@@ -48,7 +48,10 @@ fn softmax_top_k(logits: &[f32], k: usize) -> (Vec<usize>, Vec<f32>) {
     indexed.truncate(k);
 
     // Softmax over only the selected experts
-    let max_val = indexed.iter().map(|(_, v)| *v).fold(f32::NEG_INFINITY, f32::max);
+    let max_val = indexed
+        .iter()
+        .map(|(_, v)| *v)
+        .fold(f32::NEG_INFINITY, f32::max);
     let exp_sum: f32 = indexed.iter().map(|(_, v)| (*v - max_val).exp()).sum();
     let inv_sum = 1.0 / exp_sum;
 
@@ -98,7 +101,8 @@ impl ForwardPass for MixtralForward {
         // Step 1: Token embedding
         let mut hidden = vec![0.0f32; dim];
         timed!(
-            ops, dequant,
+            ops,
+            dequant,
             weights.dequantize_row("token_embd.weight", token_id as usize, &mut hidden)?
         );
 
@@ -120,11 +124,13 @@ impl ForwardPass for MixtralForward {
 
             // 2a. Attention norm
             let attn_norm_w = timed!(
-                ops, dequant,
+                ops,
+                dequant,
                 weights.f32_slice(&format!("{prefix}.attn_norm.weight"))?
             );
             timed!(
-                ops, norm,
+                ops,
+                norm,
                 rms_norm::rms_norm_out(&hidden, attn_norm_w, &mut norm_buf, cfg.rms_norm_eps)
             );
 
@@ -152,11 +158,16 @@ impl ForwardPass for MixtralForward {
                 crate::model::config::RopeScaling::None => position as f32,
             };
             timed!(
-                ops, rope,
+                ops,
+                rope,
                 rope::apply_rope_multi_head_scaled(
-                    &mut q_buf, &mut k_buf,
-                    n_heads, n_kv_heads, head_dim,
-                    rope_position, cfg.rope_freq_base,
+                    &mut q_buf,
+                    &mut k_buf,
+                    n_heads,
+                    n_kv_heads,
+                    head_dim,
+                    rope_position,
+                    cfg.rope_freq_base,
                 )
             );
 
@@ -166,7 +177,8 @@ impl ForwardPass for MixtralForward {
             // 2e. Attention
             let seq_len = cpu_kv.seq_len() + 1;
             timed!(
-                ops, attention,
+                ops,
+                attention,
                 attention::multi_head_attention(
                     &q_buf,
                     cpu_kv.k_slice_including_current(layer, seq_len),
@@ -181,21 +193,29 @@ impl ForwardPass for MixtralForward {
             let (wo_raw, wo_dtype) =
                 weights.raw_with_dtype(&format!("{prefix}.attn_output.weight"))?;
             timed!(
-                ops, matmul,
+                ops,
+                matmul,
                 ctx.backend.dequant_matmul(
-                    wo_raw, wo_dtype, &attn_out, &mut proj_buf,
-                    dim, 1, n_heads * head_dim,
+                    wo_raw,
+                    wo_dtype,
+                    &attn_out,
+                    &mut proj_buf,
+                    dim,
+                    1,
+                    n_heads * head_dim,
                 )
             );
             silu::elementwise_add(&mut hidden, &proj_buf);
 
             // 2g. FFN norm
             let ffn_norm_w = timed!(
-                ops, dequant,
+                ops,
+                dequant,
                 weights.f32_slice(&format!("{prefix}.ffn_norm.weight"))?
             );
             timed!(
-                ops, norm,
+                ops,
+                norm,
                 rms_norm::rms_norm_out(&hidden, ffn_norm_w, &mut norm_buf, cfg.rms_norm_eps)
             );
 
@@ -205,11 +225,7 @@ impl ForwardPass for MixtralForward {
             let mut router_logits = vec![0.0f32; n_expert];
             for e in 0..n_expert {
                 let row = &router_w[e * dim..(e + 1) * dim];
-                router_logits[e] = row
-                    .iter()
-                    .zip(norm_buf.iter())
-                    .map(|(&w, &x)| w * x)
-                    .sum();
+                router_logits[e] = row.iter().zip(norm_buf.iter()).map(|(&w, &x)| w * x).sum();
             }
             let (expert_ids, expert_weights) = softmax_top_k(&router_logits, n_expert_used);
 
@@ -237,10 +253,16 @@ impl ForwardPass for MixtralForward {
                 let (wd_raw, wd_dtype) =
                     weights.raw_with_dtype(&format!("{prefix}.ffn_down.{eid}.weight"))?;
                 timed!(
-                    ops, matmul,
+                    ops,
+                    matmul,
                     ctx.backend.dequant_matmul(
-                        wd_raw, wd_dtype, &gate_buf, &mut expert_out,
-                        dim, 1, inter_dim,
+                        wd_raw,
+                        wd_dtype,
+                        &gate_buf,
+                        &mut expert_out,
+                        dim,
+                        1,
+                        inter_dim,
                     )
                 );
 
@@ -259,7 +281,8 @@ impl ForwardPass for MixtralForward {
         // Step 3: Final RMSNorm
         let final_norm_w = timed!(ops, dequant, weights.f32_slice("output_norm.weight")?);
         timed!(
-            ops, norm,
+            ops,
+            norm,
             rms_norm::rms_norm(&mut hidden, final_norm_w, cfg.rms_norm_eps)
         );
 
@@ -271,8 +294,10 @@ impl ForwardPass for MixtralForward {
         };
         let (lm_raw, lm_dtype) = weights.raw_with_dtype(lm_weight_name)?;
         timed!(
-            ops, matmul,
-            ctx.backend.dequant_matmul(lm_raw, lm_dtype, &hidden, logits, vocab_size, 1, dim)
+            ops,
+            matmul,
+            ctx.backend
+                .dequant_matmul(lm_raw, lm_dtype, &hidden, logits, vocab_size, 1, dim)
         );
 
         Ok(())

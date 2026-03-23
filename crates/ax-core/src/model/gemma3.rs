@@ -68,6 +68,7 @@ fn encode_gemma3_gpu_layers_only(
     gpu_kv: &crate::kv::GpuKv,
     cached: &crate::backend::metal::CachedModelKeys,
     weight_cache: &rustc_hash::FxHashMap<usize, ax_metal::MetalBuffer>,
+    fused_qkv_cache: &rustc_hash::FxHashMap<(usize, usize, usize), ax_metal::MetalBuffer>,
 ) -> anyhow::Result<()> {
     let dim = cfg.embedding_dim as usize;
     let n_layers = cfg.n_layers as usize;
@@ -78,6 +79,8 @@ fn encode_gemma3_gpu_layers_only(
     let q_dim = n_heads * head_dim;
     let kv_dim = n_kv_heads * head_dim;
     let eps = cfg.rms_norm_eps;
+    let use_fused_decode_qkv =
+        crate::backend::metal::metal_decode_fused_qkv_enabled_for_arch(&cfg.architecture);
 
     for layer in 0..n_layers {
         let lw = &cached.layers[layer];
@@ -87,6 +90,15 @@ fn encode_gemma3_gpu_layers_only(
         let wq_buf = weight_cache.get(&lw.wq).unwrap();
         let wk_buf = weight_cache.get(&lw.wk).unwrap();
         let wv_buf = weight_cache.get(&lw.wv).unwrap();
+        let fused_qkv_dtype_ok = lw.wq_dtype == lw.wk_dtype
+            && lw.wq_dtype == lw.wv_dtype
+            && matches!(lw.wq_dtype, GgmlType::Q4K | GgmlType::Q6K);
+        let fused_qkv_key = (lw.wq, lw.wk, lw.wv);
+        let fused_qkv_buf = if use_fused_decode_qkv && fused_qkv_dtype_ok {
+            fused_qkv_cache.get(&fused_qkv_key)
+        } else {
+            None
+        };
 
         let rope_base = if is_local {
             cfg.rope_freq_base_local.unwrap_or(cfg.rope_freq_base)
@@ -112,89 +124,133 @@ fn encode_gemma3_gpu_layers_only(
         );
         ax_metal::barrier_buffers(encoder);
 
-        encode_dequant_matvec(
-            metal_ops,
-            encoder,
-            wq_buf,
-            &s.norm_buf,
-            &s.q_buf,
-            q_dim as u32,
-            dim as u32,
-            lw.wq_dtype,
-        );
-        encode_dequant_matvec(
-            metal_ops,
-            encoder,
-            wk_buf,
-            &s.norm_buf,
-            &s.k_buf,
-            kv_dim as u32,
-            dim as u32,
-            lw.wk_dtype,
-        );
-        encode_dequant_matvec(
-            metal_ops,
-            encoder,
-            wv_buf,
-            &s.norm_buf,
-            &s.v_buf,
-            kv_dim as u32,
-            dim as u32,
-            lw.wv_dtype,
-        );
-        ax_metal::barrier_buffers(encoder);
-
-        if let (Some(q_norm_key), Some(k_norm_key)) = (lw.attn_q_norm, lw.attn_k_norm) {
+        if let (Some(fused_w), Some(q_norm_key), Some(k_norm_key)) =
+            (fused_qkv_buf, lw.attn_q_norm, lw.attn_k_norm)
+        {
             let q_nw_buf = weight_cache.get(&q_norm_key).unwrap();
             let k_nw_buf = weight_cache.get(&k_norm_key).unwrap();
-            metal_ops.elementwise.encode_per_head_rms_norm(
+            encode_dequant_matvec(
+                metal_ops,
+                encoder,
+                fused_w,
+                &s.norm_buf,
+                &s.qkv_buf,
+                (q_dim + 2 * kv_dim) as u32,
+                dim as u32,
+                lw.wq_dtype,
+            );
+            ax_metal::barrier_buffers(encoder);
+
+            metal_ops
+                .elementwise
+                .encode_qkv_split_qk_norm_rope_append_kv_batch(
+                    encoder,
+                    &s.qkv_buf,
+                    &s.q_buf,
+                    &s.k_buf,
+                    &s.v_buf,
+                    q_nw_buf,
+                    k_nw_buf,
+                    gpu_kv.k_buffer(layer),
+                    gpu_kv.v_buffer(layer),
+                    kv_f16,
+                    1,
+                    n_heads as u32,
+                    n_kv_heads as u32,
+                    head_dim as u32,
+                    eps,
+                    rope_position,
+                    1.0,
+                    rope_base,
+                    kv_offset,
+                    kv_dim as u32,
+                );
+            ax_metal::barrier_buffers(encoder);
+        } else {
+            encode_dequant_matvec(
+                metal_ops,
+                encoder,
+                wq_buf,
+                &s.norm_buf,
+                &s.q_buf,
+                q_dim as u32,
+                dim as u32,
+                lw.wq_dtype,
+            );
+            encode_dequant_matvec(
+                metal_ops,
+                encoder,
+                wk_buf,
+                &s.norm_buf,
+                &s.k_buf,
+                kv_dim as u32,
+                dim as u32,
+                lw.wk_dtype,
+            );
+            encode_dequant_matvec(
+                metal_ops,
+                encoder,
+                wv_buf,
+                &s.norm_buf,
+                &s.v_buf,
+                kv_dim as u32,
+                dim as u32,
+                lw.wv_dtype,
+            );
+            ax_metal::barrier_buffers(encoder);
+
+            if let (Some(q_norm_key), Some(k_norm_key)) = (lw.attn_q_norm, lw.attn_k_norm) {
+                let q_nw_buf = weight_cache.get(&q_norm_key).unwrap();
+                let k_nw_buf = weight_cache.get(&k_norm_key).unwrap();
+                metal_ops.elementwise.encode_per_head_rms_norm(
+                    encoder,
+                    &s.q_buf,
+                    q_nw_buf,
+                    n_heads as u32,
+                    head_dim as u32,
+                    eps,
+                );
+                metal_ops.elementwise.encode_per_head_rms_norm(
+                    encoder,
+                    &s.k_buf,
+                    k_nw_buf,
+                    n_kv_heads as u32,
+                    head_dim as u32,
+                    eps,
+                );
+                ax_metal::barrier_buffers(encoder);
+            }
+
+            metal_ops.elementwise.encode_rope(
                 encoder,
                 &s.q_buf,
-                q_nw_buf,
-                n_heads as u32,
-                head_dim as u32,
-                eps,
-            );
-            metal_ops.elementwise.encode_per_head_rms_norm(
-                encoder,
                 &s.k_buf,
-                k_nw_buf,
+                n_heads as u32,
                 n_kv_heads as u32,
                 head_dim as u32,
-                eps,
+                rope_position,
+                rope_base,
+            );
+            ax_metal::barrier_buffers(encoder);
+
+            metal_ops.elementwise.encode_kv_append(
+                encoder,
+                &s.k_buf,
+                gpu_kv.k_buffer(layer),
+                kv_f16,
+                kv_offset,
+                kv_dim as u32,
+            );
+            metal_ops.elementwise.encode_kv_append(
+                encoder,
+                &s.v_buf,
+                gpu_kv.v_buffer(layer),
+                kv_f16,
+                kv_offset,
+                kv_dim as u32,
             );
             ax_metal::barrier_buffers(encoder);
         }
-
-        metal_ops.elementwise.encode_rope(
-            encoder,
-            &s.q_buf,
-            &s.k_buf,
-            n_heads as u32,
-            n_kv_heads as u32,
-            head_dim as u32,
-            rope_position,
-            rope_base,
-        );
-        ax_metal::barrier_buffers(encoder);
-
-        metal_ops.elementwise.encode_kv_append(
-            encoder,
-            &s.k_buf,
-            gpu_kv.k_buffer(layer),
-            kv_f16,
-            kv_offset,
-            kv_dim as u32,
-        );
-        metal_ops.elementwise.encode_kv_append(
-            encoder,
-            &s.v_buf,
-            gpu_kv.v_buffer(layer),
-            kv_f16,
-            kv_offset,
-            kv_dim as u32,
-        );
-        ax_metal::barrier_buffers(encoder);
 
         let (attend_start, attend_len) = if is_local {
             if let Some(window) = cfg.sliding_window_size {
@@ -384,6 +440,7 @@ fn encode_gemma3_pending_step(
     let cached_guard = metal_ops.cached_model_keys();
     let cached = cached_guard.as_ref().unwrap();
     let weight_cache = metal_ops.lock_weight_cache();
+    let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
 
     let kv_offset = (position * kv_dim) as u32;
     let full_seq_len = position + 1;
@@ -402,6 +459,7 @@ fn encode_gemma3_pending_step(
             gpu_kv,
             cached,
             &weight_cache,
+            &fused_qkv_cache,
         )?;
         encode_gemma3_gpu_output_head(
             encoder,
@@ -460,6 +518,8 @@ impl Gemma3Forward {
         let kv_dim = n_kv_heads * head_dim;
         let use_precomputed_f16 =
             crate::backend::metal::metal_precompute_f16_enabled_for_model(cfg);
+        let use_fused_decode_qkv =
+            crate::backend::metal::metal_decode_fused_qkv_enabled_for_arch(&cfg.architecture);
 
         let mut layers = Vec::with_capacity(n_layers);
         for layer in 0..n_layers {
@@ -472,6 +532,13 @@ impl Gemma3Forward {
             let wq_key = metal_ops.ensure_quant_cached(wq_raw);
             let wk_key = metal_ops.ensure_quant_cached(wk_raw);
             let wv_key = metal_ops.ensure_quant_cached(wv_raw);
+            if use_fused_decode_qkv
+                && wq_dtype == wk_dtype
+                && wq_dtype == wv_dtype
+                && matches!(wq_dtype, GgmlType::Q4K | GgmlType::Q6K)
+            {
+                metal_ops.ensure_qkv_fused_quant_cached(wq_raw, wk_raw, wv_raw);
+            }
             if use_precomputed_f16
                 && crate::backend::metal::metal_fused_qkv_enabled()
                 && wq_dtype == wk_dtype
@@ -725,6 +792,7 @@ impl Gemma3Forward {
         // ── Single command buffer: all layers + final norm + LM head ──
         {
             let weight_cache = metal_ops.lock_weight_cache();
+            let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
             let exec_t = OpTimer::start();
             metal_ops.device.execute_sync(|encoder| {
                 encode_gemma3_gpu_layers_only(
@@ -740,6 +808,7 @@ impl Gemma3Forward {
                     gpu_kv,
                     cached,
                     &weight_cache,
+                    &fused_qkv_cache,
                 )?;
                 encode_gemma3_gpu_output_head(
                     encoder,

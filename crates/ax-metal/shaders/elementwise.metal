@@ -1220,6 +1220,204 @@ kernel void qkv_split_rope_append_kv_batch_f16(
     }
 }
 
+// ── QKV split + Q/K norm + RoPE + KV append Batch (f32 KV cache) ───────────
+kernel void qkv_split_qk_norm_rope_append_kv_batch_f32(
+    device const float* src        [[buffer(0)]],
+    device float* q                [[buffer(1)]],
+    device float* k                [[buffer(2)]],
+    device float* v                [[buffer(3)]],
+    device const float* q_weight   [[buffer(4)]],
+    device const float* k_weight   [[buffer(5)]],
+    device float* cache_k          [[buffer(6)]],
+    device float* cache_v          [[buffer(7)]],
+    constant uint& n_rows          [[buffer(8)]],
+    constant uint& n_q_heads       [[buffer(9)]],
+    constant uint& n_kv_heads      [[buffer(10)]],
+    constant uint& head_dim        [[buffer(11)]],
+    constant float& eps            [[buffer(12)]],
+    constant float& start_pos      [[buffer(13)]],
+    constant float& pos_step       [[buffer(14)]],
+    constant float& freq_base      [[buffer(15)]],
+    constant uint& cache_offset    [[buffer(16)]],
+    constant uint& cache_stride    [[buffer(17)]],
+    uint gid                       [[thread_position_in_grid]]
+) {
+    uint half_dim = head_dim / 2;
+    uint q_dim = n_q_heads * head_dim;
+    uint kv_dim = n_kv_heads * head_dim;
+    uint fused_dim = q_dim + 2 * kv_dim;
+    uint q_pairs = n_q_heads * half_dim;
+    uint k_pairs = n_kv_heads * half_dim;
+    uint items_per_row = q_pairs + k_pairs + kv_dim;
+    uint total = n_rows * items_per_row;
+    if (gid >= total) return;
+
+    uint row = gid / items_per_row;
+    uint local = gid % items_per_row;
+    float position = start_pos + float(row) * pos_step;
+    uint cache_row_base = cache_offset + row * cache_stride;
+    uint src_row_base = row * fused_dim;
+    uint q_row_base = row * q_dim;
+    uint kv_row_base = row * kv_dim;
+
+    if (local < q_pairs) {
+        uint head = local / half_dim;
+        uint i = local % half_dim;
+        uint head_base = src_row_base + head * head_dim;
+        float sum_sq = 0.0f;
+        for (uint j = 0; j < head_dim; ++j) {
+            float vv = src[head_base + j];
+            sum_sq += vv * vv;
+        }
+        float inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
+        uint src_base = head_base + 2 * i;
+        uint dst_base = q_row_base + head * head_dim + 2 * i;
+        float v0 = src[src_base] * inv_rms * q_weight[2 * i];
+        float v1 = src[src_base + 1] * inv_rms * q_weight[2 * i + 1];
+        float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
+        float theta = position * freq;
+        float cos_t = cos(theta);
+        float sin_t = sin(theta);
+        q[dst_base] = v0 * cos_t - v1 * sin_t;
+        q[dst_base + 1] = v0 * sin_t + v1 * cos_t;
+        return;
+    }
+
+    uint k_start = q_pairs;
+    uint v_start = q_pairs + k_pairs;
+    if (local < v_start) {
+        uint k_local = local - k_start;
+        uint head = k_local / half_dim;
+        uint i = k_local % half_dim;
+        uint head_base = src_row_base + q_dim + head * head_dim;
+        float sum_sq = 0.0f;
+        for (uint j = 0; j < head_dim; ++j) {
+            float vv = src[head_base + j];
+            sum_sq += vv * vv;
+        }
+        float inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
+        uint src_base = head_base + 2 * i;
+        uint dst_base = kv_row_base + head * head_dim + 2 * i;
+        float v0 = src[src_base] * inv_rms * k_weight[2 * i];
+        float v1 = src[src_base + 1] * inv_rms * k_weight[2 * i + 1];
+        float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
+        float theta = position * freq;
+        float cos_t = cos(theta);
+        float sin_t = sin(theta);
+        float rk0 = v0 * cos_t - v1 * sin_t;
+        float rk1 = v0 * sin_t + v1 * cos_t;
+        k[dst_base] = rk0;
+        k[dst_base + 1] = rk1;
+        cache_k[cache_row_base + dst_base] = rk0;
+        cache_k[cache_row_base + dst_base + 1] = rk1;
+    } else {
+        uint vc = local - v_start;
+        uint src_idx = src_row_base + q_dim + kv_dim + vc;
+        float vv = src[src_idx];
+        v[kv_row_base + vc] = vv;
+        cache_v[cache_row_base + vc] = vv;
+    }
+}
+
+// ── QKV split + Q/K norm + RoPE + KV append Batch (f16 KV cache) ───────────
+kernel void qkv_split_qk_norm_rope_append_kv_batch_f16(
+    device const float* src        [[buffer(0)]],
+    device float* q                [[buffer(1)]],
+    device float* k                [[buffer(2)]],
+    device float* v                [[buffer(3)]],
+    device const float* q_weight   [[buffer(4)]],
+    device const float* k_weight   [[buffer(5)]],
+    device half* cache_k           [[buffer(6)]],
+    device half* cache_v           [[buffer(7)]],
+    constant uint& n_rows          [[buffer(8)]],
+    constant uint& n_q_heads       [[buffer(9)]],
+    constant uint& n_kv_heads      [[buffer(10)]],
+    constant uint& head_dim        [[buffer(11)]],
+    constant float& eps            [[buffer(12)]],
+    constant float& start_pos      [[buffer(13)]],
+    constant float& pos_step       [[buffer(14)]],
+    constant float& freq_base      [[buffer(15)]],
+    constant uint& cache_offset    [[buffer(16)]],
+    constant uint& cache_stride    [[buffer(17)]],
+    uint gid                       [[thread_position_in_grid]]
+) {
+    uint half_dim = head_dim / 2;
+    uint q_dim = n_q_heads * head_dim;
+    uint kv_dim = n_kv_heads * head_dim;
+    uint fused_dim = q_dim + 2 * kv_dim;
+    uint q_pairs = n_q_heads * half_dim;
+    uint k_pairs = n_kv_heads * half_dim;
+    uint items_per_row = q_pairs + k_pairs + kv_dim;
+    uint total = n_rows * items_per_row;
+    if (gid >= total) return;
+
+    uint row = gid / items_per_row;
+    uint local = gid % items_per_row;
+    float position = start_pos + float(row) * pos_step;
+    uint cache_row_base = cache_offset + row * cache_stride;
+    uint src_row_base = row * fused_dim;
+    uint q_row_base = row * q_dim;
+    uint kv_row_base = row * kv_dim;
+
+    if (local < q_pairs) {
+        uint head = local / half_dim;
+        uint i = local % half_dim;
+        uint head_base = src_row_base + head * head_dim;
+        float sum_sq = 0.0f;
+        for (uint j = 0; j < head_dim; ++j) {
+            float vv = src[head_base + j];
+            sum_sq += vv * vv;
+        }
+        float inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
+        uint src_base = head_base + 2 * i;
+        uint dst_base = q_row_base + head * head_dim + 2 * i;
+        float v0 = src[src_base] * inv_rms * q_weight[2 * i];
+        float v1 = src[src_base + 1] * inv_rms * q_weight[2 * i + 1];
+        float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
+        float theta = position * freq;
+        float cos_t = cos(theta);
+        float sin_t = sin(theta);
+        q[dst_base] = v0 * cos_t - v1 * sin_t;
+        q[dst_base + 1] = v0 * sin_t + v1 * cos_t;
+        return;
+    }
+
+    uint k_start = q_pairs;
+    uint v_start = q_pairs + k_pairs;
+    if (local < v_start) {
+        uint k_local = local - k_start;
+        uint head = k_local / half_dim;
+        uint i = k_local % half_dim;
+        uint head_base = src_row_base + q_dim + head * head_dim;
+        float sum_sq = 0.0f;
+        for (uint j = 0; j < head_dim; ++j) {
+            float vv = src[head_base + j];
+            sum_sq += vv * vv;
+        }
+        float inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
+        uint src_base = head_base + 2 * i;
+        uint dst_base = kv_row_base + head * head_dim + 2 * i;
+        float v0 = src[src_base] * inv_rms * k_weight[2 * i];
+        float v1 = src[src_base + 1] * inv_rms * k_weight[2 * i + 1];
+        float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
+        float theta = position * freq;
+        float cos_t = cos(theta);
+        float sin_t = sin(theta);
+        float rk0 = v0 * cos_t - v1 * sin_t;
+        float rk1 = v0 * sin_t + v1 * cos_t;
+        k[dst_base] = rk0;
+        k[dst_base + 1] = rk1;
+        cache_k[cache_row_base + dst_base] = half(rk0);
+        cache_k[cache_row_base + dst_base + 1] = half(rk1);
+    } else {
+        uint vc = local - v_start;
+        uint src_idx = src_row_base + q_dim + kv_dim + vc;
+        float vv = src[src_idx];
+        v[kv_row_base + vc] = vv;
+        cache_v[cache_row_base + vc] = half(vv);
+    }
+}
+
 // ── KV cache append ───────────────────────────────────────────────
 //
 // Copy `count` floats from src into dst at byte offset `offset`.

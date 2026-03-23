@@ -8,8 +8,8 @@ pub mod glm;
 pub mod llama;
 pub mod mixtral;
 pub mod qwen3;
-pub mod starcoder2;
 pub(crate) mod shared;
+pub mod starcoder2;
 pub mod weights;
 
 pub use config::ModelConfig;

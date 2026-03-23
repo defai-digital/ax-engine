@@ -50,13 +50,7 @@ macro_rules! timed {
 }
 
 /// CPU LayerNorm: y = (x - mean) / sqrt(var + eps) * weight + bias
-fn layer_norm_out(
-    x: &[f32],
-    weight: &[f32],
-    bias: &[f32],
-    out: &mut [f32],
-    eps: f32,
-) {
+fn layer_norm_out(x: &[f32], weight: &[f32], bias: &[f32], out: &mut [f32], eps: f32) {
     let n = x.len();
     let mean: f32 = x.iter().sum::<f32>() / n as f32;
     let var: f32 = x.iter().map(|&v| (v - mean) * (v - mean)).sum::<f32>() / n as f32;
@@ -123,64 +117,114 @@ fn encode_falcon_gpu_layers_sequential(
 
         // 2. QKV matmul
         encode_dequant_matvec(
-            metal_ops, encoder, wq_buf, &s.norm_buf, &s.q_buf,
-            q_dim as u32, dim as u32, lw.wq_dtype,
+            metal_ops,
+            encoder,
+            wq_buf,
+            &s.norm_buf,
+            &s.q_buf,
+            q_dim as u32,
+            dim as u32,
+            lw.wq_dtype,
         );
         encode_dequant_matvec(
-            metal_ops, encoder, wk_buf, &s.norm_buf, &s.k_buf,
-            kv_dim as u32, dim as u32, lw.wk_dtype,
+            metal_ops,
+            encoder,
+            wk_buf,
+            &s.norm_buf,
+            &s.k_buf,
+            kv_dim as u32,
+            dim as u32,
+            lw.wk_dtype,
         );
         encode_dequant_matvec(
-            metal_ops, encoder, wv_buf, &s.norm_buf, &s.v_buf,
-            kv_dim as u32, dim as u32, lw.wv_dtype,
+            metal_ops,
+            encoder,
+            wv_buf,
+            &s.norm_buf,
+            &s.v_buf,
+            kv_dim as u32,
+            dim as u32,
+            lw.wv_dtype,
         );
         ax_metal::barrier_buffers(encoder);
 
         // 3. RoPE
         metal_ops.elementwise.encode_rope(
-            encoder, &s.q_buf, &s.k_buf,
-            n_heads as u32, n_kv_heads as u32, head_dim as u32,
-            rope_position, cfg.rope_freq_base,
+            encoder,
+            &s.q_buf,
+            &s.k_buf,
+            n_heads as u32,
+            n_kv_heads as u32,
+            head_dim as u32,
+            rope_position,
+            cfg.rope_freq_base,
         );
         ax_metal::barrier_buffers(encoder);
 
         // 4. KV cache append
         metal_ops.elementwise.encode_kv_append(
-            encoder, &s.k_buf, gpu_kv.k_buffer(layer),
-            kv_f16, kv_offset, kv_dim as u32,
+            encoder,
+            &s.k_buf,
+            gpu_kv.k_buffer(layer),
+            kv_f16,
+            kv_offset,
+            kv_dim as u32,
         );
         metal_ops.elementwise.encode_kv_append(
-            encoder, &s.v_buf, gpu_kv.v_buffer(layer),
-            kv_f16, kv_offset, kv_dim as u32,
+            encoder,
+            &s.v_buf,
+            gpu_kv.v_buffer(layer),
+            kv_f16,
+            kv_offset,
+            kv_dim as u32,
         );
         ax_metal::barrier_buffers(encoder);
 
         // 5. Attention
         metal_ops.attention.encode_attention_decode_with_scratch(
-            encoder, &s.q_buf,
-            gpu_kv.k_buffer(layer), gpu_kv.v_buffer(layer),
-            &s.attn_out, &s.splitk_partial_out, &s.splitk_partial_lse,
-            kv_f16, n_heads as u32, n_kv_heads as u32, head_dim as u32,
-            0, full_seq_len as u32,
+            encoder,
+            &s.q_buf,
+            gpu_kv.k_buffer(layer),
+            gpu_kv.v_buffer(layer),
+            &s.attn_out,
+            &s.splitk_partial_out,
+            &s.splitk_partial_lse,
+            kv_f16,
+            n_heads as u32,
+            n_kv_heads as u32,
+            head_dim as u32,
+            0,
+            full_seq_len as u32,
         );
         ax_metal::barrier_buffers(encoder);
 
         // 6. Output projection + residual
         let wo_buf = weight_cache.get(&lw.wo).unwrap();
         encode_dequant_matvec(
-            metal_ops, encoder, wo_buf, &s.attn_out, &s.proj_buf,
-            dim as u32, q_dim as u32, lw.wo_dtype,
+            metal_ops,
+            encoder,
+            wo_buf,
+            &s.attn_out,
+            &s.proj_buf,
+            dim as u32,
+            q_dim as u32,
+            lw.wo_dtype,
         );
         ax_metal::barrier_buffers(encoder);
-        metal_ops.elementwise.encode_elementwise_add(
-            encoder, hidden_buf, &s.proj_buf, dim as u32,
-        );
+        metal_ops
+            .elementwise
+            .encode_elementwise_add(encoder, hidden_buf, &s.proj_buf, dim as u32);
         ax_metal::barrier_buffers(encoder);
 
         // 7. FFN norm + FFN
         let ffn_nw_buf = weight_cache.get(&lw.ffn_norm).unwrap();
         metal_ops.elementwise.encode_rms_norm_out(
-            encoder, hidden_buf, ffn_nw_buf, &s.norm_buf, dim as u32, eps,
+            encoder,
+            hidden_buf,
+            ffn_nw_buf,
+            &s.norm_buf,
+            dim as u32,
+            eps,
         );
         ax_metal::barrier_buffers(encoder);
 
@@ -189,41 +233,68 @@ fn encode_falcon_gpu_layers_sequential(
             let wg_buf = weight_cache.get(&lw.wg).unwrap();
             let wu_buf = weight_cache.get(&lw.wu).unwrap();
             encode_dequant_matvec(
-                metal_ops, encoder, wg_buf, &s.norm_buf, &s.gate_buf,
-                inter_dim as u32, dim as u32, lw.wg_dtype,
+                metal_ops,
+                encoder,
+                wg_buf,
+                &s.norm_buf,
+                &s.gate_buf,
+                inter_dim as u32,
+                dim as u32,
+                lw.wg_dtype,
             );
             encode_dequant_matvec(
-                metal_ops, encoder, wu_buf, &s.norm_buf, &s.up_buf,
-                inter_dim as u32, dim as u32, lw.wu_dtype,
+                metal_ops,
+                encoder,
+                wu_buf,
+                &s.norm_buf,
+                &s.up_buf,
+                inter_dim as u32,
+                dim as u32,
+                lw.wu_dtype,
             );
             ax_metal::barrier_buffers(encoder);
             metal_ops.elementwise.encode_gelu_elementwise_mul(
-                encoder, &s.gate_buf, &s.up_buf, inter_dim as u32,
+                encoder,
+                &s.gate_buf,
+                &s.up_buf,
+                inter_dim as u32,
             );
         } else {
             // No-gate FFN: up → GELU → down (original Falcon)
             let wu_buf = weight_cache.get(&lw.wu).unwrap();
             encode_dequant_matvec(
-                metal_ops, encoder, wu_buf, &s.norm_buf, &s.gate_buf,
-                inter_dim as u32, dim as u32, lw.wu_dtype,
+                metal_ops,
+                encoder,
+                wu_buf,
+                &s.norm_buf,
+                &s.gate_buf,
+                inter_dim as u32,
+                dim as u32,
+                lw.wu_dtype,
             );
             ax_metal::barrier_buffers(encoder);
-            metal_ops.elementwise.encode_gelu_inplace(
-                encoder, &s.gate_buf, inter_dim as u32,
-            );
+            metal_ops
+                .elementwise
+                .encode_gelu_inplace(encoder, &s.gate_buf, inter_dim as u32);
         }
         ax_metal::barrier_buffers(encoder);
 
         // 8. Down projection + residual
         let wd_buf = weight_cache.get(&lw.wd).unwrap();
         encode_dequant_matvec(
-            metal_ops, encoder, wd_buf, &s.gate_buf, &s.down_buf,
-            dim as u32, inter_dim as u32, lw.wd_dtype,
+            metal_ops,
+            encoder,
+            wd_buf,
+            &s.gate_buf,
+            &s.down_buf,
+            dim as u32,
+            inter_dim as u32,
+            lw.wd_dtype,
         );
         ax_metal::barrier_buffers(encoder);
-        metal_ops.elementwise.encode_elementwise_add(
-            encoder, hidden_buf, &s.down_buf, dim as u32,
-        );
+        metal_ops
+            .elementwise
+            .encode_elementwise_add(encoder, hidden_buf, &s.down_buf, dim as u32);
         if layer + 1 < n_layers {
             ax_metal::barrier_buffers(encoder);
         }
@@ -247,14 +318,20 @@ fn encode_falcon_gpu_output_head(
 
     let fnw_buf = weight_cache.get(&cached.output_norm).unwrap();
     ax_metal::barrier_buffers(encoder);
-    metal_ops.elementwise.encode_rms_norm(
-        encoder, hidden_buf, fnw_buf, dim as u32, eps,
-    );
+    metal_ops
+        .elementwise
+        .encode_rms_norm(encoder, hidden_buf, fnw_buf, dim as u32, eps);
     ax_metal::barrier_buffers(encoder);
     let lm_buf = weight_cache.get(&cached.lm_head).unwrap();
     encode_dequant_matvec(
-        metal_ops, encoder, lm_buf, hidden_buf, &s.logits_buf,
-        vocab_size as u32, dim as u32, cached.lm_head_dtype,
+        metal_ops,
+        encoder,
+        lm_buf,
+        hidden_buf,
+        &s.logits_buf,
+        vocab_size as u32,
+        dim as u32,
+        cached.lm_head_dtype,
     );
 }
 
@@ -294,12 +371,28 @@ fn encode_falcon_pending_step(
 
     metal_ops.device.encode_frame(|encoder| {
         encode_falcon_gpu_layers_sequential(
-            encoder, metal_ops, s, hidden_buf, cfg,
-            kv_offset, rope_position, full_seq_len,
-            kv_f16, gpu_kv, cached, &weight_cache, has_gate,
+            encoder,
+            metal_ops,
+            s,
+            hidden_buf,
+            cfg,
+            kv_offset,
+            rope_position,
+            full_seq_len,
+            kv_f16,
+            gpu_kv,
+            cached,
+            &weight_cache,
+            has_gate,
         )?;
         encode_falcon_gpu_output_head(
-            encoder, metal_ops, s, hidden_buf, cfg, cached, &weight_cache,
+            encoder,
+            metal_ops,
+            s,
+            hidden_buf,
+            cfg,
+            cached,
+            &weight_cache,
         );
         Ok(())
     })
@@ -396,12 +489,16 @@ impl FalconForward {
                 let key = metal_ops.ensure_quant_cached(wg_raw);
                 if use_precomputed_f16 && wg_dtype == GgmlType::Q4K {
                     metal_ops.ensure_precomputed_q4k_f16_from_raw(
-                        wg_raw, inter_dim as u32, dim as u32,
+                        wg_raw,
+                        inter_dim as u32,
+                        dim as u32,
                     )?;
                 }
                 if use_precomputed_f16 && wg_dtype == GgmlType::Q6K {
                     metal_ops.ensure_precomputed_q6k_f16_from_raw(
-                        wg_raw, inter_dim as u32, dim as u32,
+                        wg_raw,
+                        inter_dim as u32,
+                        dim as u32,
                     )?;
                 }
                 (key, wg_dtype)
@@ -412,22 +509,30 @@ impl FalconForward {
 
             if use_precomputed_f16 && wu_dtype == GgmlType::Q4K {
                 metal_ops.ensure_precomputed_q4k_f16_from_raw(
-                    wu_raw, inter_dim as u32, dim as u32,
+                    wu_raw,
+                    inter_dim as u32,
+                    dim as u32,
                 )?;
             }
             if use_precomputed_f16 && wu_dtype == GgmlType::Q6K {
                 metal_ops.ensure_precomputed_q6k_f16_from_raw(
-                    wu_raw, inter_dim as u32, dim as u32,
+                    wu_raw,
+                    inter_dim as u32,
+                    dim as u32,
                 )?;
             }
             if use_precomputed_f16 && wd_dtype == GgmlType::Q4K {
                 metal_ops.ensure_precomputed_q4k_f16_from_raw(
-                    wd_raw, dim as u32, inter_dim as u32,
+                    wd_raw,
+                    dim as u32,
+                    inter_dim as u32,
                 )?;
             }
             if use_precomputed_f16 && wd_dtype == GgmlType::Q6K {
                 metal_ops.ensure_precomputed_q6k_f16_from_raw(
-                    wd_raw, dim as u32, inter_dim as u32,
+                    wd_raw,
+                    dim as u32,
+                    inter_dim as u32,
                 )?;
             }
 
@@ -469,12 +574,16 @@ impl FalconForward {
         let lm_head_key = metal_ops.ensure_quant_cached(lm_raw);
         if use_precomputed_f16 && lm_dtype == GgmlType::Q4K {
             metal_ops.ensure_precomputed_q4k_f16_from_raw(
-                lm_raw, cfg.vocab_size, cfg.embedding_dim,
+                lm_raw,
+                cfg.vocab_size,
+                cfg.embedding_dim,
             )?;
         }
         if use_precomputed_f16 && lm_dtype == GgmlType::Q6K {
             metal_ops.ensure_precomputed_q6k_f16_from_raw(
-                lm_raw, cfg.vocab_size, cfg.embedding_dim,
+                lm_raw,
+                cfg.vocab_size,
+                cfg.embedding_dim,
             )?;
         }
 
@@ -549,12 +658,28 @@ impl FalconForward {
             let exec_t = OpTimer::start();
             metal_ops.device.execute_sync(|encoder| {
                 encode_falcon_gpu_layers_sequential(
-                    encoder, metal_ops, s, &s.hidden, cfg,
-                    kv_offset, rope_position, cur_seq_len + 1,
-                    kv_f16, gpu_kv, cached, &weight_cache, has_gate,
+                    encoder,
+                    metal_ops,
+                    s,
+                    &s.hidden,
+                    cfg,
+                    kv_offset,
+                    rope_position,
+                    cur_seq_len + 1,
+                    kv_f16,
+                    gpu_kv,
+                    cached,
+                    &weight_cache,
+                    has_gate,
                 )?;
                 encode_falcon_gpu_output_head(
-                    encoder, metal_ops, s, &s.hidden, cfg, cached, &weight_cache,
+                    encoder,
+                    metal_ops,
+                    s,
+                    &s.hidden,
+                    cfg,
+                    cached,
+                    &weight_cache,
                 );
                 Ok(())
             })?;
@@ -675,43 +800,102 @@ impl FalconForward {
 
                     // Phase 1: Batched RMSNorm
                     metal_ops.elementwise.encode_rms_norm_out_batch(
-                        encoder, &bs.hidden, norm_w_buf, &bs.norm_buf,
-                        dim as u32, nt, eps,
+                        encoder,
+                        &bs.hidden,
+                        norm_w_buf,
+                        &bs.norm_buf,
+                        dim as u32,
+                        nt,
+                        eps,
                     );
                     ax_metal::barrier_buffers(encoder);
 
                     // Phase 2: Batched QKV matmul
                     if use_f16_batch_io {
                         metal_ops.elementwise.encode_cast_f32_to_f16(
-                            encoder, &bs.norm_buf, &bs.matmul_in_f16, nt * dim as u32,
+                            encoder,
+                            &bs.norm_buf,
+                            &bs.matmul_in_f16,
+                            nt * dim as u32,
                         );
                         encode_dequant_batch_f16in(
-                            metal_ops, encoder, wq_buf, &bs.matmul_in_f16, &bs.q_buf,
-                            q_dim as u32, nt, dim as u32, lw.wq_dtype,
+                            metal_ops,
+                            encoder,
+                            wq_buf,
+                            &bs.matmul_in_f16,
+                            &bs.q_buf,
+                            q_dim as u32,
+                            nt,
+                            dim as u32,
+                            lw.wq_dtype,
                         );
                         encode_dequant_batch_f16in(
-                            metal_ops, encoder, wk_buf, &bs.matmul_in_f16, &bs.k_buf,
-                            kv_dim as u32, nt, dim as u32, lw.wk_dtype,
+                            metal_ops,
+                            encoder,
+                            wk_buf,
+                            &bs.matmul_in_f16,
+                            &bs.k_buf,
+                            kv_dim as u32,
+                            nt,
+                            dim as u32,
+                            lw.wk_dtype,
                         );
                         encode_dequant_batch_f16in(
-                            metal_ops, encoder, wv_buf, &bs.matmul_in_f16, &bs.v_buf,
-                            kv_dim as u32, nt, dim as u32, lw.wv_dtype,
+                            metal_ops,
+                            encoder,
+                            wv_buf,
+                            &bs.matmul_in_f16,
+                            &bs.v_buf,
+                            kv_dim as u32,
+                            nt,
+                            dim as u32,
+                            lw.wv_dtype,
                         );
                     } else {
                         encode_dequant_batch(
-                            &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                            wq_buf, &bs.norm_buf, &bs.q_buf, &bs.matmul_in_f16,
-                            q_dim as u32, nt, dim as u32, lw.wq_dtype, false, use_batch_simd,
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wq_buf,
+                            &bs.norm_buf,
+                            &bs.q_buf,
+                            &bs.matmul_in_f16,
+                            q_dim as u32,
+                            nt,
+                            dim as u32,
+                            lw.wq_dtype,
+                            false,
+                            use_batch_simd,
                         );
                         encode_dequant_batch(
-                            &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                            wk_buf, &bs.norm_buf, &bs.k_buf, &bs.matmul_in_f16,
-                            kv_dim as u32, nt, dim as u32, lw.wk_dtype, false, use_batch_simd,
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wk_buf,
+                            &bs.norm_buf,
+                            &bs.k_buf,
+                            &bs.matmul_in_f16,
+                            kv_dim as u32,
+                            nt,
+                            dim as u32,
+                            lw.wk_dtype,
+                            false,
+                            use_batch_simd,
                         );
                         encode_dequant_batch(
-                            &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                            wv_buf, &bs.norm_buf, &bs.v_buf, &bs.matmul_in_f16,
-                            kv_dim as u32, nt, dim as u32, lw.wv_dtype, false, use_batch_simd,
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wv_buf,
+                            &bs.norm_buf,
+                            &bs.v_buf,
+                            &bs.matmul_in_f16,
+                            kv_dim as u32,
+                            nt,
+                            dim as u32,
+                            lw.wv_dtype,
+                            false,
+                            use_batch_simd,
                         );
                     }
                     ax_metal::barrier_buffers(encoder);
@@ -721,41 +905,72 @@ impl FalconForward {
                         crate::model::config::RopeScaling::Linear(f) => {
                             (base_seq_len as f32 / f, 1.0f32 / f)
                         }
-                        crate::model::config::RopeScaling::None => {
-                            (base_seq_len as f32, 1.0f32)
-                        }
+                        crate::model::config::RopeScaling::None => (base_seq_len as f32, 1.0f32),
                     };
                     metal_ops.elementwise.encode_rope_batch(
-                        encoder, &bs.q_buf, &bs.k_buf,
-                        nt, n_heads as u32, n_kv_heads as u32, head_dim as u32,
-                        rope_start, rope_step, cfg.rope_freq_base,
+                        encoder,
+                        &bs.q_buf,
+                        &bs.k_buf,
+                        nt,
+                        n_heads as u32,
+                        n_kv_heads as u32,
+                        head_dim as u32,
+                        rope_start,
+                        rope_step,
+                        cfg.rope_freq_base,
                     );
                     ax_metal::barrier_buffers(encoder);
 
                     let cache_offset = (base_seq_len * kv_dim) as u32;
                     metal_ops.elementwise.encode_kv_append_batch(
-                        encoder, &bs.k_buf, gpu_kv.k_buffer(layer),
-                        kv_f16, cache_offset, kv_dim as u32, kv_dim as u32, nt,
+                        encoder,
+                        &bs.k_buf,
+                        gpu_kv.k_buffer(layer),
+                        kv_f16,
+                        cache_offset,
+                        kv_dim as u32,
+                        kv_dim as u32,
+                        nt,
                     );
                     metal_ops.elementwise.encode_kv_append_batch(
-                        encoder, &bs.v_buf, gpu_kv.v_buffer(layer),
-                        kv_f16, cache_offset, kv_dim as u32, kv_dim as u32, nt,
+                        encoder,
+                        &bs.v_buf,
+                        gpu_kv.v_buffer(layer),
+                        kv_f16,
+                        cache_offset,
+                        kv_dim as u32,
+                        kv_dim as u32,
+                        nt,
                     );
                     ax_metal::barrier_buffers(encoder);
 
                     // Phase 4: Batched attention
                     if base_seq_len == 0 {
                         metal_ops.attention.encode_attention_prefill(
-                            encoder, &bs.q_buf, &bs.k_buf, &bs.v_buf, &bs.attn_out,
-                            nt, n_heads as u32, n_kv_heads as u32, head_dim as u32,
+                            encoder,
+                            &bs.q_buf,
+                            &bs.k_buf,
+                            &bs.v_buf,
+                            &bs.attn_out,
+                            nt,
+                            n_heads as u32,
+                            n_kv_heads as u32,
+                            head_dim as u32,
                         );
                     } else {
                         metal_ops.attention.encode_attention_prefill_cached(
-                            encoder, &bs.q_buf,
-                            gpu_kv.k_buffer(layer), gpu_kv.v_buffer(layer),
-                            &bs.attn_out, kv_f16, nt,
-                            n_heads as u32, n_kv_heads as u32, head_dim as u32,
-                            base_seq_len as u32, 0,
+                            encoder,
+                            &bs.q_buf,
+                            gpu_kv.k_buffer(layer),
+                            gpu_kv.v_buffer(layer),
+                            &bs.attn_out,
+                            kv_f16,
+                            nt,
+                            n_heads as u32,
+                            n_kv_heads as u32,
+                            head_dim as u32,
+                            base_seq_len as u32,
+                            0,
                         );
                     }
                     ax_metal::barrier_buffers(encoder);
@@ -763,19 +978,36 @@ impl FalconForward {
                     // Phase 5: Output proj + residual
                     let wo_buf = weight_cache.get(&lw.wo).unwrap();
                     encode_dequant_batch(
-                        &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                        wo_buf, &bs.attn_out, &bs.proj_buf, &bs.matmul_in_f16,
-                        dim as u32, nt, q_dim as u32, lw.wo_dtype,
-                        use_f16_batch_io, use_batch_simd,
+                        &metal_ops.dequant,
+                        &metal_ops.elementwise,
+                        encoder,
+                        wo_buf,
+                        &bs.attn_out,
+                        &bs.proj_buf,
+                        &bs.matmul_in_f16,
+                        dim as u32,
+                        nt,
+                        q_dim as u32,
+                        lw.wo_dtype,
+                        use_f16_batch_io,
+                        use_batch_simd,
                     );
                     ax_metal::barrier_buffers(encoder);
 
                     // Phase 6: FFN norm + FFN
                     let ffn_nw_buf = weight_cache.get(&lw.ffn_norm).unwrap();
-                    metal_ops.elementwise.encode_residual_add_rms_norm_out_batch(
-                        encoder, &bs.hidden, &bs.proj_buf, ffn_nw_buf, &bs.norm_buf,
-                        dim as u32, nt, eps,
-                    );
+                    metal_ops
+                        .elementwise
+                        .encode_residual_add_rms_norm_out_batch(
+                            encoder,
+                            &bs.hidden,
+                            &bs.proj_buf,
+                            ffn_nw_buf,
+                            &bs.norm_buf,
+                            dim as u32,
+                            nt,
+                            eps,
+                        );
                     ax_metal::barrier_buffers(encoder);
 
                     if has_gate {
@@ -783,68 +1015,136 @@ impl FalconForward {
                         let wu_buf = weight_cache.get(&lw.wu).unwrap();
                         if use_f16_batch_io {
                             metal_ops.elementwise.encode_cast_f32_to_f16(
-                                encoder, &bs.norm_buf, &bs.matmul_in_f16, nt * dim as u32,
+                                encoder,
+                                &bs.norm_buf,
+                                &bs.matmul_in_f16,
+                                nt * dim as u32,
                             );
                             let use_pair_this_layer = (use_f16_pair
                                 || (lw.wg_dtype == GgmlType::Q8_0 && n_tokens <= 256))
                                 && lw.wg_dtype == lw.wu_dtype;
                             if use_pair_this_layer {
                                 encode_dequant_batch_pair_f16in(
-                                    &metal_ops.dequant, encoder,
-                                    wg_buf, wu_buf, &bs.matmul_in_f16,
-                                    &bs.gate_buf, &bs.up_buf,
-                                    inter_dim as u32, nt, dim as u32, lw.wg_dtype,
+                                    &metal_ops.dequant,
+                                    encoder,
+                                    wg_buf,
+                                    wu_buf,
+                                    &bs.matmul_in_f16,
+                                    &bs.gate_buf,
+                                    &bs.up_buf,
+                                    inter_dim as u32,
+                                    nt,
+                                    dim as u32,
+                                    lw.wg_dtype,
                                 );
                             } else {
                                 encode_dequant_batch_f16in(
-                                    metal_ops, encoder, wg_buf, &bs.matmul_in_f16, &bs.gate_buf,
-                                    inter_dim as u32, nt, dim as u32, lw.wg_dtype,
+                                    metal_ops,
+                                    encoder,
+                                    wg_buf,
+                                    &bs.matmul_in_f16,
+                                    &bs.gate_buf,
+                                    inter_dim as u32,
+                                    nt,
+                                    dim as u32,
+                                    lw.wg_dtype,
                                 );
                                 encode_dequant_batch_f16in(
-                                    metal_ops, encoder, wu_buf, &bs.matmul_in_f16, &bs.up_buf,
-                                    inter_dim as u32, nt, dim as u32, lw.wu_dtype,
+                                    metal_ops,
+                                    encoder,
+                                    wu_buf,
+                                    &bs.matmul_in_f16,
+                                    &bs.up_buf,
+                                    inter_dim as u32,
+                                    nt,
+                                    dim as u32,
+                                    lw.wu_dtype,
                                 );
                             }
                         } else {
                             encode_dequant_batch(
-                                &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                                wg_buf, &bs.norm_buf, &bs.gate_buf, &bs.matmul_in_f16,
-                                inter_dim as u32, nt, dim as u32, lw.wg_dtype,
-                                false, use_batch_simd,
+                                &metal_ops.dequant,
+                                &metal_ops.elementwise,
+                                encoder,
+                                wg_buf,
+                                &bs.norm_buf,
+                                &bs.gate_buf,
+                                &bs.matmul_in_f16,
+                                inter_dim as u32,
+                                nt,
+                                dim as u32,
+                                lw.wg_dtype,
+                                false,
+                                use_batch_simd,
                             );
                             encode_dequant_batch(
-                                &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                                wu_buf, &bs.norm_buf, &bs.up_buf, &bs.matmul_in_f16,
-                                inter_dim as u32, nt, dim as u32, lw.wu_dtype,
-                                false, use_batch_simd,
+                                &metal_ops.dequant,
+                                &metal_ops.elementwise,
+                                encoder,
+                                wu_buf,
+                                &bs.norm_buf,
+                                &bs.up_buf,
+                                &bs.matmul_in_f16,
+                                inter_dim as u32,
+                                nt,
+                                dim as u32,
+                                lw.wu_dtype,
+                                false,
+                                use_batch_simd,
                             );
                         }
                         ax_metal::barrier_buffers(encoder);
                         metal_ops.elementwise.encode_gelu_elementwise_mul_batch(
-                            encoder, &bs.gate_buf, &bs.up_buf, inter_dim as u32, nt,
+                            encoder,
+                            &bs.gate_buf,
+                            &bs.up_buf,
+                            inter_dim as u32,
+                            nt,
                         );
                     } else {
                         // No-gate FFN
                         let wu_buf = weight_cache.get(&lw.wu).unwrap();
                         if use_f16_batch_io {
                             metal_ops.elementwise.encode_cast_f32_to_f16(
-                                encoder, &bs.norm_buf, &bs.matmul_in_f16, nt * dim as u32,
+                                encoder,
+                                &bs.norm_buf,
+                                &bs.matmul_in_f16,
+                                nt * dim as u32,
                             );
                             encode_dequant_batch_f16in(
-                                metal_ops, encoder, wu_buf, &bs.matmul_in_f16, &bs.gate_buf,
-                                inter_dim as u32, nt, dim as u32, lw.wu_dtype,
+                                metal_ops,
+                                encoder,
+                                wu_buf,
+                                &bs.matmul_in_f16,
+                                &bs.gate_buf,
+                                inter_dim as u32,
+                                nt,
+                                dim as u32,
+                                lw.wu_dtype,
                             );
                         } else {
                             encode_dequant_batch(
-                                &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                                wu_buf, &bs.norm_buf, &bs.gate_buf, &bs.matmul_in_f16,
-                                inter_dim as u32, nt, dim as u32, lw.wu_dtype,
-                                false, use_batch_simd,
+                                &metal_ops.dequant,
+                                &metal_ops.elementwise,
+                                encoder,
+                                wu_buf,
+                                &bs.norm_buf,
+                                &bs.gate_buf,
+                                &bs.matmul_in_f16,
+                                inter_dim as u32,
+                                nt,
+                                dim as u32,
+                                lw.wu_dtype,
+                                false,
+                                use_batch_simd,
                             );
                         }
                         ax_metal::barrier_buffers(encoder);
                         metal_ops.elementwise.encode_gelu_inplace_batch(
-                            encoder, &bs.gate_buf, inter_dim as u32, nt,
+                            encoder,
+                            &bs.gate_buf,
+                            inter_dim as u32,
+                            nt,
                         );
                     }
                     ax_metal::barrier_buffers(encoder);
@@ -852,14 +1152,27 @@ impl FalconForward {
                     // Phase 7: Down proj + residual
                     let wd_buf = weight_cache.get(&lw.wd).unwrap();
                     encode_dequant_batch(
-                        &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                        wd_buf, &bs.gate_buf, &bs.proj_buf, &bs.matmul_in_f16,
-                        dim as u32, nt, inter_dim as u32, lw.wd_dtype,
-                        use_f16_batch_io, use_batch_simd,
+                        &metal_ops.dequant,
+                        &metal_ops.elementwise,
+                        encoder,
+                        wd_buf,
+                        &bs.gate_buf,
+                        &bs.proj_buf,
+                        &bs.matmul_in_f16,
+                        dim as u32,
+                        nt,
+                        inter_dim as u32,
+                        lw.wd_dtype,
+                        use_f16_batch_io,
+                        use_batch_simd,
                     );
                     ax_metal::barrier_buffers(encoder);
                     metal_ops.elementwise.encode_elementwise_add_batch(
-                        encoder, &bs.hidden, &bs.proj_buf, dim as u32, nt,
+                        encoder,
+                        &bs.hidden,
+                        &bs.proj_buf,
+                        dim as u32,
+                        nt,
                     );
                     ax_metal::barrier_buffers(encoder);
                 }
@@ -869,13 +1182,28 @@ impl FalconForward {
                 let lm_buf = weight_cache.get(&cached.lm_head).unwrap();
                 if let Some(logits_buf) = all_logits_buf.as_ref() {
                     metal_ops.elementwise.encode_rms_norm_out_batch(
-                        encoder, &bs.hidden, fnw_buf, &bs.norm_buf, dim as u32, nt, eps,
+                        encoder,
+                        &bs.hidden,
+                        fnw_buf,
+                        &bs.norm_buf,
+                        dim as u32,
+                        nt,
+                        eps,
                     );
                     ax_metal::barrier_buffers(encoder);
                     encode_batch_logits(
-                        metal_ops, encoder, lm_buf, &bs.norm_buf, &bs.matmul_in_f16,
-                        logits_buf, vocab_size as u32, nt, dim as u32,
-                        cached.lm_head_dtype, use_f16_batch_io, use_batch_simd,
+                        metal_ops,
+                        encoder,
+                        lm_buf,
+                        &bs.norm_buf,
+                        &bs.matmul_in_f16,
+                        logits_buf,
+                        vocab_size as u32,
+                        nt,
+                        dim as u32,
+                        cached.lm_head_dtype,
+                        use_f16_batch_io,
+                        use_batch_simd,
                     );
                 } else {
                     let last_off = (n_tokens - 1) * dim * 4;
@@ -883,13 +1211,19 @@ impl FalconForward {
                         encoder, &bs.hidden, last_off, &s.hidden, 0, dim as u32,
                     );
                     ax_metal::barrier_buffers(encoder);
-                    metal_ops.elementwise.encode_rms_norm(
-                        encoder, &s.hidden, fnw_buf, dim as u32, eps,
-                    );
+                    metal_ops
+                        .elementwise
+                        .encode_rms_norm(encoder, &s.hidden, fnw_buf, dim as u32, eps);
                     ax_metal::barrier_buffers(encoder);
                     encode_dequant_matvec(
-                        metal_ops, encoder, lm_buf, &s.hidden, &s.logits_buf,
-                        vocab_size as u32, dim as u32, cached.lm_head_dtype,
+                        metal_ops,
+                        encoder,
+                        lm_buf,
+                        &s.hidden,
+                        &s.logits_buf,
+                        vocab_size as u32,
+                        dim as u32,
+                        cached.lm_head_dtype,
                     );
                 }
 
@@ -943,7 +1277,14 @@ impl ForwardPass for FalconForward {
             if let Some(ops_ref) = ops {
                 let t = OpTimer::start();
                 let r = self.forward_single_gpu_unified(
-                    ctx, metal_ops, token_id, position, gpu_kv, weights, logits, Some(ops_ref),
+                    ctx,
+                    metal_ops,
+                    token_id,
+                    position,
+                    gpu_kv,
+                    weights,
+                    logits,
+                    Some(ops_ref),
                 );
                 ops_ref.gpu += t.elapsed();
                 return r;
@@ -975,7 +1316,8 @@ impl ForwardPass for FalconForward {
         // Step 1: Token embedding
         let mut hidden = vec![0.0f32; dim];
         timed!(
-            ops, dequant,
+            ops,
+            dequant,
             weights.dequantize_row("token_embd.weight", token_id as usize, &mut hidden)?
         );
 
@@ -1000,21 +1342,31 @@ impl ForwardPass for FalconForward {
 
             // 2a. Attention norm (LayerNorm with bias, or RMSNorm)
             let attn_norm_w = timed!(
-                ops, dequant,
+                ops,
+                dequant,
                 weights.f32_slice(&format!("{prefix}.attn_norm.weight"))?
             );
             if has_norm_bias {
                 let attn_norm_b = timed!(
-                    ops, dequant,
+                    ops,
+                    dequant,
                     weights.f32_slice(&format!("{prefix}.attn_norm.bias"))?
                 );
                 timed!(
-                    ops, norm,
-                    layer_norm_out(&hidden, attn_norm_w, attn_norm_b, &mut norm_buf, cfg.rms_norm_eps)
+                    ops,
+                    norm,
+                    layer_norm_out(
+                        &hidden,
+                        attn_norm_w,
+                        attn_norm_b,
+                        &mut norm_buf,
+                        cfg.rms_norm_eps
+                    )
                 );
             } else {
                 timed!(
-                    ops, norm,
+                    ops,
+                    norm,
                     rms_norm::rms_norm_out(&hidden, attn_norm_w, &mut norm_buf, cfg.rms_norm_eps)
                 );
             }
@@ -1043,11 +1395,16 @@ impl ForwardPass for FalconForward {
                 crate::model::config::RopeScaling::None => position as f32,
             };
             timed!(
-                ops, rope,
+                ops,
+                rope,
                 rope::apply_rope_multi_head_scaled(
-                    &mut q_buf, &mut k_buf,
-                    n_heads, n_kv_heads, head_dim,
-                    rope_position, cfg.rope_freq_base,
+                    &mut q_buf,
+                    &mut k_buf,
+                    n_heads,
+                    n_kv_heads,
+                    head_dim,
+                    rope_position,
+                    cfg.rope_freq_base,
                 )
             );
 
@@ -1057,7 +1414,8 @@ impl ForwardPass for FalconForward {
             // 2e. Attention
             let seq_len = cpu_kv.seq_len() + 1;
             timed!(
-                ops, attention,
+                ops,
+                attention,
                 attention::multi_head_attention(
                     &q_buf,
                     cpu_kv.k_slice_including_current(layer, seq_len),
@@ -1072,10 +1430,16 @@ impl ForwardPass for FalconForward {
             let (wo_raw, wo_dtype) =
                 weights.raw_with_dtype(&format!("{prefix}.attn_output.weight"))?;
             timed!(
-                ops, matmul,
+                ops,
+                matmul,
                 ctx.backend.dequant_matmul(
-                    wo_raw, wo_dtype, &attn_out, &mut proj_buf,
-                    dim, 1, n_heads * head_dim,
+                    wo_raw,
+                    wo_dtype,
+                    &attn_out,
+                    &mut proj_buf,
+                    dim,
+                    1,
+                    n_heads * head_dim,
                 )
             );
 
@@ -1086,10 +1450,16 @@ impl ForwardPass for FalconForward {
                 let (wu_raw, wu_dtype) =
                     weights.raw_with_dtype(&format!("{prefix}.ffn_up.weight"))?;
                 timed!(
-                    ops, matmul,
+                    ops,
+                    matmul,
                     ctx.backend.dequant_matmul(
-                        wu_raw, wu_dtype, &norm_buf, &mut gate_buf,
-                        inter_dim, 1, dim,
+                        wu_raw,
+                        wu_dtype,
+                        &norm_buf,
+                        &mut gate_buf,
+                        inter_dim,
+                        1,
+                        dim,
                     )
                 );
                 gelu::gelu(&mut gate_buf);
@@ -1097,10 +1467,16 @@ impl ForwardPass for FalconForward {
                 let (wd_raw, wd_dtype) =
                     weights.raw_with_dtype(&format!("{prefix}.ffn_down.weight"))?;
                 timed!(
-                    ops, matmul,
+                    ops,
+                    matmul,
                     ctx.backend.dequant_matmul(
-                        wd_raw, wd_dtype, &gate_buf, &mut down_buf,
-                        dim, 1, inter_dim,
+                        wd_raw,
+                        wd_dtype,
+                        &gate_buf,
+                        &mut down_buf,
+                        dim,
+                        1,
+                        inter_dim,
                     )
                 );
 
@@ -1115,22 +1491,37 @@ impl ForwardPass for FalconForward {
 
                 // FFN norm
                 let ffn_norm_w = timed!(
-                    ops, dequant,
+                    ops,
+                    dequant,
                     weights.f32_slice(&format!("{prefix}.ffn_norm.weight"))?
                 );
                 if has_norm_bias && weights.has(&format!("{prefix}.ffn_norm.bias")) {
                     let ffn_norm_b = timed!(
-                        ops, dequant,
+                        ops,
+                        dequant,
                         weights.f32_slice(&format!("{prefix}.ffn_norm.bias"))?
                     );
                     timed!(
-                        ops, norm,
-                        layer_norm_out(&hidden, ffn_norm_w, ffn_norm_b, &mut norm_buf, cfg.rms_norm_eps)
+                        ops,
+                        norm,
+                        layer_norm_out(
+                            &hidden,
+                            ffn_norm_w,
+                            ffn_norm_b,
+                            &mut norm_buf,
+                            cfg.rms_norm_eps
+                        )
                     );
                 } else {
                     timed!(
-                        ops, norm,
-                        rms_norm::rms_norm_out(&hidden, ffn_norm_w, &mut norm_buf, cfg.rms_norm_eps)
+                        ops,
+                        norm,
+                        rms_norm::rms_norm_out(
+                            &hidden,
+                            ffn_norm_w,
+                            &mut norm_buf,
+                            cfg.rms_norm_eps
+                        )
                     );
                 }
 
@@ -1154,10 +1545,16 @@ impl ForwardPass for FalconForward {
                     let (wu_raw, wu_dtype) =
                         weights.raw_with_dtype(&format!("{prefix}.ffn_up.weight"))?;
                     timed!(
-                        ops, matmul,
+                        ops,
+                        matmul,
                         ctx.backend.dequant_matmul(
-                            wu_raw, wu_dtype, &norm_buf, &mut gate_buf,
-                            inter_dim, 1, dim,
+                            wu_raw,
+                            wu_dtype,
+                            &norm_buf,
+                            &mut gate_buf,
+                            inter_dim,
+                            1,
+                            dim,
                         )
                     );
                     gelu::gelu(&mut gate_buf);
@@ -1166,10 +1563,16 @@ impl ForwardPass for FalconForward {
                 let (wd_raw, wd_dtype) =
                     weights.raw_with_dtype(&format!("{prefix}.ffn_down.weight"))?;
                 timed!(
-                    ops, matmul,
+                    ops,
+                    matmul,
                     ctx.backend.dequant_matmul(
-                        wd_raw, wd_dtype, &gate_buf, &mut down_buf,
-                        dim, 1, inter_dim,
+                        wd_raw,
+                        wd_dtype,
+                        &gate_buf,
+                        &mut down_buf,
+                        dim,
+                        1,
+                        inter_dim,
                     )
                 );
 
@@ -1183,11 +1586,18 @@ impl ForwardPass for FalconForward {
         let final_norm_w = timed!(ops, dequant, weights.f32_slice("output_norm.weight")?);
         if has_norm_bias && weights.has("output_norm.bias") {
             let final_norm_b = timed!(ops, dequant, weights.f32_slice("output_norm.bias")?);
-            layer_norm_out(&hidden, final_norm_w, final_norm_b, &mut norm_buf, cfg.rms_norm_eps);
+            layer_norm_out(
+                &hidden,
+                final_norm_w,
+                final_norm_b,
+                &mut norm_buf,
+                cfg.rms_norm_eps,
+            );
             hidden.copy_from_slice(&norm_buf);
         } else {
             timed!(
-                ops, norm,
+                ops,
+                norm,
                 rms_norm::rms_norm(&mut hidden, final_norm_w, cfg.rms_norm_eps)
             );
         }
@@ -1200,8 +1610,10 @@ impl ForwardPass for FalconForward {
         };
         let (lm_raw, lm_dtype) = weights.raw_with_dtype(lm_weight_name)?;
         timed!(
-            ops, matmul,
-            ctx.backend.dequant_matmul(lm_raw, lm_dtype, &hidden, logits, vocab_size, 1, dim)
+            ops,
+            matmul,
+            ctx.backend
+                .dequant_matmul(lm_raw, lm_dtype, &hidden, logits, vocab_size, 1, dim)
         );
 
         Ok(())
@@ -1226,7 +1638,13 @@ impl ForwardPass for FalconForward {
         if can_gpu_batch && let Some(metal_ops) = ctx.backend.metal_ops() {
             let gpu_kv = kv.as_gpu_mut().unwrap();
             match self.forward_batch_gpu_unified(
-                ctx, metal_ops, token_ids, gpu_kv, weights, Some(logits), None,
+                ctx,
+                metal_ops,
+                token_ids,
+                gpu_kv,
+                weights,
+                Some(logits),
+                None,
             ) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
@@ -1272,7 +1690,13 @@ impl ForwardPass for FalconForward {
         if can_gpu_batch && let Some(metal_ops) = ctx.backend.metal_ops() {
             let gpu_kv = kv.as_gpu_mut().unwrap();
             match self.forward_batch_gpu_unified(
-                ctx, metal_ops, token_ids, gpu_kv, weights, None, Some(logits_all),
+                ctx,
+                metal_ops,
+                token_ids,
+                gpu_kv,
+                weights,
+                None,
+                Some(logits_all),
             ) {
                 Ok(()) => return Ok(()),
                 Err(e) => {

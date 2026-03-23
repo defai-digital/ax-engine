@@ -236,6 +236,20 @@ pub fn metal_fused_qkv_enabled_for_arch(arch: &str) -> bool {
     env_bool_with_arch_override("AX_METAL_FUSED_QKV", arch).unwrap_or(true)
 }
 
+/// Per-architecture override for experimental decode-side fused QKV path.
+///
+/// This is intentionally opt-in only. It gates fused decode helpers that
+/// combine QKV split with downstream elementwise work, and should not change
+/// default routing until benchmarked.
+///
+/// Precedence:
+/// 1) `AX_METAL_DECODE_FUSED_QKV_<ARCH>`
+/// 2) `AX_METAL_DECODE_FUSED_QKV`
+/// 3) built-in default (`false`)
+pub fn metal_decode_fused_qkv_enabled_for_arch(arch: &str) -> bool {
+    env_bool_with_arch_override("AX_METAL_DECODE_FUSED_QKV", arch).unwrap_or(false)
+}
+
 /// Per-architecture override for simd-sum batch kernels.
 ///
 /// Precedence:

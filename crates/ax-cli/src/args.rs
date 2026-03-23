@@ -38,6 +38,10 @@ pub struct CliArgs {
     #[arg(long = "top-p", default_value_t = 0.9)]
     pub top_p: f32,
 
+    /// Minimum probability relative to the most likely token (0.0 = disabled)
+    #[arg(long = "min-p", default_value_t = 0.0)]
+    pub min_p: f32,
+
     /// Random seed (-1 = random)
     #[arg(long = "seed", default_value_t = -1)]
     pub seed: i64,

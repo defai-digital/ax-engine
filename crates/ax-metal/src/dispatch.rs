@@ -4602,6 +4602,8 @@ pub struct ElementwiseKernels {
     per_head_rms_norm: ComputePipeline,
     per_head_rms_norm_batch: ComputePipeline,
     qk_norm_rope_batch: ComputePipeline,
+    qkv_split_qk_norm_rope_append_kv_batch_f32: ComputePipeline,
+    qkv_split_qk_norm_rope_append_kv_batch_f16: ComputePipeline,
     gelu_elementwise_mul: ComputePipeline,
     gelu_elementwise_mul_batch: ComputePipeline,
     gelu_inplace: ComputePipeline,
@@ -4694,6 +4696,18 @@ impl ElementwiseKernels {
             "qk_norm_rope_batch_f32",
         )
         .context("Failed to compile qk_norm_rope_batch_f32 kernel")?;
+        let qkv_split_qk_norm_rope_append_kv_batch_f32 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "qkv_split_qk_norm_rope_append_kv_batch_f32",
+        )
+        .context("Failed to compile qkv_split_qk_norm_rope_append_kv_batch_f32 kernel")?;
+        let qkv_split_qk_norm_rope_append_kv_batch_f16 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "qkv_split_qk_norm_rope_append_kv_batch_f16",
+        )
+        .context("Failed to compile qkv_split_qk_norm_rope_append_kv_batch_f16 kernel")?;
 
         let gelu_elementwise_mul = ComputePipeline::from_source(
             device.device(),
@@ -4834,6 +4848,8 @@ impl ElementwiseKernels {
             per_head_rms_norm,
             per_head_rms_norm_batch,
             qk_norm_rope_batch,
+            qkv_split_qk_norm_rope_append_kv_batch_f32,
+            qkv_split_qk_norm_rope_append_kv_batch_f16,
             gelu_elementwise_mul,
             gelu_elementwise_mul_batch,
             gelu_inplace,
@@ -5284,6 +5300,69 @@ impl ElementwiseKernels {
                 height: 1,
                 depth: 1,
             },
+        );
+    }
+
+    /// Encode fused batched QKV split + Q/K norm + RoPE + KV append.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_qkv_split_qk_norm_rope_append_kv_batch(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src: &MetalBuffer,
+        q: &MetalBuffer,
+        k: &MetalBuffer,
+        v: &MetalBuffer,
+        q_weight: &MetalBuffer,
+        k_weight: &MetalBuffer,
+        cache_k: &MetalBuffer,
+        cache_v: &MetalBuffer,
+        cache_f16: bool,
+        n_rows: u32,
+        n_q_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        eps: f32,
+        start_pos: f32,
+        pos_step: f32,
+        freq_base: f32,
+        cache_offset: u32,
+        cache_stride: u32,
+    ) {
+        let half_dim = head_dim / 2;
+        let q_pairs = n_q_heads * half_dim;
+        let k_pairs = n_kv_heads * half_dim;
+        let kv_dim = n_kv_heads * head_dim;
+        let items_per_row = q_pairs + k_pairs + kv_dim;
+        let total = (n_rows as usize) * (items_per_row as usize);
+        let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(if cache_f16 {
+            self.qkv_split_qk_norm_rope_append_kv_batch_f16.state()
+        } else {
+            self.qkv_split_qk_norm_rope_append_kv_batch_f32.state()
+        });
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(k.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(v.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(q_weight.mtl_buffer()), 0, 4);
+            encoder.setBuffer_offset_atIndex(Some(k_weight.mtl_buffer()), 0, 5);
+            encoder.setBuffer_offset_atIndex(Some(cache_k.mtl_buffer()), 0, 6);
+            encoder.setBuffer_offset_atIndex(Some(cache_v.mtl_buffer()), 0, 7);
+        }
+        bind_u32(encoder, 8, n_rows);
+        bind_u32(encoder, 9, n_q_heads);
+        bind_u32(encoder, 10, n_kv_heads);
+        bind_u32(encoder, 11, head_dim);
+        bind_f32(encoder, 12, eps);
+        bind_f32(encoder, 13, start_pos);
+        bind_f32(encoder, 14, pos_step);
+        bind_f32(encoder, 15, freq_base);
+        bind_u32(encoder, 16, cache_offset);
+        bind_u32(encoder, 17, cache_stride);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
         );
     }
 

@@ -123,7 +123,11 @@ pub fn rms_norm_out(x: &[f32], weight: &[f32], out: &mut [f32], eps: f32) {
             }
         }
         let tail = chunks * 4;
-        for ((&xi, &wi), oi) in x[tail..].iter().zip(weight[tail..].iter()).zip(out[tail..].iter_mut()) {
+        for ((&xi, &wi), oi) in x[tail..]
+            .iter()
+            .zip(weight[tail..].iter())
+            .zip(out[tail..].iter_mut())
+        {
             *oi = xi * inv_rms * wi;
         }
     }
