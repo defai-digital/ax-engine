@@ -1,0 +1,445 @@
+//! Kernel dispatch profile system.
+//!
+//! Provides JSON-driven configuration for kernel dispatch parameters.
+//! This enables instant parameter iteration without recompilation.
+//!
+//! # Environment Variables
+//!
+//! - `AX_KERNEL_PROFILE_PATH`: Path to a JSON profile file (overrides auto-detection)
+//!
+//! # Profile Resolution Order
+//!
+//! 1. `AX_KERNEL_PROFILE_PATH` env var (if set)
+//! 2. `perfs/<model>-<quant>.json` (exact match)
+//! 3. `perfs/<architecture>.json` (e.g., `qwen3-8b.json`)
+//! 4. `perfs/default.json`
+//! 5. Hardcoded defaults
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::OnceLock;
+
+use serde::{Deserialize, Serialize};
+
+pub static GLOBAL_PROFILE: OnceLock<KernelProfile> = OnceLock::new();
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MatvecParams {
+    #[serde(default = "default_matvec_tg_size")]
+    pub threadgroup_size: u32,
+    /// Number of output rows per simdgroup. llama.cpp uses 2 for Q4_K/Q6_K.
+    /// When set to 2, selects the NR2 multi-row kernel variant (if available).
+    /// Default: 1 (current AX kernel).
+    #[serde(default = "default_matvec_rows_per_sg")]
+    pub rows_per_simdgroup: u32,
+}
+
+fn default_matvec_tg_size() -> u32 {
+    128
+}
+
+fn default_matvec_rows_per_sg() -> u32 {
+    1
+}
+
+impl Default for MatvecParams {
+    fn default() -> Self {
+        Self {
+            threadgroup_size: default_matvec_tg_size(),
+            rows_per_simdgroup: default_matvec_rows_per_sg(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AttentionDecodeParams {
+    #[serde(default = "default_attn_decode_splitk_chunk_size")]
+    pub splitk_chunk_size: u32,
+    #[serde(default = "default_attn_decode_splitk_threshold")]
+    pub splitk_threshold: u32,
+}
+
+fn default_attn_decode_splitk_chunk_size() -> u32 {
+    256
+}
+fn default_attn_decode_splitk_threshold() -> u32 {
+    512
+}
+
+impl Default for AttentionDecodeParams {
+    fn default() -> Self {
+        Self {
+            splitk_chunk_size: default_attn_decode_splitk_chunk_size(),
+            splitk_threshold: default_attn_decode_splitk_threshold(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct KernelProfile {
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub decode_matvec: HashMap<String, MatvecParams>,
+    #[serde(default)]
+    pub attention_decode: AttentionDecodeParams,
+}
+
+impl Default for KernelProfile {
+    fn default() -> Self {
+        let mut decode_matvec = HashMap::new();
+        decode_matvec.insert("q4_k".to_string(), MatvecParams::default());
+        decode_matvec.insert("q6_k".to_string(), MatvecParams::default());
+        decode_matvec.insert("q8_0".to_string(), MatvecParams::default());
+
+        Self {
+            model: String::new(),
+            source: "hardcoded".to_string(),
+            decode_matvec,
+            attention_decode: AttentionDecodeParams::default(),
+        }
+    }
+}
+
+impl KernelProfile {
+    pub fn load(model_name: &str, quant: &str) -> Self {
+        if let Some(profile) = Self::try_load_from_env() {
+            return profile;
+        }
+
+        let sanitized_model = sanitize_name(model_name);
+        let sanitized_quant = sanitize_name(quant);
+
+        if let Some(profile) = Self::try_load_exact(&sanitized_model, &sanitized_quant) {
+            return profile;
+        }
+
+        let arch = extract_architecture(model_name);
+        if let Some(profile) = Self::try_load_arch(&arch) {
+            return profile;
+        }
+
+        if let Some(profile) = Self::try_load_default() {
+            return profile;
+        }
+
+        Self::default()
+    }
+
+    fn try_load_from_env() -> Option<Self> {
+        let path = std::env::var("AX_KERNEL_PROFILE_PATH")
+            .ok()
+            .filter(|s| !s.is_empty())?;
+        Self::load_from_path(&path)
+    }
+
+    fn try_load_exact(model: &str, quant: &str) -> Option<Self> {
+        let filename = format!("perfs/{}-{}.json", model, quant);
+        Self::load_from_path(&filename)
+    }
+
+    fn try_load_arch(arch: &str) -> Option<Self> {
+        let filename = format!("perfs/{}.json", arch);
+        Self::load_from_path(&filename)
+    }
+
+    fn try_load_default() -> Option<Self> {
+        Self::load_from_path("perfs/default.json")
+    }
+
+    pub fn load_from_path<P: AsRef<Path>>(path: P) -> Option<Self> {
+        let path = path.as_ref();
+        match std::fs::read_to_string(path) {
+            Ok(content) => match serde_json::from_str::<KernelProfile>(&content) {
+                Ok(profile) => {
+                    tracing::info!(
+                        path = %path.display(),
+                        model = %profile.model,
+                        source = %profile.source,
+                        "Loaded kernel profile"
+                    );
+                    Some(profile)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "Failed to parse kernel profile JSON"
+                    );
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::debug!(path = %path.display(), error = %e, "Kernel profile not found");
+                None
+            }
+        }
+    }
+
+    pub fn matvec_params(&self, quant_type: &str) -> MatvecParams {
+        self.decode_matvec
+            .get(quant_type)
+            .cloned()
+            .unwrap_or_else(|| {
+                self.decode_matvec
+                    .get("default")
+                    .cloned()
+                    .unwrap_or_default()
+            })
+    }
+}
+
+fn sanitize_name(name: &str) -> String {
+    name.to_lowercase()
+        .replace([' ', '.', '/'], "-")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
+}
+
+fn extract_architecture(model_name: &str) -> String {
+    let lower = model_name.to_lowercase();
+
+    // Order matters: more specific patterns before general ones.
+    // "codellama" must come before "llama", "deepseek" before "qwen"/"llama",
+    // "tinyllama" before "llama".
+
+    // Order: more specific patterns before general ones.
+    // "codellama" before "llama", "deepseek" before "qwen"/"llama".
+
+    // CodeLlama (uses llama forward pass, GGUF arch="codellama")
+    if lower.contains("codellama")
+        || lower.contains("code llama")
+        || lower.contains("code-llama")
+        || lower.contains("code_llama")
+    {
+        return match_size(&lower, "codellama");
+    }
+
+    // DeepSeek (distillations use llama or qwen2 arch depending on base)
+    if lower.contains("deepseek") {
+        if lower.contains("qwen") {
+            return match_size(&lower, "deepseek-qwen");
+        }
+        return match_size(&lower, "deepseek-llama");
+    }
+
+    // Qwen family (qwen, qwen2, qwen2.5, qwen3) — uses qwen3 forward pass
+    if lower.contains("qwen") {
+        return match_size(&lower, "qwen3");
+    }
+
+    // Gemma family (gemma, gemma2, gemma3) — uses gemma3 forward pass
+    if lower.contains("gemma") {
+        if lower.contains("9b") {
+            return "gemma3-9b".to_string();
+        }
+        return match_size(&lower, "gemma3");
+    }
+
+    // Mistral (uses llama forward pass, GGUF arch="mistral")
+    if lower.contains("mistral") {
+        return match_size(&lower, "mistral");
+    }
+
+    // LLaMA family (must come after codellama)
+    if lower.contains("llama") {
+        return match_size(&lower, "llama3");
+    }
+
+    "default".to_string()
+}
+
+/// Extract size bucket from model name for profile filename resolution.
+fn match_size(lower: &str, family: &str) -> String {
+    // Check small sizes first to avoid "0.6b" matching "6b"
+    if lower.contains("0.5b") || lower.contains("0.6b") {
+        format!("{family}-1b")
+    } else if lower.contains("1.5b") || lower.contains("1.7b") {
+        format!("{family}-2b")
+    } else if lower.contains("9b") {
+        format!("{family}-9b")
+    } else if lower.contains("8b") || lower.contains("7b") || lower.contains("6b") {
+        format!("{family}-8b")
+    } else if lower.contains("4b") || lower.contains("3.8b") {
+        format!("{family}-4b")
+    } else if lower.contains("3b") {
+        format!("{family}-3b")
+    } else if lower.contains("2b") {
+        format!("{family}-2b")
+    } else if lower.contains("1b") {
+        format!("{family}-1b")
+    } else {
+        family.to_string()
+    }
+}
+
+pub fn global_profile() -> &'static KernelProfile {
+    GLOBAL_PROFILE.get_or_init(|| {
+        if let Some(profile) = KernelProfile::try_load_from_env() {
+            return profile;
+        }
+        if let Some(profile) = KernelProfile::try_load_default() {
+            return profile;
+        }
+        KernelProfile::default()
+    })
+}
+
+pub fn init_global_profile(model_name: &str, quant: &str) {
+    let profile = KernelProfile::load(model_name, quant);
+    if GLOBAL_PROFILE.set(profile).is_err() {
+        tracing::warn!(
+            model_name,
+            "init_global_profile called but GLOBAL_PROFILE was already initialized; \
+             model-specific profile will NOT take effect. Ensure init_global_profile \
+             is called before any dispatch function reads the profile."
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_profile() {
+        let profile = KernelProfile::default();
+        assert_eq!(profile.source, "hardcoded");
+
+        let q4k_matvec = profile.matvec_params("q4_k");
+        assert_eq!(q4k_matvec.threadgroup_size, 128);
+    }
+
+    #[test]
+    fn test_sanitize_name() {
+        assert_eq!(sanitize_name("Qwen3-8B"), "qwen3-8b");
+        assert_eq!(sanitize_name("LLaMA 3.1 8B"), "llama-3-1-8b");
+    }
+
+    #[test]
+    fn test_extract_architecture() {
+        // Core families
+        assert_eq!(extract_architecture("Qwen3-8B-Q4_K_M"), "qwen3-8b");
+        assert_eq!(extract_architecture("Qwen2.5-7B-Instruct"), "qwen3-8b");
+        assert_eq!(extract_architecture("Qwen2.5-3B"), "qwen3-3b");
+        assert_eq!(extract_architecture("Qwen3-0.6B"), "qwen3-1b"); // 0.6b → 1b bucket
+        assert_eq!(extract_architecture("Qwen2.5-1.5B"), "qwen3-2b"); // 1.5b → 2b bucket
+        assert_eq!(extract_architecture("gemma-3-4b-it"), "gemma3-4b");
+        assert_eq!(extract_architecture("gemma-2-9b-it"), "gemma3-9b");
+        assert_eq!(extract_architecture("gemma-2-2b"), "gemma3-2b");
+        assert_eq!(extract_architecture("Meta-Llama-3-8B"), "llama3-8b");
+        assert_eq!(extract_architecture("Meta-Llama-3.2-3B"), "llama3-3b");
+        assert_eq!(extract_architecture("Meta-Llama-3.2-1B"), "llama3-1b");
+
+        // Extended supported families
+        assert_eq!(
+            extract_architecture("Mistral-7B-Instruct-v0.3"),
+            "mistral-8b"
+        );
+        assert_eq!(
+            extract_architecture("CodeLlama-7B-Instruct"),
+            "codellama-8b"
+        );
+        assert_eq!(
+            extract_architecture("Code Llama 7B Instruct"),
+            "codellama-8b"
+        );
+        assert_eq!(
+            extract_architecture("DeepSeek-R1-Distill-Qwen-7B"),
+            "deepseek-qwen-8b"
+        );
+        assert_eq!(
+            extract_architecture("DeepSeek-R1-Distill-Qwen-1.5B"),
+            "deepseek-qwen-2b"
+        );
+        assert_eq!(
+            extract_architecture("DeepSeek-R1-Distill-Llama-8B"),
+            "deepseek-llama-8b"
+        );
+
+        // Qwen 3.5 — resolves to qwen3 family (same arch)
+        assert_eq!(extract_architecture("Qwen3.5-0.6B"), "qwen3-1b");
+        assert_eq!(extract_architecture("Qwen3.5-1.5B-Instruct"), "qwen3-2b");
+        assert_eq!(extract_architecture("Qwen3.5-4B"), "qwen3-4b");
+        assert_eq!(extract_architecture("Qwen3.5-7B-Instruct"), "qwen3-8b");
+        assert_eq!(extract_architecture("Qwen3.5-8B"), "qwen3-8b");
+
+        // Unknown falls to default
+        assert_eq!(extract_architecture("some-unknown-model"), "default");
+    }
+
+    #[test]
+    fn test_fallback_matvec_params() {
+        let profile = KernelProfile::default();
+        let unknown = profile.matvec_params("unknown_quant");
+        assert_eq!(unknown.threadgroup_size, 128);
+    }
+
+    #[test]
+    fn test_profile_json_roundtrip() {
+        let profile = KernelProfile::default();
+        let json = serde_json::to_string(&profile).unwrap();
+        let parsed: KernelProfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(profile, parsed);
+    }
+
+    #[test]
+    fn test_profile_json_rejects_unknown_fields() {
+        let json = r#"{
+            "model": "default",
+            "source": "test",
+            "generated": "2026-03-22",
+            "decode_matvec": {},
+            "attention_decode": {}
+        }"#;
+        assert!(serde_json::from_str::<KernelProfile>(json).is_err());
+    }
+
+    #[test]
+    fn test_extended_family_profiles_resolve_and_load() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let cases = [
+            ("CodeLlama-7B-Instruct", "codellama-8b", "codellama-7b"),
+            (
+                "DeepSeek-R1-Distill-Llama-8B",
+                "deepseek-llama-8b",
+                "deepseek-r1-distill-llama-8b",
+            ),
+            (
+                "DeepSeek-R1-Distill-Qwen-7B",
+                "deepseek-qwen-8b",
+                "deepseek-r1-distill-qwen-7b",
+            ),
+            ("Meta-Llama-3-8B-Instruct", "llama3-8b", "llama3-8b"),
+            ("Mistral-7B-Instruct-v0.3", "mistral-8b", "mistral-7b"),
+        ];
+
+        for (model_name, expected_arch, expected_profile_model) in cases {
+            let arch = extract_architecture(model_name);
+            assert_eq!(arch, expected_arch);
+
+            let profile_path = workspace_root.join("perfs").join(format!("{arch}.json"));
+            let profile = KernelProfile::load_from_path(&profile_path)
+                .unwrap_or_else(|| panic!("expected profile file for {}", profile_path.display()));
+            assert_eq!(profile.model, expected_profile_model);
+            assert_eq!(profile.source, "llama.cpp-params-2026-03-22");
+
+            let q4k = profile.matvec_params("q4_k");
+            assert_eq!(q4k.threadgroup_size, 64);
+            assert_eq!(q4k.rows_per_simdgroup, 2);
+
+            let q6k = profile.matvec_params("q6_k");
+            assert_eq!(q6k.threadgroup_size, 64);
+            assert_eq!(q6k.rows_per_simdgroup, 2);
+        }
+    }
+}

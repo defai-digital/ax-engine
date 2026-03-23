@@ -1,0 +1,60 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+authors = ["DEFAI Private Limited <info@defai.digital>"]
+repository = "https://github.com/defai-digital/ax-engine"
+
+[workspace.dependencies]
+# Internal crates
+ax-core = { path = "crates/ax-core" }
+ax-metal = { path = "crates/ax-metal" }
+ax-shim = { path = "crates/ax-shim" }
+ax-bench = { path = "crates/ax-bench" }
+
+# Memory & I/O
+memmap2 = "0.9"
+byteorder = "1"
+half = { version = "2", features = ["num-traits"] }
+
+# Parallelism
+rayon = "1"
+
+# Metal (optional)
+objc2 = "0.6"
+objc2-metal = "0.3"
+objc2-foundation = "0.3"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Bench
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Testing
+rstest = "0.24"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Fast hashing
+rustc-hash = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"

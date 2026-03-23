@@ -1,0 +1,31 @@
+# Build artifacts
+/target/
+
+# Model files (large binaries)
+/models/
+
+# Internal planning docs — not for public repo
+/BUGS/
+/PRDS/
+/TODOS/
+/ADRS/
+/TODO/
+/Archived/
+
+# Benchmark and profiling artifacts
+/automatosx/
+
+# AI assistant configs (may contain private instructions)
+AGENTS.md
+CLAUDE.md
+opencode.json
+.automatosx/
+.ax-grok/
+.gemini/
+.claude/
+
+# IDE / editor
+.DS_Store
+*.swp
+*.swo
+*~

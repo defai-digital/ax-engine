@@ -1,0 +1,454 @@
+//! Speculative decoding — CPU draft + GPU target verification.
+//!
+//! # Algorithm (Leviathan et al., 2023)
+//!
+//! Each generation step produces up to K+1 tokens instead of 1:
+//!
+//! 1. **Draft**: run the small draft model autoregressively for K steps on CPU,
+//!    collecting draft tokens and their per-token probabilities.
+//! 2. **Verify**: run the large target model on all K+1 tokens
+//!    (`[last_accepted] + draft_tokens`) to obtain K+1 target logit distributions.
+//! 3. **Accept/Reject**: for each draft token `i`:
+//!    - sample `r ~ Uniform(0, 1)`
+//!    - if `r < target_prob[i] / draft_prob[i]`: **accept**
+//!    - else: **reject** — sample a correction token from `max(0, p_target - p_draft)`,
+//!      rewind the target KV cache to `accepted_pos`, emit the correction token.
+//! 4. If all K tokens accepted: sample a **bonus token** from `target_logits[K]`.
+//!
+//! # Performance characteristics
+//!
+//! - Draft K steps on CPU (lightweight model) vs. 1 step on GPU (large model).
+//! - Target verification: `forward_batch_all_logits` over K+1 positions.
+//!   Supported architectures route this through the GPU batch path and retain a
+//!   serial fallback when batch logits are unavailable.
+//! - Average accepted tokens per step: E[accepted] = K * acceptance_rate + 1 bonus.
+//!
+//! # Usage
+//!
+//! ```ignore
+//! let mut decoder = SpeculativeDecoder::load("./draft.gguf", 4)?;
+//! let result = decoder.generate_step(last_token, position, &target_model,
+//!                                    &mut target_kv, &target_weights, &mut sampler)?;
+//! for tok in result.tokens { /* emit */ }
+//! ```
+
+use std::path::Path;
+use std::time::Duration;
+
+use crate::gguf::MappedModel;
+use crate::kv::ModelKv;
+use crate::metrics::counters::OpTimer;
+use crate::model::{LlamaModel, WeightStore};
+use crate::sampling::Sampler;
+
+/// Timing and shape details for one speculative decode step.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SpecStepMetrics {
+    /// CPU draft generation time for the K proposed tokens.
+    pub draft_duration: Duration,
+    /// Target verification time for `[last_token] + draft_tokens`.
+    pub verify_duration: Duration,
+    /// Acceptance/rejection bookkeeping time.
+    pub accept_duration: Duration,
+    /// Number of draft tokens proposed this step.
+    pub drafted_tokens: usize,
+    /// Number of verification positions evaluated this step.
+    pub verified_positions: usize,
+}
+
+impl SpecStepMetrics {
+    /// Total measured wall time for the step.
+    pub fn total_duration(&self) -> Duration {
+        self.draft_duration + self.verify_duration + self.accept_duration
+    }
+}
+
+/// Result of one speculative decode step.
+pub struct SpecStep {
+    /// Accepted (and bonus) tokens produced this step. Always ≥ 1.
+    pub tokens: Vec<u32>,
+    /// Number of draft tokens that were accepted (0..=k).
+    pub n_accepted: usize,
+    /// Timing breakdown for the speculative step.
+    pub metrics: SpecStepMetrics,
+}
+
+/// Speculative decoder: wraps a small CPU draft model for use with a large target model.
+pub struct SpeculativeDecoder {
+    /// Small draft model (runs on CpuBackend).
+    draft_model: LlamaModel,
+    /// GGUF mapping kept alive for the draft model's weights.
+    _draft_mapped: MappedModel,
+    /// Persistent draft KV synchronized to the accepted history.
+    draft_kv: ModelKv,
+    /// Number of tokens to speculate per step.
+    k: usize,
+}
+
+impl SpeculativeDecoder {
+    /// Load a draft model from a GGUF file and create a `SpeculativeDecoder`.
+    ///
+    /// The draft model always uses `CpuBackend` (forced via `LlamaModel::new`).
+    /// `k` is the number of lookahead tokens per step; 4 is a good default.
+    pub fn load(draft_path: &str, k: usize) -> anyhow::Result<Self> {
+        let draft_mapped = MappedModel::open(Path::new(draft_path))?;
+        let draft_config = crate::model::ModelConfig::from_gguf(&draft_mapped.header)?;
+        validate_speculative_config(k, draft_config.vocab_size, draft_config.vocab_size)?;
+        let draft_model = LlamaModel::new(draft_config); // CPU backend
+        let draft_kv = draft_model.create_model_kv();
+        Ok(Self {
+            draft_model,
+            _draft_mapped: draft_mapped,
+            draft_kv,
+            k,
+        })
+    }
+
+    /// The lookahead length K.
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
+    /// Run one speculative decode step starting from `last_token` at `position`.
+    ///
+    /// Returns a [`SpecStep`] containing 1..=K+1 tokens. The target KV cache is
+    /// rewound if tokens are rejected so that its `seq_len` always equals
+    /// `position + result.tokens.len()` after the call.
+    ///
+    /// # Arguments
+    /// * `last_token` — the last accepted token (seeds both draft and target).
+    /// * `position`   — KV position of `last_token` (= `target_kv.seq_len()`).
+    /// * `target_model` — large target model.
+    /// * `target_kv`  — KV cache for the target model (GPU or CPU).
+    /// * `target_weights` — weight store for the target model.
+    /// * `sampler`    — shared sampler (temperature/top-k/top-p).
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_step(
+        &mut self,
+        history_tokens: &[u32],
+        last_token: u32,
+        position: usize,
+        target_model: &LlamaModel,
+        target_kv: &mut ModelKv,
+        target_weights: &WeightStore,
+        sampler: &mut Sampler,
+    ) -> anyhow::Result<SpecStep> {
+        self.validate_against_target(target_model)?;
+
+        // ── Step 1: Draft K tokens on CPU ──────────────────────────────────
+        let draft_weights = WeightStore::new(&self._draft_mapped);
+        anyhow::ensure!(
+            history_tokens.len() == position,
+            "speculative draft history length ({}) must match position ({position})",
+            history_tokens.len()
+        );
+        anyhow::ensure!(
+            history_tokens.len() <= self.draft_model.config.context_length as usize,
+            "draft history length ({}) exceeds draft model context ({})",
+            history_tokens.len(),
+            self.draft_model.config.context_length
+        );
+
+        if self.draft_kv.seq_len() > history_tokens.len() {
+            self.draft_kv.truncate_to(history_tokens.len());
+        }
+        if self.draft_kv.seq_len() < history_tokens.len() {
+            let mut sync_logits = vec![0.0f32; self.draft_model.config.vocab_size as usize];
+            self.draft_model.forward_batch(
+                &history_tokens[self.draft_kv.seq_len()..],
+                &mut self.draft_kv,
+                &draft_weights,
+                &mut sync_logits,
+            )?;
+        }
+
+        // Run draft model for K steps from position, seeded by last_token.
+        // We collect the drafted tokens and their probabilities.
+        let draft_timer = OpTimer::start();
+        let vocab = self.draft_model.config.vocab_size as usize;
+        let mut draft_tokens: Vec<u32> = Vec::with_capacity(self.k);
+        let mut draft_probs_all: Vec<Vec<f32>> = Vec::with_capacity(self.k);
+        let mut draft_logits = vec![0.0f32; vocab];
+        let recent_limit = sampler.config().repeat_last_n.max(0) as usize;
+        let recent_start = history_tokens.len().saturating_sub(recent_limit);
+        let mut draft_recent_tokens = history_tokens[recent_start..].to_vec();
+
+        let mut draft_pos = self.draft_kv.seq_len();
+        let mut prev_tok = last_token;
+
+        for _ in 0..self.k {
+            draft_logits.fill(0.0);
+            self.draft_model.forward_single(
+                prev_tok,
+                draft_pos,
+                &mut self.draft_kv,
+                &draft_weights,
+                &mut draft_logits,
+            )?;
+
+            // Draft token probability distribution
+            let draft_probs = softmax(&draft_logits[..vocab]);
+            let draft_tok = sampler.sample(&mut draft_logits, &draft_recent_tokens);
+            draft_probs_all.push(draft_probs);
+            draft_tokens.push(draft_tok);
+            draft_recent_tokens.push(draft_tok);
+            if recent_limit > 0 && draft_recent_tokens.len() > recent_limit {
+                let drain = draft_recent_tokens.len() - recent_limit;
+                draft_recent_tokens.drain(..drain);
+            }
+
+            prev_tok = draft_tok;
+            draft_pos += 1;
+        }
+        let draft_duration = draft_timer.elapsed();
+
+        // ── Step 2: Verify with target model ───────────────────────────────
+        // Run target on [last_token] + draft_tokens (K+1 tokens total).
+        let verify_tokens: Vec<u32> = std::iter::once(last_token)
+            .chain(draft_tokens.iter().copied())
+            .collect();
+
+        let verify_timer = OpTimer::start();
+        let mut target_logits_all: Vec<f32> = Vec::new();
+        target_model.forward_batch_all_logits(
+            &verify_tokens,
+            target_kv,
+            target_weights,
+            &mut target_logits_all,
+        )?;
+        let verify_duration = verify_timer.elapsed();
+        // target_logits_all[i*vocab..(i+1)*vocab] are next-token logits after
+        // consuming verify_tokens[i]. That means:
+        // - slot 0 verifies draft_tokens[0]
+        // - slot i verifies draft_tokens[i]
+        // - slot k is the bonus position after all K drafts
+
+        // ── Step 3: Accept / reject ─────────────────────────────────────────
+        let accept_timer = OpTimer::start();
+        let mut accepted: Vec<u32> = Vec::with_capacity(self.k + 1);
+        let mut n_accepted = 0usize;
+
+        // Position in target_kv where draft_tokens begin
+        // (target_kv.seq_len() was incremented by forward_batch_all_logits for all K+1)
+        let base_pos_after_verify = position + verify_tokens.len();
+
+        for i in 0..self.k {
+            let target_slot = logits_slot(&target_logits_all, i, vocab);
+            let target_probs = softmax(target_slot);
+            let t_prob = target_probs[draft_tokens[i] as usize].max(1e-9);
+            let d_prob = draft_probs_all[i][draft_tokens[i] as usize].max(1e-9);
+
+            let r: f32 = sampler.sample_uniform();
+            if r < (t_prob / d_prob).min(1.0) {
+                // Accept
+                accepted.push(draft_tokens[i]);
+                n_accepted += 1;
+            } else {
+                // Reject: sample correction from max(0, p_target - p_draft)
+                let mut correction_probs = vec![0.0f32; vocab];
+                let mut sum = 0.0f32;
+                for j in 0..vocab {
+                    let p = (target_probs[j] - draft_probs_all[i][j]).max(0.0);
+                    correction_probs[j] = p;
+                    sum += p;
+                }
+                if sum > 0.0 {
+                    let inv_sum = 1.0 / sum;
+                    for p in &mut correction_probs {
+                        *p *= inv_sum;
+                    }
+                } else {
+                    correction_probs.copy_from_slice(&target_probs);
+                }
+                let correction = sampler.sample_from_probs(&correction_probs);
+                accepted.push(correction);
+
+                // Rewind target KV to position + n_accepted + 1
+                // (we've accepted n_accepted draft tokens + the correction)
+                let rewind_pos = position + n_accepted + 1;
+                target_kv.truncate_to(rewind_pos);
+                self.draft_kv.truncate_to(position + n_accepted);
+
+                return Ok(SpecStep {
+                    tokens: accepted,
+                    n_accepted,
+                    metrics: SpecStepMetrics {
+                        draft_duration,
+                        verify_duration,
+                        accept_duration: accept_timer.elapsed(),
+                        drafted_tokens: draft_tokens.len(),
+                        verified_positions: verify_tokens.len(),
+                    },
+                });
+            }
+        }
+
+        // All K tokens accepted: sample bonus token from target_logits[K]
+        let bonus_slot = &mut logits_slot(&target_logits_all, self.k, vocab).to_vec();
+        let bonus_tok = sampler.sample(bonus_slot, &accepted);
+        accepted.push(bonus_tok);
+
+        // target_kv is already at position + K + 1 (all K+1 forward_singles ran)
+        // Verify it matches our expectation
+        debug_assert_eq!(
+            target_kv.seq_len(),
+            base_pos_after_verify,
+            "target KV seq_len mismatch after full acceptance"
+        );
+        self.draft_kv.truncate_to(position + self.k);
+
+        Ok(SpecStep {
+            tokens: accepted,
+            n_accepted: self.k,
+            metrics: SpecStepMetrics {
+                draft_duration,
+                verify_duration,
+                accept_duration: accept_timer.elapsed(),
+                drafted_tokens: draft_tokens.len(),
+                verified_positions: verify_tokens.len(),
+            },
+        })
+    }
+
+    fn validate_against_target(&self, target_model: &LlamaModel) -> anyhow::Result<()> {
+        validate_speculative_config(
+            self.k,
+            self.draft_model.config.vocab_size,
+            target_model.config.vocab_size,
+        )
+    }
+}
+
+fn validate_speculative_config(
+    k: usize,
+    draft_vocab_size: u32,
+    target_vocab_size: u32,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(k > 0, "speculative decoding requires k > 0");
+    anyhow::ensure!(
+        draft_vocab_size == target_vocab_size,
+        "speculative decoding requires matching draft/target vocab sizes (draft={draft_vocab_size}, target={target_vocab_size})"
+    );
+    Ok(())
+}
+
+/// Compute softmax of a logit slice, returning a probability vector.
+fn softmax(logits: &[f32]) -> Vec<f32> {
+    let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let mut probs: Vec<f32> = logits.iter().map(|&x| (x - max).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    if sum > 0.0 {
+        for p in &mut probs {
+            *p /= sum;
+        }
+    }
+    probs
+}
+
+fn logits_slot(logits_all: &[f32], slot: usize, vocab: usize) -> &[f32] {
+    &logits_all[slot * vocab..(slot + 1) * vocab]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{LlamaModel, ModelConfig};
+
+    fn tiny_config() -> ModelConfig {
+        ModelConfig {
+            architecture: "llama".into(),
+            n_layers: 1,
+            n_heads: 2,
+            n_kv_heads: 2,
+            embedding_dim: 8,
+            head_dim: 4,
+            intermediate_dim: 16,
+            vocab_size: 16,
+            context_length: 64,
+            rms_norm_eps: 1e-5,
+            rope_freq_base: 10000.0,
+            has_qkv_bias: false,
+            sliding_window_size: None,
+            sliding_window_pattern: None,
+            gate_activation: crate::model::config::GateActivation::SiLU,
+            tie_word_embeddings: false,
+            logit_scale: None,
+            rope_scaling: crate::model::config::RopeScaling::None,
+            embed_scale: false,
+            rope_freq_base_local: None,
+        }
+    }
+
+    #[test]
+    fn test_truncate_to_resets_seq_len_gpu_variant() {
+        // Test ModelKv::truncate_to via the Cpu variant (no GPU needed in tests)
+        let model = LlamaModel::new(tiny_config());
+        let mut kv = model.create_model_kv();
+        assert_eq!(kv.seq_len(), 0);
+
+        // truncate_to(0) on empty KV is a no-op
+        kv.truncate_to(0);
+        assert_eq!(kv.seq_len(), 0);
+    }
+
+    #[test]
+    fn test_softmax_sums_to_one() {
+        let logits = vec![1.0f32, 2.0, 3.0, 4.0];
+        let probs = softmax(&logits);
+        let sum: f32 = probs.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-5, "sum={sum}");
+    }
+
+    #[test]
+    fn test_softmax_max_is_largest() {
+        let logits = vec![0.0f32, 1.0, 5.0, 2.0];
+        let probs = softmax(&logits);
+        let max_idx = probs
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .map(|(i, _)| i)
+            .unwrap();
+        assert_eq!(max_idx, 2, "max logit should have max prob");
+    }
+
+    #[test]
+    fn test_softmax_uniform_logits() {
+        let logits = vec![1.0f32; 8];
+        let probs = softmax(&logits);
+        for &p in &probs {
+            assert!(
+                (p - 0.125).abs() < 1e-5,
+                "uniform logits → uniform probs, got {p}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_speculative_config_rejects_zero_k() {
+        let err = validate_speculative_config(0, 16, 16).unwrap_err();
+        assert!(err.to_string().contains("k > 0"));
+    }
+
+    #[test]
+    fn test_validate_speculative_config_rejects_vocab_mismatch() {
+        let err = validate_speculative_config(4, 16, 32).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("matching draft/target vocab sizes")
+        );
+    }
+
+    #[test]
+    fn test_validate_speculative_config_accepts_matching_models() {
+        validate_speculative_config(4, 16, 16).unwrap();
+    }
+
+    #[test]
+    fn test_logits_slot_maps_first_draft_to_slot_zero() {
+        let logits_all: Vec<f32> = (0..12).map(|i| i as f32).collect();
+        assert_eq!(logits_slot(&logits_all, 0, 4), &[0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(logits_slot(&logits_all, 1, 4), &[4.0, 5.0, 6.0, 7.0]);
+        assert_eq!(logits_slot(&logits_all, 2, 4), &[8.0, 9.0, 10.0, 11.0]);
+    }
+}
