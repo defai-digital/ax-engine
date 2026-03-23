@@ -285,7 +285,11 @@ impl SpeculativeDecoder {
 
         // All K tokens accepted: sample bonus token from target_logits[K]
         let bonus_slot = &mut logits_slot(&target_logits_all, self.k, vocab).to_vec();
-        let bonus_tok = sampler.sample(bonus_slot, &accepted);
+        // Include last_token in context so repetition penalty covers the full window
+        let mut bonus_context = Vec::with_capacity(1 + accepted.len());
+        bonus_context.push(last_token);
+        bonus_context.extend_from_slice(&accepted);
+        let bonus_tok = sampler.sample(bonus_slot, &bonus_context);
         accepted.push(bonus_tok);
 
         // target_kv is already at position + K + 1 (all K+1 forward_singles ran)

@@ -2101,10 +2101,16 @@ impl LlamaModel {
     /// Create a new LLaMA model with a specific compute backend.
     ///
     /// The forward pass implementation is selected based on `config.architecture`
-    /// via the architecture registry. Falls back to LlamaForward for unknown architectures.
+    /// via the architecture registry.
+    ///
+    /// # Panics
+    /// Panics if the architecture is not supported. Use `arch_registry::forward_for_arch`
+    /// directly if you need fallible construction.
     pub fn with_backend(config: ModelConfig, backend: Box<dyn Backend>) -> Self {
         let forward = crate::model::arch_registry::forward_for_arch(&config.architecture)
-            .unwrap_or_else(|_| Box::new(LlamaForward));
+            .unwrap_or_else(|e| {
+                panic!("unsupported model architecture '{}': {e}", config.architecture)
+            });
 
         if let Err(e) = forward.validate_config(&config) {
             tracing::warn!(
