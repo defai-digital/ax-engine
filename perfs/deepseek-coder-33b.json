@@ -1,0 +1,22 @@
+{
+  "model": "deepseek-coder-33b",
+  "source": "llama.cpp-params-2026-03-22",
+  "decode_matvec": {
+    "q4_k": {
+      "threadgroup_size": 64,
+      "rows_per_simdgroup": 2
+    },
+    "q6_k": {
+      "threadgroup_size": 64,
+      "rows_per_simdgroup": 2
+    },
+    "q8_0": {
+      "threadgroup_size": 128,
+      "rows_per_simdgroup": 2
+    }
+  },
+  "attention_decode": {
+    "splitk_chunk_size": 256,
+    "splitk_threshold": 1024
+  }
+}

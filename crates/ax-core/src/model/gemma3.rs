@@ -2027,6 +2027,8 @@ mod tests {
             rope_scaling: crate::model::config::RopeScaling::None,
             embed_scale: true,
             rope_freq_base_local: Some(10000.0),
+            n_expert: None,
+            n_expert_used: None,
         };
 
         // Pattern=6: layers 0-4 = local (sliding window), layer 5 = global
@@ -2069,6 +2071,8 @@ mod tests {
             rope_scaling: crate::model::config::RopeScaling::None,
             embed_scale: true,
             rope_freq_base_local: Some(10000.0),
+            n_expert: None,
+            n_expert_used: None,
         };
 
         assert_eq!(Gemma3Forward::gpu_prefill_chunk_len(&config, 512), None);

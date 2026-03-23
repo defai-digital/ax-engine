@@ -342,6 +342,8 @@ mod tests {
             rope_scaling: RopeScaling::None,
             embed_scale: arch == "gemma3",
             rope_freq_base_local: None,
+            n_expert: None,
+            n_expert_used: None,
         }
     }
 

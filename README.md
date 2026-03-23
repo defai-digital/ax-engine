@@ -38,8 +38,30 @@ AX Engine is a purpose-built Rust inference engine that runs large language mode
 - **Speculative decoding** — draft-model acceleration with KV rollback on rejection
 - **NEON fused matvec** — hand-tuned ARM NEON kernels for CPU decode path (Q8_0, Q6_K)
 - **llama.cpp compatibility** — drop-in `libllama.dylib` shim via C API (`ax-shim`)
-- **Multiple architectures** — LLaMA/LLaMA-3, Qwen3, Gemma 3
+- **Multiple architectures** — LLaMA/LLaMA-3, Qwen3, Gemma 3, Phi-3/Phi-4, Falcon, Mistral, Mixtral (MoE), StarCoder2, GLM-4/5
+- **Broad model support** — tuned performance profiles for 50+ models across 15 families
 - **Built-in benchmarking** — throughput, layer profiling, and stability soak tests
+
+## Supported Models
+
+AX Engine includes tuned decode performance profiles for the following model families. Any GGUF model using a supported architecture (LLaMA, Qwen3, Gemma3) can run; models listed below have optimized kernel parameters.
+
+| Family | Models | Sizes |
+|--------|--------|-------|
+| **LLaMA 3** | llama3-1b, 3b, 8b, 70b | 1B – 70B |
+| **Code Llama** | codellama-8b | 8B |
+| **Qwen3** | qwen3-1b, 2b, 4b, 8b, 14b, 32b, 72b | 1B – 72B |
+| **Gemma 3** | gemma3-2b, 4b, 9b, 27b | 2B – 27B |
+| **GLM-4** | glm4-9b, glm4-32b | 9B – 32B |
+| **GLM-5** | glm5-9b, glm5-32b | 9B – 32B |
+| **Phi (Microsoft)** | phi3-mini-4b, phi3-small-7b, phi3-medium-14b, phi4-14b | 4B – 14B |
+| **Mistral** | mistral-8b, mistral-nemo-12b, mistral-small-22b | 8B – 22B |
+| **Mixtral (MoE)** | mixtral-8x7b, mixtral-8x22b | 47B – 141B (active ~13B – 39B) |
+| **Falcon** | falcon-7b, falcon-40b | 7B – 40B |
+| **DeepSeek** | deepseek-qwen-2b, 8b, deepseek-llama-8b, deepseek-coder-7b, 33b | 2B – 33B |
+| **StarCoder 2** | starcoder2-3b, 7b, 15b | 3B – 15B |
+
+Performance profiles are in the [`perfs/`](perfs/) directory. To use a custom profile, place a JSON file matching the model name.
 
 ## Requirements
 
@@ -142,7 +164,7 @@ Key v2 design changes from v1:
 - **Explicit backend types** — `HybridCpuDecodeBackend` is its own type, not a hidden bool flag
 - **`use_gpu_decode()` oracle** — single source of truth for GPU vs CPU decode dispatch
 
-See `CLAUDE.md` for full ADR details.
+See the source code and commit history for full ADR details.
 
 ## License
 

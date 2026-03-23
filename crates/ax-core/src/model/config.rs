@@ -58,6 +58,10 @@ pub struct ModelConfig {
     /// RoPE freq base for local (sliding window) attention layers.
     /// Gemma3 uses 10000.0 for local layers vs 1000000.0 for global.
     pub rope_freq_base_local: Option<f32>,
+    /// Number of experts in MoE models (Mixtral). None for dense models.
+    pub n_expert: Option<u32>,
+    /// Number of experts used per token in MoE routing. None for dense models.
+    pub n_expert_used: Option<u32>,
 }
 
 impl ModelConfig {
@@ -139,7 +143,9 @@ impl ModelConfig {
 
         // Architecture-specific: gate activation + logit scale + tie embeddings
         let is_gemma = matches!(arch.as_str(), "gemma" | "gemma2" | "gemma3");
-        let gate_activation = if is_gemma {
+        let is_falcon = matches!(arch.as_str(), "falcon");
+        let is_starcoder2 = matches!(arch.as_str(), "starcoder2");
+        let gate_activation = if is_gemma || is_falcon || is_starcoder2 {
             GateActivation::GELU
         } else {
             GateActivation::SiLU
@@ -189,6 +195,10 @@ impl ModelConfig {
             None
         };
 
+        // MoE: expert count and experts-per-token (Mixtral)
+        let n_expert = header.get_u32(&format!("{arch}.expert_count"));
+        let n_expert_used = header.get_u32(&format!("{arch}.expert_used_count"));
+
         tracing::info!(
             arch = %arch,
             n_layers,
@@ -209,6 +219,8 @@ impl ModelConfig {
             ?rope_scaling,
             embed_scale,
             ?rope_freq_base_local,
+            ?n_expert,
+            ?n_expert_used,
             "model config loaded"
         );
 
@@ -233,6 +245,8 @@ impl ModelConfig {
             rope_scaling,
             embed_scale,
             rope_freq_base_local,
+            n_expert,
+            n_expert_used,
         })
     }
 }

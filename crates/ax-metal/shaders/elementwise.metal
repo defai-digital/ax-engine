@@ -778,6 +778,39 @@ kernel void gelu_elementwise_mul_batch_f32(
     gate[gid] = 0.5f * x * (1.0f + tanh(inner)) * up[gid];
 }
 
+// ── GELU inplace ────────────────────────────────────────────────────
+//
+// x[i] = GELU(x[i])
+// Used by Falcon FFN (no gate projection).
+
+kernel void gelu_inplace_f32(
+    device float* x          [[buffer(0)]],
+    constant uint& n         [[buffer(1)]],
+    uint gid                 [[thread_position_in_grid]]
+) {
+    if (gid >= n) return;
+    float v = x[gid];
+    float v3 = v * v * v;
+    float inner = SQRT_2_PI * (v + 0.044715f * v3);
+    inner = clamp(inner, -10.0f, 10.0f);
+    x[gid] = 0.5f * v * (1.0f + tanh(inner));
+}
+
+kernel void gelu_inplace_batch_f32(
+    device float* x          [[buffer(0)]],
+    constant uint& n         [[buffer(1)]],
+    constant uint& n_rows    [[buffer(2)]],
+    uint gid                 [[thread_position_in_grid]]
+) {
+    uint total = n * n_rows;
+    if (gid >= total) return;
+    float v = x[gid];
+    float v3 = v * v * v;
+    float inner = SQRT_2_PI * (v + 0.044715f * v3);
+    inner = clamp(inner, -10.0f, 10.0f);
+    x[gid] = 0.5f * v * (1.0f + tanh(inner));
+}
+
 // ── SiLU elementwise mul ────────────────────────────────────────────
 //
 // gate[i] = SiLU(gate[i]) * up[i]

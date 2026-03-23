@@ -2383,6 +2383,8 @@ mod tests {
             rope_scaling: crate::model::config::RopeScaling::None,
             embed_scale: false,
             rope_freq_base_local: None,
+            n_expert: None,
+            n_expert_used: None,
         }
     }
 
@@ -2457,6 +2459,8 @@ mod tests {
             rope_scaling: crate::model::config::RopeScaling::None,
             embed_scale: false,
             rope_freq_base_local: None,
+            n_expert: None,
+            n_expert_used: None,
         };
         let model = LlamaModel::new(config);
         assert_eq!(model.attn_params.n_heads, 32);

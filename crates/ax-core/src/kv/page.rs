@@ -291,6 +291,8 @@ mod tests {
             rope_scaling: crate::model::config::RopeScaling::None,
             embed_scale: false,
             rope_freq_base_local: None,
+            n_expert: None,
+            n_expert_used: None,
         };
         let cfg = KvCacheConfig::from_model(&model);
         assert_eq!(cfg.n_layers, 32);
@@ -371,6 +373,8 @@ mod tests {
             rope_scaling: crate::model::config::RopeScaling::None,
             embed_scale: false,
             rope_freq_base_local: None,
+            n_expert: None,
+            n_expert_used: None,
         };
         let cfg = KvCacheConfig::from_model(&model);
         assert_eq!(
@@ -405,6 +409,8 @@ mod tests {
             rope_scaling: crate::model::config::RopeScaling::None,
             embed_scale: false,
             rope_freq_base_local: None,
+            n_expert: None,
+            n_expert_used: None,
         };
         let cfg = KvCacheConfig::from_model(&model);
         assert_eq!(cfg.dtype, KvDtype::F32, "small model should stay F32");

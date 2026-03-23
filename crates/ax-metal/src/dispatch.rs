@@ -4604,6 +4604,8 @@ pub struct ElementwiseKernels {
     qk_norm_rope_batch: ComputePipeline,
     gelu_elementwise_mul: ComputePipeline,
     gelu_elementwise_mul_batch: ComputePipeline,
+    gelu_inplace: ComputePipeline,
+    gelu_inplace_batch: ComputePipeline,
     silu_elementwise_mul: ComputePipeline,
     silu_elementwise_mul_batch: ComputePipeline,
     silu_elementwise_mul_batch_f16: ComputePipeline,
@@ -4705,6 +4707,18 @@ impl ElementwiseKernels {
             "gelu_elementwise_mul_batch_f32",
         )
         .context("Failed to compile gelu_elementwise_mul_batch_f32 kernel")?;
+        let gelu_inplace = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "gelu_inplace_f32",
+        )
+        .context("Failed to compile gelu_inplace_f32 kernel")?;
+        let gelu_inplace_batch = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "gelu_inplace_batch_f32",
+        )
+        .context("Failed to compile gelu_inplace_batch_f32 kernel")?;
 
         let silu_elementwise_mul = ComputePipeline::from_source(
             device.device(),
@@ -4822,6 +4836,8 @@ impl ElementwiseKernels {
             qk_norm_rope_batch,
             gelu_elementwise_mul,
             gelu_elementwise_mul_batch,
+            gelu_inplace,
+            gelu_inplace_batch,
             silu_elementwise_mul,
             silu_elementwise_mul_batch,
             silu_elementwise_mul_batch_f16,
@@ -5310,6 +5326,48 @@ impl ElementwiseKernels {
         }
         bind_u32(encoder, 2, n);
         bind_u32(encoder, 3, n_rows);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Encode in-place GELU: x[i] = GELU(x[i]).
+    /// Used by Falcon FFN (no gate projection).
+    pub fn encode_gelu_inplace(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        x: &MetalBuffer,
+        n: u32,
+    ) {
+        let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.gelu_inplace.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
+        }
+        bind_u32(encoder, 1, n);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Encode batched in-place GELU across `n_rows` rows of length `n`.
+    pub fn encode_gelu_inplace_batch(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        x: &MetalBuffer,
+        n: u32,
+        n_rows: u32,
+    ) {
+        let total = (n as usize) * (n_rows as usize);
+        let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.gelu_inplace_batch.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
+        }
+        bind_u32(encoder, 1, n);
+        bind_u32(encoder, 2, n_rows);
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             dims.threadgroups,
             dims.threads_per_threadgroup,

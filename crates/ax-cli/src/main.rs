@@ -184,6 +184,22 @@ pub(crate) fn apply_chat_template(prompt: &str, architecture: &str) -> String {
             // Qwen chat template
             format!("<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n")
         }
+        "phi3" => {
+            // Phi-3 Instruct chat template
+            format!("<|user|>\n{prompt}<|end|>\n<|assistant|>\n")
+        }
+        "falcon" => {
+            // Falcon Instruct chat template
+            format!("User: {prompt}\nAssistant:")
+        }
+        "mistral" | "mixtral" => {
+            // Mistral/Mixtral Instruct chat template
+            format!("[INST] {prompt} [/INST]")
+        }
+        "chatglm" | "glm4" | "glm" => {
+            // GLM-4 chat template
+            format!("<|user|>\n{prompt}<|assistant|>")
+        }
         _ => {
             // Generic fallback — just use the raw prompt
             eprintln!(
@@ -207,6 +223,18 @@ pub(crate) fn apply_chat_template_turn(prompt: &str, architecture: &str) -> Stri
         }
         "qwen3" | "qwen2" => {
             format!("<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n")
+        }
+        "phi3" => {
+            format!("<|user|>\n{prompt}<|end|>\n<|assistant|>\n")
+        }
+        "falcon" => {
+            format!("\nUser: {prompt}\nAssistant:")
+        }
+        "mistral" | "mixtral" => {
+            format!("[INST] {prompt} [/INST]")
+        }
+        "chatglm" | "glm4" | "glm" => {
+            format!("<|user|>\n{prompt}<|assistant|>")
         }
         _ => prompt.to_string(),
     }
