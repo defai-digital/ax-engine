@@ -14,9 +14,9 @@ use ax_core::gguf::MappedModel;
 use ax_core::metrics::counters::OpTimer;
 use ax_core::metrics::{InferenceMetrics, LatencyHistogram, current_rss_bytes};
 use ax_core::model::{
-    DecodeIntent, DecodeRunConfig, LlamaModel, ModelConfig, WeightStore, run_decode,
+    DecodeControl, DecodeIntent, DecodeRunConfig, LlamaModel, ModelConfig, WeightStore, run_decode,
 };
-use ax_core::sampling::{SampledTokenInfo, Sampler, SamplingConfig};
+use ax_core::sampling::{LogitBias, SampledTokenInfo, Sampler, SamplingConfig};
 use ax_core::speculative::{SpecStep, SpeculativeDecoder};
 use ax_core::tokenizer::Tokenizer;
 
@@ -24,7 +24,7 @@ mod args;
 mod interactive;
 mod stream;
 
-use stream::StreamPrinter;
+use stream::{StreamAction, StreamPrinter};
 
 fn main() -> anyhow::Result<()> {
     // Check for known unsupported llama.cpp flags before clap parsing
@@ -151,6 +151,16 @@ pub(crate) fn load_model(
 /// Build a SamplingConfig from CLI args.
 fn sampling_config(args: &args::CliArgs) -> SamplingConfig {
     SamplingConfig {
+        logit_bias: args
+            .logit_bias
+            .iter()
+            .map(|bias| LogitBias {
+                token: bias.token,
+                bias: bias.bias,
+            })
+            .collect(),
+        allowed_token_ids: args.allow_token_id.clone(),
+        banned_token_ids: args.ban_token_id.clone(),
         temperature: args.temperature,
         top_k: args.top_k,
         top_p: args.top_p,
@@ -166,6 +176,43 @@ fn sampling_config(args: &args::CliArgs) -> SamplingConfig {
             args.seed as u64
         },
     }
+}
+
+fn validate_sampling_token_ids(args: &args::CliArgs, vocab_size: usize) -> anyhow::Result<()> {
+    for &token in &args.allow_token_id {
+        if token as usize >= vocab_size {
+            anyhow::bail!("--allow-token-id {token} is outside vocab range 0..{vocab_size}");
+        }
+    }
+
+    for &token in &args.ban_token_id {
+        if token as usize >= vocab_size {
+            anyhow::bail!("--ban-token-id {token} is outside vocab range 0..{vocab_size}");
+        }
+    }
+
+    for bias in &args.logit_bias {
+        if bias.token as usize >= vocab_size {
+            anyhow::bail!(
+                "--logit-bias {}={} is outside vocab range 0..{vocab_size}",
+                bias.token,
+                bias.bias
+            );
+        }
+    }
+
+    if !args.allow_token_id.is_empty() {
+        let allowed_after_ban = args
+            .allow_token_id
+            .iter()
+            .filter(|token| !args.ban_token_id.contains(token))
+            .count();
+        if allowed_after_ban == 0 {
+            anyhow::bail!("--allow-token-id and --ban-token-id leave no valid tokens to sample");
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn print_top_logprobs(
@@ -206,6 +253,7 @@ fn run_single(
 
     let (mapped, _config, tokenizer, model) =
         load_model(&args.model, args.ctx_size, args.verbose, backend)?;
+    validate_sampling_token_ids(args, model.config.vocab_size as usize)?;
     let weights = WeightStore::new(&mapped);
     let mut kv = model.create_model_kv();
     let mut sampler = Sampler::new(sampling_config(args));
@@ -259,6 +307,15 @@ fn run_single(
     if let Some(ref draft_path) = args.speculative_draft {
         if args.top_logprobs > 0 {
             anyhow::bail!("--top-logprobs is not supported with speculative decoding");
+        }
+        if !args.stop.is_empty() || !args.stop_token_id.is_empty() {
+            anyhow::bail!("--stop and --stop-token-id are not supported with speculative decoding");
+        }
+        if !args.allow_token_id.is_empty() {
+            anyhow::bail!("--allow-token-id is not supported with speculative decoding");
+        }
+        if !args.ban_token_id.is_empty() {
+            anyhow::bail!("--ban-token-id is not supported with speculative decoding");
         }
         return run_speculative(
             args,
@@ -336,7 +393,8 @@ fn run_single(
 
     let mut decode_selection = None;
     let stdout = std::io::stdout();
-    let mut stream = StreamPrinter::new(stdout.lock());
+    let mut stream =
+        StreamPrinter::with_stops(stdout.lock(), args.stop.clone(), args.stop_token_id.clone());
     // Debug path stays local because it dumps per-step logits.
     if debug_logits {
         let decode_timer = OpTimer::start();
@@ -352,7 +410,12 @@ fn run_single(
             }
 
             // Print token text
-            stream.push_token(&tokenizer, next_token)?;
+            if matches!(
+                stream.push_token(&tokenizer, next_token)?,
+                StreamAction::Stop
+            ) {
+                break;
+            }
             if let Some(info) = next_token_info.as_ref() {
                 sampled_infos.push(info.clone());
             }
@@ -405,13 +468,18 @@ fn run_single(
                 top_logprobs: args.top_logprobs,
             },
             |tok, info| {
-                stream
+                let action = stream
                     .push_token(&tokenizer, tok)
                     .map_err(anyhow::Error::from)?;
                 if let Some(info) = info {
-                    sampled_infos.push(info.clone());
+                    if action == StreamAction::Continue {
+                        sampled_infos.push(info.clone());
+                    }
                 }
-                Ok(())
+                Ok(match action {
+                    StreamAction::Continue => DecodeControl::Continue,
+                    StreamAction::Stop => DecodeControl::Stop,
+                })
             },
         )?;
         for sample in outcome.latencies {
@@ -547,7 +615,7 @@ fn run_speculative(
         }
 
         // Print the last accepted token
-        stream.push_token(tokenizer, last_token)?;
+        let _ = stream.push_token(tokenizer, last_token)?;
 
         let remaining = max_tokens as u64 - n_generated;
         let step_k = spec.k().min(remaining as usize).max(1);
@@ -591,7 +659,7 @@ fn run_speculative(
             if tokenizer.is_eos(tok) || n_generated >= max_tokens as u64 {
                 break;
             }
-            stream.push_token(tokenizer, tok)?;
+            let _ = stream.push_token(tokenizer, tok)?;
             n_generated += 1;
         }
 

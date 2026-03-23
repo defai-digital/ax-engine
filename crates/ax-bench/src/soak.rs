@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use ax_core::gguf::MappedModel;
 use ax_core::metrics::{LatencyHistogram, current_rss_bytes};
 use ax_core::model::{
-    DecodeIntent, DecodeRunConfig, LlamaModel, ModelConfig, WeightStore, run_decode,
+    DecodeControl, DecodeIntent, DecodeRunConfig, LlamaModel, ModelConfig, WeightStore, run_decode,
 };
 use ax_core::sampling::{Sampler, SamplingConfig};
 use ax_core::tokenizer::Tokenizer;
@@ -305,7 +305,7 @@ fn run_one_iteration(
             allow_pipelined: true,
             top_logprobs: 0,
         },
-        |_tok, _info| Ok(()),
+        |_tok, _info| Ok(DecodeControl::Continue),
     )?;
 
     Ok(outcome.generated_tokens)
@@ -347,7 +347,7 @@ fn run_timed_iteration(
             allow_pipelined: true,
             top_logprobs: 0,
         },
-        |_tok, _info| Ok(()),
+        |_tok, _info| Ok(DecodeControl::Continue),
     )?;
     for sample in outcome.latencies {
         latency.record(sample);

@@ -1,20 +1,31 @@
 use ax_core::chat::render_user_turn;
 use ax_core::metrics::counters::OpTimer;
 use ax_core::metrics::{LatencyHistogram, current_rss_bytes};
-use ax_core::model::{DecodeIntent, DecodeRunConfig, WeightStore, run_decode};
-use ax_core::sampling::{Sampler, SamplingConfig};
+use ax_core::model::{DecodeControl, DecodeIntent, DecodeRunConfig, WeightStore, run_decode};
+use ax_core::sampling::{LogitBias, Sampler, SamplingConfig};
 use std::io::{BufRead, Write};
 
 use crate::args::CliArgs;
-use crate::stream::StreamPrinter;
+use crate::stream::{StreamAction, StreamPrinter};
 
 /// Run interactive multi-turn REPL mode.
 pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyhow::Result<()> {
     let (mapped, config, tokenizer, model) =
         crate::load_model(&args.model, args.ctx_size, args.verbose, backend)?;
+    crate::validate_sampling_token_ids(args, config.vocab_size as usize)?;
     let weights = WeightStore::new(&mapped);
 
     let sampling_config = SamplingConfig {
+        logit_bias: args
+            .logit_bias
+            .iter()
+            .map(|bias| LogitBias {
+                token: bias.token,
+                bias: bias.bias,
+            })
+            .collect(),
+        allowed_token_ids: args.allow_token_id.clone(),
+        banned_token_ids: args.ban_token_id.clone(),
         temperature: args.temperature,
         top_k: args.top_k,
         top_p: args.top_p,
@@ -49,7 +60,8 @@ pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyho
     let mut logits = vec![0.0f32; config.vocab_size as usize];
     let mut latency = LatencyHistogram::new();
     let stdout = std::io::stdout();
-    let mut stream = StreamPrinter::new(stdout.lock());
+    let mut stream =
+        StreamPrinter::with_stops(stdout.lock(), args.stop.clone(), args.stop_token_id.clone());
 
     loop {
         // Prompt
@@ -139,13 +151,18 @@ pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyho
                 top_logprobs: args.top_logprobs,
             },
             |tok, info| {
-                stream
+                let action = stream
                     .push_token(&tokenizer, tok)
                     .map_err(anyhow::Error::from)?;
                 if let Some(info) = info {
-                    sampled_infos.push(info.clone());
+                    if action == StreamAction::Continue {
+                        sampled_infos.push(info.clone());
+                    }
                 }
-                Ok(())
+                Ok(match action {
+                    StreamAction::Continue => DecodeControl::Continue,
+                    StreamAction::Stop => DecodeControl::Stop,
+                })
             },
         )?;
         stream.flush()?;

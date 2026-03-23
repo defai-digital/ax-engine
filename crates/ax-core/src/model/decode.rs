@@ -39,6 +39,12 @@ impl fmt::Display for DecodeMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeControl {
+    Continue,
+    Stop,
+}
+
 #[derive(Debug, Clone)]
 pub struct DecodeSelection {
     pub intent: DecodeIntent,
@@ -131,7 +137,7 @@ pub fn run_decode<F>(
     on_token: F,
 ) -> anyhow::Result<DecodeRunResult>
 where
-    F: FnMut(u32, Option<&SampledTokenInfo>) -> anyhow::Result<()>,
+    F: FnMut(u32, Option<&SampledTokenInfo>) -> anyhow::Result<DecodeControl>,
 {
     let selection = select_decode_mode(model, kv, config.intent, config.allow_pipelined);
     match selection.mode {
@@ -185,7 +191,7 @@ fn run_sequential_decode<F>(
     mut on_token: F,
 ) -> anyhow::Result<DecodeRunResult>
 where
-    F: FnMut(u32, Option<&SampledTokenInfo>) -> anyhow::Result<()>,
+    F: FnMut(u32, Option<&SampledTokenInfo>) -> anyhow::Result<DecodeControl>,
 {
     let mut logits = vec![0.0f32; model.config.vocab_size as usize];
     let mut next_token = first_token;
@@ -199,7 +205,12 @@ where
             break;
         }
 
-        on_token(next_token, next_token_info.as_ref())?;
+        if matches!(
+            on_token(next_token, next_token_info.as_ref())?,
+            DecodeControl::Stop
+        ) {
+            break;
+        }
         history.push(next_token);
         generated_tokens += 1;
 
@@ -247,7 +258,7 @@ fn run_pipelined_decode<F>(
     mut on_token: F,
 ) -> anyhow::Result<DecodeRunResult>
 where
-    F: FnMut(u32, Option<&SampledTokenInfo>) -> anyhow::Result<()>,
+    F: FnMut(u32, Option<&SampledTokenInfo>) -> anyhow::Result<DecodeControl>,
 {
     if tokenizer.is_eos(first_token) || max_tokens == 0 {
         return Ok(DecodeRunResult {
@@ -310,7 +321,12 @@ where
             .map(|info| info.token)
             .unwrap_or_else(|| sampler.sample(&mut logits, history));
 
-        on_token(next_token, next_token_info.as_ref())?;
+        if matches!(
+            on_token(next_token, next_token_info.as_ref())?,
+            DecodeControl::Stop
+        ) {
+            break;
+        }
         history.push(next_token);
         generated_tokens += 1;
 

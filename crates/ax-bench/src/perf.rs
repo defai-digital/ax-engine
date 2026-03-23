@@ -11,8 +11,8 @@ use ax_core::gguf::MappedModel;
 use ax_core::metrics::LatencyHistogram;
 use ax_core::metrics::counters::OpTimer;
 use ax_core::model::{
-    DecodeIntent, DecodeRunConfig, DecodeSelection, LlamaModel, ModelConfig, WeightStore,
-    run_decode,
+    DecodeControl, DecodeIntent, DecodeRunConfig, DecodeSelection, LlamaModel, ModelConfig,
+    WeightStore, run_decode,
 };
 use ax_core::sampling::{Sampler, SamplingConfig};
 use ax_core::speculative::SpeculativeDecoder;
@@ -693,7 +693,7 @@ fn run_single_bench(
             allow_pipelined: true,
             top_logprobs: 0,
         },
-        |_tok, _info| Ok(()),
+        |_tok, _info| Ok(DecodeControl::Continue),
     )?;
     let decode_dur = decode.decode_duration;
     let decode_counters = ax_core::backend::metal::read_metal_perf_counters();

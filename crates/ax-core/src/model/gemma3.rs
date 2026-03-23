@@ -141,18 +141,16 @@ fn encode_gemma3_gpu_layers_only(
             );
             ax_metal::barrier_buffers(encoder);
 
-            metal_ops
-                .elementwise
-                .encode_qkv_split_batch(
-                    encoder,
-                    &s.qkv_buf,
-                    &s.q_buf,
-                    &s.k_buf,
-                    &s.v_buf,
-                    1,
-                    q_dim as u32,
-                    kv_dim as u32,
-                );
+            metal_ops.elementwise.encode_qkv_split_batch(
+                encoder,
+                &s.qkv_buf,
+                &s.q_buf,
+                &s.k_buf,
+                &s.v_buf,
+                1,
+                q_dim as u32,
+                kv_dim as u32,
+            );
             ax_metal::barrier_buffers(encoder);
 
             metal_ops.elementwise.encode_qk_norm_rope_batch(

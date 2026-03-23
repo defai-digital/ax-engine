@@ -1,159 +1,251 @@
-# AX Engine — Quick Start
+# Quickstart
 
-Get from zero to running inference in under 5 minutes.
+This guide gets AX Engine from a clean checkout to a working local prompt on Apple Silicon.
 
 ## 1. Prerequisites
 
-- **macOS** on Apple Silicon **M3 or later** (M1/M2 not supported)
-- **Xcode** installed (provides the Metal compiler)
-- **Rust 1.88+** — install via [rustup](https://rustup.rs):
-  ```bash
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  ```
+You need:
 
-## 2. Clone and Build
+- a Mac with Apple Silicon M3 or newer
+- macOS with Xcode installed
+- Rust 1.88 or newer
+
+Check the basics:
 
 ```bash
-git clone https://github.com/defai-digital/ax-engine.git
-cd ax-engine
+xcode-select -p
+rustc --version
+cargo --version
+```
+
+If `xcode-select -p` fails, install Xcode and open it once so the Metal toolchain is available.
+
+## 2. Build the Workspace
+
+From the repository root:
+
+```bash
 cargo build --workspace --release
 ```
 
-The release binary lands at `./target/aarch64-apple-darwin/release/ax-llama`.
-
-## 3. Get a Model
-
-Download any GGUF-format model. For example, LLaMA 3.1 8B Instruct (Q8_0):
+For day-to-day iteration:
 
 ```bash
-mkdir -p models
-# Place your .gguf file in ./models/
-# e.g. models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf
+cargo check --workspace
 ```
 
-Supported architectures: **LLaMA/LLaMA-3**, **Qwen3**, **Gemma 3**.
+The main CLI binary will be:
 
-## 4. Run Inference
-
-### Single prompt
-
-```bash
-./target/aarch64-apple-darwin/release/ax-llama \
-  -m ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
-  -p "What is the capital of France?"
+```text
+./target/release/ax-llama
 ```
 
-### Chat mode (applies model chat template)
+## 3. Get a GGUF Model
+
+Place at least one GGUF model in `./models/`.
+
+Example layout:
+
+```text
+models/
+  Meta-Llama-3.1-8B-Instruct-Q8_0.gguf
+```
+
+AX Engine expects a direct path to the GGUF file:
 
 ```bash
-./target/aarch64-apple-darwin/release/ax-llama \
-  -m ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
-  -p "Explain Rust ownership in simple terms" \
+./target/release/ax-llama --model ./models/<model>.gguf --prompt "Hello"
+```
+
+## 4. First Successful Run
+
+For an instruction-tuned model, start with `--chat`:
+
+```bash
+./target/release/ax-llama \
+  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --chat \
+  --prompt "Explain what AX Engine does in two sentences."
+```
+
+If the model is a plain base model instead of an instruct/chat model, omit `--chat`.
+
+## 5. Interactive Chat
+
+Run the REPL:
+
+```bash
+./target/release/ax-llama \
+  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --interactive \
   --chat
 ```
 
-### Interactive REPL
+Useful REPL commands:
+
+- `/reset`
+- `/clear`
+- `/quit`
+- `/exit`
+
+## 6. Useful Sampling Controls
+
+Example with explicit sampling settings:
 
 ```bash
-./target/aarch64-apple-darwin/release/ax-llama \
-  -m ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
-  --interactive --chat
+./target/release/ax-llama \
+  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --chat \
+  --prompt "Write a short paragraph about on-device inference." \
+  --temp 0.8 \
+  --top-k 40 \
+  --top-p 0.95 \
+  --min-p 0.05 \
+  --min-keep 2 \
+  --repeat-penalty 1.1 \
+  --repeat-last-n 128
 ```
 
-Type your messages at the prompt. Use `/reset` to clear context.
+What these do:
 
-## 5. CLI Options
+- `--temp`: higher means more randomness
+- `--top-k`: limit candidate tokens to the top K logits
+- `--top-p`: nucleus filtering
+- `--min-p`: drop very low-probability tail tokens relative to the best token
+- `--min-keep`: keep at least this many candidates after filtering
+- `--logit-bias TOKEN=BIAS`: add an explicit bias to a token before sampling
+- `--allow-token-id TOKEN`: hard-restrict sampling to specific token IDs
+- `--ban-token-id TOKEN`: hard-block specific token IDs
+- `--repeat-penalty`: discourage repetition
+- `--repeat-last-n`: limit repetition penalty to the last N tokens; `0` disables the repetition window, `-1` means full history
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-m, --model` | (required) | Path to GGUF model file |
-| `-p, --prompt` | | Input prompt text |
-| `-n, --n-predict` | `-1` (infinite) | Max tokens to generate |
-| `-c, --ctx-size` | `4096` | Context window size |
-| `-t, --threads` | `0` (auto) | Number of CPU threads |
-| `--temp` | `0.8` | Sampling temperature |
-| `--top-k` | `40` | Top-K sampling (0 = disabled) |
-| `--top-p` | `0.9` | Top-P nucleus sampling (1.0 = disabled) |
-| `--seed` | `-1` (random) | Random seed for reproducibility |
-| `--repeat-penalty` | `1.0` | Repetition penalty |
-| `--chat` | off | Wrap prompt in model chat template |
-| `--interactive` | off | Multi-turn REPL mode |
-| `--verbose` | off | Print timing metrics |
+## 7. Stop Generation Cleanly
 
-## 6. Speculative Decoding
-
-Use a small draft model to accelerate generation:
+AX Engine can stop on specific output strings or token IDs without leaking the stop text:
 
 ```bash
-./target/aarch64-apple-darwin/release/ax-llama \
-  -m ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
-  --speculative-draft ./models/small-draft-model.gguf \
+./target/release/ax-llama \
+  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --chat \
+  --prompt "Write one line and then END." \
+  --stop "END"
+```
+
+You can repeat the flags:
+
+- `--stop "END" --stop "###"`
+- `--stop-token-id 2`
+
+`--stop` matches rendered output text. `--stop-token-id` stops before printing the matching token at all.
+
+## 8. Inspect Top Logprobs
+
+AX Engine can print top candidate logprobs for each emitted token:
+
+```bash
+./target/release/ax-llama \
+  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --chat \
+  --prompt "Write one sentence about Rust." \
+  --top-logprobs 5
+```
+
+The generated text still streams normally. The logprob payload is printed afterward as structured JSON on stderr.
+
+## 9. Verbose Mode
+
+Use `--verbose` for metrics and decode mode details:
+
+```bash
+./target/release/ax-llama \
+  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --prompt "Hello" \
+  --verbose
+```
+
+This prints:
+
+- prefill throughput
+- decode throughput
+- decode mode selection
+- latency percentiles when available
+- peak RSS
+
+## 10. Speculative Decoding
+
+Speculative decoding is available behind `--experimental` and requires a draft model:
+
+```bash
+./target/release/ax-llama \
+  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --speculative-draft ./models/small-draft.gguf \
   --speculative-k 4 \
-  -p "Write a haiku about Metal shaders"
+  --experimental \
+  --prompt "Summarize why draft-model verification works."
 ```
 
-The draft model runs on CPU while the target model verifies on GPU. Mismatched tokens are rejected and the KV cache rolls back automatically.
+Current limitation:
 
-## 7. Benchmarking
+- `--top-logprobs` is not supported together with speculative decoding
+- `--stop` and `--stop-token-id` are not supported together with speculative decoding
+- `--allow-token-id` is not supported together with speculative decoding
+- `--ban-token-id` is not supported together with speculative decoding
+
+## 11. Benchmarking
+
+Run the benchmark tool after a release build:
 
 ```bash
-# Token throughput benchmark
-./target/aarch64-apple-darwin/release/ax-bench bench \
-  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf
-
-# Per-layer profiling
-./target/aarch64-apple-darwin/release/ax-bench profile \
-  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf
-
-# Stability soak test (short smoke run)
-./target/aarch64-apple-darwin/release/ax-bench soak \
-  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf --smoke
+./target/release/ax-bench bench --model ./models/<model>.gguf
+./target/release/ax-bench profile --model ./models/<model>.gguf
+./target/release/ax-bench soak --model ./models/<model>.gguf --smoke
 ```
 
-## 8. Backend Selection
+Use these to compare models, inspect decode mode behavior, and catch stability regressions.
 
-AX Engine defaults to Metal GPU for both prefill and decode. Override with environment variables:
+## 12. Troubleshooting
+
+### Build fails because Metal tooling is missing
+
+Check:
 
 ```bash
-# Force CPU-only
-AX_CPU_ONLY=1 ./target/aarch64-apple-darwin/release/ax-llama \
-  -m ./models/model.gguf -p "Hello"
-
-# GPU prefill + CPU decode (NEON-optimized)
-AX_HYBRID_DECODE=cpu ./target/aarch64-apple-darwin/release/ax-llama \
-  -m ./models/model.gguf -p "Hello"
-
-# f16 KV cache (reduces memory, auto-enabled for long contexts)
-AX_METAL_F16_KV_CACHE=on ./target/aarch64-apple-darwin/release/ax-llama \
-  -m ./models/model.gguf -p "Hello"
+xcode-select -p
 ```
 
-## 9. C API (libllama.dylib)
+If needed, install Xcode and open it once.
 
-The `ax-shim` crate builds a drop-in `libllama.dylib` compatible with llama.h:
+### The model runs badly or incorrectly on M1 or M2
+
+That is outside the supported target range. AX Engine is tuned for M3 and newer.
+
+### An instruction model gives poor output
+
+Try `--chat`. Many instruct models expect a model-family prompt wrapper.
+
+### No room left to generate
+
+Increase the context size:
 
 ```bash
-cargo build -p ax-shim --release
-# Output: target/aarch64-apple-darwin/release/libllama.dylib
+./target/release/ax-llama \
+  --model ./models/<model>.gguf \
+  --ctx-size 8192 \
+  --prompt "..."
 ```
 
-Use it with any application expecting the llama.cpp C API.
+### You want to see exactly which flags exist
 
-## 10. Running Tests
+Run:
 
 ```bash
-cargo test --workspace             # all tests
-cargo test -p ax-core test_name    # single test
-cargo clippy --workspace --tests -- -D warnings  # lint
-cargo fmt --all -- --check         # format check
+./target/release/ax-llama --help
 ```
 
-## Troubleshooting
+## 13. Next Steps
 
-| Problem | Fix |
-|---------|-----|
-| `compile_error!` on non-Apple platform | AX Engine only supports `aarch64-apple-darwin` (M3+) |
-| Incorrect output or GPU errors on M1/M2 | M1 and M2 are not officially supported and may produce abnormal results — M3 or later required |
-| Metal shader compilation fails | Ensure Xcode is installed: `xcode-select --install` |
-| Out of memory on large models | Try `AX_METAL_F16_KV_CACHE=on` or reduce `-c` context size |
-| Slow decode throughput | Ensure you're using `--release` build, not debug |
+After the first successful run, the usual next checks are:
+
+1. `cargo test --workspace`
+2. `cargo clippy --workspace --tests -- -D warnings`
+3. `./target/release/ax-bench bench --model ./models/<model>.gguf`

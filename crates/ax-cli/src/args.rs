@@ -50,6 +50,26 @@ pub struct CliArgs {
     #[arg(long = "top-logprobs", default_value_t = 0)]
     pub top_logprobs: usize,
 
+    /// Stop generation when this text appears in the output. May be repeated.
+    #[arg(long = "stop")]
+    pub stop: Vec<String>,
+
+    /// Stop generation before emitting this token ID. May be repeated.
+    #[arg(long = "stop-token-id")]
+    pub stop_token_id: Vec<u32>,
+
+    /// Add an additive logit bias in TOKEN=BIAS form. May be repeated.
+    #[arg(long = "logit-bias", value_parser = parse_logit_bias)]
+    pub logit_bias: Vec<LogitBiasArg>,
+
+    /// Restrict sampling to these token IDs. May be repeated.
+    #[arg(long = "allow-token-id")]
+    pub allow_token_id: Vec<u32>,
+
+    /// Prevent sampling these token IDs. May be repeated.
+    #[arg(long = "ban-token-id")]
+    pub ban_token_id: Vec<u32>,
+
     /// Random seed (-1 = random)
     #[arg(long = "seed", default_value_t = -1)]
     pub seed: i64,
@@ -102,6 +122,26 @@ pub struct CliArgs {
     /// Number of tokens to speculate per step (speculative decoding lookahead K).
     #[arg(long = "speculative-k", default_value_t = 4)]
     pub speculative_k: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogitBiasArg {
+    pub token: u32,
+    pub bias: f32,
+}
+
+fn parse_logit_bias(input: &str) -> Result<LogitBiasArg, String> {
+    let (token, bias) = input
+        .split_once('=')
+        .ok_or_else(|| "expected TOKEN=BIAS".to_string())?;
+    let token = token
+        .parse::<u32>()
+        .map_err(|_| format!("invalid token id: {token}"))?;
+    let bias = bias
+        .parse::<f32>()
+        .map_err(|_| format!("invalid bias value: {bias}"))?;
+
+    Ok(LogitBiasArg { token, bias })
 }
 
 /// Known llama.cpp flags that AX Engine does not support, with human-readable reasons.
@@ -191,5 +231,24 @@ mod tests {
         for &(flag, desc) in UNSUPPORTED_FLAGS {
             assert!(!desc.is_empty(), "missing description for flag: {flag}");
         }
+    }
+
+    #[test]
+    fn test_parse_logit_bias_accepts_valid_pair() {
+        let parsed = parse_logit_bias("42=-1.5").unwrap();
+        assert_eq!(
+            parsed,
+            LogitBiasArg {
+                token: 42,
+                bias: -1.5,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_logit_bias_rejects_invalid_input() {
+        assert!(parse_logit_bias("42").is_err());
+        assert!(parse_logit_bias("abc=1.0").is_err());
+        assert!(parse_logit_bias("42=abc").is_err());
     }
 }

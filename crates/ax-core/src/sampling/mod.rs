@@ -1,16 +1,22 @@
 //! Token sampling from logits.
 //!
 //! Sampling pipeline (matches llama.cpp order):
-//!   1. Repetition penalty
-//!   2. Presence/frequency penalties
-//!   3. Temperature scaling
-//!   4. Top-k filtering
-//!   5. Top-p (nucleus) filtering
-//!   6. Min-p filtering
-//!   7. Softmax to probabilities
-//!   8. Weighted random selection (or argmax if temperature = 0)
+//!   1. Logit bias
+//!   2. Allowed-token masking
+//!   3. Banned-token masking
+//!   4. Repetition penalty
+//!   5. Presence/frequency penalties
+//!   6. Temperature scaling
+//!   7. Top-k filtering
+//!   8. Top-p (nucleus) filtering
+//!   9. Min-p filtering
+//!   10. Softmax to probabilities
+//!   11. Weighted random selection (or argmax if temperature = 0)
 
+pub mod allowed_tokens;
+pub mod banned_tokens;
 pub mod grammar;
+pub mod logit_bias;
 pub mod min_p;
 pub mod penalties;
 pub mod repetition;
@@ -25,6 +31,9 @@ use crate::compute::softmax;
 /// Sampling configuration matching llama.cpp defaults.
 #[derive(Debug, Clone)]
 pub struct SamplingConfig {
+    pub logit_bias: Vec<LogitBias>,
+    pub allowed_token_ids: Vec<u32>,
+    pub banned_token_ids: Vec<u32>,
     pub temperature: f32,
     pub top_k: i32,
     pub top_p: f32,
@@ -40,6 +49,9 @@ pub struct SamplingConfig {
 impl Default for SamplingConfig {
     fn default() -> Self {
         Self {
+            logit_bias: Vec::new(),
+            allowed_token_ids: Vec::new(),
+            banned_token_ids: Vec::new(),
             temperature: 0.8,
             top_k: 40,
             top_p: 0.9,
@@ -52,6 +64,13 @@ impl Default for SamplingConfig {
             seed: u64::MAX, // random
         }
     }
+}
+
+/// Additive bias for a specific token before sampling.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogitBias {
+    pub token: u32,
+    pub bias: f32,
 }
 
 /// Logprob metadata for a candidate token in the final sampling distribution.
@@ -293,6 +312,10 @@ fn apply_penalties_and_filters_with_scratch(
     scratch_probs: &mut Vec<f32>,
     scratch_indices: &mut Vec<usize>,
 ) {
+    logit_bias::apply_logit_bias(logits, &config.logit_bias);
+    allowed_tokens::apply_allowed_token_mask(logits, &config.allowed_token_ids);
+    banned_tokens::apply_banned_token_mask(logits, &config.banned_token_ids);
+
     if config.repeat_penalty != 1.0 && !recent_tokens.is_empty() && config.repeat_last_n != 0 {
         let window = if config.repeat_last_n > 0 {
             let start = recent_tokens
@@ -631,6 +654,98 @@ mod tests {
     }
 
     #[test]
+    fn test_greedy_with_logit_bias_changes_choice() {
+        let config = SamplingConfig {
+            temperature: 0.0,
+            logit_bias: vec![LogitBias {
+                token: 2,
+                bias: 3.0,
+            }],
+            ..Default::default()
+        };
+        let mut logits = [1.0, 4.0, 2.0];
+        let token = sample_token(&mut logits, &config, &[]);
+        assert_eq!(token, 2);
+    }
+
+    #[test]
+    fn test_logit_bias_applies_before_repetition_penalty() {
+        let config = SamplingConfig {
+            temperature: 0.0,
+            repeat_penalty: 2.0,
+            repeat_last_n: -1,
+            logit_bias: vec![LogitBias {
+                token: 1,
+                bias: 2.0,
+            }],
+            ..Default::default()
+        };
+        let mut logits = [1.0, 3.0];
+        let token = sample_token(&mut logits, &config, &[1]);
+        assert_eq!(token, 1);
+        assert_eq!(logits[1], 2.5);
+    }
+
+    #[test]
+    fn test_allowed_token_ids_restrict_choice() {
+        let config = SamplingConfig {
+            temperature: 0.0,
+            allowed_token_ids: vec![2],
+            ..Default::default()
+        };
+        let mut logits = [5.0, 4.0, 1.0];
+        let token = sample_token(&mut logits, &config, &[]);
+        assert_eq!(token, 2);
+        assert_eq!(logits[0], f32::NEG_INFINITY);
+        assert_eq!(logits[1], f32::NEG_INFINITY);
+    }
+
+    #[test]
+    fn test_allowed_token_ids_dominate_logit_bias_for_disallowed_tokens() {
+        let config = SamplingConfig {
+            temperature: 0.0,
+            allowed_token_ids: vec![1],
+            logit_bias: vec![LogitBias {
+                token: 2,
+                bias: 100.0,
+            }],
+            ..Default::default()
+        };
+        let mut logits = [1.0, 2.0, 3.0];
+        let token = sample_token(&mut logits, &config, &[]);
+        assert_eq!(token, 1);
+        assert_eq!(logits[2], f32::NEG_INFINITY);
+    }
+
+    #[test]
+    fn test_banned_token_ids_block_choice() {
+        let config = SamplingConfig {
+            temperature: 0.0,
+            banned_token_ids: vec![0],
+            ..Default::default()
+        };
+        let mut logits = [5.0, 4.0, 3.0];
+        let token = sample_token(&mut logits, &config, &[]);
+        assert_eq!(token, 1);
+        assert_eq!(logits[0], f32::NEG_INFINITY);
+    }
+
+    #[test]
+    fn test_banned_token_ids_override_allowlist() {
+        let config = SamplingConfig {
+            temperature: 0.0,
+            allowed_token_ids: vec![0, 1],
+            banned_token_ids: vec![0],
+            ..Default::default()
+        };
+        let mut logits = [5.0, 4.0, 3.0];
+        let token = sample_token(&mut logits, &config, &[]);
+        assert_eq!(token, 1);
+        assert_eq!(logits[0], f32::NEG_INFINITY);
+        assert_eq!(logits[2], f32::NEG_INFINITY);
+    }
+
+    #[test]
     fn test_sample_deterministic() {
         // Same seed should produce same result
         let config = SamplingConfig {
@@ -729,6 +844,9 @@ mod tests {
     #[test]
     fn test_full_pipeline() {
         let config = SamplingConfig {
+            logit_bias: Vec::new(),
+            allowed_token_ids: Vec::new(),
+            banned_token_ids: Vec::new(),
             temperature: 0.5,
             top_k: 3,
             top_p: 0.95,

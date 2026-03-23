@@ -14,8 +14,8 @@ pub mod weights;
 
 pub use config::ModelConfig;
 pub use decode::{
-    DecodeIntent, DecodeMode, DecodeRunConfig, DecodeRunResult, DecodeSelection, run_decode,
-    select_decode_mode,
+    DecodeControl, DecodeIntent, DecodeMode, DecodeRunConfig, DecodeRunResult, DecodeSelection,
+    run_decode, select_decode_mode,
 };
 pub use forward::ForwardPass;
 pub use llama::LlamaModel;
