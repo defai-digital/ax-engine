@@ -835,10 +835,20 @@ impl Qwen3Forward {
             metal_ops.device.execute_sync(|encoder| {
                 let nt = n_tokens as u32;
 
+                // First layer's Phase 1a: standalone RMSNorm before loop.
+                // Subsequent layers fuse Phase 3f (residual add) with next layer's norm.
+                {
+                    let norm_w_buf = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
+                    metal_ops.elementwise.encode_rms_norm_out_batch(
+                        encoder, &bs.hidden, norm_w_buf, &bs.norm_buf,
+                        dim as u32, nt, eps,
+                    );
+                    ax_metal::barrier_buffers(encoder);
+                }
+
                 for layer in 0..n_layers {
                     let lw = &cached.layers[layer];
 
-                    let norm_w_buf = weight_cache.get(&lw.attn_norm).unwrap();
                     let wq_buf = weight_cache.get(&lw.wq).unwrap();
                     let wk_buf = weight_cache.get(&lw.wk).unwrap();
                     let wv_buf = weight_cache.get(&lw.wv).unwrap();
@@ -853,18 +863,8 @@ impl Qwen3Forward {
                         None
                     };
 
-                    // ── Phase 1a: Batched RMSNorm hidden[N×dim] -> norm[N×dim] ──
-                    metal_ops.elementwise.encode_rms_norm_out_batch(
-                        encoder,
-                        &bs.hidden,
-                        norm_w_buf,
-                        &bs.norm_buf,
-                        dim as u32,
-                        nt,
-                        eps,
-                    );
-                    // Ensure all batch_norm writes are visible to batched QKV matmul.
-                    ax_metal::barrier_buffers(encoder);
+                    // Phase 1a: norm_buf already populated (first layer before loop,
+                    // subsequent layers fused with previous Phase 3f).
 
                     // ── Phase 1b: Batched QKV matmul ──
                     if let Some(fused_w) = fused_qkv_buf {
@@ -1295,15 +1295,32 @@ impl Qwen3Forward {
                     );
                     ax_metal::barrier_buffers(encoder);
 
-                    // ── Phase 3f: Batched residual ──
-                    metal_ops.elementwise.encode_elementwise_add_batch(
-                        encoder,
-                        &bs.hidden,
-                        &bs.proj_buf,
-                        dim as u32,
-                        nt,
-                    );
-                    // Ensure residual updates are visible before the next layer/final norm.
+                    // ── Phase 3f: Batched residual (+ next layer's norm if not last) ──
+                    if layer + 1 < n_layers {
+                        let next_norm_w = weight_cache
+                            .get(&cached.layers[layer + 1].attn_norm)
+                            .unwrap();
+                        metal_ops
+                            .elementwise
+                            .encode_residual_add_rms_norm_out_batch(
+                                encoder,
+                                &bs.hidden,
+                                &bs.proj_buf,
+                                next_norm_w,
+                                &bs.norm_buf,
+                                dim as u32,
+                                nt,
+                                eps,
+                            );
+                    } else {
+                        metal_ops.elementwise.encode_elementwise_add_batch(
+                            encoder,
+                            &bs.hidden,
+                            &bs.proj_buf,
+                            dim as u32,
+                            nt,
+                        );
+                    }
                     ax_metal::barrier_buffers(encoder);
                 }
 
