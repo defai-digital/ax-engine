@@ -3,6 +3,7 @@
 // Binary name: ax-llama
 // Can be symlinked as `llama` for drop-in use.
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
 
@@ -210,6 +211,17 @@ fn validate_sampling_token_ids(args: &args::CliArgs, vocab_size: usize) -> anyho
         if allowed_after_ban == 0 {
             anyhow::bail!("--allow-token-id and --ban-token-id leave no valid tokens to sample");
         }
+    } else {
+        let banned_unique = args
+            .ban_token_id
+            .iter()
+            .copied()
+            .filter(|&token| (token as usize) < vocab_size)
+            .collect::<HashSet<_>>()
+            .len();
+        if banned_unique >= vocab_size {
+            anyhow::bail!("--ban-token-id excludes the entire vocabulary");
+        }
     }
 
     Ok(())
@@ -316,6 +328,9 @@ fn run_single(
         }
         if !args.ban_token_id.is_empty() {
             anyhow::bail!("--ban-token-id is not supported with speculative decoding");
+        }
+        if !args.logit_bias.is_empty() {
+            anyhow::bail!("--logit-bias is not supported with speculative decoding");
         }
         return run_speculative(
             args,
@@ -471,10 +486,10 @@ fn run_single(
                 let action = stream
                     .push_token(&tokenizer, tok)
                     .map_err(anyhow::Error::from)?;
-                if let Some(info) = info {
-                    if action == StreamAction::Continue {
-                        sampled_infos.push(info.clone());
-                    }
+                if let Some(info) = info
+                    && action == StreamAction::Continue
+                {
+                    sampled_infos.push(info.clone());
                 }
                 Ok(match action {
                     StreamAction::Continue => DecodeControl::Continue,
@@ -799,4 +814,77 @@ fn run_reuse_bench(
         eprintln!("Prefill speedup (run2/run1): {:.2}x", speedup);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_args() -> args::CliArgs {
+        args::CliArgs {
+            model: "model.gguf".to_string(),
+            prompt: Some("hello".to_string()),
+            n_predict: 16,
+            ctx_size: 4096,
+            threads: 0,
+            temperature: 0.8,
+            top_k: 40,
+            top_p: 0.9,
+            min_p: 0.0,
+            min_keep: 1,
+            top_logprobs: 0,
+            stop: Vec::new(),
+            stop_token_id: Vec::new(),
+            logit_bias: Vec::new(),
+            allow_token_id: Vec::new(),
+            ban_token_id: Vec::new(),
+            seed: -1,
+            repeat_penalty: 1.0,
+            repeat_last_n: 64,
+            frequency_penalty: 0.0,
+            presence_penalty: 0.0,
+            interactive: false,
+            verbose: false,
+            experimental: false,
+            chat: false,
+            reuse_bench: false,
+            reuse_bench_json: false,
+            speculative_draft: None,
+            speculative_k: 4,
+        }
+    }
+
+    #[test]
+    fn test_validate_sampling_token_ids_rejects_full_ban_without_allowlist() {
+        let mut args = make_args();
+        args.ban_token_id = vec![0, 1, 2];
+
+        let err = validate_sampling_token_ids(&args, 3).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--ban-token-id excludes the entire vocabulary")
+        );
+    }
+
+    #[test]
+    fn test_validate_sampling_token_ids_rejects_allowlist_fully_banned() {
+        let mut args = make_args();
+        args.allow_token_id = vec![1, 2];
+        args.ban_token_id = vec![1, 2];
+
+        let err = validate_sampling_token_ids(&args, 8).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--allow-token-id and --ban-token-id leave no valid tokens to sample")
+        );
+    }
+
+    #[test]
+    fn test_validate_sampling_token_ids_allows_partial_overlap() {
+        let mut args = make_args();
+        args.allow_token_id = vec![1, 2];
+        args.ban_token_id = vec![2];
+
+        validate_sampling_token_ids(&args, 8).unwrap();
+    }
 }

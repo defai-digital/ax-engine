@@ -340,7 +340,9 @@ fn apply_penalties_and_filters_with_scratch(
         return;
     }
 
-    temperature::apply_temperature(logits, config.temperature);
+    // Apply filters in original logit space (before temperature), matching llama.cpp order.
+    // Temperature is applied last so that top-k/top-p/min-p thresholds operate on
+    // the unscaled distribution.
     top_k::apply_top_k_with_scratch(logits, config.top_k, config.min_keep, scratch_indices);
     top_p::apply_top_p_with_scratch(
         logits,
@@ -356,6 +358,7 @@ fn apply_penalties_and_filters_with_scratch(
         scratch_probs,
         scratch_indices,
     );
+    temperature::apply_temperature(logits, config.temperature);
 }
 
 /// Return the index of the maximum value (greedy / argmax decoding).
@@ -450,9 +453,13 @@ fn sample_filtered_logits_info_with_scratch(
     );
 
     if scratch_indices.is_empty() {
+        // All logits filtered to -inf: fall back to uniform over vocab.
+        // Use a safe logprob (ln(1/n)) instead of ln(-inf) which would be NaN.
+        let n = logits.len();
         softmax::softmax(logits);
         let token = sample_categorical(logits, rng);
-        let logprob = logits[token as usize].ln();
+        let prob = logits[token as usize];
+        let logprob = if prob > 0.0 { prob.ln() } else { -((n as f32).ln()) };
         let top_logprobs = collect_top_logprobs_from_probs(logits, top_logprobs, scratch_indices);
         return SampledTokenInfo {
             token,

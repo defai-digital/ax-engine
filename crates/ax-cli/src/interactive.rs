@@ -154,10 +154,10 @@ pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyho
                 let action = stream
                     .push_token(&tokenizer, tok)
                     .map_err(anyhow::Error::from)?;
-                if let Some(info) = info {
-                    if action == StreamAction::Continue {
-                        sampled_infos.push(info.clone());
-                    }
+                if let Some(info) = info
+                    && action == StreamAction::Continue
+                {
+                    sampled_infos.push(info.clone());
                 }
                 Ok(match action {
                     StreamAction::Continue => DecodeControl::Continue,

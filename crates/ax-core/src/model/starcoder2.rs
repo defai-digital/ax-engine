@@ -946,7 +946,7 @@ impl StarCoder2Forward {
                     }
                     ax_metal::barrier_buffers(encoder);
 
-                    // Output proj + residual + FFN norm
+                    // Output proj + wo_bias + residual + FFN norm
                     let wo_buf = weight_cache.get(&lw.wo).unwrap();
                     encode_dequant_batch(
                         &metal_ops.dequant,
@@ -964,6 +964,11 @@ impl StarCoder2Forward {
                         use_batch_simd,
                     );
                     ax_metal::barrier_buffers(encoder);
+                    if let Some(wob_key) = lw.wo_bias {
+                        let wob_buf = weight_cache.get(&wob_key).unwrap();
+                        metal_ops.elementwise.encode_elementwise_add_batch(encoder, &bs.proj_buf, wob_buf, dim as u32, nt);
+                        ax_metal::barrier_buffers(encoder);
+                    }
 
                     let ffn_nw_buf = weight_cache.get(&lw.ffn_norm).unwrap();
                     metal_ops
@@ -1065,13 +1070,22 @@ impl StarCoder2Forward {
                     }
                     ax_metal::barrier_buffers(encoder);
 
+                    // FFN gate/up bias (StarCoder2-specific)
+                    if let Some(gb_key) = lw.gate_bias {
+                        let gb_buf = weight_cache.get(&gb_key).unwrap();
+                        metal_ops.elementwise.encode_elementwise_add_batch(encoder, &bs.gate_buf, gb_buf, inter_dim as u32, nt);
+                    }
+                    if let Some(ub_key) = lw.up_bias {
+                        let ub_buf = weight_cache.get(&ub_key).unwrap();
+                        metal_ops.elementwise.encode_elementwise_add_batch(encoder, &bs.up_buf, ub_buf, inter_dim as u32, nt);
+                    }
+                    if lw.gate_bias.is_some() || lw.up_bias.is_some() {
+                        ax_metal::barrier_buffers(encoder);
+                    }
+
                     // GELU(gate) * up
                     metal_ops.elementwise.encode_gelu_elementwise_mul_batch(
-                        encoder,
-                        &bs.gate_buf,
-                        &bs.up_buf,
-                        inter_dim as u32,
-                        nt,
+                        encoder, &bs.gate_buf, &bs.up_buf, inter_dim as u32, nt,
                     );
                     ax_metal::barrier_buffers(encoder);
 
@@ -1093,6 +1107,12 @@ impl StarCoder2Forward {
                         use_batch_simd,
                     );
                     ax_metal::barrier_buffers(encoder);
+                    // Down bias (StarCoder2-specific)
+                    if let Some(db_key) = lw.down_bias {
+                        let db_buf = weight_cache.get(&db_key).unwrap();
+                        metal_ops.elementwise.encode_elementwise_add_batch(encoder, &bs.proj_buf, db_buf, dim as u32, nt);
+                        ax_metal::barrier_buffers(encoder);
+                    }
                     metal_ops.elementwise.encode_elementwise_add_batch(
                         encoder,
                         &bs.hidden,
