@@ -15,7 +15,7 @@ use crate::compute::softmax;
 pub fn apply_top_p(logits: &mut [f32], p: f32) {
     let mut scratch_probs = Vec::new();
     let mut scratch_indices = Vec::new();
-    apply_top_p_with_scratch(logits, p, &mut scratch_probs, &mut scratch_indices);
+    apply_top_p_with_scratch(logits, p, 1, &mut scratch_probs, &mut scratch_indices);
 }
 
 /// Apply top-p filtering using caller-provided scratch buffers.
@@ -24,6 +24,7 @@ pub fn apply_top_p(logits: &mut [f32], p: f32) {
 pub(crate) fn apply_top_p_with_scratch(
     logits: &mut [f32],
     p: f32,
+    min_keep: usize,
     scratch_probs: &mut Vec<f32>,
     scratch_indices: &mut Vec<usize>,
 ) {
@@ -73,7 +74,7 @@ pub(crate) fn apply_top_p_with_scratch(
             break;
         }
     }
-    cutoff = cutoff.max(1);
+    cutoff = cutoff.max(min_keep.min(scratch_indices.len())).max(1);
 
     for &idx in &scratch_indices[cutoff..] {
         logits[idx] = f32::NEG_INFINITY;
@@ -155,5 +156,21 @@ mod tests {
         let mut logits = [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
         apply_top_p(&mut logits, 0.5);
         assert!(logits.iter().all(|v| *v == f32::NEG_INFINITY));
+    }
+
+    #[test]
+    fn test_top_p_honors_min_keep() {
+        let mut logits = [5.0, 4.0, 3.0, 2.0];
+        let mut scratch_probs = Vec::new();
+        let mut scratch_indices = Vec::new();
+        apply_top_p_with_scratch(
+            &mut logits,
+            0.01,
+            3,
+            &mut scratch_probs,
+            &mut scratch_indices,
+        );
+        let finite_count = logits.iter().filter(|v| v.is_finite()).count();
+        assert_eq!(finite_count, 3);
     }
 }

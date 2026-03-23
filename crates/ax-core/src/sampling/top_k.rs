@@ -9,19 +9,24 @@
 /// If `k <= 0` or `k >= logits.len()`, no filtering is applied.
 pub fn apply_top_k(logits: &mut [f32], k: i32) {
     let mut scratch = Vec::new();
-    apply_top_k_with_scratch(logits, k, &mut scratch);
+    apply_top_k_with_scratch(logits, k, 1, &mut scratch);
 }
 
 /// Apply top-k filtering using a caller-provided scratch buffer.
 ///
 /// `scratch` is cleared and resized in-place — pass a reusable Vec to
 /// avoid per-call allocation.
-pub(crate) fn apply_top_k_with_scratch(logits: &mut [f32], k: i32, scratch: &mut Vec<usize>) {
+pub(crate) fn apply_top_k_with_scratch(
+    logits: &mut [f32],
+    k: i32,
+    min_keep: usize,
+    scratch: &mut Vec<usize>,
+) {
     let n = logits.len();
     if k <= 0 || k as usize >= n {
         return;
     }
-    let k = k as usize;
+    let k = (k as usize).max(min_keep.min(n));
 
     scratch.clear();
     // Reserve without zeroing; extend fills exactly n elements.
@@ -94,5 +99,14 @@ mod tests {
         apply_top_k(&mut logits, 3);
         let finite_count = logits.iter().filter(|v| v.is_finite()).count();
         assert_eq!(finite_count, 3);
+    }
+
+    #[test]
+    fn test_top_k_honors_min_keep() {
+        let mut logits = [5.0, 4.0, 3.0, 2.0];
+        let mut scratch = Vec::new();
+        apply_top_k_with_scratch(&mut logits, 1, 2, &mut scratch);
+        let finite_count = logits.iter().filter(|v| v.is_finite()).count();
+        assert_eq!(finite_count, 2);
     }
 }

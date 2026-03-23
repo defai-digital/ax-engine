@@ -42,6 +42,10 @@ pub struct CliArgs {
     #[arg(long = "min-p", default_value_t = 0.0)]
     pub min_p: f32,
 
+    /// Minimum number of candidate tokens to preserve after filtering
+    #[arg(long = "min-keep", default_value_t = 1)]
+    pub min_keep: usize,
+
     /// Random seed (-1 = random)
     #[arg(long = "seed", default_value_t = -1)]
     pub seed: i64,
@@ -49,6 +53,10 @@ pub struct CliArgs {
     /// Repeat penalty
     #[arg(long = "repeat-penalty", default_value_t = 1.0)]
     pub repeat_penalty: f32,
+
+    /// Number of recent tokens considered for repetition penalty (-1 = full history)
+    #[arg(long = "repeat-last-n", default_value_t = 64)]
+    pub repeat_last_n: i32,
 
     /// Penalize tokens in proportion to the number of prior occurrences.
     #[arg(long = "frequency-penalty", default_value_t = 0.0)]

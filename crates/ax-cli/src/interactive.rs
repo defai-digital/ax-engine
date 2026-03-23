@@ -19,10 +19,11 @@ pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyho
         top_k: args.top_k,
         top_p: args.top_p,
         min_p: args.min_p,
+        min_keep: args.min_keep.max(1),
         repeat_penalty: args.repeat_penalty,
         frequency_penalty: args.frequency_penalty,
         presence_penalty: args.presence_penalty,
-        repeat_last_n: 64,
+        repeat_last_n: args.repeat_last_n,
         seed: if args.seed < 0 {
             u64::MAX
         } else {

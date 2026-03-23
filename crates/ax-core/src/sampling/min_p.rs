@@ -14,13 +14,14 @@ use crate::compute::softmax;
 pub fn apply_min_p(logits: &mut [f32], p: f32) {
     let mut scratch_probs = Vec::new();
     let mut scratch_indices = Vec::new();
-    apply_min_p_with_scratch(logits, p, &mut scratch_probs, &mut scratch_indices);
+    apply_min_p_with_scratch(logits, p, 1, &mut scratch_probs, &mut scratch_indices);
 }
 
 /// Apply min-p filtering using caller-provided scratch buffers.
 pub(crate) fn apply_min_p_with_scratch(
     logits: &mut [f32],
     p: f32,
+    min_keep: usize,
     scratch_probs: &mut Vec<f32>,
     scratch_indices: &mut Vec<usize>,
 ) {
@@ -61,6 +62,7 @@ pub(crate) fn apply_min_p_with_scratch(
     while cutoff < scratch_probs.len() && scratch_probs[cutoff] >= threshold {
         cutoff += 1;
     }
+    cutoff = cutoff.max(min_keep.min(scratch_probs.len()));
 
     for &idx in &scratch_indices[cutoff..] {
         logits[idx] = f32::NEG_INFINITY;
@@ -110,5 +112,21 @@ mod tests {
     fn test_min_p_empty_is_noop() {
         let mut logits: [f32; 0] = [];
         apply_min_p(&mut logits, 0.5);
+    }
+
+    #[test]
+    fn test_min_p_honors_min_keep() {
+        let mut logits = [5.0, 4.0, 1.0, 0.5];
+        let mut scratch_probs = Vec::new();
+        let mut scratch_indices = Vec::new();
+        apply_min_p_with_scratch(
+            &mut logits,
+            0.8,
+            2,
+            &mut scratch_probs,
+            &mut scratch_indices,
+        );
+        let finite_count = logits.iter().filter(|v| v.is_finite()).count();
+        assert_eq!(finite_count, 2);
     }
 }

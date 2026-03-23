@@ -29,6 +29,7 @@ pub struct SamplingConfig {
     pub top_k: i32,
     pub top_p: f32,
     pub min_p: f32,
+    pub min_keep: usize,
     pub repeat_penalty: f32,
     pub frequency_penalty: f32,
     pub presence_penalty: f32,
@@ -43,6 +44,7 @@ impl Default for SamplingConfig {
             top_k: 40,
             top_p: 0.9,
             min_p: 0.0,
+            min_keep: 1,
             repeat_penalty: 1.0,
             frequency_penalty: 0.0,
             presence_penalty: 0.0,
@@ -316,9 +318,21 @@ fn apply_penalties_and_filters_with_scratch(
     }
 
     temperature::apply_temperature(logits, config.temperature);
-    top_k::apply_top_k_with_scratch(logits, config.top_k, scratch_indices);
-    top_p::apply_top_p_with_scratch(logits, config.top_p, scratch_probs, scratch_indices);
-    min_p::apply_min_p_with_scratch(logits, config.min_p, scratch_probs, scratch_indices);
+    top_k::apply_top_k_with_scratch(logits, config.top_k, config.min_keep, scratch_indices);
+    top_p::apply_top_p_with_scratch(
+        logits,
+        config.top_p,
+        config.min_keep,
+        scratch_probs,
+        scratch_indices,
+    );
+    min_p::apply_min_p_with_scratch(
+        logits,
+        config.min_p,
+        config.min_keep,
+        scratch_probs,
+        scratch_indices,
+    );
 }
 
 /// Return the index of the maximum value (greedy / argmax decoding).
@@ -660,6 +674,7 @@ mod tests {
             top_k: 0,
             top_p: 1.0,
             min_p: 0.2,
+            min_keep: 1,
             seed: 7,
             ..Default::default()
         };
@@ -718,6 +733,7 @@ mod tests {
             top_k: 3,
             top_p: 0.95,
             min_p: 0.0,
+            min_keep: 1,
             repeat_penalty: 1.1,
             frequency_penalty: 0.0,
             presence_penalty: 0.0,
@@ -786,6 +802,7 @@ mod tests {
             top_k: 0,
             top_p: 1.0,
             min_p: 0.0,
+            min_keep: 1,
             seed: 123,
             ..Default::default()
         };
@@ -814,5 +831,39 @@ mod tests {
         assert_eq!(info.token, 1);
         assert_eq!(info.top_logprobs[0].token, 1);
         assert!(info.logprob.is_finite());
+    }
+
+    #[test]
+    fn test_repeat_last_n_limits_repetition_window() {
+        let config = SamplingConfig {
+            temperature: 0.0,
+            repeat_penalty: 2.0,
+            repeat_last_n: 1,
+            ..Default::default()
+        };
+        let mut logits = [1.0, 5.0, 4.0];
+        let token = sample_token(&mut logits, &config, &[1, 2]);
+        assert_eq!(token, 1);
+    }
+
+    #[test]
+    fn test_min_keep_preserves_candidate_floor() {
+        let config = SamplingConfig {
+            temperature: 1.0,
+            top_k: 1,
+            top_p: 0.01,
+            min_p: 0.9,
+            min_keep: 2,
+            seed: 9,
+            ..Default::default()
+        };
+        let mut logits = [5.0, 4.0, 1.0];
+        let mut sampler = Sampler::new(config);
+
+        for _ in 0..20 {
+            let token = sampler.sample(&mut logits, &[]);
+            assert!(token == 0 || token == 1, "unexpected token {token}");
+            logits = [5.0, 4.0, 1.0];
+        }
     }
 }

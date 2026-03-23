@@ -143,28 +143,51 @@ fn encode_gemma3_gpu_layers_only(
 
             metal_ops
                 .elementwise
-                .encode_qkv_split_qk_norm_rope_append_kv_batch(
+                .encode_qkv_split_batch(
                     encoder,
                     &s.qkv_buf,
                     &s.q_buf,
                     &s.k_buf,
                     &s.v_buf,
-                    q_nw_buf,
-                    k_nw_buf,
-                    gpu_kv.k_buffer(layer),
-                    gpu_kv.v_buffer(layer),
-                    kv_f16,
                     1,
-                    n_heads as u32,
-                    n_kv_heads as u32,
-                    head_dim as u32,
-                    eps,
-                    rope_position,
-                    1.0,
-                    rope_base,
-                    kv_offset,
+                    q_dim as u32,
                     kv_dim as u32,
                 );
+            ax_metal::barrier_buffers(encoder);
+
+            metal_ops.elementwise.encode_qk_norm_rope_batch(
+                encoder,
+                &s.q_buf,
+                &s.k_buf,
+                q_nw_buf,
+                k_nw_buf,
+                1,
+                n_heads as u32,
+                n_kv_heads as u32,
+                head_dim as u32,
+                eps,
+                rope_position,
+                1.0,
+                rope_base,
+            );
+            ax_metal::barrier_buffers(encoder);
+
+            metal_ops.elementwise.encode_kv_append(
+                encoder,
+                &s.k_buf,
+                gpu_kv.k_buffer(layer),
+                kv_f16,
+                kv_offset,
+                kv_dim as u32,
+            );
+            metal_ops.elementwise.encode_kv_append(
+                encoder,
+                &s.v_buf,
+                gpu_kv.v_buffer(layer),
+                kv_f16,
+                kv_offset,
+                kv_dim as u32,
+            );
             ax_metal::barrier_buffers(encoder);
         } else {
             encode_dequant_matvec(
