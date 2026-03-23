@@ -1127,8 +1127,9 @@ kernel void qkv_split_rope_append_kv_batch_f32(
         float rk1 = v0 * sin_t + v1 * cos_t;
         k[dst_base] = rk0;
         k[dst_base + 1] = rk1;
-        cache_k[cache_row_base + dst_base] = rk0;
-        cache_k[cache_row_base + dst_base + 1] = rk1;
+        uint cache_k_off = head * head_dim + 2 * i;
+        cache_k[cache_row_base + cache_k_off] = rk0;
+        cache_k[cache_row_base + cache_k_off + 1] = rk1;
     } else {
         uint vc = local - v_start;
         uint src_idx = src_row_base + q_dim + kv_dim + vc;
@@ -1209,8 +1210,9 @@ kernel void qkv_split_rope_append_kv_batch_f16(
         float rk1 = v0 * sin_t + v1 * cos_t;
         k[dst_base] = rk0;
         k[dst_base + 1] = rk1;
-        cache_k[cache_row_base + dst_base] = half(rk0);
-        cache_k[cache_row_base + dst_base + 1] = half(rk1);
+        uint cache_k_off = head * head_dim + 2 * i;
+        cache_k[cache_row_base + cache_k_off] = half(rk0);
+        cache_k[cache_row_base + cache_k_off + 1] = half(rk1);
     } else {
         uint vc = local - v_start;
         uint src_idx = src_row_base + q_dim + kv_dim + vc;
@@ -1308,8 +1310,9 @@ kernel void qkv_split_qk_norm_rope_append_kv_batch_f32(
         float rk1 = v0 * sin_t + v1 * cos_t;
         k[dst_base] = rk0;
         k[dst_base + 1] = rk1;
-        cache_k[cache_row_base + dst_base] = rk0;
-        cache_k[cache_row_base + dst_base + 1] = rk1;
+        uint cache_k_off = head * head_dim + 2 * i;
+        cache_k[cache_row_base + cache_k_off] = rk0;
+        cache_k[cache_row_base + cache_k_off + 1] = rk1;
     } else {
         uint vc = local - v_start;
         uint src_idx = src_row_base + q_dim + kv_dim + vc;
@@ -1407,8 +1410,9 @@ kernel void qkv_split_qk_norm_rope_append_kv_batch_f16(
         float rk1 = v0 * sin_t + v1 * cos_t;
         k[dst_base] = rk0;
         k[dst_base + 1] = rk1;
-        cache_k[cache_row_base + dst_base] = half(rk0);
-        cache_k[cache_row_base + dst_base + 1] = half(rk1);
+        uint cache_k_off = head * head_dim + 2 * i;
+        cache_k[cache_row_base + cache_k_off] = half(rk0);
+        cache_k[cache_row_base + cache_k_off + 1] = half(rk1);
     } else {
         uint vc = local - v_start;
         uint src_idx = src_row_base + q_dim + kv_dim + vc;

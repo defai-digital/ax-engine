@@ -565,6 +565,10 @@ impl GlmForward {
                 q_bias: q_bias_key,
                 k_bias: k_bias_key,
                 v_bias: v_bias_key,
+                wo_bias: None,
+                gate_bias: None,
+                up_bias: None,
+                down_bias: None,
             });
         }
 

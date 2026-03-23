@@ -857,6 +857,11 @@ pub struct CachedLayerKeys {
     pub q_bias: Option<usize>,
     pub k_bias: Option<usize>,
     pub v_bias: Option<usize>,
+    // StarCoder2-specific: FFN and output projection biases
+    pub wo_bias: Option<usize>,
+    pub gate_bias: Option<usize>,
+    pub up_bias: Option<usize>,
+    pub down_bias: Option<usize>,
 }
 
 /// Pre-computed weight cache keys for the full model.

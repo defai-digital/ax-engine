@@ -560,6 +560,10 @@ impl FalconForward {
                 q_bias: None,
                 k_bias: None,
                 v_bias: None,
+                wo_bias: None,
+                gate_bias: None,
+                up_bias: None,
+                down_bias: None,
             });
         }
 
