@@ -903,16 +903,21 @@ impl Qwen3Forward {
                                 use_batch_simd,
                             );
                         }
-                        metal_ops.elementwise.encode_qkv_split_batch(
-                            encoder,
-                            &bs.qkv_buf,
-                            &bs.q_buf,
-                            &bs.k_buf,
-                            &bs.v_buf,
-                            nt,
-                            q_dim as u32,
-                            kv_dim as u32,
-                        );
+                        // Skip split if fused bias+norm+rope+append will handle it.
+                        let will_use_fused_bias =
+                            lw.q_bias.is_some() && lw.attn_q_norm.is_some() && !kv_f16;
+                        if !will_use_fused_bias {
+                            metal_ops.elementwise.encode_qkv_split_batch(
+                                encoder,
+                                &bs.qkv_buf,
+                                &bs.q_buf,
+                                &bs.k_buf,
+                                &bs.v_buf,
+                                nt,
+                                q_dim as u32,
+                                kv_dim as u32,
+                            );
+                        }
                     } else if use_f16_batch_io {
                         metal_ops.elementwise.encode_cast_f32_to_f16(
                             encoder,
@@ -1002,114 +1007,103 @@ impl Qwen3Forward {
                     }
                     ax_metal::barrier_buffers(encoder);
 
-                    // ── Phase 1c: QKV bias add (v2: batched, O(1) dispatches) ──
-                    //
-                    // v1 applied bias per-token in a loop: O(n_tokens × 7) dispatches + barriers.
-                    // v2: `encode_elementwise_add_batch` broadcasts bias[dim] to all n_tokens rows
-                    // in ONE dispatch per Q/K/V. This is the same O(1) approach as the main
-                    // residual and activation kernels.
-                    if let (Some(qb_key), Some(kb_key), Some(vb_key)) =
-                        (lw.q_bias, lw.k_bias, lw.v_bias)
-                    {
-                        let qb_buf = weight_cache.get(&qb_key).unwrap();
-                        let kb_buf = weight_cache.get(&kb_key).unwrap();
-                        let vb_buf = weight_cache.get(&vb_key).unwrap();
-                        // Batched broadcast: bias[dim] added to each of the n_tokens rows
-                        metal_ops.elementwise.encode_elementwise_add_batch(
-                            encoder,
-                            &bs.q_buf,
-                            qb_buf,
-                            q_dim as u32,
-                            nt,
-                        );
-                        metal_ops.elementwise.encode_elementwise_add_batch(
-                            encoder,
-                            &bs.k_buf,
-                            kb_buf,
-                            kv_dim as u32,
-                            nt,
-                        );
-                        metal_ops.elementwise.encode_elementwise_add_batch(
-                            encoder,
-                            &bs.v_buf,
-                            vb_buf,
-                            kv_dim as u32,
-                            nt,
-                        );
-                        ax_metal::barrier_buffers(encoder);
-                    }
-
-                    // ── Phase 1d: RoPE + KV cache append (batched) ──
-                    //
-                    // After bias is applied (above), both bias-present and bias-absent paths
-                    // converge here. The batched qk_norm_rope_batch or rope_batch kernel
-                    // handles all n_tokens in a single dispatch.
+                    // ── Phase 1c+1d: Bias + QK norm + RoPE + KV append ──
                     let (rope_start, rope_step) = match cfg.rope_scaling {
                         crate::model::config::RopeScaling::Linear(f) => {
                             (base_seq_len as f32 / f, 1.0f32 / f)
                         }
                         crate::model::config::RopeScaling::None => (base_seq_len as f32, 1.0f32),
                     };
-
-                    if let (Some(q_norm_key), Some(k_norm_key)) = (lw.attn_q_norm, lw.attn_k_norm) {
-                        // Fused batch kernel: per-head QK norm + RoPE
-                        let q_nw = weight_cache.get(&q_norm_key).unwrap();
-                        let k_nw = weight_cache.get(&k_norm_key).unwrap();
-                        metal_ops.elementwise.encode_qk_norm_rope_batch(
-                            encoder,
-                            &bs.q_buf,
-                            &bs.k_buf,
-                            q_nw,
-                            k_nw,
-                            nt,
-                            n_heads as u32,
-                            n_kv_heads as u32,
-                            head_dim as u32,
-                            eps,
-                            rope_start,
-                            rope_step,
-                            cfg.rope_freq_base,
-                        );
-                    } else {
-                        // No QK norm: batched RoPE only
-                        metal_ops.elementwise.encode_rope_batch(
-                            encoder,
-                            &bs.q_buf,
-                            &bs.k_buf,
-                            nt,
-                            n_heads as u32,
-                            n_kv_heads as u32,
-                            head_dim as u32,
-                            rope_start,
-                            rope_step,
-                            cfg.rope_freq_base,
-                        );
-                    }
-                    ax_metal::barrier_buffers(encoder);
-
                     let cache_offset = (base_seq_len * kv_dim) as u32;
-                    metal_ops.elementwise.encode_kv_append_batch(
-                        encoder,
-                        &bs.k_buf,
-                        gpu_kv.k_buffer(layer),
-                        kv_f16,
-                        cache_offset,
-                        kv_dim as u32,
-                        kv_dim as u32,
-                        nt,
-                    );
-                    metal_ops.elementwise.encode_kv_append_batch(
-                        encoder,
-                        &bs.v_buf,
-                        gpu_kv.v_buffer(layer),
-                        kv_f16,
-                        cache_offset,
-                        kv_dim as u32,
-                        kv_dim as u32,
-                        nt,
-                    );
-                    // Ensure batched q/k writes and KV cache appends are visible to attention.
-                    ax_metal::barrier_buffers(encoder);
+
+                    // Try fused bias+QKnorm+RoPE+append path (1 dispatch instead of 7).
+                    // Requires: fused QKV matmul + QKV bias + QK norm + f32 KV cache.
+                    let use_fused_bias_path = fused_qkv_buf.is_some()
+                        && lw.q_bias.is_some()
+                        && lw.attn_q_norm.is_some()
+                        && !kv_f16;
+                    if use_fused_bias_path {
+                        let qb_buf = weight_cache.get(&lw.q_bias.unwrap()).unwrap();
+                        let kb_buf = weight_cache.get(&lw.k_bias.unwrap()).unwrap();
+                        let vb_buf = weight_cache.get(&lw.v_bias.unwrap()).unwrap();
+                        let q_nw = weight_cache.get(&lw.attn_q_norm.unwrap()).unwrap();
+                        let k_nw = weight_cache.get(&lw.attn_k_norm.unwrap()).unwrap();
+                        metal_ops
+                            .elementwise
+                            .encode_qkv_split_bias_qknorm_rope_append_kv_batch(
+                                encoder,
+                                &bs.qkv_buf,
+                                &bs.q_buf,
+                                &bs.k_buf,
+                                &bs.v_buf,
+                                q_nw,
+                                k_nw,
+                                gpu_kv.k_buffer(layer),
+                                gpu_kv.v_buffer(layer),
+                                qb_buf,
+                                kb_buf,
+                                vb_buf,
+                                nt,
+                                n_heads as u32,
+                                n_kv_heads as u32,
+                                head_dim as u32,
+                                eps,
+                                rope_start,
+                                rope_step,
+                                cfg.rope_freq_base,
+                                cache_offset,
+                                kv_dim as u32,
+                            );
+                        ax_metal::barrier_buffers(encoder);
+                    } else {
+                        // Fallback: separate bias + norm + RoPE + append dispatches.
+                        if let (Some(qb_key), Some(kb_key), Some(vb_key)) =
+                            (lw.q_bias, lw.k_bias, lw.v_bias)
+                        {
+                            let qb_buf = weight_cache.get(&qb_key).unwrap();
+                            let kb_buf = weight_cache.get(&kb_key).unwrap();
+                            let vb_buf = weight_cache.get(&vb_key).unwrap();
+                            metal_ops.elementwise.encode_elementwise_add_batch(
+                                encoder, &bs.q_buf, qb_buf, q_dim as u32, nt,
+                            );
+                            metal_ops.elementwise.encode_elementwise_add_batch(
+                                encoder, &bs.k_buf, kb_buf, kv_dim as u32, nt,
+                            );
+                            metal_ops.elementwise.encode_elementwise_add_batch(
+                                encoder, &bs.v_buf, vb_buf, kv_dim as u32, nt,
+                            );
+                            ax_metal::barrier_buffers(encoder);
+                        }
+
+                        if let (Some(q_norm_key), Some(k_norm_key)) =
+                            (lw.attn_q_norm, lw.attn_k_norm)
+                        {
+                            let q_nw = weight_cache.get(&q_norm_key).unwrap();
+                            let k_nw = weight_cache.get(&k_norm_key).unwrap();
+                            metal_ops.elementwise.encode_qk_norm_rope_batch(
+                                encoder, &bs.q_buf, &bs.k_buf, q_nw, k_nw, nt,
+                                n_heads as u32, n_kv_heads as u32, head_dim as u32,
+                                eps, rope_start, rope_step, cfg.rope_freq_base,
+                            );
+                        } else {
+                            metal_ops.elementwise.encode_rope_batch(
+                                encoder, &bs.q_buf, &bs.k_buf, nt,
+                                n_heads as u32, n_kv_heads as u32, head_dim as u32,
+                                rope_start, rope_step, cfg.rope_freq_base,
+                            );
+                        }
+                        ax_metal::barrier_buffers(encoder);
+
+                        metal_ops.elementwise.encode_kv_append_batch(
+                            encoder, &bs.k_buf, gpu_kv.k_buffer(layer), kv_f16,
+                            cache_offset, kv_dim as u32, kv_dim as u32, nt,
+                        );
+                        metal_ops.elementwise.encode_kv_append_batch(
+                            encoder, &bs.v_buf, gpu_kv.v_buffer(layer), kv_f16,
+                            cache_offset, kv_dim as u32, kv_dim as u32, nt,
+                        );
+                        ax_metal::barrier_buffers(encoder);
+                    }
 
                     // ── Phase 2: Batched attention ──
                     let sliding_window = cfg.sliding_window_size.unwrap_or(0);

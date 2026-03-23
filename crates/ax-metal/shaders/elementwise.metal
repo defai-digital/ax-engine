@@ -1379,6 +1379,118 @@ kernel void qkv_split_qk_norm_rope_append_kv_batch_f32(
     }
 }
 
+// ── QKV split + BIAS + Q/K norm + RoPE + KV append Batch (f32 KV cache) ────
+//
+// Same as qkv_split_qk_norm_rope_append_kv_batch_f32 but applies Q/K/V bias
+// BEFORE norm+RoPE. Fuses 7 dispatches (split, 3 bias, norm+RoPE, 2 KV append)
+// into 1. For Qwen3 which has per-layer QKV bias.
+//
+// Bias is broadcast: q_bias[d] added to every row's Q at dimension d.
+kernel void qkv_split_bias_qknorm_rope_append_kv_batch_f32(
+    device const float* src        [[buffer(0)]],
+    device float* q                [[buffer(1)]],
+    device float* k                [[buffer(2)]],
+    device float* v                [[buffer(3)]],
+    device const float* q_weight   [[buffer(4)]],
+    device const float* k_weight   [[buffer(5)]],
+    device float* cache_k          [[buffer(6)]],
+    device float* cache_v          [[buffer(7)]],
+    device const float* q_bias     [[buffer(8)]],
+    device const float* k_bias     [[buffer(9)]],
+    device const float* v_bias     [[buffer(10)]],
+    constant uint& n_rows          [[buffer(11)]],
+    constant uint& n_q_heads       [[buffer(12)]],
+    constant uint& n_kv_heads      [[buffer(13)]],
+    constant uint& head_dim        [[buffer(14)]],
+    constant float& eps            [[buffer(15)]],
+    constant float& start_pos      [[buffer(16)]],
+    constant float& pos_step       [[buffer(17)]],
+    constant float& freq_base      [[buffer(18)]],
+    constant uint& cache_offset    [[buffer(19)]],
+    constant uint& cache_stride    [[buffer(20)]],
+    uint gid                       [[thread_position_in_grid]]
+) {
+    uint half_dim = head_dim / 2;
+    uint q_dim = n_q_heads * head_dim;
+    uint kv_dim = n_kv_heads * head_dim;
+    uint fused_dim = q_dim + 2 * kv_dim;
+    uint q_pairs = n_q_heads * half_dim;
+    uint k_pairs = n_kv_heads * half_dim;
+    uint items_per_row = q_pairs + k_pairs + kv_dim;
+    uint total = n_rows * items_per_row;
+    if (gid >= total) return;
+
+    uint row = gid / items_per_row;
+    uint local = gid % items_per_row;
+    float position = start_pos + float(row) * pos_step;
+    uint cache_row_base = cache_offset + row * cache_stride;
+    uint src_row_base = row * fused_dim;
+    uint q_row_base = row * q_dim;
+    uint kv_row_base = row * kv_dim;
+
+    if (local < q_pairs) {
+        // Q path: split + bias + per-head norm + RoPE
+        uint head = local / half_dim;
+        uint i = local % half_dim;
+        uint head_base = src_row_base + head * head_dim;
+        // Per-head RMSNorm with bias applied first
+        float sum_sq = 0.0f;
+        for (uint j = 0; j < head_dim; ++j) {
+            float vv = src[head_base + j] + q_bias[head * head_dim + j];
+            sum_sq += vv * vv;
+        }
+        float inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
+        uint src_base = head_base + 2 * i;
+        uint dst_base = q_row_base + head * head_dim + 2 * i;
+        float v0 = (src[src_base] + q_bias[head * head_dim + 2 * i]) * inv_rms * q_weight[2 * i];
+        float v1 = (src[src_base + 1] + q_bias[head * head_dim + 2 * i + 1]) * inv_rms * q_weight[2 * i + 1];
+        float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
+        float theta = position * freq;
+        float cos_t = cos(theta);
+        float sin_t = sin(theta);
+        q[dst_base] = v0 * cos_t - v1 * sin_t;
+        q[dst_base + 1] = v0 * sin_t + v1 * cos_t;
+        return;
+    }
+
+    uint k_start = q_pairs;
+    uint v_start = q_pairs + k_pairs;
+    if (local < v_start) {
+        // K path: split + bias + per-head norm + RoPE + KV cache append
+        uint k_local = local - k_start;
+        uint head = k_local / half_dim;
+        uint i = k_local % half_dim;
+        uint head_base = src_row_base + q_dim + head * head_dim;
+        float sum_sq = 0.0f;
+        for (uint j = 0; j < head_dim; ++j) {
+            float vv = src[head_base + j] + k_bias[head * head_dim + j];
+            sum_sq += vv * vv;
+        }
+        float inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
+        uint src_base = head_base + 2 * i;
+        uint dst_base = kv_row_base + head * head_dim + 2 * i;
+        float v0 = (src[src_base] + k_bias[head * head_dim + 2 * i]) * inv_rms * k_weight[2 * i];
+        float v1 = (src[src_base + 1] + k_bias[head * head_dim + 2 * i + 1]) * inv_rms * k_weight[2 * i + 1];
+        float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
+        float theta = position * freq;
+        float cos_t = cos(theta);
+        float sin_t = sin(theta);
+        float rk0 = v0 * cos_t - v1 * sin_t;
+        float rk1 = v0 * sin_t + v1 * cos_t;
+        k[dst_base] = rk0;
+        k[dst_base + 1] = rk1;
+        uint cache_k_off = head * head_dim + 2 * i;
+        cache_k[cache_row_base + cache_k_off] = rk0;
+        cache_k[cache_row_base + cache_k_off + 1] = rk1;
+    } else {
+        // V path: split + bias + KV cache append (no norm or RoPE for V)
+        uint vc = local - v_start;
+        float vv = src[src_row_base + q_dim + kv_dim + vc] + v_bias[vc];
+        v[kv_row_base + vc] = vv;
+        cache_v[cache_row_base + vc] = vv;
+    }
+}
+
 // ── QKV split + Q/K norm + RoPE + KV append Batch (f16 KV cache) ───────────
 kernel void qkv_split_qk_norm_rope_append_kv_batch_f16(
     device const float* src        [[buffer(0)]],

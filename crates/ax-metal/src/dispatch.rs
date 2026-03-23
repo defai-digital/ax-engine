@@ -5031,6 +5031,8 @@ pub struct ElementwiseKernels {
     qk_norm_rope_batch: ComputePipeline,
     qkv_split_qk_norm_rope_append_kv_batch_f32: ComputePipeline,
     qkv_split_qk_norm_rope_append_kv_batch_f16: ComputePipeline,
+    /// Fused: QKV split + bias + QK norm + RoPE + KV append (Qwen3 with QKV bias).
+    qkv_split_bias_qknorm_rope_append_kv_batch_f32: ComputePipeline,
     gelu_elementwise_mul: ComputePipeline,
     gelu_elementwise_mul_batch: ComputePipeline,
     gelu_inplace: ComputePipeline,
@@ -5141,6 +5143,12 @@ impl ElementwiseKernels {
             "qkv_split_qk_norm_rope_append_kv_batch_f16",
         )
         .context("Failed to compile qkv_split_qk_norm_rope_append_kv_batch_f16 kernel")?;
+        let qkv_split_bias_qknorm_rope_append_kv_batch_f32 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "qkv_split_bias_qknorm_rope_append_kv_batch_f32",
+        )
+        .context("Failed to compile qkv_split_bias_qknorm_rope_append_kv_batch_f32 kernel")?;
 
         let gelu_elementwise_mul = ComputePipeline::from_source(
             device.device(),
@@ -5284,6 +5292,7 @@ impl ElementwiseKernels {
             qk_norm_rope_batch,
             qkv_split_qk_norm_rope_append_kv_batch_f32,
             qkv_split_qk_norm_rope_append_kv_batch_f16,
+            qkv_split_bias_qknorm_rope_append_kv_batch_f32,
             gelu_elementwise_mul,
             gelu_elementwise_mul_batch,
             gelu_inplace,
@@ -5801,6 +5810,75 @@ impl ElementwiseKernels {
         bind_f32(encoder, 15, freq_base);
         bind_u32(encoder, 16, cache_offset);
         bind_u32(encoder, 17, cache_stride);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Encode fused QKV split + bias + QK norm + RoPE + KV cache append (Qwen3).
+    ///
+    /// Combines 7 dispatches (split, 3 bias, norm+RoPE, 2 KV append) into 1.
+    /// `src` is the fused QKV output `[n_rows × (q_dim + 2*kv_dim)]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_qkv_split_bias_qknorm_rope_append_kv_batch(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src: &MetalBuffer,
+        q: &MetalBuffer,
+        k: &MetalBuffer,
+        v: &MetalBuffer,
+        q_weight: &MetalBuffer,
+        k_weight: &MetalBuffer,
+        cache_k: &MetalBuffer,
+        cache_v: &MetalBuffer,
+        q_bias: &MetalBuffer,
+        k_bias: &MetalBuffer,
+        v_bias: &MetalBuffer,
+        n_rows: u32,
+        n_q_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        eps: f32,
+        start_pos: f32,
+        pos_step: f32,
+        freq_base: f32,
+        cache_offset: u32,
+        cache_stride: u32,
+    ) {
+        let half_dim = head_dim / 2;
+        let q_pairs = n_q_heads * half_dim;
+        let k_pairs = n_kv_heads * half_dim;
+        let kv_dim = n_kv_heads * head_dim;
+        let items_per_row = q_pairs + k_pairs + kv_dim;
+        let total = (n_rows as usize) * (items_per_row as usize);
+        let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(
+            self.qkv_split_bias_qknorm_rope_append_kv_batch_f32.state(),
+        );
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(k.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(v.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(q_weight.mtl_buffer()), 0, 4);
+            encoder.setBuffer_offset_atIndex(Some(k_weight.mtl_buffer()), 0, 5);
+            encoder.setBuffer_offset_atIndex(Some(cache_k.mtl_buffer()), 0, 6);
+            encoder.setBuffer_offset_atIndex(Some(cache_v.mtl_buffer()), 0, 7);
+            encoder.setBuffer_offset_atIndex(Some(q_bias.mtl_buffer()), 0, 8);
+            encoder.setBuffer_offset_atIndex(Some(k_bias.mtl_buffer()), 0, 9);
+            encoder.setBuffer_offset_atIndex(Some(v_bias.mtl_buffer()), 0, 10);
+        }
+        bind_u32(encoder, 11, n_rows);
+        bind_u32(encoder, 12, n_q_heads);
+        bind_u32(encoder, 13, n_kv_heads);
+        bind_u32(encoder, 14, head_dim);
+        bind_f32(encoder, 15, eps);
+        bind_f32(encoder, 16, start_pos);
+        bind_f32(encoder, 17, pos_step);
+        bind_f32(encoder, 18, freq_base);
+        bind_u32(encoder, 19, cache_offset);
+        bind_u32(encoder, 20, cache_stride);
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             dims.threadgroups,
             dims.threads_per_threadgroup,
