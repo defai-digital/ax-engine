@@ -1093,6 +1093,25 @@ impl LlamaForward {
             metal_ops.device.execute_sync(|encoder| {
                 let nt = n_tokens as u32;
 
+                // First layer's Phase 1a: RMSNorm (standalone, before loop).
+                // Subsequent layers' Phase 1a is fused with the previous layer's
+                // Phase 3f residual add (saves 1 dispatch + 1 barrier per layer).
+                {
+                    let norm_w_buf = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
+                    if use_f16_batch_io {
+                        metal_ops.elementwise.encode_rms_norm_out_batch_f16(
+                            encoder, &bs.hidden, norm_w_buf, &bs.matmul_in_f16,
+                            dim as u32, nt, eps,
+                        );
+                    } else {
+                        metal_ops.elementwise.encode_rms_norm_out_batch(
+                            encoder, &bs.hidden, norm_w_buf, &bs.norm_buf,
+                            dim as u32, nt, eps,
+                        );
+                    }
+                    ax_metal::barrier_buffers(encoder);
+                }
+
                 for layer in 0..n_layers {
                     let lw = &cached.layers[layer];
                     let (rope_start, rope_step) = match cfg.rope_scaling {
@@ -1104,7 +1123,6 @@ impl LlamaForward {
                     let mut rope_done = false;
                     let mut kv_appended = false;
 
-                    let norm_w_buf = weight_cache.get(&lw.attn_norm).unwrap();
                     let wq_buf = weight_cache.get(&lw.wq).unwrap();
                     let wk_buf = weight_cache.get(&lw.wk).unwrap();
                     let wv_buf = weight_cache.get(&lw.wv).unwrap();
@@ -1119,29 +1137,9 @@ impl LlamaForward {
                         None
                     };
 
-                    // ── Phase 1a: Batched RMSNorm hidden[N×dim] -> norm[N×dim] ──
-                    if use_f16_batch_io {
-                        metal_ops.elementwise.encode_rms_norm_out_batch_f16(
-                            encoder,
-                            &bs.hidden,
-                            norm_w_buf,
-                            &bs.matmul_in_f16,
-                            dim as u32,
-                            nt,
-                            eps,
-                        );
-                    } else {
-                        metal_ops.elementwise.encode_rms_norm_out_batch(
-                            encoder,
-                            &bs.hidden,
-                            norm_w_buf,
-                            &bs.norm_buf,
-                            dim as u32,
-                            nt,
-                            eps,
-                        );
-                    }
-                    ax_metal::barrier_buffers(encoder);
+                    // Phase 1a (RMSNorm) is done before loop for layer 0, and
+                    // fused with previous layer's Phase 3f for layers 1+.
+                    // norm_buf / matmul_in_f16 is already populated.
 
                     // ── Phase 1b: Batched QKV matmul ──
                     if let Some(fused_w) = fused_qkv_buf {
@@ -1593,14 +1591,50 @@ impl LlamaForward {
                     }
                     ax_metal::barrier_buffers(encoder);
 
-                    // ── Phase 3f: Batched residual ──
-                    metal_ops.elementwise.encode_elementwise_add_batch(
-                        encoder,
-                        &bs.hidden,
-                        &bs.proj_buf,
-                        dim as u32,
-                        nt,
-                    );
+                    // ── Phase 3f: Batched residual (+ next layer's norm if not last) ──
+                    if layer + 1 < n_layers {
+                        // Fuse residual add with next layer's Phase 1a RMSNorm.
+                        // hidden += proj_buf; norm_buf = RMSNorm(hidden, next_attn_norm)
+                        let next_norm_w = weight_cache
+                            .get(&cached.layers[layer + 1].attn_norm)
+                            .unwrap();
+                        if use_f16_batch_io {
+                            metal_ops
+                                .elementwise
+                                .encode_residual_add_rms_norm_out_batch_f16(
+                                    encoder,
+                                    &bs.hidden,
+                                    &bs.proj_buf,
+                                    next_norm_w,
+                                    &bs.matmul_in_f16,
+                                    dim as u32,
+                                    nt,
+                                    eps,
+                                );
+                        } else {
+                            metal_ops
+                                .elementwise
+                                .encode_residual_add_rms_norm_out_batch(
+                                    encoder,
+                                    &bs.hidden,
+                                    &bs.proj_buf,
+                                    next_norm_w,
+                                    &bs.norm_buf,
+                                    dim as u32,
+                                    nt,
+                                    eps,
+                                );
+                        }
+                    } else {
+                        // Last layer: standalone residual (no norm needed for logits path).
+                        metal_ops.elementwise.encode_elementwise_add_batch(
+                            encoder,
+                            &bs.hidden,
+                            &bs.proj_buf,
+                            dim as u32,
+                            nt,
+                        );
+                    }
                     ax_metal::barrier_buffers(encoder);
                 }
 
