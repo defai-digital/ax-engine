@@ -4,7 +4,7 @@ use std::time::Duration;
 use crate::kv::ModelKv;
 use crate::metrics::counters::OpTimer;
 use crate::model::{LlamaModel, WeightStore};
-use crate::sampling::Sampler;
+use crate::sampling::{SampledTokenInfo, Sampler};
 use crate::tokenizer::Tokenizer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +50,7 @@ pub struct DecodeSelection {
 pub struct DecodeRunConfig {
     pub intent: DecodeIntent,
     pub allow_pipelined: bool,
+    pub top_logprobs: usize,
 }
 
 impl Default for DecodeRunConfig {
@@ -57,6 +58,7 @@ impl Default for DecodeRunConfig {
         Self {
             intent: DecodeIntent::Throughput,
             allow_pipelined: true,
+            top_logprobs: 0,
         }
     }
 }
@@ -122,13 +124,14 @@ pub fn run_decode<F>(
     sampler: &mut Sampler,
     history: &mut Vec<u32>,
     first_token: u32,
+    first_token_info: Option<SampledTokenInfo>,
     position: usize,
     max_tokens: usize,
     config: DecodeRunConfig,
     on_token: F,
 ) -> anyhow::Result<DecodeRunResult>
 where
-    F: FnMut(u32) -> anyhow::Result<()>,
+    F: FnMut(u32, Option<&SampledTokenInfo>) -> anyhow::Result<()>,
 {
     let selection = select_decode_mode(model, kv, config.intent, config.allow_pipelined);
     match selection.mode {
@@ -140,8 +143,10 @@ where
             sampler,
             history,
             first_token,
+            first_token_info,
             position,
             max_tokens,
+            config.top_logprobs,
             selection,
             on_token,
         ),
@@ -153,8 +158,10 @@ where
             sampler,
             history,
             first_token,
+            first_token_info,
             position,
             max_tokens,
+            config.top_logprobs,
             selection,
             on_token,
         ),
@@ -170,16 +177,19 @@ fn run_sequential_decode<F>(
     sampler: &mut Sampler,
     history: &mut Vec<u32>,
     first_token: u32,
+    first_token_info: Option<SampledTokenInfo>,
     mut position: usize,
     max_tokens: usize,
+    top_logprobs: usize,
     selection: DecodeSelection,
     mut on_token: F,
 ) -> anyhow::Result<DecodeRunResult>
 where
-    F: FnMut(u32) -> anyhow::Result<()>,
+    F: FnMut(u32, Option<&SampledTokenInfo>) -> anyhow::Result<()>,
 {
     let mut logits = vec![0.0f32; model.config.vocab_size as usize];
     let mut next_token = first_token;
+    let mut next_token_info = first_token_info;
     let mut generated_tokens = 0u64;
     let mut latencies = Vec::new();
     let decode_timer = OpTimer::start();
@@ -189,7 +199,7 @@ where
             break;
         }
 
-        on_token(next_token)?;
+        on_token(next_token, next_token_info.as_ref())?;
         history.push(next_token);
         generated_tokens += 1;
 
@@ -202,7 +212,14 @@ where
         }
         position += 1;
 
-        next_token = sampler.sample(&mut logits, history);
+        if top_logprobs > 0 {
+            let sampled = sampler.sample_with_logprobs(&mut logits, history, top_logprobs);
+            next_token = sampled.token;
+            next_token_info = Some(sampled);
+        } else {
+            next_token = sampler.sample(&mut logits, history);
+            next_token_info = None;
+        }
     }
 
     Ok(DecodeRunResult {
@@ -222,13 +239,15 @@ fn run_pipelined_decode<F>(
     sampler: &mut Sampler,
     history: &mut Vec<u32>,
     first_token: u32,
+    first_token_info: Option<SampledTokenInfo>,
     start_position: usize,
     max_tokens: usize,
+    top_logprobs: usize,
     selection: DecodeSelection,
     mut on_token: F,
 ) -> anyhow::Result<DecodeRunResult>
 where
-    F: FnMut(u32) -> anyhow::Result<()>,
+    F: FnMut(u32, Option<&SampledTokenInfo>) -> anyhow::Result<()>,
 {
     if tokenizer.is_eos(first_token) || max_tokens == 0 {
         return Ok(DecodeRunResult {
@@ -252,6 +271,7 @@ where
     let mut logits = vec![0.0f32; model.config.vocab_size as usize];
     let mut position = start_position;
     let mut next_token = first_token;
+    let mut next_token_info = first_token_info;
     let mut generated_tokens = 0u64;
     let decode_timer = OpTimer::start();
 
@@ -280,9 +300,17 @@ where
         model.advance_gpu_kv_token(kv);
 
         model.read_gpu_logits(&mut logits)?;
-        let sampled = sampler.sample(&mut logits, history);
+        let sampled_info = if top_logprobs > 0 {
+            Some(sampler.sample_with_logprobs(&mut logits, history, top_logprobs))
+        } else {
+            None
+        };
+        let sampled = sampled_info
+            .as_ref()
+            .map(|info| info.token)
+            .unwrap_or_else(|| sampler.sample(&mut logits, history));
 
-        on_token(next_token)?;
+        on_token(next_token, next_token_info.as_ref())?;
         history.push(next_token);
         generated_tokens += 1;
 
@@ -298,6 +326,7 @@ where
         inflight = Some(metal_dev.commit_frame(pending_next));
 
         next_token = sampled;
+        next_token_info = sampled_info;
         position = next_position;
         std::mem::swap(&mut hidden_a, &mut hidden_b);
     }

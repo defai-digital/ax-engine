@@ -46,6 +46,10 @@ pub struct CliArgs {
     #[arg(long = "min-keep", default_value_t = 1)]
     pub min_keep: usize,
 
+    /// Number of top candidate logprobs to capture per generated token
+    #[arg(long = "top-logprobs", default_value_t = 0)]
+    pub top_logprobs: usize,
+
     /// Random seed (-1 = random)
     #[arg(long = "seed", default_value_t = -1)]
     pub seed: i64,

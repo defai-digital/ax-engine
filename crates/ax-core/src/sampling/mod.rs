@@ -293,7 +293,7 @@ fn apply_penalties_and_filters_with_scratch(
     scratch_probs: &mut Vec<f32>,
     scratch_indices: &mut Vec<usize>,
 ) {
-    if config.repeat_penalty != 1.0 && !recent_tokens.is_empty() {
+    if config.repeat_penalty != 1.0 && !recent_tokens.is_empty() && config.repeat_last_n != 0 {
         let window = if config.repeat_last_n > 0 {
             let start = recent_tokens
                 .len()
@@ -843,6 +843,19 @@ mod tests {
         };
         let mut logits = [1.0, 5.0, 4.0];
         let token = sample_token(&mut logits, &config, &[1, 2]);
+        assert_eq!(token, 1);
+    }
+
+    #[test]
+    fn test_repeat_last_n_zero_disables_repetition_penalty() {
+        let config = SamplingConfig {
+            temperature: 0.0,
+            repeat_penalty: 2.0,
+            repeat_last_n: 0,
+            ..Default::default()
+        };
+        let mut logits = [1.0, 5.0, 4.0];
+        let token = sample_token(&mut logits, &config, &[1]);
         assert_eq!(token, 1);
     }
 

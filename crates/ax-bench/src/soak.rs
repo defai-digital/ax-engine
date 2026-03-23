@@ -297,13 +297,15 @@ fn run_one_iteration(
         sampler,
         &mut history,
         first_token,
+        None,
         position,
         max_tokens,
         DecodeRunConfig {
             intent: DecodeIntent::Throughput,
             allow_pipelined: true,
+            top_logprobs: 0,
         },
-        |_tok| Ok(()),
+        |_tok, _info| Ok(()),
     )?;
 
     Ok(outcome.generated_tokens)
@@ -337,13 +339,15 @@ fn run_timed_iteration(
         sampler,
         &mut history,
         first_token,
+        None,
         position,
         max_tokens,
         DecodeRunConfig {
             intent: DecodeIntent::Latency,
             allow_pipelined: true,
+            top_logprobs: 0,
         },
-        |_tok| Ok(()),
+        |_tok, _info| Ok(()),
     )?;
     for sample in outcome.latencies {
         latency.record(sample);

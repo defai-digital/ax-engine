@@ -16,7 +16,7 @@ use ax_core::metrics::{InferenceMetrics, LatencyHistogram, current_rss_bytes};
 use ax_core::model::{
     DecodeIntent, DecodeRunConfig, LlamaModel, ModelConfig, WeightStore, run_decode,
 };
-use ax_core::sampling::{Sampler, SamplingConfig};
+use ax_core::sampling::{SampledTokenInfo, Sampler, SamplingConfig};
 use ax_core::speculative::{SpecStep, SpeculativeDecoder};
 use ax_core::tokenizer::Tokenizer;
 
@@ -168,6 +168,32 @@ fn sampling_config(args: &args::CliArgs) -> SamplingConfig {
     }
 }
 
+pub(crate) fn print_top_logprobs(
+    tokenizer: &Tokenizer,
+    infos: &[SampledTokenInfo],
+) -> anyhow::Result<()> {
+    let out = infos
+        .iter()
+        .map(|info| {
+            json!({
+                "token": info.token,
+                "text": tokenizer.render_token(info.token),
+                "logprob": info.logprob,
+                "top_logprobs": info.top_logprobs.iter().map(|candidate| {
+                    json!({
+                        "token": candidate.token,
+                        "text": tokenizer.render_token(candidate.token),
+                        "logprob": candidate.logprob,
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    eprintln!("--- Top Logprobs ---");
+    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
 /// Run single-prompt generation.
 fn run_single(
     args: &args::CliArgs,
@@ -231,6 +257,9 @@ fn run_single(
 
     // --- Speculative decoding path (if --speculative-draft provided) ---
     if let Some(ref draft_path) = args.speculative_draft {
+        if args.top_logprobs > 0 {
+            anyhow::bail!("--top-logprobs is not supported with speculative decoding");
+        }
         return run_speculative(
             args,
             draft_path,
@@ -294,7 +323,16 @@ fn run_single(
     dump_top_logits(&logits, "prefill", vocab_size, &tokenizer);
 
     // Sample first token from last prefill logits
-    let first_decode_token = sampler.sample(&mut logits, &all_tokens);
+    let first_decode_info = if args.top_logprobs > 0 {
+        Some(sampler.sample_with_logprobs(&mut logits, &all_tokens, args.top_logprobs))
+    } else {
+        None
+    };
+    let first_decode_token = first_decode_info
+        .as_ref()
+        .map(|info| info.token)
+        .unwrap_or_else(|| sampler.sample(&mut logits, &all_tokens));
+    let mut sampled_infos = Vec::new();
 
     let mut decode_selection = None;
     let stdout = std::io::stdout();
@@ -303,6 +341,7 @@ fn run_single(
     if debug_logits {
         let decode_timer = OpTimer::start();
         let mut next_token = first_decode_token;
+        let mut next_token_info = first_decode_info;
         let mut position = n_prompt;
         let mut n_generated = 0u64;
 
@@ -314,6 +353,9 @@ fn run_single(
 
             // Print token text
             stream.push_token(&tokenizer, next_token)?;
+            if let Some(info) = next_token_info.as_ref() {
+                sampled_infos.push(info.clone());
+            }
 
             all_tokens.push(next_token);
             n_generated += 1;
@@ -333,7 +375,15 @@ fn run_single(
             );
 
             // Sample next token
-            next_token = sampler.sample(&mut logits, &all_tokens);
+            if args.top_logprobs > 0 {
+                let info =
+                    sampler.sample_with_logprobs(&mut logits, &all_tokens, args.top_logprobs);
+                next_token = info.token;
+                next_token_info = Some(info);
+            } else {
+                next_token = sampler.sample(&mut logits, &all_tokens);
+                next_token_info = None;
+            }
         }
         metrics.decode_tokens = n_generated;
         metrics.decode_duration = decode_timer.elapsed();
@@ -346,16 +396,22 @@ fn run_single(
             &mut sampler,
             &mut all_tokens,
             first_decode_token,
+            first_decode_info,
             n_prompt,
             max_tokens,
             DecodeRunConfig {
                 intent: DecodeIntent::Throughput,
                 allow_pipelined: true,
+                top_logprobs: args.top_logprobs,
             },
-            |tok| {
+            |tok, info| {
                 stream
                     .push_token(&tokenizer, tok)
-                    .map_err(anyhow::Error::from)
+                    .map_err(anyhow::Error::from)?;
+                if let Some(info) = info {
+                    sampled_infos.push(info.clone());
+                }
+                Ok(())
             },
         )?;
         for sample in outcome.latencies {
@@ -369,6 +425,10 @@ fn run_single(
     metrics.update_peak_rss();
 
     println!(); // final newline
+
+    if args.top_logprobs > 0 {
+        print_top_logprobs(&tokenizer, &sampled_infos)?;
+    }
 
     // Print metrics
     if args.verbose {

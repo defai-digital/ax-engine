@@ -112,7 +112,16 @@ pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyho
 
         // Generate response (limit to remaining context capacity)
         let max_tokens = user_max_tokens.min(context_length.saturating_sub(position));
-        let next_token = sampler.sample(&mut logits, &all_tokens);
+        let first_token_info = if args.top_logprobs > 0 {
+            Some(sampler.sample_with_logprobs(&mut logits, &all_tokens, args.top_logprobs))
+        } else {
+            None
+        };
+        let next_token = first_token_info
+            .as_ref()
+            .map(|info| info.token)
+            .unwrap_or_else(|| sampler.sample(&mut logits, &all_tokens));
+        let mut sampled_infos = Vec::new();
         let outcome = run_decode(
             &model,
             &weights,
@@ -121,16 +130,22 @@ pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyho
             &mut sampler,
             &mut all_tokens,
             next_token,
+            first_token_info,
             position,
             max_tokens,
             DecodeRunConfig {
                 intent: DecodeIntent::Throughput,
                 allow_pipelined: true,
+                top_logprobs: args.top_logprobs,
             },
-            |tok| {
+            |tok, info| {
                 stream
                     .push_token(&tokenizer, tok)
-                    .map_err(anyhow::Error::from)
+                    .map_err(anyhow::Error::from)?;
+                if let Some(info) = info {
+                    sampled_infos.push(info.clone());
+                }
+                Ok(())
             },
         )?;
         stream.flush()?;
@@ -142,6 +157,10 @@ pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyho
         position += gen_count as usize;
 
         println!(); // newline after generation
+
+        if args.top_logprobs > 0 {
+            crate::print_top_logprobs(&tokenizer, &sampled_infos)?;
+        }
 
         if args.verbose {
             let tok_per_sec = if decode_time.as_secs_f64() > 0.0 {

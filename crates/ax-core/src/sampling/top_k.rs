@@ -27,6 +27,9 @@ pub(crate) fn apply_top_k_with_scratch(
         return;
     }
     let k = (k as usize).max(min_keep.min(n));
+    if k >= n {
+        return;
+    }
 
     scratch.clear();
     // Reserve without zeroing; extend fills exactly n elements.
@@ -108,5 +111,15 @@ mod tests {
         apply_top_k_with_scratch(&mut logits, 1, 2, &mut scratch);
         let finite_count = logits.iter().filter(|v| v.is_finite()).count();
         assert_eq!(finite_count, 2);
+    }
+
+    #[test]
+    fn test_top_k_min_keep_equal_vocab_is_noop() {
+        let mut logits = [5.0, 4.0, 3.0, 2.0];
+        let original = logits;
+        let len = logits.len();
+        let mut scratch = Vec::new();
+        apply_top_k_with_scratch(&mut logits, 1, len, &mut scratch);
+        assert_eq!(logits, original);
     }
 }

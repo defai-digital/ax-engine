@@ -685,13 +685,15 @@ fn run_single_bench(
         &mut sampler,
         &mut history,
         first_token,
+        None,
         prompt_tokens.len(),
         decode_count,
         DecodeRunConfig {
             intent,
             allow_pipelined: true,
+            top_logprobs: 0,
         },
-        |_tok| Ok(()),
+        |_tok, _info| Ok(()),
     )?;
     let decode_dur = decode.decode_duration;
     let decode_counters = ax_core::backend::metal::read_metal_perf_counters();
