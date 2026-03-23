@@ -6,6 +6,7 @@
 compile_error!("ax-engine only supports aarch64-apple-darwin (Apple Silicon M3+)");
 
 pub mod backend;
+pub mod chat;
 pub mod compute;
 pub mod gguf;
 pub mod kv;

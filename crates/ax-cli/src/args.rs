@@ -46,6 +46,14 @@ pub struct CliArgs {
     #[arg(long = "repeat-penalty", default_value_t = 1.0)]
     pub repeat_penalty: f32,
 
+    /// Penalize tokens in proportion to the number of prior occurrences.
+    #[arg(long = "frequency-penalty", default_value_t = 0.0)]
+    pub frequency_penalty: f32,
+
+    /// Penalize tokens that have appeared at least once.
+    #[arg(long = "presence-penalty", default_value_t = 0.0)]
+    pub presence_penalty: f32,
+
     /// Interactive mode (multi-turn REPL)
     #[arg(long = "interactive")]
     pub interactive: bool,

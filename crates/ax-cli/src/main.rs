@@ -9,6 +9,7 @@ use std::path::Path;
 use clap::Parser;
 use serde_json::json;
 
+use ax_core::chat::render_user_prompt;
 use ax_core::gguf::MappedModel;
 use ax_core::metrics::counters::OpTimer;
 use ax_core::metrics::{InferenceMetrics, LatencyHistogram, current_rss_bytes};
@@ -154,89 +155,14 @@ fn sampling_config(args: &args::CliArgs) -> SamplingConfig {
         top_k: args.top_k,
         top_p: args.top_p,
         repeat_penalty: args.repeat_penalty,
+        frequency_penalty: args.frequency_penalty,
+        presence_penalty: args.presence_penalty,
         repeat_last_n: 64,
         seed: if args.seed < 0 {
             u64::MAX
         } else {
             args.seed as u64
         },
-    }
-}
-
-/// Wrap a user prompt in a chat template based on model architecture.
-///
-/// Returns the wrapped prompt string with special tokens that the tokenizer
-/// will recognize as single tokens (e.g. `<start_of_turn>` → token 105).
-pub(crate) fn apply_chat_template(prompt: &str, architecture: &str) -> String {
-    match architecture {
-        "gemma3" | "gemma2" | "gemma" => {
-            // Gemma3 chat template: <start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n
-            // BOS is added automatically by tokenizer (add_bos=true)
-            format!("<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n")
-        }
-        "llama" => {
-            // LLaMA 3.x Instruct chat template
-            format!(
-                "<|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-            )
-        }
-        "qwen3" | "qwen2" => {
-            // Qwen chat template
-            format!("<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n")
-        }
-        "phi3" => {
-            // Phi-3 Instruct chat template
-            format!("<|user|>\n{prompt}<|end|>\n<|assistant|>\n")
-        }
-        "falcon" => {
-            // Falcon Instruct chat template
-            format!("User: {prompt}\nAssistant:")
-        }
-        "mistral" | "mixtral" => {
-            // Mistral/Mixtral Instruct chat template
-            format!("[INST] {prompt} [/INST]")
-        }
-        "chatglm" | "glm4" | "glm" => {
-            // GLM-4 chat template
-            format!("<|user|>\n{prompt}<|assistant|>")
-        }
-        _ => {
-            // Generic fallback — just use the raw prompt
-            eprintln!(
-                "Warning: no chat template for architecture '{architecture}', using raw prompt"
-            );
-            prompt.to_string()
-        }
-    }
-}
-
-/// Wrap a user prompt for the next turn in interactive chat mode.
-pub(crate) fn apply_chat_template_turn(prompt: &str, architecture: &str) -> String {
-    match architecture {
-        "gemma3" | "gemma2" | "gemma" => {
-            format!("\n<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n")
-        }
-        "llama" => {
-            format!(
-                "<|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-            )
-        }
-        "qwen3" | "qwen2" => {
-            format!("<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n")
-        }
-        "phi3" => {
-            format!("<|user|>\n{prompt}<|end|>\n<|assistant|>\n")
-        }
-        "falcon" => {
-            format!("\nUser: {prompt}\nAssistant:")
-        }
-        "mistral" | "mixtral" => {
-            format!("[INST] {prompt} [/INST]")
-        }
-        "chatglm" | "glm4" | "glm" => {
-            format!("<|user|>\n{prompt}<|assistant|>")
-        }
-        _ => prompt.to_string(),
     }
 }
 
@@ -264,7 +190,7 @@ fn run_single(
     // Apply chat template if requested
     let effective_prompt = if args.chat {
         let arch = model.arch_name();
-        let wrapped = apply_chat_template(prompt, arch);
+        let wrapped = render_user_prompt(prompt, arch);
         if args.verbose {
             eprintln!("Chat template applied ({arch}): {:?}", wrapped);
         }

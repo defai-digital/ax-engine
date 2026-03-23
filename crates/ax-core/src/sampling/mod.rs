@@ -2,17 +2,21 @@
 //!
 //! Sampling pipeline (matches llama.cpp order):
 //!   1. Repetition penalty
-//!   2. Temperature scaling
-//!   3. Top-k filtering
-//!   4. Top-p (nucleus) filtering
-//!   5. Softmax to probabilities
-//!   6. Weighted random selection (or argmax if temperature = 0)
+//!   2. Presence/frequency penalties
+//!   3. Temperature scaling
+//!   4. Top-k filtering
+//!   5. Top-p (nucleus) filtering
+//!   6. Softmax to probabilities
+//!   7. Weighted random selection (or argmax if temperature = 0)
 
 pub mod grammar;
+pub mod penalties;
 pub mod repetition;
 pub mod temperature;
 pub mod top_k;
 pub mod top_p;
+
+use std::collections::HashMap;
 
 use crate::compute::softmax;
 
@@ -23,6 +27,8 @@ pub struct SamplingConfig {
     pub top_k: i32,
     pub top_p: f32,
     pub repeat_penalty: f32,
+    pub frequency_penalty: f32,
+    pub presence_penalty: f32,
     pub repeat_last_n: i32,
     pub seed: u64,
 }
@@ -34,6 +40,8 @@ impl Default for SamplingConfig {
             top_k: 40,
             top_p: 0.9,
             repeat_penalty: 1.0,
+            frequency_penalty: 0.0,
+            presence_penalty: 0.0,
             repeat_last_n: 64,
             seed: u64::MAX, // random
         }
@@ -48,6 +56,8 @@ pub struct Sampler {
     scratch_probs: Vec<f32>,
     /// Scratch buffer for top-k / top-p index sort — avoids per-token heap allocation.
     scratch_indices: Vec<usize>,
+    /// Scratch map for presence/frequency penalties.
+    scratch_counts: HashMap<u32, u32>,
 }
 
 impl Sampler {
@@ -67,6 +77,7 @@ impl Sampler {
             rng_state: seed,
             scratch_probs: Vec::new(),
             scratch_indices: Vec::new(),
+            scratch_counts: HashMap::new(),
         }
     }
 
@@ -92,18 +103,27 @@ impl Sampler {
             repetition::apply_repetition_penalty(logits, window, self.config.repeat_penalty);
         }
 
-        // 2. Greedy (temperature = 0): just return argmax
+        // 2. OpenAI-style penalties over the full generated history.
+        penalties::apply_presence_frequency_penalties_with_counts(
+            logits,
+            recent_tokens,
+            self.config.presence_penalty,
+            self.config.frequency_penalty,
+            &mut self.scratch_counts,
+        );
+
+        // 3. Greedy (temperature = 0): just return argmax
         if self.config.temperature == 0.0 {
             return argmax(logits);
         }
 
-        // 3. Temperature scaling
+        // 4. Temperature scaling
         temperature::apply_temperature(logits, self.config.temperature);
 
-        // 4. Top-k filtering (reuses scratch_indices)
+        // 5. Top-k filtering (reuses scratch_indices)
         top_k::apply_top_k_with_scratch(logits, self.config.top_k, &mut self.scratch_indices);
 
-        // 5. Top-p filtering (reuses scratch_probs + scratch_indices)
+        // 6. Top-p filtering (reuses scratch_probs + scratch_indices)
         top_p::apply_top_p_with_scratch(
             logits,
             self.config.top_p,
@@ -111,7 +131,7 @@ impl Sampler {
             &mut self.scratch_indices,
         );
 
-        // 6. Softmax + categorical sampling over the surviving candidate set.
+        // 7. Softmax + categorical sampling over the surviving candidate set.
         sample_filtered_logits_with_scratch(
             logits,
             &mut self.scratch_probs,
@@ -175,21 +195,28 @@ fn sample_token_with_rng(
         repetition::apply_repetition_penalty(logits, window, config.repeat_penalty);
     }
 
-    // 2. Greedy (temperature = 0): just return argmax
+    penalties::apply_presence_frequency_penalties(
+        logits,
+        recent_tokens,
+        config.presence_penalty,
+        config.frequency_penalty,
+    );
+
+    // 3. Greedy (temperature = 0): just return argmax
     if config.temperature == 0.0 {
         return argmax(logits);
     }
 
-    // 3. Temperature scaling
+    // 4. Temperature scaling
     temperature::apply_temperature(logits, config.temperature);
 
-    // 4. Top-k filtering
+    // 5. Top-k filtering
     top_k::apply_top_k(logits, config.top_k);
 
-    // 5. Top-p filtering
+    // 6. Top-p filtering
     top_p::apply_top_p(logits, config.top_p);
 
-    // 6. Softmax + categorical sampling over the surviving candidate set.
+    // 7. Softmax + categorical sampling over the surviving candidate set.
     let mut scratch_probs = Vec::new();
     let mut scratch_indices = Vec::new();
     sample_filtered_logits_with_scratch(logits, &mut scratch_probs, &mut scratch_indices, rng)
@@ -320,6 +347,19 @@ mod tests {
     }
 
     #[test]
+    fn test_greedy_with_presence_and_frequency_penalties() {
+        let config = SamplingConfig {
+            temperature: 0.0,
+            presence_penalty: 0.4,
+            frequency_penalty: 0.6,
+            ..Default::default()
+        };
+        let mut logits = [5.0, 4.0, 2.0];
+        let token = sample_token(&mut logits, &config, &[0, 0]);
+        assert_eq!(token, 1);
+    }
+
+    #[test]
     fn test_sample_deterministic() {
         // Same seed should produce same result
         let config = SamplingConfig {
@@ -400,6 +440,8 @@ mod tests {
             top_k: 3,
             top_p: 0.95,
             repeat_penalty: 1.1,
+            frequency_penalty: 0.0,
+            presence_penalty: 0.0,
             repeat_last_n: 5,
             seed: 999,
         };

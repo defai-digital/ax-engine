@@ -1,3 +1,4 @@
+use ax_core::chat::render_user_turn;
 use ax_core::metrics::counters::OpTimer;
 use ax_core::metrics::{LatencyHistogram, current_rss_bytes};
 use ax_core::model::{DecodeIntent, DecodeRunConfig, WeightStore, run_decode};
@@ -18,6 +19,8 @@ pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyho
         top_k: args.top_k,
         top_p: args.top_p,
         repeat_penalty: args.repeat_penalty,
+        frequency_penalty: args.frequency_penalty,
+        presence_penalty: args.presence_penalty,
         repeat_last_n: 64,
         seed: if args.seed < 0 {
             u64::MAX
@@ -81,11 +84,7 @@ pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyho
         let add_bos = all_tokens.is_empty();
         let input_text = if args.chat {
             let arch = model.arch_name();
-            if add_bos {
-                crate::apply_chat_template(line, arch)
-            } else {
-                crate::apply_chat_template_turn(line, arch)
-            }
+            render_user_turn(line, arch, add_bos)
         } else {
             line.to_string()
         };

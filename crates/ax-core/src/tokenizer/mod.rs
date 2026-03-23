@@ -3,6 +3,7 @@ pub mod vocab;
 
 pub use vocab::Vocab;
 
+use crate::chat::gguf_chat_template;
 use crate::gguf::GgufHeader;
 
 /// Tokenizer backed by GGUF-embedded vocabulary.
@@ -11,18 +12,25 @@ use crate::gguf::GgufHeader;
 /// Extracts vocab, scores, and special tokens from GGUF metadata.
 pub struct Tokenizer {
     vocab: Vocab,
+    chat_template: Option<String>,
 }
 
 impl Tokenizer {
     /// Create a tokenizer from GGUF header metadata.
     pub fn from_gguf(header: &GgufHeader) -> anyhow::Result<Self> {
         let vocab = Vocab::from_gguf(header)?;
-        Ok(Self { vocab })
+        Ok(Self {
+            vocab,
+            chat_template: gguf_chat_template(header).map(str::to_string),
+        })
     }
 
     /// Create a tokenizer from a pre-built vocabulary.
     pub fn from_vocab(vocab: Vocab) -> Self {
-        Self { vocab }
+        Self {
+            vocab,
+            chat_template: None,
+        }
     }
 
     /// Encode text to token IDs.
@@ -212,6 +220,11 @@ impl Tokenizer {
     /// Get a reference to the underlying vocabulary.
     pub fn vocab(&self) -> &Vocab {
         &self.vocab
+    }
+
+    /// Return the raw GGUF chat template string if present.
+    pub fn chat_template(&self) -> Option<&str> {
+        self.chat_template.as_deref()
     }
 }
 
