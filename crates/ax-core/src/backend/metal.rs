@@ -80,7 +80,7 @@ fn metal_decode_splitk_chunk_size() -> usize {
 fn normalized_arch_name(arch: &str) -> &str {
     match arch {
         "mistral" | "codellama" | "llama" => "llama",
-        "qwen2" | "qwen3" => "qwen3",
+        "qwen2" | "qwen3" | "qwen35" => "qwen3",
         "gemma" | "gemma2" | "gemma3" => "gemma3",
         _ => arch,
     }

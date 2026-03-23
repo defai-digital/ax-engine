@@ -15,14 +15,14 @@ use crate::model::starcoder2::StarCoder2Forward;
 pub fn forward_for_arch(arch: &str) -> anyhow::Result<Box<dyn ForwardPass>> {
     match arch {
         "llama" | "mistral" | "codellama" | "phi3" => Ok(Box::new(LlamaForward)),
-        "qwen2" | "qwen3" => Ok(Box::new(Qwen3Forward)),
+        "qwen2" | "qwen3" | "qwen35" => Ok(Box::new(Qwen3Forward)),
         "gemma" | "gemma2" | "gemma3" => Ok(Box::new(Gemma3Forward)),
         "falcon" => Ok(Box::new(FalconForward)),
         "mixtral" => Ok(Box::new(MixtralForward)),
         "starcoder2" => Ok(Box::new(StarCoder2Forward)),
         "chatglm" | "glm4" | "glm" => Ok(Box::new(GlmForward)),
         _ => anyhow::bail!(
-            "unsupported architecture: '{arch}'. Supported: llama, mistral, codellama, phi3, qwen2, qwen3, gemma, gemma2, gemma3, falcon, mixtral, starcoder2, chatglm/glm4/glm"
+            "unsupported architecture: '{arch}'. Supported: llama, mistral, codellama, phi3, qwen2, qwen3, qwen35, gemma, gemma2, gemma3, falcon, mixtral, starcoder2, chatglm/glm4/glm"
         ),
     }
 }
@@ -41,7 +41,7 @@ mod tests {
 
     #[test]
     fn test_qwen_variants() {
-        for arch in &["qwen2", "qwen3"] {
+        for arch in &["qwen2", "qwen3", "qwen35"] {
             let fwd = forward_for_arch(arch).unwrap();
             assert_eq!(fwd.arch_name(), "qwen3");
         }
