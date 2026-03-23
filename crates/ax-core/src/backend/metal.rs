@@ -135,9 +135,11 @@ fn env_auto_toggle_with_arch_override(base: &str, arch: &str) -> Option<AutoTogg
 /// Precedence:
 /// 1) `AX_METAL_BATCH_F16_IO_<ARCH>` (e.g. `_LLAMA`, `_QWEN3`, `_GEMMA3`)
 /// 2) `AX_METAL_BATCH_F16_IO`
-/// 3) built-in default (`false`)
+/// 3) kernel profile `batch_prefill.prefer_f16_io`
+/// 4) built-in default (`false`)
 pub fn metal_batch_f16_io_enabled_for_arch(arch: &str) -> bool {
-    env_bool_with_arch_override("AX_METAL_BATCH_F16_IO", arch).unwrap_or(false)
+    env_bool_with_arch_override("AX_METAL_BATCH_F16_IO", arch)
+        .unwrap_or_else(|| ax_metal::global_profile().batch_prefill.prefer_f16_io)
 }
 
 /// Whether f16-input pair FFN kernel (gate+up in one dispatch) is enabled.
@@ -161,9 +163,11 @@ pub fn metal_batch_f16_pair_enabled() -> bool {
 /// Precedence:
 /// 1) `AX_METAL_BATCH_F16_PAIR_<ARCH>`
 /// 2) `AX_METAL_BATCH_F16_PAIR`
-/// 3) built-in default (`false`)
+/// 3) kernel profile `batch_prefill.prefer_pair_kernel`
+/// 4) built-in default (`false`)
 pub fn metal_batch_f16_pair_enabled_for_arch(arch: &str) -> bool {
-    env_bool_with_arch_override("AX_METAL_BATCH_F16_PAIR", arch).unwrap_or(false)
+    env_bool_with_arch_override("AX_METAL_BATCH_F16_PAIR", arch)
+        .unwrap_or_else(|| ax_metal::global_profile().batch_prefill.prefer_pair_kernel)
 }
 
 /// Whether native Q8_0 batch dequant matmul kernel is enabled.

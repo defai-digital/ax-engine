@@ -15,7 +15,7 @@ use crate::buffer::MetalBuffer;
 use crate::device::MetalDevice;
 use crate::inc_buffer_barrier_count;
 use crate::pipeline::{ComputePipeline, FunctionConstant, FunctionConstantValue};
-use crate::profile::global_profile;
+use crate::profile::{ProfileKernelMode, global_profile};
 
 /// Embedded Metal shader source for matmul kernels.
 const MATMUL_SHADER_SRC: &str = include_str!("../shaders/matmul.metal");
@@ -372,6 +372,8 @@ const DB64_TG: usize = 256;
 const DB32_TILE_N: usize = 32;
 /// Threadgroup size for 64x32 full-tile f16in kernels (must match D32_TG).
 const DB32_TG: usize = 128;
+/// Minimum active threads to enter BM=64 full-tile f16-in kernels.
+const BATCH_F16IN_FULL_TILE_MIN_THREADS: usize = 32_768;
 /// 32x32 full-tile M size for Q8 small-N fast path.
 const DB32_TILE_M: usize = 32;
 /// 32x32 full-tile threadgroup size for Q8 small-N fast path.
@@ -397,6 +399,9 @@ const SIMD_ROWS_PER_TG: usize = 8;
 /// Disabled by default (`1`) because current small-N kernels regress prefill in
 /// benchmarked workloads (e.g. ~39 tokens). Keep plumbing for future retunes.
 const BATCH_SMALL_N_THRESHOLD: u32 = 1;
+/// Q4_K and Q6_K blocks contain 256 quantized values. K must be a multiple of this.
+const Q4_K_BLOCK_VALUES: usize = 256;
+const Q6_K_BLOCK_VALUES: usize = 256;
 
 /// Pre-compiled dequantization compute pipelines.
 ///
@@ -430,8 +435,18 @@ pub struct DequantKernels {
     fused_matmul_q6_k: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q4_K: C[N×M] = B[N×K] × dequant(A[M×K])^T.
     fused_batch_q4_k: ComputePipeline,
+    /// v2: 2-B-fragment inner loop (1.33 MACs/load vs 0.80).
+    fused_batch_q4_k_v2: ComputePipeline,
+    /// BN=32 full-tile: 8 KB TG memory → 3 TGs/SM (vs 12-20 KB → 1-2 TGs/SM).
+    fused_batch_q4_k_bn32_full: ComputePipeline,
+    /// Inline-dequant full-tile: fuses Phase 1 into Phase 2, eliminates barrier.
+    fused_batch_q4_k_inline: ComputePipeline,
+    /// Blocked-layout kernel (llama.cpp pattern): stride-8, 6KB TG, TG=128, 1.33 MACs/load.
+    fused_batch_q4_k_blocked: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q6_K: C[N×M] = B[N×K] × dequant(A[M×K])^T.
     fused_batch_q6_k: ComputePipeline,
+    /// Blocked-layout Q6_K kernel (same architecture as Q4_K blocked).
+    fused_batch_q6_k_blocked: ComputePipeline,
     /// Full-tile fast path for Q4_K batch dequant+matmul.
     fused_batch_q4_k_full: ComputePipeline,
     /// Full-tile fast path for Q6_K batch dequant+matmul.
@@ -442,6 +457,8 @@ pub struct DequantKernels {
     fused_batch_q6_k_f16io: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q4_K with f16 input and f32 output.
     fused_batch_q4_k_f16in: ComputePipeline,
+    /// Full-tile (BM=32, BN=64, TG=256) fast path for Q4_K with f16 input. No out_tile → 12 KB.
+    fused_batch_q4_k_f16in_full: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q6_K with f16 input and f32 output.
     fused_batch_q6_k_f16in: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q8_0 with f16 input and f32 output.
@@ -697,9 +714,39 @@ impl DequantKernels {
         let fused_batch_q4_k =
             ComputePipeline::from_source(device.device(), DEQUANT_SHADER_SRC, "dequant_batch_q4_k")
                 .context("Failed to compile dequant_batch_q4_k kernel")?;
+        let fused_batch_q4_k_blocked = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q4_k_blocked",
+        )
+        .context("Failed to compile dequant_batch_q4_k_blocked kernel")?;
+        let fused_batch_q4_k_inline = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q4_k_inline",
+        )
+        .context("Failed to compile dequant_batch_q4_k_inline kernel")?;
+        let fused_batch_q4_k_bn32_full = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q4_k_bn32_full",
+        )
+        .context("Failed to compile dequant_batch_q4_k_bn32_full kernel")?;
+        let fused_batch_q4_k_v2 = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q4_k_v2",
+        )
+        .context("Failed to compile dequant_batch_q4_k_v2 kernel")?;
         let fused_batch_q6_k =
             ComputePipeline::from_source(device.device(), DEQUANT_SHADER_SRC, "dequant_batch_q6_k")
                 .context("Failed to compile dequant_batch_q6_k kernel")?;
+        let fused_batch_q6_k_blocked = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q6_k_blocked",
+        )
+        .context("Failed to compile dequant_batch_q6_k_blocked kernel")?;
         let fused_batch_q4_k_full = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -730,6 +777,12 @@ impl DequantKernels {
             "dequant_batch_q4_k_f16in",
         )
         .context("Failed to compile dequant_batch_q4_k_f16in kernel")?;
+        let fused_batch_q4_k_f16in_full = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q4_k_f16in_full",
+        )
+        .context("Failed to compile dequant_batch_q4_k_f16in_full kernel")?;
         let fused_batch_q6_k_f16in = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -928,12 +981,18 @@ impl DequantKernels {
             fused_matmul_q4_k,
             fused_matmul_q6_k,
             fused_batch_q4_k,
+            fused_batch_q4_k_v2,
+            fused_batch_q4_k_inline,
+            fused_batch_q4_k_blocked,
+            fused_batch_q4_k_bn32_full,
             fused_batch_q6_k,
+            fused_batch_q6_k_blocked,
             fused_batch_q4_k_full,
             fused_batch_q6_k_full,
             fused_batch_q4_k_f16io,
             fused_batch_q6_k_f16io,
             fused_batch_q4_k_f16in,
+            fused_batch_q4_k_f16in_full,
             fused_batch_q6_k_f16in,
             fused_batch_q8_0_f16in,
             fused_batch_q8_0_f16in_full,
@@ -1767,6 +1826,34 @@ impl DequantKernels {
         n: u32,
         k: u32,
     ) {
+        // Blocked-layout kernel (llama.cpp pattern): stride-8 TG memory, 6KB,
+        // TG=128, 1.33 MACs/load. Preferred for all K%256==0 workloads.
+        // Uses dynamic threadgroup memory via [[threadgroup(0)]].
+        if batch_q4k_blocked_enabled() && k.is_multiple_of(Q4_K_BLOCK_VALUES as u32) {
+            const BLOCKED_TG: usize = 128;
+            const BLOCKED_SMEM: usize = 8192; // 8 KB (sa=4KB + sb=2KB + padding for output staging)
+            encoder.setComputePipelineState(self.fused_batch_q4_k_blocked.state());
+            bind_buffers(encoder, a, b, c);
+            bind_u32(encoder, 3, m);
+            bind_u32(encoder, 4, n);
+            bind_u32(encoder, 5, k);
+            unsafe { encoder.setThreadgroupMemoryLength_atIndex(BLOCKED_SMEM, 0); }
+            // Grid: (ceil(N/32), ceil(M/64)) — matches llama.cpp convention.
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: (n as usize).div_ceil(32),
+                    height: (m as usize).div_ceil(64),
+                    depth: 1,
+                },
+                MTLSize {
+                    width: BLOCKED_TG,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            return;
+        }
+
         // For small N (< 64 rows), use the BN=32 kernel: half tiles, 12 KB TG memory → 2 TGs/SM.
         // At N=39: BN=64 has 100% boundary tiles; BN=32 has 50% fast-path + 50% boundary, 2 TGs/SM.
         if n < DB_TILE_N as u32 {
@@ -1792,11 +1879,147 @@ impl DequantKernels {
             return;
         }
         let use_small = n < BATCH_SMALL_N_THRESHOLD;
+
+        // BN=32 full-tile path: 8 KB TG memory → 3 TGs/SM (vs 12-20 KB → 1-2).
+        // Higher occupancy hides memory latency. Use when both M and N are aligned.
+        // Split into full BN=32 tiles + boundary remainder with existing BN=64 kernel.
+        let use_bn32_full = !use_small
+            && batch_q4k_bn32_full_enabled()
+            && (m as usize).is_multiple_of(DB_TILE_M);
+        if use_bn32_full {
+            const BN32_TG: usize = 128;
+            let groups_x = (m as usize) / DB_TILE_M;
+            let full_n = (n as usize / 32) * 32;
+            let n_tail = (n as usize).saturating_sub(full_n);
+
+            if full_n > 0 {
+                encoder.setComputePipelineState(self.fused_batch_q4_k_bn32_full.state());
+                bind_buffers(encoder, a, b, c);
+                bind_u32(encoder, 3, m);
+                bind_u32(encoder, 4, full_n as u32);
+                bind_u32(encoder, 5, k);
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                    MTLSize {
+                        width: groups_x,
+                        height: full_n / 32,
+                        depth: 1,
+                    },
+                    MTLSize {
+                        width: BN32_TG,
+                        height: 1,
+                        depth: 1,
+                    },
+                );
+            }
+
+            // Tail N-rows (< 32) use the bounds-checked BN=32 kernel.
+            if n_tail > 0 {
+                let b_off = full_n
+                    .checked_mul(k as usize)
+                    .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
+                    .expect("b offset overflow");
+                let c_off = full_n
+                    .checked_mul(m as usize)
+                    .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
+                    .expect("c offset overflow");
+                encoder.setComputePipelineState(self.fused_batch_q4_k_bn32.state());
+                unsafe {
+                    encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+                    encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
+                    encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), c_off, 2);
+                }
+                bind_u32(encoder, 3, m);
+                bind_u32(encoder, 4, n_tail as u32);
+                bind_u32(encoder, 5, k);
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                    MTLSize {
+                        width: groups_x,
+                        height: n_tail.div_ceil(32),
+                        depth: 1,
+                    },
+                    MTLSize {
+                        width: BN32_TG,
+                        height: 1,
+                        depth: 1,
+                    },
+                );
+            }
+            return;
+        }
+
+        // v2 kernel: 2-B-fragment inner loop (1.33 MACs/load). Same tiles
+        // (BM=32, BN=64) but TG=128 with 8 accumulators per SG.
+        // Use for all non-small N that are aligned to BN=64.
+        let use_v2 = !use_small && batch_q4k_v2_enabled();
+        if use_v2 {
+            const V2_TG: usize = 128;
+            let groups_x = (m as usize).div_ceil(DB_TILE_M);
+            let full_rows = (n as usize / DB_TILE_N) * DB_TILE_N;
+            if full_rows > 0 {
+                encoder.setComputePipelineState(self.fused_batch_q4_k_v2.state());
+                bind_buffers(encoder, a, b, c);
+                bind_u32(encoder, 3, m);
+                bind_u32(encoder, 4, full_rows as u32);
+                bind_u32(encoder, 5, k);
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                    MTLSize {
+                        width: groups_x,
+                        height: full_rows / DB_TILE_N,
+                        depth: 1,
+                    },
+                    MTLSize {
+                        width: V2_TG,
+                        height: 1,
+                        depth: 1,
+                    },
+                );
+            }
+            let tail_rows = (n as usize).saturating_sub(full_rows);
+            if tail_rows > 0 {
+                // Tail uses the original v1 kernel (bounds-checked).
+                let b_row_offset = full_rows
+                    .checked_mul(k as usize)
+                    .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
+                    .expect("b row offset overflow");
+                let c_row_offset = full_rows
+                    .checked_mul(m as usize)
+                    .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
+                    .expect("c row offset overflow");
+                encoder.setComputePipelineState(self.fused_batch_q4_k.state());
+                unsafe {
+                    encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+                    encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_row_offset, 1);
+                    encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), c_row_offset, 2);
+                }
+                bind_u32(encoder, 3, m);
+                bind_u32(encoder, 4, tail_rows as u32);
+                bind_u32(encoder, 5, k);
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                    MTLSize {
+                        width: groups_x,
+                        height: tail_rows.div_ceil(DB_TILE_N),
+                        depth: 1,
+                    },
+                    MTLSize {
+                        width: DB_TG,
+                        height: 1,
+                        depth: 1,
+                    },
+                );
+            }
+            return;
+        }
         if !use_small && m.is_multiple_of(DB_TILE_M as u32) {
             let groups_x = (m as usize).div_ceil(DB_TILE_M);
             let full_rows = (n as usize / DB_TILE_N) * DB_TILE_N;
             if full_rows > 0 {
-                encoder.setComputePipelineState(self.fused_batch_q4_k_full.state());
+                // Inline-dequant kernel: fuses Phase 1 into Phase 2,
+                // eliminates 1 barrier per K-tile and 88% thread idle time.
+                encoder.setComputePipelineState(if batch_q4k_inline_enabled() {
+                    self.fused_batch_q4_k_inline.state()
+                } else {
+                    self.fused_batch_q4_k_full.state()
+                });
                 bind_buffers(encoder, a, b, c);
                 bind_u32(encoder, 3, m);
                 bind_u32(encoder, 4, full_rows as u32);
@@ -1899,6 +2122,31 @@ impl DequantKernels {
         n: u32,
         k: u32,
     ) {
+        // Blocked-layout Q6_K kernel (same architecture as Q4_K blocked).
+        if batch_q6k_blocked_enabled() && k.is_multiple_of(Q6_K_BLOCK_VALUES as u32) {
+            const BLOCKED_TG: usize = 128;
+            const BLOCKED_SMEM: usize = 8192;
+            encoder.setComputePipelineState(self.fused_batch_q6_k_blocked.state());
+            bind_buffers(encoder, a, b, c);
+            bind_u32(encoder, 3, m);
+            bind_u32(encoder, 4, n);
+            bind_u32(encoder, 5, k);
+            unsafe { encoder.setThreadgroupMemoryLength_atIndex(BLOCKED_SMEM, 0); }
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: (n as usize).div_ceil(32),
+                    height: (m as usize).div_ceil(64),
+                    depth: 1,
+                },
+                MTLSize {
+                    width: BLOCKED_TG,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            return;
+        }
+
         let use_small = n < BATCH_SMALL_N_THRESHOLD;
         if !use_small && m.is_multiple_of(DB_TILE_M as u32) {
             let groups_x = (m as usize).div_ceil(DB_TILE_M);
@@ -2079,7 +2327,15 @@ impl DequantKernels {
         if !use_small {
             let m_full = (m as usize / DB64_TILE_M) * DB64_TILE_M;
             let m_tail = (m as usize).saturating_sub(m_full);
-            let use_bn32 = batch_f16in_bn32_enabled();
+
+            // Full-tile kernels use BM=64 (no bounds checks, faster inner loop).
+            // But BM=64 halves the M-group count vs BM=32. For small M this
+            // starves the GPU. Gate: need ≥ 128 full-tile threadgroups to use
+            // the full-tile path; otherwise fall through to the standard kernel
+            // (BM=32, BN=64, TG=256) which has bounds checks but 2x more TGs.
+            let bn32_preferred = batch_f16in_bn32_enabled();
+            let tgs_bn32 = m_full.div_ceil(DB64_TILE_M) * (n as usize / DB32_TILE_N).max(1);
+            let use_bn32 = bn32_preferred && (tgs_bn32 * DB32_TG) >= 32768;
             let n_tile = if use_bn32 { DB32_TILE_N } else { DB64_TILE_N };
             let n_full = (n as usize / n_tile) * n_tile;
             let n_tail = (n as usize).saturating_sub(n_full);
@@ -2088,7 +2344,14 @@ impl DequantKernels {
                 .checked_mul(144) // Q4_K bytes per block
                 .expect("A row bytes overflow");
 
-            if m_full > 0 && n_full > 0 {
+            // Skip full-tile path when it would produce too few threadgroups.
+            let tgs_full = m_full.div_ceil(DB64_TILE_M) * (n_full / n_tile).max(1);
+            let tg_size_full = if use_bn32 { DB32_TG } else { DB64_TG };
+            let use_full_tiles = (tgs_full * tg_size_full) >= 32768;
+
+            if use_full_tiles && m_full > 0 && n_full > 0 {
+                // Full-tile path: dispatches full64/full32 for the aligned portion,
+                // then tail kernels for boundary tiles, then returns.
                 let groups_x = m_full.div_ceil(DB64_TILE_M);
                 if use_bn32 {
                     encoder.setComputePipelineState(self.fused_batch_q4_k_f16in_full32.state());
@@ -2134,97 +2397,125 @@ impl DequantKernels {
                         },
                     );
                 }
-            }
 
-            let encode_tail =
-                |a_off: usize, b_off: usize, c_off: usize, out_cols: usize, n_rows: usize| {
-                    if out_cols == 0 || n_rows == 0 {
-                        return;
-                    }
-                    let groups_x = out_cols.div_ceil(DB_TILE_M);
-                    encoder.setComputePipelineState(self.fused_batch_q4_k_f16in.state());
-                    unsafe {
-                        encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), a_off, 0);
-                        encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
-                        encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), c_off, 2);
-                    }
-                    bind_u32(encoder, 3, out_cols as u32);
-                    bind_u32(encoder, 4, n_rows as u32);
-                    bind_u32(encoder, 5, k);
-                    bind_u32(encoder, 6, m); // destination row stride
-                    encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                        MTLSize {
-                            width: groups_x,
-                            height: n_rows.div_ceil(DB_TILE_N),
-                            depth: 1,
-                        },
-                        MTLSize {
-                            width: DB_TG,
-                            height: 1,
-                            depth: 1,
-                        },
-                    );
-                };
+                let encode_tail =
+                    |a_off: usize, b_off: usize, c_off: usize, out_cols: usize, n_rows: usize| {
+                        if out_cols == 0 || n_rows == 0 {
+                            return;
+                        }
+                        let groups_x = out_cols.div_ceil(DB_TILE_M);
+                        encoder.setComputePipelineState(self.fused_batch_q4_k_f16in.state());
+                        unsafe {
+                            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), a_off, 0);
+                            encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
+                            encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), c_off, 2);
+                        }
+                        bind_u32(encoder, 3, out_cols as u32);
+                        bind_u32(encoder, 4, n_rows as u32);
+                        bind_u32(encoder, 5, k);
+                        bind_u32(encoder, 6, m); // destination row stride
+                        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                            MTLSize {
+                                width: groups_x,
+                                height: n_rows.div_ceil(DB_TILE_N),
+                                depth: 1,
+                            },
+                            MTLSize {
+                                width: DB_TG,
+                                height: 1,
+                                depth: 1,
+                            },
+                        );
+                    };
 
-            if m_full > 0 && n_tail > 0 {
-                let b_off = n_full
-                    .checked_mul(k as usize)
-                    .and_then(|x| x.checked_mul(2))
-                    .expect("B offset overflow");
-                let c_off = n_full
-                    .checked_mul(m as usize)
-                    .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
-                    .expect("C offset overflow");
-                if use_bn32 {
-                    // tail32: grid (m_full/64, 1), TG=128, staging buffer for bounds-safe output
-                    encoder.setComputePipelineState(self.fused_batch_q4_k_f16in_tail32.state());
-                    unsafe {
-                        encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
-                        encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
-                        encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), c_off, 2);
+                if m_full > 0 && n_tail > 0 {
+                    let b_off = n_full
+                        .checked_mul(k as usize)
+                        .and_then(|x| x.checked_mul(2))
+                        .expect("B offset overflow");
+                    let c_off = n_full
+                        .checked_mul(m as usize)
+                        .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
+                        .expect("C offset overflow");
+                    if use_bn32 {
+                        encoder.setComputePipelineState(self.fused_batch_q4_k_f16in_tail32.state());
+                        unsafe {
+                            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+                            encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
+                            encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), c_off, 2);
+                        }
+                        bind_u32(encoder, 3, m_full as u32);
+                        bind_u32(encoder, 4, n_tail as u32);
+                        bind_u32(encoder, 5, k);
+                        bind_u32(encoder, 6, m);
+                        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                            MTLSize {
+                                width: m_full / DB64_TILE_M,
+                                height: 1,
+                                depth: 1,
+                            },
+                            MTLSize {
+                                width: DB32_TG,
+                                height: 1,
+                                depth: 1,
+                            },
+                        );
+                    } else {
+                        encode_tail(0, b_off, c_off, m_full, n_tail);
                     }
-                    bind_u32(encoder, 3, m_full as u32);
-                    bind_u32(encoder, 4, n_tail as u32);
-                    bind_u32(encoder, 5, k);
-                    bind_u32(encoder, 6, m);
-                    encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                        MTLSize {
-                            width: m_full / DB64_TILE_M,
-                            height: 1,
-                            depth: 1,
-                        },
-                        MTLSize {
-                            width: DB32_TG,
-                            height: 1,
-                            depth: 1,
-                        },
-                    );
-                } else {
-                    encode_tail(0, b_off, c_off, m_full, n_tail);
                 }
-            }
 
-            if m_tail > 0 && n_full > 0 {
-                let a_off = m_full.checked_mul(a_row_bytes).expect("A offset overflow");
-                let c_off = m_full
-                    .checked_mul(std::mem::size_of::<f32>())
-                    .expect("C col offset overflow");
-                encode_tail(a_off, 0, c_off, m_tail, n_full);
-            }
+                if m_tail > 0 && n_full > 0 {
+                    let a_off = m_full.checked_mul(a_row_bytes).expect("A offset overflow");
+                    let c_off = m_full
+                        .checked_mul(std::mem::size_of::<f32>())
+                        .expect("C col offset overflow");
+                    encode_tail(a_off, 0, c_off, m_tail, n_full);
+                }
 
-            if m_tail > 0 && n_tail > 0 {
-                let a_off = m_full.checked_mul(a_row_bytes).expect("A offset overflow");
-                let b_off = n_full
-                    .checked_mul(k as usize)
-                    .and_then(|x| x.checked_mul(2))
-                    .expect("B offset overflow");
-                let c_off = n_full
-                    .checked_mul(m as usize)
-                    .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
-                    .and_then(|x| x.checked_add(m_full * std::mem::size_of::<f32>()))
-                    .expect("C offset overflow");
-                encode_tail(a_off, b_off, c_off, m_tail, n_tail);
+                if m_tail > 0 && n_tail > 0 {
+                    let a_off = m_full.checked_mul(a_row_bytes).expect("A offset overflow");
+                    let b_off = n_full
+                        .checked_mul(k as usize)
+                        .and_then(|x| x.checked_mul(2))
+                        .expect("B offset overflow");
+                    let c_off = n_full
+                        .checked_mul(m as usize)
+                        .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
+                        .and_then(|x| x.checked_add(m_full * std::mem::size_of::<f32>()))
+                        .expect("C offset overflow");
+                    encode_tail(a_off, b_off, c_off, m_tail, n_tail);
+                }
+                return;
             }
+        }
+
+        // BM=32 full-tile path: no out_tile → 12 KB TG → 2 TGs/SM.
+        // Use when both M and N are aligned and not small.
+        if !use_small
+            && (m as usize).is_multiple_of(DB_TILE_M)
+            && (n as usize).is_multiple_of(DB_TILE_N)
+        {
+            let groups_x = (m as usize) / DB_TILE_M;
+            let groups_y = (n as usize) / DB_TILE_N;
+            encoder.setComputePipelineState(self.fused_batch_q4_k_f16in_full.state());
+            bind_buffers(encoder, a, b, c);
+            bind_u32(encoder, 3, m);
+            bind_u32(encoder, 4, n);
+            bind_u32(encoder, 5, k);
+            // No C_STRIDE (buffer 6) — full kernel uses M as stride.
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: groups_x,
+                    height: groups_y,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: DB_TG,
+                    height: 1,
+                    depth: 1,
+                },
+            );
             return;
         }
 
@@ -2277,7 +2568,10 @@ impl DequantKernels {
         if !use_small {
             let m_full = (m as usize / DB64_TILE_M) * DB64_TILE_M;
             let m_tail = (m as usize).saturating_sub(m_full);
-            let use_bn32 = batch_f16in_bn32_enabled();
+            // BN=32 occupancy gate (same logic as Q4_K — see above).
+            let bn32_preferred = batch_f16in_bn32_enabled();
+            let tgs_bn32 = m_full.div_ceil(DB64_TILE_M) * (n as usize / DB32_TILE_N).max(1);
+            let use_bn32 = bn32_preferred && (tgs_bn32 * DB32_TG) >= 32768;
             let n_tile = if use_bn32 { DB32_TILE_N } else { DB64_TILE_N };
             let n_full = (n as usize / n_tile) * n_tile;
             let n_tail = (n as usize).saturating_sub(n_full);
@@ -2286,7 +2580,12 @@ impl DequantKernels {
                 .checked_mul(210) // Q6_K bytes per block
                 .expect("A row bytes overflow");
 
-            if m_full > 0 && n_full > 0 {
+            // Full-tile occupancy gate (same logic as Q4_K).
+            let tgs_full = m_full.div_ceil(DB64_TILE_M) * (n_full / n_tile).max(1);
+            let tg_size_full = if use_bn32 { DB32_TG } else { DB64_TG };
+            let use_full_tiles = (tgs_full * tg_size_full) >= 32768;
+
+            if use_full_tiles && m_full > 0 && n_full > 0 {
                 let groups_x = m_full.div_ceil(DB64_TILE_M);
                 if use_bn32 {
                     encoder.setComputePipelineState(self.fused_batch_q6_k_f16in_full32.state());
@@ -2327,98 +2626,97 @@ impl DequantKernels {
                         },
                     );
                 }
-            }
 
-            let encode_tail =
-                |a_off: usize, b_off: usize, c_off: usize, out_cols: usize, n_rows: usize| {
-                    if out_cols == 0 || n_rows == 0 {
-                        return;
-                    }
-                    let groups_x = out_cols.div_ceil(DB_TILE_M);
-                    encoder.setComputePipelineState(self.fused_batch_q6_k_f16in.state());
-                    unsafe {
-                        encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), a_off, 0);
-                        encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
-                        encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), c_off, 2);
-                    }
-                    bind_u32(encoder, 3, out_cols as u32);
-                    bind_u32(encoder, 4, n_rows as u32);
-                    bind_u32(encoder, 5, k);
-                    bind_u32(encoder, 6, m); // destination row stride
-                    encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                        MTLSize {
-                            width: groups_x,
-                            height: n_rows.div_ceil(DB_TILE_N),
-                            depth: 1,
-                        },
-                        MTLSize {
-                            width: DB_TG,
-                            height: 1,
-                            depth: 1,
-                        },
-                    );
-                };
+                let encode_tail =
+                    |a_off: usize, b_off: usize, c_off: usize, out_cols: usize, n_rows: usize| {
+                        if out_cols == 0 || n_rows == 0 {
+                            return;
+                        }
+                        let groups_x = out_cols.div_ceil(DB_TILE_M);
+                        encoder.setComputePipelineState(self.fused_batch_q6_k_f16in.state());
+                        unsafe {
+                            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), a_off, 0);
+                            encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
+                            encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), c_off, 2);
+                        }
+                        bind_u32(encoder, 3, out_cols as u32);
+                        bind_u32(encoder, 4, n_rows as u32);
+                        bind_u32(encoder, 5, k);
+                        bind_u32(encoder, 6, m); // destination row stride
+                        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                            MTLSize {
+                                width: groups_x,
+                                height: n_rows.div_ceil(DB_TILE_N),
+                                depth: 1,
+                            },
+                            MTLSize {
+                                width: DB_TG,
+                                height: 1,
+                                depth: 1,
+                            },
+                        );
+                    };
 
-            if m_full > 0 && n_tail > 0 {
-                let b_off = n_full
-                    .checked_mul(k as usize)
-                    .and_then(|x| x.checked_mul(2))
-                    .expect("B offset overflow");
-                let c_off = n_full
-                    .checked_mul(m as usize)
-                    .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
-                    .expect("C offset overflow");
-                if use_bn32 {
-                    // tail32: grid (m_full/64, 1), TG=128, staging buffer for bounds-safe output
-                    encoder.setComputePipelineState(self.fused_batch_q6_k_f16in_tail32.state());
-                    unsafe {
-                        encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
-                        encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
-                        encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), c_off, 2);
+                if m_full > 0 && n_tail > 0 {
+                    let b_off = n_full
+                        .checked_mul(k as usize)
+                        .and_then(|x| x.checked_mul(2))
+                        .expect("B offset overflow");
+                    let c_off = n_full
+                        .checked_mul(m as usize)
+                        .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
+                        .expect("C offset overflow");
+                    if use_bn32 {
+                        encoder.setComputePipelineState(self.fused_batch_q6_k_f16in_tail32.state());
+                        unsafe {
+                            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+                            encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
+                            encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), c_off, 2);
+                        }
+                        bind_u32(encoder, 3, m_full as u32);
+                        bind_u32(encoder, 4, n_tail as u32);
+                        bind_u32(encoder, 5, k);
+                        bind_u32(encoder, 6, m);
+                        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                            MTLSize {
+                                width: m_full / DB64_TILE_M,
+                                height: 1,
+                                depth: 1,
+                            },
+                            MTLSize {
+                                width: DB32_TG,
+                                height: 1,
+                                depth: 1,
+                            },
+                        );
+                    } else {
+                        encode_tail(0, b_off, c_off, m_full, n_tail);
                     }
-                    bind_u32(encoder, 3, m_full as u32);
-                    bind_u32(encoder, 4, n_tail as u32);
-                    bind_u32(encoder, 5, k);
-                    bind_u32(encoder, 6, m);
-                    encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                        MTLSize {
-                            width: m_full / DB64_TILE_M,
-                            height: 1,
-                            depth: 1,
-                        },
-                        MTLSize {
-                            width: DB32_TG,
-                            height: 1,
-                            depth: 1,
-                        },
-                    );
-                } else {
-                    encode_tail(0, b_off, c_off, m_full, n_tail);
                 }
-            }
 
-            if m_tail > 0 && n_full > 0 {
-                let a_off = m_full.checked_mul(a_row_bytes).expect("A offset overflow");
-                let c_off = m_full
-                    .checked_mul(std::mem::size_of::<f32>())
-                    .expect("C col offset overflow");
-                encode_tail(a_off, 0, c_off, m_tail, n_full);
-            }
+                if m_tail > 0 && n_full > 0 {
+                    let a_off = m_full.checked_mul(a_row_bytes).expect("A offset overflow");
+                    let c_off = m_full
+                        .checked_mul(std::mem::size_of::<f32>())
+                        .expect("C col offset overflow");
+                    encode_tail(a_off, 0, c_off, m_tail, n_full);
+                }
 
-            if m_tail > 0 && n_tail > 0 {
-                let a_off = m_full.checked_mul(a_row_bytes).expect("A offset overflow");
-                let b_off = n_full
-                    .checked_mul(k as usize)
-                    .and_then(|x| x.checked_mul(2))
-                    .expect("B offset overflow");
-                let c_off = n_full
-                    .checked_mul(m as usize)
-                    .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
-                    .and_then(|x| x.checked_add(m_full * std::mem::size_of::<f32>()))
-                    .expect("C offset overflow");
-                encode_tail(a_off, b_off, c_off, m_tail, n_tail);
+                if m_tail > 0 && n_tail > 0 {
+                    let a_off = m_full.checked_mul(a_row_bytes).expect("A offset overflow");
+                    let b_off = n_full
+                        .checked_mul(k as usize)
+                        .and_then(|x| x.checked_mul(2))
+                        .expect("B offset overflow");
+                    let c_off = n_full
+                        .checked_mul(m as usize)
+                        .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
+                        .and_then(|x| x.checked_add(m_full * std::mem::size_of::<f32>()))
+                        .expect("C offset overflow");
+                    encode_tail(a_off, b_off, c_off, m_tail, n_tail);
+                }
+                return;
             }
-            return;
         }
 
         let groups_x = (m as usize).div_ceil(DB_TILE_M);
@@ -2464,12 +2762,19 @@ impl DequantKernels {
         k: u32,
     ) {
         let can_use_full = (k as usize).is_multiple_of(64) && (n as usize) >= q8_f16in_full_min_n();
-        if can_use_full && (m as usize).is_multiple_of(DB64_TILE_M) {
-            // Occupancy heuristic for Q8_0 full-tile path: dequant_batch_q8_0_f16in_full32 is
-            // new and untested at large N. Use BN=32 (TG=128) only for mid-size N where the
-            // 2× resident TG benefit is clearest; fall back to the validated BN=64 (TG=256)
-            // kernel for very large N until gains are confirmed.
-            let use_bn32 = batch_f16in_bn32_enabled() && (n as usize) < 768;
+        let can_use_full64 = can_use_full && (m as usize).is_multiple_of(DB64_TILE_M) && {
+            let m_full = (m as usize) / DB64_TILE_M;
+            let n_full = (n as usize / DB64_TILE_N) * DB64_TILE_N;
+            n_full > 0
+                && (m_full).max(1) * (n_full / DB64_TILE_N).max(1) * DB64_TG
+                    >= BATCH_F16IN_FULL_TILE_MIN_THREADS
+        };
+        if can_use_full64 {
+            // BN=32 occupancy gate: need ≥ 32K total threads (same as Q4_K/Q6_K).
+            // Also cap at N < 768 (original heuristic for untested large-N path).
+            let bn32_preferred = batch_f16in_bn32_enabled() && (n as usize) < 768;
+            let tgs_bn32 = (m as usize).div_ceil(DB64_TILE_M) * (n as usize / DB32_TILE_N).max(1);
+            let use_bn32 = bn32_preferred && (tgs_bn32 * DB32_TG) >= 32768;
             let use_small32x32 =
                 use_bn32 && (n as usize) <= 256 && (m as usize).is_multiple_of(DB32_TILE_M);
             let n_full = if use_bn32 {
@@ -2979,6 +3284,8 @@ pub struct AttentionKernels {
     prefill_mistral_hd128_smem_f16: ComputePipeline,
     prefill_mistral_hd128_bc64: ComputePipeline,
     prefill_fa2_hd128: ComputePipeline,
+    /// FA2 with simdgroup_half8x8 matrix ops (HD=128) — llama.cpp-style.
+    prefill_fa2_simd_hd128: ComputePipeline,
     prefill_cache: ComputePipeline,
     prefill_cache_f16kv: ComputePipeline,
     /// FA2-style 8-query-per-TG prefill (HD=256, f16 KV).
@@ -3069,6 +3376,12 @@ impl AttentionKernels {
             "attention_prefill_f32_fa2_hd128",
         )
         .context("Failed to compile attention_prefill_f32_fa2_hd128 kernel")?;
+        let prefill_fa2_simd_hd128 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_prefill_fa2_simd_hd128",
+        )
+        .context("Failed to compile attention_prefill_fa2_simd_hd128 kernel")?;
         let prefill_cache = ComputePipeline::from_source(
             device.device(),
             ATTENTION_SHADER_SRC,
@@ -3182,6 +3495,8 @@ impl AttentionKernels {
             prefill_mistral_hd128_bc64_max_threads =
                 prefill_mistral_hd128_bc64.max_threads_per_threadgroup(),
             prefill_fa2_hd128_max_threads = prefill_fa2_hd128.max_threads_per_threadgroup(),
+            prefill_fa2_simd_hd128_max_threads =
+                prefill_fa2_simd_hd128.max_threads_per_threadgroup(),
             prefill_cache_max_threads = prefill_cache.max_threads_per_threadgroup(),
             prefill_cache_f16kv_max_threads = prefill_cache_f16kv.max_threads_per_threadgroup(),
             prefill_cache_fa2_hd256_max_threads =
@@ -3217,6 +3532,7 @@ impl AttentionKernels {
             prefill_mistral_hd128_smem_f16,
             prefill_mistral_hd128_bc64,
             prefill_fa2_hd128,
+            prefill_fa2_simd_hd128,
             prefill_cache,
             prefill_cache_f16kv,
             prefill_cache_fa2_hd256,
@@ -3271,8 +3587,16 @@ impl AttentionKernels {
         let use_mistral_smem_f16 =
             attention_prefill_mistral_smem_f16_enabled() && use_mistral_hd128;
         let use_fa2_hd128 = attention_prefill_fa2_hd128_should_use(n_tokens, head_dim);
+        let use_fa2_simd_hd128 = attention_prefill_fa2_simd_hd128_enabled() && head_dim == 128;
         let use_hd256 = attention_prefill_hd256_enabled() && head_dim == 256 && !use_v2;
-        let (pipeline, tg_width, groups_x) = if use_fa2_hd128 {
+        const FA2S_TG: usize = 128;
+        let (pipeline, tg_width, groups_x) = if use_fa2_simd_hd128 {
+            (
+                &self.prefill_fa2_simd_hd128,
+                FA2S_TG,
+                (n_tokens as usize).div_ceil(8),
+            )
+        } else if use_fa2_hd128 {
             (
                 &self.prefill_fa2_hd128,
                 ATTN_TG,
@@ -3656,6 +3980,7 @@ impl AttentionKernels {
         let use_mistral_smem_f16 =
             attention_prefill_mistral_smem_f16_enabled() && use_mistral_hd128;
         let use_fa2_hd128 = attention_prefill_fa2_hd128_should_use(n_tokens, head_dim);
+        let use_fa2_simd_hd128 = attention_prefill_fa2_simd_hd128_enabled() && head_dim == 128;
         let use_hd256 = attention_prefill_hd256_enabled() && head_dim == 256 && !use_v2;
         if attention_kernel_routing_log_enabled() {
             tracing::info!(
@@ -3664,11 +3989,20 @@ impl AttentionKernels {
                 n_kv_heads,
                 head_dim,
                 profile = active_attention_routing_profile().name,
+                fa2_simd_hd128 = use_fa2_simd_hd128,
                 fa2_hd128 = use_fa2_hd128,
                 "encode_attention_prefill kernel routing"
             );
         }
-        let (pipeline, tg_width, groups_x) = if use_fa2_hd128 {
+        // FA2 simd (half8x8 matrix ops) is the fastest path for HD=128.
+        const FA2S_TG: usize = 128;
+        let (pipeline, tg_width, groups_x) = if use_fa2_simd_hd128 {
+            (
+                &self.prefill_fa2_simd_hd128,
+                FA2S_TG,
+                (n_tokens as usize).div_ceil(8),
+            )
+        } else if use_fa2_hd128 {
             (
                 &self.prefill_fa2_hd128,
                 ATTN_TG,
@@ -3981,6 +4315,76 @@ impl AttentionKernels {
     }
 }
 
+fn batch_q4k_blocked_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BATCH_Q4K_BLOCKED") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !(v == "0" || v == "false" || v == "off")
+        }
+        // Default ON: blocked threadgroup layout (stride 8, 6 KB TG memory).
+        // Ports llama.cpp's kernel_mul_mm pattern for 3-4 TGs/SM occupancy
+        // and 1.33 MACs/load inner loop.
+        Err(_) => true,
+    })
+}
+
+fn batch_q6k_blocked_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BATCH_Q6K_BLOCKED") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !(v == "0" || v == "false" || v == "off")
+        }
+        Err(_) => true, // Default ON
+    })
+}
+
+fn batch_q4k_inline_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BATCH_Q4K_INLINE") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !(v == "0" || v == "false" || v == "off")
+        }
+        // Default OFF: inline dequant regresses 6-8% because each thread reads
+        // block headers from device memory (L1-cached but still slower than the
+        // precomputed threadgroup-memory path). The 32-thread Phase 1 preload +
+        // barrier is cheaper than 1024 redundant L1 header reads.
+        Err(_) => false,
+    })
+}
+
+fn batch_q4k_bn32_full_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BATCH_Q4K_BN32") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !(v == "0" || v == "false" || v == "off")
+        }
+        // Default OFF: BN=32 (TG=128) reduces Phase 2 dequant throughput
+        // because only 128 threads cooperatively load vs 256. The ~3 TGs/SM
+        // occupancy gain doesn't compensate. Same pattern as v2.
+        Err(_) => false,
+    })
+}
+
+fn batch_q4k_v2_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BATCH_Q4K_V2") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "on"
+        }
+        // Default OFF: 2-B-fragment inner loop is ~2x slower despite better
+        // MAC/load ratio. Root cause: TG=128 halves cooperative loading throughput
+        // (dequant phase + B-tile load each thread does 2x work). The loading
+        // phase dominates over the compute improvement. Needs a different approach:
+        // keep TG=256 but restructure SG assignment for 2-B reuse.
+        Err(_) => false,
+    })
+}
+
 fn attention_prefill_v2_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| match std::env::var("AX_METAL_PREFILL_ATTN_V2") {
@@ -4075,8 +4479,7 @@ fn attention_prefill_mistral_smem_f16_enabled() -> bool {
 }
 
 fn batch_f16in_bn32_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_F16IN_BN32") {
+    match std::env::var("AX_METAL_F16IN_BN32") {
         Ok(v) => {
             let v = v.trim().to_ascii_lowercase();
             !(v == "0" || v == "false" || v == "off")
@@ -4085,34 +4488,32 @@ fn batch_f16in_bn32_enabled() -> bool {
         // ~20KB, 1 TG/SM).  Doubled occupancy hides memory latency and gives +5% (N=39) to
         // +14% (N=1024) prefill throughput — empirically measured on Q4_K_M across models.
         // Set AX_METAL_F16IN_BN32=0 to disable.
-        Err(_) => true,
-    })
+        Err(_) => global_profile().batch_prefill.use_bn32,
+    }
 }
 
 fn batch_f16in_bk32_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_F16IN_BK32") {
+    match std::env::var("AX_METAL_F16IN_BK32") {
         Ok(v) => {
             let v = v.trim().to_ascii_lowercase();
             v == "1" || v == "true" || v == "on"
         }
         // Default ON: BK=32 improves long-prompt prefill on current models.
         // Set AX_METAL_F16IN_BK32=0 to disable.
-        Err(_) => true,
-    })
+        Err(_) => global_profile().batch_prefill.use_bk32,
+    }
 }
 
 fn q8_f16in_full_min_n() -> usize {
-    static MIN_N: OnceLock<usize> = OnceLock::new();
-    *MIN_N.get_or_init(|| match std::env::var("AX_METAL_Q8_F16IN_FULL_MIN_N") {
+    match std::env::var("AX_METAL_Q8_F16IN_FULL_MIN_N") {
         Ok(v) => v
             .trim()
             .parse::<usize>()
             .ok()
             .filter(|&x| x > 0)
             .unwrap_or(DB_TILE_N),
-        Err(_) => DB_TILE_N,
-    })
+        Err(_) => global_profile().batch_prefill.q8_f16in_full_min_n.max(1) as usize,
+    }
 }
 
 fn attention_decode_sdpa_enabled() -> bool {
@@ -4175,70 +4576,84 @@ fn parse_positive_u32_env(var: &str, default_value: u32) -> u32 {
     }
 }
 
+fn profile_kernel_mode(mode: ProfileKernelMode) -> KernelMode {
+    match mode {
+        ProfileKernelMode::Off => KernelMode::Off,
+        ProfileKernelMode::On => KernelMode::On,
+        ProfileKernelMode::Auto => KernelMode::Auto,
+    }
+}
+
 fn attention_prefill_fa2_mode() -> KernelMode {
-    static MODE: OnceLock<KernelMode> = OnceLock::new();
-    *MODE.get_or_init(|| {
-        let mode = parse_kernel_mode("AX_METAL_PREFILL_FA2_MODE", KernelMode::Off);
-        match mode {
-            // Backward compatibility with existing boolean toggle.
-            KernelMode::Off => {
-                if attention_prefill_fa2_enabled() {
-                    KernelMode::On
-                } else {
-                    KernelMode::Off
-                }
+    let profile_default = profile_kernel_mode(global_profile().attention_prefill.fa2_mode.clone());
+    let mode = parse_kernel_mode("AX_METAL_PREFILL_FA2_MODE", profile_default);
+    match mode {
+        // Backward compatibility with existing boolean toggle.
+        KernelMode::Off => {
+            if attention_prefill_fa2_enabled() {
+                KernelMode::On
+            } else {
+                KernelMode::Off
             }
-            _ => mode,
         }
-    })
+        _ => mode,
+    }
 }
 
 fn attention_prefill_fa2_hd128_mode() -> KernelMode {
-    static MODE: OnceLock<KernelMode> = OnceLock::new();
-    *MODE.get_or_init(|| {
-        let mode = parse_kernel_mode("AX_METAL_PREFILL_FA2_HD128_MODE", KernelMode::Off);
-        match mode {
-            // Backward compatibility with existing boolean toggle.
-            KernelMode::Off => {
-                if attention_prefill_fa2_hd128_enabled() {
-                    KernelMode::On
-                } else {
-                    KernelMode::Off
-                }
+    let profile_default =
+        profile_kernel_mode(global_profile().attention_prefill.fa2_hd128_mode.clone());
+    let mode = parse_kernel_mode("AX_METAL_PREFILL_FA2_HD128_MODE", profile_default);
+    match mode {
+        // Backward compatibility with existing boolean toggle.
+        KernelMode::Off => {
+            if attention_prefill_fa2_hd128_enabled() {
+                KernelMode::On
+            } else {
+                KernelMode::Off
             }
-            _ => mode,
         }
-    })
+        _ => mode,
+    }
 }
 
 fn attention_prefill_fa2_auto_min_tokens() -> u32 {
-    static MIN_TOKENS: OnceLock<u32> = OnceLock::new();
-    *MIN_TOKENS.get_or_init(|| {
-        parse_positive_u32_env(
-            "AX_METAL_PREFILL_FA2_AUTO_MIN_TOKENS",
-            active_attention_routing_profile().prefill_fa2_auto_min_tokens,
-        )
-    })
+    let profile = global_profile();
+    let threshold = profile.attention_prefill.fa2_auto_min_tokens;
+    parse_positive_u32_env(
+        "AX_METAL_PREFILL_FA2_AUTO_MIN_TOKENS",
+        if threshold > 0 {
+            threshold
+        } else {
+            active_attention_routing_profile().prefill_fa2_auto_min_tokens
+        },
+    )
 }
 
 fn attention_prefill_fa2_auto_min_base_seq() -> u32 {
-    static MIN_BASE: OnceLock<u32> = OnceLock::new();
-    *MIN_BASE.get_or_init(|| {
-        parse_positive_u32_env(
-            "AX_METAL_PREFILL_FA2_AUTO_MIN_BASE_SEQ",
-            active_attention_routing_profile().prefill_fa2_auto_min_base_seq,
-        )
-    })
+    let profile = global_profile();
+    let threshold = profile.attention_prefill.fa2_auto_min_base_seq;
+    parse_positive_u32_env(
+        "AX_METAL_PREFILL_FA2_AUTO_MIN_BASE_SEQ",
+        if threshold > 0 {
+            threshold
+        } else {
+            active_attention_routing_profile().prefill_fa2_auto_min_base_seq
+        },
+    )
 }
 
 fn attention_prefill_fa2_hd128_auto_min_tokens() -> u32 {
-    static MIN_TOKENS: OnceLock<u32> = OnceLock::new();
-    *MIN_TOKENS.get_or_init(|| {
-        parse_positive_u32_env(
-            "AX_METAL_PREFILL_FA2_HD128_AUTO_MIN_TOKENS",
-            active_attention_routing_profile().prefill_fa2_hd128_auto_min_tokens,
-        )
-    })
+    let profile = global_profile();
+    let threshold = profile.attention_prefill.fa2_hd128_auto_min_tokens;
+    parse_positive_u32_env(
+        "AX_METAL_PREFILL_FA2_HD128_AUTO_MIN_TOKENS",
+        if threshold > 0 {
+            threshold
+        } else {
+            active_attention_routing_profile().prefill_fa2_hd128_auto_min_tokens
+        },
+    )
 }
 
 fn attention_decode_splitk_mode() -> KernelMode {
@@ -4349,6 +4764,17 @@ fn attention_prefill_fa2_hd128_should_use(n_tokens: u32, head_dim: u32) -> bool 
         KernelMode::On => true,
         KernelMode::Auto => n_tokens >= attention_prefill_fa2_hd128_auto_min_tokens(),
     }
+}
+
+fn attention_prefill_fa2_simd_hd128_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_PREFILL_FA2_SIMD") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "on"
+        }
+        Err(_) => true, // default ON — this is the fast path
+    })
 }
 
 fn attention_kernel_routing_log_enabled() -> bool {
@@ -4594,6 +5020,7 @@ pub struct ElementwiseKernels {
     rms_norm_batch: ComputePipeline,
     rms_norm_out: ComputePipeline,
     rms_norm_out_batch: ComputePipeline,
+    rms_norm_out_batch_vec4: ComputePipeline,
     rms_norm_out_batch_f16: ComputePipeline,
     residual_add_rms_norm_out_batch: ComputePipeline,
     residual_add_rms_norm_out_batch_f16: ComputePipeline,
@@ -4652,6 +5079,12 @@ impl ElementwiseKernels {
             "rms_norm_out_batch_f32",
         )
         .context("Failed to compile rms_norm_out_batch_f32 kernel")?;
+        let rms_norm_out_batch_vec4 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "rms_norm_out_batch_f32_vec4",
+        )
+        .context("Failed to compile rms_norm_out_batch_f32_vec4 kernel")?;
         let rms_norm_out_batch_f16 = ComputePipeline::from_source(
             device.device(),
             ELEMENTWISE_SHADER_SRC,
@@ -4840,6 +5273,7 @@ impl ElementwiseKernels {
             rms_norm_batch,
             rms_norm_out,
             rms_norm_out_batch,
+            rms_norm_out_batch_vec4,
             rms_norm_out_batch_f16,
             residual_add_rms_norm_out_batch,
             residual_add_rms_norm_out_batch_f16,
@@ -4982,7 +5416,14 @@ impl ElementwiseKernels {
         n_rows: u32,
         eps: f32,
     ) {
-        encoder.setComputePipelineState(self.rms_norm_out_batch.state());
+        // Use float4-vectorized kernel when dim is divisible by 4 (always true for LLM dims).
+        // Reference: llama.cpp kernel_rms_norm_fuse_impl<float4, F>.
+        let use_vec4 = n.is_multiple_of(4);
+        encoder.setComputePipelineState(if use_vec4 {
+            self.rms_norm_out_batch_vec4.state()
+        } else {
+            self.rms_norm_out_batch.state()
+        });
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(weight.mtl_buffer()), 0, 1);

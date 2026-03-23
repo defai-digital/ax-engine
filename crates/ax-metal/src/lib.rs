@@ -65,19 +65,25 @@ fn init_batch_f16in_route_defaults() {
         return;
     }
 
+    let profile = crate::profile::global_profile();
     let n_threshold = match std::env::var("AX_METAL_F16IN_SMALL_N") {
         Ok(v) => v.trim().parse::<u32>().unwrap_or(1),
-        Err(_) => 1,
+        Err(_) => profile.batch_prefill.small_n_threshold,
     };
     let m_max = match std::env::var("AX_METAL_F16IN_SMALL_M_MAX") {
         Ok(v) => v.trim().parse::<u32>().unwrap_or(0),
-        Err(_) => 0,
+        Err(_) => profile.batch_prefill.small_m_max,
     };
     BATCH_F16IN_SMALL_N_THRESHOLD.store(n_threshold, Ordering::Relaxed);
     BATCH_F16IN_SMALL_M_MAX.store(m_max, Ordering::Relaxed);
 }
 
 /// Get current f16-input batch routing thresholds (small-kernel route).
+///
+/// Precedence:
+/// 1) `AX_METAL_F16IN_SMALL_N` / `AX_METAL_F16IN_SMALL_M_MAX`
+/// 2) kernel profile `batch_prefill.small_*`
+/// 3) built-in defaults
 pub fn batch_f16in_route_config() -> (u32, u32) {
     init_batch_f16in_route_defaults();
     (
@@ -94,6 +100,15 @@ pub fn set_batch_f16in_route_config(small_n_threshold: u32, small_m_max: u32) {
     init_batch_f16in_route_defaults();
     BATCH_F16IN_SMALL_N_THRESHOLD.store(small_n_threshold, Ordering::Relaxed);
     BATCH_F16IN_SMALL_M_MAX.store(small_m_max, Ordering::Relaxed);
+}
+
+pub(crate) fn sync_batch_f16in_route_from_profile(small_n_threshold: u32, small_m_max: u32) {
+    if std::env::var("AX_METAL_F16IN_SMALL_N").is_ok()
+        || std::env::var("AX_METAL_F16IN_SMALL_M_MAX").is_ok()
+    {
+        return;
+    }
+    set_batch_f16in_route_config(small_n_threshold, small_m_max);
 }
 
 pub(crate) fn inc_command_buffer_count() {

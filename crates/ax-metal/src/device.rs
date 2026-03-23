@@ -9,7 +9,7 @@ use objc2::rc::autoreleasepool;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{
     MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
-    MTLComputeCommandEncoder, MTLCreateSystemDefaultDevice, MTLDevice,
+    MTLComputeCommandEncoder, MTLCreateSystemDefaultDevice, MTLDevice, MTLDispatchType,
 };
 
 use crate::inc_command_buffer_count;
@@ -159,6 +159,62 @@ impl MetalDevice {
         }
 
         Ok(())
+    }
+
+    /// Like [`execute_sync`] but creates the encoder with `MTLDispatchTypeConcurrent`.
+    ///
+    /// With a concurrent encoder, independent kernel dispatches (those whose
+    /// memory ranges don't overlap) can execute in parallel on the GPU.
+    /// Memory barriers (`memoryBarrierWithScope`) must be inserted explicitly
+    /// between dependent dispatches — the GPU will NOT serialize them.
+    ///
+    /// This matches llama.cpp's graph_compute strategy: encode the entire
+    /// forward pass into one command buffer with concurrent dispatch, using
+    /// barriers only where data dependencies require serialization.
+    pub fn execute_sync_concurrent<F>(&self, f: F) -> anyhow::Result<()>
+    where
+        F: FnOnce(&ProtocolObject<dyn MTLComputeCommandEncoder>) -> anyhow::Result<()>,
+    {
+        inc_command_buffer_count();
+        let cmd_buf = self.command_buffer()?;
+        let encoder = cmd_buf
+            .computeCommandEncoderWithDispatchType(MTLDispatchType::Concurrent)
+            .context("Failed to create concurrent compute command encoder")?;
+
+        f(&encoder)?;
+
+        encoder.endEncoding();
+        cmd_buf.commit();
+        cmd_buf.waitUntilCompleted();
+
+        if let Some(error) = cmd_buf.error() {
+            bail!("Metal command buffer error: {:?}", error);
+        }
+
+        Ok(())
+    }
+
+    /// Encode and submit a concurrent command buffer without waiting for completion.
+    ///
+    /// Returns an [`InflightFrame`] that the caller can wait on via [`wait_frame`]
+    /// when the results are actually needed. This matches llama.cpp's strategy
+    /// of asynchronous GPU submission — the CPU can do useful work (e.g. KV
+    /// finalization bookkeeping) while the GPU is still computing.
+    pub fn execute_async_concurrent<F>(&self, f: F) -> anyhow::Result<InflightFrame>
+    where
+        F: FnOnce(&ProtocolObject<dyn MTLComputeCommandEncoder>) -> anyhow::Result<()>,
+    {
+        inc_command_buffer_count();
+        let cmd_buf = self.command_buffer()?;
+        let encoder = cmd_buf
+            .computeCommandEncoderWithDispatchType(MTLDispatchType::Concurrent)
+            .context("Failed to create concurrent compute command encoder")?;
+
+        f(&encoder)?;
+
+        encoder.endEncoding();
+        cmd_buf.commit();
+        Ok(InflightFrame { cmd_buf })
     }
 
     /// Encode compute commands into a new command buffer without committing.

@@ -3363,3 +3363,254 @@ kernel void attention_prefill_cache_fa2_hd256(
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FA2 prefill with simdgroup matrix operations — head_dim=128
+//
+// Uses Apple Silicon simdgroup_half8x8 hardware matrix units for both
+// QK^T and O=S*V, matching llama.cpp's flash_attn_ext approach.
+//
+// Parallelism strategy (matches llama.cpp):
+//   QK^T phase: simdgroups divide KV dimension (NC=2 blocks of 8 KV each)
+//   Softmax:    simdgroups divide Q  dimension (NQ=2 queries each)
+//   OV phase:   simdgroups divide DV dimension (NO=4 blocks of 8 dims each)
+//
+// Grid: (ceil(n_tokens/8), n_heads) threadgroups.
+// TG: 128 threads = 4 simdgroups × 32 threads.
+//
+// Threadgroup memory: ~15 KB
+//   sq[8×128] half  = 2 KB   Q tile
+//   so[8×128] half  = 2 KB   O accumulator
+//   ss[8×64]  half  = 1 KB   softmax scores
+//   sk[4][8×128] half = 8 KB per-simdgroup K scratch (reused for V)
+//   + small scalars
+// ═══════════════════════════════════════════════════════════════════════════
+
+constant uint FA2S_Q   = 8;      // queries per threadgroup
+constant uint FA2S_C   = 64;     // KV tokens per tile
+constant uint FA2S_NSG = 4;      // simdgroups per threadgroup
+constant uint FA2S_NW  = 32;     // threads per simdgroup
+constant uint FA2S_TG  = FA2S_NW * FA2S_NSG;  // 128 threads
+constant uint FA2S_HD  = 128;    // head_dim
+
+constant uint FA2S_NQ  = FA2S_Q / FA2S_NSG;            // 2 queries per SG (softmax)
+constant uint FA2S_NC  = (FA2S_C / 8) / FA2S_NSG;      // 2 KV-blocks per SG (QK^T)
+constant uint FA2S_NO  = (FA2S_HD / 8) / FA2S_NSG;     // 4 output-blocks per SG (OV)
+
+kernel void attention_prefill_fa2_simd_hd128(
+    device const float* Q_buf   [[buffer(0)]],
+    device const float* K_buf   [[buffer(1)]],
+    device const float* V_buf   [[buffer(2)]],
+    device float* O_buf         [[buffer(3)]],
+    constant uint& n_tokens     [[buffer(4)]],
+    constant uint& n_heads      [[buffer(5)]],
+    constant uint& n_kv_heads   [[buffer(6)]],
+    constant uint& head_dim     [[buffer(7)]],
+    uint2 tg_id       [[threadgroup_position_in_grid]],
+    uint  lid          [[thread_index_in_threadgroup]],
+    uint  simd_lane    [[thread_index_in_simdgroup]],
+    uint  simd_id      [[simdgroup_index_in_threadgroup]]
+) {
+    uint tile_q = tg_id.x * FA2S_Q;
+    uint h      = tg_id.y;
+    if (h >= n_heads) return;
+
+    uint heads_per_kv = n_heads / n_kv_heads;
+    uint kv_h         = h / heads_per_kv;
+    uint q_stride     = n_heads * FA2S_HD;
+    uint kv_stride    = n_kv_heads * FA2S_HD;
+    constexpr float inv_sqrt_hd = 0.08838834764831843f; // 1/sqrt(128)
+
+    // ── Threadgroup memory ──────────────────────────────────────────
+    threadgroup half  sq[FA2S_Q * FA2S_HD];                 // 2 KB: Q tile
+    threadgroup half  so[FA2S_Q * FA2S_HD];                 // 2 KB: O accumulator
+    threadgroup half  ss[FA2S_Q * FA2S_C];                  // 1 KB: scores
+    threadgroup half  sk[FA2S_NSG * 8 * FA2S_HD];           // 8 KB: per-SG K/V scratch
+
+    // Per-query online softmax state (register, per simdgroup)
+    float S[FA2S_NQ] = {};
+    float M[FA2S_NQ];
+    for (uint i = 0; i < FA2S_NQ; i++) M[i] = -INFINITY;
+
+    // ── Load Q into threadgroup as half ──────────────────────────────
+    for (uint i = lid; i < FA2S_Q * FA2S_HD; i += FA2S_TG) {
+        uint qi = i / FA2S_HD;
+        uint d  = i % FA2S_HD;
+        uint gqi = tile_q + qi;
+        sq[i] = (gqi < n_tokens)
+            ? half(Q_buf[gqi * q_stride + h * FA2S_HD + d])
+            : half(0.0h);
+    }
+
+    // Zero O accumulator
+    for (uint i = lid; i < FA2S_Q * FA2S_HD; i += FA2S_TG) {
+        so[i] = half(0.0h);
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    uint attend_range = min(tile_q + FA2S_Q, n_tokens);
+
+    // ── Main tile loop over KV sequence ──────────────────────────────
+    for (uint tile_kv = 0; tile_kv < attend_range; tile_kv += FA2S_C) {
+        uint kv_tile_len = min(uint(FA2S_C), attend_range - tile_kv);
+
+        // ── Phase 1: QK^T via simdgroup_half8x8 ─────────────────────
+        // Each simdgroup handles NC=2 blocks of 8 KV tokens.
+        for (uint cc = 0; cc < FA2S_NC; cc++) {
+            uint block_idx = cc * FA2S_NSG + simd_id;
+            uint gkv_base  = tile_kv + block_idx * 8;
+
+            // Load K[8×HD] into per-simdgroup scratch as half
+            threadgroup half* my_sk = sk + simd_id * (8 * FA2S_HD);
+            for (uint i = simd_lane; i < 8 * FA2S_HD; i += FA2S_NW) {
+                uint ki = i / FA2S_HD;
+                uint d  = i % FA2S_HD;
+                uint gkv = gkv_base + ki;
+                my_sk[i] = (gkv < attend_range)
+                    ? half(K_buf[gkv * kv_stride + kv_h * FA2S_HD + d])
+                    : half(0.0h);
+            }
+
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+
+            // Compute QK^T [8q × 8k] via 8×8 matrix multiply
+            simdgroup_half8x8 mqk = make_filled_simdgroup_matrix<half, 8>(half(0.0h));
+
+            for (uint dk = 0; dk < FA2S_HD; dk += 16) {
+                simdgroup_half8x8 mq0, mq1, mk0, mk1;
+                // Q fragments: rows=queries, cols=dk..dk+8
+                simdgroup_load(mq0, sq + dk,     FA2S_HD);
+                simdgroup_load(mq1, sq + dk + 8, FA2S_HD);
+                // K fragments: transposed so rows=dk..dk+8, cols=keys
+                simdgroup_load(mk0, my_sk + dk,     FA2S_HD, ulong2(0, 0), true);
+                simdgroup_load(mk1, my_sk + dk + 8, FA2S_HD, ulong2(0, 0), true);
+
+                simdgroup_multiply_accumulate(mqk, mq0, mk0, mqk);
+                simdgroup_multiply_accumulate(mqk, mq1, mk1, mqk);
+            }
+
+            // Store QK^T [8q × 8k] into score buffer
+            simdgroup_store(mqk, ss + block_idx * 8, FA2S_C);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // ── Phase 2: Online softmax (parallel over Q) ────────────────
+        // Each simdgroup handles NQ=2 queries.
+        // 32 lanes × 2 values = 64 = C scores per query.
+        for (uint jj = 0; jj < FA2S_NQ; jj++) {
+            uint j   = jj * FA2S_NSG + simd_id;
+            uint gqi = tile_q + j;
+            float prev_max = M[jj];
+
+            // Each lane reads 2 score values
+            uint ki0 = simd_lane * 2;
+            uint ki1 = ki0 + 1;
+            uint gkv0 = tile_kv + ki0;
+            uint gkv1 = tile_kv + ki1;
+
+            // Read raw QK^T, apply scale + causal mask
+            float s0 = -INFINITY, s1 = -INFINITY;
+            if (ki0 < kv_tile_len && gkv0 <= gqi) {
+                s0 = float(ss[j * FA2S_C + ki0]) * inv_sqrt_hd;
+            }
+            if (ki1 < kv_tile_len && gkv1 <= gqi) {
+                s1 = float(ss[j * FA2S_C + ki1]) * inv_sqrt_hd;
+            }
+
+            // Tile-wide max via SIMD reduction
+            float new_max = simd_max(max(max(s0, s1), prev_max));
+
+            // Correction for previous accumulator
+            float ms = exp(prev_max - new_max);
+
+            // Softmax exp and sum
+            float e0 = exp(s0 - new_max);
+            float e1 = exp(s1 - new_max);
+            float tile_sum = simd_sum(e0 + e1);
+
+            M[jj] = new_max;
+            S[jj] = S[jj] * ms + tile_sum;
+
+            // Store softmax probabilities back to ss
+            ss[j * FA2S_C + ki0] = half(e0);
+            ss[j * FA2S_C + ki1] = half(e1);
+
+            // Correct O accumulator: so[j, :] *= ms
+            for (uint d = simd_lane; d < FA2S_HD; d += FA2S_NW) {
+                so[j * FA2S_HD + d] = half(float(so[j * FA2S_HD + d]) * ms);
+            }
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // ── Phase 3: O += S × V via simdgroup_half8x8 ───────────────
+        // Each simdgroup handles NO=4 blocks of 8 output dimensions.
+        // All simdgroups iterate over all C/8 score blocks.
+
+        // Load O accumulators into simdgroup registers
+        simdgroup_half8x8 lo[FA2S_NO];
+        {
+            threadgroup half* sop = so + 8 * simd_id;
+            for (uint oo = 0; oo < FA2S_NO; oo++) {
+                simdgroup_load(lo[oo], sop, FA2S_HD);
+                sop += 8 * FA2S_NSG;
+            }
+        }
+
+        for (uint cc = 0; cc < FA2S_C / 8; cc++) {
+            // Load scores [8q × 8k] for this KV block
+            simdgroup_half8x8 ms_mat;
+            simdgroup_load(ms_mat, ss + 8 * cc, FA2S_C);
+
+            // For each output-dim block owned by this simdgroup
+            for (uint oo = 0; oo < FA2S_NO; oo++) {
+                uint dv_block  = oo * FA2S_NSG + simd_id;
+                uint dv_offset = kv_h * FA2S_HD + dv_block * 8;
+                uint gkv_base  = tile_kv + cc * 8;
+
+                // Load V[8k × 8d] into per-simdgroup scratch (reuse sk, 64 half)
+                threadgroup half* my_sv = sk + simd_id * 64;
+                for (uint i = simd_lane; i < 64; i += FA2S_NW) {
+                    uint vi = i / 8;
+                    uint d  = i % 8;
+                    uint gkv = gkv_base + vi;
+                    my_sv[i] = (gkv < attend_range)
+                        ? half(V_buf[gkv * kv_stride + dv_offset + d])
+                        : half(0.0h);
+                }
+
+                simdgroup_barrier(mem_flags::mem_threadgroup);
+
+                simdgroup_half8x8 mv;
+                simdgroup_load(mv, my_sv, 8);
+                simdgroup_multiply_accumulate(lo[oo], ms_mat, mv, lo[oo]);
+            }
+        }
+
+        // Store O accumulators back to threadgroup
+        {
+            threadgroup half* sop = so + 8 * simd_id;
+            for (uint oo = 0; oo < FA2S_NO; oo++) {
+                simdgroup_store(lo[oo], sop, FA2S_HD);
+                sop += 8 * FA2S_NSG;
+            }
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // ── Write final output (divide by softmax sum) ───────────────────
+    for (uint jj = 0; jj < FA2S_NQ; jj++) {
+        uint j   = jj * FA2S_NSG + simd_id;
+        uint gqi = tile_q + j;
+        if (gqi < n_tokens && S[jj] > 0.0f) {
+            float inv_sum = 1.0f / S[jj];
+            for (uint d = simd_lane; d < FA2S_HD; d += FA2S_NW) {
+                O_buf[gqi * q_stride + h * FA2S_HD + d] =
+                    float(so[j * FA2S_HD + d]) * inv_sum;
+            }
+        }
+    }
+}

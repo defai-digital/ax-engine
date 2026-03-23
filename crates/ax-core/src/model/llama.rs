@@ -2109,7 +2109,10 @@ impl LlamaModel {
     pub fn with_backend(config: ModelConfig, backend: Box<dyn Backend>) -> Self {
         let forward = crate::model::arch_registry::forward_for_arch(&config.architecture)
             .unwrap_or_else(|e| {
-                panic!("unsupported model architecture '{}': {e}", config.architecture)
+                panic!(
+                    "unsupported model architecture '{}': {e}",
+                    config.architecture
+                )
             });
 
         if let Err(e) = forward.validate_config(&config) {

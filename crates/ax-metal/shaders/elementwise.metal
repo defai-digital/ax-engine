@@ -177,6 +177,63 @@ kernel void rms_norm_out_batch_f32(
     }
 }
 
+// ── RMSNorm Batch (out-of-place, float4 vectorized) ──────────────────
+//
+// Same as rms_norm_out_batch_f32 but processes 4 elements per iteration
+// via float4 dot product. Requires n % 4 == 0 (always true for LLM dims).
+// Reference: llama.cpp kernel_rms_norm_fuse_impl<float4, F>.
+kernel void rms_norm_out_batch_f32_vec4(
+    device const float* x      [[buffer(0)]],
+    device const float* weight [[buffer(1)]],
+    device float* out          [[buffer(2)]],
+    constant uint& n           [[buffer(3)]],
+    constant uint& n_rows      [[buffer(4)]],
+    constant float& eps        [[buffer(5)]],
+    uint row                   [[threadgroup_position_in_grid]],
+    uint lid                   [[thread_index_in_threadgroup]],
+    uint simd_lane             [[thread_index_in_simdgroup]],
+    uint simd_id               [[simdgroup_index_in_threadgroup]]
+) {
+    if (row >= n_rows) return;
+
+    uint base = row * n;
+    uint n4 = n / 4;
+
+    device const float4* x4 = (device const float4*)(x + base);
+    device const float4* w4 = (device const float4*)weight;
+    device float4* o4       = (device float4*)(out + base);
+
+    float sum_sq = 0.0f;
+    for (uint i = lid; i < n4; i += NORM_TG_SIZE) {
+        sum_sq += dot(x4[i], x4[i]);
+    }
+
+    sum_sq = simd_sum(sum_sq);
+
+    constexpr uint n_groups = NORM_TG_SIZE / 32;
+    threadgroup float simd_sums[n_groups];
+    if (simd_lane == 0) {
+        simd_sums[simd_id] = sum_sq;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    threadgroup float shared_inv_rms;
+    if (simd_id == 0) {
+        sum_sq = (simd_lane < n_groups) ? simd_sums[simd_lane] : 0.0f;
+        sum_sq = simd_sum(sum_sq);
+        if (simd_lane == 0) {
+            shared_inv_rms = rsqrt(sum_sq / float(n) + eps);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float inv_rms = shared_inv_rms;
+
+    for (uint i = lid; i < n4; i += NORM_TG_SIZE) {
+        o4[i] = x4[i] * inv_rms * w4[i];
+    }
+}
+
 // ── RMSNorm Batch (out-of-place, f16 output) ─────────────────────────
 //
 // For each row r in [0, n_rows):

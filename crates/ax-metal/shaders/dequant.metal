@@ -660,6 +660,187 @@ kernel void dequant_batch_q4_k(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// dequant_batch_q4_k_v2 — 2-B-fragment inner loop (llama.cpp pattern)
+//
+// Same tile dimensions as dequant_batch_q4_k (BM=32, BN=64, BK=64) but
+// restructured for 4 simdgroups (TG=128) instead of 8 (TG=256).
+//
+// Each simdgroup handles 16 N-rows (2 blocks of 8) and all 32 M-cols,
+// loading 2 B fragments per K-step and reusing 4 A fragments across both:
+//
+//   OLD (v1): 1 B × 4 A = 4 MACs  → 5 loads/step → 0.80 MACs/load
+//   NEW (v2): 2 B × 4 A = 8 MACs  → 6 loads/step → 1.33 MACs/load  (+66%)
+//
+// This matches llama.cpp's kernel_mul_mm inner loop structure.
+//
+// Threadgroup memory:
+//   half tg_A[32 × 64]          = 4 KB
+//   half tg_B[64 × 64]          = 8 KB
+//   half row_dsc/dmin × 4       = 256 B
+//   float out_tile[64 × 32]     = 8 KB  (boundary path only)
+//   Total ≈ 20.25 KB
+//
+// TG: 128 threads (4 simdgroups × 32 threads)
+// Grid: ceil(M/32) × ceil(N/64) threadgroups
+// ═══════════════════════════════════════════════════════════════════════════
+
+constant uint V2_BM = 32;
+constant uint V2_BN = 64;
+constant uint V2_BK = 64;
+constant uint V2_TG = 128;   // 4 simdgroups
+constant uint V2_NSG = 4;
+
+kernel void dequant_batch_q4_k_v2(
+    device const Q4_K_Block* A [[buffer(0)]],
+    device const float* B      [[buffer(1)]],
+    device float* C            [[buffer(2)]],
+    constant uint& M           [[buffer(3)]],
+    constant uint& N           [[buffer(4)]],
+    constant uint& K           [[buffer(5)]],
+    uint2 group_id             [[threadgroup_position_in_grid]],
+    uint  tid                  [[thread_index_in_threadgroup]],
+    uint  simd_id              [[simdgroup_index_in_threadgroup]],
+    uint  simd_lane            [[thread_index_in_simdgroup]]
+) {
+    uint tile_m = group_id.x * V2_BM;
+    uint tile_n = group_id.y * V2_BN;
+
+    threadgroup half tg_A[V2_BM * V2_BK];       // 4 KB
+    threadgroup half tg_B[V2_BN * V2_BK];       // 8 KB
+    threadgroup half row_dsc1[V2_BM];
+    threadgroup half row_dmin1[V2_BM];
+    threadgroup half row_dsc2[V2_BM];
+    threadgroup half row_dmin2[V2_BM];
+    threadgroup float out_tile[V2_BN * V2_BM];  // 8 KB (boundary path)
+
+    // 8 half-precision accumulators: 2 B-blocks × 4 A-blocks.
+    // Using half instead of float halves register pressure (1 KB vs 2 KB per SG),
+    // avoiding register spilling on Apple Silicon. The MAC inputs are already half,
+    // so accumulating in half is natural. Precision is sufficient for Q4_K inference.
+    simdgroup_half8x8 acc0, acc1, acc2, acc3;  // B0 × A0..A3
+    simdgroup_half8x8 acc4, acc5, acc6, acc7;  // B1 × A0..A3
+    acc0 = make_filled_simdgroup_matrix<half, 8>(half(0.0h));
+    acc1 = make_filled_simdgroup_matrix<half, 8>(half(0.0h));
+    acc2 = make_filled_simdgroup_matrix<half, 8>(half(0.0h));
+    acc3 = make_filled_simdgroup_matrix<half, 8>(half(0.0h));
+    acc4 = make_filled_simdgroup_matrix<half, 8>(half(0.0h));
+    acc5 = make_filled_simdgroup_matrix<half, 8>(half(0.0h));
+    acc6 = make_filled_simdgroup_matrix<half, 8>(half(0.0h));
+    acc7 = make_filled_simdgroup_matrix<half, 8>(half(0.0h));
+
+    uint blocks_per_row = K / Q4_K_BLOCK_VALUES;
+
+    for (uint kt = 0; kt < K; kt += V2_BK) {
+        uint block_idx = kt / Q4_K_BLOCK_VALUES;
+        uint pair = (kt % Q4_K_BLOCK_VALUES) / V2_BK;
+
+        // Phase 1: preload per-row dequant params.
+        if (tid < V2_BM) {
+            uint global_r = tile_m + tid;
+            if (global_r < M) {
+                device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+                float d    = float(blk.d);
+                float dmin = float(blk.dmin);
+                float2 sm1 = get_scale_min_q4k(pair * 2,     blk.scales);
+                float2 sm2 = get_scale_min_q4k(pair * 2 + 1, blk.scales);
+                row_dsc1[tid]  = half(d * sm1.x);
+                row_dmin1[tid] = half(dmin * sm1.y);
+                row_dsc2[tid]  = half(d * sm2.x);
+                row_dmin2[tid] = half(dmin * sm2.y);
+            } else {
+                row_dsc1[tid]  = half(0.0f);
+                row_dmin1[tid] = half(0.0f);
+                row_dsc2[tid]  = half(0.0f);
+                row_dmin2[tid] = half(0.0f);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Phase 2: paired nibble extraction → tg_A[BM × BK].
+        // 128 threads, BM*(BK/2) = 32*32 = 1024 elements → 8 per thread.
+        for (uint i = tid; i < V2_BM * (V2_BK / 2); i += V2_TG) {
+            uint r = i / (V2_BK / 2);
+            uint b = i % (V2_BK / 2);
+            uint global_r = tile_m + r;
+            if (global_r < M) {
+                device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+                uchar byte = blk.qs[pair * 32 + b];
+                tg_A[r * V2_BK + b]      = half(float(row_dsc1[r]) * float(byte & 0x0F) - float(row_dmin1[r]));
+                tg_A[r * V2_BK + b + 32] = half(float(row_dsc2[r]) * float(byte >> 4)   - float(row_dmin2[r]));
+            } else {
+                tg_A[r * V2_BK + b]      = half(0.0f);
+                tg_A[r * V2_BK + b + 32] = half(0.0f);
+            }
+        }
+
+        // Phase 3: load B tile, cast float→half.
+        // 128 threads, BN*BK = 64*64 = 4096 elements → 32 per thread.
+        for (uint i = tid; i < V2_BN * V2_BK; i += V2_TG) {
+            uint r = i / V2_BK;
+            uint c = i % V2_BK;
+            uint gn = tile_n + r;
+            uint gk = kt + c;
+            tg_B[r * V2_BK + c] = (gn < N && gk < K) ? half(B[gn * K + gk]) : half(0.0f);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Phase 4: 2-B-fragment inner loop.
+        // Each simdgroup handles N-rows [simd_id*16 .. simd_id*16+15].
+        // b0 = first 8 rows, b1 = second 8 rows.
+        // A fragments a0..a3 cover all 32 M-rows (shared across b0 and b1).
+        for (uint kk = 0; kk < V2_BK / 8; kk++) {
+            simdgroup_half8x8 b0, b1;
+            simdgroup_load(b0, &tg_B[(simd_id * 16)     * V2_BK + kk * 8], V2_BK);
+            simdgroup_load(b1, &tg_B[(simd_id * 16 + 8) * V2_BK + kk * 8], V2_BK);
+
+            simdgroup_half8x8 a0, a1, a2, a3;
+            simdgroup_load(a0, &tg_A[0  * V2_BK + kk * 8], V2_BK, ulong2(0,0), true);
+            simdgroup_load(a1, &tg_A[8  * V2_BK + kk * 8], V2_BK, ulong2(0,0), true);
+            simdgroup_load(a2, &tg_A[16 * V2_BK + kk * 8], V2_BK, ulong2(0,0), true);
+            simdgroup_load(a3, &tg_A[24 * V2_BK + kk * 8], V2_BK, ulong2(0,0), true);
+
+            // 8 MACs: b0 × a0..a3, b1 × a0..a3
+            simdgroup_multiply_accumulate(acc0, b0, a0, acc0);
+            simdgroup_multiply_accumulate(acc1, b0, a1, acc1);
+            simdgroup_multiply_accumulate(acc2, b0, a2, acc2);
+            simdgroup_multiply_accumulate(acc3, b0, a3, acc3);
+            simdgroup_multiply_accumulate(acc4, b1, a0, acc4);
+            simdgroup_multiply_accumulate(acc5, b1, a1, acc5);
+            simdgroup_multiply_accumulate(acc6, b1, a2, acc6);
+            simdgroup_multiply_accumulate(acc7, b1, a3, acc7);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Write output: stage half accumulators to threadgroup, convert to float on write.
+    // Reuse tg_B as half staging buffer (8 KB, fits 16×32 per SG = 2 KB, 4 SGs = 8 KB).
+    threadgroup half* stg = (threadgroup half*)tg_B;  // reuse B tile (no longer needed)
+
+    simdgroup_store(acc0, &stg[(simd_id * 16)     * V2_BM + 0],  V2_BM);
+    simdgroup_store(acc1, &stg[(simd_id * 16)     * V2_BM + 8],  V2_BM);
+    simdgroup_store(acc2, &stg[(simd_id * 16)     * V2_BM + 16], V2_BM);
+    simdgroup_store(acc3, &stg[(simd_id * 16)     * V2_BM + 24], V2_BM);
+    simdgroup_store(acc4, &stg[(simd_id * 16 + 8) * V2_BM + 0],  V2_BM);
+    simdgroup_store(acc5, &stg[(simd_id * 16 + 8) * V2_BM + 8],  V2_BM);
+    simdgroup_store(acc6, &stg[(simd_id * 16 + 8) * V2_BM + 16], V2_BM);
+    simdgroup_store(acc7, &stg[(simd_id * 16 + 8) * V2_BM + 24], V2_BM);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Convert half→float and write to global output (with bounds check).
+    for (uint i = tid; i < V2_BN * V2_BM; i += V2_TG) {
+        uint r = i / V2_BM;
+        uint c = i % V2_BM;
+        uint gn = tile_n + r;
+        uint gm = tile_m + c;
+        if (gn < N && gm < M) {
+            C[gn * M + gm] = float(stg[r * V2_BM + c]);
+        }
+    }
+}
+
 // BN=32 variant of dequant_batch_q4_k for small-N prefill.
 //
 // Uses SB_BN=32 and SB_TG=128 (4 simdgroups × 8 N-rows = 32-row N-tiles).
@@ -810,6 +991,336 @@ kernel void dequant_batch_q4_k_bn32(
             C[gn * M + gm] = out_tile[r * DB_BM + c];
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// dequant_batch_q4_k_blocked — Blocked threadgroup layout (llama.cpp pattern)
+//
+// Ports llama.cpp's kernel_mul_mm_q4_K_f32 architecture:
+//   - Tile: BM=64, BN=32, BK=32
+//   - TG: 128 threads (4 simdgroups)
+//   - TG memory: 6-8 KB (sa=4KB blocked + sb=2KB blocked)
+//   - Layout: BLOCKED — each 8×8 fragment at stride 8 (1 cache line)
+//   - Dequant: all 128 threads inline, each producing 16 values
+//   - Inner loop: 4A + 2B loads + 8 MACs per K/8 step (1.33 MACs/load)
+//
+// Why blocked layout is faster:
+//   simdgroup_load with stride 8 reads an 8×8 fragment from 1 cache line (128B).
+//   Row-major stride 64 reads from 8 cache lines with bank conflicts.
+//
+// Memory map (dynamic threadgroup via [[threadgroup(0)]]):
+//   [0..4095]     sa: 64×32 half in blocked layout (32 blocks of 64 elements)
+//   [4096..6143]  sb: 32×32 half in blocked layout (16 blocks of 64 elements)
+//   Total: 6144 bytes (6 KB). Output staging reuses sa as float (8192 bytes).
+//
+// Grid: (ceil(N/32), ceil(M/64)) threadgroups.
+// Requires: K % 256 == 0 (Q4_K block size).
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Scale extraction matching llama.cpp's get_scale_min_k4_just2.
+// Returns uchar2(scale, min) for sub-block (j, k) from 6-bit packed scales.
+inline uchar2 get_scale_min_k4_just2(int j, int k, device const uchar* q) {
+    return j < 4
+        ? uchar2{uchar(q[j + 0 + k] & 63), uchar(q[j + 4 + k] & 63)}
+        : uchar2{uchar((q[j + 4 + k] & 0xF) | ((q[j - 4 + k] & 0xc0) >> 2)),
+                  uchar((q[j + 4 + k] >> 4) | ((q[j + 0 + k] & 0xc0) >> 2))};
+}
+
+// Per-thread dequantization matching llama.cpp's dequantize_q4_K.
+// Produces 16 half values in a 4×4 thread-local matrix from one Q4_K sub-block.
+inline void dequantize_q4k_blocked(
+    device const Q4_K_Block* xb,
+    short il,
+    thread half4x4& reg
+) {
+    device const uchar* q = xb->qs;
+
+    short is = (il / 4) * 2;
+    q = q + (il / 4) * 32 + 16 * (il & 1);
+    il = il & 3;
+    const uchar2 sc = get_scale_min_k4_just2(is, il / 2, xb->scales);
+    const float d   = il < 2 ? float(xb->d) : float(xb->d) / 16.0f;
+    const float mn  = float(xb->dmin);
+    const float dl  = d * float(sc[0]);
+    const float ml  = mn * float(sc[1]);
+
+    const ushort mask = il < 2 ? 0x0F : 0xF0;
+    for (int i = 0; i < 16; ++i) {
+        reg[i / 4][i % 4] = half(dl * float(q[i] & mask) - ml);
+    }
+}
+
+kernel void dequant_batch_q4_k_blocked(
+    device const Q4_K_Block* A [[buffer(0)]],  // [M × K/256] quantized weights
+    device const float* B      [[buffer(1)]],  // [N × K] activations (float32)
+    device float* C            [[buffer(2)]],  // [N × M] output (float32)
+    constant uint& M           [[buffer(3)]],  // weight rows (output features)
+    constant uint& N           [[buffer(4)]],  // tokens (batch size)
+    constant uint& K           [[buffer(5)]],  // input features
+    threadgroup char* shmem    [[threadgroup(0)]],
+    uint2 tgpig                [[threadgroup_position_in_grid]],
+    ushort tiitg               [[thread_index_in_threadgroup]],
+    ushort sgitg               [[simdgroup_index_in_threadgroup]]
+) {
+    // Blocked threadgroup buffers.
+    // sa: 64×32 half = 4096 bytes. sb: 32×32 half = 2048 bytes.
+    threadgroup half* sa = (threadgroup half*)(shmem);
+    threadgroup half* sb = (threadgroup half*)(shmem + 4096);
+
+    constexpr short NR0 = 64;   // M-tile (weight rows)
+    constexpr short NR1 = 32;   // N-tile (tokens)
+    constexpr short NK  = 32;   // K-tile
+    constexpr short NL0 = NK / 16;  // = 2: dequant sub-positions per thread
+    constexpr short NL1 = NK / 8;   // = 4: activation sub-positions per thread
+    constexpr short QK_NL = 16;     // Q4_K: 256 values / 16 per dequant call
+
+    // Tile position in output matrix.
+    const int r0 = tgpig.y * NR0;   // M offset (weight rows)
+    const int r1 = tgpig.x * NR1;   // N offset (tokens)
+
+    // Boundary clamping (same as llama.cpp).
+    const short nr0 = short(min(uint(NR0), M - uint(r0)));
+    const short nr1 = short(min(uint(NR1), N - uint(r1)));
+    const short lr0 = short(min(short(tiitg / NL0), short(nr0 - 1)));
+    const short lr1 = short(min(short(tiitg / NL1), short(nr1 - 1)));
+
+    const short il0 = short(tiitg % NL0);
+    short il = il0;
+
+    // Weight pointer: each thread reads its own row's Q4_K block.
+    uint blocks_per_row = K / Q4_K_BLOCK_VALUES;
+    const short offset1 = il0 / QK_NL;  // = 0 for Q4_K (il0 < 16)
+    device const Q4_K_Block* x = A + uint(r0 + lr0) * blocks_per_row + offset1;
+
+    // Activation pointer: each thread reads 8 consecutive K-elements.
+    const short iy = short(8 * (tiitg % NL1));
+    device const float* y = B + uint(r1 + lr1) * K + iy;
+
+    // 8 accumulators: 4 simdgroups × 2 rows × 4 cols = 8 output tiles of 8×8.
+    simdgroup_half8x8 ma[4];
+    simdgroup_half8x8 mb[2];
+    simdgroup_float8x8 mc[8];
+    for (short i = 0; i < 8; i++) {
+        mc[i] = make_filled_simdgroup_matrix<float, 8>(0.0f);
+    }
+
+    // ── K-loop: process NK=32 elements per iteration ──────────────────
+    for (uint loop_k = 0; loop_k < K; loop_k += NK) {
+        // Phase 1: Dequantize A — all 128 threads, each produces 16 values.
+        half4x4 temp_a;
+        dequantize_q4k_blocked(x, il, temp_a);
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Scatter to blocked layout: sa[64*ib + 8*ly + lx].
+        FOR_UNROLL (short i = 0; i < 16; i++) {
+            const short sx = 2 * il0 + i / 8;
+            const short sy = (tiitg / NL0) / 8;
+            const short lx = (tiitg / NL0) % 8;
+            const short ly = i % 8;
+            const short ib = 8 * sx + sy;
+            *(sa + 64 * ib + 8 * ly + lx) = temp_a[i / 4][i % 4];
+        }
+
+        // Phase 2: Load B — all 128 threads, each loads 8 values.
+        // Scatter to blocked layout: sb[64*ib + 8*ly + lx].
+        for (short i = 0; i < 8; ++i) {
+            const short sx = short(tiitg % NL1);
+            const short sy = (tiitg / NL1) / 8;
+            const short lx = i;
+            const short ly = (tiitg / NL1) % 8;
+            const short ib = 4 * sx + sy;
+            *(sb + 64 * ib + 8 * ly + lx) =
+                (loop_k + iy + i < K) ? half(*(y + i)) : half(0.0h);
+        }
+
+        // Advance pointers for next K-tile (llama.cpp pattern).
+        il = (il + 2 < QK_NL) ? il + 2 : il % 2;
+        x  = (il < 2) ? x + (2 + QK_NL - 1) / QK_NL : x;
+        y += NK;
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Phase 3: Compute — blocked simdgroup matmul.
+        // Each simdgroup loads from its quadrant of sa/sb.
+        // lsma selects one of 2 halves of 64 M-rows (32 rows each).
+        // lsmb selects one of 2 halves of 32 N-rows (16 rows each).
+        threadgroup const half* lsma = sa + 4 * 64 * (sgitg % 2);
+        threadgroup const half* lsmb = sb + 2 * 64 * (sgitg / 2);
+
+        FOR_UNROLL (short ik = 0; ik < NK / 8; ik++) {
+            simdgroup_barrier(mem_flags::mem_none);
+
+            FOR_UNROLL (short i = 0; i < 4; i++) {
+                simdgroup_load(ma[i], lsma + 64 * i, 8, ulong2(0, 0), false);
+            }
+
+            simdgroup_barrier(mem_flags::mem_none);
+
+            FOR_UNROLL (short i = 0; i < 2; i++) {
+                simdgroup_load(mb[i], lsmb + 64 * i, 8, ulong2(0, 0), false);
+            }
+
+            simdgroup_barrier(mem_flags::mem_none);
+
+            FOR_UNROLL (short i = 0; i < 8; i++) {
+                simdgroup_multiply_accumulate(mc[i], mb[i / 4], ma[i % 4], mc[i]);
+            }
+
+            lsma += 8 * 64;
+            lsmb += 4 * 64;
+        }
+    }
+
+    // ── Output write ──────────────────────────────────────────────────
+    if (r0 + NR0 <= int(M) && r1 + NR1 <= int(N)) {
+        // Fast path: full tile, direct write to device memory.
+        device float* out = C
+            + uint(r0 + 32 * (sgitg & 1))
+            + uint(r1 + 16 * (sgitg >> 1)) * M;
+
+        for (short i = 0; i < 8; i++) {
+            simdgroup_store(mc[i], out + 8 * (i % 4) + 8 * M * (i / 4), M, ulong2(0, 0), false);
+        }
+    } else {
+        // Slow path: stage through threadgroup memory, bounds-checked write.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        threadgroup float* temp_str = ((threadgroup float*)shmem)
+            + 32 * (sgitg & 1) + 16 * (sgitg >> 1) * NR0;
+
+        for (short i = 0; i < 8; i++) {
+            simdgroup_store(mc[i], temp_str + 8 * (i % 4) + 8 * NR0 * (i / 4),
+                            NR0, ulong2(0, 0), false);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (sgitg == 0) {
+            for (int j = tiitg; j < nr1; j += NR1) {
+                device float*  D  = C + uint(r0) + uint(r1 + j) * M;
+                device float4* D4 = (device float4*)D;
+                threadgroup float*  Cs  = temp_str + j * NR0;
+                threadgroup float4* C4 = (threadgroup float4*)Cs;
+
+                int i = 0;
+                for (; i < nr0 / 4; i++) {
+                    *(D4 + i) = *(C4 + i);
+                }
+                i *= 4;
+                for (; i < nr0; i++) {
+                    *(D + i) = *(Cs + i);
+                }
+            }
+        }
+    }
+}
+
+// ── BN=32 full-tile (no bounds check) ──────────────────────────────────
+//
+// Same as dequant_batch_q4_k_bn32 but without out_tile allocation or
+// boundary checks. Requires N % 32 == 0 and M % 32 == 0.
+//
+// Threadgroup memory:
+//   half tg_A[32 × 64]     = 4 KB
+//   half tg_B[32 × 64]     = 4 KB
+//   half row_dsc/dmin × 4  = 256 B
+//   Total ≈ 8.25 KB  →  3 TGs/SM (vs 12 KB with out_tile → 2 TGs/SM)
+//
+// TG: 128 threads (4 simdgroups × 32 threads)
+// Grid: (M/32) × (N/32) threadgroups
+kernel void dequant_batch_q4_k_bn32_full(
+    device const Q4_K_Block* A [[buffer(0)]],
+    device const float* B      [[buffer(1)]],
+    device float* C            [[buffer(2)]],
+    constant uint& M           [[buffer(3)]],
+    constant uint& N           [[buffer(4)]],
+    constant uint& K           [[buffer(5)]],
+    uint2 group_id             [[threadgroup_position_in_grid]],
+    uint  tid                  [[thread_index_in_threadgroup]],
+    uint  simd_id              [[simdgroup_index_in_threadgroup]],
+    uint  simd_lane            [[thread_index_in_simdgroup]]
+) {
+    uint tile_m = group_id.x * DB_BM;
+    uint tile_n = group_id.y * DB32_BN;
+
+    threadgroup half tg_A[DB_BM * DB_BK];       // 4 KB
+    threadgroup half tg_B[DB32_BN * DB_BK];     // 4 KB
+    threadgroup half row_dsc1[DB_BM];
+    threadgroup half row_dmin1[DB_BM];
+    threadgroup half row_dsc2[DB_BM];
+    threadgroup half row_dmin2[DB_BM];
+    // No out_tile — full tile only, saves 4 KB TG memory.
+
+    simdgroup_float8x8 acc0, acc1, acc2, acc3;
+    acc0 = simdgroup_float8x8(0);
+    acc1 = simdgroup_float8x8(0);
+    acc2 = simdgroup_float8x8(0);
+    acc3 = simdgroup_float8x8(0);
+
+    uint blocks_per_row = K / Q4_K_BLOCK_VALUES;
+
+    for (uint kt = 0; kt < K; kt += DB_BK) {
+        uint block_idx = kt / Q4_K_BLOCK_VALUES;
+        uint pair = (kt % Q4_K_BLOCK_VALUES) / DB_BK;
+
+        if (tid < DB_BM) {
+            uint global_r = tile_m + tid;
+            device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+            float d    = float(blk.d);
+            float dmin = float(blk.dmin);
+            float2 sm1 = get_scale_min_q4k(pair * 2,     blk.scales);
+            float2 sm2 = get_scale_min_q4k(pair * 2 + 1, blk.scales);
+            row_dsc1[tid]  = half(d * sm1.x);
+            row_dmin1[tid] = half(dmin * sm1.y);
+            row_dsc2[tid]  = half(d * sm2.x);
+            row_dmin2[tid] = half(dmin * sm2.y);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint i = tid; i < DB_BM * (DB_BK / 2); i += DB32_TG) {
+            uint r = i / (DB_BK / 2);
+            uint b = i % (DB_BK / 2);
+            uint global_r = tile_m + r;
+            device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+            uchar byte = blk.qs[pair * 32 + b];
+            tg_A[r * DB_BK + b]      = half(float(row_dsc1[r]) * float(byte & 0x0F) - float(row_dmin1[r]));
+            tg_A[r * DB_BK + b + 32] = half(float(row_dsc2[r]) * float(byte >> 4)   - float(row_dmin2[r]));
+        }
+
+        for (uint i = tid; i < DB32_BN * DB_BK; i += DB32_TG) {
+            uint r = i / DB_BK;
+            uint c = i % DB_BK;
+            tg_B[r * DB_BK + c] = half(B[(tile_n + r) * K + kt + c]);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint kk = 0; kk < DB_BK / 8; kk++) {
+            simdgroup_half8x8 b_frag;
+            simdgroup_load(b_frag, &tg_B[simd_id * 8 * DB_BK + kk * 8], DB_BK);
+
+            simdgroup_half8x8 a0, a1, a2, a3;
+            simdgroup_load(a0, &tg_A[0  * DB_BK + kk * 8], DB_BK, ulong2(0,0), true);
+            simdgroup_load(a1, &tg_A[8  * DB_BK + kk * 8], DB_BK, ulong2(0,0), true);
+            simdgroup_load(a2, &tg_A[16 * DB_BK + kk * 8], DB_BK, ulong2(0,0), true);
+            simdgroup_load(a3, &tg_A[24 * DB_BK + kk * 8], DB_BK, ulong2(0,0), true);
+
+            simdgroup_multiply_accumulate(acc0, b_frag, a0, acc0);
+            simdgroup_multiply_accumulate(acc1, b_frag, a1, acc1);
+            simdgroup_multiply_accumulate(acc2, b_frag, a2, acc2);
+            simdgroup_multiply_accumulate(acc3, b_frag, a3, acc3);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Direct store — no bounds check needed (caller guarantees alignment).
+    device float* c_base = C + (tile_n + simd_id * 8) * M + tile_m;
+    simdgroup_store(acc0, c_base + 0,  M);
+    simdgroup_store(acc1, c_base + 8,  M);
+    simdgroup_store(acc2, c_base + 16, M);
+    simdgroup_store(acc3, c_base + 24, M);
 }
 
 // Same batch kernel for Q6_K format.
@@ -1233,6 +1744,109 @@ kernel void dequant_batch_q4_k_full(
     simdgroup_store(acc3, c_base + 24, M);
 }
 
+// ── Inline-dequant full-tile Q4_K batch matmul ─────────────────────────
+//
+// Fuses Phase 1 (32-thread scale preload) into Phase 2 (256-thread dequant).
+// Each thread reads the Q4_K block header (d, dmin, scales) inline during
+// nibble extraction. Eliminates one barrier and the 88%-idle Phase 1.
+//
+// Block headers are tiny (16 bytes) and L1-cached: 32 threads in a simdgroup
+// all read the same row's header, so only one L1 miss per row per simdgroup.
+//
+// Threadgroup memory: same as dequant_batch_q4_k_full minus row_dsc/dmin.
+//   tg_A[32×64] half = 4 KB
+//   tg_B[64×64] half = 8 KB
+//   Total = 12 KB (no scale staging needed)
+//
+// TG: 256 threads (8 simdgroups). Grid: (M/32) × (N/64).
+// Requires M % 32 == 0, N % 64 == 0.
+kernel void dequant_batch_q4_k_inline(
+    device const Q4_K_Block* A [[buffer(0)]],
+    device const float* B      [[buffer(1)]],
+    device float* C            [[buffer(2)]],
+    constant uint& M           [[buffer(3)]],
+    constant uint& N           [[buffer(4)]],
+    constant uint& K           [[buffer(5)]],
+    uint2 group_id             [[threadgroup_position_in_grid]],
+    uint  tid                  [[thread_index_in_threadgroup]],
+    uint  simd_id              [[simdgroup_index_in_threadgroup]],
+    uint  simd_lane            [[thread_index_in_simdgroup]]
+) {
+    uint tile_m = group_id.x * DB_BM;
+    uint tile_n = group_id.y * DB_BN;
+
+    threadgroup half tg_A[DB_BM * DB_BK];   // 4 KB
+    threadgroup half tg_B[DB_BN * DB_BK];   // 8 KB
+    // No row_dsc/dmin arrays — scales extracted inline per thread.
+
+    simdgroup_float8x8 acc0, acc1, acc2, acc3;
+    acc0 = simdgroup_float8x8(0);
+    acc1 = simdgroup_float8x8(0);
+    acc2 = simdgroup_float8x8(0);
+    acc3 = simdgroup_float8x8(0);
+
+    uint blocks_per_row = K / Q4_K_BLOCK_VALUES;
+
+    for (uint kt = 0; kt < K; kt += DB_BK) {
+        uint block_idx = kt / Q4_K_BLOCK_VALUES;
+        uint pair = (kt % Q4_K_BLOCK_VALUES) / DB_BK;
+
+        // Fused Phase 1+2: inline dequant, all 256 threads active.
+        // Each thread reads block header + nibble byte, produces 2 half values.
+        // Block headers (16 B) are L1-cached across threads in the same simdgroup.
+        for (uint i = tid; i < DB_BM * (DB_BK / 2); i += DB_TG) {
+            uint r = i / (DB_BK / 2);   // M-row within tile (0..31)
+            uint b = i % (DB_BK / 2);   // byte index (0..31)
+            device const Q4_K_Block& blk = A[(tile_m + r) * blocks_per_row + block_idx];
+            float d    = float(blk.d);
+            float dmin = float(blk.dmin);
+            float2 sm1 = get_scale_min_q4k(pair * 2,     blk.scales);
+            float2 sm2 = get_scale_min_q4k(pair * 2 + 1, blk.scales);
+            float dsc1 = d * sm1.x;
+            float mn1  = dmin * sm1.y;
+            float dsc2 = d * sm2.x;
+            float mn2  = dmin * sm2.y;
+            uchar byte = blk.qs[pair * 32 + b];
+            tg_A[r * DB_BK + b]      = half(dsc1 * float(byte & 0x0F) - mn1);
+            tg_A[r * DB_BK + b + 32] = half(dsc2 * float(byte >> 4)   - mn2);
+        }
+
+        // Phase 3: B-tile load (unchanged).
+        for (uint i = tid; i < DB_BN * DB_BK; i += DB_TG) {
+            uint r = i / DB_BK;
+            uint c = i % DB_BK;
+            tg_B[r * DB_BK + c] = half(B[(tile_n + r) * K + (kt + c)]);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Phase 4: simdgroup matmul (unchanged).
+        for (uint kk = 0; kk < DB_BK / 8; kk++) {
+            simdgroup_half8x8 b_frag;
+            simdgroup_load(b_frag, &tg_B[simd_id * 8 * DB_BK + kk * 8], DB_BK);
+
+            simdgroup_half8x8 a0, a1, a2, a3;
+            simdgroup_load(a0, &tg_A[0  * DB_BK + kk * 8], DB_BK, ulong2(0,0), true);
+            simdgroup_load(a1, &tg_A[8  * DB_BK + kk * 8], DB_BK, ulong2(0,0), true);
+            simdgroup_load(a2, &tg_A[16 * DB_BK + kk * 8], DB_BK, ulong2(0,0), true);
+            simdgroup_load(a3, &tg_A[24 * DB_BK + kk * 8], DB_BK, ulong2(0,0), true);
+
+            simdgroup_multiply_accumulate(acc0, b_frag, a0, acc0);
+            simdgroup_multiply_accumulate(acc1, b_frag, a1, acc1);
+            simdgroup_multiply_accumulate(acc2, b_frag, a2, acc2);
+            simdgroup_multiply_accumulate(acc3, b_frag, a3, acc3);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    device float* c_base = C + (tile_n + simd_id * 8) * M + tile_m;
+    simdgroup_store(acc0, c_base + 0,  M);
+    simdgroup_store(acc1, c_base + 8,  M);
+    simdgroup_store(acc2, c_base + 16, M);
+    simdgroup_store(acc3, c_base + 24, M);
+}
+
 kernel void dequant_batch_q6_k_full(
     device const Q6_K_Block* A [[buffer(0)]],
     device const float* B      [[buffer(1)]],
@@ -1337,6 +1951,186 @@ kernel void dequant_batch_q6_k_full(
     simdgroup_store(acc1, c_base + 8,  M);
     simdgroup_store(acc2, c_base + 16, M);
     simdgroup_store(acc3, c_base + 24, M);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// dequant_batch_q6_k_blocked — Blocked threadgroup layout for Q6_K
+//
+// Same architecture as dequant_batch_q4_k_blocked (llama.cpp pattern):
+//   BM=64, BN=32, BK=32, TG=128, blocked layout (stride 8), 6 KB TG memory.
+// Only the dequant function differs (Q6_K has 6-bit values: ql[128]+qh[64]).
+//
+// Grid: (ceil(N/32), ceil(M/64)) threadgroups.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Port of llama.cpp's dequantize_q6_K for blocked layout.
+// Each call with il ∈ [0..15] produces 16 half values in a 4×4 matrix.
+inline void dequantize_q6k_blocked(
+    device const Q6_K_Block* xb,
+    short il,
+    thread half4x4& reg
+) {
+    const half d_all = xb->d;
+    device const uint16_t* ql = (device const uint16_t*)xb->ql;
+    device const uint16_t* qh = (device const uint16_t*)xb->qh;
+    device const char*  scales = (device const char*)xb->scales;
+
+    ql = ql + 32 * (il / 8) + 16 * ((il / 2) & 1) + 8 * (il & 1);
+    qh = qh + 16 * (il / 8) + 8 * (il & 1);
+    float sc = float(scales[(il % 2) + 2 * (il / 2)]);
+    il = (il / 2) & 3;
+
+    const uint kmask1 = il > 1 ? (il > 2 ? 0xC0C0C0C0u : 0x30303030u)
+                                : (il > 0 ? 0x0C0C0C0Cu : 0x03030303u);
+    const uint kmask2 = il > 1 ? 0xF0F0F0F0u : 0x0F0F0F0Fu;
+    const float ml  = float(d_all) * sc * 32.0f;
+    const float dl0 = float(d_all) * sc;
+    const float dl1 = dl0 / 256.0f;
+    const float dl2 = dl0 / (256.0f * 256.0f);
+    const float dl3 = dl0 / (256.0f * 256.0f * 256.0f);
+    const uint shr_h = il > 2 ? 2u : 0u;
+    const uint shl_h = il > 1 ? 0u : (il > 0 ? 2u : 4u);
+    const uint shr_l = il > 1 ? 4u : 0u;
+
+    for (int i = 0; i < 4; ++i) {
+        const uint low  = (uint(ql[2 * i]) | (uint(ql[2 * i + 1]) << 16)) & kmask2;
+        const uint high = (uint(qh[2 * i]) | (uint(qh[2 * i + 1]) << 16)) & kmask1;
+        const uint q = ((high << shl_h) >> shr_h) | (low >> shr_l);
+        reg[i][0] = half(dl0 * float(q & 0xFFu)         - ml);
+        reg[i][1] = half(dl1 * float(q & 0xFF00u)        - ml);
+        reg[i][2] = half(dl2 * float(q & 0xFF0000u)      - ml);
+        reg[i][3] = half(dl3 * float(q & 0xFF000000u)    - ml);
+    }
+}
+
+kernel void dequant_batch_q6_k_blocked(
+    device const Q6_K_Block* A [[buffer(0)]],
+    device const float* B      [[buffer(1)]],
+    device float* C            [[buffer(2)]],
+    constant uint& M           [[buffer(3)]],
+    constant uint& N           [[buffer(4)]],
+    constant uint& K           [[buffer(5)]],
+    threadgroup char* shmem    [[threadgroup(0)]],
+    uint2 tgpig                [[threadgroup_position_in_grid]],
+    ushort tiitg               [[thread_index_in_threadgroup]],
+    ushort sgitg               [[simdgroup_index_in_threadgroup]]
+) {
+    threadgroup half* sa = (threadgroup half*)(shmem);
+    threadgroup half* sb = (threadgroup half*)(shmem + 4096);
+
+    constexpr short NR0 = 64;
+    constexpr short NR1 = 32;
+    constexpr short NK  = 32;
+    constexpr short NL0 = NK / 16;  // = 2
+    constexpr short NL1 = NK / 8;   // = 4
+    constexpr short QK_NL = 16;
+
+    const int r0 = tgpig.y * NR0;
+    const int r1 = tgpig.x * NR1;
+
+    const short nr0 = short(min(uint(NR0), M - uint(r0)));
+    const short nr1 = short(min(uint(NR1), N - uint(r1)));
+    const short lr0 = short(min(short(tiitg / NL0), short(nr0 - 1)));
+    const short lr1 = short(min(short(tiitg / NL1), short(nr1 - 1)));
+
+    const short il0 = short(tiitg % NL0);
+    short il = il0;
+
+    uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
+    const short offset1 = il0 / QK_NL;
+    device const Q6_K_Block* x = A + uint(r0 + lr0) * blocks_per_row + offset1;
+
+    const short iy = short(8 * (tiitg % NL1));
+    device const float* y = B + uint(r1 + lr1) * K + iy;
+
+    simdgroup_half8x8 ma[4];
+    simdgroup_half8x8 mb[2];
+    simdgroup_float8x8 mc[8];
+    for (short i = 0; i < 8; i++) {
+        mc[i] = make_filled_simdgroup_matrix<float, 8>(0.0f);
+    }
+
+    for (uint loop_k = 0; loop_k < K; loop_k += NK) {
+        half4x4 temp_a;
+        dequantize_q6k_blocked(x, il, temp_a);
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        FOR_UNROLL (short i = 0; i < 16; i++) {
+            const short sx = 2 * il0 + i / 8;
+            const short sy = (tiitg / NL0) / 8;
+            const short lx = (tiitg / NL0) % 8;
+            const short ly = i % 8;
+            const short ib = 8 * sx + sy;
+            *(sa + 64 * ib + 8 * ly + lx) = temp_a[i / 4][i % 4];
+        }
+
+        for (short i = 0; i < 8; ++i) {
+            const short sx = short(tiitg % NL1);
+            const short sy = (tiitg / NL1) / 8;
+            const short lx = i;
+            const short ly = (tiitg / NL1) % 8;
+            const short ib = 4 * sx + sy;
+            *(sb + 64 * ib + 8 * ly + lx) =
+                (loop_k + iy + i < K) ? half(*(y + i)) : half(0.0h);
+        }
+
+        il = (il + 2 < QK_NL) ? il + 2 : il % 2;
+        x  = (il < 2) ? x + (2 + QK_NL - 1) / QK_NL : x;
+        y += NK;
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        threadgroup const half* lsma = sa + 4 * 64 * (sgitg % 2);
+        threadgroup const half* lsmb = sb + 2 * 64 * (sgitg / 2);
+
+        FOR_UNROLL (short ik = 0; ik < NK / 8; ik++) {
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 4; i++) {
+                simdgroup_load(ma[i], lsma + 64 * i, 8, ulong2(0, 0), false);
+            }
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 2; i++) {
+                simdgroup_load(mb[i], lsmb + 64 * i, 8, ulong2(0, 0), false);
+            }
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 8; i++) {
+                simdgroup_multiply_accumulate(mc[i], mb[i / 4], ma[i % 4], mc[i]);
+            }
+            lsma += 8 * 64;
+            lsmb += 4 * 64;
+        }
+    }
+
+    if (r0 + NR0 <= int(M) && r1 + NR1 <= int(N)) {
+        device float* out = C
+            + uint(r0 + 32 * (sgitg & 1))
+            + uint(r1 + 16 * (sgitg >> 1)) * M;
+        for (short i = 0; i < 8; i++) {
+            simdgroup_store(mc[i], out + 8 * (i % 4) + 8 * M * (i / 4), M, ulong2(0, 0), false);
+        }
+    } else {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        threadgroup float* temp_str = ((threadgroup float*)shmem)
+            + 32 * (sgitg & 1) + 16 * (sgitg >> 1) * NR0;
+        for (short i = 0; i < 8; i++) {
+            simdgroup_store(mc[i], temp_str + 8 * (i % 4) + 8 * NR0 * (i / 4),
+                            NR0, ulong2(0, 0), false);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (sgitg == 0) {
+            for (int j = tiitg; j < nr1; j += NR1) {
+                device float*  D  = C + uint(r0) + uint(r1 + j) * M;
+                device float4* D4 = (device float4*)D;
+                threadgroup float*  Cs  = temp_str + j * NR0;
+                threadgroup float4* C4 = (threadgroup float4*)Cs;
+                int i = 0;
+                for (; i < nr0 / 4; i++) { *(D4 + i) = *(C4 + i); }
+                i *= 4;
+                for (; i < nr0; i++) { *(D + i) = *(Cs + i); }
+            }
+        }
+    }
 }
 
 // f16-IO variant:
@@ -1583,12 +2377,11 @@ kernel void dequant_batch_q4_k_f16in(
 
     threadgroup half tg_A[DB_BM * DB_BK];
     threadgroup half tg_B[DB_BN * DB_BK];
-    threadgroup half row_d[DB_BM];
-    threadgroup half row_dmin[DB_BM];
-    threadgroup half row_sm1x[DB_BM];
-    threadgroup half row_sm1y[DB_BM];
-    threadgroup half row_sm2x[DB_BM];
-    threadgroup half row_sm2y[DB_BM];
+    // Precomputed dequant params (same as f32 kernel's paired-nibble pattern).
+    threadgroup half row_dsc1[DB_BM];
+    threadgroup half row_dmin1[DB_BM];
+    threadgroup half row_dsc2[DB_BM];
+    threadgroup half row_dmin2[DB_BM];
 
     simdgroup_float8x8 acc0, acc1, acc2, acc3;
     acc0 = simdgroup_float8x8(0);
@@ -1602,53 +2395,45 @@ kernel void dequant_batch_q4_k_f16in(
         uint block_idx = kt / Q4_K_BLOCK_VALUES;
         uint pair = (kt % Q4_K_BLOCK_VALUES) / DB_BK;
 
-        // Preload per-row dequant parameters once per tile.
-        for (uint r = tid; r < DB_BM; r += DB_TG) {
-            uint global_r = tile_m + r;
+        // Phase 1: preload precomputed d*scale and dmin*min (same as f32 kernel).
+        if (tid < DB_BM) {
+            uint global_r = tile_m + tid;
             if (global_r < M) {
                 device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-                float2 sm1 = get_scale_min_q4k(pair * 2, blk.scales);
+                float d    = float(blk.d);
+                float dmin = float(blk.dmin);
+                float2 sm1 = get_scale_min_q4k(pair * 2,     blk.scales);
                 float2 sm2 = get_scale_min_q4k(pair * 2 + 1, blk.scales);
-                row_d[r] = half(float(blk.d));
-                row_dmin[r] = half(float(blk.dmin));
-                row_sm1x[r] = half(sm1.x);
-                row_sm1y[r] = half(sm1.y);
-                row_sm2x[r] = half(sm2.x);
-                row_sm2y[r] = half(sm2.y);
+                row_dsc1[tid]  = half(d * sm1.x);
+                row_dmin1[tid] = half(dmin * sm1.y);
+                row_dsc2[tid]  = half(d * sm2.x);
+                row_dmin2[tid] = half(dmin * sm2.y);
             } else {
-                row_d[r] = half(0.0f);
-                row_dmin[r] = half(0.0f);
-                row_sm1x[r] = half(0.0f);
-                row_sm1y[r] = half(0.0f);
-                row_sm2x[r] = half(0.0f);
-                row_sm2y[r] = half(0.0f);
+                row_dsc1[tid]  = half(0.0f);
+                row_dmin1[tid] = half(0.0f);
+                row_dsc2[tid]  = half(0.0f);
+                row_dmin2[tid] = half(0.0f);
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        for (uint i = tid; i < DB_BM * DB_BK; i += DB_TG) {
-            uint r = i / DB_BK;
-            uint c = i % DB_BK;
+        // Phase 2: paired nibble extraction (same as f32 kernel — 4 iters, no branch).
+        for (uint i = tid; i < DB_BM * (DB_BK / 2); i += DB_TG) {
+            uint r = i / (DB_BK / 2);
+            uint b = i % (DB_BK / 2);
             uint global_r = tile_m + r;
             if (global_r < M) {
                 device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-                uchar byte = blk.qs[pair * 32 + (c < 32 ? c : c - 32)];
-                if (c < 32) {
-                    tg_A[r * DB_BK + c] = half(
-                        float(row_d[r]) * float(row_sm1x[r]) * float(byte & 0x0F)
-                            - float(row_dmin[r]) * float(row_sm1y[r])
-                    );
-                } else {
-                    tg_A[r * DB_BK + c] = half(
-                        float(row_d[r]) * float(row_sm2x[r]) * float(byte >> 4)
-                            - float(row_dmin[r]) * float(row_sm2y[r])
-                    );
-                }
+                uchar byte = blk.qs[pair * 32 + b];
+                tg_A[r * DB_BK + b]      = half(float(row_dsc1[r]) * float(byte & 0x0F) - float(row_dmin1[r]));
+                tg_A[r * DB_BK + b + 32] = half(float(row_dsc2[r]) * float(byte >> 4)   - float(row_dmin2[r]));
             } else {
-                tg_A[r * DB_BK + c] = half(0.0f);
+                tg_A[r * DB_BK + b]      = half(0.0f);
+                tg_A[r * DB_BK + b + 32] = half(0.0f);
             }
         }
 
+        // Phase 3: B load (half input — no cast needed, half bandwidth vs f32 kernel).
         for (uint i = tid; i < DB_BN * DB_BK; i += DB_TG) {
             uint r = i / DB_BK;
             uint c = i % DB_BK;
@@ -2045,12 +2830,10 @@ kernel void dequant_batch_q4_k_f16in_full(
 
     threadgroup half tg_A[DB_BM * DB_BK];
     threadgroup half tg_B[DB_BN * DB_BK];
-    threadgroup half row_d[DB_BM];
-    threadgroup half row_dmin[DB_BM];
-    threadgroup half row_sm1x[DB_BM];
-    threadgroup half row_sm1y[DB_BM];
-    threadgroup half row_sm2x[DB_BM];
-    threadgroup half row_sm2y[DB_BM];
+    threadgroup half row_dsc1[DB_BM];
+    threadgroup half row_dmin1[DB_BM];
+    threadgroup half row_dsc2[DB_BM];
+    threadgroup half row_dmin2[DB_BM];
 
     simdgroup_float8x8 acc0, acc1, acc2, acc3;
     acc0 = simdgroup_float8x8(0);
@@ -2064,37 +2847,30 @@ kernel void dequant_batch_q4_k_f16in_full(
         uint block_idx = kt / Q4_K_BLOCK_VALUES;
         uint pair = (kt % Q4_K_BLOCK_VALUES) / DB_BK;
 
+        // Phase 1: precompute d*scale and dmin*min.
         for (uint r = tid; r < DB_BM; r += DB_TG) {
             uint global_r = tile_m + r;
             device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+            float d    = float(blk.d);
+            float dmin = float(blk.dmin);
             float2 sm1 = get_scale_min_q4k(pair * 2, blk.scales);
             float2 sm2 = get_scale_min_q4k(pair * 2 + 1, blk.scales);
-            row_d[r] = half(float(blk.d));
-            row_dmin[r] = half(float(blk.dmin));
-            row_sm1x[r] = half(sm1.x);
-            row_sm1y[r] = half(sm1.y);
-            row_sm2x[r] = half(sm2.x);
-            row_sm2y[r] = half(sm2.y);
+            row_dsc1[r]  = half(d * sm1.x);
+            row_dmin1[r] = half(dmin * sm1.y);
+            row_dsc2[r]  = half(d * sm2.x);
+            row_dmin2[r] = half(dmin * sm2.y);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        for (uint i = tid; i < DB_BM * DB_BK; i += DB_TG) {
-            uint r = i / DB_BK;
-            uint c = i % DB_BK;
+        // Phase 2: paired nibble extraction (no branch).
+        for (uint i = tid; i < DB_BM * (DB_BK / 2); i += DB_TG) {
+            uint r = i / (DB_BK / 2);
+            uint b = i % (DB_BK / 2);
             uint global_r = tile_m + r;
             device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-            uchar byte = blk.qs[pair * 32 + (c < 32 ? c : c - 32)];
-            if (c < 32) {
-                tg_A[r * DB_BK + c] = half(
-                    float(row_d[r]) * float(row_sm1x[r]) * float(byte & 0x0F)
-                        - float(row_dmin[r]) * float(row_sm1y[r])
-                );
-            } else {
-                tg_A[r * DB_BK + c] = half(
-                    float(row_d[r]) * float(row_sm2x[r]) * float(byte >> 4)
-                        - float(row_dmin[r]) * float(row_sm2y[r])
-                );
-            }
+            uchar byte = blk.qs[pair * 32 + b];
+            tg_A[r * DB_BK + b]      = half(float(row_dsc1[r]) * float(byte & 0x0F) - float(row_dmin1[r]));
+            tg_A[r * DB_BK + b + 32] = half(float(row_dsc2[r]) * float(byte >> 4)   - float(row_dmin2[r]));
         }
 
         for (uint i = tid; i < DB_BN * DB_BK; i += DB_TG) {
@@ -2263,12 +3039,10 @@ kernel void dequant_batch_q4_k_f16in_full64(
 
     threadgroup half tg_A[D64_BM * D64_BK];
     threadgroup half tg_B[D64_BN * D64_BK];
-    threadgroup half row_d[D64_BM];
-    threadgroup half row_dmin[D64_BM];
-    threadgroup half row_sm1x[D64_BM];
-    threadgroup half row_sm1y[D64_BM];
-    threadgroup half row_sm2x[D64_BM];
-    threadgroup half row_sm2y[D64_BM];
+    threadgroup half row_dsc1[D64_BM];
+    threadgroup half row_dmin1[D64_BM];
+    threadgroup half row_dsc2[D64_BM];
+    threadgroup half row_dmin2[D64_BM];
 
     simdgroup_float8x8 acc0, acc1, acc2, acc3, acc4, acc5, acc6, acc7;
     acc0 = simdgroup_float8x8(0);
@@ -2286,37 +3060,30 @@ kernel void dequant_batch_q4_k_f16in_full64(
         uint block_idx = kt / Q4_K_BLOCK_VALUES;
         uint pair = (kt % Q4_K_BLOCK_VALUES) / D64_BK;
 
+        // Phase 1: precompute d*scale and dmin*min.
         for (uint r = tid; r < D64_BM; r += D64_TG) {
             uint global_r = tile_m + r;
             device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+            float d    = float(blk.d);
+            float dmin = float(blk.dmin);
             float2 sm1 = get_scale_min_q4k(pair * 2, blk.scales);
             float2 sm2 = get_scale_min_q4k(pair * 2 + 1, blk.scales);
-            row_d[r] = half(float(blk.d));
-            row_dmin[r] = half(float(blk.dmin));
-            row_sm1x[r] = half(sm1.x);
-            row_sm1y[r] = half(sm1.y);
-            row_sm2x[r] = half(sm2.x);
-            row_sm2y[r] = half(sm2.y);
+            row_dsc1[r]  = half(d * sm1.x);
+            row_dmin1[r] = half(dmin * sm1.y);
+            row_dsc2[r]  = half(d * sm2.x);
+            row_dmin2[r] = half(dmin * sm2.y);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        for (uint i = tid; i < D64_BM * D64_BK; i += D64_TG) {
-            uint r = i / D64_BK;
-            uint c = i % D64_BK;
+        // Phase 2: paired nibble extraction (no branch).
+        for (uint i = tid; i < D64_BM * (D64_BK / 2); i += D64_TG) {
+            uint r = i / (D64_BK / 2);
+            uint b = i % (D64_BK / 2);
             uint global_r = tile_m + r;
             device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-            uchar byte = blk.qs[pair * 32 + (c < 32 ? c : c - 32)];
-            if (c < 32) {
-                tg_A[r * D64_BK + c] = half(
-                    float(row_d[r]) * float(row_sm1x[r]) * float(byte & 0x0F)
-                        - float(row_dmin[r]) * float(row_sm1y[r])
-                );
-            } else {
-                tg_A[r * D64_BK + c] = half(
-                    float(row_d[r]) * float(row_sm2x[r]) * float(byte >> 4)
-                        - float(row_dmin[r]) * float(row_sm2y[r])
-                );
-            }
+            uchar byte = blk.qs[pair * 32 + b];
+            tg_A[r * D64_BK + b]      = half(float(row_dsc1[r]) * float(byte & 0x0F) - float(row_dmin1[r]));
+            tg_A[r * D64_BK + b + 32] = half(float(row_dsc2[r]) * float(byte >> 4)   - float(row_dmin2[r]));
         }
 
         for (uint i = tid; i < D64_BN * D64_BK; i += D64_TG) {
@@ -2392,10 +3159,8 @@ kernel void dequant_batch_q4_k_f16in_full64_bk32(
 
     threadgroup half tg_A[D64S_BM * D64S_BK];
     threadgroup half tg_B[D64S_BN * D64S_BK];
-    threadgroup half row_d[D64S_BM];
-    threadgroup half row_dmin[D64S_BM];
-    threadgroup half row_smx[D64S_BM];
-    threadgroup half row_smy[D64S_BM];
+    threadgroup half row_dsc[D64S_BM];
+    threadgroup half row_dmn[D64S_BM];
 
     simdgroup_float8x8 acc0, acc1, acc2, acc3, acc4, acc5, acc6, acc7;
     acc0 = simdgroup_float8x8(0);
@@ -2414,23 +3179,25 @@ kernel void dequant_batch_q4_k_f16in_full64_bk32(
         uint pair64 = (kt % Q4_K_BLOCK_VALUES) / 64;
         uint half32 = (kt % 64) / 32;
 
+        // Phase 1: precompute d*scale and dmin*min for the active half.
         for (uint r = tid; r < D64S_BM; r += D64S_TG) {
             uint global_r = tile_m + r;
             device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+            float d    = float(blk.d);
+            float dmin = float(blk.dmin);
             float2 sm1 = get_scale_min_q4k(pair64 * 2, blk.scales);
             float2 sm2 = get_scale_min_q4k(pair64 * 2 + 1, blk.scales);
-            row_d[r] = half(float(blk.d));
-            row_dmin[r] = half(float(blk.dmin));
             if (half32 == 0) {
-                row_smx[r] = half(sm1.x);
-                row_smy[r] = half(sm1.y);
+                row_dsc[r] = half(d * sm1.x);
+                row_dmn[r] = half(dmin * sm1.y);
             } else {
-                row_smx[r] = half(sm2.x);
-                row_smy[r] = half(sm2.y);
+                row_dsc[r] = half(d * sm2.x);
+                row_dmn[r] = half(dmin * sm2.y);
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
+        // Phase 2: dequant with precomputed scales (no branch in inner loop).
         for (uint i = tid; i < D64S_BM * D64S_BK; i += D64S_TG) {
             uint r = i / D64S_BK;
             uint c = i % D64S_BK;
@@ -2438,9 +3205,7 @@ kernel void dequant_batch_q4_k_f16in_full64_bk32(
             device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
             uchar byte = blk.qs[pair64 * 32 + c];
             float q = (half32 == 0) ? float(byte & 0x0F) : float(byte >> 4);
-            tg_A[r * D64S_BK + c] = half(
-                float(row_d[r]) * float(row_smx[r]) * q - float(row_dmin[r]) * float(row_smy[r])
-            );
+            tg_A[r * D64S_BK + c] = half(float(row_dsc[r]) * q - float(row_dmn[r]));
         }
 
         for (uint i = tid; i < D64S_BN * D64S_BK; i += D64S_TG) {
@@ -3019,12 +3784,10 @@ kernel void dequant_batch_q4_k_f16in_full32(
 
     threadgroup half tg_A[D32_BM * D64_BK];
     threadgroup half tg_B[D32_BN * D64_BK];
-    threadgroup half row_d[D32_BM];
-    threadgroup half row_dmin[D32_BM];
-    threadgroup half row_sm1x[D32_BM];
-    threadgroup half row_sm1y[D32_BM];
-    threadgroup half row_sm2x[D32_BM];
-    threadgroup half row_sm2y[D32_BM];
+    threadgroup half row_dsc1[D32_BM];
+    threadgroup half row_dmin1[D32_BM];
+    threadgroup half row_dsc2[D32_BM];
+    threadgroup half row_dmin2[D32_BM];
 
     simdgroup_float8x8 acc0, acc1, acc2, acc3, acc4, acc5, acc6, acc7;
     acc0 = simdgroup_float8x8(0);
@@ -3042,37 +3805,30 @@ kernel void dequant_batch_q4_k_f16in_full32(
         uint block_idx = kt / Q4_K_BLOCK_VALUES;
         uint pair = (kt % Q4_K_BLOCK_VALUES) / D64_BK;
 
+        // Phase 1: precompute d*scale and dmin*min.
         for (uint r = tid; r < D32_BM; r += D32_TG) {
             uint global_r = tile_m + r;
             device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+            float d    = float(blk.d);
+            float dmin = float(blk.dmin);
             float2 sm1 = get_scale_min_q4k(pair * 2, blk.scales);
             float2 sm2 = get_scale_min_q4k(pair * 2 + 1, blk.scales);
-            row_d[r] = half(float(blk.d));
-            row_dmin[r] = half(float(blk.dmin));
-            row_sm1x[r] = half(sm1.x);
-            row_sm1y[r] = half(sm1.y);
-            row_sm2x[r] = half(sm2.x);
-            row_sm2y[r] = half(sm2.y);
+            row_dsc1[r]  = half(d * sm1.x);
+            row_dmin1[r] = half(dmin * sm1.y);
+            row_dsc2[r]  = half(d * sm2.x);
+            row_dmin2[r] = half(dmin * sm2.y);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        for (uint i = tid; i < D32_BM * D64_BK; i += D32_TG) {
-            uint r = i / D64_BK;
-            uint c = i % D64_BK;
+        // Phase 2: paired nibble extraction (no branch).
+        for (uint i = tid; i < D32_BM * (D64_BK / 2); i += D32_TG) {
+            uint r = i / (D64_BK / 2);
+            uint b = i % (D64_BK / 2);
             uint global_r = tile_m + r;
             device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-            uchar byte = blk.qs[pair * 32 + (c < 32 ? c : c - 32)];
-            if (c < 32) {
-                tg_A[r * D64_BK + c] = half(
-                    float(row_d[r]) * float(row_sm1x[r]) * float(byte & 0x0F)
-                        - float(row_dmin[r]) * float(row_sm1y[r])
-                );
-            } else {
-                tg_A[r * D64_BK + c] = half(
-                    float(row_d[r]) * float(row_sm2x[r]) * float(byte >> 4)
-                        - float(row_dmin[r]) * float(row_sm2y[r])
-                );
-            }
+            uchar byte = blk.qs[pair * 32 + b];
+            tg_A[r * D64_BK + b]      = half(float(row_dsc1[r]) * float(byte & 0x0F) - float(row_dmin1[r]));
+            tg_A[r * D64_BK + b + 32] = half(float(row_dsc2[r]) * float(byte >> 4)   - float(row_dmin2[r]));
         }
 
         for (uint i = tid; i < D32_BN * D64_BK; i += D32_TG) {
@@ -3276,12 +4032,10 @@ kernel void dequant_batch_q4_k_f16in_tail32(
 
     threadgroup half tg_A[D32_BM * D64_BK];
     threadgroup half tg_B[D32_BN * D64_BK];
-    threadgroup half row_d[D32_BM];
-    threadgroup half row_dmin[D32_BM];
-    threadgroup half row_sm1x[D32_BM];
-    threadgroup half row_sm1y[D32_BM];
-    threadgroup half row_sm2x[D32_BM];
-    threadgroup half row_sm2y[D32_BM];
+    threadgroup half row_dsc1[D32_BM];
+    threadgroup half row_dmin1[D32_BM];
+    threadgroup half row_dsc2[D32_BM];
+    threadgroup half row_dmin2[D32_BM];
     threadgroup float out_tile[D32_BN * D32_BM];
 
     simdgroup_float8x8 acc0, acc1, acc2, acc3, acc4, acc5, acc6, acc7;
@@ -3300,37 +4054,30 @@ kernel void dequant_batch_q4_k_f16in_tail32(
         uint block_idx = kt / Q4_K_BLOCK_VALUES;
         uint pair = (kt % Q4_K_BLOCK_VALUES) / D64_BK;
 
+        // Phase 1: precompute d*scale and dmin*min.
         for (uint r = tid; r < D32_BM; r += D32_TG) {
             uint global_r = tile_m + r;
             device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+            float d    = float(blk.d);
+            float dmin = float(blk.dmin);
             float2 sm1 = get_scale_min_q4k(pair * 2, blk.scales);
             float2 sm2 = get_scale_min_q4k(pair * 2 + 1, blk.scales);
-            row_d[r] = half(float(blk.d));
-            row_dmin[r] = half(float(blk.dmin));
-            row_sm1x[r] = half(sm1.x);
-            row_sm1y[r] = half(sm1.y);
-            row_sm2x[r] = half(sm2.x);
-            row_sm2y[r] = half(sm2.y);
+            row_dsc1[r]  = half(d * sm1.x);
+            row_dmin1[r] = half(dmin * sm1.y);
+            row_dsc2[r]  = half(d * sm2.x);
+            row_dmin2[r] = half(dmin * sm2.y);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        for (uint i = tid; i < D32_BM * D64_BK; i += D32_TG) {
-            uint r = i / D64_BK;
-            uint c = i % D64_BK;
+        // Phase 2: paired nibble extraction (no branch).
+        for (uint i = tid; i < D32_BM * (D64_BK / 2); i += D32_TG) {
+            uint r = i / (D64_BK / 2);
+            uint b = i % (D64_BK / 2);
             uint global_r = tile_m + r;
             device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-            uchar byte = blk.qs[pair * 32 + (c < 32 ? c : c - 32)];
-            if (c < 32) {
-                tg_A[r * D64_BK + c] = half(
-                    float(row_d[r]) * float(row_sm1x[r]) * float(byte & 0x0F)
-                        - float(row_dmin[r]) * float(row_sm1y[r])
-                );
-            } else {
-                tg_A[r * D64_BK + c] = half(
-                    float(row_d[r]) * float(row_sm2x[r]) * float(byte >> 4)
-                        - float(row_dmin[r]) * float(row_sm2y[r])
-                );
-            }
+            uchar byte = blk.qs[pair * 32 + b];
+            tg_A[r * D64_BK + b]      = half(float(row_dsc1[r]) * float(byte & 0x0F) - float(row_dmin1[r]));
+            tg_A[r * D64_BK + b + 32] = half(float(row_dsc2[r]) * float(byte >> 4)   - float(row_dmin2[r]));
         }
 
         // B tile load with N bounds check (handles n_tail < D32_BN)
@@ -4718,6 +5465,10 @@ kernel void dequant_batch_q4_k_f16in_small(
 
     threadgroup half tg_A[SB_BM * SB_BK];
     threadgroup half tg_B[SB_BN * SB_BK];
+    threadgroup half row_dsc1[SB_BM];
+    threadgroup half row_dmin1[SB_BM];
+    threadgroup half row_dsc2[SB_BM];
+    threadgroup half row_dmin2[SB_BM];
 
     simdgroup_float8x8 acc0, acc1, acc2, acc3;
     acc0 = simdgroup_float8x8(0);
@@ -4731,25 +5482,41 @@ kernel void dequant_batch_q4_k_f16in_small(
         uint block_idx = kt / Q4_K_BLOCK_VALUES;
         uint pair = (kt % Q4_K_BLOCK_VALUES) / SB_BK;
 
-        for (uint i = tid; i < SB_BM * SB_BK; i += SB_TG) {
-            uint r = i / SB_BK;
-            uint c = i % SB_BK;
-            uint global_r = tile_m + r;
-
+        // Phase 1: precompute d*scale and dmin*min.
+        if (tid < SB_BM) {
+            uint global_r = tile_m + tid;
             if (global_r < M) {
                 device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-                float d = float(blk.d);
+                float d    = float(blk.d);
                 float dmin = float(blk.dmin);
                 float2 sm1 = get_scale_min_q4k(pair * 2, blk.scales);
                 float2 sm2 = get_scale_min_q4k(pair * 2 + 1, blk.scales);
-                uchar byte = blk.qs[pair * 32 + (c < 32 ? c : c - 32)];
-                if (c < 32) {
-                    tg_A[r * SB_BK + c] = half(d * sm1.x * float(byte & 0x0F) - dmin * sm1.y);
-                } else {
-                    tg_A[r * SB_BK + c] = half(d * sm2.x * float(byte >> 4) - dmin * sm2.y);
-                }
+                row_dsc1[tid]  = half(d * sm1.x);
+                row_dmin1[tid] = half(dmin * sm1.y);
+                row_dsc2[tid]  = half(d * sm2.x);
+                row_dmin2[tid] = half(dmin * sm2.y);
             } else {
-                tg_A[r * SB_BK + c] = half(0.0f);
+                row_dsc1[tid]  = half(0.0f);
+                row_dmin1[tid] = half(0.0f);
+                row_dsc2[tid]  = half(0.0f);
+                row_dmin2[tid] = half(0.0f);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Phase 2: paired nibble extraction (no branch).
+        for (uint i = tid; i < SB_BM * (SB_BK / 2); i += SB_TG) {
+            uint r = i / (SB_BK / 2);
+            uint b = i % (SB_BK / 2);
+            uint global_r = tile_m + r;
+            if (global_r < M) {
+                device const Q4_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+                uchar byte = blk.qs[pair * 32 + b];
+                tg_A[r * SB_BK + b]      = half(float(row_dsc1[r]) * float(byte & 0x0F) - float(row_dmin1[r]));
+                tg_A[r * SB_BK + b + 32] = half(float(row_dsc2[r]) * float(byte >> 4)   - float(row_dmin2[r]));
+            } else {
+                tg_A[r * SB_BK + b]      = half(0.0f);
+                tg_A[r * SB_BK + b + 32] = half(0.0f);
             }
         }
 
