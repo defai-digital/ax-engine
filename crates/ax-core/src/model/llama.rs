@@ -64,8 +64,13 @@ macro_rules! timed {
 /// Whether explicit Metal barriers are enabled for single-token decode path.
 ///
 /// Controlled by `AX_METAL_DECODE_BARRIERS`:
-/// - unset / `1` / `true` / `on`   -> enabled (default)
-/// - `0` / `false` / `off`         -> disabled
+/// - `1` / `true` / `on`            -> enabled
+/// - unset / `0` / `false` / `off`  -> disabled (default)
+///
+/// Default OFF: llama.cpp uses zero barriers in decode. The sequential
+/// Metal encoder on Apple Silicon UMA provides ordering guarantees —
+/// each dispatch completes before the next starts, and writes are
+/// immediately visible via cache coherency. Barriers are redundant.
 fn metal_decode_barriers_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| match std::env::var("AX_METAL_DECODE_BARRIERS") {
@@ -73,7 +78,7 @@ fn metal_decode_barriers_enabled() -> bool {
             let v = v.trim().to_ascii_lowercase();
             v == "1" || v == "true" || v == "on"
         }
-        Err(_) => true,
+        Err(_) => false, // llama.cpp uses 0 barriers; safe on Apple Silicon UMA
     })
 }
 
