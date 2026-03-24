@@ -387,13 +387,6 @@ fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
                 None
             }
         }
-        "codellama" => {
-            if approx_size(size, 7.0) || approx_size(size, 8.0) {
-                Some("8b")
-            } else {
-                None
-            }
-        }
         "deepseek-qwen" => {
             if approx_size(size, 6.0) || approx_size(size, 7.0) || approx_size(size, 8.0) {
                 Some("8b")
@@ -409,20 +402,7 @@ fn extract_architecture(model_name: &str) -> String {
     let lower = model_name.to_lowercase();
 
     // Order matters: more specific patterns before general ones.
-    // "codellama" must come before "llama", "deepseek" before "qwen"/"llama",
-    // "tinyllama" before "llama".
-
-    // Order: more specific patterns before general ones.
-    // "codellama" before "llama", "deepseek" before "qwen"/"llama".
-
-    // CodeLlama (uses llama forward pass, GGUF arch="codellama")
-    if lower.contains("codellama")
-        || lower.contains("code llama")
-        || lower.contains("code-llama")
-        || lower.contains("code_llama")
-    {
-        return match_size(&lower, "codellama");
-    }
+    // "deepseek" before "qwen"/"llama".
 
     // DeepSeek (distillations use llama or qwen2 arch depending on base)
     if lower.contains("deepseek") {
@@ -452,7 +432,7 @@ fn extract_architecture(model_name: &str) -> String {
         return match_size(&lower, "mistral");
     }
 
-    // LLaMA family (must come after codellama)
+    // LLaMA family
     if lower.contains("llama") {
         return match_size(&lower, "llama3");
     }
@@ -585,14 +565,6 @@ mod tests {
             "mistral-8b"
         );
         assert_eq!(
-            extract_architecture("CodeLlama-7B-Instruct"),
-            "codellama-8b"
-        );
-        assert_eq!(
-            extract_architecture("Code Llama 7B Instruct"),
-            "codellama-8b"
-        );
-        assert_eq!(
             extract_architecture("DeepSeek-R1-Distill-Qwen-7B"),
             "deepseek-qwen-8b"
         );
@@ -691,7 +663,6 @@ mod tests {
             .canonicalize()
             .unwrap();
         let cases = [
-            ("CodeLlama-7B-Instruct", "codellama-8b", "codellama-7b"),
             (
                 "DeepSeek-R1-Distill-Llama-8B",
                 "deepseek-llama-8b",

@@ -15,7 +15,7 @@ use crate::buffer::MetalBuffer;
 use crate::device::MetalDevice;
 use crate::inc_buffer_barrier_count;
 use crate::pipeline::{ComputePipeline, FunctionConstant, FunctionConstantValue};
-use crate::profile::{ProfileKernelMode, global_profile};
+use crate::profile::{KernelProfile, ProfileKernelMode, global_profile};
 
 /// Embedded Metal shader source for matmul kernels.
 const MATMUL_SHADER_SRC: &str = include_str!("../shaders/matmul.metal");
@@ -45,7 +45,7 @@ const SG_TG: usize = 128;
 const MATVEC_TG_SIZE: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum KernelMode {
+pub enum KernelMode {
     Off,
     On,
     Auto,
@@ -95,6 +95,255 @@ const ATTN_PROFILE_DECODE_LONG_CONTEXT: AttentionRoutingProfile = AttentionRouti
     decode_sdpa_default: true,
     decode_hd128_n2_default: true,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttentionDispatchConfig {
+    routing_profile_name: &'static str,
+    prefill_fa2_mode: KernelMode,
+    prefill_fa2_hd128_mode: KernelMode,
+    prefill_fa2_auto_min_tokens: u32,
+    prefill_fa2_auto_min_base_seq: u32,
+    prefill_fa2_hd128_auto_min_tokens: u32,
+    decode_splitk_mode: KernelMode,
+    decode_splitk_chunk_size: u32,
+    decode_splitk_auto_min_tokens: u32,
+    decode_sdpa_default: bool,
+    decode_hd128_n2_default: bool,
+}
+
+impl Default for AttentionDispatchConfig {
+    fn default() -> Self {
+        Self::from_profile(&KernelProfile::default())
+    }
+}
+
+impl AttentionDispatchConfig {
+    pub fn from_profile(profile: &KernelProfile) -> Self {
+        let routing = active_attention_routing_profile();
+        let prefill_fa2_mode = {
+            let profile_default = profile_kernel_mode(profile.attention_prefill.fa2_mode.clone());
+            let mode = parse_kernel_mode("AX_METAL_PREFILL_FA2_MODE", profile_default);
+            match mode {
+                KernelMode::Off => {
+                    if attention_prefill_fa2_enabled() {
+                        KernelMode::On
+                    } else {
+                        KernelMode::Off
+                    }
+                }
+                _ => mode,
+            }
+        };
+        let prefill_fa2_hd128_mode = {
+            let profile_default =
+                profile_kernel_mode(profile.attention_prefill.fa2_hd128_mode.clone());
+            let mode = parse_kernel_mode("AX_METAL_PREFILL_FA2_HD128_MODE", profile_default);
+            match mode {
+                KernelMode::Off => {
+                    if attention_prefill_fa2_hd128_enabled() {
+                        KernelMode::On
+                    } else {
+                        KernelMode::Off
+                    }
+                }
+                _ => mode,
+            }
+        };
+        let prefill_fa2_auto_min_tokens = parse_positive_u32_env(
+            "AX_METAL_PREFILL_FA2_AUTO_MIN_TOKENS",
+            if profile.attention_prefill.fa2_auto_min_tokens > 0 {
+                profile.attention_prefill.fa2_auto_min_tokens
+            } else {
+                routing.prefill_fa2_auto_min_tokens
+            },
+        );
+        let prefill_fa2_auto_min_base_seq = parse_positive_u32_env(
+            "AX_METAL_PREFILL_FA2_AUTO_MIN_BASE_SEQ",
+            if profile.attention_prefill.fa2_auto_min_base_seq > 0 {
+                profile.attention_prefill.fa2_auto_min_base_seq
+            } else {
+                routing.prefill_fa2_auto_min_base_seq
+            },
+        );
+        let prefill_fa2_hd128_auto_min_tokens = parse_positive_u32_env(
+            "AX_METAL_PREFILL_FA2_HD128_AUTO_MIN_TOKENS",
+            if profile.attention_prefill.fa2_hd128_auto_min_tokens > 0 {
+                profile.attention_prefill.fa2_hd128_auto_min_tokens
+            } else {
+                routing.prefill_fa2_hd128_auto_min_tokens
+            },
+        );
+        let decode_splitk_mode =
+            parse_kernel_mode("AX_METAL_DECODE_SPLITK_MODE", KernelMode::Auto);
+        let decode_splitk_chunk_size = std::env::var("AX_METAL_DECODE_SPLITK_CHUNK_SIZE")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or_else(|| {
+                let size = profile.attention_decode.splitk_chunk_size;
+                if size > 0 {
+                    size
+                } else {
+                    routing.decode_splitk_chunk_size
+                }
+            });
+        let decode_splitk_auto_min_tokens = std::env::var("AX_METAL_DECODE_SPLITK_AUTO_MIN_TOKENS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or_else(|| {
+                let threshold = profile.attention_decode.splitk_threshold;
+                if threshold > 0 {
+                    threshold
+                } else {
+                    routing.decode_splitk_auto_min_tokens
+                }
+            });
+        let decode_sdpa_default = match std::env::var("AX_METAL_DECODE_SDPA") {
+            Ok(v) => {
+                let v = v.trim().to_ascii_lowercase();
+                !(v == "0" || v == "false" || v == "off")
+            }
+            Err(_) => routing.decode_sdpa_default,
+        };
+        let decode_hd128_n2_default = match std::env::var("AX_METAL_DECODE_HD128_N2") {
+            Ok(v) => {
+                let v = v.trim().to_ascii_lowercase();
+                v == "1" || v == "true" || v == "on"
+            }
+            Err(_) => routing.decode_hd128_n2_default,
+        };
+
+        Self {
+            routing_profile_name: routing.name,
+            prefill_fa2_mode,
+            prefill_fa2_hd128_mode,
+            prefill_fa2_auto_min_tokens,
+            prefill_fa2_auto_min_base_seq,
+            prefill_fa2_hd128_auto_min_tokens,
+            decode_splitk_mode,
+            decode_splitk_chunk_size,
+            decode_splitk_auto_min_tokens,
+            decode_sdpa_default,
+            decode_hd128_n2_default,
+        }
+    }
+
+    pub fn routing_profile_name(&self) -> &'static str {
+        self.routing_profile_name
+    }
+
+    pub fn decode_splitk_chunk_size(&self) -> u32 {
+        self.decode_splitk_chunk_size
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DequantDispatchConfig {
+    pub q4_k_threadgroup_size: usize,
+    pub q4_k_rows_per_simdgroup: u32,
+    pub q6_k_threadgroup_size: usize,
+    pub q6_k_rows_per_simdgroup: u32,
+    pub batch_f16in_small_n_threshold: u32,
+    pub batch_f16in_small_m_max: u32,
+    pub batch_f16in_use_bn32: bool,
+    pub batch_f16in_use_bk32: bool,
+    pub q8_f16in_full_min_n: usize,
+}
+
+impl Default for DequantDispatchConfig {
+    fn default() -> Self {
+        Self::from_profile(&KernelProfile::default())
+    }
+}
+
+impl DequantDispatchConfig {
+    pub fn from_profile(profile: &KernelProfile) -> Self {
+        let q4_params = profile.matvec_params("q4_k");
+        let q6_params = profile.matvec_params("q6_k");
+
+        let q4_k_threadgroup_size = match std::env::var("AX_METAL_MATVEC_Q4K_TG") {
+            Ok(v) => match v.trim() {
+                "64" => DEQUANT_MATVEC_Q4K_NR2_TG,
+                "256" => DEQUANT_MATVEC_Q4K_TG256,
+                "128" => DEQUANT_MATVEC_TG,
+                other => {
+                    tracing::warn!(
+                        value = other,
+                        "Invalid AX_METAL_MATVEC_Q4K_TG value; falling back to profile",
+                    );
+                    q4_params.threadgroup_size as usize
+                }
+            },
+            Err(_) => q4_params.threadgroup_size as usize,
+        };
+        let q4_k_rows_per_simdgroup = std::env::var("AX_METAL_MATVEC_Q4K_NR")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(q4_params.rows_per_simdgroup);
+
+        let q6_k_threadgroup_size = match std::env::var("AX_METAL_MATVEC_Q6K_TG") {
+            Ok(v) => match v.trim() {
+                "64" => DEQUANT_MATVEC_Q6K_NR2_TG,
+                "128" => DEQUANT_MATVEC_TG,
+                other => {
+                    tracing::warn!(
+                        value = other,
+                        "Invalid AX_METAL_MATVEC_Q6K_TG value; falling back to profile",
+                    );
+                    q6_params.threadgroup_size as usize
+                }
+            },
+            Err(_) => q6_params.threadgroup_size as usize,
+        };
+        let q6_k_rows_per_simdgroup = std::env::var("AX_METAL_MATVEC_Q6K_NR")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(q6_params.rows_per_simdgroup);
+
+        let batch_f16in_small_n_threshold = std::env::var("AX_METAL_F16IN_SMALL_N")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(profile.batch_prefill.small_n_threshold);
+        let batch_f16in_small_m_max = std::env::var("AX_METAL_F16IN_SMALL_M_MAX")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(profile.batch_prefill.small_m_max);
+        let batch_f16in_use_bn32 = match std::env::var("AX_METAL_F16IN_BN32") {
+            Ok(v) => {
+                let v = v.trim().to_ascii_lowercase();
+                !(v == "0" || v == "false" || v == "off")
+            }
+            Err(_) => profile.batch_prefill.use_bn32,
+        };
+        let batch_f16in_use_bk32 = match std::env::var("AX_METAL_F16IN_BK32") {
+            Ok(v) => {
+                let v = v.trim().to_ascii_lowercase();
+                v == "1" || v == "true" || v == "on"
+            }
+            Err(_) => profile.batch_prefill.use_bk32,
+        };
+        let q8_f16in_full_min_n = match std::env::var("AX_METAL_Q8_F16IN_FULL_MIN_N") {
+            Ok(v) => v
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|&x| x > 0)
+                .unwrap_or(DB_TILE_N),
+            Err(_) => profile.batch_prefill.q8_f16in_full_min_n.max(1) as usize,
+        };
+
+        Self {
+            q4_k_threadgroup_size,
+            q4_k_rows_per_simdgroup,
+            q6_k_threadgroup_size,
+            q6_k_rows_per_simdgroup,
+            batch_f16in_small_n_threshold,
+            batch_f16in_small_m_max,
+            batch_f16in_use_bn32,
+            batch_f16in_use_bk32,
+            q8_f16in_full_min_n,
+        }
+    }
+}
 
 fn resolve_attention_routing_profile(name: &str) -> Option<AttentionRoutingProfile> {
     match name.trim().to_ascii_lowercase().as_str() {
@@ -532,6 +781,7 @@ pub struct DequantKernels {
 }
 
 impl DequantKernels {
+    #[allow(dead_code)]
     fn q4_k_matvec_dispatch(
         &self,
         m: u32,
@@ -540,8 +790,23 @@ impl DequantKernels {
         usize,
         &ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
     ) {
-        let q4k_tg = matvec_q4k_threadgroup_size();
-        let q4k_rows_per_sg = matvec_q4k_rows_per_simdgroup();
+        self.q4_k_matvec_dispatch_with_config(
+            m,
+            DequantDispatchConfig::from_profile(global_profile()),
+        )
+    }
+
+    fn q4_k_matvec_dispatch_with_config(
+        &self,
+        m: u32,
+        config: DequantDispatchConfig,
+    ) -> (
+        usize,
+        usize,
+        &ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
+    ) {
+        let q4k_tg = config.q4_k_threadgroup_size;
+        let q4k_rows_per_sg = config.q4_k_rows_per_simdgroup;
         let use_n4 = matvec_q4k_n4_enabled() && m >= NDST4_ROWS as u32;
         let use_nr2 = !use_n4
             && (matvec_q4k_nr2_enabled()
@@ -591,6 +856,7 @@ impl DequantKernels {
         }
     }
 
+    #[allow(dead_code)]
     fn q6_k_matvec_dispatch(
         &self,
         m: u32,
@@ -599,8 +865,23 @@ impl DequantKernels {
         usize,
         &ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
     ) {
-        let q6k_tg = matvec_q6k_threadgroup_size();
-        let q6k_rows_per_sg = matvec_q6k_rows_per_simdgroup();
+        self.q6_k_matvec_dispatch_with_config(
+            m,
+            DequantDispatchConfig::from_profile(global_profile()),
+        )
+    }
+
+    fn q6_k_matvec_dispatch_with_config(
+        &self,
+        m: u32,
+        config: DequantDispatchConfig,
+    ) -> (
+        usize,
+        usize,
+        &ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
+    ) {
+        let q6k_tg = config.q6_k_threadgroup_size;
+        let q6k_rows_per_sg = config.q6_k_rows_per_simdgroup;
         if (matvec_q6k_nr2_enabled() || q6k_rows_per_sg >= 2 || q6k_tg == DEQUANT_MATVEC_Q6K_NR2_TG)
             && m >= 2
         {
@@ -1332,7 +1613,28 @@ impl DequantKernels {
         m: u32,
         k: u32,
     ) -> anyhow::Result<()> {
-        let (groups, tg_width, pipeline) = self.q4_k_matvec_dispatch(m);
+        self.fused_matvec_q4_k_with_config(
+            device,
+            a,
+            x,
+            y,
+            m,
+            k,
+            DequantDispatchConfig::from_profile(global_profile()),
+        )
+    }
+
+    pub fn fused_matvec_q4_k_with_config(
+        &self,
+        device: &MetalDevice,
+        a: &MetalBuffer,
+        x: &MetalBuffer,
+        y: &MetalBuffer,
+        m: u32,
+        k: u32,
+        config: DequantDispatchConfig,
+    ) -> anyhow::Result<()> {
+        let (groups, tg_width, pipeline) = self.q4_k_matvec_dispatch_with_config(m, config);
         let dims = DispatchDims::d1(groups, 1);
 
         device.execute_sync(|encoder| {
@@ -1354,7 +1656,7 @@ impl DequantKernels {
 
     /// Explicit TG=256 Q4_K matvec route for A/B benchmarking and validation.
     #[allow(dead_code)]
-    pub(crate) fn fused_matvec_q4_k_tg256(
+    pub fn fused_matvec_q4_k_tg256(
         &self,
         device: &MetalDevice,
         a: &MetalBuffer,
@@ -1384,7 +1686,7 @@ impl DequantKernels {
 
     /// Explicit 2-block-unrolled Q4_K matvec route for A/B benchmarking and validation.
     #[allow(dead_code)]
-    pub(crate) fn fused_matvec_q4_k_blk2(
+    pub fn fused_matvec_q4_k_blk2(
         &self,
         device: &MetalDevice,
         a: &MetalBuffer,
@@ -1414,7 +1716,7 @@ impl DequantKernels {
 
     /// Explicit NR2 Q4_K matvec route for A/B benchmarking and validation.
     #[allow(dead_code)]
-    pub(crate) fn fused_matvec_q4_k_nr2(
+    pub fn fused_matvec_q4_k_nr2(
         &self,
         device: &MetalDevice,
         a: &MetalBuffer,
@@ -1525,7 +1827,28 @@ impl DequantKernels {
         m: u32,
         k: u32,
     ) {
-        let (groups, tg_width, pipeline) = self.q4_k_matvec_dispatch(m);
+        self.encode_fused_matvec_q4_k_with_config(
+            encoder,
+            a,
+            x,
+            y,
+            m,
+            k,
+            DequantDispatchConfig::from_profile(global_profile()),
+        );
+    }
+
+    pub fn encode_fused_matvec_q4_k_with_config(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        x: &MetalBuffer,
+        y: &MetalBuffer,
+        m: u32,
+        k: u32,
+        config: DequantDispatchConfig,
+    ) {
+        let (groups, tg_width, pipeline) = self.q4_k_matvec_dispatch_with_config(m, config);
         let dims = DispatchDims::d1(groups, 1);
         encoder.setComputePipelineState(pipeline);
         bind_buffers(encoder, a, x, y);
@@ -1662,7 +1985,28 @@ impl DequantKernels {
         m: u32,
         k: u32,
     ) -> anyhow::Result<()> {
-        let (groups, tg_width, pipeline) = self.q6_k_matvec_dispatch(m);
+        self.fused_matvec_q6_k_with_config(
+            device,
+            a,
+            x,
+            y,
+            m,
+            k,
+            DequantDispatchConfig::from_profile(global_profile()),
+        )
+    }
+
+    pub fn fused_matvec_q6_k_with_config(
+        &self,
+        device: &MetalDevice,
+        a: &MetalBuffer,
+        x: &MetalBuffer,
+        y: &MetalBuffer,
+        m: u32,
+        k: u32,
+        config: DequantDispatchConfig,
+    ) -> anyhow::Result<()> {
+        let (groups, tg_width, pipeline) = self.q6_k_matvec_dispatch_with_config(m, config);
         let dims = DispatchDims::d1(groups, 1);
 
         device.execute_sync(|encoder| {
@@ -1684,7 +2028,7 @@ impl DequantKernels {
 
     /// Explicit NR2 Q6_K matvec route for A/B benchmarking and validation.
     #[allow(dead_code)]
-    pub(crate) fn fused_matvec_q6_k_nr2(
+    pub fn fused_matvec_q6_k_nr2(
         &self,
         device: &MetalDevice,
         a: &MetalBuffer,
@@ -1725,7 +2069,28 @@ impl DequantKernels {
         m: u32,
         k: u32,
     ) {
-        let (groups, tg_width, pipeline) = self.q6_k_matvec_dispatch(m);
+        self.encode_fused_matvec_q6_k_with_config(
+            encoder,
+            a,
+            x,
+            y,
+            m,
+            k,
+            DequantDispatchConfig::from_profile(global_profile()),
+        );
+    }
+
+    pub fn encode_fused_matvec_q6_k_with_config(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        x: &MetalBuffer,
+        y: &MetalBuffer,
+        m: u32,
+        k: u32,
+        config: DequantDispatchConfig,
+    ) {
+        let (groups, tg_width, pipeline) = self.q6_k_matvec_dispatch_with_config(m, config);
         let dims = DispatchDims::d1(groups, 1);
         encoder.setComputePipelineState(pipeline);
         bind_buffers(encoder, a, x, y);
@@ -2353,7 +2718,31 @@ impl DequantKernels {
         n: u32,
         k: u32,
     ) {
-        let (small_n_threshold, small_m_max) = crate::batch_f16in_route_config();
+        self.encode_fused_batch_q4_k_f16in_with_config(
+            encoder,
+            a,
+            b,
+            c,
+            m,
+            n,
+            k,
+            DequantDispatchConfig::from_profile(global_profile()),
+        );
+    }
+
+    pub fn encode_fused_batch_q4_k_f16in_with_config(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+        config: DequantDispatchConfig,
+    ) {
+        let small_n_threshold = config.batch_f16in_small_n_threshold;
+        let small_m_max = config.batch_f16in_small_m_max;
         let use_small =
             small_n_threshold > 1 && n < small_n_threshold && small_m_max > 0 && m <= small_m_max;
 
@@ -2366,7 +2755,7 @@ impl DequantKernels {
             // starves the GPU. Gate: need ≥ 128 full-tile threadgroups to use
             // the full-tile path; otherwise fall through to the standard kernel
             // (BM=32, BN=64, TG=256) which has bounds checks but 2x more TGs.
-            let bn32_preferred = batch_f16in_bn32_enabled();
+            let bn32_preferred = config.batch_f16in_use_bn32;
             let tgs_bn32 = m_full.div_ceil(DB64_TILE_M) * (n as usize / DB32_TILE_N).max(1);
             let use_bn32 = bn32_preferred && (tgs_bn32 * DB32_TG) >= 32768;
             let n_tile = if use_bn32 { DB32_TILE_N } else { DB64_TILE_N };
@@ -2406,7 +2795,7 @@ impl DequantKernels {
                         },
                     );
                 } else {
-                    let use_bk32 = batch_f16in_bk32_enabled();
+                    let use_bk32 = config.batch_f16in_use_bk32;
                     encoder.setComputePipelineState(if use_bk32 {
                         self.fused_batch_q4_k_f16in_full64_bk32.state()
                     } else {
@@ -2594,7 +2983,31 @@ impl DequantKernels {
         n: u32,
         k: u32,
     ) {
-        let (small_n_threshold, small_m_max) = crate::batch_f16in_route_config();
+        self.encode_fused_batch_q6_k_f16in_with_config(
+            encoder,
+            a,
+            b,
+            c,
+            m,
+            n,
+            k,
+            DequantDispatchConfig::from_profile(global_profile()),
+        );
+    }
+
+    pub fn encode_fused_batch_q6_k_f16in_with_config(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+        config: DequantDispatchConfig,
+    ) {
+        let small_n_threshold = config.batch_f16in_small_n_threshold;
+        let small_m_max = config.batch_f16in_small_m_max;
         let use_small =
             small_n_threshold > 1 && n < small_n_threshold && small_m_max > 0 && m <= small_m_max;
 
@@ -2602,7 +3015,7 @@ impl DequantKernels {
             let m_full = (m as usize / DB64_TILE_M) * DB64_TILE_M;
             let m_tail = (m as usize).saturating_sub(m_full);
             // BN=32 occupancy gate (same logic as Q4_K — see above).
-            let bn32_preferred = batch_f16in_bn32_enabled();
+            let bn32_preferred = config.batch_f16in_use_bn32;
             let tgs_bn32 = m_full.div_ceil(DB64_TILE_M) * (n as usize / DB32_TILE_N).max(1);
             let use_bn32 = bn32_preferred && (tgs_bn32 * DB32_TG) >= 32768;
             let n_tile = if use_bn32 { DB32_TILE_N } else { DB64_TILE_N };
@@ -2794,7 +3207,31 @@ impl DequantKernels {
         n: u32,
         k: u32,
     ) {
-        let can_use_full = (k as usize).is_multiple_of(64) && (n as usize) >= q8_f16in_full_min_n();
+        self.encode_fused_batch_q8_0_f16in_with_config(
+            encoder,
+            a,
+            b,
+            c,
+            m,
+            n,
+            k,
+            DequantDispatchConfig::from_profile(global_profile()),
+        );
+    }
+
+    pub fn encode_fused_batch_q8_0_f16in_with_config(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+        config: DequantDispatchConfig,
+    ) {
+        let can_use_full =
+            (k as usize).is_multiple_of(64) && (n as usize) >= config.q8_f16in_full_min_n;
         let can_use_full64 = can_use_full && (m as usize).is_multiple_of(DB64_TILE_M) && {
             let m_full = (m as usize) / DB64_TILE_M;
             let n_full = (n as usize / DB64_TILE_N) * DB64_TILE_N;
@@ -2805,7 +3242,7 @@ impl DequantKernels {
         if can_use_full64 {
             // BN=32 occupancy gate: need ≥ 32K total threads (same as Q4_K/Q6_K).
             // Also cap at N < 768 (original heuristic for untested large-N path).
-            let bn32_preferred = batch_f16in_bn32_enabled() && (n as usize) < 768;
+            let bn32_preferred = config.batch_f16in_use_bn32 && (n as usize) < 768;
             let tgs_bn32 = (m as usize).div_ceil(DB64_TILE_M) * (n as usize / DB32_TILE_N).max(1);
             let use_bn32 = bn32_preferred && (tgs_bn32 * DB32_TG) >= 32768;
             let use_small32x32 =
@@ -3626,6 +4063,34 @@ impl AttentionKernels {
         n_kv_heads: u32,
         head_dim: u32,
     ) -> anyhow::Result<()> {
+        self.attention_prefill_with_config(
+            device,
+            q,
+            k,
+            v,
+            o,
+            n_tokens,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            AttentionDispatchConfig::from_profile(global_profile()),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn attention_prefill_with_config(
+        &self,
+        device: &MetalDevice,
+        q: &MetalBuffer,
+        k: &MetalBuffer,
+        v: &MetalBuffer,
+        o: &MetalBuffer,
+        n_tokens: u32,
+        n_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        config: AttentionDispatchConfig,
+    ) -> anyhow::Result<()> {
         let use_v2 = attention_prefill_v2_enabled();
         let use_v2_hd128 = attention_prefill_hd128_enabled() && head_dim == 128;
         let use_mistral_hd128 = attention_prefill_mistral_hd128_enabled() && head_dim == 128;
@@ -3635,7 +4100,9 @@ impl AttentionKernels {
         let use_mistral_smem = attention_prefill_mistral_smem_enabled() && use_mistral_hd128;
         let use_mistral_smem_f16 =
             attention_prefill_mistral_smem_f16_enabled() && use_mistral_hd128;
-        let use_fa2_hd128 = attention_prefill_fa2_hd128_should_use(n_tokens, head_dim);
+        let use_fa2_hd128 = attention_prefill_fa2_hd128_should_use_with_config(
+            n_tokens, head_dim, config,
+        );
         let use_fa2_simd_hd128 = attention_prefill_fa2_simd_hd128_enabled() && head_dim == 128;
         let use_fa2_simd_hd64 = attention_prefill_fa2_simd_hd128_enabled() && head_dim == 64;
         let use_hd256 = attention_prefill_hd256_enabled() && head_dim == 256 && !use_v2;
@@ -3699,7 +4166,7 @@ impl AttentionKernels {
                 n_heads,
                 n_kv_heads,
                 head_dim,
-                profile = active_attention_routing_profile().name,
+                profile = config.routing_profile_name(),
                 fa2_hd128 = use_fa2_hd128,
                 "attention_prefill kernel routing"
             );
@@ -3760,6 +4227,38 @@ impl AttentionKernels {
         attend_start: u32,
         attend_len: u32,
     ) {
+        self.encode_attention_decode_with_config(
+            encoder,
+            q,
+            k_cache,
+            v_cache,
+            o,
+            kv_f16,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            attend_start,
+            attend_len,
+            AttentionDispatchConfig::from_profile(global_profile()),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_attention_decode_with_config(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        q: &MetalBuffer,
+        k_cache: &MetalBuffer,
+        v_cache: &MetalBuffer,
+        o: &MetalBuffer,
+        kv_f16: bool,
+        n_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        attend_start: u32,
+        attend_len: u32,
+        config: AttentionDispatchConfig,
+    ) {
         assert!(
             head_dim <= MAX_HEAD_DIM,
             "head_dim {} exceeds MAX_HD ({}) in attention shader",
@@ -3769,8 +4268,9 @@ impl AttentionKernels {
         let use_v2 = attention_decode_v2_enabled(attend_len);
         let use_hd256 = head_dim == 256;
         let use_hd128 = head_dim == 128;
-        let use_sdpa = kv_f16 && use_hd256 && attention_decode_sdpa_enabled();
-        let use_hd128_n2 = kv_f16 && use_hd128 && attention_decode_hd128_n2_enabled();
+        let use_sdpa = kv_f16 && use_hd256 && attention_decode_sdpa_enabled_with_config(config);
+        let use_hd128_n2 =
+            kv_f16 && use_hd128 && attention_decode_hd128_n2_enabled_with_config(config);
         let (pipeline, tg_width, groups_x) = if use_sdpa {
             // sdpa_vector: MLX-pattern lane-parallel decode (HD=256, f16 KV).
             (&self.decode_sdpa_hd256, ATTN_TG, n_heads as usize)
@@ -3804,7 +4304,7 @@ impl AttentionKernels {
                 head_dim,
                 attend_start,
                 attend_len,
-                profile = active_attention_routing_profile().name,
+                profile = config.routing_profile_name(),
                 decode_sdpa = use_sdpa,
                 decode_hd128_n2 = use_hd128_n2,
                 "attention_decode kernel routing"
@@ -3854,8 +4354,44 @@ impl AttentionKernels {
         attend_start: u32,
         attend_len: u32,
     ) {
+        self.encode_attention_decode_splitk_with_config(
+            encoder,
+            q,
+            k_cache,
+            v_cache,
+            o,
+            partial_out,
+            partial_lse,
+            kv_f16,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            attend_start,
+            attend_len,
+            AttentionDispatchConfig::from_profile(global_profile()),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_attention_decode_splitk_with_config(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        q: &MetalBuffer,
+        k_cache: &MetalBuffer,
+        v_cache: &MetalBuffer,
+        o: &MetalBuffer,
+        partial_out: &MetalBuffer,
+        partial_lse: &MetalBuffer,
+        kv_f16: bool,
+        n_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        attend_start: u32,
+        attend_len: u32,
+        config: AttentionDispatchConfig,
+    ) {
         if !attention_decode_splitk_supported(kv_f16, head_dim) {
-            self.encode_attention_decode(
+            self.encode_attention_decode_with_config(
                 encoder,
                 q,
                 k_cache,
@@ -3867,11 +4403,12 @@ impl AttentionKernels {
                 head_dim,
                 attend_start,
                 attend_len,
+                config,
             );
             return;
         }
 
-        let chunk_size = attention_decode_splitk_chunk_size();
+        let chunk_size = attention_decode_splitk_chunk_size_with_config(config);
         let n_chunks = attend_len.div_ceil(chunk_size);
         let (partial_pipeline, reduce_pipeline, tg_width) = if head_dim == 256 {
             (
@@ -3958,7 +4495,44 @@ impl AttentionKernels {
         attend_start: u32,
         attend_len: u32,
     ) {
-        let use_splitk = attention_decode_splitk_should_use(kv_f16, head_dim, attend_len);
+        self.encode_attention_decode_with_scratch_and_config(
+            encoder,
+            q,
+            k_cache,
+            v_cache,
+            o,
+            partial_out,
+            partial_lse,
+            kv_f16,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            attend_start,
+            attend_len,
+            AttentionDispatchConfig::from_profile(global_profile()),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_attention_decode_with_scratch_and_config(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        q: &MetalBuffer,
+        k_cache: &MetalBuffer,
+        v_cache: &MetalBuffer,
+        o: &MetalBuffer,
+        partial_out: &MetalBuffer,
+        partial_lse: &MetalBuffer,
+        kv_f16: bool,
+        n_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        attend_start: u32,
+        attend_len: u32,
+        config: AttentionDispatchConfig,
+    ) {
+        let use_splitk =
+            attention_decode_splitk_should_use_with_config(kv_f16, head_dim, attend_len, config);
         if attention_kernel_routing_log_enabled() {
             tracing::info!(
                 n_heads,
@@ -3966,13 +4540,13 @@ impl AttentionKernels {
                 head_dim,
                 attend_start,
                 attend_len,
-                profile = active_attention_routing_profile().name,
+                profile = config.routing_profile_name(),
                 splitk = use_splitk,
                 "attention_decode_with_scratch kernel routing"
             );
         }
         if use_splitk {
-            self.encode_attention_decode_splitk(
+            self.encode_attention_decode_splitk_with_config(
                 encoder,
                 q,
                 k_cache,
@@ -3986,9 +4560,10 @@ impl AttentionKernels {
                 head_dim,
                 attend_start,
                 attend_len,
+                config,
             );
         } else {
-            self.encode_attention_decode(
+            self.encode_attention_decode_with_config(
                 encoder,
                 q,
                 k_cache,
@@ -4000,6 +4575,7 @@ impl AttentionKernels {
                 head_dim,
                 attend_start,
                 attend_len,
+                config,
             );
         }
     }
@@ -4026,6 +4602,34 @@ impl AttentionKernels {
         n_kv_heads: u32,
         head_dim: u32,
     ) {
+        self.encode_attention_prefill_with_config(
+            encoder,
+            q,
+            k,
+            v,
+            o,
+            n_tokens,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            AttentionDispatchConfig::from_profile(global_profile()),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_attention_prefill_with_config(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        q: &MetalBuffer,
+        k: &MetalBuffer,
+        v: &MetalBuffer,
+        o: &MetalBuffer,
+        n_tokens: u32,
+        n_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        config: AttentionDispatchConfig,
+    ) {
         let use_v2 = attention_prefill_v2_enabled();
         let use_v2_hd128 = attention_prefill_hd128_enabled() && head_dim == 128;
         let use_mistral_hd128 = attention_prefill_mistral_hd128_enabled() && head_dim == 128;
@@ -4035,7 +4639,9 @@ impl AttentionKernels {
         let use_mistral_smem = attention_prefill_mistral_smem_enabled() && use_mistral_hd128;
         let use_mistral_smem_f16 =
             attention_prefill_mistral_smem_f16_enabled() && use_mistral_hd128;
-        let use_fa2_hd128 = attention_prefill_fa2_hd128_should_use(n_tokens, head_dim);
+        let use_fa2_hd128 = attention_prefill_fa2_hd128_should_use_with_config(
+            n_tokens, head_dim, config,
+        );
         let use_fa2_simd_hd128 = attention_prefill_fa2_simd_hd128_enabled() && head_dim == 128;
         let use_fa2_simd_hd64 = attention_prefill_fa2_simd_hd128_enabled() && head_dim == 64;
         let use_hd256 = attention_prefill_hd256_enabled() && head_dim == 256 && !use_v2;
@@ -4045,7 +4651,7 @@ impl AttentionKernels {
                 n_heads,
                 n_kv_heads,
                 head_dim,
-                profile = active_attention_routing_profile().name,
+                profile = config.routing_profile_name(),
                 fa2_simd_hd128 = use_fa2_simd_hd128,
                 fa2_hd128 = use_fa2_hd128,
                 "encode_attention_prefill kernel routing"
@@ -4202,18 +4808,48 @@ impl AttentionKernels {
         base_seq_len: u32,
         sliding_window: u32,
     ) {
+        self.encode_attention_prefill_cached_with_config(
+            encoder,
+            q,
+            k_cache,
+            v_cache,
+            o,
+            kv_f16,
+            n_tokens,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            base_seq_len,
+            sliding_window,
+            AttentionDispatchConfig::from_profile(global_profile()),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_attention_prefill_cached_with_config(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        q: &MetalBuffer,
+        k_cache: &MetalBuffer,
+        v_cache: &MetalBuffer,
+        o: &MetalBuffer,
+        kv_f16: bool,
+        n_tokens: u32,
+        n_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        base_seq_len: u32,
+        sliding_window: u32,
+        config: AttentionDispatchConfig,
+    ) {
         assert!(
             head_dim <= MAX_HEAD_DIM,
             "head_dim {} exceeds MAX_HD ({}) in attention shader",
             head_dim,
             MAX_HEAD_DIM
         );
-        let use_fa2 = attention_prefill_fa2_cached_should_use(
-            kv_f16,
-            n_tokens,
-            head_dim,
-            base_seq_len,
-            sliding_window,
+        let use_fa2 = attention_prefill_fa2_cached_should_use_with_config(
+            kv_f16, n_tokens, head_dim, base_seq_len, sliding_window, config,
         );
         if attention_kernel_routing_log_enabled() {
             tracing::info!(
@@ -4225,7 +4861,7 @@ impl AttentionKernels {
                 base_seq_len,
                 sliding_window,
                 fa2_cached_hd256 = use_fa2,
-                mode = ?attention_prefill_fa2_mode(),
+                mode = ?attention_prefill_fa2_mode_with_config(config),
                 "encode_attention_prefill_cached kernel routing"
             );
         }
@@ -4620,53 +5256,10 @@ fn attention_prefill_mistral_smem_f16_enabled() -> bool {
     )
 }
 
-fn batch_f16in_bn32_enabled() -> bool {
-    match std::env::var("AX_METAL_F16IN_BN32") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            !(v == "0" || v == "false" || v == "off")
-        }
-        // Default ON: BN=32 (TG=128, ~13KB TG memory) fits 2 TGs per SM vs BN=64 (TG=256,
-        // ~20KB, 1 TG/SM).  Doubled occupancy hides memory latency and gives +5% (N=39) to
-        // +14% (N=1024) prefill throughput — empirically measured on Q4_K_M across models.
-        // Set AX_METAL_F16IN_BN32=0 to disable.
-        Err(_) => global_profile().batch_prefill.use_bn32,
-    }
-}
-
-fn batch_f16in_bk32_enabled() -> bool {
-    match std::env::var("AX_METAL_F16IN_BK32") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true" || v == "on"
-        }
-        // Default ON: BK=32 improves long-prompt prefill on current models.
-        // Set AX_METAL_F16IN_BK32=0 to disable.
-        Err(_) => global_profile().batch_prefill.use_bk32,
-    }
-}
-
-fn q8_f16in_full_min_n() -> usize {
-    match std::env::var("AX_METAL_Q8_F16IN_FULL_MIN_N") {
-        Ok(v) => v
-            .trim()
-            .parse::<usize>()
-            .ok()
-            .filter(|&x| x > 0)
-            .unwrap_or(DB_TILE_N),
-        Err(_) => global_profile().batch_prefill.q8_f16in_full_min_n.max(1) as usize,
-    }
-}
-
 fn attention_decode_sdpa_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_DECODE_SDPA") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            !(v == "0" || v == "false" || v == "off")
-        }
-        Err(_) => active_attention_routing_profile().decode_sdpa_default,
-    })
+    attention_decode_sdpa_enabled_with_config(AttentionDispatchConfig::from_profile(
+        global_profile(),
+    ))
 }
 
 fn attention_prefill_fa2_enabled() -> bool {
@@ -4727,124 +5320,89 @@ fn profile_kernel_mode(mode: ProfileKernelMode) -> KernelMode {
 }
 
 fn attention_prefill_fa2_mode() -> KernelMode {
-    let profile_default = profile_kernel_mode(global_profile().attention_prefill.fa2_mode.clone());
-    let mode = parse_kernel_mode("AX_METAL_PREFILL_FA2_MODE", profile_default);
-    match mode {
-        // Backward compatibility with existing boolean toggle.
-        KernelMode::Off => {
-            if attention_prefill_fa2_enabled() {
-                KernelMode::On
-            } else {
-                KernelMode::Off
-            }
-        }
-        _ => mode,
-    }
+    attention_prefill_fa2_mode_with_config(AttentionDispatchConfig::from_profile(global_profile()))
 }
 
 fn attention_prefill_fa2_hd128_mode() -> KernelMode {
-    let profile_default =
-        profile_kernel_mode(global_profile().attention_prefill.fa2_hd128_mode.clone());
-    let mode = parse_kernel_mode("AX_METAL_PREFILL_FA2_HD128_MODE", profile_default);
-    match mode {
-        // Backward compatibility with existing boolean toggle.
-        KernelMode::Off => {
-            if attention_prefill_fa2_hd128_enabled() {
-                KernelMode::On
-            } else {
-                KernelMode::Off
-            }
-        }
-        _ => mode,
-    }
+    attention_prefill_fa2_hd128_mode_with_config(AttentionDispatchConfig::from_profile(
+        global_profile(),
+    ))
 }
 
 fn attention_prefill_fa2_auto_min_tokens() -> u32 {
-    let profile = global_profile();
-    let threshold = profile.attention_prefill.fa2_auto_min_tokens;
-    parse_positive_u32_env(
-        "AX_METAL_PREFILL_FA2_AUTO_MIN_TOKENS",
-        if threshold > 0 {
-            threshold
-        } else {
-            active_attention_routing_profile().prefill_fa2_auto_min_tokens
-        },
-    )
+    attention_prefill_fa2_auto_min_tokens_with_config(AttentionDispatchConfig::from_profile(
+        global_profile(),
+    ))
 }
 
 fn attention_prefill_fa2_auto_min_base_seq() -> u32 {
-    let profile = global_profile();
-    let threshold = profile.attention_prefill.fa2_auto_min_base_seq;
-    parse_positive_u32_env(
-        "AX_METAL_PREFILL_FA2_AUTO_MIN_BASE_SEQ",
-        if threshold > 0 {
-            threshold
-        } else {
-            active_attention_routing_profile().prefill_fa2_auto_min_base_seq
-        },
-    )
+    attention_prefill_fa2_auto_min_base_seq_with_config(AttentionDispatchConfig::from_profile(
+        global_profile(),
+    ))
 }
 
 fn attention_prefill_fa2_hd128_auto_min_tokens() -> u32 {
-    let profile = global_profile();
-    let threshold = profile.attention_prefill.fa2_hd128_auto_min_tokens;
-    parse_positive_u32_env(
-        "AX_METAL_PREFILL_FA2_HD128_AUTO_MIN_TOKENS",
-        if threshold > 0 {
-            threshold
-        } else {
-            active_attention_routing_profile().prefill_fa2_hd128_auto_min_tokens
-        },
-    )
+    attention_prefill_fa2_hd128_auto_min_tokens_with_config(AttentionDispatchConfig::from_profile(
+        global_profile(),
+    ))
 }
 
 fn attention_decode_splitk_mode() -> KernelMode {
-    static MODE: OnceLock<KernelMode> = OnceLock::new();
-    *MODE.get_or_init(|| parse_kernel_mode("AX_METAL_DECODE_SPLITK_MODE", KernelMode::Auto))
+    attention_decode_splitk_mode_with_config(AttentionDispatchConfig::from_profile(global_profile()))
 }
 
 pub fn attention_decode_splitk_chunk_size() -> u32 {
-    static CHUNK_SIZE: OnceLock<u32> = OnceLock::new();
-    *CHUNK_SIZE.get_or_init(|| {
-        let from_env = std::env::var("AX_METAL_DECODE_SPLITK_CHUNK_SIZE")
-            .ok()
-            .and_then(|v| v.trim().parse::<u32>().ok());
-        if let Some(size) = from_env {
-            size
-        } else {
-            let profile = global_profile();
-            let size = profile.attention_decode.splitk_chunk_size;
-            if size > 0 {
-                size
-            } else {
-                active_attention_routing_profile().decode_splitk_chunk_size
-            }
-        }
-    })
+    attention_decode_splitk_chunk_size_with_config(AttentionDispatchConfig::from_profile(
+        global_profile(),
+    ))
 }
 
 fn attention_decode_splitk_auto_min_tokens() -> u32 {
-    static MIN_TOKENS: OnceLock<u32> = OnceLock::new();
-    *MIN_TOKENS.get_or_init(|| {
-        let from_env = std::env::var("AX_METAL_DECODE_SPLITK_AUTO_MIN_TOKENS")
-            .ok()
-            .and_then(|v| v.trim().parse::<u32>().ok());
-        if let Some(tokens) = from_env {
-            tokens
-        } else {
-            let profile = global_profile();
-            let threshold = profile.attention_decode.splitk_threshold;
-            if threshold > 0 {
-                threshold
-            } else {
-                active_attention_routing_profile().decode_splitk_auto_min_tokens
-            }
-        }
-    })
+    attention_decode_splitk_auto_min_tokens_with_config(AttentionDispatchConfig::from_profile(
+        global_profile(),
+    ))
 }
 
 fn attention_decode_splitk_supported(kv_f16: bool, head_dim: u32) -> bool {
     kv_f16 && matches!(head_dim, 128 | 256)
+}
+
+fn attention_decode_sdpa_enabled_with_config(config: AttentionDispatchConfig) -> bool {
+    config.decode_sdpa_default
+}
+
+fn attention_prefill_fa2_mode_with_config(config: AttentionDispatchConfig) -> KernelMode {
+    config.prefill_fa2_mode
+}
+
+fn attention_prefill_fa2_hd128_mode_with_config(config: AttentionDispatchConfig) -> KernelMode {
+    config.prefill_fa2_hd128_mode
+}
+
+fn attention_prefill_fa2_auto_min_tokens_with_config(config: AttentionDispatchConfig) -> u32 {
+    config.prefill_fa2_auto_min_tokens
+}
+
+fn attention_prefill_fa2_auto_min_base_seq_with_config(config: AttentionDispatchConfig) -> u32 {
+    config.prefill_fa2_auto_min_base_seq
+}
+
+fn attention_prefill_fa2_hd128_auto_min_tokens_with_config(
+    config: AttentionDispatchConfig,
+) -> u32 {
+    config.prefill_fa2_hd128_auto_min_tokens
+}
+
+fn attention_decode_splitk_mode_with_config(config: AttentionDispatchConfig) -> KernelMode {
+    config.decode_splitk_mode
+}
+
+pub fn attention_decode_splitk_chunk_size_with_config(config: AttentionDispatchConfig) -> u32 {
+    config.decode_splitk_chunk_size
+}
+
+fn attention_decode_splitk_auto_min_tokens_with_config(config: AttentionDispatchConfig) -> u32 {
+    config.decode_splitk_auto_min_tokens
 }
 
 fn attention_decode_splitk_should_use_mode(
@@ -4860,18 +5418,40 @@ fn attention_decode_splitk_should_use_mode(
         KernelMode::Off => false,
         KernelMode::On => true,
         KernelMode::Auto => {
-            head_dim == 256 && attend_len >= attention_decode_splitk_auto_min_tokens()
+            head_dim == 256
+                && attend_len
+                    >= attention_decode_splitk_auto_min_tokens_with_config(
+                        AttentionDispatchConfig::from_profile(global_profile()),
+                    )
         }
     }
 }
 
 fn attention_decode_splitk_should_use(kv_f16: bool, head_dim: u32, attend_len: u32) -> bool {
-    attention_decode_splitk_should_use_mode(
-        attention_decode_splitk_mode(),
+    attention_decode_splitk_should_use_with_config(
         kv_f16,
         head_dim,
         attend_len,
+        AttentionDispatchConfig::from_profile(global_profile()),
     )
+}
+
+fn attention_decode_splitk_should_use_with_config(
+    kv_f16: bool,
+    head_dim: u32,
+    attend_len: u32,
+    config: AttentionDispatchConfig,
+) -> bool {
+    if !attention_decode_splitk_supported(kv_f16, head_dim) {
+        return false;
+    }
+    match attention_decode_splitk_mode_with_config(config) {
+        KernelMode::Off => false,
+        KernelMode::On => true,
+        KernelMode::Auto => {
+            head_dim == 256 && attend_len >= attention_decode_splitk_auto_min_tokens_with_config(config)
+        }
+    }
 }
 
 fn attention_prefill_fa2_cached_should_use(
@@ -4881,30 +5461,60 @@ fn attention_prefill_fa2_cached_should_use(
     base_seq_len: u32,
     sliding_window: u32,
 ) -> bool {
+    attention_prefill_fa2_cached_should_use_with_config(
+        kv_f16,
+        n_tokens,
+        head_dim,
+        base_seq_len,
+        sliding_window,
+        AttentionDispatchConfig::from_profile(global_profile()),
+    )
+}
+
+fn attention_prefill_fa2_cached_should_use_with_config(
+    kv_f16: bool,
+    n_tokens: u32,
+    head_dim: u32,
+    base_seq_len: u32,
+    sliding_window: u32,
+    config: AttentionDispatchConfig,
+) -> bool {
     if !(kv_f16 && head_dim == 256) {
         return false;
     }
-    match attention_prefill_fa2_mode() {
+    match attention_prefill_fa2_mode_with_config(config) {
         KernelMode::Off => false,
         KernelMode::On => true,
         KernelMode::Auto => {
             // Conservative auto-gate for current kernels. Designed as a benchmark gate:
             // only route FA2 where sequence depth/width is high enough to amortize setup.
-            n_tokens >= attention_prefill_fa2_auto_min_tokens()
-                && base_seq_len >= attention_prefill_fa2_auto_min_base_seq()
+            n_tokens >= attention_prefill_fa2_auto_min_tokens_with_config(config)
+                && base_seq_len >= attention_prefill_fa2_auto_min_base_seq_with_config(config)
                 && sliding_window == 0
         }
     }
 }
 
 fn attention_prefill_fa2_hd128_should_use(n_tokens: u32, head_dim: u32) -> bool {
+    attention_prefill_fa2_hd128_should_use_with_config(
+        n_tokens,
+        head_dim,
+        AttentionDispatchConfig::from_profile(global_profile()),
+    )
+}
+
+fn attention_prefill_fa2_hd128_should_use_with_config(
+    n_tokens: u32,
+    head_dim: u32,
+    config: AttentionDispatchConfig,
+) -> bool {
     if head_dim != 128 {
         return false;
     }
-    match attention_prefill_fa2_hd128_mode() {
+    match attention_prefill_fa2_hd128_mode_with_config(config) {
         KernelMode::Off => false,
         KernelMode::On => true,
-        KernelMode::Auto => n_tokens >= attention_prefill_fa2_hd128_auto_min_tokens(),
+        KernelMode::Auto => n_tokens >= attention_prefill_fa2_hd128_auto_min_tokens_with_config(config),
     }
 }
 
@@ -4917,6 +5527,10 @@ fn attention_prefill_fa2_simd_hd128_enabled() -> bool {
         }
         Err(_) => true, // default ON — this is the fast path
     })
+}
+
+fn attention_decode_hd128_n2_enabled_with_config(config: AttentionDispatchConfig) -> bool {
+    config.decode_hd128_n2_default
 }
 
 fn attention_kernel_routing_log_enabled() -> bool {
@@ -4954,14 +5568,9 @@ fn attention_decode_v2_enabled(attend_len: u32) -> bool {
 }
 
 fn attention_decode_hd128_n2_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_DECODE_HD128_N2") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true" || v == "on"
-        }
-        Err(_) => active_attention_routing_profile().decode_hd128_n2_default,
-    })
+    attention_decode_hd128_n2_enabled_with_config(AttentionDispatchConfig::from_profile(
+        global_profile(),
+    ))
 }
 
 fn matvec_q4k_n4_enabled() -> bool {
@@ -5020,63 +5629,6 @@ fn matvec_q4k_blk2_enabled() -> bool {
             v == "1" || v == "true" || v == "on"
         }
         Err(_) => false,
-    })
-}
-
-fn matvec_q4k_threadgroup_size() -> usize {
-    static TG: OnceLock<usize> = OnceLock::new();
-    *TG.get_or_init(|| match std::env::var("AX_METAL_MATVEC_Q4K_TG") {
-        Ok(v) => match v.trim() {
-            "64" => DEQUANT_MATVEC_Q4K_NR2_TG,
-            "256" => DEQUANT_MATVEC_Q4K_TG256,
-            "128" => DEQUANT_MATVEC_TG,
-            other => {
-                tracing::warn!(
-                    value = other,
-                    "Invalid AX_METAL_MATVEC_Q4K_TG value; falling back to profile",
-                );
-                global_profile().matvec_params("q4_k").threadgroup_size as usize
-            }
-        },
-        Err(_) => global_profile().matvec_params("q4_k").threadgroup_size as usize,
-    })
-}
-
-fn matvec_q4k_rows_per_simdgroup() -> u32 {
-    static ROWS: OnceLock<u32> = OnceLock::new();
-    *ROWS.get_or_init(|| {
-        std::env::var("AX_METAL_MATVEC_Q4K_NR")
-            .ok()
-            .and_then(|v| v.trim().parse::<u32>().ok())
-            .unwrap_or_else(|| global_profile().matvec_params("q4_k").rows_per_simdgroup)
-    })
-}
-
-fn matvec_q6k_threadgroup_size() -> usize {
-    static TG: OnceLock<usize> = OnceLock::new();
-    *TG.get_or_init(|| match std::env::var("AX_METAL_MATVEC_Q6K_TG") {
-        Ok(v) => match v.trim() {
-            "64" => DEQUANT_MATVEC_Q6K_NR2_TG,
-            "128" => DEQUANT_MATVEC_TG,
-            other => {
-                tracing::warn!(
-                    value = other,
-                    "Invalid AX_METAL_MATVEC_Q6K_TG value; falling back to profile",
-                );
-                global_profile().matvec_params("q6_k").threadgroup_size as usize
-            }
-        },
-        Err(_) => global_profile().matvec_params("q6_k").threadgroup_size as usize,
-    })
-}
-
-fn matvec_q6k_rows_per_simdgroup() -> u32 {
-    static ROWS: OnceLock<u32> = OnceLock::new();
-    *ROWS.get_or_init(|| {
-        std::env::var("AX_METAL_MATVEC_Q6K_NR")
-            .ok()
-            .and_then(|v| v.trim().parse::<u32>().ok())
-            .unwrap_or_else(|| global_profile().matvec_params("q6_k").rows_per_simdgroup)
     })
 }
 
@@ -6191,7 +6743,6 @@ impl ElementwiseKernels {
     }
 
     /// Encode in-place GELU: x[i] = GELU(x[i]).
-    /// Used by Falcon FFN (no gate projection).
     pub fn encode_gelu_inplace(
         &self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,

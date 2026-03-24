@@ -1,13 +1,13 @@
 pub mod arch_registry;
 pub mod config;
 pub mod decode;
-pub mod falcon;
 pub mod forward;
 pub mod gemma3;
 pub mod glm;
 pub mod llama;
 pub mod mixtral;
 pub mod qwen3;
+pub mod qwen35;
 pub(crate) mod shared;
 pub mod starcoder2;
 pub mod weights;

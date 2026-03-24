@@ -98,7 +98,6 @@ pub fn render_chat_messages(
         "llama" => render_llama(messages, options),
         "qwen3" | "qwen2" => render_qwen(messages, options),
         "phi3" => render_phi3(messages, options),
-        "falcon" => render_falcon(messages, options),
         "mistral" | "mixtral" => render_mistral(messages),
         "chatglm" | "glm4" | "glm" => render_glm(messages, options),
         _ => render_fallback(messages, options),
@@ -121,7 +120,7 @@ pub fn render_user_turn(prompt: &str, architecture: &str, first_turn: bool) -> S
     }
 
     match architecture {
-        "gemma3" | "gemma2" | "gemma" | "falcon" => render_chat_messages(
+        "gemma3" | "gemma2" | "gemma" => render_chat_messages(
             &[ChatMessage::user(&format!("\n{prompt}"))],
             architecture,
             ChatRenderOptions::default(),
@@ -204,30 +203,6 @@ fn render_glm(messages: &[ChatMessage<'_>], options: ChatRenderOptions) -> Strin
     }
     if options.add_generation_prompt {
         rendered.push_str("<|assistant|>");
-    }
-    rendered
-}
-
-fn render_falcon(messages: &[ChatMessage<'_>], options: ChatRenderOptions) -> String {
-    let mut rendered = String::new();
-    for message in messages {
-        let prefix = match message.role {
-            ChatRole::System => "System",
-            ChatRole::User => "User",
-            ChatRole::Assistant => "Assistant",
-        };
-        if !rendered.is_empty() {
-            rendered.push('\n');
-        }
-        rendered.push_str(prefix);
-        rendered.push_str(": ");
-        rendered.push_str(message.content);
-    }
-    if options.add_generation_prompt {
-        if !rendered.is_empty() {
-            rendered.push('\n');
-        }
-        rendered.push_str("Assistant:");
     }
     rendered
 }

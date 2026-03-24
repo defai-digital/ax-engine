@@ -1,6 +1,7 @@
 use rustc_hash::FxHashMap;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
@@ -11,7 +12,8 @@ use anyhow::Context;
 // v2: GpuKv is owned by LlamaModel via ModelKv, not stored in MetalOps.
 use crate::model::config::ModelConfig;
 use ax_metal::{
-    AttentionKernels, DequantKernels, ElementwiseKernels, MatmulKernels, MetalBuffer, MetalDevice,
+    AttentionDispatchConfig, AttentionKernels, DequantDispatchConfig, DequantKernels,
+    ElementwiseKernels, GdnKernels, KernelProfile, MatmulKernels, MetalBuffer, MetalDevice,
 };
 
 /// Snapshot of Metal synchronization counters (for perf debugging).
@@ -79,8 +81,9 @@ fn metal_decode_splitk_chunk_size() -> usize {
 
 fn normalized_arch_name(arch: &str) -> &str {
     match arch {
-        "mistral" | "codellama" | "llama" => "llama",
-        "qwen2" | "qwen3" | "qwen35" => "qwen3",
+        "mistral" | "llama" => "llama",
+        "qwen2" | "qwen3" => "qwen3",
+        "qwen35" => "qwen35",
         "gemma" | "gemma2" | "gemma3" => "gemma3",
         _ => arch,
     }
@@ -341,6 +344,7 @@ pub struct MetalBackend {
     matmul_kernels: MatmulKernels,
     dequant_kernels: DequantKernels,
     attention_kernels: AttentionKernels,
+    gdn_kernels: GdnKernels,
     /// Cache of Metal buffers for weight tensors, keyed by data pointer address.
     /// Weight data from mmap'd GGUF files has stable addresses across calls.
     weight_cache: Mutex<FxHashMap<usize, MetalBuffer>>,
@@ -359,6 +363,7 @@ impl MetalBackend {
         let matmul_kernels = MatmulKernels::new(&device)?;
         let dequant_kernels = DequantKernels::new(&device)?;
         let attention_kernels = AttentionKernels::new(&device)?;
+        let gdn_kernels = GdnKernels::new(&device)?;
         let ops = MetalOps::with_device(&device)?;
         tracing::info!("MetalBackend initialized");
         Ok(Self {
@@ -366,6 +371,7 @@ impl MetalBackend {
             matmul_kernels,
             dequant_kernels,
             attention_kernels,
+            gdn_kernels,
             weight_cache: Mutex::new(FxHashMap::default()),
             input_buf: Mutex::new((None, 0)),
             output_buf: Mutex::new((None, 0)),
@@ -417,6 +423,12 @@ impl MetalBackend {
 }
 
 impl Backend for MetalBackend {
+    fn configure_for_model(&self, model_name: &str, quant: &str) -> anyhow::Result<()> {
+        let profile = KernelProfile::load(model_name, quant);
+        self.ops.apply_kernel_profile(profile);
+        Ok(())
+    }
+
     fn matmul(&self, a: &[f32], b: &[f32], c: &mut [f32], m: usize, n: usize, k: usize) {
         let buf_a = MetalBuffer::from_slice(self.device.device(), a)
             .expect("Failed to create Metal buffer for A");
@@ -565,6 +577,7 @@ impl Backend for MetalBackend {
 
         // Single command buffer for all dispatches
         let cache = self.weight_cache.lock().unwrap();
+        let dispatch_config = self.ops.dequant_dispatch_config();
         self.device
             .execute_sync(|encoder| {
                 for (i, (_, _, m)) in ops.iter().enumerate() {
@@ -591,23 +604,25 @@ impl Backend for MetalBackend {
                             );
                         }
                         GgmlType::Q4K => {
-                            self.dequant_kernels.encode_fused_matvec_q4_k(
+                            self.dequant_kernels.encode_fused_matvec_q4_k_with_config(
                                 encoder,
                                 buf_a,
                                 buf_x,
                                 &output_bufs[i],
                                 *m as u32,
                                 k as u32,
+                                dispatch_config,
                             );
                         }
                         GgmlType::Q6K => {
-                            self.dequant_kernels.encode_fused_matvec_q6_k(
+                            self.dequant_kernels.encode_fused_matvec_q6_k_with_config(
                                 encoder,
                                 buf_a,
                                 buf_x,
                                 &output_bufs[i],
                                 *m as u32,
                                 k as u32,
+                                dispatch_config,
                             );
                         }
                         _ => unreachable!(),
@@ -656,7 +671,7 @@ impl Backend for MetalBackend {
             .expect("Failed to create Metal buffer for O");
 
         self.attention_kernels
-            .attention_prefill(
+            .attention_prefill_with_config(
                 &self.device,
                 &buf_q,
                 &buf_k,
@@ -666,11 +681,71 @@ impl Backend for MetalBackend {
                 n_heads as u32,
                 n_kv_heads as u32,
                 head_dim as u32,
+                self.ops.attention_dispatch_config(),
             )
             .expect("Metal attention prefill dispatch failed");
 
         let result = unsafe { buf_o.as_slice::<f32>() };
         output[..o_size].copy_from_slice(&result[..o_size]);
+    }
+
+    fn qwen35_gated_delta_sequence(
+        &self,
+        q_batch: &[f32],
+        k_batch: &[f32],
+        v_batch: &[f32],
+        gate_batch: &[f32],
+        beta_batch: &[f32],
+        recurrent_state: &mut [f32],
+        output_batch: &mut [f32],
+        n_tokens: usize,
+        n_heads: usize,
+        head_dim: usize,
+    ) {
+        let q_bhsk = pack_token_major_to_bhsk(q_batch, n_tokens, n_heads, head_dim);
+        let k_bhsk = pack_token_major_to_bhsk(k_batch, n_tokens, n_heads, head_dim);
+        let v_bhsv = pack_token_major_to_bhsk(v_batch, n_tokens, n_heads, head_dim);
+        let g_bhs = pack_token_major_scalars_to_bhs(gate_batch, n_tokens, n_heads);
+        let beta_bhs = pack_token_major_scalars_to_bhs(beta_batch, n_tokens, n_heads);
+
+        let buf_q = MetalBuffer::from_slice(self.device.device(), &q_bhsk)
+            .expect("Failed to create Metal buffer for qwen35 q");
+        let buf_k = MetalBuffer::from_slice(self.device.device(), &k_bhsk)
+            .expect("Failed to create Metal buffer for qwen35 k");
+        let buf_v = MetalBuffer::from_slice(self.device.device(), &v_bhsv)
+            .expect("Failed to create Metal buffer for qwen35 v");
+        let buf_g = MetalBuffer::from_slice(self.device.device(), &g_bhs)
+            .expect("Failed to create Metal buffer for qwen35 gate");
+        let buf_beta = MetalBuffer::from_slice(self.device.device(), &beta_bhs)
+            .expect("Failed to create Metal buffer for qwen35 beta");
+        let buf_state = MetalBuffer::from_slice(self.device.device(), recurrent_state)
+            .expect("Failed to create Metal buffer for qwen35 recurrent state");
+        let buf_out = MetalBuffer::new(
+            self.device.device(),
+            n_tokens * n_heads * head_dim * std::mem::size_of::<f32>(),
+        )
+        .expect("Failed to create Metal buffer for qwen35 recurrent output");
+
+        self.gdn_kernels
+            .gated_delta_sequence(
+                &self.device,
+                &buf_q,
+                &buf_k,
+                &buf_v,
+                &buf_g,
+                &buf_beta,
+                &buf_state,
+                &buf_out,
+                n_tokens as u32,
+                n_heads as u32,
+                head_dim as u32,
+            )
+            .expect("Metal qwen35 gated delta dispatch failed");
+
+        let out_bhsv = unsafe { buf_out.as_slice::<f32>() };
+        unpack_bhsk_to_token_major(out_bhsv, output_batch, n_tokens, n_heads, head_dim);
+        let state_out = unsafe { buf_state.as_slice::<f32>() };
+        recurrent_state.copy_from_slice(&state_out[..recurrent_state.len()]);
     }
 
     fn metal_ops(&self) -> Option<&MetalOps> {
@@ -679,6 +754,51 @@ impl Backend for MetalBackend {
 
     fn use_gpu_decode(&self) -> bool {
         true
+    }
+}
+
+fn pack_token_major_to_bhsk(
+    input: &[f32],
+    n_tokens: usize,
+    n_heads: usize,
+    head_dim: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; input.len()];
+    for token_idx in 0..n_tokens {
+        for head in 0..n_heads {
+            let src = token_idx * n_heads * head_dim + head * head_dim;
+            let dst = head * n_tokens * head_dim + token_idx * head_dim;
+            out[dst..dst + head_dim].copy_from_slice(&input[src..src + head_dim]);
+        }
+    }
+    out
+}
+
+fn pack_token_major_scalars_to_bhs(input: &[f32], n_tokens: usize, n_heads: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; input.len()];
+    for token_idx in 0..n_tokens {
+        for head in 0..n_heads {
+            let src = token_idx * n_heads + head;
+            let dst = head * n_tokens + token_idx;
+            out[dst] = input[src];
+        }
+    }
+    out
+}
+
+fn unpack_bhsk_to_token_major(
+    input: &[f32],
+    output: &mut [f32],
+    n_tokens: usize,
+    n_heads: usize,
+    head_dim: usize,
+) {
+    for head in 0..n_heads {
+        for token_idx in 0..n_tokens {
+            let src = head * n_tokens * head_dim + token_idx * head_dim;
+            let dst = token_idx * n_heads * head_dim + head * head_dim;
+            output[dst..dst + head_dim].copy_from_slice(&input[src..src + head_dim]);
+        }
     }
 }
 
@@ -775,13 +895,14 @@ impl MetalBackend {
         let buf_a = cache.get(&key).unwrap();
 
         self.dequant_kernels
-            .fused_matvec_q4_k(
+            .fused_matvec_q4_k_with_config(
                 &self.device,
                 buf_a,
                 input_guard.0.as_ref().unwrap(),
                 output_guard.0.as_ref().unwrap(),
                 m as u32,
                 k as u32,
+                self.ops.dequant_dispatch_config(),
             )
             .expect("Metal fused Q4_K matvec failed");
 
@@ -807,13 +928,14 @@ impl MetalBackend {
         let buf_a = cache.get(&key).unwrap();
 
         self.dequant_kernels
-            .fused_matvec_q6_k(
+            .fused_matvec_q6_k_with_config(
                 &self.device,
                 buf_a,
                 input_guard.0.as_ref().unwrap(),
                 output_guard.0.as_ref().unwrap(),
                 m as u32,
                 k as u32,
+                self.ops.dequant_dispatch_config(),
             )
             .expect("Metal fused Q6_K matvec failed");
 
@@ -943,6 +1065,12 @@ pub struct MetalOps {
     pub dequant: DequantKernels,
     pub attention: AttentionKernels,
     pub matmul: MatmulKernels,
+    /// Backend-local kernel profile for this model/backend instance.
+    model_profile: RwLock<KernelProfile>,
+    /// Snapshot of dequant dispatch tuning derived from `model_profile`.
+    dequant_dispatch: RwLock<DequantDispatchConfig>,
+    /// Snapshot of attention dispatch tuning derived from `model_profile`.
+    attention_dispatch: RwLock<AttentionDispatchConfig>,
     /// Cache of f32 weight tensors as MetalBuffers (norm weights, bias vectors).
     f32_weight_cache: Mutex<FxHashMap<usize, MetalBuffer>>,
     /// Cache of fused QKV quantized buffers keyed by (wq_ptr, wk_ptr, wv_ptr).
@@ -970,12 +1098,18 @@ impl MetalOps {
         let dequant = DequantKernels::new(&device)?;
         let attention = AttentionKernels::new(&device)?;
         let matmul = MatmulKernels::new(&device)?;
+        let profile = KernelProfile::default();
+        let dequant_dispatch = DequantDispatchConfig::from_profile(&profile);
+        let attention_dispatch = AttentionDispatchConfig::from_profile(&profile);
         Ok(Self {
             device,
             elementwise,
             dequant,
             attention,
             matmul,
+            model_profile: RwLock::new(profile),
+            dequant_dispatch: RwLock::new(dequant_dispatch),
+            attention_dispatch: RwLock::new(attention_dispatch),
             f32_weight_cache: Mutex::new(FxHashMap::default()),
             fused_qkv_weight_cache: Mutex::new(FxHashMap::default()),
             precomputed_f16_weight_cache: Mutex::new(FxHashMap::default()),
@@ -983,6 +1117,42 @@ impl MetalOps {
             batch_scratches: Mutex::new(None),
             f16in_route_tuned: AtomicBool::new(false),
             cached_model_keys: Mutex::new(None),
+        })
+    }
+
+    pub fn apply_kernel_profile(&self, profile: KernelProfile) {
+        let dispatch = DequantDispatchConfig::from_profile(&profile);
+        let attention_dispatch = AttentionDispatchConfig::from_profile(&profile);
+        *self.model_profile.write().unwrap() = profile;
+        *self.dequant_dispatch.write().unwrap() = dispatch;
+        *self.attention_dispatch.write().unwrap() = attention_dispatch;
+    }
+
+    pub fn dequant_dispatch_config(&self) -> DequantDispatchConfig {
+        *self.dequant_dispatch.read().unwrap()
+    }
+
+    pub fn attention_dispatch_config(&self) -> AttentionDispatchConfig {
+        *self.attention_dispatch.read().unwrap()
+    }
+
+    pub fn metal_batch_f16_io_enabled_for_arch(&self, arch: &str) -> bool {
+        env_bool_with_arch_override("AX_METAL_BATCH_F16_IO", arch).unwrap_or_else(|| {
+            self.model_profile
+                .read()
+                .unwrap()
+                .batch_prefill
+                .prefer_f16_io
+        })
+    }
+
+    pub fn metal_batch_f16_pair_enabled_for_arch(&self, arch: &str) -> bool {
+        env_bool_with_arch_override("AX_METAL_BATCH_F16_PAIR", arch).unwrap_or_else(|| {
+            self.model_profile
+                .read()
+                .unwrap()
+                .batch_prefill
+                .prefer_pair_kernel
         })
     }
 
@@ -1003,7 +1173,7 @@ impl MetalOps {
         let kv_dim = n_kv_heads * head_dim;
         let max_chunks = config
             .context_length
-            .div_ceil(metal_decode_splitk_chunk_size() as u32) as usize;
+            .div_ceil(self.attention_dispatch_config().decode_splitk_chunk_size()) as usize;
 
         let alloc = |size: usize| -> MetalBuffer {
             MetalBuffer::new(self.device.device(), size * std::mem::size_of::<f32>())
@@ -1147,7 +1317,7 @@ impl MetalOps {
             }
         }
 
-        let old_route = ax_metal::batch_f16in_route_config();
+        let old_config = self.dequant_dispatch_config();
         let (n_threshold, m_max) = if wins.is_empty() {
             (1u32, 0u32)
         } else {
@@ -1155,11 +1325,14 @@ impl MetalOps {
             let max_m = wins.iter().map(|(m, _)| *m).max().unwrap_or(dim);
             (max_n + 1, max_m)
         };
-        ax_metal::set_batch_f16in_route_config(n_threshold, m_max);
+        let mut tuned = old_config;
+        tuned.batch_f16in_small_n_threshold = n_threshold;
+        tuned.batch_f16in_small_m_max = m_max;
+        *self.dequant_dispatch.write().unwrap() = tuned;
         self.f16in_route_tuned.store(true, Ordering::Relaxed);
         tracing::info!(
-            old_n_threshold = old_route.0,
-            old_m_max = old_route.1,
+            old_n_threshold = old_config.batch_f16in_small_n_threshold,
+            old_m_max = old_config.batch_f16in_small_m_max,
             tuned_n_threshold = n_threshold,
             tuned_m_max = m_max,
             "Autotuned f16in batch kernel routing"
@@ -1191,17 +1364,28 @@ impl MetalOps {
         let b = MetalBuffer::from_slice(self.device.device(), &b_data).ok()?;
         let c = MetalBuffer::new(self.device.device(), c_bytes).ok()?;
 
-        let old_route = ax_metal::batch_f16in_route_config();
+        let old_config = self.dequant_dispatch_config();
+        let mut bench_config = old_config;
         if use_small {
-            ax_metal::set_batch_f16in_route_config(u32::MAX, m);
+            bench_config.batch_f16in_small_n_threshold = u32::MAX;
+            bench_config.batch_f16in_small_m_max = m;
         } else {
-            ax_metal::set_batch_f16in_route_config(1, 0);
+            bench_config.batch_f16in_small_n_threshold = 1;
+            bench_config.batch_f16in_small_m_max = 0;
         }
 
         // Warmup
         let _ = self.device.execute_sync(|encoder| {
-            self.dequant
-                .encode_fused_batch_q4_k_f16in(encoder, &a, &b, &c, m, n, k);
+            self.dequant.encode_fused_batch_q4_k_f16in_with_config(
+                encoder,
+                &a,
+                &b,
+                &c,
+                m,
+                n,
+                k,
+                bench_config,
+            );
             Ok(())
         });
 
@@ -1211,17 +1395,23 @@ impl MetalOps {
             if self
                 .device
                 .execute_sync(|encoder| {
-                    self.dequant
-                        .encode_fused_batch_q4_k_f16in(encoder, &a, &b, &c, m, n, k);
+                    self.dequant.encode_fused_batch_q4_k_f16in_with_config(
+                        encoder,
+                        &a,
+                        &b,
+                        &c,
+                        m,
+                        n,
+                        k,
+                        bench_config,
+                    );
                     Ok(())
                 })
                 .is_err()
             {
-                ax_metal::set_batch_f16in_route_config(old_route.0, old_route.1);
                 return None;
             }
         }
-        ax_metal::set_batch_f16in_route_config(old_route.0, old_route.1);
         Some(t0.elapsed().as_nanos() / reps as u128)
     }
 
@@ -1669,6 +1859,10 @@ impl HybridBackend {
 }
 
 impl Backend for HybridBackend {
+    fn configure_for_model(&self, model_name: &str, quant: &str) -> anyhow::Result<()> {
+        self.metal.configure_for_model(model_name, quant)
+    }
+
     fn matmul(&self, a: &[f32], b: &[f32], c: &mut [f32], m: usize, n: usize, k: usize) {
         if self.decode_on_cpu && n == 1 {
             self.cpu.matmul(a, b, c, m, n, k);
@@ -1729,6 +1923,48 @@ impl Backend for HybridBackend {
             .attention_prefill(q, k, v, output, n_tokens, n_heads, n_kv_heads, head_dim);
     }
 
+    fn qwen35_gated_delta_sequence(
+        &self,
+        q_batch: &[f32],
+        k_batch: &[f32],
+        v_batch: &[f32],
+        gate_batch: &[f32],
+        beta_batch: &[f32],
+        recurrent_state: &mut [f32],
+        output_batch: &mut [f32],
+        n_tokens: usize,
+        n_heads: usize,
+        head_dim: usize,
+    ) {
+        if self.decode_on_cpu && n_tokens == 1 {
+            self.cpu.qwen35_gated_delta_sequence(
+                q_batch,
+                k_batch,
+                v_batch,
+                gate_batch,
+                beta_batch,
+                recurrent_state,
+                output_batch,
+                n_tokens,
+                n_heads,
+                head_dim,
+            );
+        } else {
+            self.metal.qwen35_gated_delta_sequence(
+                q_batch,
+                k_batch,
+                v_batch,
+                gate_batch,
+                beta_batch,
+                recurrent_state,
+                output_batch,
+                n_tokens,
+                n_heads,
+                head_dim,
+            );
+        }
+    }
+
     fn metal_ops(&self) -> Option<&MetalOps> {
         self.metal.metal_ops()
     }
@@ -1772,11 +2008,57 @@ impl HybridCpuDecodeBackend {
 }
 
 impl Backend for HybridCpuDecodeBackend {
+    fn configure_for_model(&self, model_name: &str, quant: &str) -> anyhow::Result<()> {
+        self.metal.configure_for_model(model_name, quant)
+    }
+
     fn matmul(&self, a: &[f32], b: &[f32], c: &mut [f32], m: usize, n: usize, k: usize) {
         if n == 1 {
             self.cpu.matmul(a, b, c, m, n, k);
         } else {
             self.metal.matmul(a, b, c, m, n, k);
+        }
+    }
+
+    fn qwen35_gated_delta_sequence(
+        &self,
+        q_batch: &[f32],
+        k_batch: &[f32],
+        v_batch: &[f32],
+        gate_batch: &[f32],
+        beta_batch: &[f32],
+        recurrent_state: &mut [f32],
+        output_batch: &mut [f32],
+        n_tokens: usize,
+        n_heads: usize,
+        head_dim: usize,
+    ) {
+        if n_tokens == 1 {
+            self.cpu.qwen35_gated_delta_sequence(
+                q_batch,
+                k_batch,
+                v_batch,
+                gate_batch,
+                beta_batch,
+                recurrent_state,
+                output_batch,
+                n_tokens,
+                n_heads,
+                head_dim,
+            );
+        } else {
+            self.metal.qwen35_gated_delta_sequence(
+                q_batch,
+                k_batch,
+                v_batch,
+                gate_batch,
+                beta_batch,
+                recurrent_state,
+                output_batch,
+                n_tokens,
+                n_heads,
+                head_dim,
+            );
         }
     }
 

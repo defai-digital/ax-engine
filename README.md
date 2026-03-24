@@ -87,13 +87,13 @@ All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Als
 | Qwen 3.5 | Qwen3.5-27B | Q4_K_M | 27B |
 | Gemma 3 | gemma-3-12b-it, gemma-3-27b-it | Q4_K_M | 12B, 27B |
 | Phi 3 / Phi 4 | Phi-3-small-8k-instruct, Phi-3-medium-14b-instruct, Phi-4-14B | Q4_K_M | 7B, 14B |
-| Falcon | falcon-7b-instruct, falcon-40b-instruct | Q4_K_M | 7B, 40B |
+
 | Mistral | Mistral-7B-Instruct-v0.3, Mistral-Nemo-Instruct-2407, Mistral-Small-24B-Instruct-2501 | Q4_K_M | 7B, 12B, 22B |
 | Mixtral (MoE) | Mixtral-8x7B-Instruct-v0.1, Mixtral-8x22B-Instruct-v0.1 | Q4_K_M | 8x7B, 8x22B |
 | StarCoder 2 | starcoder2-7b, starcoder2-15b | Q4_K_M | 7B, 15B |
 | GLM-4 / GLM-5 | GLM-4-9B-Chat, glm-4-32b-0414, GLM-5-9B-Chat, GLM-5-32B-Chat | Q4_K_M | 9B, 32B |
 | DeepSeek (distill) | DeepSeek-R1-Distill-Llama-8B, DeepSeek-R1-Distill-Qwen-7B, DeepSeek-Coder-V2-Lite-Instruct | Q4_K_M | 7B, 8B, 33B |
-| CodeLlama | CodeLlama-7b-Instruct-hf | Q4_K_M | 7B |
+
 
 **Memory requirements** (approximate, Q4_K_M weights + KV cache at 4K context):
 

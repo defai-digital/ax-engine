@@ -155,9 +155,8 @@ impl ModelConfig {
 
         // Architecture-specific: gate activation + logit scale + tie embeddings
         let is_gemma = matches!(arch.as_str(), "gemma" | "gemma2" | "gemma3");
-        let is_falcon = matches!(arch.as_str(), "falcon");
         let is_starcoder2 = matches!(arch.as_str(), "starcoder2");
-        let gate_activation = if is_gemma || is_falcon || is_starcoder2 {
+        let gate_activation = if is_gemma || is_starcoder2 {
             GateActivation::GELU
         } else {
             GateActivation::SiLU
@@ -215,8 +214,7 @@ impl ModelConfig {
         let qwen35_ssm_conv_kernel = header.get_u32(&format!("{arch}.ssm.conv_kernel"));
         let qwen35_ssm_inner_size = header.get_u32(&format!("{arch}.ssm.inner_size"));
         let qwen35_ssm_state_size = header.get_u32(&format!("{arch}.ssm.state_size"));
-        let qwen35_ssm_time_step_rank =
-            header.get_u32(&format!("{arch}.ssm.time_step_rank"));
+        let qwen35_ssm_time_step_rank = header.get_u32(&format!("{arch}.ssm.time_step_rank"));
         let qwen35_ssm_group_count = header.get_u32(&format!("{arch}.ssm.group_count"));
 
         tracing::info!(

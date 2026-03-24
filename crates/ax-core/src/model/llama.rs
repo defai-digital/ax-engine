@@ -595,7 +595,7 @@ fn encode_llama_pending_step(
 
 /// LLaMA-family forward pass implementation.
 ///
-/// Used for llama, mistral, codellama, and any architecture that follows
+/// Used for llama, mistral, and any architecture that follows
 /// the standard LLaMA transformer pattern (SwiGLU FFN, no QKV bias).
 #[derive(Debug)]
 pub struct LlamaForward;
@@ -1085,10 +1085,8 @@ impl LlamaForward {
                     || lw.wd_dtype == GgmlType::Q8_0
             }) || matches!(cached.lm_head_dtype, GgmlType::Q8_0);
             let use_f16_batch_io =
-                crate::backend::metal::metal_batch_f16_io_enabled_for_arch(&cfg.architecture)
-                    || has_q8_weights;
-            let use_f16_pair =
-                crate::backend::metal::metal_batch_f16_pair_enabled_for_arch(&cfg.architecture);
+                metal_ops.metal_batch_f16_io_enabled_for_arch(&cfg.architecture) || has_q8_weights;
+            let use_f16_pair = metal_ops.metal_batch_f16_pair_enabled_for_arch(&cfg.architecture);
             let use_fused_qkv =
                 crate::backend::metal::metal_fused_qkv_enabled_for_arch(&cfg.architecture);
             let use_batch_simd =
