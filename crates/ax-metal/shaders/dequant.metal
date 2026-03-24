@@ -6221,7 +6221,7 @@ kernel void dequant_matvec_q4_k(
 // Each simdgroup reuses the loaded x values across both output rows and writes
 // them independently, so no cross-simdgroup barrier or reduction is needed.
 constant uint Q4K_NR2_ROWS_PER_SG = 2;
-constant uint Q4K_NR2_SG_PER_TG = 4;  // 4 SGs × 2 rows = 8 rows/TG (matches llama.cpp)
+constant uint Q4K_NR2_SG_PER_TG = 2;
 constant uint Q4K_NR2_ROWS_PER_TG = Q4K_NR2_ROWS_PER_SG * Q4K_NR2_SG_PER_TG;
 
 kernel void dequant_matvec_q4_k_nr2(

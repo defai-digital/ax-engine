@@ -334,16 +334,16 @@ impl MatmulKernels {
 
 /// Threadgroup size for fused dequant+matvec kernels (must match shader constant).
 const DEQUANT_MATVEC_TG: usize = 128;
-/// Threadgroup size for the Q4_K NR2 decode matvec (4 SGs × 32 = 128, matches llama.cpp).
-const DEQUANT_MATVEC_Q4K_NR2_TG: usize = 128;
+/// Threadgroup size for the Q4_K NR2 decode matvec pilot.
+const DEQUANT_MATVEC_Q4K_NR2_TG: usize = 64;
 /// Threadgroup size for the Q6_K NR2 decode matvec pilot.
 const DEQUANT_MATVEC_Q6K_NR2_TG: usize = 64;
 /// Specialized threadgroup size for the Q4_K decode matvec pilot.
 const DEQUANT_MATVEC_Q4K_TG256: usize = 256;
 /// Threadgroup size for N_DST=4 decode matvec kernels (must match shader NDST4_TG).
 const NDST4_TG: usize = 32;
-/// Number of output rows per threadgroup for the Q4_K NR2 kernel (4 SGs × 2 rows = 8).
-const Q4K_NR2_ROWS: usize = 8;
+/// Number of output rows per threadgroup for the Q4_K NR2 kernel.
+const Q4K_NR2_ROWS: usize = 4;
 /// Number of output rows per threadgroup for the Q6_K NR2 kernel.
 const Q6K_NR2_ROWS: usize = 4;
 /// Number of output rows per threadgroup for N_DST=4 kernels (must match shader NDST4_ROWS).
