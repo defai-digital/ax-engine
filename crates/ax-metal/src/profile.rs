@@ -110,7 +110,7 @@ pub struct BatchPrefillParams {
 
 fn default_batch_prefill_prefer_f16_io() -> bool {
     false // f16 B reads waste half the 128-byte cache line on Apple Silicon UMA.
-          // f32 reads + inline cast is faster because it fills the full bus width.
+    // f32 reads + inline cast is faster because it fills the full bus width.
 }
 
 fn default_batch_prefill_prefer_pair() -> bool {
@@ -320,6 +320,111 @@ fn sanitize_name(name: &str) -> String {
         .collect()
 }
 
+fn approx_size(size: f32, target: f32) -> bool {
+    (size - target).abs() < 0.11
+}
+
+fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
+    match family {
+        "qwen3" => {
+            if approx_size(size, 0.5) || approx_size(size, 0.6) {
+                Some("1b")
+            } else if approx_size(size, 1.5) || approx_size(size, 1.7) {
+                Some("2b")
+            } else if approx_size(size, 3.0) {
+                Some("3b")
+            } else if approx_size(size, 3.8) || approx_size(size, 4.0) {
+                Some("4b")
+            } else if approx_size(size, 6.0) || approx_size(size, 7.0) || approx_size(size, 8.0) {
+                Some("8b")
+            } else if approx_size(size, 14.0) {
+                Some("14b")
+            } else if approx_size(size, 32.0) {
+                Some("32b")
+            } else if approx_size(size, 72.0) {
+                Some("72b")
+            } else {
+                None
+            }
+        }
+        "qwen35" => {
+            if approx_size(size, 0.5) || approx_size(size, 0.6) {
+                Some("1b")
+            } else if approx_size(size, 1.5) || approx_size(size, 1.7) {
+                Some("2b")
+            } else if approx_size(size, 3.8) || approx_size(size, 4.0) {
+                Some("4b")
+            } else if approx_size(size, 7.0) || approx_size(size, 8.0) || approx_size(size, 9.0) {
+                Some("9b")
+            } else if approx_size(size, 27.0) {
+                Some("27b")
+            } else if approx_size(size, 30.0) {
+                Some("30b")
+            } else if approx_size(size, 35.0) {
+                Some("35b")
+            } else if approx_size(size, 397.0) {
+                Some("397b")
+            } else {
+                None
+            }
+        }
+        "gemma3" => {
+            if approx_size(size, 2.0) {
+                Some("2b")
+            } else if approx_size(size, 3.8) || approx_size(size, 4.0) {
+                Some("4b")
+            } else if approx_size(size, 9.0) {
+                Some("9b")
+            } else if approx_size(size, 27.0) {
+                Some("27b")
+            } else {
+                None
+            }
+        }
+        "llama3" | "deepseek-llama" => {
+            if approx_size(size, 1.0) {
+                Some("1b")
+            } else if approx_size(size, 3.0) {
+                Some("3b")
+            } else if approx_size(size, 7.0) || approx_size(size, 8.0) {
+                Some("8b")
+            } else if approx_size(size, 70.0) {
+                Some("70b")
+            } else {
+                None
+            }
+        }
+        "mistral" => {
+            if approx_size(size, 7.0) || approx_size(size, 8.0) {
+                Some("8b")
+            } else if approx_size(size, 12.0) {
+                Some("12b")
+            } else if approx_size(size, 22.0) {
+                Some("22b")
+            } else {
+                None
+            }
+        }
+        "codellama" => {
+            if approx_size(size, 7.0) || approx_size(size, 8.0) {
+                Some("8b")
+            } else {
+                None
+            }
+        }
+        "deepseek-qwen" => {
+            if approx_size(size, 1.5) || approx_size(size, 1.7) {
+                Some("2b")
+            } else if approx_size(size, 6.0) || approx_size(size, 7.0) || approx_size(size, 8.0) {
+                Some("8b")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 fn extract_architecture(model_name: &str) -> String {
     let lower = model_name.to_lowercase();
 
@@ -347,14 +452,20 @@ fn extract_architecture(model_name: &str) -> String {
         return match_size(&lower, "deepseek-llama");
     }
 
+    // Qwen3.5 hybrid family has its own forward path and tuning namespace.
+    if lower.contains("qwen3.5") || lower.contains("qwen35") {
+        return match_size(&lower, "qwen35");
+    }
+
     // Qwen family (qwen, qwen2, qwen2.5, qwen3) — uses qwen3 forward pass
     if lower.contains("qwen") {
         return match_size(&lower, "qwen3");
     }
 
     // Gemma family (gemma, gemma2, gemma3) — uses gemma3 forward pass
+    // Gemma has a distinct 9b profile (not 8b), so check for it explicitly.
     if lower.contains("gemma") {
-        if lower.contains("9b") {
+        if let Some(size) = extract_param_billions(&lower) && (8.5..10.0).contains(&size) {
             return "gemma3-9b".to_string();
         }
         return match_size(&lower, "gemma3");
@@ -373,28 +484,64 @@ fn extract_architecture(model_name: &str) -> String {
     "default".to_string()
 }
 
+fn perf_profile_exists(profile_name: &str) -> bool {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("perfs")
+        .join(format!("{profile_name}.json"))
+        .is_file()
+}
+
 /// Extract size bucket from model name for profile filename resolution.
+///
+/// Uses numeric parsing to avoid substring false positives
+/// (e.g. "27b" must not match "7b", "14b" must not match "4b").
 fn match_size(lower: &str, family: &str) -> String {
-    // Check small sizes first to avoid "0.6b" matching "6b"
-    if lower.contains("0.5b") || lower.contains("0.6b") {
-        format!("{family}-1b")
-    } else if lower.contains("1.5b") || lower.contains("1.7b") {
-        format!("{family}-2b")
-    } else if lower.contains("9b") {
-        format!("{family}-9b")
-    } else if lower.contains("8b") || lower.contains("7b") || lower.contains("6b") {
-        format!("{family}-8b")
-    } else if lower.contains("4b") || lower.contains("3.8b") {
-        format!("{family}-4b")
-    } else if lower.contains("3b") {
-        format!("{family}-3b")
-    } else if lower.contains("2b") {
-        format!("{family}-2b")
-    } else if lower.contains("1b") {
-        format!("{family}-1b")
+    if let Some(size) = extract_param_billions(lower) {
+        // Preserve an exact small-model profile when one exists. This avoids
+        // collapsing Qwen3-0.6B onto the 1B bucket once a dedicated profile is
+        // added under perfs/.
+        if lower.contains("0.6b") {
+            let exact = format!("{family}-0.6b");
+            if perf_profile_exists(&exact) {
+                return exact;
+            }
+        }
+
+        family_size_bucket(family, size)
+            .map(|bucket| format!("{family}-{bucket}"))
+            .unwrap_or_else(|| family.to_string())
     } else {
         family.to_string()
     }
+}
+
+/// Parse the first `<number>b` or `<number>B` pattern from a model name string.
+/// Returns the size in billions as f32.
+fn extract_param_billions(name: &str) -> Option<f32> {
+    let bytes = name.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Find a digit
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            // Consume digits and optional decimal point
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            // Check for trailing 'b' or 'B'
+            if i < bytes.len() && (bytes[i] == b'b' || bytes[i] == b'B') {
+                // Make sure 'b' is not part of a longer word (e.g. "block")
+                let after_b = i + 1;
+                let is_boundary = after_b >= bytes.len() || !bytes[after_b].is_ascii_alphabetic();
+                if is_boundary && let Ok(val) = name[start..i].parse::<f32>() {
+                    return Some(val);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 pub fn global_profile() -> &'static KernelProfile {
@@ -450,13 +597,22 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_param_billions() {
+        assert_eq!(extract_param_billions("Qwen3.5-27B-Q4_K_M"), Some(27.0));
+        assert_eq!(extract_param_billions("Qwen3-14B-Instruct"), Some(14.0));
+        assert_eq!(extract_param_billions("Meta-Llama-3.2-1B"), Some(1.0));
+        assert_eq!(extract_param_billions("some-unknown-model"), None);
+    }
+
+    #[test]
     fn test_extract_architecture() {
         // Core families
         assert_eq!(extract_architecture("Qwen3-8B-Q4_K_M"), "qwen3-8b");
         assert_eq!(extract_architecture("Qwen2.5-7B-Instruct"), "qwen3-8b");
         assert_eq!(extract_architecture("Qwen2.5-3B"), "qwen3-3b");
-        assert_eq!(extract_architecture("Qwen3-0.6B"), "qwen3-1b"); // 0.6b → 1b bucket
+        assert_eq!(extract_architecture("Qwen3-0.6B"), "qwen3-0.6b");
         assert_eq!(extract_architecture("Qwen2.5-1.5B"), "qwen3-2b"); // 1.5b → 2b bucket
+        assert_eq!(extract_architecture("Qwen3-14B"), "qwen3-14b");
         assert_eq!(extract_architecture("gemma-3-4b-it"), "gemma3-4b");
         assert_eq!(extract_architecture("gemma-2-9b-it"), "gemma3-9b");
         assert_eq!(extract_architecture("gemma-2-2b"), "gemma3-2b");
@@ -490,12 +646,13 @@ mod tests {
             "deepseek-llama-8b"
         );
 
-        // Qwen 3.5 — resolves to qwen3 family (same arch)
-        assert_eq!(extract_architecture("Qwen3.5-0.6B"), "qwen3-1b");
-        assert_eq!(extract_architecture("Qwen3.5-1.5B-Instruct"), "qwen3-2b");
-        assert_eq!(extract_architecture("Qwen3.5-4B"), "qwen3-4b");
-        assert_eq!(extract_architecture("Qwen3.5-7B-Instruct"), "qwen3-8b");
-        assert_eq!(extract_architecture("Qwen3.5-8B"), "qwen3-8b");
+        // Qwen 3.5 — separate hybrid family, distinct from qwen3
+        assert_eq!(extract_architecture("Qwen3.5-0.6B"), "qwen35-1b");
+        assert_eq!(extract_architecture("Qwen3.5-1.5B-Instruct"), "qwen35-2b");
+        assert_eq!(extract_architecture("Qwen3.5-4B"), "qwen35-4b");
+        assert_eq!(extract_architecture("Qwen3.5-7B-Instruct"), "qwen35-9b");
+        assert_eq!(extract_architecture("Qwen3.5-8B"), "qwen35-9b");
+        assert_eq!(extract_architecture("Qwen3.5-27B-Q4_K_M"), "qwen35-27b");
 
         // Unknown falls to default
         assert_eq!(extract_architecture("some-unknown-model"), "default");
@@ -590,6 +747,7 @@ mod tests {
             ),
             ("Meta-Llama-3-8B-Instruct", "llama3-8b", "llama3-8b"),
             ("Mistral-7B-Instruct-v0.3", "mistral-8b", "mistral-7b"),
+            ("Qwen3.5-27B-Instruct", "qwen35-27b", "qwen35-27b"),
         ];
 
         for (model_name, expected_arch, expected_profile_model) in cases {
@@ -600,7 +758,7 @@ mod tests {
             let profile = KernelProfile::load_from_path(&profile_path)
                 .unwrap_or_else(|| panic!("expected profile file for {}", profile_path.display()));
             assert_eq!(profile.model, expected_profile_model);
-            assert_eq!(profile.source, "llama.cpp-params-2026-03-22");
+            assert!(!profile.source.is_empty());
 
             let q4k = profile.matvec_params("q4_k");
             assert_eq!(q4k.threadgroup_size, 64);

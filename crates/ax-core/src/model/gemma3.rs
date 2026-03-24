@@ -984,14 +984,19 @@ impl Gemma3Forward {
                 crate::backend::metal::metal_batch_simd_enabled_for_arch(&cfg.architecture);
             let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
 
-            metal_ops.device.execute_sync(|encoder| {
+            metal_ops.device.execute_sync_concurrent(|encoder| {
                 let nt = n_tokens as u32;
                 // First layer's Phase 1a: standalone RMSNorm before loop.
                 {
                     let norm_w_buf = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
                     metal_ops.elementwise.encode_rms_norm_out_batch(
-                        encoder, &bs.hidden, norm_w_buf, &bs.norm_buf,
-                        dim as u32, nt, eps,
+                        encoder,
+                        &bs.hidden,
+                        norm_w_buf,
+                        &bs.norm_buf,
+                        dim as u32,
+                        nt,
+                        eps,
                     );
                     ax_metal::barrier_buffers(encoder);
                 }
@@ -2141,6 +2146,12 @@ mod tests {
             rope_freq_base_local: Some(10000.0),
             n_expert: None,
             n_expert_used: None,
+            qwen35_full_attention_interval: None,
+            qwen35_ssm_conv_kernel: None,
+            qwen35_ssm_inner_size: None,
+            qwen35_ssm_state_size: None,
+            qwen35_ssm_time_step_rank: None,
+            qwen35_ssm_group_count: None,
         };
 
         // Pattern=6: layers 0-4 = local (sliding window), layer 5 = global
@@ -2185,6 +2196,12 @@ mod tests {
             rope_freq_base_local: Some(10000.0),
             n_expert: None,
             n_expert_used: None,
+            qwen35_full_attention_interval: None,
+            qwen35_ssm_conv_kernel: None,
+            qwen35_ssm_inner_size: None,
+            qwen35_ssm_state_size: None,
+            qwen35_ssm_time_step_rank: None,
+            qwen35_ssm_group_count: None,
         };
 
         assert_eq!(Gemma3Forward::gpu_prefill_chunk_len(&config, 512), None);

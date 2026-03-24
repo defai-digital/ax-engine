@@ -791,7 +791,7 @@ impl FalconForward {
             let use_batch_simd =
                 crate::backend::metal::metal_batch_simd_enabled_for_arch(&cfg.architecture);
 
-            metal_ops.device.execute_sync(|encoder| {
+            metal_ops.device.execute_sync_concurrent(|encoder| {
                 let nt = n_tokens as u32;
 
                 for layer in 0..n_layers {

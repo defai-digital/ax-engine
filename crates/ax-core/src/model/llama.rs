@@ -1090,7 +1090,7 @@ impl LlamaForward {
                 crate::backend::metal::metal_batch_simd_enabled_for_arch(&cfg.architecture);
             let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
 
-            metal_ops.device.execute_sync(|encoder| {
+            metal_ops.device.execute_sync_concurrent(|encoder| {
                 let nt = n_tokens as u32;
 
                 // First layer's Phase 1a: RMSNorm (standalone, before loop).
@@ -1100,13 +1100,23 @@ impl LlamaForward {
                     let norm_w_buf = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
                     if use_f16_batch_io {
                         metal_ops.elementwise.encode_rms_norm_out_batch_f16(
-                            encoder, &bs.hidden, norm_w_buf, &bs.matmul_in_f16,
-                            dim as u32, nt, eps,
+                            encoder,
+                            &bs.hidden,
+                            norm_w_buf,
+                            &bs.matmul_in_f16,
+                            dim as u32,
+                            nt,
+                            eps,
                         );
                     } else {
                         metal_ops.elementwise.encode_rms_norm_out_batch(
-                            encoder, &bs.hidden, norm_w_buf, &bs.norm_buf,
-                            dim as u32, nt, eps,
+                            encoder,
+                            &bs.hidden,
+                            norm_w_buf,
+                            &bs.norm_buf,
+                            dim as u32,
+                            nt,
+                            eps,
                         );
                     }
                     ax_metal::barrier_buffers(encoder);
@@ -2175,6 +2185,21 @@ impl LlamaModel {
     /// f16 KV is used when context_length >= 256 (auto policy, same as v1).
     /// Paged KV deferred to v2.1.
     pub fn create_model_kv(&self) -> ModelKv {
+        if self.config.architecture == "qwen35" {
+            return ModelKv::Qwen35(crate::kv::Qwen35Kv::new(
+                self.config.n_layers as usize,
+                self.config.n_kv_heads as usize,
+                self.config.head_dim as usize,
+                self.config.context_length as usize,
+                self.config.qwen35_full_attention_interval.unwrap_or(4) as usize,
+                self.config.qwen35_ssm_conv_kernel.unwrap_or(4) as usize,
+                self.config.qwen35_ssm_inner_size.unwrap_or(0) as usize,
+                self.config.qwen35_ssm_state_size.unwrap_or(0) as usize,
+                self.config.qwen35_ssm_time_step_rank.unwrap_or(0) as usize,
+                self.config.qwen35_ssm_group_count.unwrap_or(0) as usize,
+            ));
+        }
+
         if self.backend.use_gpu_decode() {
             if let Some(metal_ops) = self.backend.metal_ops() {
                 // GPU variant: use Metal buffers, f16 when context_length >= 256
@@ -2432,6 +2457,12 @@ mod tests {
             rope_freq_base_local: None,
             n_expert: None,
             n_expert_used: None,
+            qwen35_full_attention_interval: None,
+            qwen35_ssm_conv_kernel: None,
+            qwen35_ssm_inner_size: None,
+            qwen35_ssm_state_size: None,
+            qwen35_ssm_time_step_rank: None,
+            qwen35_ssm_group_count: None,
         }
     }
 
@@ -2508,6 +2539,12 @@ mod tests {
             rope_freq_base_local: None,
             n_expert: None,
             n_expert_used: None,
+            qwen35_full_attention_interval: None,
+            qwen35_ssm_conv_kernel: None,
+            qwen35_ssm_inner_size: None,
+            qwen35_ssm_state_size: None,
+            qwen35_ssm_time_step_rank: None,
+            qwen35_ssm_group_count: None,
         };
         let model = LlamaModel::new(config);
         assert_eq!(model.attn_params.n_heads, 32);
