@@ -47,24 +47,37 @@ Benchmarked on Apple M3 Max, Q4_K_M quantization, 256 prompt + 256 decode tokens
 - Generative / chat / code models: **6B+ parameters**
 - Embedding models: **90M+ parameters**
 
+All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Also supported: Q6_K, Q8_0.
+
+> MoE (Mixture-of-Experts) models such as Qwen3-30B-A3B and Qwen3-235B-A22B are not yet supported. Only dense architectures and Mixtral-style MoE are supported.
+
 **Supported architectures and models:**
 
-| Architecture | Models | Sizes |
-|---|---|---|
-| LLaMA 3 | Meta-Llama-3.1-8B-Instruct, Meta-Llama-3-70B-Instruct | 8B, 70B |
-| Qwen 3 | Qwen3-8B, Qwen3-14B, Qwen3-32B, Qwen3-72B | 8B, 14B, 32B, 72B |
-| Qwen 3.5 | Qwen3.5-27B | 27B |
-| Gemma 3 | gemma-3-12b-it, gemma-3-27b-it | 12B, 27B |
-| Phi 3 / Phi 4 | Phi-3-small-8k-instruct, Phi-3-medium-14b-instruct, Phi-4-14B | 7B, 14B |
-| Falcon | falcon-7b-instruct, falcon-40b-instruct | 7B, 40B |
-| Mistral | Mistral-7B-Instruct-v0.3, Mistral-Nemo-Instruct-12B, Mistral-Small-22B-Instruct | 7B, 12B, 22B |
-| Mixtral | Mixtral-8x7B-Instruct-v0.1, Mixtral-8x22B-Instruct-v0.1 | 8x7B, 8x22B |
-| StarCoder 2 | starcoder2-7b, starcoder2-15b | 7B, 15B |
-| GLM-4 / GLM-5 | GLM-4-9B-Chat, glm-4-32b-chat, GLM-5-9B-Chat, GLM-5-32B-Chat | 9B, 32B |
-| DeepSeek (distill) | DeepSeek-R1-Distill-Llama-8B, DeepSeek-R1-Distill-Qwen-7B, DeepSeek-Coder-V2-Lite-Instruct | 7B, 8B, 33B |
-| CodeLlama | CodeLlama-7b-Instruct-hf | 7B |
+| Architecture | Tested Models | Quant | Sizes |
+|---|---|---|---|
+| LLaMA 3 | Meta-Llama-3.1-8B-Instruct, Meta-Llama-3-70B-Instruct | Q4_K_M, Q8_0 | 8B, 70B |
+| Qwen 3 (dense) | Qwen3-8B, Qwen3-14B, Qwen3-32B | Q4_K_M | 8B, 14B, 32B |
+| Qwen 3.5 | Qwen3.5-27B | Q4_K_M | 27B |
+| Gemma 3 | gemma-3-12b-it, gemma-3-27b-it | Q4_K_M | 12B, 27B |
+| Phi 3 / Phi 4 | Phi-3-small-8k-instruct, Phi-3-medium-14b-instruct, Phi-4-14B | Q4_K_M | 7B, 14B |
+| Falcon | falcon-7b-instruct, falcon-40b-instruct | Q4_K_M | 7B, 40B |
+| Mistral | Mistral-7B-Instruct-v0.3, Mistral-Nemo-Instruct-2407, Mistral-Small-24B-Instruct-2501 | Q4_K_M | 7B, 12B, 22B |
+| Mixtral (MoE) | Mixtral-8x7B-Instruct-v0.1, Mixtral-8x22B-Instruct-v0.1 | Q4_K_M | 8x7B, 8x22B |
+| StarCoder 2 | starcoder2-7b, starcoder2-15b | Q4_K_M | 7B, 15B |
+| GLM-4 / GLM-5 | GLM-4-9B-Chat, glm-4-32b-0414, GLM-5-9B-Chat, GLM-5-32B-Chat | Q4_K_M | 9B, 32B |
+| DeepSeek (distill) | DeepSeek-R1-Distill-Llama-8B, DeepSeek-R1-Distill-Qwen-7B, DeepSeek-Coder-V2-Lite-Instruct | Q4_K_M | 7B, 8B, 33B |
+| CodeLlama | CodeLlama-7b-Instruct-hf | Q4_K_M | 7B |
 
-All models must be in **GGUF format**. Recommended quantizations: **Q4_K_M**, Q6_K, Q8_0.
+**Memory requirements** (approximate, Q4_K_M weights + KV cache at 4K context):
+
+| Model Size | Weights | KV Cache | Total | Minimum Mac RAM |
+|---|---:|---:|---:|---|
+| 7–8B | ~4.5 GB | ~0.5 GB | ~5 GB | 16 GB |
+| 12–14B | ~8 GB | ~1 GB | ~9 GB | 16 GB |
+| 22–32B | ~18 GB | ~2 GB | ~20 GB | 32 GB |
+| 70B | ~40 GB | ~4 GB | ~44 GB | 64 GB |
+| 8x7B (MoE) | ~26 GB | ~2 GB | ~28 GB | 36 GB |
+| 8x22B (MoE) | ~80 GB | ~5 GB | ~85 GB | 128 GB |
 
 ## Current Capabilities
 
