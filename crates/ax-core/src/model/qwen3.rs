@@ -27,11 +27,25 @@
 //! the no-bias path, extended to the bias-present path.
 
 use crate::backend::metal::MetalOps;
+use std::sync::OnceLock;
+
 use crate::compute::attention;
 use crate::compute::rms_norm;
 use crate::compute::rope;
 use crate::compute::silu;
 use crate::gguf::tensor::GgmlType;
+
+/// Whether decode-path barriers are enabled. Default OFF (llama.cpp uses zero).
+fn decode_barriers_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_DECODE_BARRIERS") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "on"
+        }
+        Err(_) => false,
+    })
+}
 use crate::kv::ModelKv;
 use crate::metrics::OpBreakdown;
 use crate::metrics::counters::OpTimer;
@@ -135,7 +149,7 @@ fn encode_qwen3_gpu_layers_only(
             dim as u32,
             eps,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         encode_dequant_matvec(
             metal_ops,
@@ -167,7 +181,7 @@ fn encode_qwen3_gpu_layers_only(
             dim as u32,
             lw.wv_dtype,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         if let (Some(qb_key), Some(kb_key), Some(vb_key)) = (lw.q_bias, lw.k_bias, lw.v_bias) {
             let qb_buf = weight_cache.get(&qb_key).unwrap();
@@ -182,7 +196,7 @@ fn encode_qwen3_gpu_layers_only(
             metal_ops
                 .elementwise
                 .encode_elementwise_add(encoder, &s.v_buf, vb_buf, kv_dim as u32);
-            ax_metal::barrier_buffers(encoder);
+            if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
         }
 
         if let (Some(q_norm_key), Some(k_norm_key)) = (lw.attn_q_norm, lw.attn_k_norm) {
@@ -204,7 +218,7 @@ fn encode_qwen3_gpu_layers_only(
                 head_dim as u32,
                 eps,
             );
-            ax_metal::barrier_buffers(encoder);
+            if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
         }
 
         metal_ops.elementwise.encode_rope(
@@ -217,7 +231,7 @@ fn encode_qwen3_gpu_layers_only(
             rope_position,
             cfg.rope_freq_base,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         metal_ops.elementwise.encode_kv_append(
             encoder,
@@ -235,7 +249,7 @@ fn encode_qwen3_gpu_layers_only(
             kv_offset,
             kv_dim as u32,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         metal_ops.attention.encode_attention_decode_with_scratch(
             encoder,
@@ -252,7 +266,7 @@ fn encode_qwen3_gpu_layers_only(
             0,
             full_seq_len as u32,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         let wo_buf = weight_cache.get(&lw.wo).unwrap();
         encode_dequant_matvec(
@@ -265,12 +279,12 @@ fn encode_qwen3_gpu_layers_only(
             q_dim as u32,
             lw.wo_dtype,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         metal_ops
             .elementwise
             .encode_elementwise_add(encoder, hidden_buf, &s.proj_buf, dim as u32);
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         let ffn_nw_buf = weight_cache.get(&lw.ffn_norm).unwrap();
         metal_ops.elementwise.encode_rms_norm_out(
@@ -281,7 +295,7 @@ fn encode_qwen3_gpu_layers_only(
             dim as u32,
             eps,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         let wg_buf = weight_cache.get(&lw.wg).unwrap();
         let wu_buf = weight_cache.get(&lw.wu).unwrap();
@@ -305,7 +319,7 @@ fn encode_qwen3_gpu_layers_only(
             dim as u32,
             lw.wu_dtype,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         metal_ops.elementwise.encode_silu_elementwise_mul(
             encoder,
@@ -313,7 +327,7 @@ fn encode_qwen3_gpu_layers_only(
             &s.up_buf,
             inter_dim as u32,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         let wd_buf = weight_cache.get(&lw.wd).unwrap();
         encode_dequant_matvec(
@@ -326,13 +340,13 @@ fn encode_qwen3_gpu_layers_only(
             inter_dim as u32,
             lw.wd_dtype,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         metal_ops
             .elementwise
             .encode_elementwise_add(encoder, hidden_buf, &s.down_buf, dim as u32);
         if layer + 1 < n_layers {
-            ax_metal::barrier_buffers(encoder);
+            if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
         }
     }
 
@@ -353,12 +367,12 @@ fn encode_qwen3_gpu_output_head(
     let eps = cfg.rms_norm_eps;
 
     let fnw_buf = weight_cache.get(&cached.output_norm).unwrap();
-    ax_metal::barrier_buffers(encoder);
+    if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
     metal_ops
         .elementwise
         .encode_rms_norm(encoder, hidden_buf, fnw_buf, dim as u32, eps);
 
-    ax_metal::barrier_buffers(encoder);
+    if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
     let lm_buf = weight_cache.get(&cached.lm_head).unwrap();
     encode_dequant_matvec(
         metal_ops,
