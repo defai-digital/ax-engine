@@ -31,6 +31,34 @@ If you need a production HTTP server, routing, request validation, or adapter lo
 - Modern sampling and stopping surface: `top_k`, `top_p`, `min_p`, `min_keep`, `logit_bias`, allowed/banned-token masks, repetition/presence/frequency penalties, `top_logprobs`, stop strings, and stop token IDs
 - Strong development ergonomics: pure Rust workspace, normal `cargo` workflows, no custom toolchain beyond Xcode and Rust
 
+## Performance (v1.3)
+
+Benchmarked on Apple M3 Max, Q4_K_M quantization, 256 prompt + 256 decode tokens:
+
+| Model | Prefill tok/s | vs llama.cpp | Decode tok/s | vs llama.cpp |
+|---|---:|---:|---:|---:|
+| Qwen3-8B | 656 | **93%** | 58.6 | **93%** |
+| Llama-3-8B | 664 | **89%** | 61.3 | **92%** |
+| Gemma-3-12B | 417 | **88%** | 37.7 | **93%** |
+
+## Supported Models
+
+**Minimum model sizes:**
+- Generative / chat / code models: **6B+ parameters**
+- Embedding models: **90M+ parameters**
+
+**Supported architectures:**
+- LLaMA / LLaMA 3 (7B, 8B, 70B)
+- Qwen 3 / Qwen 3.5 (8B, 14B, 32B, 72B)
+- Gemma 3 (12B, 27B)
+- Phi 3 / Phi 4 (7B, 14B)
+- Falcon (7B, 40B)
+- Mistral / Mixtral (7B, 12B, 22B, 8x7B, 8x22B)
+- StarCoder 2 (7B, 15B)
+- GLM-4 / GLM-5 (9B, 32B)
+- DeepSeek distillations (7B, 8B, 33B)
+- CodeLlama (7B)
+
 ## Current Capabilities
 
 - Metal GPU inference for prefill and decode
@@ -38,15 +66,9 @@ If you need a production HTTP server, routing, request validation, or adapter lo
 - CPU and hybrid backend modes
 - Speculative decoding with a draft model
 - Library chat rendering helpers for common model families
-- Multiple supported model architectures, including:
-  - LLaMA / LLaMA 3
-  - Qwen 3
-  - Gemma 3
-  - Phi 3 / Phi 4
-  - Falcon
-  - Mistral / Mixtral
-  - StarCoder 2
-  - GLM variants
+- Blocked-layout batch matmul (llama.cpp kernel_mul_mm architecture)
+- Concurrent Metal dispatch with smart barrier placement
+- Precompiled Metal shaders (.metallib) for fast startup
 
 ## Requirements
 
@@ -110,6 +132,10 @@ Run speculative decoding:
   --experimental \
   --prompt "Summarize the purpose of KV cache reuse."
 ```
+
+Current speculative limitation:
+
+- `--top-logprobs`, stop controls, token masks, and `--logit-bias` are not supported with speculative decoding
 
 For a step-by-step setup guide, see [QUICKSTART.md](./QUICKSTART.md).
 
