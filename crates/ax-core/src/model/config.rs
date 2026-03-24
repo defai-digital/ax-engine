@@ -58,7 +58,7 @@ pub struct ModelConfig {
     /// RoPE freq base for local (sliding window) attention layers.
     /// Gemma3 uses 10000.0 for local layers vs 1000000.0 for global.
     pub rope_freq_base_local: Option<f32>,
-    /// Number of experts in MoE models (Mixtral). None for dense models.
+    /// Number of experts in MoE models. None for dense models.
     pub n_expert: Option<u32>,
     /// Number of experts used per token in MoE routing. None for dense models.
     pub n_expert_used: Option<u32>,
@@ -205,7 +205,7 @@ impl ModelConfig {
             None
         };
 
-        // MoE: expert count and experts-per-token (Mixtral)
+        // MoE: expert count and experts-per-token
         let n_expert = header.get_u32(&format!("{arch}.expert_count"));
         let n_expert_used = header.get_u32(&format!("{arch}.expert_used_count"));
         let qwen35_full_attention_interval =

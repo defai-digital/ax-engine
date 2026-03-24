@@ -61,7 +61,7 @@ These numbers show current parity progress on supported model families, not a cl
 | Qwen3-32B | Q4_K_M | 145 | **91%** | 16.9 | **98%** |
 | Meta-Llama-3.1-8B-Instruct | Q4_K_M | 664 | **89%** | 61.3 | **92%** |
 | gemma-3-12b-it | Q4_K_M | 417 | **88%** | 37.7 | **93%** |
-| Mistral-7B-Instruct-v0.3 | Q4_K_M | 666 | **85%** | 65.1 | **93%** |
+
 
 Areas where we expect the most improvement:
 
@@ -87,10 +87,6 @@ All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Als
 | Qwen 3 (dense) | Qwen3-8B, Qwen3-14B, Qwen3-32B | Q4_K_M | 8B, 14B, 32B |
 | Qwen 3.5 | Qwen3.5-27B | Q4_K_M | 27B |
 | Gemma 3 | gemma-3-12b-it, gemma-3-27b-it | Q4_K_M | 12B, 27B |
-
-| Mistral | Mistral-7B-Instruct-v0.3, Mistral-Nemo-Instruct-2407, Mistral-Small-24B-Instruct-2501 | Q4_K_M | 7B, 12B, 22B |
-| Mixtral (MoE) | Mixtral-8x7B-Instruct-v0.1, Mixtral-8x22B-Instruct-v0.1 | Q4_K_M | 8x7B, 8x22B |
-
 | GLM-5 | GLM-5-9B-Chat, GLM-5-32B-Chat | Q4_K_M | 9B, 32B |
 
 
@@ -102,8 +98,6 @@ All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Als
 | 12–14B | ~8 GB | ~1 GB | ~9 GB | 16 GB |
 | 22–32B | ~18 GB | ~2 GB | ~20 GB | 32 GB |
 | 70B | ~40 GB | ~4 GB | ~44 GB | 64 GB |
-| 8x7B (MoE) | ~26 GB | ~2 GB | ~28 GB | 36 GB |
-| 8x22B (MoE) | ~80 GB | ~5 GB | ~85 GB | 128 GB |
 
 ## Current Capabilities
 

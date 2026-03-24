@@ -16,27 +16,6 @@ use ax_metal::{
     ElementwiseKernels, GdnKernels, KernelProfile, MatmulKernels, MetalBuffer, MetalDevice,
 };
 
-/// Snapshot of Metal synchronization counters (for perf debugging).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct MetalPerfCounters {
-    pub command_buffers: u64,
-    pub buffer_barriers: u64,
-}
-
-/// Reset Metal performance counters.
-pub fn reset_metal_perf_counters() {
-    ax_metal::reset_perf_counters();
-}
-
-/// Read current Metal performance counters.
-pub fn read_metal_perf_counters() -> MetalPerfCounters {
-    let c = ax_metal::perf_counters();
-    MetalPerfCounters {
-        command_buffers: c.command_buffers,
-        buffer_barriers: c.buffer_barriers,
-    }
-}
-
 fn metal_profile_llama() -> bool {
     static LLAMA: OnceLock<bool> = OnceLock::new();
     *LLAMA.get_or_init(|| match std::env::var("AX_METAL_LLAMA_MODE") {
@@ -45,43 +24,9 @@ fn metal_profile_llama() -> bool {
     })
 }
 
-/// Whether f16 batch dequant matmul I/O path is enabled.
-///
-/// Controlled by `AX_METAL_BATCH_F16_IO`:
-/// - `1` / `true` / `on` -> enabled
-/// - unset / any other value -> disabled (default)
-///
-/// Benchmarked as slower than f32 path at N=39 (2×), N=209 (24%), N=509 (12%).
-/// Only marginally faster at N=1024 (+7%). Default remains OFF.
-pub fn metal_batch_f16_io_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BATCH_F16_IO") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true" || v == "on"
-        }
-        Err(_) => false,
-    })
-}
-
-fn metal_decode_splitk_chunk_size() -> usize {
-    static CHUNK: OnceLock<usize> = OnceLock::new();
-    *CHUNK.get_or_init(
-        || match std::env::var("AX_METAL_DECODE_SPLITK_CHUNK_SIZE") {
-            Ok(v) => v
-                .trim()
-                .parse::<usize>()
-                .ok()
-                .filter(|&x| x > 0)
-                .unwrap_or(256),
-            Err(_) => 256,
-        },
-    )
-}
-
 fn normalized_arch_name(arch: &str) -> &str {
     match arch {
-        "mistral" | "llama" => "llama",
+        "llama" => "llama",
         "qwen2" | "qwen3" => "qwen3",
         "qwen35" => "qwen35",
         "gemma" | "gemma2" | "gemma3" => "gemma3",
@@ -131,46 +76,6 @@ fn env_auto_toggle_with_arch_override(base: &str, arch: &str) -> Option<AutoTogg
         return parse_auto_toggle(&v);
     }
     std::env::var(base).ok().and_then(|v| parse_auto_toggle(&v))
-}
-
-/// Per-architecture override for f16 batch dequant matmul I/O.
-///
-/// Precedence:
-/// 1) `AX_METAL_BATCH_F16_IO_<ARCH>` (e.g. `_LLAMA`, `_QWEN3`, `_GEMMA3`)
-/// 2) `AX_METAL_BATCH_F16_IO`
-/// 3) kernel profile `batch_prefill.prefer_f16_io`
-/// 4) built-in default (`false`)
-pub fn metal_batch_f16_io_enabled_for_arch(arch: &str) -> bool {
-    env_bool_with_arch_override("AX_METAL_BATCH_F16_IO", arch)
-        .unwrap_or_else(|| ax_metal::global_profile().batch_prefill.prefer_f16_io)
-}
-
-/// Whether f16-input pair FFN kernel (gate+up in one dispatch) is enabled.
-///
-/// Controlled by `AX_METAL_BATCH_F16_PAIR`:
-/// - `1` / `true` / `on` -> enabled
-/// - unset / any other value -> disabled (default)
-pub fn metal_batch_f16_pair_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BATCH_F16_PAIR") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true" || v == "on"
-        }
-        Err(_) => false,
-    })
-}
-
-/// Per-architecture override for f16 pair FFN kernel.
-///
-/// Precedence:
-/// 1) `AX_METAL_BATCH_F16_PAIR_<ARCH>`
-/// 2) `AX_METAL_BATCH_F16_PAIR`
-/// 3) kernel profile `batch_prefill.prefer_pair_kernel`
-/// 4) built-in default (`false`)
-pub fn metal_batch_f16_pair_enabled_for_arch(arch: &str) -> bool {
-    env_bool_with_arch_override("AX_METAL_BATCH_F16_PAIR", arch)
-        .unwrap_or_else(|| ax_metal::global_profile().batch_prefill.prefer_pair_kernel)
 }
 
 /// Whether native Q8_0 batch dequant matmul kernel is enabled.
@@ -1173,7 +1078,8 @@ impl MetalOps {
         let kv_dim = n_kv_heads * head_dim;
         let max_chunks = config
             .context_length
-            .div_ceil(self.attention_dispatch_config().decode_splitk_chunk_size()) as usize;
+            .div_ceil(self.attention_dispatch_config().decode_splitk_chunk_size())
+            as usize;
 
         let alloc = |size: usize| -> MetalBuffer {
             MetalBuffer::new(self.device.device(), size * std::mem::size_of::<f32>())

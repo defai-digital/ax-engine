@@ -376,17 +376,6 @@ fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
                 None
             }
         }
-        "mistral" => {
-            if approx_size(size, 7.0) || approx_size(size, 8.0) {
-                Some("8b")
-            } else if approx_size(size, 12.0) {
-                Some("12b")
-            } else if approx_size(size, 22.0) {
-                Some("22b")
-            } else {
-                None
-            }
-        }
         _ => None,
     }
 }
@@ -409,11 +398,6 @@ fn extract_architecture(model_name: &str) -> String {
     // Gemma family (gemma, gemma2, gemma3) — uses gemma3 forward pass
     if lower.contains("gemma") {
         return match_size(&lower, "gemma3");
-    }
-
-    // Mistral (uses llama forward pass, GGUF arch="mistral")
-    if lower.contains("mistral") {
-        return match_size(&lower, "mistral");
     }
 
     // LLaMA family
@@ -530,11 +514,6 @@ mod tests {
         assert_eq!(extract_architecture("gemma-3-12b-it"), "gemma3-12b");
         assert_eq!(extract_architecture("Meta-Llama-3-8B"), "llama3-8b");
 
-        // Extended supported families
-        assert_eq!(
-            extract_architecture("Mistral-7B-Instruct-v0.3"),
-            "mistral-8b"
-        );
         // Qwen 3.5 — separate hybrid family, distinct from qwen3 (6B+ only)
         assert_eq!(extract_architecture("Qwen3.5-7B-Instruct"), "qwen35-9b");
         assert_eq!(extract_architecture("Qwen3.5-8B"), "qwen35-9b");
@@ -621,7 +600,6 @@ mod tests {
             .unwrap();
         let cases = [
             ("Meta-Llama-3-8B-Instruct", "llama3-8b", "llama3-8b"),
-            ("Mistral-7B-Instruct-v0.3", "mistral-8b", "mistral-7b"),
             ("Qwen3.5-27B-Instruct", "qwen35-27b", "qwen35-27b"),
         ];
 

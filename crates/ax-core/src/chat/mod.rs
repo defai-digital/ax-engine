@@ -97,7 +97,6 @@ pub fn render_chat_messages(
         "gemma3" | "gemma2" | "gemma" => render_gemma(messages, options),
         "llama" => render_llama(messages, options),
         "qwen3" | "qwen2" => render_qwen(messages, options),
-        "mistral" | "mixtral" => render_mistral(messages),
         "glm" => render_glm(messages, options),
         _ => render_fallback(messages, options),
     }
@@ -186,40 +185,6 @@ fn render_glm(messages: &[ChatMessage<'_>], options: ChatRenderOptions) -> Strin
     if options.add_generation_prompt {
         rendered.push_str("<|assistant|>");
     }
-    rendered
-}
-
-fn render_mistral(messages: &[ChatMessage<'_>]) -> String {
-    let mut rendered = String::new();
-    let mut pending_system: Option<&str> = None;
-
-    for message in messages {
-        match message.role {
-            ChatRole::System => {
-                pending_system = Some(message.content);
-            }
-            ChatRole::User => {
-                if !rendered.is_empty() {
-                    rendered.push(' ');
-                }
-                rendered.push_str("[INST] ");
-                if let Some(system) = pending_system.take() {
-                    rendered.push_str("<<SYS>>\n");
-                    rendered.push_str(system);
-                    rendered.push_str("\n<</SYS>>\n\n");
-                }
-                rendered.push_str(message.content);
-                rendered.push_str(" [/INST]");
-            }
-            ChatRole::Assistant => {
-                if !rendered.is_empty() {
-                    rendered.push(' ');
-                }
-                rendered.push_str(message.content);
-            }
-        }
-    }
-
     rendered
 }
 
