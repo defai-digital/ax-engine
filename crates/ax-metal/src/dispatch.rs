@@ -1850,7 +1850,7 @@ impl DequantKernels {
         if batch_q4k_blocked_enabled() && k.is_multiple_of(Q4_K_BLOCK_VALUES as u32) {
             const BLOCKED_TG: usize = 128;
             // Choose BM=32 for small M (doubles TG count for better GPU saturation).
-            let use_bm32 = (m as usize) < 2048;
+            let use_bm32 = false; // BM=32 tested: no improvement on small M (GPU saturation not the bottleneck)
             let (pipeline, bm, smem) = if use_bm32 {
                 (&self.fused_batch_q4_k_blocked_bm32, 32usize, 8192usize)
             } else {
@@ -2148,7 +2148,7 @@ impl DequantKernels {
         // Blocked-layout Q6_K kernel (same architecture as Q4_K blocked).
         if batch_q6k_blocked_enabled() && k.is_multiple_of(Q6_K_BLOCK_VALUES as u32) {
             const BLOCKED_TG: usize = 128;
-            let use_bm32 = (m as usize) < 2048;
+            let use_bm32 = false; // BM=32 tested: no improvement on small M (GPU saturation not the bottleneck)
             let (pipeline, bm, smem) = if use_bm32 {
                 (&self.fused_batch_q6_k_blocked_bm32, 32usize, 8192usize)
             } else {
