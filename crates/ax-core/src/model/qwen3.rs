@@ -864,18 +864,26 @@ impl Qwen3Forward {
                 crate::backend::metal::metal_batch_simd_enabled_for_arch(&cfg.architecture);
             let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
 
-            metal_ops.device.execute_sync(|encoder| {
+            // Concurrent dispatch with smart barriers (llama.cpp pattern).
+            // SmartBarrier tracks buffer ranges and only inserts barriers
+            // when dispatches actually conflict on the same buffer.
+            metal_ops.device.execute_sync_concurrent(|encoder| {
                 let nt = n_tokens as u32;
+                let mut sb = ax_metal::SmartBarrier::new(encoder);
 
                 // First layer's Phase 1a: standalone RMSNorm before loop.
-                // Subsequent layers fuse Phase 3f (residual add) with next layer's norm.
                 {
                     let norm_w_buf = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
                     metal_ops.elementwise.encode_rms_norm_out_batch(
-                        encoder, &bs.hidden, norm_w_buf, &bs.norm_buf,
-                        dim as u32, nt, eps,
+                        encoder,
+                        &bs.hidden,
+                        norm_w_buf,
+                        &bs.norm_buf,
+                        dim as u32,
+                        nt,
+                        eps,
                     );
-                    ax_metal::barrier_buffers(encoder);
+                    sb.post_dispatch(&[&bs.hidden], &[&bs.norm_buf]);
                 }
 
                 for layer in 0..n_layers {
@@ -1053,9 +1061,7 @@ impl Qwen3Forward {
                     // 2) WITHOUT bias: split+QKnorm+RoPE+append (for Qwen3-0.6B etc.)
                     let has_bias = lw.q_bias.is_some();
                     let has_qk_norm = lw.attn_q_norm.is_some();
-                    let use_fused_bias_path = fused_qkv_buf.is_some()
-                        && has_bias
-                        && has_qk_norm;
+                    let use_fused_bias_path = fused_qkv_buf.is_some() && has_bias && has_qk_norm;
                     if use_fused_bias_path {
                         let qb_buf = weight_cache.get(&lw.q_bias.unwrap()).unwrap();
                         let kb_buf = weight_cache.get(&lw.k_bias.unwrap()).unwrap();
@@ -1129,13 +1135,25 @@ impl Qwen3Forward {
                             let kb_buf = weight_cache.get(&kb_key).unwrap();
                             let vb_buf = weight_cache.get(&vb_key).unwrap();
                             metal_ops.elementwise.encode_elementwise_add_batch(
-                                encoder, &bs.q_buf, qb_buf, q_dim as u32, nt,
+                                encoder,
+                                &bs.q_buf,
+                                qb_buf,
+                                q_dim as u32,
+                                nt,
                             );
                             metal_ops.elementwise.encode_elementwise_add_batch(
-                                encoder, &bs.k_buf, kb_buf, kv_dim as u32, nt,
+                                encoder,
+                                &bs.k_buf,
+                                kb_buf,
+                                kv_dim as u32,
+                                nt,
                             );
                             metal_ops.elementwise.encode_elementwise_add_batch(
-                                encoder, &bs.v_buf, vb_buf, kv_dim as u32, nt,
+                                encoder,
+                                &bs.v_buf,
+                                vb_buf,
+                                kv_dim as u32,
+                                nt,
                             );
                             ax_metal::barrier_buffers(encoder);
                         }
@@ -1146,26 +1164,55 @@ impl Qwen3Forward {
                             let q_nw = weight_cache.get(&q_norm_key).unwrap();
                             let k_nw = weight_cache.get(&k_norm_key).unwrap();
                             metal_ops.elementwise.encode_qk_norm_rope_batch(
-                                encoder, &bs.q_buf, &bs.k_buf, q_nw, k_nw, nt,
-                                n_heads as u32, n_kv_heads as u32, head_dim as u32,
-                                eps, rope_start, rope_step, cfg.rope_freq_base,
+                                encoder,
+                                &bs.q_buf,
+                                &bs.k_buf,
+                                q_nw,
+                                k_nw,
+                                nt,
+                                n_heads as u32,
+                                n_kv_heads as u32,
+                                head_dim as u32,
+                                eps,
+                                rope_start,
+                                rope_step,
+                                cfg.rope_freq_base,
                             );
                         } else {
                             metal_ops.elementwise.encode_rope_batch(
-                                encoder, &bs.q_buf, &bs.k_buf, nt,
-                                n_heads as u32, n_kv_heads as u32, head_dim as u32,
-                                rope_start, rope_step, cfg.rope_freq_base,
+                                encoder,
+                                &bs.q_buf,
+                                &bs.k_buf,
+                                nt,
+                                n_heads as u32,
+                                n_kv_heads as u32,
+                                head_dim as u32,
+                                rope_start,
+                                rope_step,
+                                cfg.rope_freq_base,
                             );
                         }
                         ax_metal::barrier_buffers(encoder);
 
                         metal_ops.elementwise.encode_kv_append_batch(
-                            encoder, &bs.k_buf, gpu_kv.k_buffer(layer), kv_f16,
-                            cache_offset, kv_dim as u32, kv_dim as u32, nt,
+                            encoder,
+                            &bs.k_buf,
+                            gpu_kv.k_buffer(layer),
+                            kv_f16,
+                            cache_offset,
+                            kv_dim as u32,
+                            kv_dim as u32,
+                            nt,
                         );
                         metal_ops.elementwise.encode_kv_append_batch(
-                            encoder, &bs.v_buf, gpu_kv.v_buffer(layer), kv_f16,
-                            cache_offset, kv_dim as u32, kv_dim as u32, nt,
+                            encoder,
+                            &bs.v_buf,
+                            gpu_kv.v_buffer(layer),
+                            kv_f16,
+                            cache_offset,
+                            kv_dim as u32,
+                            kv_dim as u32,
+                            nt,
                         );
                         ax_metal::barrier_buffers(encoder);
                     }

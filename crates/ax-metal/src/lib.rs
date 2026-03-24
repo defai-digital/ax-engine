@@ -20,7 +20,7 @@ pub use buffer::MetalBuffer;
 pub use device::{DeviceInfo, InflightFrame, MetalDevice, PendingFrame};
 pub use dispatch::{
     AttentionKernels, DequantKernels, DispatchDims, ElementwiseKernels, MatmulKernels,
-    barrier_buffers, batch_simd_enabled,
+    SmartBarrier, barrier_buffers, batch_simd_enabled,
 };
 pub use pipeline::{ComputePipeline, FunctionConstant, FunctionConstantValue};
 pub use profile::{KernelProfile, global_profile, init_global_profile};

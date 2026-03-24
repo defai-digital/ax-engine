@@ -1861,7 +1861,9 @@ impl DequantKernels {
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
             bind_u32(encoder, 5, k);
-            unsafe { encoder.setThreadgroupMemoryLength_atIndex(smem, 0); }
+            unsafe {
+                encoder.setThreadgroupMemoryLength_atIndex(smem, 0);
+            }
             encoder.dispatchThreadgroups_threadsPerThreadgroup(
                 MTLSize {
                     width: (n as usize).div_ceil(32),
@@ -1906,9 +1908,8 @@ impl DequantKernels {
         // BN=32 full-tile path: 8 KB TG memory → 3 TGs/SM (vs 12-20 KB → 1-2).
         // Higher occupancy hides memory latency. Use when both M and N are aligned.
         // Split into full BN=32 tiles + boundary remainder with existing BN=64 kernel.
-        let use_bn32_full = !use_small
-            && batch_q4k_bn32_full_enabled()
-            && (m as usize).is_multiple_of(DB_TILE_M);
+        let use_bn32_full =
+            !use_small && batch_q4k_bn32_full_enabled() && (m as usize).is_multiple_of(DB_TILE_M);
         if use_bn32_full {
             const BN32_TG: usize = 128;
             let groups_x = (m as usize) / DB_TILE_M;
@@ -2159,7 +2160,9 @@ impl DequantKernels {
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
             bind_u32(encoder, 5, k);
-            unsafe { encoder.setThreadgroupMemoryLength_atIndex(smem, 0); }
+            unsafe {
+                encoder.setThreadgroupMemoryLength_atIndex(smem, 0);
+            }
             encoder.dispatchThreadgroups_threadsPerThreadgroup(
                 MTLSize {
                     width: (n as usize).div_ceil(32),
@@ -5033,6 +5036,91 @@ pub fn barrier_buffers(encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>) {
     }
     inc_buffer_barrier_count();
     encoder.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+}
+
+/// Smart barrier tracker for concurrent Metal dispatch.
+///
+/// Tracks buffer read/write ranges and inserts barriers only when a new
+/// dispatch conflicts with pending operations. Ports llama.cpp's
+/// `ggml_metal_op_concurrency_check` pattern (ggml-metal-ops.cpp:221).
+///
+/// Usage:
+/// ```ignore
+/// let mut sb = SmartBarrier::new(encoder);
+/// sb.pre_dispatch(&[&buf_a], &[&buf_b]);  // check + barrier if needed
+/// encode_op(encoder, &buf_a, &buf_b);
+/// sb.post_dispatch(&[&buf_a], &[&buf_b]); // register ranges
+/// ```
+pub struct SmartBarrier<'a> {
+    encoder: &'a ProtocolObject<dyn MTLComputeCommandEncoder>,
+    /// Pending (buffer_ptr, is_write) ranges from dispatches since last barrier.
+    pending: Vec<(usize, bool)>,
+}
+
+impl<'a> SmartBarrier<'a> {
+    /// Create a new tracker wrapping a concurrent encoder.
+    pub fn new(encoder: &'a ProtocolObject<dyn MTLComputeCommandEncoder>) -> Self {
+        Self {
+            encoder,
+            pending: Vec::with_capacity(32),
+        }
+    }
+
+    /// Check for conflicts and insert barrier if needed, BEFORE dispatching.
+    /// `reads`: buffers the next dispatch will read from.
+    /// `writes`: buffers the next dispatch will write to.
+    pub fn pre_dispatch(&mut self, reads: &[&MetalBuffer], writes: &[&MetalBuffer]) {
+        if !barriers_enabled() {
+            return;
+        }
+        let needs_barrier = self.has_conflict(reads, writes);
+        if needs_barrier {
+            inc_buffer_barrier_count();
+            self.encoder
+                .memoryBarrierWithScope(MTLBarrierScope::Buffers);
+            self.pending.clear();
+        }
+    }
+
+    /// Register buffer ranges AFTER dispatching.
+    pub fn post_dispatch(&mut self, reads: &[&MetalBuffer], writes: &[&MetalBuffer]) {
+        for buf in reads {
+            self.pending.push((buf.ptr_id(), false));
+        }
+        for buf in writes {
+            self.pending.push((buf.ptr_id(), true));
+        }
+    }
+
+    /// Insert an unconditional barrier (e.g., at end of encoding).
+    pub fn flush(&mut self) {
+        if !self.pending.is_empty() && barriers_enabled() {
+            inc_buffer_barrier_count();
+            self.encoder
+                .memoryBarrierWithScope(MTLBarrierScope::Buffers);
+            self.pending.clear();
+        }
+    }
+
+    /// Check if any of the new reads/writes conflict with pending ranges.
+    /// Conflict = new read overlaps pending write, OR new write overlaps pending read/write.
+    fn has_conflict(&self, reads: &[&MetalBuffer], writes: &[&MetalBuffer]) -> bool {
+        for buf in reads {
+            let id = buf.ptr_id();
+            // Read conflicts with pending WRITE to same buffer.
+            if self.pending.iter().any(|&(pid, is_w)| is_w && pid == id) {
+                return true;
+            }
+        }
+        for buf in writes {
+            let id = buf.ptr_id();
+            // Write conflicts with ANY pending access to same buffer.
+            if self.pending.iter().any(|&(pid, _)| pid == id) {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 /// Threadgroup size for elementwise kernels (must match shader constant).

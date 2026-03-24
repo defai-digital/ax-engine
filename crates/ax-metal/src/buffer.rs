@@ -67,6 +67,13 @@ impl MetalBuffer {
         self.buffer.contents()
     }
 
+    /// Unique identifier for this buffer (the MTLBuffer pointer address).
+    /// Used by [`SmartBarrier`] for overlap detection.
+    pub fn ptr_id(&self) -> usize {
+        // Use the MTLBuffer's GPU address as a stable identity.
+        self.buffer.contents().as_ptr() as usize
+    }
+
     /// Length of the buffer in bytes.
     pub fn len(&self) -> usize {
         self.buffer.length()
