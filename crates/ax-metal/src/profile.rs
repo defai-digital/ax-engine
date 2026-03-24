@@ -327,13 +327,8 @@ fn approx_size(size: f32, target: f32) -> bool {
 fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
     match family {
         "qwen3" => {
-            if approx_size(size, 1.5) || approx_size(size, 1.7) {
-                Some("2b")
-            } else if approx_size(size, 3.0) {
-                Some("3b")
-            } else if approx_size(size, 3.8) || approx_size(size, 4.0) {
-                Some("4b")
-            } else if approx_size(size, 6.0) || approx_size(size, 7.0) || approx_size(size, 8.0) {
+            // Generative models: 6B+ only
+            if approx_size(size, 6.0) || approx_size(size, 7.0) || approx_size(size, 8.0) {
                 Some("8b")
             } else if approx_size(size, 14.0) {
                 Some("14b")
@@ -346,9 +341,8 @@ fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
             }
         }
         "qwen35" => {
-            if approx_size(size, 3.8) || approx_size(size, 4.0) {
-                Some("4b")
-            } else if approx_size(size, 7.0) || approx_size(size, 8.0) || approx_size(size, 9.0) {
+            // Generative models: 6B+ only
+            if approx_size(size, 7.0) || approx_size(size, 8.0) || approx_size(size, 9.0) {
                 Some("9b")
             } else if approx_size(size, 27.0) {
                 Some("27b")
@@ -363,9 +357,8 @@ fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
             }
         }
         "gemma3" => {
-            if approx_size(size, 3.8) || approx_size(size, 4.0) {
-                Some("4b")
-            } else if approx_size(size, 12.0) {
+            // Generative models: 6B+ only
+            if approx_size(size, 12.0) {
                 Some("12b")
             } else if approx_size(size, 27.0) {
                 Some("27b")
@@ -374,9 +367,8 @@ fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
             }
         }
         "llama3" | "deepseek-llama" => {
-            if approx_size(size, 3.0) {
-                Some("3b")
-            } else if approx_size(size, 7.0) || approx_size(size, 8.0) {
+            // Generative models: 6B+ only
+            if approx_size(size, 7.0) || approx_size(size, 8.0) {
                 Some("8b")
             } else if approx_size(size, 70.0) {
                 Some("70b")
@@ -580,15 +572,12 @@ mod tests {
 
     #[test]
     fn test_extract_architecture() {
-        // Core families
+        // Core families (6B+ generative only)
         assert_eq!(extract_architecture("Qwen3-8B-Q4_K_M"), "qwen3-8b");
         assert_eq!(extract_architecture("Qwen2.5-7B-Instruct"), "qwen3-8b");
-        assert_eq!(extract_architecture("Qwen2.5-3B"), "qwen3-3b");
         assert_eq!(extract_architecture("Qwen3-14B"), "qwen3-14b");
-        assert_eq!(extract_architecture("gemma-3-4b-it"), "gemma3-4b");
         assert_eq!(extract_architecture("gemma-3-12b-it"), "gemma3-12b");
         assert_eq!(extract_architecture("Meta-Llama-3-8B"), "llama3-8b");
-        assert_eq!(extract_architecture("Meta-Llama-3.2-3B"), "llama3-3b");
 
         // Extended supported families
         assert_eq!(
@@ -617,8 +606,7 @@ mod tests {
             "deepseek-llama-8b"
         );
 
-        // Qwen 3.5 — separate hybrid family, distinct from qwen3
-        assert_eq!(extract_architecture("Qwen3.5-4B"), "qwen35-4b");
+        // Qwen 3.5 — separate hybrid family, distinct from qwen3 (6B+ only)
         assert_eq!(extract_architecture("Qwen3.5-7B-Instruct"), "qwen35-9b");
         assert_eq!(extract_architecture("Qwen3.5-8B"), "qwen35-9b");
         assert_eq!(extract_architecture("Qwen3.5-27B-Q4_K_M"), "qwen35-27b");

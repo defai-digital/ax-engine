@@ -1,6 +1,6 @@
 {
-  "model": "gemma3-4b",
-  "source": "llama.cpp-params-2026-03-22",
+  "model": "qwen35-27b",
+  "source": "ax-qwen35-bootstrap-2026-03-23",
   "generated": "2026-03-23",
   "decode_matvec": {
     "q4_k": {
@@ -27,7 +27,7 @@
   },
   "attention_decode": {
     "splitk_chunk_size": 256,
-    "splitk_threshold": 256
+    "splitk_threshold": 512
   },
   "attention_prefill": {
     "fa2_mode": "off",

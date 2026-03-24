@@ -1,5 +1,5 @@
 {
-  "model": "qwen3-1.5b",
+  "model": "qwen3-27b",
   "source": "llama.cpp-params-2026-03-22",
   "generated": "2026-03-23",
   "decode_matvec": {
@@ -27,7 +27,7 @@
   },
   "attention_decode": {
     "splitk_chunk_size": 256,
-    "splitk_threshold": 512
+    "splitk_threshold": 1024
   },
   "attention_prefill": {
     "fa2_mode": "off",
