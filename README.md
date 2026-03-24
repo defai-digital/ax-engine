@@ -52,17 +52,17 @@ AX Engine is currently most relevant for:
 
 Benchmarked on Apple M3 Max, Q4_K_M quantization, 512 prompt + 128 decode tokens.
 
-AX Engine **matches or beats llama.cpp on decode** across all tested models, and significantly outperforms on larger models (Qwen3-32B: **143% prefill, 133% decode**).
+AX Engine **matches or beats llama.cpp on decode** across all tested models. Pipelined decode with f16 KV cache.
 
 | Model | Quant | Prefill tok/s | vs llama.cpp | Decode tok/s | vs llama.cpp |
 |---|---|---:|---:|---:|---:|
 | Qwen3-8B | Q4_K_M | 655 | **87%** | 58.8 | **103%** |
-| Qwen3-14B | Q4_K_M | 353 | **87%** | 36.0 | **102%** |
-| Qwen3-32B | Q4_K_M | 111 | **143%** | 9.2 | **133%** |
+| Qwen3-14B | Q4_K_M | 354 | **90%** | 35.7 | **102%** |
+| Qwen3-32B | Q4_K_M | 142 | **84%** | 16.0 | **99%** |
 | Meta-Llama-3.1-8B-Instruct | Q4_K_M | 640 | **85%** | 60.2 | **100%** |
 | gemma-3-12b-it | Q4_K_M | 420 | **86%** | 39.5 | **102%** |
 
-AX decode uses pipelined mode with f16 KV cache.
+Results measured with cooldown between runs to avoid thermal throttling.
 
 Areas where we expect the most improvement:
 
