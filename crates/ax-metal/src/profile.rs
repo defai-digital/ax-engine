@@ -373,8 +373,8 @@ fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
                 Some("2b")
             } else if approx_size(size, 3.8) || approx_size(size, 4.0) {
                 Some("4b")
-            } else if approx_size(size, 9.0) {
-                Some("9b")
+            } else if approx_size(size, 12.0) {
+                Some("12b")
             } else if approx_size(size, 27.0) {
                 Some("27b")
             } else {
@@ -463,11 +463,7 @@ fn extract_architecture(model_name: &str) -> String {
     }
 
     // Gemma family (gemma, gemma2, gemma3) — uses gemma3 forward pass
-    // Gemma has a distinct 9b profile (not 8b), so check for it explicitly.
     if lower.contains("gemma") {
-        if let Some(size) = extract_param_billions(&lower) && (8.5..10.0).contains(&size) {
-            return "gemma3-9b".to_string();
-        }
         return match_size(&lower, "gemma3");
     }
 
@@ -614,7 +610,7 @@ mod tests {
         assert_eq!(extract_architecture("Qwen2.5-1.5B"), "qwen3-2b"); // 1.5b → 2b bucket
         assert_eq!(extract_architecture("Qwen3-14B"), "qwen3-14b");
         assert_eq!(extract_architecture("gemma-3-4b-it"), "gemma3-4b");
-        assert_eq!(extract_architecture("gemma-2-9b-it"), "gemma3-9b");
+        assert_eq!(extract_architecture("gemma-3-12b-it"), "gemma3-12b");
         assert_eq!(extract_architecture("gemma-2-2b"), "gemma3-2b");
         assert_eq!(extract_architecture("Meta-Llama-3-8B"), "llama3-8b");
         assert_eq!(extract_architecture("Meta-Llama-3.2-3B"), "llama3-3b");
