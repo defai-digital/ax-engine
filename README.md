@@ -48,27 +48,30 @@ AX Engine is currently most relevant for:
 - Workflows that benefit from explicit backend control and long-running local inference
 - Mac-native deployments where stable, isolated execution matters more than broad platform coverage
 
-## Performance (v1.3.2)
+## Performance
 
-Benchmarked on Apple M3 Max, Q4_K_M quantization, 512 prompt + 128 decode tokens.
+Performance depends heavily on model family, quantization, context length, kernel routing, and benchmark configuration.
 
-AX Engine **matches or beats llama.cpp on decode** across all tested models. Pipelined decode with f16 KV cache.
+AX Engine is optimized for Apple Silicon throughput and low-overhead local inference, but cross-engine claims should only be made from apples-to-apples runs. In particular, `llama.cpp` comparisons must record whether Flash Attention was enabled, because that materially changes the result on supported models.
 
-| Model | Quant | Prefill tok/s | vs llama.cpp | Decode tok/s | vs llama.cpp |
-|---|---|---:|---:|---:|---:|
-| Qwen3-8B | Q4_K_M | 655 | **87%** | 58.8 | **103%** |
-| Qwen3-14B | Q4_K_M | 354 | **90%** | 35.7 | **102%** |
-| Qwen3-32B | Q4_K_M | 142 | **84%** | 16.0 | **99%** |
-| Meta-Llama-3.1-8B-Instruct | Q4_K_M | 640 | **85%** | 60.2 | **100%** |
-| gemma-3-12b-it | Q4_K_M | 420 | **86%** | 39.5 | **102%** |
+For the current benchmarking methodology, command lines, and reporting rules, see [BENCHMARKING.md](./BENCHMARKING.md).
 
-Results measured with cooldown between runs to avoid thermal throttling.
+Current local snapshot, measured on March 24, 2026 on Apple M3 Max with Q4_K_M GGUFs, `512` prompt tokens, `128` decode tokens, AX deterministic `5` samples with `500ms` cooldown, and `llama.cpp` `llama-bench` with `-r 5 -fa 1`. Table values below use medians. `AX vs llama.cpp` over `100%` means AX was faster.
+
+| Model | AX prefill | llama.cpp prefill | AX vs llama.cpp | AX decode | llama.cpp decode | AX vs llama.cpp |
+|---|---:|---:|---:|---:|---:|---:|
+| Gemma 3 12B | 418.5 tok/s | 477.7 tok/s | 87.6% | 39.3 tok/s | 39.1 tok/s | 100.5% |
+| Gemma 3 27B | 161.3 tok/s | 191.3 tok/s | 84.3% | 17.7 tok/s | 14.6 tok/s | 121.2% |
+| Llama 3 8B | 642.0 tok/s | 771.4 tok/s | 83.2% | 58.1 tok/s | 64.8 tok/s | 89.7% |
+| Qwen3 8B | 631.4 tok/s | 664.8 tok/s | 95.0% | 55.1 tok/s | 59.8 tok/s | 92.1% |
+| Qwen3 14B | 269.6 tok/s | 334.0 tok/s | 80.7% | 33.4 tok/s | 20.8 tok/s | 160.6% |
+| Qwen3 32B | 126.3 tok/s | 129.4 tok/s | 97.6% | 13.1 tok/s | 12.0 tok/s | 109.2% |
 
 Areas where we expect the most improvement:
 
-- Prefill throughput (closing the 85–87% gap via kernel tuning)
-- Larger dense models (32B–70B), where decode already approaches or exceeds llama.cpp
-- Model-specific kernel fusions for Qwen3 QKV bias and other architecture-specific operations
+- Prefill throughput on dense models
+- Decode throughput on dense models where AX still trails on some model families
+- Model-specific kernel fusions for architecture-specific operations
 
 ## Supported Models
 
@@ -187,7 +190,7 @@ Current speculative limitation:
 
 - `--top-logprobs`, stop controls, token masks, and `--logit-bias` are not supported with speculative decoding
 
-For a step-by-step setup guide, see [QUICKSTART.md](./QUICKSTART.md).
+For a step-by-step setup guide, see [QUICKSTART.md](./QUICKSTART.md). For benchmark procedure and AX-vs-`llama.cpp` comparisons, see [BENCHMARKING.md](./BENCHMARKING.md).
 
 ## Common Commands
 
@@ -328,7 +331,7 @@ cargo run -p ax-cli -- --help
 ## Roadmap
 
 **Now** (v1.x):
-- Steady performance progress toward llama.cpp parity across supported model families
+- Steady performance progress toward better AX-vs-`llama.cpp` parity across supported model families
 - Model-specific kernel fusions for Qwen3, GLM, StarCoder2
 - Stable `ax-core` library surface for embedding into local AI toolchains
 
