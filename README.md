@@ -31,13 +31,14 @@ If you need a production HTTP server, routing, request validation, or adapter lo
 - Modern sampling and stopping surface: `top_k`, `top_p`, `min_p`, `min_keep`, `logit_bias`, allowed/banned-token masks, repetition/presence/frequency penalties, `top_logprobs`, stop strings, and stop token IDs
 - Strong development ergonomics: pure Rust workspace, normal `cargo` workflows, no custom toolchain beyond Xcode and Rust
 
-## Performance (v1.3)
+## Performance (v1.3.1)
 
 Benchmarked on Apple M3 Max, Q4_K_M quantization, 256 prompt + 256 decode tokens:
 
 | Model | Quant | Prefill tok/s | vs llama.cpp | Decode tok/s | vs llama.cpp |
 |---|---|---:|---:|---:|---:|
 | Qwen3-8B | Q4_K_M | 656 | **93%** | 58.6 | **93%** |
+| Qwen3-32B | Q4_K_M | 145 | **91%** | 16.9 | **98%** |
 | Meta-Llama-3.1-8B-Instruct | Q4_K_M | 664 | **89%** | 61.3 | **92%** |
 | gemma-3-12b-it | Q4_K_M | 417 | **88%** | 37.7 | **93%** |
 
