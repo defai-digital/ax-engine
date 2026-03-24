@@ -327,9 +327,7 @@ fn approx_size(size: f32, target: f32) -> bool {
 fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
     match family {
         "qwen3" => {
-            if approx_size(size, 0.5) || approx_size(size, 0.6) {
-                Some("1b")
-            } else if approx_size(size, 1.5) || approx_size(size, 1.7) {
+            if approx_size(size, 1.5) || approx_size(size, 1.7) {
                 Some("2b")
             } else if approx_size(size, 3.0) {
                 Some("3b")
@@ -348,11 +346,7 @@ fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
             }
         }
         "qwen35" => {
-            if approx_size(size, 0.5) || approx_size(size, 0.6) {
-                Some("1b")
-            } else if approx_size(size, 1.5) || approx_size(size, 1.7) {
-                Some("2b")
-            } else if approx_size(size, 3.8) || approx_size(size, 4.0) {
+            if approx_size(size, 3.8) || approx_size(size, 4.0) {
                 Some("4b")
             } else if approx_size(size, 7.0) || approx_size(size, 8.0) || approx_size(size, 9.0) {
                 Some("9b")
@@ -369,9 +363,7 @@ fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
             }
         }
         "gemma3" => {
-            if approx_size(size, 2.0) {
-                Some("2b")
-            } else if approx_size(size, 3.8) || approx_size(size, 4.0) {
+            if approx_size(size, 3.8) || approx_size(size, 4.0) {
                 Some("4b")
             } else if approx_size(size, 12.0) {
                 Some("12b")
@@ -382,9 +374,7 @@ fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
             }
         }
         "llama3" | "deepseek-llama" => {
-            if approx_size(size, 1.0) {
-                Some("1b")
-            } else if approx_size(size, 3.0) {
+            if approx_size(size, 3.0) {
                 Some("3b")
             } else if approx_size(size, 7.0) || approx_size(size, 8.0) {
                 Some("8b")
@@ -413,9 +403,7 @@ fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
             }
         }
         "deepseek-qwen" => {
-            if approx_size(size, 1.5) || approx_size(size, 1.7) {
-                Some("2b")
-            } else if approx_size(size, 6.0) || approx_size(size, 7.0) || approx_size(size, 8.0) {
+            if approx_size(size, 6.0) || approx_size(size, 7.0) || approx_size(size, 8.0) {
                 Some("8b")
             } else {
                 None
@@ -494,16 +482,6 @@ fn perf_profile_exists(profile_name: &str) -> bool {
 /// (e.g. "27b" must not match "7b", "14b" must not match "4b").
 fn match_size(lower: &str, family: &str) -> String {
     if let Some(size) = extract_param_billions(lower) {
-        // Preserve an exact small-model profile when one exists. This avoids
-        // collapsing Qwen3-0.6B onto the 1B bucket once a dedicated profile is
-        // added under perfs/.
-        if lower.contains("0.6b") {
-            let exact = format!("{family}-0.6b");
-            if perf_profile_exists(&exact) {
-                return exact;
-            }
-        }
-
         family_size_bucket(family, size)
             .map(|bucket| format!("{family}-{bucket}"))
             .unwrap_or_else(|| family.to_string())
@@ -606,15 +584,11 @@ mod tests {
         assert_eq!(extract_architecture("Qwen3-8B-Q4_K_M"), "qwen3-8b");
         assert_eq!(extract_architecture("Qwen2.5-7B-Instruct"), "qwen3-8b");
         assert_eq!(extract_architecture("Qwen2.5-3B"), "qwen3-3b");
-        assert_eq!(extract_architecture("Qwen3-0.6B"), "qwen3-0.6b");
-        assert_eq!(extract_architecture("Qwen2.5-1.5B"), "qwen3-2b"); // 1.5b → 2b bucket
         assert_eq!(extract_architecture("Qwen3-14B"), "qwen3-14b");
         assert_eq!(extract_architecture("gemma-3-4b-it"), "gemma3-4b");
         assert_eq!(extract_architecture("gemma-3-12b-it"), "gemma3-12b");
-        assert_eq!(extract_architecture("gemma-2-2b"), "gemma3-2b");
         assert_eq!(extract_architecture("Meta-Llama-3-8B"), "llama3-8b");
         assert_eq!(extract_architecture("Meta-Llama-3.2-3B"), "llama3-3b");
-        assert_eq!(extract_architecture("Meta-Llama-3.2-1B"), "llama3-1b");
 
         // Extended supported families
         assert_eq!(
@@ -633,9 +607,10 @@ mod tests {
             extract_architecture("DeepSeek-R1-Distill-Qwen-7B"),
             "deepseek-qwen-8b"
         );
+        // DeepSeek-Qwen-1.5B: < 2B, falls back to family default
         assert_eq!(
             extract_architecture("DeepSeek-R1-Distill-Qwen-1.5B"),
-            "deepseek-qwen-2b"
+            "deepseek-qwen"
         );
         assert_eq!(
             extract_architecture("DeepSeek-R1-Distill-Llama-8B"),
@@ -643,8 +618,6 @@ mod tests {
         );
 
         // Qwen 3.5 — separate hybrid family, distinct from qwen3
-        assert_eq!(extract_architecture("Qwen3.5-0.6B"), "qwen35-1b");
-        assert_eq!(extract_architecture("Qwen3.5-1.5B-Instruct"), "qwen35-2b");
         assert_eq!(extract_architecture("Qwen3.5-4B"), "qwen35-4b");
         assert_eq!(extract_architecture("Qwen3.5-7B-Instruct"), "qwen35-9b");
         assert_eq!(extract_architecture("Qwen3.5-8B"), "qwen35-9b");
