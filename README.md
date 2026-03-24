@@ -35,11 +35,11 @@ If you need a production HTTP server, routing, request validation, or adapter lo
 
 Benchmarked on Apple M3 Max, Q4_K_M quantization, 256 prompt + 256 decode tokens:
 
-| Model | Prefill tok/s | vs llama.cpp | Decode tok/s | vs llama.cpp |
-|---|---:|---:|---:|---:|
-| Qwen3-8B | 656 | **93%** | 58.6 | **93%** |
-| Llama-3-8B | 664 | **89%** | 61.3 | **92%** |
-| Gemma-3-12B | 417 | **88%** | 37.7 | **93%** |
+| Model | Quant | Prefill tok/s | vs llama.cpp | Decode tok/s | vs llama.cpp |
+|---|---|---:|---:|---:|---:|
+| Qwen3-8B | Q4_K_M | 656 | **93%** | 58.6 | **93%** |
+| Meta-Llama-3.1-8B-Instruct | Q4_K_M | 664 | **89%** | 61.3 | **92%** |
+| gemma-3-12b-it | Q4_K_M | 417 | **88%** | 37.7 | **93%** |
 
 ## Supported Models
 
@@ -47,17 +47,24 @@ Benchmarked on Apple M3 Max, Q4_K_M quantization, 256 prompt + 256 decode tokens
 - Generative / chat / code models: **6B+ parameters**
 - Embedding models: **90M+ parameters**
 
-**Supported architectures:**
-- LLaMA / LLaMA 3 (7B, 8B, 70B)
-- Qwen 3 / Qwen 3.5 (8B, 14B, 32B, 72B)
-- Gemma 3 (12B, 27B)
-- Phi 3 / Phi 4 (7B, 14B)
-- Falcon (7B, 40B)
-- Mistral / Mixtral (7B, 12B, 22B, 8x7B, 8x22B)
-- StarCoder 2 (7B, 15B)
-- GLM-4 / GLM-5 (9B, 32B)
-- DeepSeek distillations (7B, 8B, 33B)
-- CodeLlama (7B)
+**Supported architectures and models:**
+
+| Architecture | Models | Sizes |
+|---|---|---|
+| LLaMA 3 | Meta-Llama-3.1-8B-Instruct, Meta-Llama-3-70B-Instruct | 8B, 70B |
+| Qwen 3 | Qwen3-8B, Qwen3-14B, Qwen3-32B, Qwen3-72B | 8B, 14B, 32B, 72B |
+| Qwen 3.5 | Qwen3.5-27B | 27B |
+| Gemma 3 | gemma-3-12b-it, gemma-3-27b-it | 12B, 27B |
+| Phi 3 / Phi 4 | Phi-3-small-8k-instruct, Phi-3-medium-14b-instruct, Phi-4-14B | 7B, 14B |
+| Falcon | falcon-7b-instruct, falcon-40b-instruct | 7B, 40B |
+| Mistral | Mistral-7B-Instruct-v0.3, Mistral-Nemo-Instruct-12B, Mistral-Small-22B-Instruct | 7B, 12B, 22B |
+| Mixtral | Mixtral-8x7B-Instruct-v0.1, Mixtral-8x22B-Instruct-v0.1 | 8x7B, 8x22B |
+| StarCoder 2 | starcoder2-7b, starcoder2-15b | 7B, 15B |
+| GLM-4 / GLM-5 | GLM-4-9B-Chat, glm-4-32b-chat, GLM-5-9B-Chat, GLM-5-32B-Chat | 9B, 32B |
+| DeepSeek (distill) | DeepSeek-R1-Distill-Llama-8B, DeepSeek-R1-Distill-Qwen-7B, DeepSeek-Coder-V2-Lite-Instruct | 7B, 8B, 33B |
+| CodeLlama | CodeLlama-7b-Instruct-hf | 7B |
+
+All models must be in **GGUF format**. Recommended quantizations: **Q4_K_M**, Q6_K, Q8_0.
 
 ## Current Capabilities
 
