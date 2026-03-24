@@ -366,7 +366,7 @@ fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
                 None
             }
         }
-        "llama3" | "deepseek-llama" => {
+        "llama3" => {
             // Generative models: 6B+ only
             if approx_size(size, 7.0) || approx_size(size, 8.0) {
                 Some("8b")
@@ -387,13 +387,6 @@ fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
                 None
             }
         }
-        "deepseek-qwen" => {
-            if approx_size(size, 6.0) || approx_size(size, 7.0) || approx_size(size, 8.0) {
-                Some("8b")
-            } else {
-                None
-            }
-        }
         _ => None,
     }
 }
@@ -402,15 +395,6 @@ fn extract_architecture(model_name: &str) -> String {
     let lower = model_name.to_lowercase();
 
     // Order matters: more specific patterns before general ones.
-    // "deepseek" before "qwen"/"llama".
-
-    // DeepSeek (distillations use llama or qwen2 arch depending on base)
-    if lower.contains("deepseek") {
-        if lower.contains("qwen") {
-            return match_size(&lower, "deepseek-qwen");
-        }
-        return match_size(&lower, "deepseek-llama");
-    }
 
     // Qwen3.5 hybrid family has its own forward path and tuning namespace.
     if lower.contains("qwen3.5") || lower.contains("qwen35") {
@@ -438,14 +422,6 @@ fn extract_architecture(model_name: &str) -> String {
     }
 
     "default".to_string()
-}
-
-fn perf_profile_exists(profile_name: &str) -> bool {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("perfs")
-        .join(format!("{profile_name}.json"))
-        .is_file()
 }
 
 /// Extract size bucket from model name for profile filename resolution.
@@ -504,19 +480,14 @@ pub fn global_profile() -> &'static KernelProfile {
 
 pub fn init_global_profile(model_name: &str, quant: &str) {
     let profile = KernelProfile::load(model_name, quant);
-    if GLOBAL_PROFILE.set(profile.clone()).is_err() {
+    if GLOBAL_PROFILE.set(profile).is_err() {
         tracing::warn!(
             model_name,
             "init_global_profile called but GLOBAL_PROFILE was already initialized; \
              model-specific profile will NOT take effect. Ensure init_global_profile \
              is called before any dispatch function reads the profile."
         );
-        return;
     }
-    crate::sync_batch_f16in_route_from_profile(
-        profile.batch_prefill.small_n_threshold,
-        profile.batch_prefill.small_m_max,
-    );
 }
 
 #[cfg(test)]
@@ -564,20 +535,6 @@ mod tests {
             extract_architecture("Mistral-7B-Instruct-v0.3"),
             "mistral-8b"
         );
-        assert_eq!(
-            extract_architecture("DeepSeek-R1-Distill-Qwen-7B"),
-            "deepseek-qwen-8b"
-        );
-        // DeepSeek-Qwen-1.5B: < 2B, falls back to family default
-        assert_eq!(
-            extract_architecture("DeepSeek-R1-Distill-Qwen-1.5B"),
-            "deepseek-qwen"
-        );
-        assert_eq!(
-            extract_architecture("DeepSeek-R1-Distill-Llama-8B"),
-            "deepseek-llama-8b"
-        );
-
         // Qwen 3.5 — separate hybrid family, distinct from qwen3 (6B+ only)
         assert_eq!(extract_architecture("Qwen3.5-7B-Instruct"), "qwen35-9b");
         assert_eq!(extract_architecture("Qwen3.5-8B"), "qwen35-9b");
@@ -663,16 +620,6 @@ mod tests {
             .canonicalize()
             .unwrap();
         let cases = [
-            (
-                "DeepSeek-R1-Distill-Llama-8B",
-                "deepseek-llama-8b",
-                "deepseek-r1-distill-llama-8b",
-            ),
-            (
-                "DeepSeek-R1-Distill-Qwen-7B",
-                "deepseek-qwen-8b",
-                "deepseek-r1-distill-qwen-7b",
-            ),
             ("Meta-Llama-3-8B-Instruct", "llama3-8b", "llama3-8b"),
             ("Mistral-7B-Instruct-v0.3", "mistral-8b", "mistral-7b"),
             ("Qwen3.5-27B-Instruct", "qwen35-27b", "qwen35-27b"),

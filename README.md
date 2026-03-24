@@ -92,7 +92,6 @@ All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Als
 | Mixtral (MoE) | Mixtral-8x7B-Instruct-v0.1, Mixtral-8x22B-Instruct-v0.1 | Q4_K_M | 8x7B, 8x22B |
 
 | GLM-5 | GLM-5-9B-Chat, GLM-5-32B-Chat | Q4_K_M | 9B, 32B |
-| DeepSeek (distill) | DeepSeek-R1-Distill-Llama-8B, DeepSeek-R1-Distill-Qwen-7B, DeepSeek-Coder-V2-Lite-Instruct | Q4_K_M | 7B, 8B, 33B |
 
 
 **Memory requirements** (approximate, Q4_K_M weights + KV cache at 4K context):
