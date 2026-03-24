@@ -7,22 +7,23 @@ use crate::model::llama::LlamaForward;
 use crate::model::mixtral::MixtralForward;
 use crate::model::qwen3::Qwen3Forward;
 use crate::model::qwen35::Qwen35Forward;
-use crate::model::starcoder2::StarCoder2Forward;
 
 /// Create the appropriate `ForwardPass` implementation for a given architecture name.
 ///
 /// Architecture names come from the GGUF `general.architecture` metadata key.
 pub fn forward_for_arch(arch: &str) -> anyhow::Result<Box<dyn ForwardPass>> {
     match arch {
-        "llama" | "mistral" | "phi3" => Ok(Box::new(LlamaForward)),
+        "llama" | "mistral" => Ok(Box::new(LlamaForward)),
+        "phi3" => anyhow::bail!(
+            "unsupported architecture: 'phi3'. Phi-3/Phi-4 support has been removed from AX."
+        ),
         "qwen2" | "qwen3" => Ok(Box::new(Qwen3Forward)),
         "qwen35" => Ok(Box::new(Qwen35Forward)),
         "gemma" | "gemma2" | "gemma3" => Ok(Box::new(Gemma3Forward)),
         "mixtral" => Ok(Box::new(MixtralForward)),
-        "starcoder2" => Ok(Box::new(StarCoder2Forward)),
-        "chatglm" | "glm4" | "glm" => Ok(Box::new(GlmForward)),
+        "glm" => Ok(Box::new(GlmForward)),
         _ => anyhow::bail!(
-            "unsupported architecture: '{arch}'. Supported: llama, mistral, phi3, qwen2, qwen3, qwen35, gemma, gemma2, gemma3, mixtral, starcoder2, chatglm/glm4/glm"
+            "unsupported architecture: '{arch}'. Supported: llama, mistral, qwen2, qwen3, qwen35, gemma, gemma2, gemma3, mixtral, glm"
         ),
     }
 }
@@ -33,10 +34,19 @@ mod tests {
 
     #[test]
     fn test_llama_variants() {
-        for arch in &["llama", "mistral", "phi3"] {
+        for arch in &["llama", "mistral"] {
             let fwd = forward_for_arch(arch).unwrap();
             assert_eq!(fwd.arch_name(), "llama");
         }
+    }
+
+    #[test]
+    fn test_phi3_removed() {
+        let err = forward_for_arch("phi3").unwrap_err();
+        assert!(
+            err.to_string().contains("Phi-3/Phi-4 support has been removed"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -68,14 +78,8 @@ mod tests {
     }
 
     #[test]
-    fn test_starcoder2_variants() {
-        let fwd = forward_for_arch("starcoder2").unwrap();
-        assert_eq!(fwd.arch_name(), "starcoder2");
-    }
-
-    #[test]
     fn test_glm_variants() {
-        for arch in &["chatglm", "glm4", "glm"] {
+        for arch in &["glm"] {
             let fwd = forward_for_arch(arch).unwrap();
             assert_eq!(fwd.arch_name(), "glm");
         }

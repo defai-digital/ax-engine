@@ -97,9 +97,8 @@ pub fn render_chat_messages(
         "gemma3" | "gemma2" | "gemma" => render_gemma(messages, options),
         "llama" => render_llama(messages, options),
         "qwen3" | "qwen2" => render_qwen(messages, options),
-        "phi3" => render_phi3(messages, options),
         "mistral" | "mixtral" => render_mistral(messages),
-        "chatglm" | "glm4" | "glm" => render_glm(messages, options),
+        "glm" => render_glm(messages, options),
         _ => render_fallback(messages, options),
     }
 }
@@ -170,23 +169,6 @@ fn render_qwen(messages: &[ChatMessage<'_>], options: ChatRenderOptions) -> Stri
     }
     if options.add_generation_prompt {
         rendered.push_str("<|im_start|>assistant\n");
-    }
-    rendered
-}
-
-fn render_phi3(messages: &[ChatMessage<'_>], options: ChatRenderOptions) -> String {
-    let mut rendered = String::new();
-    for message in messages {
-        rendered.push_str(match message.role {
-            ChatRole::System => "<|system|>\n",
-            ChatRole::User => "<|user|>\n",
-            ChatRole::Assistant => "<|assistant|>\n",
-        });
-        rendered.push_str(message.content);
-        rendered.push_str("<|end|>\n");
-    }
-    if options.add_generation_prompt {
-        rendered.push_str("<|assistant|>\n");
     }
     rendered
 }

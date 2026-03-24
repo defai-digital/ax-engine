@@ -155,8 +155,7 @@ impl ModelConfig {
 
         // Architecture-specific: gate activation + logit scale + tie embeddings
         let is_gemma = matches!(arch.as_str(), "gemma" | "gemma2" | "gemma3");
-        let is_starcoder2 = matches!(arch.as_str(), "starcoder2");
-        let gate_activation = if is_gemma || is_starcoder2 {
+        let gate_activation = if is_gemma {
             GateActivation::GELU
         } else {
             GateActivation::SiLU

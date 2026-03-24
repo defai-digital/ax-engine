@@ -1,4 +1,4 @@
-//! GLM-family (ChatGLM-4/5) transformer forward pass.
+//! GLM-5 transformer forward pass.
 //!
 //! GLM is a hybrid of Qwen3 and Gemma3 features:
 //!   1. QKV bias terms (shared with Qwen3)
@@ -196,21 +196,24 @@ fn encode_glm_gpu_layers_only(
         ax_metal::barrier_buffers(encoder);
 
         // 7. Attention
-        metal_ops.attention.encode_attention_decode_with_scratch(
-            encoder,
-            &s.q_buf,
-            gpu_kv.k_buffer(layer),
-            gpu_kv.v_buffer(layer),
-            &s.attn_out,
-            &s.splitk_partial_out,
-            &s.splitk_partial_lse,
-            kv_f16,
-            n_heads as u32,
-            n_kv_heads as u32,
-            head_dim as u32,
-            0,
-            full_seq_len as u32,
-        );
+        metal_ops
+            .attention
+            .encode_attention_decode_with_scratch_and_config(
+                encoder,
+                &s.q_buf,
+                gpu_kv.k_buffer(layer),
+                gpu_kv.v_buffer(layer),
+                &s.attn_out,
+                &s.splitk_partial_out,
+                &s.splitk_partial_lse,
+                kv_f16,
+                n_heads as u32,
+                n_kv_heads as u32,
+                head_dim as u32,
+                0,
+                full_seq_len as u32,
+                metal_ops.attention_dispatch_config(),
+            );
         ax_metal::barrier_buffers(encoder);
 
         // 8. Output projection
@@ -543,6 +546,8 @@ impl GlmForward {
 
             layers.push(CachedLayerKeys {
                 attn_norm: attn_norm_key,
+                wqkv: None,
+                wqkv_dtype: None,
                 wq: wq_key,
                 wq_dtype,
                 wk: wk_key,
