@@ -28,6 +28,8 @@ const ATTENTION_SHADER_SRC: &str = include_str!("../shaders/attention.metal");
 
 /// Embedded Metal shader source for elementwise kernels.
 const ELEMENTWISE_SHADER_SRC: &str = include_str!("../shaders/elementwise.metal");
+/// Embedded Metal shader source for GDN recurrent kernels.
+const GDN_SHADER_SRC: &str = include_str!("../shaders/gdn.metal");
 
 /// Tile size for the general tiled matmul kernel (must match shader constant).
 #[allow(dead_code)]
@@ -3317,6 +3319,7 @@ pub struct AttentionKernels {
     prefill_fa2_hd128: ComputePipeline,
     /// FA2 with simdgroup_half8x8 matrix ops (HD=128) — llama.cpp-style.
     prefill_fa2_simd_hd128: ComputePipeline,
+    prefill_fa2_simd_hd64: ComputePipeline,
     prefill_cache: ComputePipeline,
     prefill_cache_f16kv: ComputePipeline,
     /// FA2-style 8-query-per-TG prefill (HD=256, f16 KV).
@@ -3342,6 +3345,13 @@ pub struct AttentionKernels {
     decode_splitk_f16kv_hd256_partial: ComputePipeline,
     /// Split-K reduction decode for head_dim=256, f16 KV.
     decode_splitk_f16kv_hd256_reduce: ComputePipeline,
+}
+
+/// Pre-compiled GDN recurrence kernels.
+pub struct GdnKernels {
+    gated_delta_128_64: ComputePipeline,
+    gated_delta_64_64: ComputePipeline,
+    gated_delta_fallback: ComputePipeline,
 }
 
 impl AttentionKernels {
@@ -3413,6 +3423,12 @@ impl AttentionKernels {
             "attention_prefill_fa2_simd_hd128",
         )
         .context("Failed to compile attention_prefill_fa2_simd_hd128 kernel")?;
+        let prefill_fa2_simd_hd64 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_prefill_fa2_simd_hd64",
+        )
+        .context("Failed to compile attention_prefill_fa2_simd_hd64 kernel")?;
         let prefill_cache = ComputePipeline::from_source(
             device.device(),
             ATTENTION_SHADER_SRC,
@@ -3528,6 +3544,8 @@ impl AttentionKernels {
             prefill_fa2_hd128_max_threads = prefill_fa2_hd128.max_threads_per_threadgroup(),
             prefill_fa2_simd_hd128_max_threads =
                 prefill_fa2_simd_hd128.max_threads_per_threadgroup(),
+            prefill_fa2_simd_hd64_max_threads =
+                prefill_fa2_simd_hd64.max_threads_per_threadgroup(),
             prefill_cache_max_threads = prefill_cache.max_threads_per_threadgroup(),
             prefill_cache_f16kv_max_threads = prefill_cache_f16kv.max_threads_per_threadgroup(),
             prefill_cache_fa2_hd256_max_threads =
@@ -3564,6 +3582,7 @@ impl AttentionKernels {
             prefill_mistral_hd128_bc64,
             prefill_fa2_hd128,
             prefill_fa2_simd_hd128,
+            prefill_fa2_simd_hd64,
             prefill_cache,
             prefill_cache_f16kv,
             prefill_cache_fa2_hd256,
@@ -3619,11 +3638,18 @@ impl AttentionKernels {
             attention_prefill_mistral_smem_f16_enabled() && use_mistral_hd128;
         let use_fa2_hd128 = attention_prefill_fa2_hd128_should_use(n_tokens, head_dim);
         let use_fa2_simd_hd128 = attention_prefill_fa2_simd_hd128_enabled() && head_dim == 128;
+        let use_fa2_simd_hd64 = attention_prefill_fa2_simd_hd128_enabled() && head_dim == 64;
         let use_hd256 = attention_prefill_hd256_enabled() && head_dim == 256 && !use_v2;
         const FA2S_TG: usize = 128;
         let (pipeline, tg_width, groups_x) = if use_fa2_simd_hd128 {
             (
                 &self.prefill_fa2_simd_hd128,
+                FA2S_TG,
+                (n_tokens as usize).div_ceil(8),
+            )
+        } else if use_fa2_simd_hd64 {
+            (
+                &self.prefill_fa2_simd_hd64,
                 FA2S_TG,
                 (n_tokens as usize).div_ceil(8),
             )
@@ -4012,6 +4038,7 @@ impl AttentionKernels {
             attention_prefill_mistral_smem_f16_enabled() && use_mistral_hd128;
         let use_fa2_hd128 = attention_prefill_fa2_hd128_should_use(n_tokens, head_dim);
         let use_fa2_simd_hd128 = attention_prefill_fa2_simd_hd128_enabled() && head_dim == 128;
+        let use_fa2_simd_hd64 = attention_prefill_fa2_simd_hd128_enabled() && head_dim == 64;
         let use_hd256 = attention_prefill_hd256_enabled() && head_dim == 256 && !use_v2;
         if attention_kernel_routing_log_enabled() {
             tracing::info!(
@@ -4030,6 +4057,12 @@ impl AttentionKernels {
         let (pipeline, tg_width, groups_x) = if use_fa2_simd_hd128 {
             (
                 &self.prefill_fa2_simd_hd128,
+                FA2S_TG,
+                (n_tokens as usize).div_ceil(8),
+            )
+        } else if use_fa2_simd_hd64 {
+            (
+                &self.prefill_fa2_simd_hd64,
                 FA2S_TG,
                 (n_tokens as usize).div_ceil(8),
             )
@@ -4340,6 +4373,88 @@ impl AttentionKernels {
                 head_dim,
                 attend_start,
                 attend_len,
+            );
+            Ok(())
+        })
+    }
+}
+
+impl GdnKernels {
+    pub fn new(device: &MetalDevice) -> anyhow::Result<Self> {
+        let gated_delta_128_64 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "gated_delta_rule_128_64",
+        )
+        .context("Failed to compile gated_delta_rule_128_64 kernel")?;
+        let gated_delta_64_64 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "gated_delta_rule_64_64",
+        )
+        .context("Failed to compile gated_delta_rule_64_64 kernel")?;
+        let gated_delta_fallback = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "gated_delta_rule_fallback",
+        )
+        .context("Failed to compile gated_delta_rule_fallback kernel")?;
+        Ok(Self {
+            gated_delta_128_64,
+            gated_delta_64_64,
+            gated_delta_fallback,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn gated_delta_sequence(
+        &self,
+        device: &MetalDevice,
+        q: &MetalBuffer,
+        k: &MetalBuffer,
+        v: &MetalBuffer,
+        g: &MetalBuffer,
+        beta: &MetalBuffer,
+        state: &MetalBuffer,
+        output: &MetalBuffer,
+        seq_len: u32,
+        n_heads: u32,
+        head_dim: u32,
+    ) -> anyhow::Result<()> {
+        let v_dim = head_dim;
+        let bv = 64u32;
+        let grid_x = (v_dim as usize).div_ceil(bv as usize);
+        let (pipeline, use_fallback) = match head_dim {
+            128 => (&self.gated_delta_128_64, false),
+            64 => (&self.gated_delta_64_64, false),
+            _ => (&self.gated_delta_fallback, true),
+        };
+
+        device.execute_sync(|encoder| {
+            encoder.setComputePipelineState(pipeline.state());
+            bind_buffers7(encoder, q, k, v, g, beta, state, output);
+            bind_u32(encoder, 7, seq_len);
+            if use_fallback {
+                bind_u32(encoder, 8, head_dim);
+                bind_u32(encoder, 9, v_dim);
+                let smem = 2 * head_dim as usize * std::mem::size_of::<f32>();
+                unsafe {
+                    encoder.setThreadgroupMemoryLength_atIndex(smem, 0);
+                }
+            } else {
+                bind_u32(encoder, 8, v_dim);
+            }
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: grid_x,
+                    height: n_heads as usize,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: bv as usize,
+                    height: 1,
+                    depth: 1,
+                },
             );
             Ok(())
         })
@@ -5000,6 +5115,27 @@ fn bind_buffers(
         encoder.setBuffer_offset_atIndex(Some(buf0.mtl_buffer()), 0, 0);
         encoder.setBuffer_offset_atIndex(Some(buf1.mtl_buffer()), 0, 1);
         encoder.setBuffer_offset_atIndex(Some(buf2.mtl_buffer()), 0, 2);
+    }
+}
+
+fn bind_buffers7(
+    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    buf0: &MetalBuffer,
+    buf1: &MetalBuffer,
+    buf2: &MetalBuffer,
+    buf3: &MetalBuffer,
+    buf4: &MetalBuffer,
+    buf5: &MetalBuffer,
+    buf6: &MetalBuffer,
+) {
+    unsafe {
+        encoder.setBuffer_offset_atIndex(Some(buf0.mtl_buffer()), 0, 0);
+        encoder.setBuffer_offset_atIndex(Some(buf1.mtl_buffer()), 0, 1);
+        encoder.setBuffer_offset_atIndex(Some(buf2.mtl_buffer()), 0, 2);
+        encoder.setBuffer_offset_atIndex(Some(buf3.mtl_buffer()), 0, 3);
+        encoder.setBuffer_offset_atIndex(Some(buf4.mtl_buffer()), 0, 4);
+        encoder.setBuffer_offset_atIndex(Some(buf5.mtl_buffer()), 0, 5);
+        encoder.setBuffer_offset_atIndex(Some(buf6.mtl_buffer()), 0, 6);
     }
 }
 
