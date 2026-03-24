@@ -2,7 +2,6 @@
 
 use crate::model::forward::ForwardPass;
 use crate::model::gemma3::Gemma3Forward;
-use crate::model::glm::GlmForward;
 use crate::model::llama::LlamaForward;
 use crate::model::qwen3::Qwen3Forward;
 use crate::model::qwen35::Qwen35Forward;
@@ -19,9 +18,8 @@ pub fn forward_for_arch(arch: &str) -> anyhow::Result<Box<dyn ForwardPass>> {
         "qwen2" | "qwen3" => Ok(Box::new(Qwen3Forward)),
         "qwen35" => Ok(Box::new(Qwen35Forward)),
         "gemma" | "gemma2" | "gemma3" => Ok(Box::new(Gemma3Forward)),
-        "glm" => Ok(Box::new(GlmForward)),
         _ => anyhow::bail!(
-            "unsupported architecture: '{arch}'. Supported: llama, qwen2, qwen3, qwen35, gemma, gemma2, gemma3, glm"
+            "unsupported architecture: '{arch}'. Supported: llama, qwen2, qwen3, qwen35, gemma, gemma2, gemma3"
         ),
     }
 }
@@ -65,14 +63,6 @@ mod tests {
         for arch in &["gemma", "gemma2", "gemma3"] {
             let fwd = forward_for_arch(arch).unwrap();
             assert_eq!(fwd.arch_name(), "gemma3");
-        }
-    }
-
-    #[test]
-    fn test_glm_variants() {
-        for arch in &["glm"] {
-            let fwd = forward_for_arch(arch).unwrap();
-            assert_eq!(fwd.arch_name(), "glm");
         }
     }
 

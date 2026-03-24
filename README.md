@@ -87,7 +87,6 @@ All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Als
 | Qwen 3 (dense) | Qwen3-8B, Qwen3-14B, Qwen3-32B | Q4_K_M | 8B, 14B, 32B |
 | Qwen 3.5 | Qwen3.5-27B | Q4_K_M | 27B |
 | Gemma 3 | gemma-3-12b-it, gemma-3-27b-it | Q4_K_M | 12B, 27B |
-| GLM-5 | GLM-5-9B-Chat, GLM-5-32B-Chat | Q4_K_M | 9B, 32B |
 
 
 **Memory requirements** (approximate, Q4_K_M weights + KV cache at 4K context):

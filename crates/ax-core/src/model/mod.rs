@@ -3,7 +3,6 @@ pub mod config;
 pub mod decode;
 pub mod forward;
 pub mod gemma3;
-pub mod glm;
 pub mod llama;
 pub mod qwen3;
 pub mod qwen35;
