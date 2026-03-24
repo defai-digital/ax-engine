@@ -1,40 +1,58 @@
 # AX Engine
 
-AX Engine is a Rust inference engine for running GGUF language models locally on Apple Silicon M3 and newer, with Metal-backed prefill and decode.
+AX Engine is a focused Rust inference engine for serious local LLM workloads on Apple Silicon M3 and newer.
 
-It is built for running multiple models and agents on a single Mac — fast, isolated, and predictable — without a Python runtime or a C++ build chain.
+It is built for one specific target: fast, correct, Mac-native GGUF inference without a Python runtime or a C++ build chain. AX Engine is not trying to be a general-purpose serving platform. It is designed for local execution, explicit backend control, and clean integration into local AI systems.
 
 > AX Engine is currently optimized for Apple Silicon M3 and later. M1 and M2 are not supported targets.
 
 ## What It Is
 
-- A Metal-native GGUF inference engine for macOS on Apple Silicon
-- Built for running multiple models and agents on a single Mac — the workload that matters for local AI toolchains
-- A llama.cpp-style CLI (`ax-llama`), a drop-in `libllama` shim (`ax-shim`), and benchmarking tools (`ax-bench`)
+- Metal-native GGUF inference for macOS on Apple Silicon
 - A Rust library (`ax-core`) with explicit backends, model configs, KV management, and sampling — designed to be embedded into larger systems
+- A llama.cpp-style CLI via `ax-llama`
+- A `libllama`-compatible shim via `ax-shim`
+- Benchmarking and soak-test tools via `ax-bench`
 
 ## What It Is Not
 
 - A general-purpose multi-platform inference runtime
 - A cloud serving stack or OpenAI-compatible HTTP server
 - A Python-first project
+- A claim to universal performance superiority over llama.cpp
 
-AX Engine is the inference layer. HTTP serving, request routing, and API adapters should sit above it.
+AX Engine is probably not the right fit if you need:
+
+- Broad cross-platform model support beyond Apple Silicon
+- Cloud-scale multi-tenant serving
+- The widest possible quantization ecosystem
+- Immediate parity across every model that llama.cpp supports
+
+If you need production HTTP serving, request orchestration, or API adapters, those concerns should sit above AX Engine.
 
 ## Why Use It
 
-AX Engine is designed for a specific gap: running multiple models and agents on a single Mac with predictable behavior, explicit resource control, and no crashes under memory pressure. This is the scenario where general-purpose runtimes break down.
-
-- **Multi-model safe**: each model gets its own Metal command queue, KV cache, and backend instance — no shared global state that causes cross-model interference or thread-safety crashes
-- **Explicit resource control**: per-model KV budgets, graceful OOM handling (returns errors, never kills the process), and explicit backend selection — you decide what runs on GPU vs CPU
-- **Local-first**: models run on your machine, not a remote API
-- **Near llama.cpp performance**: 85–98% of llama.cpp across all tested models, with model-specific kernel fusions that generic runtimes cannot match
-- **Clean integration surface**: `ax-core` is usable as a library, `ax-cli` is usable as a tool, and `ax-shim` is usable as a drop-in `libllama` replacement
+- **Local-first execution**: models run on your machine, not a remote API
+- **Apple Silicon focus**: optimized for Mac GPU execution instead of portability-first tradeoffs
+- **Explicit backend control**: you decide what runs on GPU vs CPU, with per-model KV budgets and graceful OOM handling (returns errors, never kills the process)
+- **Multi-model safe**: each model gets its own Metal command queue, KV cache, and backend instance — designed for running multiple models in the same process without shared global state conflicts
+- **Clean integration surface**: usable as a library, CLI, or drop-in `libllama` compatibility shim
 - **Rust-native**: pure Rust workspace, no Python runtime, no C++ build chain, normal `cargo` workflows
+
+## Current Optimization Focus
+
+AX Engine is currently most relevant for:
+
+- Dense GGUF models in the 14B–70B range on Apple Silicon
+- Model families with optimization depth: **Qwen 3 dense**, **LLaMA 3**, **Gemma 3**
+- Workflows that benefit from explicit backend control and long-running local inference
+- Mac-native deployments where stable, isolated execution matters more than broad platform coverage
 
 ## Performance (v1.3.1)
 
-Benchmarked on Apple M3 Max, Q4_K_M quantization, 256 prompt + 256 decode tokens:
+Benchmarked on Apple M3 Max, Q4_K_M quantization, 256 prompt + 256 decode tokens.
+
+These numbers show current parity progress on supported model families, not a claim of universal superiority over llama.cpp. AX Engine is optimized around correct Mac-native execution, focused model support, and steady performance progress on Apple Silicon.
 
 | Model | Quant | Prefill tok/s | vs llama.cpp | Decode tok/s | vs llama.cpp |
 |---|---|---:|---:|---:|---:|
@@ -43,6 +61,12 @@ Benchmarked on Apple M3 Max, Q4_K_M quantization, 256 prompt + 256 decode tokens
 | Qwen3-32B | Q4_K_M | 145 | **91%** | 16.9 | **98%** |
 | Meta-Llama-3.1-8B-Instruct | Q4_K_M | 664 | **89%** | 61.3 | **92%** |
 | gemma-3-12b-it | Q4_K_M | 417 | **88%** | 37.7 | **93%** |
+
+Areas where we expect the most improvement:
+
+- Larger dense models (32B–70B), where per-dispatch overhead is amortized and decode approaches parity
+- Model-specific kernel fusions for architectures with extra operations (Qwen3 QKV bias, GLM post-norms)
+- Long-context prefill throughput
 
 ## Supported Models
 
@@ -85,7 +109,7 @@ All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Als
 ## Current Capabilities
 
 **Inference**
-- Metal GPU inference for prefill and decode (85–98% of llama.cpp)
+- Metal GPU inference for prefill and decode
 - Pipelined GPU decode with double-buffered command buffers
 - CPU and hybrid backend modes with explicit selection
 - Speculative decoding with a draft model
@@ -308,16 +332,22 @@ cargo run -p ax-cli -- --help
 | `AX_DEBUG_LOGITS` | `1` | Dump top logits during generation |
 | `RUST_LOG` | standard tracing filter | Enable debug logging |
 
-## Project Status
+## Roadmap
 
-AX Engine is under active development. The current focus areas:
+**Now** (v1.x):
+- Steady performance progress toward llama.cpp parity across supported model families
+- Model-specific kernel fusions for Qwen3, GLM, StarCoder2
+- Stable `ax-core` library surface for embedding into local AI toolchains
 
-- **Multi-model inference**: running multiple models (e.g., coder + embedding + reranker) on a single Mac with isolated resources and predictable behavior
-- **Closing the llama.cpp gap**: model-specific kernel fusions to reach and exceed llama.cpp performance on key architectures (Qwen3, GLM, StarCoder2)
-- **Stable library surface**: `ax-core` as an embeddable inference library for local AI toolchains, agents, and pipelines
-- **Per-model resource control**: KV budgets, memory admission, and graceful degradation under pressure
+**Next** (v2.x):
+- Multi-model resource isolation: per-model KV budgets, memory admission control, graceful degradation under memory pressure
+- Per-model kernel profiles (currently process-global) — enabling correct dispatch when multiple models share a process
+- Paged KV prefix cache for long-context and multi-turn workloads
 
-Deliberate gaps relative to larger serving stacks: request orchestration, continuous batching at the serving layer, and OpenAI-compatible HTTP semantics. These belong in layers above `ax-core`.
+**Later**:
+- Model-level scheduler for multi-model GPU sharing (prefill/decode priority, latency-sensitive vs throughput policies)
+- Q8 KV quantization for reduced memory footprint
+- Fused QKV weights (3 matmuls to 1)
 
 ## License
 
