@@ -5061,6 +5061,8 @@ pub struct ElementwiseKernels {
     qkv_split_qk_norm_rope_append_kv_batch_f16: ComputePipeline,
     /// Fused: QKV split + bias + QK norm + RoPE + KV append (Qwen3 with QKV bias).
     qkv_split_bias_qknorm_rope_append_kv_batch_f32: ComputePipeline,
+    /// Same, with f16 KV cache (the DEFAULT path since max_seq_len ≥ 256 enables f16 KV).
+    qkv_split_bias_qknorm_rope_append_kv_batch_f16: ComputePipeline,
     gelu_elementwise_mul: ComputePipeline,
     gelu_elementwise_mul_batch: ComputePipeline,
     gelu_inplace: ComputePipeline,
@@ -5177,6 +5179,12 @@ impl ElementwiseKernels {
             "qkv_split_bias_qknorm_rope_append_kv_batch_f32",
         )
         .context("Failed to compile qkv_split_bias_qknorm_rope_append_kv_batch_f32 kernel")?;
+        let qkv_split_bias_qknorm_rope_append_kv_batch_f16 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "qkv_split_bias_qknorm_rope_append_kv_batch_f16",
+        )
+        .context("Failed to compile qkv_split_bias_qknorm_rope_append_kv_batch_f16 kernel")?;
 
         let gelu_elementwise_mul = ComputePipeline::from_source(
             device.device(),
@@ -5321,6 +5329,7 @@ impl ElementwiseKernels {
             qkv_split_qk_norm_rope_append_kv_batch_f32,
             qkv_split_qk_norm_rope_append_kv_batch_f16,
             qkv_split_bias_qknorm_rope_append_kv_batch_f32,
+            qkv_split_bias_qknorm_rope_append_kv_batch_f16,
             gelu_elementwise_mul,
             gelu_elementwise_mul_batch,
             gelu_inplace,
@@ -5860,6 +5869,7 @@ impl ElementwiseKernels {
         k_weight: &MetalBuffer,
         cache_k: &MetalBuffer,
         cache_v: &MetalBuffer,
+        cache_f16: bool,
         q_bias: &MetalBuffer,
         k_bias: &MetalBuffer,
         v_bias: &MetalBuffer,
@@ -5881,9 +5891,11 @@ impl ElementwiseKernels {
         let items_per_row = q_pairs + k_pairs + kv_dim;
         let total = (n_rows as usize) * (items_per_row as usize);
         let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(
-            self.qkv_split_bias_qknorm_rope_append_kv_batch_f32.state(),
-        );
+        encoder.setComputePipelineState(if cache_f16 {
+            self.qkv_split_bias_qknorm_rope_append_kv_batch_f16.state()
+        } else {
+            self.qkv_split_bias_qknorm_rope_append_kv_batch_f32.state()
+        });
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 1);

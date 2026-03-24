@@ -937,7 +937,7 @@ impl Qwen3Forward {
                         }
                         // Skip split if fused bias+norm+rope+append will handle it.
                         let will_use_fused_bias =
-                            lw.q_bias.is_some() && lw.attn_q_norm.is_some() && !kv_f16;
+                            lw.q_bias.is_some() && lw.attn_q_norm.is_some();
                         if !will_use_fused_bias {
                             metal_ops.elementwise.encode_qkv_split_batch(
                                 encoder,
@@ -1049,11 +1049,11 @@ impl Qwen3Forward {
                     let cache_offset = (base_seq_len * kv_dim) as u32;
 
                     // Try fused bias+QKnorm+RoPE+append path (1 dispatch instead of 7).
-                    // Requires: fused QKV matmul + QKV bias + QK norm + f32 KV cache.
+                    // Requires: fused QKV matmul + QKV bias + QK norm.
+                    // Supports both f32 and f16 KV cache.
                     let use_fused_bias_path = fused_qkv_buf.is_some()
                         && lw.q_bias.is_some()
-                        && lw.attn_q_norm.is_some()
-                        && !kv_f16;
+                        && lw.attn_q_norm.is_some();
                     if use_fused_bias_path {
                         let qb_buf = weight_cache.get(&lw.q_bias.unwrap()).unwrap();
                         let kb_buf = weight_cache.get(&lw.k_bias.unwrap()).unwrap();
@@ -1072,6 +1072,7 @@ impl Qwen3Forward {
                                 k_nw,
                                 gpu_kv.k_buffer(layer),
                                 gpu_kv.v_buffer(layer),
+                                kv_f16,
                                 qb_buf,
                                 kb_buf,
                                 vb_buf,

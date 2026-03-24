@@ -62,6 +62,18 @@ pub struct ModelConfig {
     pub n_expert: Option<u32>,
     /// Number of experts used per token in MoE routing. None for dense models.
     pub n_expert_used: Option<u32>,
+    /// Qwen3.5: every Nth layer is full attention, others are recurrent GDN.
+    pub qwen35_full_attention_interval: Option<u32>,
+    /// Qwen3.5 recurrent SSM conv kernel size.
+    pub qwen35_ssm_conv_kernel: Option<u32>,
+    /// Qwen3.5 recurrent inner/value dimension.
+    pub qwen35_ssm_inner_size: Option<u32>,
+    /// Qwen3.5 recurrent state dimension per head.
+    pub qwen35_ssm_state_size: Option<u32>,
+    /// Qwen3.5 recurrent value-head count / time-step rank.
+    pub qwen35_ssm_time_step_rank: Option<u32>,
+    /// Qwen3.5 recurrent key-head group count.
+    pub qwen35_ssm_group_count: Option<u32>,
 }
 
 impl ModelConfig {
@@ -198,6 +210,14 @@ impl ModelConfig {
         // MoE: expert count and experts-per-token (Mixtral)
         let n_expert = header.get_u32(&format!("{arch}.expert_count"));
         let n_expert_used = header.get_u32(&format!("{arch}.expert_used_count"));
+        let qwen35_full_attention_interval =
+            header.get_u32(&format!("{arch}.full_attention_interval"));
+        let qwen35_ssm_conv_kernel = header.get_u32(&format!("{arch}.ssm.conv_kernel"));
+        let qwen35_ssm_inner_size = header.get_u32(&format!("{arch}.ssm.inner_size"));
+        let qwen35_ssm_state_size = header.get_u32(&format!("{arch}.ssm.state_size"));
+        let qwen35_ssm_time_step_rank =
+            header.get_u32(&format!("{arch}.ssm.time_step_rank"));
+        let qwen35_ssm_group_count = header.get_u32(&format!("{arch}.ssm.group_count"));
 
         tracing::info!(
             arch = %arch,
@@ -221,6 +241,12 @@ impl ModelConfig {
             ?rope_freq_base_local,
             ?n_expert,
             ?n_expert_used,
+            ?qwen35_full_attention_interval,
+            ?qwen35_ssm_conv_kernel,
+            ?qwen35_ssm_inner_size,
+            ?qwen35_ssm_state_size,
+            ?qwen35_ssm_time_step_rank,
+            ?qwen35_ssm_group_count,
             "model config loaded"
         );
 
@@ -247,7 +273,21 @@ impl ModelConfig {
             rope_freq_base_local,
             n_expert,
             n_expert_used,
+            qwen35_full_attention_interval,
+            qwen35_ssm_conv_kernel,
+            qwen35_ssm_inner_size,
+            qwen35_ssm_state_size,
+            qwen35_ssm_time_step_rank,
+            qwen35_ssm_group_count,
         })
+    }
+
+    pub fn qwen35_is_recurrent_layer(&self, layer: usize) -> bool {
+        let Some(interval) = self.qwen35_full_attention_interval else {
+            return false;
+        };
+        let interval = interval as usize;
+        interval > 0 && !(layer + 1).is_multiple_of(interval)
     }
 }
 
