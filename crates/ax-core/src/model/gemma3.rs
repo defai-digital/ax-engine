@@ -17,8 +17,22 @@
 //! - `gpu_kv.advance()` → `gpu_kv.finalize_token()`
 //! - `gpu_kv.advance_by(n)` → `gpu_kv.finalize_batch(n)` (no CPU mirror sync)
 
+use std::sync::OnceLock;
+
 use crate::backend::metal::MetalOps;
 use crate::compute::attention;
+
+/// Whether decode-path barriers are enabled. Default OFF (llama.cpp uses zero).
+fn decode_barriers_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_DECODE_BARRIERS") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "on"
+        }
+        Err(_) => false,
+    })
+}
 use crate::compute::gelu;
 use crate::compute::rms_norm;
 use crate::compute::rope;
@@ -122,7 +136,7 @@ fn encode_gemma3_gpu_layers_only(
             dim as u32,
             eps,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         if let (Some(fused_w), Some(q_norm_key), Some(k_norm_key)) =
             (fused_qkv_buf, lw.attn_q_norm, lw.attn_k_norm)
@@ -139,7 +153,7 @@ fn encode_gemma3_gpu_layers_only(
                 dim as u32,
                 lw.wq_dtype,
             );
-            ax_metal::barrier_buffers(encoder);
+            if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
             metal_ops.elementwise.encode_qkv_split_batch(
                 encoder,
@@ -151,7 +165,7 @@ fn encode_gemma3_gpu_layers_only(
                 q_dim as u32,
                 kv_dim as u32,
             );
-            ax_metal::barrier_buffers(encoder);
+            if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
             metal_ops.elementwise.encode_qk_norm_rope_batch(
                 encoder,
@@ -168,7 +182,7 @@ fn encode_gemma3_gpu_layers_only(
                 1.0,
                 rope_base,
             );
-            ax_metal::barrier_buffers(encoder);
+            if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
             metal_ops.elementwise.encode_kv_append(
                 encoder,
@@ -186,7 +200,7 @@ fn encode_gemma3_gpu_layers_only(
                 kv_offset,
                 kv_dim as u32,
             );
-            ax_metal::barrier_buffers(encoder);
+            if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
         } else {
             encode_dequant_matvec(
                 metal_ops,
@@ -218,7 +232,7 @@ fn encode_gemma3_gpu_layers_only(
                 dim as u32,
                 lw.wv_dtype,
             );
-            ax_metal::barrier_buffers(encoder);
+            if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
             if let (Some(q_norm_key), Some(k_norm_key)) = (lw.attn_q_norm, lw.attn_k_norm) {
                 let q_nw_buf = weight_cache.get(&q_norm_key).unwrap();
@@ -239,7 +253,7 @@ fn encode_gemma3_gpu_layers_only(
                     head_dim as u32,
                     eps,
                 );
-                ax_metal::barrier_buffers(encoder);
+                if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
             }
 
             metal_ops.elementwise.encode_rope(
@@ -252,7 +266,7 @@ fn encode_gemma3_gpu_layers_only(
                 rope_position,
                 rope_base,
             );
-            ax_metal::barrier_buffers(encoder);
+            if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
             metal_ops.elementwise.encode_kv_append(
                 encoder,
@@ -270,7 +284,7 @@ fn encode_gemma3_gpu_layers_only(
                 kv_offset,
                 kv_dim as u32,
             );
-            ax_metal::barrier_buffers(encoder);
+            if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
         }
 
         let (attend_start, attend_len) = if is_local {
@@ -301,7 +315,7 @@ fn encode_gemma3_gpu_layers_only(
             attend_start,
             attend_len,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         let wo_buf = weight_cache.get(&lw.wo).unwrap();
         encode_dequant_matvec(
@@ -314,20 +328,20 @@ fn encode_gemma3_gpu_layers_only(
             q_dim as u32,
             lw.wo_dtype,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         if let Some(post_attn_key) = lw.post_attn_norm {
             let nw = weight_cache.get(&post_attn_key).unwrap();
             metal_ops
                 .elementwise
                 .encode_rms_norm(encoder, &s.proj_buf, nw, dim as u32, eps);
-            ax_metal::barrier_buffers(encoder);
+            if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
         }
 
         metal_ops
             .elementwise
             .encode_elementwise_add(encoder, hidden_buf, &s.proj_buf, dim as u32);
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         let ffn_nw_buf = weight_cache.get(&lw.ffn_norm).unwrap();
         metal_ops.elementwise.encode_rms_norm_out(
@@ -338,7 +352,7 @@ fn encode_gemma3_gpu_layers_only(
             dim as u32,
             eps,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         let wg_buf = weight_cache.get(&lw.wg).unwrap();
         let wu_buf = weight_cache.get(&lw.wu).unwrap();
@@ -362,7 +376,7 @@ fn encode_gemma3_gpu_layers_only(
             dim as u32,
             lw.wu_dtype,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         metal_ops.elementwise.encode_gelu_elementwise_mul(
             encoder,
@@ -370,7 +384,7 @@ fn encode_gemma3_gpu_layers_only(
             &s.up_buf,
             inter_dim as u32,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         let wd_buf = weight_cache.get(&lw.wd).unwrap();
         encode_dequant_matvec(
@@ -383,21 +397,21 @@ fn encode_gemma3_gpu_layers_only(
             inter_dim as u32,
             lw.wd_dtype,
         );
-        ax_metal::barrier_buffers(encoder);
+        if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
 
         if let Some(post_ffn_key) = lw.post_ffn_norm {
             let nw = weight_cache.get(&post_ffn_key).unwrap();
             metal_ops
                 .elementwise
                 .encode_rms_norm(encoder, &s.down_buf, nw, dim as u32, eps);
-            ax_metal::barrier_buffers(encoder);
+            if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
         }
 
         metal_ops
             .elementwise
             .encode_elementwise_add(encoder, hidden_buf, &s.down_buf, dim as u32);
         if layer + 1 < n_layers {
-            ax_metal::barrier_buffers(encoder);
+            if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
         }
     }
 
@@ -418,12 +432,12 @@ fn encode_gemma3_gpu_output_head(
     let eps = cfg.rms_norm_eps;
 
     let fnw_buf = weight_cache.get(&cached.output_norm).unwrap();
-    ax_metal::barrier_buffers(encoder);
+    if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
     metal_ops
         .elementwise
         .encode_rms_norm(encoder, hidden_buf, fnw_buf, dim as u32, eps);
 
-    ax_metal::barrier_buffers(encoder);
+    if decode_barriers_enabled() { ax_metal::barrier_buffers(encoder); }
     let lm_buf = weight_cache.get(&cached.lm_head).unwrap();
     encode_dequant_matvec(
         metal_ops,
