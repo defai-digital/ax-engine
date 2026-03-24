@@ -64,6 +64,36 @@ macro_rules! timed {
 #[derive(Debug)]
 pub struct Qwen3Forward;
 
+fn unsupported_qwen3_layout_reason(
+    architecture: &str,
+    has_fused_qkv: bool,
+    has_ssm: bool,
+) -> Option<&'static str> {
+    if architecture == "qwen35" || has_fused_qkv || has_ssm {
+        Some(
+            "unsupported qwen35 hybrid layout: found fused attention/SSM tensors \
+             (attn_qkv/ssm_*). This model cannot run through Qwen3Forward and needs \
+             a dedicated qwen35 implementation.",
+        )
+    } else {
+        None
+    }
+}
+
+fn ensure_supported_qwen3_layout(weights: &WeightStore, cfg: &ModelConfig) -> anyhow::Result<()> {
+    let has_fused_qkv = weights.has("blk.0.attn_qkv.weight");
+    let has_ssm = weights.has("blk.0.ssm_a")
+        || weights.has("blk.0.ssm_alpha.weight")
+        || weights.has("blk.0.ssm_conv1d.weight");
+
+    if let Some(reason) = unsupported_qwen3_layout_reason(&cfg.architecture, has_fused_qkv, has_ssm)
+    {
+        anyhow::bail!(reason);
+    }
+
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn encode_qwen3_gpu_layers_only(
     encoder: &ax_metal::MetalEncoder,
@@ -412,6 +442,8 @@ impl Qwen3Forward {
         cfg: &ModelConfig,
     ) -> anyhow::Result<()> {
         use crate::backend::metal::{CachedLayerKeys, CachedModelKeys};
+
+        ensure_supported_qwen3_layout(weights, cfg)?;
 
         let n_layers = cfg.n_layers as usize;
         let n_heads = cfg.n_heads as usize;
@@ -1415,6 +1447,8 @@ impl ForwardPass for Qwen3Forward {
         logits: &mut [f32],
         mut ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<()> {
+        ensure_supported_qwen3_layout(weights, ctx.config)?;
+
         // v2: GPU gate uses use_gpu_decode() + kv.as_gpu_mut() — no AX_CPU_ONLY check
         if ctx.backend.use_gpu_decode()
             && let Some(metal_ops) = ctx.backend.metal_ops()
@@ -1685,6 +1719,8 @@ impl ForwardPass for Qwen3Forward {
         weights: &WeightStore,
         logits: &mut [f32],
     ) -> anyhow::Result<()> {
+        ensure_supported_qwen3_layout(weights, ctx.config)?;
+
         // v2 GPU gate: use_gpu_decode() + kv.as_gpu_mut() (no AX_CPU_ONLY check)
         let force_serial = std::env::var("AX_SERIAL_PREFILL").is_ok();
         let can_gpu_batch = !force_serial
@@ -1729,6 +1765,8 @@ impl ForwardPass for Qwen3Forward {
         weights: &WeightStore,
         logits_all: &mut Vec<f32>,
     ) -> anyhow::Result<()> {
+        ensure_supported_qwen3_layout(weights, ctx.config)?;
+
         let force_serial = std::env::var("AX_SERIAL_PREFILL").is_ok();
         let lm_weight_name = if weights.has("output.weight") {
             "output.weight"
@@ -1832,5 +1870,25 @@ mod tests {
     fn test_qwen3_forward_arch_name() {
         let fwd = Qwen3Forward;
         assert_eq!(fwd.arch_name(), "qwen3");
+    }
+
+    #[test]
+    fn test_qwen35_layout_rejected_by_architecture() {
+        assert!(unsupported_qwen3_layout_reason("qwen35", false, false).is_some());
+    }
+
+    #[test]
+    fn test_qwen35_layout_rejected_by_fused_qkv() {
+        assert!(unsupported_qwen3_layout_reason("qwen3", true, false).is_some());
+    }
+
+    #[test]
+    fn test_qwen35_layout_rejected_by_ssm_tensors() {
+        assert!(unsupported_qwen3_layout_reason("qwen3", false, true).is_some());
+    }
+
+    #[test]
+    fn test_plain_qwen3_layout_remains_supported() {
+        assert!(unsupported_qwen3_layout_reason("qwen3", false, false).is_none());
     }
 }

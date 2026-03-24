@@ -1216,6 +1216,306 @@ kernel void dequant_batch_q4_k_blocked(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// dequant_batch_q4_k_blocked_bm32 — BM=32 variant for small M dimensions
+//
+// Same blocked layout (stride 8) as dequant_batch_q4_k_blocked but with
+// BM=32 instead of 64. This doubles the threadgroup count for small M:
+//   M=1024: BM=64 → 16 TG rows, BM=32 → 32 TG rows (2× more GPU saturation)
+//
+// Tile: BM=32, BN=32, BK=32. TG=128 (4 simdgroups).
+// sa: 32×32 half = 2 KB (16 blocks of 64 elements, ib = 4*sx + sy)
+// sb: 32×32 half = 2 KB (same as BM=64)
+// Total TG memory: 4 KB → 8 TGs/SM (vs 6 KB → 5 TGs/SM for BM=64)
+// Inner loop: 2A + 2B loads + 4 MACs per K-step (1.0 MACs/load)
+//
+// Grid: (ceil(N/32), ceil(M/32)) threadgroups.
+// ═══════════════════════════════════════════════════════════════════════════
+
+kernel void dequant_batch_q4_k_blocked_bm32(
+    device const Q4_K_Block* A [[buffer(0)]],
+    device const float* B      [[buffer(1)]],
+    device float* C            [[buffer(2)]],
+    constant uint& M           [[buffer(3)]],
+    constant uint& N           [[buffer(4)]],
+    constant uint& K           [[buffer(5)]],
+    threadgroup char* shmem    [[threadgroup(0)]],
+    uint2 tgpig                [[threadgroup_position_in_grid]],
+    ushort tiitg               [[thread_index_in_threadgroup]],
+    ushort sgitg               [[simdgroup_index_in_threadgroup]]
+) {
+    // sa: 32×32 half = 2 KB. sb: 32×32 half = 2 KB.
+    threadgroup half* sa = (threadgroup half*)(shmem);
+    threadgroup half* sb = (threadgroup half*)(shmem + 2048);
+
+    constexpr short NR0 = 32;   // M-tile (half of BM=64)
+    constexpr short NR1 = 32;   // N-tile
+    constexpr short NK  = 32;   // K-tile
+    constexpr short NL0 = NK / 16;  // = 2
+    constexpr short NL1 = NK / 8;   // = 4
+    constexpr short QK_NL = 16;
+
+    const int r0 = tgpig.y * NR0;
+    const int r1 = tgpig.x * NR1;
+
+    const short nr0 = short(min(uint(NR0), M - uint(r0)));
+    const short nr1 = short(min(uint(NR1), N - uint(r1)));
+    const short lr0 = short(min(short(tiitg / NL0), short(nr0 - 1)));
+    const short lr1 = short(min(short(tiitg / NL1), short(nr1 - 1)));
+
+    const short il0 = short(tiitg % NL0);
+    short il = il0;
+
+    uint blocks_per_row = K / Q4_K_BLOCK_VALUES;
+    const short offset1 = il0 / QK_NL;
+    device const Q4_K_Block* x = A + uint(r0 + lr0) * blocks_per_row + offset1;
+
+    const short iy = short(8 * (tiitg % NL1));
+    device const float* y = B + uint(r1 + lr1) * K + iy;
+
+    // 4 accumulators: 2 M-halves × 2 N-halves per simdgroup.
+    simdgroup_half8x8 ma[2];
+    simdgroup_half8x8 mb[2];
+    simdgroup_float8x8 mc[4];
+    for (short i = 0; i < 4; i++) {
+        mc[i] = make_filled_simdgroup_matrix<float, 8>(0.0f);
+    }
+
+    for (uint loop_k = 0; loop_k < K; loop_k += NK) {
+        half4x4 temp_a;
+        dequantize_q4k_blocked(x, il, temp_a);
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Scatter to blocked layout: sa[64*ib + 8*ly + lx].
+        // ib = 4*sx + sy (not 8*sx + sy) because BM=32 → 16 blocks.
+        FOR_UNROLL (short i = 0; i < 16; i++) {
+            const short sx = 2 * il0 + i / 8;
+            const short sy = (tiitg / NL0) / 8;
+            const short lx = (tiitg / NL0) % 8;
+            const short ly = i % 8;
+            const short ib = 4 * sx + sy;  // 4 for BM=32 (was 8 for BM=64)
+            *(sa + 64 * ib + 8 * ly + lx) = temp_a[i / 4][i % 4];
+        }
+
+        for (short i = 0; i < 8; ++i) {
+            const short sx = short(tiitg % NL1);
+            const short sy = (tiitg / NL1) / 8;
+            const short lx = i;
+            const short ly = (tiitg / NL1) % 8;
+            const short ib = 4 * sx + sy;
+            *(sb + 64 * ib + 8 * ly + lx) =
+                (loop_k + iy + i < K) ? half(*(y + i)) : half(0.0h);
+        }
+
+        il = (il + 2 < QK_NL) ? il + 2 : il % 2;
+        x  = (il < 2) ? x + (2 + QK_NL - 1) / QK_NL : x;
+        y += NK;
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Compute: each SG handles 16×16 output sub-tile (2 A-blocks × 2 B-blocks).
+        // lsma: 2 halves of 32 M-rows (16 each)
+        // lsmb: 2 halves of 32 N-rows (16 each)
+        threadgroup const half* lsma = sa + 2 * 64 * (sgitg % 2);
+        threadgroup const half* lsmb = sb + 2 * 64 * (sgitg / 2);
+
+        FOR_UNROLL (short ik = 0; ik < NK / 8; ik++) {
+            simdgroup_barrier(mem_flags::mem_none);
+
+            FOR_UNROLL (short i = 0; i < 2; i++) {
+                simdgroup_load(ma[i], lsma + 64 * i, 8, ulong2(0, 0), false);
+            }
+
+            simdgroup_barrier(mem_flags::mem_none);
+
+            FOR_UNROLL (short i = 0; i < 2; i++) {
+                simdgroup_load(mb[i], lsmb + 64 * i, 8, ulong2(0, 0), false);
+            }
+
+            simdgroup_barrier(mem_flags::mem_none);
+
+            // 4 MACs: mb[i/2] × ma[i%2]
+            FOR_UNROLL (short i = 0; i < 4; i++) {
+                simdgroup_multiply_accumulate(mc[i], mb[i / 2], ma[i % 2], mc[i]);
+            }
+
+            lsma += 4 * 64;  // advance past 4 blocks (2 SG halves × 2 A-blocks)
+            lsmb += 4 * 64;
+        }
+    }
+
+    // Output: each SG writes 16×16 sub-tile.
+    if (r0 + NR0 <= int(M) && r1 + NR1 <= int(N)) {
+        device float* out = C
+            + uint(r0 + 16 * (sgitg & 1))
+            + uint(r1 + 16 * (sgitg >> 1)) * M;
+
+        for (short i = 0; i < 4; i++) {
+            simdgroup_store(mc[i], out + 8 * (i % 2) + 8 * M * (i / 2), M, ulong2(0, 0), false);
+        }
+    } else {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        threadgroup float* temp_str = ((threadgroup float*)shmem)
+            + 16 * (sgitg & 1) + 16 * (sgitg >> 1) * NR0;
+
+        for (short i = 0; i < 4; i++) {
+            simdgroup_store(mc[i], temp_str + 8 * (i % 2) + 8 * NR0 * (i / 2),
+                            NR0, ulong2(0, 0), false);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (sgitg == 0) {
+            for (int j = tiitg; j < nr1; j += NR1) {
+                device float*  D  = C + uint(r0) + uint(r1 + j) * M;
+                device float4* D4 = (device float4*)D;
+                threadgroup float*  Cs  = temp_str + j * NR0;
+                threadgroup float4* C4 = (threadgroup float4*)Cs;
+                int i = 0;
+                for (; i < nr0 / 4; i++) { *(D4 + i) = *(C4 + i); }
+                i *= 4;
+                for (; i < nr0; i++) { *(D + i) = *(Cs + i); }
+            }
+        }
+    }
+}
+
+// Forward declaration (defined later, after Q6_K blocked BM=64).
+inline void dequantize_q6k_blocked(device const Q6_K_Block* xb, short il, thread half4x4& reg);
+
+// Same for Q6_K:
+kernel void dequant_batch_q6_k_blocked_bm32(
+    device const Q6_K_Block* A [[buffer(0)]],
+    device const float* B      [[buffer(1)]],
+    device float* C            [[buffer(2)]],
+    constant uint& M           [[buffer(3)]],
+    constant uint& N           [[buffer(4)]],
+    constant uint& K           [[buffer(5)]],
+    threadgroup char* shmem    [[threadgroup(0)]],
+    uint2 tgpig                [[threadgroup_position_in_grid]],
+    ushort tiitg               [[thread_index_in_threadgroup]],
+    ushort sgitg               [[simdgroup_index_in_threadgroup]]
+) {
+    threadgroup half* sa = (threadgroup half*)(shmem);
+    threadgroup half* sb = (threadgroup half*)(shmem + 2048);
+
+    constexpr short NR0 = 32;
+    constexpr short NR1 = 32;
+    constexpr short NK  = 32;
+    constexpr short NL0 = NK / 16;
+    constexpr short NL1 = NK / 8;
+    constexpr short QK_NL = 16;
+
+    const int r0 = tgpig.y * NR0;
+    const int r1 = tgpig.x * NR1;
+
+    const short nr0 = short(min(uint(NR0), M - uint(r0)));
+    const short nr1 = short(min(uint(NR1), N - uint(r1)));
+    const short lr0 = short(min(short(tiitg / NL0), short(nr0 - 1)));
+    const short lr1 = short(min(short(tiitg / NL1), short(nr1 - 1)));
+
+    const short il0 = short(tiitg % NL0);
+    short il = il0;
+
+    uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
+    const short offset1 = il0 / QK_NL;
+    device const Q6_K_Block* x = A + uint(r0 + lr0) * blocks_per_row + offset1;
+
+    const short iy = short(8 * (tiitg % NL1));
+    device const float* y = B + uint(r1 + lr1) * K + iy;
+
+    simdgroup_half8x8 ma[2];
+    simdgroup_half8x8 mb[2];
+    simdgroup_float8x8 mc[4];
+    for (short i = 0; i < 4; i++) {
+        mc[i] = make_filled_simdgroup_matrix<float, 8>(0.0f);
+    }
+
+    for (uint loop_k = 0; loop_k < K; loop_k += NK) {
+        half4x4 temp_a;
+        dequantize_q6k_blocked(x, il, temp_a);
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        FOR_UNROLL (short i = 0; i < 16; i++) {
+            const short sx = 2 * il0 + i / 8;
+            const short sy = (tiitg / NL0) / 8;
+            const short lx = (tiitg / NL0) % 8;
+            const short ly = i % 8;
+            const short ib = 4 * sx + sy;
+            *(sa + 64 * ib + 8 * ly + lx) = temp_a[i / 4][i % 4];
+        }
+
+        for (short i = 0; i < 8; ++i) {
+            const short sx = short(tiitg % NL1);
+            const short sy = (tiitg / NL1) / 8;
+            const short lx = i;
+            const short ly = (tiitg / NL1) % 8;
+            const short ib = 4 * sx + sy;
+            *(sb + 64 * ib + 8 * ly + lx) =
+                (loop_k + iy + i < K) ? half(*(y + i)) : half(0.0h);
+        }
+
+        il = (il + 2 < QK_NL) ? il + 2 : il % 2;
+        x  = (il < 2) ? x + (2 + QK_NL - 1) / QK_NL : x;
+        y += NK;
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        threadgroup const half* lsma = sa + 2 * 64 * (sgitg % 2);
+        threadgroup const half* lsmb = sb + 2 * 64 * (sgitg / 2);
+
+        FOR_UNROLL (short ik = 0; ik < NK / 8; ik++) {
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 2; i++) {
+                simdgroup_load(ma[i], lsma + 64 * i, 8, ulong2(0, 0), false);
+            }
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 2; i++) {
+                simdgroup_load(mb[i], lsmb + 64 * i, 8, ulong2(0, 0), false);
+            }
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 4; i++) {
+                simdgroup_multiply_accumulate(mc[i], mb[i / 2], ma[i % 2], mc[i]);
+            }
+            lsma += 4 * 64;
+            lsmb += 4 * 64;
+        }
+    }
+
+    if (r0 + NR0 <= int(M) && r1 + NR1 <= int(N)) {
+        device float* out = C
+            + uint(r0 + 16 * (sgitg & 1))
+            + uint(r1 + 16 * (sgitg >> 1)) * M;
+        for (short i = 0; i < 4; i++) {
+            simdgroup_store(mc[i], out + 8 * (i % 2) + 8 * M * (i / 2), M, ulong2(0, 0), false);
+        }
+    } else {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        threadgroup float* temp_str = ((threadgroup float*)shmem)
+            + 16 * (sgitg & 1) + 16 * (sgitg >> 1) * NR0;
+        for (short i = 0; i < 4; i++) {
+            simdgroup_store(mc[i], temp_str + 8 * (i % 2) + 8 * NR0 * (i / 2),
+                            NR0, ulong2(0, 0), false);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (sgitg == 0) {
+            for (int j = tiitg; j < nr1; j += NR1) {
+                device float*  D  = C + uint(r0) + uint(r1 + j) * M;
+                device float4* D4 = (device float4*)D;
+                threadgroup float*  Cs  = temp_str + j * NR0;
+                threadgroup float4* C4 = (threadgroup float4*)Cs;
+                int i = 0;
+                for (; i < nr0 / 4; i++) { *(D4 + i) = *(C4 + i); }
+                i *= 4;
+                for (; i < nr0; i++) { *(D + i) = *(Cs + i); }
+            }
+        }
+    }
+}
+
 // ── BN=32 full-tile (no bounds check) ──────────────────────────────────
 //
 // Same as dequant_batch_q4_k_bn32 but without out_tile allocation or

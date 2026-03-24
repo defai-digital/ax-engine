@@ -443,10 +443,14 @@ pub struct DequantKernels {
     fused_batch_q4_k_inline: ComputePipeline,
     /// Blocked-layout kernel (llama.cpp pattern): stride-8, 6KB TG, TG=128, 1.33 MACs/load.
     fused_batch_q4_k_blocked: ComputePipeline,
+    /// BM=32 blocked variant for small M: 4KB TG, 2× more TGs.
+    fused_batch_q4_k_blocked_bm32: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q6_K: C[N×M] = B[N×K] × dequant(A[M×K])^T.
     fused_batch_q6_k: ComputePipeline,
     /// Blocked-layout Q6_K kernel (same architecture as Q4_K blocked).
     fused_batch_q6_k_blocked: ComputePipeline,
+    /// BM=32 blocked Q6_K variant for small M.
+    fused_batch_q6_k_blocked_bm32: ComputePipeline,
     /// Full-tile fast path for Q4_K batch dequant+matmul.
     fused_batch_q4_k_full: ComputePipeline,
     /// Full-tile fast path for Q6_K batch dequant+matmul.
@@ -720,6 +724,12 @@ impl DequantKernels {
             "dequant_batch_q4_k_blocked",
         )
         .context("Failed to compile dequant_batch_q4_k_blocked kernel")?;
+        let fused_batch_q4_k_blocked_bm32 = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q4_k_blocked_bm32",
+        )
+        .context("Failed to compile dequant_batch_q4_k_blocked_bm32 kernel")?;
         let fused_batch_q4_k_inline = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -747,6 +757,12 @@ impl DequantKernels {
             "dequant_batch_q6_k_blocked",
         )
         .context("Failed to compile dequant_batch_q6_k_blocked kernel")?;
+        let fused_batch_q6_k_blocked_bm32 = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q6_k_blocked_bm32",
+        )
+        .context("Failed to compile dequant_batch_q6_k_blocked_bm32 kernel")?;
         let fused_batch_q4_k_full = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -984,9 +1000,11 @@ impl DequantKernels {
             fused_batch_q4_k_v2,
             fused_batch_q4_k_inline,
             fused_batch_q4_k_blocked,
+            fused_batch_q4_k_blocked_bm32,
             fused_batch_q4_k_bn32_full,
             fused_batch_q6_k,
             fused_batch_q6_k_blocked,
+            fused_batch_q6_k_blocked_bm32,
             fused_batch_q4_k_full,
             fused_batch_q6_k_full,
             fused_batch_q4_k_f16io,
@@ -1831,18 +1849,23 @@ impl DequantKernels {
         // Uses dynamic threadgroup memory via [[threadgroup(0)]].
         if batch_q4k_blocked_enabled() && k.is_multiple_of(Q4_K_BLOCK_VALUES as u32) {
             const BLOCKED_TG: usize = 128;
-            const BLOCKED_SMEM: usize = 8192; // 8 KB (sa=4KB + sb=2KB + padding for output staging)
-            encoder.setComputePipelineState(self.fused_batch_q4_k_blocked.state());
+            // Choose BM=32 for small M (doubles TG count for better GPU saturation).
+            let use_bm32 = (m as usize) < 2048;
+            let (pipeline, bm, smem) = if use_bm32 {
+                (&self.fused_batch_q4_k_blocked_bm32, 32usize, 8192usize)
+            } else {
+                (&self.fused_batch_q4_k_blocked, 64usize, 8192usize)
+            };
+            encoder.setComputePipelineState(pipeline.state());
             bind_buffers(encoder, a, b, c);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
             bind_u32(encoder, 5, k);
-            unsafe { encoder.setThreadgroupMemoryLength_atIndex(BLOCKED_SMEM, 0); }
-            // Grid: (ceil(N/32), ceil(M/64)) — matches llama.cpp convention.
+            unsafe { encoder.setThreadgroupMemoryLength_atIndex(smem, 0); }
             encoder.dispatchThreadgroups_threadsPerThreadgroup(
                 MTLSize {
                     width: (n as usize).div_ceil(32),
-                    height: (m as usize).div_ceil(64),
+                    height: (m as usize).div_ceil(bm),
                     depth: 1,
                 },
                 MTLSize {
@@ -2125,17 +2148,22 @@ impl DequantKernels {
         // Blocked-layout Q6_K kernel (same architecture as Q4_K blocked).
         if batch_q6k_blocked_enabled() && k.is_multiple_of(Q6_K_BLOCK_VALUES as u32) {
             const BLOCKED_TG: usize = 128;
-            const BLOCKED_SMEM: usize = 8192;
-            encoder.setComputePipelineState(self.fused_batch_q6_k_blocked.state());
+            let use_bm32 = (m as usize) < 2048;
+            let (pipeline, bm, smem) = if use_bm32 {
+                (&self.fused_batch_q6_k_blocked_bm32, 32usize, 8192usize)
+            } else {
+                (&self.fused_batch_q6_k_blocked, 64usize, 8192usize)
+            };
+            encoder.setComputePipelineState(pipeline.state());
             bind_buffers(encoder, a, b, c);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
             bind_u32(encoder, 5, k);
-            unsafe { encoder.setThreadgroupMemoryLength_atIndex(BLOCKED_SMEM, 0); }
+            unsafe { encoder.setThreadgroupMemoryLength_atIndex(smem, 0); }
             encoder.dispatchThreadgroups_threadsPerThreadgroup(
                 MTLSize {
                     width: (n as usize).div_ceil(32),
-                    height: (m as usize).div_ceil(64),
+                    height: (m as usize).div_ceil(bm),
                     depth: 1,
                 },
                 MTLSize {
