@@ -61,6 +61,7 @@ These numbers show current parity progress on supported model families, not a cl
 | Qwen3-32B | Q4_K_M | 145 | **91%** | 16.9 | **98%** |
 | Meta-Llama-3.1-8B-Instruct | Q4_K_M | 664 | **89%** | 61.3 | **92%** |
 | gemma-3-12b-it | Q4_K_M | 417 | **88%** | 37.7 | **93%** |
+| Mistral-7B-Instruct-v0.3 | Q4_K_M | 666 | **85%** | 65.1 | **93%** |
 
 Areas where we expect the most improvement:
 
