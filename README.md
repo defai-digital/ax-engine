@@ -2,34 +2,35 @@
 
 AX Engine is a Rust inference engine for running GGUF language models locally on Apple Silicon M3 and newer, with Metal-backed prefill and decode.
 
-It is built for one specific target: fast, correct local inference on modern Macs without a Python runtime or a C++ build chain.
+It is built for running multiple models and agents on a single Mac — fast, isolated, and predictable — without a Python runtime or a C++ build chain.
 
 > AX Engine is currently optimized for Apple Silicon M3 and later. M1 and M2 are not supported targets.
 
 ## What It Is
 
-- Metal-native GGUF inference for macOS on Apple Silicon
-- A llama.cpp-style CLI: `ax-llama`
-- A `libllama`-compatible shim via `ax-shim`
-- Benchmarking and soak-test tools via `ax-bench`
-- A Rust codebase organized around explicit backends, model configs, tokenizer/gguf loading, KV management, and sampling
+- A Metal-native GGUF inference engine for macOS on Apple Silicon
+- Built for running multiple models and agents on a single Mac — the workload that matters for local AI toolchains
+- A llama.cpp-style CLI (`ax-llama`), a drop-in `libllama` shim (`ax-shim`), and benchmarking tools (`ax-bench`)
+- A Rust library (`ax-core`) with explicit backends, model configs, KV management, and sampling — designed to be embedded into larger systems
 
 ## What It Is Not
 
 - A general-purpose multi-platform inference runtime
-- A cloud serving stack
+- A cloud serving stack or OpenAI-compatible HTTP server
 - A Python-first project
-- A full OpenAI-compatible server
 
-If you need a production HTTP server, routing, request validation, or adapter logic, that should sit above AX Engine.
+AX Engine is the inference layer. HTTP serving, request routing, and API adapters should sit above it.
 
 ## Why Use It
 
-- Local-first: models run on your machine, not a remote API
-- Focused architecture: the project is optimized around Apple Silicon GPU execution instead of trying to be portable first
-- Clean integration surface: `ax-core` is usable as a library, `ax-cli` is usable as a tool, and `ax-shim` is usable for llama.cpp-style integrations
-- Modern sampling and stopping surface: `top_k`, `top_p`, `min_p`, `min_keep`, `logit_bias`, allowed/banned-token masks, repetition/presence/frequency penalties, `top_logprobs`, stop strings, and stop token IDs
-- Strong development ergonomics: pure Rust workspace, normal `cargo` workflows, no custom toolchain beyond Xcode and Rust
+AX Engine is designed for a specific gap: running multiple models and agents on a single Mac with predictable behavior, explicit resource control, and no crashes under memory pressure. This is the scenario where general-purpose runtimes break down.
+
+- **Multi-model safe**: each model gets its own Metal command queue, KV cache, and backend instance — no shared global state that causes cross-model interference or thread-safety crashes
+- **Explicit resource control**: per-model KV budgets, graceful OOM handling (returns errors, never kills the process), and explicit backend selection — you decide what runs on GPU vs CPU
+- **Local-first**: models run on your machine, not a remote API
+- **Near llama.cpp performance**: 85–98% of llama.cpp across all tested models, with model-specific kernel fusions that generic runtimes cannot match
+- **Clean integration surface**: `ax-core` is usable as a library, `ax-cli` is usable as a tool, and `ax-shim` is usable as a drop-in `libllama` replacement
+- **Rust-native**: pure Rust workspace, no Python runtime, no C++ build chain, normal `cargo` workflows
 
 ## Performance (v1.3.1)
 
@@ -83,14 +84,24 @@ All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Als
 
 ## Current Capabilities
 
-- Metal GPU inference for prefill and decode
-- Pipelined GPU decode paths where supported
-- CPU and hybrid backend modes
+**Inference**
+- Metal GPU inference for prefill and decode (85–98% of llama.cpp)
+- Pipelined GPU decode with double-buffered command buffers
+- CPU and hybrid backend modes with explicit selection
 - Speculative decoding with a draft model
-- Library chat rendering helpers for common model families
-- Blocked-layout batch matmul (llama.cpp kernel_mul_mm architecture)
+
+**GPU Optimization**
+- Blocked-layout batch matmul (llama.cpp `kernel_mul_mm` architecture)
+- Model-specific fused kernels (QKV bias + QK norm + RoPE + KV append in a single dispatch)
 - Concurrent Metal dispatch with smart barrier placement
-- Precompiled Metal shaders (.metallib) for fast startup
+- Precompiled Metal shaders (`.metallib`) for fast startup
+- simdgroup-matrix Flash Attention (HD=64 and HD=128)
+
+**Multi-Model Foundation**
+- Per-model Metal command queues and KV caches — no shared mutable state between models
+- Graceful OOM handling — buffer allocation failures return errors, never crash the process
+- Explicit backend per model — run one model on GPU, another on CPU, in the same process
+- Thread-safe throughout (`Arc`/`Mutex`, no `Rc`/`RefCell`)
 
 ## Requirements
 
@@ -299,14 +310,14 @@ cargo run -p ax-cli -- --help
 
 ## Project Status
 
-AX Engine is under active development. The current focus is:
+AX Engine is under active development. The current focus areas:
 
-- strong local inference performance on supported Apple Silicon targets
-- explicit backend behavior
-- stable library surfaces for prompt rendering, sampling, and decode
-- performance and correctness tooling in-tree
+- **Multi-model inference**: running multiple models (e.g., coder + embedding + reranker) on a single Mac with isolated resources and predictable behavior
+- **Closing the llama.cpp gap**: model-specific kernel fusions to reach and exceed llama.cpp performance on key architectures (Qwen3, GLM, StarCoder2)
+- **Stable library surface**: `ax-core` as an embeddable inference library for local AI toolchains, agents, and pipelines
+- **Per-model resource control**: KV budgets, memory admission, and graceful degradation under pressure
 
-There are still deliberate gaps relative to larger serving stacks, especially around server/runtime concerns such as request orchestration, continuous batching at the serving layer, and OpenAI-compatible HTTP semantics.
+Deliberate gaps relative to larger serving stacks: request orchestration, continuous batching at the serving layer, and OpenAI-compatible HTTP semantics. These belong in layers above `ax-core`.
 
 ## License
 
