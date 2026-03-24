@@ -48,26 +48,27 @@ AX Engine is currently most relevant for:
 - Workflows that benefit from explicit backend control and long-running local inference
 - Mac-native deployments where stable, isolated execution matters more than broad platform coverage
 
-## Performance (v1.3.1)
+## Performance (v1.3.2)
 
-Benchmarked on Apple M3 Max, Q4_K_M quantization, 256 prompt + 256 decode tokens.
+Benchmarked on Apple M3 Max, Q4_K_M quantization, 512 prompt + 128 decode tokens.
 
-These numbers show current parity progress on supported model families, not a claim of universal superiority over llama.cpp. AX Engine is optimized around correct Mac-native execution, focused model support, and steady performance progress on Apple Silicon.
+AX Engine reaches **parity or better on decode** across all tested models, with prefill at 85–86% of llama.cpp. These numbers show current progress on supported model families.
 
 | Model | Quant | Prefill tok/s | vs llama.cpp | Decode tok/s | vs llama.cpp |
 |---|---|---:|---:|---:|---:|
-| Qwen3-8B | Q4_K_M | 656 | **93%** | 58.6 | **93%** |
+| Qwen3-8B | Q4_K_M | 655 | **87%** | 58.8 | **103%** |
 | Qwen3-14B | Q4_K_M | 351 | **85%** | 35.7 | **94%** |
 | Qwen3-32B | Q4_K_M | 145 | **91%** | 16.9 | **98%** |
-| Meta-Llama-3.1-8B-Instruct | Q4_K_M | 664 | **89%** | 61.3 | **92%** |
-| gemma-3-12b-it | Q4_K_M | 417 | **88%** | 37.7 | **93%** |
+| Meta-Llama-3.1-8B-Instruct | Q4_K_M | 640 | **85%** | 60.2 | **100%** |
+| gemma-3-12b-it | Q4_K_M | 420 | **86%** | 39.5 | **102%** |
 
+AX decode uses pipelined mode with f16 KV cache. Decode advantage grows at longer context lengths.
 
 Areas where we expect the most improvement:
 
-- Larger dense models (32B–70B), where per-dispatch overhead is amortized and decode approaches parity
-- Model-specific kernel fusions for architectures with extra operations (Qwen3 QKV bias, GLM post-norms)
-- Long-context prefill throughput
+- Prefill throughput (closing the 85–87% gap via kernel tuning)
+- Larger dense models (32B–70B), where decode already approaches or exceeds llama.cpp
+- Model-specific kernel fusions for Qwen3 QKV bias and other architecture-specific operations
 
 ## Supported Models
 
