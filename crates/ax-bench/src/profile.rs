@@ -24,6 +24,8 @@ pub struct ProfileConfig {
     pub warmup_tokens: usize,
     /// Number of tokens to profile.
     pub profile_tokens: usize,
+    /// Optional kernel profile override path used for this run.
+    pub kernel_profile_path: Option<String>,
 }
 
 impl Default for ProfileConfig {
@@ -32,6 +34,7 @@ impl Default for ProfileConfig {
             model_path: String::new(),
             warmup_tokens: 16,
             profile_tokens: 64,
+            kernel_profile_path: None,
         }
     }
 }
@@ -53,9 +56,27 @@ pub struct ProfileResult {
     /// Decode mode used during profiling.
     #[serde(default)]
     pub decode_mode: String,
+    /// Compact prefill execution-plan summary.
+    #[serde(default)]
+    pub prefill_plan: String,
+    /// Parsed `q5k_prefill=...` mode from the prefill plan, when present.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub q5k_prefill_mode: Option<String>,
+    /// Compact decode execution-plan summary.
+    #[serde(default)]
+    pub decode_plan: String,
+    /// Optional support-boundary note for the loaded model quant family.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support_note: Option<String>,
     /// Optional explanation when a faster mode was not used.
     #[serde(default)]
     pub decode_fallback_reason: Option<String>,
+    /// Optional kernel profile override path used for this run.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel_profile_path: Option<String>,
     /// GPU decode wall time percentage (Metal decode path end-to-end).
     #[serde(default)]
     pub gpu_pct: f64,
@@ -200,10 +221,12 @@ pub fn run_profile_with_backend(
     backend: Box<dyn ax_core::backend::Backend>,
 ) -> anyhow::Result<ProfileResult> {
     let mapped = MappedModel::open(Path::new(&config.model_path))?;
-    crate::init_kernel_profile(&config.model_path, &mapped);
+    crate::configure_backend_for_model(&*backend, &config.model_path, &mapped)?;
     let model_config = ModelConfig::from_gguf(&mapped.header)?;
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = LlamaModel::with_backend(model_config.clone(), backend);
+    crate::report_planned_kv_budget(&mapped, &model)?;
+    let support_note = crate::support_note(&mapped);
     let weights = WeightStore::new(&mapped);
 
     let vocab_size = model_config.vocab_size as usize;
@@ -218,11 +241,12 @@ pub fn run_profile_with_backend(
         config.profile_tokens,
     );
 
-    let mut kv = model.create_model_kv();
+    let mut kv = model.create_model_kv_for_weights(&weights);
     let mut logits = vec![0.0f32; vocab_size];
 
     // Prefill with a simple prompt
     let prompt_tokens = tokenizer.encode("The meaning of life is", true);
+    let prefill_plan = model.prefill_plan_summary(&weights, &kv, prompt_tokens.len())?;
     for (i, &tok) in prompt_tokens.iter().enumerate() {
         logits.fill(0.0);
         model.forward_single(tok, i, &mut kv, &weights, &mut logits)?;
@@ -245,6 +269,7 @@ pub fn run_profile_with_backend(
     eprintln!("Warmup done at position {position}, starting profile...");
 
     let selection = select_decode_mode(&model, &kv, DecodeIntent::Latency, false);
+    let plan_summary = model.decode_plan_summary(&kv, DecodeIntent::Latency, false);
 
     // Profiled decode
     let mut ops = OpBreakdown::new();
@@ -302,7 +327,12 @@ pub fn run_profile_with_backend(
         },
         decode_intent: selection.intent.to_string(),
         decode_mode: selection.mode.to_string(),
+        q5k_prefill_mode: crate::q5k_prefill_mode(&prefill_plan),
+        prefill_plan,
+        decode_plan: plan_summary,
+        support_note,
         decode_fallback_reason: selection.fallback_reason,
+        kernel_profile_path: config.kernel_profile_path.clone(),
         gpu_pct: pct(ops.gpu),
         gpu_encode_pct: pct(ops.gpu_encode),
         gpu_execute_pct: pct(ops.gpu_execute),
@@ -492,8 +522,19 @@ impl ProfileResult {
         eprintln!("Tokens:      {}", self.tokens);
         eprintln!("Intent:      {}", self.decode_intent);
         eprintln!("Mode:        {}", self.decode_mode);
+        eprintln!("PrefillPlan: {}", self.prefill_plan);
+        if let Some(mode) = &self.q5k_prefill_mode {
+            eprintln!("Q5KPrefill:  {mode}");
+        }
+        eprintln!("Plan:        {}", self.decode_plan);
+        if let Some(note) = &self.support_note {
+            eprintln!("Support:     {note}");
+        }
         if let Some(reason) = &self.decode_fallback_reason {
             eprintln!("Fallback:    {reason}");
+        }
+        if let Some(path) = &self.kernel_profile_path {
+            eprintln!("KernelProf:  {path}");
         }
         eprintln!(
             "Wall time:   {:.1}ms ({:.2}ms/tok)",
@@ -612,11 +653,18 @@ impl ProfileResult {
 mod tests {
     use super::*;
 
+    fn q5k_support_note() -> String {
+        ax_core::gguf::mmap::support_note_for_q5k_layer_presence(true)
+            .unwrap()
+            .to_string()
+    }
+
     #[test]
     fn test_profile_config_defaults() {
         let c = ProfileConfig::default();
         assert_eq!(c.warmup_tokens, 16);
         assert_eq!(c.profile_tokens, 64);
+        assert_eq!(c.kernel_profile_path, None);
     }
 
     #[test]
@@ -628,7 +676,12 @@ mod tests {
             avg_tok_ms: 15.625,
             decode_intent: "latency".into(),
             decode_mode: "single_cb".into(),
+            prefill_plan: "mode=gpu_batch q5k_prefill=experimental_small_n".into(),
+            q5k_prefill_mode: Some("experimental_small_n".into()),
+            decode_plan: "sync=single_cb scratch=gpu_shared".into(),
+            support_note: Some(q5k_support_note()),
             decode_fallback_reason: None,
+            kernel_profile_path: None,
             gpu_pct: 70.0,
             gpu_encode_pct: 8.0,
             gpu_execute_pct: 62.0,
@@ -684,7 +737,12 @@ mod tests {
             avg_tok_ms: 15.625,
             decode_intent: "latency".into(),
             decode_mode: "single_cb".into(),
+            prefill_plan: "mode=gpu_batch q5k_prefill=experimental_small_n".into(),
+            q5k_prefill_mode: Some("experimental_small_n".into()),
+            decode_plan: "sync=single_cb scratch=gpu_shared".into(),
+            support_note: Some(q5k_support_note()),
             decode_fallback_reason: None,
+            kernel_profile_path: None,
             gpu_pct: 60.0,
             gpu_encode_pct: 10.0,
             gpu_execute_pct: 50.0,
@@ -730,6 +788,8 @@ mod tests {
         let json = r.to_json().unwrap();
         assert!(json.contains("\"matmul_pct\": 65.0"));
         assert!(json.contains("\"tokens\": 32"));
+        assert!(json.contains(&format!("\"support_note\": \"{}\"", q5k_support_note())));
+        assert!(json.contains("\"q5k_prefill_mode\": \"experimental_small_n\""));
     }
 
     #[test]
@@ -741,7 +801,12 @@ mod tests {
             avg_tok_ms: 0.0,
             decode_intent: "latency".into(),
             decode_mode: "sequential".into(),
+            prefill_plan: "mode=serial".into(),
+            q5k_prefill_mode: None,
+            decode_plan: "sync=sequential scratch=cpu".into(),
+            support_note: None,
             decode_fallback_reason: None,
+            kernel_profile_path: None,
             gpu_pct: 0.0,
             gpu_encode_pct: 0.0,
             gpu_execute_pct: 0.0,
@@ -797,7 +862,12 @@ mod tests {
             avg_tok_ms: 15.625,
             decode_intent: "latency".into(),
             decode_mode: "single_cb".into(),
+            prefill_plan: "mode=gpu_batch".into(),
+            q5k_prefill_mode: None,
+            decode_plan: "sync=single_cb scratch=gpu_shared".into(),
+            support_note: None,
             decode_fallback_reason: None,
+            kernel_profile_path: None,
             gpu_pct: 55.0,
             gpu_encode_pct: 5.0,
             gpu_execute_pct: 50.0,
@@ -847,7 +917,12 @@ mod tests {
             avg_tok_ms: 17.96875,
             decode_intent: "latency".into(),
             decode_mode: "single_cb".into(),
+            prefill_plan: "mode=gpu_batch".into(),
+            q5k_prefill_mode: None,
+            decode_plan: "sync=single_cb scratch=gpu_shared".into(),
+            support_note: None,
             decode_fallback_reason: None,
+            kernel_profile_path: None,
             gpu_pct: 58.0,
             gpu_encode_pct: 7.0,
             gpu_execute_pct: 51.0,

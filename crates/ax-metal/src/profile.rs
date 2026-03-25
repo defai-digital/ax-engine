@@ -17,11 +17,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
-
-pub static GLOBAL_PROFILE: OnceLock<KernelProfile> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -59,6 +56,10 @@ pub struct AttentionDecodeParams {
     pub splitk_chunk_size: u32,
     #[serde(default = "default_attn_decode_splitk_threshold")]
     pub splitk_threshold: u32,
+    #[serde(default)]
+    pub sdpa_default: Option<bool>,
+    #[serde(default)]
+    pub hd128_n2_default: Option<bool>,
 }
 
 fn default_attn_decode_splitk_chunk_size() -> u32 {
@@ -73,6 +74,8 @@ impl Default for AttentionDecodeParams {
         Self {
             splitk_chunk_size: default_attn_decode_splitk_chunk_size(),
             splitk_threshold: default_attn_decode_splitk_threshold(),
+            sdpa_default: None,
+            hd128_n2_default: None,
         }
     }
 }
@@ -450,30 +453,6 @@ fn extract_param_billions(name: &str) -> Option<f32> {
     None
 }
 
-pub fn global_profile() -> &'static KernelProfile {
-    GLOBAL_PROFILE.get_or_init(|| {
-        if let Some(profile) = KernelProfile::try_load_from_env() {
-            return profile;
-        }
-        if let Some(profile) = KernelProfile::try_load_default() {
-            return profile;
-        }
-        KernelProfile::default()
-    })
-}
-
-pub fn init_global_profile(model_name: &str, quant: &str) {
-    let profile = KernelProfile::load(model_name, quant);
-    if GLOBAL_PROFILE.set(profile).is_err() {
-        tracing::warn!(
-            model_name,
-            "init_global_profile called but GLOBAL_PROFILE was already initialized; \
-             model-specific profile will NOT take effect. Ensure init_global_profile \
-             is called before any dispatch function reads the profile."
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -574,7 +553,9 @@ mod tests {
             },
             "attention_decode": {
                 "splitk_chunk_size": 256,
-                "splitk_threshold": 512
+                "splitk_threshold": 512,
+                "sdpa_default": true,
+                "hd128_n2_default": false
             },
             "attention_prefill": {
                 "fa2_mode": "auto",
@@ -588,6 +569,8 @@ mod tests {
         assert_eq!(profile.generated, "2026-03-23");
         assert!(profile.batch_prefill.prefer_f16_io); // JSON has true
         assert_eq!(profile.batch_prefill.small_n_threshold, 32);
+        assert_eq!(profile.attention_decode.sdpa_default, Some(true));
+        assert_eq!(profile.attention_decode.hd128_n2_default, Some(false));
         assert_eq!(profile.attention_prefill.fa2_mode, ProfileKernelMode::Auto);
         assert_eq!(profile.attention_prefill.fa2_auto_min_base_seq, 320);
     }

@@ -10,12 +10,16 @@
 //! - `append()` now calls `ensure_capacity()` AND increments `seq_len` atomically,
 //!   matching the GPU path's atomicity guarantee.
 
-use super::page::{KvCacheConfig, KvDtype, PageAllocator, recommended_page_size};
+use super::page::{
+    KvCacheConfig, KvDtype, PageAllocator, initial_token_capacity, planned_capacity_for_needed,
+    recommended_page_size,
+};
 
 /// CPU-resident KV cache for all transformer layers.
 ///
 /// Layout per layer: contiguous `[max_seq_len, n_kv_heads * head_dim]` f32 values.
 /// Memory grows by `page_size` tokens on demand.
+#[derive(Debug)]
 pub struct CpuKv {
     /// Per-layer key cache (f32).
     k: Vec<Vec<f32>>,
@@ -56,7 +60,7 @@ impl CpuKv {
             .checked_mul(cfg.head_dim)
             .expect("CPU KV token stride overflow");
         let page_size = cfg.page_size.max(1);
-        let initial_cap = page_size.min(cfg.max_seq_len);
+        let initial_cap = initial_token_capacity(page_size, cfg.max_seq_len);
         let layer_elems = initial_cap
             .checked_mul(stride)
             .expect("CPU KV initial allocation overflow");
@@ -124,10 +128,38 @@ impl CpuKv {
         // See `finalize_token()`.
     }
 
+    /// Append a batch of token-major K/V rows for one layer without advancing seq_len.
+    ///
+    /// `k_batch` and `v_batch` are laid out as `[n_tokens, token_stride]`.
+    /// Callers must write every participating layer before calling `finalize_batch()`.
+    pub fn append_batch(
+        &mut self,
+        layer: usize,
+        k_batch: &[f32],
+        v_batch: &[f32],
+        n_tokens: usize,
+    ) {
+        assert!(self.seq_len + n_tokens <= self.max_seq_len);
+        assert_eq!(k_batch.len(), n_tokens * self.token_stride);
+        assert_eq!(v_batch.len(), n_tokens * self.token_stride);
+
+        self.ensure_capacity_for(self.seq_len + n_tokens);
+        let offset = self.token_offset(self.seq_len);
+        let end = offset + n_tokens * self.token_stride;
+        self.k[layer][offset..end].copy_from_slice(k_batch);
+        self.v[layer][offset..end].copy_from_slice(v_batch);
+    }
+
     /// Finalize storage of one token. Call after `append_and_advance` for all layers.
     pub fn finalize_token(&mut self) {
         assert!(self.seq_len < self.max_seq_len);
         self.seq_len += 1;
+    }
+
+    /// Finalize storage of a batch of tokens after all layer writes complete.
+    pub fn finalize_batch(&mut self, n_tokens: usize) {
+        assert!(self.seq_len + n_tokens <= self.max_seq_len);
+        self.seq_len += n_tokens;
     }
 
     /// Reset the KV cache to zero tokens (keeps allocated memory).
@@ -256,18 +288,11 @@ impl CpuKv {
         if self.capacity >= needed {
             return;
         }
-        let mut new_cap = self.capacity;
-        while new_cap < needed {
-            new_cap = (new_cap + self.page_size).min(self.max_seq_len);
-            if new_cap < needed {
-                // If we're at max_seq_len and still not enough, that's a bug in the caller.
-                assert!(
-                    new_cap >= needed,
-                    "CPU KV: needed={needed} > max_seq_len={}",
-                    self.max_seq_len
-                );
-            }
-        }
+        let new_cap =
+            planned_capacity_for_needed(self.capacity, needed, self.page_size, self.max_seq_len)
+                .unwrap_or_else(|| {
+                    panic!("CPU KV: needed={needed} > max_seq_len={}", self.max_seq_len)
+                });
         let new_elems = new_cap
             .checked_mul(self.token_stride)
             .expect("CPU KV growth overflow");
@@ -313,6 +338,22 @@ mod tests {
         assert_eq!(kv.seq_len(), 1);
         assert_eq!(kv.k_slice(0, 1), k0.as_slice());
         assert_eq!(kv.v_slice(0, 1), v0.as_slice());
+    }
+
+    #[test]
+    fn cpu_kv_append_batch_finalize_roundtrip() {
+        let mut kv = CpuKv::new(1, 2, 4, 16);
+        let stride = kv.token_stride();
+        let n_tokens = 3usize;
+        let k_batch: Vec<f32> = (0..n_tokens * stride).map(|i| i as f32).collect();
+        let v_batch: Vec<f32> = (0..n_tokens * stride).map(|i| (i + 100) as f32).collect();
+
+        kv.append_batch(0, &k_batch, &v_batch, n_tokens);
+        kv.finalize_batch(n_tokens);
+
+        assert_eq!(kv.seq_len(), n_tokens);
+        assert_eq!(kv.k_slice(0, n_tokens), k_batch.as_slice());
+        assert_eq!(kv.v_slice(0, n_tokens), v_batch.as_slice());
     }
 
     #[test]

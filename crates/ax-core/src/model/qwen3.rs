@@ -46,7 +46,8 @@ use crate::model::forward::{ForwardContext, ForwardPass};
 use crate::model::shared::{
     encode_batch_logits, encode_dequant_batch, encode_dequant_batch_f16in,
     encode_dequant_batch_pair_f16in, encode_dequant_matvec, encode_dequant_matvec_with_config,
-    gpu_decode_quant_supported, gpu_prefill_uses_experimental_q5k, per_head_rms_norm,
+    gpu_decode_quant_supported, gpu_prefill_experimental_q5k_small_n_auto_eligible,
+    gpu_prefill_uses_experimental_q5k, per_head_rms_norm,
 };
 use crate::model::weights::WeightStore;
 
@@ -897,13 +898,17 @@ impl Qwen3Forward {
         {
             let weight_cache = metal_ops.lock_weight_cache();
             let has_q5k_weights = gpu_prefill_uses_experimental_q5k(weights);
+            let q5k_small_n_auto_eligible =
+                gpu_prefill_experimental_q5k_small_n_auto_eligible(weights);
             let prefill_plan: GpuBatchPrefillExecutionPlan = DecodeExecutionPlan::qwen3_prefill(
                 metal_ops,
                 gpu_kv,
                 base_seq_len,
+                n_tokens as u32,
                 cfg.head_dim,
                 cfg.sliding_window_size.unwrap_or(0),
                 has_q5k_weights,
+                q5k_small_n_auto_eligible,
             );
             let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
 
@@ -992,6 +997,7 @@ impl Qwen3Forward {
                                     lw.wq_dtype,
                                     false,
                                     prefill_plan.use_batch_simd,
+                                    prefill_plan.experimental_q5k_prefill_small_n,
                                 );
                             }
                         }
@@ -1083,6 +1089,7 @@ impl Qwen3Forward {
                                     lw.wq_dtype,
                                     false,
                                     prefill_plan.use_batch_simd,
+                                    prefill_plan.experimental_q5k_prefill_small_n,
                                 );
                                 sb.post_dispatch(&[&bs.norm_buf], &[&bs.q_buf]);
                                 sb.pre_dispatch(&[&bs.norm_buf], &[&bs.k_buf]);
@@ -1100,6 +1107,7 @@ impl Qwen3Forward {
                                     lw.wk_dtype,
                                     false,
                                     prefill_plan.use_batch_simd,
+                                    prefill_plan.experimental_q5k_prefill_small_n,
                                 );
                                 sb.post_dispatch(&[&bs.norm_buf], &[&bs.k_buf]);
                                 sb.pre_dispatch(&[&bs.norm_buf], &[&bs.v_buf]);
@@ -1117,6 +1125,7 @@ impl Qwen3Forward {
                                     lw.wv_dtype,
                                     false,
                                     prefill_plan.use_batch_simd,
+                                    prefill_plan.experimental_q5k_prefill_small_n,
                                 );
                                 sb.post_dispatch(&[&bs.norm_buf], &[&bs.v_buf]);
                             }
@@ -1392,6 +1401,7 @@ impl Qwen3Forward {
                         lw.wo_dtype,
                         prefill_plan.use_f16_batch_io,
                         prefill_plan.use_batch_simd,
+                        prefill_plan.experimental_q5k_prefill_small_n,
                     );
                     sb.post_dispatch(&[&bs.attn_out], &[&bs.proj_buf]);
 
@@ -1485,6 +1495,7 @@ impl Qwen3Forward {
                                 lw.wg_dtype,
                                 false,
                                 prefill_plan.use_batch_simd,
+                                prefill_plan.experimental_q5k_prefill_small_n,
                             );
                             encode_dequant_batch(
                                 &metal_ops.dequant,
@@ -1500,6 +1511,7 @@ impl Qwen3Forward {
                                 lw.wu_dtype,
                                 false,
                                 prefill_plan.use_batch_simd,
+                                prefill_plan.experimental_q5k_prefill_small_n,
                             );
                         }
                     }
@@ -1539,6 +1551,7 @@ impl Qwen3Forward {
                         lw.wd_dtype,
                         prefill_plan.use_f16_batch_io,
                         prefill_plan.use_batch_simd,
+                        prefill_plan.experimental_q5k_prefill_small_n,
                     );
                     sb.post_dispatch(&[&bs.gate_buf], &[&bs.proj_buf]);
 

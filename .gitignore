@@ -23,9 +23,16 @@ opencode.json
 .ax-grok/
 .gemini/
 .claude/
+.mcp.json
 
 # IDE / editor
 .DS_Store
 *.swp
 *.swo
 *~
+
+# Python build/cache artifacts
+__pycache__/
+*.pyc
+/python/ax_engine/_ax_engine*.so
+*.dSYM/

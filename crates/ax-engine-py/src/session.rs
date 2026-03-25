@@ -52,6 +52,7 @@ pub struct TextStream {
     state: Mutex<Option<LiveTextStreamState>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 #[pymethods]
 impl Session {
     #[getter]
@@ -291,6 +292,7 @@ impl TextStream {
     }
 }
 
+#[allow(clippy::arc_with_non_send_sync)]
 impl Session {
     pub(crate) fn new(
         model: Arc<LoadedModel>,
@@ -333,7 +335,10 @@ impl Session {
         add_bos: bool,
         config: GenerationConfig,
     ) -> anyhow::Result<LiveTextStreamState> {
-        ensure!(config.max_tokens > 0, "max_tokens must be greater than zero");
+        ensure!(
+            config.max_tokens > 0,
+            "max_tokens must be greater than zero"
+        );
         ensure!(
             (0.0..=1.0).contains(&config.top_p),
             "top_p must be between 0.0 and 1.0"

@@ -459,7 +459,11 @@ fn sample_filtered_logits_info_with_scratch(
         softmax::softmax(logits);
         let token = sample_categorical(logits, rng);
         let prob = logits[token as usize];
-        let logprob = if prob > 0.0 { prob.ln() } else { -((n as f32).ln()) };
+        let logprob = if prob > 0.0 {
+            prob.ln()
+        } else {
+            -((n as f32).ln())
+        };
         let top_logprobs = collect_top_logprobs_from_probs(logits, top_logprobs, scratch_indices);
         return SampledTokenInfo {
             token,

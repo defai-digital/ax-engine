@@ -2,7 +2,7 @@
 
 AX Engine is a focused Rust inference engine for serious local LLM workloads on Apple Silicon M3 and newer.
 
-It is built for one specific target: fast, correct, Mac-native GGUF inference without a Python runtime or a C++ build chain. AX Engine is not trying to be a general-purpose serving platform. It is designed for local execution, explicit backend control, and clean integration into local AI systems.
+The core engine is built for one specific target: fast, correct, Mac-native GGUF inference without requiring a Python runtime or a C++ build chain in the core path. AX Engine is not trying to be a general-purpose serving platform. It is designed for local execution, explicit backend control, and clean integration into local AI systems.
 
 > AX Engine is currently optimized for Apple Silicon M3 and later. M1 and M2 are not supported targets.
 
@@ -12,6 +12,7 @@ It is built for one specific target: fast, correct, Mac-native GGUF inference wi
 - A Rust library (`ax-core`) with explicit backends, model configs, KV management, and sampling — designed to be embedded into larger systems
 - A llama.cpp-style CLI via `ax-llama`
 - A `libllama`-compatible shim via `ax-shim`
+- An experimental direct Python binding via `ax-engine-py`
 - Benchmarking and soak-test tools via `ax-bench`
 
 ## What It Is Not
@@ -117,7 +118,9 @@ Areas where we expect the most improvement:
 
 All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Also supported: Q6_K, Q8_0.
 
-> MoE (Mixture-of-Experts) models such as Qwen3-30B-A3B and Qwen3-235B-A22B are not yet supported. Only dense architectures and Mixtral-style MoE are supported.
+> `v2.0.0` is an intentional compatibility reset. The active native architecture surface is limited to `llama`, `qwen2`/`qwen3`, `qwen35`, and `gemma`/`gemma2`/`gemma3`. Native support for `phi3`/`phi4`, `mistral`, `mixtral`, `glm`/`chatglm`, and `starcoder2` has been removed.
+
+> MoE models are not supported in `v2.0.0`. That includes Qwen3-30B-A3B, Qwen3-235B-A22B, and Mixtral-style MoE models.
 
 **Supported architectures and models:**
 
@@ -127,6 +130,8 @@ All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Als
 | Qwen 3 (dense) | Qwen3-8B, Qwen3-14B, Qwen3-32B | Q4_K_M | 8B, 14B, 32B |
 | Qwen 3.5 | Qwen3.5-27B | Q4_K_M | 27B |
 | Gemma 3 | gemma-3-12b-it, gemma-3-27b-it | Q4_K_M | 12B, 27B |
+
+Qwen2 models continue to route through the `qwen3` implementation, but they are not currently listed as separately tested release targets.
 
 Mixed-quant caveat:
 

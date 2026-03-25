@@ -49,7 +49,8 @@ use crate::model::forward::{ForwardContext, ForwardPass};
 use crate::model::shared::{
     encode_batch_logits, encode_dequant_batch, encode_dequant_batch_f16in,
     encode_dequant_batch_pair_f16in, encode_dequant_matvec, encode_dequant_matvec_with_config,
-    gpu_decode_quant_supported, gpu_prefill_uses_experimental_q5k,
+    gpu_decode_quant_supported, gpu_prefill_experimental_q5k_small_n_auto_eligible,
+    gpu_prefill_uses_experimental_q5k,
 };
 use crate::model::weights::WeightStore;
 use std::sync::OnceLock;
@@ -1134,19 +1135,46 @@ impl LlamaForward {
                     || lw.wd_dtype == GgmlType::Q8_0
             }) || matches!(cached.lm_head_dtype, GgmlType::Q8_0);
             let has_q5k_weights = gpu_prefill_uses_experimental_q5k(weights);
+            let q5k_small_n_auto_eligible =
+                gpu_prefill_experimental_q5k_small_n_auto_eligible(weights);
             let prefill_plan: GpuBatchPrefillExecutionPlan = DecodeExecutionPlan::llama_prefill(
                 metal_ops,
                 gpu_kv,
                 base_seq_len,
+                n_tokens as u32,
                 cfg.head_dim,
                 has_q8_weights,
                 has_q5k_weights,
+                q5k_small_n_auto_eligible,
                 metal_prefill_attn_f16out_enabled(),
                 metal_prefill_use_cached0_enabled(),
                 metal_prefill_split_rope_append_enabled(),
             );
             let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
 
+            // ── Graph IR path: pre-computed dispatch schedule ──
+            if super::prefill_schedule::prefill_graph_ir_enabled() {
+                let schedule = super::prefill_schedule::build_llama_prefill_schedule(
+                    cfg,
+                    &prefill_plan,
+                    cached,
+                    &weight_cache,
+                    bs,
+                    s,
+                    gpu_kv,
+                    base_seq_len,
+                    n_tokens,
+                    all_logits_buf.as_ref(),
+                    &fused_qkv_cache,
+                );
+                return super::prefill_schedule::execute_prefill_multi_cb(
+                    &metal_ops.device,
+                    &schedule,
+                    metal_ops,
+                );
+            }
+
+            // ── Inline path (default): existing SmartBarrier encoding ──
             metal_ops.device.execute_sync_concurrent(|encoder| {
                 let nt = n_tokens as u32;
                 let mut sb = ax_metal::SmartBarrier::new(encoder);
@@ -1249,6 +1277,7 @@ impl LlamaForward {
                                     lw.wq_dtype,
                                     false,
                                     prefill_plan.use_batch_simd,
+                                    prefill_plan.experimental_q5k_prefill_small_n,
                                 );
                             }
                         }
@@ -1348,6 +1377,7 @@ impl LlamaForward {
                                     &bs.matmul_in_f16, q_dim as u32, nt,
                                     dim as u32, lw.wq_dtype, false,
                                     prefill_plan.use_batch_simd,
+                                    prefill_plan.experimental_q5k_prefill_small_n,
                                 );
                                 sb.post_dispatch(&[&bs.norm_buf], &[&bs.q_buf]);
                                 sb.pre_dispatch(&[&bs.norm_buf], &[&bs.k_buf]);
@@ -1357,6 +1387,7 @@ impl LlamaForward {
                                     &bs.matmul_in_f16, kv_dim as u32, nt,
                                     dim as u32, lw.wk_dtype, false,
                                     prefill_plan.use_batch_simd,
+                                    prefill_plan.experimental_q5k_prefill_small_n,
                                 );
                                 sb.post_dispatch(&[&bs.norm_buf], &[&bs.k_buf]);
                                 sb.pre_dispatch(&[&bs.norm_buf], &[&bs.v_buf]);
@@ -1366,6 +1397,7 @@ impl LlamaForward {
                                     &bs.matmul_in_f16, kv_dim as u32, nt,
                                     dim as u32, lw.wv_dtype, false,
                                     prefill_plan.use_batch_simd,
+                                    prefill_plan.experimental_q5k_prefill_small_n,
                                 );
                                 sb.post_dispatch(&[&bs.norm_buf], &[&bs.v_buf]);
                             }
@@ -1535,6 +1567,7 @@ impl LlamaForward {
                             lw.wo_dtype,
                             false,
                             prefill_plan.use_batch_simd,
+                            prefill_plan.experimental_q5k_prefill_small_n,
                         );
                     }
                     sb.post_dispatch(&[wo_input], &[&bs.proj_buf]);
@@ -1653,6 +1686,7 @@ impl LlamaForward {
                                 lw.wg_dtype,
                                 false,
                                 prefill_plan.use_batch_simd,
+                                prefill_plan.experimental_q5k_prefill_small_n,
                             );
                             encode_dequant_batch(
                                 &metal_ops.dequant,
@@ -1668,6 +1702,7 @@ impl LlamaForward {
                                 lw.wu_dtype,
                                 false,
                                 prefill_plan.use_batch_simd,
+                                prefill_plan.experimental_q5k_prefill_small_n,
                             );
                         }
                     }
@@ -1735,6 +1770,7 @@ impl LlamaForward {
                                 lw.wd_dtype,
                                 false,
                                 prefill_plan.use_batch_simd,
+                                prefill_plan.experimental_q5k_prefill_small_n,
                             );
                         }
                         PrefillFfnActivationPlan::GeluMulGateF32 => unreachable!(),
@@ -2469,9 +2505,11 @@ impl LlamaModel {
                     metal_ops,
                     gpu_kv,
                     base_seq_len,
+                    n_tokens as u32,
                     self.config.head_dim,
                     self.prefill_plan_has_q8_weights(weights)?,
                     gpu_prefill_uses_experimental_q5k(weights),
+                    gpu_prefill_experimental_q5k_small_n_auto_eligible(weights),
                     metal_prefill_attn_f16out_enabled(),
                     metal_prefill_use_cached0_enabled(),
                     metal_prefill_split_rope_append_enabled(),
@@ -2494,9 +2532,11 @@ impl LlamaModel {
                     metal_ops,
                     gpu_kv,
                     base_seq_len,
+                    n_tokens as u32,
                     self.config.head_dim,
                     sliding_window,
                     gpu_prefill_uses_experimental_q5k(weights),
+                    gpu_prefill_experimental_q5k_small_n_auto_eligible(weights),
                 );
                 let route = self.prefill_attention_route(
                     plan,
@@ -2514,7 +2554,9 @@ impl LlamaModel {
                 let plan = DecodeExecutionPlan::gemma3_prefill(
                     metal_ops,
                     gpu_kv,
+                    n_tokens as u32,
                     gpu_prefill_uses_experimental_q5k(weights),
+                    gpu_prefill_experimental_q5k_small_n_auto_eligible(weights),
                 );
                 let route = self.prefill_attention_route(
                     plan,

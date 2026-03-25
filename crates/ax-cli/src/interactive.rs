@@ -55,7 +55,7 @@ pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyho
     let stdin = std::io::stdin();
     let mut all_tokens: Vec<u32> = Vec::new();
     let mut position = 0usize;
-    let mut kv = model.create_model_kv();
+    let mut kv = model.create_model_kv_for_weights(&weights);
     let mut sampler = Sampler::new(sampling_config);
     let mut logits = vec![0.0f32; config.vocab_size as usize];
     let mut latency = LatencyHistogram::new();
@@ -104,8 +104,10 @@ pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyho
         };
         let input_tokens = tokenizer.encode(&input_text, add_bos);
 
+        let remaining_context = context_length.saturating_sub(position);
+
         // Check context length before prefill
-        if position + input_tokens.len() >= context_length {
+        if input_tokens.len() > remaining_context {
             eprintln!(
                 "[Context full: position={}, input={} tokens, limit={}. Use /reset to start over.]",
                 position,
@@ -116,14 +118,24 @@ pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyho
         }
 
         // Prefill user tokens
+        let prefill_plan = model.prefill_plan_summary(&weights, &kv, input_tokens.len())?;
         let prefill_timer = OpTimer::start();
         model.forward_batch(&input_tokens, &mut kv, &weights, &mut logits)?;
         all_tokens.extend_from_slice(&input_tokens);
         position += input_tokens.len();
         let prefill_time = prefill_timer.elapsed();
+        let remaining_decode_capacity = context_length.saturating_sub(position);
+        if remaining_decode_capacity == 0 {
+            println!();
+            eprintln!(
+                "[Context full: no room to decode. position={}, limit={}. Use /reset to start over.]",
+                position, context_length
+            );
+            continue;
+        }
 
         // Generate response (limit to remaining context capacity)
-        let max_tokens = user_max_tokens.min(context_length.saturating_sub(position));
+        let max_tokens = user_max_tokens.min(remaining_decode_capacity);
         let first_token_info = if args.top_logprobs > 0 {
             Some(sampler.sample_with_logprobs(&mut logits, &all_tokens, args.top_logprobs))
         } else {
@@ -193,10 +205,12 @@ pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyho
                 decode_time.as_secs_f64(),
                 tok_per_sec,
             );
+            eprint!(" | prefill {prefill_plan}");
             eprint!(
                 " | mode {} ({})",
                 outcome.selection.mode, outcome.selection.intent
             );
+            eprint!(" | plan {}", outcome.plan_summary);
             if let (Some(p50), Some(p95)) = (latency.p50(), latency.p95()) {
                 eprint!(
                     " | P50 {:.1}ms P95 {:.1}ms",
@@ -215,4 +229,19 @@ pub fn run(args: &CliArgs, backend: Box<dyn ax_core::backend::Backend>) -> anyho
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    fn can_fit_input(position: usize, input_tokens: usize, context_length: usize) -> bool {
+        input_tokens <= context_length.saturating_sub(position)
+    }
+
+    #[test]
+    fn test_context_check_allows_exact_fit() {
+        assert!(can_fit_input(4, 6, 10));
+        assert!(!can_fit_input(4, 7, 10));
+        assert!(can_fit_input(10, 0, 10));
+        assert!(!can_fit_input(10, 1, 10));
+    }
 }

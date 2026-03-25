@@ -1,6 +1,6 @@
 // AX Engine — Dequantization compute shaders
 //
-// GPU-accelerated dequantization for Q4_0 and Q4_K formats.
+// GPU-accelerated dequantization for Q4_0, Q4_K, Q5_K, and Q6_K formats.
 //
 // Loop unroll hint — matches llama.cpp's FOR_UNROLL for inner accumulation loops.
 #define FOR_UNROLL(x) _Pragma("clang loop unroll(full)") for (x)
@@ -71,6 +71,30 @@ struct Q4_K_Block {
 static_assert(sizeof(Q4_K_Block) == 144, "Q4_K_Block must be exactly 144 bytes");
 
 constant uint Q4_K_BLOCK_VALUES = 256;
+
+// ── Q5_K Block ─────────────────────────────────────────────────────────
+//
+// 176 bytes → 256 f32 values.
+//   - 2 bytes:   f16 d    (super-block scale)
+//   - 2 bytes:   f16 dmin (super-block min scale)
+//   - 12 bytes:  scales[12] — 8 × 6-bit scales + 8 × 6-bit mins, packed
+//   - 32 bytes:  qh[32]     — high-bit plane for the 5th quant bit
+//   - 128 bytes: qs[128]    — 256 × low 4-bit quants (2 per byte)
+//
+// 8 sub-blocks of 32 values, processed in 4 pairs.
+// value = d * sc * (ql | (qh_bit << 4)) - dmin * m
+
+struct Q5_K_Block {
+    half d;
+    half dmin;
+    uchar scales[12];
+    uchar qh[32];
+    uchar qs[128];
+};
+
+static_assert(sizeof(Q5_K_Block) == 176, "Q5_K_Block must be exactly 176 bytes");
+
+constant uint Q5_K_BLOCK_VALUES = 256;
 
 // Extract 6-bit scale and min for sub-block j from packed scales array.
 // Returns float2(scale, min).
@@ -656,6 +680,272 @@ kernel void dequant_batch_q4_k(
         uint gm = tile_m + c;
         if (gn < N && gm < M) {
             C[gn * M + gm] = out_tile[r * DB_BM + c];
+        }
+    }
+}
+
+kernel void dequant_batch_q5_k(
+    device const Q5_K_Block* A [[buffer(0)]],
+    device const float* B      [[buffer(1)]],
+    device float* C            [[buffer(2)]],
+    constant uint& M           [[buffer(3)]],
+    constant uint& N           [[buffer(4)]],
+    constant uint& K           [[buffer(5)]],
+    uint2 group_id             [[threadgroup_position_in_grid]],
+    uint  tid                  [[thread_index_in_threadgroup]],
+    uint  simd_id              [[simdgroup_index_in_threadgroup]],
+    uint  simd_lane            [[thread_index_in_simdgroup]]
+) {
+    uint tile_m = group_id.x * DB_BM;
+    uint tile_n = group_id.y * DB_BN;
+
+    threadgroup half tg_A[DB_BM * DB_BK];
+    threadgroup half tg_B[DB_BN * DB_BK];
+    threadgroup half row_dsc1[DB_BM];
+    threadgroup half row_dmin1[DB_BM];
+    threadgroup half row_dsc2[DB_BM];
+    threadgroup half row_dmin2[DB_BM];
+    threadgroup float out_tile[DB_BN * DB_BM];
+
+    simdgroup_float8x8 acc0, acc1, acc2, acc3;
+    acc0 = simdgroup_float8x8(0);
+    acc1 = simdgroup_float8x8(0);
+    acc2 = simdgroup_float8x8(0);
+    acc3 = simdgroup_float8x8(0);
+
+    uint blocks_per_row = K / Q5_K_BLOCK_VALUES;
+
+    for (uint kt = 0; kt < K; kt += DB_BK) {
+        uint block_idx = kt / Q5_K_BLOCK_VALUES;
+        uint pair = (kt % Q5_K_BLOCK_VALUES) / DB_BK;
+
+        if (tid < DB_BM) {
+            uint global_r = tile_m + tid;
+            if (global_r < M) {
+                device const Q5_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+                float d = float(blk.d);
+                float dmin = float(blk.dmin);
+                float2 sm1 = get_scale_min_q4k(pair * 2, blk.scales);
+                float2 sm2 = get_scale_min_q4k(pair * 2 + 1, blk.scales);
+                row_dsc1[tid] = half(d * sm1.x);
+                row_dmin1[tid] = half(dmin * sm1.y);
+                row_dsc2[tid] = half(d * sm2.x);
+                row_dmin2[tid] = half(dmin * sm2.y);
+            } else {
+                row_dsc1[tid] = half(0.0f);
+                row_dmin1[tid] = half(0.0f);
+                row_dsc2[tid] = half(0.0f);
+                row_dmin2[tid] = half(0.0f);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint i = tid; i < DB_BM * (DB_BK / 2); i += DB_TG) {
+            uint r = i / (DB_BK / 2);
+            uint b = i % (DB_BK / 2);
+            uint global_r = tile_m + r;
+            if (global_r < M) {
+                device const Q5_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+                uchar byte = blk.qs[pair * 32 + b];
+                uchar high_bits = blk.qh[b];
+                float lo_q =
+                    float(byte & 0x0F) + (((high_bits >> (pair * 2)) & 0x01) ? 16.0f : 0.0f);
+                float hi_q = float(byte >> 4)
+                    + (((high_bits >> (pair * 2 + 1)) & 0x01) ? 16.0f : 0.0f);
+                tg_A[r * DB_BK + b] =
+                    half(float(row_dsc1[r]) * lo_q - float(row_dmin1[r]));
+                tg_A[r * DB_BK + b + 32] =
+                    half(float(row_dsc2[r]) * hi_q - float(row_dmin2[r]));
+            } else {
+                tg_A[r * DB_BK + b] = half(0.0f);
+                tg_A[r * DB_BK + b + 32] = half(0.0f);
+            }
+        }
+
+        for (uint i = tid; i < DB_BN * DB_BK; i += DB_TG) {
+            uint r = i / DB_BK;
+            uint c = i % DB_BK;
+            uint gn = tile_n + r;
+            uint gk = kt + c;
+            tg_B[r * DB_BK + c] = (gn < N && gk < K) ? half(B[gn * K + gk]) : half(0.0f);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint kk = 0; kk < DB_BK / 8; kk++) {
+            simdgroup_half8x8 b_frag;
+            simdgroup_load(b_frag, &tg_B[simd_id * 8 * DB_BK + kk * 8], DB_BK);
+
+            simdgroup_half8x8 a0, a1, a2, a3;
+            simdgroup_load(a0, &tg_A[0 * DB_BK + kk * 8], DB_BK, ulong2(0, 0), true);
+            simdgroup_load(a1, &tg_A[8 * DB_BK + kk * 8], DB_BK, ulong2(0, 0), true);
+            simdgroup_load(a2, &tg_A[16 * DB_BK + kk * 8], DB_BK, ulong2(0, 0), true);
+            simdgroup_load(a3, &tg_A[24 * DB_BK + kk * 8], DB_BK, ulong2(0, 0), true);
+
+            simdgroup_multiply_accumulate(acc0, b_frag, a0, acc0);
+            simdgroup_multiply_accumulate(acc1, b_frag, a1, acc1);
+            simdgroup_multiply_accumulate(acc2, b_frag, a2, acc2);
+            simdgroup_multiply_accumulate(acc3, b_frag, a3, acc3);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (tile_n + DB_BN <= N && tile_m + DB_BM <= M) {
+        device float* c_base = C + (tile_n + simd_id * 8) * M + tile_m;
+        simdgroup_store(acc0, c_base + 0, M);
+        simdgroup_store(acc1, c_base + 8, M);
+        simdgroup_store(acc2, c_base + 16, M);
+        simdgroup_store(acc3, c_base + 24, M);
+        return;
+    }
+
+    simdgroup_store(acc0, &out_tile[simd_id * 8 * DB_BM + 0], DB_BM);
+    simdgroup_store(acc1, &out_tile[simd_id * 8 * DB_BM + 8], DB_BM);
+    simdgroup_store(acc2, &out_tile[simd_id * 8 * DB_BM + 16], DB_BM);
+    simdgroup_store(acc3, &out_tile[simd_id * 8 * DB_BM + 24], DB_BM);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = tid; i < DB_BN * DB_BM; i += DB_TG) {
+        uint r = i / DB_BM;
+        uint c = i % DB_BM;
+        uint gn = tile_n + r;
+        uint gm = tile_m + c;
+        if (gn < N && gm < M) {
+            C[gn * M + gm] = out_tile[r * DB_BM + c];
+        }
+    }
+}
+
+kernel void dequant_batch_q5_k_small(
+    device const Q5_K_Block* A [[buffer(0)]],
+    device const float* B      [[buffer(1)]],
+    device float* C            [[buffer(2)]],
+    constant uint& M           [[buffer(3)]],
+    constant uint& N           [[buffer(4)]],
+    constant uint& K           [[buffer(5)]],
+    uint2 group_id             [[threadgroup_position_in_grid]],
+    uint  tid                  [[thread_index_in_threadgroup]],
+    uint  simd_id              [[simdgroup_index_in_threadgroup]],
+    uint  simd_lane            [[thread_index_in_simdgroup]]
+) {
+    uint tile_m = group_id.x * SB_BM;
+    uint tile_n = group_id.y * SB_BN;
+
+    threadgroup half tg_A[SB_BM * SB_BK];
+    threadgroup float tg_B[SB_BN * SB_BK];
+    threadgroup half row_dsc1[SB_BM];
+    threadgroup half row_dmin1[SB_BM];
+    threadgroup half row_dsc2[SB_BM];
+    threadgroup half row_dmin2[SB_BM];
+
+    simdgroup_float8x8 acc0, acc1, acc2, acc3;
+    acc0 = simdgroup_float8x8(0);
+    acc1 = simdgroup_float8x8(0);
+    acc2 = simdgroup_float8x8(0);
+    acc3 = simdgroup_float8x8(0);
+
+    uint blocks_per_row = K / Q5_K_BLOCK_VALUES;
+
+    for (uint kt = 0; kt < K; kt += SB_BK) {
+        uint block_idx = kt / Q5_K_BLOCK_VALUES;
+        uint pair = (kt % Q5_K_BLOCK_VALUES) / SB_BK;
+
+        if (tid < SB_BM) {
+            uint global_r = tile_m + tid;
+            if (global_r < M) {
+                device const Q5_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+                float d = float(blk.d);
+                float dmin = float(blk.dmin);
+                float2 sm1 = get_scale_min_q4k(pair * 2, blk.scales);
+                float2 sm2 = get_scale_min_q4k(pair * 2 + 1, blk.scales);
+                row_dsc1[tid] = half(d * sm1.x);
+                row_dmin1[tid] = half(dmin * sm1.y);
+                row_dsc2[tid] = half(d * sm2.x);
+                row_dmin2[tid] = half(dmin * sm2.y);
+            } else {
+                row_dsc1[tid] = half(0.0f);
+                row_dmin1[tid] = half(0.0f);
+                row_dsc2[tid] = half(0.0f);
+                row_dmin2[tid] = half(0.0f);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint i = tid; i < SB_BM * (SB_BK / 2); i += SB_TG) {
+            uint r = i / (SB_BK / 2);
+            uint b = i % (SB_BK / 2);
+            uint global_r = tile_m + r;
+            if (global_r < M) {
+                device const Q5_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+                uchar byte = blk.qs[pair * 32 + b];
+                uchar high_bits = blk.qh[b];
+                float lo_q =
+                    float(byte & 0x0F) + (((high_bits >> (pair * 2)) & 0x01) ? 16.0f : 0.0f);
+                float hi_q = float(byte >> 4)
+                    + (((high_bits >> (pair * 2 + 1)) & 0x01) ? 16.0f : 0.0f);
+                tg_A[r * SB_BK + b] =
+                    half(float(row_dsc1[r]) * lo_q - float(row_dmin1[r]));
+                tg_A[r * SB_BK + b + 32] =
+                    half(float(row_dsc2[r]) * hi_q - float(row_dmin2[r]));
+            } else {
+                tg_A[r * SB_BK + b] = half(0.0f);
+                tg_A[r * SB_BK + b + 32] = half(0.0f);
+            }
+        }
+
+        for (uint i = tid; i < SB_BN * SB_BK; i += SB_TG) {
+            uint r = i / SB_BK;
+            uint c = i % SB_BK;
+            uint gn = tile_n + r;
+            uint gk = kt + c;
+            tg_B[r * SB_BK + c] = (gn < N && gk < K) ? B[gn * K + gk] : 0.0f;
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint kk = 0; kk < SB_BK / 8; kk++) {
+            simdgroup_float8x8 b_frag;
+            simdgroup_load(b_frag, &tg_B[simd_id * 8 * SB_BK + kk * 8], SB_BK);
+
+            simdgroup_half8x8 a0, a1, a2, a3;
+            simdgroup_load(a0, &tg_A[0 * SB_BK + kk * 8], SB_BK, ulong2(0, 0), true);
+            simdgroup_load(a1, &tg_A[8 * SB_BK + kk * 8], SB_BK, ulong2(0, 0), true);
+            simdgroup_load(a2, &tg_A[16 * SB_BK + kk * 8], SB_BK, ulong2(0, 0), true);
+            simdgroup_load(a3, &tg_A[24 * SB_BK + kk * 8], SB_BK, ulong2(0, 0), true);
+
+            simdgroup_multiply_accumulate(acc0, b_frag, a0, acc0);
+            simdgroup_multiply_accumulate(acc1, b_frag, a1, acc1);
+            simdgroup_multiply_accumulate(acc2, b_frag, a2, acc2);
+            simdgroup_multiply_accumulate(acc3, b_frag, a3, acc3);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (tile_n + SB_BN <= N && tile_m + SB_BM <= M) {
+        device float* c_base = C + (tile_n + simd_id * 8) * M + tile_m;
+        simdgroup_store(acc0, c_base + 0, M);
+        simdgroup_store(acc1, c_base + 8, M);
+        simdgroup_store(acc2, c_base + 16, M);
+        simdgroup_store(acc3, c_base + 24, M);
+        return;
+    }
+
+    threadgroup float out_tile[SB_BN * SB_BM];
+    simdgroup_store(acc0, &out_tile[simd_id * 8 * SB_BM + 0], SB_BM);
+    simdgroup_store(acc1, &out_tile[simd_id * 8 * SB_BM + 8], SB_BM);
+    simdgroup_store(acc2, &out_tile[simd_id * 8 * SB_BM + 16], SB_BM);
+    simdgroup_store(acc3, &out_tile[simd_id * 8 * SB_BM + 24], SB_BM);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = tid; i < SB_BN * SB_BM; i += SB_TG) {
+        uint r = i / SB_BM;
+        uint c = i % SB_BM;
+        uint gn = tile_n + r;
+        uint gm = tile_m + c;
+        if (gn < N && gm < M) {
+            C[gn * M + gm] = out_tile[r * SB_BM + c];
         }
     }
 }
@@ -6172,6 +6462,80 @@ inline float q4_k_block_dot(
     }
 
     return block_sum;
+}
+
+inline float q5_k_block_dot(
+    device const Q5_K_Block* a_row,
+    uint b,
+    device const float* x,
+    uint simd_lane
+) {
+    uint base = b * Q5_K_BLOCK_VALUES;
+
+    half rx0 = half(x[base +   0 + simd_lane]);
+    half rx1 = half(x[base +  32 + simd_lane]);
+    half rx2 = half(x[base +  64 + simd_lane]);
+    half rx3 = half(x[base +  96 + simd_lane]);
+    half rx4 = half(x[base + 128 + simd_lane]);
+    half rx5 = half(x[base + 160 + simd_lane]);
+    half rx6 = half(x[base + 192 + simd_lane]);
+    half rx7 = half(x[base + 224 + simd_lane]);
+
+    float d    = (simd_lane == 0) ? float(a_row[b].d)    : 0.0f;
+    float dmin = (simd_lane == 0) ? float(a_row[b].dmin) : 0.0f;
+    d    = simd_broadcast(d, 0);
+    dmin = simd_broadcast(dmin, 0);
+    device const uchar* scales = a_row[b].scales;
+    device const uchar* qh     = a_row[b].qh;
+    device const uchar* qs     = a_row[b].qs;
+
+    float block_sum = 0.0f;
+    uchar high_bits = qh[simd_lane];
+    for (uint pair = 0; pair < 4; pair++) {
+        float2 sm1 = get_scale_min_q4k(pair * 2, scales);
+        float2 sm2 = get_scale_min_q4k(pair * 2 + 1, scales);
+        float d1 = d * sm1.x, m1 = dmin * sm1.y;
+        float d2 = d * sm2.x, m2 = dmin * sm2.y;
+
+        uchar byte = qs[pair * 32 + simd_lane];
+        float lo_q = float(byte & 0x0F) + (((high_bits >> (pair * 2)) & 0x01) ? 16.0f : 0.0f);
+        float hi_q = float(byte >> 4) + (((high_bits >> (pair * 2 + 1)) & 0x01) ? 16.0f : 0.0f);
+        half lo = (pair == 0) ? rx0 : (pair == 1) ? rx2 : (pair == 2) ? rx4 : rx6;
+        half hi = (pair == 0) ? rx1 : (pair == 1) ? rx3 : (pair == 2) ? rx5 : rx7;
+        block_sum += (d1 * lo_q - m1) * float(lo);
+        block_sum += (d2 * hi_q - m2) * float(hi);
+    }
+
+    return block_sum;
+}
+
+// Baseline Q5_K decode matvec imported from llama.cpp's decode-only shape:
+// 2 simdgroups per threadgroup, 1 output row per simdgroup (TG=64 total).
+kernel void dequant_matvec_q5_k(
+    device const Q5_K_Block* A [[buffer(0)]],
+    device const float* x      [[buffer(1)]],
+    device float* y            [[buffer(2)]],
+    constant uint& M           [[buffer(3)]],
+    constant uint& K           [[buffer(4)]],
+    uint tg_id                 [[threadgroup_position_in_grid]],
+    uint simd_lane             [[thread_index_in_simdgroup]],
+    uint simd_id               [[simdgroup_index_in_threadgroup]]
+) {
+    uint first_row = tg_id * 2 + simd_id;
+    if (first_row >= M) return;
+
+    uint blocks_per_row = K / Q5_K_BLOCK_VALUES;
+    device const Q5_K_Block* a_row = A + first_row * blocks_per_row;
+
+    float sum = 0.0f;
+    for (uint b = 0; b < blocks_per_row; ++b) {
+        sum += q5_k_block_dot(a_row, b, x, simd_lane);
+    }
+
+    sum = simd_sum(sum);
+    if (simd_lane == 0) {
+        y[first_row] = sum;
+    }
 }
 
 kernel void dequant_matvec_q4_k(

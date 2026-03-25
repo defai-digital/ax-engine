@@ -18,7 +18,7 @@ use ax_core::model::{
 };
 use ax_core::sampling::{Sampler, SamplingConfig};
 use ax_core::tokenizer::Tokenizer;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Soak test configuration.
 pub struct SoakConfig {
@@ -71,7 +71,7 @@ impl SoakConfig {
 }
 
 /// Result of a soak test run.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SoakResult {
     /// Total tokens generated.
     pub total_tokens: u64,
@@ -97,6 +97,17 @@ pub struct SoakResult {
     pub failures: Vec<String>,
     /// Average decode throughput (tokens/second).
     pub avg_tok_per_sec: f64,
+    /// Prefill plan summary for the active model path.
+    #[serde(default)]
+    pub prefill_plan: String,
+    /// Experimental Q5_K prefill mode, when present.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub q5k_prefill_mode: Option<String>,
+    /// Optional support note for the active model.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support_note: Option<String>,
 }
 
 /// Run a soak test with the given configuration.
@@ -115,11 +126,19 @@ pub fn run_soak_test_with_backend(
 ) -> anyhow::Result<SoakResult> {
     // Load model
     let mapped = MappedModel::open(Path::new(&config.model_path))?;
-    crate::init_kernel_profile(&config.model_path, &mapped);
+    crate::configure_backend_for_model(&*backend, &config.model_path, &mapped)?;
     let model_config = ModelConfig::from_gguf(&mapped.header)?;
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = LlamaModel::with_backend(model_config.clone(), backend);
+    crate::report_planned_kv_budget(&mapped, &model)?;
     let weights = WeightStore::new(&mapped);
+    let support_note = crate::support_note(&mapped);
+    let prefill_plan = model.prefill_plan_summary(
+        &weights,
+        &model.create_model_kv_for_weights(&weights),
+        config.tokens_per_iter,
+    )?;
+    let q5k_prefill_mode = crate::q5k_prefill_mode(&prefill_plan);
 
     let vocab_size = model_config.vocab_size as usize;
     let sampling = SamplingConfig::default();
@@ -266,6 +285,9 @@ pub fn run_soak_test_with_backend(
         passed,
         failures,
         avg_tok_per_sec,
+        prefill_plan,
+        q5k_prefill_mode,
+        support_note,
     })
 }
 
@@ -278,7 +300,7 @@ fn run_one_iteration(
     vocab_size: usize,
     max_tokens: usize,
 ) -> anyhow::Result<u64> {
-    let mut kv = model.create_model_kv();
+    let mut kv = model.create_model_kv_for_weights(weights);
     let mut logits = vec![0.0f32; vocab_size];
 
     // Use a simple prompt
@@ -321,7 +343,7 @@ fn run_timed_iteration(
     max_tokens: usize,
     latency: &mut LatencyHistogram,
 ) -> anyhow::Result<()> {
-    let mut kv = model.create_model_kv();
+    let mut kv = model.create_model_kv_for_weights(weights);
     let mut logits = vec![0.0f32; vocab_size];
 
     let prompt_tokens = tokenizer.encode("The meaning of life is", true);
@@ -366,6 +388,13 @@ impl SoakResult {
         eprintln!("Iterations:  {}", self.iterations);
         eprintln!("Tokens:      {}", self.total_tokens);
         eprintln!("Throughput:  {:.1} tok/s", self.avg_tok_per_sec);
+        eprintln!("PrefillPlan: {}", self.prefill_plan);
+        if let Some(mode) = &self.q5k_prefill_mode {
+            eprintln!("Q5KPrefill:  {mode}");
+        }
+        if let Some(note) = &self.support_note {
+            eprintln!("Support:     {note}");
+        }
         eprintln!(
             "RSS:         {:.1}MB → {:.1}MB (drift {:+.1}%)",
             self.baseline_rss as f64 / 1024.0 / 1024.0,
@@ -392,11 +421,22 @@ impl SoakResult {
     pub fn to_json(&self) -> serde_json::Result<String> {
         serde_json::to_string_pretty(self)
     }
+
+    /// Deserialize from JSON.
+    pub fn from_json(json: &str) -> serde_json::Result<Self> {
+        serde_json::from_str(json)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn q5k_support_note() -> String {
+        ax_core::gguf::mmap::support_note_for_q5k_layer_presence(true)
+            .unwrap()
+            .to_string()
+    }
 
     #[test]
     fn test_soak_config_defaults() {
@@ -436,6 +476,9 @@ mod tests {
             passed: true,
             failures: vec![],
             avg_tok_per_sec: 10.0,
+            prefill_plan: "mode=gpu_batch q5k_prefill=experimental_small_n".into(),
+            q5k_prefill_mode: Some("experimental_small_n".into()),
+            support_note: Some(q5k_support_note()),
         };
         assert!(r.passed);
         assert!(r.failures.is_empty());
@@ -456,6 +499,9 @@ mod tests {
             passed: false,
             failures: vec!["RSS drift 20.0% exceeds 5% threshold".into()],
             avg_tok_per_sec: 10.0,
+            prefill_plan: "mode=serial".into(),
+            q5k_prefill_mode: None,
+            support_note: None,
         };
         assert!(!r.passed);
         assert_eq!(r.failures.len(), 1);
@@ -476,10 +522,38 @@ mod tests {
             passed: true,
             failures: vec![],
             avg_tok_per_sec: 1.39,
+            prefill_plan: "mode=gpu_batch q5k_prefill=experimental_small_n".into(),
+            q5k_prefill_mode: Some("experimental_small_n".into()),
+            support_note: Some(q5k_support_note()),
         };
         let json = r.to_json().unwrap();
         assert!(json.contains("\"passed\": true"));
         assert!(json.contains("\"total_tokens\": 5000"));
         assert!(json.contains("\"avg_tok_per_sec\""));
+        assert!(json.contains("\"q5k_prefill_mode\": \"experimental_small_n\""));
+        assert!(json.contains(&format!("\"support_note\": \"{}\"", q5k_support_note())));
+    }
+
+    #[test]
+    fn test_soak_result_from_json_defaults_missing_optional_fields() {
+        let json = r#"{
+            "total_tokens": 128,
+            "iterations": 4,
+            "elapsed_secs": 10.0,
+            "baseline_rss": 1000,
+            "final_rss": 1100,
+            "rss_drift": 0.1,
+            "baseline_p95_ms": 10.0,
+            "final_p95_ms": 12.0,
+            "p95_drift": 0.2,
+            "passed": true,
+            "failures": [],
+            "avg_tok_per_sec": 12.8
+        }"#;
+
+        let result = SoakResult::from_json(json).unwrap();
+        assert!(result.prefill_plan.is_empty());
+        assert_eq!(result.q5k_prefill_mode, None);
+        assert_eq!(result.support_note, None);
     }
 }

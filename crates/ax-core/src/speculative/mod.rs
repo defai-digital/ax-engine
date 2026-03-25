@@ -95,6 +95,7 @@ impl SpeculativeDecoder {
         let draft_config = crate::model::ModelConfig::from_gguf(&draft_mapped.header)?;
         validate_speculative_config(k, draft_config.vocab_size, draft_config.vocab_size)?;
         let draft_model = LlamaModel::new(draft_config); // CPU backend
+        validate_speculative_model_rollback("draft", &draft_model)?;
         let draft_kv = draft_model.create_model_kv();
         Ok(Self {
             draft_model,
@@ -319,7 +320,9 @@ impl SpeculativeDecoder {
             self.k,
             self.draft_model.config.vocab_size,
             target_model.config.vocab_size,
-        )
+        )?;
+        validate_speculative_model_rollback("draft", &self.draft_model)?;
+        validate_speculative_model_rollback("target", target_model)
     }
 }
 
@@ -334,6 +337,20 @@ fn validate_speculative_config(
         "speculative decoding requires matching draft/target vocab sizes (draft={draft_vocab_size}, target={target_vocab_size})"
     );
     Ok(())
+}
+
+fn validate_speculative_model_rollback(label: &str, model: &LlamaModel) -> anyhow::Result<()> {
+    model
+        .kv_plan_with_requirements(crate::backend::KvPlannerRequirements {
+            require_precise_rollback: true,
+        })
+        .map(|_| ())
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "speculative decoding does not support {label} model architecture '{}' because precise KV rollback is unavailable",
+                model.config.architecture
+            )
+        })
 }
 
 /// Compute softmax of a logit slice, returning a probability vector.
@@ -382,6 +399,12 @@ mod tests {
             rope_freq_base_local: None,
             n_expert: None,
             n_expert_used: None,
+            qwen35_full_attention_interval: None,
+            qwen35_ssm_conv_kernel: None,
+            qwen35_ssm_inner_size: None,
+            qwen35_ssm_state_size: None,
+            qwen35_ssm_time_step_rank: None,
+            qwen35_ssm_group_count: None,
         }
     }
 
@@ -448,6 +471,79 @@ mod tests {
     #[test]
     fn test_validate_speculative_config_accepts_matching_models() {
         validate_speculative_config(4, 16, 16).unwrap();
+    }
+
+    fn speculative_test_config(architecture: &str) -> crate::model::ModelConfig {
+        crate::model::ModelConfig {
+            architecture: architecture.into(),
+            n_layers: 4,
+            n_heads: 4,
+            n_kv_heads: 4,
+            embedding_dim: 512,
+            head_dim: 128,
+            intermediate_dim: 2048,
+            context_length: 1024,
+            vocab_size: 32000,
+            rms_norm_eps: 1e-5,
+            rope_freq_base: 10000.0,
+            has_qkv_bias: false,
+            sliding_window_size: None,
+            sliding_window_pattern: None,
+            gate_activation: crate::model::config::GateActivation::SiLU,
+            tie_word_embeddings: false,
+            logit_scale: None,
+            rope_scaling: crate::model::config::RopeScaling::None,
+            embed_scale: false,
+            rope_freq_base_local: None,
+            n_expert: None,
+            n_expert_used: None,
+            qwen35_full_attention_interval: if architecture == "qwen35" {
+                Some(4)
+            } else {
+                None
+            },
+            qwen35_ssm_conv_kernel: if architecture == "qwen35" {
+                Some(4)
+            } else {
+                None
+            },
+            qwen35_ssm_inner_size: if architecture == "qwen35" {
+                Some(1024)
+            } else {
+                None
+            },
+            qwen35_ssm_state_size: if architecture == "qwen35" {
+                Some(128)
+            } else {
+                None
+            },
+            qwen35_ssm_time_step_rank: if architecture == "qwen35" {
+                Some(8)
+            } else {
+                None
+            },
+            qwen35_ssm_group_count: if architecture == "qwen35" {
+                Some(2)
+            } else {
+                None
+            },
+        }
+    }
+
+    #[test]
+    fn test_validate_speculative_model_rollback_rejects_qwen35_draft() {
+        let model = LlamaModel::new(speculative_test_config("qwen35"));
+        let err = validate_speculative_model_rollback("draft", &model).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("draft model architecture 'qwen35'")
+        );
+    }
+
+    #[test]
+    fn test_validate_speculative_model_rollback_accepts_llama() {
+        let model = LlamaModel::new(speculative_test_config("llama"));
+        validate_speculative_model_rollback("target", &model).unwrap();
     }
 
     #[test]

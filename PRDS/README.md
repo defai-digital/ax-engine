@@ -4,6 +4,8 @@
 `ADRS/` captures architecture decisions.
 `TODOS/` is historical analysis (superseded).
 
+Use [REFERENCE-FIRST-SUPPORT-WORKFLOW.md](/Users/akiralam/code/ax-engine-v2/PRDS/REFERENCE-FIRST-SUPPORT-WORKFLOW.md) for new quant/architecture support planning.
+
 ## Current Status
 
 See **`STATUS-FINAL-2026-03-23.md`** for the complete picture: benchmark
@@ -55,6 +57,24 @@ far below the non-spec baseline.
    Adds a benchmarked prefill gap-workstream that learns from llama.cpp structure
    while staying within schema-valid AX controls.
 
+8. **PRD-0009** — Architecture hardening roadmap: **Completed.**
+   Keeps AX's design advantage while tuning continues, by centralizing policy,
+   KV planning, execution planning, and experiment selection.
+
+9. **PRD-0010** — Hardware study and microbench workbench: **Proposed.**
+   Turns Apple Silicon hardware literacy into a concrete workflow: targeted
+   reading, dedicated microbenches, and hardware-backed perf hypotheses.
+
+10. **PRD-0011** — Q5_K support: **In progress.**
+   Baseline decode-only Metal support is landed from the imported reference
+   shape. Remaining work is a possible experimental AX-native batch/prefill
+   track plus any justified second candidate.
+
+11. **PRD-0012** — Qwen3.5 support: **Proposed.**
+   Reference-first plan: external engines define the initial hybrid/recurrent
+   basis, then AX microbench and end-to-end runs validate AX-specific choices
+   for Qwen3.5.
+
 ## Quick experiments (not PRDs, just tests)
 
 These can be run immediately without code changes:
@@ -63,6 +83,7 @@ These can be run immediately without code changes:
 |---|---|---|
 | Barrier A/B | `bash scripts/bench_decode_barriers_ab.sh` | Measured neutral to slightly negative |
 | Spec pair check | `bash scripts/bench_speculative_pairs.sh` | Older large-draft pairs are blocked/bad |
+| Q4_K_V2 prefill A/B | `PROMPT_TOKENS=256 WARMUP_ITERS=1 MEASURE_ITERS=3 bash scripts/bench_prefill_v2_ab.sh` | `Q4K_V2=1` regressed in tested short prefill prompts |
 
 ## PRD Files
 
@@ -79,6 +100,29 @@ These can be run immediately without code changes:
   profile extraction.
 - `PRD-0008-prefill-performance-decision.md` — **Done.**
   Documents the v2 opt-in regression finding and the profiling-first next step.
+- `PRD-0009-architecture-hardening-roadmap.md` — **Completed.**
+  Defines the design track that keeps tuning as typed policy and planning
+  instead of ad hoc runtime branching.
+- `PRD-0010-hardware-study-and-microbench-workbench.md` — **Proposed.**
+  Defines what hardware topics to study, which microbenches to add, and how to
+  use them before promoting tuning changes.
+- `PRD-0011-q5k-support.md` — **In progress.**
+  Defines the staged plan to move `Q5_K` from live-validated decode-only
+  baseline support to full first-class optimized support.
+- `PRD-0011-q5k-reference-matrix.md` — **Active artifact.**
+  Capture sheet for imported `Q5_K` layout, kernel, fallback, and validation
+  choices, now including the landed baseline decode import.
+- `PRD-0011-q5k-metal-import-note.md` — **Baseline slice landed.**
+  Concrete AX mapping and current-state note for the imported `llama.cpp`
+  `Q5_K` Metal decode path.
+- `PRD-0011-q5k-prefill-experimental-track.md` — **Proposed companion.**
+  Defines the best-practice rules for any future AX-native `Q5_K` GPU
+  prefill/batch work: opt-in, experimental, benchmark-gated, and non-default.
+- `PRD-0012-qwen35-support.md` — **Proposed.**
+  Defines a reference-first staged plan to make Qwen3.5 a first-class
+  supported hybrid architecture rather than a special-case implementation.
+- `PRD-0012-qwen35-reference-matrix.md` — **Planned artifact.**
+  Capture sheet for imported Qwen3.5 hybrid/recurrent design and validation choices.
 
 ## Status Files
 

@@ -1,6 +1,7 @@
 pub mod q4_0;
 pub mod q4_k;
 pub mod q5_0;
+pub mod q5_k;
 pub mod q6_k;
 pub mod q8_0;
 
@@ -15,6 +16,7 @@ pub fn dequant_supported(dtype: GgmlType) -> bool {
             | GgmlType::Q4_0
             | GgmlType::Q5_0
             | GgmlType::Q4K
+            | GgmlType::Q5K
             | GgmlType::Q6K
             | GgmlType::Q8_0
     )
@@ -34,6 +36,7 @@ pub fn dequantize(dtype: GgmlType, src: &[u8], dst: &mut [f32]) {
         GgmlType::Q4_0 => q4_0::dequantize(src, dst),
         GgmlType::Q5_0 => q5_0::dequantize(src, dst),
         GgmlType::Q4K => q4_k::dequantize(src, dst),
+        GgmlType::Q5K => q5_k::dequantize(src, dst),
         GgmlType::Q6K => q6_k::dequantize(src, dst),
         GgmlType::Q8_0 => q8_0::dequantize(src, dst),
         _ => {

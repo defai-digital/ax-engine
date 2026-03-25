@@ -62,12 +62,12 @@ impl ComputePipeline {
         function_name: &str,
     ) -> anyhow::Result<Self> {
         // Try precompiled metallib first (faster startup, potentially better codegen).
-        if let Some(lib) = precompiled_library(device) {
-            if let Ok(pipeline) = Self::from_library(device, &lib, function_name) {
-                return Ok(pipeline);
-            }
-            // Function not in metallib — fall through to runtime compilation.
+        if let Some(lib) = precompiled_library(device)
+            && let Ok(pipeline) = Self::from_library(device, &lib, function_name)
+        {
+            return Ok(pipeline);
         }
+        // Function not in metallib — fall through to runtime compilation.
         let library = compile_library(device, source)?;
         Self::from_library(device, &library, function_name)
     }
@@ -144,8 +144,7 @@ fn compile_library(
 
 /// Path to precompiled .metallib (built by build.rs via xcrun metal + metallib).
 /// Empty string if precompilation was skipped.
-static PRECOMPILED_METALLIB_PATH: &str =
-    concat!(env!("OUT_DIR"), "/ax_metal.metallib");
+static PRECOMPILED_METALLIB_PATH: &str = concat!(env!("OUT_DIR"), "/ax_metal.metallib");
 
 /// Try to load the precompiled metallib.
 /// Returns None if the metallib is empty or doesn't exist.

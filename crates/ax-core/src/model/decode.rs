@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use crate::kv::ModelKv;
 use crate::metrics::counters::OpTimer;
+use crate::model::execution_plan::{DecodeExecutionPlan, DecodeScratchPlan, DecodeSyncPlan};
 use crate::model::{LlamaModel, WeightStore};
 use crate::sampling::{SampledTokenInfo, Sampler};
 use crate::tokenizer::Tokenizer;
@@ -72,6 +73,7 @@ impl Default for DecodeRunConfig {
 #[derive(Debug)]
 pub struct DecodeRunResult {
     pub selection: DecodeSelection,
+    pub plan_summary: String,
     pub generated_tokens: u64,
     pub decode_duration: Duration,
     pub latencies: Vec<Duration>,
@@ -83,42 +85,7 @@ pub fn select_decode_mode(
     intent: DecodeIntent,
     allow_pipelined: bool,
 ) -> DecodeSelection {
-    let has_gpu_decode = kv.is_gpu() && model.metal_device().is_some();
-
-    if intent == DecodeIntent::Throughput && allow_pipelined {
-        if has_gpu_decode && model.supports_pipelined_decode() {
-            return DecodeSelection {
-                intent,
-                mode: DecodeMode::Pipelined,
-                fallback_reason: None,
-            };
-        }
-        if has_gpu_decode {
-            return DecodeSelection {
-                intent,
-                mode: DecodeMode::SingleCb,
-                fallback_reason: Some(
-                    "pipelined decode is unavailable for this model/backend combination"
-                        .to_string(),
-                ),
-            };
-        }
-        return DecodeSelection {
-            intent,
-            mode: DecodeMode::Sequential,
-            fallback_reason: Some("GPU decode unavailable; using sequential decode".to_string()),
-        };
-    }
-
-    DecodeSelection {
-        intent,
-        mode: if has_gpu_decode {
-            DecodeMode::SingleCb
-        } else {
-            DecodeMode::Sequential
-        },
-        fallback_reason: None,
-    }
+    DecodeExecutionPlan::for_model(model, kv, intent, allow_pipelined).selection
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -139,9 +106,26 @@ pub fn run_decode<F>(
 where
     F: FnMut(u32, Option<&SampledTokenInfo>) -> anyhow::Result<DecodeControl>,
 {
-    let selection = select_decode_mode(model, kv, config.intent, config.allow_pipelined);
-    match selection.mode {
-        DecodeMode::Pipelined => run_pipelined_decode(
+    let plan = DecodeExecutionPlan::for_model(model, kv, config.intent, config.allow_pipelined);
+    let plan_summary = plan.summary_label();
+    let selection = plan.selection.clone();
+    debug_assert!(
+        matches!(plan.sync, DecodeSyncPlan::Sequential) == plan.gpu.is_none(),
+        "decode execution plan must only attach a GPU sub-plan for GPU-backed modes"
+    );
+    debug_assert!(
+        matches!(
+            (plan.sync, plan.scratch),
+            (DecodeSyncPlan::Sequential, DecodeScratchPlan::CpuScratch)
+                | (
+                    DecodeSyncPlan::SingleCommandBuffer | DecodeSyncPlan::Pipelined,
+                    DecodeScratchPlan::SharedGpuScratch
+                )
+        ),
+        "decode execution plan scratch policy must match sync mode"
+    );
+    match plan.sync {
+        DecodeSyncPlan::Pipelined => run_pipelined_decode(
             model,
             weights,
             tokenizer,
@@ -154,9 +138,10 @@ where
             max_tokens,
             config.top_logprobs,
             selection,
+            plan_summary,
             on_token,
         ),
-        DecodeMode::Sequential | DecodeMode::SingleCb => run_sequential_decode(
+        DecodeSyncPlan::Sequential | DecodeSyncPlan::SingleCommandBuffer => run_sequential_decode(
             model,
             weights,
             tokenizer,
@@ -169,6 +154,7 @@ where
             max_tokens,
             config.top_logprobs,
             selection,
+            plan_summary,
             on_token,
         ),
     }
@@ -188,6 +174,7 @@ fn run_sequential_decode<F>(
     max_tokens: usize,
     top_logprobs: usize,
     selection: DecodeSelection,
+    plan_summary: String,
     mut on_token: F,
 ) -> anyhow::Result<DecodeRunResult>
 where
@@ -235,6 +222,7 @@ where
 
     Ok(DecodeRunResult {
         selection,
+        plan_summary,
         generated_tokens,
         decode_duration: decode_timer.elapsed(),
         latencies,
@@ -255,6 +243,7 @@ fn run_pipelined_decode<F>(
     max_tokens: usize,
     top_logprobs: usize,
     selection: DecodeSelection,
+    plan_summary: String,
     mut on_token: F,
 ) -> anyhow::Result<DecodeRunResult>
 where
@@ -263,6 +252,7 @@ where
     if tokenizer.is_eos(first_token) || max_tokens == 0 {
         return Ok(DecodeRunResult {
             selection,
+            plan_summary,
             generated_tokens: 0,
             decode_duration: Duration::ZERO,
             latencies: Vec::new(),
@@ -349,6 +339,7 @@ where
 
     Ok(DecodeRunResult {
         selection,
+        plan_summary,
         generated_tokens,
         decode_duration: decode_timer.elapsed(),
         latencies: Vec::new(),
@@ -389,6 +380,12 @@ mod tests {
             rope_freq_base_local: None,
             n_expert: None,
             n_expert_used: None,
+            qwen35_full_attention_interval: None,
+            qwen35_ssm_conv_kernel: None,
+            qwen35_ssm_inner_size: None,
+            qwen35_ssm_state_size: None,
+            qwen35_ssm_time_step_rank: None,
+            qwen35_ssm_group_count: None,
         }
     }
 

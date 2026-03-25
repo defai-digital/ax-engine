@@ -157,6 +157,11 @@ impl<'a> WeightStore<'a> {
     pub fn has(&self, name: &str) -> bool {
         self.model.tensor_info(name).is_some()
     }
+
+    /// Get the predominant quantization type across the mapped model.
+    pub fn predominant_quant(&self) -> Option<GgmlType> {
+        self.model.predominant_quant()
+    }
 }
 
 /// Caching wrapper around `WeightStore` that stores dequantized f32 tensors.

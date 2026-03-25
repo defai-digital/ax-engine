@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Generate kernel profile JSON from llama.cpp parameter rules.
+Generate AX-compatible kernel profile JSON using llama.cpp-informed defaults.
 
-This script reads GGUF model headers and generates optimized kernel dispatch
-profiles based on llama.cpp's proven parameter choices.
+This script emits only schema-backed fields that the AX runtime can consume.
+The output is intentionally conservative: benchmark-gated defaults stay aligned
+with current AX routing behavior, while still preserving model-specific profile
+metadata for future tuning.
 """
 
 import json
@@ -38,45 +40,47 @@ def read_gguf_header(path: str) -> dict:
 
 
 def llama_cpp_matvec_params(quant_type: str) -> dict:
-    """llama.cpp mul_mv kernel parameters for decode (N=1)."""
+    """AX-compatible decode matvec parameters informed by llama.cpp NR2 routing."""
+    if quant_type == "q8_0":
+        return {
+            "threadgroup_size": 128,
+            "rows_per_simdgroup": 2,
+        }
     return {
-        "threadgroup_size": 256,
-        "rows_per_tg": 2,
-        "blocks_per_thread": 4,
-        "x_in_threadgroup_mem": True,
+        "threadgroup_size": 64,
+        "rows_per_simdgroup": 2,
     }
 
 
-def llama_cpp_batch_params(quant_type: str) -> dict:
-    """llama.cpp mul_mm kernel parameters for prefill (N>1)."""
+def batch_prefill_params() -> dict:
+    """AX-compatible prefill batch-matmul routing knobs."""
     return {
-        "tile_m": 32,
-        "tile_n": 32,
-        "tile_k": 32,
-        "threadgroup_size": 256,
-        "use_f16_io": True,
-        "use_pair_kernel": True,
+        "prefer_f16_io": False,
+        "prefer_pair_kernel": False,
+        "small_n_threshold": 1,
+        "small_m_max": 0,
+        "use_bn32": True,
+        "use_bk32": True,
+        "q8_f16in_full_min_n": 64,
     }
 
 
 def llama_cpp_attention_decode_params() -> dict:
-    """llama.cpp flash_attn_ext parameters for decode."""
+    """AX-compatible decode attention parameters."""
     return {
-        "kernel": "splitk",
-        "threadgroup_size": 256,
         "splitk_chunk_size": 256,
-        "splitk_threshold": 256,
-        "fallback_kernel": "single_tg",
+        "splitk_threshold": 512,
     }
 
 
 def llama_cpp_attention_prefill_params() -> dict:
-    """llama.cpp flash_attn parameters for prefill."""
+    """AX-compatible prefill attention routing thresholds."""
     return {
-        "kernel": "fa2_hd128",
-        "threadgroup_size": 256,
-        "queries_per_tg": 8,
-        "fa2_auto_threshold": 512,
+        "fa2_mode": "off",
+        "fa2_hd128_mode": "off",
+        "fa2_auto_min_tokens": 512,
+        "fa2_auto_min_base_seq": 256,
+        "fa2_hd128_auto_min_tokens": 512,
     }
 
 
@@ -84,21 +88,16 @@ def generate_profile(model_name: str, quant: str) -> dict:
     """Generate a kernel profile for the given model."""
     profile = {
         "model": model_name,
-        "source": "llama.cpp-inspired",
-        "generated": "2026-03-22",
+        "source": "llama.cpp-inspired-benchmark-gated",
+        "generated": "2026-03-23",
         "decode_matvec": {},
-        "batch_matmul": {},
+        "batch_prefill": batch_prefill_params(),
         "attention_decode": llama_cpp_attention_decode_params(),
         "attention_prefill": llama_cpp_attention_prefill_params(),
-        "elementwise": {
-            "threadgroup_size": 256,
-            "use_fused_residual_norm": False,
-        },
     }
     
     for quant_type in ["q4_k", "q6_k", "q8_0"]:
         profile["decode_matvec"][quant_type] = llama_cpp_matvec_params(quant_type)
-        profile["batch_matmul"][quant_type] = llama_cpp_batch_params(quant_type)
     
     return profile
 
@@ -135,9 +134,7 @@ def main():
     
     if args.gguf:
         try:
-            header = read_gguf_header(args.gguf)
-            profile["gguf_version"] = header["version"]
-            profile["tensor_count"] = header["tensor_count"]
+            read_gguf_header(args.gguf)
         except Exception as e:
             print(f"Warning: Could not read GGUF header: {e}", file=sys.stderr)
     

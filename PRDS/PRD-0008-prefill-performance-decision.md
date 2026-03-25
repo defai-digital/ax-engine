@@ -35,9 +35,9 @@ Command:
 
 | Model | Default | `Q4K_V2=0` | `Q4K_V2=1` |
 |---|---:|---:|---:|
-| `Qwen3-0.6B-Q4_K_M` | 4189.5 tok/s | 4192.8 tok/s | 3479.3 tok/s |
-| `Llama-3-8B-Instruct-GGUF-Q4_K_M` | 385.9 tok/s | 384.0 tok/s | 269.6 tok/s |
-| `gemma-3-4b-it-Q4_K_M` | 811.5 tok/s | 813.4 tok/s | 614.6 tok/s |
+| `Qwen3-0.6B-Q4_K_M` | 4137.4 tok/s | 4140.1 tok/s | 3437.5 tok/s |
+| `Llama-3-8B-Instruct-GGUF-Q4_K_M` | 377.7 tok/s | 376.4 tok/s | 263.6 tok/s |
+| `gemma-3-4b-it-Q4_K_M` | 794.2 tok/s | 797.1 tok/s | 593.5 tok/s |
 
 Implication:
 

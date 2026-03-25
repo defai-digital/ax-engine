@@ -77,15 +77,16 @@ impl Model {
 
     #[getter]
     pub fn support_note(&self) -> PyResult<Option<String>> {
-        Ok(self.loaded_model()?.mapped.support_note().map(str::to_string))
+        Ok(self
+            .loaded_model()?
+            .mapped
+            .support_note()
+            .map(str::to_string))
     }
 
     #[getter]
     pub fn closed(&self) -> bool {
-        self.inner
-            .lock()
-            .expect("model lock poisoned")
-            .is_none()
+        self.inner.lock().expect("model lock poisoned").is_none()
     }
 
     #[pyo3(signature = (text, add_special = false))]
@@ -138,7 +139,11 @@ impl Model {
         init_tracing();
 
         let model_path = Path::new(path);
-        ensure!(model_path.exists(), "model path does not exist: {}", model_path.display());
+        ensure!(
+            model_path.exists(),
+            "model path does not exist: {}",
+            model_path.display()
+        );
 
         let mapped = MappedModel::open(model_path)
             .with_context(|| format!("failed to open GGUF model: {}", model_path.display()))?;
@@ -162,11 +167,7 @@ impl Model {
 
         let backend_config = parse_backend(backend)?;
         let backend = create_backend(backend_config)?;
-        backend.configure_for_model(
-            &profile_model_name,
-            &profile_quant,
-            profile_architecture,
-        )?;
+        backend.configure_for_model(&profile_model_name, &profile_quant, profile_architecture)?;
 
         let model = LlamaModel::with_backend(config.clone(), backend);
 

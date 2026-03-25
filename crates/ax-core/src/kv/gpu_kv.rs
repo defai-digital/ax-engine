@@ -11,6 +11,8 @@
 
 use ax_metal::{MetalBuffer, MetalDevice};
 
+use super::page::{initial_token_capacity, planned_capacity_for_needed};
+
 /// Storage format for GPU KV cache buffers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuKvDtype {
@@ -84,7 +86,7 @@ impl GpuKv {
         dtype: GpuKvDtype,
     ) -> anyhow::Result<Self> {
         let page_size = page_size.max(1);
-        let initial_cap = page_size.min(max_seq_len);
+        let initial_cap = initial_token_capacity(page_size, max_seq_len);
         let kv_stride = n_kv_heads
             .checked_mul(head_dim)
             .expect("GPU KV stride overflow");
@@ -304,17 +306,14 @@ impl GpuKv {
             return Ok(());
         }
 
-        let mut new_cap = self.capacity;
-        while new_cap < needed {
-            let prev = new_cap;
-            new_cap = (new_cap + self.page_size).min(self.max_seq_len);
-            if new_cap == prev {
-                anyhow::bail!(
-                    "GPU KV cannot grow: needed={needed} > max={}",
-                    self.max_seq_len
-                );
-            }
-        }
+        let new_cap =
+            planned_capacity_for_needed(self.capacity, needed, self.page_size, self.max_seq_len)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "GPU KV cannot grow: needed={needed} > max={}",
+                        self.max_seq_len
+                    )
+                })?;
 
         let elem_size = self.dtype.elem_size();
         let new_bytes = new_cap

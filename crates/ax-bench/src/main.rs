@@ -1,15 +1,21 @@
 //! ax-bench CLI — benchmark, profiler, and soak test runner for AX Engine.
 //!
 //! Usage:
-//!   ax-bench soak --model <path> [--duration 24h] [--json]
-//!   ax-bench bench --model <path> [--prompt-tokens 512] [--decode-tokens 128]
-//!   ax-bench profile --model <path> [--profile-tokens 64] [--json]
+//!   ax-bench soak --model <path> [--duration 24h] [--json] [--json-output <path>]
+//!   ax-bench bench --model <path> [--prompt-tokens 512] [--decode-tokens 128] [--json] [--json-output <path>]
+//!   ax-bench profile --model <path> [--profile-tokens 64] [--json] [--json-output <path>]
+//!   ax-bench speculative --model <target> --draft-model <draft> [--json] [--json-output <path>]
+//!   ax-bench microbench [--suite gpu] [--json] [--profile-output <path>]
 
 use std::process;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use ax_bench::microbench::{
+    self, MicrobenchConfig, MicrobenchProfileExportAction, MicrobenchProfileExportStatus,
+    MicrobenchSuite,
+};
 use ax_bench::perf::{self, BenchConfig, SpecBenchConfig};
 use ax_bench::profile::{self, ProfileConfig};
 use ax_bench::soak::{self, SoakConfig};
@@ -28,12 +34,43 @@ enum BenchIntentArg {
     Latency,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum MicrobenchSuiteArg {
+    Cpu,
+    Gpu,
+    Uma,
+    Sync,
+    All,
+}
+
 impl From<BenchIntentArg> for DecodeIntent {
     fn from(value: BenchIntentArg) -> Self {
         match value {
             BenchIntentArg::Throughput => DecodeIntent::Throughput,
             BenchIntentArg::Latency => DecodeIntent::Latency,
         }
+    }
+}
+
+impl From<MicrobenchSuiteArg> for MicrobenchSuite {
+    fn from(value: MicrobenchSuiteArg) -> Self {
+        match value {
+            MicrobenchSuiteArg::Cpu => MicrobenchSuite::Cpu,
+            MicrobenchSuiteArg::Gpu => MicrobenchSuite::Gpu,
+            MicrobenchSuiteArg::Uma => MicrobenchSuite::Uma,
+            MicrobenchSuiteArg::Sync => MicrobenchSuite::Sync,
+            MicrobenchSuiteArg::All => MicrobenchSuite::All,
+        }
+    }
+}
+
+fn format_export_status_blockers(status: &MicrobenchProfileExportStatus) -> Vec<String> {
+    microbench::format_export_status_blockers(status)
+}
+
+fn print_export_status_blockers(status: &MicrobenchProfileExportStatus) {
+    for line in format_export_status_blockers(status) {
+        eprintln!("  {line}");
     }
 }
 
@@ -115,6 +152,10 @@ enum Command {
         /// Apply llama.cpp-aligned AX runtime preset (if vars are unset).
         #[arg(long)]
         llama_parity_preset: bool,
+
+        /// Override kernel profile path for this run.
+        #[arg(long)]
+        kernel_profile_path: Option<String>,
     },
 
     /// Run a performance benchmark.
@@ -159,6 +200,18 @@ enum Command {
         /// latency mode keeps per-token latency measurement meaningful.
         #[arg(long, value_enum, default_value_t = BenchIntentArg::Throughput)]
         intent: BenchIntentArg,
+
+        /// Override kernel profile path for this run.
+        #[arg(long)]
+        kernel_profile_path: Option<String>,
+
+        /// Output results as JSON.
+        #[arg(long)]
+        json: bool,
+
+        /// Write JSON results to file.
+        #[arg(long)]
+        json_output: Option<String>,
     },
 
     /// Run a speculative-decoding performance benchmark.
@@ -206,6 +259,45 @@ enum Command {
         /// Apply llama.cpp-aligned AX runtime preset (if vars are unset).
         #[arg(long)]
         llama_parity_preset: bool,
+
+        /// Override kernel profile path for this run.
+        #[arg(long)]
+        kernel_profile_path: Option<String>,
+
+        /// Output results as JSON.
+        #[arg(long)]
+        json: bool,
+
+        /// Write JSON results to file.
+        #[arg(long)]
+        json_output: Option<String>,
+    },
+
+    /// Run hardware-oriented microbenchmarks.
+    Microbench {
+        /// Which suite to run.
+        #[arg(long, value_enum, default_value_t = MicrobenchSuiteArg::All)]
+        suite: MicrobenchSuiteArg,
+
+        /// Number of measurement iterations per subtest.
+        #[arg(long, default_value = "10")]
+        iterations: usize,
+
+        /// Number of times to rerun the whole selected suite before aggregating.
+        #[arg(long, default_value = "1")]
+        suite_runs: usize,
+
+        /// Output results as JSON.
+        #[arg(long)]
+        json: bool,
+
+        /// Write a suggested kernel profile JSON derived from microbench winners.
+        #[arg(long)]
+        profile_output: Option<String>,
+
+        /// Allow writing a suggested profile even when the confidence gate blocks export.
+        #[arg(long)]
+        allow_low_confidence_export: bool,
     },
 }
 
@@ -214,6 +306,14 @@ fn set_env_default(key: &str, value: &str) {
         // SAFETY: Process-global environment mutation is intentional here for this
         // one-shot CLI process before model/runner initialization.
         unsafe { std::env::set_var(key, value) };
+    }
+}
+
+fn apply_kernel_profile_override(path: Option<&str>) {
+    if let Some(path) = path {
+        // SAFETY: Process-global environment mutation is intentional here for this
+        // one-shot CLI process before backend/model initialization.
+        unsafe { std::env::set_var("AX_KERNEL_PROFILE_PATH", path) };
     }
 }
 
@@ -327,10 +427,12 @@ fn main() {
             baseline_json,
             top_regressions,
             llama_parity_preset,
+            kernel_profile_path,
         } => {
             if llama_parity_preset {
                 apply_llama_parity_preset();
             }
+            apply_kernel_profile_override(kernel_profile_path.as_deref());
             let backend =
                 ax_core::backend::create_backend(ax_core::backend::BackendConfig::default())
                     .unwrap_or_else(|e| {
@@ -342,6 +444,7 @@ fn main() {
                 model_path: model,
                 warmup_tokens,
                 profile_tokens,
+                kernel_profile_path,
             };
 
             match profile::run_profile_with_backend(&config, backend) {
@@ -407,10 +510,14 @@ fn main() {
             cooldown_ms,
             llama_parity_preset,
             intent,
+            kernel_profile_path,
+            json,
+            json_output,
         } => {
             if llama_parity_preset {
                 apply_llama_parity_preset();
             }
+            apply_kernel_profile_override(kernel_profile_path.as_deref());
             let backend =
                 ax_core::backend::create_backend(ax_core::backend::BackendConfig::default())
                     .unwrap_or_else(|e| {
@@ -428,11 +535,32 @@ fn main() {
                 samples,
                 cooldown_ms,
                 intent: intent.into(),
+                kernel_profile_path,
             };
 
             match perf::run_benchmark_with_backend(&config, backend) {
                 Ok(result) => {
                     result.print_summary();
+
+                    if json {
+                        match result.to_json() {
+                            Ok(j) => println!("{j}"),
+                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                        }
+                    }
+
+                    if let Some(path) = json_output {
+                        match result.to_json() {
+                            Ok(j) => {
+                                if let Err(e) = std::fs::write(&path, j) {
+                                    eprintln!("Failed to write JSON output to {path}: {e}");
+                                } else {
+                                    eprintln!("Results written to {path}");
+                                }
+                            }
+                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!("Benchmark error: {e}");
@@ -453,10 +581,14 @@ fn main() {
             cooldown_ms,
             speculative_k,
             llama_parity_preset,
+            kernel_profile_path,
+            json,
+            json_output,
         } => {
             if llama_parity_preset {
                 apply_llama_parity_preset();
             }
+            apply_kernel_profile_override(kernel_profile_path.as_deref());
             let backend =
                 ax_core::backend::create_backend(ax_core::backend::BackendConfig::default())
                     .unwrap_or_else(|e| {
@@ -475,14 +607,119 @@ fn main() {
                 samples,
                 cooldown_ms,
                 speculative_k,
+                kernel_profile_path,
             };
 
             match perf::run_speculative_benchmark_with_backend(&config, backend) {
                 Ok(result) => {
                     result.print_summary();
+
+                    if json {
+                        match result.to_json() {
+                            Ok(j) => println!("{j}"),
+                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                        }
+                    }
+
+                    if let Some(path) = json_output {
+                        match result.to_json() {
+                            Ok(j) => {
+                                if let Err(e) = std::fs::write(&path, j) {
+                                    eprintln!("Failed to write JSON output to {path}: {e}");
+                                } else {
+                                    eprintln!("Results written to {path}");
+                                }
+                            }
+                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!("Speculative benchmark error: {e}");
+                    process::exit(2);
+                }
+            }
+        }
+
+        Command::Microbench {
+            suite,
+            iterations,
+            suite_runs,
+            json,
+            profile_output,
+            allow_low_confidence_export,
+        } => {
+            let config = MicrobenchConfig {
+                suite: suite.into(),
+                iterations: iterations.max(1),
+                suite_runs: suite_runs.max(1),
+            };
+
+            match microbench::run_microbench(&config) {
+                Ok(result) => {
+                    let output_path = profile_output.clone();
+                    let export_decision = result.suggested_kernel_profile_export_decision();
+                    let requested_profile_output = output_path.is_some();
+                    let export_action = microbench::determine_profile_export_action(
+                        requested_profile_output,
+                        allow_low_confidence_export,
+                        &export_decision,
+                    );
+                    let mut wrote_profile = false;
+
+                    if let Some(path) = output_path.clone()
+                        && matches!(export_action, MicrobenchProfileExportAction::Write { .. })
+                    {
+                        match result.suggested_kernel_profile_json() {
+                            Ok(j) => {
+                                if let Err(e) = std::fs::write(&path, j) {
+                                    eprintln!(
+                                        "Failed to write suggested kernel profile to {path}: {e}"
+                                    );
+                                    process::exit(2);
+                                } else {
+                                    wrote_profile = true;
+                                    eprintln!("Suggested kernel profile written to {path}");
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Kernel profile serialization error: {e}");
+                                process::exit(2);
+                            }
+                        }
+                    }
+
+                    let report =
+                        result.with_export_outcome(output_path, export_action, wrote_profile);
+                    let export_status = report
+                        .export_status()
+                        .expect("microbench export status should be present after outcome");
+                    if export_status.override_used {
+                        eprintln!(
+                            "Bypassing suggested kernel profile confidence gate due to --allow-low-confidence-export"
+                        );
+                        print_export_status_blockers(export_status);
+                    }
+                    if json {
+                        match report.to_json() {
+                            Ok(j) => println!("{j}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
+                        }
+                    } else {
+                        report.print_summary();
+                    }
+
+                    if export_status.exit_code != 0 {
+                        eprintln!("Suggested kernel profile export blocked by confidence gate:");
+                        print_export_status_blockers(export_status);
+                        process::exit(export_status.exit_code);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Microbench error: {e}");
                     process::exit(2);
                 }
             }
@@ -517,6 +754,10 @@ fn parse_duration(s: &str) -> anyhow::Result<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ax_bench::microbench::{
+        MicrobenchProfileExportBlocker, MicrobenchProfileExportBlockerKind,
+        MicrobenchProfileExportState,
+    };
 
     #[test]
     fn test_parse_duration_hours() {
@@ -547,5 +788,109 @@ mod tests {
     fn test_parse_duration_invalid() {
         assert!(parse_duration("abc").is_err());
         assert!(parse_duration("1x").is_err());
+    }
+
+    #[test]
+    fn test_determine_profile_export_action_blocks_by_default() {
+        let decision = microbench::MicrobenchProfileExportDecision {
+            allowed: false,
+            blocker_details: vec![],
+            blockers: vec!["blocked".to_string()],
+        };
+        assert_eq!(
+            microbench::determine_profile_export_action(true, false, &decision),
+            MicrobenchProfileExportAction::Blocked
+        );
+    }
+
+    #[test]
+    fn test_determine_profile_export_action_allows_override() {
+        let decision = microbench::MicrobenchProfileExportDecision {
+            allowed: false,
+            blocker_details: vec![],
+            blockers: vec!["blocked".to_string()],
+        };
+        assert_eq!(
+            microbench::determine_profile_export_action(true, true, &decision),
+            MicrobenchProfileExportAction::Write {
+                override_used: true
+            }
+        );
+    }
+
+    #[test]
+    fn test_determine_profile_export_action_skips_when_not_requested() {
+        let decision = microbench::MicrobenchProfileExportDecision {
+            allowed: true,
+            blocker_details: vec![],
+            blockers: vec![],
+        };
+        assert_eq!(
+            microbench::determine_profile_export_action(false, false, &decision),
+            MicrobenchProfileExportAction::NotRequested
+        );
+    }
+
+    #[test]
+    fn test_format_export_status_blockers_uses_structured_threshold_details() {
+        let status = MicrobenchProfileExportStatus {
+            state: MicrobenchProfileExportState::Blocked,
+            exit_code: 1,
+            requested: true,
+            gate_allowed: false,
+            override_used: false,
+            wrote_profile: false,
+            blocker_details: vec![MicrobenchProfileExportBlocker {
+                kind: MicrobenchProfileExportBlockerKind::BelowThreshold,
+                reason: "decode_matvec.q4_k avg speedup 1.080x below export threshold 1.100x"
+                    .to_string(),
+                rule: Some("decode_matvec.q4_k".to_string()),
+                avg_speedup: Some(1.08),
+                required_speedup: Some(1.10),
+                forced: false,
+            }],
+            blockers: vec!["legacy blocker".to_string()],
+            output_path: Some("/tmp/profile.json".to_string()),
+        };
+
+        let lines = format_export_status_blockers(&status);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("kind=below_threshold"));
+        assert!(lines[0].contains("rule=decode_matvec.q4_k"));
+        assert!(lines[0].contains("avg=1.080x"));
+        assert!(lines[0].contains("required=1.100x"));
+        assert!(!lines[0].contains("legacy blocker"));
+    }
+
+    #[test]
+    fn test_format_export_status_blockers_uses_structured_forced_details() {
+        let status = MicrobenchProfileExportStatus {
+            state: MicrobenchProfileExportState::Blocked,
+            exit_code: 1,
+            requested: true,
+            gate_allowed: false,
+            override_used: false,
+            wrote_profile: false,
+            blocker_details: vec![MicrobenchProfileExportBlocker {
+                kind: MicrobenchProfileExportBlockerKind::Forced,
+                reason: "forced export block via AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK=1"
+                    .to_string(),
+                rule: None,
+                avg_speedup: None,
+                required_speedup: None,
+                forced: true,
+            }],
+            blockers: vec!["legacy forced blocker".to_string()],
+            output_path: None,
+        };
+
+        let lines = format_export_status_blockers(&status);
+        assert_eq!(
+            lines,
+            vec![
+                "forced export block via AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK=1 kind=forced"
+                    .to_string()
+            ]
+        );
     }
 }

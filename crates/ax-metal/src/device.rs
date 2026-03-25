@@ -11,8 +11,12 @@ use objc2_metal::{
     MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
     MTLComputeCommandEncoder, MTLCreateSystemDefaultDevice, MTLDevice, MTLDispatchType,
 };
+use std::sync::Arc;
 
-use crate::inc_command_buffer_count;
+use crate::{
+    PerfCounterState, PerfCounters, inc_command_buffer_count, new_perf_counter_state,
+    reset_perf_counter_state, snapshot_perf_counter_state, with_active_perf_counters,
+};
 
 /// A command buffer that has been fully encoded but not yet committed to the GPU.
 ///
@@ -48,6 +52,7 @@ pub struct InflightFrame {
 pub struct MetalDevice {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    perf_counters: Arc<PerfCounterState>,
 }
 
 /// Device capabilities.
@@ -84,7 +89,11 @@ impl MetalDevice {
             "Metal device initialized",
         );
 
-        Ok(Self { device, queue })
+        Ok(Self {
+            device,
+            queue,
+            perf_counters: new_perf_counter_state(),
+        })
     }
 
     fn read_device_info(device: &ProtocolObject<dyn MTLDevice>) -> DeviceInfo {
@@ -109,7 +118,18 @@ impl MetalDevice {
         Ok(Self {
             device: self.device.clone(),
             queue,
+            perf_counters: self.perf_counters.clone(),
         })
+    }
+
+    /// Reset backend-local performance counters for this device family.
+    pub fn reset_perf_counters(&self) {
+        reset_perf_counter_state(&self.perf_counters);
+    }
+
+    /// Read backend-local performance counters for this device family.
+    pub fn perf_counters(&self) -> PerfCounters {
+        snapshot_perf_counter_state(&self.perf_counters)
     }
 
     /// Get device capabilities.
@@ -142,23 +162,25 @@ impl MetalDevice {
     where
         F: FnOnce(&ProtocolObject<dyn MTLComputeCommandEncoder>) -> anyhow::Result<()>,
     {
-        inc_command_buffer_count();
-        let cmd_buf = self.command_buffer()?;
-        let encoder = cmd_buf
-            .computeCommandEncoder()
-            .context("Failed to create compute command encoder")?;
+        with_active_perf_counters(&self.perf_counters, || {
+            inc_command_buffer_count();
+            let cmd_buf = self.command_buffer()?;
+            let encoder = cmd_buf
+                .computeCommandEncoder()
+                .context("Failed to create compute command encoder")?;
 
-        f(&encoder)?;
+            f(&encoder)?;
 
-        encoder.endEncoding();
-        cmd_buf.commit();
-        cmd_buf.waitUntilCompleted();
+            encoder.endEncoding();
+            cmd_buf.commit();
+            cmd_buf.waitUntilCompleted();
 
-        if let Some(error) = cmd_buf.error() {
-            bail!("Metal command buffer error: {:?}", error);
-        }
+            if let Some(error) = cmd_buf.error() {
+                bail!("Metal command buffer error: {:?}", error);
+            }
 
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Like [`execute_sync`] but creates the encoder with `MTLDispatchTypeConcurrent`.
@@ -175,23 +197,25 @@ impl MetalDevice {
     where
         F: FnOnce(&ProtocolObject<dyn MTLComputeCommandEncoder>) -> anyhow::Result<()>,
     {
-        inc_command_buffer_count();
-        let cmd_buf = self.command_buffer()?;
-        let encoder = cmd_buf
-            .computeCommandEncoderWithDispatchType(MTLDispatchType::Concurrent)
-            .context("Failed to create concurrent compute command encoder")?;
+        with_active_perf_counters(&self.perf_counters, || {
+            inc_command_buffer_count();
+            let cmd_buf = self.command_buffer()?;
+            let encoder = cmd_buf
+                .computeCommandEncoderWithDispatchType(MTLDispatchType::Concurrent)
+                .context("Failed to create concurrent compute command encoder")?;
 
-        f(&encoder)?;
+            f(&encoder)?;
 
-        encoder.endEncoding();
-        cmd_buf.commit();
-        cmd_buf.waitUntilCompleted();
+            encoder.endEncoding();
+            cmd_buf.commit();
+            cmd_buf.waitUntilCompleted();
 
-        if let Some(error) = cmd_buf.error() {
-            bail!("Metal command buffer error: {:?}", error);
-        }
+            if let Some(error) = cmd_buf.error() {
+                bail!("Metal command buffer error: {:?}", error);
+            }
 
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Encode and submit a concurrent command buffer without waiting for completion.
@@ -204,17 +228,19 @@ impl MetalDevice {
     where
         F: FnOnce(&ProtocolObject<dyn MTLComputeCommandEncoder>) -> anyhow::Result<()>,
     {
-        inc_command_buffer_count();
-        let cmd_buf = self.command_buffer()?;
-        let encoder = cmd_buf
-            .computeCommandEncoderWithDispatchType(MTLDispatchType::Concurrent)
-            .context("Failed to create concurrent compute command encoder")?;
+        with_active_perf_counters(&self.perf_counters, || {
+            inc_command_buffer_count();
+            let cmd_buf = self.command_buffer()?;
+            let encoder = cmd_buf
+                .computeCommandEncoderWithDispatchType(MTLDispatchType::Concurrent)
+                .context("Failed to create concurrent compute command encoder")?;
 
-        f(&encoder)?;
+            f(&encoder)?;
 
-        encoder.endEncoding();
-        cmd_buf.commit();
-        Ok(InflightFrame { cmd_buf })
+            encoder.endEncoding();
+            cmd_buf.commit();
+            Ok(InflightFrame { cmd_buf })
+        })
     }
 
     /// Encode compute commands into a new command buffer without committing.
@@ -229,16 +255,18 @@ impl MetalDevice {
     where
         F: FnOnce(&ProtocolObject<dyn MTLComputeCommandEncoder>) -> anyhow::Result<()>,
     {
-        inc_command_buffer_count();
-        let cmd_buf = self.command_buffer()?;
-        let encoder = cmd_buf
-            .computeCommandEncoder()
-            .context("Failed to create compute command encoder")?;
+        with_active_perf_counters(&self.perf_counters, || {
+            inc_command_buffer_count();
+            let cmd_buf = self.command_buffer()?;
+            let encoder = cmd_buf
+                .computeCommandEncoder()
+                .context("Failed to create compute command encoder")?;
 
-        f(&encoder)?;
+            f(&encoder)?;
 
-        encoder.endEncoding();
-        Ok(PendingFrame { cmd_buf })
+            encoder.endEncoding();
+            Ok(PendingFrame { cmd_buf })
+        })
     }
 
     /// Commit a [`PendingFrame`] to the GPU (non-blocking).
@@ -335,6 +363,24 @@ mod tests {
             .command_buffer()
             .expect("Should create command buffer");
         drop(cmd_buf);
+    }
+
+    #[test]
+    fn test_clone_sharing_device_shares_local_perf_counters() {
+        let device = MetalDevice::new().unwrap();
+        let shared = device.clone_sharing_device().unwrap();
+
+        device.reset_perf_counters();
+
+        device.execute_sync(|_| Ok(())).unwrap();
+        shared.execute_sync(|_| Ok(())).unwrap();
+
+        let base = device.perf_counters();
+        let clone = shared.perf_counters();
+        assert_eq!(base.command_buffers, 2);
+        assert_eq!(clone.command_buffers, 2);
+        assert_eq!(base.buffer_barriers, 0);
+        assert_eq!(clone.buffer_barriers, 0);
     }
 
     #[test]

@@ -20,9 +20,9 @@ experiment-only runtime flag (`=1`).
 
 Three-model prefill A/B (M3 Max, release binary, 256 prompt tokens):
 
-- `Qwen3-0.6B`: default 4189.5, `v2=0` 4192.8, `v2=1` 3479.3
-- `Llama-3-8B`: default 385.9, `v2=0` 384.0, `v2=1` 269.6
-- `Gemma3-4B`: default 811.5, `v2=0` 813.4, `v2=1` 614.6
+- `Qwen3-0.6B`: default 4137.4, `v2=0` 4140.1, `v2=1` 3437.5
+- `Llama-3-8B`: default 377.7, `v2=0` 376.4, `v2=1` 263.6
+- `Gemma3-4B`: default 794.2, `v2=0` 797.1, `v2=1` 593.5
 
 This is a consistent regression pattern (~17–37% slower for `v2=1`) and aligns with
 phase observations that loading/dequant dominates.

@@ -17,6 +17,7 @@ use ax_core::model::{
 use ax_core::sampling::{Sampler, SamplingConfig};
 use ax_core::speculative::SpeculativeDecoder;
 use ax_core::tokenizer::Tokenizer;
+use serde::{Deserialize, Serialize};
 
 /// Benchmark configuration.
 pub struct BenchConfig {
@@ -38,6 +39,8 @@ pub struct BenchConfig {
     pub cooldown_ms: u64,
     /// Whether the benchmark is measuring throughput or latency semantics.
     pub intent: DecodeIntent,
+    /// Optional kernel profile override path used for this run.
+    pub kernel_profile_path: Option<String>,
 }
 
 /// Benchmark configuration for speculative decoding.
@@ -62,6 +65,8 @@ pub struct SpecBenchConfig {
     pub cooldown_ms: u64,
     /// Speculative lookahead length.
     pub speculative_k: usize,
+    /// Optional kernel profile override path used for this run.
+    pub kernel_profile_path: Option<String>,
 }
 
 impl Default for BenchConfig {
@@ -76,6 +81,7 @@ impl Default for BenchConfig {
             samples: 1,
             cooldown_ms: 0,
             intent: DecodeIntent::Throughput,
+            kernel_profile_path: None,
         }
     }
 }
@@ -93,12 +99,13 @@ impl Default for SpecBenchConfig {
             samples: 1,
             cooldown_ms: 0,
             speculative_k: 4,
+            kernel_profile_path: None,
         }
     }
 }
 
 /// Results of a performance benchmark.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BenchResult {
     /// Model name/path.
     pub model: String,
@@ -131,21 +138,44 @@ pub struct BenchResult {
     /// Benchmark intent (`throughput` or `latency`).
     pub decode_intent: String,
     /// Selected decode mode for measured runs.
+    #[serde(default)]
     pub decode_mode: String,
+    /// Compact prefill execution-plan summary.
+    #[serde(default)]
+    pub prefill_plan: String,
+    /// Parsed `q5k_prefill=...` mode from the prefill plan, when present.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub q5k_prefill_mode: Option<String>,
+    /// Compact decode execution-plan summary.
+    #[serde(default)]
+    pub decode_plan: String,
+    /// Optional support-boundary note for the loaded model quant family.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support_note: Option<String>,
     /// Fallback reason if a faster mode was requested but not used.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub decode_fallback_reason: Option<String>,
+    /// Optional kernel profile override path used for this run.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel_profile_path: Option<String>,
     /// Whether f16 KV cache was active.
     pub kv_f16: bool,
     /// True when deterministic mode was enabled.
     pub deterministic: bool,
     /// Number of repeated samples used.
+    #[serde(default)]
     pub samples: usize,
     /// Cooldown between measured iterations (ms).
+    #[serde(default)]
     pub cooldown_ms: u64,
 }
 
 /// Results of a speculative-decoding benchmark.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SpecBenchResult {
     /// Target model name/path.
     pub model: String,
@@ -165,6 +195,13 @@ pub struct SpecBenchResult {
     pub decode_tok_per_sec: f64,
     /// Median decode throughput (tok/s).
     pub decode_tok_per_sec_median: f64,
+    /// Compact prefill execution-plan summary.
+    #[serde(default)]
+    pub prefill_plan: String,
+    /// Parsed `q5k_prefill=...` mode from the prefill plan, when present.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub q5k_prefill_mode: Option<String>,
     /// Average accepted draft tokens per speculative step.
     pub avg_accepted_per_step: f64,
     /// Average draft time per speculative step.
@@ -177,13 +214,23 @@ pub struct SpecBenchResult {
     pub verify_ms_per_position: f64,
     /// Average draft time per drafted token.
     pub draft_ms_per_drafted_token: f64,
+    /// Optional support-boundary note for the loaded model quant family.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support_note: Option<String>,
+    /// Optional kernel profile override path used for this run.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel_profile_path: Option<String>,
     /// Whether f16 KV cache was active.
     pub kv_f16: bool,
     /// True when deterministic mode was enabled.
     pub deterministic: bool,
     /// Number of repeated samples used.
+    #[serde(default)]
     pub samples: usize,
     /// Cooldown between measured iterations (ms).
+    #[serde(default)]
     pub cooldown_ms: u64,
 }
 
@@ -208,10 +255,12 @@ pub fn run_benchmark_with_backend(
     backend: Box<dyn ax_core::backend::Backend>,
 ) -> anyhow::Result<BenchResult> {
     let mapped = MappedModel::open(Path::new(&config.model_path))?;
-    crate::init_kernel_profile(&config.model_path, &mapped);
+    crate::configure_backend_for_model(&*backend, &config.model_path, &mapped)?;
     let model_config = ModelConfig::from_gguf(&mapped.header)?;
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = LlamaModel::with_backend(model_config.clone(), backend);
+    crate::report_planned_kv_budget(&mapped, &model)?;
+    let support_note = crate::support_note(&mapped);
     let weights = WeightStore::new(&mapped);
 
     let vocab_size = model_config.vocab_size as usize;
@@ -220,8 +269,7 @@ pub fn run_benchmark_with_backend(
         ..Default::default()
     };
 
-    let kv_f16 =
-        ax_core::backend::metal::metal_f16_kv_cache_enabled(model_config.context_length as usize);
+    let kv_f16 = matches!(model.kv_plan(), ax_core::backend::KvPlan::Gpu(ref plan) if plan.dtype == ax_core::kv::GpuKvDtype::F16);
 
     eprintln!(
         "Benchmarking: {} layers, {:.0}MB, KV dtype: {}",
@@ -275,6 +323,8 @@ pub fn run_benchmark_with_backend(
     let mut decode_cmd_buf_counts = Vec::new();
     let mut decode_barrier_counts = Vec::new();
     let mut decode_selection: Option<DecodeSelection> = None;
+    let mut prefill_plan: Option<String> = None;
+    let mut decode_plan: Option<String> = None;
 
     for _sample in 0..sample_count {
         let mut sample_prefill_times = Vec::with_capacity(iters_per_sample);
@@ -293,6 +343,8 @@ pub fn run_benchmark_with_backend(
                 decode_cmd_bufs,
                 decode_barriers,
                 iter_selection,
+                iter_prefill_plan,
+                iter_plan,
             ) = run_single_bench(
                 &model,
                 &weights,
@@ -313,6 +365,28 @@ pub fn run_benchmark_with_backend(
                         "decode mode changed across measured iterations: {} -> {}",
                         existing.mode,
                         iter_selection.mode
+                    );
+                }
+                Some(_) => {}
+            }
+            match &prefill_plan {
+                None => prefill_plan = Some(iter_prefill_plan.clone()),
+                Some(existing) if existing != &iter_prefill_plan => {
+                    anyhow::bail!(
+                        "prefill execution plan changed across measured iterations: {} -> {}",
+                        existing,
+                        iter_prefill_plan
+                    );
+                }
+                Some(_) => {}
+            }
+            match &decode_plan {
+                None => decode_plan = Some(iter_plan.clone()),
+                Some(existing) if existing != &iter_plan => {
+                    anyhow::bail!(
+                        "decode execution plan changed across measured iterations: {} -> {}",
+                        existing,
+                        iter_plan
                     );
                 }
                 Some(_) => {}
@@ -429,7 +503,12 @@ pub fn run_benchmark_with_backend(
             .as_ref()
             .map(|s| s.mode.to_string())
             .unwrap_or_else(|| "sequential".to_string()),
+        q5k_prefill_mode: prefill_plan.as_deref().and_then(crate::q5k_prefill_mode),
+        prefill_plan: prefill_plan.unwrap_or_else(|| "mode=serial".to_string()),
+        decode_plan: decode_plan.unwrap_or_else(|| "sync=sequential scratch=cpu".to_string()),
+        support_note,
         decode_fallback_reason: decode_selection.and_then(|s| s.fallback_reason),
+        kernel_profile_path: config.kernel_profile_path.clone(),
         kv_f16,
         deterministic: config.deterministic,
         samples: sample_count,
@@ -442,18 +521,19 @@ pub fn run_speculative_benchmark_with_backend(
     backend: Box<dyn ax_core::backend::Backend>,
 ) -> anyhow::Result<SpecBenchResult> {
     let mapped = MappedModel::open(Path::new(&config.model_path))?;
-    crate::init_kernel_profile(&config.model_path, &mapped);
+    crate::configure_backend_for_model(&*backend, &config.model_path, &mapped)?;
     let model_config = ModelConfig::from_gguf(&mapped.header)?;
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = LlamaModel::with_backend(model_config.clone(), backend);
+    crate::report_planned_kv_budget(&mapped, &model)?;
+    let support_note = crate::support_note(&mapped);
     let weights = WeightStore::new(&mapped);
 
     let sampling = SamplingConfig {
         temperature: 0.0,
         ..Default::default()
     };
-    let kv_f16 =
-        ax_core::backend::metal::metal_f16_kv_cache_enabled(model_config.context_length as usize);
+    let kv_f16 = matches!(model.kv_plan(), ax_core::backend::KvPlan::Gpu(ref plan) if plan.dtype == ax_core::kv::GpuKvDtype::F16);
 
     eprintln!(
         "Spec benchmark: target={} draft={} k={} layers={} {:.0}MB KV dtype={}",
@@ -466,6 +546,11 @@ pub fn run_speculative_benchmark_with_backend(
     );
 
     let prompt_tokens = build_fixed_prompt(&tokenizer, config.prompt_tokens);
+    let prefill_plan = model.prefill_plan_summary(
+        &weights,
+        &model.create_model_kv_for_weights(&weights),
+        prompt_tokens.len(),
+    )?;
 
     for _ in 0..config.warmup_iters {
         run_single_spec_bench(
@@ -622,12 +707,16 @@ pub fn run_speculative_benchmark_with_backend(
         prefill_tok_per_sec_median: median(&mut sample_prefill_tok_per_sec),
         decode_tok_per_sec,
         decode_tok_per_sec_median: median(&mut sample_decode_tok_per_sec),
+        q5k_prefill_mode: crate::q5k_prefill_mode(&prefill_plan),
+        prefill_plan,
         avg_accepted_per_step: avg_metric(&accepted_per_step_values),
         draft_ms_per_step: avg_metric(&draft_ms_per_step_values),
         verify_ms_per_step: avg_metric(&verify_ms_per_step_values),
         accept_ms_per_step: avg_metric(&accept_ms_per_step_values),
         verify_ms_per_position: avg_metric(&verify_ms_per_position_values),
         draft_ms_per_drafted_token: avg_metric(&draft_ms_per_drafted_token_values),
+        support_note,
+        kernel_profile_path: config.kernel_profile_path.clone(),
         kv_f16,
         deterministic: config.deterministic,
         samples: sample_count,
@@ -639,7 +728,8 @@ pub fn run_speculative_benchmark_with_backend(
 /// Returns:
 /// (prefill_duration, decode_duration, generated_tokens, per_token_latencies,
 ///  prefill_command_buffers, prefill_buffer_barriers,
-///  decode_command_buffers, decode_buffer_barriers, decode_selection).
+///  decode_command_buffers, decode_buffer_barriers, decode_selection,
+///  prefill_plan_summary, decode_plan_summary).
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn run_single_bench(
     model: &LlamaModel,
@@ -660,21 +750,24 @@ fn run_single_bench(
     u64,
     u64,
     DecodeSelection,
+    String,
+    String,
 )> {
-    let mut kv = model.create_model_kv();
+    let mut kv = model.create_model_kv_for_weights(weights);
     let mut logits = vec![0.0f32; vocab_size];
     let mut sampler = Sampler::new(sampling_config.clone());
 
     // Prefill
-    ax_core::backend::metal::reset_metal_perf_counters();
+    let prefill_plan = model.prefill_plan_summary(weights, &kv, prompt_tokens.len())?;
+    model.reset_metal_perf_counters();
     let prefill_timer = OpTimer::start();
     logits.fill(0.0);
     model.forward_batch(prompt_tokens, &mut kv, weights, &mut logits)?;
     let prefill_dur = prefill_timer.elapsed();
-    let prefill_counters = ax_core::backend::metal::read_metal_perf_counters();
+    let prefill_counters = model.read_metal_perf_counters();
 
     // Decode
-    ax_core::backend::metal::reset_metal_perf_counters();
+    model.reset_metal_perf_counters();
     let mut history = prompt_tokens.to_vec();
     let first_token = sampler.sample(&mut logits, &history);
     let decode = run_decode(
@@ -696,7 +789,7 @@ fn run_single_bench(
         |_tok, _info| Ok(DecodeControl::Continue),
     )?;
     let decode_dur = decode.decode_duration;
-    let decode_counters = ax_core::backend::metal::read_metal_perf_counters();
+    let decode_counters = model.read_metal_perf_counters();
 
     Ok((
         prefill_dur,
@@ -708,6 +801,8 @@ fn run_single_bench(
         decode_counters.command_buffers,
         decode_counters.buffer_barriers,
         decode.selection,
+        prefill_plan,
+        decode.plan_summary,
     ))
 }
 
@@ -733,7 +828,7 @@ fn run_single_spec_bench(
     speculative_k: usize,
 ) -> anyhow::Result<(Duration, Duration, usize, f64, f64, f64, f64, f64, f64)> {
     let vocab_size = model.config.vocab_size as usize;
-    let mut kv = model.create_model_kv();
+    let mut kv = model.create_model_kv_for_weights(weights);
     let mut logits = vec![0.0f32; vocab_size];
     let mut sampler = Sampler::new(sampling_config.clone());
     let mut spec = SpeculativeDecoder::load(draft_model_path, speculative_k)?;
@@ -838,6 +933,16 @@ fn run_single_spec_bench(
 }
 
 impl BenchResult {
+    /// Serialize to JSON.
+    pub fn to_json(&self) -> serde_json::Result<String> {
+        serde_json::to_string_pretty(self)
+    }
+
+    /// Parse a JSON-encoded benchmark result.
+    pub fn from_json(s: &str) -> serde_json::Result<Self> {
+        serde_json::from_str(s)
+    }
+
     /// Print a human-readable summary.
     pub fn print_summary(&self) {
         eprintln!();
@@ -859,8 +964,19 @@ impl BenchResult {
         );
         eprintln!("Intent:      {}", self.decode_intent);
         eprintln!("Mode:        {}", self.decode_mode);
+        eprintln!("PrefillPlan: {}", self.prefill_plan);
+        if let Some(mode) = &self.q5k_prefill_mode {
+            eprintln!("Q5KPrefill:  {mode}");
+        }
+        eprintln!("Plan:        {}", self.decode_plan);
+        if let Some(note) = &self.support_note {
+            eprintln!("Support:     {note}");
+        }
         if let Some(reason) = &self.decode_fallback_reason {
             eprintln!("Fallback:    {reason}");
+        }
+        if let Some(path) = &self.kernel_profile_path {
+            eprintln!("KernelProf:  {path}");
         }
         if self.decode_intent == "latency" {
             eprintln!(
@@ -884,6 +1000,16 @@ impl BenchResult {
 }
 
 impl SpecBenchResult {
+    /// Serialize to JSON.
+    pub fn to_json(&self) -> serde_json::Result<String> {
+        serde_json::to_string_pretty(self)
+    }
+
+    /// Parse a JSON-encoded speculative benchmark result.
+    pub fn from_json(s: &str) -> serde_json::Result<Self> {
+        serde_json::from_str(s)
+    }
+
     /// Print a human-readable summary.
     pub fn print_summary(&self) {
         eprintln!();
@@ -905,6 +1031,10 @@ impl SpecBenchResult {
             "Decode:      {} tokens → median {:.1} tok/s (mean {:.1})",
             self.decode_tokens, self.decode_tok_per_sec_median, self.decode_tok_per_sec,
         );
+        eprintln!("PrefillPlan: {}", self.prefill_plan);
+        if let Some(mode) = &self.q5k_prefill_mode {
+            eprintln!("Q5KPrefill:  {mode}");
+        }
         eprintln!("KV dtype:    {}", if self.kv_f16 { "f16" } else { "f32" });
         eprintln!(
             "Accepted:    {:.2} draft tokens/step",
@@ -919,6 +1049,12 @@ impl SpecBenchResult {
             self.verify_ms_per_step, self.verify_ms_per_position,
         );
         eprintln!("Accept:      {:.2} ms/step", self.accept_ms_per_step);
+        if let Some(note) = &self.support_note {
+            eprintln!("Support:     {note}");
+        }
+        if let Some(path) = &self.kernel_profile_path {
+            eprintln!("KernelProf:  {path}");
+        }
     }
 }
 
@@ -936,6 +1072,7 @@ mod tests {
         assert!(!c.deterministic);
         assert_eq!(c.samples, 1);
         assert_eq!(c.cooldown_ms, 0);
+        assert_eq!(c.kernel_profile_path, None);
     }
 
     #[test]
@@ -949,5 +1086,179 @@ mod tests {
         assert_eq!(c.samples, 1);
         assert_eq!(c.cooldown_ms, 0);
         assert_eq!(c.speculative_k, 4);
+        assert_eq!(c.kernel_profile_path, None);
+    }
+
+    #[test]
+    fn test_spec_bench_result_summary_formatting() {
+        let result = SpecBenchResult {
+            model: "target.gguf".into(),
+            draft_model: "draft.gguf".into(),
+            prompt_tokens: 512,
+            decode_tokens: 64,
+            speculative_k: 4,
+            prefill_tok_per_sec: 900.0,
+            prefill_tok_per_sec_median: 900.0,
+            decode_tok_per_sec: 55.0,
+            decode_tok_per_sec_median: 55.0,
+            prefill_plan: "mode=gpu_batch q5k_prefill=experimental_small_n".into(),
+            q5k_prefill_mode: Some("experimental_small_n".into()),
+            avg_accepted_per_step: 1.5,
+            draft_ms_per_step: 2.0,
+            verify_ms_per_step: 3.0,
+            accept_ms_per_step: 0.2,
+            verify_ms_per_position: 1.0,
+            draft_ms_per_drafted_token: 0.5,
+            support_note: Some(
+                ax_core::gguf::mmap::support_note_for_q5k_layer_presence(true)
+                    .unwrap()
+                    .to_string(),
+            ),
+            kernel_profile_path: None,
+            kv_f16: true,
+            deterministic: false,
+            samples: 1,
+            cooldown_ms: 0,
+        };
+
+        result.print_summary();
+    }
+
+    #[test]
+    fn test_bench_result_to_json() {
+        let result = BenchResult {
+            model: "test.gguf".into(),
+            prompt_tokens: 16,
+            decode_tokens: 32,
+            prefill_tok_per_sec: 100.0,
+            prefill_tok_per_sec_median: 99.0,
+            decode_tok_per_sec: 35.0,
+            decode_tok_per_sec_median: 34.5,
+            p50_latency: Duration::from_millis(10),
+            p95_latency: Duration::from_millis(12),
+            p99_latency: Duration::from_millis(15),
+            prefill_command_buffers: 1.0,
+            prefill_buffer_barriers: 10.0,
+            decode_command_buffers: 32.0,
+            decode_buffer_barriers: 0.0,
+            decode_intent: "throughput".into(),
+            decode_mode: "pipelined".into(),
+            prefill_plan: "mode=gpu_batch q5k_prefill=experimental_small_n".into(),
+            q5k_prefill_mode: Some("experimental_small_n".into()),
+            decode_plan: "sync=pipelined scratch=gpu_shared".into(),
+            support_note: Some(
+                ax_core::gguf::mmap::support_note_for_q5k_layer_presence(true)
+                    .unwrap()
+                    .to_string(),
+            ),
+            decode_fallback_reason: None,
+            kernel_profile_path: None,
+            kv_f16: true,
+            deterministic: false,
+            samples: 1,
+            cooldown_ms: 0,
+        };
+        let json = result.to_json().unwrap();
+        assert!(json.contains("\"q5k_prefill_mode\": \"experimental_small_n\""));
+        assert!(
+            json.contains("\"prefill_plan\": \"mode=gpu_batch q5k_prefill=experimental_small_n\"")
+        );
+    }
+
+    #[test]
+    fn test_bench_result_from_json_defaults_missing_optional_fields() {
+        let json = r#"{
+          "model": "test.gguf",
+          "prompt_tokens": 16,
+          "decode_tokens": 32,
+          "prefill_tok_per_sec": 100.0,
+          "prefill_tok_per_sec_median": 99.0,
+          "decode_tok_per_sec": 35.0,
+          "decode_tok_per_sec_median": 34.5,
+          "p50_latency": { "secs": 0, "nanos": 0 },
+          "p95_latency": { "secs": 0, "nanos": 0 },
+          "p99_latency": { "secs": 0, "nanos": 0 },
+          "prefill_command_buffers": 1.0,
+          "prefill_buffer_barriers": 10.0,
+          "decode_command_buffers": 32.0,
+          "decode_buffer_barriers": 0.0,
+          "decode_intent": "throughput",
+          "kv_f16": true,
+          "deterministic": false
+        }"#;
+        let result = BenchResult::from_json(json).unwrap();
+        assert_eq!(result.model, "test.gguf");
+        assert_eq!(result.q5k_prefill_mode, None);
+        assert!(result.prefill_plan.is_empty());
+        assert!(result.decode_plan.is_empty());
+        assert_eq!(result.samples, 0);
+        assert_eq!(result.cooldown_ms, 0);
+    }
+
+    #[test]
+    fn test_spec_bench_result_to_json() {
+        let result = SpecBenchResult {
+            model: "target.gguf".into(),
+            draft_model: "draft.gguf".into(),
+            prompt_tokens: 512,
+            decode_tokens: 64,
+            speculative_k: 4,
+            prefill_tok_per_sec: 900.0,
+            prefill_tok_per_sec_median: 900.0,
+            decode_tok_per_sec: 55.0,
+            decode_tok_per_sec_median: 55.0,
+            prefill_plan: "mode=gpu_batch q5k_prefill=experimental_small_n".into(),
+            q5k_prefill_mode: Some("experimental_small_n".into()),
+            avg_accepted_per_step: 1.5,
+            draft_ms_per_step: 2.0,
+            verify_ms_per_step: 3.0,
+            accept_ms_per_step: 0.2,
+            verify_ms_per_position: 1.0,
+            draft_ms_per_drafted_token: 0.5,
+            support_note: Some(
+                ax_core::gguf::mmap::support_note_for_q5k_layer_presence(true)
+                    .unwrap()
+                    .to_string(),
+            ),
+            kernel_profile_path: None,
+            kv_f16: true,
+            deterministic: false,
+            samples: 1,
+            cooldown_ms: 0,
+        };
+        let json = result.to_json().unwrap();
+        assert!(json.contains("\"q5k_prefill_mode\": \"experimental_small_n\""));
+        assert!(
+            json.contains("\"prefill_plan\": \"mode=gpu_batch q5k_prefill=experimental_small_n\"")
+        );
+    }
+
+    #[test]
+    fn test_spec_bench_result_from_json_defaults_missing_optional_fields() {
+        let json = r#"{
+          "model": "target.gguf",
+          "draft_model": "draft.gguf",
+          "prompt_tokens": 512,
+          "decode_tokens": 64,
+          "speculative_k": 4,
+          "prefill_tok_per_sec": 900.0,
+          "prefill_tok_per_sec_median": 900.0,
+          "decode_tok_per_sec": 55.0,
+          "decode_tok_per_sec_median": 55.0,
+          "avg_accepted_per_step": 1.5,
+          "draft_ms_per_step": 2.0,
+          "verify_ms_per_step": 3.0,
+          "accept_ms_per_step": 0.2,
+          "verify_ms_per_position": 1.0,
+          "draft_ms_per_drafted_token": 0.5,
+          "kv_f16": true,
+          "deterministic": false
+        }"#;
+        let result = SpecBenchResult::from_json(json).unwrap();
+        assert_eq!(result.model, "target.gguf");
+        assert_eq!(result.q5k_prefill_mode, None);
+        assert!(result.prefill_plan.is_empty());
+        assert_eq!(result.samples, 0);
+        assert_eq!(result.cooldown_ms, 0);
     }
 }

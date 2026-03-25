@@ -81,6 +81,13 @@ Basic run:
 ./target/release/ax-bench bench --model ./models/<model>.gguf
 ```
 
+Machine-readable artifact:
+
+```bash
+./target/release/ax-bench bench --model ./models/<model>.gguf --json
+./target/release/ax-bench bench --model ./models/<model>.gguf --json-output /tmp/ax-bench.json
+```
+
 Recommended repeated run for publishable numbers:
 
 ```bash
@@ -121,6 +128,25 @@ Use this to inspect the decode hot path and identify where time is actually spen
 - If AX prints `PrefillPlan: mode=serial reason=unsupported_quant:...`, treat that prefill result as a fallback-path measurement, not a normal GPU-prefill comparison.
 - Mixed-quant GGUFs can trigger that behavior when active layer tensors use `Q5_K`, because AX defaults `Q5_K` to decode-only baseline.
 - If you benchmark the experimental route with `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`, record that env var alongside the run and do not compare it against default AX numbers as if it were shipped behavior.
+- For current experimental `Q5_K` prefill runs, also record whether AX auto-used:
+  - `q5k_prefill=experimental`
+  - `q5k_prefill=experimental_small_n`
+- AX currently auto-selects `experimental_small_n` only when the mapped model is
+  predominantly `Q5_K` and the prompt batch is small (`<= 32` tokens).
+- `ax-bench bench`, `ax-bench profile`, and `ax-bench soak` JSON now emit this as a first-class field:
+  - `q5k_prefill_mode`
+- `ax-bench soak` summary now also prints:
+  - `PrefillPlan: ...`
+  - `Q5KPrefill: ...` when present
+- `ax-bench speculative` summary now also prints:
+  - `PrefillPlan: ...`
+  - `Q5KPrefill: ...` when present
+- `ax-bench speculative` also supports machine-readable artifacts now:
+  - `--json`
+  - `--json-output <path>`
+- If you are doing route A/B validation, record any forced override explicitly:
+  - `AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=base`
+  - `AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=small`
 
 ## `llama.cpp` Comparison Runs
 
@@ -191,6 +217,8 @@ One more invalid-comparison case:
 
 - if AX prefill fell back to `mode=serial reason=unsupported_quant:...` while `llama.cpp` stayed on its normal prompt fast path, do not treat the prefill delta as an apples-to-apples engine conclusion
 - in that case, the decode comparison is still useful, but the prefill comparison is mostly measuring AX's current `Q5_K` support boundary
+- if AX used `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`, do not compare that number against default AX results as if they were the same support level
+- if AX auto-used `q5k_prefill=experimental_small_n`, record that explicitly because it is narrower than the base experimental route
 
 ## Suggested Reporting Format
 
@@ -252,7 +280,7 @@ Recorded results:
 | Llama 3 8B Q4_K_M | 642.0 | 771.4 | 83.2% | 58.1 | 64.8 | 89.7% | `pipelined`, `attn=f16kv_hd128/stable` |
 | Llama 3 70B Q4_K_M | 70.1 | 71.4 | 98.2% | 8.0 | 7.1 | 112.7% | `pipelined`, `PrefillPlan=mode=gpu_batch`, `q5k_prefill=experimental` |
 | Qwen3 8B Q4_K_M | 631.4 | 664.8 | 95.0% | 55.1 | 59.8 | 92.1% | `pipelined`, `attn=f16kv_hd128/stable` |
-| Qwen3 14B Q4_K_M | 269.6 | 334.0 | 80.7% | 33.4 | 20.8 | 160.6% | `pipelined`, `attn=f16kv_hd128/stable` |
+| Qwen3 14B Q4_K_M | 251.0 | 334.4 | 75.1% | 18.1 | 21.8 | 82.9% | `pipelined`, `attn=f16kv_hd128/stable` |
 | Qwen3 32B Q4_K_M | 126.3 | 129.4 | 97.6% | 13.1 | 12.0 | 109.2% | `pipelined`, `attn=f16kv_hd128/stable` |
 
 `llama.cpp` values above are medians from `samples_ts` with `-fa 1`, `-ctk f16`, and `-ctv f16`. `AX vs llama.cpp` over `100%` means AX was faster.
@@ -263,6 +291,30 @@ Recorded results:
 - The published 70B row above records only the post-fix validation result with `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`.
 - The default AX path is intentionally excluded from the headline table because it is a fallback-path result, not a representative fast-path comparison.
 
+Experimental `Q5_K` prefill auto-routing snapshot:
+
+- `models/meta-llama-3.1-8b-instruct-q5_k_m.gguf`
+  - command shape:
+    - `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1 target/release/ax-bench bench --model ... --prompt-tokens 16 --decode-tokens 32 --warmup-iters 1 --measure-iters 1`
+  - result:
+    - `PrefillPlan: ... q5k_prefill=experimental_small_n`
+    - prefill `108.1 tok/s`
+    - decode `35.0 tok/s`
+- `models/meta-llama-3-70b-instruct.Q4_K_M.gguf`
+  - same command shape
+  - result:
+    - `PrefillPlan: ... q5k_prefill=experimental`
+    - prefill `27.0 tok/s`
+    - decode `8.2 tok/s`
+
+Interpretation:
+
+- AX currently auto-uses the small-`N` experimental route only on the
+  predominant-`Q5_K` 8B file
+- the mixed-quant 70B file stays on the base experimental route
+- benchmark records for experimental `Q5_K` prefill should include the exact
+  `q5k_prefill=...` label, not just the env var
+
 Interpretation:
 
 - Gemma 3 12B: `llama.cpp` led on prefill, decode was effectively tied.
@@ -270,7 +322,7 @@ Interpretation:
 - Llama 3 8B: `llama.cpp` led on both prefill and decode in this retest.
 - Llama 3 70B: with `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`, AX was close to `llama.cpp` on prefill and slightly ahead on decode in this local retest; the default fallback path is intentionally not treated as a headline benchmark row.
 - Qwen3 8B: `llama.cpp` led on both prefill and decode, but AX remained within the same general range.
-- Qwen3 14B: `llama.cpp` led clearly on prefill, while AX led materially on decode in this retest.
+- Qwen3 14B: `llama.cpp` led on both prefill and decode in this retest.
 - Qwen3 32B: prefill was close, with `llama.cpp` slightly ahead, while AX led modestly on decode.
 - Earlier local comparisons that omitted `-fa 1` for `llama.cpp` were not reliable enough to use as headline repo claims.
 

@@ -81,7 +81,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "ax-bench"
-version = "1.4.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "ax-core",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "ax-cli"
-version = "1.4.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "ax-core",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "ax-core"
-version = "1.4.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "ax-metal",
@@ -126,7 +126,7 @@ dependencies = [
 
 [[package]]
 name = "ax-engine-py"
-version = "1.4.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "ax-core",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "ax-metal"
-version = "1.4.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "half",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "ax-shim"
-version = "1.4.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "ax-core",

@@ -1,14 +1,45 @@
 pub mod cpu;
+pub mod kv_plan;
 pub mod metal;
 pub mod neon;
+pub mod policy;
 
 use crate::gguf::tensor::GgmlType;
+use crate::model::config::ModelConfig;
+
+pub use kv_plan::{
+    CpuKvPlan, GpuKvPlan, KvCapacityPolicy, KvPlan, KvPlanKind, KvPlanMemoryEstimate, KvPlanner,
+    KvPlannerRequirements, KvRollbackPolicy, Qwen35KvPlan,
+};
+pub use policy::{KvPrecisionPolicy, RuntimePolicy};
 
 /// Backend trait for compute dispatch.
 ///
 /// Provides matmul and fused dequant+matmul operations.
 /// CpuBackend uses Accelerate BLAS. MetalBackend offloads to GPU.
 pub trait Backend {
+    /// Configure backend-local model policy after GGUF metadata is available.
+    ///
+    /// CPU backends ignore this. Metal-backed implementations should treat
+    /// `model_name`, `quant`, and `architecture` as the source for any
+    /// backend-local policy resolution.
+    fn configure_for_model(
+        &self,
+        _model_name: &str,
+        _quant: &str,
+        _architecture: &str,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Return the resolved backend-local runtime policy when available.
+    ///
+    /// Metal-backed implementations use this to expose the typed policy object
+    /// that already owns routing and KV precision decisions.
+    fn runtime_policy(&self) -> Option<RuntimePolicy> {
+        None
+    }
+
     /// Matrix multiply: C = A × B (all f32, row-major).
     fn matmul(&self, a: &[f32], b: &[f32], c: &mut [f32], m: usize, n: usize, k: usize);
 
@@ -63,6 +94,92 @@ pub trait Backend {
     ) {
         let params = crate::compute::attention::AttentionParams::new(n_heads, n_kv_heads, head_dim);
         crate::compute::attention::multi_head_attention_prefill(q, k, v, output, n_tokens, &params);
+    }
+
+    /// Qwen3.5 recurrent GDN primitive for one or more sequence tokens.
+    ///
+    /// The default implementation uses the scalar CPU helper. GPU backends can
+    /// override this with sequence-aware recurrent kernels later.
+    #[allow(clippy::too_many_arguments)]
+    fn qwen35_recurrent_sequence(
+        &self,
+        qkv_batch: &[f32],
+        beta_batch: &mut [f32],
+        alpha_batch: &mut [f32],
+        dt_bias: &[f32],
+        a: &[f32],
+        conv_kernel: &[f32],
+        conv_state: &mut [f32],
+        recurrent_state: &mut [f32],
+        output_batch: &mut [f32],
+        n_tokens: usize,
+        cfg: crate::compute::gdn::Qwen35RecurrentConfig,
+    ) {
+        crate::compute::gdn::qwen35_recurrent_sequence(
+            qkv_batch,
+            beta_batch,
+            alpha_batch,
+            dt_bias,
+            a,
+            conv_kernel,
+            conv_state,
+            recurrent_state,
+            output_batch,
+            n_tokens,
+            cfg,
+        );
+    }
+
+    /// Qwen3.5 depthwise causal conv sequence primitive.
+    #[allow(clippy::too_many_arguments)]
+    fn qwen35_causal_conv_sequence(
+        &self,
+        input_batch: &[f32],
+        kernel: &[f32],
+        conv_state: &mut [f32],
+        output_batch: &mut [f32],
+        n_tokens: usize,
+        conv_cache_len: usize,
+        conv_dim: usize,
+    ) {
+        crate::compute::gdn::depthwise_conv1d_sequence(
+            input_batch,
+            kernel,
+            conv_state,
+            output_batch,
+            n_tokens,
+            conv_cache_len,
+            conv_dim,
+        );
+    }
+
+    /// Qwen3.5 gated-delta recurrence primitive.
+    #[allow(clippy::too_many_arguments)]
+    fn qwen35_gated_delta_sequence(
+        &self,
+        q_batch: &[f32],
+        k_batch: &[f32],
+        v_batch: &[f32],
+        gate_batch: &[f32],
+        beta_batch: &[f32],
+        recurrent_state: &mut [f32],
+        output_batch: &mut [f32],
+        n_tokens: usize,
+        n_heads: usize,
+        head_dim: usize,
+    ) {
+        crate::compute::gdn::gated_delta_rule_sequence(
+            q_batch,
+            k_batch,
+            v_batch,
+            gate_batch,
+            beta_batch,
+            recurrent_state,
+            output_batch,
+            n_tokens,
+            n_heads,
+            head_dim,
+        );
     }
 
     /// Access Metal GPU operations for GPU-accelerated forward pass dispatch.
@@ -123,63 +240,53 @@ pub fn create_backend(config: BackendConfig) -> anyhow::Result<Box<dyn Backend>>
     }
 }
 
-/// Create the `ModelKv` appropriate for a given backend configuration.
+/// Create the `ModelKv` appropriate for a given model/backend pair.
 ///
-/// The KV variant must match the backend's `use_gpu_decode()` return value —
-/// GPU decode requires `ModelKv::Gpu`, CPU decode requires `ModelKv::Cpu`.
-pub fn create_model_kv(
-    config: BackendConfig,
-    n_layers: usize,
-    n_kv_heads: usize,
-    head_dim: usize,
-    max_seq_len: usize,
-    page_size: usize,
-    device: Option<&ax_metal::MetalDevice>,
-) -> anyhow::Result<crate::kv::ModelKv> {
-    use crate::kv::gpu_kv::GpuKvDtype;
-    use crate::kv::page::{KvCacheConfig, KvDtype};
-    use crate::kv::{CpuKv, GpuKv, ModelKv};
-
-    match config {
-        BackendConfig::Cpu | BackendConfig::HybridCpuDecode => {
-            let cfg = KvCacheConfig {
-                n_layers,
-                n_kv_heads,
-                head_dim,
-                max_seq_len,
-                page_size,
-                dtype: KvDtype::F32,
-            };
-            Ok(ModelKv::Cpu(CpuKv::with_config(&cfg)))
-        }
-        BackendConfig::Metal | BackendConfig::Hybrid => {
-            let device =
-                device.ok_or_else(|| anyhow::anyhow!("Metal device required for GPU KV"))?;
-            // Auto-select f16 KV for long contexts (same policy as v1)
-            let dtype = match std::env::var("AX_METAL_F16_KV_CACHE").as_deref() {
-                Ok("off") => GpuKvDtype::F32,
-                Ok("on" | "1") => GpuKvDtype::F16,
-                _ /* auto */ => {
-                    if max_seq_len >= 256 { GpuKvDtype::F16 } else { GpuKvDtype::F32 }
-                }
-            };
-            let gpu_kv = GpuKv::new_with_dtype(
-                device,
-                n_layers,
-                n_kv_heads,
-                head_dim,
-                max_seq_len,
-                page_size,
-                dtype,
-            )?;
-            Ok(ModelKv::Gpu(gpu_kv))
-        }
-    }
+/// This is the single constructor path for current KV allocation semantics.
+/// The planner decides the variant and allocation policy; the plan then builds
+/// the final `ModelKv`, including the current GPU-allocation fallback to CPU.
+pub fn create_model_kv(backend: &dyn Backend, config: &ModelConfig) -> crate::kv::ModelKv {
+    KvPlanner::plan(backend, config).build(backend)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ModelConfig;
+    use crate::model::config::{GateActivation, RopeScaling};
+
+    fn test_model_config() -> ModelConfig {
+        ModelConfig {
+            architecture: "llama".into(),
+            n_layers: 32,
+            n_heads: 32,
+            n_kv_heads: 8,
+            embedding_dim: 4096,
+            head_dim: 128,
+            intermediate_dim: 11008,
+            context_length: 4096,
+            vocab_size: 32000,
+            rms_norm_eps: 1e-5,
+            rope_freq_base: 10000.0,
+            has_qkv_bias: false,
+            sliding_window_size: None,
+            sliding_window_pattern: None,
+            gate_activation: GateActivation::SiLU,
+            tie_word_embeddings: false,
+            logit_scale: None,
+            rope_scaling: RopeScaling::None,
+            embed_scale: false,
+            rope_freq_base_local: None,
+            n_expert: None,
+            n_expert_used: None,
+            qwen35_full_attention_interval: None,
+            qwen35_ssm_conv_kernel: None,
+            qwen35_ssm_inner_size: None,
+            qwen35_ssm_state_size: None,
+            qwen35_ssm_time_step_rank: None,
+            qwen35_ssm_group_count: None,
+        }
+    }
 
     #[test]
     fn test_backend_config_default() {
@@ -212,5 +319,12 @@ mod tests {
             backend.use_gpu_decode(),
             "Hybrid must return use_gpu_decode()=true"
         );
+    }
+
+    #[test]
+    fn test_create_model_kv_uses_cpu_kv_for_hybrid_cpu_decode() {
+        let backend = create_backend(BackendConfig::HybridCpuDecode).unwrap();
+        let kv = create_model_kv(backend.as_ref(), &test_model_config());
+        assert!(matches!(kv, crate::kv::ModelKv::Cpu(_)));
     }
 }

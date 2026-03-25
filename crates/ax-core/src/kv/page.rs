@@ -118,6 +118,42 @@ impl KvCacheConfig {
     }
 }
 
+/// Resolve the initial token capacity for a paged KV cache.
+///
+/// Current KV implementations allocate exactly one growth page up front unless
+/// the model's max context is smaller than that page.
+pub fn initial_token_capacity(page_size: usize, max_seq_len: usize) -> usize {
+    page_size.max(1).min(max_seq_len)
+}
+
+/// Resolve the capacity required to hold `needed` tokens under a paged-growth
+/// policy.
+///
+/// Returns `None` when `needed` exceeds `max_seq_len` or when the policy cannot
+/// make further progress.
+pub fn planned_capacity_for_needed(
+    current_capacity: usize,
+    needed: usize,
+    growth_tokens: usize,
+    max_seq_len: usize,
+) -> Option<usize> {
+    if needed > max_seq_len {
+        return None;
+    }
+
+    let growth_tokens = growth_tokens.max(1);
+    let mut capacity = current_capacity.max(initial_token_capacity(growth_tokens, max_seq_len));
+    while capacity < needed {
+        let next = (capacity + growth_tokens).min(max_seq_len);
+        if next == capacity {
+            return None;
+        }
+        capacity = next;
+    }
+
+    Some(capacity)
+}
+
 /// Recommend a page size (in tokens) based on model KV dimensions.
 ///
 /// Targets [`TARGET_PAGE_BYTES`] per page per K/V component per layer.
@@ -293,6 +329,12 @@ mod tests {
             rope_freq_base_local: None,
             n_expert: None,
             n_expert_used: None,
+            qwen35_full_attention_interval: None,
+            qwen35_ssm_conv_kernel: None,
+            qwen35_ssm_inner_size: None,
+            qwen35_ssm_state_size: None,
+            qwen35_ssm_time_step_rank: None,
+            qwen35_ssm_group_count: None,
         };
         let cfg = KvCacheConfig::from_model(&model);
         assert_eq!(cfg.n_layers, 32);
@@ -349,6 +391,26 @@ mod tests {
     }
 
     #[test]
+    fn test_initial_token_capacity_uses_one_page() {
+        assert_eq!(initial_token_capacity(64, 4096), 64);
+        assert_eq!(initial_token_capacity(64, 32), 32);
+        assert_eq!(initial_token_capacity(0, 32), 1);
+    }
+
+    #[test]
+    fn test_planned_capacity_for_needed_grows_in_page_steps() {
+        assert_eq!(planned_capacity_for_needed(64, 65, 64, 4096), Some(128));
+        assert_eq!(planned_capacity_for_needed(64, 191, 64, 4096), Some(192));
+        assert_eq!(planned_capacity_for_needed(64, 4096, 64, 4096), Some(4096));
+    }
+
+    #[test]
+    fn test_planned_capacity_for_needed_rejects_out_of_bounds_requests() {
+        assert_eq!(planned_capacity_for_needed(64, 4097, 64, 4096), None);
+        assert_eq!(planned_capacity_for_needed(4096, 4097, 64, 4096), None);
+    }
+
+    #[test]
     fn test_q8_auto_enable_large_model() {
         // Llama 7B: 32 layers, 8 kv_heads, 128 dim, 4096 ctx
         // F32 KV = 2 * 32 * 4096 * 8 * 128 * 4 = 1,073,741,824 = 1.07GB > 1GB → Q8
@@ -375,6 +437,12 @@ mod tests {
             rope_freq_base_local: None,
             n_expert: None,
             n_expert_used: None,
+            qwen35_full_attention_interval: None,
+            qwen35_ssm_conv_kernel: None,
+            qwen35_ssm_inner_size: None,
+            qwen35_ssm_state_size: None,
+            qwen35_ssm_time_step_rank: None,
+            qwen35_ssm_group_count: None,
         };
         let cfg = KvCacheConfig::from_model(&model);
         assert_eq!(
@@ -411,6 +479,12 @@ mod tests {
             rope_freq_base_local: None,
             n_expert: None,
             n_expert_used: None,
+            qwen35_full_attention_interval: None,
+            qwen35_ssm_conv_kernel: None,
+            qwen35_ssm_inner_size: None,
+            qwen35_ssm_state_size: None,
+            qwen35_ssm_time_step_rank: None,
+            qwen35_ssm_group_count: None,
         };
         let cfg = KvCacheConfig::from_model(&model);
         assert_eq!(cfg.dtype, KvDtype::F32, "small model should stay F32");

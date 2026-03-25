@@ -6,6 +6,30 @@ use memmap2::Mmap;
 use super::header::{GgufError, GgufHeader};
 use super::tensor::{GgmlType, TensorInfo};
 
+pub fn support_note_for_q5k_layer_presence(has_q5k_layer_weights: bool) -> Option<&'static str> {
+    if has_q5k_layer_weights {
+        Some(
+            "Q5_K support defaults to decode-only baseline: GPU prefill/batch stays disabled unless AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1 enables the experimental path, and profile tuning is not exposed yet.",
+        )
+    } else {
+        None
+    }
+}
+
+fn is_active_layer_weight_name(name: &str) -> bool {
+    const LAYER_SUFFIXES: &[&str] = &[
+        "attn_q.weight",
+        "attn_k.weight",
+        "attn_v.weight",
+        "attn_output.weight",
+        "ffn_gate.weight",
+        "ffn_up.weight",
+        "ffn_down.weight",
+    ];
+
+    name.starts_with("blk.") && LAYER_SUFFIXES.iter().any(|suffix| name.ends_with(suffix))
+}
+
 /// A memory-mapped GGUF model file.
 ///
 /// Provides zero-copy access to tensor data via mmap. The entire file is
@@ -166,6 +190,16 @@ impl MappedModel {
             .max_by_key(|(_, bytes)| *bytes)
             .map(|(dtype, _)| dtype)
     }
+
+    pub fn uses_layer_quant(&self, dtype: GgmlType) -> bool {
+        self.tensors
+            .iter()
+            .any(|tensor| tensor.dtype == dtype && is_active_layer_weight_name(&tensor.name))
+    }
+
+    pub fn support_note(&self) -> Option<&'static str> {
+        support_note_for_q5k_layer_presence(self.uses_layer_quant(GgmlType::Q5K))
+    }
 }
 
 /// Round `offset` up to the next multiple of `alignment`.
@@ -194,6 +228,32 @@ mod tests {
     #[test]
     fn test_align_up_zero() {
         assert_eq!(align_up(42, 0), 42);
+    }
+
+    #[test]
+    fn test_support_note_for_q5k_layer_presence_marks_q5k_decode_only() {
+        assert!(
+            support_note_for_q5k_layer_presence(true)
+                .unwrap()
+                .contains("decode-only baseline")
+        );
+        assert_eq!(support_note_for_q5k_layer_presence(false), None);
+    }
+
+    #[test]
+    fn test_is_active_layer_weight_name_matches_transformer_projection_weights() {
+        assert!(is_active_layer_weight_name("blk.0.attn_q.weight"));
+        assert!(is_active_layer_weight_name("blk.10.attn_v.weight"));
+        assert!(is_active_layer_weight_name("blk.31.ffn_down.weight"));
+    }
+
+    #[test]
+    fn test_is_active_layer_weight_name_excludes_non_layer_or_non_projection_tensors() {
+        assert!(!is_active_layer_weight_name("token_embd.weight"));
+        assert!(!is_active_layer_weight_name("output.weight"));
+        assert!(!is_active_layer_weight_name("blk.0.attn_norm.weight"));
+        assert!(!is_active_layer_weight_name("blk.0.ffn_norm.weight"));
+        assert!(!is_active_layer_weight_name("blk.0.attn_q.bias"));
     }
 
     /// Build a complete GGUF file in memory with header, metadata, tensor info, and tensor data.

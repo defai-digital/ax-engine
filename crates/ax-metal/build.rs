@@ -14,13 +14,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
-const METAL_SOURCES: [&str; 5] = [
-    "attention",
-    "dequant",
-    "elementwise",
-    "gdn",
-    "matmul",
-];
+const METAL_SOURCES: [&str; 5] = ["attention", "dequant", "elementwise", "gdn", "matmul"];
 
 fn main() {
     // Track changes to shader sources.

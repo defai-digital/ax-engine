@@ -190,6 +190,7 @@ Current limitation:
 - `--stop` and `--stop-token-id` are not supported together with speculative decoding
 - `--allow-token-id` is not supported together with speculative decoding
 - `--ban-token-id` is not supported together with speculative decoding
+- `--logit-bias` is not supported together with speculative decoding
 
 ## 11. Benchmarking
 
@@ -203,6 +204,35 @@ Run the benchmark tool after a release build:
 
 Use these to compare models, inspect decode mode behavior, and catch stability regressions.
 
+If you need machine-readable artifacts, the same commands support JSON output:
+
+```bash
+./target/release/ax-bench bench \
+  --model ./models/<model>.gguf \
+  --json \
+  --json-output /tmp/ax-bench.json
+
+./target/release/ax-bench speculative \
+  --model ./models/<target>.gguf \
+  --draft-model ./models/<draft>.gguf \
+  --json \
+  --json-output /tmp/ax-spec.json
+```
+
+For experimental `Q5_K` prefill runs, these artifacts now also carry the
+prefill route explicitly:
+
+- `prefill_plan`
+- `q5k_prefill_mode` when present
+
+This applies to:
+
+- `ax-bench bench`
+- `ax-bench profile`
+- `ax-bench soak`
+
+For apples-to-apples AX vs `llama.cpp` comparisons, repeated-run guidance, and reporting rules, see [BENCHMARKING.md](./BENCHMARKING.md).
+
 ## 12. Troubleshooting
 
 ### Build fails because Metal tooling is missing
@@ -214,6 +244,57 @@ xcode-select -p
 ```
 
 If needed, install Xcode and open it once.
+
+### Bench or CLI shows `PrefillPlan: mode=serial reason=unsupported_quant:...`
+
+This means AX found an active layer tensor that does not yet have a GPU
+batch/prefill kernel path, so prefill fell back to the serial path on purpose.
+
+Example:
+
+```text
+PrefillPlan: mode=serial reason=unsupported_quant:blk.10.attn_v.weight:Q5K
+Support: Q5_K support defaults to decode-only baseline...
+```
+
+Interpretation:
+
+- decode can still use the landed `Q5_K` GPU path
+- prefill is not using the normal GPU fast path for this model
+- the tensor and dtype after `unsupported_quant:` tell you exactly what blocked it
+
+Today this is expected for mixed-quant models with active `Q5_K` layer tensors,
+because `Q5_K` support defaults to decode-only baseline, not full GPU prefill support.
+
+If you are deliberately testing the experimental AX-native path, set:
+
+```bash
+AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1
+```
+
+That route is conservative, opt-in, and not profile-tuned yet.
+
+Current experimental auto-routing behavior:
+
+- AX only auto-selects the small-`N` `Q5_K` prefill route when the model is
+  predominantly `Q5_K` and the prompt batch is small (`<= 32` tokens)
+- mixed-quant files can still stay on the base experimental route even when the
+  env var is set
+
+If you are doing validation A/B runs, you can force the route:
+
+```bash
+AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1 \
+AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=base \
+./target/release/ax-bench bench --model ./models/<model>.gguf
+
+AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1 \
+AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=small \
+./target/release/ax-bench bench --model ./models/<model>.gguf
+```
+
+The variant override is for validation only. It is not a recommended permanent
+user tuning surface.
 
 ### The model runs badly or incorrectly on M1 or M2
 

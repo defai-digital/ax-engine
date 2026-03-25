@@ -25,6 +25,24 @@ pub(super) fn experimental_q5k_prefill_enabled() -> bool {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ExperimentalQ5KPrefillVariantOverride {
+    Auto,
+    Base,
+    Small,
+}
+
+pub(super) fn experimental_q5k_prefill_variant_override() -> ExperimentalQ5KPrefillVariantOverride {
+    match std::env::var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT") {
+        Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "base" => ExperimentalQ5KPrefillVariantOverride::Base,
+            "small" => ExperimentalQ5KPrefillVariantOverride::Small,
+            _ => ExperimentalQ5KPrefillVariantOverride::Auto,
+        },
+        Err(_) => ExperimentalQ5KPrefillVariantOverride::Auto,
+    }
+}
+
 fn gpu_decode_quant_dtype_supported(dtype: GgmlType) -> bool {
     matches!(
         dtype,
@@ -71,6 +89,22 @@ pub(super) fn gpu_prefill_uses_experimental_q5k(weights: &WeightStore) -> bool {
         });
     }
     uses_experimental_q5k
+}
+
+pub(super) fn gpu_prefill_experimental_q5k_small_n_auto_eligible(weights: &WeightStore) -> bool {
+    q5k_prefill_small_n_auto_eligible_for_model(
+        weights.predominant_quant(),
+        any_layers_match(weights, LAYER_SUFFIXES, |dtype| dtype == GgmlType::Q5K),
+    )
+}
+
+fn q5k_prefill_small_n_auto_eligible_for_model(
+    predominant_quant: Option<GgmlType>,
+    has_q5k_layer_weights: bool,
+) -> bool {
+    experimental_q5k_prefill_enabled()
+        && has_q5k_layer_weights
+        && predominant_quant == Some(GgmlType::Q5K)
 }
 
 /// Return true when a quantized LM head can use the existing batched GPU matmul path.
@@ -305,6 +339,7 @@ pub(super) fn encode_dequant_batch(
     dtype: GgmlType,
     use_f16_io: bool,
     use_batch_simd: bool,
+    use_q5k_small_n: bool,
 ) {
     if use_batch_simd {
         match dtype {
@@ -351,7 +386,11 @@ pub(super) fn encode_dequant_batch(
                 dequant.encode_fused_batch_q4_k(encoder, weight, input, output, m, n, k)
             }
             GgmlType::Q5K if experimental_q5k_prefill_enabled() => {
-                dequant.encode_fused_batch_q5_k(encoder, weight, input, output, m, n, k)
+                if use_q5k_small_n {
+                    dequant.encode_fused_batch_q5_k_small(encoder, weight, input, output, m, n, k)
+                } else {
+                    dequant.encode_fused_batch_q5_k(encoder, weight, input, output, m, n, k)
+                }
             }
             GgmlType::Q6K => {
                 dequant.encode_fused_batch_q6_k(encoder, weight, input, output, m, n, k)
@@ -495,6 +534,7 @@ pub(super) fn encode_batch_logits(
                     dtype,
                     false,
                     use_batch_simd,
+                    false,
                 );
             }
         }
@@ -576,6 +616,50 @@ mod tests {
             assert!(gpu_decode_quant_dtype_supported(GgmlType::Q5K));
             assert!(gpu_prefill_quant_dtype_supported(GgmlType::Q5K));
             assert!(!gpu_batch_logits_dtype_supported(GgmlType::Q5K));
+        });
+    }
+
+    #[test]
+    fn test_experimental_q5k_prefill_variant_override_parses_known_values() {
+        assert_eq!(
+            experimental_q5k_prefill_variant_override(),
+            ExperimentalQ5KPrefillVariantOverride::Auto
+        );
+        with_env_var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", "base", || {
+            assert_eq!(
+                experimental_q5k_prefill_variant_override(),
+                ExperimentalQ5KPrefillVariantOverride::Base
+            );
+        });
+        with_env_var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", "small", || {
+            assert_eq!(
+                experimental_q5k_prefill_variant_override(),
+                ExperimentalQ5KPrefillVariantOverride::Small
+            );
+        });
+        with_env_var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", "auto", || {
+            assert_eq!(
+                experimental_q5k_prefill_variant_override(),
+                ExperimentalQ5KPrefillVariantOverride::Auto
+            );
+        });
+    }
+
+    #[test]
+    fn test_q5k_prefill_small_n_auto_eligible_for_predominant_q5k_models_only() {
+        with_env_var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL", "1", || {
+            assert!(q5k_prefill_small_n_auto_eligible_for_model(
+                Some(GgmlType::Q5K),
+                true
+            ));
+            assert!(!q5k_prefill_small_n_auto_eligible_for_model(
+                Some(GgmlType::Q4K),
+                true
+            ));
+            assert!(!q5k_prefill_small_n_auto_eligible_for_model(
+                Some(GgmlType::Q5K),
+                false
+            ));
         });
     }
 

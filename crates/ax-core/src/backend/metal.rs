@@ -5,7 +5,7 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use super::Backend;
+use super::{Backend, RuntimePolicy};
 use crate::gguf::tensor::GgmlType;
 use anyhow::Context;
 
@@ -13,7 +13,7 @@ use anyhow::Context;
 use crate::model::config::ModelConfig;
 use ax_metal::{
     AttentionDispatchConfig, AttentionKernels, DequantDispatchConfig, DequantKernels,
-    ElementwiseKernels, GdnKernels, KernelProfile, MatmulKernels, MetalBuffer, MetalDevice,
+    ElementwiseKernels, GdnKernels, MatmulKernels, MetalBuffer, MetalDevice,
 };
 
 fn metal_profile_llama() -> bool {
@@ -24,74 +24,13 @@ fn metal_profile_llama() -> bool {
     })
 }
 
-fn normalized_arch_name(arch: &str) -> &str {
-    match arch {
-        "llama" => "llama",
-        "qwen2" | "qwen3" => "qwen3",
-        "qwen35" => "qwen35",
-        "gemma" | "gemma2" | "gemma3" => "gemma3",
-        _ => arch,
-    }
-}
-
-fn parse_bool_toggle(v: &str) -> Option<bool> {
-    let v = v.trim().to_ascii_lowercase();
-    if v == "1" || v == "true" || v == "on" {
-        Some(true)
-    } else if v == "0" || v == "false" || v == "off" {
-        Some(false)
-    } else {
-        None
-    }
-}
-
-fn env_bool_with_arch_override(base: &str, arch: &str) -> Option<bool> {
-    let arch_key = format!("{base}_{}", normalized_arch_name(arch).to_ascii_uppercase());
-    if let Ok(v) = std::env::var(&arch_key) {
-        return parse_bool_toggle(&v);
-    }
-    std::env::var(base).ok().and_then(|v| parse_bool_toggle(&v))
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AutoToggle {
-    Off,
-    On,
-    Auto,
-}
-
-fn parse_auto_toggle(v: &str) -> Option<AutoToggle> {
-    let v = v.trim().to_ascii_lowercase();
-    match v.as_str() {
-        "1" | "true" | "on" => Some(AutoToggle::On),
-        "0" | "false" | "off" => Some(AutoToggle::Off),
-        "auto" => Some(AutoToggle::Auto),
-        _ => None,
-    }
-}
-
-fn env_auto_toggle_with_arch_override(base: &str, arch: &str) -> Option<AutoToggle> {
-    let arch_key = format!("{base}_{}", normalized_arch_name(arch).to_ascii_uppercase());
-    if let Ok(v) = std::env::var(&arch_key) {
-        return parse_auto_toggle(&v);
-    }
-    std::env::var(base).ok().and_then(|v| parse_auto_toggle(&v))
-}
-
 /// Whether native Q8_0 batch dequant matmul kernel is enabled.
 ///
 /// Controlled by `AX_METAL_Q8_BATCH_NATIVE`:
 /// - `1` / `true` / `on` -> enabled
 /// - unset / any other value -> disabled (default)
 pub fn metal_q8_batch_native_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_Q8_BATCH_NATIVE") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true" || v == "on"
-        }
-        Err(_) => false,
-    })
+    RuntimePolicy::resolved_defaults().q8_batch_native_enabled()
 }
 
 /// Whether native Q8_0 batch kernel should be used for a specific shape.
@@ -103,23 +42,7 @@ pub fn metal_q8_batch_native_enabled() -> bool {
 /// - `AX_METAL_Q8_NATIVE_K_MIN` (default: 0)
 /// - `AX_METAL_Q8_NATIVE_K_MAX` (default: u32::MAX)
 pub fn metal_q8_batch_native_shape_enabled(m: u32, _n: u32, k: u32) -> bool {
-    if !metal_q8_batch_native_enabled() {
-        return false;
-    }
-
-    let parse_u32 = |key: &str, default: u32| -> u32 {
-        std::env::var(key)
-            .ok()
-            .and_then(|v| v.trim().parse::<u32>().ok())
-            .unwrap_or(default)
-    };
-
-    let m_min = parse_u32("AX_METAL_Q8_NATIVE_M_MIN", 0);
-    let m_max = parse_u32("AX_METAL_Q8_NATIVE_M_MAX", u32::MAX);
-    let k_min = parse_u32("AX_METAL_Q8_NATIVE_K_MIN", 0);
-    let k_max = parse_u32("AX_METAL_Q8_NATIVE_K_MAX", u32::MAX);
-
-    m >= m_min && m <= m_max && k >= k_min && k <= k_max
+    RuntimePolicy::resolved_defaults().q8_batch_native_shape_enabled(m, 1, k)
 }
 
 /// Whether fused QKV prefill matmul path is enabled.
@@ -128,14 +51,7 @@ pub fn metal_q8_batch_native_shape_enabled(m: u32, _n: u32, k: u32) -> bool {
 /// - unset -> enabled (default)
 /// - `0` / `false` / `off` -> disabled
 pub fn metal_fused_qkv_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_FUSED_QKV") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            !(v == "0" || v == "false" || v == "off")
-        }
-        Err(_) => true,
-    })
+    RuntimePolicy::resolved_defaults().fused_qkv_prefill_enabled()
 }
 
 /// Per-architecture override for fused QKV prefill path.
@@ -145,7 +61,7 @@ pub fn metal_fused_qkv_enabled() -> bool {
 /// 2) `AX_METAL_FUSED_QKV`
 /// 3) built-in default (`true`)
 pub fn metal_fused_qkv_enabled_for_arch(arch: &str) -> bool {
-    env_bool_with_arch_override("AX_METAL_FUSED_QKV", arch).unwrap_or(true)
+    RuntimePolicy::for_model("default", "default", arch).fused_qkv_prefill_enabled()
 }
 
 /// Per-architecture override for experimental decode-side fused QKV path.
@@ -159,7 +75,7 @@ pub fn metal_fused_qkv_enabled_for_arch(arch: &str) -> bool {
 /// 2) `AX_METAL_DECODE_FUSED_QKV`
 /// 3) built-in default (`false`)
 pub fn metal_decode_fused_qkv_enabled_for_arch(arch: &str) -> bool {
-    env_bool_with_arch_override("AX_METAL_DECODE_FUSED_QKV", arch).unwrap_or(false)
+    RuntimePolicy::for_model("default", "default", arch).decode_fused_qkv_enabled()
 }
 
 /// Per-architecture override for simd-sum batch kernels.
@@ -168,8 +84,7 @@ pub fn metal_decode_fused_qkv_enabled_for_arch(arch: &str) -> bool {
 /// 1) `AX_METAL_BATCH_SIMD_<ARCH>`
 /// 2) `AX_METAL_BATCH_SIMD` (via `ax_metal::batch_simd_enabled()`)
 pub fn metal_batch_simd_enabled_for_arch(arch: &str) -> bool {
-    env_bool_with_arch_override("AX_METAL_BATCH_SIMD", arch)
-        .unwrap_or_else(ax_metal::batch_simd_enabled)
+    RuntimePolicy::for_model("default", "default", arch).batch_simd_enabled()
 }
 
 /// Whether runtime kernel autotuning is enabled.
@@ -179,14 +94,7 @@ pub fn metal_batch_simd_enabled_for_arch(arch: &str) -> bool {
 /// - unset -> disabled (default)
 /// - `0` / `false` / `off` -> disabled
 pub fn metal_autotune_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_AUTOTUNE") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true" || v == "on"
-        }
-        Err(_) => false,
-    })
+    RuntimePolicy::resolved_defaults().autotune_f16in_batch_route_enabled()
 }
 
 /// Resolve whether GPU KV cache should use f16 storage for this model.
@@ -196,23 +104,8 @@ pub fn metal_autotune_enabled() -> bool {
 /// - `0` / `false` / `off` -> force disable
 /// - `auto` or unset       -> enable when context length >= 256
 pub fn metal_f16_kv_cache_enabled(context_len: usize) -> bool {
-    match std::env::var("AX_METAL_F16_KV_CACHE") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            if v == "1" || v == "true" || v == "on" {
-                true
-            } else if v == "0" || v == "false" || v == "off" {
-                false
-            } else {
-                context_len >= 256
-            }
-        }
-        // Profile and default both use context-aware auto mode.
-        Err(_) => {
-            let _ = metal_profile_llama();
-            context_len >= 256
-        }
-    }
+    let _ = metal_profile_llama();
+    RuntimePolicy::resolved_defaults().uses_f16_gpu_kv(context_len)
 }
 
 /// Whether load-time precomputed dense f16 decode weights should be used for a model.
@@ -226,16 +119,7 @@ pub fn metal_f16_kv_cache_enabled(context_len: usize) -> bool {
 /// stays conservative until a clean, uncontended release-benchmark win is
 /// established for a model family.
 pub fn metal_precompute_f16_enabled_for_model(config: &ModelConfig) -> bool {
-    match env_auto_toggle_with_arch_override("AX_PRECOMPUTE_F16", &config.architecture)
-        .unwrap_or(AutoToggle::Auto)
-    {
-        AutoToggle::Off => false,
-        AutoToggle::On => true,
-        AutoToggle::Auto => {
-            let _ = config;
-            false
-        }
-    }
+    RuntimePolicy::for_model("default", "default", &config.architecture).precompute_f16_enabled()
 }
 
 /// Metal compute backend — offloads matmul to GPU.
@@ -328,10 +212,19 @@ impl MetalBackend {
 }
 
 impl Backend for MetalBackend {
-    fn configure_for_model(&self, model_name: &str, quant: &str) -> anyhow::Result<()> {
-        let profile = KernelProfile::load(model_name, quant);
-        self.ops.apply_kernel_profile(profile);
+    fn configure_for_model(
+        &self,
+        model_name: &str,
+        quant: &str,
+        architecture: &str,
+    ) -> anyhow::Result<()> {
+        self.ops
+            .apply_runtime_policy(RuntimePolicy::for_model(model_name, quant, architecture));
         Ok(())
+    }
+
+    fn runtime_policy(&self) -> Option<RuntimePolicy> {
+        Some(self.ops.runtime_policy())
     }
 
     fn matmul(&self, a: &[f32], b: &[f32], c: &mut [f32], m: usize, n: usize, k: usize) {
@@ -380,6 +273,10 @@ impl Backend for MetalBackend {
                 }
                 GgmlType::Q4K => {
                     self.fused_matvec_q4_k(a_quant, b, c, m, k);
+                    return;
+                }
+                GgmlType::Q5K => {
+                    self.fused_matvec_q5_k(a_quant, b, c, m, k);
                     return;
                 }
                 GgmlType::Q6K => {
@@ -442,6 +339,7 @@ impl Backend for MetalBackend {
             && (first_dtype == GgmlType::Q4_0
                 || first_dtype == GgmlType::Q8_0
                 || first_dtype == GgmlType::Q4K
+                || first_dtype == GgmlType::Q5K
                 || first_dtype == GgmlType::Q6K)
             && ops.iter().all(|(_, _, _)| true); // n=1 implied
 
@@ -510,6 +408,17 @@ impl Backend for MetalBackend {
                         }
                         GgmlType::Q4K => {
                             self.dequant_kernels.encode_fused_matvec_q4_k_with_config(
+                                encoder,
+                                buf_a,
+                                buf_x,
+                                &output_bufs[i],
+                                *m as u32,
+                                k as u32,
+                                dispatch_config,
+                            );
+                        }
+                        GgmlType::Q5K => {
+                            self.dequant_kernels.encode_fused_matvec_q5_k_with_config(
                                 encoder,
                                 buf_a,
                                 buf_x,
@@ -823,6 +732,38 @@ impl MetalBackend {
         }
     }
 
+    fn fused_matvec_q5_k(&self, a_quant: &[u8], x: &[f32], y: &mut [f32], m: usize, k: usize) {
+        let y_bytes = m * std::mem::size_of::<f32>();
+        let input_guard = self.prepare_input(x);
+        let output_guard = self.prepare_output(y_bytes);
+
+        let key = a_quant.as_ptr() as usize;
+        let cache = self.get_weight_buffer(a_quant);
+        let buf_a = cache.get(&key).unwrap();
+
+        self.dequant_kernels
+            .fused_matvec_q5_k_with_config(
+                &self.device,
+                buf_a,
+                input_guard.0.as_ref().unwrap(),
+                output_guard.0.as_ref().unwrap(),
+                m as u32,
+                k as u32,
+                self.ops.dequant_dispatch_config(),
+            )
+            .expect("Metal fused Q5_K matvec failed");
+
+        drop(cache);
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                output_guard.0.as_ref().unwrap().contents().as_ptr() as *const f32,
+                y.as_mut_ptr(),
+                m,
+            );
+        }
+    }
+
     fn fused_matvec_q6_k(&self, a_quant: &[u8], x: &[f32], y: &mut [f32], m: usize, k: usize) {
         let y_bytes = m * std::mem::size_of::<f32>();
         let input_guard = self.prepare_input(x);
@@ -970,12 +911,8 @@ pub struct MetalOps {
     pub dequant: DequantKernels,
     pub attention: AttentionKernels,
     pub matmul: MatmulKernels,
-    /// Backend-local kernel profile for this model/backend instance.
-    model_profile: RwLock<KernelProfile>,
-    /// Snapshot of dequant dispatch tuning derived from `model_profile`.
-    dequant_dispatch: RwLock<DequantDispatchConfig>,
-    /// Snapshot of attention dispatch tuning derived from `model_profile`.
-    attention_dispatch: RwLock<AttentionDispatchConfig>,
+    /// Backend-local runtime policy for this model/backend instance.
+    runtime_policy: RwLock<RuntimePolicy>,
     /// Cache of f32 weight tensors as MetalBuffers (norm weights, bias vectors).
     f32_weight_cache: Mutex<FxHashMap<usize, MetalBuffer>>,
     /// Cache of fused QKV quantized buffers keyed by (wq_ptr, wk_ptr, wv_ptr).
@@ -1003,18 +940,14 @@ impl MetalOps {
         let dequant = DequantKernels::new(&device)?;
         let attention = AttentionKernels::new(&device)?;
         let matmul = MatmulKernels::new(&device)?;
-        let profile = KernelProfile::default();
-        let dequant_dispatch = DequantDispatchConfig::from_profile(&profile);
-        let attention_dispatch = AttentionDispatchConfig::from_profile(&profile);
+        let runtime_policy = RuntimePolicy::resolved_defaults();
         Ok(Self {
             device,
             elementwise,
             dequant,
             attention,
             matmul,
-            model_profile: RwLock::new(profile),
-            dequant_dispatch: RwLock::new(dequant_dispatch),
-            attention_dispatch: RwLock::new(attention_dispatch),
+            runtime_policy: RwLock::new(runtime_policy),
             f32_weight_cache: Mutex::new(FxHashMap::default()),
             fused_qkv_weight_cache: Mutex::new(FxHashMap::default()),
             precomputed_f16_weight_cache: Mutex::new(FxHashMap::default()),
@@ -1025,40 +958,76 @@ impl MetalOps {
         })
     }
 
-    pub fn apply_kernel_profile(&self, profile: KernelProfile) {
-        let dispatch = DequantDispatchConfig::from_profile(&profile);
-        let attention_dispatch = AttentionDispatchConfig::from_profile(&profile);
-        *self.model_profile.write().unwrap() = profile;
-        *self.dequant_dispatch.write().unwrap() = dispatch;
-        *self.attention_dispatch.write().unwrap() = attention_dispatch;
+    pub fn apply_runtime_policy(&self, runtime_policy: RuntimePolicy) {
+        *self.runtime_policy.write().unwrap() = runtime_policy;
+    }
+
+    pub fn runtime_policy(&self) -> RuntimePolicy {
+        self.runtime_policy.read().unwrap().clone()
     }
 
     pub fn dequant_dispatch_config(&self) -> DequantDispatchConfig {
-        *self.dequant_dispatch.read().unwrap()
+        self.runtime_policy
+            .read()
+            .unwrap()
+            .dequant_dispatch_config()
     }
 
     pub fn attention_dispatch_config(&self) -> AttentionDispatchConfig {
-        *self.attention_dispatch.read().unwrap()
+        self.runtime_policy
+            .read()
+            .unwrap()
+            .attention_dispatch_config()
     }
 
-    pub fn metal_batch_f16_io_enabled_for_arch(&self, arch: &str) -> bool {
-        env_bool_with_arch_override("AX_METAL_BATCH_F16_IO", arch).unwrap_or_else(|| {
-            self.model_profile
-                .read()
-                .unwrap()
-                .batch_prefill
-                .prefer_f16_io
-        })
+    pub fn metal_batch_f16_io_enabled(&self) -> bool {
+        self.runtime_policy
+            .read()
+            .unwrap()
+            .batch_prefill_prefers_f16_io()
     }
 
-    pub fn metal_batch_f16_pair_enabled_for_arch(&self, arch: &str) -> bool {
-        env_bool_with_arch_override("AX_METAL_BATCH_F16_PAIR", arch).unwrap_or_else(|| {
-            self.model_profile
-                .read()
-                .unwrap()
-                .batch_prefill
-                .prefer_pair_kernel
-        })
+    pub fn metal_batch_f16_pair_enabled(&self) -> bool {
+        self.runtime_policy
+            .read()
+            .unwrap()
+            .batch_prefill_prefers_pair_kernel()
+    }
+
+    pub fn metal_fused_qkv_enabled(&self) -> bool {
+        self.runtime_policy
+            .read()
+            .unwrap()
+            .fused_qkv_prefill_enabled()
+    }
+
+    pub fn metal_decode_fused_qkv_enabled(&self) -> bool {
+        self.runtime_policy
+            .read()
+            .unwrap()
+            .decode_fused_qkv_enabled()
+    }
+
+    pub fn metal_batch_simd_enabled(&self) -> bool {
+        self.runtime_policy.read().unwrap().batch_simd_enabled()
+    }
+
+    pub fn metal_precompute_f16_enabled(&self) -> bool {
+        self.runtime_policy.read().unwrap().precompute_f16_enabled()
+    }
+
+    pub fn metal_autotune_enabled(&self) -> bool {
+        self.runtime_policy
+            .read()
+            .unwrap()
+            .autotune_f16in_batch_route_enabled()
+    }
+
+    pub fn metal_q8_batch_native_shape_enabled(&self, m: u32, n: u32, k: u32) -> bool {
+        self.runtime_policy
+            .read()
+            .unwrap()
+            .q8_batch_native_shape_enabled(m, n, k)
     }
 
     /// Initialize scratch buffers sized to the model config.
@@ -1196,7 +1165,7 @@ impl MetalOps {
     }
 
     fn maybe_autotune_f16in_batch_route(&self, config: &ModelConfig) {
-        if !metal_autotune_enabled() {
+        if !self.metal_autotune_enabled() {
             return;
         }
         if self.f16in_route_tuned.load(Ordering::Relaxed) {
@@ -1223,7 +1192,8 @@ impl MetalOps {
             }
         }
 
-        let old_config = self.dequant_dispatch_config();
+        let old_policy = self.runtime_policy();
+        let old_config = old_policy.dequant_dispatch_config();
         let (n_threshold, m_max) = if wins.is_empty() {
             (1u32, 0u32)
         } else {
@@ -1234,7 +1204,7 @@ impl MetalOps {
         let mut tuned = old_config;
         tuned.batch_f16in_small_n_threshold = n_threshold;
         tuned.batch_f16in_small_m_max = m_max;
-        *self.dequant_dispatch.write().unwrap() = tuned;
+        self.apply_runtime_policy(old_policy.with_dequant_dispatch(tuned));
         self.f16in_route_tuned.store(true, Ordering::Relaxed);
         tracing::info!(
             old_n_threshold = old_config.batch_f16in_small_n_threshold,
@@ -1765,8 +1735,18 @@ impl HybridBackend {
 }
 
 impl Backend for HybridBackend {
-    fn configure_for_model(&self, model_name: &str, quant: &str) -> anyhow::Result<()> {
-        self.metal.configure_for_model(model_name, quant)
+    fn configure_for_model(
+        &self,
+        model_name: &str,
+        quant: &str,
+        architecture: &str,
+    ) -> anyhow::Result<()> {
+        self.metal
+            .configure_for_model(model_name, quant, architecture)
+    }
+
+    fn runtime_policy(&self) -> Option<RuntimePolicy> {
+        self.metal.runtime_policy()
     }
 
     fn matmul(&self, a: &[f32], b: &[f32], c: &mut [f32], m: usize, n: usize, k: usize) {
@@ -1914,8 +1894,18 @@ impl HybridCpuDecodeBackend {
 }
 
 impl Backend for HybridCpuDecodeBackend {
-    fn configure_for_model(&self, model_name: &str, quant: &str) -> anyhow::Result<()> {
-        self.metal.configure_for_model(model_name, quant)
+    fn configure_for_model(
+        &self,
+        model_name: &str,
+        quant: &str,
+        architecture: &str,
+    ) -> anyhow::Result<()> {
+        self.metal
+            .configure_for_model(model_name, quant, architecture)
+    }
+
+    fn runtime_policy(&self) -> Option<RuntimePolicy> {
+        self.metal.runtime_policy()
     }
 
     fn matmul(&self, a: &[f32], b: &[f32], c: &mut [f32], m: usize, n: usize, k: usize) {
@@ -2141,6 +2131,57 @@ mod tests {
     }
 
     #[test]
+    fn test_metal_backend_fused_q5_k_matvec() {
+        let backend = MetalBackend::new().unwrap();
+
+        let m = 4;
+        let k = 512;
+        let blocks_per_row = k / 256;
+
+        let mut quant_data = Vec::new();
+        for row in 0..m {
+            for blk in 0..blocks_per_row {
+                let mut block = vec![0u8; 176];
+                let d_val = (row as f32 + 1.0) * 0.05 + blk as f32 * 0.02;
+                let d_bytes = half::f16::from_f32(d_val).to_le_bytes();
+                block[0] = d_bytes[0];
+                block[1] = d_bytes[1];
+                let dmin_val = (blk as f32) * 0.01;
+                let dmin_bytes = half::f16::from_f32(dmin_val).to_le_bytes();
+                block[2] = dmin_bytes[0];
+                block[3] = dmin_bytes[1];
+                for i in 0..8 {
+                    block[4 + (i % 4)] = ((row + i) % 8 + 1) as u8;
+                    block[8 + (i % 4)] = ((blk + i) % 4) as u8;
+                }
+                for (i, b) in block[16..48].iter_mut().enumerate() {
+                    *b = ((row * 5 + blk * 3 + i) % 256) as u8;
+                }
+                for (i, b) in block[48..176].iter_mut().enumerate() {
+                    *b = ((row * 11 + blk * 7 + i) % 256) as u8;
+                }
+                quant_data.extend(block);
+            }
+        }
+
+        let x: Vec<f32> = (0..k).map(|i| ((i as f32) * 0.01) - 2.56).collect();
+
+        let mut weights = vec![0.0f32; m * k];
+        crate::quant::q5_k::dequantize(&quant_data, &mut weights);
+        let mut expected = vec![0.0f32; m];
+        crate::compute::matmul::matmul_f32(&weights, &x, &mut expected, m, 1, k);
+
+        let mut result = vec![0.0f32; m];
+        backend.dequant_matmul(&quant_data, GgmlType::Q5K, &x, &mut result, m, 1, k);
+
+        let diff = max_abs_diff(&result, &expected);
+        assert!(
+            diff < 0.5,
+            "Fused Q5_K matvec mismatch: max_diff={diff}, result={result:?}, expected={expected:?}"
+        );
+    }
+
+    #[test]
     fn test_metal_backend_fused_q6_k_matvec() {
         let backend = MetalBackend::new().unwrap();
 
@@ -2275,6 +2316,55 @@ mod tests {
             diff < 1e-3,
             "Metal attention vs CPU mismatch: max_diff={diff}"
         );
+    }
+
+    #[test]
+    fn test_configure_for_model_updates_runtime_policy() {
+        let backend = MetalBackend::new().unwrap();
+        let before = backend.ops.runtime_policy();
+
+        backend
+            .configure_for_model("Qwen3-8B", "Q4_K", "qwen3")
+            .unwrap();
+
+        let after = backend.ops.runtime_policy();
+        let expected = RuntimePolicy::for_model("Qwen3-8B", "Q4_K", "qwen3");
+
+        assert_eq!(
+            after.dequant_dispatch_config(),
+            expected.dequant_dispatch_config()
+        );
+        assert_eq!(
+            after.attention_dispatch_config(),
+            expected.attention_dispatch_config()
+        );
+        assert_eq!(
+            after.batch_prefill_prefers_f16_io(),
+            expected.batch_prefill_prefers_f16_io()
+        );
+        assert_eq!(
+            after.batch_prefill_prefers_pair_kernel(),
+            expected.batch_prefill_prefers_pair_kernel()
+        );
+        assert_eq!(
+            after.dequant_dispatch_config(),
+            expected.dequant_dispatch_config(),
+            "configure_for_model should resolve the same runtime policy as direct policy loading"
+        );
+        assert_eq!(
+            before.attention_dispatch_config(),
+            RuntimePolicy::resolved_defaults().attention_dispatch_config()
+        );
+        assert_eq!(
+            after.gpu_kv_dtype(4096),
+            expected.gpu_kv_dtype(4096),
+            "configure_for_model should carry KV precision policy through the backend-local runtime policy"
+        );
+        assert_eq!(
+            after.fused_qkv_prefill_enabled(),
+            expected.fused_qkv_prefill_enabled()
+        );
+        assert_eq!(after.batch_simd_enabled(), expected.batch_simd_enabled());
     }
 
     #[test]

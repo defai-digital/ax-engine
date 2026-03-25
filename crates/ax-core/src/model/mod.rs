@@ -1,9 +1,12 @@
 pub mod arch_registry;
 pub mod config;
 pub mod decode;
+pub(crate) mod execution_plan;
 pub mod forward;
 pub mod gemma3;
 pub mod llama;
+#[cfg(target_os = "macos")]
+mod prefill_schedule;
 pub mod qwen3;
 pub mod qwen35;
 pub(crate) mod shared;

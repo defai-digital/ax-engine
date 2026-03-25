@@ -26,9 +26,11 @@
 pub mod cpu_kv;
 pub mod gpu_kv;
 pub mod page;
+pub mod qwen35_kv;
 
 pub use cpu_kv::CpuKv;
 pub use gpu_kv::{GpuKv, GpuKvDtype};
+pub use qwen35_kv::Qwen35Kv;
 
 /// Single-owner KV cache. Eliminates the v1 CPU+GPU split-brain.
 pub enum ModelKv {
@@ -36,6 +38,8 @@ pub enum ModelKv {
     Cpu(CpuKv),
     /// GPU Metal buffer storage (f32 or f16). Used with MetalBackend or HybridBackend.
     Gpu(GpuKv),
+    /// Hybrid recurrent state + attention KV for Qwen3.5.
+    Qwen35(Qwen35Kv),
 }
 
 impl ModelKv {
@@ -44,6 +48,7 @@ impl ModelKv {
         match self {
             Self::Cpu(c) => c.seq_len(),
             Self::Gpu(g) => g.seq_len(),
+            Self::Qwen35(q) => q.seq_len(),
         }
     }
 
@@ -56,6 +61,16 @@ impl ModelKv {
         match self {
             Self::Gpu(g) => Some(g),
             Self::Cpu(_) => None,
+            Self::Qwen35(_) => None,
+        }
+    }
+
+    /// Attempt to get an immutable reference to the GPU KV cache.
+    pub fn as_gpu(&self) -> Option<&GpuKv> {
+        match self {
+            Self::Gpu(g) => Some(g),
+            Self::Cpu(_) => None,
+            Self::Qwen35(_) => None,
         }
     }
 
@@ -66,6 +81,15 @@ impl ModelKv {
         match self {
             Self::Cpu(c) => Some(c),
             Self::Gpu(_) => None,
+            Self::Qwen35(_) => None,
+        }
+    }
+
+    /// Get a reference to the Qwen3.5 hybrid cache/state.
+    pub fn as_qwen35_mut(&mut self) -> Option<&mut Qwen35Kv> {
+        match self {
+            Self::Qwen35(q) => Some(q),
+            Self::Cpu(_) | Self::Gpu(_) => None,
         }
     }
 
@@ -79,6 +103,7 @@ impl ModelKv {
         match self {
             Self::Cpu(c) => c.clear(),
             Self::Gpu(g) => g.clear(),
+            Self::Qwen35(q) => q.clear(),
         }
     }
 
@@ -90,6 +115,7 @@ impl ModelKv {
         match self {
             Self::Cpu(c) => c.truncate_to(pos),
             Self::Gpu(g) => g.truncate_to(pos),
+            Self::Qwen35(q) => q.truncate_to(pos),
         }
     }
 }
