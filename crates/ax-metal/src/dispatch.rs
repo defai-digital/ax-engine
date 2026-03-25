@@ -208,27 +208,22 @@ impl AttentionDispatchConfig {
             },
         );
         let decode_splitk_mode = parse_kernel_mode("AX_METAL_DECODE_SPLITK_MODE", KernelMode::Auto);
-        let decode_splitk_chunk_size = legacy_kernel_override("AX_METAL_DECODE_SPLITK_CHUNK_SIZE")
-            .and_then(|v| v.trim().parse::<u32>().ok())
-            .unwrap_or_else(|| {
-                let size = profile.attention_decode.splitk_chunk_size;
-                if size > 0 {
-                    size
-                } else {
-                    routing.decode_splitk_chunk_size
-                }
-            });
-        let decode_splitk_auto_min_tokens =
-            legacy_kernel_override("AX_METAL_DECODE_SPLITK_AUTO_MIN_TOKENS")
-                .and_then(|v| v.trim().parse::<u32>().ok())
-                .unwrap_or_else(|| {
-                    let threshold = profile.attention_decode.splitk_threshold;
-                    if threshold > 0 {
-                        threshold
-                    } else {
-                        routing.decode_splitk_auto_min_tokens
-                    }
-                });
+        let decode_splitk_chunk_size = parse_positive_u32_env(
+            "AX_METAL_DECODE_SPLITK_CHUNK_SIZE",
+            if profile.attention_decode.splitk_chunk_size > 0 {
+                profile.attention_decode.splitk_chunk_size
+            } else {
+                routing.decode_splitk_chunk_size
+            },
+        );
+        let decode_splitk_auto_min_tokens = parse_positive_u32_env(
+            "AX_METAL_DECODE_SPLITK_AUTO_MIN_TOKENS",
+            if profile.attention_decode.splitk_threshold > 0 {
+                profile.attention_decode.splitk_threshold
+            } else {
+                routing.decode_splitk_auto_min_tokens
+            },
+        );
         let decode_sdpa_default = match legacy_kernel_override("AX_METAL_DECODE_SDPA") {
             Some(v) => parse_bool_env_flag(&v).unwrap_or(false),
             None => profile
@@ -7785,6 +7780,29 @@ mod tests {
             AttentionDispatchConfig::from_profile(&profile)
         });
         assert!(!config.decode_sdpa_default);
+    }
+
+    #[test]
+    fn test_attention_decode_splitk_chunk_size_treats_invalid_values_as_default() {
+        let default = AttentionDispatchConfig::default().decode_splitk_chunk_size();
+        let config = with_env_var("AX_METAL_DECODE_SPLITK_CHUNK_SIZE", "0", || {
+            AttentionDispatchConfig::from_profile(&KernelProfile::default())
+        });
+        assert_eq!(config.decode_splitk_chunk_size(), default);
+
+        let config = with_env_var("AX_METAL_DECODE_SPLITK_CHUNK_SIZE", "bad", || {
+            AttentionDispatchConfig::from_profile(&KernelProfile::default())
+        });
+        assert_eq!(config.decode_splitk_chunk_size(), default);
+    }
+
+    #[test]
+    fn test_attention_decode_splitk_auto_min_tokens_treats_zero_as_default() {
+        let default = AttentionDispatchConfig::default().decode_splitk_auto_min_tokens;
+        let config = with_env_var("AX_METAL_DECODE_SPLITK_AUTO_MIN_TOKENS", "0", || {
+            AttentionDispatchConfig::from_profile(&KernelProfile::default())
+        });
+        assert_eq!(config.decode_splitk_auto_min_tokens, default);
     }
 
     #[test]
