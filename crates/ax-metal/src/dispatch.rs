@@ -232,7 +232,7 @@ impl AttentionDispatchConfig {
         let decode_sdpa_default = match legacy_kernel_override("AX_METAL_DECODE_SDPA") {
             Some(v) => {
                 let v = v.trim().to_ascii_lowercase();
-                !(v == "0" || v == "false" || v == "off")
+                matches!(v.as_str(), "1" | "true" | "on")
             }
             None => profile
                 .attention_decode
@@ -7837,6 +7837,16 @@ mod tests {
         let selection = config.decode_candidate_selection(true, 256, 128);
         assert_eq!(selection.candidate, AttentionDecodeCandidate::SdpaHd256);
         assert_eq!(selection.stability, KernelStabilityTier::ProfilePreferred);
+    }
+
+    #[test]
+    fn test_attention_dispatch_config_treats_unknown_decode_sdpa_value_as_disabled() {
+        let mut profile = KernelProfile::default();
+        profile.attention_decode.sdpa_default = Some(false);
+        let config = with_env_var("AX_METAL_DECODE_SDPA", "maybe", || {
+            AttentionDispatchConfig::from_profile(&profile)
+        });
+        assert!(!config.decode_sdpa_default);
     }
 
     #[test]
