@@ -56,16 +56,19 @@ AX Engine is optimized for Apple Silicon throughput and low-overhead local infer
 
 For the current benchmarking methodology, command lines, and reporting rules, see [BENCHMARKING.md](./BENCHMARKING.md).
 
-Current local snapshot, measured on March 24, 2026 on Apple M3 Max with Q4_K_M GGUFs, `512` prompt tokens, `128` decode tokens, AX deterministic `5` samples with `500ms` cooldown, and `llama.cpp` `llama-bench` with `-r 5 -fa 1`. Table values below use medians. `AX vs llama.cpp` over `100%` means AX was faster.
+Current local snapshot, measured on March 25, 2026 on Apple M3 Max with Q4_K_M GGUFs, `512` prompt tokens, `128` decode tokens, AX deterministic `5` samples with `500ms` cooldown, and `llama.cpp` `llama-bench` with `-r 5 -fa 1`. Table values below use medians. `AX vs llama.cpp` over `100%` means AX was faster.
 
 | Model | AX prefill | llama.cpp prefill | AX vs llama.cpp | AX decode | llama.cpp decode | AX vs llama.cpp |
 |---|---:|---:|---:|---:|---:|---:|
 | Gemma 3 12B | 418.5 tok/s | 477.7 tok/s | 87.6% | 39.3 tok/s | 39.1 tok/s | 100.5% |
 | Gemma 3 27B | 161.3 tok/s | 191.3 tok/s | 84.3% | 17.7 tok/s | 14.6 tok/s | 121.2% |
 | Llama 3 8B | 642.0 tok/s | 771.4 tok/s | 83.2% | 58.1 tok/s | 64.8 tok/s | 89.7% |
+| Llama 3 70B | 70.1 tok/s | 71.4 tok/s | 98.2% | 8.0 tok/s | 7.1 tok/s | 112.7% |
 | Qwen3 8B | 631.4 tok/s | 664.8 tok/s | 95.0% | 55.1 tok/s | 59.8 tok/s | 92.1% |
 | Qwen3 14B | 269.6 tok/s | 334.0 tok/s | 80.7% | 33.4 tok/s | 20.8 tok/s | 160.6% |
 | Qwen3 32B | 126.3 tok/s | 129.4 tok/s | 97.6% | 13.1 tok/s | 12.0 tok/s | 109.2% |
+
+For the 70B row, the model file is mixed-quant and contains an active `Q5_K` tensor. The published 70B result therefore records only the meaningful post-fix path with `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`; the default shipped behavior still falls back on prefill and is documented as a caveat, not a headline comparison row.
 
 Areas where we expect the most improvement:
 
@@ -92,6 +95,15 @@ All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Als
 | Qwen 3.5 | Qwen3.5-27B | Q4_K_M | 27B |
 | Gemma 3 | gemma-3-12b-it, gemma-3-27b-it | Q4_K_M | 12B, 27B |
 
+Mixed-quant caveat:
+
+- some `Q4_K_M` or `Q5_K_M` GGUFs can contain active `Q5_K` layer tensors
+- AX defaults `Q5_K` to decode-only baseline
+- an experimental GPU prefill path exists behind `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`
+- when that happens, AX will tell you explicitly in runtime output, for example:
+  - `PrefillPlan: mode=serial reason=unsupported_quant:blk.10.attn_v.weight:Q5K`
+  - `Support: Q5_K support defaults to decode-only baseline...`
+  - `PrefillPlan: mode=gpu_batch ... q5k_prefill=experimental`
 
 **Memory requirements** (approximate, Q4_K_M weights + KV cache at 4K context):
 

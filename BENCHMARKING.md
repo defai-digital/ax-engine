@@ -118,6 +118,9 @@ Use this to inspect the decode hot path and identify where time is actually spen
 - Latency mode usually selects `single_cb` decode.
 - The selected prefill and decode plans are printed in the output. Keep them with the benchmark record.
 - `--llama-parity-preset` is not a cross-engine truth mode. It only applies a small set of AX env defaults and can change performance significantly.
+- If AX prints `PrefillPlan: mode=serial reason=unsupported_quant:...`, treat that prefill result as a fallback-path measurement, not a normal GPU-prefill comparison.
+- Mixed-quant GGUFs can trigger that behavior when active layer tensors use `Q5_K`, because AX defaults `Q5_K` to decode-only baseline.
+- If you benchmark the experimental route with `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`, record that env var alongside the run and do not compare it against default AX numbers as if it were shipped behavior.
 
 ## `llama.cpp` Comparison Runs
 
@@ -184,6 +187,11 @@ Before publishing AX vs `llama.cpp` numbers, confirm:
 
 If any of those are missing, label the result as exploratory, not authoritative.
 
+One more invalid-comparison case:
+
+- if AX prefill fell back to `mode=serial reason=unsupported_quant:...` while `llama.cpp` stayed on its normal prompt fast path, do not treat the prefill delta as an apples-to-apples engine conclusion
+- in that case, the decode comparison is still useful, but the prefill comparison is mostly measuring AX's current `Q5_K` support boundary
+
 ## Suggested Reporting Format
 
 Include:
@@ -207,7 +215,7 @@ Example table:
 
 ## Current Repo Snapshot
 
-Retested on March 24, 2026 on Apple M3 Max with the corrected comparison method:
+Retested on March 25, 2026 on Apple M3 Max with the corrected comparison method:
 
 - AX command shape:
 
@@ -242,17 +250,25 @@ Recorded results:
 | Gemma 3 12B Q4_K_M | 418.5 | 477.7 | 87.6% | 39.3 | 39.1 | 100.5% | `pipelined`, `attn=splitk_hd256/profile_preferred` |
 | Gemma 3 27B Q4_K_M | 161.3 | 191.3 | 84.3% | 17.7 | 14.6 | 121.2% | `pipelined`, `attn=f16kv_hd128/stable` |
 | Llama 3 8B Q4_K_M | 642.0 | 771.4 | 83.2% | 58.1 | 64.8 | 89.7% | `pipelined`, `attn=f16kv_hd128/stable` |
+| Llama 3 70B Q4_K_M | 70.1 | 71.4 | 98.2% | 8.0 | 7.1 | 112.7% | `pipelined`, `PrefillPlan=mode=gpu_batch`, `q5k_prefill=experimental` |
 | Qwen3 8B Q4_K_M | 631.4 | 664.8 | 95.0% | 55.1 | 59.8 | 92.1% | `pipelined`, `attn=f16kv_hd128/stable` |
 | Qwen3 14B Q4_K_M | 269.6 | 334.0 | 80.7% | 33.4 | 20.8 | 160.6% | `pipelined`, `attn=f16kv_hd128/stable` |
 | Qwen3 32B Q4_K_M | 126.3 | 129.4 | 97.6% | 13.1 | 12.0 | 109.2% | `pipelined`, `attn=f16kv_hd128/stable` |
 
 `llama.cpp` values above are medians from `samples_ts` with `-fa 1`, `-ctk f16`, and `-ctv f16`. `AX vs llama.cpp` over `100%` means AX was faster.
 
+70B note:
+
+- `models/meta-llama-3-70b-instruct.Q4_K_M.gguf` contains an active `Q5_K` tensor, so shipped AX behavior still defaults that model to decode-only baseline for prefill.
+- The published 70B row above records only the post-fix validation result with `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`.
+- The default AX path is intentionally excluded from the headline table because it is a fallback-path result, not a representative fast-path comparison.
+
 Interpretation:
 
 - Gemma 3 12B: `llama.cpp` led on prefill, decode was effectively tied.
 - Gemma 3 27B: `llama.cpp` led on prefill, while AX led on decode in this retest.
 - Llama 3 8B: `llama.cpp` led on both prefill and decode in this retest.
+- Llama 3 70B: with `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`, AX was close to `llama.cpp` on prefill and slightly ahead on decode in this local retest; the default fallback path is intentionally not treated as a headline benchmark row.
 - Qwen3 8B: `llama.cpp` led on both prefill and decode, but AX remained within the same general range.
 - Qwen3 14B: `llama.cpp` led clearly on prefill, while AX led materially on decode in this retest.
 - Qwen3 32B: prefill was close, with `llama.cpp` slightly ahead, while AX led modestly on decode.
