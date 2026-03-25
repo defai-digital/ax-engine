@@ -28,6 +28,12 @@ mod stream;
 
 use stream::{StreamAction, StreamPrinter};
 
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on"))
+}
+
 fn main() -> anyhow::Result<()> {
     // Check for known unsupported llama.cpp flags before clap parsing
     args::check_unsupported_flags();
@@ -415,7 +421,7 @@ fn run_single(
     let mut all_tokens: Vec<u32> = Vec::with_capacity(n_prompt + max_tokens);
     all_tokens.extend_from_slice(&prompt_tokens);
 
-    let debug_logits = std::env::var("AX_DEBUG_LOGITS").is_ok();
+    let debug_logits = env_flag_enabled("AX_DEBUG_LOGITS");
     let vocab_size = model.config.vocab_size as usize;
 
     // Debug helper: print top-5 logits and their token IDs
@@ -895,6 +901,42 @@ fn run_reuse_bench(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    struct EnvVarRestore {
+        key: String,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(prev) => unsafe {
+                    std::env::set_var(&self.key, prev);
+                },
+                None => unsafe {
+                    std::env::remove_var(&self.key);
+                },
+            }
+        }
+    }
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("test env lock")
+    }
+
+    fn with_env_var<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
+        let _guard = env_lock();
+        let _restore = EnvVarRestore {
+            key: key.to_string(),
+            previous: std::env::var_os(key),
+        };
+        unsafe { std::env::set_var(key, value) };
+        f()
+    }
 
     fn make_args() -> args::CliArgs {
         args::CliArgs {
@@ -1012,5 +1054,25 @@ mod tests {
             ax_core::gguf::mmap::support_note_for_q5k_layer_presence(false),
             None
         );
+    }
+
+    #[test]
+    fn test_env_flag_enabled_supports_truthy_values_and_rejects_invalid() {
+        let key = "AX_DEBUG_LOGITS";
+        with_env_var(key, "1", || {
+            assert!(env_flag_enabled(key));
+        });
+        with_env_var(key, "true", || {
+            assert!(env_flag_enabled(key));
+        });
+        with_env_var(key, "on", || {
+            assert!(env_flag_enabled(key));
+        });
+        with_env_var(key, "0", || {
+            assert!(!env_flag_enabled(key));
+        });
+        with_env_var(key, "bad", || {
+            assert!(!env_flag_enabled(key));
+        });
     }
 }

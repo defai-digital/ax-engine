@@ -19,10 +19,13 @@ const LAYER_SUFFIXES: &[&str] = &[
 ];
 
 pub(super) fn experimental_q5k_prefill_enabled() -> bool {
-    matches!(std::env::var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL"), Ok(v) if {
-        let v = v.trim().to_ascii_lowercase();
-        v == "1" || v == "true" || v == "on"
-    })
+    env_flag_enabled("AX_METAL_EXPERIMENTAL_Q5K_PREFILL")
+}
+
+pub(super) fn env_flag_enabled(var: &str) -> bool {
+    std::env::var(var)
+        .ok()
+        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -576,6 +579,7 @@ pub(super) fn encode_dequant_batch_pair_f16in(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use std::sync::MutexGuard;
 
     fn env_lock() -> MutexGuard<'static, ()> {
@@ -585,22 +589,34 @@ mod tests {
             .expect("shared env test lock")
     }
 
+    struct EnvVarRestore {
+        key: String,
+        previous: Option<OsString>,
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(prev) => unsafe {
+                    std::env::set_var(&self.key, prev);
+                },
+                None => unsafe {
+                    std::env::remove_var(&self.key);
+                },
+            }
+        }
+    }
+
     fn with_env_var<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
         let _guard = env_lock();
-        let previous = std::env::var(key).ok();
+        let _restore = EnvVarRestore {
+            key: key.to_string(),
+            previous: std::env::var_os(key),
+        };
         unsafe {
             std::env::set_var(key, value);
         }
-        let result = f();
-        match previous {
-            Some(prev) => unsafe {
-                std::env::set_var(key, prev);
-            },
-            None => unsafe {
-                std::env::remove_var(key);
-            },
-        }
-        result
+        f()
     }
 
     #[test]
@@ -660,6 +676,27 @@ mod tests {
                 Some(GgmlType::Q5K),
                 false
             ));
+        });
+    }
+
+    #[test]
+    fn test_env_flag_enabled_parses_known_truthy_values() {
+        let key = "AX_TEST_ENV_FLAG_ENABLED";
+        assert!(!env_flag_enabled(key));
+        with_env_var(key, "1", || {
+            assert!(env_flag_enabled(key));
+        });
+        with_env_var(key, "true", || {
+            assert!(env_flag_enabled(key));
+        });
+        with_env_var(key, "on", || {
+            assert!(env_flag_enabled(key));
+        });
+        with_env_var(key, "false", || {
+            assert!(!env_flag_enabled(key));
+        });
+        with_env_var(key, "", || {
+            assert!(!env_flag_enabled(key));
         });
     }
 

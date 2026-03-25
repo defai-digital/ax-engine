@@ -319,6 +319,24 @@ fn metal_device_unavailable_message() -> String {
 mod tests {
     use super::*;
 
+    struct EnvVarRestore {
+        key: String,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(prev) => unsafe {
+                    std::env::set_var(&self.key, prev);
+                },
+                None => unsafe {
+                    std::env::remove_var(&self.key);
+                },
+            }
+        }
+    }
+
     #[test]
     fn test_device_init() {
         let device = MetalDevice::new().expect("Metal device should init on Apple Silicon");
@@ -481,8 +499,13 @@ mod tests {
 
     #[test]
     fn test_metal_device_unavailable_message_mentions_sandbox_when_present() {
+        let key = "CODEX_SANDBOX";
+        let _restore = EnvVarRestore {
+            key: key.to_string(),
+            previous: std::env::var_os(key),
+        };
         // SAFETY: Test-only process-local environment mutation.
-        unsafe { std::env::set_var("CODEX_SANDBOX", "seatbelt") };
+        unsafe { std::env::set_var(key, "seatbelt") };
         let msg = metal_device_unavailable_message();
         assert!(msg.contains("Codex sandbox"));
     }

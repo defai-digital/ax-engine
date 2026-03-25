@@ -1,5 +1,11 @@
 use anyhow::{Context, bail};
 
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on"))
+}
+
 /// Memory budget gate.
 ///
 /// Uses host total RAM as a conservative upper bound and reserves headroom
@@ -46,7 +52,7 @@ impl MemoryBudget {
             .checked_add(extra_bytes)
             .context("memory budget requirement overflow")?;
 
-        if std::env::var("AX_DISABLE_MEMORY_BUDGET_CHECK").is_ok() {
+        if env_flag_enabled("AX_DISABLE_MEMORY_BUDGET_CHECK") {
             return Ok(MemoryBudgetSummary {
                 required_bytes,
                 allowed_bytes: u64::MAX,

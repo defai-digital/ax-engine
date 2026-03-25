@@ -2812,6 +2812,7 @@ fn aggregate_recommendations(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::sync::{Mutex, OnceLock};
 
     use super::*;
@@ -2819,6 +2820,24 @@ mod tests {
     fn export_env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvVarRestore {
+        key: String,
+        previous: Option<OsString>,
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(prev) => unsafe {
+                    std::env::set_var(&self.key, prev);
+                },
+                None => unsafe {
+                    std::env::remove_var(&self.key);
+                },
+            }
+        }
     }
 
     #[test]
@@ -4588,6 +4607,10 @@ mod tests {
         // SAFETY: This test serializes process-global env mutation with a mutex
         // and restores the previous value before returning.
         let previous = std::env::var_os("AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK");
+        let _restore = EnvVarRestore {
+            key: "AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK".to_string(),
+            previous,
+        };
         unsafe {
             std::env::set_var("AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK", "1");
         }
@@ -4603,15 +4626,6 @@ mod tests {
                 && blocker.reason
                     == "forced export block via AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK=1"
         }));
-
-        // SAFETY: Restores the serialized test mutation before releasing the mutex.
-        unsafe {
-            if let Some(previous) = previous {
-                std::env::set_var("AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK", previous);
-            } else {
-                std::env::remove_var("AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK");
-            }
-        }
     }
 
     #[test]

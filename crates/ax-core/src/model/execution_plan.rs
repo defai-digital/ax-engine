@@ -5,7 +5,7 @@ use super::forward::ForwardContext;
 use super::gemma3::Gemma3Forward;
 use super::qwen3::ensure_supported_qwen3_layout;
 use super::shared::{
-    ExperimentalQ5KPrefillVariantOverride, experimental_q5k_prefill_enabled,
+    ExperimentalQ5KPrefillVariantOverride, env_flag_enabled, experimental_q5k_prefill_enabled,
     experimental_q5k_prefill_variant_override, gpu_batch_logits_supported,
     gpu_prefill_quant_blocker,
 };
@@ -734,7 +734,7 @@ impl PrefillExecutionPlan {
         n_tokens: usize,
         emit_all_logits: bool,
     ) -> anyhow::Result<Self> {
-        if std::env::var("AX_SERIAL_PREFILL").is_ok() {
+        if env_flag_enabled("AX_SERIAL_PREFILL") {
             return Ok(Self {
                 mode: PrefillMode::Serial,
                 chunk_len: None,
@@ -1239,47 +1239,60 @@ mod tests {
             .expect("execution_plan env test lock")
     }
 
+    struct EnvVarRestore {
+        values: Vec<(String, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvVarRestore {
+        fn one(key: &str) -> Self {
+            Self {
+                values: vec![(key.to_string(), std::env::var_os(key))],
+            }
+        }
+
+        fn many(vars: &[(&str, &str)]) -> Self {
+            Self {
+                values: vars
+                    .iter()
+                    .map(|(key, _)| ((*key).to_string(), std::env::var_os(key)))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            for (key, previous) in self.values.iter().rev() {
+                match previous {
+                    Some(prev) => unsafe {
+                        std::env::set_var(key, prev);
+                    },
+                    None => unsafe {
+                        std::env::remove_var(key);
+                    },
+                }
+            }
+        }
+    }
+
     fn with_env_var<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
         let _guard = env_lock();
-        let previous = std::env::var(key).ok();
+        let _restore = EnvVarRestore::one(key);
         unsafe {
             std::env::set_var(key, value);
         }
-        let result = f();
-        match previous {
-            Some(prev) => unsafe {
-                std::env::set_var(key, prev);
-            },
-            None => unsafe {
-                std::env::remove_var(key);
-            },
-        }
-        result
+        f()
     }
 
     fn with_env_vars<T>(vars: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
         let _guard = env_lock();
-        let previous: Vec<_> = vars
-            .iter()
-            .map(|(key, _)| ((*key).to_string(), std::env::var(key).ok()))
-            .collect();
+        let _restore = EnvVarRestore::many(vars);
         for (key, value) in vars {
             unsafe {
                 std::env::set_var(key, value);
             }
         }
-        let result = f();
-        for (key, previous) in previous {
-            match previous {
-                Some(prev) => unsafe {
-                    std::env::set_var(&key, prev);
-                },
-                None => unsafe {
-                    std::env::remove_var(&key);
-                },
-            }
-        }
-        result
+        f()
     }
 
     #[test]

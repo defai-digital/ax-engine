@@ -7691,22 +7691,39 @@ mod tests {
             .expect("dispatch env test lock")
     }
 
+    struct EnvVarRestore {
+        key: String,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(prev) => unsafe {
+                    std::env::set_var(&self.key, prev);
+                },
+                None => unsafe {
+                    std::env::remove_var(&self.key);
+                },
+            }
+        }
+    }
+
     fn with_env_var<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
         let _guard = env_lock();
-        let previous = std::env::var(key).ok();
+        let _restore = EnvVarRestore {
+            key: key.to_string(),
+            previous: std::env::var_os(key),
+        };
         unsafe {
             std::env::set_var(key, value);
         }
-        let result = f();
-        match previous {
-            Some(prev) => unsafe {
-                std::env::set_var(key, prev);
-            },
-            None => unsafe {
-                std::env::remove_var(key);
-            },
-        }
-        result
+        f()
+    }
+
+    fn with_env_lock<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = env_lock();
+        f()
     }
 
     #[test]
@@ -7748,11 +7765,13 @@ mod tests {
             },
         );
 
-        let config = DequantDispatchConfig::from_profile(&profile);
-        assert_eq!(config.q4_k_threadgroup_size, 128);
-        assert_eq!(config.q4_k_rows_per_simdgroup, 1);
-        assert_eq!(config.q6_k_threadgroup_size, 128);
-        assert_eq!(config.q6_k_rows_per_simdgroup, 1);
+        with_env_lock(|| {
+            let config = DequantDispatchConfig::from_profile(&profile);
+            assert_eq!(config.q4_k_threadgroup_size, 128);
+            assert_eq!(config.q4_k_rows_per_simdgroup, 1);
+            assert_eq!(config.q6_k_threadgroup_size, 128);
+            assert_eq!(config.q6_k_rows_per_simdgroup, 1);
+        });
     }
 
     #[test]

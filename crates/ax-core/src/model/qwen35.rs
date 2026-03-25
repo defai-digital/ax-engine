@@ -24,7 +24,7 @@ use crate::metrics::OpBreakdown;
 use crate::metrics::counters::OpTimer;
 use crate::model::config::ModelConfig;
 use crate::model::forward::{ForwardContext, ForwardPass};
-use crate::model::shared::per_head_rms_norm;
+use crate::model::shared::{env_flag_enabled, per_head_rms_norm};
 use crate::model::weights::WeightStore;
 
 macro_rules! timed {
@@ -581,7 +581,7 @@ impl ForwardPass for Qwen35Forward {
         weights: &WeightStore,
         logits: &mut [f32],
     ) -> anyhow::Result<()> {
-        let force_serial = std::env::var("AX_SERIAL_PREFILL").is_ok();
+        let force_serial = env_flag_enabled("AX_SERIAL_PREFILL");
         let Some(qwen_kv) = kv.as_qwen35_mut() else {
             anyhow::bail!("Qwen35Forward requires ModelKv::Qwen35");
         };
