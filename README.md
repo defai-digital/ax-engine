@@ -39,6 +39,39 @@ If you need production HTTP serving, request orchestration, or API adapters, tho
 - **Clean integration surface**: usable as a library, CLI, or drop-in `libllama` compatibility shim
 - **Rust-native**: pure Rust workspace, no Python runtime, no C++ build chain, normal `cargo` workflows
 
+## When To Choose AX Engine
+
+Use AX Engine when your application needs one or more of these:
+
+- **Multiple local models in one runtime**: for example, an embedding model, a chat model, and a coder model running under one process with isolated queues, KV caches, and backend instances
+- **Explicit placement control**: for example, keep a latency-sensitive chat model on GPU while running a secondary model on CPU
+- **A Rust-native inference layer**: you want to embed local model execution directly into a Rust system instead of orchestrating Python or external model services
+- **Stable local Mac orchestration**: you care about predictable ownership of memory, queues, fallback behavior, and failure handling in a long-running desktop or local-server app
+- **Focused Apple Silicon optimization**: you are willing to optimize for a narrower model set in exchange for tighter control over the hot path
+
+You probably do not need AX Engine if your setup is simpler:
+
+- a single local model at a time is enough
+- a separate model process per task is acceptable
+- broad model compatibility matters more than runtime control
+- the simplest path to decent Apple Silicon performance matters more than in-process multi-model orchestration
+
+## Engine Comparison
+
+The table below is intentionally practical. It answers "which engine shape fits my app?" more than "which project is universally best?"
+
+| Engine | Best When | Strengths | Tradeoffs | Typical Multi-Model Shape |
+|---|---|---|---|---|
+| **AX Engine** | You need a Rust-native local inference layer with explicit control over backend placement, memory behavior, and more than one model role in one app | In-process multi-model design, per-model queues/KV/backend instances, explicit GPU vs CPU placement, good fit for embedding/chat/coder combinations inside one runtime | Narrower model scope, more tuning work, not trying to be the broadest ecosystem | One process can own multiple models directly |
+| **llama.cpp** | You want the broadest GGUF compatibility and a strong default single-model local server/toolchain | Huge model ecosystem, mature tooling, strong Apple Silicon support, easy single-model serving with concurrent requests | Main shape is one loaded model per server process; multi-model setups usually mean multiple processes/services | Usually one process per model, plus concurrent users on each model |
+| **mlx-lm / MLX** | You want the fastest path to a solid Apple Silicon baseline with the MLX stack | Apple-focused stack, good default local performance, simple Python workflow, strong single-model experience | Python/MLX-oriented workflow, default server/tooling is centered on one model at a time, multi-model orchestration is usually custom code or multiple processes | Usually one process or custom orchestrator per model role |
+
+Rule of thumb:
+
+- choose **AX Engine** when your product needs one runtime to coordinate multiple model roles with explicit control
+- choose **llama.cpp** when you want the most general GGUF path and can tolerate one model service per role
+- choose **mlx-lm / MLX** when Apple Silicon is the whole target and a Python-first single-model workflow is acceptable
+
 ## Current Optimization Focus
 
 AX Engine is currently most relevant for:
@@ -65,7 +98,7 @@ Current local snapshot, measured on March 25, 2026 on Apple M3 Max with Q4_K_M G
 | Llama 3 8B | 642.0 tok/s | 771.4 tok/s | 83.2% | 58.1 tok/s | 64.8 tok/s | 89.7% |
 | Llama 3 70B | 70.1 tok/s | 71.4 tok/s | 98.2% | 8.0 tok/s | 7.1 tok/s | 112.7% |
 | Qwen3 8B | 631.4 tok/s | 664.8 tok/s | 95.0% | 55.1 tok/s | 59.8 tok/s | 92.1% |
-| Qwen3 14B | 269.6 tok/s | 334.0 tok/s | 80.7% | 33.4 tok/s | 20.8 tok/s | 160.6% |
+| Qwen3 14B | 251.0 tok/s | 334.4 tok/s | 75.1% | 18.1 tok/s | 21.8 tok/s | 82.9% |
 | Qwen3 32B | 126.3 tok/s | 129.4 tok/s | 97.6% | 13.1 tok/s | 12.0 tok/s | 109.2% |
 
 For the 70B row, the model file is mixed-quant and contains an active `Q5_K` tensor. The published 70B result therefore records only the meaningful post-fix path with `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`; the default shipped behavior still falls back on prefill and is documented as a caveat, not a headline comparison row.
