@@ -121,13 +121,7 @@ pub(crate) fn with_active_perf_counters<R>(
 /// - `0` / `false` / `off`        -> disabled
 pub(crate) fn barriers_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BARRIERS") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            !(v == "0" || v == "false" || v == "off")
-        }
-        Err(_) => true,
-    })
+    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_BARRIERS", true))
 }
 
 /// Whether smart barrier tracking is enabled for concurrent prefill dispatch.
@@ -141,11 +135,20 @@ pub(crate) fn barriers_enabled() -> bool {
 /// - `0` / `false` / `off`        -> disabled (falls back to barrier_buffers)
 pub fn smart_barriers_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_SMART_BARRIERS") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            !(v == "0" || v == "false" || v == "off")
-        }
-        Err(_) => true,
-    })
+    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_SMART_BARRIERS", true))
+}
+
+fn parse_bool_env_flag(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" => Some(true),
+        "0" | "false" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_bool_env_with_default(var: &'static str, default: bool) -> bool {
+    std::env::var(var)
+        .ok()
+        .and_then(|value| parse_bool_env_flag(&value))
+        .unwrap_or(default)
 }

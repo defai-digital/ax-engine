@@ -230,20 +230,14 @@ impl AttentionDispatchConfig {
                     }
                 });
         let decode_sdpa_default = match legacy_kernel_override("AX_METAL_DECODE_SDPA") {
-            Some(v) => {
-                let v = v.trim().to_ascii_lowercase();
-                matches!(v.as_str(), "1" | "true" | "on")
-            }
+            Some(v) => parse_bool_env_flag(&v).unwrap_or(false),
             None => profile
                 .attention_decode
                 .sdpa_default
                 .unwrap_or(routing.decode_sdpa_default),
         };
         let decode_hd128_n2_default = match legacy_kernel_override("AX_METAL_DECODE_HD128_N2") {
-            Some(v) => {
-                let v = v.trim().to_ascii_lowercase();
-                v == "1" || v == "true" || v == "on"
-            }
+            Some(v) => parse_bool_env_flag(&v).unwrap_or(false),
             None => profile
                 .attention_decode
                 .hd128_n2_default
@@ -508,10 +502,7 @@ impl DequantDispatchConfig {
             .and_then(|v| v.trim().parse::<u32>().ok())
             .unwrap_or(profile.batch_prefill.small_m_max);
         let batch_f16in_use_bn32 = match legacy_kernel_override("AX_METAL_F16IN_BN32") {
-            Some(v) => {
-                let v = v.trim().to_ascii_lowercase();
-                !(v == "0" || v == "false" || v == "off")
-            }
+            Some(v) => parse_bool_env_flag(&v).unwrap_or(profile.batch_prefill.use_bn32),
             None => profile.batch_prefill.use_bn32,
         };
         let batch_f16in_use_bk32 = match legacy_kernel_override("AX_METAL_F16IN_BK32") {
@@ -5508,10 +5499,7 @@ impl GdnKernels {
 fn batch_q4k_blocked_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BATCH_Q4K_BLOCKED") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            !(v == "0" || v == "false" || v == "off")
-        }
+        Ok(v) => parse_bool_env_flag(&v).unwrap_or(true),
         // Default ON: blocked threadgroup layout (stride 8, 6 KB TG memory).
         // Ports llama.cpp's kernel_mul_mm pattern for 3-4 TGs/SM occupancy
         // and 1.33 MACs/load inner loop.
@@ -5522,10 +5510,7 @@ fn batch_q4k_blocked_enabled() -> bool {
 fn batch_q6k_blocked_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BATCH_Q6K_BLOCKED") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            !(v == "0" || v == "false" || v == "off")
-        }
+        Ok(v) => parse_bool_env_flag(&v).unwrap_or(true),
         Err(_) => true, // Default ON
     })
 }
@@ -5533,10 +5518,7 @@ fn batch_q6k_blocked_enabled() -> bool {
 fn batch_q4k_inline_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BATCH_Q4K_INLINE") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            !(v == "0" || v == "false" || v == "off")
-        }
+        Ok(v) => parse_bool_env_flag(&v).unwrap_or(false),
         // Default OFF: inline dequant regresses 6-8% because each thread reads
         // block headers from device memory (L1-cached but still slower than the
         // precomputed threadgroup-memory path). The 32-thread Phase 1 preload +
@@ -5548,10 +5530,7 @@ fn batch_q4k_inline_enabled() -> bool {
 fn batch_q4k_bn32_full_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BATCH_Q4K_BN32") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            !(v == "0" || v == "false" || v == "off")
-        }
+        Ok(v) => parse_bool_env_flag(&v).unwrap_or(false),
         // Default OFF: BN=32 (TG=128) reduces Phase 2 dequant throughput
         // because only 128 threads cooperatively load vs 256. The ~3 TGs/SM
         // occupancy gain doesn't compensate. Same pattern as v2.
@@ -5577,73 +5556,35 @@ fn batch_q4k_v2_enabled() -> bool {
 
 fn attention_prefill_v2_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(
-        || match legacy_kernel_override("AX_METAL_PREFILL_ATTN_V2") {
-            Some(v) => {
-                let v = v.trim().to_ascii_lowercase();
-                v == "1" || v == "true" || v == "on"
-            }
-            // Default ON for current Llama/Qwen/Gemma prefill workloads.
-            // Set AX_METAL_PREFILL_ATTN_V2=0 to disable.
-            None => true,
-        },
-    )
+    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_PREFILL_ATTN_V2", true))
 }
 
 fn attention_prefill_hd256_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     // Default ON — constexpr HD=256 removes dynamic head_dim loops in the prefill kernel.
     // Set AX_METAL_PREFILL_HD256=0 to disable.
-    *ENABLED.get_or_init(|| match legacy_kernel_override("AX_METAL_PREFILL_HD256") {
-        Some(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            v != "0" && v != "false" && v != "off"
-        }
-        None => true,
-    })
+    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_PREFILL_HD256", true))
 }
 
 fn attention_prefill_hd128_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     // Experimental: default OFF until sustained win is confirmed.
     // Set AX_METAL_PREFILL_HD128=1 to enable.
-    *ENABLED.get_or_init(|| match legacy_kernel_override("AX_METAL_PREFILL_HD128") {
-        Some(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true" || v == "on"
-        }
-        None => false,
-    })
+    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_PREFILL_HD128", false))
 }
 
 fn attention_prefill_mistral_hd128_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     // Mistral-style prefill tiling for HD=128 (BR=8, BC=32).
     // Default ON; set AX_METAL_PREFILL_MISTRAL_HD128=0 to disable.
-    *ENABLED.get_or_init(
-        || match legacy_kernel_override("AX_METAL_PREFILL_MISTRAL_HD128") {
-            Some(v) => {
-                let v = v.trim().to_ascii_lowercase();
-                !(v == "0" || v == "false" || v == "off")
-            }
-            None => true,
-        },
-    )
+    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_PREFILL_MISTRAL_HD128", true))
 }
 
 fn attention_prefill_mistral_bc64_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     // Long-prompt variant for mistral-style HD128 prefill.
     // Default ON; set AX_METAL_PREFILL_MISTRAL_BC64=0 to disable.
-    *ENABLED.get_or_init(
-        || match legacy_kernel_override("AX_METAL_PREFILL_MISTRAL_BC64") {
-            Some(v) => {
-                let v = v.trim().to_ascii_lowercase();
-                !(v == "0" || v == "false" || v == "off")
-            }
-            None => true,
-        },
-    )
+    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_PREFILL_MISTRAL_BC64", true))
 }
 
 fn attention_prefill_mistral_smem_enabled() -> bool {
@@ -5678,29 +5619,12 @@ fn attention_prefill_mistral_smem_f16_enabled() -> bool {
 
 fn attention_prefill_fa2_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match legacy_kernel_override("AX_METAL_PREFILL_FA2") {
-        Some(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            !(v == "0" || v == "false" || v == "off")
-        }
-        // Default OFF: FA2 serial score loop + idle threads regresses vs f16kv prefill.
-        // Enable with AX_METAL_PREFILL_FA2=1.
-        None => false,
-    })
+    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_PREFILL_FA2", false))
 }
 
 fn attention_prefill_fa2_hd128_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(
-        || match legacy_kernel_override("AX_METAL_PREFILL_FA2_HD128") {
-            Some(v) => {
-                let v = v.trim().to_ascii_lowercase();
-                v == "1" || v == "true" || v == "on"
-            }
-            // Experimental: default OFF until sustained gains are verified.
-            None => false,
-        },
-    )
+    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_PREFILL_FA2_HD128", false))
 }
 
 fn parse_kernel_mode(var: &'static str, default_mode: KernelMode) -> KernelMode {
@@ -5725,6 +5649,20 @@ fn parse_positive_u32_env(var: &'static str, default_value: u32) -> u32 {
             .unwrap_or(default_value),
         None => default_value,
     }
+}
+
+fn parse_bool_env_flag(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" => Some(true),
+        "0" | "false" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_bool_env_with_default(var: &'static str, default_value: bool) -> bool {
+    legacy_kernel_override(var)
+        .and_then(|value| parse_bool_env_flag(&value))
+        .unwrap_or(default_value)
 }
 
 fn profile_kernel_mode(mode: ProfileKernelMode) -> KernelMode {
