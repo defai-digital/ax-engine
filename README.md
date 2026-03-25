@@ -28,7 +28,7 @@ AX Engine is probably not the right fit if you need:
 - The widest possible quantization ecosystem
 - Immediate parity across every model that llama.cpp supports
 
-If you need production HTTP serving, request orchestration, or API adapters, those concerns should sit above AX Engine.
+If you need production HTTP serving, request orchestration, API adapters, or more advanced LLM serving features, use [ax-serving](https://github.com/defai-digital/ax-serving). Those concerns should sit above AX Engine.
 
 ## Why Use It
 
