@@ -1,57 +1,81 @@
 //! Shared helpers used by all three model implementations (LLaMA, Gemma3, Qwen3).
 
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
+
 use crate::backend::metal::MetalOps;
 use crate::compute::rms_norm;
 use crate::gguf::tensor::GgmlType;
 use crate::model::weights::WeightStore;
 
-/// Check if all layer-0 weight tensors use GPU-supported quant types.
-/// Falls back to CPU path for models with unsupported types.
-pub(super) fn gpu_quant_supported(weights: &WeightStore) -> bool {
-    const LAYER_SUFFIXES: &[&str] = &[
-        "attn_q.weight",
-        "attn_k.weight",
-        "attn_v.weight",
-        "attn_output.weight",
-        "ffn_gate.weight",
-        "ffn_up.weight",
-        "ffn_down.weight",
-    ];
-    let is_supported = |dtype: GgmlType| {
-        matches!(
-            dtype,
-            GgmlType::Q4_0 | GgmlType::Q4K | GgmlType::Q6K | GgmlType::F32
-        )
-    };
-    all_layers_match(weights, LAYER_SUFFIXES, is_supported)
+const LAYER_SUFFIXES: &[&str] = &[
+    "attn_q.weight",
+    "attn_k.weight",
+    "attn_v.weight",
+    "attn_output.weight",
+    "ffn_gate.weight",
+    "ffn_up.weight",
+    "ffn_down.weight",
+];
+
+pub(super) fn experimental_q5k_prefill_enabled() -> bool {
+    matches!(std::env::var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL"), Ok(v) if {
+        let v = v.trim().to_ascii_lowercase();
+        v == "1" || v == "true" || v == "on"
+    })
+}
+
+fn gpu_decode_quant_dtype_supported(dtype: GgmlType) -> bool {
+    matches!(
+        dtype,
+        GgmlType::Q4_0
+            | GgmlType::Q4K
+            | GgmlType::Q5K
+            | GgmlType::Q6K
+            | GgmlType::Q8_0
+            | GgmlType::F32
+    )
+}
+
+fn gpu_prefill_quant_dtype_supported(dtype: GgmlType) -> bool {
+    matches!(
+        dtype,
+        GgmlType::Q4_0 | GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0 | GgmlType::F32
+    ) || (dtype == GgmlType::Q5K && experimental_q5k_prefill_enabled())
+}
+
+fn gpu_batch_logits_dtype_supported(dtype: GgmlType) -> bool {
+    matches!(dtype, GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0)
 }
 
 /// Check if all layer-0 weight tensors use quant types supported by decode-only GPU path.
 ///
-/// Decode can use additional fused matvec kernels (such as Q8_0) that are not yet
+/// Decode can use additional fused matvec kernels (such as Q8_0 and Q5_K) that are not yet
 /// available for batch-prefill kernels.
 pub(super) fn gpu_decode_quant_supported(weights: &WeightStore) -> bool {
-    const LAYER_SUFFIXES: &[&str] = &[
-        "attn_q.weight",
-        "attn_k.weight",
-        "attn_v.weight",
-        "attn_output.weight",
-        "ffn_gate.weight",
-        "ffn_up.weight",
-        "ffn_down.weight",
-    ];
-    let is_supported = |dtype: GgmlType| {
-        matches!(
-            dtype,
-            GgmlType::Q4_0 | GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0 | GgmlType::F32
-        )
-    };
-    all_layers_match(weights, LAYER_SUFFIXES, is_supported)
+    all_layers_match(weights, LAYER_SUFFIXES, gpu_decode_quant_dtype_supported)
+}
+
+pub(super) fn gpu_prefill_quant_blocker(weights: &WeightStore) -> Option<String> {
+    first_layer_mismatch(weights, LAYER_SUFFIXES, gpu_prefill_quant_dtype_supported)
+}
+
+pub(super) fn gpu_prefill_uses_experimental_q5k(weights: &WeightStore) -> bool {
+    let uses_experimental_q5k = experimental_q5k_prefill_enabled()
+        && any_layers_match(weights, LAYER_SUFFIXES, |dtype| dtype == GgmlType::Q5K);
+    if uses_experimental_q5k {
+        warn_gpu_path_issue_once("experimental:q5k_prefill".to_string(), || {
+            tracing::warn!(
+                "AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1 enabled the experimental Q5_K GPU prefill path; this route is AX-native, conservative, and not yet profile-tuned"
+            );
+        });
+    }
+    uses_experimental_q5k
 }
 
 /// Return true when a quantized LM head can use the existing batched GPU matmul path.
 pub(super) fn gpu_batch_logits_supported(dtype: GgmlType) -> bool {
-    matches!(dtype, GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0)
+    gpu_batch_logits_dtype_supported(dtype)
 }
 
 fn all_layers_match(
@@ -59,6 +83,37 @@ fn all_layers_match(
     layer_suffixes: &[&str],
     is_supported: impl Fn(GgmlType) -> bool,
 ) -> bool {
+    first_layer_mismatch(weights, layer_suffixes, is_supported).is_none()
+}
+
+fn any_layers_match(
+    weights: &WeightStore,
+    layer_suffixes: &[&str],
+    predicate: impl Fn(GgmlType) -> bool,
+) -> bool {
+    for layer in 0usize.. {
+        let probe = format!("blk.{layer}.{}", layer_suffixes[0]);
+        if !weights.has(&probe) {
+            break;
+        }
+
+        for suffix in layer_suffixes {
+            let name = format!("blk.{layer}.{suffix}");
+            if let Ok((_, dtype)) = weights.raw_with_dtype(&name)
+                && predicate(dtype)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn first_layer_mismatch(
+    weights: &WeightStore,
+    layer_suffixes: &[&str],
+    is_supported: impl Fn(GgmlType) -> bool,
+) -> Option<String> {
     for layer in 0usize.. {
         let probe = format!("blk.{layer}.{}", layer_suffixes[0]);
         if !weights.has(&probe) {
@@ -70,17 +125,44 @@ fn all_layers_match(
             match weights.raw_with_dtype(&name) {
                 Ok((_, dtype)) if is_supported(dtype) => {}
                 Ok((_, dtype)) => {
-                    tracing::warn!(%name, ?dtype, "unsupported quant dtype for GPU path");
-                    return false;
+                    warn_gpu_path_issue_once(format!("unsupported:{name}:{dtype:?}"), || {
+                        tracing::warn!(%name, ?dtype, "unsupported quant dtype for GPU path");
+                    });
+                    return Some(format!("{name}:{dtype:?}"));
                 }
                 Err(e) => {
-                    tracing::warn!(%name, error = %e, "missing or unreadable tensor for GPU path");
-                    return false;
+                    warn_gpu_path_issue_once(format!("missing:{name}:{e}"), || {
+                        tracing::warn!(
+                            %name,
+                            error = %e,
+                            "missing or unreadable tensor for GPU path"
+                        );
+                    });
+                    return Some(format!("{name}:missing"));
                 }
             }
         }
     }
-    true
+    None
+}
+
+fn warn_gpu_path_issue_once(key: String, warn: impl FnOnce()) {
+    static WARNED_GPU_PATH_ISSUES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+    let warned = WARNED_GPU_PATH_ISSUES.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut warned = warned
+        .lock()
+        .expect("WARNED_GPU_PATH_ISSUES mutex should not be poisoned");
+    if warned.insert(key) {
+        warn();
+    }
+}
+
+fn gpu_batch_prefill_panic(dtype: GgmlType) -> ! {
+    panic!(
+        "GPU batch matmul only supports Q4_K, Q6_K, and experimental Q5_K, got {:?}",
+        dtype
+    )
 }
 
 /// Apply per-head RMSNorm in-place.
@@ -113,6 +195,35 @@ pub(super) fn encode_dequant_matvec(
     k: u32,
     dtype: GgmlType,
 ) {
+    encode_dequant_matvec_with_config(
+        metal_ops,
+        encoder,
+        weight,
+        input,
+        output,
+        m,
+        k,
+        dtype,
+        metal_ops.dequant_dispatch_config(),
+    )
+}
+
+/// Encode a fused dequant+matvec dispatch using an explicit dispatch config.
+///
+/// Decode execution planning uses this to keep kernel routing aligned with the
+/// typed plan rather than re-reading backend state at every call site.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn encode_dequant_matvec_with_config(
+    metal_ops: &MetalOps,
+    encoder: &ax_metal::MetalEncoder,
+    weight: &ax_metal::MetalBuffer,
+    input: &ax_metal::MetalBuffer,
+    output: &ax_metal::MetalBuffer,
+    m: u32,
+    k: u32,
+    dtype: GgmlType,
+    dispatch_config: ax_metal::DequantDispatchConfig,
+) {
     match dtype {
         GgmlType::Q4_0 => metal_ops
             .dequant
@@ -133,22 +244,43 @@ pub(super) fn encode_dequant_matvec(
             {
                 return;
             }
-            metal_ops
-                .dequant
-                .encode_fused_matvec_q4_k(encoder, weight, input, output, m, k)
+            metal_ops.dequant.encode_fused_matvec_q4_k_with_config(
+                encoder,
+                weight,
+                input,
+                output,
+                m,
+                k,
+                dispatch_config,
+            )
         }
+        GgmlType::Q5K => metal_ops.dequant.encode_fused_matvec_q5_k_with_config(
+            encoder,
+            weight,
+            input,
+            output,
+            m,
+            k,
+            dispatch_config,
+        ),
         GgmlType::Q6K => {
             if metal_ops
                 .encode_precomputed_q4k_matvec_if_available(encoder, weight, input, output, m, k)
             {
                 return;
             }
-            metal_ops
-                .dequant
-                .encode_fused_matvec_q6_k(encoder, weight, input, output, m, k)
+            metal_ops.dequant.encode_fused_matvec_q6_k_with_config(
+                encoder,
+                weight,
+                input,
+                output,
+                m,
+                k,
+                dispatch_config,
+            )
         }
         _ => panic!(
-            "GPU phased dispatch only supports Q4_0, Q8_0, Q4_K, and Q6_K, got {:?}",
+            "GPU phased dispatch only supports Q4_0, Q8_0, Q4_K, Q5_K, and Q6_K, got {:?}",
             dtype
         ),
     }
@@ -191,29 +323,40 @@ pub(super) fn encode_dequant_batch(
     if use_f16_io {
         elementwise.encode_cast_f32_to_f16(encoder, input, input_f16, n * k);
         match dtype {
-            GgmlType::Q4K => {
-                dequant.encode_fused_batch_q4_k_f16in(encoder, weight, input_f16, output, m, n, k)
-            }
-            GgmlType::Q6K => {
-                dequant.encode_fused_batch_q6_k_f16in(encoder, weight, input_f16, output, m, n, k)
-            }
-            _ => panic!(
-                "GPU batch matmul only supports Q4_K and Q6_K, got {:?}",
-                dtype
+            GgmlType::Q4K => dequant.encode_fused_batch_q4_k_f16in_with_config(
+                encoder,
+                weight,
+                input_f16,
+                output,
+                m,
+                n,
+                k,
+                ax_metal::DequantDispatchConfig::default(),
             ),
+            GgmlType::Q6K => dequant.encode_fused_batch_q6_k_f16in_with_config(
+                encoder,
+                weight,
+                input_f16,
+                output,
+                m,
+                n,
+                k,
+                ax_metal::DequantDispatchConfig::default(),
+            ),
+            _ => gpu_batch_prefill_panic(dtype),
         }
     } else {
         match dtype {
             GgmlType::Q4K => {
                 dequant.encode_fused_batch_q4_k(encoder, weight, input, output, m, n, k)
             }
+            GgmlType::Q5K if experimental_q5k_prefill_enabled() => {
+                dequant.encode_fused_batch_q5_k(encoder, weight, input, output, m, n, k)
+            }
             GgmlType::Q6K => {
                 dequant.encode_fused_batch_q6_k(encoder, weight, input, output, m, n, k)
             }
-            _ => panic!(
-                "GPU batch matmul only supports Q4_K and Q6_K, got {:?}",
-                dtype
-            ),
+            _ => gpu_batch_prefill_panic(dtype),
         }
     }
 }
@@ -235,10 +378,17 @@ pub(super) fn encode_dequant_batch_f16in(
 ) {
     match dtype {
         GgmlType::Q8_0 => {
-            if crate::backend::metal::metal_q8_batch_native_shape_enabled(m, n, k) {
-                metal_ops
-                    .dequant
-                    .encode_fused_batch_q8_0_f16in(encoder, weight, input_f16, output, m, n, k);
+            if metal_ops.metal_q8_batch_native_shape_enabled(m, n, k) {
+                metal_ops.dequant.encode_fused_batch_q8_0_f16in_with_config(
+                    encoder,
+                    weight,
+                    input_f16,
+                    output,
+                    m,
+                    n,
+                    k,
+                    metal_ops.dequant_dispatch_config(),
+                );
                 return;
             }
             if metal_ops
@@ -257,9 +407,16 @@ pub(super) fn encode_dequant_batch_f16in(
             ) {
                 return;
             }
-            metal_ops
-                .dequant
-                .encode_fused_batch_q4_k_f16in(encoder, weight, input_f16, output, m, n, k)
+            metal_ops.dequant.encode_fused_batch_q4_k_f16in_with_config(
+                encoder,
+                weight,
+                input_f16,
+                output,
+                m,
+                n,
+                k,
+                metal_ops.dequant_dispatch_config(),
+            )
         }
         GgmlType::Q6K => {
             if metal_ops.encode_precomputed_q4k_batch_if_available(
@@ -267,14 +424,18 @@ pub(super) fn encode_dequant_batch_f16in(
             ) {
                 return;
             }
-            metal_ops
-                .dequant
-                .encode_fused_batch_q6_k_f16in(encoder, weight, input_f16, output, m, n, k)
+            metal_ops.dequant.encode_fused_batch_q6_k_f16in_with_config(
+                encoder,
+                weight,
+                input_f16,
+                output,
+                m,
+                n,
+                k,
+                metal_ops.dequant_dispatch_config(),
+            )
         }
-        _ => panic!(
-            "GPU batch matmul only supports Q4_K and Q6_K, got {:?}",
-            dtype
-        ),
+        _ => gpu_batch_prefill_panic(dtype),
     }
 }
 
@@ -369,5 +530,69 @@ pub(super) fn encode_dequant_batch_pair_f16in(
             "GPU batch pair matmul only supports Q4_K, Q6_K, and Q8_0, got {:?}",
             dtype
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::MutexGuard;
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("shared env test lock")
+    }
+
+    fn with_env_var<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
+        let _guard = env_lock();
+        let previous = std::env::var(key).ok();
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        let result = f();
+        match previous {
+            Some(prev) => unsafe {
+                std::env::set_var(key, prev);
+            },
+            None => unsafe {
+                std::env::remove_var(key);
+            },
+        }
+        result
+    }
+
+    #[test]
+    fn test_q5k_is_decode_only_gpu_quant() {
+        assert!(gpu_decode_quant_dtype_supported(GgmlType::Q5K));
+        assert!(!gpu_prefill_quant_dtype_supported(GgmlType::Q5K));
+        assert!(!gpu_batch_logits_dtype_supported(GgmlType::Q5K));
+    }
+
+    #[test]
+    fn test_experimental_q5k_prefill_env_widens_prefill_dtype_gate_only() {
+        with_env_var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL", "1", || {
+            assert!(gpu_decode_quant_dtype_supported(GgmlType::Q5K));
+            assert!(gpu_prefill_quant_dtype_supported(GgmlType::Q5K));
+            assert!(!gpu_batch_logits_dtype_supported(GgmlType::Q5K));
+        });
+    }
+
+    #[test]
+    fn test_warn_gpu_path_issue_once_only_runs_first_warning() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static WARN_COUNT: AtomicUsize = AtomicUsize::new(0);
+        let key = "test:unsupported:blk.0.attn_q.weight:Q5K".to_string();
+
+        warn_gpu_path_issue_once(key.clone(), || {
+            WARN_COUNT.fetch_add(1, Ordering::Relaxed);
+        });
+        warn_gpu_path_issue_once(key, || {
+            WARN_COUNT.fetch_add(1, Ordering::Relaxed);
+        });
+
+        assert_eq!(WARN_COUNT.load(Ordering::Relaxed), 1);
     }
 }

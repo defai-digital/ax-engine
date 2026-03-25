@@ -12,6 +12,7 @@ use serde_json::json;
 
 use ax_core::chat::render_user_prompt;
 use ax_core::gguf::MappedModel;
+use ax_core::memory::MemoryBudget;
 use ax_core::metrics::counters::OpTimer;
 use ax_core::metrics::{InferenceMetrics, LatencyHistogram, current_rss_bytes};
 use ax_core::model::{
@@ -32,6 +33,8 @@ fn main() -> anyhow::Result<()> {
     args::check_unsupported_flags();
 
     let args = args::CliArgs::parse();
+
+    validate_mode_combinations(&args)?;
 
     if args.speculative_draft.is_some() && !args.experimental {
         anyhow::bail!(
@@ -66,6 +69,26 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_mode_combinations(args: &args::CliArgs) -> anyhow::Result<()> {
+    if !args.interactive {
+        return Ok(());
+    }
+
+    if args.prompt.is_some() {
+        anyhow::bail!("--prompt is not used in --interactive mode");
+    }
+    if args.reuse_bench || args.reuse_bench_json {
+        anyhow::bail!(
+            "--reuse-bench and --reuse-bench-json are not supported in --interactive mode"
+        );
+    }
+    if args.speculative_draft.is_some() {
+        anyhow::bail!("--speculative-draft is not supported in --interactive mode");
+    }
+
+    Ok(())
+}
+
 /// Load a GGUF model and return all components needed for inference.
 pub(crate) fn load_model(
     model_path: &str,
@@ -87,7 +110,8 @@ pub(crate) fn load_model(
         .predominant_quant()
         .map(|dtype| dtype.to_string())
         .unwrap_or_else(|| "default".to_string());
-    ax_metal::init_global_profile(&profile_model_name, &profile_quant);
+    let profile_architecture = mapped.header.architecture().unwrap_or("default");
+    backend.configure_for_model(&profile_model_name, &profile_quant, profile_architecture)?;
 
     let mut config = ModelConfig::from_gguf(&mapped.header)?;
     // Apply user-specified context size override
@@ -101,6 +125,20 @@ pub(crate) fn load_model(
     }
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = LlamaModel::with_backend(config.clone(), backend);
+    let kv_plan = model.kv_plan();
+    let kv_memory = kv_plan.memory_estimate();
+    let kv_capacity = kv_plan.capacity_policy();
+    let model_bytes_u64 = mapped.total_tensor_bytes();
+    MemoryBudget::check_combined(model_bytes_u64, kv_memory.initial_bytes as u64)?;
+    if let Ok(max_summary) = MemoryBudget::summary(model_bytes_u64, kv_memory.max_bytes as u64)
+        && max_summary.required_bytes > max_summary.allowed_bytes
+    {
+        eprintln!(
+            "Warning: model + max planned KV footprint ({:.1}GB) exceeds budget ({:.1}GB). Initial allocation still fits, but long-context growth may pressure memory.",
+            max_summary.required_bytes as f64 / 1e9,
+            max_summary.allowed_bytes as f64 / 1e9,
+        );
+    }
 
     let load_time = timer.elapsed();
     let rss_after = current_rss_bytes();
@@ -113,6 +151,19 @@ pub(crate) fn load_model(
         model_mb,
         load_time.as_secs_f64(),
     );
+    eprintln!(
+        "KV plan: {} | Rollback: {} | Capacity {}→+{} up to {} tok | Initial {:.1}MB | Max {:.1}MB",
+        kv_plan.summary_label(),
+        kv_plan.rollback_policy().label(),
+        kv_capacity.initial_tokens,
+        kv_capacity.growth_tokens,
+        kv_capacity.max_tokens,
+        kv_memory.initial_bytes as f64 / 1024.0 / 1024.0,
+        kv_memory.max_bytes as f64 / 1024.0 / 1024.0,
+    );
+    if let Some(note) = mapped.support_note() {
+        eprintln!("Support: {note}");
+    }
 
     // Log architecture features
     let head_dim_source = if config.head_dim != config.embedding_dim / config.n_heads {
@@ -267,7 +318,7 @@ fn run_single(
         load_model(&args.model, args.ctx_size, args.verbose, backend)?;
     validate_sampling_token_ids(args, model.config.vocab_size as usize)?;
     let weights = WeightStore::new(&mapped);
-    let mut kv = model.create_model_kv();
+    let mut kv = model.create_model_kv_for_weights(&weights);
     let mut sampler = Sampler::new(sampling_config(args));
     let mut metrics = InferenceMetrics::new();
     let mut latency = LatencyHistogram::new();
@@ -343,6 +394,7 @@ fn run_single(
     }
 
     // --- Prefill: process prompt tokens, keep last logits for sampling ---
+    let prefill_plan = model.prefill_plan_summary(&weights, &kv, prompt_tokens.len())?;
     let prefill_timer = OpTimer::start();
     let mut logits = vec![0.0f32; model.config.vocab_size as usize];
     model.forward_batch(&prompt_tokens, &mut kv, &weights, &mut logits)?;
@@ -407,6 +459,7 @@ fn run_single(
     let mut sampled_infos = Vec::new();
 
     let mut decode_selection = None;
+    let mut decode_plan = None;
     let stdout = std::io::stdout();
     let mut stream =
         StreamPrinter::with_stops(stdout.lock(), args.stop.clone(), args.stop_token_id.clone());
@@ -502,6 +555,7 @@ fn run_single(
         }
         metrics.decode_tokens = outcome.generated_tokens;
         metrics.decode_duration = outcome.decode_duration;
+        decode_plan = Some(outcome.plan_summary.clone());
         decode_selection = Some(outcome.selection);
     }
     stream.flush()?;
@@ -523,6 +577,7 @@ fn run_single(
             metrics.prefill_duration.as_secs_f64(),
             metrics.prefill_tok_per_sec(),
         );
+        eprintln!("PrefillPlan: {prefill_plan}");
         eprintln!(
             "Decode:  {} tokens, {:.2}s ({:.1} tok/s)",
             metrics.decode_tokens,
@@ -531,6 +586,9 @@ fn run_single(
         );
         if let Some(selection) = &decode_selection {
             eprintln!("Mode:    {} ({})", selection.mode, selection.intent);
+            if let Some(plan) = &decode_plan {
+                eprintln!("Plan:    {plan}");
+            }
             if let Some(reason) = &selection.fallback_reason {
                 eprintln!("Fallback:{reason}");
             }
@@ -584,7 +642,7 @@ fn run_speculative(
     );
 
     let mut spec = SpeculativeDecoder::load(draft_path, args.speculative_k)?;
-    let mut kv = model.create_model_kv();
+    let mut kv = model.create_model_kv_for_weights(weights);
     let mut sampler = Sampler::new(sampling_config(args));
     let mut metrics = InferenceMetrics::new();
 
@@ -629,18 +687,24 @@ fn run_speculative(
             break;
         }
 
-        // Print the last accepted token
+        // Print the last accepted token.
         let _ = stream.push_token(tokenizer, last_token)?;
+        n_generated += 1;
+        if n_generated >= max_tokens as u64 {
+            break;
+        }
 
         let remaining = max_tokens as u64 - n_generated;
         let step_k = spec.k().min(remaining as usize).max(1);
 
-        // Temporarily use k=step_k (last step may need fewer tokens)
+        // Run the speculative (or partial-fallback) step.
+        // `position` must equal `target_kv.seq_len()` here — generate_step
+        // feeds `last_token` as verify_tokens[0] at this position.
         let step = if step_k < spec.k() {
             // For the last partial step, just do one regular forward_single
             logits.fill(0.0);
             model.forward_single(last_token, position, &mut kv, weights, &mut logits)?;
-            let tok = sampler.sample(&mut logits, &[]);
+            let tok = sampler.sample(&mut logits, &kv_history);
             SpecStep {
                 tokens: vec![tok],
                 n_accepted: 0,
@@ -666,26 +730,38 @@ fn run_speculative(
         total_verified_positions += step.metrics.verified_positions as u64;
         total_drafted_tokens += step.metrics.drafted_tokens as u64;
 
+        // last_token was fed into target KV by the step; record it in history.
+        kv_history.push(last_token);
+
         // Emit all tokens from this step (except last which seeds next step)
         let n_emitted = step.tokens.len().saturating_sub(1);
-        kv_history.push(last_token);
-        kv_history.extend_from_slice(&step.tokens[..n_emitted]);
+        let mut saw_stop_token = false;
         for &tok in &step.tokens[..n_emitted] {
-            if tokenizer.is_eos(tok) || n_generated >= max_tokens as u64 {
+            if tokenizer.is_eos(tok) {
+                saw_stop_token = true;
                 break;
             }
             let _ = stream.push_token(tokenizer, tok)?;
+            kv_history.push(tok);
             n_generated += 1;
+            if n_generated >= max_tokens as u64 {
+                break;
+            }
         }
 
         // Last token seeds the next step
         if let Some(&tok) = step.tokens.last() {
             last_token = tok;
-            position += step.tokens.len();
-            n_generated = n_generated.saturating_add(1);
         } else {
             break;
         }
+
+        if saw_stop_token || n_generated >= max_tokens as u64 {
+            break;
+        }
+
+        // position tracks target_kv.seq_len(): last_token (1) + accepted tokens.
+        position += step.tokens.len();
     }
 
     metrics.decode_tokens = n_generated;
@@ -761,7 +837,7 @@ fn run_reuse_bench(
     let mut run_results: Vec<(f64, f64)> = Vec::new(); // (elapsed_secs, tok_per_sec)
 
     for _ in 0..2u64 {
-        let mut kv = model.create_model_kv();
+        let mut kv = model.create_model_kv_for_weights(weights);
         let mut logits = vec![0.0f32; vocab_size];
 
         let timer = OpTimer::start();
@@ -886,5 +962,55 @@ mod tests {
         args.ban_token_id = vec![2];
 
         validate_sampling_token_ids(&args, 8).unwrap();
+    }
+
+    #[test]
+    fn test_validate_mode_combinations_rejects_prompt_in_interactive_mode() {
+        let mut args = make_args();
+        args.interactive = true;
+
+        let err = validate_mode_combinations(&args).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--prompt is not used in --interactive mode")
+        );
+    }
+
+    #[test]
+    fn test_validate_mode_combinations_rejects_reuse_bench_in_interactive_mode() {
+        let mut args = make_args();
+        args.interactive = true;
+        args.prompt = None;
+        args.reuse_bench = true;
+
+        let err = validate_mode_combinations(&args).unwrap_err();
+        assert!(err.to_string().contains("--reuse-bench"));
+    }
+
+    #[test]
+    fn test_validate_mode_combinations_rejects_speculative_in_interactive_mode() {
+        let mut args = make_args();
+        args.interactive = true;
+        args.prompt = None;
+        args.speculative_draft = Some("draft.gguf".to_string());
+
+        let err = validate_mode_combinations(&args).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--speculative-draft is not supported in --interactive mode")
+        );
+    }
+
+    #[test]
+    fn test_support_note_for_quant_marks_q5k_decode_only() {
+        assert!(
+            ax_core::gguf::mmap::support_note_for_q5k_layer_presence(true)
+                .unwrap()
+                .contains("decode-only baseline")
+        );
+        assert_eq!(
+            ax_core::gguf::mmap::support_note_for_q5k_layer_presence(false),
+            None
+        );
     }
 }

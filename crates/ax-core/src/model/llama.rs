@@ -38,11 +38,18 @@ use crate::kv::ModelKv;
 use crate::metrics::OpBreakdown;
 use crate::metrics::counters::OpTimer;
 use crate::model::config::ModelConfig;
+use crate::model::decode::DecodeIntent;
+use crate::model::execution_plan::{
+    DecodeBarrierPlan, DecodeExecutionPlan, DecodeScratchPlan, GpuBatchPrefillExecutionPlan,
+    GpuDecodeExecutionPlan, LlamaLayerQkvPlan, PrefillAttentionPlan, PrefillExecutionPlan,
+    PrefillFfnActivationPlan, PrefillLogitsPlan, PrefillMode, PrefillProjectionInputPlan,
+    PrefillResidualHandoffPlan, PrefillWoInputPlan, llama_layer_plan_for_gpu,
+};
 use crate::model::forward::{ForwardContext, ForwardPass};
 use crate::model::shared::{
     encode_batch_logits, encode_dequant_batch, encode_dequant_batch_f16in,
-    encode_dequant_batch_pair_f16in, encode_dequant_matvec, gpu_batch_logits_supported,
-    gpu_decode_quant_supported, gpu_quant_supported,
+    encode_dequant_batch_pair_f16in, encode_dequant_matvec, encode_dequant_matvec_with_config,
+    gpu_decode_quant_supported, gpu_prefill_uses_experimental_q5k,
 };
 use crate::model::weights::WeightStore;
 use std::sync::OnceLock;
@@ -71,7 +78,7 @@ macro_rules! timed {
 /// Metal encoder on Apple Silicon UMA provides ordering guarantees —
 /// each dispatch completes before the next starts, and writes are
 /// immediately visible via cache coherency. Barriers are redundant.
-fn metal_decode_barriers_enabled() -> bool {
+pub(crate) fn metal_decode_barriers_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| match std::env::var("AX_METAL_DECODE_BARRIERS") {
         Ok(v) => {
@@ -141,12 +148,11 @@ fn encode_llama_gpu_layers_only(
     kv_offset: u32,
     rope_position: f32,
     full_seq_len: usize,
-    kv_f16: bool,
+    exec_plan: &GpuDecodeExecutionPlan,
     gpu_kv: &crate::kv::GpuKv,
     cached: &crate::backend::metal::CachedModelKeys,
     weight_cache: &rustc_hash::FxHashMap<usize, ax_metal::MetalBuffer>,
     fused_qkv_cache: &rustc_hash::FxHashMap<(usize, usize, usize), ax_metal::MetalBuffer>,
-    decode_barriers: bool,
     mut ops: Option<&mut OpBreakdown>,
 ) -> anyhow::Result<()> {
     let dim = cfg.embedding_dim as usize;
@@ -158,26 +164,26 @@ fn encode_llama_gpu_layers_only(
     let q_dim = n_heads * head_dim;
     let kv_dim = n_kv_heads * head_dim;
     let eps = cfg.rms_norm_eps;
-    let use_fused_qkv = crate::backend::metal::metal_fused_qkv_enabled_for_arch(&cfg.architecture);
-
+    let layer_plans: Vec<_> = cached
+        .layers
+        .iter()
+        .map(|lw| llama_layer_plan_for_gpu(exec_plan, lw.wq_dtype, lw.wk_dtype, lw.wv_dtype))
+        .collect();
     let decode_barrier = |encoder: &ax_metal::MetalEncoder| {
-        if decode_barriers {
+        if exec_plan.barriers == DecodeBarrierPlan::Explicit {
             ax_metal::barrier_buffers(encoder);
         }
     };
 
-    for layer in 0..n_layers {
+    for (layer, &layer_plan) in layer_plans.iter().enumerate().take(n_layers) {
         let lw = &cached.layers[layer];
 
         let norm_w_buf = weight_cache.get(&lw.attn_norm).unwrap();
         let wq_buf = weight_cache.get(&lw.wq).unwrap();
         let wk_buf = weight_cache.get(&lw.wk).unwrap();
         let wv_buf = weight_cache.get(&lw.wv).unwrap();
-        let fused_qkv_dtype_ok = lw.wq_dtype == lw.wk_dtype
-            && lw.wq_dtype == lw.wv_dtype
-            && matches!(lw.wq_dtype, GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0);
         let fused_qkv_key = (lw.wq, lw.wk, lw.wv);
-        let fused_qkv_buf = if use_fused_qkv && fused_qkv_dtype_ok {
+        let fused_qkv_buf = if layer_plan.qkv == LlamaLayerQkvPlan::Fused {
             fused_qkv_cache.get(&fused_qkv_key)
         } else {
             None
@@ -201,7 +207,7 @@ fn encode_llama_gpu_layers_only(
         // 2. QKV matmul
         if let Some(fused_w) = fused_qkv_buf {
             let t = OpTimer::start();
-            encode_dequant_matvec(
+            encode_dequant_matvec_with_config(
                 metal_ops,
                 encoder,
                 fused_w,
@@ -210,6 +216,7 @@ fn encode_llama_gpu_layers_only(
                 (q_dim + 2 * kv_dim) as u32,
                 dim as u32,
                 lw.wq_dtype,
+                exec_plan.dequant_dispatch,
             );
             if let Some(ref mut ops_ref) = ops {
                 ops_ref.gpu_encode_layer_qkv += t.elapsed();
@@ -225,7 +232,7 @@ fn encode_llama_gpu_layers_only(
                 &s.v_buf,
                 gpu_kv.k_buffer(layer),
                 gpu_kv.v_buffer(layer),
-                kv_f16,
+                exec_plan.kv_f16,
                 1,
                 n_heads as u32,
                 n_kv_heads as u32,
@@ -245,7 +252,7 @@ fn encode_llama_gpu_layers_only(
             decode_barrier(encoder);
         } else {
             let t = OpTimer::start();
-            encode_dequant_matvec(
+            encode_dequant_matvec_with_config(
                 metal_ops,
                 encoder,
                 wq_buf,
@@ -254,8 +261,9 @@ fn encode_llama_gpu_layers_only(
                 q_dim as u32,
                 dim as u32,
                 lw.wq_dtype,
+                exec_plan.dequant_dispatch,
             );
-            encode_dequant_matvec(
+            encode_dequant_matvec_with_config(
                 metal_ops,
                 encoder,
                 wk_buf,
@@ -264,8 +272,9 @@ fn encode_llama_gpu_layers_only(
                 kv_dim as u32,
                 dim as u32,
                 lw.wk_dtype,
+                exec_plan.dequant_dispatch,
             );
-            encode_dequant_matvec(
+            encode_dequant_matvec_with_config(
                 metal_ops,
                 encoder,
                 wv_buf,
@@ -274,6 +283,7 @@ fn encode_llama_gpu_layers_only(
                 kv_dim as u32,
                 dim as u32,
                 lw.wv_dtype,
+                exec_plan.dequant_dispatch,
             );
             if let Some(ref mut ops_ref) = ops {
                 ops_ref.gpu_encode_layer_qkv += t.elapsed();
@@ -303,7 +313,7 @@ fn encode_llama_gpu_layers_only(
                 encoder,
                 &s.k_buf,
                 gpu_kv.k_buffer(layer),
-                kv_f16,
+                exec_plan.kv_f16,
                 kv_offset,
                 kv_dim as u32,
             );
@@ -311,7 +321,7 @@ fn encode_llama_gpu_layers_only(
                 encoder,
                 &s.v_buf,
                 gpu_kv.v_buffer(layer),
-                kv_f16,
+                exec_plan.kv_f16,
                 kv_offset,
                 kv_dim as u32,
             );
@@ -323,21 +333,24 @@ fn encode_llama_gpu_layers_only(
 
         // 5. Decode attention
         let t = OpTimer::start();
-        metal_ops.attention.encode_attention_decode_with_scratch(
-            encoder,
-            &s.q_buf,
-            gpu_kv.k_buffer(layer),
-            gpu_kv.v_buffer(layer),
-            &s.attn_out,
-            &s.splitk_partial_out,
-            &s.splitk_partial_lse,
-            kv_f16,
-            n_heads as u32,
-            n_kv_heads as u32,
-            head_dim as u32,
-            0,
-            full_seq_len as u32,
-        );
+        metal_ops
+            .attention
+            .encode_attention_decode_with_scratch_and_config(
+                encoder,
+                &s.q_buf,
+                gpu_kv.k_buffer(layer),
+                gpu_kv.v_buffer(layer),
+                &s.attn_out,
+                &s.splitk_partial_out,
+                &s.splitk_partial_lse,
+                exec_plan.kv_f16,
+                n_heads as u32,
+                n_kv_heads as u32,
+                head_dim as u32,
+                0,
+                full_seq_len as u32,
+                exec_plan.attention_dispatch,
+            );
         if let Some(ref mut ops_ref) = ops {
             ops_ref.gpu_encode_layer_attention += t.elapsed();
         }
@@ -346,7 +359,7 @@ fn encode_llama_gpu_layers_only(
         // 6. Output projection
         let wo_buf = weight_cache.get(&lw.wo).unwrap();
         let t = OpTimer::start();
-        encode_dequant_matvec(
+        encode_dequant_matvec_with_config(
             metal_ops,
             encoder,
             wo_buf,
@@ -355,6 +368,7 @@ fn encode_llama_gpu_layers_only(
             dim as u32,
             q_dim as u32,
             lw.wo_dtype,
+            exec_plan.dequant_dispatch,
         );
         if let Some(ref mut ops_ref) = ops {
             ops_ref.gpu_encode_layer_out_proj += t.elapsed();
@@ -391,7 +405,7 @@ fn encode_llama_gpu_layers_only(
         let wg_buf = weight_cache.get(&lw.wg).unwrap();
         let wu_buf = weight_cache.get(&lw.wu).unwrap();
         let t = OpTimer::start();
-        encode_dequant_matvec(
+        encode_dequant_matvec_with_config(
             metal_ops,
             encoder,
             wg_buf,
@@ -400,8 +414,9 @@ fn encode_llama_gpu_layers_only(
             inter_dim as u32,
             dim as u32,
             lw.wg_dtype,
+            exec_plan.dequant_dispatch,
         );
-        encode_dequant_matvec(
+        encode_dequant_matvec_with_config(
             metal_ops,
             encoder,
             wu_buf,
@@ -410,6 +425,7 @@ fn encode_llama_gpu_layers_only(
             inter_dim as u32,
             dim as u32,
             lw.wu_dtype,
+            exec_plan.dequant_dispatch,
         );
         if let Some(ref mut ops_ref) = ops {
             ops_ref.gpu_encode_layer_ffn += t.elapsed();
@@ -432,7 +448,7 @@ fn encode_llama_gpu_layers_only(
         // 11. Down projection
         let wd_buf = weight_cache.get(&lw.wd).unwrap();
         let t = OpTimer::start();
-        encode_dequant_matvec(
+        encode_dequant_matvec_with_config(
             metal_ops,
             encoder,
             wd_buf,
@@ -441,6 +457,7 @@ fn encode_llama_gpu_layers_only(
             dim as u32,
             inter_dim as u32,
             lw.wd_dtype,
+            exec_plan.dequant_dispatch,
         );
         if let Some(ref mut ops_ref) = ops {
             ops_ref.gpu_encode_layer_ffn += t.elapsed();
@@ -472,14 +489,14 @@ fn encode_llama_gpu_output_head(
     cfg: &ModelConfig,
     cached: &crate::backend::metal::CachedModelKeys,
     weight_cache: &rustc_hash::FxHashMap<usize, ax_metal::MetalBuffer>,
-    decode_barriers: bool,
+    exec_plan: &GpuDecodeExecutionPlan,
 ) {
     let dim = cfg.embedding_dim as usize;
     let vocab_size = cfg.vocab_size as usize;
     let eps = cfg.rms_norm_eps;
 
     let decode_barrier = |encoder: &ax_metal::MetalEncoder| {
-        if decode_barriers {
+        if exec_plan.barriers == DecodeBarrierPlan::Explicit {
             ax_metal::barrier_buffers(encoder);
         }
     };
@@ -494,7 +511,7 @@ fn encode_llama_gpu_output_head(
     // LM head → logits
     decode_barrier(encoder);
     let lm_buf = weight_cache.get(&cached.lm_head).unwrap();
-    encode_dequant_matvec(
+    encode_dequant_matvec_with_config(
         metal_ops,
         encoder,
         lm_buf,
@@ -503,6 +520,7 @@ fn encode_llama_gpu_output_head(
         vocab_size as u32,
         dim as u32,
         cached.lm_head_dtype,
+        exec_plan.dequant_dispatch,
     );
 }
 
@@ -529,14 +547,33 @@ fn encode_llama_pending_step(
     weights: &WeightStore,
 ) -> anyhow::Result<ax_metal::PendingFrame> {
     let kv_dim = (cfg.n_kv_heads * cfg.head_dim) as usize;
-    let kv_f16 = gpu_kv.is_f16();
+    let exec_plan = DecodeExecutionPlan::llama_pipelined(
+        metal_ops,
+        gpu_kv,
+        cfg.embedding_dim,
+        cfg.head_dim,
+        position + 1,
+    );
+    debug_assert_eq!(
+        exec_plan.dequant_dispatch,
+        metal_ops.dequant_dispatch_config(),
+        "llama decode execution plan must match current Metal dequant dispatch config"
+    );
+    debug_assert_eq!(
+        exec_plan.attention_dispatch,
+        metal_ops.attention_dispatch_config(),
+        "llama decode execution plan must match current Metal attention dispatch config"
+    );
 
     // Pre-condition: capacity must already be reserved by caller.
     // This call is a guaranteed no-op if prewarm_kv_capacity was called.
     gpu_kv.ensure_capacity(&metal_ops.device, position + 1)?;
 
     // Init scratch buffers (no-op after first call)
-    metal_ops.init_scratches(cfg);
+    match DecodeScratchPlan::SharedGpuScratch {
+        DecodeScratchPlan::SharedGpuScratch => metal_ops.init_scratches(cfg),
+        DecodeScratchPlan::CpuScratch => anyhow::bail!("pipelined GPU decode requires GPU scratch"),
+    }
 
     let scratch_guard = metal_ops.scratches();
     let s = scratch_guard.as_ref().unwrap();
@@ -559,7 +596,6 @@ fn encode_llama_pending_step(
 
     let weight_cache = metal_ops.lock_weight_cache();
     let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
-    let decode_barriers = metal_decode_barriers_enabled();
 
     metal_ops.device.encode_frame(|encoder| {
         encode_llama_gpu_layers_only(
@@ -571,12 +607,11 @@ fn encode_llama_pending_step(
             kv_offset,
             rope_position,
             full_seq_len,
-            kv_f16,
+            &exec_plan,
             gpu_kv,
             cached,
             &weight_cache,
             &fused_qkv_cache,
-            decode_barriers,
             None,
         )?;
         encode_llama_gpu_output_head(
@@ -587,7 +622,7 @@ fn encode_llama_pending_step(
             cfg,
             cached,
             &weight_cache,
-            decode_barriers,
+            &exec_plan,
         );
         Ok(())
     })
@@ -618,8 +653,7 @@ impl LlamaForward {
         let dim = cfg.embedding_dim as usize;
         let q_dim = n_heads * head_dim;
         let kv_dim = n_kv_heads * head_dim;
-        let use_precomputed_f16 =
-            crate::backend::metal::metal_precompute_f16_enabled_for_model(cfg);
+        let use_precomputed_f16 = metal_ops.metal_precompute_f16_enabled();
 
         let mut layers = Vec::with_capacity(n_layers);
         for layer in 0..n_layers {
@@ -633,7 +667,7 @@ impl LlamaForward {
             let wk_key = metal_ops.ensure_quant_cached(wk_raw);
             let wv_key = metal_ops.ensure_quant_cached(wv_raw);
             if use_precomputed_f16
-                && crate::backend::metal::metal_fused_qkv_enabled()
+                && metal_ops.metal_fused_qkv_enabled()
                 && wq_dtype == wk_dtype
                 && wq_dtype == wv_dtype
                 && matches!(wq_dtype, GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0)
@@ -854,15 +888,35 @@ impl LlamaForward {
         let dim = cfg.embedding_dim as usize;
         let vocab_size = cfg.vocab_size as usize;
         let kv_dim = (cfg.n_kv_heads * cfg.head_dim) as usize;
+        let exec_plan = DecodeExecutionPlan::llama_single_cb(
+            metal_ops,
+            gpu_kv,
+            cfg.embedding_dim,
+            cfg.head_dim,
+            gpu_kv.seq_len() + 1,
+        );
+        debug_assert_eq!(
+            exec_plan.dequant_dispatch,
+            metal_ops.dequant_dispatch_config(),
+            "llama decode execution plan must match current Metal dequant dispatch config"
+        );
+        debug_assert_eq!(
+            exec_plan.attention_dispatch,
+            metal_ops.attention_dispatch_config(),
+            "llama decode execution plan must match current Metal attention dispatch config"
+        );
 
         assert!(logits.len() >= vocab_size);
 
-        metal_ops.init_scratches(cfg);
+        match DecodeScratchPlan::SharedGpuScratch {
+            DecodeScratchPlan::SharedGpuScratch => metal_ops.init_scratches(cfg),
+            DecodeScratchPlan::CpuScratch => {
+                anyhow::bail!("single-CB GPU decode requires GPU scratch")
+            }
+        }
 
         let scratch_guard = metal_ops.scratches();
         let s = scratch_guard.as_ref().unwrap();
-
-        let kv_f16 = gpu_kv.is_f16();
 
         let next_seq = gpu_kv.seq_len() + 1;
         gpu_kv.ensure_capacity(&metal_ops.device, next_seq)?;
@@ -900,7 +954,6 @@ impl LlamaForward {
         {
             let weight_cache = metal_ops.lock_weight_cache();
             let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
-            let decode_barriers = metal_decode_barriers_enabled();
             if let Some(ref mut ops_ref) = ops {
                 let exec_t = OpTimer::start();
                 metal_ops.device.execute_sync(|encoder| {
@@ -913,12 +966,11 @@ impl LlamaForward {
                         kv_offset,
                         rope_position,
                         cur_seq_len + 1,
-                        kv_f16,
+                        &exec_plan,
                         gpu_kv,
                         cached,
                         &weight_cache,
                         &fused_qkv_cache,
-                        decode_barriers,
                         Some(ops_ref),
                     )?;
                     encode_llama_gpu_output_head(
@@ -929,7 +981,7 @@ impl LlamaForward {
                         cfg,
                         cached,
                         &weight_cache,
-                        decode_barriers,
+                        &exec_plan,
                     );
                     Ok(())
                 })?;
@@ -946,12 +998,11 @@ impl LlamaForward {
                         kv_offset,
                         rope_position,
                         cur_seq_len + 1,
-                        kv_f16,
+                        &exec_plan,
                         gpu_kv,
                         cached,
                         &weight_cache,
                         &fused_qkv_cache,
-                        decode_barriers,
                         None,
                     )?;
                     encode_llama_gpu_output_head(
@@ -962,7 +1013,7 @@ impl LlamaForward {
                         cfg,
                         cached,
                         &weight_cache,
-                        decode_barriers,
+                        &exec_plan,
                     );
                     Ok(())
                 })?;
@@ -1031,8 +1082,6 @@ impl LlamaForward {
         let batch_guard = metal_ops.batch_scratches();
         let bs = batch_guard.as_ref().unwrap();
 
-        let kv_f16 = gpu_kv.is_f16();
-
         // Ensure capacity for all N tokens
         gpu_kv.ensure_capacity(&metal_ops.device, gpu_kv.seq_len() + n_tokens)?;
 
@@ -1084,24 +1133,30 @@ impl LlamaForward {
                     || lw.wu_dtype == GgmlType::Q8_0
                     || lw.wd_dtype == GgmlType::Q8_0
             }) || matches!(cached.lm_head_dtype, GgmlType::Q8_0);
-            let use_f16_batch_io =
-                metal_ops.metal_batch_f16_io_enabled_for_arch(&cfg.architecture) || has_q8_weights;
-            let use_f16_pair = metal_ops.metal_batch_f16_pair_enabled_for_arch(&cfg.architecture);
-            let use_fused_qkv =
-                crate::backend::metal::metal_fused_qkv_enabled_for_arch(&cfg.architecture);
-            let use_batch_simd =
-                crate::backend::metal::metal_batch_simd_enabled_for_arch(&cfg.architecture);
+            let has_q5k_weights = gpu_prefill_uses_experimental_q5k(weights);
+            let prefill_plan: GpuBatchPrefillExecutionPlan = DecodeExecutionPlan::llama_prefill(
+                metal_ops,
+                gpu_kv,
+                base_seq_len,
+                cfg.head_dim,
+                has_q8_weights,
+                has_q5k_weights,
+                metal_prefill_attn_f16out_enabled(),
+                metal_prefill_use_cached0_enabled(),
+                metal_prefill_split_rope_append_enabled(),
+            );
             let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
 
             metal_ops.device.execute_sync_concurrent(|encoder| {
                 let nt = n_tokens as u32;
+                let mut sb = ax_metal::SmartBarrier::new(encoder);
 
                 // First layer's Phase 1a: RMSNorm (standalone, before loop).
                 // Subsequent layers' Phase 1a is fused with the previous layer's
                 // Phase 3f residual add (saves 1 dispatch + 1 barrier per layer).
                 {
                     let norm_w_buf = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
-                    if use_f16_batch_io {
+                    if prefill_plan.use_f16_batch_io {
                         metal_ops.elementwise.encode_rms_norm_out_batch_f16(
                             encoder,
                             &bs.hidden,
@@ -1111,6 +1166,7 @@ impl LlamaForward {
                             nt,
                             eps,
                         );
+                        sb.post_dispatch(&[&bs.hidden], &[&bs.matmul_in_f16]);
                     } else {
                         metal_ops.elementwise.encode_rms_norm_out_batch(
                             encoder,
@@ -1121,8 +1177,8 @@ impl LlamaForward {
                             nt,
                             eps,
                         );
+                        sb.post_dispatch(&[&bs.hidden], &[&bs.norm_buf]);
                     }
-                    ax_metal::barrier_buffers(encoder);
                 }
 
                 for layer in 0..n_layers {
@@ -1133,18 +1189,19 @@ impl LlamaForward {
                         }
                         crate::model::config::RopeScaling::None => (base_seq_len as f32, 1.0f32),
                     };
-                    let mut rope_done = false;
-                    let mut kv_appended = false;
 
                     let wq_buf = weight_cache.get(&lw.wq).unwrap();
                     let wk_buf = weight_cache.get(&lw.wk).unwrap();
                     let wv_buf = weight_cache.get(&lw.wv).unwrap();
                     let fused_qkv_m = q_dim + 2 * kv_dim;
-                    let fused_qkv_dtype_ok = lw.wq_dtype == lw.wk_dtype
-                        && lw.wq_dtype == lw.wv_dtype
-                        && matches!(lw.wq_dtype, GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0);
                     let fused_qkv_key = (lw.wq, lw.wk, lw.wv);
-                    let fused_qkv_buf = if use_fused_qkv && fused_qkv_dtype_ok {
+                    let qkv_layer_plan = DecodeExecutionPlan::llama_prefill_qkv_layer(
+                        &prefill_plan,
+                        lw.wq_dtype,
+                        lw.wk_dtype,
+                        lw.wv_dtype,
+                    );
+                    let fused_qkv_buf = if qkv_layer_plan.use_fused_projection {
                         fused_qkv_cache.get(&fused_qkv_key)
                     } else {
                         None
@@ -1157,45 +1214,63 @@ impl LlamaForward {
                     // ── Phase 1b: Batched QKV matmul ──
                     if let Some(fused_w) = fused_qkv_buf {
                         let cache_offset = (base_seq_len * kv_dim) as u32;
-                        if use_f16_batch_io {
-                            encode_dequant_batch_f16in(
-                                metal_ops,
-                                encoder,
-                                fused_w,
-                                &bs.matmul_in_f16,
-                                &bs.qkv_buf,
-                                fused_qkv_m as u32,
-                                nt,
-                                dim as u32,
-                                lw.wq_dtype,
-                            );
+                        let qkv_input = if prefill_plan.use_f16_batch_io {
+                            &bs.matmul_in_f16
                         } else {
-                            encode_dequant_batch(
-                                &metal_ops.dequant,
-                                &metal_ops.elementwise,
-                                encoder,
-                                fused_w,
-                                &bs.norm_buf,
-                                &bs.qkv_buf,
-                                &bs.matmul_in_f16,
-                                fused_qkv_m as u32,
-                                nt,
-                                dim as u32,
-                                lw.wq_dtype,
-                                false,
-                                use_batch_simd,
-                            );
+                            &bs.norm_buf
+                        };
+                        sb.pre_dispatch(&[qkv_input], &[&bs.qkv_buf]);
+                        match qkv_layer_plan.input {
+                            PrefillProjectionInputPlan::MatmulScratchF16 => {
+                                encode_dequant_batch_f16in(
+                                    metal_ops,
+                                    encoder,
+                                    fused_w,
+                                    &bs.matmul_in_f16,
+                                    &bs.qkv_buf,
+                                    fused_qkv_m as u32,
+                                    nt,
+                                    dim as u32,
+                                    lw.wq_dtype,
+                                );
+                            }
+                            PrefillProjectionInputPlan::NormBufF32 => {
+                                encode_dequant_batch(
+                                    &metal_ops.dequant,
+                                    &metal_ops.elementwise,
+                                    encoder,
+                                    fused_w,
+                                    &bs.norm_buf,
+                                    &bs.qkv_buf,
+                                    &bs.matmul_in_f16,
+                                    fused_qkv_m as u32,
+                                    nt,
+                                    dim as u32,
+                                    lw.wq_dtype,
+                                    false,
+                                    prefill_plan.use_batch_simd,
+                                );
+                            }
                         }
-                        if metal_prefill_split_rope_append_enabled() {
+                        sb.post_dispatch(&[qkv_input], &[&bs.qkv_buf]);
+                        if qkv_layer_plan.llama_post
+                            == crate::model::execution_plan::LlamaPrefillQkvPostPlan::FusedSplitRopeAppendKv
+                        {
+                            let kv_k = gpu_kv.k_buffer(layer);
+                            let kv_v = gpu_kv.v_buffer(layer);
+                            sb.pre_dispatch(
+                                &[&bs.qkv_buf],
+                                &[&bs.q_buf, &bs.k_buf, &bs.v_buf, kv_k, kv_v],
+                            );
                             metal_ops.elementwise.encode_qkv_split_rope_append_kv_batch(
                                 encoder,
                                 &bs.qkv_buf,
                                 &bs.q_buf,
                                 &bs.k_buf,
                                 &bs.v_buf,
-                                gpu_kv.k_buffer(layer),
-                                gpu_kv.v_buffer(layer),
-                                kv_f16,
+                                kv_k,
+                                kv_v,
+                                prefill_plan.kv_f16,
                                 nt,
                                 n_heads as u32,
                                 n_kv_heads as u32,
@@ -1206,9 +1281,15 @@ impl LlamaForward {
                                 cache_offset,
                                 kv_dim as u32,
                             );
-                            rope_done = true;
-                            kv_appended = true;
+                            sb.post_dispatch(
+                                &[&bs.qkv_buf],
+                                &[&bs.q_buf, &bs.k_buf, &bs.v_buf, kv_k, kv_v],
+                            );
                         } else {
+                            sb.pre_dispatch(
+                                &[&bs.qkv_buf],
+                                &[&bs.q_buf, &bs.k_buf, &bs.v_buf],
+                            );
                             metal_ops.elementwise.encode_qkv_split_rope_batch(
                                 encoder,
                                 &bs.qkv_buf,
@@ -1223,93 +1304,79 @@ impl LlamaForward {
                                 rope_step,
                                 cfg.rope_freq_base,
                             );
-                            rope_done = true;
+                            sb.post_dispatch(
+                                &[&bs.qkv_buf],
+                                &[&bs.q_buf, &bs.k_buf, &bs.v_buf],
+                            );
                         }
-                    } else if use_f16_batch_io {
-                        encode_dequant_batch_f16in(
-                            metal_ops,
-                            encoder,
-                            wq_buf,
-                            &bs.matmul_in_f16,
-                            &bs.q_buf,
-                            q_dim as u32,
-                            nt,
-                            dim as u32,
-                            lw.wq_dtype,
-                        );
-                        encode_dequant_batch_f16in(
-                            metal_ops,
-                            encoder,
-                            wk_buf,
-                            &bs.matmul_in_f16,
-                            &bs.k_buf,
-                            kv_dim as u32,
-                            nt,
-                            dim as u32,
-                            lw.wk_dtype,
-                        );
-                        encode_dequant_batch_f16in(
-                            metal_ops,
-                            encoder,
-                            wv_buf,
-                            &bs.matmul_in_f16,
-                            &bs.v_buf,
-                            kv_dim as u32,
-                            nt,
-                            dim as u32,
-                            lw.wv_dtype,
-                        );
                     } else {
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
-                            encoder,
-                            wq_buf,
-                            &bs.norm_buf,
-                            &bs.q_buf,
-                            &bs.matmul_in_f16,
-                            q_dim as u32,
-                            nt,
-                            dim as u32,
-                            lw.wq_dtype,
-                            false,
-                            use_batch_simd,
-                        );
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
-                            encoder,
-                            wk_buf,
-                            &bs.norm_buf,
-                            &bs.k_buf,
-                            &bs.matmul_in_f16,
-                            kv_dim as u32,
-                            nt,
-                            dim as u32,
-                            lw.wk_dtype,
-                            false,
-                            use_batch_simd,
-                        );
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
-                            encoder,
-                            wv_buf,
-                            &bs.norm_buf,
-                            &bs.v_buf,
-                            &bs.matmul_in_f16,
-                            kv_dim as u32,
-                            nt,
-                            dim as u32,
-                            lw.wv_dtype,
-                            false,
-                            use_batch_simd,
-                        );
+                        // Separate Q/K/V projections — these can overlap when
+                        // all three read norm_buf and write different outputs.
+                        match qkv_layer_plan.input {
+                            PrefillProjectionInputPlan::MatmulScratchF16 => {
+                                // f16 path: all three share matmul_in_f16, can't overlap.
+                                sb.pre_dispatch(&[&bs.matmul_in_f16], &[&bs.q_buf]);
+                                encode_dequant_batch_f16in(
+                                    metal_ops, encoder, wq_buf,
+                                    &bs.matmul_in_f16, &bs.q_buf,
+                                    q_dim as u32, nt, dim as u32, lw.wq_dtype,
+                                );
+                                sb.post_dispatch(&[&bs.matmul_in_f16], &[&bs.q_buf]);
+                                sb.pre_dispatch(&[&bs.matmul_in_f16], &[&bs.k_buf]);
+                                encode_dequant_batch_f16in(
+                                    metal_ops, encoder, wk_buf,
+                                    &bs.matmul_in_f16, &bs.k_buf,
+                                    kv_dim as u32, nt, dim as u32, lw.wk_dtype,
+                                );
+                                sb.post_dispatch(&[&bs.matmul_in_f16], &[&bs.k_buf]);
+                                sb.pre_dispatch(&[&bs.matmul_in_f16], &[&bs.v_buf]);
+                                encode_dequant_batch_f16in(
+                                    metal_ops, encoder, wv_buf,
+                                    &bs.matmul_in_f16, &bs.v_buf,
+                                    kv_dim as u32, nt, dim as u32, lw.wv_dtype,
+                                );
+                                sb.post_dispatch(&[&bs.matmul_in_f16], &[&bs.v_buf]);
+                            }
+                            PrefillProjectionInputPlan::NormBufF32 => {
+                                // f32 path: Q/K/V all read norm_buf, write
+                                // different buffers → SmartBarrier skips
+                                // barriers between them (GPU can overlap).
+                                sb.pre_dispatch(&[&bs.norm_buf], &[&bs.q_buf]);
+                                encode_dequant_batch(
+                                    &metal_ops.dequant, &metal_ops.elementwise,
+                                    encoder, wq_buf, &bs.norm_buf, &bs.q_buf,
+                                    &bs.matmul_in_f16, q_dim as u32, nt,
+                                    dim as u32, lw.wq_dtype, false,
+                                    prefill_plan.use_batch_simd,
+                                );
+                                sb.post_dispatch(&[&bs.norm_buf], &[&bs.q_buf]);
+                                sb.pre_dispatch(&[&bs.norm_buf], &[&bs.k_buf]);
+                                encode_dequant_batch(
+                                    &metal_ops.dequant, &metal_ops.elementwise,
+                                    encoder, wk_buf, &bs.norm_buf, &bs.k_buf,
+                                    &bs.matmul_in_f16, kv_dim as u32, nt,
+                                    dim as u32, lw.wk_dtype, false,
+                                    prefill_plan.use_batch_simd,
+                                );
+                                sb.post_dispatch(&[&bs.norm_buf], &[&bs.k_buf]);
+                                sb.pre_dispatch(&[&bs.norm_buf], &[&bs.v_buf]);
+                                encode_dequant_batch(
+                                    &metal_ops.dequant, &metal_ops.elementwise,
+                                    encoder, wv_buf, &bs.norm_buf, &bs.v_buf,
+                                    &bs.matmul_in_f16, kv_dim as u32, nt,
+                                    dim as u32, lw.wv_dtype, false,
+                                    prefill_plan.use_batch_simd,
+                                );
+                                sb.post_dispatch(&[&bs.norm_buf], &[&bs.v_buf]);
+                            }
+                        }
                     }
-                    ax_metal::barrier_buffers(encoder);
 
                     // ── Phase 1c: Batched RoPE + batched KV cache append ──
-                    if !rope_done {
+                    if qkv_layer_plan.llama_post
+                        == crate::model::execution_plan::LlamaPrefillQkvPostPlan::Separate
+                    {
+                        sb.pre_dispatch(&[&bs.q_buf, &bs.k_buf], &[&bs.q_buf, &bs.k_buf]);
                         metal_ops.elementwise.encode_rope_batch(
                             encoder,
                             &bs.q_buf,
@@ -1322,87 +1389,119 @@ impl LlamaForward {
                             rope_step,
                             cfg.rope_freq_base,
                         );
-                        ax_metal::barrier_buffers(encoder);
+                        sb.post_dispatch(&[&bs.q_buf, &bs.k_buf], &[&bs.q_buf, &bs.k_buf]);
                     }
 
-                    if !kv_appended {
+                    if qkv_layer_plan.llama_post
+                        != crate::model::execution_plan::LlamaPrefillQkvPostPlan::FusedSplitRopeAppendKv
+                    {
                         let cache_offset = (base_seq_len * kv_dim) as u32;
+                        let kv_k = gpu_kv.k_buffer(layer);
+                        let kv_v = gpu_kv.v_buffer(layer);
+                        // K and V appends write to different KV buffers —
+                        // SmartBarrier skips the barrier between them.
+                        sb.pre_dispatch(&[&bs.k_buf], &[kv_k]);
                         metal_ops.elementwise.encode_kv_append_batch(
                             encoder,
                             &bs.k_buf,
-                            gpu_kv.k_buffer(layer),
-                            kv_f16,
+                            kv_k,
+                            prefill_plan.kv_f16,
                             cache_offset,
                             kv_dim as u32,
                             kv_dim as u32,
                             nt,
                         );
+                        sb.post_dispatch(&[&bs.k_buf], &[kv_k]);
+                        sb.pre_dispatch(&[&bs.v_buf], &[kv_v]);
                         metal_ops.elementwise.encode_kv_append_batch(
                             encoder,
                             &bs.v_buf,
-                            gpu_kv.v_buffer(layer),
-                            kv_f16,
+                            kv_v,
+                            prefill_plan.kv_f16,
                             cache_offset,
                             kv_dim as u32,
                             kv_dim as u32,
                             nt,
                         );
-                        ax_metal::barrier_buffers(encoder);
+                        sb.post_dispatch(&[&bs.v_buf], &[kv_v]);
                     }
 
                     // ── Phase 2: Batched attention ──
-                    let use_attn_f16out = use_f16_batch_io
-                        && base_seq_len == 0
-                        && head_dim == 128
-                        && metal_prefill_attn_f16out_enabled();
-                    if base_seq_len == 0 && !metal_prefill_use_cached0_enabled() {
-                        if use_attn_f16out {
-                            metal_ops.attention.encode_attention_prefill_f16out_hd128(
-                                encoder,
-                                &bs.q_buf,
-                                &bs.k_buf,
-                                &bs.v_buf,
-                                &bs.matmul_in_f16,
-                                nt,
-                                n_heads as u32,
-                                n_kv_heads as u32,
-                                head_dim as u32,
-                            );
-                        } else {
-                            metal_ops.attention.encode_attention_prefill(
-                                encoder,
-                                &bs.q_buf,
-                                &bs.k_buf,
-                                &bs.v_buf,
-                                &bs.attn_out,
-                                nt,
-                                n_heads as u32,
-                                n_kv_heads as u32,
-                                head_dim as u32,
-                            );
-                        }
-                    } else {
-                        metal_ops.attention.encode_attention_prefill_cached(
+                    if prefill_plan.attention == PrefillAttentionPlan::BatchLocalF16OutHd128 {
+                        sb.pre_dispatch(
+                            &[&bs.q_buf, &bs.k_buf, &bs.v_buf],
+                            &[&bs.matmul_in_f16],
+                        );
+                        metal_ops.attention.encode_attention_prefill_f16out_hd128(
                             encoder,
                             &bs.q_buf,
-                            gpu_kv.k_buffer(layer),
-                            gpu_kv.v_buffer(layer),
-                            &bs.attn_out,
-                            kv_f16,
+                            &bs.k_buf,
+                            &bs.v_buf,
+                            &bs.matmul_in_f16,
                             nt,
                             n_heads as u32,
                             n_kv_heads as u32,
                             head_dim as u32,
-                            base_seq_len as u32,
-                            0,
                         );
+                        sb.post_dispatch(
+                            &[&bs.q_buf, &bs.k_buf, &bs.v_buf],
+                            &[&bs.matmul_in_f16],
+                        );
+                    } else if prefill_plan.attention == PrefillAttentionPlan::BatchLocal {
+                        sb.pre_dispatch(
+                            &[&bs.q_buf, &bs.k_buf, &bs.v_buf],
+                            &[&bs.attn_out],
+                        );
+                        metal_ops.attention.encode_attention_prefill_with_config(
+                            encoder,
+                            &bs.q_buf,
+                            &bs.k_buf,
+                            &bs.v_buf,
+                            &bs.attn_out,
+                            nt,
+                            n_heads as u32,
+                            n_kv_heads as u32,
+                            head_dim as u32,
+                            prefill_plan.attention_dispatch,
+                        );
+                        sb.post_dispatch(
+                            &[&bs.q_buf, &bs.k_buf, &bs.v_buf],
+                            &[&bs.attn_out],
+                        );
+                    } else {
+                        let kv_k = gpu_kv.k_buffer(layer);
+                        let kv_v = gpu_kv.v_buffer(layer);
+                        sb.pre_dispatch(&[&bs.q_buf, kv_k, kv_v], &[&bs.attn_out]);
+                        metal_ops
+                            .attention
+                            .encode_attention_prefill_cached_with_config(
+                                encoder,
+                                &bs.q_buf,
+                                kv_k,
+                                kv_v,
+                                &bs.attn_out,
+                                prefill_plan.kv_f16,
+                                nt,
+                                n_heads as u32,
+                                n_kv_heads as u32,
+                                head_dim as u32,
+                                base_seq_len as u32,
+                                0,
+                                prefill_plan.attention_dispatch,
+                            );
+                        sb.post_dispatch(&[&bs.q_buf, kv_k, kv_v], &[&bs.attn_out]);
                     }
-                    ax_metal::barrier_buffers(encoder);
 
                     // ── Phase 3a: Batched output projection ──
                     let wo_buf = weight_cache.get(&lw.wo).unwrap();
-                    if use_f16_batch_io {
-                        if !use_attn_f16out {
+                    let wo_input = if prefill_plan.use_f16_batch_io {
+                        &bs.matmul_in_f16
+                    } else {
+                        &bs.attn_out
+                    };
+                    sb.pre_dispatch(&[wo_input], &[&bs.proj_buf]);
+                    if prefill_plan.use_f16_batch_io {
+                        if prefill_plan.wo_input == PrefillWoInputPlan::AttentionOutF32 {
                             metal_ops.elementwise.encode_cast_f32_to_f16(
                                 encoder,
                                 &bs.attn_out,
@@ -1435,14 +1534,23 @@ impl LlamaForward {
                             q_dim as u32,
                             lw.wo_dtype,
                             false,
-                            use_batch_simd,
+                            prefill_plan.use_batch_simd,
                         );
                     }
-                    ax_metal::barrier_buffers(encoder);
+                    sb.post_dispatch(&[wo_input], &[&bs.proj_buf]);
 
                     // ── Phase 3b: Batched residual + FFN norm ──
                     let ffn_nw_buf = weight_cache.get(&lw.ffn_norm).unwrap();
-                    if use_f16_batch_io {
+                    let ffn_norm_out = if prefill_plan.use_f16_batch_io {
+                        &bs.matmul_in_f16
+                    } else {
+                        &bs.norm_buf
+                    };
+                    sb.pre_dispatch(
+                        &[&bs.hidden, &bs.proj_buf],
+                        &[&bs.hidden, ffn_norm_out],
+                    );
+                    if prefill_plan.use_f16_batch_io {
                         metal_ops
                             .elementwise
                             .encode_residual_add_rms_norm_out_batch_f16(
@@ -1469,162 +1577,206 @@ impl LlamaForward {
                                 eps,
                             );
                     }
-                    ax_metal::barrier_buffers(encoder);
+                    sb.post_dispatch(
+                        &[&bs.hidden, &bs.proj_buf],
+                        &[&bs.hidden, ffn_norm_out],
+                    );
 
                     // ── Phase 3c: Batched gate + up ──
                     let wg_buf = weight_cache.get(&lw.wg).unwrap();
                     let wu_buf = weight_cache.get(&lw.wu).unwrap();
+                    let ffn_layer_plan = DecodeExecutionPlan::llama_prefill_ffn_layer(
+                        &prefill_plan,
+                        lw.wg_dtype,
+                        lw.wu_dtype,
+                    );
 
-                    if use_f16_batch_io {
-                        let use_pair_this_layer = (use_f16_pair || lw.wg_dtype == GgmlType::Q8_0)
-                            && lw.wg_dtype == lw.wu_dtype;
-                        if use_pair_this_layer {
-                            encode_dequant_batch_pair_f16in(
+                    let ffn_input = if prefill_plan.use_f16_batch_io {
+                        &bs.matmul_in_f16
+                    } else {
+                        &bs.norm_buf
+                    };
+                    sb.pre_dispatch(&[ffn_input], &[&bs.gate_buf, &bs.up_buf]);
+                    match ffn_layer_plan.input {
+                        PrefillProjectionInputPlan::MatmulScratchF16 => {
+                            if ffn_layer_plan.use_pair_kernel {
+                                encode_dequant_batch_pair_f16in(
+                                    &metal_ops.dequant,
+                                    encoder,
+                                    wg_buf,
+                                    wu_buf,
+                                    &bs.matmul_in_f16,
+                                    &bs.gate_buf,
+                                    &bs.up_buf,
+                                    inter_dim as u32,
+                                    nt,
+                                    dim as u32,
+                                    lw.wg_dtype,
+                                );
+                            } else {
+                                encode_dequant_batch_f16in(
+                                    metal_ops,
+                                    encoder,
+                                    wg_buf,
+                                    &bs.matmul_in_f16,
+                                    &bs.gate_buf,
+                                    inter_dim as u32,
+                                    nt,
+                                    dim as u32,
+                                    lw.wg_dtype,
+                                );
+                                encode_dequant_batch_f16in(
+                                    metal_ops,
+                                    encoder,
+                                    wu_buf,
+                                    &bs.matmul_in_f16,
+                                    &bs.up_buf,
+                                    inter_dim as u32,
+                                    nt,
+                                    dim as u32,
+                                    lw.wu_dtype,
+                                );
+                            }
+                        }
+                        PrefillProjectionInputPlan::NormBufF32 => {
+                            encode_dequant_batch(
                                 &metal_ops.dequant,
+                                &metal_ops.elementwise,
                                 encoder,
                                 wg_buf,
-                                wu_buf,
-                                &bs.matmul_in_f16,
+                                &bs.norm_buf,
                                 &bs.gate_buf,
-                                &bs.up_buf,
+                                &bs.matmul_in_f16,
                                 inter_dim as u32,
                                 nt,
                                 dim as u32,
                                 lw.wg_dtype,
+                                false,
+                                prefill_plan.use_batch_simd,
                             );
-                        } else {
-                            encode_dequant_batch_f16in(
-                                metal_ops,
-                                encoder,
-                                wg_buf,
-                                &bs.matmul_in_f16,
-                                &bs.gate_buf,
-                                inter_dim as u32,
-                                nt,
-                                dim as u32,
-                                lw.wg_dtype,
-                            );
-                            encode_dequant_batch_f16in(
-                                metal_ops,
+                            encode_dequant_batch(
+                                &metal_ops.dequant,
+                                &metal_ops.elementwise,
                                 encoder,
                                 wu_buf,
-                                &bs.matmul_in_f16,
+                                &bs.norm_buf,
                                 &bs.up_buf,
+                                &bs.matmul_in_f16,
                                 inter_dim as u32,
                                 nt,
                                 dim as u32,
                                 lw.wu_dtype,
+                                false,
+                                prefill_plan.use_batch_simd,
                             );
                         }
-                    } else {
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
-                            encoder,
-                            wg_buf,
-                            &bs.norm_buf,
-                            &bs.gate_buf,
-                            &bs.matmul_in_f16,
-                            inter_dim as u32,
-                            nt,
-                            dim as u32,
-                            lw.wg_dtype,
-                            false,
-                            use_batch_simd,
-                        );
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
-                            encoder,
-                            wu_buf,
-                            &bs.norm_buf,
-                            &bs.up_buf,
-                            &bs.matmul_in_f16,
-                            inter_dim as u32,
-                            nt,
-                            dim as u32,
-                            lw.wu_dtype,
-                            false,
-                            use_batch_simd,
-                        );
                     }
-                    ax_metal::barrier_buffers(encoder);
+                    sb.post_dispatch(&[ffn_input], &[&bs.gate_buf, &bs.up_buf]);
 
                     // ── Phase 3d: Batched activation ──
-                    if use_f16_batch_io {
-                        metal_ops.elementwise.encode_silu_elementwise_mul_batch_f16(
-                            encoder,
-                            &bs.gate_buf,
-                            &bs.up_buf,
-                            &bs.matmul_in_f16,
-                            inter_dim as u32,
-                            nt,
-                        );
-                    } else {
-                        metal_ops.elementwise.encode_silu_elementwise_mul_batch(
-                            encoder,
-                            &bs.gate_buf,
-                            &bs.up_buf,
-                            inter_dim as u32,
-                            nt,
-                        );
+                    let act_out = match ffn_layer_plan.activation {
+                        PrefillFfnActivationPlan::SiluMulScratchF16 => &bs.matmul_in_f16,
+                        _ => &bs.gate_buf,
+                    };
+                    sb.pre_dispatch(&[&bs.gate_buf, &bs.up_buf], &[act_out]);
+                    match ffn_layer_plan.activation {
+                        PrefillFfnActivationPlan::SiluMulScratchF16 => {
+                            metal_ops.elementwise.encode_silu_elementwise_mul_batch_f16(
+                                encoder,
+                                &bs.gate_buf,
+                                &bs.up_buf,
+                                &bs.matmul_in_f16,
+                                inter_dim as u32,
+                                nt,
+                            );
+                        }
+                        PrefillFfnActivationPlan::SiluMulGateF32 => {
+                            metal_ops.elementwise.encode_silu_elementwise_mul_batch(
+                                encoder,
+                                &bs.gate_buf,
+                                &bs.up_buf,
+                                inter_dim as u32,
+                                nt,
+                            );
+                        }
+                        PrefillFfnActivationPlan::GeluMulGateF32 => unreachable!(),
                     }
-                    ax_metal::barrier_buffers(encoder);
+                    sb.post_dispatch(&[&bs.gate_buf, &bs.up_buf], &[act_out]);
 
                     // ── Phase 3e: Batched down projection ──
                     let wd_buf = weight_cache.get(&lw.wd).unwrap();
-                    if use_f16_batch_io {
-                        encode_dequant_batch_f16in(
-                            metal_ops,
-                            encoder,
-                            wd_buf,
-                            &bs.matmul_in_f16,
-                            &bs.proj_buf,
-                            dim as u32,
-                            nt,
-                            inter_dim as u32,
-                            lw.wd_dtype,
-                        );
-                    } else {
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
-                            encoder,
-                            wd_buf,
-                            &bs.gate_buf,
-                            &bs.proj_buf,
-                            &bs.matmul_in_f16,
-                            dim as u32,
-                            nt,
-                            inter_dim as u32,
-                            lw.wd_dtype,
-                            false,
-                            use_batch_simd,
-                        );
+                    sb.pre_dispatch(&[act_out], &[&bs.proj_buf]);
+                    match ffn_layer_plan.activation {
+                        PrefillFfnActivationPlan::SiluMulScratchF16 => {
+                            encode_dequant_batch_f16in(
+                                metal_ops,
+                                encoder,
+                                wd_buf,
+                                &bs.matmul_in_f16,
+                                &bs.proj_buf,
+                                dim as u32,
+                                nt,
+                                inter_dim as u32,
+                                lw.wd_dtype,
+                            );
+                        }
+                        PrefillFfnActivationPlan::SiluMulGateF32 => {
+                            encode_dequant_batch(
+                                &metal_ops.dequant,
+                                &metal_ops.elementwise,
+                                encoder,
+                                wd_buf,
+                                &bs.gate_buf,
+                                &bs.proj_buf,
+                                &bs.matmul_in_f16,
+                                dim as u32,
+                                nt,
+                                inter_dim as u32,
+                                lw.wd_dtype,
+                                false,
+                                prefill_plan.use_batch_simd,
+                            );
+                        }
+                        PrefillFfnActivationPlan::GeluMulGateF32 => unreachable!(),
                     }
-                    ax_metal::barrier_buffers(encoder);
+                    sb.post_dispatch(&[act_out], &[&bs.proj_buf]);
 
                     // ── Phase 3f: Batched residual (+ next layer's norm if not last) ──
-                    if layer + 1 < n_layers {
-                        // Fuse residual add with next layer's Phase 1a RMSNorm.
-                        // hidden += proj_buf; norm_buf = RMSNorm(hidden, next_attn_norm)
-                        let next_norm_w = weight_cache
-                            .get(&cached.layers[layer + 1].attn_norm)
-                            .unwrap();
-                        if use_f16_batch_io {
-                            metal_ops
-                                .elementwise
-                                .encode_residual_add_rms_norm_out_batch_f16(
-                                    encoder,
-                                    &bs.hidden,
-                                    &bs.proj_buf,
-                                    next_norm_w,
-                                    &bs.matmul_in_f16,
-                                    dim as u32,
-                                    nt,
-                                    eps,
-                                );
-                        } else {
+                    let residual_plan = DecodeExecutionPlan::llama_prefill_residual_handoff(
+                        &prefill_plan,
+                        layer + 1 == n_layers,
+                    );
+                    let residual_norm_out = match residual_plan {
+                        PrefillResidualHandoffPlan::ResidualOnly => None,
+                        PrefillResidualHandoffPlan::ResidualAddRmsNormF32 => {
+                            Some(&bs.norm_buf)
+                        }
+                        PrefillResidualHandoffPlan::ResidualAddRmsNormF16 => {
+                            Some(&bs.matmul_in_f16)
+                        }
+                    };
+                    if let Some(nout) = residual_norm_out {
+                        sb.pre_dispatch(
+                            &[&bs.hidden, &bs.proj_buf],
+                            &[&bs.hidden, nout],
+                        );
+                    } else {
+                        sb.pre_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden]);
+                    }
+                    match residual_plan {
+                        PrefillResidualHandoffPlan::ResidualOnly => {
+                            metal_ops.elementwise.encode_elementwise_add_batch(
+                                encoder,
+                                &bs.hidden,
+                                &bs.proj_buf,
+                                dim as u32,
+                                nt,
+                            );
+                        }
+                        PrefillResidualHandoffPlan::ResidualAddRmsNormF32 => {
+                            let next_norm_w = weight_cache
+                                .get(&cached.layers[layer + 1].attn_norm)
+                                .unwrap();
                             metal_ops
                                 .elementwise
                                 .encode_residual_add_rms_norm_out_batch(
@@ -1638,69 +1790,91 @@ impl LlamaForward {
                                     eps,
                                 );
                         }
-                    } else {
-                        // Last layer: standalone residual (no norm needed for logits path).
-                        metal_ops.elementwise.encode_elementwise_add_batch(
-                            encoder,
-                            &bs.hidden,
-                            &bs.proj_buf,
-                            dim as u32,
-                            nt,
-                        );
+                        PrefillResidualHandoffPlan::ResidualAddRmsNormF16 => {
+                            let next_norm_w = weight_cache
+                                .get(&cached.layers[layer + 1].attn_norm)
+                                .unwrap();
+                            metal_ops
+                                .elementwise
+                                .encode_residual_add_rms_norm_out_batch_f16(
+                                    encoder,
+                                    &bs.hidden,
+                                    &bs.proj_buf,
+                                    next_norm_w,
+                                    &bs.matmul_in_f16,
+                                    dim as u32,
+                                    nt,
+                                    eps,
+                                );
+                        }
                     }
-                    ax_metal::barrier_buffers(encoder);
+                    if let Some(nout) = residual_norm_out {
+                        sb.post_dispatch(
+                            &[&bs.hidden, &bs.proj_buf],
+                            &[&bs.hidden, nout],
+                        );
+                    } else {
+                        sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden]);
+                    }
                 }
 
+                // ── Post-loop: Final norm + LM head ──
                 let fnw_buf = weight_cache.get(&cached.output_norm).unwrap();
                 let lm_buf = weight_cache.get(&cached.lm_head).unwrap();
-                if let Some(logits_buf) = all_logits_buf.as_ref() {
-                    metal_ops.elementwise.encode_rms_norm_out_batch(
-                        encoder,
-                        &bs.hidden,
-                        fnw_buf,
-                        &bs.norm_buf,
-                        dim as u32,
-                        nt,
-                        eps,
-                    );
-                    ax_metal::barrier_buffers(encoder);
-                    encode_batch_logits(
-                        metal_ops,
-                        encoder,
-                        lm_buf,
-                        &bs.norm_buf,
-                        &bs.matmul_in_f16,
-                        logits_buf,
-                        vocab_size as u32,
-                        nt,
-                        dim as u32,
-                        cached.lm_head_dtype,
-                        use_f16_batch_io,
-                        use_batch_simd,
-                    );
-                } else {
-                    // Final RMSNorm on last token's hidden
-                    let last_off = (n_tokens - 1) * dim * 4;
-                    metal_ops.elementwise.encode_buffer_copy(
-                        encoder, &bs.hidden, last_off, &s.hidden, 0, dim as u32,
-                    );
-                    ax_metal::barrier_buffers(encoder);
-                    metal_ops
-                        .elementwise
-                        .encode_rms_norm(encoder, &s.hidden, fnw_buf, dim as u32, eps);
-
-                    // LM head (folded into same command buffer)
-                    ax_metal::barrier_buffers(encoder);
-                    encode_dequant_matvec(
-                        metal_ops,
-                        encoder,
-                        lm_buf,
-                        &s.hidden,
-                        &s.logits_buf,
-                        vocab_size as u32,
-                        dim as u32,
-                        cached.lm_head_dtype,
-                    );
+                match DecodeExecutionPlan::prefill_logits_plan(all_logits_buf.is_some()) {
+                    PrefillLogitsPlan::BatchAllLogits => {
+                        let logits_buf = all_logits_buf.as_ref().unwrap();
+                        sb.pre_dispatch(&[&bs.hidden], &[&bs.norm_buf]);
+                        metal_ops.elementwise.encode_rms_norm_out_batch(
+                            encoder,
+                            &bs.hidden,
+                            fnw_buf,
+                            &bs.norm_buf,
+                            dim as u32,
+                            nt,
+                            eps,
+                        );
+                        sb.post_dispatch(&[&bs.hidden], &[&bs.norm_buf]);
+                        sb.pre_dispatch(&[&bs.norm_buf], &[logits_buf]);
+                        encode_batch_logits(
+                            metal_ops,
+                            encoder,
+                            lm_buf,
+                            &bs.norm_buf,
+                            &bs.matmul_in_f16,
+                            logits_buf,
+                            vocab_size as u32,
+                            nt,
+                            dim as u32,
+                            cached.lm_head_dtype,
+                            prefill_plan.use_f16_batch_io,
+                            prefill_plan.use_batch_simd,
+                        );
+                    }
+                    PrefillLogitsPlan::LastTokenMatvec => {
+                        sb.pre_dispatch(&[&bs.hidden], &[&s.hidden]);
+                        let last_off = (n_tokens - 1) * dim * 4;
+                        metal_ops.elementwise.encode_buffer_copy(
+                            encoder, &bs.hidden, last_off, &s.hidden, 0, dim as u32,
+                        );
+                        sb.post_dispatch(&[&bs.hidden], &[&s.hidden]);
+                        sb.pre_dispatch(&[&s.hidden], &[&s.hidden]);
+                        metal_ops
+                            .elementwise
+                            .encode_rms_norm(encoder, &s.hidden, fnw_buf, dim as u32, eps);
+                        sb.post_dispatch(&[&s.hidden], &[&s.hidden]);
+                        sb.pre_dispatch(&[&s.hidden], &[&s.logits_buf]);
+                        encode_dequant_matvec(
+                            metal_ops,
+                            encoder,
+                            lm_buf,
+                            &s.hidden,
+                            &s.logits_buf,
+                            vocab_size as u32,
+                            dim as u32,
+                            cached.lm_head_dtype,
+                        );
+                    }
                 }
 
                 Ok(())
@@ -1986,16 +2160,11 @@ impl ForwardPass for LlamaForward {
         weights: &WeightStore,
         logits: &mut [f32],
     ) -> anyhow::Result<()> {
-        // v2 GPU gate: use_gpu_decode() + kv.as_gpu_mut() (no AX_CPU_ONLY check)
-        let force_serial = std::env::var("AX_SERIAL_PREFILL").is_ok();
-        let can_gpu_batch = !force_serial
-            && ctx.backend.use_gpu_decode()
-            && token_ids.len() > 1
-            && kv.as_gpu_mut().is_some()
-            && (gpu_quant_supported(weights) || gpu_decode_quant_supported(weights));
+        let prefill_plan =
+            PrefillExecutionPlan::for_forward_batch(ctx, kv, weights, token_ids.len(), false)?;
 
-        if can_gpu_batch && let Some(metal_ops) = ctx.backend.metal_ops() {
-            // Extract gpu_kv after the is_some() check above — guaranteed Some
+        if prefill_plan.mode == PrefillMode::GpuBatch {
+            let metal_ops = ctx.backend.metal_ops().unwrap();
             let gpu_kv = kv.as_gpu_mut().unwrap();
             match self.forward_batch_gpu_unified(
                 ctx,
@@ -2030,24 +2199,11 @@ impl ForwardPass for LlamaForward {
         weights: &WeightStore,
         logits_all: &mut Vec<f32>,
     ) -> anyhow::Result<()> {
-        let force_serial = std::env::var("AX_SERIAL_PREFILL").is_ok();
-        let lm_weight_name = if weights.has("output.weight") {
-            "output.weight"
-        } else {
-            "token_embd.weight"
-        };
-        let lm_head_dtype_supported = matches!(
-            weights.raw_with_dtype(lm_weight_name),
-            Ok((_, dtype)) if gpu_batch_logits_supported(dtype)
-        );
-        let can_gpu_batch = !force_serial
-            && ctx.backend.use_gpu_decode()
-            && token_ids.len() > 1
-            && kv.as_gpu_mut().is_some()
-            && lm_head_dtype_supported
-            && (gpu_quant_supported(weights) || gpu_decode_quant_supported(weights));
+        let prefill_plan =
+            PrefillExecutionPlan::for_forward_batch(ctx, kv, weights, token_ids.len(), true)?;
 
-        if can_gpu_batch && let Some(metal_ops) = ctx.backend.metal_ops() {
+        if prefill_plan.mode == PrefillMode::GpuBatch {
+            let metal_ops = ctx.backend.metal_ops().unwrap();
             let gpu_kv = kv.as_gpu_mut().unwrap();
             match self.forward_batch_gpu_unified(
                 ctx,
@@ -2182,68 +2338,200 @@ impl LlamaModel {
         }
     }
 
-    /// Create a KV cache sized for this model.
-    ///
-    /// v2: returns `ModelKv`. Backend selects CPU or GPU variant automatically.
-    /// f16 KV is used when context_length >= 256 (auto policy, same as v1).
-    /// Paged KV deferred to v2.1.
-    pub fn create_model_kv(&self) -> ModelKv {
-        if self.config.architecture == "qwen35" {
-            return ModelKv::Qwen35(crate::kv::Qwen35Kv::new(
-                self.config.n_layers as usize,
-                self.config.n_kv_heads as usize,
-                self.config.head_dim as usize,
-                self.config.context_length as usize,
-                self.config.qwen35_full_attention_interval.unwrap_or(4) as usize,
-                self.config.qwen35_ssm_conv_kernel.unwrap_or(4) as usize,
-                self.config.qwen35_ssm_inner_size.unwrap_or(0) as usize,
-                self.config.qwen35_ssm_state_size.unwrap_or(0) as usize,
-                self.config.qwen35_ssm_time_step_rank.unwrap_or(0) as usize,
-                self.config.qwen35_ssm_group_count.unwrap_or(0) as usize,
-            ));
-        }
-
-        if self.backend.use_gpu_decode() {
-            if let Some(metal_ops) = self.backend.metal_ops() {
-                // GPU variant: use Metal buffers, f16 when context_length >= 256
-                let cfg = &self.config;
-                let kv_dtype = if crate::backend::metal::metal_f16_kv_cache_enabled(
-                    cfg.context_length as usize,
-                ) {
-                    crate::kv::GpuKvDtype::F16
-                } else {
-                    crate::kv::GpuKvDtype::F32
-                };
-                match crate::kv::GpuKv::new_with_dtype(
-                    &metal_ops.device,
-                    cfg.n_layers as usize,
-                    cfg.n_kv_heads as usize,
-                    cfg.head_dim as usize,
-                    cfg.context_length as usize,
-                    256, // page_size
-                    kv_dtype,
-                ) {
-                    Ok(gpu_kv) => {
-                        tracing::info!(kv_dtype = ?kv_dtype, "Initialized GPU KV cache");
-                        return ModelKv::Gpu(gpu_kv);
-                    }
-                    Err(e) => {
-                        tracing::warn!("GPU KV allocation failed, falling back to CPU: {e}");
-                    }
+    fn prefill_plan_has_q8_weights(&self, weights: &WeightStore) -> anyhow::Result<bool> {
+        for layer in 0..self.config.n_layers as usize {
+            for suffix in [
+                "attn_q.weight",
+                "attn_k.weight",
+                "attn_v.weight",
+                "attn_output.weight",
+                "ffn_gate.weight",
+                "ffn_up.weight",
+                "ffn_down.weight",
+            ] {
+                let name = format!("blk.{layer}.{suffix}");
+                let (_, dtype) = weights.raw_with_dtype(&name)?;
+                if dtype == GgmlType::Q8_0 {
+                    return Ok(true);
                 }
-            } else {
-                tracing::warn!(
-                    "Backend reported GPU decode support without Metal ops; falling back to CPU KV"
-                );
             }
         }
-        // CPU variant
-        ModelKv::Cpu(crate::kv::CpuKv::new(
-            self.config.n_layers as usize,
-            self.config.n_kv_heads as usize,
-            self.config.head_dim as usize,
-            self.config.context_length as usize,
-        ))
+
+        let lm_weight_name = if weights.has("output.weight") {
+            "output.weight"
+        } else {
+            "token_embd.weight"
+        };
+        let (_, lm_head_dtype) = weights.raw_with_dtype(lm_weight_name)?;
+        Ok(lm_head_dtype == GgmlType::Q8_0)
+    }
+
+    fn prefill_attention_route(
+        &self,
+        plan: GpuBatchPrefillExecutionPlan,
+        base_seq_len: usize,
+        n_tokens: usize,
+        head_dim: u32,
+        sliding_window: u32,
+    ) -> String {
+        match plan.attention {
+            PrefillAttentionPlan::BatchLocalF16OutHd128 => {
+                "mistral_f16out_hd128/profile_preferred".to_string()
+            }
+            PrefillAttentionPlan::BatchLocal => {
+                let selection = plan
+                    .attention_dispatch
+                    .prefill_local_candidate_selection(n_tokens as u32, head_dim);
+                format!("{}/{}", selection.label(), selection.stability.label())
+            }
+            PrefillAttentionPlan::Cached => {
+                let selection = plan.attention_dispatch.prefill_cached_candidate_selection(
+                    plan.kv_f16,
+                    n_tokens as u32,
+                    head_dim,
+                    base_seq_len as u32,
+                    sliding_window,
+                );
+                format!("{}/{}", selection.label(), selection.stability.label())
+            }
+        }
+    }
+
+    /// Create a KV cache sized for this model.
+    ///
+    /// v2: returns `ModelKv` via the backend-side planner.
+    /// Paged KV remains deferred to v2.1.
+    pub fn create_model_kv(&self) -> ModelKv {
+        self.kv_plan().build(self.backend.as_ref())
+    }
+
+    /// Create a KV cache matched to the active decode support of the loaded weights.
+    ///
+    /// Mixed-quant models can resolve to CPU decode even when the backend default is
+    /// GPU decode. In that case we must allocate CPU KV up front to avoid a
+    /// GPU-KV/CPU-decode mismatch at runtime.
+    pub fn create_model_kv_for_weights(&self, weights: &WeightStore) -> ModelKv {
+        self.kv_plan()
+            .build_decode_compatible(self.backend.as_ref(), gpu_decode_quant_supported(weights))
+    }
+
+    /// Resolve the backend-side KV allocation plan for this model.
+    pub fn kv_plan(&self) -> crate::backend::KvPlan {
+        crate::backend::KvPlanner::plan(self.backend.as_ref(), &self.config)
+    }
+
+    pub fn kv_plan_with_requirements(
+        &self,
+        requirements: crate::backend::KvPlannerRequirements,
+    ) -> anyhow::Result<crate::backend::KvPlan> {
+        crate::backend::KvPlanner::plan_with_requirements(
+            self.backend.as_ref(),
+            &self.config,
+            requirements,
+        )
+    }
+
+    pub fn decode_plan_summary(
+        &self,
+        kv: &ModelKv,
+        intent: DecodeIntent,
+        allow_pipelined: bool,
+    ) -> String {
+        DecodeExecutionPlan::for_model(self, kv, intent, allow_pipelined).summary_label()
+    }
+
+    pub fn prefill_plan_summary(
+        &self,
+        weights: &WeightStore,
+        kv: &ModelKv,
+        n_tokens: usize,
+    ) -> anyhow::Result<String> {
+        let ctx = self.forward_context();
+        let mode_plan =
+            match PrefillExecutionPlan::for_forward_batch(&ctx, kv, weights, n_tokens, false) {
+                Ok(plan) => plan,
+                Err(_) if self.arch_name() == "qwen3" => {
+                    return Ok("mode=serial reason=unsupported_qwen3_layout".to_string());
+                }
+                Err(e) => return Err(e),
+            };
+        if mode_plan.mode == PrefillMode::Serial {
+            return Ok(mode_plan.summary_label());
+        }
+
+        let gpu_kv = kv.as_gpu().unwrap();
+        let metal_ops = self.metal_ops().unwrap();
+
+        let base_seq_len = gpu_kv.seq_len();
+        let summary = match self.arch_name() {
+            "llama" => {
+                let plan = DecodeExecutionPlan::llama_prefill(
+                    metal_ops,
+                    gpu_kv,
+                    base_seq_len,
+                    self.config.head_dim,
+                    self.prefill_plan_has_q8_weights(weights)?,
+                    gpu_prefill_uses_experimental_q5k(weights),
+                    metal_prefill_attn_f16out_enabled(),
+                    metal_prefill_use_cached0_enabled(),
+                    metal_prefill_split_rope_append_enabled(),
+                );
+                let route = self.prefill_attention_route(
+                    plan,
+                    base_seq_len,
+                    n_tokens,
+                    self.config.head_dim,
+                    0,
+                );
+                plan.summary_label(
+                    mode_plan.summary_label().trim_start_matches("mode="),
+                    &route,
+                )
+            }
+            "qwen3" => {
+                let sliding_window = self.config.sliding_window_size.unwrap_or(0);
+                let plan = DecodeExecutionPlan::qwen3_prefill(
+                    metal_ops,
+                    gpu_kv,
+                    base_seq_len,
+                    self.config.head_dim,
+                    sliding_window,
+                    gpu_prefill_uses_experimental_q5k(weights),
+                );
+                let route = self.prefill_attention_route(
+                    plan,
+                    base_seq_len,
+                    n_tokens,
+                    self.config.head_dim,
+                    plan.attention_sliding_window,
+                );
+                plan.summary_label(
+                    mode_plan.summary_label().trim_start_matches("mode="),
+                    &route,
+                )
+            }
+            "gemma3" => {
+                let plan = DecodeExecutionPlan::gemma3_prefill(
+                    metal_ops,
+                    gpu_kv,
+                    gpu_prefill_uses_experimental_q5k(weights),
+                );
+                let route = self.prefill_attention_route(
+                    plan,
+                    base_seq_len,
+                    n_tokens,
+                    self.config.head_dim,
+                    0,
+                );
+                plan.summary_label(
+                    mode_plan.summary_label().trim_start_matches("mode="),
+                    &route,
+                )
+            }
+            _ => mode_plan.summary_label(),
+        };
+
+        Ok(summary)
     }
 
     /// Run a single decode step: one token in, logits out.
@@ -2331,6 +2619,24 @@ impl LlamaModel {
     /// Return the Metal device if this model uses a GPU backend, else `None`.
     pub fn metal_device(&self) -> Option<&ax_metal::MetalDevice> {
         self.backend.metal_ops().map(|m| &m.device)
+    }
+
+    pub(crate) fn metal_ops(&self) -> Option<&MetalOps> {
+        self.backend.metal_ops()
+    }
+
+    /// Reset backend-local Metal performance counters for this model.
+    pub fn reset_metal_perf_counters(&self) {
+        if let Some(device) = self.metal_device() {
+            device.reset_perf_counters();
+        }
+    }
+
+    /// Read backend-local Metal performance counters for this model.
+    pub fn read_metal_perf_counters(&self) -> ax_metal::PerfCounters {
+        self.metal_device()
+            .map(ax_metal::MetalDevice::perf_counters)
+            .unwrap_or_default()
     }
 
     /// Allocate a Metal shared-memory buffer of `bytes` bytes.
