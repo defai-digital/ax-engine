@@ -92,6 +92,10 @@ fn default_profile_kernel_mode_off() -> ProfileKernelMode {
     ProfileKernelMode::Off
 }
 
+fn default_profile_kernel_mode_auto() -> ProfileKernelMode {
+    ProfileKernelMode::Auto
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BatchPrefillParams {
@@ -157,12 +161,16 @@ pub struct AttentionPrefillParams {
     pub fa2_mode: ProfileKernelMode,
     #[serde(default = "default_profile_kernel_mode_off")]
     pub fa2_hd128_mode: ProfileKernelMode,
+    #[serde(default = "default_profile_kernel_mode_auto")]
+    pub mistral_bc64_mode: ProfileKernelMode,
     #[serde(default = "default_attention_prefill_fa2_auto_min_tokens")]
     pub fa2_auto_min_tokens: u32,
     #[serde(default = "default_attention_prefill_fa2_auto_min_base_seq")]
     pub fa2_auto_min_base_seq: u32,
     #[serde(default = "default_attention_prefill_fa2_hd128_auto_min_tokens")]
     pub fa2_hd128_auto_min_tokens: u32,
+    #[serde(default = "default_attention_prefill_mistral_bc64_min_tokens")]
+    pub mistral_bc64_min_tokens: u32,
 }
 
 fn default_attention_prefill_fa2_auto_min_tokens() -> u32 {
@@ -177,14 +185,20 @@ fn default_attention_prefill_fa2_hd128_auto_min_tokens() -> u32 {
     512
 }
 
+fn default_attention_prefill_mistral_bc64_min_tokens() -> u32 {
+    384
+}
+
 impl Default for AttentionPrefillParams {
     fn default() -> Self {
         Self {
             fa2_mode: default_profile_kernel_mode_off(),
             fa2_hd128_mode: default_profile_kernel_mode_off(),
+            mistral_bc64_mode: default_profile_kernel_mode_auto(),
             fa2_auto_min_tokens: default_attention_prefill_fa2_auto_min_tokens(),
             fa2_auto_min_base_seq: default_attention_prefill_fa2_auto_min_base_seq(),
             fa2_hd128_auto_min_tokens: default_attention_prefill_fa2_hd128_auto_min_tokens(),
+            mistral_bc64_min_tokens: default_attention_prefill_mistral_bc64_min_tokens(),
         }
     }
 }
@@ -560,9 +574,11 @@ mod tests {
             "attention_prefill": {
                 "fa2_mode": "auto",
                 "fa2_hd128_mode": "off",
+                "mistral_bc64_mode": "off",
                 "fa2_auto_min_tokens": 640,
                 "fa2_auto_min_base_seq": 320,
-                "fa2_hd128_auto_min_tokens": 768
+                "fa2_hd128_auto_min_tokens": 768,
+                "mistral_bc64_min_tokens": 1024
             }
         }"#;
         let profile: KernelProfile = serde_json::from_str(json).unwrap();
@@ -572,7 +588,12 @@ mod tests {
         assert_eq!(profile.attention_decode.sdpa_default, Some(true));
         assert_eq!(profile.attention_decode.hd128_n2_default, Some(false));
         assert_eq!(profile.attention_prefill.fa2_mode, ProfileKernelMode::Auto);
+        assert_eq!(
+            profile.attention_prefill.mistral_bc64_mode,
+            ProfileKernelMode::Off
+        );
         assert_eq!(profile.attention_prefill.fa2_auto_min_base_seq, 320);
+        assert_eq!(profile.attention_prefill.mistral_bc64_min_tokens, 1024);
     }
 
     #[test]
@@ -583,6 +604,7 @@ mod tests {
             .unwrap();
         let cases = [
             ("Meta-Llama-3-8B-Instruct", "llama3-8b", "llama3-8b"),
+            ("Qwen3.5-7B-Instruct", "qwen35-9b", "qwen35-9b"),
             ("Qwen3.5-27B-Instruct", "qwen35-27b", "qwen35-27b"),
         ];
 

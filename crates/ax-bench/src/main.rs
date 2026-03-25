@@ -318,10 +318,7 @@ fn apply_kernel_profile_override(path: Option<&str>) {
 }
 
 fn apply_llama_parity_preset() {
-    set_env_default("AX_METAL_BATCH_F16_IO", "1");
     set_env_default("AX_METAL_F16_KV_CACHE", "on");
-    set_env_default("AX_METAL_PREFILL_FA2_MODE", "auto");
-    set_env_default("AX_METAL_PREFILL_FA2_HD128_MODE", "auto");
 }
 
 fn main() {
@@ -754,10 +751,46 @@ fn parse_duration(s: &str) -> anyhow::Result<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
     use ax_bench::microbench::{
         MicrobenchProfileExportBlocker, MicrobenchProfileExportBlockerKind,
         MicrobenchProfileExportState,
     };
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("ax-bench env test lock")
+    }
+
+    struct EnvVarRestore {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(prev) => unsafe { std::env::set_var(self.key, prev) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    fn with_cleared_env_vars<T>(keys: &[&'static str], f: impl FnOnce() -> T) -> T {
+        let _guard = env_lock();
+        let _restore: Vec<_> = keys
+            .iter()
+            .map(|&key| {
+                let previous = std::env::var_os(key);
+                unsafe { std::env::remove_var(key) };
+                EnvVarRestore { key, previous }
+            })
+            .collect();
+        f()
+    }
 
     #[test]
     fn test_parse_duration_hours() {
@@ -891,6 +924,27 @@ mod tests {
                 "forced export block via AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK=1 kind=forced"
                     .to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn test_llama_parity_preset_does_not_override_prefill_routing_modes() {
+        with_cleared_env_vars(
+            &[
+                "AX_METAL_F16_KV_CACHE",
+                "AX_METAL_PREFILL_FA2_MODE",
+                "AX_METAL_PREFILL_FA2_HD128_MODE",
+            ],
+            || {
+                apply_llama_parity_preset();
+                assert_eq!(
+                    std::env::var("AX_METAL_F16_KV_CACHE").ok().as_deref(),
+                    Some("on")
+                );
+                assert!(std::env::var_os("AX_METAL_BATCH_F16_IO").is_none());
+                assert!(std::env::var_os("AX_METAL_PREFILL_FA2_MODE").is_none());
+                assert!(std::env::var_os("AX_METAL_PREFILL_FA2_HD128_MODE").is_none());
+            },
         );
     }
 }

@@ -102,9 +102,11 @@ pub struct AttentionDispatchConfig {
     routing_profile_name: &'static str,
     prefill_fa2_mode: KernelMode,
     prefill_fa2_hd128_mode: KernelMode,
+    prefill_mistral_bc64_mode: KernelMode,
     prefill_fa2_auto_min_tokens: u32,
     prefill_fa2_auto_min_base_seq: u32,
     prefill_fa2_hd128_auto_min_tokens: u32,
+    prefill_mistral_bc64_min_tokens: u32,
     decode_splitk_mode: KernelMode,
     decode_splitk_chunk_size: u32,
     decode_splitk_auto_min_tokens: u32,
@@ -183,6 +185,20 @@ impl AttentionDispatchConfig {
                 _ => mode,
             }
         };
+        let prefill_mistral_bc64_mode = {
+            let profile_default =
+                profile_kernel_mode(profile.attention_prefill.mistral_bc64_mode.clone());
+            let mode = parse_kernel_mode("AX_METAL_PREFILL_MISTRAL_BC64_MODE", profile_default);
+            match mode {
+                KernelMode::Off => match legacy_kernel_override("AX_METAL_PREFILL_MISTRAL_BC64")
+                    .and_then(|v| parse_bool_env_flag(&v))
+                {
+                    Some(true) => KernelMode::On,
+                    Some(false) | None => KernelMode::Off,
+                },
+                _ => mode,
+            }
+        };
         let prefill_fa2_auto_min_tokens = parse_positive_u32_env(
             "AX_METAL_PREFILL_FA2_AUTO_MIN_TOKENS",
             if profile.attention_prefill.fa2_auto_min_tokens > 0 {
@@ -206,6 +222,10 @@ impl AttentionDispatchConfig {
             } else {
                 routing.prefill_fa2_hd128_auto_min_tokens
             },
+        );
+        let prefill_mistral_bc64_min_tokens = parse_positive_u32_env(
+            "AX_METAL_PREFILL_MISTRAL_BC64_MIN_TOKENS",
+            profile.attention_prefill.mistral_bc64_min_tokens,
         );
         let decode_splitk_mode = parse_kernel_mode("AX_METAL_DECODE_SPLITK_MODE", KernelMode::Auto);
         let decode_splitk_chunk_size = parse_positive_u32_env(
@@ -243,9 +263,11 @@ impl AttentionDispatchConfig {
             routing_profile_name: routing.name,
             prefill_fa2_mode,
             prefill_fa2_hd128_mode,
+            prefill_mistral_bc64_mode,
             prefill_fa2_auto_min_tokens,
             prefill_fa2_auto_min_base_seq,
             prefill_fa2_hd128_auto_min_tokens,
+            prefill_mistral_bc64_min_tokens,
             decode_splitk_mode,
             decode_splitk_chunk_size,
             decode_splitk_auto_min_tokens,
@@ -821,14 +843,15 @@ fn attention_prefill_local_candidate_selection(
     let use_v2 = attention_prefill_v2_enabled();
     let use_v2_hd128 = attention_prefill_hd128_enabled() && head_dim == 128;
     let use_mistral_hd128 = attention_prefill_mistral_hd128_enabled() && head_dim == 128;
-    let use_mistral_bc64 = attention_prefill_mistral_bc64_enabled()
-        && use_mistral_hd128
-        && n_tokens >= ATTN_PREFILL_MISTRAL_BC64_THRESHOLD;
+    let use_mistral_bc64 = use_mistral_hd128
+        && attention_prefill_mistral_bc64_should_use_with_config(n_tokens, config);
     let use_mistral_smem = attention_prefill_mistral_smem_enabled() && use_mistral_hd128;
     let use_mistral_smem_f16 = attention_prefill_mistral_smem_f16_enabled() && use_mistral_hd128;
     let use_fa2_hd128 =
         attention_prefill_fa2_hd128_should_use_with_config(n_tokens, head_dim, config);
-    let use_fa2_simd_hd128 = attention_prefill_fa2_simd_hd128_enabled() && head_dim == 128;
+    // The simd kernel is an implementation variant of the FA2 HD128 route and
+    // must not bypass the profile's mode/threshold gating.
+    let use_fa2_simd_hd128 = use_fa2_hd128 && attention_prefill_fa2_simd_hd128_enabled();
     let use_fa2_simd_hd64 = attention_prefill_fa2_simd_hd128_enabled() && head_dim == 64;
     let use_hd256 = attention_prefill_hd256_enabled() && head_dim == 256 && !use_v2;
 
@@ -4344,9 +4367,6 @@ const ATTN2_TG: usize = 128;
 const ATTN_DEC_TG: usize = 256;
 /// Threadgroup size for alternative decode attention kernel (must match ATTN_DEC2_TG in shader).
 const ATTN_DEC2_TG: usize = 128;
-/// Prompt-length threshold for using mistral HD128 BC64 prefill variant.
-const ATTN_PREFILL_MISTRAL_BC64_THRESHOLD: u32 = 384;
-
 /// Maximum head dimension supported by attention shaders (must match MAX_HD in attention.metal).
 const MAX_HEAD_DIM: u32 = 256;
 
@@ -5575,13 +5595,6 @@ fn attention_prefill_mistral_hd128_enabled() -> bool {
     *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_PREFILL_MISTRAL_HD128", true))
 }
 
-fn attention_prefill_mistral_bc64_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    // Long-prompt variant for mistral-style HD128 prefill.
-    // Default ON; set AX_METAL_PREFILL_MISTRAL_BC64=0 to disable.
-    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_PREFILL_MISTRAL_BC64", true))
-}
-
 fn attention_prefill_mistral_smem_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     // Experimental: default OFF until sustained win is confirmed.
@@ -5694,6 +5707,27 @@ fn attention_prefill_fa2_auto_min_base_seq_with_config(config: AttentionDispatch
 
 fn attention_prefill_fa2_hd128_auto_min_tokens_with_config(config: AttentionDispatchConfig) -> u32 {
     config.prefill_fa2_hd128_auto_min_tokens
+}
+
+fn attention_prefill_mistral_bc64_mode_with_config(config: AttentionDispatchConfig) -> KernelMode {
+    config.prefill_mistral_bc64_mode
+}
+
+fn attention_prefill_mistral_bc64_min_tokens_with_config(config: AttentionDispatchConfig) -> u32 {
+    config.prefill_mistral_bc64_min_tokens
+}
+
+fn attention_prefill_mistral_bc64_should_use_with_config(
+    n_tokens: u32,
+    config: AttentionDispatchConfig,
+) -> bool {
+    match attention_prefill_mistral_bc64_mode_with_config(config) {
+        KernelMode::Off => false,
+        KernelMode::On => true,
+        KernelMode::Auto => {
+            n_tokens >= attention_prefill_mistral_bc64_min_tokens_with_config(config)
+        }
+    }
 }
 
 fn attention_decode_splitk_mode_with_config(config: AttentionDispatchConfig) -> KernelMode {
@@ -7828,6 +7862,40 @@ mod tests {
             AttentionPrefillCandidate::Fa2Hd128 | AttentionPrefillCandidate::Fa2SimdHd128
         ));
         assert_ne!(selection.stability, KernelStabilityTier::Stable);
+    }
+
+    #[test]
+    fn test_attention_prefill_local_candidate_selection_does_not_bypass_hd128_fa2_mode() {
+        let config = AttentionDispatchConfig {
+            prefill_fa2_hd128_mode: KernelMode::Off,
+            ..default_attention_config()
+        };
+        let selection = config.prefill_local_candidate_selection(512, 128);
+        assert_ne!(selection.candidate, AttentionPrefillCandidate::Fa2SimdHd128);
+        assert_ne!(selection.candidate, AttentionPrefillCandidate::Fa2Hd128);
+    }
+
+    #[test]
+    fn test_attention_prefill_local_candidate_selection_respects_mistral_bc64_mode_off() {
+        let config = AttentionDispatchConfig {
+            prefill_fa2_hd128_mode: KernelMode::Off,
+            prefill_mistral_bc64_mode: KernelMode::Off,
+            ..default_attention_config()
+        };
+        let selection = config.prefill_local_candidate_selection(512, 128);
+        assert_eq!(selection.candidate, AttentionPrefillCandidate::MistralHd128);
+    }
+
+    #[test]
+    fn test_attention_prefill_local_candidate_selection_respects_mistral_bc64_threshold() {
+        let config = AttentionDispatchConfig {
+            prefill_fa2_hd128_mode: KernelMode::Off,
+            prefill_mistral_bc64_mode: KernelMode::Auto,
+            prefill_mistral_bc64_min_tokens: 768,
+            ..default_attention_config()
+        };
+        let selection = config.prefill_local_candidate_selection(512, 128);
+        assert_eq!(selection.candidate, AttentionPrefillCandidate::MistralHd128);
     }
 
     #[test]
