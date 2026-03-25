@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "ax-engine"
+version = "1.4.0"
+description = "Python bindings for local AX Engine inference on Apple Silicon"
+requires-python = ">=3.10"
+readme = "crates/ax-engine-py/README.md"
+
+[tool.maturin]
+manifest-path = "crates/ax-engine-py/Cargo.toml"
+python-source = "python"
+module-name = "ax_engine._ax_engine"

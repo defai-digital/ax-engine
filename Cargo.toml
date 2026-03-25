@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "2.0.0"
+version = "1.4.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -50,6 +50,9 @@ serde_json = "1"
 # Error handling
 anyhow = "1"
 thiserror = "2"
+
+# Python bindings
+pyo3 = { version = "0.24", features = ["extension-module"] }
 
 # Fast hashing
 rustc-hash = "2"

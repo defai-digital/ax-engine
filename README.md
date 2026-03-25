@@ -133,10 +133,17 @@ Mixed-quant caveat:
 - some `Q4_K_M` or `Q5_K_M` GGUFs can contain active `Q5_K` layer tensors
 - AX defaults `Q5_K` to decode-only baseline
 - an experimental GPU prefill path exists behind `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`
+- under that experimental path, AX currently auto-selects the small-`N` `Q5_K`
+  prefill route only when the mapped model is predominantly `Q5_K` and the
+  prompt batch is small (`<= 32` tokens)
+- validation-only override knobs also exist:
+  - `AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=base`
+  - `AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=small`
 - when that happens, AX will tell you explicitly in runtime output, for example:
   - `PrefillPlan: mode=serial reason=unsupported_quant:blk.10.attn_v.weight:Q5K`
   - `Support: Q5_K support defaults to decode-only baseline...`
   - `PrefillPlan: mode=gpu_batch ... q5k_prefill=experimental`
+  - `PrefillPlan: mode=gpu_batch ... q5k_prefill=experimental_small_n`
 
 **Memory requirements** (approximate, Q4_K_M weights + KV cache at 4K context):
 
@@ -210,6 +217,53 @@ Capture top logprobs while generating:
   --top-logprobs 5
 ```
 
+### Python Bindings
+
+An experimental direct Python binding is available in
+[`crates/ax-engine-py`](/Users/akiralam/code/ax-engine-v2/crates/ax-engine-py/README.md).
+It builds a local `ax_engine` module on top of `ax-core`; it does not use
+`ax-serving`.
+
+Install it into a virtual environment with `maturin`:
+
+```bash
+python3 -m venv /tmp/ax-engine-py-venv
+env -u CONDA_PREFIX \
+  VIRTUAL_ENV=/tmp/ax-engine-py-venv \
+  PATH=/tmp/ax-engine-py-venv/bin:$PATH \
+  maturin develop --manifest-path crates/ax-engine-py/Cargo.toml
+```
+
+Basic usage:
+
+```python
+import ax_engine
+
+model = ax_engine.Model.load("./models/Qwen3-8B-Q4_K_M.gguf", backend="auto")
+session = model.session()
+reply = session.generate("Explain KV cache briefly.", max_tokens=48, temperature=0.7)
+print(reply)
+session.close()
+model.close()
+```
+
+Runnable examples:
+
+- [`examples/python/basic.py`](/Users/akiralam/code/ax-engine-v2/examples/python/basic.py)
+- [`examples/python/smoke.py`](/Users/akiralam/code/ax-engine-v2/examples/python/smoke.py)
+
+Repeatable smoke test:
+
+```bash
+./scripts/test_ax_engine_py_smoke.sh
+```
+
+To include a tiny generation check:
+
+```bash
+AX_ENGINE_PY_GENERATE=1 ./scripts/test_ax_engine_py_smoke.sh
+```
+
 Stop on a string or token ID without leaking the stop text:
 
 ```bash
@@ -236,6 +290,34 @@ Current speculative limitation:
 - `--top-logprobs`, stop controls, token masks, and `--logit-bias` are not supported with speculative decoding
 
 For a step-by-step setup guide, see [QUICKSTART.md](./QUICKSTART.md). For benchmark procedure and AX-vs-`llama.cpp` comparisons, see [BENCHMARKING.md](./BENCHMARKING.md).
+
+If you need machine-readable benchmark artifacts, `ax-bench` now supports JSON
+output for:
+
+- `bench`
+- `profile`
+- `speculative`
+- `soak`
+
+Examples:
+
+```bash
+./target/release/ax-bench bench \
+  --model ./models/<model>.gguf \
+  --json \
+  --json-output /tmp/ax-bench.json
+
+./target/release/ax-bench profile \
+  --model ./models/<model>.gguf \
+  --json \
+  --json-output /tmp/ax-profile.json
+
+./target/release/ax-bench soak \
+  --model ./models/<model>.gguf \
+  --smoke \
+  --json \
+  --json-output /tmp/ax-soak.json
+```
 
 ## Common Commands
 

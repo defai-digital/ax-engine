@@ -1,0 +1,18 @@
+[package]
+name = "ax-engine-py"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "AX Engine Python bindings for local Apple Silicon inference"
+
+[lib]
+name = "_ax_engine"
+crate-type = ["cdylib"]
+
+[dependencies]
+ax-core.workspace = true
+anyhow.workspace = true
+pyo3.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
