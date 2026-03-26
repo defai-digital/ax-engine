@@ -94,6 +94,10 @@ Performance depends heavily on model family, quantization, context length, kerne
 
 AX Engine is optimized for Apple Silicon throughput and low-overhead local inference, but cross-engine claims should only be made from apples-to-apples runs. In particular, `llama.cpp` comparisons must record whether Flash Attention was enabled, because that materially changes the result on supported models.
 
+AX is not trying to match `llama.cpp`'s breadth of model support. `llama.cpp` supports a much wider range of architectures, quantizations, and edge-case model files. AX is intentionally narrower: the performance claims in this README are only meant for the target families we actively optimize on Apple Silicon, namely **Qwen 3 dense**, **Qwen 3.5 (9B, 27B)**, **LLaMA 3**, and **Gemma 3**.
+
+Where AX matches or beats `llama.cpp`, read that as a result on those tuned target families, not as a general claim across the wider GGUF ecosystem. Even inside those target families, some sizes still trail `llama.cpp`, so the table below should be read model-by-model rather than as a blanket engine-wide win claim.
+
 The README keeps this section simple: AX Engine vs `llama.cpp`, with raw tok/s numbers and AX as a percentage of `llama.cpp`. For the full methodology, command lines, and profiler artifacts, see [BENCHMARKING.md](./BENCHMARKING.md).
 
 Current local snapshot on March 26, 2026 on Apple M3 Max. Table values below keep the existing AX-vs-`llama.cpp` comparison format: raw tok/s plus AX as a percentage of `llama.cpp`. `AX vs llama.cpp` over `100%` means AX was faster.
