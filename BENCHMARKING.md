@@ -275,8 +275,8 @@ Recorded results:
 |---|---:|---:|---:|---:|---:|---:|---|
 | Gemma 3 12B Q4_K_M | 420.5 | 463.3 | 90.8% | 39.6 | 35.8 | 110.5% | `pipelined`, `attn=cache/stable` |
 | Gemma 3 27B Q4_K_M | 155.7 | 170.2 | 91.5% | 17.8 | 15.1 | 117.9% | `pipelined`, `attn=f16kv_hd128/stable` |
-| Llama 3 8B Q4_K_M | 673.6 | 639.2 | 105.4% | 61.1 | 47.1 | 129.8% | `pipelined`, `attn=mistral_bc64/experimental` |
-| Llama 3 70B Q4_K_M | 55.0 | 66.8 | 82.4% | 6.0 | 6.3 | 95.6% | `pipelined`, `PrefillPlan=mode=gpu_batch`, `q5k_prefill=base` |
+| Llama 3 8B Q4_K_M | 675.8 | 639.2 | 105.7% | 61.2 | 47.1 | 129.9% | `pipelined`, `attn=mistral_bc64/experimental` |
+| Llama 3 70B Q4_K_M | 55.7 | 66.8 | 83.4% | 6.5 | 6.3 | 103.2% | `pipelined`, `PrefillPlan=mode=gpu_batch`, `q5k_prefill=base` |
 | Qwen3 8B Q4_K_M | 667.3 | 736.7 | 90.6% | 57.9 | 60.3 | 96.0% | `pipelined`, `attn=mistral_bc64/experimental`, `decode=f16kv_hd128_n2/profile_preferred` |
 | Qwen3 14B Q4_K_M | 357.2 | 408.2 | 87.5% | 35.3 | 35.6 | 99.1% | `pipelined`, `attn=mistral_hd128/profile_preferred` |
 | Qwen3 32B Q4_K_M | 126.0 | 150.7 | 83.6% | 16.6 | 14.9 | 111.4% | `pipelined`, `attn=mistral_bc64/experimental` |
@@ -317,8 +317,8 @@ Interpretation:
 
 - Gemma 3 12B: after the March 26 Gemma-specific Metal fusions, AX is close on prefill and now leads on decode.
 - Gemma 3 27B: after the March 26 Gemma-specific Metal fusions, AX is close on prefill and now leads on decode.
-- Llama 3 8B: in this March 26 rerun, AX leads on both prefill and decode.
-- Llama 3 70B: AX remains below current local `llama.cpp` on both prefill and decode, and the published row now reflects the shipped default mixed-quant route.
+- Llama 3 8B: after the March 26 route pass, the current shipped default is still the best tested path and AX remains ahead on both prefill and decode.
+- Llama 3 70B: after the March 26 route pass, the shipped mixed-quant default remains the best balanced route; forced `q5k_prefill=small_n` improved prefill but hurt decode.
 - Qwen3 8B: after a March 26 route pass, AX improved modestly but current local `llama.cpp` still leads on both prefill and decode.
 - Qwen3 14B: after a March 26 route pass, AX is much closer on prefill and decode is effectively at parity; current local `llama.cpp` still holds a prefill lead.
 - Qwen3 32B: after the March 26 exact-shape route pass, AX is still below current local `llama.cpp` on prefill but now leads on decode.
@@ -376,6 +376,24 @@ March 26 Qwen3 8B / 14B route pass:
 - Forcing decode `hd128_n2` on `Qwen3 14B` regressed to `336.8 tok/s` prefill and `34.0 tok/s` decode.
   - artifact: `automatosx/tmp/qwen3-14b-bench-hd128n2-2026-03-26.json`
 - Conclusion: keep the shipped `perfs/qwen3-14b.json` route as-is. The old README row was stale, but the current 14B default is already the best of the tested routes in this pass.
+
+March 26 Llama 3 8B / 70B route pass:
+
+- Fresh current-default `Llama 3 8B` throughput landed at `675.8 tok/s` prefill and `61.2 tok/s` decode.
+  - artifact: `automatosx/tmp/llama3-8b-bench-refresh-2026-03-26.json`
+- Forcing decode `hd128_n2` on `Llama 3 8B` regressed badly to `583.1 tok/s` prefill and `43.7 tok/s` decode.
+  - artifact: `automatosx/tmp/llama3-8b-bench-hd128n2-2026-03-26.json`
+- Forcing `fa2_hd128` on `Llama 3 8B` regressed to `638.1 tok/s` prefill and `50.9 tok/s` decode.
+  - artifact: `automatosx/tmp/llama3-8b-bench-fa2hd128-2026-03-26.json`
+- Conclusion: keep `Llama 3 8B` on the current default route. Neither tested override beat the shipped path.
+
+- Fresh current-default `Llama 3 70B` throughput landed at `55.7 tok/s` prefill and `6.5 tok/s` decode.
+  - artifact: `automatosx/tmp/llama3-70b-bench-refresh-2026-03-26.json`
+- Forcing `AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=small` improved prefill to `58.8 tok/s` but reduced decode to `5.9 tok/s`.
+  - artifact: `automatosx/tmp/llama3-70b-bench-q5k-small-2026-03-26.json`
+- Forcing decode `hd128_n2` regressed to `54.2 tok/s` prefill and `5.8 tok/s` decode.
+  - artifact: `automatosx/tmp/llama3-70b-bench-hd128n2-2026-03-26.json`
+- Conclusion: keep `perfs/llama3-70b.json` unchanged for now. The forced `small_n` variant is a prompt-throughput tradeoff, not a clear shipped win, and `hd128_n2` is worse.
 
 ## Common Mistakes
 
