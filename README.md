@@ -108,11 +108,11 @@ Current local snapshot on March 26, 2026 on Apple M3 Max. Table values below kee
 | Gemma 3 27B | 155.7 tok/s | 170.2 tok/s | 91.5% | 17.8 tok/s | 15.1 tok/s | 117.9% |
 | Llama 3 8B | 673.6 tok/s | 639.2 tok/s | 105.4% | 61.1 tok/s | 47.1 tok/s | 129.8% |
 | Llama 3 70B | 55.0 tok/s | 66.8 tok/s | 82.4% | 6.0 tok/s | 6.3 tok/s | 95.6% |
-| Qwen3 8B | 659.5 tok/s | 736.7 tok/s | 89.5% | 58.3 tok/s | 60.3 tok/s | 96.7% |
-| Qwen3 14B | 277.0 tok/s | 408.2 tok/s | 67.9% | 34.9 tok/s | 35.6 tok/s | 98.1% |
+| Qwen3 8B | 667.3 tok/s | 736.7 tok/s | 90.6% | 57.9 tok/s | 60.3 tok/s | 96.0% |
+| Qwen3 14B | 357.2 tok/s | 408.2 tok/s | 87.5% | 35.3 tok/s | 35.6 tok/s | 99.1% |
 | Qwen3 32B | 126.0 tok/s | 150.7 tok/s | 83.6% | 16.6 tok/s | 14.9 tok/s | 111.4% |
 
-Most rows in this table come from one same-day March 26, 2026 rerun set. The `Gemma 3 12B`, `Gemma 3 27B`, and `Qwen3 32B` rows were refreshed later the same day after follow-up Metal optimization passes and route checks. AX values are deterministic medians from fresh `ax-bench` runs. `llama.cpp` values are medians from current local `llama-bench` `samples_ts` with `-fa 1`, `-ctk f16`, and `-ctv f16`.
+Most rows in this table come from one same-day March 26, 2026 rerun set. The `Gemma 3 12B`, `Gemma 3 27B`, `Qwen3 8B`, `Qwen3 14B`, and `Qwen3 32B` rows were refreshed later the same day after follow-up Metal optimization passes and route checks. AX values are deterministic medians from fresh `ax-bench` runs. `llama.cpp` values are medians from current local `llama-bench` `samples_ts` with `-fa 1`, `-ctk f16`, and `-ctv f16`.
 
 For the 70B row, the model file is mixed-quant and contains an active `Q5_K` tensor. AX now routes that case through its conservative `Q5_K` GPU prefill path by default, so the published 70B result is representative of current shipped behavior rather than an opt-in special case.
 

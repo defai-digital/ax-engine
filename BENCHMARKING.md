@@ -277,8 +277,8 @@ Recorded results:
 | Gemma 3 27B Q4_K_M | 155.7 | 170.2 | 91.5% | 17.8 | 15.1 | 117.9% | `pipelined`, `attn=f16kv_hd128/stable` |
 | Llama 3 8B Q4_K_M | 673.6 | 639.2 | 105.4% | 61.1 | 47.1 | 129.8% | `pipelined`, `attn=mistral_bc64/experimental` |
 | Llama 3 70B Q4_K_M | 55.0 | 66.8 | 82.4% | 6.0 | 6.3 | 95.6% | `pipelined`, `PrefillPlan=mode=gpu_batch`, `q5k_prefill=base` |
-| Qwen3 8B Q4_K_M | 659.5 | 736.7 | 89.5% | 58.3 | 60.3 | 96.7% | `pipelined`, `attn=mistral_bc64/experimental` |
-| Qwen3 14B Q4_K_M | 277.0 | 408.2 | 67.9% | 34.9 | 35.6 | 98.1% | `pipelined`, `attn=mistral_hd128/profile_preferred` |
+| Qwen3 8B Q4_K_M | 667.3 | 736.7 | 90.6% | 57.9 | 60.3 | 96.0% | `pipelined`, `attn=mistral_bc64/experimental`, `decode=f16kv_hd128_n2/profile_preferred` |
+| Qwen3 14B Q4_K_M | 357.2 | 408.2 | 87.5% | 35.3 | 35.6 | 99.1% | `pipelined`, `attn=mistral_hd128/profile_preferred` |
 | Qwen3 32B Q4_K_M | 126.0 | 150.7 | 83.6% | 16.6 | 14.9 | 111.4% | `pipelined`, `attn=mistral_bc64/experimental` |
 
 `llama.cpp` values above are medians from `samples_ts` on the current local Homebrew `llama-bench` build (`build_commit 342d6125b`, `build_number 8500`) with `-fa 1`, `-ctk f16`, and `-ctv f16`. `AX vs llama.cpp` over `100%` means AX was faster.
@@ -319,8 +319,8 @@ Interpretation:
 - Gemma 3 27B: after the March 26 Gemma-specific Metal fusions, AX is close on prefill and now leads on decode.
 - Llama 3 8B: in this March 26 rerun, AX leads on both prefill and decode.
 - Llama 3 70B: AX remains below current local `llama.cpp` on both prefill and decode, and the published row now reflects the shipped default mixed-quant route.
-- Qwen3 8B: current local `llama.cpp` leads modestly on both prefill and decode.
-- Qwen3 14B: current local `llama.cpp` leads strongly on prefill, while decode is close.
+- Qwen3 8B: after a March 26 route pass, AX improved modestly but current local `llama.cpp` still leads on both prefill and decode.
+- Qwen3 14B: after a March 26 route pass, AX is much closer on prefill and decode is effectively at parity; current local `llama.cpp` still holds a prefill lead.
 - Qwen3 32B: after the March 26 exact-shape route pass, AX is still below current local `llama.cpp` on prefill but now leads on decode.
 - Earlier mixed-date rows and earlier local comparisons that omitted `-fa 1` for `llama.cpp` are not reliable enough to keep as headline repo claims.
 
@@ -353,6 +353,29 @@ March 26 Qwen3 32B exact-shape route pass:
     - artifact: `automatosx/tmp/qwen3-32b-bench-f16io-no-pair-2026-03-26.json`
 - Conclusion: keep the shipped `perfs/qwen3-32b.json` route as-is for now. The remaining 32B gap is not a missing profile flip; it is still inside the current dense prefill GPU execution path.
 - Conclusion: the remaining dense-model prefill gap is not hiding behind `f16in + pair`; current README rows should keep the existing dense-model `f16_io=off` fast path until a different kernel family shows a clear win.
+
+March 26 Qwen3 8B / 14B route pass:
+
+- Fresh current-default `Qwen3 8B` throughput before any profile change landed at `654.5 tok/s` prefill and `56.1 tok/s` decode.
+  - artifact: `automatosx/tmp/qwen3-8b-bench-refresh-2026-03-26.json`
+- Forcing `fa2_hd128` on `Qwen3 8B` moved prefill attention to `fa2_simd_hd128/experimental` and landed at `655.5 tok/s` prefill and `57.6 tok/s` decode.
+  - artifact: `automatosx/tmp/qwen3-8b-bench-fa2hd128-2026-03-26.json`
+- Forcing decode `hd128_n2` on `Qwen3 8B` landed at `665.4 tok/s` prefill and `57.5 tok/s` decode.
+  - artifact: `automatosx/tmp/qwen3-8b-bench-hd128n2-2026-03-26.json`
+- Combining `fa2_hd128 + hd128_n2` on `Qwen3 8B` regressed prefill to `646.9 tok/s`, so it was not kept.
+  - artifact: `automatosx/tmp/qwen3-8b-bench-fa2hd128-hd128n2-2026-03-26.json`
+- Shipped change: AX now loads `perfs/qwen3-8b.json`, which keeps the existing `mistral_bc64` prefill route and sets `hd128_n2_default=true` for decode. The clean no-env post-change bench landed at `667.3 tok/s` prefill and `57.9 tok/s` decode.
+  - artifact: `automatosx/tmp/qwen3-8b-bench-post-profile-2026-03-26.json`
+
+- Fresh current-default `Qwen3 14B` throughput landed at `357.2 tok/s` prefill and `35.3 tok/s` decode.
+  - artifact: `automatosx/tmp/qwen3-14b-bench-refresh-2026-03-26.json`
+- Forcing `fa2_hd128` on `Qwen3 14B` regressed prefill to `346.8 tok/s`, even though decode nudged up slightly.
+  - artifact: `automatosx/tmp/qwen3-14b-bench-fa2hd128-2026-03-26.json`
+- Forcing `mistral_bc64` on `Qwen3 14B` regressed heavily to `276.2 tok/s` prefill and `34.9 tok/s` decode.
+  - artifact: `automatosx/tmp/qwen3-14b-bench-bc64-2026-03-26.json`
+- Forcing decode `hd128_n2` on `Qwen3 14B` regressed to `336.8 tok/s` prefill and `34.0 tok/s` decode.
+  - artifact: `automatosx/tmp/qwen3-14b-bench-hd128n2-2026-03-26.json`
+- Conclusion: keep the shipped `perfs/qwen3-14b.json` route as-is. The old README row was stale, but the current 14B default is already the best of the tested routes in this pass.
 
 ## Common Mistakes
 

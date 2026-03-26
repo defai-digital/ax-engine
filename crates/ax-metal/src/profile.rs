@@ -607,6 +607,7 @@ mod tests {
             .canonicalize()
             .unwrap();
         let cases = [
+            ("Qwen3-8B-Instruct", "qwen3-8b", "qwen3-8b"),
             ("Qwen3-14B-Instruct", "qwen3-14b", "qwen3-14b"),
             ("Qwen3.5-7B-Instruct", "qwen35-9b", "qwen35-9b"),
             ("Qwen3.5-27B-Instruct", "qwen35-27b", "qwen35-27b"),
@@ -638,10 +639,7 @@ mod tests {
             .join("../..")
             .canonicalize()
             .unwrap();
-        let cases = [
-            ("Meta-Llama-3-8B-Instruct", "llama3-8b"),
-            ("Qwen3-8B-Instruct", "qwen3-8b"),
-        ];
+        let cases = [("Meta-Llama-3-8B-Instruct", "llama3-8b")];
 
         for (model_name, arch) in cases {
             let arch_path = workspace_root.join("perfs").join(format!("{arch}.json"));
