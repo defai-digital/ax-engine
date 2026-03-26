@@ -641,12 +641,25 @@ fn run_gpu_suite(iterations: usize) -> anyhow::Result<MicrobenchSuiteResult> {
         MatvecShape { m: 5_120, k: 5_120 },
         MatvecShape { m: 8_192, k: 5_120 },
         MatvecShape {
+            m: 10_240,
+            k: 5_120,
+        },
+        MatvecShape {
             m: 12_288,
             k: 5_120,
         },
         MatvecShape {
             m: 17_408,
             k: 5_120,
+        },
+        MatvecShape {
+            m: 25_600,
+            k: 5_120,
+        },
+        MatvecShape { m: 5_120, k: 8_192 },
+        MatvecShape {
+            m: 5_120,
+            k: 25_600,
         },
     ];
     for shape in shapes {
@@ -750,6 +763,27 @@ fn run_gpu_suite(iterations: usize) -> anyhow::Result<MicrobenchSuiteResult> {
             k: 17408,
         },
         QuantPrefillBatchShape {
+            model: "qwen3_32b",
+            label: "attn_qkv_fused",
+            m: 10240,
+            n: 512,
+            k: 5120,
+        },
+        QuantPrefillBatchShape {
+            model: "qwen3_32b",
+            label: "attn_wo",
+            m: 5120,
+            n: 512,
+            k: 8192,
+        },
+        QuantPrefillBatchShape {
+            model: "qwen3_32b",
+            label: "ffn_down",
+            m: 5120,
+            n: 512,
+            k: 25600,
+        },
+        QuantPrefillBatchShape {
             model: "gemma3_12b",
             label: "attn_qkv",
             m: 4096,
@@ -794,6 +828,13 @@ fn run_gpu_suite(iterations: usize) -> anyhow::Result<MicrobenchSuiteResult> {
             model: "qwen3_14b",
             label: "ffn_gate_up",
             m: 17408,
+            n: 512,
+            k: 5120,
+        },
+        QuantPrefillPairShape {
+            model: "qwen3_32b",
+            label: "ffn_gate_up",
+            m: 25600,
             n: 512,
             k: 5120,
         },

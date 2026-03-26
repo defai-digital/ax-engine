@@ -462,6 +462,93 @@ kernel void residual_add_rms_norm_out_batch_f16(
     }
 }
 
+// ── Post-Attention RMSNorm + Residual Add + RMSNorm Batch ───────────────────
+//
+// Gemma3-specific fused handoff:
+//   1. attn_norm[i] = addend[i] * post_weight[i] / sqrt(mean(addend[:]²) + eps)
+//   2. hidden[i] = hidden[i] + attn_norm[i]
+//   3. norm_out[i] = hidden[i] * residual_weight[i] / sqrt(mean(hidden[:]²) + eps)
+//
+// This replaces a standalone post-attention RMSNorm dispatch plus the existing
+// residual_add_rms_norm_out_batch dispatch in the Gemma3 prefill path.
+
+kernel void post_attn_norm_residual_add_rms_norm_out_batch_f32(
+    device float* hidden                 [[buffer(0)]],
+    device const float* addend           [[buffer(1)]],
+    device const float* post_weight      [[buffer(2)]],
+    device const float* residual_weight  [[buffer(3)]],
+    device float* norm_out               [[buffer(4)]],
+    constant uint& n                     [[buffer(5)]],
+    constant uint& n_rows                [[buffer(6)]],
+    constant float& eps                  [[buffer(7)]],
+    uint row                             [[threadgroup_position_in_grid]],
+    uint lid                             [[thread_index_in_threadgroup]],
+    uint simd_lane                       [[thread_index_in_simdgroup]],
+    uint simd_id                         [[simdgroup_index_in_threadgroup]]
+) {
+    if (row >= n_rows) return;
+
+    uint base = row * n;
+
+    float addend_sum_sq = 0.0f;
+    for (uint i = lid; i < n; i += NORM_TG_SIZE) {
+        float v = addend[base + i];
+        addend_sum_sq += v * v;
+    }
+
+    addend_sum_sq = simd_sum(addend_sum_sq);
+
+    constexpr uint n_groups = NORM_TG_SIZE / 32;
+    threadgroup float simd_sums[n_groups];
+    if (simd_lane == 0) {
+        simd_sums[simd_id] = addend_sum_sq;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    threadgroup float addend_inv_rms;
+    if (simd_id == 0) {
+        addend_sum_sq = (simd_lane < n_groups) ? simd_sums[simd_lane] : 0.0f;
+        addend_sum_sq = simd_sum(addend_sum_sq);
+        if (simd_lane == 0) {
+            addend_inv_rms = rsqrt(addend_sum_sq / float(n) + eps);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float hidden_sum_sq = 0.0f;
+    float inv_rms_addend = addend_inv_rms;
+    for (uint i = lid; i < n; i += NORM_TG_SIZE) {
+        float attn_norm = addend[base + i] * inv_rms_addend * post_weight[i];
+        float v = hidden[base + i] + attn_norm;
+        hidden_sum_sq += v * v;
+    }
+
+    hidden_sum_sq = simd_sum(hidden_sum_sq);
+
+    if (simd_lane == 0) {
+        simd_sums[simd_id] = hidden_sum_sq;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    threadgroup float hidden_inv_rms;
+    if (simd_id == 0) {
+        hidden_sum_sq = (simd_lane < n_groups) ? simd_sums[simd_lane] : 0.0f;
+        hidden_sum_sq = simd_sum(hidden_sum_sq);
+        if (simd_lane == 0) {
+            hidden_inv_rms = rsqrt(hidden_sum_sq / float(n) + eps);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float inv_rms_hidden = hidden_inv_rms;
+    for (uint i = lid; i < n; i += NORM_TG_SIZE) {
+        float attn_norm = addend[base + i] * inv_rms_addend * post_weight[i];
+        float v = hidden[base + i] + attn_norm;
+        hidden[base + i] = v;
+        norm_out[base + i] = v * inv_rms_hidden * residual_weight[i];
+    }
+}
+
 // ── RoPE ────────────────────────────────────────────────────────────
 //
 // Applies rotary position embeddings to Q and K vectors.

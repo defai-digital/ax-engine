@@ -1259,79 +1259,119 @@ impl Gemma3Forward {
                         ops_ref.gpu_encode_layer_qkv += qkv_t.elapsed();
                     }
 
-                    // ── Phase 1c: Fused per-head QK norm + RoPE (per-layer freq_base) ──
-                    let rope_t = OpTimer::start();
-                    sb.pre_dispatch(&[&bs.q_buf, &bs.k_buf], &[&bs.q_buf, &bs.k_buf]);
-                    if let (Some(q_norm_key), Some(k_norm_key)) = (lw.attn_q_norm, lw.attn_k_norm) {
-                        let q_nw = weight_cache.get(&q_norm_key).unwrap();
-                        let k_nw = weight_cache.get(&k_norm_key).unwrap();
-                        metal_ops.elementwise.encode_qk_norm_rope_batch(
-                            encoder,
-                            &bs.q_buf,
-                            &bs.k_buf,
-                            q_nw,
-                            k_nw,
-                            nt,
-                            n_heads as u32,
-                            n_kv_heads as u32,
-                            head_dim as u32,
-                            eps,
-                            layer_plan.rope_start,
-                            layer_plan.rope_step,
-                            layer_plan.rope_base,
-                        );
-                    } else {
-                        metal_ops.elementwise.encode_rope_batch(
-                            encoder,
-                            &bs.q_buf,
-                            &bs.k_buf,
-                            nt,
-                            n_heads as u32,
-                            n_kv_heads as u32,
-                            head_dim as u32,
-                            layer_plan.rope_start,
-                            layer_plan.rope_step,
-                            layer_plan.rope_base,
-                        );
-                    }
-                    sb.post_dispatch(&[&bs.q_buf, &bs.k_buf], &[&bs.q_buf, &bs.k_buf]);
-                    if let Some(ref mut ops_ref) = ops {
-                        ops_ref.gpu_encode_layer_rope += rope_t.elapsed();
-                    }
-
-                    // ── Phase 1d: Batched KV cache append ──
-                    let kv_append_t = OpTimer::start();
                     let cache_offset = (base_seq_len * kv_dim) as u32;
                     let kv_k = gpu_kv.k_buffer(layer);
                     let kv_v = gpu_kv.v_buffer(layer);
-                    // K and V appends write to different KV buffers —
-                    // SmartBarrier skips the barrier between them.
-                    sb.pre_dispatch(&[&bs.k_buf], &[kv_k]);
-                    metal_ops.elementwise.encode_kv_append_batch(
-                        encoder,
-                        &bs.k_buf,
-                        kv_k,
-                        prefill_plan.kv_f16,
-                        cache_offset,
-                        kv_dim as u32,
-                        kv_dim as u32,
-                        nt,
-                    );
-                    sb.post_dispatch(&[&bs.k_buf], &[kv_k]);
-                    sb.pre_dispatch(&[&bs.v_buf], &[kv_v]);
-                    metal_ops.elementwise.encode_kv_append_batch(
-                        encoder,
-                        &bs.v_buf,
-                        kv_v,
-                        prefill_plan.kv_f16,
-                        cache_offset,
-                        kv_dim as u32,
-                        kv_dim as u32,
-                        nt,
-                    );
-                    sb.post_dispatch(&[&bs.v_buf], &[kv_v]);
+                    let fused_qkv_post = fused_qkv_buf.is_some()
+                        && lw.attn_q_norm.is_some()
+                        && lw.attn_k_norm.is_some();
+
+                    // ── Phase 1c+1d: Fused split + QK norm + RoPE + KV append when eligible ──
+                    let rope_kv_t = OpTimer::start();
+                    if fused_qkv_post {
+                        let q_nw = weight_cache.get(&lw.attn_q_norm.unwrap()).unwrap();
+                        let k_nw = weight_cache.get(&lw.attn_k_norm.unwrap()).unwrap();
+                        sb.pre_dispatch(
+                            &[&bs.qkv_buf],
+                            &[&bs.q_buf, &bs.k_buf, &bs.v_buf, kv_k, kv_v],
+                        );
+                        metal_ops
+                            .elementwise
+                            .encode_qkv_split_qk_norm_rope_append_kv_batch(
+                                encoder,
+                                &bs.qkv_buf,
+                                &bs.q_buf,
+                                &bs.k_buf,
+                                &bs.v_buf,
+                                q_nw,
+                                k_nw,
+                                kv_k,
+                                kv_v,
+                                prefill_plan.kv_f16,
+                                nt,
+                                n_heads as u32,
+                                n_kv_heads as u32,
+                                head_dim as u32,
+                                eps,
+                                layer_plan.rope_start,
+                                layer_plan.rope_step,
+                                layer_plan.rope_base,
+                                cache_offset,
+                                kv_dim as u32,
+                            );
+                        sb.post_dispatch(
+                            &[&bs.qkv_buf],
+                            &[&bs.q_buf, &bs.k_buf, &bs.v_buf, kv_k, kv_v],
+                        );
+                    } else {
+                        sb.pre_dispatch(&[&bs.q_buf, &bs.k_buf], &[&bs.q_buf, &bs.k_buf]);
+                        if let (Some(q_norm_key), Some(k_norm_key)) =
+                            (lw.attn_q_norm, lw.attn_k_norm)
+                        {
+                            let q_nw = weight_cache.get(&q_norm_key).unwrap();
+                            let k_nw = weight_cache.get(&k_norm_key).unwrap();
+                            metal_ops.elementwise.encode_qk_norm_rope_batch(
+                                encoder,
+                                &bs.q_buf,
+                                &bs.k_buf,
+                                q_nw,
+                                k_nw,
+                                nt,
+                                n_heads as u32,
+                                n_kv_heads as u32,
+                                head_dim as u32,
+                                eps,
+                                layer_plan.rope_start,
+                                layer_plan.rope_step,
+                                layer_plan.rope_base,
+                            );
+                        } else {
+                            metal_ops.elementwise.encode_rope_batch(
+                                encoder,
+                                &bs.q_buf,
+                                &bs.k_buf,
+                                nt,
+                                n_heads as u32,
+                                n_kv_heads as u32,
+                                head_dim as u32,
+                                layer_plan.rope_start,
+                                layer_plan.rope_step,
+                                layer_plan.rope_base,
+                            );
+                        }
+                        sb.post_dispatch(&[&bs.q_buf, &bs.k_buf], &[&bs.q_buf, &bs.k_buf]);
+
+                        // K and V appends write to different KV buffers —
+                        // SmartBarrier skips the barrier between them.
+                        sb.pre_dispatch(&[&bs.k_buf], &[kv_k]);
+                        metal_ops.elementwise.encode_kv_append_batch(
+                            encoder,
+                            &bs.k_buf,
+                            kv_k,
+                            prefill_plan.kv_f16,
+                            cache_offset,
+                            kv_dim as u32,
+                            kv_dim as u32,
+                            nt,
+                        );
+                        sb.post_dispatch(&[&bs.k_buf], &[kv_k]);
+                        sb.pre_dispatch(&[&bs.v_buf], &[kv_v]);
+                        metal_ops.elementwise.encode_kv_append_batch(
+                            encoder,
+                            &bs.v_buf,
+                            kv_v,
+                            prefill_plan.kv_f16,
+                            cache_offset,
+                            kv_dim as u32,
+                            kv_dim as u32,
+                            nt,
+                        );
+                        sb.post_dispatch(&[&bs.v_buf], &[kv_v]);
+                    }
                     if let Some(ref mut ops_ref) = ops {
-                        ops_ref.gpu_encode_layer_kv_append += kv_append_t.elapsed();
+                        let elapsed = rope_kv_t.elapsed();
+                        ops_ref.gpu_encode_layer_rope += elapsed / 2;
+                        ops_ref.gpu_encode_layer_kv_append += elapsed / 2;
                     }
 
                     // ── Phase 2: Batched attention ──
@@ -1403,44 +1443,43 @@ impl Gemma3Forward {
                         ops_ref.gpu_encode_layer_out_proj += out_proj_t.elapsed();
                     }
 
-                    // ── Phase 3b: Post-attention RMSNorm (Gemma3-specific) ──
-                    let post_attn_norm_t = OpTimer::start();
-                    if let Some(post_attn_key) = lw.post_attn_norm {
-                        let nw = weight_cache.get(&post_attn_key).unwrap();
-                        sb.pre_dispatch(&[&bs.proj_buf], &[&bs.proj_buf]);
-                        metal_ops.elementwise.encode_rms_norm_batch(
-                            encoder,
-                            &bs.proj_buf,
-                            nw,
-                            dim as u32,
-                            nt,
-                            eps,
-                        );
-                        sb.post_dispatch(&[&bs.proj_buf], &[&bs.proj_buf]);
-                    }
-                    if let Some(ref mut ops_ref) = ops {
-                        ops_ref.gpu_encode_layer_norm += post_attn_norm_t.elapsed();
-                    }
-
-                    // ── Phase 3c: Batched residual + FFN norm ──
-                    let residual_norm_t = OpTimer::start();
                     let ffn_nw_buf = weight_cache.get(&lw.ffn_norm).unwrap();
-                    sb.pre_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
-                    metal_ops
-                        .elementwise
-                        .encode_residual_add_rms_norm_out_batch(
-                            encoder,
-                            &bs.hidden,
-                            &bs.proj_buf,
-                            ffn_nw_buf,
-                            &bs.norm_buf,
-                            dim as u32,
-                            nt,
-                            eps,
-                        );
-                    sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
+                    let post_attn_and_residual_t = OpTimer::start();
+                    if let Some(post_attn_key) = lw.post_attn_norm {
+                        let post_attn_nw_buf = weight_cache.get(&post_attn_key).unwrap();
+                        sb.pre_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
+                        metal_ops
+                            .elementwise
+                            .encode_post_attn_norm_residual_add_rms_norm_out_batch(
+                                encoder,
+                                &bs.hidden,
+                                &bs.proj_buf,
+                                post_attn_nw_buf,
+                                ffn_nw_buf,
+                                &bs.norm_buf,
+                                dim as u32,
+                                nt,
+                                eps,
+                            );
+                        sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
+                    } else {
+                        sb.pre_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
+                        metal_ops
+                            .elementwise
+                            .encode_residual_add_rms_norm_out_batch(
+                                encoder,
+                                &bs.hidden,
+                                &bs.proj_buf,
+                                ffn_nw_buf,
+                                &bs.norm_buf,
+                                dim as u32,
+                                nt,
+                                eps,
+                            );
+                        sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
+                    }
                     if let Some(ref mut ops_ref) = ops {
-                        let elapsed = residual_norm_t.elapsed();
+                        let elapsed = post_attn_and_residual_t.elapsed();
                         ops_ref.gpu_encode_layer_residual += elapsed / 2;
                         ops_ref.gpu_encode_layer_norm += elapsed / 2;
                     }

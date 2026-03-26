@@ -6228,6 +6228,7 @@ pub struct ElementwiseKernels {
     rms_norm_out_batch_f16: ComputePipeline,
     residual_add_rms_norm_out_batch: ComputePipeline,
     residual_add_rms_norm_out_batch_f16: ComputePipeline,
+    post_attn_norm_residual_add_rms_norm_out_batch: ComputePipeline,
     rope: ComputePipeline,
     rope_batch: ComputePipeline,
     per_head_rms_norm: ComputePipeline,
@@ -6311,6 +6312,12 @@ impl ElementwiseKernels {
             "residual_add_rms_norm_out_batch_f16",
         )
         .context("Failed to compile residual_add_rms_norm_out_batch_f16 kernel")?;
+        let post_attn_norm_residual_add_rms_norm_out_batch = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "post_attn_norm_residual_add_rms_norm_out_batch_f32",
+        )
+        .context("Failed to compile post_attn_norm_residual_add_rms_norm_out_batch_f32 kernel")?;
 
         let rope =
             ComputePipeline::from_source(device.device(), ELEMENTWISE_SHADER_SRC, "rope_f32")
@@ -6497,6 +6504,7 @@ impl ElementwiseKernels {
             rms_norm_out_batch_f16,
             residual_add_rms_norm_out_batch,
             residual_add_rms_norm_out_batch_f16,
+            post_attn_norm_residual_add_rms_norm_out_batch,
             rope,
             rope_batch,
             per_head_rms_norm,
@@ -6908,6 +6916,51 @@ impl ElementwiseKernels {
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
                 width: (n_rows * n_heads) as usize,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: ELEMENTWISE_TG_SIZE,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode Gemma-style post-attention RMSNorm + residual add + FFN RMSNorm.
+    ///
+    /// For each row:
+    /// - `addend` is RMS-normalized with `post_weight`
+    /// - `hidden += normalized(addend)`
+    /// - `norm_out = RMSNorm(hidden, residual_weight)`
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_post_attn_norm_residual_add_rms_norm_out_batch(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        hidden: &MetalBuffer,
+        addend: &MetalBuffer,
+        post_weight: &MetalBuffer,
+        residual_weight: &MetalBuffer,
+        norm_out: &MetalBuffer,
+        n: u32,
+        n_rows: u32,
+        eps: f32,
+    ) {
+        encoder
+            .setComputePipelineState(self.post_attn_norm_residual_add_rms_norm_out_batch.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(hidden.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(addend.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(post_weight.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(residual_weight.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(norm_out.mtl_buffer()), 0, 4);
+        }
+        bind_u32(encoder, 5, n);
+        bind_u32(encoder, 6, n_rows);
+        bind_f32(encoder, 7, eps);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: n_rows as usize,
                 height: 1,
                 depth: 1,
             },
@@ -7733,6 +7786,36 @@ impl ElementwiseKernels {
     ) -> anyhow::Result<()> {
         device.execute_sync(|encoder| {
             self.encode_kv_append(encoder, src, dst, dst_f16, offset, count);
+            Ok(())
+        })
+    }
+
+    /// Gemma-style post-attention RMSNorm + residual add + RMSNorm (standalone).
+    #[allow(clippy::too_many_arguments)]
+    pub fn post_attn_norm_residual_add_rms_norm_out_batch(
+        &self,
+        device: &MetalDevice,
+        hidden: &MetalBuffer,
+        addend: &MetalBuffer,
+        post_weight: &MetalBuffer,
+        residual_weight: &MetalBuffer,
+        norm_out: &MetalBuffer,
+        n: u32,
+        n_rows: u32,
+        eps: f32,
+    ) -> anyhow::Result<()> {
+        device.execute_sync(|encoder| {
+            self.encode_post_attn_norm_residual_add_rms_norm_out_batch(
+                encoder,
+                hidden,
+                addend,
+                post_weight,
+                residual_weight,
+                norm_out,
+                n,
+                n_rows,
+                eps,
+            );
             Ok(())
         })
     }
@@ -10030,6 +10113,33 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn cpu_post_attn_norm_residual_add_rms_norm_out_batch(
+        hidden: &mut [f32],
+        addend: &[f32],
+        post_weight: &[f32],
+        residual_weight: &[f32],
+        norm_out: &mut [f32],
+        n: usize,
+        n_rows: usize,
+        eps: f32,
+    ) {
+        for row in 0..n_rows {
+            let base = row * n;
+            let mut attn_norm = vec![0.0f32; n];
+            cpu_rms_norm_out(&addend[base..base + n], post_weight, &mut attn_norm, eps);
+            for i in 0..n {
+                hidden[base + i] += attn_norm[i];
+            }
+            cpu_rms_norm_out(
+                &hidden[base..base + n],
+                residual_weight,
+                &mut norm_out[base..base + n],
+                eps,
+            );
+        }
+    }
+
     #[test]
     fn test_elementwise_kernels_compile() {
         let gpu = MetalDevice::new().unwrap();
@@ -10281,6 +10391,75 @@ mod tests {
         assert!(
             diff < 1e-6,
             "Elementwise add GPU vs CPU mismatch: max_diff={diff}"
+        );
+    }
+
+    #[test]
+    fn test_gpu_post_attn_norm_residual_add_rms_norm_out_batch_matches_cpu() {
+        let gpu = MetalDevice::new().unwrap();
+        let kernels = ElementwiseKernels::new(&gpu).unwrap();
+
+        let n = 256usize;
+        let n_rows = 3usize;
+        let eps = 1e-6f32;
+
+        let hidden: Vec<f32> = (0..n * n_rows)
+            .map(|i| ((i % 17) as f32 - 8.0) * 0.15)
+            .collect();
+        let addend: Vec<f32> = (0..n * n_rows)
+            .map(|i| ((i % 23) as f32 - 11.0) * 0.12)
+            .collect();
+        let post_weight: Vec<f32> = (0..n)
+            .map(|i| ((i % 7) as f32 - 3.0) * 0.05 + 1.0)
+            .collect();
+        let residual_weight: Vec<f32> = (0..n)
+            .map(|i| ((i % 11) as f32 - 5.0) * 0.04 + 1.0)
+            .collect();
+
+        let mut hidden_expected = hidden.clone();
+        let mut norm_expected = vec![0.0f32; n * n_rows];
+        cpu_post_attn_norm_residual_add_rms_norm_out_batch(
+            &mut hidden_expected,
+            &addend,
+            &post_weight,
+            &residual_weight,
+            &mut norm_expected,
+            n,
+            n_rows,
+            eps,
+        );
+
+        let buf_hidden = MetalBuffer::from_slice(gpu.device(), &hidden).unwrap();
+        let buf_addend = MetalBuffer::from_slice(gpu.device(), &addend).unwrap();
+        let buf_post_weight = MetalBuffer::from_slice(gpu.device(), &post_weight).unwrap();
+        let buf_residual_weight = MetalBuffer::from_slice(gpu.device(), &residual_weight).unwrap();
+        let buf_norm_out = MetalBuffer::new(gpu.device(), n * n_rows * 4).unwrap();
+        kernels
+            .post_attn_norm_residual_add_rms_norm_out_batch(
+                &gpu,
+                &buf_hidden,
+                &buf_addend,
+                &buf_post_weight,
+                &buf_residual_weight,
+                &buf_norm_out,
+                n as u32,
+                n_rows as u32,
+                eps,
+            )
+            .unwrap();
+
+        let hidden_gpu = unsafe { buf_hidden.as_slice::<f32>() };
+        let norm_gpu = unsafe { buf_norm_out.as_slice::<f32>() };
+
+        let hidden_diff = max_abs_diff(hidden_gpu, &hidden_expected);
+        let norm_diff = max_abs_diff(norm_gpu, &norm_expected);
+        assert!(
+            hidden_diff < 1e-4,
+            "Fused Gemma residual hidden GPU vs CPU mismatch: max_diff={hidden_diff}"
+        );
+        assert!(
+            norm_diff < 1e-4,
+            "Fused Gemma residual norm GPU vs CPU mismatch: max_diff={norm_diff}"
         );
     }
 
