@@ -273,8 +273,8 @@ Recorded results:
 
 | Model | AX prefill | llama.cpp prefill | AX vs llama.cpp | AX decode | llama.cpp decode | AX vs llama.cpp | AX notes |
 |---|---:|---:|---:|---:|---:|---:|---|
-| Gemma 3 12B Q4_K_M | 305.5 | 463.3 | 65.9% | 23.5 | 35.8 | 65.7% | `pipelined`, `attn=cache/stable` |
-| Gemma 3 27B Q4_K_M | 128.5 | 170.2 | 75.5% | 10.9 | 15.1 | 72.3% | `pipelined`, `attn=cache/stable` |
+| Gemma 3 12B Q4_K_M | 420.5 | 463.3 | 90.8% | 39.6 | 35.8 | 110.5% | `pipelined`, `attn=cache/stable` |
+| Gemma 3 27B Q4_K_M | 155.7 | 170.2 | 91.5% | 17.8 | 15.1 | 117.9% | `pipelined`, `attn=f16kv_hd128/stable` |
 | Llama 3 8B Q4_K_M | 673.6 | 639.2 | 105.4% | 61.1 | 47.1 | 129.8% | `pipelined`, `attn=mistral_bc64/experimental` |
 | Llama 3 70B Q4_K_M | 55.0 | 66.8 | 82.4% | 6.0 | 6.3 | 95.6% | `pipelined`, `PrefillPlan=mode=gpu_batch`, `q5k_prefill=base` |
 | Qwen3 8B Q4_K_M | 659.5 | 736.7 | 89.5% | 58.3 | 60.3 | 96.7% | `pipelined`, `attn=mistral_bc64/experimental` |
@@ -315,8 +315,8 @@ Interpretation:
 
 Interpretation:
 
-- Gemma 3 12B: current local `llama.cpp` leads clearly on both prefill and decode.
-- Gemma 3 27B: current local `llama.cpp` leads on both prefill and decode.
+- Gemma 3 12B: after the March 26 Gemma-specific Metal fusions, AX is close on prefill and now leads on decode.
+- Gemma 3 27B: after the March 26 Gemma-specific Metal fusions, AX is close on prefill and now leads on decode.
 - Llama 3 8B: in this March 26 rerun, AX leads on both prefill and decode.
 - Llama 3 70B: AX remains below current local `llama.cpp` on both prefill and decode, and the published row now reflects the shipped default mixed-quant route.
 - Qwen3 8B: current local `llama.cpp` leads modestly on both prefill and decode.

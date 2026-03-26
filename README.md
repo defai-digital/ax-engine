@@ -96,19 +96,19 @@ AX Engine is optimized for Apple Silicon throughput and low-overhead local infer
 
 The README keeps this section simple: AX Engine vs `llama.cpp`, with raw tok/s numbers and AX as a percentage of `llama.cpp`. For the full methodology, command lines, and profiler artifacts, see [BENCHMARKING.md](./BENCHMARKING.md).
 
-Current local snapshot, rerun end-to-end on March 26, 2026 on Apple M3 Max. Table values below keep the existing AX-vs-`llama.cpp` comparison format: raw tok/s plus AX as a percentage of `llama.cpp`. `AX vs llama.cpp` over `100%` means AX was faster.
+Current local snapshot on March 26, 2026 on Apple M3 Max. Table values below keep the existing AX-vs-`llama.cpp` comparison format: raw tok/s plus AX as a percentage of `llama.cpp`. `AX vs llama.cpp` over `100%` means AX was faster.
 
 | Model | AX prefill | llama.cpp prefill | AX prefill vs llama.cpp | AX decode | llama.cpp decode | AX decode vs llama.cpp |
 |---|---:|---:|---:|---:|---:|---:|
-| Gemma 3 12B | 305.5 tok/s | 463.3 tok/s | 65.9% | 23.5 tok/s | 35.8 tok/s | 65.7% |
-| Gemma 3 27B | 128.5 tok/s | 170.2 tok/s | 75.5% | 10.9 tok/s | 15.1 tok/s | 72.3% |
+| Gemma 3 12B | 420.5 tok/s | 463.3 tok/s | 90.8% | 39.6 tok/s | 35.8 tok/s | 110.5% |
+| Gemma 3 27B | 155.7 tok/s | 170.2 tok/s | 91.5% | 17.8 tok/s | 15.1 tok/s | 117.9% |
 | Llama 3 8B | 673.6 tok/s | 639.2 tok/s | 105.4% | 61.1 tok/s | 47.1 tok/s | 129.8% |
 | Llama 3 70B | 55.0 tok/s | 66.8 tok/s | 82.4% | 6.0 tok/s | 6.3 tok/s | 95.6% |
 | Qwen3 8B | 659.5 tok/s | 736.7 tok/s | 89.5% | 58.3 tok/s | 60.3 tok/s | 96.7% |
 | Qwen3 14B | 277.0 tok/s | 408.2 tok/s | 67.9% | 34.9 tok/s | 35.6 tok/s | 98.1% |
 | Qwen3 32B | 104.9 tok/s | 150.7 tok/s | 69.6% | 9.2 tok/s | 14.9 tok/s | 61.7% |
 
-This table now comes from one same-day rerun set instead of mixed-date rows. AX values are deterministic medians from fresh `ax-bench` runs. `llama.cpp` values are medians from current local `llama-bench` `samples_ts` with `-fa 1`, `-ctk f16`, and `-ctv f16` on the same March 26, 2026 pass.
+Most rows in this table come from one same-day March 26, 2026 rerun set. The `Gemma 3 12B` and `Gemma 3 27B` rows were refreshed later the same day after Gemma-specific Metal kernel fusions landed. AX values are deterministic medians from fresh `ax-bench` runs. `llama.cpp` values are medians from current local `llama-bench` `samples_ts` with `-fa 1`, `-ctk f16`, and `-ctv f16`.
 
 For the 70B row, the model file is mixed-quant and contains an active `Q5_K` tensor. AX now routes that case through its conservative `Q5_K` GPU prefill path by default, so the published 70B result is representative of current shipped behavior rather than an opt-in special case.
 
