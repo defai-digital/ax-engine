@@ -5,10 +5,28 @@
 //! Used in LLaMA's feed-forward network (SwiGLU variant):
 //!   FFN(x) = SiLU(W_gate * x) * (W_up * x)
 
+#[cfg(target_arch = "aarch64")]
+use std::os::raw::c_int;
+
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" {
+    fn vvexpf(y: *mut f32, x: *const f32, n: *const c_int);
+}
+
+#[cfg(target_arch = "aarch64")]
+const VFORCE_CHUNK: usize = 256;
+
 /// In-place SiLU activation.
 pub fn silu(x: &mut [f32]) {
-    for v in x.iter_mut() {
-        *v = *v / (1.0 + (-*v).exp());
+    #[cfg(target_arch = "aarch64")]
+    {
+        silu_vforce(x);
+        return;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        silu_scalar(x);
     }
 }
 
@@ -18,8 +36,106 @@ pub fn silu(x: &mut [f32]) {
 /// then output = gate * up.
 pub fn silu_elementwise_mul(x: &mut [f32], y: &[f32]) {
     assert_eq!(x.len(), y.len());
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        silu_elementwise_mul_vforce(x, y);
+        return;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        silu_elementwise_mul_scalar(x, y);
+    }
+}
+
+#[allow(dead_code)]
+fn silu_scalar(x: &mut [f32]) {
+    for v in x.iter_mut() {
+        *v = *v / (1.0 + (-*v).exp());
+    }
+}
+
+#[allow(dead_code)]
+fn silu_elementwise_mul_scalar(x: &mut [f32], y: &[f32]) {
     for (xi, &yi) in x.iter_mut().zip(y.iter()) {
         *xi = *xi / (1.0 + (-*xi).exp()) * yi;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn silu_vforce(x: &mut [f32]) {
+    use std::arch::aarch64::*;
+
+    let mut neg = [0.0f32; VFORCE_CHUNK];
+    let mut exp_neg = [0.0f32; VFORCE_CHUNK];
+
+    for chunk in x.chunks_mut(VFORCE_CHUNK) {
+        let len = chunk.len();
+        for i in 0..len {
+            neg[i] = -chunk[i];
+        }
+
+        let n = len as c_int;
+        unsafe {
+            vvexpf(exp_neg.as_mut_ptr(), neg.as_ptr(), &n);
+        }
+
+        let simd_chunks = len / 4;
+        unsafe {
+            let ones = vdupq_n_f32(1.0);
+            for i in 0..simd_chunks {
+                let offset = i * 4;
+                let xv = vld1q_f32(chunk.as_ptr().add(offset));
+                let expv = vld1q_f32(exp_neg.as_ptr().add(offset));
+                let denom = vaddq_f32(ones, expv);
+                let out = vdivq_f32(xv, denom);
+                vst1q_f32(chunk.as_mut_ptr().add(offset), out);
+            }
+        }
+
+        for i in simd_chunks * 4..len {
+            chunk[i] = chunk[i] / (1.0 + exp_neg[i]);
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn silu_elementwise_mul_vforce(x: &mut [f32], y: &[f32]) {
+    use std::arch::aarch64::*;
+
+    let mut neg = [0.0f32; VFORCE_CHUNK];
+    let mut exp_neg = [0.0f32; VFORCE_CHUNK];
+
+    for (x_chunk, y_chunk) in x.chunks_mut(VFORCE_CHUNK).zip(y.chunks(VFORCE_CHUNK)) {
+        let len = x_chunk.len();
+        for i in 0..len {
+            neg[i] = -x_chunk[i];
+        }
+
+        let n = len as c_int;
+        unsafe {
+            vvexpf(exp_neg.as_mut_ptr(), neg.as_ptr(), &n);
+        }
+
+        let simd_chunks = len / 4;
+        unsafe {
+            let ones = vdupq_n_f32(1.0);
+            for i in 0..simd_chunks {
+                let offset = i * 4;
+                let xv = vld1q_f32(x_chunk.as_ptr().add(offset));
+                let yv = vld1q_f32(y_chunk.as_ptr().add(offset));
+                let expv = vld1q_f32(exp_neg.as_ptr().add(offset));
+                let denom = vaddq_f32(ones, expv);
+                let activated = vdivq_f32(xv, denom);
+                let out = vmulq_f32(activated, yv);
+                vst1q_f32(x_chunk.as_mut_ptr().add(offset), out);
+            }
+        }
+
+        for i in simd_chunks * 4..len {
+            x_chunk[i] = x_chunk[i] / (1.0 + exp_neg[i]) * y_chunk[i];
+        }
     }
 }
 

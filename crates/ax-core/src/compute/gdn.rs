@@ -6,6 +6,17 @@
 //! is CPU scalar code; the Metal backend can override these entry points with
 //! sequence-aware kernels later without changing model code again.
 
+#[cfg(target_arch = "aarch64")]
+use std::os::raw::c_int;
+
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" {
+    fn vvexpf(y: *mut f32, x: *const f32, n: *const c_int);
+}
+
+#[cfg(target_arch = "aarch64")]
+const GDN_VFORCE_CHUNK: usize = 256;
+
 /// Shape/configuration for one Qwen3.5 recurrent block.
 #[derive(Debug, Clone, Copy)]
 pub struct Qwen35RecurrentConfig {
@@ -28,18 +39,160 @@ impl Qwen35RecurrentConfig {
 }
 
 pub fn sigmoid_in_place(buf: &mut [f32]) {
-    for v in buf {
-        *v = 1.0 / (1.0 + (-*v).exp());
+    #[cfg(target_arch = "aarch64")]
+    {
+        use std::arch::aarch64::*;
+
+        let mut neg = [0.0f32; GDN_VFORCE_CHUNK];
+        let mut exp_neg = [0.0f32; GDN_VFORCE_CHUNK];
+
+        for chunk in buf.chunks_mut(GDN_VFORCE_CHUNK) {
+            let len = chunk.len();
+            for i in 0..len {
+                neg[i] = -chunk[i];
+            }
+
+            let n = len as c_int;
+            unsafe {
+                vvexpf(exp_neg.as_mut_ptr(), neg.as_ptr(), &n);
+            }
+
+            let simd_chunks = len / 4;
+            unsafe {
+                let ones = vdupq_n_f32(1.0);
+                for i in 0..simd_chunks {
+                    let offset = i * 4;
+                    let expv = vld1q_f32(exp_neg.as_ptr().add(offset));
+                    let denom = vaddq_f32(ones, expv);
+                    let out = vdivq_f32(ones, denom);
+                    vst1q_f32(chunk.as_mut_ptr().add(offset), out);
+                }
+            }
+
+            for i in simd_chunks * 4..len {
+                chunk[i] = 1.0 / (1.0 + exp_neg[i]);
+            }
+        }
+        return;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for v in buf {
+            *v = 1.0 / (1.0 + (-*v).exp());
+        }
     }
 }
 
 pub fn l2_norm_heads(buf: &mut [f32], n_heads: usize, head_dim: usize, eps: f32) {
-    for head in buf.chunks_mut(head_dim).take(n_heads) {
-        let sum_sq = head.iter().map(|v| v * v).sum::<f32>();
-        let inv = 1.0 / (sum_sq + eps).sqrt();
-        for v in head {
-            *v *= inv;
+    #[cfg(target_arch = "aarch64")]
+    {
+        use std::arch::aarch64::*;
+
+        for head in buf.chunks_mut(head_dim).take(n_heads) {
+            let len = head.len();
+            let chunks = len / 4;
+            let mut sum_sq = unsafe { vdupq_n_f32(0.0) };
+
+            unsafe {
+                for i in 0..chunks {
+                    let v = vld1q_f32(head.as_ptr().add(i * 4));
+                    sum_sq = vfmaq_f32(sum_sq, v, v);
+                }
+            }
+
+            let mut total = unsafe { vaddvq_f32(sum_sq) };
+            for &v in &head[chunks * 4..] {
+                total += v * v;
+            }
+
+            let inv = 1.0 / (total + eps).sqrt();
+            let inv_v = unsafe { vdupq_n_f32(inv) };
+            unsafe {
+                for i in 0..chunks {
+                    let offset = i * 4;
+                    let v = vld1q_f32(head.as_ptr().add(offset));
+                    let out = vmulq_f32(v, inv_v);
+                    vst1q_f32(head.as_mut_ptr().add(offset), out);
+                }
+            }
+            for v in &mut head[chunks * 4..] {
+                *v *= inv;
+            }
         }
+        return;
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for head in buf.chunks_mut(head_dim).take(n_heads) {
+            let sum_sq = head.iter().map(|v| v * v).sum::<f32>();
+            let inv = 1.0 / (sum_sq + eps).sqrt();
+            for v in head {
+                *v *= inv;
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn scale_in_place(buf: &mut [f32], scalar: f32) {
+    use std::arch::aarch64::*;
+
+    let len = buf.len();
+    let chunks = len / 4;
+    unsafe {
+        let sv = vdupq_n_f32(scalar);
+        for i in 0..chunks {
+            let offset = i * 4;
+            let v = vld1q_f32(buf.as_ptr().add(offset));
+            let out = vmulq_f32(v, sv);
+            vst1q_f32(buf.as_mut_ptr().add(offset), out);
+        }
+    }
+    for v in &mut buf[chunks * 4..] {
+        *v *= scalar;
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn scale_in_place(buf: &mut [f32], scalar: f32) {
+    for v in buf {
+        *v *= scalar;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn scaled_add_in_place(dst: &mut [f32], scalar: f32, src: &[f32]) {
+    use std::arch::aarch64::*;
+
+    debug_assert_eq!(dst.len(), src.len());
+    let len = dst.len();
+    let chunks = len / 4;
+    unsafe {
+        let sv = vdupq_n_f32(scalar);
+        for i in 0..chunks {
+            let offset = i * 4;
+            let dv = vld1q_f32(dst.as_ptr().add(offset));
+            let srcv = vld1q_f32(src.as_ptr().add(offset));
+            let out = vfmaq_f32(dv, sv, srcv);
+            vst1q_f32(dst.as_mut_ptr().add(offset), out);
+        }
+    }
+    for (d, &s) in dst[chunks * 4..].iter_mut().zip(src[chunks * 4..].iter()) {
+        *d += scalar * s;
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn scaled_add_in_place(dst: &mut [f32], scalar: f32, src: &[f32]) {
+    debug_assert_eq!(dst.len(), src.len());
+    for (d, &s) in dst.iter_mut().zip(src.iter()) {
+        *d += scalar * s;
     }
 }
 
@@ -83,8 +236,10 @@ pub fn depthwise_conv1d_step(
         for t in 0..conv_cache_len {
             acc += conv_state[t * conv_dim + c] * kernel[t * conv_dim + c];
         }
-        out[c] = acc / (1.0 + (-acc).exp());
+        out[c] = acc;
     }
+
+    crate::compute::silu::silu(out);
 
     if conv_cache_len > 0 {
         if conv_cache_len > 1 {
@@ -141,17 +296,15 @@ pub fn gated_delta_rule_step(
     assert_eq!(out.len(), n_heads * head_dim);
 
     let scale = 1.0 / (head_dim as f32).sqrt();
+    let mut delta = vec![0.0f32; head_dim];
     for h in 0..n_heads {
         let qh = &q[h * head_dim..(h + 1) * head_dim];
         let kh = &k[h * head_dim..(h + 1) * head_dim];
         let vh = &v[h * head_dim..(h + 1) * head_dim];
         let state_h = &mut state[h * head_dim * head_dim..(h + 1) * head_dim * head_dim];
         let decay = gate[h].exp();
-        for s in state_h.iter_mut() {
-            *s *= decay;
-        }
+        scale_in_place(state_h, decay);
 
-        let mut delta = vec![0.0f32; head_dim];
         for value_idx in 0..head_dim {
             let mut kv_mem = 0.0f32;
             for key_idx in 0..head_dim {
@@ -160,11 +313,8 @@ pub fn gated_delta_rule_step(
             delta[value_idx] = (vh[value_idx] - kv_mem) * beta[h];
         }
 
-        for key_idx in 0..head_dim {
-            let k_val = kh[key_idx];
-            for value_idx in 0..head_dim {
-                state_h[key_idx * head_dim + value_idx] += k_val * delta[value_idx];
-            }
+        for (row, &k_val) in state_h.chunks_exact_mut(head_dim).zip(kh.iter()) {
+            scaled_add_in_place(row, k_val, &delta);
         }
 
         let out_h = &mut out[h * head_dim..(h + 1) * head_dim];
@@ -322,11 +472,70 @@ pub fn qwen35_recurrent_sequence(
 mod tests {
     use super::*;
 
+    fn sigmoid_in_place_scalar(buf: &mut [f32]) {
+        for v in buf {
+            *v = 1.0 / (1.0 + (-*v).exp());
+        }
+    }
+
+    fn l2_norm_heads_scalar(buf: &mut [f32], n_heads: usize, head_dim: usize, eps: f32) {
+        for head in buf.chunks_mut(head_dim).take(n_heads) {
+            let sum_sq = head.iter().map(|v| v * v).sum::<f32>();
+            let inv = 1.0 / (sum_sq + eps).sqrt();
+            for v in head {
+                *v *= inv;
+            }
+        }
+    }
+
+    fn scaled_add_in_place_scalar(dst: &mut [f32], scalar: f32, src: &[f32]) {
+        for (d, &s) in dst.iter_mut().zip(src.iter()) {
+            *d += scalar * s;
+        }
+    }
+
     #[test]
     fn test_repeat_heads_expands_groups() {
         let input = [1.0, 2.0, 3.0, 4.0];
         let repeated = repeat_heads(&input, 2, 4, 2);
         assert_eq!(repeated, vec![1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_sigmoid_in_place_matches_scalar() {
+        let mut actual = [-8.0, -2.5, -0.5, 0.0, 0.5, 2.5, 8.0];
+        let mut expected = actual;
+        sigmoid_in_place(&mut actual);
+        sigmoid_in_place_scalar(&mut expected);
+        for (i, (&act, &exp)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!((act - exp).abs() < 1e-6, "buf[{i}]: {act} != {exp}");
+        }
+    }
+
+    #[test]
+    fn test_l2_norm_heads_matches_scalar() {
+        let mut actual = [
+            1.0, -2.0, 3.0, -4.0, 0.5, 0.25, -0.75, 1.5, 2.0, -1.0, 0.25, -0.5,
+        ];
+        let mut expected = actual;
+        l2_norm_heads(&mut actual, 3, 4, 1e-5);
+        l2_norm_heads_scalar(&mut expected, 3, 4, 1e-5);
+        for (i, (&act, &exp)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!((act - exp).abs() < 1e-5, "buf[{i}]: {act} != {exp}");
+        }
+    }
+
+    #[test]
+    fn test_scaled_add_in_place_matches_scalar() {
+        let mut actual = [1.0, -2.0, 3.0, -4.0, 5.0, -6.0];
+        let mut expected = actual;
+        let src = [-0.5, 0.25, 1.5, -2.0, 0.75, 3.0];
+        let scalar = 1.75;
+        scaled_add_in_place(&mut actual, scalar, &src);
+        scaled_add_in_place_scalar(&mut expected, scalar, &src);
+        for (i, (&act, &exp)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!((act - exp).abs() < 1e-6, "buf[{i}]: {act} != {exp}");
+        }
     }
 
     #[test]

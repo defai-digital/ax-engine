@@ -9,6 +9,118 @@
 //!   x_2i'    = x_2i * cos(theta) - x_{2i+1} * sin(theta)
 //!   x_{2i+1}' = x_2i * sin(theta) + x_{2i+1} * cos(theta)
 
+const STACK_TABLE_MAX: usize = 128;
+
+#[inline]
+fn fill_rope_tables(
+    position: f32,
+    head_dim: usize,
+    freq_base: f32,
+    cos_table: &mut [f32],
+    sin_table: &mut [f32],
+) {
+    let half_dim = head_dim / 2;
+    assert_eq!(cos_table.len(), half_dim);
+    assert_eq!(sin_table.len(), half_dim);
+
+    let neg_log_base = -(freq_base.ln());
+    let dim_inv = 2.0 / head_dim as f32;
+
+    for i in 0..half_dim {
+        // exp(-ln(base) * 2i/dim) is faster than 1/base.powf(2i/dim)
+        let freq = (neg_log_base * i as f32 * dim_inv).exp();
+        let theta = position * freq;
+        (sin_table[i], cos_table[i]) = theta.sin_cos();
+    }
+}
+
+#[inline]
+fn with_rope_tables<R>(
+    head_dim: usize,
+    position: f32,
+    freq_base: f32,
+    f: impl FnOnce(&[f32], &[f32]) -> R,
+) -> R {
+    let half_dim = head_dim / 2;
+    let mut cos_stack = [0.0f32; STACK_TABLE_MAX];
+    let mut sin_stack = [0.0f32; STACK_TABLE_MAX];
+
+    if half_dim <= STACK_TABLE_MAX {
+        let cos_table = &mut cos_stack[..half_dim];
+        let sin_table = &mut sin_stack[..half_dim];
+        fill_rope_tables(position, head_dim, freq_base, cos_table, sin_table);
+        f(cos_table, sin_table)
+    } else {
+        let mut cos_heap = vec![0.0f32; half_dim];
+        let mut sin_heap = vec![0.0f32; half_dim];
+        fill_rope_tables(position, head_dim, freq_base, &mut cos_heap, &mut sin_heap);
+        f(&cos_heap, &sin_heap)
+    }
+}
+
+#[inline]
+fn apply_rope_pairs_scalar(buf: &mut [f32], cos_table: &[f32], sin_table: &[f32]) {
+    debug_assert_eq!(buf.len(), cos_table.len() * 2);
+    debug_assert_eq!(cos_table.len(), sin_table.len());
+
+    for i in 0..cos_table.len() {
+        let cos_t = cos_table[i];
+        let sin_t = sin_table[i];
+        let idx = 2 * i;
+        let x0 = buf[idx];
+        let x1 = buf[idx + 1];
+        buf[idx] = x0 * cos_t - x1 * sin_t;
+        buf[idx + 1] = x0 * sin_t + x1 * cos_t;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn apply_rope_pairs_in_place(buf: &mut [f32], cos_table: &[f32], sin_table: &[f32]) {
+    use std::arch::aarch64::*;
+
+    debug_assert_eq!(buf.len(), cos_table.len() * 2);
+    debug_assert_eq!(cos_table.len(), sin_table.len());
+
+    let n_pairs = cos_table.len();
+    let chunks = n_pairs / 4;
+
+    unsafe {
+        for chunk in 0..chunks {
+            let pair_offset = chunk * 4;
+            let buf_offset = pair_offset * 2;
+
+            let in_lo = vld1q_f32(buf.as_ptr().add(buf_offset));
+            let in_hi = vld1q_f32(buf.as_ptr().add(buf_offset + 4));
+            let even = vuzp1q_f32(in_lo, in_hi);
+            let odd = vuzp2q_f32(in_lo, in_hi);
+            let cos_v = vld1q_f32(cos_table.as_ptr().add(pair_offset));
+            let sin_v = vld1q_f32(sin_table.as_ptr().add(pair_offset));
+
+            let rot_even = vsubq_f32(vmulq_f32(even, cos_v), vmulq_f32(odd, sin_v));
+            let rot_odd = vaddq_f32(vmulq_f32(even, sin_v), vmulq_f32(odd, cos_v));
+            let out_lo = vzip1q_f32(rot_even, rot_odd);
+            let out_hi = vzip2q_f32(rot_even, rot_odd);
+
+            vst1q_f32(buf.as_mut_ptr().add(buf_offset), out_lo);
+            vst1q_f32(buf.as_mut_ptr().add(buf_offset + 4), out_hi);
+        }
+    }
+
+    let tail_pairs = chunks * 4;
+    apply_rope_pairs_scalar(
+        &mut buf[tail_pairs * 2..],
+        &cos_table[tail_pairs..],
+        &sin_table[tail_pairs..],
+    );
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn apply_rope_pairs_in_place(buf: &mut [f32], cos_table: &[f32], sin_table: &[f32]) {
+    apply_rope_pairs_scalar(buf, cos_table, sin_table);
+}
+
 /// Apply RoPE to a single head's query and key vectors.
 ///
 /// `q`: query vector for one head (length = head_dim)
@@ -24,28 +136,15 @@ pub fn apply_rope(q: &mut [f32], k: &mut [f32], head_dim: usize, position: usize
         "RoPE head_dim must be even, got {head_dim}"
     );
 
-    let half_dim = head_dim / 2;
-    let neg_log_base = -(freq_base.ln());
-    let dim_inv = 2.0 / head_dim as f32;
-
-    for i in 0..half_dim {
-        // exp(-ln(base) * 2i/dim) is faster than 1/base.powf(2i/dim)
-        let freq = (neg_log_base * i as f32 * dim_inv).exp();
-        let theta = position as f32 * freq;
-        let (sin_t, cos_t) = theta.sin_cos();
-
-        // Rotate query pair
-        let q0 = q[2 * i];
-        let q1 = q[2 * i + 1];
-        q[2 * i] = q0 * cos_t - q1 * sin_t;
-        q[2 * i + 1] = q0 * sin_t + q1 * cos_t;
-
-        // Rotate key pair
-        let k0 = k[2 * i];
-        let k1 = k[2 * i + 1];
-        k[2 * i] = k0 * cos_t - k1 * sin_t;
-        k[2 * i + 1] = k0 * sin_t + k1 * cos_t;
-    }
+    with_rope_tables(
+        head_dim,
+        position as f32,
+        freq_base,
+        |cos_table, sin_table| {
+            apply_rope_pairs_in_place(q, cos_table, sin_table);
+            apply_rope_pairs_in_place(k, cos_table, sin_table);
+        },
+    );
 }
 
 /// Apply RoPE to query only (used when key is not needed, e.g. cached).
@@ -53,20 +152,14 @@ pub fn apply_rope_q(q: &mut [f32], head_dim: usize, position: usize, freq_base: 
     assert_eq!(q.len(), head_dim);
     assert!(head_dim.is_multiple_of(2));
 
-    let half_dim = head_dim / 2;
-    let neg_log_base = -(freq_base.ln());
-    let dim_inv = 2.0 / head_dim as f32;
-
-    for i in 0..half_dim {
-        let freq = (neg_log_base * i as f32 * dim_inv).exp();
-        let theta = position as f32 * freq;
-        let (sin_t, cos_t) = theta.sin_cos();
-
-        let q0 = q[2 * i];
-        let q1 = q[2 * i + 1];
-        q[2 * i] = q0 * cos_t - q1 * sin_t;
-        q[2 * i + 1] = q0 * sin_t + q1 * cos_t;
-    }
+    with_rope_tables(
+        head_dim,
+        position as f32,
+        freq_base,
+        |cos_table, sin_table| {
+            apply_rope_pairs_in_place(q, cos_table, sin_table);
+        },
+    );
 }
 
 /// Apply RoPE to multiple heads at once (contiguous in memory).
@@ -111,56 +204,15 @@ pub fn apply_rope_multi_head_scaled(
     assert!(q.len() >= n_heads * head_dim);
     assert!(k.len() >= n_kv_heads * head_dim);
 
-    // Precompute cos/sin table for this position (stack-allocated for typical head_dim <= 256)
-    let half_dim = head_dim / 2;
-    let neg_log_base = -(freq_base.ln());
-    let dim_inv = 2.0 / head_dim as f32;
+    with_rope_tables(head_dim, position, freq_base, |cos_table, sin_table| {
+        for q_head in q[..n_heads * head_dim].chunks_exact_mut(head_dim) {
+            apply_rope_pairs_in_place(q_head, cos_table, sin_table);
+        }
 
-    // Stack buffer for common head_dim sizes (up to 256 → 128 pairs → 1 KiB)
-    const STACK_MAX: usize = 128;
-    let mut cos_stack = [0.0f32; STACK_MAX];
-    let mut sin_stack = [0.0f32; STACK_MAX];
-    let mut cos_heap;
-    let mut sin_heap;
-    let (cos_table, sin_table): (&[f32], &[f32]) = if half_dim <= STACK_MAX {
-        for i in 0..half_dim {
-            let freq = (neg_log_base * i as f32 * dim_inv).exp();
-            let theta = position * freq;
-            (sin_stack[i], cos_stack[i]) = theta.sin_cos();
+        for k_head in k[..n_kv_heads * head_dim].chunks_exact_mut(head_dim) {
+            apply_rope_pairs_in_place(k_head, cos_table, sin_table);
         }
-        (&cos_stack[..half_dim], &sin_stack[..half_dim])
-    } else {
-        cos_heap = vec![0.0f32; half_dim];
-        sin_heap = vec![0.0f32; half_dim];
-        for i in 0..half_dim {
-            let freq = (neg_log_base * i as f32 * dim_inv).exp();
-            let theta = position * freq;
-            (sin_heap[i], cos_heap[i]) = theta.sin_cos();
-        }
-        (&cos_heap[..], &sin_heap[..])
-    };
-
-    // Rotate all query heads
-    for h in 0..n_heads {
-        let offset = h * head_dim;
-        for i in 0..half_dim {
-            let q0 = q[offset + 2 * i];
-            let q1 = q[offset + 2 * i + 1];
-            q[offset + 2 * i] = q0 * cos_table[i] - q1 * sin_table[i];
-            q[offset + 2 * i + 1] = q0 * sin_table[i] + q1 * cos_table[i];
-        }
-    }
-
-    // Rotate all key heads
-    for h in 0..n_kv_heads {
-        let offset = h * head_dim;
-        for i in 0..half_dim {
-            let k0 = k[offset + 2 * i];
-            let k1 = k[offset + 2 * i + 1];
-            k[offset + 2 * i] = k0 * cos_table[i] - k1 * sin_table[i];
-            k[offset + 2 * i + 1] = k0 * sin_table[i] + k1 * cos_table[i];
-        }
-    }
+    });
 }
 
 #[cfg(test)]
@@ -310,6 +362,63 @@ mod tests {
                 q1[i],
                 q2[i]
             );
+        }
+    }
+
+    #[test]
+    fn test_rope_pairs_in_place_matches_scalar_large_head_dim() {
+        let head_dim = 16;
+        let mut actual = [
+            -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5,
+        ];
+        let mut expected = actual;
+
+        with_rope_tables(head_dim, 7.25, FREQ_BASE, |cos_table, sin_table| {
+            apply_rope_pairs_in_place(&mut actual, cos_table, sin_table);
+            apply_rope_pairs_scalar(&mut expected, cos_table, sin_table);
+        });
+
+        for (i, (&act, &exp)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!((act - exp).abs() < 1e-5, "buf[{i}]: {act} != {exp}");
+        }
+    }
+
+    #[test]
+    fn test_rope_multi_head_scaled_matches_scalar_reference_large_head_dim() {
+        let head_dim = 16;
+        let n_heads = 3;
+        let n_kv_heads = 2;
+        let position = 11.5;
+        let mut q = vec![0.0f32; n_heads * head_dim];
+        let mut k = vec![0.0f32; n_kv_heads * head_dim];
+
+        for (i, v) in q.iter_mut().enumerate() {
+            *v = i as f32 * 0.25 - 3.0;
+        }
+        for (i, v) in k.iter_mut().enumerate() {
+            *v = i as f32 * -0.125 + 1.0;
+        }
+
+        let mut q_ref = q.clone();
+        let mut k_ref = k.clone();
+        with_rope_tables(head_dim, position, FREQ_BASE, |cos_table, sin_table| {
+            for q_head in q_ref.chunks_exact_mut(head_dim) {
+                apply_rope_pairs_scalar(q_head, cos_table, sin_table);
+            }
+            for k_head in k_ref.chunks_exact_mut(head_dim) {
+                apply_rope_pairs_scalar(k_head, cos_table, sin_table);
+            }
+        });
+
+        apply_rope_multi_head_scaled(
+            &mut q, &mut k, n_heads, n_kv_heads, head_dim, position, FREQ_BASE,
+        );
+
+        for (i, (&act, &exp)) in q.iter().zip(q_ref.iter()).enumerate() {
+            assert!((act - exp).abs() < 1e-5, "q[{i}]: {act} != {exp}");
+        }
+        for (i, (&act, &exp)) in k.iter().zip(k_ref.iter()).enumerate() {
+            assert!((act - exp).abs() < 1e-5, "k[{i}]: {act} != {exp}");
         }
     }
 }
