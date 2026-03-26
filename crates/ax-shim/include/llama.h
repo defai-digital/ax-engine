@@ -210,7 +210,7 @@ int32_t llama_token_to_piece(const llama_model *model,
                              char *buf,
                              int32_t length,
                              int32_t _lstrip,
-                             bool _special);
+                             bool special);
 
 #ifdef __cplusplus
 }  // extern "C"

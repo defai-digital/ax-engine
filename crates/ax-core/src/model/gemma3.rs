@@ -932,6 +932,7 @@ impl Gemma3Forward {
         weights: &WeightStore,
         last_logits: Option<&mut [f32]>,
         logits_all: Option<&mut Vec<f32>>,
+        mut ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<()> {
         let cfg = ctx.config;
         let n_tokens = token_ids.len();
@@ -960,6 +961,8 @@ impl Gemma3Forward {
                 window
             );
         }
+
+        let setup_t = OpTimer::start();
 
         metal_ops.init_scratches(cfg);
         metal_ops.init_batch_scratches(cfg, n_tokens);
@@ -1009,6 +1012,10 @@ impl Gemma3Forward {
             None
         };
 
+        if let Some(ref mut ops_ref) = ops {
+            ops_ref.gpu_encode += setup_t.elapsed();
+        }
+
         // Single command buffer: all layers + final norm + LM head
         {
             let weight_cache = metal_ops.lock_weight_cache();
@@ -1024,12 +1031,14 @@ impl Gemma3Forward {
             );
             let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
 
+            let exec_t = OpTimer::start();
             metal_ops.device.execute_sync_concurrent(|encoder| {
                 let nt = n_tokens as u32;
                 let mut sb = ax_metal::SmartBarrier::new(encoder);
 
                 // First layer's Phase 1a: standalone RMSNorm before loop.
                 {
+                    let t = OpTimer::start();
                     let norm_w_buf = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
                     metal_ops.elementwise.encode_rms_norm_out_batch(
                         encoder,
@@ -1041,6 +1050,9 @@ impl Gemma3Forward {
                         eps,
                     );
                     sb.post_dispatch(&[&bs.hidden], &[&bs.norm_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_norm += t.elapsed();
+                    }
                 }
 
                 for layer in 0..n_layers {
@@ -1074,6 +1086,7 @@ impl Gemma3Forward {
                     // subsequent layers fused with previous Phase 3h).
 
                     // ── Phase 1b: Batched QKV matmul ──
+                    let qkv_t = OpTimer::start();
                     if let Some(fused_w) = fused_qkv_buf {
                         let qkv_input = &bs.norm_buf;
                         sb.pre_dispatch(&[qkv_input], &[&bs.qkv_buf]);
@@ -1242,8 +1255,12 @@ impl Gemma3Forward {
                             }
                         }
                     }
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_qkv += qkv_t.elapsed();
+                    }
 
                     // ── Phase 1c: Fused per-head QK norm + RoPE (per-layer freq_base) ──
+                    let rope_t = OpTimer::start();
                     sb.pre_dispatch(&[&bs.q_buf, &bs.k_buf], &[&bs.q_buf, &bs.k_buf]);
                     if let (Some(q_norm_key), Some(k_norm_key)) = (lw.attn_q_norm, lw.attn_k_norm) {
                         let q_nw = weight_cache.get(&q_norm_key).unwrap();
@@ -1278,8 +1295,12 @@ impl Gemma3Forward {
                         );
                     }
                     sb.post_dispatch(&[&bs.q_buf, &bs.k_buf], &[&bs.q_buf, &bs.k_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_rope += rope_t.elapsed();
+                    }
 
                     // ── Phase 1d: Batched KV cache append ──
+                    let kv_append_t = OpTimer::start();
                     let cache_offset = (base_seq_len * kv_dim) as u32;
                     let kv_k = gpu_kv.k_buffer(layer);
                     let kv_v = gpu_kv.v_buffer(layer);
@@ -1309,8 +1330,12 @@ impl Gemma3Forward {
                         nt,
                     );
                     sb.post_dispatch(&[&bs.v_buf], &[kv_v]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_kv_append += kv_append_t.elapsed();
+                    }
 
                     // ── Phase 2: Batched attention ──
+                    let attn_t = OpTimer::start();
                     if layer_plan.attention == PrefillAttentionPlan::BatchLocal {
                         sb.pre_dispatch(&[&bs.q_buf, &bs.k_buf, &bs.v_buf], &[&bs.attn_out]);
                         metal_ops.attention.encode_attention_prefill_with_config(
@@ -1349,8 +1374,12 @@ impl Gemma3Forward {
                             );
                         sb.post_dispatch(&[&bs.q_buf, attn_kv_k, attn_kv_v], &[&bs.attn_out]);
                     }
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_attention += attn_t.elapsed();
+                    }
 
                     // ── Phase 3a: Batched output projection ──
+                    let out_proj_t = OpTimer::start();
                     let wo_buf = weight_cache.get(&lw.wo).unwrap();
                     sb.pre_dispatch(&[&bs.attn_out], &[&bs.proj_buf]);
                     encode_dequant_batch(
@@ -1370,8 +1399,12 @@ impl Gemma3Forward {
                         prefill_plan.experimental_q5k_prefill_small_n,
                     );
                     sb.post_dispatch(&[&bs.attn_out], &[&bs.proj_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_out_proj += out_proj_t.elapsed();
+                    }
 
                     // ── Phase 3b: Post-attention RMSNorm (Gemma3-specific) ──
+                    let post_attn_norm_t = OpTimer::start();
                     if let Some(post_attn_key) = lw.post_attn_norm {
                         let nw = weight_cache.get(&post_attn_key).unwrap();
                         sb.pre_dispatch(&[&bs.proj_buf], &[&bs.proj_buf]);
@@ -1385,8 +1418,12 @@ impl Gemma3Forward {
                         );
                         sb.post_dispatch(&[&bs.proj_buf], &[&bs.proj_buf]);
                     }
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_norm += post_attn_norm_t.elapsed();
+                    }
 
                     // ── Phase 3c: Batched residual + FFN norm ──
+                    let residual_norm_t = OpTimer::start();
                     let ffn_nw_buf = weight_cache.get(&lw.ffn_norm).unwrap();
                     sb.pre_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
                     metal_ops
@@ -1402,8 +1439,14 @@ impl Gemma3Forward {
                             eps,
                         );
                     sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        let elapsed = residual_norm_t.elapsed();
+                        ops_ref.gpu_encode_layer_residual += elapsed / 2;
+                        ops_ref.gpu_encode_layer_norm += elapsed / 2;
+                    }
 
                     // ── Phase 3d: Batched gate + up ──
+                    let gate_up_t = OpTimer::start();
                     let wg_buf = weight_cache.get(&lw.wg).unwrap();
                     let wu_buf = weight_cache.get(&lw.wu).unwrap();
                     let ffn_layer_plan = DecodeExecutionPlan::gemma3_prefill_ffn_layer(
@@ -1496,8 +1539,12 @@ impl Gemma3Forward {
                         }
                     }
                     sb.post_dispatch(&[&bs.norm_buf], &[&bs.gate_buf, &bs.up_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_ffn += gate_up_t.elapsed();
+                    }
 
                     // ── Phase 3e: Batched GELU activation ──
+                    let activation_t = OpTimer::start();
                     sb.pre_dispatch(&[&bs.gate_buf, &bs.up_buf], &[&bs.gate_buf]);
                     match ffn_layer_plan.activation {
                         PrefillFfnActivationPlan::GeluMulGateF32 => {
@@ -1513,8 +1560,12 @@ impl Gemma3Forward {
                         | PrefillFfnActivationPlan::SiluMulScratchF16 => unreachable!(),
                     }
                     sb.post_dispatch(&[&bs.gate_buf, &bs.up_buf], &[&bs.gate_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_ffn += activation_t.elapsed();
+                    }
 
                     // ── Phase 3f: Batched down projection ──
+                    let down_proj_t = OpTimer::start();
                     let wd_buf = weight_cache.get(&lw.wd).unwrap();
                     sb.pre_dispatch(&[&bs.gate_buf], &[&bs.proj_buf]);
                     encode_dequant_batch(
@@ -1534,8 +1585,12 @@ impl Gemma3Forward {
                         prefill_plan.experimental_q5k_prefill_small_n,
                     );
                     sb.post_dispatch(&[&bs.gate_buf], &[&bs.proj_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_ffn += down_proj_t.elapsed();
+                    }
 
                     // ── Phase 3g: Post-FFN RMSNorm (Gemma3-specific) ──
+                    let post_ffn_norm_t = OpTimer::start();
                     if let Some(post_ffn_key) = lw.post_ffn_norm {
                         let nw = weight_cache.get(&post_ffn_key).unwrap();
                         sb.pre_dispatch(&[&bs.proj_buf], &[&bs.proj_buf]);
@@ -1549,8 +1604,12 @@ impl Gemma3Forward {
                         );
                         sb.post_dispatch(&[&bs.proj_buf], &[&bs.proj_buf]);
                     }
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_norm += post_ffn_norm_t.elapsed();
+                    }
 
                     // ── Phase 3h: Batched residual (+ next layer's norm if not last) ──
+                    let residual_handoff_t = OpTimer::start();
                     let residual_plan =
                         DecodeExecutionPlan::gemma3_prefill_residual_handoff(layer + 1 == n_layers);
                     let residual_norm_out = match residual_plan {
@@ -1596,6 +1655,19 @@ impl Gemma3Forward {
                         sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, nout]);
                     } else {
                         sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden]);
+                    }
+                    if let Some(ref mut ops_ref) = ops {
+                        let elapsed = residual_handoff_t.elapsed();
+                        match residual_plan {
+                            PrefillResidualHandoffPlan::ResidualOnly => {
+                                ops_ref.gpu_encode_layer_residual += elapsed;
+                            }
+                            PrefillResidualHandoffPlan::ResidualAddRmsNormF32 => {
+                                ops_ref.gpu_encode_layer_residual += elapsed / 2;
+                                ops_ref.gpu_encode_layer_norm += elapsed / 2;
+                            }
+                            PrefillResidualHandoffPlan::ResidualAddRmsNormF16 => unreachable!(),
+                        }
                     }
                 }
 
@@ -1659,11 +1731,15 @@ impl Gemma3Forward {
 
                 Ok(())
             })?;
+            if let Some(ref mut ops_ref) = ops {
+                ops_ref.gpu_execute += exec_t.elapsed();
+            }
         }
 
         // v2: advance GPU KV only — no CPU mirror to sync
         gpu_kv.finalize_batch(n_tokens);
 
+        let rb_t = OpTimer::start();
         if let Some(logits_all) = logits_all {
             let logits_gpu = unsafe {
                 std::slice::from_raw_parts(
@@ -1695,6 +1771,9 @@ impl Gemma3Forward {
                     *l *= scale;
                 }
             }
+        }
+        if let Some(ref mut ops_ref) = ops {
+            ops_ref.gpu_readback += rb_t.elapsed();
         }
 
         Ok(())
@@ -2069,6 +2148,7 @@ impl ForwardPass for Gemma3Forward {
                         weights,
                         Some(logits),
                         None,
+                        None,
                     ) {
                         Ok(()) => {}
                         Err(e) => {
@@ -2102,6 +2182,7 @@ impl ForwardPass for Gemma3Forward {
                 weights,
                 Some(logits),
                 None,
+                None,
             ) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
@@ -2113,6 +2194,66 @@ impl ForwardPass for Gemma3Forward {
         for (i, &tid) in token_ids.iter().enumerate() {
             logits.fill(0.0);
             self.forward_single(ctx, tid, start_pos + i, kv, weights, logits, None)?;
+        }
+        Ok(())
+    }
+
+    fn forward_batch_profiled(
+        &self,
+        ctx: &ForwardContext,
+        token_ids: &[u32],
+        kv: &mut ModelKv,
+        weights: &WeightStore,
+        logits: &mut [f32],
+        ops: &mut OpBreakdown,
+    ) -> anyhow::Result<()> {
+        let prefill_plan =
+            PrefillExecutionPlan::for_forward_batch(ctx, kv, weights, token_ids.len(), false)?;
+
+        if matches!(
+            prefill_plan.mode,
+            PrefillMode::GpuBatch | PrefillMode::GpuChunked
+        ) {
+            let metal_ops = ctx.backend.metal_ops().unwrap();
+            let gpu_kv = kv.as_gpu_mut().unwrap();
+            if prefill_plan.mode == PrefillMode::GpuChunked {
+                let total_t = OpTimer::start();
+                let chunk_len = prefill_plan.chunk_len.unwrap();
+                for chunk in token_ids.chunks(chunk_len) {
+                    self.forward_batch_gpu_unified(
+                        ctx,
+                        metal_ops,
+                        chunk,
+                        gpu_kv,
+                        weights,
+                        Some(logits),
+                        None,
+                        Some(&mut *ops),
+                    )?;
+                }
+                ops.gpu += total_t.elapsed();
+                return Ok(());
+            }
+
+            let total_t = OpTimer::start();
+            let result = self.forward_batch_gpu_unified(
+                ctx,
+                metal_ops,
+                token_ids,
+                gpu_kv,
+                weights,
+                Some(logits),
+                None,
+                Some(&mut *ops),
+            );
+            ops.gpu += total_t.elapsed();
+            return result;
+        }
+
+        let start_pos = kv.seq_len();
+        for (i, &tid) in token_ids.iter().enumerate() {
+            logits.fill(0.0);
+            self.forward_single(ctx, tid, start_pos + i, kv, weights, logits, Some(ops))?;
         }
         Ok(())
     }
@@ -2139,6 +2280,7 @@ impl ForwardPass for Gemma3Forward {
                 weights,
                 None,
                 Some(logits_all),
+                None,
             ) {
                 Ok(()) => return Ok(()),
                 Err(e) => {

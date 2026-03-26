@@ -126,12 +126,11 @@ Use this to inspect the decode hot path and identify where time is actually spen
 - The selected prefill and decode plans are printed in the output. Keep them with the benchmark record.
 - `--llama-parity-preset` is not a cross-engine truth mode. It only applies a small set of AX env defaults and can change performance significantly.
 - If AX prints `PrefillPlan: mode=serial reason=unsupported_quant:...`, treat that prefill result as a fallback-path measurement, not a normal GPU-prefill comparison.
-- Mixed-quant GGUFs can trigger that behavior when active layer tensors use `Q5_K`, because AX defaults `Q5_K` to decode-only baseline.
-- If you benchmark the experimental route with `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`, record that env var alongside the run and do not compare it against default AX numbers as if it were shipped behavior.
-- For current experimental `Q5_K` prefill runs, also record whether AX auto-used:
-  - `q5k_prefill=experimental`
-  - `q5k_prefill=experimental_small_n`
-- AX currently auto-selects `experimental_small_n` only when the mapped model is
+- Mixed-quant GGUFs with active `Q5_K` layer tensors now use AX's conservative GPU prefill route by default.
+- For `Q5_K` prefill runs, also record whether AX auto-used:
+  - `q5k_prefill=base`
+  - `q5k_prefill=small_n`
+- AX currently auto-selects `small_n` only when the mapped model is
   predominantly `Q5_K` and the prompt batch is small (`<= 32` tokens).
 - `ax-bench bench`, `ax-bench profile`, and `ax-bench soak` JSON now emit this as a first-class field:
   - `q5k_prefill_mode`
@@ -216,9 +215,8 @@ If any of those are missing, label the result as exploratory, not authoritative.
 One more invalid-comparison case:
 
 - if AX prefill fell back to `mode=serial reason=unsupported_quant:...` while `llama.cpp` stayed on its normal prompt fast path, do not treat the prefill delta as an apples-to-apples engine conclusion
-- in that case, the decode comparison is still useful, but the prefill comparison is mostly measuring AX's current `Q5_K` support boundary
-- if AX used `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`, do not compare that number against default AX results as if they were the same support level
-- if AX auto-used `q5k_prefill=experimental_small_n`, record that explicitly because it is narrower than the base experimental route
+- in that case, the decode comparison is still useful, but the prefill comparison is mostly measuring an unsupported-quant fallback rather than AX's normal GPU path
+- if AX auto-used `q5k_prefill=small_n`, record that explicitly because it is narrower than the base conservative route
 
 ## Suggested Reporting Format
 
@@ -243,7 +241,7 @@ Example table:
 
 ## Current Repo Snapshot
 
-Retested on March 25, 2026 on Apple M3 Max with the corrected comparison method:
+Retested on March 26, 2026 on Apple M3 Max with one fresh AX-vs-`llama.cpp` rerun set:
 
 - AX command shape:
 
@@ -263,7 +261,7 @@ Retested on March 25, 2026 on Apple M3 Max with the corrected comparison method:
   -m ./models/<model>.gguf \
   -p 512 \
   -n 128 \
-  -r 5 \
+  -r 3 \
   -ngl 99 \
   -ctk f16 \
   -ctv f16 \
@@ -275,56 +273,69 @@ Recorded results:
 
 | Model | AX prefill | llama.cpp prefill | AX vs llama.cpp | AX decode | llama.cpp decode | AX vs llama.cpp | AX notes |
 |---|---:|---:|---:|---:|---:|---:|---|
-| Gemma 3 12B Q4_K_M | 418.5 | 477.7 | 87.6% | 39.3 | 39.1 | 100.5% | `pipelined`, `attn=splitk_hd256/profile_preferred` |
-| Gemma 3 27B Q4_K_M | 161.3 | 191.3 | 84.3% | 17.7 | 14.6 | 121.2% | `pipelined`, `attn=f16kv_hd128/stable` |
-| Llama 3 8B Q4_K_M | 642.0 | 771.4 | 83.2% | 58.1 | 64.8 | 89.7% | `pipelined`, `attn=f16kv_hd128/stable` |
-| Llama 3 70B Q4_K_M | 70.1 | 71.4 | 98.2% | 8.0 | 7.1 | 112.7% | `pipelined`, `PrefillPlan=mode=gpu_batch`, `q5k_prefill=experimental` |
-| Qwen3 8B Q4_K_M | 631.4 | 664.8 | 95.0% | 55.1 | 59.8 | 92.1% | `pipelined`, `attn=f16kv_hd128/stable` |
-| Qwen3 14B Q4_K_M | 251.0 | 334.4 | 75.1% | 18.1 | 21.8 | 82.9% | `pipelined`, `attn=f16kv_hd128/stable` |
-| Qwen3 32B Q4_K_M | 126.3 | 129.4 | 97.6% | 13.1 | 12.0 | 109.2% | `pipelined`, `attn=f16kv_hd128/stable` |
+| Gemma 3 12B Q4_K_M | 305.5 | 463.3 | 65.9% | 23.5 | 35.8 | 65.7% | `pipelined`, `attn=cache/stable` |
+| Gemma 3 27B Q4_K_M | 128.5 | 170.2 | 75.5% | 10.9 | 15.1 | 72.3% | `pipelined`, `attn=cache/stable` |
+| Llama 3 8B Q4_K_M | 673.6 | 639.2 | 105.4% | 61.1 | 47.1 | 129.8% | `pipelined`, `attn=mistral_bc64/experimental` |
+| Llama 3 70B Q4_K_M | 55.0 | 66.8 | 82.4% | 6.0 | 6.3 | 95.6% | `pipelined`, `PrefillPlan=mode=gpu_batch`, `q5k_prefill=base` |
+| Qwen3 8B Q4_K_M | 659.5 | 736.7 | 89.5% | 58.3 | 60.3 | 96.7% | `pipelined`, `attn=mistral_bc64/experimental` |
+| Qwen3 14B Q4_K_M | 277.0 | 408.2 | 67.9% | 34.9 | 35.6 | 98.1% | `pipelined`, `attn=mistral_hd128/profile_preferred` |
+| Qwen3 32B Q4_K_M | 104.9 | 150.7 | 69.6% | 9.2 | 14.9 | 61.7% | `pipelined`, `attn=mistral_bc64/experimental` |
 
-`llama.cpp` values above are medians from `samples_ts` with `-fa 1`, `-ctk f16`, and `-ctv f16`. `AX vs llama.cpp` over `100%` means AX was faster.
+`llama.cpp` values above are medians from `samples_ts` on the current local Homebrew `llama-bench` build (`build_commit 342d6125b`, `build_number 8500`) with `-fa 1`, `-ctk f16`, and `-ctv f16`. `AX vs llama.cpp` over `100%` means AX was faster.
 
 70B note:
 
-- `models/meta-llama-3-70b-instruct.Q4_K_M.gguf` contains an active `Q5_K` tensor, so shipped AX behavior still defaults that model to decode-only baseline for prefill.
-- The published 70B row above records only the post-fix validation result with `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`.
-- The default AX path is intentionally excluded from the headline table because it is a fallback-path result, not a representative fast-path comparison.
+- `models/meta-llama-3-70b-instruct.Q4_K_M.gguf` contains an active `Q5_K` tensor.
+- Shipped AX now routes that mixed-quant case through the conservative `Q5_K` GPU prefill path by default.
+- The published 70B row above is therefore representative of current shipped behavior, not an opt-in validation path.
 
-Experimental `Q5_K` prefill auto-routing snapshot:
+`Q5_K` prefill auto-routing snapshot:
 
 - `models/meta-llama-3.1-8b-instruct-q5_k_m.gguf`
   - command shape:
-    - `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1 target/release/ax-bench bench --model ... --prompt-tokens 16 --decode-tokens 32 --warmup-iters 1 --measure-iters 1`
+    - `target/release/ax-bench bench --model ... --prompt-tokens 16 --decode-tokens 32 --warmup-iters 1 --measure-iters 1`
   - result:
-    - `PrefillPlan: ... q5k_prefill=experimental_small_n`
+    - `PrefillPlan: ... q5k_prefill=small_n`
     - prefill `108.1 tok/s`
     - decode `35.0 tok/s`
 - `models/meta-llama-3-70b-instruct.Q4_K_M.gguf`
   - same command shape
   - result:
-    - `PrefillPlan: ... q5k_prefill=experimental`
+    - `PrefillPlan: ... q5k_prefill=base`
     - prefill `27.0 tok/s`
     - decode `8.2 tok/s`
 
 Interpretation:
 
-- AX currently auto-uses the small-`N` experimental route only on the
+- AX currently auto-uses the small-`N` route only on the
   predominant-`Q5_K` 8B file
-- the mixed-quant 70B file stays on the base experimental route
-- benchmark records for experimental `Q5_K` prefill should include the exact
-  `q5k_prefill=...` label, not just the env var
+- the mixed-quant 70B file stays on the base conservative route
+- benchmark records for `Q5_K` prefill should include the exact
+  `q5k_prefill=...` label
 
 Interpretation:
 
-- Gemma 3 12B: `llama.cpp` led on prefill, decode was effectively tied.
-- Gemma 3 27B: `llama.cpp` led on prefill, while AX led on decode in this retest.
-- Llama 3 8B: `llama.cpp` led on both prefill and decode in this retest.
-- Llama 3 70B: with `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`, AX was close to `llama.cpp` on prefill and slightly ahead on decode in this local retest; the default fallback path is intentionally not treated as a headline benchmark row.
-- Qwen3 8B: `llama.cpp` led on both prefill and decode, but AX remained within the same general range.
-- Qwen3 14B: `llama.cpp` led on both prefill and decode in this retest.
-- Qwen3 32B: prefill was close, with `llama.cpp` slightly ahead, while AX led modestly on decode.
-- Earlier local comparisons that omitted `-fa 1` for `llama.cpp` were not reliable enough to use as headline repo claims.
+- Gemma 3 12B: current local `llama.cpp` leads clearly on both prefill and decode.
+- Gemma 3 27B: current local `llama.cpp` leads on both prefill and decode.
+- Llama 3 8B: in this March 26 rerun, AX leads on both prefill and decode.
+- Llama 3 70B: AX remains below current local `llama.cpp` on both prefill and decode, and the published row now reflects the shipped default mixed-quant route.
+- Qwen3 8B: current local `llama.cpp` leads modestly on both prefill and decode.
+- Qwen3 14B: current local `llama.cpp` leads strongly on prefill, while decode is close.
+- Qwen3 32B: current local `llama.cpp` leads on both prefill and decode in this rerun.
+- Earlier mixed-date rows and earlier local comparisons that omitted `-fa 1` for `llama.cpp` are not reliable enough to keep as headline repo claims.
+
+March 26 exact-shape prefill route sanity check:
+
+- Synthetic GPU microbench on the dominant `pp512` dense-model shapes showed the same ordering across `Llama 3 8B`, `Qwen3 14B`, and `Gemma 3 12B`: the current `f32` batch route beat `f16in`, and `f16in_bn32` was slower still.
+  - artifact: `automatosx/tmp/gpu-microbench-exact-prefill-routes-suite2-2026-03-26.json`
+- The paired FFN `f16in` kernel also lost to two separate `f16in` projections on those same shapes.
+  - artifact: `automatosx/tmp/gpu-microbench-exact-prefill-routes-suite2-2026-03-26.json`
+- End-to-end warmed `prefill-profile` reruns confirmed the same direction for the still-slower published rows:
+  - `Llama 3 8B`: `AX_METAL_BATCH_F16_IO=1 AX_METAL_BATCH_F16_PAIR=1` dropped to `323.4 tok/s`, which remains far below the current headline prefill row
+    - artifact: `automatosx/tmp/llama3-8b-prefill-profile-hot-pp512-f16in-pair-2026-03-26.json`
+  - `Gemma 3 12B`: the same route dropped to `199.4 tok/s`, also well below the current headline prefill row
+    - artifact: `automatosx/tmp/gemma3-12b-prefill-profile-hot-pp512-f16in-pair-2026-03-26.json`
+- Conclusion: the remaining dense-model prefill gap is not hiding behind `f16in + pair`; current README rows should keep the existing dense-model `f16_io=off` fast path until a different kernel family shows a clear win.
 
 ## Common Mistakes
 

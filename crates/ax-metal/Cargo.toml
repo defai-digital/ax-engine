@@ -12,6 +12,7 @@ objc2-metal = { workspace = true, features = [
     "MTLDevice",
     "MTLTypes",
     "MTLDataType",
+    "block2",
     "MTLCommandQueue",
     "MTLCommandBuffer",
     "MTLAllocation",
@@ -24,6 +25,7 @@ objc2-metal = { workspace = true, features = [
     "MTLComputeCommandEncoder",
 ] }
 objc2-foundation.workspace = true
+block2.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 serde.workspace = true

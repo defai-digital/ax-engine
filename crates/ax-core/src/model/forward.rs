@@ -85,6 +85,29 @@ pub trait ForwardPass: Send + Sync + std::fmt::Debug {
         Ok(())
     }
 
+    /// Run batched prefill while recording coarse operation timing.
+    ///
+    /// The default implementation falls back to profiled sequential
+    /// `forward_single` calls so architectures can opt in to true profiled GPU
+    /// batch prefill incrementally.
+    #[allow(clippy::too_many_arguments)]
+    fn forward_batch_profiled(
+        &self,
+        ctx: &ForwardContext,
+        token_ids: &[u32],
+        kv: &mut ModelKv,
+        weights: &WeightStore,
+        logits: &mut [f32],
+        ops: &mut OpBreakdown,
+    ) -> anyhow::Result<()> {
+        let start_pos = kv.seq_len();
+        for (i, &tid) in token_ids.iter().enumerate() {
+            logits.fill(0.0);
+            self.forward_single(ctx, tid, start_pos + i, kv, weights, logits, Some(ops))?;
+        }
+        Ok(())
+    }
+
     /// Run a batched forward pass and return logits for every token position.
     ///
     /// The default implementation falls back to sequential `forward_single`

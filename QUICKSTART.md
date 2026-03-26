@@ -253,42 +253,36 @@ batch/prefill kernel path, so prefill fell back to the serial path on purpose.
 Example:
 
 ```text
-PrefillPlan: mode=serial reason=unsupported_quant:blk.10.attn_v.weight:Q5K
-Support: Q5_K support defaults to decode-only baseline...
+PrefillPlan: mode=serial reason=unsupported_quant:<tensor>:<dtype>
 ```
 
 Interpretation:
 
-- decode can still use the landed `Q5_K` GPU path
 - prefill is not using the normal GPU fast path for this model
 - the tensor and dtype after `unsupported_quant:` tell you exactly what blocked it
 
-Today this is expected for mixed-quant models with active `Q5_K` layer tensors,
-because `Q5_K` support defaults to decode-only baseline, not full GPU prefill support.
+Mixed-quant models with active `Q5_K` layer tensors no longer use this fallback by default.
+Those models should now report a conservative GPU prefill route instead, for example:
 
-If you are deliberately testing the experimental AX-native path, set:
-
-```bash
-AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1
+```text
+Support: Mixed-quant Q5_K layers use AX's conservative GPU prefill route...
+PrefillPlan: mode=gpu_batch ... q5k_prefill=base
 ```
 
-That route is conservative, opt-in, and not profile-tuned yet.
+That route is conservative and not profile-tuned yet.
 
-Current experimental auto-routing behavior:
+Current `Q5_K` auto-routing behavior:
 
 - AX only auto-selects the small-`N` `Q5_K` prefill route when the model is
   predominantly `Q5_K` and the prompt batch is small (`<= 32` tokens)
-- mixed-quant files can still stay on the base experimental route even when the
-  env var is set
+- mixed-quant files can still stay on the base route
 
 If you are doing validation A/B runs, you can force the route:
 
 ```bash
-AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1 \
 AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=base \
 ./target/release/ax-bench bench --model ./models/<model>.gguf
 
-AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1 \
 AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=small \
 ./target/release/ax-bench bench --model ./models/<model>.gguf
 ```

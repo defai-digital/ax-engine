@@ -57,6 +57,12 @@ pub extern "C" fn llama_model_load_from_file(
         }
     };
 
+    // Validate architecture before with_backend (which panics on unsupported arch)
+    if let Err(e) = ax_core::model::arch_registry::forward_for_arch(&config.architecture) {
+        tracing::error!("llama_model_load_from_file: {e}");
+        return std::ptr::null_mut();
+    }
+
     // Use Hybrid backend (Metal GPU + CPU) when GPU layers requested, else CPU only
     let backend_config = if _params.n_gpu_layers > 0 {
         BackendConfig::default() // Hybrid

@@ -3,8 +3,11 @@
 //! Usage:
 //!   ax-bench soak --model <path> [--duration 24h] [--json] [--json-output <path>]
 //!   ax-bench bench --model <path> [--prompt-tokens 512] [--decode-tokens 128] [--json] [--json-output <path>]
+//!   ax-bench prefill-profile --model <path> [--prompt-tokens 512] [--json] [--json-output <path>]
 //!   ax-bench profile --model <path> [--profile-tokens 64] [--json] [--json-output <path>]
 //!   ax-bench speculative --model <target> --draft-model <draft> [--json] [--json-output <path>]
+//!   ax-bench parity --model <path> [--prompt "Hello"] [--decode-tokens 8]
+//!   ax-bench parity --model <path> [--prompt "Hello"] --speculative-verify-k 2
 //!   ax-bench microbench [--suite gpu] [--json] [--profile-output <path>]
 
 use std::process;
@@ -16,9 +19,12 @@ use ax_bench::microbench::{
     self, MicrobenchConfig, MicrobenchProfileExportAction, MicrobenchProfileExportStatus,
     MicrobenchSuite,
 };
+use ax_bench::parity::{self, ParityConfig, ParityMode};
 use ax_bench::perf::{self, BenchConfig, SpecBenchConfig};
+use ax_bench::prefill_profile::{self, PrefillProfileConfig};
 use ax_bench::profile::{self, ProfileConfig};
 use ax_bench::soak::{self, SoakConfig};
+use ax_core::backend::BackendConfig;
 use ax_core::model::DecodeIntent;
 
 #[derive(Parser)]
@@ -43,6 +49,13 @@ enum MicrobenchSuiteArg {
     All,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum ParityBackendArg {
+    Hybrid,
+    Metal,
+    HybridCpuDecode,
+}
+
 impl From<BenchIntentArg> for DecodeIntent {
     fn from(value: BenchIntentArg) -> Self {
         match value {
@@ -60,6 +73,16 @@ impl From<MicrobenchSuiteArg> for MicrobenchSuite {
             MicrobenchSuiteArg::Uma => MicrobenchSuite::Uma,
             MicrobenchSuiteArg::Sync => MicrobenchSuite::Sync,
             MicrobenchSuiteArg::All => MicrobenchSuite::All,
+        }
+    }
+}
+
+impl From<ParityBackendArg> for BackendConfig {
+    fn from(value: ParityBackendArg) -> Self {
+        match value {
+            ParityBackendArg::Hybrid => BackendConfig::Hybrid,
+            ParityBackendArg::Metal => BackendConfig::Metal,
+            ParityBackendArg::HybridCpuDecode => BackendConfig::HybridCpuDecode,
         }
     }
 }
@@ -148,6 +171,37 @@ enum Command {
         /// Number of top regression kernels to print when baseline is provided.
         #[arg(long, default_value = "3")]
         top_regressions: usize,
+
+        /// Apply llama.cpp-aligned AX runtime preset (if vars are unset).
+        #[arg(long)]
+        llama_parity_preset: bool,
+
+        /// Override kernel profile path for this run.
+        #[arg(long)]
+        kernel_profile_path: Option<String>,
+    },
+
+    /// Profile the batched-prefill path (coarse timing breakdown).
+    PrefillProfile {
+        /// Path to GGUF model file.
+        #[arg(long)]
+        model: String,
+
+        /// Number of prompt tokens to process.
+        #[arg(long, default_value = "512")]
+        prompt_tokens: usize,
+
+        /// Number of unprofiled warmup prefills before measurement.
+        #[arg(long, default_value = "1")]
+        warmup_iters: usize,
+
+        /// Output results as JSON.
+        #[arg(long)]
+        json: bool,
+
+        /// Write JSON results to file.
+        #[arg(long)]
+        json_output: Option<String>,
 
         /// Apply llama.cpp-aligned AX runtime preset (if vars are unset).
         #[arg(long)]
@@ -299,6 +353,54 @@ enum Command {
         #[arg(long)]
         allow_low_confidence_export: bool,
     },
+
+    /// Compare CPU reference logits against another backend on the same token path.
+    Parity {
+        /// Path to GGUF model file.
+        #[arg(long)]
+        model: String,
+
+        /// Prompt text used to seed the shared context.
+        #[arg(long, default_value = "Hello")]
+        prompt: String,
+
+        /// Number of greedy decode steps to compare after prefill.
+        #[arg(long, default_value = "8")]
+        decode_tokens: usize,
+
+        /// Compare the speculative verification batch shape
+        /// `forward_batch_all_logits([last_token] + draft_tokens)` with K drafts.
+        #[arg(long)]
+        speculative_verify_k: Option<usize>,
+
+        /// Backend to compare against CPU.
+        #[arg(long, value_enum, default_value_t = ParityBackendArg::Hybrid)]
+        compare_backend: ParityBackendArg,
+
+        /// Number of top tokens to print per step.
+        #[arg(long, default_value = "5")]
+        top_tokens: usize,
+
+        /// Absolute logit tolerance used for divergence reporting.
+        #[arg(long, default_value = "0.001")]
+        max_abs_tolerance: f32,
+
+        /// Apply llama.cpp-aligned AX runtime preset (if vars are unset).
+        #[arg(long)]
+        llama_parity_preset: bool,
+
+        /// Override kernel profile path for this run.
+        #[arg(long)]
+        kernel_profile_path: Option<String>,
+
+        /// Output results as JSON.
+        #[arg(long)]
+        json: bool,
+
+        /// Write JSON results to file.
+        #[arg(long)]
+        json_output: Option<String>,
+    },
 }
 
 fn set_env_default(key: &str, value: &str) {
@@ -319,6 +421,14 @@ fn apply_kernel_profile_override(path: Option<&str>) {
 
 fn apply_llama_parity_preset() {
     set_env_default("AX_METAL_F16_KV_CACHE", "on");
+}
+
+fn create_runtime_backend(context: &str) -> Box<dyn ax_core::backend::Backend> {
+    ax_core::backend::create_backend(ax_core::backend::resolve_backend_config_from_env())
+        .unwrap_or_else(|e| {
+            eprintln!("{context} error: {e}");
+            process::exit(2);
+        })
 }
 
 fn main() {
@@ -344,12 +454,7 @@ fn main() {
             json,
             json_output,
         } => {
-            let backend =
-                ax_core::backend::create_backend(ax_core::backend::BackendConfig::default())
-                    .unwrap_or_else(|e| {
-                        eprintln!("Soak test error: {e}");
-                        process::exit(2);
-                    });
+            let backend = create_runtime_backend("Soak test");
             ax_core::scheduler::init_global_threadpool();
             let mut config = if nightly {
                 SoakConfig::nightly()
@@ -430,12 +535,7 @@ fn main() {
                 apply_llama_parity_preset();
             }
             apply_kernel_profile_override(kernel_profile_path.as_deref());
-            let backend =
-                ax_core::backend::create_backend(ax_core::backend::BackendConfig::default())
-                    .unwrap_or_else(|e| {
-                        eprintln!("Profile error: {e}");
-                        process::exit(2);
-                    });
+            let backend = create_runtime_backend("Profile");
             ax_core::scheduler::init_global_threadpool();
             let config = ProfileConfig {
                 model_path: model,
@@ -496,6 +596,59 @@ fn main() {
             }
         }
 
+        Command::PrefillProfile {
+            model,
+            prompt_tokens,
+            warmup_iters,
+            json,
+            json_output,
+            llama_parity_preset,
+            kernel_profile_path,
+        } => {
+            if llama_parity_preset {
+                apply_llama_parity_preset();
+            }
+            apply_kernel_profile_override(kernel_profile_path.as_deref());
+            let backend = create_runtime_backend("Prefill profile");
+            ax_core::scheduler::init_global_threadpool();
+            let config = PrefillProfileConfig {
+                model_path: model,
+                prompt_tokens,
+                warmup_iters,
+                kernel_profile_path,
+            };
+
+            match prefill_profile::run_prefill_profile_with_backend(&config, backend) {
+                Ok(result) => {
+                    result.print_summary();
+
+                    if json {
+                        match result.to_json() {
+                            Ok(j) => println!("{j}"),
+                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                        }
+                    }
+
+                    if let Some(path) = json_output {
+                        match result.to_json() {
+                            Ok(j) => {
+                                if let Err(e) = std::fs::write(&path, j) {
+                                    eprintln!("Failed to write JSON output to {path}: {e}");
+                                } else {
+                                    eprintln!("Results written to {path}");
+                                }
+                            }
+                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Prefill profile error: {e}");
+                    process::exit(2);
+                }
+            }
+        }
+
         Command::Bench {
             model,
             prompt_tokens,
@@ -515,12 +668,7 @@ fn main() {
                 apply_llama_parity_preset();
             }
             apply_kernel_profile_override(kernel_profile_path.as_deref());
-            let backend =
-                ax_core::backend::create_backend(ax_core::backend::BackendConfig::default())
-                    .unwrap_or_else(|e| {
-                        eprintln!("Benchmark error: {e}");
-                        process::exit(2);
-                    });
+            let backend = create_runtime_backend("Benchmark");
             ax_core::scheduler::init_global_threadpool();
             let config = BenchConfig {
                 model_path: model,
@@ -586,12 +734,7 @@ fn main() {
                 apply_llama_parity_preset();
             }
             apply_kernel_profile_override(kernel_profile_path.as_deref());
-            let backend =
-                ax_core::backend::create_backend(ax_core::backend::BackendConfig::default())
-                    .unwrap_or_else(|e| {
-                        eprintln!("Speculative benchmark error: {e}");
-                        process::exit(2);
-                    });
+            let backend = create_runtime_backend("Speculative benchmark");
             ax_core::scheduler::init_global_threadpool();
             let config = SpecBenchConfig {
                 model_path: model,
@@ -717,6 +860,73 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("Microbench error: {e}");
+                    process::exit(2);
+                }
+            }
+        }
+
+        Command::Parity {
+            model,
+            prompt,
+            decode_tokens,
+            speculative_verify_k,
+            compare_backend,
+            top_tokens,
+            max_abs_tolerance,
+            llama_parity_preset,
+            kernel_profile_path,
+            json,
+            json_output,
+        } => {
+            if llama_parity_preset {
+                apply_llama_parity_preset();
+            }
+            apply_kernel_profile_override(kernel_profile_path.as_deref());
+            let config = ParityConfig {
+                model_path: model,
+                prompt,
+                decode_tokens,
+                compare_backend: compare_backend.into(),
+                top_tokens,
+                max_abs_tolerance,
+                mode: speculative_verify_k
+                    .map(|draft_tokens| ParityMode::SpeculativeVerify { draft_tokens })
+                    .unwrap_or(ParityMode::Decode),
+            };
+
+            match parity::run_parity(&config) {
+                Ok(result) => {
+                    result.print_summary();
+
+                    if json {
+                        match result.to_json() {
+                            Ok(j) => println!("{j}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
+                        }
+                    }
+
+                    if let Some(path) = json_output {
+                        match result.to_json() {
+                            Ok(j) => {
+                                if let Err(e) = std::fs::write(&path, j) {
+                                    eprintln!("Failed to write JSON output to {path}: {e}");
+                                    process::exit(2);
+                                } else {
+                                    eprintln!("Results written to {path}");
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Parity probe error: {e}");
                     process::exit(2);
                 }
             }

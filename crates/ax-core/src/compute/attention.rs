@@ -239,6 +239,78 @@ pub fn multi_head_attention_prefill(
     }
 }
 
+/// Compute multi-head attention for multiple tokens against an existing prefix.
+///
+/// Each token in the current batch can attend to all prefix tokens plus the
+/// current batch tokens up to and including itself.
+#[allow(clippy::too_many_arguments)]
+pub fn multi_head_attention_prefill_with_prefix(
+    prefix_k: &[f32],
+    prefix_v: &[f32],
+    prefix_len: usize,
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    output: &mut [f32],
+    n_tokens: usize,
+    params: &AttentionParams,
+) {
+    let AttentionParams {
+        n_heads,
+        n_kv_heads: _,
+        head_dim,
+    } = *params;
+
+    let q_stride = params.q_stride();
+    let kv_stride = params.kv_stride();
+    let heads_per_kv = params.heads_per_kv();
+    let scale = params.scale();
+
+    assert_eq!(prefix_k.len(), prefix_len * kv_stride);
+    assert_eq!(prefix_v.len(), prefix_len * kv_stride);
+    assert!(q.len() >= n_tokens * q_stride);
+    assert!(k.len() >= n_tokens * kv_stride);
+    assert!(v.len() >= n_tokens * kv_stride);
+    assert!(output.len() >= n_tokens * q_stride);
+
+    let mut scores = vec![0.0f32; prefix_len + n_tokens];
+
+    for h in 0..n_heads {
+        let kv_h = h / heads_per_kv;
+
+        for qi in 0..n_tokens {
+            let q_offset = qi * q_stride + h * head_dim;
+            let q_head = &q[q_offset..q_offset + head_dim];
+            let attend_len = prefix_len + qi + 1;
+            let scores_slice = &mut scores[..attend_len];
+
+            for (t, score) in scores_slice[..prefix_len].iter_mut().enumerate() {
+                let k_offset = t * kv_stride + kv_h * head_dim;
+                *score = dot(q_head, &prefix_k[k_offset..k_offset + head_dim]) * scale;
+            }
+            for (t, score) in scores_slice[prefix_len..].iter_mut().enumerate() {
+                let k_offset = t * kv_stride + kv_h * head_dim;
+                *score = dot(q_head, &k[k_offset..k_offset + head_dim]) * scale;
+            }
+
+            softmax::softmax(scores_slice);
+
+            let out_offset = qi * q_stride + h * head_dim;
+            let out_head = &mut output[out_offset..out_offset + head_dim];
+            out_head.fill(0.0);
+
+            for (t, &w) in scores_slice[..prefix_len].iter().enumerate() {
+                let v_offset = t * kv_stride + kv_h * head_dim;
+                accumulate(out_head, w, &prefix_v[v_offset..v_offset + head_dim]);
+            }
+            for (t, &w) in scores_slice[prefix_len..].iter().enumerate() {
+                let v_offset = t * kv_stride + kv_h * head_dim;
+                accumulate(out_head, w, &v[v_offset..v_offset + head_dim]);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,5 +470,45 @@ mod tests {
         assert!((out[1] - 15.0).abs() < 1e-4, "out[1]={}", out[1]);
         // Token 2: uniform over V[0..3] → (10+20+30)/3 = 20
         assert!((out[2] - 20.0).abs() < 1e-4, "out[2]={}", out[2]);
+    }
+
+    #[test]
+    fn test_prefill_with_prefix_matches_decode_attention() {
+        let p = params(1, 1, 2);
+        let prefix_k = [1.0, 0.0];
+        let prefix_v = [10.0, 20.0];
+        let q = [0.0, 1.0, 1.0, 1.0];
+        let k = [0.0, 1.0, 1.0, 1.0];
+        let v = [30.0, 40.0, 50.0, 60.0];
+        let mut out = [0.0f32; 4];
+
+        multi_head_attention_prefill_with_prefix(
+            &prefix_k, &prefix_v, 1, &q, &k, &v, &mut out, 2, &p,
+        );
+
+        let mut expected0 = [0.0f32; 2];
+        multi_head_attention(
+            &q[..2],
+            &[prefix_k[0], prefix_k[1], k[0], k[1]],
+            &[prefix_v[0], prefix_v[1], v[0], v[1]],
+            &mut expected0,
+            &p,
+            2,
+        );
+
+        let mut expected1 = [0.0f32; 2];
+        multi_head_attention(
+            &q[2..4],
+            &[prefix_k[0], prefix_k[1], k[0], k[1], k[2], k[3]],
+            &[prefix_v[0], prefix_v[1], v[0], v[1], v[2], v[3]],
+            &mut expected1,
+            &p,
+            3,
+        );
+
+        assert!((out[0] - expected0[0]).abs() < 1e-5, "out[0]={}", out[0]);
+        assert!((out[1] - expected0[1]).abs() < 1e-5, "out[1]={}", out[1]);
+        assert!((out[2] - expected1[0]).abs() < 1e-5, "out[2]={}", out[2]);
+        assert!((out[3] - expected1[1]).abs() < 1e-5, "out[3]={}", out[3]);
     }
 }

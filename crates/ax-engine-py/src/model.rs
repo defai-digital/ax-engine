@@ -165,6 +165,9 @@ impl Model {
             .unwrap_or_else(|| "default".to_string());
         let profile_architecture = mapped.header.architecture().unwrap_or("default");
 
+        // Validate architecture before with_backend (which panics on unsupported arch)
+        ax_core::model::arch_registry::forward_for_arch(&config.architecture)?;
+
         let backend_config = parse_backend(backend)?;
         let backend = create_backend(backend_config)?;
         backend.configure_for_model(&profile_model_name, &profile_quant, profile_architecture)?;

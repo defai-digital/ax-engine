@@ -1,6 +1,8 @@
 //! Context creation, free, KV cache management.
 
-// v2: KV created via LlamaModel::create_model_kv()
+// v2: KV created via LlamaModel::create_model_kv_for_weights()
+
+use ax_core::model::WeightStore;
 
 use crate::types::*;
 
@@ -26,7 +28,8 @@ pub extern "C" fn llama_new_context_with_model(
         params.n_ctx.min(model_ref.config.context_length)
     };
 
-    let kv = model_ref.model.create_model_kv();
+    let weights = WeightStore::new(&model_ref.mapped);
+    let kv = model_ref.model.create_model_kv_for_weights(&weights);
 
     let logits = vec![0.0f32; model_ref.config.vocab_size as usize];
 

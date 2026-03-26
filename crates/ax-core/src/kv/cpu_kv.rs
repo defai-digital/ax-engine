@@ -15,6 +15,18 @@ use super::page::{
     recommended_page_size,
 };
 
+#[derive(Debug, Clone)]
+pub struct CpuKvSnapshot {
+    k: Vec<Vec<f32>>,
+    v: Vec<Vec<f32>>,
+    seq_len: usize,
+    capacity: usize,
+    max_seq_len: usize,
+    token_stride: usize,
+    page_size: usize,
+    allocator: PageAllocator,
+}
+
 /// CPU-resident KV cache for all transformer layers.
 ///
 /// Layout per layer: contiguous `[max_seq_len, n_kv_heads * head_dim]` f32 values.
@@ -276,6 +288,52 @@ impl CpuKv {
         &self.allocator
     }
 
+    /// Snapshot the full CPU KV state, including allocated pages.
+    pub fn snapshot(&self) -> CpuKvSnapshot {
+        CpuKvSnapshot {
+            k: self.k.clone(),
+            v: self.v.clone(),
+            seq_len: self.seq_len,
+            capacity: self.capacity,
+            max_seq_len: self.max_seq_len,
+            token_stride: self.token_stride,
+            page_size: self.page_size,
+            allocator: self.allocator.clone(),
+        }
+    }
+
+    /// Restore a previously captured CPU KV snapshot.
+    pub fn restore(&mut self, snapshot: &CpuKvSnapshot) {
+        assert_eq!(
+            self.k.len(),
+            snapshot.k.len(),
+            "cpu kv snapshot layer count mismatch"
+        );
+        assert_eq!(
+            self.v.len(),
+            snapshot.v.len(),
+            "cpu kv snapshot layer count mismatch"
+        );
+        assert_eq!(
+            self.max_seq_len, snapshot.max_seq_len,
+            "cpu kv snapshot max_seq_len mismatch"
+        );
+        assert_eq!(
+            self.token_stride, snapshot.token_stride,
+            "cpu kv snapshot token_stride mismatch"
+        );
+        assert_eq!(
+            self.page_size, snapshot.page_size,
+            "cpu kv snapshot page_size mismatch"
+        );
+
+        self.k = snapshot.k.clone();
+        self.v = snapshot.v.clone();
+        self.seq_len = snapshot.seq_len;
+        self.capacity = snapshot.capacity;
+        self.allocator = snapshot.allocator.clone();
+    }
+
     // ── Private helpers ──────────────────────────────────────────────────────
 
     /// Grow if current capacity < seq_len + 1.
@@ -409,5 +467,27 @@ mod tests {
         assert_eq!(kv.seq_len(), 0);
         assert_eq!(kv.k_slice_including_current(0, 1), k.as_slice());
         assert_eq!(kv.v_slice_including_current(0, 1), v.as_slice());
+    }
+
+    #[test]
+    fn cpu_kv_snapshot_restore_round_trip() {
+        let mut kv = CpuKv::new(1, 1, 2, 16);
+        let k0 = vec![1.0f32, 2.0];
+        let v0 = vec![3.0f32, 4.0];
+        let k1 = vec![5.0f32, 6.0];
+        let v1 = vec![7.0f32, 8.0];
+
+        kv.append_and_advance(0, &k0, &v0);
+        kv.finalize_token();
+        let snapshot = kv.snapshot();
+
+        kv.append_and_advance(0, &k1, &v1);
+        kv.finalize_token();
+        assert_eq!(kv.seq_len(), 2);
+
+        kv.restore(&snapshot);
+        assert_eq!(kv.seq_len(), 1);
+        assert_eq!(kv.k_slice(0, 1), k0.as_slice());
+        assert_eq!(kv.v_slice(0, 1), v0.as_slice());
     }
 }

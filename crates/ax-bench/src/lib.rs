@@ -6,7 +6,9 @@ use ax_core::model::LlamaModel;
 
 pub mod baseline;
 pub mod microbench;
+pub mod parity;
 pub mod perf;
+pub mod prefill_profile;
 pub mod profile;
 pub mod report;
 pub mod soak;
@@ -82,8 +84,8 @@ mod tests {
     #[test]
     fn test_q5k_prefill_mode_extracts_known_prefill_label() {
         assert_eq!(
-            q5k_prefill_mode("mode=gpu_batch kv=f16 attn=local q5k_prefill=experimental_small_n"),
-            Some("experimental_small_n".into())
+            q5k_prefill_mode("mode=gpu_batch kv=f16 attn=local q5k_prefill=small_n"),
+            Some("small_n".into())
         );
         assert_eq!(q5k_prefill_mode("mode=gpu_batch kv=f16 attn=local"), None);
     }

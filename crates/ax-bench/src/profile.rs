@@ -77,6 +77,18 @@ pub struct ProfileResult {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kernel_profile_path: Option<String>,
+    /// Total Metal command buffers used during the profiled decode loop.
+    #[serde(default)]
+    pub decode_command_buffers: f64,
+    /// Total explicit Metal buffer barriers used during the profiled decode loop.
+    #[serde(default)]
+    pub decode_buffer_barriers: f64,
+    /// Average Metal command buffers per profiled token.
+    #[serde(default)]
+    pub decode_command_buffers_per_tok: f64,
+    /// Average explicit Metal buffer barriers per profiled token.
+    #[serde(default)]
+    pub decode_buffer_barriers_per_tok: f64,
     /// GPU decode wall time percentage (Metal decode path end-to-end).
     #[serde(default)]
     pub gpu_pct: f64,
@@ -121,8 +133,20 @@ pub struct ProfileResult {
     pub gpu_encode_layer_residual_pct: f64,
     /// Matmul percentage of total tracked time.
     pub matmul_pct: f64,
+    /// Input-side projection matmul percentage.
+    #[serde(default)]
+    pub matmul_input_proj_pct: f64,
+    /// Output-side projection matmul percentage.
+    #[serde(default)]
+    pub matmul_output_proj_pct: f64,
+    /// LM-head matmul percentage.
+    #[serde(default)]
+    pub matmul_lm_head_pct: f64,
     /// Attention percentage.
     pub attention_pct: f64,
+    /// Qwen3.5 recurrent-block percentage.
+    #[serde(default)]
+    pub recurrent_pct: f64,
     /// Dequant percentage.
     pub dequant_pct: f64,
     /// RoPE percentage.
@@ -177,8 +201,20 @@ pub struct ProfileResult {
     pub gpu_encode_layer_residual_ms: f64,
     /// Raw matmul time in milliseconds.
     pub matmul_ms: f64,
+    /// Raw input-side projection matmul time in milliseconds.
+    #[serde(default)]
+    pub matmul_input_proj_ms: f64,
+    /// Raw output-side projection matmul time in milliseconds.
+    #[serde(default)]
+    pub matmul_output_proj_ms: f64,
+    /// Raw LM-head matmul time in milliseconds.
+    #[serde(default)]
+    pub matmul_lm_head_ms: f64,
     /// Raw attention time in milliseconds.
     pub attention_ms: f64,
+    /// Raw Qwen3.5 recurrent-block time in milliseconds.
+    #[serde(default)]
+    pub recurrent_ms: f64,
     /// Raw dequant time in milliseconds.
     pub dequant_ms: f64,
     /// Raw rope time in milliseconds.
@@ -274,6 +310,7 @@ pub fn run_profile_with_backend(
     // Profiled decode
     let mut ops = OpBreakdown::new();
     let mut tokens_generated = 0usize;
+    model.reset_metal_perf_counters();
     let wall_timer = OpTimer::start();
 
     for _ in 0..config.profile_tokens {
@@ -301,6 +338,7 @@ pub fn run_profile_with_backend(
     }
 
     let wall_time = wall_timer.elapsed();
+    let decode_counters = model.read_metal_perf_counters();
 
     // Compute breakdown
     let tracked = ops.total();
@@ -333,6 +371,18 @@ pub fn run_profile_with_backend(
         support_note,
         decode_fallback_reason: selection.fallback_reason,
         kernel_profile_path: config.kernel_profile_path.clone(),
+        decode_command_buffers: decode_counters.command_buffers as f64,
+        decode_buffer_barriers: decode_counters.buffer_barriers as f64,
+        decode_command_buffers_per_tok: if tokens_generated > 0 {
+            decode_counters.command_buffers as f64 / tokens_generated as f64
+        } else {
+            0.0
+        },
+        decode_buffer_barriers_per_tok: if tokens_generated > 0 {
+            decode_counters.buffer_barriers as f64 / tokens_generated as f64
+        } else {
+            0.0
+        },
         gpu_pct: pct(ops.gpu),
         gpu_encode_pct: pct(ops.gpu_encode),
         gpu_execute_pct: pct(ops.gpu_execute),
@@ -348,7 +398,11 @@ pub fn run_profile_with_backend(
         gpu_encode_layer_ffn_pct: pct(ops.gpu_encode_layer_ffn),
         gpu_encode_layer_residual_pct: pct(ops.gpu_encode_layer_residual),
         matmul_pct: pct(ops.matmul),
+        matmul_input_proj_pct: pct(ops.matmul_input_proj),
+        matmul_output_proj_pct: pct(ops.matmul_output_proj),
+        matmul_lm_head_pct: pct(ops.matmul_lm_head),
         attention_pct: pct(ops.attention),
+        recurrent_pct: pct(ops.recurrent),
         dequant_pct: pct(ops.dequant),
         rope_pct: pct(ops.rope),
         norm_pct: pct(ops.norm),
@@ -373,7 +427,11 @@ pub fn run_profile_with_backend(
         gpu_encode_layer_ffn_ms: ops.gpu_encode_layer_ffn.as_secs_f64() * 1000.0,
         gpu_encode_layer_residual_ms: ops.gpu_encode_layer_residual.as_secs_f64() * 1000.0,
         matmul_ms: ops.matmul.as_secs_f64() * 1000.0,
+        matmul_input_proj_ms: ops.matmul_input_proj.as_secs_f64() * 1000.0,
+        matmul_output_proj_ms: ops.matmul_output_proj.as_secs_f64() * 1000.0,
+        matmul_lm_head_ms: ops.matmul_lm_head.as_secs_f64() * 1000.0,
         attention_ms: ops.attention.as_secs_f64() * 1000.0,
+        recurrent_ms: ops.recurrent.as_secs_f64() * 1000.0,
         dequant_ms: ops.dequant.as_secs_f64() * 1000.0,
         rope_ms: ops.rope.as_secs_f64() * 1000.0,
         norm_ms: ops.norm.as_secs_f64() * 1000.0,
@@ -382,7 +440,7 @@ pub fn run_profile_with_backend(
 }
 
 impl ProfileResult {
-    fn op_rows(&self) -> [(&'static str, f64, f64); 20] {
+    fn op_rows(&self) -> [(&'static str, f64, f64); 24] {
         [
             ("gpu", self.gpu_ms, self.gpu_pct),
             ("gpu_encode", self.gpu_encode_ms, self.gpu_encode_pct),
@@ -439,7 +497,23 @@ impl ProfileResult {
                 self.gpu_encode_layer_residual_pct,
             ),
             ("matmul", self.matmul_ms, self.matmul_pct),
+            (
+                "matmul_input_proj",
+                self.matmul_input_proj_ms,
+                self.matmul_input_proj_pct,
+            ),
+            (
+                "matmul_output_proj",
+                self.matmul_output_proj_ms,
+                self.matmul_output_proj_pct,
+            ),
+            (
+                "matmul_lm_head",
+                self.matmul_lm_head_ms,
+                self.matmul_lm_head_pct,
+            ),
             ("attention", self.attention_ms, self.attention_pct),
+            ("recurrent", self.recurrent_ms, self.recurrent_pct),
             ("dequant", self.dequant_ms, self.dequant_pct),
             ("rope", self.rope_ms, self.rope_pct),
             ("norm", self.norm_ms, self.norm_pct),
@@ -540,6 +614,15 @@ impl ProfileResult {
             "Wall time:   {:.1}ms ({:.2}ms/tok)",
             self.total_ms, self.avg_tok_ms,
         );
+        if self.decode_command_buffers > 0.0 || self.decode_buffer_barriers > 0.0 {
+            eprintln!(
+                "GPU Submit:  {:.1} cmd/tok, {:.1} barriers/tok  ({:.0} cmd, {:.0} barriers)",
+                self.decode_command_buffers_per_tok,
+                self.decode_buffer_barriers_per_tok,
+                self.decode_command_buffers,
+                self.decode_buffer_barriers,
+            );
+        }
         eprintln!();
         eprintln!(
             "  GPU:       {:6.1}ms  ({:5.1}%)",
@@ -603,10 +686,34 @@ impl ProfileResult {
             "  Matmul:    {:6.1}ms  ({:5.1}%)",
             self.matmul_ms, self.matmul_pct
         );
+        if self.matmul_input_proj_ms > 0.0 || self.matmul_input_proj_pct > 0.0 {
+            eprintln!(
+                "  Matmul In: {:6.1}ms  ({:5.1}%)",
+                self.matmul_input_proj_ms, self.matmul_input_proj_pct
+            );
+        }
+        if self.matmul_output_proj_ms > 0.0 || self.matmul_output_proj_pct > 0.0 {
+            eprintln!(
+                "  Matmul Out:{:6.1}ms  ({:5.1}%)",
+                self.matmul_output_proj_ms, self.matmul_output_proj_pct
+            );
+        }
+        if self.matmul_lm_head_ms > 0.0 || self.matmul_lm_head_pct > 0.0 {
+            eprintln!(
+                "  Matmul LM: {:6.1}ms  ({:5.1}%)",
+                self.matmul_lm_head_ms, self.matmul_lm_head_pct
+            );
+        }
         eprintln!(
             "  Attention: {:6.1}ms  ({:5.1}%)",
             self.attention_ms, self.attention_pct
         );
+        if self.recurrent_ms > 0.0 || self.recurrent_pct > 0.0 {
+            eprintln!(
+                "  Recurrent: {:6.1}ms  ({:5.1}%)",
+                self.recurrent_ms, self.recurrent_pct
+            );
+        }
         eprintln!(
             "  Dequant:   {:6.1}ms  ({:5.1}%)",
             self.dequant_ms, self.dequant_pct
@@ -629,6 +736,7 @@ impl ProfileResult {
                 - self.gpu_ms
                 - self.matmul_ms
                 - self.attention_ms
+                - self.recurrent_ms
                 - self.dequant_ms
                 - self.norm_ms
                 - self.rope_ms
@@ -676,12 +784,16 @@ mod tests {
             avg_tok_ms: 15.625,
             decode_intent: "latency".into(),
             decode_mode: "single_cb".into(),
-            prefill_plan: "mode=gpu_batch q5k_prefill=experimental_small_n".into(),
-            q5k_prefill_mode: Some("experimental_small_n".into()),
+            prefill_plan: "mode=gpu_batch q5k_prefill=small_n".into(),
+            q5k_prefill_mode: Some("small_n".into()),
             decode_plan: "sync=single_cb scratch=gpu_shared".into(),
             support_note: Some(q5k_support_note()),
             decode_fallback_reason: None,
             kernel_profile_path: None,
+            decode_command_buffers: 64.0,
+            decode_buffer_barriers: 128.0,
+            decode_command_buffers_per_tok: 1.0,
+            decode_buffer_barriers_per_tok: 2.0,
             gpu_pct: 70.0,
             gpu_encode_pct: 8.0,
             gpu_execute_pct: 62.0,
@@ -697,7 +809,11 @@ mod tests {
             gpu_encode_layer_ffn_pct: 8.0,
             gpu_encode_layer_residual_pct: 2.0,
             matmul_pct: 60.0,
+            matmul_input_proj_pct: 20.0,
+            matmul_output_proj_pct: 25.0,
+            matmul_lm_head_pct: 15.0,
             attention_pct: 15.0,
+            recurrent_pct: 0.0,
             dequant_pct: 10.0,
             rope_pct: 3.0,
             norm_pct: 2.0,
@@ -718,7 +834,11 @@ mod tests {
             gpu_encode_layer_ffn_ms: 80.0,
             gpu_encode_layer_residual_ms: 20.0,
             matmul_ms: 600.0,
+            matmul_input_proj_ms: 200.0,
+            matmul_output_proj_ms: 250.0,
+            matmul_lm_head_ms: 150.0,
             attention_ms: 150.0,
+            recurrent_ms: 0.0,
             dequant_ms: 100.0,
             rope_ms: 30.0,
             norm_ms: 20.0,
@@ -737,12 +857,16 @@ mod tests {
             avg_tok_ms: 15.625,
             decode_intent: "latency".into(),
             decode_mode: "single_cb".into(),
-            prefill_plan: "mode=gpu_batch q5k_prefill=experimental_small_n".into(),
-            q5k_prefill_mode: Some("experimental_small_n".into()),
+            prefill_plan: "mode=gpu_batch q5k_prefill=small_n".into(),
+            q5k_prefill_mode: Some("small_n".into()),
             decode_plan: "sync=single_cb scratch=gpu_shared".into(),
             support_note: Some(q5k_support_note()),
             decode_fallback_reason: None,
             kernel_profile_path: None,
+            decode_command_buffers: 32.0,
+            decode_buffer_barriers: 64.0,
+            decode_command_buffers_per_tok: 1.0,
+            decode_buffer_barriers_per_tok: 2.0,
             gpu_pct: 60.0,
             gpu_encode_pct: 10.0,
             gpu_execute_pct: 50.0,
@@ -758,7 +882,11 @@ mod tests {
             gpu_encode_layer_ffn_pct: 6.0,
             gpu_encode_layer_residual_pct: 1.0,
             matmul_pct: 65.0,
+            matmul_input_proj_pct: 24.0,
+            matmul_output_proj_pct: 26.0,
+            matmul_lm_head_pct: 15.0,
             attention_pct: 12.0,
+            recurrent_pct: 0.0,
             dequant_pct: 8.0,
             rope_pct: 4.0,
             norm_pct: 3.0,
@@ -779,7 +907,11 @@ mod tests {
             gpu_encode_layer_ffn_ms: 30.0,
             gpu_encode_layer_residual_ms: 5.0,
             matmul_ms: 325.0,
+            matmul_input_proj_ms: 120.0,
+            matmul_output_proj_ms: 130.0,
+            matmul_lm_head_ms: 75.0,
             attention_ms: 60.0,
+            recurrent_ms: 0.0,
             dequant_ms: 40.0,
             rope_ms: 20.0,
             norm_ms: 15.0,
@@ -788,8 +920,9 @@ mod tests {
         let json = r.to_json().unwrap();
         assert!(json.contains("\"matmul_pct\": 65.0"));
         assert!(json.contains("\"tokens\": 32"));
+        assert!(json.contains("\"decode_command_buffers\": 32.0"));
         assert!(json.contains(&format!("\"support_note\": \"{}\"", q5k_support_note())));
-        assert!(json.contains("\"q5k_prefill_mode\": \"experimental_small_n\""));
+        assert!(json.contains("\"q5k_prefill_mode\": \"small_n\""));
     }
 
     #[test]
@@ -807,6 +940,10 @@ mod tests {
             support_note: None,
             decode_fallback_reason: None,
             kernel_profile_path: None,
+            decode_command_buffers: 0.0,
+            decode_buffer_barriers: 0.0,
+            decode_command_buffers_per_tok: 0.0,
+            decode_buffer_barriers_per_tok: 0.0,
             gpu_pct: 0.0,
             gpu_encode_pct: 0.0,
             gpu_execute_pct: 0.0,
@@ -822,7 +959,11 @@ mod tests {
             gpu_encode_layer_ffn_pct: 0.0,
             gpu_encode_layer_residual_pct: 0.0,
             matmul_pct: 0.0,
+            matmul_input_proj_pct: 0.0,
+            matmul_output_proj_pct: 0.0,
+            matmul_lm_head_pct: 0.0,
             attention_pct: 0.0,
+            recurrent_pct: 0.0,
             dequant_pct: 0.0,
             rope_pct: 0.0,
             norm_pct: 0.0,
@@ -843,7 +984,11 @@ mod tests {
             gpu_encode_layer_ffn_ms: 0.0,
             gpu_encode_layer_residual_ms: 0.0,
             matmul_ms: 0.0,
+            matmul_input_proj_ms: 0.0,
+            matmul_output_proj_ms: 0.0,
+            matmul_lm_head_ms: 0.0,
             attention_ms: 0.0,
+            recurrent_ms: 0.0,
             dequant_ms: 0.0,
             rope_ms: 0.0,
             norm_ms: 0.0,
@@ -868,6 +1013,10 @@ mod tests {
             support_note: None,
             decode_fallback_reason: None,
             kernel_profile_path: None,
+            decode_command_buffers: 64.0,
+            decode_buffer_barriers: 0.0,
+            decode_command_buffers_per_tok: 1.0,
+            decode_buffer_barriers_per_tok: 0.0,
             gpu_pct: 55.0,
             gpu_encode_pct: 5.0,
             gpu_execute_pct: 50.0,
@@ -883,7 +1032,11 @@ mod tests {
             gpu_encode_layer_ffn_pct: 6.0,
             gpu_encode_layer_residual_pct: 1.0,
             matmul_pct: 50.0,
+            matmul_input_proj_pct: 18.0,
+            matmul_output_proj_pct: 20.0,
+            matmul_lm_head_pct: 12.0,
             attention_pct: 20.0,
+            recurrent_pct: 0.0,
             dequant_pct: 10.0,
             rope_pct: 5.0,
             norm_pct: 5.0,
@@ -904,7 +1057,11 @@ mod tests {
             gpu_encode_layer_ffn_ms: 60.0,
             gpu_encode_layer_residual_ms: 10.0,
             matmul_ms: 500.0,
+            matmul_input_proj_ms: 180.0,
+            matmul_output_proj_ms: 200.0,
+            matmul_lm_head_ms: 120.0,
             attention_ms: 200.0,
+            recurrent_ms: 0.0,
             dequant_ms: 100.0,
             rope_ms: 50.0,
             norm_ms: 50.0,
@@ -923,6 +1080,10 @@ mod tests {
             support_note: None,
             decode_fallback_reason: None,
             kernel_profile_path: None,
+            decode_command_buffers: 64.0,
+            decode_buffer_barriers: 0.0,
+            decode_command_buffers_per_tok: 1.0,
+            decode_buffer_barriers_per_tok: 0.0,
             gpu_pct: 58.0,
             gpu_encode_pct: 7.0,
             gpu_execute_pct: 51.0,
@@ -938,7 +1099,11 @@ mod tests {
             gpu_encode_layer_ffn_pct: 6.0,
             gpu_encode_layer_residual_pct: 1.5,
             matmul_pct: 52.0,
+            matmul_input_proj_pct: 19.0,
+            matmul_output_proj_pct: 21.0,
+            matmul_lm_head_pct: 12.0,
             attention_pct: 24.0,
+            recurrent_pct: 0.0,
             dequant_pct: 8.0,
             rope_pct: 5.0,
             norm_pct: 4.0,
@@ -959,7 +1124,11 @@ mod tests {
             gpu_encode_layer_ffn_ms: 68.0,
             gpu_encode_layer_residual_ms: 17.0,
             matmul_ms: 598.0,
+            matmul_input_proj_ms: 218.0,
+            matmul_output_proj_ms: 241.0,
+            matmul_lm_head_ms: 138.0,
             attention_ms: 276.0,
+            recurrent_ms: 0.0,
             dequant_ms: 92.0,
             rope_ms: 57.5,
             norm_ms: 46.0,

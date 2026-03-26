@@ -1,6 +1,6 @@
 {
   "model": "qwen35-27b",
-  "source": "llama.cpp-params-2026-03-22",
+  "source": "qwen35-upstream-baseline-not-tuned-2026-03-25",
   "generated": "2026-03-25",
   "decode_matvec": {
     "q4_k": {

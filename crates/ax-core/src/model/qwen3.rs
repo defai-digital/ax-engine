@@ -831,6 +831,7 @@ impl Qwen3Forward {
         weights: &WeightStore,
         last_logits: Option<&mut [f32]>,
         logits_all: Option<&mut Vec<f32>>,
+        mut ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<()> {
         let cfg = ctx.config;
         let n_tokens = token_ids.len();
@@ -849,6 +850,8 @@ impl Qwen3Forward {
         if let Some(logits) = last_logits.as_ref() {
             assert!(logits.len() >= vocab_size);
         }
+
+        let setup_t = OpTimer::start();
 
         metal_ops.init_scratches(cfg);
         metal_ops.init_batch_scratches(cfg, n_tokens);
@@ -895,6 +898,10 @@ impl Qwen3Forward {
             None
         };
 
+        if let Some(ref mut ops_ref) = ops {
+            ops_ref.gpu_encode += setup_t.elapsed();
+        }
+
         {
             let weight_cache = metal_ops.lock_weight_cache();
             let has_q5k_weights = gpu_prefill_uses_experimental_q5k(weights);
@@ -915,12 +922,14 @@ impl Qwen3Forward {
             // Concurrent dispatch with smart barriers (llama.cpp pattern).
             // SmartBarrier tracks buffer ranges and only inserts barriers
             // when dispatches actually conflict on the same buffer.
+            let exec_t = OpTimer::start();
             metal_ops.device.execute_sync_concurrent(|encoder| {
                 let nt = n_tokens as u32;
                 let mut sb = ax_metal::SmartBarrier::new(encoder);
 
                 // First layer's Phase 1a: standalone RMSNorm before loop.
                 {
+                    let t = OpTimer::start();
                     let norm_w_buf = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
                     metal_ops.elementwise.encode_rms_norm_out_batch(
                         encoder,
@@ -932,6 +941,9 @@ impl Qwen3Forward {
                         eps,
                     );
                     sb.post_dispatch(&[&bs.hidden], &[&bs.norm_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_norm += t.elapsed();
+                    }
                 }
 
                 for layer in 0..n_layers {
@@ -960,6 +972,7 @@ impl Qwen3Forward {
                     // subsequent layers fused with previous Phase 3f).
 
                     // ── Phase 1b: Batched QKV matmul ──
+                    let qkv_t = OpTimer::start();
                     if let Some(fused_w) = fused_qkv_buf {
                         sb.pre_dispatch(&[&bs.norm_buf], &[&bs.qkv_buf]);
                         match qkv_layer_plan.input {
@@ -1131,8 +1144,12 @@ impl Qwen3Forward {
                             }
                         }
                     }
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_qkv += qkv_t.elapsed();
+                    }
 
                     // ── Phase 1c+1d: Bias + QK norm + RoPE + KV append ──
+                    let rope_kv_t = OpTimer::start();
                     let (rope_start, rope_step) = match cfg.rope_scaling {
                         crate::model::config::RopeScaling::Linear(f) => {
                             (base_seq_len as f32 / f, 1.0f32 / f)
@@ -1343,8 +1360,14 @@ impl Qwen3Forward {
                             sb.post_dispatch(&[&bs.v_buf], &[kv_v]);
                         }
                     }
+                    if let Some(ref mut ops_ref) = ops {
+                        let elapsed = rope_kv_t.elapsed();
+                        ops_ref.gpu_encode_layer_rope += elapsed / 2;
+                        ops_ref.gpu_encode_layer_kv_append += elapsed / 2;
+                    }
 
                     // ── Phase 2: Batched attention ──
+                    let attn_t = OpTimer::start();
                     if prefill_plan.attention == PrefillAttentionPlan::BatchLocal {
                         sb.pre_dispatch(&[&bs.q_buf, &bs.k_buf, &bs.v_buf], &[&bs.attn_out]);
                         metal_ops.attention.encode_attention_prefill_with_config(
@@ -1383,8 +1406,12 @@ impl Qwen3Forward {
                             );
                         sb.post_dispatch(&[&bs.q_buf, kv_k, kv_v], &[&bs.attn_out]);
                     }
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_attention += attn_t.elapsed();
+                    }
 
                     // ── Phase 3a: Batched output projection ──
+                    let out_proj_t = OpTimer::start();
                     let wo_buf = weight_cache.get(&lw.wo).unwrap();
                     sb.pre_dispatch(&[&bs.attn_out], &[&bs.proj_buf]);
                     encode_dequant_batch(
@@ -1404,8 +1431,12 @@ impl Qwen3Forward {
                         prefill_plan.experimental_q5k_prefill_small_n,
                     );
                     sb.post_dispatch(&[&bs.attn_out], &[&bs.proj_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_out_proj += out_proj_t.elapsed();
+                    }
 
                     // ── Phase 3b: Batched residual + FFN norm ──
+                    let residual_norm_t = OpTimer::start();
                     let ffn_nw_buf = weight_cache.get(&lw.ffn_norm).unwrap();
                     sb.pre_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
                     metal_ops
@@ -1421,8 +1452,14 @@ impl Qwen3Forward {
                             eps,
                         );
                     sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        let elapsed = residual_norm_t.elapsed();
+                        ops_ref.gpu_encode_layer_residual += elapsed / 2;
+                        ops_ref.gpu_encode_layer_norm += elapsed / 2;
+                    }
 
                     // ── Phase 3c: Batched gate + up ──
+                    let gate_up_t = OpTimer::start();
                     let wg_buf = weight_cache.get(&lw.wg).unwrap();
                     let wu_buf = weight_cache.get(&lw.wu).unwrap();
                     let ffn_layer_plan = DecodeExecutionPlan::qwen3_prefill_ffn_layer(
@@ -1516,8 +1553,12 @@ impl Qwen3Forward {
                         }
                     }
                     sb.post_dispatch(&[&bs.norm_buf], &[&bs.gate_buf, &bs.up_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_ffn += gate_up_t.elapsed();
+                    }
 
                     // ── Phase 3d: Batched activation ──
+                    let activation_t = OpTimer::start();
                     sb.pre_dispatch(&[&bs.gate_buf, &bs.up_buf], &[&bs.gate_buf]);
                     match ffn_layer_plan.activation {
                         PrefillFfnActivationPlan::SiluMulGateF32 => {
@@ -1533,8 +1574,12 @@ impl Qwen3Forward {
                         | PrefillFfnActivationPlan::GeluMulGateF32 => unreachable!(),
                     }
                     sb.post_dispatch(&[&bs.gate_buf, &bs.up_buf], &[&bs.gate_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_ffn += activation_t.elapsed();
+                    }
 
                     // ── Phase 3e: Batched down projection ──
+                    let down_proj_t = OpTimer::start();
                     let wd_buf = weight_cache.get(&lw.wd).unwrap();
                     sb.pre_dispatch(&[&bs.gate_buf], &[&bs.proj_buf]);
                     encode_dequant_batch(
@@ -1554,8 +1599,12 @@ impl Qwen3Forward {
                         prefill_plan.experimental_q5k_prefill_small_n,
                     );
                     sb.post_dispatch(&[&bs.gate_buf], &[&bs.proj_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_ffn += down_proj_t.elapsed();
+                    }
 
                     // ── Phase 3f: Batched residual (+ next layer's norm if not last) ──
+                    let residual_handoff_t = OpTimer::start();
                     let residual_plan =
                         DecodeExecutionPlan::qwen3_prefill_residual_handoff(layer + 1 == n_layers);
                     let residual_norm_out = match residual_plan {
@@ -1601,6 +1650,19 @@ impl Qwen3Forward {
                         sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, nout]);
                     } else {
                         sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden]);
+                    }
+                    if let Some(ref mut ops_ref) = ops {
+                        let elapsed = residual_handoff_t.elapsed();
+                        match residual_plan {
+                            PrefillResidualHandoffPlan::ResidualOnly => {
+                                ops_ref.gpu_encode_layer_residual += elapsed;
+                            }
+                            PrefillResidualHandoffPlan::ResidualAddRmsNormF32 => {
+                                ops_ref.gpu_encode_layer_residual += elapsed / 2;
+                                ops_ref.gpu_encode_layer_norm += elapsed / 2;
+                            }
+                            PrefillResidualHandoffPlan::ResidualAddRmsNormF16 => unreachable!(),
+                        }
                     }
                 }
 
@@ -1664,11 +1726,15 @@ impl Qwen3Forward {
 
                 Ok(())
             })?;
+            if let Some(ref mut ops_ref) = ops {
+                ops_ref.gpu_execute += exec_t.elapsed();
+            }
         }
 
         // v2: finalize GPU KV batch (no CPU mirror to sync)
         gpu_kv.finalize_batch(n_tokens);
 
+        let rb_t = OpTimer::start();
         if let Some(logits_all) = logits_all {
             let logits_gpu = unsafe {
                 std::slice::from_raw_parts(
@@ -1690,6 +1756,9 @@ impl Qwen3Forward {
                 )
             };
             logits[..vocab_size].copy_from_slice(logits_gpu);
+        }
+        if let Some(ref mut ops_ref) = ops {
+            ops_ref.gpu_readback += rb_t.elapsed();
         }
 
         Ok(())
@@ -1993,6 +2062,7 @@ impl ForwardPass for Qwen3Forward {
                 weights,
                 Some(logits),
                 None,
+                None,
             ) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
@@ -2006,6 +2076,44 @@ impl ForwardPass for Qwen3Forward {
         for (i, &tid) in token_ids.iter().enumerate() {
             logits.fill(0.0);
             self.forward_single(ctx, tid, start_pos + i, kv, weights, logits, None)?;
+        }
+        Ok(())
+    }
+
+    fn forward_batch_profiled(
+        &self,
+        ctx: &ForwardContext,
+        token_ids: &[u32],
+        kv: &mut ModelKv,
+        weights: &WeightStore,
+        logits: &mut [f32],
+        ops: &mut OpBreakdown,
+    ) -> anyhow::Result<()> {
+        let prefill_plan =
+            PrefillExecutionPlan::for_forward_batch(ctx, kv, weights, token_ids.len(), false)?;
+
+        if prefill_plan.mode == PrefillMode::GpuBatch {
+            let metal_ops = ctx.backend.metal_ops().unwrap();
+            let gpu_kv = kv.as_gpu_mut().unwrap();
+            let total_t = OpTimer::start();
+            let result = self.forward_batch_gpu_unified(
+                ctx,
+                metal_ops,
+                token_ids,
+                gpu_kv,
+                weights,
+                Some(logits),
+                None,
+                Some(&mut *ops),
+            );
+            ops.gpu += total_t.elapsed();
+            return result;
+        }
+
+        let start_pos = kv.seq_len();
+        for (i, &tid) in token_ids.iter().enumerate() {
+            logits.fill(0.0);
+            self.forward_single(ctx, tid, start_pos + i, kv, weights, logits, Some(ops))?;
         }
         Ok(())
     }
@@ -2032,6 +2140,7 @@ impl ForwardPass for Qwen3Forward {
                 weights,
                 None,
                 Some(logits_all),
+                None,
             ) {
                 Ok(()) => return Ok(()),
                 Err(e) => {

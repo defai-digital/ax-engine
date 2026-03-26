@@ -11,7 +11,7 @@ use std::time::Instant;
 use ax_metal::profile::ProfileKernelMode;
 use ax_metal::{
     AttentionDecodeCandidate, AttentionDispatchConfig, AttentionKernels, DequantDispatchConfig,
-    DequantKernels, KernelMode, KernelProfile, MetalBuffer, MetalDevice,
+    DequantKernels, ElementwiseKernels, KernelMode, KernelProfile, MetalBuffer, MetalDevice,
 };
 use serde::{Deserialize, Serialize};
 
@@ -604,6 +604,7 @@ fn run_gpu_suite(iterations: usize) -> anyhow::Result<MicrobenchSuiteResult> {
     let info = gpu.info();
     let kernels = DequantKernels::new(&gpu)?;
     let attention = AttentionKernels::new(&gpu)?;
+    let elementwise = ElementwiseKernels::new(&gpu)?;
 
     let sync_ms = average_ms(iterations, || gpu.execute_sync(|_| Ok(())))?;
     let concurrent_ms = average_ms(iterations, || gpu.execute_sync_concurrent(|_| Ok(())))?;
@@ -624,11 +625,29 @@ fn run_gpu_suite(iterations: usize) -> anyhow::Result<MicrobenchSuiteResult> {
     ];
     let mut recommendations = Vec::new();
 
+    // Keep the generic decode shapes, then include the dominant Qwen 3.5
+    // input-projection sizes for 9B and 27B so microbench output is directly
+    // actionable for the current focus models.
     let shapes = [
         MatvecShape { m: 1_024, k: 4_096 },
         MatvecShape { m: 4_096, k: 4_096 },
         MatvecShape { m: 8_192, k: 4_096 },
+        MatvecShape {
+            m: 12_288,
+            k: 4_096,
+        },
         MatvecShape { m: 4_096, k: 8_192 },
+        MatvecShape { m: 1_024, k: 5_120 },
+        MatvecShape { m: 5_120, k: 5_120 },
+        MatvecShape { m: 8_192, k: 5_120 },
+        MatvecShape {
+            m: 12_288,
+            k: 5_120,
+        },
+        MatvecShape {
+            m: 17_408,
+            k: 5_120,
+        },
     ];
     for shape in shapes {
         let q4 = run_quant_shape_sweep(
@@ -699,6 +718,108 @@ fn run_gpu_suite(iterations: usize) -> anyhow::Result<MicrobenchSuiteResult> {
             shape,
             q5k_prefill_batch_variants(shape),
         )?);
+    }
+
+    let exact_prefill_batch_shapes = [
+        QuantPrefillBatchShape {
+            model: "llama3_8b",
+            label: "attn_qkv",
+            m: 4096,
+            n: 512,
+            k: 4096,
+        },
+        QuantPrefillBatchShape {
+            model: "llama3_8b",
+            label: "ffn_down",
+            m: 4096,
+            n: 512,
+            k: 14336,
+        },
+        QuantPrefillBatchShape {
+            model: "qwen3_14b",
+            label: "attn_qkv",
+            m: 5120,
+            n: 512,
+            k: 5120,
+        },
+        QuantPrefillBatchShape {
+            model: "qwen3_14b",
+            label: "ffn_down",
+            m: 5120,
+            n: 512,
+            k: 17408,
+        },
+        QuantPrefillBatchShape {
+            model: "gemma3_12b",
+            label: "attn_qkv",
+            m: 4096,
+            n: 512,
+            k: 3840,
+        },
+        QuantPrefillBatchShape {
+            model: "gemma3_12b",
+            label: "ffn_down",
+            m: 3840,
+            n: 512,
+            k: 15360,
+        },
+    ];
+    for quant in [QuantCase::Q4K, QuantCase::Q6K] {
+        for shape in exact_prefill_batch_shapes {
+            measurements.extend(run_quant_prefill_batch_case(
+                iterations,
+                &gpu,
+                &kernels,
+                &elementwise,
+                quant,
+                shape,
+                &[
+                    QuantPrefillBatchVariant::F32,
+                    QuantPrefillBatchVariant::F16In,
+                    QuantPrefillBatchVariant::F16InBn32,
+                ],
+            )?);
+        }
+    }
+
+    let exact_prefill_pair_shapes = [
+        QuantPrefillPairShape {
+            model: "llama3_8b",
+            label: "ffn_gate_up",
+            m: 14336,
+            n: 512,
+            k: 4096,
+        },
+        QuantPrefillPairShape {
+            model: "qwen3_14b",
+            label: "ffn_gate_up",
+            m: 17408,
+            n: 512,
+            k: 5120,
+        },
+        QuantPrefillPairShape {
+            model: "gemma3_12b",
+            label: "ffn_gate_up",
+            m: 15360,
+            n: 512,
+            k: 3840,
+        },
+    ];
+    for quant in [QuantCase::Q4K, QuantCase::Q6K] {
+        for shape in exact_prefill_pair_shapes {
+            measurements.extend(run_quant_prefill_pair_case(
+                iterations,
+                &gpu,
+                &kernels,
+                &elementwise,
+                quant,
+                shape,
+                &[
+                    QuantPrefillPairVariant::SeparateF16In,
+                    QuantPrefillPairVariant::PairF16In,
+                ],
+            )?);
+        }
     }
 
     let attention_shapes = [
@@ -1029,6 +1150,37 @@ enum Q5KPrefillBatchVariant {
     Small,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct QuantPrefillBatchShape {
+    model: &'static str,
+    label: &'static str,
+    m: usize,
+    n: usize,
+    k: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuantPrefillBatchVariant {
+    F32,
+    F16In,
+    F16InBn32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QuantPrefillPairShape {
+    model: &'static str,
+    label: &'static str,
+    m: usize,
+    n: usize,
+    k: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuantPrefillPairVariant {
+    SeparateF16In,
+    PairF16In,
+}
+
 fn quant_case_is_observational_only(quant: QuantCase) -> bool {
     matches!(quant, QuantCase::Q5K)
 }
@@ -1087,6 +1239,37 @@ fn q5k_prefill_batch_measurement_note(variant: Q5KPrefillBatchVariant) -> String
     };
     format!(
         "experimental q5_k prefill batch matmul wall time; candidate={} tier=experimental observational_only=experimental",
+        candidate
+    )
+}
+
+fn quant_prefill_batch_measurement_note(
+    quant: QuantCase,
+    variant: QuantPrefillBatchVariant,
+) -> String {
+    let candidate = match variant {
+        QuantPrefillBatchVariant::F32 => "f32",
+        QuantPrefillBatchVariant::F16In => "f16in",
+        QuantPrefillBatchVariant::F16InBn32 => "f16in_bn32",
+    };
+    format!(
+        "exact-shape prefill batch matmul wall time; quant={} candidate={} observational_only=exact_shape",
+        quant_case_name(quant),
+        candidate
+    )
+}
+
+fn quant_prefill_pair_measurement_note(
+    quant: QuantCase,
+    variant: QuantPrefillPairVariant,
+) -> String {
+    let candidate = match variant {
+        QuantPrefillPairVariant::SeparateF16In => "separate_f16in",
+        QuantPrefillPairVariant::PairF16In => "pair_f16in",
+    };
+    format!(
+        "exact-shape prefill FFN pair wall time; quant={} candidate={} observational_only=exact_shape",
+        quant_case_name(quant),
         candidate
     )
 }
@@ -1658,6 +1841,392 @@ fn run_q5k_prefill_batch_case(
     }
 
     Ok(measurements)
+}
+
+fn quant_prefill_batch_variant_name(variant: QuantPrefillBatchVariant) -> &'static str {
+    match variant {
+        QuantPrefillBatchVariant::F32 => "f32",
+        QuantPrefillBatchVariant::F16In => "f16in",
+        QuantPrefillBatchVariant::F16InBn32 => "f16in_bn32",
+    }
+}
+
+fn quant_prefill_pair_variant_name(variant: QuantPrefillPairVariant) -> &'static str {
+    match variant {
+        QuantPrefillPairVariant::SeparateF16In => "separate_f16in",
+        QuantPrefillPairVariant::PairF16In => "pair_f16in",
+    }
+}
+
+fn quant_prefill_dispatch_config(variant: QuantPrefillBatchVariant) -> DequantDispatchConfig {
+    let mut config = DequantDispatchConfig::default();
+    if matches!(variant, QuantPrefillBatchVariant::F16InBn32) {
+        config.batch_f16in_use_bn32 = true;
+    }
+    config
+}
+
+fn run_quant_prefill_batch_case(
+    iterations: usize,
+    gpu: &MetalDevice,
+    kernels: &DequantKernels,
+    elementwise: &ElementwiseKernels,
+    quant: QuantCase,
+    shape: QuantPrefillBatchShape,
+    variants: &[QuantPrefillBatchVariant],
+) -> anyhow::Result<Vec<MicrobenchMeasurement>> {
+    let weight_bytes = match quant {
+        QuantCase::Q4K => make_q4k_matrix_bytes(shape.m, shape.k),
+        QuantCase::Q6K => make_q6k_matrix_bytes(shape.m, shape.k),
+        QuantCase::Q5K => anyhow::bail!("q5_k exact-shape prefill batch microbench is unsupported"),
+    };
+    let batch_input: Vec<f32> = (0..shape.n * shape.k)
+        .map(|i| ((i % 17) as f32 - 8.0) * 0.02)
+        .collect();
+    let buf_a = MetalBuffer::from_bytes(gpu.device(), &weight_bytes)?;
+    let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input)?;
+    let buf_b_f16 = MetalBuffer::new(
+        gpu.device(),
+        batch_input.len() * std::mem::size_of::<half::f16>(),
+    )?;
+    let buf_c = MetalBuffer::new(gpu.device(), shape.n * shape.m * std::mem::size_of::<f32>())?;
+
+    let mut measurements = Vec::new();
+    let mut base_avg_ms = None;
+    for &variant in variants {
+        run_quant_prefill_batch_variant(
+            gpu,
+            kernels,
+            elementwise,
+            quant,
+            variant,
+            &buf_a,
+            &buf_b,
+            &buf_b_f16,
+            &buf_c,
+            shape.m as u32,
+            shape.n as u32,
+            shape.k as u32,
+        )?;
+
+        gpu.reset_perf_counters();
+        let start = Instant::now();
+        for _ in 0..iterations {
+            run_quant_prefill_batch_variant(
+                gpu,
+                kernels,
+                elementwise,
+                quant,
+                variant,
+                &buf_a,
+                &buf_b,
+                &buf_b_f16,
+                &buf_c,
+                shape.m as u32,
+                shape.n as u32,
+                shape.k as u32,
+            )?;
+        }
+        black_box(unsafe { buf_c.as_slice::<f32>()[0] });
+        let elapsed = start.elapsed().as_secs_f64().max(f64::EPSILON);
+        let counters = gpu.perf_counters();
+        let avg_ms = elapsed * 1000.0 / iterations.max(1) as f64;
+        let effective_gbps = ((weight_bytes.len()
+            + batch_input.len() * std::mem::size_of::<f32>()
+            + shape.n * shape.m * std::mem::size_of::<f32>())
+            * iterations) as f64
+            / elapsed
+            / 1e9;
+        let prefix = format!(
+            "gpu.prefill_matmul.{}.{}.{}.{}.tokens{}.{}x{}",
+            quant_case_name(quant),
+            quant_prefill_batch_variant_name(variant),
+            shape.model,
+            shape.label,
+            shape.n,
+            shape.m,
+            shape.k
+        );
+
+        measurements.push(MicrobenchMeasurement {
+            name: prefix.clone(),
+            unit: "ms".to_string(),
+            value: avg_ms,
+            note: Some(quant_prefill_batch_measurement_note(quant, variant)),
+        });
+        measurements.push(MicrobenchMeasurement {
+            name: format!("{prefix}.effective_io_bw"),
+            unit: "GB/s".to_string(),
+            value: effective_gbps,
+            note: Some("weights + dense input/output bytes only".to_string()),
+        });
+        measurements.push(MicrobenchMeasurement {
+            name: format!("{prefix}.command_buffers"),
+            unit: "avg".to_string(),
+            value: counters.command_buffers as f64 / iterations.max(1) as f64,
+            note: Some("Metal command buffers per iteration".to_string()),
+        });
+        measurements.push(MicrobenchMeasurement {
+            name: format!("{prefix}.buffer_barriers"),
+            unit: "avg".to_string(),
+            value: counters.buffer_barriers as f64 / iterations.max(1) as f64,
+            note: Some("explicit buffer barriers per iteration".to_string()),
+        });
+        if matches!(variant, QuantPrefillBatchVariant::F32) {
+            base_avg_ms = Some(avg_ms);
+        } else if let Some(base_avg_ms) = base_avg_ms {
+            measurements.push(MicrobenchMeasurement {
+                name: format!("{prefix}.speedup_vs_f32"),
+                unit: "x".to_string(),
+                value: base_avg_ms / avg_ms.max(f64::EPSILON),
+                note: Some("values > 1.0 mean faster than f32 batch matmul".to_string()),
+            });
+        }
+    }
+
+    Ok(measurements)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_quant_prefill_batch_variant(
+    gpu: &MetalDevice,
+    kernels: &DequantKernels,
+    elementwise: &ElementwiseKernels,
+    quant: QuantCase,
+    variant: QuantPrefillBatchVariant,
+    buf_a: &MetalBuffer,
+    buf_b: &MetalBuffer,
+    buf_b_f16: &MetalBuffer,
+    buf_c: &MetalBuffer,
+    m: u32,
+    n: u32,
+    k: u32,
+) -> anyhow::Result<()> {
+    gpu.execute_sync(|encoder| {
+        match variant {
+            QuantPrefillBatchVariant::F32 => match quant {
+                QuantCase::Q4K => {
+                    kernels.encode_fused_batch_q4_k(encoder, buf_a, buf_b, buf_c, m, n, k)
+                }
+                QuantCase::Q6K => {
+                    kernels.encode_fused_batch_q6_k(encoder, buf_a, buf_b, buf_c, m, n, k)
+                }
+                QuantCase::Q5K => {
+                    anyhow::bail!("unsupported q5_k exact-shape prefill batch variant")
+                }
+            },
+            QuantPrefillBatchVariant::F16In | QuantPrefillBatchVariant::F16InBn32 => {
+                elementwise.encode_cast_f32_to_f16(encoder, buf_b, buf_b_f16, n * k);
+                let config = quant_prefill_dispatch_config(variant);
+                match quant {
+                    QuantCase::Q4K => kernels.encode_fused_batch_q4_k_f16in_with_config(
+                        encoder, buf_a, buf_b_f16, buf_c, m, n, k, config,
+                    ),
+                    QuantCase::Q6K => kernels.encode_fused_batch_q6_k_f16in_with_config(
+                        encoder, buf_a, buf_b_f16, buf_c, m, n, k, config,
+                    ),
+                    QuantCase::Q5K => {
+                        anyhow::bail!("unsupported q5_k exact-shape prefill batch variant")
+                    }
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+fn run_quant_prefill_pair_case(
+    iterations: usize,
+    gpu: &MetalDevice,
+    kernels: &DequantKernels,
+    elementwise: &ElementwiseKernels,
+    quant: QuantCase,
+    shape: QuantPrefillPairShape,
+    variants: &[QuantPrefillPairVariant],
+) -> anyhow::Result<Vec<MicrobenchMeasurement>> {
+    let weight_bytes = match quant {
+        QuantCase::Q4K => make_q4k_matrix_bytes(shape.m, shape.k),
+        QuantCase::Q6K => make_q6k_matrix_bytes(shape.m, shape.k),
+        QuantCase::Q5K => anyhow::bail!("q5_k exact-shape prefill pair microbench is unsupported"),
+    };
+    let batch_input: Vec<f32> = (0..shape.n * shape.k)
+        .map(|i| ((i % 17) as f32 - 8.0) * 0.02)
+        .collect();
+    let buf_w0 = MetalBuffer::from_bytes(gpu.device(), &weight_bytes)?;
+    let buf_w1 = MetalBuffer::from_bytes(gpu.device(), &weight_bytes)?;
+    let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input)?;
+    let buf_b_f16 = MetalBuffer::new(
+        gpu.device(),
+        batch_input.len() * std::mem::size_of::<half::f16>(),
+    )?;
+    let buf_c0 = MetalBuffer::new(gpu.device(), shape.n * shape.m * std::mem::size_of::<f32>())?;
+    let buf_c1 = MetalBuffer::new(gpu.device(), shape.n * shape.m * std::mem::size_of::<f32>())?;
+
+    let mut measurements = Vec::new();
+    let mut separate_avg_ms = None;
+    for &variant in variants {
+        run_quant_prefill_pair_variant(
+            gpu,
+            kernels,
+            elementwise,
+            quant,
+            variant,
+            &buf_w0,
+            &buf_w1,
+            &buf_b,
+            &buf_b_f16,
+            &buf_c0,
+            &buf_c1,
+            shape.m as u32,
+            shape.n as u32,
+            shape.k as u32,
+        )?;
+
+        gpu.reset_perf_counters();
+        let start = Instant::now();
+        for _ in 0..iterations {
+            run_quant_prefill_pair_variant(
+                gpu,
+                kernels,
+                elementwise,
+                quant,
+                variant,
+                &buf_w0,
+                &buf_w1,
+                &buf_b,
+                &buf_b_f16,
+                &buf_c0,
+                &buf_c1,
+                shape.m as u32,
+                shape.n as u32,
+                shape.k as u32,
+            )?;
+        }
+        black_box(unsafe { buf_c0.as_slice::<f32>()[0] });
+        black_box(unsafe { buf_c1.as_slice::<f32>()[0] });
+        let elapsed = start.elapsed().as_secs_f64().max(f64::EPSILON);
+        let counters = gpu.perf_counters();
+        let avg_ms = elapsed * 1000.0 / iterations.max(1) as f64;
+        let effective_gbps = ((2 * weight_bytes.len()
+            + batch_input.len() * std::mem::size_of::<f32>()
+            + 2 * shape.n * shape.m * std::mem::size_of::<f32>())
+            * iterations) as f64
+            / elapsed
+            / 1e9;
+        let prefix = format!(
+            "gpu.prefill_pair.{}.{}.{}.{}.tokens{}.{}x{}",
+            quant_case_name(quant),
+            quant_prefill_pair_variant_name(variant),
+            shape.model,
+            shape.label,
+            shape.n,
+            shape.m,
+            shape.k
+        );
+
+        measurements.push(MicrobenchMeasurement {
+            name: prefix.clone(),
+            unit: "ms".to_string(),
+            value: avg_ms,
+            note: Some(quant_prefill_pair_measurement_note(quant, variant)),
+        });
+        measurements.push(MicrobenchMeasurement {
+            name: format!("{prefix}.effective_io_bw"),
+            unit: "GB/s".to_string(),
+            value: effective_gbps,
+            note: Some("two weights + dense input/output bytes only".to_string()),
+        });
+        measurements.push(MicrobenchMeasurement {
+            name: format!("{prefix}.command_buffers"),
+            unit: "avg".to_string(),
+            value: counters.command_buffers as f64 / iterations.max(1) as f64,
+            note: Some("Metal command buffers per iteration".to_string()),
+        });
+        measurements.push(MicrobenchMeasurement {
+            name: format!("{prefix}.buffer_barriers"),
+            unit: "avg".to_string(),
+            value: counters.buffer_barriers as f64 / iterations.max(1) as f64,
+            note: Some("explicit buffer barriers per iteration".to_string()),
+        });
+        if matches!(variant, QuantPrefillPairVariant::SeparateF16In) {
+            separate_avg_ms = Some(avg_ms);
+        } else if let Some(separate_avg_ms) = separate_avg_ms {
+            measurements.push(MicrobenchMeasurement {
+                name: format!("{prefix}.speedup_vs_separate_f16in"),
+                unit: "x".to_string(),
+                value: separate_avg_ms / avg_ms.max(f64::EPSILON),
+                note: Some(
+                    "values > 1.0 mean faster than two separate f16in projections".to_string(),
+                ),
+            });
+        }
+    }
+
+    Ok(measurements)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_quant_prefill_pair_variant(
+    gpu: &MetalDevice,
+    kernels: &DequantKernels,
+    elementwise: &ElementwiseKernels,
+    quant: QuantCase,
+    variant: QuantPrefillPairVariant,
+    buf_w0: &MetalBuffer,
+    buf_w1: &MetalBuffer,
+    buf_b: &MetalBuffer,
+    buf_b_f16: &MetalBuffer,
+    buf_c0: &MetalBuffer,
+    buf_c1: &MetalBuffer,
+    m: u32,
+    n: u32,
+    k: u32,
+) -> anyhow::Result<()> {
+    gpu.execute_sync(|encoder| {
+        elementwise.encode_cast_f32_to_f16(encoder, buf_b, buf_b_f16, n * k);
+        match variant {
+            QuantPrefillPairVariant::SeparateF16In => {
+                let config = DequantDispatchConfig::default();
+                match quant {
+                    QuantCase::Q4K => {
+                        kernels.encode_fused_batch_q4_k_f16in_with_config(
+                            encoder, buf_w0, buf_b_f16, buf_c0, m, n, k, config,
+                        );
+                        kernels.encode_fused_batch_q4_k_f16in_with_config(
+                            encoder, buf_w1, buf_b_f16, buf_c1, m, n, k, config,
+                        );
+                    }
+                    QuantCase::Q6K => {
+                        kernels.encode_fused_batch_q6_k_f16in_with_config(
+                            encoder, buf_w0, buf_b_f16, buf_c0, m, n, k, config,
+                        );
+                        kernels.encode_fused_batch_q6_k_f16in_with_config(
+                            encoder, buf_w1, buf_b_f16, buf_c1, m, n, k, config,
+                        );
+                    }
+                    QuantCase::Q5K => {
+                        anyhow::bail!("unsupported q5_k exact-shape prefill pair variant")
+                    }
+                }
+            }
+            QuantPrefillPairVariant::PairF16In => match quant {
+                QuantCase::Q4K => {
+                    kernels.encode_fused_batch_pair_q4_k_f16in(
+                        encoder, buf_w0, buf_w1, buf_b_f16, buf_c0, buf_c1, m, n, k,
+                    );
+                }
+                QuantCase::Q6K => {
+                    kernels.encode_fused_batch_pair_q6_k_f16in(
+                        encoder, buf_w0, buf_w1, buf_b_f16, buf_c0, buf_c1, m, n, k,
+                    );
+                }
+                QuantCase::Q5K => {
+                    anyhow::bail!("unsupported q5_k exact-shape prefill pair variant")
+                }
+            },
+        }
+        Ok(())
+    })
 }
 
 fn q5k_prefill_batch_variant_name(variant: Q5KPrefillBatchVariant) -> &'static str {

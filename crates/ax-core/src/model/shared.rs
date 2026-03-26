@@ -19,7 +19,10 @@ const LAYER_SUFFIXES: &[&str] = &[
 ];
 
 pub(super) fn experimental_q5k_prefill_enabled() -> bool {
-    env_flag_enabled("AX_METAL_EXPERIMENTAL_Q5K_PREFILL")
+    // Kept under the existing helper name so current call sites do not need to
+    // branch on a one-off mixed-quant special case. Q5_K GPU prefill is now
+    // enabled by default; the remaining env surface only selects the variant.
+    true
 }
 
 pub(super) fn env_flag_enabled(var: &str) -> bool {
@@ -71,8 +74,8 @@ fn gpu_batch_logits_dtype_supported(dtype: GgmlType) -> bool {
 
 /// Check if all layer-0 weight tensors use quant types supported by decode-only GPU path.
 ///
-/// Decode can use additional fused matvec kernels (such as Q8_0 and Q5_K) that are not yet
-/// available for batch-prefill kernels.
+/// Decode can use additional fused matvec kernels (such as Q8_0) that are not yet available for
+/// batch-prefill kernels.
 pub(super) fn gpu_decode_quant_supported(weights: &WeightStore) -> bool {
     all_layers_match(weights, LAYER_SUFFIXES, gpu_decode_quant_dtype_supported)
 }
@@ -82,16 +85,8 @@ pub(super) fn gpu_prefill_quant_blocker(weights: &WeightStore) -> Option<String>
 }
 
 pub(super) fn gpu_prefill_uses_experimental_q5k(weights: &WeightStore) -> bool {
-    let uses_experimental_q5k = experimental_q5k_prefill_enabled()
-        && any_layers_match(weights, LAYER_SUFFIXES, |dtype| dtype == GgmlType::Q5K);
-    if uses_experimental_q5k {
-        warn_gpu_path_issue_once("experimental:q5k_prefill".to_string(), || {
-            tracing::warn!(
-                "AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1 enabled the experimental Q5_K GPU prefill path; this route is AX-native, conservative, and not yet profile-tuned"
-            );
-        });
-    }
-    uses_experimental_q5k
+    experimental_q5k_prefill_enabled()
+        && any_layers_match(weights, LAYER_SUFFIXES, |dtype| dtype == GgmlType::Q5K)
 }
 
 pub(super) fn gpu_prefill_experimental_q5k_small_n_auto_eligible(weights: &WeightStore) -> bool {
@@ -105,9 +100,7 @@ fn q5k_prefill_small_n_auto_eligible_for_model(
     predominant_quant: Option<GgmlType>,
     has_q5k_layer_weights: bool,
 ) -> bool {
-    experimental_q5k_prefill_enabled()
-        && has_q5k_layer_weights
-        && predominant_quant == Some(GgmlType::Q5K)
+    has_q5k_layer_weights && predominant_quant == Some(GgmlType::Q5K)
 }
 
 /// Return true when a quantized LM head can use the existing batched GPU matmul path.
@@ -197,7 +190,7 @@ fn warn_gpu_path_issue_once(key: String, warn: impl FnOnce()) {
 
 fn gpu_batch_prefill_panic(dtype: GgmlType) -> ! {
     panic!(
-        "GPU batch matmul only supports Q4_K, Q6_K, and experimental Q5_K, got {:?}",
+        "GPU batch matmul only supports Q4_K, Q5_K, and Q6_K, got {:?}",
         dtype
     )
 }
@@ -620,19 +613,10 @@ mod tests {
     }
 
     #[test]
-    fn test_q5k_is_decode_only_gpu_quant() {
+    fn test_q5k_is_supported_gpu_prefill_quant() {
         assert!(gpu_decode_quant_dtype_supported(GgmlType::Q5K));
-        assert!(!gpu_prefill_quant_dtype_supported(GgmlType::Q5K));
+        assert!(gpu_prefill_quant_dtype_supported(GgmlType::Q5K));
         assert!(!gpu_batch_logits_dtype_supported(GgmlType::Q5K));
-    }
-
-    #[test]
-    fn test_experimental_q5k_prefill_env_widens_prefill_dtype_gate_only() {
-        with_env_var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL", "1", || {
-            assert!(gpu_decode_quant_dtype_supported(GgmlType::Q5K));
-            assert!(gpu_prefill_quant_dtype_supported(GgmlType::Q5K));
-            assert!(!gpu_batch_logits_dtype_supported(GgmlType::Q5K));
-        });
     }
 
     #[test]
@@ -663,20 +647,18 @@ mod tests {
 
     #[test]
     fn test_q5k_prefill_small_n_auto_eligible_for_predominant_q5k_models_only() {
-        with_env_var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL", "1", || {
-            assert!(q5k_prefill_small_n_auto_eligible_for_model(
-                Some(GgmlType::Q5K),
-                true
-            ));
-            assert!(!q5k_prefill_small_n_auto_eligible_for_model(
-                Some(GgmlType::Q4K),
-                true
-            ));
-            assert!(!q5k_prefill_small_n_auto_eligible_for_model(
-                Some(GgmlType::Q5K),
-                false
-            ));
-        });
+        assert!(q5k_prefill_small_n_auto_eligible_for_model(
+            Some(GgmlType::Q5K),
+            true
+        ));
+        assert!(!q5k_prefill_small_n_auto_eligible_for_model(
+            Some(GgmlType::Q4K),
+            true
+        ));
+        assert!(!q5k_prefill_small_n_auto_eligible_for_model(
+            Some(GgmlType::Q5K),
+            false
+        ));
     }
 
     #[test]

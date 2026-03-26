@@ -5,6 +5,7 @@ pub mod neon;
 pub mod policy;
 
 use crate::gguf::tensor::GgmlType;
+use crate::kv::Qwen35Kv;
 use crate::model::config::ModelConfig;
 
 pub use kv_plan::{
@@ -12,6 +13,249 @@ pub use kv_plan::{
     KvPlannerRequirements, KvRollbackPolicy, Qwen35KvPlan,
 };
 pub use policy::{KvPrecisionPolicy, RuntimePolicy};
+
+/// Slot-indexed recurrent-state batch for Qwen3.5 hybrid layers.
+///
+/// The batch is expressed as one or more live recurrent slots, each with an
+/// equal number of new tokens. The underlying state buffers stay flattened for
+/// the current backend implementations, but slot ownership is explicit at the
+/// API boundary so the runtime can evolve toward true `state_indices` execution
+/// without another backend refactor.
+#[derive(Debug)]
+pub struct Qwen35RecurrentStateBatch<'a> {
+    layer_idx: usize,
+    slot_indices: &'a [usize],
+    conv_state_batch: &'a mut [f32],
+    recurrent_state_batch: &'a mut [f32],
+    conv_state_stride: usize,
+    recurrent_state_stride: usize,
+}
+
+impl<'a> Qwen35RecurrentStateBatch<'a> {
+    pub fn new(
+        layer_idx: usize,
+        slot_indices: &'a [usize],
+        conv_state_batch: &'a mut [f32],
+        recurrent_state_batch: &'a mut [f32],
+        conv_state_stride: usize,
+        recurrent_state_stride: usize,
+    ) -> Self {
+        assert!(
+            !slot_indices.is_empty(),
+            "qwen35 recurrent state batch requires at least one slot"
+        );
+        assert!(
+            conv_state_stride > 0,
+            "qwen35 recurrent conv state stride must be > 0"
+        );
+        assert!(
+            recurrent_state_stride > 0,
+            "qwen35 recurrent state stride must be > 0"
+        );
+        for (i, &slot_idx) in slot_indices.iter().enumerate() {
+            for &other_slot_idx in &slot_indices[..i] {
+                assert!(
+                    slot_idx != other_slot_idx,
+                    "qwen35 recurrent state batch must not contain duplicate slots"
+                );
+            }
+        }
+        assert_eq!(
+            conv_state_batch.len(),
+            slot_indices.len() * conv_state_stride,
+            "qwen35 recurrent conv state batch has wrong length"
+        );
+        assert_eq!(
+            recurrent_state_batch.len(),
+            slot_indices.len() * recurrent_state_stride,
+            "qwen35 recurrent state batch has wrong length"
+        );
+        Self {
+            layer_idx,
+            slot_indices,
+            conv_state_batch,
+            recurrent_state_batch,
+            conv_state_stride,
+            recurrent_state_stride,
+        }
+    }
+
+    pub fn layer_idx(&self) -> usize {
+        self.layer_idx
+    }
+
+    pub fn slot_count(&self) -> usize {
+        self.slot_indices.len()
+    }
+
+    pub fn slot_indices(&self) -> &[usize] {
+        self.slot_indices
+    }
+
+    pub fn slot_index(&self, batch_idx: usize) -> usize {
+        self.slot_indices[batch_idx]
+    }
+
+    pub fn conv_state_stride(&self) -> usize {
+        self.conv_state_stride
+    }
+
+    pub fn recurrent_state_stride(&self) -> usize {
+        self.recurrent_state_stride
+    }
+
+    pub fn conv_state_for_slot_mut(&mut self, batch_idx: usize) -> &mut [f32] {
+        let start = batch_idx * self.conv_state_stride;
+        let end = start + self.conv_state_stride;
+        &mut self.conv_state_batch[start..end]
+    }
+
+    pub fn recurrent_state_for_slot_mut(&mut self, batch_idx: usize) -> &mut [f32] {
+        let start = batch_idx * self.recurrent_state_stride;
+        let end = start + self.recurrent_state_stride;
+        &mut self.recurrent_state_batch[start..end]
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn qwen35_recurrent_sequence_via_backend(
+    backend: &(impl Backend + ?Sized),
+    qkv_batch: &[f32],
+    beta_batch: &mut [f32],
+    alpha_batch: &mut [f32],
+    dt_bias: &[f32],
+    a: &[f32],
+    conv_kernel: &[f32],
+    state_batch: &mut Qwen35RecurrentStateBatch<'_>,
+    output_batch: &mut [f32],
+    tokens_per_slot: usize,
+    cfg: crate::compute::gdn::Qwen35RecurrentConfig,
+) {
+    assert!(
+        tokens_per_slot > 0,
+        "qwen35 recurrent sequence requires tokens_per_slot > 0"
+    );
+    let slot_count = state_batch.slot_count();
+    let total_tokens = slot_count * tokens_per_slot;
+    let key_dim = cfg.key_dim();
+    let value_dim = cfg.value_dim();
+    assert_eq!(
+        qkv_batch.len(),
+        total_tokens * cfg.conv_dim,
+        "qwen35 recurrent qkv batch has wrong length"
+    );
+    assert_eq!(
+        beta_batch.len(),
+        total_tokens * cfg.time_step_rank,
+        "qwen35 recurrent beta batch has wrong length"
+    );
+    assert_eq!(
+        alpha_batch.len(),
+        total_tokens * cfg.time_step_rank,
+        "qwen35 recurrent alpha batch has wrong length"
+    );
+    assert_eq!(
+        output_batch.len(),
+        total_tokens * value_dim,
+        "qwen35 recurrent output batch has wrong length"
+    );
+    assert_eq!(
+        state_batch.conv_state_stride(),
+        cfg.conv_cache_len * cfg.conv_dim,
+        "qwen35 recurrent conv state stride mismatch"
+    );
+    assert_eq!(
+        state_batch.recurrent_state_stride(),
+        cfg.time_step_rank * cfg.state_size * cfg.state_size,
+        "qwen35 recurrent state stride mismatch"
+    );
+
+    let mut conv_out_batch = vec![0.0f32; total_tokens * cfg.conv_dim];
+    let mut q_batch = vec![0.0f32; total_tokens * value_dim];
+    let mut k_batch = vec![0.0f32; total_tokens * value_dim];
+    let mut v_batch = vec![0.0f32; total_tokens * value_dim];
+
+    crate::compute::gdn::prepare_alpha_beta(alpha_batch, beta_batch, dt_bias, a);
+
+    for batch_idx in 0..slot_count {
+        let _slot_idx = state_batch.slot_index(batch_idx);
+        let token_start = batch_idx * tokens_per_slot;
+        let token_end = token_start + tokens_per_slot;
+        let qkv_start = token_start * cfg.conv_dim;
+        let qkv_end = token_end * cfg.conv_dim;
+        backend.qwen35_causal_conv_sequence(
+            &qkv_batch[qkv_start..qkv_end],
+            conv_kernel,
+            state_batch.conv_state_for_slot_mut(batch_idx),
+            &mut conv_out_batch[qkv_start..qkv_end],
+            tokens_per_slot,
+            cfg.conv_cache_len,
+            cfg.conv_dim,
+        );
+    }
+
+    for token_idx in 0..total_tokens {
+        let conv_start = token_idx * cfg.conv_dim;
+        let conv_end = conv_start + cfg.conv_dim;
+        let conv_out = &conv_out_batch[conv_start..conv_end];
+        let mut q_lin = conv_out[..key_dim].to_vec();
+        let mut k_lin = conv_out[key_dim..2 * key_dim].to_vec();
+        let v_lin = &conv_out[2 * key_dim..2 * key_dim + value_dim];
+
+        crate::compute::gdn::l2_norm_heads(
+            &mut q_lin,
+            cfg.group_count,
+            cfg.state_size,
+            cfg.rms_norm_eps,
+        );
+        crate::compute::gdn::l2_norm_heads(
+            &mut k_lin,
+            cfg.group_count,
+            cfg.state_size,
+            cfg.rms_norm_eps,
+        );
+
+        let q_rep = crate::compute::gdn::repeat_heads(
+            &q_lin,
+            cfg.group_count,
+            cfg.time_step_rank,
+            cfg.state_size,
+        );
+        let k_rep = crate::compute::gdn::repeat_heads(
+            &k_lin,
+            cfg.group_count,
+            cfg.time_step_rank,
+            cfg.state_size,
+        );
+        let out_start = token_idx * value_dim;
+        let out_end = out_start + value_dim;
+        q_batch[out_start..out_end].copy_from_slice(&q_rep);
+        k_batch[out_start..out_end].copy_from_slice(&k_rep);
+        v_batch[out_start..out_end].copy_from_slice(v_lin);
+    }
+
+    for batch_idx in 0..slot_count {
+        let _slot_idx = state_batch.slot_index(batch_idx);
+        let token_start = batch_idx * tokens_per_slot;
+        let token_end = token_start + tokens_per_slot;
+        let qkv_start = token_start * value_dim;
+        let qkv_end = token_end * value_dim;
+        let gate_start = token_start * cfg.time_step_rank;
+        let gate_end = token_end * cfg.time_step_rank;
+        backend.qwen35_gated_delta_sequence(
+            &q_batch[qkv_start..qkv_end],
+            &k_batch[qkv_start..qkv_end],
+            &v_batch[qkv_start..qkv_end],
+            &alpha_batch[gate_start..gate_end],
+            &beta_batch[gate_start..gate_end],
+            state_batch.recurrent_state_for_slot_mut(batch_idx),
+            &mut output_batch[qkv_start..qkv_end],
+            tokens_per_slot,
+            cfg.time_step_rank,
+            cfg.state_size,
+        );
+    }
+}
 
 /// Backend trait for compute dispatch.
 ///
@@ -109,26 +353,93 @@ pub trait Backend {
         dt_bias: &[f32],
         a: &[f32],
         conv_kernel: &[f32],
-        conv_state: &mut [f32],
-        recurrent_state: &mut [f32],
+        state_batch: &mut Qwen35RecurrentStateBatch<'_>,
         output_batch: &mut [f32],
-        n_tokens: usize,
+        tokens_per_slot: usize,
         cfg: crate::compute::gdn::Qwen35RecurrentConfig,
     ) {
-        crate::compute::gdn::qwen35_recurrent_sequence(
+        qwen35_recurrent_sequence_via_backend(
+            self,
             qkv_batch,
             beta_batch,
             alpha_batch,
             dt_bias,
             a,
             conv_kernel,
-            conv_state,
-            recurrent_state,
+            state_batch,
             output_batch,
-            n_tokens,
+            tokens_per_slot,
             cfg,
         );
     }
+
+    /// Qwen3.5 recurrent GDN primitive operating directly on the hybrid KV.
+    ///
+    /// This keeps `Qwen35Forward` agnostic to how a backend stages recurrent
+    /// state. Backends can override this to use backend-owned mirrors or
+    /// device-resident pools without forcing another model-side refactor.
+    #[allow(clippy::too_many_arguments)]
+    fn qwen35_recurrent_sequence_for_kv(
+        &self,
+        qkv_batch: &[f32],
+        beta_batch: &mut [f32],
+        alpha_batch: &mut [f32],
+        dt_bias: &[f32],
+        a: &[f32],
+        conv_kernel: &[f32],
+        qwen_kv: &mut Qwen35Kv,
+        layer_idx: usize,
+        slot_indices: &[usize],
+        output_batch: &mut [f32],
+        tokens_per_slot: usize,
+        cfg: crate::compute::gdn::Qwen35RecurrentConfig,
+    ) {
+        qwen_kv.assert_valid_recurrent_slot_batch(slot_indices, layer_idx);
+        let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
+        let recurrent_state_stride = qwen_kv.recurrent_state_len();
+        let mut conv_state_batch = vec![0.0f32; slot_indices.len() * conv_state_stride];
+        let mut recurrent_state_batch = vec![0.0f32; slot_indices.len() * recurrent_state_stride];
+        qwen_kv.gather_recurrent_state_batch(
+            slot_indices,
+            layer_idx,
+            &mut conv_state_batch,
+            &mut recurrent_state_batch,
+        );
+        let mut state_batch = Qwen35RecurrentStateBatch::new(
+            layer_idx,
+            slot_indices,
+            &mut conv_state_batch,
+            &mut recurrent_state_batch,
+            conv_state_stride,
+            recurrent_state_stride,
+        );
+        self.qwen35_recurrent_sequence(
+            qkv_batch,
+            beta_batch,
+            alpha_batch,
+            dt_bias,
+            a,
+            conv_kernel,
+            &mut state_batch,
+            output_batch,
+            tokens_per_slot,
+            cfg,
+        );
+        qwen_kv.scatter_recurrent_state_batch(
+            slot_indices,
+            layer_idx,
+            &conv_state_batch,
+            &recurrent_state_batch,
+        );
+    }
+
+    /// Materialize any backend-owned Qwen3.5 recurrent state back into the KV.
+    ///
+    /// Most backends keep Qwen3.5 recurrent state in CPU-owned slices, so the
+    /// default implementation is a no-op. Backends with slot-buffer mirrors can
+    /// override this to flush the latest recurrent state before snapshotting or
+    /// other host-side control paths.
+    fn sync_qwen35_kv(&self, _qwen_kv: &mut Qwen35Kv) {}
 
     /// Qwen3.5 depthwise causal conv sequence primitive.
     #[allow(clippy::too_many_arguments)]
@@ -230,6 +541,32 @@ pub enum BackendConfig {
     HybridCpuDecode,
 }
 
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on"))
+}
+
+/// Resolve the runtime backend configuration from supported environment overrides.
+///
+/// `AX_CPU_ONLY=1` forces [`BackendConfig::Cpu`].
+/// `AX_HYBRID_DECODE=cpu` forces [`BackendConfig::HybridCpuDecode`].
+/// Otherwise the production default [`BackendConfig::Hybrid`] is used.
+pub fn resolve_backend_config_from_env() -> BackendConfig {
+    if env_flag_enabled("AX_CPU_ONLY") {
+        return BackendConfig::Cpu;
+    }
+
+    if std::env::var("AX_HYBRID_DECODE")
+        .ok()
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("cpu"))
+    {
+        return BackendConfig::HybridCpuDecode;
+    }
+
+    BackendConfig::default()
+}
+
 /// Create a boxed backend from configuration.
 pub fn create_backend(config: BackendConfig) -> anyhow::Result<Box<dyn Backend>> {
     match config {
@@ -254,6 +591,28 @@ mod tests {
     use super::*;
     use crate::model::ModelConfig;
     use crate::model::config::{GateActivation, RopeScaling};
+    use std::sync::{Mutex, OnceLock};
+
+    struct EnvVarRestore {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(prev) => unsafe { std::env::set_var(self.key, prev) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("backend env lock")
+    }
 
     fn test_model_config() -> ModelConfig {
         ModelConfig {
@@ -326,5 +685,423 @@ mod tests {
         let backend = create_backend(BackendConfig::HybridCpuDecode).unwrap();
         let kv = create_model_kv(backend.as_ref(), &test_model_config());
         assert!(matches!(kv, crate::kv::ModelKv::Cpu(_)));
+    }
+
+    #[test]
+    fn test_resolve_backend_config_from_env_defaults_to_hybrid() {
+        let _guard = env_lock();
+        let _restore_cpu = EnvVarRestore {
+            key: "AX_CPU_ONLY",
+            previous: std::env::var_os("AX_CPU_ONLY"),
+        };
+        let _restore_decode = EnvVarRestore {
+            key: "AX_HYBRID_DECODE",
+            previous: std::env::var_os("AX_HYBRID_DECODE"),
+        };
+        unsafe {
+            std::env::remove_var("AX_CPU_ONLY");
+            std::env::remove_var("AX_HYBRID_DECODE");
+        }
+
+        assert_eq!(resolve_backend_config_from_env(), BackendConfig::Hybrid);
+    }
+
+    #[test]
+    fn test_resolve_backend_config_from_env_honors_cpu_only() {
+        let _guard = env_lock();
+        let _restore_cpu = EnvVarRestore {
+            key: "AX_CPU_ONLY",
+            previous: std::env::var_os("AX_CPU_ONLY"),
+        };
+        unsafe {
+            std::env::set_var("AX_CPU_ONLY", "1");
+        }
+
+        assert_eq!(resolve_backend_config_from_env(), BackendConfig::Cpu);
+    }
+
+    #[test]
+    fn test_resolve_backend_config_from_env_honors_hybrid_cpu_decode() {
+        let _guard = env_lock();
+        let _restore_decode = EnvVarRestore {
+            key: "AX_HYBRID_DECODE",
+            previous: std::env::var_os("AX_HYBRID_DECODE"),
+        };
+        unsafe {
+            std::env::set_var("AX_HYBRID_DECODE", "cpu");
+        }
+
+        assert_eq!(
+            resolve_backend_config_from_env(),
+            BackendConfig::HybridCpuDecode
+        );
+    }
+
+    #[test]
+    fn test_resolve_backend_config_from_env_cpu_only_wins() {
+        let _guard = env_lock();
+        let _restore_cpu = EnvVarRestore {
+            key: "AX_CPU_ONLY",
+            previous: std::env::var_os("AX_CPU_ONLY"),
+        };
+        let _restore_decode = EnvVarRestore {
+            key: "AX_HYBRID_DECODE",
+            previous: std::env::var_os("AX_HYBRID_DECODE"),
+        };
+        unsafe {
+            std::env::set_var("AX_CPU_ONLY", "1");
+            std::env::set_var("AX_HYBRID_DECODE", "cpu");
+        }
+
+        assert_eq!(resolve_backend_config_from_env(), BackendConfig::Cpu);
+    }
+
+    #[test]
+    fn test_qwen35_recurrent_state_batch_requires_matching_lengths() {
+        let slot_indices = [0usize, 1usize];
+        let mut conv_state = vec![0.0f32; 8];
+        let mut recurrent_state = vec![0.0f32; 8];
+        let batch = Qwen35RecurrentStateBatch::new(
+            0,
+            &slot_indices,
+            &mut conv_state,
+            &mut recurrent_state,
+            4,
+            4,
+        );
+
+        assert_eq!(batch.slot_count(), 2);
+        assert_eq!(batch.layer_idx(), 0);
+        assert_eq!(batch.slot_indices(), &slot_indices);
+        assert_eq!(batch.conv_state_stride(), 4);
+        assert_eq!(batch.recurrent_state_stride(), 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "qwen35 recurrent state batch must not contain duplicate slots")]
+    fn test_qwen35_recurrent_state_batch_rejects_duplicate_slots() {
+        let slot_indices = [0usize, 0usize];
+        let mut conv_state = vec![0.0f32; 8];
+        let mut recurrent_state = vec![0.0f32; 8];
+        let _ = Qwen35RecurrentStateBatch::new(
+            0,
+            &slot_indices,
+            &mut conv_state,
+            &mut recurrent_state,
+            4,
+            4,
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "qwen35 recurrent slot batch slot 1 has seqlen_offset 1 != shared attention seq_len 0"
+    )]
+    fn test_qwen35_recurrent_sequence_for_kv_rejects_misaligned_slot_batch() {
+        let backend = cpu::CpuBackend;
+        let cfg = crate::compute::gdn::Qwen35RecurrentConfig {
+            conv_cache_len: 2,
+            conv_dim: 6,
+            group_count: 1,
+            state_size: 2,
+            time_step_rank: 1,
+            rms_norm_eps: 1e-5,
+        };
+        let mut kv = crate::kv::Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+        let slot1 = kv.allocate_recurrent_slot();
+        kv.set_recurrent_seqlen_offset(slot1, 1);
+        let slot_indices = [0usize, slot1];
+        let tokens_per_slot = 1usize;
+        let total_tokens = slot_indices.len() * tokens_per_slot;
+        let qkv = vec![0.0f32; total_tokens * cfg.conv_dim];
+        let mut alpha = vec![0.0f32; total_tokens * cfg.time_step_rank];
+        let mut beta = vec![0.0f32; total_tokens * cfg.time_step_rank];
+        let dt_bias = vec![0.0f32; cfg.time_step_rank];
+        let a = vec![0.0f32; cfg.time_step_rank];
+        let kernel = vec![0.0f32; (cfg.conv_cache_len + 1) * cfg.conv_dim];
+        let mut out = vec![0.0f32; total_tokens * cfg.value_dim()];
+
+        backend.qwen35_recurrent_sequence_for_kv(
+            &qkv,
+            &mut beta,
+            &mut alpha,
+            &dt_bias,
+            &a,
+            &kernel,
+            &mut kv,
+            0,
+            &slot_indices,
+            &mut out,
+            tokens_per_slot,
+            cfg,
+        );
+    }
+
+    #[test]
+    fn test_qwen35_recurrent_sequence_via_backend_matches_per_slot_cpu_execution() {
+        let backend = cpu::CpuBackend;
+        let cfg = crate::compute::gdn::Qwen35RecurrentConfig {
+            conv_cache_len: 2,
+            conv_dim: 6,
+            group_count: 1,
+            state_size: 2,
+            time_step_rank: 1,
+            rms_norm_eps: 1e-5,
+        };
+        let slot_indices = [3usize, 7usize];
+        let tokens_per_slot = 2;
+        let total_tokens = slot_indices.len() * tokens_per_slot;
+        let conv_state_stride = cfg.conv_cache_len * cfg.conv_dim;
+        let recurrent_state_stride = cfg.time_step_rank * cfg.state_size * cfg.state_size;
+        let qkv = vec![
+            0.5, 0.1, -0.2, 0.7, 0.3, 0.4, //
+            -0.1, 0.2, 0.6, 0.8, -0.4, 0.9, //
+            0.2, -0.3, 0.1, -0.5, 0.6, 0.7, //
+            0.8, 0.4, -0.6, 0.2, 0.1, -0.2,
+        ];
+        let alpha_input = vec![0.3, 0.4, 0.2, 0.1];
+        let beta_input = vec![0.1, 0.2, 0.3, 0.4];
+        let dt_bias = vec![0.05];
+        let a = vec![0.7];
+        let kernel = vec![
+            0.1, 0.2, 0.1, 0.2, 0.1, 0.2, //
+            0.2, 0.1, 0.2, 0.1, 0.2, 0.1, //
+            0.3, 0.4, 0.3, 0.4, 0.3, 0.4,
+        ];
+        let mut conv_state = vec![0.0f32; slot_indices.len() * conv_state_stride];
+        let mut recurrent_state = vec![0.0f32; slot_indices.len() * recurrent_state_stride];
+        let mut alpha = alpha_input.clone();
+        let mut beta = beta_input.clone();
+        let mut out = vec![0.0f32; total_tokens * cfg.value_dim()];
+
+        {
+            let mut state_batch = Qwen35RecurrentStateBatch::new(
+                0,
+                &slot_indices,
+                &mut conv_state,
+                &mut recurrent_state,
+                conv_state_stride,
+                recurrent_state_stride,
+            );
+            backend.qwen35_recurrent_sequence(
+                &qkv,
+                &mut beta,
+                &mut alpha,
+                &dt_bias,
+                &a,
+                &kernel,
+                &mut state_batch,
+                &mut out,
+                tokens_per_slot,
+                cfg,
+            );
+        }
+
+        for batch_idx in 0..slot_indices.len() {
+            let token_start = batch_idx * tokens_per_slot;
+            let token_end = token_start + tokens_per_slot;
+            let qkv_start = token_start * cfg.conv_dim;
+            let qkv_end = token_end * cfg.conv_dim;
+            let gate_start = token_start * cfg.time_step_rank;
+            let gate_end = token_end * cfg.time_step_rank;
+            let out_start = token_start * cfg.value_dim();
+            let out_end = token_end * cfg.value_dim();
+
+            let mut expected_alpha = alpha_input[gate_start..gate_end].to_vec();
+            let mut expected_beta = beta_input[gate_start..gate_end].to_vec();
+            let mut expected_conv_state = vec![0.0f32; conv_state_stride];
+            let mut expected_recurrent_state = vec![0.0f32; recurrent_state_stride];
+            let mut expected_out = vec![0.0f32; tokens_per_slot * cfg.value_dim()];
+
+            crate::compute::gdn::qwen35_recurrent_sequence(
+                &qkv[qkv_start..qkv_end],
+                &mut expected_beta,
+                &mut expected_alpha,
+                &dt_bias,
+                &a,
+                &kernel,
+                &mut expected_conv_state,
+                &mut expected_recurrent_state,
+                &mut expected_out,
+                tokens_per_slot,
+                cfg,
+            );
+
+            for (actual, expected) in alpha[gate_start..gate_end]
+                .iter()
+                .zip(expected_alpha.iter())
+            {
+                assert!((actual - expected).abs() < 1e-5);
+            }
+            for (actual, expected) in beta[gate_start..gate_end].iter().zip(expected_beta.iter()) {
+                assert!((actual - expected).abs() < 1e-5);
+            }
+            for (actual, expected) in out[out_start..out_end].iter().zip(expected_out.iter()) {
+                assert!((actual - expected).abs() < 1e-5);
+            }
+            let conv_start = batch_idx * conv_state_stride;
+            let conv_end = conv_start + conv_state_stride;
+            for (actual, expected) in conv_state[conv_start..conv_end]
+                .iter()
+                .zip(expected_conv_state.iter())
+            {
+                assert!((actual - expected).abs() < 1e-5);
+            }
+            let state_start = batch_idx * recurrent_state_stride;
+            let state_end = state_start + recurrent_state_stride;
+            for (actual, expected) in recurrent_state[state_start..state_end]
+                .iter()
+                .zip(expected_recurrent_state.iter())
+            {
+                assert!((actual - expected).abs() < 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn test_qwen35_recurrent_sequence_for_kv_matches_gathered_state_batch_path() {
+        let backend = cpu::CpuBackend;
+        let cfg = crate::compute::gdn::Qwen35RecurrentConfig {
+            conv_cache_len: 3,
+            conv_dim: 16,
+            group_count: 2,
+            state_size: 2,
+            time_step_rank: 4,
+            rms_norm_eps: 1e-5,
+        };
+        let layer_idx = 0usize;
+        let tokens_per_slot = 2;
+        let mut actual_kv = crate::kv::Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+        let mut expected_kv = crate::kv::Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+        let slot1 = actual_kv.allocate_recurrent_slot();
+        let expected_slot1 = expected_kv.allocate_recurrent_slot();
+        assert_eq!(slot1, expected_slot1);
+        let slot_indices = [0usize, slot1];
+        let total_tokens = slot_indices.len() * tokens_per_slot;
+        let conv_state_stride = actual_kv.conv_cache_len() * actual_kv.conv_dim();
+        let recurrent_state_stride = actual_kv.recurrent_state_len();
+
+        for (slot_pos, &slot_idx) in slot_indices.iter().enumerate() {
+            actual_kv
+                .conv_state_for_slot_mut(slot_idx, layer_idx)
+                .iter_mut()
+                .enumerate()
+                .for_each(|(i, v)| *v = (slot_pos as f32 + 1.0) * 0.1 + i as f32 * 0.001);
+            actual_kv
+                .recurrent_state_for_slot_mut(slot_idx, layer_idx)
+                .iter_mut()
+                .enumerate()
+                .for_each(|(i, v)| *v = (slot_pos as f32 + 1.0) * 0.2 + i as f32 * 0.002);
+            expected_kv
+                .conv_state_for_slot_mut(slot_idx, layer_idx)
+                .copy_from_slice(actual_kv.conv_state_for_slot(slot_idx, layer_idx));
+            expected_kv
+                .recurrent_state_for_slot_mut(slot_idx, layer_idx)
+                .copy_from_slice(actual_kv.recurrent_state_for_slot(slot_idx, layer_idx));
+        }
+
+        let qkv: Vec<f32> = (0..total_tokens * cfg.conv_dim)
+            .map(|i| ((i % 31) as f32 - 15.0) * 0.02)
+            .collect();
+        let alpha_input: Vec<f32> = (0..total_tokens * cfg.time_step_rank)
+            .map(|i| ((i % 9) as f32 - 4.0) * 0.05)
+            .collect();
+        let beta_input: Vec<f32> = (0..total_tokens * cfg.time_step_rank)
+            .map(|i| 0.1 + (i % 11) as f32 * 0.02)
+            .collect();
+        let dt_bias = vec![0.03, 0.04, 0.05, 0.06];
+        let a = vec![0.2, 0.25, 0.3, 0.35];
+        let kernel: Vec<f32> = (0..(cfg.conv_cache_len + 1) * cfg.conv_dim)
+            .map(|i| ((i % 17) as f32 - 8.0) * 0.01)
+            .collect();
+
+        let mut expected_conv_state = vec![0.0f32; slot_indices.len() * conv_state_stride];
+        let mut expected_recurrent_state =
+            vec![0.0f32; slot_indices.len() * recurrent_state_stride];
+        expected_kv.gather_recurrent_state_batch(
+            &slot_indices,
+            layer_idx,
+            &mut expected_conv_state,
+            &mut expected_recurrent_state,
+        );
+        let mut expected_alpha = alpha_input.clone();
+        let mut expected_beta = beta_input.clone();
+        let mut expected_out = vec![0.0f32; total_tokens * cfg.value_dim()];
+        {
+            let mut state_batch = Qwen35RecurrentStateBatch::new(
+                layer_idx,
+                &slot_indices,
+                &mut expected_conv_state,
+                &mut expected_recurrent_state,
+                conv_state_stride,
+                recurrent_state_stride,
+            );
+            backend.qwen35_recurrent_sequence(
+                &qkv,
+                &mut expected_beta,
+                &mut expected_alpha,
+                &dt_bias,
+                &a,
+                &kernel,
+                &mut state_batch,
+                &mut expected_out,
+                tokens_per_slot,
+                cfg,
+            );
+        }
+        expected_kv.scatter_recurrent_state_batch(
+            &slot_indices,
+            layer_idx,
+            &expected_conv_state,
+            &expected_recurrent_state,
+        );
+
+        let mut actual_alpha = alpha_input.clone();
+        let mut actual_beta = beta_input.clone();
+        let mut actual_out = vec![0.0f32; total_tokens * cfg.value_dim()];
+        backend.qwen35_recurrent_sequence_for_kv(
+            &qkv,
+            &mut actual_beta,
+            &mut actual_alpha,
+            &dt_bias,
+            &a,
+            &kernel,
+            &mut actual_kv,
+            layer_idx,
+            &slot_indices,
+            &mut actual_out,
+            tokens_per_slot,
+            cfg,
+        );
+
+        for (actual, expected) in actual_alpha.iter().zip(expected_alpha.iter()) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        for (actual, expected) in actual_beta.iter().zip(expected_beta.iter()) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        for (actual, expected) in actual_out.iter().zip(expected_out.iter()) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        for &slot_idx in &slot_indices {
+            for (actual, expected) in actual_kv
+                .conv_state_for_slot(slot_idx, layer_idx)
+                .iter()
+                .zip(expected_kv.conv_state_for_slot(slot_idx, layer_idx).iter())
+            {
+                assert!((actual - expected).abs() < 1e-5);
+            }
+            for (actual, expected) in actual_kv
+                .recurrent_state_for_slot(slot_idx, layer_idx)
+                .iter()
+                .zip(
+                    expected_kv
+                        .recurrent_state_for_slot(slot_idx, layer_idx)
+                        .iter(),
+                )
+            {
+                assert!((actual - expected).abs() < 1e-5);
+            }
+        }
     }
 }

@@ -36,7 +36,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::gguf::MappedModel;
-use crate::kv::ModelKv;
+use crate::kv::{ModelKv, ModelKvSnapshot};
 use crate::metrics::counters::OpTimer;
 use crate::model::{LlamaModel, WeightStore};
 use crate::sampling::Sampler;
@@ -162,6 +162,8 @@ impl SpeculativeDecoder {
                 &mut sync_logits,
             )?;
         }
+        self.draft_model.sync_model_kv(&mut self.draft_kv);
+        let draft_step_snapshot = self.draft_kv.snapshot();
 
         // Run draft model for K steps from position, seeded by last_token.
         // We collect the drafted tokens and their probabilities.
@@ -210,6 +212,8 @@ impl SpeculativeDecoder {
             .collect();
 
         let verify_timer = OpTimer::start();
+        target_model.sync_model_kv(target_kv);
+        let target_step_snapshot = target_kv.snapshot();
         let mut target_logits_all: Vec<f32> = Vec::new();
         target_model.forward_batch_all_logits(
             &verify_tokens,
@@ -264,11 +268,26 @@ impl SpeculativeDecoder {
                 let correction = sampler.sample_from_probs(&correction_probs);
                 accepted.push(correction);
 
-                // Rewind target KV to position + n_accepted + 1
-                // (we've accepted n_accepted draft tokens + the correction)
+                // Restore target state to the start of the speculative window,
+                // then replay last_token + accepted drafts when precise
+                // truncate is unavailable.
                 let rewind_pos = position + n_accepted + 1;
-                target_kv.truncate_to(rewind_pos);
-                self.draft_kv.truncate_to(position + n_accepted);
+                restore_or_truncate_kv(
+                    target_model,
+                    target_kv,
+                    target_weights,
+                    target_step_snapshot.as_ref(),
+                    &verify_tokens[..n_accepted + 1],
+                    rewind_pos,
+                )?;
+                restore_or_truncate_kv(
+                    &self.draft_model,
+                    &mut self.draft_kv,
+                    &draft_weights,
+                    draft_step_snapshot.as_ref(),
+                    &verify_tokens[..n_accepted],
+                    position + n_accepted,
+                )?;
 
                 return Ok(SpecStep {
                     tokens: accepted,
@@ -300,7 +319,14 @@ impl SpeculativeDecoder {
             base_pos_after_verify,
             "target KV seq_len mismatch after full acceptance"
         );
-        self.draft_kv.truncate_to(position + self.k);
+        // Draft KV is already at position + K from the K forward_single calls.
+        // Do NOT call truncate_to here — for recurrent models (Qwen3.5) it would
+        // destroy state, and for transformer models it is a no-op.
+        debug_assert_eq!(
+            self.draft_kv.seq_len(),
+            position + self.k,
+            "draft KV seq_len mismatch after full acceptance"
+        );
 
         Ok(SpecStep {
             tokens: accepted,
@@ -340,17 +366,44 @@ fn validate_speculative_config(
 }
 
 fn validate_speculative_model_rollback(label: &str, model: &LlamaModel) -> anyhow::Result<()> {
-    model
+    if model
         .kv_plan_with_requirements(crate::backend::KvPlannerRequirements {
             require_precise_rollback: true,
         })
-        .map(|_| ())
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "speculative decoding does not support {label} model architecture '{}' because precise KV rollback is unavailable",
-                model.config.architecture
-            )
-        })
+        .is_ok()
+    {
+        return Ok(());
+    }
+
+    if model.create_model_kv().snapshot().is_some() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "speculative decoding does not support {label} model architecture '{}' because neither precise KV rollback nor snapshot replay is available",
+        model.config.architecture
+    );
+}
+
+fn restore_or_truncate_kv(
+    model: &LlamaModel,
+    kv: &mut ModelKv,
+    weights: &WeightStore,
+    snapshot: Option<&ModelKvSnapshot>,
+    replay_tokens: &[u32],
+    truncate_pos: usize,
+) -> anyhow::Result<()> {
+    if let Some(snapshot) = snapshot {
+        kv.restore_snapshot(snapshot)?;
+        if !replay_tokens.is_empty() {
+            let mut replay_logits = vec![0.0f32; model.config.vocab_size as usize];
+            model.forward_batch(replay_tokens, kv, weights, &mut replay_logits)?;
+        }
+        return Ok(());
+    }
+
+    kv.truncate_to(truncate_pos);
+    Ok(())
 }
 
 /// Compute softmax of a logit slice, returning a probability vector.
@@ -531,13 +584,9 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_speculative_model_rollback_rejects_qwen35_draft() {
+    fn test_validate_speculative_model_rollback_accepts_qwen35_via_snapshot() {
         let model = LlamaModel::new(speculative_test_config("qwen35"));
-        let err = validate_speculative_model_rollback("draft", &model).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("draft model architecture 'qwen35'")
-        );
+        validate_speculative_model_rollback("draft", &model).unwrap();
     }
 
     #[test]

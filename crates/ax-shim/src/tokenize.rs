@@ -26,8 +26,8 @@ pub extern "C" fn llama_tokenize(
 
     let model_ref = unsafe { &*model };
 
-    // Extract text: if text_len > 0, use as byte length; otherwise null-terminated
-    let text_str = if text_len > 0 {
+    // Extract text: if text_len >= 0, use as byte length; if negative, null-terminated
+    let text_str = if text_len >= 0 {
         let bytes = unsafe { std::slice::from_raw_parts(text as *const u8, text_len as usize) };
         match std::str::from_utf8(bytes) {
             Ok(s) => s,
@@ -78,7 +78,7 @@ pub extern "C" fn llama_token_to_piece(
     buf: *mut c_char,
     length: i32,
     _lstrip: i32,
-    _special: bool,
+    special: bool,
 ) -> i32 {
     if model.is_null() || buf.is_null() || length <= 0 {
         return 0;
@@ -89,12 +89,29 @@ pub extern "C" fn llama_token_to_piece(
         return 0;
     }
 
-    let text = match model_ref.tokenizer.decode_token(token as u32) {
-        Some(t) => t,
-        None => return 0,
+    let id = token as u32;
+
+    // Use render_token for proper SentencePiece/byte-token decoding.
+    // render_token returns None for special tokens; when the `special` flag
+    // is set, fall back to the raw vocab string so callers can see BOS/EOS.
+    let rendered: String;
+    let bytes: &[u8] = match model_ref.tokenizer.render_token(id) {
+        Some(s) => {
+            rendered = s;
+            rendered.as_bytes()
+        }
+        None => {
+            if special {
+                match model_ref.tokenizer.decode_token(id) {
+                    Some(t) => t.as_bytes(),
+                    None => return 0,
+                }
+            } else {
+                return 0;
+            }
+        }
     };
 
-    let bytes = text.as_bytes();
     let n = bytes.len();
 
     if n as i32 > length {

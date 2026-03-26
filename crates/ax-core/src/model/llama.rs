@@ -1055,6 +1055,7 @@ impl LlamaForward {
         weights: &WeightStore,
         last_logits: Option<&mut [f32]>,
         logits_all: Option<&mut Vec<f32>>,
+        mut ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<()> {
         let cfg = ctx.config;
         let n_tokens = token_ids.len();
@@ -1073,6 +1074,8 @@ impl LlamaForward {
         if let Some(logits) = last_logits.as_ref() {
             assert!(logits.len() >= vocab_size);
         }
+
+        let setup_t = OpTimer::start();
 
         // Initialize buffers
         metal_ops.init_scratches(cfg);
@@ -1122,6 +1125,10 @@ impl LlamaForward {
             None
         };
 
+        if let Some(ref mut ops_ref) = ops {
+            ops_ref.gpu_encode += setup_t.elapsed();
+        }
+
         // Single command buffer: all layers + final norm + LM head
         {
             let weight_cache = metal_ops.lock_weight_cache();
@@ -1167,14 +1174,20 @@ impl LlamaForward {
                     all_logits_buf.as_ref(),
                     &fused_qkv_cache,
                 );
-                return super::prefill_schedule::execute_prefill_multi_cb(
+                let exec_t = OpTimer::start();
+                let result = super::prefill_schedule::execute_prefill_multi_cb(
                     &metal_ops.device,
                     &schedule,
                     metal_ops,
                 );
+                if let Some(ref mut ops_ref) = ops {
+                    ops_ref.gpu_execute += exec_t.elapsed();
+                }
+                return result;
             }
 
             // ── Inline path (default): existing SmartBarrier encoding ──
+            let exec_t = OpTimer::start();
             metal_ops.device.execute_sync_concurrent(|encoder| {
                 let nt = n_tokens as u32;
                 let mut sb = ax_metal::SmartBarrier::new(encoder);
@@ -1183,6 +1196,7 @@ impl LlamaForward {
                 // Subsequent layers' Phase 1a is fused with the previous layer's
                 // Phase 3f residual add (saves 1 dispatch + 1 barrier per layer).
                 {
+                    let t = OpTimer::start();
                     let norm_w_buf = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
                     if prefill_plan.use_f16_batch_io {
                         metal_ops.elementwise.encode_rms_norm_out_batch_f16(
@@ -1206,6 +1220,9 @@ impl LlamaForward {
                             eps,
                         );
                         sb.post_dispatch(&[&bs.hidden], &[&bs.norm_buf]);
+                    }
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_norm += t.elapsed();
                     }
                 }
 
@@ -1240,6 +1257,7 @@ impl LlamaForward {
                     // norm_buf / matmul_in_f16 is already populated.
 
                     // ── Phase 1b: Batched QKV matmul ──
+                    let qkv_t = OpTimer::start();
                     if let Some(fused_w) = fused_qkv_buf {
                         let cache_offset = (base_seq_len * kv_dim) as u32;
                         let qkv_input = if prefill_plan.use_f16_batch_io {
@@ -1403,8 +1421,12 @@ impl LlamaForward {
                             }
                         }
                     }
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_qkv += qkv_t.elapsed();
+                    }
 
                     // ── Phase 1c: Batched RoPE + batched KV cache append ──
+                    let rope_kv_t = OpTimer::start();
                     if qkv_layer_plan.llama_post
                         == crate::model::execution_plan::LlamaPrefillQkvPostPlan::Separate
                     {
@@ -1457,8 +1479,14 @@ impl LlamaForward {
                         );
                         sb.post_dispatch(&[&bs.v_buf], &[kv_v]);
                     }
+                    if let Some(ref mut ops_ref) = ops {
+                        let elapsed = rope_kv_t.elapsed();
+                        ops_ref.gpu_encode_layer_rope += elapsed / 2;
+                        ops_ref.gpu_encode_layer_kv_append += elapsed / 2;
+                    }
 
                     // ── Phase 2: Batched attention ──
+                    let attn_t = OpTimer::start();
                     if prefill_plan.attention == PrefillAttentionPlan::BatchLocalF16OutHd128 {
                         sb.pre_dispatch(
                             &[&bs.q_buf, &bs.k_buf, &bs.v_buf],
@@ -1520,11 +1548,15 @@ impl LlamaForward {
                                 base_seq_len as u32,
                                 0,
                                 prefill_plan.attention_dispatch,
-                            );
+                        );
                         sb.post_dispatch(&[&bs.q_buf, kv_k, kv_v], &[&bs.attn_out]);
+                    }
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_attention += attn_t.elapsed();
                     }
 
                     // ── Phase 3a: Batched output projection ──
+                    let out_proj_t = OpTimer::start();
                     let wo_buf = weight_cache.get(&lw.wo).unwrap();
                     let wo_input = if prefill_plan.use_f16_batch_io {
                         &bs.matmul_in_f16
@@ -1571,8 +1603,12 @@ impl LlamaForward {
                         );
                     }
                     sb.post_dispatch(&[wo_input], &[&bs.proj_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_out_proj += out_proj_t.elapsed();
+                    }
 
                     // ── Phase 3b: Batched residual + FFN norm ──
+                    let residual_norm_t = OpTimer::start();
                     let ffn_nw_buf = weight_cache.get(&lw.ffn_norm).unwrap();
                     let ffn_norm_out = if prefill_plan.use_f16_batch_io {
                         &bs.matmul_in_f16
@@ -1614,8 +1650,14 @@ impl LlamaForward {
                         &[&bs.hidden, &bs.proj_buf],
                         &[&bs.hidden, ffn_norm_out],
                     );
+                    if let Some(ref mut ops_ref) = ops {
+                        let elapsed = residual_norm_t.elapsed();
+                        ops_ref.gpu_encode_layer_residual += elapsed / 2;
+                        ops_ref.gpu_encode_layer_norm += elapsed / 2;
+                    }
 
                     // ── Phase 3c: Batched gate + up ──
+                    let gate_up_t = OpTimer::start();
                     let wg_buf = weight_cache.get(&lw.wg).unwrap();
                     let wu_buf = weight_cache.get(&lw.wu).unwrap();
                     let ffn_layer_plan = DecodeExecutionPlan::llama_prefill_ffn_layer(
@@ -1707,8 +1749,12 @@ impl LlamaForward {
                         }
                     }
                     sb.post_dispatch(&[ffn_input], &[&bs.gate_buf, &bs.up_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_ffn += gate_up_t.elapsed();
+                    }
 
                     // ── Phase 3d: Batched activation ──
+                    let activation_t = OpTimer::start();
                     let act_out = match ffn_layer_plan.activation {
                         PrefillFfnActivationPlan::SiluMulScratchF16 => &bs.matmul_in_f16,
                         _ => &bs.gate_buf,
@@ -1737,8 +1783,12 @@ impl LlamaForward {
                         PrefillFfnActivationPlan::GeluMulGateF32 => unreachable!(),
                     }
                     sb.post_dispatch(&[&bs.gate_buf, &bs.up_buf], &[act_out]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_ffn += activation_t.elapsed();
+                    }
 
                     // ── Phase 3e: Batched down projection ──
+                    let down_proj_t = OpTimer::start();
                     let wd_buf = weight_cache.get(&lw.wd).unwrap();
                     sb.pre_dispatch(&[act_out], &[&bs.proj_buf]);
                     match ffn_layer_plan.activation {
@@ -1776,8 +1826,12 @@ impl LlamaForward {
                         PrefillFfnActivationPlan::GeluMulGateF32 => unreachable!(),
                     }
                     sb.post_dispatch(&[act_out], &[&bs.proj_buf]);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_ffn += down_proj_t.elapsed();
+                    }
 
                     // ── Phase 3f: Batched residual (+ next layer's norm if not last) ──
+                    let residual_handoff_t = OpTimer::start();
                     let residual_plan = DecodeExecutionPlan::llama_prefill_residual_handoff(
                         &prefill_plan,
                         layer + 1 == n_layers,
@@ -1852,6 +1906,19 @@ impl LlamaForward {
                     } else {
                         sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden]);
                     }
+                    if let Some(ref mut ops_ref) = ops {
+                        let elapsed = residual_handoff_t.elapsed();
+                        match residual_plan {
+                            PrefillResidualHandoffPlan::ResidualOnly => {
+                                ops_ref.gpu_encode_layer_residual += elapsed;
+                            }
+                            PrefillResidualHandoffPlan::ResidualAddRmsNormF32
+                            | PrefillResidualHandoffPlan::ResidualAddRmsNormF16 => {
+                                ops_ref.gpu_encode_layer_residual += elapsed / 2;
+                                ops_ref.gpu_encode_layer_norm += elapsed / 2;
+                            }
+                        }
+                    }
                 }
 
                 // ── Post-loop: Final norm + LM head ──
@@ -1915,11 +1982,15 @@ impl LlamaForward {
 
                 Ok(())
             })?;
+            if let Some(ref mut ops_ref) = ops {
+                ops_ref.gpu_execute += exec_t.elapsed();
+            }
         }
 
         // v2: advance GPU KV only — no CPU mirror to sync
         gpu_kv.finalize_batch(n_tokens);
 
+        let rb_t = OpTimer::start();
         if let Some(logits_all) = logits_all {
             let logits_gpu = unsafe {
                 std::slice::from_raw_parts(
@@ -1941,6 +2012,9 @@ impl LlamaForward {
                 )
             };
             logits[..vocab_size].copy_from_slice(logits_gpu);
+        }
+        if let Some(ref mut ops_ref) = ops {
+            ops_ref.gpu_readback += rb_t.elapsed();
         }
 
         Ok(())
@@ -2210,6 +2284,7 @@ impl ForwardPass for LlamaForward {
                 weights,
                 Some(logits),
                 None,
+                None,
             ) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
@@ -2223,6 +2298,44 @@ impl ForwardPass for LlamaForward {
         for (i, &tid) in token_ids.iter().enumerate() {
             logits.fill(0.0);
             self.forward_single(ctx, tid, start_pos + i, kv, weights, logits, None)?;
+        }
+        Ok(())
+    }
+
+    fn forward_batch_profiled(
+        &self,
+        ctx: &ForwardContext,
+        token_ids: &[u32],
+        kv: &mut ModelKv,
+        weights: &WeightStore,
+        logits: &mut [f32],
+        ops: &mut OpBreakdown,
+    ) -> anyhow::Result<()> {
+        let prefill_plan =
+            PrefillExecutionPlan::for_forward_batch(ctx, kv, weights, token_ids.len(), false)?;
+
+        if prefill_plan.mode == PrefillMode::GpuBatch {
+            let metal_ops = ctx.backend.metal_ops().unwrap();
+            let gpu_kv = kv.as_gpu_mut().unwrap();
+            let total_t = OpTimer::start();
+            let result = self.forward_batch_gpu_unified(
+                ctx,
+                metal_ops,
+                token_ids,
+                gpu_kv,
+                weights,
+                Some(logits),
+                None,
+                Some(&mut *ops),
+            );
+            ops.gpu += total_t.elapsed();
+            return result;
+        }
+
+        let start_pos = kv.seq_len();
+        for (i, &tid) in token_ids.iter().enumerate() {
+            logits.fill(0.0);
+            self.forward_single(ctx, tid, start_pos + i, kv, weights, logits, Some(ops))?;
         }
         Ok(())
     }
@@ -2249,6 +2362,7 @@ impl ForwardPass for LlamaForward {
                 weights,
                 None,
                 Some(logits_all),
+                None,
             ) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
@@ -2456,6 +2570,14 @@ impl LlamaModel {
         crate::backend::KvPlanner::plan(self.backend.as_ref(), &self.config)
     }
 
+    /// Flush backend-owned hybrid state into the KV before host-side control
+    /// paths such as snapshotting inspect it.
+    pub fn sync_model_kv(&self, kv: &mut ModelKv) {
+        if let Some(qwen_kv) = kv.as_qwen35_mut() {
+            self.backend.sync_qwen35_kv(qwen_kv);
+        }
+    }
+
     pub fn kv_plan_with_requirements(
         &self,
         requirements: crate::backend::KvPlannerRequirements,
@@ -2603,6 +2725,21 @@ impl LlamaModel {
         let ctx = self.forward_context();
         self.forward
             .forward_batch(&ctx, token_ids, kv, weights, logits)
+    }
+
+    /// Profiled batched prefill: same as `forward_batch` but records coarse
+    /// operation timing into the provided `OpBreakdown`.
+    pub fn forward_batch_profiled(
+        &self,
+        token_ids: &[u32],
+        kv: &mut ModelKv,
+        weights: &WeightStore,
+        logits: &mut [f32],
+        ops: &mut OpBreakdown,
+    ) -> anyhow::Result<()> {
+        let ctx = self.forward_context();
+        self.forward
+            .forward_batch_profiled(&ctx, token_ids, kv, weights, logits, ops)
     }
 
     /// Profiled decode step: same as `forward_single` but records per-operation

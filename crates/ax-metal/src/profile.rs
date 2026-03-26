@@ -243,6 +243,10 @@ impl Default for KernelProfile {
 
 impl KernelProfile {
     pub fn load(model_name: &str, quant: &str) -> Self {
+        Self::load_relative_to(Path::new("."), model_name, quant)
+    }
+
+    fn load_relative_to(base_dir: &Path, model_name: &str, quant: &str) -> Self {
         if let Some(profile) = Self::try_load_from_env() {
             return profile;
         }
@@ -250,16 +254,16 @@ impl KernelProfile {
         let sanitized_model = sanitize_name(model_name);
         let sanitized_quant = sanitize_name(quant);
 
-        if let Some(profile) = Self::try_load_exact(&sanitized_model, &sanitized_quant) {
+        if let Some(profile) = Self::try_load_exact(base_dir, &sanitized_model, &sanitized_quant) {
             return profile;
         }
 
         let arch = extract_architecture(model_name);
-        if let Some(profile) = Self::try_load_arch(&arch) {
+        if let Some(profile) = Self::try_load_arch(base_dir, &arch) {
             return profile;
         }
 
-        if let Some(profile) = Self::try_load_default() {
+        if let Some(profile) = Self::try_load_default(base_dir) {
             return profile;
         }
 
@@ -273,18 +277,18 @@ impl KernelProfile {
         Self::load_from_path(&path)
     }
 
-    fn try_load_exact(model: &str, quant: &str) -> Option<Self> {
-        let filename = format!("perfs/{}-{}.json", model, quant);
+    fn try_load_exact(base_dir: &Path, model: &str, quant: &str) -> Option<Self> {
+        let filename = base_dir.join("perfs").join(format!("{model}-{quant}.json"));
         Self::load_from_path(&filename)
     }
 
-    fn try_load_arch(arch: &str) -> Option<Self> {
-        let filename = format!("perfs/{}.json", arch);
+    fn try_load_arch(base_dir: &Path, arch: &str) -> Option<Self> {
+        let filename = base_dir.join("perfs").join(format!("{arch}.json"));
         Self::load_from_path(&filename)
     }
 
-    fn try_load_default() -> Option<Self> {
-        Self::load_from_path("perfs/default.json")
+    fn try_load_default(base_dir: &Path) -> Option<Self> {
+        Self::load_from_path(base_dir.join("perfs").join("default.json"))
     }
 
     pub fn load_from_path<P: AsRef<Path>>(path: P) -> Option<Self> {
@@ -603,7 +607,7 @@ mod tests {
             .canonicalize()
             .unwrap();
         let cases = [
-            ("Meta-Llama-3-8B-Instruct", "llama3-8b", "llama3-8b"),
+            ("Qwen3-14B-Instruct", "qwen3-14b", "qwen3-14b"),
             ("Qwen3.5-7B-Instruct", "qwen35-9b", "qwen35-9b"),
             ("Qwen3.5-27B-Instruct", "qwen35-27b", "qwen35-27b"),
         ];
@@ -625,6 +629,35 @@ mod tests {
             let q6k = profile.matvec_params("q6_k");
             assert_eq!(q6k.threadgroup_size, 64);
             assert_eq!(q6k.rows_per_simdgroup, 2);
+        }
+    }
+
+    #[test]
+    fn test_redundant_arch_profiles_fall_back_to_default() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let cases = [
+            ("Meta-Llama-3-8B-Instruct", "llama3-8b"),
+            ("Qwen3-8B-Instruct", "qwen3-8b"),
+        ];
+
+        for (model_name, arch) in cases {
+            let arch_path = workspace_root.join("perfs").join(format!("{arch}.json"));
+            assert!(
+                !arch_path.exists(),
+                "expected redundant profile to be removed: {}",
+                arch_path.display()
+            );
+
+            let profile = KernelProfile::load_relative_to(&workspace_root, model_name, "q4_k_m");
+            assert_eq!(profile.model, "default");
+            assert_eq!(profile.source, "llama.cpp-params-2026-03-22");
+
+            let q4k = profile.matvec_params("q4_k");
+            assert_eq!(q4k.threadgroup_size, 64);
+            assert_eq!(q4k.rows_per_simdgroup, 2);
         }
     }
 

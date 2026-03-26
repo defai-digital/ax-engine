@@ -1101,8 +1101,8 @@ mod tests {
             prefill_tok_per_sec_median: 900.0,
             decode_tok_per_sec: 55.0,
             decode_tok_per_sec_median: 55.0,
-            prefill_plan: "mode=gpu_batch q5k_prefill=experimental_small_n".into(),
-            q5k_prefill_mode: Some("experimental_small_n".into()),
+            prefill_plan: "mode=gpu_batch q5k_prefill=small_n".into(),
+            q5k_prefill_mode: Some("small_n".into()),
             avg_accepted_per_step: 1.5,
             draft_ms_per_step: 2.0,
             verify_ms_per_step: 3.0,
@@ -1143,8 +1143,8 @@ mod tests {
             decode_buffer_barriers: 0.0,
             decode_intent: "throughput".into(),
             decode_mode: "pipelined".into(),
-            prefill_plan: "mode=gpu_batch q5k_prefill=experimental_small_n".into(),
-            q5k_prefill_mode: Some("experimental_small_n".into()),
+            prefill_plan: "mode=gpu_batch q5k_prefill=small_n".into(),
+            q5k_prefill_mode: Some("small_n".into()),
             decode_plan: "sync=pipelined scratch=gpu_shared".into(),
             support_note: Some(
                 ax_core::gguf::mmap::support_note_for_q5k_layer_presence(true)
@@ -1159,10 +1159,8 @@ mod tests {
             cooldown_ms: 0,
         };
         let json = result.to_json().unwrap();
-        assert!(json.contains("\"q5k_prefill_mode\": \"experimental_small_n\""));
-        assert!(
-            json.contains("\"prefill_plan\": \"mode=gpu_batch q5k_prefill=experimental_small_n\"")
-        );
+        assert!(json.contains("\"q5k_prefill_mode\": \"small_n\""));
+        assert!(json.contains("\"prefill_plan\": \"mode=gpu_batch q5k_prefill=small_n\""));
     }
 
     #[test]
@@ -1207,8 +1205,8 @@ mod tests {
             prefill_tok_per_sec_median: 900.0,
             decode_tok_per_sec: 55.0,
             decode_tok_per_sec_median: 55.0,
-            prefill_plan: "mode=gpu_batch q5k_prefill=experimental_small_n".into(),
-            q5k_prefill_mode: Some("experimental_small_n".into()),
+            prefill_plan: "mode=gpu_batch q5k_prefill=small_n".into(),
+            q5k_prefill_mode: Some("small_n".into()),
             avg_accepted_per_step: 1.5,
             draft_ms_per_step: 2.0,
             verify_ms_per_step: 3.0,
@@ -1227,10 +1225,8 @@ mod tests {
             cooldown_ms: 0,
         };
         let json = result.to_json().unwrap();
-        assert!(json.contains("\"q5k_prefill_mode\": \"experimental_small_n\""));
-        assert!(
-            json.contains("\"prefill_plan\": \"mode=gpu_batch q5k_prefill=experimental_small_n\"")
-        );
+        assert!(json.contains("\"q5k_prefill_mode\": \"small_n\""));
+        assert!(json.contains("\"prefill_plan\": \"mode=gpu_batch q5k_prefill=small_n\""));
     }
 
     #[test]

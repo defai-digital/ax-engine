@@ -8,11 +8,11 @@
 //! - full-attention layers use doubled Q projection (`q + gate`)
 //! - every layer uses `post_attention_norm` before the FFN
 //!
-//! AX does not yet have dedicated GPU kernels for the recurrent path, so the
-//! hybrid `ModelKv::Qwen35` state remains CPU-resident. Dense projections still
-//! route through the active backend, allowing Metal/Hybrid backends to
-//! accelerate the heavy dequant+matmul work while recurrent state updates stay
-//! on CPU.
+//! AX now routes the recurrent projections and recurrent primitives through the
+//! active backend, including Metal kernels for the causal-conv and gated-delta
+//! steps. The hybrid `ModelKv::Qwen35` state remains CPU-owned today, so Metal
+//! recurrent execution still copies state through backend-owned kernels rather
+//! than keeping it GPU-resident end to end.
 
 use crate::compute::attention::{self, AttentionParams};
 use crate::compute::gdn;
@@ -33,6 +33,21 @@ macro_rules! timed {
             let _t = OpTimer::start();
             let _r = $body;
             ops.$field += _t.elapsed();
+            _r
+        } else {
+            $body
+        }
+    }};
+}
+
+macro_rules! timed_matmul_bucket {
+    ($ops:expr, $field:ident, $body:expr) => {{
+        if let Some(ref mut ops) = $ops {
+            let _t = OpTimer::start();
+            let _r = $body;
+            let _elapsed = _t.elapsed();
+            ops.matmul += _elapsed;
+            ops.$field += _elapsed;
             _r
         } else {
             $body
@@ -72,7 +87,39 @@ impl Qwen35RecurrentDims {
     }
 }
 
+type QuantOp<'a> = (&'a [u8], crate::gguf::tensor::GgmlType, usize);
+
+#[derive(Clone, Copy)]
+struct Qwen35AttentionNormWeights<'a> {
+    q: &'a [f32],
+    k: &'a [f32],
+}
+
+#[derive(Clone, Copy)]
+struct Qwen35RecurrentRuntimeTensors<'a> {
+    dt_bias: &'a [f32],
+    a: &'a [f32],
+    conv_kernel: &'a [f32],
+    ssm_norm: &'a [f32],
+}
+
 impl Qwen35Forward {
+    fn assert_finite_if_enabled(
+        label: &str,
+        values: &[f32],
+        layer: usize,
+        position: usize,
+    ) -> anyhow::Result<()> {
+        if !env_flag_enabled("AX_QWEN35_ASSERT_FINITE") {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            values.iter().all(|value| value.is_finite()),
+            "qwen35 non-finite values at {label} (layer={layer}, position={position})"
+        );
+        Ok(())
+    }
+
     fn recurrent_dims(cfg: &ModelConfig) -> anyhow::Result<Qwen35RecurrentDims> {
         let dims = Qwen35RecurrentDims {
             conv_kernel: cfg
@@ -168,6 +215,732 @@ impl Qwen35Forward {
         let output_nm = Self::transpose(&output_mn, out_dim, n_tokens);
         output_token_major.copy_from_slice(&output_nm);
     }
+
+    fn qwen35_recurrent_config(
+        qwen_kv: &crate::kv::Qwen35Kv,
+        dims: Qwen35RecurrentDims,
+        rms_norm_eps: f32,
+    ) -> gdn::Qwen35RecurrentConfig {
+        gdn::Qwen35RecurrentConfig {
+            conv_cache_len: qwen_kv.conv_cache_len(),
+            conv_dim: qwen_kv.conv_dim(),
+            group_count: dims.group_count,
+            state_size: dims.state_size,
+            time_step_rank: dims.time_step_rank,
+            rms_norm_eps,
+        }
+    }
+
+    fn validate_recurrent_layer_state(
+        qwen_kv: &crate::kv::Qwen35Kv,
+        recurrent_slot: usize,
+        layer: usize,
+        stage: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            qwen_kv.is_recurrent_layer(layer),
+            "qwen35 KV/state layer mapping mismatch at layer {layer}"
+        );
+        debug_assert_eq!(
+            qwen_kv.recurrent_seqlen_offset(recurrent_slot),
+            qwen_kv.seq_len(),
+            "qwen35 recurrent slot {recurrent_slot} drifted from seq_len before {stage} layer {layer}"
+        );
+        Ok(())
+    }
+
+    fn full_attention_input_ops<'a>(
+        weights: &'a WeightStore,
+        prefix: &str,
+        q_dim: usize,
+        kv_dim: usize,
+    ) -> anyhow::Result<[QuantOp<'a>; 3]> {
+        let (wq_raw, wq_dtype) = weights.raw_with_dtype(&format!("{prefix}.attn_q.weight"))?;
+        let (wk_raw, wk_dtype) = weights.raw_with_dtype(&format!("{prefix}.attn_k.weight"))?;
+        let (wv_raw, wv_dtype) = weights.raw_with_dtype(&format!("{prefix}.attn_v.weight"))?;
+        Ok([
+            (wq_raw, wq_dtype, q_dim * 2),
+            (wk_raw, wk_dtype, kv_dim),
+            (wv_raw, wv_dtype, kv_dim),
+        ])
+    }
+
+    fn maybe_attention_qk_norm<'a>(
+        weights: &'a WeightStore,
+        prefix: &str,
+    ) -> anyhow::Result<Option<Qwen35AttentionNormWeights<'a>>> {
+        if !weights.has(&format!("{prefix}.attn_q_norm.weight")) {
+            return Ok(None);
+        }
+        Ok(Some(Qwen35AttentionNormWeights {
+            q: weights.f32_slice(&format!("{prefix}.attn_q_norm.weight"))?,
+            k: weights.f32_slice(&format!("{prefix}.attn_k_norm.weight"))?,
+        }))
+    }
+
+    fn recurrent_input_ops<'a>(
+        weights: &'a WeightStore,
+        prefix: &str,
+        dims: Qwen35RecurrentDims,
+    ) -> anyhow::Result<[QuantOp<'a>; 4]> {
+        let (wqkv_raw, wqkv_dtype) =
+            weights.raw_with_dtype(&format!("{prefix}.attn_qkv.weight"))?;
+        let (wgate_raw, wgate_dtype) =
+            weights.raw_with_dtype(&format!("{prefix}.attn_gate.weight"))?;
+        let (wbeta_raw, wbeta_dtype) =
+            weights.raw_with_dtype(&format!("{prefix}.ssm_beta.weight"))?;
+        let (walpha_raw, walpha_dtype) =
+            weights.raw_with_dtype(&format!("{prefix}.ssm_alpha.weight"))?;
+        Ok([
+            (wqkv_raw, wqkv_dtype, dims.conv_dim()),
+            (wgate_raw, wgate_dtype, dims.inner_size),
+            (wbeta_raw, wbeta_dtype, dims.time_step_rank),
+            (walpha_raw, walpha_dtype, dims.time_step_rank),
+        ])
+    }
+
+    fn recurrent_runtime_tensors<'a>(
+        weights: &'a WeightStore,
+        prefix: &str,
+    ) -> anyhow::Result<Qwen35RecurrentRuntimeTensors<'a>> {
+        Ok(Qwen35RecurrentRuntimeTensors {
+            dt_bias: weights.f32_slice(&format!("{prefix}.ssm_dt.bias"))?,
+            a: weights.f32_slice(&format!("{prefix}.ssm_a"))?,
+            conv_kernel: weights.f32_slice(&format!("{prefix}.ssm_conv1d.weight"))?,
+            ssm_norm: weights.f32_slice(&format!("{prefix}.ssm_norm.weight"))?,
+        })
+    }
+
+    fn ffn_input_ops<'a>(
+        weights: &'a WeightStore,
+        prefix: &str,
+        inter_dim: usize,
+    ) -> anyhow::Result<[QuantOp<'a>; 2]> {
+        let (wg_raw, wg_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_gate.weight"))?;
+        let (wu_raw, wu_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_up.weight"))?;
+        Ok([(wg_raw, wg_dtype, inter_dim), (wu_raw, wu_dtype, inter_dim)])
+    }
+
+    fn finalize_recurrent_output(
+        rec_out: &mut [f32],
+        rec_z: &[f32],
+        dims: Qwen35RecurrentDims,
+        ssm_norm_w: &[f32],
+        rms_norm_eps: f32,
+    ) {
+        for head in 0..dims.time_step_rank {
+            let start = head * dims.state_size;
+            let end = start + dims.state_size;
+            rms_norm::rms_norm(&mut rec_out[start..end], ssm_norm_w, rms_norm_eps);
+        }
+        let mut z_gate = rec_z.to_vec();
+        silu::silu(&mut z_gate);
+        silu::elementwise_mul(rec_out, &z_gate);
+    }
+
+    fn rms_norm_token_major(
+        input: &[f32],
+        weight: &[f32],
+        output: &mut [f32],
+        n_tokens: usize,
+        dim: usize,
+        rms_norm_eps: f32,
+    ) {
+        for token_idx in 0..n_tokens {
+            let start = token_idx * dim;
+            let end = start + dim;
+            rms_norm::rms_norm_out(
+                &input[start..end],
+                weight,
+                &mut output[start..end],
+                rms_norm_eps,
+            );
+        }
+    }
+
+    fn extract_q_from_q_gate_batch(
+        q_gate_batch: &[f32],
+        q_batch: &mut [f32],
+        n_tokens: usize,
+        q_dim: usize,
+    ) {
+        for token_idx in 0..n_tokens {
+            let src_start = token_idx * q_dim * 2;
+            let q_start = token_idx * q_dim;
+            q_batch[q_start..q_start + q_dim]
+                .copy_from_slice(&q_gate_batch[src_start..src_start + q_dim]);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_attention_qk_norm_batch(
+        q_batch: &mut [f32],
+        k_batch: &mut [f32],
+        n_tokens: usize,
+        q_dim: usize,
+        kv_dim: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        norm_weights: Qwen35AttentionNormWeights<'_>,
+        rms_norm_eps: f32,
+    ) {
+        for token_idx in 0..n_tokens {
+            let q_start = token_idx * q_dim;
+            let k_start = token_idx * kv_dim;
+            per_head_rms_norm(
+                &mut q_batch[q_start..q_start + q_dim],
+                n_heads,
+                head_dim,
+                norm_weights.q,
+                rms_norm_eps,
+            );
+            per_head_rms_norm(
+                &mut k_batch[k_start..k_start + kv_dim],
+                n_kv_heads,
+                head_dim,
+                norm_weights.k,
+                rms_norm_eps,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_rope_batch(
+        cfg: &ModelConfig,
+        q_batch: &mut [f32],
+        k_batch: &mut [f32],
+        n_tokens: usize,
+        start_position: usize,
+        q_dim: usize,
+        kv_dim: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+    ) {
+        for token_idx in 0..n_tokens {
+            let q_start = token_idx * q_dim;
+            let k_start = token_idx * kv_dim;
+            let rope_position = Self::rope_position(cfg, start_position + token_idx);
+            rope::apply_rope_multi_head_scaled(
+                &mut q_batch[q_start..q_start + q_dim],
+                &mut k_batch[k_start..k_start + kv_dim],
+                n_heads,
+                n_kv_heads,
+                head_dim,
+                rope_position,
+                cfg.rope_freq_base,
+            );
+        }
+    }
+
+    fn apply_attention_gate_batch(
+        q_gate_batch: &mut [f32],
+        attn_out_batch: &mut [f32],
+        n_tokens: usize,
+        q_dim: usize,
+    ) {
+        for token_idx in 0..n_tokens {
+            let gate_start = token_idx * q_dim * 2 + q_dim;
+            let attn_start = token_idx * q_dim;
+            let gate = &mut q_gate_batch[gate_start..gate_start + q_dim];
+            gdn::sigmoid_in_place(gate);
+            silu::elementwise_mul(&mut attn_out_batch[attn_start..attn_start + q_dim], gate);
+        }
+    }
+
+    fn finalize_recurrent_output_batch(
+        rec_out_batch: &mut [f32],
+        rec_z_batch: &[f32],
+        n_tokens: usize,
+        dims: Qwen35RecurrentDims,
+        ssm_norm_w: &[f32],
+        rms_norm_eps: f32,
+    ) {
+        for token_idx in 0..n_tokens {
+            let rec_out_start = token_idx * dims.inner_size;
+            let rec_out_end = rec_out_start + dims.inner_size;
+            Self::finalize_recurrent_output(
+                &mut rec_out_batch[rec_out_start..rec_out_end],
+                &rec_z_batch[rec_out_start..rec_out_end],
+                dims,
+                ssm_norm_w,
+                rms_norm_eps,
+            );
+        }
+    }
+
+    fn lm_head_weight_name(weights: &WeightStore) -> &'static str {
+        if weights.has("output.weight") {
+            "output.weight"
+        } else {
+            "token_embd.weight"
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn full_attention_prefill_batch(
+        backend: &dyn crate::backend::Backend,
+        qwen_kv: &crate::kv::Qwen35Kv,
+        layer: usize,
+        q_batch: &[f32],
+        k_batch: &[f32],
+        v_batch: &[f32],
+        attn_out_batch: &mut [f32],
+        n_tokens: usize,
+        params: &AttentionParams,
+    ) {
+        let prefix_len = qwen_kv.seq_len();
+        if prefix_len == 0 {
+            backend.attention_prefill(
+                q_batch,
+                k_batch,
+                v_batch,
+                attn_out_batch,
+                n_tokens,
+                params.n_heads,
+                params.n_kv_heads,
+                params.head_dim,
+            );
+        } else {
+            attention::multi_head_attention_prefill_with_prefix(
+                qwen_kv.attention_k_slice_including_current(layer, prefix_len),
+                qwen_kv.attention_v_slice_including_current(layer, prefix_len),
+                prefix_len,
+                q_batch,
+                k_batch,
+                v_batch,
+                attn_out_batch,
+                n_tokens,
+                params,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_last_batch_logits(
+        backend: &dyn crate::backend::Backend,
+        hidden: &mut [f32],
+        n_tokens: usize,
+        dim: usize,
+        vocab_size: usize,
+        rms_norm_eps: f32,
+        weights: &WeightStore,
+        logits: &mut [f32],
+    ) -> anyhow::Result<()> {
+        let final_norm_w = weights.f32_slice("output_norm.weight")?;
+        let last_hidden = &mut hidden[(n_tokens - 1) * dim..n_tokens * dim];
+        rms_norm::rms_norm(last_hidden, final_norm_w, rms_norm_eps);
+        let lm_weight_name = Self::lm_head_weight_name(weights);
+        let (lm_raw, lm_dtype) = weights.raw_with_dtype(lm_weight_name)?;
+        anyhow::ensure!(logits.len() >= vocab_size, "logits buffer too small");
+        backend.dequant_matmul(lm_raw, lm_dtype, last_hidden, logits, vocab_size, 1, dim);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_all_batch_logits(
+        backend: &dyn crate::backend::Backend,
+        hidden: &[f32],
+        n_tokens: usize,
+        dim: usize,
+        vocab_size: usize,
+        rms_norm_eps: f32,
+        weights: &WeightStore,
+        logits_all: &mut Vec<f32>,
+    ) -> anyhow::Result<()> {
+        let final_norm_w = weights.f32_slice("output_norm.weight")?;
+        let mut final_hidden = vec![0.0f32; hidden.len()];
+        Self::rms_norm_token_major(
+            hidden,
+            final_norm_w,
+            &mut final_hidden,
+            n_tokens,
+            dim,
+            rms_norm_eps,
+        );
+        let lm_weight_name = Self::lm_head_weight_name(weights);
+        let (lm_raw, lm_dtype) = weights.raw_with_dtype(lm_weight_name)?;
+        logits_all.resize(n_tokens * vocab_size, 0.0);
+        Self::batched_dequant_matmul_token_major(
+            backend,
+            lm_raw,
+            lm_dtype,
+            &final_hidden,
+            logits_all.as_mut_slice(),
+            n_tokens,
+            vocab_size,
+            dim,
+        );
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn forward_batch_impl(
+        &self,
+        ctx: &ForwardContext,
+        token_ids: &[u32],
+        kv: &mut ModelKv,
+        weights: &WeightStore,
+        logits: Option<&mut [f32]>,
+        logits_all: Option<&mut Vec<f32>>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !token_ids.is_empty(),
+            "qwen35 forward_batch requires at least one token"
+        );
+        anyhow::ensure!(
+            logits.is_some() ^ logits_all.is_some(),
+            "qwen35 batch forward requires either last logits or all logits output"
+        );
+
+        let force_serial = env_flag_enabled("AX_SERIAL_PREFILL");
+        let Some(qwen_kv) = kv.as_qwen35_mut() else {
+            anyhow::bail!("Qwen35Forward requires ModelKv::Qwen35");
+        };
+        let recurrent_slot = qwen_kv.active_slot();
+        if force_serial || !ctx.backend.use_gpu_decode() || token_ids.len() <= 1 {
+            let start_pos = kv.seq_len();
+            if let Some(logits) = logits {
+                for (i, &tid) in token_ids.iter().enumerate() {
+                    logits.fill(0.0);
+                    self.forward_single(ctx, tid, start_pos + i, kv, weights, logits, None)?;
+                }
+            } else if let Some(logits_all) = logits_all {
+                let vocab_size = ctx.config.vocab_size as usize;
+                logits_all.resize(token_ids.len() * vocab_size, 0.0);
+                for (i, &tid) in token_ids.iter().enumerate() {
+                    let slot = &mut logits_all[i * vocab_size..(i + 1) * vocab_size];
+                    slot.fill(0.0);
+                    self.forward_single(ctx, tid, start_pos + i, kv, weights, slot, None)?;
+                }
+            }
+            return Ok(());
+        }
+
+        let cfg = ctx.config;
+        let backend = ctx.backend;
+        let dims = Self::recurrent_dims(cfg)?;
+        let n_tokens = token_ids.len();
+        let n_layers = cfg.n_layers as usize;
+        let dim = cfg.embedding_dim as usize;
+        let n_heads = cfg.n_heads as usize;
+        let n_kv_heads = cfg.n_kv_heads as usize;
+        let head_dim = cfg.head_dim as usize;
+        let inter_dim = cfg.intermediate_dim as usize;
+        let q_dim = n_heads * head_dim;
+        let kv_dim = n_kv_heads * head_dim;
+        let vocab_size = cfg.vocab_size as usize;
+        let conv_dim = dims.conv_dim();
+        let full_attn_params = AttentionParams::new(n_heads, n_kv_heads, head_dim);
+
+        let mut hidden = vec![0.0f32; n_tokens * dim];
+        for (i, &tid) in token_ids.iter().enumerate() {
+            weights.dequantize_row(
+                "token_embd.weight",
+                tid as usize,
+                &mut hidden[i * dim..(i + 1) * dim],
+            )?;
+        }
+
+        let mut norm_buf = vec![0.0f32; n_tokens * dim];
+        let mut proj_buf = vec![0.0f32; n_tokens * dim];
+        let mut gate_buf = vec![0.0f32; n_tokens * inter_dim];
+        let mut up_buf = vec![0.0f32; n_tokens * inter_dim];
+        let mut down_buf = vec![0.0f32; n_tokens * dim];
+        let mut q_gate_batch = vec![0.0f32; n_tokens * q_dim * 2];
+        let mut q_batch = vec![0.0f32; n_tokens * q_dim];
+        let mut k_batch = vec![0.0f32; n_tokens * kv_dim];
+        let mut v_batch = vec![0.0f32; n_tokens * kv_dim];
+        let mut attn_out_batch = vec![0.0f32; n_tokens * q_dim];
+        let mut rec_qkv_batch = vec![0.0f32; n_tokens * conv_dim];
+        let mut rec_z_batch = vec![0.0f32; n_tokens * dims.inner_size];
+        let mut rec_beta_batch = vec![0.0f32; n_tokens * dims.time_step_rank];
+        let mut rec_alpha_batch = vec![0.0f32; n_tokens * dims.time_step_rank];
+        let mut rec_out_batch = vec![0.0f32; n_tokens * dims.inner_size];
+        let recurrent_slot_indices = [recurrent_slot];
+
+        for layer in 0..n_layers {
+            let prefix = format!("blk.{layer}");
+            let attn_norm_w = weights.f32_slice(&format!("{prefix}.attn_norm.weight"))?;
+            Self::rms_norm_token_major(
+                &hidden,
+                attn_norm_w,
+                &mut norm_buf,
+                n_tokens,
+                dim,
+                cfg.rms_norm_eps,
+            );
+
+            match Self::layer_type(cfg, layer) {
+                Qwen35LayerType::FullAttention => {
+                    let input_ops =
+                        Self::full_attention_input_ops(weights, &prefix, q_dim, kv_dim)?;
+
+                    Self::batched_dequant_matmul_token_major(
+                        backend,
+                        input_ops[0].0,
+                        input_ops[0].1,
+                        &norm_buf,
+                        &mut q_gate_batch,
+                        n_tokens,
+                        q_dim * 2,
+                        dim,
+                    );
+                    Self::batched_dequant_matmul_token_major(
+                        backend,
+                        input_ops[1].0,
+                        input_ops[1].1,
+                        &norm_buf,
+                        &mut k_batch,
+                        n_tokens,
+                        kv_dim,
+                        dim,
+                    );
+                    Self::batched_dequant_matmul_token_major(
+                        backend,
+                        input_ops[2].0,
+                        input_ops[2].1,
+                        &norm_buf,
+                        &mut v_batch,
+                        n_tokens,
+                        kv_dim,
+                        dim,
+                    );
+
+                    Self::extract_q_from_q_gate_batch(&q_gate_batch, &mut q_batch, n_tokens, q_dim);
+
+                    if let Some(norm_weights) = Self::maybe_attention_qk_norm(weights, &prefix)? {
+                        Self::apply_attention_qk_norm_batch(
+                            &mut q_batch,
+                            &mut k_batch,
+                            n_tokens,
+                            q_dim,
+                            kv_dim,
+                            n_heads,
+                            n_kv_heads,
+                            head_dim,
+                            norm_weights,
+                            cfg.rms_norm_eps,
+                        );
+                    }
+
+                    Self::apply_rope_batch(
+                        cfg,
+                        &mut q_batch,
+                        &mut k_batch,
+                        n_tokens,
+                        qwen_kv.seq_len(),
+                        q_dim,
+                        kv_dim,
+                        n_heads,
+                        n_kv_heads,
+                        head_dim,
+                    );
+
+                    Self::full_attention_prefill_batch(
+                        backend,
+                        qwen_kv,
+                        layer,
+                        &q_batch,
+                        &k_batch,
+                        &v_batch,
+                        &mut attn_out_batch,
+                        n_tokens,
+                        &full_attn_params,
+                    );
+                    Self::apply_attention_gate_batch(
+                        &mut q_gate_batch,
+                        &mut attn_out_batch,
+                        n_tokens,
+                        q_dim,
+                    );
+
+                    qwen_kv.attention_append_batch(layer, &k_batch, &v_batch, n_tokens);
+
+                    let (wo_raw, wo_dtype) =
+                        weights.raw_with_dtype(&format!("{prefix}.attn_output.weight"))?;
+                    Self::batched_dequant_matmul_token_major(
+                        backend,
+                        wo_raw,
+                        wo_dtype,
+                        &attn_out_batch,
+                        &mut proj_buf,
+                        n_tokens,
+                        dim,
+                        q_dim,
+                    );
+                }
+                Qwen35LayerType::RecurrentGdn => {
+                    Self::validate_recurrent_layer_state(
+                        qwen_kv,
+                        recurrent_slot,
+                        layer,
+                        "prefill",
+                    )?;
+                    let input_ops = Self::recurrent_input_ops(weights, &prefix, dims)?;
+
+                    Self::batched_dequant_matmul_token_major(
+                        backend,
+                        input_ops[0].0,
+                        input_ops[0].1,
+                        &norm_buf,
+                        &mut rec_qkv_batch,
+                        n_tokens,
+                        conv_dim,
+                        dim,
+                    );
+                    Self::batched_dequant_matmul_token_major(
+                        backend,
+                        input_ops[1].0,
+                        input_ops[1].1,
+                        &norm_buf,
+                        &mut rec_z_batch,
+                        n_tokens,
+                        dims.inner_size,
+                        dim,
+                    );
+                    Self::batched_dequant_matmul_token_major(
+                        backend,
+                        input_ops[2].0,
+                        input_ops[2].1,
+                        &norm_buf,
+                        &mut rec_beta_batch,
+                        n_tokens,
+                        dims.time_step_rank,
+                        dim,
+                    );
+                    Self::batched_dequant_matmul_token_major(
+                        backend,
+                        input_ops[3].0,
+                        input_ops[3].1,
+                        &norm_buf,
+                        &mut rec_alpha_batch,
+                        n_tokens,
+                        dims.time_step_rank,
+                        dim,
+                    );
+
+                    let runtime = Self::recurrent_runtime_tensors(weights, &prefix)?;
+
+                    rec_out_batch.fill(0.0);
+                    let qwen35_cfg = Self::qwen35_recurrent_config(qwen_kv, dims, cfg.rms_norm_eps);
+                    backend.qwen35_recurrent_sequence_for_kv(
+                        &rec_qkv_batch,
+                        &mut rec_beta_batch,
+                        &mut rec_alpha_batch,
+                        runtime.dt_bias,
+                        runtime.a,
+                        runtime.conv_kernel,
+                        qwen_kv,
+                        layer,
+                        &recurrent_slot_indices,
+                        &mut rec_out_batch,
+                        n_tokens,
+                        qwen35_cfg,
+                    );
+
+                    Self::finalize_recurrent_output_batch(
+                        &mut rec_out_batch,
+                        &rec_z_batch,
+                        n_tokens,
+                        dims,
+                        runtime.ssm_norm,
+                        cfg.rms_norm_eps,
+                    );
+
+                    let (ssm_out_raw, ssm_out_dtype) =
+                        weights.raw_with_dtype(&format!("{prefix}.ssm_out.weight"))?;
+                    Self::batched_dequant_matmul_token_major(
+                        backend,
+                        ssm_out_raw,
+                        ssm_out_dtype,
+                        &rec_out_batch,
+                        &mut proj_buf,
+                        n_tokens,
+                        dim,
+                        dims.inner_size,
+                    );
+                }
+            }
+
+            silu::elementwise_add(&mut hidden, &proj_buf);
+
+            let post_attn_norm_w =
+                weights.f32_slice(&format!("{prefix}.post_attention_norm.weight"))?;
+            Self::rms_norm_token_major(
+                &hidden,
+                post_attn_norm_w,
+                &mut norm_buf,
+                n_tokens,
+                dim,
+                cfg.rms_norm_eps,
+            );
+
+            let input_ops = Self::ffn_input_ops(weights, &prefix, inter_dim)?;
+            Self::batched_dequant_matmul_token_major(
+                backend,
+                input_ops[0].0,
+                input_ops[0].1,
+                &norm_buf,
+                &mut gate_buf,
+                n_tokens,
+                inter_dim,
+                dim,
+            );
+            Self::batched_dequant_matmul_token_major(
+                backend,
+                input_ops[1].0,
+                input_ops[1].1,
+                &norm_buf,
+                &mut up_buf,
+                n_tokens,
+                inter_dim,
+                dim,
+            );
+            silu::silu_elementwise_mul(&mut gate_buf, &up_buf);
+
+            let (wd_raw, wd_dtype) =
+                weights.raw_with_dtype(&format!("{prefix}.ffn_down.weight"))?;
+            Self::batched_dequant_matmul_token_major(
+                backend,
+                wd_raw,
+                wd_dtype,
+                &gate_buf,
+                &mut down_buf,
+                n_tokens,
+                dim,
+                inter_dim,
+            );
+            silu::elementwise_add(&mut hidden, &down_buf);
+        }
+
+        qwen_kv.finalize_batch(n_tokens);
+
+        match (logits, logits_all) {
+            (Some(logits), None) => Self::write_last_batch_logits(
+                backend,
+                &mut hidden,
+                n_tokens,
+                dim,
+                vocab_size,
+                cfg.rms_norm_eps,
+                weights,
+                logits,
+            ),
+            (None, Some(logits_all)) => Self::write_all_batch_logits(
+                backend,
+                &hidden,
+                n_tokens,
+                dim,
+                vocab_size,
+                cfg.rms_norm_eps,
+                weights,
+                logits_all,
+            ),
+            _ => unreachable!("validated above"),
+        }
+    }
 }
 
 impl ForwardPass for Qwen35Forward {
@@ -186,9 +959,21 @@ impl ForwardPass for Qwen35Forward {
         let qwen_kv = kv
             .as_qwen35_mut()
             .ok_or_else(|| anyhow::anyhow!("Qwen35Forward requires ModelKv::Qwen35"))?;
+        let recurrent_slot = qwen_kv.active_slot();
 
         let dims = Self::recurrent_dims(cfg)?;
         let backend = ctx.backend;
+        let cpu_backend = crate::backend::cpu::CpuBackend;
+        // Working-first fallback: after GPU batch prefill, the current Metal
+        // decode projection kernels can produce non-finite Qwen3.5 activations.
+        // Keep the recurrent state update on the selected backend, but route
+        // single-token linear projections through the CPU reference path until
+        // the Metal decode matvec path is fixed.
+        let decode_proj_backend: &dyn crate::backend::Backend = if backend.use_gpu_decode() {
+            &cpu_backend
+        } else {
+            backend
+        };
         let n_layers = cfg.n_layers as usize;
         let dim = cfg.embedding_dim as usize;
         let n_heads = cfg.n_heads as usize;
@@ -221,6 +1006,7 @@ impl ForwardPass for Qwen35Forward {
         let mut rec_beta = vec![0.0f32; dims.time_step_rank];
         let mut rec_alpha = vec![0.0f32; dims.time_step_rank];
         let mut rec_out = vec![0.0f32; dims.inner_size];
+        let recurrent_slot_indices = [recurrent_slot];
         let full_attn_params = AttentionParams::new(n_heads, n_kv_heads, head_dim);
 
         for layer in 0..n_layers {
@@ -235,60 +1021,42 @@ impl ForwardPass for Qwen35Forward {
                 norm,
                 rms_norm::rms_norm_out(&hidden, attn_norm_w, &mut norm_buf, cfg.rms_norm_eps)
             );
+            Self::assert_finite_if_enabled("attn_norm_output", &norm_buf, layer, position)?;
 
             match Self::layer_type(cfg, layer) {
                 Qwen35LayerType::FullAttention => {
-                    let (wq_raw, wq_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.attn_q.weight"))?;
-                    let (wk_raw, wk_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.attn_k.weight"))?;
-                    let (wv_raw, wv_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.attn_v.weight"))?;
+                    let input_ops =
+                        Self::full_attention_input_ops(weights, &prefix, q_dim, kv_dim)?;
 
-                    timed!(ops, matmul, {
-                        backend.dequant_matmul(
-                            wq_raw,
-                            wq_dtype,
+                    timed_matmul_bucket!(ops, matmul_input_proj, {
+                        decode_proj_backend.batch_dequant_matvec(
+                            &input_ops,
                             &norm_buf,
-                            &mut q_gate_buf,
-                            q_dim * 2,
-                            1,
                             dim,
-                        );
-                        backend.dequant_matmul(
-                            wk_raw, wk_dtype, &norm_buf, &mut k_buf, kv_dim, 1, dim,
-                        );
-                        backend.dequant_matmul(
-                            wv_raw, wv_dtype, &norm_buf, &mut v_buf, kv_dim, 1, dim,
+                            &mut [&mut q_gate_buf, &mut k_buf, &mut v_buf],
                         );
                     });
                     q_buf.copy_from_slice(&q_gate_buf[..q_dim]);
                     let gate_attn = &mut q_gate_buf[q_dim..];
 
-                    if weights.has(&format!("{prefix}.attn_q_norm.weight")) {
-                        let q_norm_w = timed!(
-                            ops,
-                            dequant,
-                            weights.f32_slice(&format!("{prefix}.attn_q_norm.weight"))?
-                        );
-                        let k_norm_w = timed!(
-                            ops,
-                            dequant,
-                            weights.f32_slice(&format!("{prefix}.attn_k_norm.weight"))?
-                        );
+                    if let Some(norm_weights) = timed!(
+                        ops,
+                        dequant,
+                        Self::maybe_attention_qk_norm(weights, &prefix)?
+                    ) {
                         timed!(ops, norm, {
                             per_head_rms_norm(
                                 &mut q_buf,
                                 n_heads,
                                 head_dim,
-                                q_norm_w,
+                                norm_weights.q,
                                 cfg.rms_norm_eps,
                             );
                             per_head_rms_norm(
                                 &mut k_buf,
                                 n_kv_heads,
                                 head_dim,
-                                k_norm_w,
+                                norm_weights.k,
                                 cfg.rms_norm_eps,
                             );
                         });
@@ -329,10 +1097,10 @@ impl ForwardPass for Qwen35Forward {
 
                     let (wo_raw, wo_dtype) =
                         weights.raw_with_dtype(&format!("{prefix}.attn_output.weight"))?;
-                    timed!(
+                    timed_matmul_bucket!(
                         ops,
-                        matmul,
-                        backend.dequant_matmul(
+                        matmul_output_proj,
+                        decode_proj_backend.dequant_matmul(
                             wo_raw,
                             wo_dtype,
                             &attn_out,
@@ -342,157 +1110,90 @@ impl ForwardPass for Qwen35Forward {
                             q_dim
                         )
                     );
+                    Self::assert_finite_if_enabled(
+                        "full_attention_proj",
+                        &proj_buf,
+                        layer,
+                        position,
+                    )?;
                 }
                 Qwen35LayerType::RecurrentGdn => {
-                    anyhow::ensure!(
-                        qwen_kv.is_recurrent_layer(layer),
-                        "qwen35 KV/state layer mapping mismatch at layer {layer}"
-                    );
-                    let (wqkv_raw, wqkv_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.attn_qkv.weight"))?;
-                    let (wgate_raw, wgate_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.attn_gate.weight"))?;
-                    let (wbeta_raw, wbeta_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.ssm_beta.weight"))?;
-                    let (walpha_raw, walpha_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.ssm_alpha.weight"))?;
-                    timed!(ops, matmul, {
-                        backend.dequant_matmul(
-                            wqkv_raw,
-                            wqkv_dtype,
-                            &norm_buf,
-                            &mut rec_qkv,
-                            dims.conv_dim(),
-                            1,
-                            dim,
+                    Self::validate_recurrent_layer_state(qwen_kv, recurrent_slot, layer, "decode")?;
+                    let input_ops = Self::recurrent_input_ops(weights, &prefix, dims)?;
+                    for ((raw, dtype, rows), out) in input_ops.into_iter().zip([
+                        &mut rec_qkv,
+                        &mut rec_z,
+                        &mut rec_beta,
+                        &mut rec_alpha,
+                    ]) {
+                        timed_matmul_bucket!(
+                            ops,
+                            matmul_input_proj,
+                            decode_proj_backend
+                                .dequant_matmul(raw, dtype, &norm_buf, out, rows, 1, dim,)
                         );
-                        backend.dequant_matmul(
-                            wgate_raw,
-                            wgate_dtype,
-                            &norm_buf,
-                            &mut rec_z,
-                            dims.inner_size,
-                            1,
-                            dim,
-                        );
-                        backend.dequant_matmul(
-                            wbeta_raw,
-                            wbeta_dtype,
-                            &norm_buf,
-                            &mut rec_beta,
-                            dims.time_step_rank,
-                            1,
-                            dim,
-                        );
-                        backend.dequant_matmul(
-                            walpha_raw,
-                            walpha_dtype,
-                            &norm_buf,
-                            &mut rec_alpha,
-                            dims.time_step_rank,
-                            1,
-                            dim,
-                        );
-                    });
+                    }
+                    Self::assert_finite_if_enabled(
+                        "recurrent_qkv_input",
+                        &rec_qkv,
+                        layer,
+                        position,
+                    )?;
+                    Self::assert_finite_if_enabled(
+                        "recurrent_state_before_decode",
+                        qwen_kv.recurrent_state_for_slot(recurrent_slot, layer),
+                        layer,
+                        position,
+                    )?;
 
-                    let dt_bias = timed!(
+                    let runtime = timed!(
                         ops,
                         dequant,
-                        weights.f32_slice(&format!("{prefix}.ssm_dt.bias"))?
+                        Self::recurrent_runtime_tensors(weights, &prefix)?
                     );
-                    let a = timed!(ops, dequant, weights.f32_slice(&format!("{prefix}.ssm_a"))?);
-
-                    let conv_kernel = timed!(
-                        ops,
-                        dequant,
-                        weights.f32_slice(&format!("{prefix}.ssm_conv1d.weight"))?
-                    );
-                    gdn::prepare_alpha_beta(&mut rec_alpha, &mut rec_beta, dt_bias, a);
-                    let conv_cache_len = qwen_kv.conv_cache_len();
-                    let conv_dim = qwen_kv.conv_dim();
-                    let mut conv_out = vec![0.0f32; dims.conv_dim()];
-                    let (conv_state, _) = qwen_kv.recurrent_buffers_mut(layer);
+                    let qwen35_cfg = Self::qwen35_recurrent_config(qwen_kv, dims, cfg.rms_norm_eps);
+                    // Recurrent state staging is backend-owned now so the
+                    // model does not need to know how state is mirrored.
                     timed!(
                         ops,
-                        attention,
-                        backend.qwen35_causal_conv_sequence(
+                        recurrent,
+                        backend.qwen35_recurrent_sequence_for_kv(
                             &rec_qkv,
-                            conv_kernel,
-                            conv_state,
-                            &mut conv_out,
-                            1,
-                            conv_cache_len,
-                            conv_dim,
-                        )
-                    );
-
-                    let key_dim = dims.key_dim();
-                    let value_dim = dims.value_dim();
-                    let mut q_lin = conv_out[..key_dim].to_vec();
-                    let mut k_lin = conv_out[key_dim..2 * key_dim].to_vec();
-                    let v_lin = conv_out[2 * key_dim..2 * key_dim + value_dim].to_vec();
-                    gdn::l2_norm_heads(
-                        &mut q_lin,
-                        dims.group_count,
-                        dims.state_size,
-                        cfg.rms_norm_eps,
-                    );
-                    gdn::l2_norm_heads(
-                        &mut k_lin,
-                        dims.group_count,
-                        dims.state_size,
-                        cfg.rms_norm_eps,
-                    );
-                    let q_rep = gdn::repeat_heads(
-                        &q_lin,
-                        dims.group_count,
-                        dims.time_step_rank,
-                        dims.state_size,
-                    );
-                    let k_rep = gdn::repeat_heads(
-                        &k_lin,
-                        dims.group_count,
-                        dims.time_step_rank,
-                        dims.state_size,
-                    );
-                    let (_, recurrent_state) = qwen_kv.recurrent_buffers_mut(layer);
-                    timed!(
-                        ops,
-                        attention,
-                        backend.qwen35_gated_delta_sequence(
-                            &q_rep,
-                            &k_rep,
-                            &v_lin,
-                            &rec_alpha,
-                            &rec_beta,
-                            recurrent_state,
+                            &mut rec_beta,
+                            &mut rec_alpha,
+                            runtime.dt_bias,
+                            runtime.a,
+                            runtime.conv_kernel,
+                            qwen_kv,
+                            layer,
+                            &recurrent_slot_indices,
                             &mut rec_out,
                             1,
-                            dims.time_step_rank,
-                            dims.state_size,
+                            qwen35_cfg,
                         )
                     );
+                    Self::assert_finite_if_enabled(
+                        "recurrent_kernel_output",
+                        &rec_out,
+                        layer,
+                        position,
+                    )?;
 
-                    let ssm_norm_w = timed!(
-                        ops,
-                        dequant,
-                        weights.f32_slice(&format!("{prefix}.ssm_norm.weight"))?
+                    Self::finalize_recurrent_output(
+                        &mut rec_out,
+                        &rec_z,
+                        dims,
+                        runtime.ssm_norm,
+                        cfg.rms_norm_eps,
                     );
-                    for head in 0..dims.time_step_rank {
-                        let start = head * dims.state_size;
-                        let end = start + dims.state_size;
-                        rms_norm::rms_norm(&mut rec_out[start..end], ssm_norm_w, cfg.rms_norm_eps);
-                    }
-                    let mut z_gate = rec_z.clone();
-                    silu::silu(&mut z_gate);
-                    silu::elementwise_mul(&mut rec_out, &z_gate);
+                    Self::assert_finite_if_enabled("recurrent_output", &rec_out, layer, position)?;
 
                     let (ssm_out_raw, ssm_out_dtype) =
                         weights.raw_with_dtype(&format!("{prefix}.ssm_out.weight"))?;
-                    timed!(
+                    timed_matmul_bucket!(
                         ops,
-                        matmul,
-                        backend.dequant_matmul(
+                        matmul_output_proj,
+                        decode_proj_backend.dequant_matmul(
                             ssm_out_raw,
                             ssm_out_dtype,
                             &rec_out,
@@ -502,10 +1203,12 @@ impl ForwardPass for Qwen35Forward {
                             dims.inner_size,
                         )
                     );
+                    Self::assert_finite_if_enabled("recurrent_proj", &proj_buf, layer, position)?;
                 }
             }
 
             silu::elementwise_add(&mut hidden, &proj_buf);
+            Self::assert_finite_if_enabled("layer_hidden", &hidden, layer, position)?;
 
             let post_attn_norm_w = timed!(
                 ops,
@@ -518,12 +1221,10 @@ impl ForwardPass for Qwen35Forward {
                 rms_norm::rms_norm_out(&hidden, post_attn_norm_w, &mut norm_buf, cfg.rms_norm_eps)
             );
 
-            let (wg_raw, wg_dtype) =
-                weights.raw_with_dtype(&format!("{prefix}.ffn_gate.weight"))?;
-            let (wu_raw, wu_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_up.weight"))?;
-            timed!(ops, matmul, {
-                backend.batch_dequant_matvec(
-                    &[(wg_raw, wg_dtype, inter_dim), (wu_raw, wu_dtype, inter_dim)],
+            let input_ops = Self::ffn_input_ops(weights, &prefix, inter_dim)?;
+            timed_matmul_bucket!(ops, matmul_input_proj, {
+                decode_proj_backend.batch_dequant_matvec(
+                    &input_ops,
                     &norm_buf,
                     dim,
                     &mut [&mut gate_buf, &mut up_buf],
@@ -533,10 +1234,10 @@ impl ForwardPass for Qwen35Forward {
 
             let (wd_raw, wd_dtype) =
                 weights.raw_with_dtype(&format!("{prefix}.ffn_down.weight"))?;
-            timed!(
+            timed_matmul_bucket!(
                 ops,
-                matmul,
-                backend.dequant_matmul(
+                matmul_output_proj,
+                decode_proj_backend.dequant_matmul(
                     wd_raw,
                     wd_dtype,
                     &gate_buf,
@@ -558,17 +1259,14 @@ impl ForwardPass for Qwen35Forward {
             rms_norm::rms_norm(&mut hidden, final_norm_w, cfg.rms_norm_eps)
         );
 
-        let lm_weight_name = if weights.has("output.weight") {
-            "output.weight"
-        } else {
-            "token_embd.weight"
-        };
+        let lm_weight_name = Self::lm_head_weight_name(weights);
         let (lm_raw, lm_dtype) = weights.raw_with_dtype(lm_weight_name)?;
         anyhow::ensure!(logits.len() >= vocab_size, "logits buffer too small");
-        timed!(
+        timed_matmul_bucket!(
             ops,
-            matmul,
-            backend.dequant_matmul(lm_raw, lm_dtype, &hidden, logits, vocab_size, 1, dim)
+            matmul_lm_head,
+            decode_proj_backend
+                .dequant_matmul(lm_raw, lm_dtype, &hidden, logits, vocab_size, 1, dim)
         );
         Ok(())
     }
@@ -581,434 +1279,47 @@ impl ForwardPass for Qwen35Forward {
         weights: &WeightStore,
         logits: &mut [f32],
     ) -> anyhow::Result<()> {
-        let force_serial = env_flag_enabled("AX_SERIAL_PREFILL");
-        let Some(qwen_kv) = kv.as_qwen35_mut() else {
-            anyhow::bail!("Qwen35Forward requires ModelKv::Qwen35");
-        };
-        if force_serial || token_ids.len() <= 1 || qwen_kv.seq_len() != 0 {
-            let start_pos = kv.seq_len();
+        self.forward_batch_impl(ctx, token_ids, kv, weights, Some(logits), None)
+    }
+
+    fn forward_batch_all_logits(
+        &self,
+        ctx: &ForwardContext,
+        token_ids: &[u32],
+        kv: &mut ModelKv,
+        weights: &WeightStore,
+        logits_all: &mut Vec<f32>,
+    ) -> anyhow::Result<()> {
+        let vocab_size = ctx.config.vocab_size as usize;
+        logits_all.resize(token_ids.len() * vocab_size, 0.0);
+
+        let start_pos = kv.seq_len();
+        if ctx.backend.use_gpu_decode() {
+            // Qwen3.5 speculative verification currently prefers the proven CPU
+            // per-token path once a batched Hybrid prefill has established the
+            // hybrid KV state. This keeps verification correct while the Metal
+            // single-token transition from batched recurrent state is still
+            // being debugged.
+            let cpu_backend = crate::backend::cpu::CpuBackend;
+            let cpu_ctx = ForwardContext {
+                config: ctx.config,
+                attn_params: ctx.attn_params,
+                backend: &cpu_backend,
+            };
             for (i, &tid) in token_ids.iter().enumerate() {
-                logits.fill(0.0);
-                self.forward_single(ctx, tid, start_pos + i, kv, weights, logits, None)?;
+                let slot = &mut logits_all[i * vocab_size..(i + 1) * vocab_size];
+                slot.fill(0.0);
+                self.forward_single(&cpu_ctx, tid, start_pos + i, kv, weights, slot, None)?;
             }
-            return Ok(());
-        }
-
-        let cfg = ctx.config;
-        let backend = ctx.backend;
-        let dims = Self::recurrent_dims(cfg)?;
-        let n_tokens = token_ids.len();
-        let n_layers = cfg.n_layers as usize;
-        let dim = cfg.embedding_dim as usize;
-        let n_heads = cfg.n_heads as usize;
-        let n_kv_heads = cfg.n_kv_heads as usize;
-        let head_dim = cfg.head_dim as usize;
-        let inter_dim = cfg.intermediate_dim as usize;
-        let q_dim = n_heads * head_dim;
-        let kv_dim = n_kv_heads * head_dim;
-        let vocab_size = cfg.vocab_size as usize;
-        let conv_dim = dims.conv_dim();
-
-        let mut hidden = vec![0.0f32; n_tokens * dim];
-        for (i, &tid) in token_ids.iter().enumerate() {
-            weights.dequantize_row(
-                "token_embd.weight",
-                tid as usize,
-                &mut hidden[i * dim..(i + 1) * dim],
-            )?;
-        }
-
-        let mut norm_buf = vec![0.0f32; n_tokens * dim];
-        let mut proj_buf = vec![0.0f32; n_tokens * dim];
-        let mut gate_buf = vec![0.0f32; n_tokens * inter_dim];
-        let mut up_buf = vec![0.0f32; n_tokens * inter_dim];
-        let mut down_buf = vec![0.0f32; n_tokens * dim];
-        let mut q_gate_batch = vec![0.0f32; n_tokens * q_dim * 2];
-        let mut q_batch = vec![0.0f32; n_tokens * q_dim];
-        let mut k_batch = vec![0.0f32; n_tokens * kv_dim];
-        let mut v_batch = vec![0.0f32; n_tokens * kv_dim];
-        let mut attn_out_batch = vec![0.0f32; n_tokens * q_dim];
-        let mut rec_qkv_batch = vec![0.0f32; n_tokens * conv_dim];
-        let mut rec_z_batch = vec![0.0f32; n_tokens * dims.inner_size];
-        let mut rec_beta_batch = vec![0.0f32; n_tokens * dims.time_step_rank];
-        let mut rec_alpha_batch = vec![0.0f32; n_tokens * dims.time_step_rank];
-        let mut rec_out_batch = vec![0.0f32; n_tokens * dims.inner_size];
-
-        for layer in 0..n_layers {
-            let prefix = format!("blk.{layer}");
-            let attn_norm_w = weights.f32_slice(&format!("{prefix}.attn_norm.weight"))?;
-            for token_idx in 0..n_tokens {
-                let start = token_idx * dim;
-                let end = start + dim;
-                rms_norm::rms_norm_out(
-                    &hidden[start..end],
-                    attn_norm_w,
-                    &mut norm_buf[start..end],
-                    cfg.rms_norm_eps,
-                );
-            }
-
-            match Self::layer_type(cfg, layer) {
-                Qwen35LayerType::FullAttention => {
-                    let (wq_raw, wq_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.attn_q.weight"))?;
-                    let (wk_raw, wk_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.attn_k.weight"))?;
-                    let (wv_raw, wv_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.attn_v.weight"))?;
-
-                    Self::batched_dequant_matmul_token_major(
-                        backend,
-                        wq_raw,
-                        wq_dtype,
-                        &norm_buf,
-                        &mut q_gate_batch,
-                        n_tokens,
-                        q_dim * 2,
-                        dim,
-                    );
-                    Self::batched_dequant_matmul_token_major(
-                        backend,
-                        wk_raw,
-                        wk_dtype,
-                        &norm_buf,
-                        &mut k_batch,
-                        n_tokens,
-                        kv_dim,
-                        dim,
-                    );
-                    Self::batched_dequant_matmul_token_major(
-                        backend,
-                        wv_raw,
-                        wv_dtype,
-                        &norm_buf,
-                        &mut v_batch,
-                        n_tokens,
-                        kv_dim,
-                        dim,
-                    );
-
-                    for token_idx in 0..n_tokens {
-                        let src_start = token_idx * q_dim * 2;
-                        let q_start = token_idx * q_dim;
-                        q_batch[q_start..q_start + q_dim]
-                            .copy_from_slice(&q_gate_batch[src_start..src_start + q_dim]);
-                    }
-
-                    if weights.has(&format!("{prefix}.attn_q_norm.weight")) {
-                        let q_norm_w =
-                            weights.f32_slice(&format!("{prefix}.attn_q_norm.weight"))?;
-                        let k_norm_w =
-                            weights.f32_slice(&format!("{prefix}.attn_k_norm.weight"))?;
-                        for token_idx in 0..n_tokens {
-                            let q_start = token_idx * q_dim;
-                            let k_start = token_idx * kv_dim;
-                            per_head_rms_norm(
-                                &mut q_batch[q_start..q_start + q_dim],
-                                n_heads,
-                                head_dim,
-                                q_norm_w,
-                                cfg.rms_norm_eps,
-                            );
-                            per_head_rms_norm(
-                                &mut k_batch[k_start..k_start + kv_dim],
-                                n_kv_heads,
-                                head_dim,
-                                k_norm_w,
-                                cfg.rms_norm_eps,
-                            );
-                        }
-                    }
-
-                    for token_idx in 0..n_tokens {
-                        let q_start = token_idx * q_dim;
-                        let k_start = token_idx * kv_dim;
-                        let rope_position = Self::rope_position(cfg, token_idx);
-                        rope::apply_rope_multi_head_scaled(
-                            &mut q_batch[q_start..q_start + q_dim],
-                            &mut k_batch[k_start..k_start + kv_dim],
-                            n_heads,
-                            n_kv_heads,
-                            head_dim,
-                            rope_position,
-                            cfg.rope_freq_base,
-                        );
-                    }
-
-                    backend.attention_prefill(
-                        &q_batch,
-                        &k_batch,
-                        &v_batch,
-                        &mut attn_out_batch,
-                        n_tokens,
-                        n_heads,
-                        n_kv_heads,
-                        head_dim,
-                    );
-                    for token_idx in 0..n_tokens {
-                        let gate_start = token_idx * q_dim * 2 + q_dim;
-                        let attn_start = token_idx * q_dim;
-                        let gate = &mut q_gate_batch[gate_start..gate_start + q_dim];
-                        gdn::sigmoid_in_place(gate);
-                        silu::elementwise_mul(
-                            &mut attn_out_batch[attn_start..attn_start + q_dim],
-                            gate,
-                        );
-                    }
-
-                    qwen_kv.attention_append_batch(layer, &k_batch, &v_batch, n_tokens);
-
-                    let (wo_raw, wo_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.attn_output.weight"))?;
-                    Self::batched_dequant_matmul_token_major(
-                        backend,
-                        wo_raw,
-                        wo_dtype,
-                        &attn_out_batch,
-                        &mut proj_buf,
-                        n_tokens,
-                        dim,
-                        q_dim,
-                    );
-                }
-                Qwen35LayerType::RecurrentGdn => {
-                    anyhow::ensure!(
-                        qwen_kv.is_recurrent_layer(layer),
-                        "qwen35 KV/state layer mapping mismatch at layer {layer}"
-                    );
-                    let (wqkv_raw, wqkv_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.attn_qkv.weight"))?;
-                    let (wgate_raw, wgate_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.attn_gate.weight"))?;
-                    let (wbeta_raw, wbeta_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.ssm_beta.weight"))?;
-                    let (walpha_raw, walpha_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.ssm_alpha.weight"))?;
-
-                    Self::batched_dequant_matmul_token_major(
-                        backend,
-                        wqkv_raw,
-                        wqkv_dtype,
-                        &norm_buf,
-                        &mut rec_qkv_batch,
-                        n_tokens,
-                        conv_dim,
-                        dim,
-                    );
-                    Self::batched_dequant_matmul_token_major(
-                        backend,
-                        wgate_raw,
-                        wgate_dtype,
-                        &norm_buf,
-                        &mut rec_z_batch,
-                        n_tokens,
-                        dims.inner_size,
-                        dim,
-                    );
-                    Self::batched_dequant_matmul_token_major(
-                        backend,
-                        wbeta_raw,
-                        wbeta_dtype,
-                        &norm_buf,
-                        &mut rec_beta_batch,
-                        n_tokens,
-                        dims.time_step_rank,
-                        dim,
-                    );
-                    Self::batched_dequant_matmul_token_major(
-                        backend,
-                        walpha_raw,
-                        walpha_dtype,
-                        &norm_buf,
-                        &mut rec_alpha_batch,
-                        n_tokens,
-                        dims.time_step_rank,
-                        dim,
-                    );
-
-                    let dt_bias = weights.f32_slice(&format!("{prefix}.ssm_dt.bias"))?;
-                    let a = weights.f32_slice(&format!("{prefix}.ssm_a"))?;
-                    let conv_kernel = weights.f32_slice(&format!("{prefix}.ssm_conv1d.weight"))?;
-                    let ssm_norm_w = weights.f32_slice(&format!("{prefix}.ssm_norm.weight"))?;
-
-                    rec_out_batch.fill(0.0);
-                    gdn::prepare_alpha_beta(&mut rec_alpha_batch, &mut rec_beta_batch, dt_bias, a);
-                    let conv_cache_len = qwen_kv.conv_cache_len();
-                    let mut conv_out_batch = vec![0.0f32; n_tokens * conv_dim];
-                    let (conv_state, _) = qwen_kv.recurrent_buffers_mut(layer);
-                    backend.qwen35_causal_conv_sequence(
-                        &rec_qkv_batch,
-                        conv_kernel,
-                        conv_state,
-                        &mut conv_out_batch,
-                        n_tokens,
-                        conv_cache_len,
-                        conv_dim,
-                    );
-
-                    let value_dim = dims.value_dim();
-                    let mut q_batch = vec![0.0f32; n_tokens * value_dim];
-                    let mut k_batch = vec![0.0f32; n_tokens * value_dim];
-                    let mut v_batch = vec![0.0f32; n_tokens * value_dim];
-                    for token_idx in 0..n_tokens {
-                        let conv_start = token_idx * conv_dim;
-                        let conv_end = conv_start + conv_dim;
-                        let conv_out = &conv_out_batch[conv_start..conv_end];
-                        let mut q_lin = conv_out[..dims.key_dim()].to_vec();
-                        let mut k_lin = conv_out[dims.key_dim()..2 * dims.key_dim()].to_vec();
-                        let v_lin = &conv_out[2 * dims.key_dim()..2 * dims.key_dim() + value_dim];
-                        gdn::l2_norm_heads(
-                            &mut q_lin,
-                            dims.group_count,
-                            dims.state_size,
-                            cfg.rms_norm_eps,
-                        );
-                        gdn::l2_norm_heads(
-                            &mut k_lin,
-                            dims.group_count,
-                            dims.state_size,
-                            cfg.rms_norm_eps,
-                        );
-                        let q_rep = gdn::repeat_heads(
-                            &q_lin,
-                            dims.group_count,
-                            dims.time_step_rank,
-                            dims.state_size,
-                        );
-                        let k_rep = gdn::repeat_heads(
-                            &k_lin,
-                            dims.group_count,
-                            dims.time_step_rank,
-                            dims.state_size,
-                        );
-                        let out_start = token_idx * value_dim;
-                        let out_end = out_start + value_dim;
-                        q_batch[out_start..out_end].copy_from_slice(&q_rep);
-                        k_batch[out_start..out_end].copy_from_slice(&k_rep);
-                        v_batch[out_start..out_end].copy_from_slice(v_lin);
-                    }
-
-                    let (_, recurrent_state) = qwen_kv.recurrent_buffers_mut(layer);
-                    backend.qwen35_gated_delta_sequence(
-                        &q_batch,
-                        &k_batch,
-                        &v_batch,
-                        &rec_alpha_batch,
-                        &rec_beta_batch,
-                        recurrent_state,
-                        &mut rec_out_batch,
-                        n_tokens,
-                        dims.time_step_rank,
-                        dims.state_size,
-                    );
-
-                    for token_idx in 0..n_tokens {
-                        let rec_out_start = token_idx * dims.inner_size;
-                        let rec_out_end = rec_out_start + dims.inner_size;
-                        for head in 0..dims.time_step_rank {
-                            let head_start = rec_out_start + head * dims.state_size;
-                            let head_end = head_start + dims.state_size;
-                            rms_norm::rms_norm(
-                                &mut rec_out_batch[head_start..head_end],
-                                ssm_norm_w,
-                                cfg.rms_norm_eps,
-                            );
-                        }
-
-                        let mut z_gate = rec_z_batch
-                            [token_idx * dims.inner_size..(token_idx + 1) * dims.inner_size]
-                            .to_vec();
-                        silu::silu(&mut z_gate);
-                        silu::elementwise_mul(
-                            &mut rec_out_batch[rec_out_start..rec_out_end],
-                            &z_gate,
-                        );
-                    }
-
-                    let (ssm_out_raw, ssm_out_dtype) =
-                        weights.raw_with_dtype(&format!("{prefix}.ssm_out.weight"))?;
-                    Self::batched_dequant_matmul_token_major(
-                        backend,
-                        ssm_out_raw,
-                        ssm_out_dtype,
-                        &rec_out_batch,
-                        &mut proj_buf,
-                        n_tokens,
-                        dim,
-                        dims.inner_size,
-                    );
-                }
-            }
-
-            silu::elementwise_add(&mut hidden, &proj_buf);
-
-            let post_attn_norm_w =
-                weights.f32_slice(&format!("{prefix}.post_attention_norm.weight"))?;
-            for token_idx in 0..n_tokens {
-                let start = token_idx * dim;
-                let end = start + dim;
-                rms_norm::rms_norm_out(
-                    &hidden[start..end],
-                    post_attn_norm_w,
-                    &mut norm_buf[start..end],
-                    cfg.rms_norm_eps,
-                );
-            }
-
-            let (wg_raw, wg_dtype) =
-                weights.raw_with_dtype(&format!("{prefix}.ffn_gate.weight"))?;
-            let (wu_raw, wu_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_up.weight"))?;
-            Self::batched_dequant_matmul_token_major(
-                backend,
-                wg_raw,
-                wg_dtype,
-                &norm_buf,
-                &mut gate_buf,
-                n_tokens,
-                inter_dim,
-                dim,
-            );
-            Self::batched_dequant_matmul_token_major(
-                backend,
-                wu_raw,
-                wu_dtype,
-                &norm_buf,
-                &mut up_buf,
-                n_tokens,
-                inter_dim,
-                dim,
-            );
-            silu::silu_elementwise_mul(&mut gate_buf, &up_buf);
-
-            let (wd_raw, wd_dtype) =
-                weights.raw_with_dtype(&format!("{prefix}.ffn_down.weight"))?;
-            Self::batched_dequant_matmul_token_major(
-                backend,
-                wd_raw,
-                wd_dtype,
-                &gate_buf,
-                &mut down_buf,
-                n_tokens,
-                dim,
-                inter_dim,
-            );
-            silu::elementwise_add(&mut hidden, &down_buf);
-        }
-
-        qwen_kv.finalize_batch(n_tokens);
-
-        let final_norm_w = weights.f32_slice("output_norm.weight")?;
-        let last_hidden = &mut hidden[(n_tokens - 1) * dim..n_tokens * dim];
-        rms_norm::rms_norm(last_hidden, final_norm_w, cfg.rms_norm_eps);
-        let lm_weight_name = if weights.has("output.weight") {
-            "output.weight"
+            Ok(())
         } else {
-            "token_embd.weight"
-        };
-        let (lm_raw, lm_dtype) = weights.raw_with_dtype(lm_weight_name)?;
-        anyhow::ensure!(logits.len() >= vocab_size, "logits buffer too small");
-        backend.dequant_matmul(lm_raw, lm_dtype, last_hidden, logits, vocab_size, 1, dim);
-        Ok(())
+            for (i, &tid) in token_ids.iter().enumerate() {
+                let slot = &mut logits_all[i * vocab_size..(i + 1) * vocab_size];
+                slot.fill(0.0);
+                self.forward_single(ctx, tid, start_pos + i, kv, weights, slot, None)?;
+            }
+            Ok(())
+        }
     }
 
     fn validate_config(&self, config: &ModelConfig) -> anyhow::Result<()> {
@@ -1147,6 +1458,85 @@ mod tests {
         };
 
         assert!((Qwen35Forward::rope_position(&cfg, 16) - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_qwen35_apply_rope_batch_uses_absolute_positions() {
+        let cfg = ModelConfig {
+            architecture: "qwen35".into(),
+            n_layers: 4,
+            n_heads: 1,
+            n_kv_heads: 1,
+            embedding_dim: 8,
+            head_dim: 4,
+            intermediate_dim: 16,
+            context_length: 4096,
+            vocab_size: 1000,
+            rms_norm_eps: 1e-6,
+            rope_freq_base: 10000.0,
+            has_qkv_bias: false,
+            sliding_window_size: None,
+            sliding_window_pattern: None,
+            gate_activation: crate::model::config::GateActivation::SiLU,
+            tie_word_embeddings: false,
+            logit_scale: None,
+            rope_scaling: crate::model::config::RopeScaling::None,
+            embed_scale: false,
+            rope_freq_base_local: None,
+            n_expert: None,
+            n_expert_used: None,
+            qwen35_full_attention_interval: Some(4),
+            qwen35_ssm_conv_kernel: Some(4),
+            qwen35_ssm_inner_size: Some(16),
+            qwen35_ssm_state_size: Some(4),
+            qwen35_ssm_time_step_rank: Some(4),
+            qwen35_ssm_group_count: Some(1),
+        };
+        let n_tokens = 2usize;
+        let start_position = 7usize;
+        let q_dim = 4usize;
+        let kv_dim = 4usize;
+        let n_heads = 1usize;
+        let n_kv_heads = 1usize;
+        let head_dim = 4usize;
+        let mut actual_q = vec![1.0f32, 2.0, 3.0, 4.0, 0.5, 1.5, 2.5, 3.5];
+        let mut actual_k = vec![4.0f32, 3.0, 2.0, 1.0, 3.5, 2.5, 1.5, 0.5];
+        let mut expected_q = actual_q.clone();
+        let mut expected_k = actual_k.clone();
+
+        for token_idx in 0..n_tokens {
+            let q_start = token_idx * q_dim;
+            let k_start = token_idx * kv_dim;
+            rope::apply_rope_multi_head_scaled(
+                &mut expected_q[q_start..q_start + q_dim],
+                &mut expected_k[k_start..k_start + kv_dim],
+                n_heads,
+                n_kv_heads,
+                head_dim,
+                Qwen35Forward::rope_position(&cfg, start_position + token_idx),
+                cfg.rope_freq_base,
+            );
+        }
+
+        Qwen35Forward::apply_rope_batch(
+            &cfg,
+            &mut actual_q,
+            &mut actual_k,
+            n_tokens,
+            start_position,
+            q_dim,
+            kv_dim,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+        );
+
+        for (actual, expected) in actual_q.iter().zip(expected_q.iter()) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        for (actual, expected) in actual_k.iter().zip(expected_k.iter()) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
     }
 
     #[test]

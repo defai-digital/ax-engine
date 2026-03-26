@@ -223,7 +223,11 @@ pub struct OpBreakdown {
     pub gpu_encode_layer_ffn: Duration,
     pub gpu_encode_layer_residual: Duration,
     pub matmul: Duration,
+    pub matmul_input_proj: Duration,
+    pub matmul_output_proj: Duration,
+    pub matmul_lm_head: Duration,
     pub attention: Duration,
+    pub recurrent: Duration,
     pub dequant: Duration,
     pub rope: Duration,
     pub norm: Duration,
@@ -240,6 +244,7 @@ impl OpBreakdown {
         self.gpu
             + self.matmul
             + self.attention
+            + self.recurrent
             + self.dequant
             + self.rope
             + self.norm
@@ -253,13 +258,14 @@ impl OpBreakdown {
             return "no op timing data".to_string();
         }
         format!(
-            "gpu {:.1}% | gpu-enc {:.1}% | gpu-exec {:.1}% | gpu-rb {:.1}% | matmul {:.1}% | attn {:.1}% | dequant {:.1}% | rope {:.1}% | norm {:.1}% | sample {:.1}%",
+            "gpu {:.1}% | gpu-enc {:.1}% | gpu-exec {:.1}% | gpu-rb {:.1}% | matmul {:.1}% | attn {:.1}% | recur {:.1}% | dequant {:.1}% | rope {:.1}% | norm {:.1}% | sample {:.1}%",
             self.gpu.as_secs_f64() / total * 100.0,
             self.gpu_encode.as_secs_f64() / total * 100.0,
             self.gpu_execute.as_secs_f64() / total * 100.0,
             self.gpu_readback.as_secs_f64() / total * 100.0,
             self.matmul.as_secs_f64() / total * 100.0,
             self.attention.as_secs_f64() / total * 100.0,
+            self.recurrent.as_secs_f64() / total * 100.0,
             self.dequant.as_secs_f64() / total * 100.0,
             self.rope.as_secs_f64() / total * 100.0,
             self.norm.as_secs_f64() / total * 100.0,
@@ -284,7 +290,11 @@ impl OpBreakdown {
         self.gpu_encode_layer_ffn += other.gpu_encode_layer_ffn;
         self.gpu_encode_layer_residual += other.gpu_encode_layer_residual;
         self.matmul += other.matmul;
+        self.matmul_input_proj += other.matmul_input_proj;
+        self.matmul_output_proj += other.matmul_output_proj;
+        self.matmul_lm_head += other.matmul_lm_head;
         self.attention += other.attention;
+        self.recurrent += other.recurrent;
         self.dequant += other.dequant;
         self.rope += other.rope;
         self.norm += other.norm;

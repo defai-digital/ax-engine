@@ -23,14 +23,22 @@
 //!
 //! There is no `advance_by()`.
 
+use anyhow::bail;
+
 pub mod cpu_kv;
 pub mod gpu_kv;
 pub mod page;
 pub mod qwen35_kv;
 
-pub use cpu_kv::CpuKv;
+pub use cpu_kv::{CpuKv, CpuKvSnapshot};
 pub use gpu_kv::{GpuKv, GpuKvDtype};
-pub use qwen35_kv::Qwen35Kv;
+pub use qwen35_kv::{Qwen35Kv, Qwen35KvSnapshot};
+
+#[derive(Debug, Clone)]
+pub enum ModelKvSnapshot {
+    Cpu(CpuKvSnapshot),
+    Qwen35(Qwen35KvSnapshot),
+}
 
 /// Single-owner KV cache. Eliminates the v1 CPU+GPU split-brain.
 pub enum ModelKv {
@@ -98,6 +106,39 @@ impl ModelKv {
         matches!(self, Self::Gpu(_))
     }
 
+    /// Snapshot the current KV state when the backing implementation supports it.
+    ///
+    /// GPU KV snapshotting is not supported yet because AX does not maintain a
+    /// CPU mirror of Metal buffers in v2.
+    pub fn snapshot(&self) -> Option<ModelKvSnapshot> {
+        match self {
+            Self::Cpu(c) => Some(ModelKvSnapshot::Cpu(c.snapshot())),
+            Self::Gpu(_) => None,
+            Self::Qwen35(q) => Some(ModelKvSnapshot::Qwen35(q.snapshot_active_slot())),
+        }
+    }
+
+    /// Restore a previously captured KV snapshot.
+    pub fn restore_snapshot(&mut self, snapshot: &ModelKvSnapshot) -> anyhow::Result<()> {
+        match (self, snapshot) {
+            (Self::Cpu(kv), ModelKvSnapshot::Cpu(snapshot)) => {
+                kv.restore(snapshot);
+                Ok(())
+            }
+            (Self::Qwen35(kv), ModelKvSnapshot::Qwen35(snapshot)) => {
+                kv.restore_snapshot(snapshot);
+                Ok(())
+            }
+            (Self::Gpu(_), _) => bail!("GPU KV snapshot restore is not supported"),
+            (Self::Cpu(_), ModelKvSnapshot::Qwen35(_)) => {
+                bail!("cannot restore qwen35 snapshot into cpu kv")
+            }
+            (Self::Qwen35(_), ModelKvSnapshot::Cpu(_)) => {
+                bail!("cannot restore cpu snapshot into qwen35 kv")
+            }
+        }
+    }
+
     /// Reset to zero tokens (keeps allocated memory/buffers).
     pub fn clear(&mut self) {
         match self {
@@ -117,5 +158,135 @@ impl ModelKv {
             Self::Gpu(g) => g.truncate_to(pos),
             Self::Qwen35(q) => q.truncate_to(pos),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_model_kv_cpu_snapshot_round_trip() {
+        let mut kv = ModelKv::Cpu(CpuKv::new(1, 1, 2, 16));
+        if let ModelKv::Cpu(cpu_kv) = &mut kv {
+            cpu_kv.append_and_advance(0, &[1.0, 2.0], &[3.0, 4.0]);
+            cpu_kv.finalize_token();
+        }
+
+        let snapshot = kv.snapshot().expect("cpu kv should support snapshots");
+        kv.clear();
+        kv.restore_snapshot(&snapshot)
+            .expect("cpu restore should succeed");
+
+        let restored = kv.as_cpu_mut().expect("expected cpu kv");
+        assert_eq!(restored.seq_len(), 1);
+        assert_eq!(restored.k_slice(0, 1), &[1.0, 2.0]);
+        assert_eq!(restored.v_slice(0, 1), &[3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_model_kv_qwen35_snapshot_round_trip() {
+        let mut kv = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        if let ModelKv::Qwen35(qwen_kv) = &mut kv {
+            let slot1 = qwen_kv.allocate_recurrent_slot();
+            qwen_kv.set_active_slot(slot1);
+            qwen_kv.conv_state_for_slot_mut(slot1, 0).fill(1.5);
+            qwen_kv.recurrent_state_for_slot_mut(slot1, 0).fill(2.5);
+            qwen_kv.attention_append(3, &[10.0, 11.0], &[12.0, 13.0]);
+            qwen_kv.finalize_token();
+        }
+
+        let snapshot = kv.snapshot().expect("qwen35 kv should support snapshots");
+        kv.clear();
+        kv.restore_snapshot(&snapshot)
+            .expect("qwen35 restore should succeed");
+
+        let restored = kv.as_qwen35_mut().expect("expected qwen35 kv");
+        assert_eq!(restored.active_slot(), 1);
+        assert_eq!(restored.seq_len(), 1);
+        assert_eq!(
+            restored.attention_k_slice_including_current(3, 1),
+            &[10.0, 11.0]
+        );
+        assert_eq!(
+            restored.attention_v_slice_including_current(3, 1),
+            &[12.0, 13.0]
+        );
+        assert!(restored.conv_state_for_slot(1, 0).iter().all(|&v| v == 1.5));
+        assert!(
+            restored
+                .recurrent_state_for_slot(1, 0)
+                .iter()
+                .all(|&v| v == 2.5)
+        );
+    }
+
+    #[test]
+    fn test_model_kv_qwen35_snapshot_restores_into_fresh_kv() {
+        let mut source = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        if let ModelKv::Qwen35(qwen_kv) = &mut source {
+            let slot1 = qwen_kv.allocate_recurrent_slot();
+            qwen_kv.set_active_slot(slot1);
+            qwen_kv.conv_state_for_slot_mut(slot1, 0).fill(1.5);
+            qwen_kv.recurrent_state_for_slot_mut(slot1, 0).fill(2.5);
+            qwen_kv.attention_append(3, &[10.0, 11.0], &[12.0, 13.0]);
+            qwen_kv.finalize_token();
+        }
+
+        let snapshot = source
+            .snapshot()
+            .expect("qwen35 kv should support snapshots");
+
+        let mut restored = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        restored
+            .restore_snapshot(&snapshot)
+            .expect("qwen35 restore into fresh kv should succeed");
+
+        let restored_qwen = restored.as_qwen35_mut().expect("expected qwen35 kv");
+        assert_eq!(restored_qwen.active_slot(), 1);
+        assert_eq!(restored_qwen.seq_len(), 1);
+        assert_eq!(
+            restored_qwen.attention_k_slice_including_current(3, 1),
+            &[10.0, 11.0]
+        );
+        assert_eq!(
+            restored_qwen.attention_v_slice_including_current(3, 1),
+            &[12.0, 13.0]
+        );
+        assert!(
+            restored_qwen
+                .conv_state_for_slot(1, 0)
+                .iter()
+                .all(|&v| v == 1.5)
+        );
+        assert!(
+            restored_qwen
+                .recurrent_state_for_slot(1, 0)
+                .iter()
+                .all(|&v| v == 2.5)
+        );
+    }
+
+    #[test]
+    fn test_model_kv_gpu_snapshot_is_unsupported() {
+        assert!(matches!(
+            ModelKv::Cpu(CpuKv::new(1, 1, 2, 16)).snapshot(),
+            Some(ModelKvSnapshot::Cpu(_))
+        ));
+    }
+
+    #[test]
+    fn test_model_kv_restore_rejects_mismatched_snapshot_variant() {
+        let mut kv = ModelKv::Cpu(CpuKv::new(1, 1, 2, 16));
+        let qwen_snapshot = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2))
+            .snapshot()
+            .expect("qwen35 snapshot should exist");
+        let err = kv
+            .restore_snapshot(&qwen_snapshot)
+            .expect_err("mismatched restore should fail");
+        assert!(
+            err.to_string()
+                .contains("cannot restore qwen35 snapshot into cpu kv")
+        );
     }
 }

@@ -62,6 +62,34 @@ impl MetalBuffer {
         Ok(Self { buffer })
     }
 
+    /// Create a buffer that aliases an existing mutable slice without copying.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the backing allocation outlives the returned
+    /// buffer and is not reallocated while the GPU may access it.
+    /// Per Apple docs the pointer should be page-aligned, but Apple Silicon UMA
+    /// with `StorageModeShared` accepts non-page-aligned pointers in practice.
+    pub unsafe fn from_mut_slice_no_copy<T: Copy>(
+        device: &ProtocolObject<dyn MTLDevice>,
+        data: &mut [T],
+    ) -> anyhow::Result<Self> {
+        let byte_len = std::mem::size_of_val(data);
+        let ptr = NonNull::new(data.as_mut_ptr() as *mut c_void)
+            .context("Null data pointer for buffer")?;
+        let buffer = unsafe {
+            device
+                .newBufferWithBytesNoCopy_length_options_deallocator(
+                    ptr,
+                    byte_len as _,
+                    MTLResourceOptions::StorageModeShared,
+                    None,
+                )
+                .context("Failed to create Metal no-copy buffer from mutable slice")?
+        };
+        Ok(Self { buffer })
+    }
+
     /// CPU-accessible pointer to the buffer contents.
     pub fn contents(&self) -> NonNull<c_void> {
         self.buffer.contents()

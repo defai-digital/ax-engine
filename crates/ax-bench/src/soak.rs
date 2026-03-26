@@ -476,8 +476,8 @@ mod tests {
             passed: true,
             failures: vec![],
             avg_tok_per_sec: 10.0,
-            prefill_plan: "mode=gpu_batch q5k_prefill=experimental_small_n".into(),
-            q5k_prefill_mode: Some("experimental_small_n".into()),
+            prefill_plan: "mode=gpu_batch q5k_prefill=small_n".into(),
+            q5k_prefill_mode: Some("small_n".into()),
             support_note: Some(q5k_support_note()),
         };
         assert!(r.passed);
@@ -522,15 +522,15 @@ mod tests {
             passed: true,
             failures: vec![],
             avg_tok_per_sec: 1.39,
-            prefill_plan: "mode=gpu_batch q5k_prefill=experimental_small_n".into(),
-            q5k_prefill_mode: Some("experimental_small_n".into()),
+            prefill_plan: "mode=gpu_batch q5k_prefill=small_n".into(),
+            q5k_prefill_mode: Some("small_n".into()),
             support_note: Some(q5k_support_note()),
         };
         let json = r.to_json().unwrap();
         assert!(json.contains("\"passed\": true"));
         assert!(json.contains("\"total_tokens\": 5000"));
         assert!(json.contains("\"avg_tok_per_sec\""));
-        assert!(json.contains("\"q5k_prefill_mode\": \"experimental_small_n\""));
+        assert!(json.contains("\"q5k_prefill_mode\": \"small_n\""));
         assert!(json.contains(&format!("\"support_note\": \"{}\"", q5k_support_note())));
     }
 

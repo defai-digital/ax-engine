@@ -12,7 +12,7 @@ pub extern "C" fn llama_sample_temperature(
     n_vocab: i32,
     temp: f32,
 ) {
-    if logits.is_null() || n_vocab <= 0 || temp <= 0.0 {
+    if logits.is_null() || n_vocab <= 0 || !temp.is_finite() || temp <= 0.0 {
         return;
     }
     let logits = unsafe { std::slice::from_raw_parts_mut(logits, n_vocab as usize) };

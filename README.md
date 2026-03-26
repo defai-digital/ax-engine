@@ -78,9 +78,15 @@ Rule of thumb:
 AX Engine is currently most relevant for:
 
 - Dense GGUF models in the 14B–70B range on Apple Silicon
-- Model families with optimization depth: **Qwen 3 dense**, **LLaMA 3**, **Gemma 3**
+- Model families with optimization depth: **Qwen 3 dense**, **Qwen 3.5 (9B, 27B)**, **LLaMA 3**, **Gemma 3**
 - Workflows that benefit from explicit backend control and long-running local inference
 - Mac-native deployments where stable, isolated execution matters more than broad platform coverage
+
+Qwen 3.5 note:
+
+- `Qwen3.5-9B-Q4_K_M.gguf` and `Qwen3.5-27B-Q4_K_M.gguf` are present locally.
+- `Qwen3.5-9B` now has a local smoke/profile baseline in this repo.
+- `Qwen3.5-9B` and `Qwen3.5-27B` are the active support-hardening targets for hybrid recurrent inference work.
 
 ## Performance
 
@@ -88,27 +94,29 @@ Performance depends heavily on model family, quantization, context length, kerne
 
 AX Engine is optimized for Apple Silicon throughput and low-overhead local inference, but cross-engine claims should only be made from apples-to-apples runs. In particular, `llama.cpp` comparisons must record whether Flash Attention was enabled, because that materially changes the result on supported models.
 
-For the current benchmarking methodology, command lines, and reporting rules, see [BENCHMARKING.md](./BENCHMARKING.md).
+The README keeps this section simple: AX Engine vs `llama.cpp`, with raw tok/s numbers and AX as a percentage of `llama.cpp`. For the full methodology, command lines, and profiler artifacts, see [BENCHMARKING.md](./BENCHMARKING.md).
 
-Current local snapshot, measured on March 25, 2026 on Apple M3 Max with Q4_K_M GGUFs, `512` prompt tokens, `128` decode tokens, AX deterministic `5` samples with `500ms` cooldown, and `llama.cpp` `llama-bench` with `-r 5 -fa 1`. Table values below use medians. `AX vs llama.cpp` over `100%` means AX was faster.
+Current local snapshot, rerun end-to-end on March 26, 2026 on Apple M3 Max. Table values below keep the existing AX-vs-`llama.cpp` comparison format: raw tok/s plus AX as a percentage of `llama.cpp`. `AX vs llama.cpp` over `100%` means AX was faster.
 
-| Model | AX prefill | llama.cpp prefill | AX vs llama.cpp | AX decode | llama.cpp decode | AX vs llama.cpp |
+| Model | AX prefill | llama.cpp prefill | AX prefill vs llama.cpp | AX decode | llama.cpp decode | AX decode vs llama.cpp |
 |---|---:|---:|---:|---:|---:|---:|
-| Gemma 3 12B | 418.5 tok/s | 477.7 tok/s | 87.6% | 39.3 tok/s | 39.1 tok/s | 100.5% |
-| Gemma 3 27B | 161.3 tok/s | 191.3 tok/s | 84.3% | 17.7 tok/s | 14.6 tok/s | 121.2% |
-| Llama 3 8B | 642.0 tok/s | 771.4 tok/s | 83.2% | 58.1 tok/s | 64.8 tok/s | 89.7% |
-| Llama 3 70B | 70.1 tok/s | 71.4 tok/s | 98.2% | 8.0 tok/s | 7.1 tok/s | 112.7% |
-| Qwen3 8B | 631.4 tok/s | 664.8 tok/s | 95.0% | 55.1 tok/s | 59.8 tok/s | 92.1% |
-| Qwen3 14B | 251.0 tok/s | 334.4 tok/s | 75.1% | 18.1 tok/s | 21.8 tok/s | 82.9% |
-| Qwen3 32B | 126.3 tok/s | 129.4 tok/s | 97.6% | 13.1 tok/s | 12.0 tok/s | 109.2% |
+| Gemma 3 12B | 305.5 tok/s | 463.3 tok/s | 65.9% | 23.5 tok/s | 35.8 tok/s | 65.7% |
+| Gemma 3 27B | 128.5 tok/s | 170.2 tok/s | 75.5% | 10.9 tok/s | 15.1 tok/s | 72.3% |
+| Llama 3 8B | 673.6 tok/s | 639.2 tok/s | 105.4% | 61.1 tok/s | 47.1 tok/s | 129.8% |
+| Llama 3 70B | 55.0 tok/s | 66.8 tok/s | 82.4% | 6.0 tok/s | 6.3 tok/s | 95.6% |
+| Qwen3 8B | 659.5 tok/s | 736.7 tok/s | 89.5% | 58.3 tok/s | 60.3 tok/s | 96.7% |
+| Qwen3 14B | 277.0 tok/s | 408.2 tok/s | 67.9% | 34.9 tok/s | 35.6 tok/s | 98.1% |
+| Qwen3 32B | 104.9 tok/s | 150.7 tok/s | 69.6% | 9.2 tok/s | 14.9 tok/s | 61.7% |
 
-For the 70B row, the model file is mixed-quant and contains an active `Q5_K` tensor. The published 70B result therefore records only the meaningful post-fix path with `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`; the default shipped behavior still falls back on prefill and is documented as a caveat, not a headline comparison row.
+This table now comes from one same-day rerun set instead of mixed-date rows. AX values are deterministic medians from fresh `ax-bench` runs. `llama.cpp` values are medians from current local `llama-bench` `samples_ts` with `-fa 1`, `-ctk f16`, and `-ctv f16` on the same March 26, 2026 pass.
+
+For the 70B row, the model file is mixed-quant and contains an active `Q5_K` tensor. AX now routes that case through its conservative `Q5_K` GPU prefill path by default, so the published 70B result is representative of current shipped behavior rather than an opt-in special case.
 
 Areas where we expect the most improvement:
 
-- Prefill throughput on dense models
+- GPU prefill execution throughput on dense models, especially batch matmul and attention kernels
 - Decode throughput on dense models where AX still trails on some model families
-- Model-specific kernel fusions for architecture-specific operations
+- Architecture-specific kernel fusions and routing improvements
 
 ## Supported Models
 
@@ -128,27 +136,30 @@ All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Als
 |---|---|---|---|
 | LLaMA 3 | Meta-Llama-3.1-8B-Instruct, Meta-Llama-3-70B-Instruct | Q4_K_M, Q8_0 | 8B, 70B |
 | Qwen 3 (dense) | Qwen3-8B, Qwen3-14B, Qwen3-32B | Q4_K_M | 8B, 14B, 32B |
-| Qwen 3.5 | Qwen3.5-27B | Q4_K_M | 27B |
+| Qwen 3.5 | Qwen3.5-9B, Qwen3.5-27B | Q4_K_M | 9B, 27B |
 | Gemma 3 | gemma-3-12b-it, gemma-3-27b-it | Q4_K_M | 12B, 27B |
+
+Qwen 3.5 support focus:
+
+- The active optimization target is the hybrid recurrent path shared by `Qwen3.5-9B` and `Qwen3.5-27B`.
+- The current local `Qwen3.5-9B` decode baseline still runs with `PrefillPlan: mode=serial reason=cpu_kv` and `Plan: sync=sequential scratch=cpu`, so the structural gap is still hybrid cache/device ownership rather than perf-profile tuning.
 
 Qwen2 models continue to route through the `qwen3` implementation, but they are not currently listed as separately tested release targets.
 
 Mixed-quant caveat:
 
 - some `Q4_K_M` or `Q5_K_M` GGUFs can contain active `Q5_K` layer tensors
-- AX defaults `Q5_K` to decode-only baseline
-- an experimental GPU prefill path exists behind `AX_METAL_EXPERIMENTAL_Q5K_PREFILL=1`
-- under that experimental path, AX currently auto-selects the small-`N` `Q5_K`
+- AX routes those tensors through a conservative GPU prefill path by default; no enable flag is required
+- AX currently auto-selects the small-`N` `Q5_K`
   prefill route only when the mapped model is predominantly `Q5_K` and the
   prompt batch is small (`<= 32` tokens)
 - validation-only override knobs also exist:
   - `AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=base`
   - `AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=small`
 - when that happens, AX will tell you explicitly in runtime output, for example:
-  - `PrefillPlan: mode=serial reason=unsupported_quant:blk.10.attn_v.weight:Q5K`
-  - `Support: Q5_K support defaults to decode-only baseline...`
-  - `PrefillPlan: mode=gpu_batch ... q5k_prefill=experimental`
-  - `PrefillPlan: mode=gpu_batch ... q5k_prefill=experimental_small_n`
+  - `Support: Mixed-quant Q5_K layers use AX's conservative GPU prefill route...`
+  - `PrefillPlan: mode=gpu_batch ... q5k_prefill=base`
+  - `PrefillPlan: mode=gpu_batch ... q5k_prefill=small_n`
 
 **Memory requirements** (approximate, Q4_K_M weights + KV cache at 4K context):
 

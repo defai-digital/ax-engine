@@ -32,6 +32,8 @@ const ELEMENTWISE_SHADER_SRC: &str = include_str!("../shaders/elementwise.metal"
 /// Embedded Metal shader source for GDN recurrent kernels.
 const GDN_SHADER_SRC: &str = include_str!("../shaders/gdn.metal");
 
+const GDN_CHUNK_THRESHOLD: u32 = 64;
+
 /// Tile size for the general tiled matmul kernel (must match shader constant).
 #[allow(dead_code)]
 const TILE: usize = 16;
@@ -1140,6 +1142,33 @@ impl MatmulKernels {
             },
             MTLSize {
                 width: SG_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode an f32 matvec dispatch into an existing command encoder.
+    ///
+    /// y = A[M×K] × x[K], where A and x are f32, y is f32.
+    pub fn encode_matvec(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        x: &MetalBuffer,
+        y: &MetalBuffer,
+        m: u32,
+        k: u32,
+    ) {
+        let dims = DispatchDims::d1(m as usize, 1);
+        encoder.setComputePipelineState(self.matvec.state());
+        bind_buffers(encoder, a, x, y);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, k);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            MTLSize {
+                width: MATVEC_TG_SIZE,
                 height: 1,
                 depth: 1,
             },
@@ -4418,9 +4447,12 @@ pub struct AttentionKernels {
 
 /// Pre-compiled GDN recurrence kernels.
 pub struct GdnKernels {
+    causal_conv_sequence_f32: ComputePipeline,
     gated_delta_128_64: ComputePipeline,
     gated_delta_64_64: ComputePipeline,
     gated_delta_fallback: ComputePipeline,
+    chunked_gated_delta_32_128_64: ComputePipeline,
+    chunked_gated_delta_32_64_64: ComputePipeline,
 }
 
 impl AttentionKernels {
@@ -5434,6 +5466,12 @@ impl AttentionKernels {
 
 impl GdnKernels {
     pub fn new(device: &MetalDevice) -> anyhow::Result<Self> {
+        let causal_conv_sequence_f32 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "qwen35_causal_conv_sequence_f32",
+        )
+        .context("Failed to compile qwen35_causal_conv_sequence_f32 kernel")?;
         let gated_delta_128_64 = ComputePipeline::from_source(
             device.device(),
             GDN_SHADER_SRC,
@@ -5449,10 +5487,69 @@ impl GdnKernels {
             "gated_delta_rule_fallback",
         )
         .context("Failed to compile gated_delta_rule_fallback kernel")?;
+        let chunked_gated_delta_32_128_64 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "chunked_gated_delta_rule_32_128_64",
+        )
+        .context("Failed to compile chunked_gated_delta_rule_32_128_64 kernel")?;
+        let chunked_gated_delta_32_64_64 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "chunked_gated_delta_rule_32_64_64",
+        )
+        .context("Failed to compile chunked_gated_delta_rule_32_64_64 kernel")?;
         Ok(Self {
+            causal_conv_sequence_f32,
             gated_delta_128_64,
             gated_delta_64_64,
             gated_delta_fallback,
+            chunked_gated_delta_32_128_64,
+            chunked_gated_delta_32_64_64,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn causal_conv_sequence(
+        &self,
+        device: &MetalDevice,
+        input: &MetalBuffer,
+        kernel: &MetalBuffer,
+        conv_state: &MetalBuffer,
+        output: &MetalBuffer,
+        seq_len: u32,
+        conv_cache_len: u32,
+        conv_dim: u32,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            conv_cache_len <= 8,
+            "qwen35 causal conv Metal kernel supports conv_cache_len <= 8, got {conv_cache_len}",
+        );
+        let groups_x = (conv_dim as usize).div_ceil(256);
+        device.execute_sync(|encoder| {
+            encoder.setComputePipelineState(self.causal_conv_sequence_f32.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(kernel.mtl_buffer()), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(conv_state.mtl_buffer()), 0, 2);
+                encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 3);
+            }
+            bind_u32(encoder, 4, seq_len);
+            bind_u32(encoder, 5, conv_cache_len);
+            bind_u32(encoder, 6, conv_dim);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: groups_x,
+                    height: 1,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: 256,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            Ok(())
         })
     }
 
@@ -5474,9 +5571,12 @@ impl GdnKernels {
         let v_dim = head_dim;
         let bv = 64u32;
         let grid_x = (v_dim as usize).div_ceil(bv as usize);
-        let (pipeline, use_fallback) = match head_dim {
-            128 => (&self.gated_delta_128_64, false),
-            64 => (&self.gated_delta_64_64, false),
+        let use_chunked = seq_len >= GDN_CHUNK_THRESHOLD;
+        let (pipeline, use_fallback) = match (head_dim, use_chunked) {
+            (128, true) => (&self.chunked_gated_delta_32_128_64, false),
+            (64, true) => (&self.chunked_gated_delta_32_64_64, false),
+            (128, false) => (&self.gated_delta_128_64, false),
+            (64, false) => (&self.gated_delta_64_64, false),
             _ => (&self.gated_delta_fallback, true),
         };
 

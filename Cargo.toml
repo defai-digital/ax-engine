@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "2.0.4"
+version = "2.0.5"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -29,6 +29,7 @@ rayon = "1"
 objc2 = "0.6"
 objc2-metal = "0.3"
 objc2-foundation = "0.3"
+block2 = "0.6"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

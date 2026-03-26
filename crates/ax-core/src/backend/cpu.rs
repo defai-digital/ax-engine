@@ -2,6 +2,7 @@ use super::Backend;
 use super::neon;
 use crate::compute::matmul;
 use crate::gguf::tensor::GgmlType;
+use crate::kv::Qwen35Kv;
 
 /// CPU backend using Apple Accelerate framework (cblas_sgemm) with
 /// NEON-fused dequant+matvec for decode (n=1).
@@ -50,6 +51,51 @@ impl Backend for CpuBackend {
         let mut a_f32 = vec![0.0f32; m * k];
         crate::quant::dequantize(dtype, a_quant, &mut a_f32);
         self.matmul(&a_f32, b, c, m, n, k);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn qwen35_recurrent_sequence_for_kv(
+        &self,
+        qkv_batch: &[f32],
+        beta_batch: &mut [f32],
+        alpha_batch: &mut [f32],
+        dt_bias: &[f32],
+        a: &[f32],
+        conv_kernel: &[f32],
+        qwen_kv: &mut Qwen35Kv,
+        layer_idx: usize,
+        slot_indices: &[usize],
+        output_batch: &mut [f32],
+        tokens_per_slot: usize,
+        cfg: crate::compute::gdn::Qwen35RecurrentConfig,
+    ) {
+        qwen_kv.assert_valid_recurrent_slot_batch(slot_indices, layer_idx);
+        let value_dim = cfg.value_dim();
+        for (batch_idx, &slot_idx) in slot_indices.iter().enumerate() {
+            let token_start = batch_idx * tokens_per_slot;
+            let token_end = token_start + tokens_per_slot;
+            let qkv_start = token_start * cfg.conv_dim;
+            let qkv_end = token_end * cfg.conv_dim;
+            let gate_start = token_start * cfg.time_step_rank;
+            let gate_end = token_end * cfg.time_step_rank;
+            let out_start = token_start * value_dim;
+            let out_end = token_end * value_dim;
+            let (conv_state, recurrent_state) =
+                qwen_kv.recurrent_buffers_for_slot_mut(slot_idx, layer_idx);
+            crate::compute::gdn::qwen35_recurrent_sequence(
+                &qkv_batch[qkv_start..qkv_end],
+                &mut beta_batch[gate_start..gate_end],
+                &mut alpha_batch[gate_start..gate_end],
+                dt_bias,
+                a,
+                conv_kernel,
+                conv_state,
+                recurrent_state,
+                &mut output_batch[out_start..out_end],
+                tokens_per_slot,
+                cfg,
+            );
+        }
     }
 }
 

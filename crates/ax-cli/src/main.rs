@@ -63,7 +63,8 @@ fn main() -> anyhow::Result<()> {
 
     // Bootstrap Metal before any scheduler/model-loading side effects so
     // device availability is probed in a clean process state.
-    let backend = ax_core::backend::create_backend(ax_core::backend::BackendConfig::default())?;
+    let backend =
+        ax_core::backend::create_backend(ax_core::backend::resolve_backend_config_from_env())?;
     ax_core::scheduler::init_global_threadpool();
 
     if args.interactive {
@@ -1044,11 +1045,11 @@ mod tests {
     }
 
     #[test]
-    fn test_support_note_for_quant_marks_q5k_decode_only() {
+    fn test_support_note_for_quant_marks_conservative_q5k_prefill() {
         assert!(
             ax_core::gguf::mmap::support_note_for_q5k_layer_presence(true)
                 .unwrap()
-                .contains("decode-only baseline")
+                .contains("conservative GPU prefill route")
         );
         assert_eq!(
             ax_core::gguf::mmap::support_note_for_q5k_layer_presence(false),

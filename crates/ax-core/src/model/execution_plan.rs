@@ -920,15 +920,15 @@ impl GpuBatchPrefillExecutionPlan {
         );
         if self.experimental_q5k_prefill_small_n {
             if self.experimental_q5k_prefill_forced_variant {
-                summary.push_str(" q5k_prefill=experimental_small_n_forced");
+                summary.push_str(" q5k_prefill=small_n_forced");
             } else {
-                summary.push_str(" q5k_prefill=experimental_small_n");
+                summary.push_str(" q5k_prefill=small_n");
             }
         } else if self.experimental_q5k_prefill {
             if self.experimental_q5k_prefill_forced_variant {
-                summary.push_str(" q5k_prefill=experimental_base_forced");
+                summary.push_str(" q5k_prefill=base_forced");
             } else {
-                summary.push_str(" q5k_prefill=experimental");
+                summary.push_str(" q5k_prefill=base");
             }
         }
         summary
@@ -1244,12 +1244,6 @@ mod tests {
     }
 
     impl EnvVarRestore {
-        fn one(key: &str) -> Self {
-            Self {
-                values: vec![(key.to_string(), std::env::var_os(key))],
-            }
-        }
-
         fn many(vars: &[(&str, &str)]) -> Self {
             Self {
                 values: vars
@@ -1273,15 +1267,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    fn with_env_var<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
-        let _guard = env_lock();
-        let _restore = EnvVarRestore::one(key);
-        unsafe {
-            std::env::set_var(key, value);
-        }
-        f()
     }
 
     fn with_env_vars<T>(vars: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
@@ -1501,7 +1486,7 @@ mod tests {
     }
 
     #[test]
-    fn test_q5k_experimental_prefill_plan_forces_conservative_batch_knobs() {
+    fn test_q5k_prefill_plan_forces_conservative_batch_knobs() {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
@@ -1514,9 +1499,8 @@ mod tests {
             return;
         };
 
-        let plan = with_env_var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL", "1", || {
-            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 32, 128, 4096, true, true)
-        });
+        let plan =
+            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 32, 128, 4096, true, true);
         assert!(!plan.use_f16_batch_io);
         assert!(!plan.use_f16_pair);
         assert!(!plan.use_batch_simd);
@@ -1524,12 +1508,12 @@ mod tests {
         assert!(plan.experimental_q5k_prefill_small_n);
         assert!(
             plan.summary_label("gpu_batch", "cache/stable")
-                .contains("q5k_prefill=experimental_small_n")
+                .contains("q5k_prefill=small_n")
         );
     }
 
     #[test]
-    fn test_q5k_experimental_prefill_plan_uses_base_route_for_larger_batches() {
+    fn test_q5k_prefill_plan_uses_base_route_for_larger_batches() {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
@@ -1542,19 +1526,18 @@ mod tests {
             return;
         };
 
-        let plan = with_env_var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL", "1", || {
-            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 128, 128, 4096, true, true)
-        });
+        let plan =
+            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 128, 128, 4096, true, true);
         assert!(plan.experimental_q5k_prefill);
         assert!(!plan.experimental_q5k_prefill_small_n);
         assert!(
             plan.summary_label("gpu_batch", "cache/stable")
-                .contains("q5k_prefill=experimental")
+                .contains("q5k_prefill=base")
         );
     }
 
     #[test]
-    fn test_q5k_experimental_prefill_plan_uses_base_route_when_auto_is_not_eligible() {
+    fn test_q5k_prefill_plan_uses_base_route_when_auto_is_not_eligible() {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
@@ -1567,19 +1550,18 @@ mod tests {
             return;
         };
 
-        let plan = with_env_var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL", "1", || {
-            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 16, 128, 4096, true, false)
-        });
+        let plan =
+            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 16, 128, 4096, true, false);
         assert!(plan.experimental_q5k_prefill);
         assert!(!plan.experimental_q5k_prefill_small_n);
         assert!(
             plan.summary_label("gpu_batch", "cache/stable")
-                .contains("q5k_prefill=experimental")
+                .contains("q5k_prefill=base")
         );
     }
 
     #[test]
-    fn test_q5k_experimental_prefill_plan_can_force_base_variant() {
+    fn test_q5k_prefill_plan_can_force_base_variant() {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
@@ -1593,10 +1575,7 @@ mod tests {
         };
 
         let plan = with_env_vars(
-            &[
-                ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL", "1"),
-                ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", "base"),
-            ],
+            &[("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", "base")],
             || DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 32, 128, 4096, true, true),
         );
         assert!(plan.experimental_q5k_prefill);
@@ -1604,12 +1583,12 @@ mod tests {
         assert!(plan.experimental_q5k_prefill_forced_variant);
         assert!(
             plan.summary_label("gpu_batch", "cache/stable")
-                .contains("q5k_prefill=experimental_base_forced")
+                .contains("q5k_prefill=base_forced")
         );
     }
 
     #[test]
-    fn test_q5k_experimental_prefill_plan_can_force_small_variant() {
+    fn test_q5k_prefill_plan_can_force_small_variant() {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
@@ -1623,10 +1602,7 @@ mod tests {
         };
 
         let plan = with_env_vars(
-            &[
-                ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL", "1"),
-                ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", "small"),
-            ],
+            &[("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", "small")],
             || {
                 DecodeExecutionPlan::qwen3_prefill(
                     metal_ops, gpu_kv, 0, 128, 128, 4096, true, false,
@@ -1638,7 +1614,7 @@ mod tests {
         assert!(plan.experimental_q5k_prefill_forced_variant);
         assert!(
             plan.summary_label("gpu_batch", "cache/stable")
-                .contains("q5k_prefill=experimental_small_n_forced")
+                .contains("q5k_prefill=small_n_forced")
         );
     }
 
