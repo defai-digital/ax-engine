@@ -29,7 +29,7 @@ impl TokenType {
 }
 
 /// Vocabulary loaded from GGUF metadata.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Vocab {
     /// Token ID → token string.
     pub tokens: Vec<String>,

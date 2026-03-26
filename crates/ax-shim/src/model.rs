@@ -11,6 +11,14 @@ use ax_core::tokenizer::Tokenizer;
 
 use crate::types::*;
 
+fn backend_config_for_n_gpu_layers(n_gpu_layers: i32) -> BackendConfig {
+    if n_gpu_layers == 0 {
+        BackendConfig::Cpu
+    } else {
+        BackendConfig::default()
+    }
+}
+
 /// Load a GGUF model from file.
 ///
 /// Returns null on failure.
@@ -64,11 +72,7 @@ pub extern "C" fn llama_model_load_from_file(
     }
 
     // Use Hybrid backend (Metal GPU + CPU) when GPU layers requested, else CPU only
-    let backend_config = if _params.n_gpu_layers > 0 {
-        BackendConfig::default() // Hybrid
-    } else {
-        BackendConfig::Cpu
-    };
+    let backend_config = backend_config_for_n_gpu_layers(_params.n_gpu_layers);
     let backend = match create_backend(backend_config) {
         Ok(b) => b,
         Err(e) => {
@@ -151,4 +155,25 @@ pub extern "C" fn llama_token_eos(model: *const LlamaModel) -> LlamaToken {
         return -1;
     }
     unsafe { (*model).tokenizer.eos_id() as LlamaToken }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_backend_config_for_n_gpu_layers_zero_stays_cpu() {
+        assert!(matches!(
+            backend_config_for_n_gpu_layers(0),
+            BackendConfig::Cpu
+        ));
+    }
+
+    #[test]
+    fn test_backend_config_for_n_gpu_layers_negative_enables_gpu_backend() {
+        assert!(matches!(
+            backend_config_for_n_gpu_layers(-1),
+            BackendConfig::Hybrid
+        ));
+    }
 }

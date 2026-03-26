@@ -2,9 +2,18 @@
 
 // v2: KV created via LlamaModel::create_model_kv_for_weights()
 
+use ax_core::backend::KvPlannerRequirements;
 use ax_core::model::WeightStore;
 
 use crate::types::*;
+
+fn resolve_context_len(requested: u32, model_max: u32) -> u32 {
+    if requested == 0 {
+        model_max
+    } else {
+        requested.min(model_max)
+    }
+}
 
 /// Create a new inference context from a loaded model.
 ///
@@ -22,14 +31,24 @@ pub extern "C" fn llama_new_context_with_model(
     let model_ref = unsafe { &*model };
 
     // Use requested context size, clamped to model's maximum
-    let n_ctx = if params.n_ctx == 0 {
-        model_ref.config.context_length
-    } else {
-        params.n_ctx.min(model_ref.config.context_length)
-    };
+    let n_ctx = resolve_context_len(params.n_ctx, model_ref.config.context_length);
 
     let weights = WeightStore::new(&model_ref.mapped);
-    let kv = model_ref.model.create_model_kv_for_weights(&weights);
+    let kv = match model_ref
+        .model
+        .create_model_kv_for_weights_with_requirements(
+            &weights,
+            KvPlannerRequirements {
+                max_seq_len_override: Some(n_ctx as usize),
+                ..Default::default()
+            },
+        ) {
+        Ok(kv) => kv,
+        Err(e) => {
+            tracing::error!("llama_new_context_with_model: failed to create KV: {e}");
+            return std::ptr::null_mut();
+        }
+    };
 
     let logits = vec![0.0f32; model_ref.config.vocab_size as usize];
 
@@ -82,5 +101,25 @@ pub extern "C" fn llama_kv_cache_clear(ctx: *mut LlamaContext) {
     unsafe {
         (*ctx).kv.clear();
         (*ctx).position = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_context_len_uses_model_max_when_requested_is_zero() {
+        assert_eq!(resolve_context_len(0, 4096), 4096);
+    }
+
+    #[test]
+    fn test_resolve_context_len_clamps_to_model_max() {
+        assert_eq!(resolve_context_len(8192, 4096), 4096);
+    }
+
+    #[test]
+    fn test_resolve_context_len_preserves_smaller_request() {
+        assert_eq!(resolve_context_len(2048, 4096), 2048);
     }
 }

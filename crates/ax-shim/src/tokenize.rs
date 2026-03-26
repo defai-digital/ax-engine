@@ -46,7 +46,9 @@ pub extern "C" fn llama_tokenize(
         }
     };
 
-    let result = model_ref.tokenizer.encode(text_str, add_special);
+    let result = model_ref
+        .tokenizer
+        .encode_with_options(text_str, add_special, _parse_special);
     let n_tokens = result.len() as i32;
 
     // If output buffer is null, just return the count needed

@@ -42,7 +42,40 @@ impl Tokenizer {
     /// If `add_special` is true, prepends BOS and/or appends EOS based on
     /// the model's configuration.
     pub fn encode(&self, text: &str, add_special: bool) -> Vec<u32> {
-        let mut tokens = self.encode_with_special_tokens(text);
+        self.encode_with_options(text, add_special, true)
+    }
+
+    /// Encode text to token IDs with explicit special-token parsing control.
+    ///
+    /// When `parse_special` is false, control token strings such as
+    /// `<start_of_turn>` are treated as ordinary text and passed through
+    /// the model tokenizer instead of being recognized as single token IDs.
+    pub fn encode_with_options(
+        &self,
+        text: &str,
+        add_special: bool,
+        parse_special: bool,
+    ) -> Vec<u32> {
+        let mut tokens = if parse_special {
+            self.encode_with_special_tokens(text)
+        } else {
+            let mut vocab = self.vocab.clone();
+            let special_ids: Vec<u32> = vocab
+                .types
+                .iter()
+                .enumerate()
+                .filter_map(|(id, ty)| match ty {
+                    vocab::TokenType::Control
+                    | vocab::TokenType::Unknown
+                    | vocab::TokenType::Unused => Some(id as u32),
+                    _ => None,
+                })
+                .collect();
+            vocab
+                .token_to_id
+                .retain(|_, &mut id| !special_ids.contains(&id));
+            bpe::bpe_encode(&vocab, text)
+        };
 
         if add_special {
             if self.vocab.add_bos {
@@ -596,6 +629,15 @@ mod tests {
         // <start_of_turn>user should be [21, 10]
         let ids = tok.encode("<start_of_turn>user", false);
         assert_eq!(ids, vec![21, 10]);
+    }
+
+    #[test]
+    fn test_encode_without_parsing_special_tokens_treats_control_text_literally() {
+        let tok = make_gemma_tokenizer();
+        let ids = tok.encode_with_options("<start_of_turn>user", false, false);
+        assert!(!ids.is_empty());
+        assert_ne!(ids[0], 21);
+        assert!(!ids.contains(&21));
     }
 
     #[test]
