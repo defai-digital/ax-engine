@@ -369,6 +369,7 @@ fn validate_speculative_model_rollback(label: &str, model: &LlamaModel) -> anyho
     if model
         .kv_plan_with_requirements(crate::backend::KvPlannerRequirements {
             require_precise_rollback: true,
+            ..Default::default()
         })
         .is_ok()
     {

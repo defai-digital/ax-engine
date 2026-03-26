@@ -573,7 +573,9 @@ fn encode_llama_pending_step(
     // Init scratch buffers (no-op after first call)
     match DecodeScratchPlan::SharedGpuScratch {
         DecodeScratchPlan::SharedGpuScratch => metal_ops.init_scratches(cfg),
-        DecodeScratchPlan::CpuScratch => anyhow::bail!("pipelined GPU decode requires GPU scratch"),
+        DecodeScratchPlan::CpuScratch | DecodeScratchPlan::HybridBackendOwned => {
+            anyhow::bail!("pipelined GPU decode requires GPU scratch")
+        }
     }
 
     let scratch_guard = metal_ops.scratches();
@@ -911,7 +913,7 @@ impl LlamaForward {
 
         match DecodeScratchPlan::SharedGpuScratch {
             DecodeScratchPlan::SharedGpuScratch => metal_ops.init_scratches(cfg),
-            DecodeScratchPlan::CpuScratch => {
+            DecodeScratchPlan::CpuScratch | DecodeScratchPlan::HybridBackendOwned => {
                 anyhow::bail!("single-CB GPU decode requires GPU scratch")
             }
         }
@@ -2565,6 +2567,19 @@ impl LlamaModel {
             .build_decode_compatible(self.backend.as_ref(), gpu_decode_quant_supported(weights))
     }
 
+    /// Create a KV cache matched to the active decode support of the loaded weights,
+    /// while honoring caller-specified planning requirements such as a smaller
+    /// context length than the model maximum.
+    pub fn create_model_kv_for_weights_with_requirements(
+        &self,
+        weights: &WeightStore,
+        requirements: crate::backend::KvPlannerRequirements,
+    ) -> anyhow::Result<ModelKv> {
+        Ok(self
+            .kv_plan_with_requirements(requirements)?
+            .build_decode_compatible(self.backend.as_ref(), gpu_decode_quant_supported(weights)))
+    }
+
     /// Resolve the backend-side KV allocation plan for this model.
     pub fn kv_plan(&self) -> crate::backend::KvPlan {
         crate::backend::KvPlanner::plan(self.backend.as_ref(), &self.config)
@@ -2615,6 +2630,13 @@ impl LlamaModel {
             };
         if mode_plan.mode == PrefillMode::Serial {
             return Ok(mode_plan.summary_label());
+        }
+
+        if self.arch_name() == "qwen35" && matches!(kv, ModelKv::Qwen35(_)) {
+            return Ok(format!(
+                "{} kv=qwen35_hybrid recurrent=backend_owned",
+                mode_plan.summary_label()
+            ));
         }
 
         let gpu_kv = kv.as_gpu().unwrap();
@@ -2791,6 +2813,10 @@ impl LlamaModel {
     pub fn supports_pipelined_decode(&self) -> bool {
         self.forward
             .supports_pipelined_decode(&self.forward_context())
+    }
+
+    pub fn use_gpu_decode(&self) -> bool {
+        self.backend.use_gpu_decode()
     }
 
     // ── Pipelining helpers (PERF-002) ────────────────────────────────────────

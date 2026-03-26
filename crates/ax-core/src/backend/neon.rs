@@ -5,7 +5,7 @@
 //! are decoded directly into NEON registers and accumulated with the input
 //! vector, so the dequantized values never touch memory.
 //!
-//! Supported formats: Q4_0, Q4_K, Q8_0, Q6_K.
+//! Supported formats: Q4_0, Q4_K, Q5_K, Q8_0, Q6_K.
 //! Unsupported formats fall back to the default dequantize-then-matmul path.
 
 use rayon::prelude::*;
@@ -22,6 +22,10 @@ const Q4_0_BYTES_PER_BLOCK: usize = 18;
 // --- Q4_K constants ---
 const Q4_K_BLOCK_SIZE: usize = 256;
 const Q4_K_BYTES_PER_BLOCK: usize = 144;
+
+// --- Q5_K constants ---
+const Q5_K_BLOCK_SIZE: usize = 256;
+const Q5_K_BYTES_PER_BLOCK: usize = 176;
 
 // --- Q8_0 constants ---
 const Q8_0_BLOCK_SIZE: usize = 32;
@@ -393,6 +397,158 @@ fn fused_dot_q4_k_scalar(quant_row: &[u8], b: &[f32], n_blocks: usize) -> f32 {
             out_idx += 64;
             q_idx += 32;
             is += 2;
+        }
+    }
+
+    total
+}
+
+// ---------------------------------------------------------------------------
+// Q5_K fused matvec
+// ---------------------------------------------------------------------------
+
+/// Fused dequant+matvec for Q5_K: c[i] = dot(dequant(A_row[i]), b) for each row.
+pub fn fused_matvec_q5_k(a_quant: &[u8], b: &[f32], c: &mut [f32], m: usize, k: usize) {
+    debug_assert_eq!(
+        k % Q5_K_BLOCK_SIZE,
+        0,
+        "k must be a multiple of Q5_K block size"
+    );
+    let blocks_per_row = k / Q5_K_BLOCK_SIZE;
+    let row_bytes = blocks_per_row * Q5_K_BYTES_PER_BLOCK;
+    let expected_bytes = m * row_bytes;
+    assert!(
+        a_quant.len() >= expected_bytes,
+        "Q5_K tensor data too small: have {} bytes, need {} (m={m}, k={k})",
+        a_quant.len(),
+        expected_bytes,
+    );
+    assert!(
+        b.len() >= k,
+        "Q5_K input vector too small: have {}, need {k}",
+        b.len(),
+    );
+
+    if m >= PARALLEL_ROW_THRESHOLD {
+        c[..m].par_iter_mut().enumerate().for_each(|(row, c_val)| {
+            let row_data = &a_quant[row * row_bytes..(row + 1) * row_bytes];
+            *c_val = fused_dot_q5_k(row_data, b, blocks_per_row);
+        });
+    } else {
+        for row in 0..m {
+            let row_data = &a_quant[row * row_bytes..(row + 1) * row_bytes];
+            c[row] = fused_dot_q5_k(row_data, b, blocks_per_row);
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn fused_dot_q5_k(quant_row: &[u8], b: &[f32], n_blocks: usize) -> f32 {
+    unsafe { fused_dot_q5_k_neon(quant_row, b, n_blocks) }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn fused_dot_q5_k(quant_row: &[u8], b: &[f32], n_blocks: usize) -> f32 {
+    fused_dot_q5_k_scalar(quant_row, b, n_blocks)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn fused_dot_q5_k_neon(quant_row: &[u8], b: &[f32], n_blocks: usize) -> f32 {
+    use std::arch::aarch64::*;
+
+    unsafe {
+        let mut total = 0.0f32;
+
+        for blk in 0..n_blocks {
+            let block = &quant_row[blk * Q5_K_BYTES_PER_BLOCK..][..Q5_K_BYTES_PER_BLOCK];
+            let b_base = blk * Q5_K_BLOCK_SIZE;
+
+            let d = half::f16::from_le_bytes([block[0], block[1]]).to_f32();
+            let dmin = half::f16::from_le_bytes([block[2], block[3]]).to_f32();
+            let scales = &block[4..16];
+            let qh = &block[16..48];
+            let qs = &block[48..176];
+
+            for subblock in 0..8 {
+                let (sc, m) = get_scale_min_k4(subblock, scales);
+                let d_scaled = d * sc as f32;
+                let d_min_scaled = dmin * m as f32;
+                let qs_group = subblock / 2;
+                let high_nibble = (subblock & 1) == 1;
+
+                let mut qb_acc = vdupq_n_f32(0.0);
+                let mut b_sum = vdupq_n_f32(0.0);
+                let b_ptr = b.as_ptr().add(b_base + subblock * 32);
+
+                for g in 0..8 {
+                    let mut q_arr = [0i32; 4];
+                    for i in 0..4 {
+                        let idx = g * 4 + i;
+                        let ql_byte = qs[qs_group * 32 + idx];
+                        let ql = if high_nibble {
+                            (ql_byte >> 4) & 0x0F
+                        } else {
+                            ql_byte & 0x0F
+                        };
+                        let qh_bit = (qh[idx] >> subblock) & 0x01;
+                        q_arr[i] = (ql | (qh_bit << 4)) as i32;
+                    }
+
+                    let qv = vcvtq_f32_s32(vld1q_s32(q_arr.as_ptr()));
+                    let bv = vld1q_f32(b_ptr.add(g * 4));
+                    qb_acc = vfmaq_f32(qb_acc, qv, bv);
+                    b_sum = vaddq_f32(b_sum, bv);
+                }
+
+                let qb = vaddvq_f32(qb_acc);
+                let bs = vaddvq_f32(b_sum);
+                total += d_scaled * qb - d_min_scaled * bs;
+            }
+        }
+
+        total
+    }
+}
+
+#[allow(dead_code)]
+fn fused_dot_q5_k_scalar(quant_row: &[u8], b: &[f32], n_blocks: usize) -> f32 {
+    let mut total = 0.0f32;
+
+    for blk in 0..n_blocks {
+        let block = &quant_row[blk * Q5_K_BYTES_PER_BLOCK..][..Q5_K_BYTES_PER_BLOCK];
+        let b_base = blk * Q5_K_BLOCK_SIZE;
+
+        let d = half::f16::from_le_bytes([block[0], block[1]]).to_f32();
+        let dmin = half::f16::from_le_bytes([block[2], block[3]]).to_f32();
+        let scales = &block[4..16];
+        let qh = &block[16..48];
+        let qs = &block[48..176];
+
+        for subblock in 0..8 {
+            let (sc, m) = get_scale_min_k4(subblock, scales);
+            let d_scaled = d * sc as f32;
+            let d_min_scaled = dmin * m as f32;
+            let qs_group = subblock / 2;
+            let high_nibble = (subblock & 1) == 1;
+            let mut qb = 0.0f32;
+            let mut bs = 0.0f32;
+
+            for i in 0..32 {
+                let ql_byte = qs[qs_group * 32 + i];
+                let ql = if high_nibble {
+                    (ql_byte >> 4) & 0x0F
+                } else {
+                    ql_byte & 0x0F
+                };
+                let qh_bit = (qh[i] >> subblock) & 0x01;
+                let q = (ql | (qh_bit << 4)) as f32;
+                let bv = b[b_base + subblock * 32 + i];
+                qb += q * bv;
+                bs += bv;
+            }
+
+            total += d_scaled * qb - d_min_scaled * bs;
         }
     }
 

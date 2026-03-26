@@ -45,6 +45,7 @@ pub enum LlamaLayerQkvPlan {
 pub enum DecodeScratchPlan {
     CpuScratch,
     SharedGpuScratch,
+    HybridBackendOwned,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,57 +197,73 @@ impl DecodeExecutionPlan {
         allow_pipelined: bool,
     ) -> Self {
         let has_gpu_decode = kv.is_gpu() && model.metal_device().is_some();
+        let qwen35_hybrid_decode = model.arch_name() == "qwen35"
+            && matches!(kv, ModelKv::Qwen35(_))
+            && model.use_gpu_decode()
+            && model.metal_device().is_some();
         let supports_pipelined = has_gpu_decode && model.supports_pipelined_decode();
 
-        let selection = select_decode_execution_mode(
-            intent,
-            allow_pipelined,
-            has_gpu_decode,
-            supports_pipelined,
-        );
+        let selection = if qwen35_hybrid_decode {
+            qwen35_hybrid_decode_selection(intent, allow_pipelined)
+        } else {
+            select_decode_execution_mode(
+                intent,
+                allow_pipelined,
+                has_gpu_decode,
+                supports_pipelined,
+            )
+        };
         let sync = match selection.mode {
             DecodeMode::Sequential => DecodeSyncPlan::Sequential,
             DecodeMode::SingleCb => DecodeSyncPlan::SingleCommandBuffer,
             DecodeMode::Pipelined => DecodeSyncPlan::Pipelined,
         };
-        let scratch = match sync {
-            DecodeSyncPlan::Sequential => DecodeScratchPlan::CpuScratch,
-            DecodeSyncPlan::SingleCommandBuffer | DecodeSyncPlan::Pipelined => {
-                DecodeScratchPlan::SharedGpuScratch
+        let scratch = if qwen35_hybrid_decode {
+            DecodeScratchPlan::HybridBackendOwned
+        } else {
+            match sync {
+                DecodeSyncPlan::Sequential => DecodeScratchPlan::CpuScratch,
+                DecodeSyncPlan::SingleCommandBuffer | DecodeSyncPlan::Pipelined => {
+                    DecodeScratchPlan::SharedGpuScratch
+                }
             }
         };
 
-        let gpu = match sync {
-            DecodeSyncPlan::Sequential => None,
-            DecodeSyncPlan::SingleCommandBuffer => {
-                model
-                    .metal_ops()
-                    .zip(kv.as_gpu())
-                    .map(|(metal_ops, gpu_kv)| {
-                        single_cb_gpu_decode_plan(
-                            model.arch_name(),
-                            metal_ops,
-                            gpu_kv,
-                            model.config.embedding_dim,
-                            model.config.head_dim,
-                            kv.seq_len().saturating_add(1),
-                        )
-                    })
-            }
-            DecodeSyncPlan::Pipelined => {
-                model
-                    .metal_ops()
-                    .zip(kv.as_gpu())
-                    .map(|(metal_ops, gpu_kv)| {
-                        pipelined_gpu_decode_plan(
-                            model.arch_name(),
-                            metal_ops,
-                            gpu_kv,
-                            model.config.embedding_dim,
-                            model.config.head_dim,
-                            kv.seq_len().saturating_add(1),
-                        )
-                    })
+        let gpu = if qwen35_hybrid_decode {
+            None
+        } else {
+            match sync {
+                DecodeSyncPlan::Sequential => None,
+                DecodeSyncPlan::SingleCommandBuffer => {
+                    model
+                        .metal_ops()
+                        .zip(kv.as_gpu())
+                        .map(|(metal_ops, gpu_kv)| {
+                            single_cb_gpu_decode_plan(
+                                model.arch_name(),
+                                metal_ops,
+                                gpu_kv,
+                                model.config.embedding_dim,
+                                model.config.head_dim,
+                                kv.seq_len().saturating_add(1),
+                            )
+                        })
+                }
+                DecodeSyncPlan::Pipelined => {
+                    model
+                        .metal_ops()
+                        .zip(kv.as_gpu())
+                        .map(|(metal_ops, gpu_kv)| {
+                            pipelined_gpu_decode_plan(
+                                model.arch_name(),
+                                metal_ops,
+                                gpu_kv,
+                                model.config.embedding_dim,
+                                model.config.head_dim,
+                                kv.seq_len().saturating_add(1),
+                            )
+                        })
+                }
             }
         };
 
@@ -726,6 +743,30 @@ impl DecodeExecutionPlan {
     }
 }
 
+fn supports_backend_prefill_kv(config: &ModelConfig, kv: &ModelKv) -> bool {
+    kv.as_gpu().is_some() || (config.architecture == "qwen35" && matches!(kv, ModelKv::Qwen35(_)))
+}
+
+fn qwen35_prefill_plan() -> PrefillExecutionPlan {
+    PrefillExecutionPlan {
+        mode: PrefillMode::GpuBatch,
+        chunk_len: None,
+        reason: None,
+    }
+}
+
+fn qwen35_hybrid_decode_selection(intent: DecodeIntent, allow_pipelined: bool) -> DecodeSelection {
+    DecodeSelection {
+        intent,
+        mode: DecodeMode::Sequential,
+        fallback_reason: if intent == DecodeIntent::Throughput && allow_pipelined {
+            Some("qwen35 hybrid decode currently uses sequential host orchestration".to_string())
+        } else {
+            None
+        },
+    }
+}
+
 impl PrefillExecutionPlan {
     pub(crate) fn for_forward_batch(
         ctx: &ForwardContext<'_>,
@@ -755,7 +796,7 @@ impl PrefillExecutionPlan {
                 reason: Some("cpu_backend".to_string()),
             });
         }
-        if kv.as_gpu().is_none() {
+        if !supports_backend_prefill_kv(ctx.config, kv) {
             return Ok(Self {
                 mode: PrefillMode::Serial,
                 chunk_len: None,
@@ -860,6 +901,7 @@ impl PrefillExecutionPlan {
                     }
                 }
             }
+            "qwen35" => qwen35_prefill_plan(),
             _ => Self {
                 mode: PrefillMode::Serial,
                 chunk_len: None,
@@ -950,6 +992,7 @@ impl DecodeScratchPlan {
         match self {
             Self::CpuScratch => "cpu",
             Self::SharedGpuScratch => "gpu_shared",
+            Self::HybridBackendOwned => "hybrid_backend",
         }
     }
 }
@@ -1196,9 +1239,10 @@ mod tests {
 
     fn tiny_config(arch: &str) -> crate::model::ModelConfig {
         let is_gemma3 = arch == "gemma3";
+        let is_qwen35 = arch == "qwen35";
         crate::model::ModelConfig {
             architecture: arch.to_string(),
-            n_layers: 2,
+            n_layers: if is_qwen35 { 4 } else { 2 },
             n_heads: 2,
             n_kv_heads: 2,
             embedding_dim: 8,
@@ -1223,12 +1267,12 @@ mod tests {
             rope_freq_base_local: if is_gemma3 { Some(5000.0) } else { None },
             n_expert: None,
             n_expert_used: None,
-            qwen35_full_attention_interval: None,
-            qwen35_ssm_conv_kernel: None,
-            qwen35_ssm_inner_size: None,
-            qwen35_ssm_state_size: None,
-            qwen35_ssm_time_step_rank: None,
-            qwen35_ssm_group_count: None,
+            qwen35_full_attention_interval: is_qwen35.then_some(4),
+            qwen35_ssm_conv_kernel: is_qwen35.then_some(4),
+            qwen35_ssm_inner_size: is_qwen35.then_some(8),
+            qwen35_ssm_state_size: is_qwen35.then_some(2),
+            qwen35_ssm_time_step_rank: is_qwen35.then_some(4),
+            qwen35_ssm_group_count: is_qwen35.then_some(2),
         }
     }
 
@@ -1299,6 +1343,29 @@ mod tests {
         let selection = select_decode_execution_mode(DecodeIntent::Latency, true, false, false);
         assert_eq!(selection.mode, DecodeMode::Sequential);
         assert!(selection.fallback_reason.is_none());
+    }
+
+    #[test]
+    fn test_supports_backend_prefill_kv_accepts_qwen35_hybrid_kv() {
+        let cfg = tiny_config("qwen35");
+        let kv = ModelKv::Qwen35(crate::kv::Qwen35Kv::new(4, 2, 4, 32, 4, 4, 8, 2, 4, 2));
+        assert!(supports_backend_prefill_kv(&cfg, &kv));
+    }
+
+    #[test]
+    fn test_decode_scratch_plan_hybrid_backend_label() {
+        assert_eq!(
+            DecodeScratchPlan::HybridBackendOwned.label(),
+            "hybrid_backend"
+        );
+    }
+
+    #[test]
+    fn test_qwen35_prefill_plan_uses_gpu_batch() {
+        let plan = qwen35_prefill_plan();
+        assert_eq!(plan.mode, PrefillMode::GpuBatch);
+        assert_eq!(plan.chunk_len, None);
+        assert_eq!(plan.reason, None);
     }
 
     #[test]

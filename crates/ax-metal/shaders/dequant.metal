@@ -6538,6 +6538,88 @@ kernel void dequant_matvec_q5_k(
     }
 }
 
+constant uint Q5K_NR2_ROWS_PER_SG = 2;
+constant uint Q5K_NR2_SG_PER_TG = 2;
+constant uint Q5K_NR2_ROWS_PER_TG = Q5K_NR2_ROWS_PER_SG * Q5K_NR2_SG_PER_TG;
+
+// Q5_K decode matvec with 2 rows per simdgroup and 2 simdgroups per
+// threadgroup. This keeps the baseline TG=64 launch geometry but reuses the
+// loaded x values across two rows inside each simdgroup.
+kernel void dequant_matvec_q5_k_nr2(
+    device const Q5_K_Block* A [[buffer(0)]],
+    device const float* x      [[buffer(1)]],
+    device float* y            [[buffer(2)]],
+    constant uint& M           [[buffer(3)]],
+    constant uint& K           [[buffer(4)]],
+    uint tg_id                 [[threadgroup_position_in_grid]],
+    uint simd_lane             [[thread_index_in_simdgroup]],
+    uint simd_id               [[simdgroup_index_in_threadgroup]]
+) {
+    uint blocks_per_row = K / Q5_K_BLOCK_VALUES;
+    uint first_row = (tg_id * Q5K_NR2_SG_PER_TG + simd_id) * Q5K_NR2_ROWS_PER_SG;
+    if (first_row >= M) return;
+
+    bool valid1 = (first_row + 1) < M;
+    device const Q5_K_Block* row0 = A + first_row * blocks_per_row;
+    device const Q5_K_Block* row1 = valid1 ? row0 + blocks_per_row : row0;
+
+    float sumf[Q5K_NR2_ROWS_PER_SG] = {0.0f, 0.0f};
+
+    for (uint b = 0; b < blocks_per_row; ++b) {
+        uint base = b * Q5_K_BLOCK_VALUES;
+
+        half rx0 = half(x[base +   0 + simd_lane]);
+        half rx1 = half(x[base +  32 + simd_lane]);
+        half rx2 = half(x[base +  64 + simd_lane]);
+        half rx3 = half(x[base +  96 + simd_lane]);
+        half rx4 = half(x[base + 128 + simd_lane]);
+        half rx5 = half(x[base + 160 + simd_lane]);
+        half rx6 = half(x[base + 192 + simd_lane]);
+        half rx7 = half(x[base + 224 + simd_lane]);
+
+        for (ushort row = 0; row < Q5K_NR2_ROWS_PER_SG; ++row) {
+            device const Q5_K_Block* row_ptr = (row == 0) ? row0 : row1;
+            device const Q5_K_Block& blk = row_ptr[b];
+            float d = (simd_lane == 0) ? float(blk.d) : 0.0f;
+            float dmin = (simd_lane == 0) ? float(blk.dmin) : 0.0f;
+            d = simd_broadcast(d, 0);
+            dmin = simd_broadcast(dmin, 0);
+
+            device const uchar* scales = blk.scales;
+            device const uchar* qh = blk.qh;
+            device const uchar* qs = blk.qs;
+
+            uchar high_bits = qh[simd_lane];
+            FOR_UNROLL (uint pair = 0; pair < 4; ++pair) {
+                float2 sm1 = get_scale_min_q4k(pair * 2, scales);
+                float2 sm2 = get_scale_min_q4k(pair * 2 + 1, scales);
+                float d1 = d * sm1.x, m1 = dmin * sm1.y;
+                float d2 = d * sm2.x, m2 = dmin * sm2.y;
+
+                uchar byte = qs[pair * 32 + simd_lane];
+                float lo_q = float(byte & 0x0F)
+                    + (((high_bits >> (pair * 2)) & 0x01) ? 16.0f : 0.0f);
+                float hi_q = float(byte >> 4)
+                    + (((high_bits >> (pair * 2 + 1)) & 0x01) ? 16.0f : 0.0f);
+
+                half lo = (pair == 0) ? rx0 : (pair == 1) ? rx2 : (pair == 2) ? rx4 : rx6;
+                half hi = (pair == 0) ? rx1 : (pair == 1) ? rx3 : (pair == 2) ? rx5 : rx7;
+                sumf[row] += (d1 * lo_q - m1) * float(lo);
+                sumf[row] += (d2 * hi_q - m2) * float(hi);
+            }
+        }
+    }
+
+    float sum0 = simd_sum(sumf[0]);
+    float sum1 = simd_sum(sumf[1]);
+    if (simd_lane == 0) {
+        y[first_row] = sum0;
+        if (valid1) {
+            y[first_row + 1] = sum1;
+        }
+    }
+}
+
 kernel void dequant_matvec_q4_k(
     device const Q4_K_Block* A [[buffer(0)]],
     device const float* x      [[buffer(1)]],

@@ -146,7 +146,7 @@ All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Als
 Qwen 3.5 support focus:
 
 - The active optimization target is the hybrid recurrent path shared by `Qwen3.5-9B` and `Qwen3.5-27B`.
-- The current local `Qwen3.5-9B` decode baseline still runs with `PrefillPlan: mode=serial reason=cpu_kv` and `Plan: sync=sequential scratch=cpu`, so the structural gap is still hybrid cache/device ownership rather than perf-profile tuning.
+- The current local `Qwen3.5-9B` hybrid path now reports `PrefillPlan: mode=gpu_batch kv=qwen35_hybrid recurrent=backend_owned`, including speculative `all_logits` verification. Decode still reports `Plan: sync=sequential scratch=hybrid_backend`, because AX does not yet have a true single-CB or pipelined Qwen3.5 decode contract.
 
 Qwen2 models continue to route through the `qwen3` implementation, but they are not currently listed as separately tested release targets.
 

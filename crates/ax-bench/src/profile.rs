@@ -280,13 +280,12 @@ pub fn run_profile_with_backend(
     let mut kv = model.create_model_kv_for_weights(&weights);
     let mut logits = vec![0.0f32; vocab_size];
 
-    // Prefill with a simple prompt
+    // Seed the KV with the same batched prefill path used by the normal
+    // runtime so profile baselines reflect the real warm-start state.
     let prompt_tokens = tokenizer.encode("The meaning of life is", true);
     let prefill_plan = model.prefill_plan_summary(&weights, &kv, prompt_tokens.len())?;
-    for (i, &tok) in prompt_tokens.iter().enumerate() {
-        logits.fill(0.0);
-        model.forward_single(tok, i, &mut kv, &weights, &mut logits)?;
-    }
+    logits.fill(0.0);
+    model.forward_batch(&prompt_tokens, &mut kv, &weights, &mut logits)?;
 
     let mut position = prompt_tokens.len();
     let mut next_token = sampler.sample(&mut logits, &prompt_tokens);

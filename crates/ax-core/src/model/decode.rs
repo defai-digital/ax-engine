@@ -118,6 +118,10 @@ where
             (plan.sync, plan.scratch),
             (DecodeSyncPlan::Sequential, DecodeScratchPlan::CpuScratch)
                 | (
+                    DecodeSyncPlan::Sequential,
+                    DecodeScratchPlan::HybridBackendOwned
+                )
+                | (
                     DecodeSyncPlan::SingleCommandBuffer | DecodeSyncPlan::Pipelined,
                     DecodeScratchPlan::SharedGpuScratch
                 )
@@ -355,7 +359,7 @@ mod tests {
     fn tiny_config(arch: &str) -> crate::model::ModelConfig {
         crate::model::ModelConfig {
             architecture: arch.into(),
-            n_layers: 1,
+            n_layers: if arch == "qwen35" { 4 } else { 1 },
             n_heads: 2,
             n_kv_heads: 2,
             embedding_dim: 8,
@@ -380,12 +384,12 @@ mod tests {
             rope_freq_base_local: None,
             n_expert: None,
             n_expert_used: None,
-            qwen35_full_attention_interval: None,
-            qwen35_ssm_conv_kernel: None,
-            qwen35_ssm_inner_size: None,
-            qwen35_ssm_state_size: None,
-            qwen35_ssm_time_step_rank: None,
-            qwen35_ssm_group_count: None,
+            qwen35_full_attention_interval: (arch == "qwen35").then_some(4),
+            qwen35_ssm_conv_kernel: (arch == "qwen35").then_some(4),
+            qwen35_ssm_inner_size: (arch == "qwen35").then_some(8),
+            qwen35_ssm_state_size: (arch == "qwen35").then_some(2),
+            qwen35_ssm_time_step_rank: (arch == "qwen35").then_some(4),
+            qwen35_ssm_group_count: (arch == "qwen35").then_some(2),
         }
     }
 
@@ -462,6 +466,27 @@ mod tests {
         let selection = select_decode_mode(&model, &kv, DecodeIntent::Throughput, true);
         assert_eq!(selection.mode, DecodeMode::Pipelined);
         assert!(selection.fallback_reason.is_none());
+    }
+
+    #[test]
+    fn test_select_decode_mode_qwen35_hybrid_stays_sequential_with_hybrid_reason() {
+        let Ok(backend) = MetalBackend::new() else {
+            return;
+        };
+        let model = LlamaModel::with_backend(tiny_config("qwen35"), Box::new(backend));
+        let kv = model.create_model_kv();
+        assert!(matches!(kv, ModelKv::Qwen35(_)));
+
+        let selection = select_decode_mode(&model, &kv, DecodeIntent::Throughput, true);
+        assert_eq!(selection.mode, DecodeMode::Sequential);
+        assert_eq!(
+            selection.fallback_reason.as_deref(),
+            Some("qwen35 hybrid decode currently uses sequential host orchestration")
+        );
+        assert_eq!(
+            model.decode_plan_summary(&kv, DecodeIntent::Throughput, true),
+            "sync=sequential scratch=hybrid_backend"
+        );
     }
 
     #[test]

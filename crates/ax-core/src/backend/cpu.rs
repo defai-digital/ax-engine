@@ -35,6 +35,10 @@ impl Backend for CpuBackend {
                     neon::fused_matvec_q4_k(a_quant, b, c, m, k);
                     return;
                 }
+                GgmlType::Q5K => {
+                    neon::fused_matvec_q5_k(a_quant, b, c, m, k);
+                    return;
+                }
                 GgmlType::Q8_0 => {
                     neon::fused_matvec_q8_0(a_quant, b, c, m, k);
                     return;
@@ -186,5 +190,61 @@ mod tests {
 
         backend.dequant_matmul(&block, GgmlType::Q6K, &b, &mut c, 1, 1, 256);
         assert!(c[0].abs() < 1e-4, "expected 0, got {}", c[0]);
+    }
+
+    #[test]
+    fn test_cpu_dequant_matmul_q5_k_fused_matches_dequantized_reference() {
+        let backend = CpuBackend;
+
+        let m = 4;
+        let k = 512;
+        let blocks_per_row = k / 256;
+
+        let mut quant_data = Vec::new();
+        for row in 0..m {
+            for blk in 0..blocks_per_row {
+                let mut block = vec![0u8; 176];
+                let d_val = (row as f32 + 1.0) * 0.05 + blk as f32 * 0.02;
+                let d_bytes = half::f16::from_f32(d_val).to_le_bytes();
+                block[0] = d_bytes[0];
+                block[1] = d_bytes[1];
+                let dmin_val = blk as f32 * 0.01;
+                let dmin_bytes = half::f16::from_f32(dmin_val).to_le_bytes();
+                block[2] = dmin_bytes[0];
+                block[3] = dmin_bytes[1];
+                for i in 0..8 {
+                    block[4 + (i % 4)] = ((row + i) % 8 + 1) as u8;
+                    block[8 + (i % 4)] = ((blk + i) % 4) as u8;
+                }
+                for (i, b) in block[16..48].iter_mut().enumerate() {
+                    *b = ((row * 5 + blk * 3 + i) % 256) as u8;
+                }
+                for (i, b) in block[48..176].iter_mut().enumerate() {
+                    *b = ((row * 11 + blk * 7 + i) % 256) as u8;
+                }
+                quant_data.extend(block);
+            }
+        }
+
+        let x: Vec<f32> = (0..k).map(|i| (i as f32) * 0.01 - 2.56).collect();
+
+        let mut weights = vec![0.0f32; m * k];
+        crate::quant::q5_k::dequantize(&quant_data, &mut weights);
+        let mut expected = vec![0.0f32; m];
+        crate::compute::matmul::matmul_f32(&weights, &x, &mut expected, m, 1, k);
+
+        let mut result = vec![0.0f32; m];
+        backend.dequant_matmul(&quant_data, GgmlType::Q5K, &x, &mut result, m, 1, k);
+
+        let max_diff = result
+            .iter()
+            .zip(expected.iter())
+            .map(|(&a, &b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+
+        assert!(
+            max_diff < 0.5,
+            "Fused Q5_K matvec mismatch: max_diff={max_diff}, result={result:?}, expected={expected:?}"
+        );
     }
 }

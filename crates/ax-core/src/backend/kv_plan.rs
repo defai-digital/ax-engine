@@ -21,6 +21,7 @@ pub enum KvRollbackPolicy {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct KvPlannerRequirements {
     pub require_precise_rollback: bool,
+    pub max_seq_len_override: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,16 +92,21 @@ impl KvPlanner {
         config: &ModelConfig,
         requirements: KvPlannerRequirements,
     ) -> anyhow::Result<KvPlan> {
+        let max_seq_len = requirements
+            .max_seq_len_override
+            .unwrap_or(config.context_length as usize);
+        ensure!(max_seq_len > 0, "KV max_seq_len override must be > 0");
+        let max_seq_len = max_seq_len.min(config.context_length as usize);
         let page_size = recommended_page_size(config.n_kv_heads as usize, config.head_dim as usize);
 
         let plan = if config.architecture == "qwen35" {
-            KvPlan::Qwen35(validate_qwen35_plan(config, page_size)?)
+            KvPlan::Qwen35(validate_qwen35_plan(config, page_size, max_seq_len)?)
         } else {
             let cpu_fallback = CpuKvPlan {
                 n_layers: config.n_layers as usize,
                 n_kv_heads: config.n_kv_heads as usize,
                 head_dim: config.head_dim as usize,
-                max_seq_len: config.context_length as usize,
+                max_seq_len,
                 page_size,
             };
 
@@ -112,9 +118,9 @@ impl KvPlanner {
                     n_layers: config.n_layers as usize,
                     n_kv_heads: config.n_kv_heads as usize,
                     head_dim: config.head_dim as usize,
-                    max_seq_len: config.context_length as usize,
+                    max_seq_len,
                     page_size,
-                    dtype: runtime_policy.gpu_kv_dtype(config.context_length as usize),
+                    dtype: runtime_policy.gpu_kv_dtype(max_seq_len),
                     fallback: cpu_fallback,
                 })
             } else {
@@ -138,6 +144,7 @@ impl KvPlanner {
 fn validate_qwen35_plan(
     config: &ModelConfig,
     attention_page_size: usize,
+    max_seq_len: usize,
 ) -> anyhow::Result<Qwen35KvPlan> {
     let full_attention_interval = config.qwen35_full_attention_interval.unwrap_or(0) as usize;
     let conv_kernel = config.qwen35_ssm_conv_kernel.unwrap_or(0) as usize;
@@ -168,7 +175,7 @@ fn validate_qwen35_plan(
         n_layers: config.n_layers as usize,
         n_kv_heads: config.n_kv_heads as usize,
         head_dim: config.head_dim as usize,
-        max_seq_len: config.context_length as usize,
+        max_seq_len,
         attention_page_size,
         full_attention_interval,
         conv_kernel,
@@ -460,6 +467,75 @@ mod tests {
     }
 
     #[test]
+    fn test_kv_planner_honors_max_seq_len_override_for_cpu_plan() {
+        let backend = TestBackend {
+            use_gpu_decode: false,
+            runtime_policy: None,
+        };
+        let plan = KvPlanner::plan_with_requirements(
+            &backend,
+            &base_config(),
+            KvPlannerRequirements {
+                max_seq_len_override: Some(1024),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        match plan {
+            KvPlan::Cpu(plan) => assert_eq!(plan.max_seq_len, 1024),
+            other => panic!("expected CPU plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_kv_planner_honors_max_seq_len_override_for_gpu_dtype_selection() {
+        let backend = TestBackend {
+            use_gpu_decode: true,
+            runtime_policy: Some(RuntimePolicy::resolved_defaults()),
+        };
+        let plan = KvPlanner::plan_with_requirements(
+            &backend,
+            &base_config(),
+            KvPlannerRequirements {
+                max_seq_len_override: Some(128),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        match plan {
+            KvPlan::Gpu(plan) => {
+                assert_eq!(plan.max_seq_len, 128);
+                assert_eq!(plan.dtype, GpuKvDtype::F32);
+            }
+            other => panic!("expected GPU plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_kv_planner_clamps_max_seq_len_override_to_model_context() {
+        let backend = TestBackend {
+            use_gpu_decode: false,
+            runtime_policy: None,
+        };
+        let plan = KvPlanner::plan_with_requirements(
+            &backend,
+            &base_config(),
+            KvPlannerRequirements {
+                max_seq_len_override: Some(8192),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        match plan {
+            KvPlan::Cpu(plan) => assert_eq!(plan.max_seq_len, 4096),
+            other => panic!("expected CPU plan, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_kv_planner_selects_qwen35_hybrid_plan() {
         let backend = TestBackend {
             use_gpu_decode: true,
@@ -551,6 +627,7 @@ mod tests {
             &config,
             KvPlannerRequirements {
                 require_precise_rollback: true,
+                ..Default::default()
             },
         )
         .unwrap_err();
