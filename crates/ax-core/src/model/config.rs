@@ -16,13 +16,137 @@ pub enum GateActivation {
 }
 
 /// RoPE scaling type.
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub enum RopeScaling {
     /// No scaling (standard RoPE).
     #[default]
     None,
-    /// Linear scaling: position = position / factor.
+    /// Linear scaling: freq_scale = 1.0 / factor.
     Linear(f32),
+    /// YaRN (Yet another RoPE extensioN): per-dimension interpolation/extrapolation blend.
+    Yarn {
+        factor: f32,
+        ext_factor: f32,
+        attn_factor: f32,
+        beta_fast: f32,
+        beta_slow: f32,
+        orig_ctx_len: u32,
+    },
+}
+
+impl RopeScaling {
+    /// Effective position used by existing linear-style RoPE paths.
+    ///
+    /// Until the remaining YaRN-specific CPU/model paths are fully plumbed,
+    /// YaRN follows the same position interpolation factor as linear RoPE.
+    pub fn scaled_position(&self, position: usize) -> f32 {
+        match self {
+            Self::None => position as f32,
+            Self::Linear(factor) => position as f32 / factor,
+            Self::Yarn { factor, .. } => position as f32 / factor,
+        }
+    }
+
+    /// Effective `(rope_start, rope_step)` pair for batched RoPE traversal.
+    ///
+    /// As above, YaRN currently follows the same positional interpolation
+    /// factor as the existing linear path until the full parameter plumbing is
+    /// completed across all forward variants.
+    pub fn scaled_start_step(&self, base_seq_len: usize) -> (f32, f32) {
+        match self {
+            Self::None => (base_seq_len as f32, 1.0),
+            Self::Linear(factor) => (base_seq_len as f32 / factor, 1.0 / factor),
+            Self::Yarn { factor, .. } => (base_seq_len as f32 / factor, 1.0 / factor),
+        }
+    }
+}
+
+/// Pre-computed YaRN parameters passed to GPU kernels.
+/// When `ext_factor == 0.0`, the kernel reduces to vanilla RoPE.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RopeYarnParams {
+    pub freq_scale: f32,
+    pub ext_factor: f32,
+    pub attn_factor: f32,
+    pub beta_fast: f32,
+    pub beta_slow: f32,
+    pub orig_ctx_len: u32,
+}
+
+impl RopeYarnParams {
+    /// Vanilla RoPE (no scaling). Kernel short-circuits to cos/sin.
+    pub fn none() -> Self {
+        Self {
+            freq_scale: 1.0,
+            ext_factor: 0.0,
+            attn_factor: 1.0,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            orig_ctx_len: 0,
+        }
+    }
+
+    /// Linear scaling (position interpolation only).
+    pub fn linear(factor: f32) -> Self {
+        Self {
+            freq_scale: 1.0 / factor,
+            ext_factor: 0.0,
+            attn_factor: 1.0,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            orig_ctx_len: 0,
+        }
+    }
+
+    /// Full YaRN with per-dimension blend.
+    pub fn yarn(
+        factor: f32,
+        ext_factor: f32,
+        attn_factor: f32,
+        beta_fast: f32,
+        beta_slow: f32,
+        orig_ctx_len: u32,
+    ) -> Self {
+        // Pre-compute effective attn_factor (mscale correction)
+        let freq_scale = 1.0 / factor;
+        let mscale = if ext_factor != 0.0 && factor > 1.0 {
+            let base_mscale = 1.0 + 0.1 * (1.0 / freq_scale).ln();
+            attn_factor * base_mscale
+        } else {
+            attn_factor
+        };
+        Self {
+            freq_scale,
+            ext_factor,
+            attn_factor: mscale,
+            beta_fast,
+            beta_slow,
+            orig_ctx_len,
+        }
+    }
+
+    /// Build from RopeScaling enum.
+    pub fn from_scaling(scaling: &RopeScaling) -> Self {
+        match scaling {
+            RopeScaling::None => Self::none(),
+            RopeScaling::Linear(factor) => Self::linear(*factor),
+            RopeScaling::Yarn {
+                factor,
+                ext_factor,
+                attn_factor,
+                beta_fast,
+                beta_slow,
+                orig_ctx_len,
+            } => Self::yarn(
+                *factor,
+                *ext_factor,
+                *attn_factor,
+                *beta_fast,
+                *beta_slow,
+                *orig_ctx_len,
+            ),
+        }
+    }
 }
 
 /// Model configuration extracted from GGUF metadata.
@@ -187,6 +311,43 @@ impl ModelConfig {
                     "invalid {arch}.rope.scaling.factor: expected finite > 0, got {factor}"
                 );
                 RopeScaling::Linear(factor)
+            }
+            Some("yarn") => {
+                let factor = header
+                    .get_f32(&format!("{arch}.rope.scaling.factor"))
+                    .unwrap_or(1.0);
+                anyhow::ensure!(
+                    factor.is_finite() && factor > 0.0,
+                    "invalid {arch}.rope.scaling.factor: expected finite > 0, got {factor}"
+                );
+                let orig_ctx_len = header
+                    .get_u32(&format!("{arch}.rope.scaling.original_context_length"))
+                    .unwrap_or(context_length);
+                let ext_factor = header
+                    .get_f32(&format!("{arch}.rope.scaling.yarn_ext_factor"))
+                    .unwrap_or(1.0);
+                let attn_factor = header
+                    .get_f32(&format!("{arch}.rope.scaling.attn_factor"))
+                    .or_else(|| header.get_f32(&format!("{arch}.rope.scaling.yarn_attn_factor")))
+                    .unwrap_or(1.0);
+                let beta_fast = header
+                    .get_f32(&format!("{arch}.rope.scaling.yarn_beta_fast"))
+                    .unwrap_or(32.0);
+                let beta_slow = header
+                    .get_f32(&format!("{arch}.rope.scaling.yarn_beta_slow"))
+                    .unwrap_or(1.0);
+                tracing::info!(
+                    factor, ext_factor, attn_factor, beta_fast, beta_slow, orig_ctx_len,
+                    "YaRN RoPE scaling detected"
+                );
+                RopeScaling::Yarn {
+                    factor,
+                    ext_factor,
+                    attn_factor,
+                    beta_fast,
+                    beta_slow,
+                    orig_ctx_len,
+                }
             }
             Some(scaling_type) => {
                 tracing::warn!(scaling_type, "unknown RoPE scaling type, ignoring");

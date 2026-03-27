@@ -21,7 +21,7 @@
     }
   },
   "batch_prefill": {
-    "prefer_f16_io": false,
+    "prefer_f16_io": true,
     "prefer_pair_kernel": true,
     "small_n_threshold": 1,
     "small_m_max": 0,

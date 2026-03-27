@@ -10,12 +10,25 @@ Most inference engines are general tensor graph executors. They represent a forw
 
 AX Engine takes a different approach. Because it only needs to run transformer inference (not arbitrary computation), it fuses operations across graph boundaries into domain-specific Metal kernels that a general executor cannot express.
 
+The runtime also leans into Apple UMA directly: mmap-backed model weights are
+now aliased into Metal buffers without an extra copy when Metal accepts the
+alias, with a safe fallback to copied buffers when it does not.
+
+The Metal API cleanup track is now fully shipped as well: command buffers
+prefer unretained references, shared buffers opt out of automatic hazard
+tracking, and the remaining single-vs-batch elementwise duplication has been
+collapsed behind function-constant-specialized pipelines.
+
 The next development phase follows that same idea more aggressively. The
 remaining high-value wins are no longer generic matmul cleanups; they are
-deeper decode fusions, especially for Qwen3:
-- QKV+bias+QK norm+RoPE+KV append in decode
-- pair matvec for FFN gate+up
-- fused activation+down projection for SiLU models
+deeper decode fusions and prefill attention/runtime work.
+
+The current FFN-side decode prototypes are both benchmark-gated:
+- `AX_METAL_DECODE_PAIR_MATVEC=1` for gate+up pair matvec
+- `AX_METAL_DECODE_FUSED_SILU_DOWN=1` for fused SiLU*Up + Down projection
+
+Neither is shipped by default yet because the first real-model results
+regressed decode on common `Q4_K`/`Q5_K` workloads.
 
 The matmul-parity phase is therefore considered closed. Ongoing performance
 work is now a fusion-architecture follow-on, not another round of isolated
@@ -75,17 +88,21 @@ AX Engine vs llama.cpp on Apple M3 Max (March 2026). Values over 100% mean AX wa
 |---|---:|---:|---:|---:|---:|---:|
 | Llama 3 8B | 675.8 tok/s | 639.2 tok/s | **105.7%** | 61.2 tok/s | 47.1 tok/s | **129.9%** |
 | Llama 3 70B | 55.7 tok/s | 66.8 tok/s | 83.4% | 6.5 tok/s | 6.3 tok/s | **103.2%** |
-| Qwen3 8B | 725.1 tok/s | 736.7 tok/s | 98.4% | 57.8 tok/s | 60.3 tok/s | 95.8% |
-| Qwen3 14B | 357.2 tok/s | 408.2 tok/s | 87.5% | 35.3 tok/s | 35.6 tok/s | 99.1% |
-| Qwen3 32B | 126.0 tok/s | 150.7 tok/s | 83.6% | 16.6 tok/s | 14.9 tok/s | **111.4%** |
+| Qwen3 8B | 727.4 tok/s | 736.7 tok/s | 98.7% | 62.4 tok/s | 60.3 tok/s | **103.5%** |
+| Qwen3 14B | 391.6 tok/s | 408.2 tok/s | 95.9% | 37.1 tok/s | 35.6 tok/s | **104.2%** |
+| Qwen3 32B | 126.7 tok/s | 150.7 tok/s | 84.1% | 15.6 tok/s | 14.9 tok/s | **104.7%** |
 | Gemma 3 12B | 420.5 tok/s | 463.3 tok/s | 90.8% | 39.6 tok/s | 35.8 tok/s | **110.5%** |
 | Gemma 3 27B | 155.7 tok/s | 170.2 tok/s | 91.5% | 17.8 tok/s | 15.1 tok/s | **117.9%** |
 
 LLaMA 3 benefits most from AX's fusion depth (10 dispatches/layer vs ~20 in a
-per-op executor). Qwen3 currently benefits least because its QKV bias + QK
-norm path is not yet fully fused in decode (17-19 dispatches/layer). That is
-the main active optimization target now: leverage the fusion architecture
-further, rather than keep adding isolated kernel variants. See
+per-op executor). Qwen3 decode now uses the shipped fused post-QKV path
+(`qkv=fused`) on the common route, and `Qwen3 14B` is now back near parity on
+both prefill and decode after restoring its shipped prefill route to
+`f16_io=off`. Synthetic throughput benches now mask stop tokens during decode
+measurement so long-context rows like `Qwen3 32B` do not collapse to `0 tok/s`
+when EOS wins the first sampled step. The remaining FFN decode fusions are
+still experimental: both the gate+up pair matvec and the fused SiLU+Down path
+are opt-in only until they show a stable real-model decode win. See
 [BENCHMARKING.md](./BENCHMARKING.md) for methodology.
 
 ## Supported Models

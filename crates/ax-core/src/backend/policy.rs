@@ -245,6 +245,9 @@ impl RuntimePolicy {
     }
 
     fn with_env_overrides(mut self, architecture: &str) -> Self {
+        if architecture == "qwen3" {
+            self.decode_fused_qkv = true;
+        }
         if let Some(kv_precision) = KvPrecisionPolicy::from_env_override() {
             self.kv_precision = kv_precision;
         }
@@ -325,6 +328,12 @@ mod tests {
         assert_eq!(policy.kv_precision_policy(), KvPrecisionPolicy::Auto);
         assert_eq!(policy.gpu_kv_dtype(128), GpuKvDtype::F32);
         assert_eq!(policy.gpu_kv_dtype(256), GpuKvDtype::F16);
+    }
+
+    #[test]
+    fn test_runtime_policy_enables_decode_fused_qkv_for_qwen3_by_default() {
+        let policy = RuntimePolicy::for_model("qwen3-8b", "q4_k_m", "qwen3");
+        assert!(policy.decode_fused_qkv_enabled());
     }
 
     #[test]

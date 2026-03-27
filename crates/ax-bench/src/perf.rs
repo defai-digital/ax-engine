@@ -755,7 +755,7 @@ fn run_single_bench(
 )> {
     let mut kv = model.create_model_kv_for_weights(weights);
     let mut logits = vec![0.0f32; vocab_size];
-    let mut sampler = Sampler::new(sampling_config.clone());
+    let mut sampler = Sampler::new(bench_sampling_config(sampling_config, tokenizer));
 
     // Prefill
     let prefill_plan = model.prefill_plan_summary(weights, &kv, prompt_tokens.len())?;
@@ -814,6 +814,19 @@ fn build_fixed_prompt(tokenizer: &Tokenizer, prompt_tokens: usize) -> Vec<u32> {
     }
     tokens.truncate(prompt_tokens);
     tokens
+}
+
+fn bench_sampling_config(base: &SamplingConfig, tokenizer: &Tokenizer) -> SamplingConfig {
+    let mut config = base.clone();
+    for stop_token in [Some(tokenizer.eos_id()), tokenizer.eot_id()]
+        .into_iter()
+        .flatten()
+    {
+        if !config.banned_token_ids.contains(&stop_token) {
+            config.banned_token_ids.push(stop_token);
+        }
+    }
+    config
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -1061,6 +1074,44 @@ impl SpecBenchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    use ax_core::tokenizer::vocab::TokenType;
+    use ax_core::tokenizer::{Tokenizer, Vocab};
+
+    fn make_test_tokenizer_with_eot() -> Tokenizer {
+        let vocab = Vocab {
+            tokens: vec![
+                "<unk>".into(),
+                "<bos>".into(),
+                "<eos>".into(),
+                "<eot>".into(),
+            ],
+            scores: vec![0.0; 4],
+            types: vec![
+                TokenType::Unknown,
+                TokenType::Control,
+                TokenType::Control,
+                TokenType::Control,
+            ],
+            token_to_id: HashMap::from([
+                ("<unk>".into(), 0),
+                ("<bos>".into(), 1),
+                ("<eos>".into(), 2),
+                ("<eot>".into(), 3),
+            ]),
+            merge_ranks: None,
+            bos_id: 1,
+            eos_id: 2,
+            unk_id: 0,
+            add_bos: false,
+            add_eos: false,
+            add_space_prefix: false,
+            model_type: "gpt2".into(),
+            eot_id: Some(3),
+        };
+        Tokenizer::from_vocab(vocab)
+    }
 
     #[test]
     fn test_bench_config_defaults() {
@@ -1073,6 +1124,15 @@ mod tests {
         assert_eq!(c.samples, 1);
         assert_eq!(c.cooldown_ms, 0);
         assert_eq!(c.kernel_profile_path, None);
+    }
+
+    #[test]
+    fn test_bench_sampling_config_bans_stop_tokens() {
+        let tokenizer = make_test_tokenizer_with_eot();
+        let config = SamplingConfig::default();
+        let bench = bench_sampling_config(&config, &tokenizer);
+        assert!(bench.banned_token_ids.contains(&2));
+        assert!(bench.banned_token_ids.contains(&3));
     }
 
     #[test]

@@ -129,6 +129,12 @@ pub struct LlamaDecodeLayerPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Qwen3DecodeLayerPlan {
+    pub qkv: DecodeQkvPlan,
+    pub qwen3_post: Qwen3PrefillQkvPost,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuBatchPrefillExecutionPlan {
     pub kv_f16: bool,
     pub use_f16_batch_io: bool,
@@ -1152,10 +1158,7 @@ fn gemma3_prefill_layer_plan(
     let (rope_start, rope_step) = if is_local {
         (base_seq_len as f32, 1.0f32)
     } else {
-        match config.rope_scaling {
-            crate::model::config::RopeScaling::Linear(f) => (base_seq_len as f32 / f, 1.0f32 / f),
-            crate::model::config::RopeScaling::None => (base_seq_len as f32, 1.0f32),
-        }
+        config.rope_scaling.scaled_start_step(base_seq_len)
     };
     let sliding_window = if is_local {
         config.sliding_window_size.unwrap_or(0)
@@ -1198,6 +1201,7 @@ fn decode_qkv_plan_for_arch(
 ) -> DecodeQkvPlan {
     let use_fused_qkv = match arch_name {
         "llama" => fused_qkv_enabled,
+        "qwen3" => decode_fused_qkv_enabled,
         "gemma3" => decode_fused_qkv_enabled,
         _ => false,
     };
@@ -1230,9 +1234,42 @@ pub(crate) fn llama_layer_plan_for_gpu(
     LlamaDecodeLayerPlan { qkv }
 }
 
+pub(crate) fn qwen3_layer_plan_for_gpu(
+    exec_plan: &GpuDecodeExecutionPlan,
+    wq_dtype: GgmlType,
+    wk_dtype: GgmlType,
+    wv_dtype: GgmlType,
+    has_bias: bool,
+    has_qk_norm: bool,
+) -> Qwen3DecodeLayerPlan {
+    let use_fused_projection = exec_plan.qkv == DecodeQkvPlan::Fused
+        && qkv_fusion_supported(wq_dtype, wk_dtype, wv_dtype)
+        && has_qk_norm;
+    let qkv = if use_fused_projection {
+        DecodeQkvPlan::Fused
+    } else {
+        DecodeQkvPlan::Split
+    };
+    let qwen3_post = if use_fused_projection && has_bias {
+        Qwen3PrefillQkvPost::FusedBiasQkNorm
+    } else if use_fused_projection {
+        Qwen3PrefillQkvPost::FusedQkNorm
+    } else if has_bias && has_qk_norm {
+        Qwen3PrefillQkvPost::SeparateBiasQkNorm
+    } else if has_bias {
+        Qwen3PrefillQkvPost::SeparateBias
+    } else if has_qk_norm {
+        Qwen3PrefillQkvPost::SeparateQkNorm
+    } else {
+        Qwen3PrefillQkvPost::Separate
+    };
+    Qwen3DecodeLayerPlan { qkv, qwen3_post }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::Backend;
     use crate::backend::metal::MetalBackend;
     use crate::model::LlamaModel;
     use crate::model::config::{GateActivation, RopeScaling};
@@ -1476,15 +1513,73 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_qkv_plan_for_qwen3_stays_split() {
-        let plan = decode_qkv_plan_for_arch("qwen3", true, true);
-        assert_eq!(plan, DecodeQkvPlan::Split);
+    fn test_decode_qkv_plan_for_qwen3_uses_decode_fused_toggle() {
+        let plan = decode_qkv_plan_for_arch("qwen3", false, true);
+        assert_eq!(plan, DecodeQkvPlan::Fused);
     }
 
     #[test]
     fn test_decode_qkv_plan_for_gemma3_uses_decode_fused_toggle() {
         let plan = decode_qkv_plan_for_arch("gemma3", false, true);
         assert_eq!(plan, DecodeQkvPlan::Fused);
+    }
+
+    #[test]
+    fn test_qwen3_layer_plan_uses_fused_qkv_when_supported() {
+        let exec_plan = GpuDecodeExecutionPlan {
+            barriers: DecodeBarrierPlan::Explicit,
+            qkv: DecodeQkvPlan::Fused,
+            kv_f16: true,
+            attention_route: "f16kv_hd128",
+            attention_tier: "stable",
+            q4_k_candidate: "q4_k.nr2",
+            q4_k_tier: "profile_preferred",
+            q5_k_candidate: "q5_k.ilp4",
+            q5_k_tier: "stable",
+            q6_k_candidate: "q6_k.nr2",
+            q6_k_tier: "profile_preferred",
+            dequant_dispatch: ax_metal::DequantDispatchConfig::default(),
+            attention_dispatch: ax_metal::AttentionDispatchConfig::default(),
+        };
+        let layer = qwen3_layer_plan_for_gpu(
+            &exec_plan,
+            GgmlType::Q4K,
+            GgmlType::Q4K,
+            GgmlType::Q4K,
+            true,
+            true,
+        );
+        assert_eq!(layer.qkv, DecodeQkvPlan::Fused);
+        assert_eq!(layer.qwen3_post, Qwen3PrefillQkvPost::FusedBiasQkNorm);
+    }
+
+    #[test]
+    fn test_qwen3_layer_plan_falls_back_when_qk_norm_missing() {
+        let exec_plan = GpuDecodeExecutionPlan {
+            barriers: DecodeBarrierPlan::Explicit,
+            qkv: DecodeQkvPlan::Fused,
+            kv_f16: true,
+            attention_route: "f16kv_hd128",
+            attention_tier: "stable",
+            q4_k_candidate: "q4_k.nr2",
+            q4_k_tier: "profile_preferred",
+            q5_k_candidate: "q5_k.ilp4",
+            q5_k_tier: "stable",
+            q6_k_candidate: "q6_k.nr2",
+            q6_k_tier: "profile_preferred",
+            dequant_dispatch: ax_metal::DequantDispatchConfig::default(),
+            attention_dispatch: ax_metal::AttentionDispatchConfig::default(),
+        };
+        let layer = qwen3_layer_plan_for_gpu(
+            &exec_plan,
+            GgmlType::Q4K,
+            GgmlType::Q4K,
+            GgmlType::Q4K,
+            true,
+            false,
+        );
+        assert_eq!(layer.qkv, DecodeQkvPlan::Split);
+        assert_eq!(layer.qwen3_post, Qwen3PrefillQkvPost::SeparateBias);
     }
 
     #[test]
@@ -2137,6 +2232,24 @@ mod tests {
 
         let plan = DecodeExecutionPlan::for_model(&model, &kv, DecodeIntent::Latency, false);
         assert_eq!(plan.gpu.unwrap().qkv, DecodeQkvPlan::Split);
+    }
+
+    #[test]
+    fn test_for_model_qwen3_reports_fused_qkv_plan_after_backend_configuration() {
+        let Ok(backend) = MetalBackend::new() else {
+            return;
+        };
+        backend
+            .configure_for_model("Qwen3-8B", "Q4_K", "qwen3")
+            .unwrap();
+        let model = LlamaModel::with_backend(tiny_config("qwen3"), Box::new(backend));
+        let kv = model.create_model_kv();
+        if !kv.is_gpu() {
+            return;
+        }
+
+        let plan = DecodeExecutionPlan::for_model(&model, &kv, DecodeIntent::Latency, false);
+        assert_eq!(plan.gpu.unwrap().qkv, DecodeQkvPlan::Fused);
     }
 
     #[test]

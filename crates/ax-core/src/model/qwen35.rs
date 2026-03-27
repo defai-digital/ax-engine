@@ -173,10 +173,7 @@ impl Qwen35Forward {
     }
 
     fn rope_position(cfg: &ModelConfig, position: usize) -> f32 {
-        match cfg.rope_scaling {
-            crate::model::config::RopeScaling::Linear(factor) => position as f32 / factor,
-            crate::model::config::RopeScaling::None => position as f32,
-        }
+        cfg.rope_scaling.scaled_position(position)
     }
 
     fn transpose(input: &[f32], rows: usize, cols: usize) -> Vec<f32> {

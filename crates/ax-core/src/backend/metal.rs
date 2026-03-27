@@ -122,6 +122,32 @@ pub fn metal_precompute_f16_enabled_for_model(config: &ModelConfig) -> bool {
     RuntimePolicy::for_model("default", "default", &config.architecture).precompute_f16_enabled()
 }
 
+fn create_mmap_weight_buffer_from_bytes(device: &MetalDevice, data: &[u8]) -> MetalBuffer {
+    unsafe { MetalBuffer::from_bytes_no_copy(device.device(), data) }.unwrap_or_else(|err| {
+        tracing::debug!(
+            len = data.len(),
+            ptr = data.as_ptr() as usize,
+            error = %err,
+            "Metal no-copy weight alias failed; falling back to copied buffer"
+        );
+        MetalBuffer::from_bytes(device.device(), data)
+            .expect("Failed to create Metal buffer for weight tensor")
+    })
+}
+
+fn create_mmap_weight_buffer_from_f32(device: &MetalDevice, data: &[f32]) -> MetalBuffer {
+    unsafe { MetalBuffer::from_slice_no_copy(device.device(), data) }.unwrap_or_else(|err| {
+        tracing::debug!(
+            len = data.len(),
+            ptr = data.as_ptr() as usize,
+            error = %err,
+            "Metal no-copy f32 weight alias failed; falling back to copied buffer"
+        );
+        MetalBuffer::from_slice(device.device(), data)
+            .expect("Failed to create Metal buffer for f32 weight")
+    })
+}
+
 /// Metal compute backend — offloads matmul to GPU.
 ///
 /// Caches Metal buffers for weight tensors (keyed by mmap pointer address)
@@ -327,8 +353,7 @@ impl MetalBackend {
         let mut cache = self.weight_cache.lock().unwrap();
         cache.entry(key).or_insert_with(|| {
             if dtype == GgmlType::F32 {
-                MetalBuffer::from_bytes(self.device.device(), a_quant)
-                    .expect("Failed to create Metal buffer for dense F32 weight tensor")
+                create_mmap_weight_buffer_from_bytes(&self.device, a_quant)
             } else {
                 let mut a_f32 = vec![0.0f32; m * k];
                 crate::quant::dequantize(dtype, a_quant, &mut a_f32);
@@ -1193,10 +1218,9 @@ impl Backend for MetalBackend {
             weight_keys.push(key);
             // Ensure weight buffer exists in cache
             let mut cache = self.weight_cache.lock().unwrap();
-            cache.entry(key).or_insert_with(|| {
-                MetalBuffer::from_bytes(self.device.device(), a_quant)
-                    .expect("Failed to create Metal buffer for weight tensor")
-            });
+            cache
+                .entry(key)
+                .or_insert_with(|| create_mmap_weight_buffer_from_bytes(&self.device, a_quant));
         }
 
         // Allocate output buffers for each operation
@@ -1876,7 +1900,8 @@ impl MetalBackend {
     ///
     /// Weight tensors from mmap'd GGUF files have stable pointer addresses,
     /// so we use the data pointer as the cache key. On first access the data
-    /// is copied into a Metal shared-mode buffer; subsequent calls return
+    /// is aliased via a no-copy Metal shared-mode buffer when possible;
+    /// otherwise it falls back to a copied buffer. Subsequent calls return
     /// the cached buffer with zero overhead.
     fn get_weight_buffer(
         &self,
@@ -1884,10 +1909,9 @@ impl MetalBackend {
     ) -> std::sync::MutexGuard<'_, FxHashMap<usize, MetalBuffer>> {
         let key = data.as_ptr() as usize;
         let mut cache = self.weight_cache.lock().unwrap();
-        cache.entry(key).or_insert_with(|| {
-            MetalBuffer::from_bytes(self.device.device(), data)
-                .expect("Failed to create Metal buffer for weight tensor")
-        });
+        cache
+            .entry(key)
+            .or_insert_with(|| create_mmap_weight_buffer_from_bytes(&self.device, data));
         cache
     }
 
@@ -2107,6 +2131,8 @@ pub struct CachedModelKeys {
 pub struct GpuScratchBuffers {
     pub hidden: MetalBuffer,
     pub norm_buf: MetalBuffer,
+    /// f16 staging input for decode-side paired FFN matvecs and future fused decode paths.
+    pub matmul_in_f16: MetalBuffer,
     /// Fused QKV projection output [q_dim + 2 * kv_dim] for single-token decode.
     pub qkv_buf: MetalBuffer,
     pub q_buf: MetalBuffer,
@@ -2309,11 +2335,20 @@ impl MetalOps {
             MetalBuffer::new(self.device.device(), size * std::mem::size_of::<f32>())
                 .expect("Failed to allocate GPU scratch buffer")
         };
+        let alloc_f16 = |size: usize| -> MetalBuffer {
+            MetalBuffer::new(
+                self.device.device(),
+                size * std::mem::size_of::<half::f16>(),
+            )
+            .expect("Failed to allocate GPU decode f16 scratch buffer")
+        };
+        let max_input_dim = dim.max(inter_dim);
 
         let vocab_size = config.vocab_size as usize;
         let scratches = GpuScratchBuffers {
             hidden: alloc(dim),
             norm_buf: alloc(dim),
+            matmul_in_f16: alloc_f16(max_input_dim),
             qkv_buf: alloc(q_dim + 2 * kv_dim),
             q_buf: alloc(q_dim),
             k_buf: alloc(kv_dim),
@@ -2559,10 +2594,9 @@ impl MetalOps {
     ) -> std::sync::MutexGuard<'_, FxHashMap<usize, MetalBuffer>> {
         let key = data.as_ptr() as usize;
         let mut cache = self.f32_weight_cache.lock().unwrap();
-        cache.entry(key).or_insert_with(|| {
-            MetalBuffer::from_slice(self.device.device(), data)
-                .expect("Failed to create Metal buffer for f32 weight")
-        });
+        cache
+            .entry(key)
+            .or_insert_with(|| create_mmap_weight_buffer_from_f32(&self.device, data));
         cache
     }
 
@@ -2574,10 +2608,9 @@ impl MetalOps {
     ) -> std::sync::MutexGuard<'_, FxHashMap<usize, MetalBuffer>> {
         let key = data.as_ptr() as usize;
         let mut cache = self.f32_weight_cache.lock().unwrap();
-        cache.entry(key).or_insert_with(|| {
-            MetalBuffer::from_bytes(self.device.device(), data)
-                .expect("Failed to create Metal buffer for quantized weight")
-        });
+        cache
+            .entry(key)
+            .or_insert_with(|| create_mmap_weight_buffer_from_bytes(&self.device, data));
         cache
     }
 
@@ -2586,10 +2619,9 @@ impl MetalOps {
     pub fn ensure_f32_cached(&self, data: &[f32]) -> usize {
         let key = data.as_ptr() as usize;
         let mut cache = self.f32_weight_cache.lock().unwrap();
-        cache.entry(key).or_insert_with(|| {
-            MetalBuffer::from_slice(self.device.device(), data)
-                .expect("Failed to create Metal buffer for f32 weight")
-        });
+        cache
+            .entry(key)
+            .or_insert_with(|| create_mmap_weight_buffer_from_f32(&self.device, data));
         key
     }
 
@@ -2598,10 +2630,9 @@ impl MetalOps {
     pub fn ensure_quant_cached(&self, data: &[u8]) -> usize {
         let key = data.as_ptr() as usize;
         let mut cache = self.f32_weight_cache.lock().unwrap();
-        cache.entry(key).or_insert_with(|| {
-            MetalBuffer::from_bytes(self.device.device(), data)
-                .expect("Failed to create Metal buffer for quantized weight")
-        });
+        cache
+            .entry(key)
+            .or_insert_with(|| create_mmap_weight_buffer_from_bytes(&self.device, data));
         key
     }
 
@@ -2934,6 +2965,14 @@ impl MetalOps {
     ///
     /// Returns true if precomputed path was used.
     #[allow(clippy::too_many_arguments)]
+    /// Check whether a precomputed (dequantized to f16) version of this weight
+    /// buffer exists in the cache, without dispatching anything.
+    pub fn has_precomputed_weight(&self, quant_buf: &MetalBuffer) -> bool {
+        let key = Self::quant_buf_key(quant_buf);
+        let cache = self.precomputed_f16_weight_cache.lock().unwrap();
+        cache.contains_key(&key)
+    }
+
     pub fn encode_precomputed_q4k_matvec_if_available(
         &self,
         encoder: &ax_metal::MetalEncoder,

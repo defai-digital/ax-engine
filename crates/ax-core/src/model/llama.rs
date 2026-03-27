@@ -48,7 +48,8 @@ use crate::model::execution_plan::{
 use crate::model::forward::{ForwardContext, ForwardPass};
 use crate::model::shared::{
     encode_batch_logits, encode_dequant_batch, encode_dequant_batch_f16in,
-    encode_dequant_batch_pair_f16in, encode_dequant_matvec, encode_dequant_matvec_with_config,
+    encode_dequant_batch_pair_f16in, encode_dequant_matvec, encode_dequant_matvec_pair_with_config,
+    encode_dequant_matvec_with_config, encode_dequant_silu_down_matvec_with_config,
     gpu_decode_quant_supported, gpu_prefill_q5k_small_n_auto_eligible, gpu_prefill_uses_q5k,
 };
 use crate::model::weights::WeightStore;
@@ -404,60 +405,82 @@ fn encode_llama_gpu_layers_only(
         let wg_buf = weight_cache.get(&lw.wg).unwrap();
         let wu_buf = weight_cache.get(&lw.wu).unwrap();
         let t = OpTimer::start();
-        encode_dequant_matvec_with_config(
+        if !encode_dequant_matvec_pair_with_config(
             metal_ops,
             encoder,
             wg_buf,
+            wu_buf,
             &s.norm_buf,
             &s.gate_buf,
+            &s.up_buf,
             inter_dim as u32,
             dim as u32,
             lw.wg_dtype,
-            exec_plan.dequant_dispatch,
-        );
-        encode_dequant_matvec_with_config(
-            metal_ops,
-            encoder,
-            wu_buf,
-            &s.norm_buf,
-            &s.up_buf,
-            inter_dim as u32,
-            dim as u32,
             lw.wu_dtype,
             exec_plan.dequant_dispatch,
-        );
+        ) {
+            encode_dequant_matvec_with_config(
+                metal_ops,
+                encoder,
+                wg_buf,
+                &s.norm_buf,
+                &s.gate_buf,
+                inter_dim as u32,
+                dim as u32,
+                lw.wg_dtype,
+                exec_plan.dequant_dispatch,
+            );
+            encode_dequant_matvec_with_config(
+                metal_ops,
+                encoder,
+                wu_buf,
+                &s.norm_buf,
+                &s.up_buf,
+                inter_dim as u32,
+                dim as u32,
+                lw.wu_dtype,
+                exec_plan.dequant_dispatch,
+            );
+        }
         if let Some(ref mut ops_ref) = ops {
             ops_ref.gpu_encode_layer_ffn += t.elapsed();
         }
         decode_barrier(encoder);
 
-        // 8. SiLU(gate) * up
-        let t = OpTimer::start();
-        metal_ops.elementwise.encode_silu_elementwise_mul(
-            encoder,
-            &s.gate_buf,
-            &s.up_buf,
-            inter_dim as u32,
-        );
-        if let Some(ref mut ops_ref) = ops {
-            ops_ref.gpu_encode_layer_ffn += t.elapsed();
-        }
-        decode_barrier(encoder);
-
-        // 9. Down projection
         let wd_buf = weight_cache.get(&lw.wd).unwrap();
         let t = OpTimer::start();
-        encode_dequant_matvec_with_config(
+        if !encode_dequant_silu_down_matvec_with_config(
             metal_ops,
             encoder,
             wd_buf,
             &s.gate_buf,
+            &s.up_buf,
             &s.down_buf,
             dim as u32,
             inter_dim as u32,
             lw.wd_dtype,
             exec_plan.dequant_dispatch,
-        );
+        ) {
+            metal_ops.elementwise.encode_silu_elementwise_mul(
+                encoder,
+                &s.gate_buf,
+                &s.up_buf,
+                inter_dim as u32,
+            );
+            decode_barrier(encoder);
+
+            encode_dequant_matvec_with_config(
+                metal_ops,
+                encoder,
+                wd_buf,
+                &s.gate_buf,
+                &s.down_buf,
+                dim as u32,
+                inter_dim as u32,
+                lw.wd_dtype,
+                exec_plan.dequant_dispatch,
+            );
+        }
         if let Some(ref mut ops_ref) = ops {
             ops_ref.gpu_encode_layer_ffn += t.elapsed();
         }
@@ -616,10 +639,7 @@ fn encode_llama_pending_step(
     // Use explicit position (NOT gpu_kv.seq_len()) for correct offset in pipeline
     let kv_offset = (position * kv_dim) as u32;
     let full_seq_len = position + 1;
-    let rope_position = match cfg.rope_scaling {
-        crate::model::config::RopeScaling::Linear(factor) => position as f32 / factor,
-        crate::model::config::RopeScaling::None => position as f32,
-    };
+    let rope_position = cfg.rope_scaling.scaled_position(position);
 
     let weight_cache = metal_ops.lock_weight_cache();
     let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
@@ -957,10 +977,7 @@ impl LlamaForward {
             weights.dequantize_row("token_embd.weight", token_id as usize, hidden_cpu)?;
         }
 
-        let rope_position = match cfg.rope_scaling {
-            crate::model::config::RopeScaling::Linear(factor) => position as f32 / factor,
-            crate::model::config::RopeScaling::None => position as f32,
-        };
+        let rope_position = cfg.rope_scaling.scaled_position(position);
 
         // Pre-cache ALL weights and build cached keys (first call only)
         if !metal_ops.has_cached_model_keys() {
@@ -1253,12 +1270,7 @@ impl LlamaForward {
 
                 for layer in 0..n_layers {
                     let lw = &cached.layers[layer];
-                    let (rope_start, rope_step) = match cfg.rope_scaling {
-                        crate::model::config::RopeScaling::Linear(f) => {
-                            (base_seq_len as f32 / f, 1.0f32 / f)
-                        }
-                        crate::model::config::RopeScaling::None => (base_seq_len as f32, 1.0f32),
-                    };
+                    let (rope_start, rope_step) = cfg.rope_scaling.scaled_start_step(base_seq_len);
 
                     let wq_buf = weight_cache.get(&lw.wq).unwrap();
                     let wk_buf = weight_cache.get(&lw.wk).unwrap();
@@ -2153,10 +2165,7 @@ impl ForwardPass for LlamaForward {
             });
 
             // 2c. RoPE on Q and K (apply linear scaling if configured)
-            let rope_position = match cfg.rope_scaling {
-                crate::model::config::RopeScaling::Linear(factor) => position as f32 / factor,
-                crate::model::config::RopeScaling::None => position as f32,
-            };
+            let rope_position = cfg.rope_scaling.scaled_position(position);
             timed!(
                 ops,
                 rope,

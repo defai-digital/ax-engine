@@ -41,11 +41,13 @@ use crate::model::execution_plan::{
     DecodeBarrierPlan, DecodeExecutionPlan, GpuBatchPrefillExecutionPlan, GpuDecodeExecutionPlan,
     PrefillAttentionPlan, PrefillExecutionPlan, PrefillFfnActivationPlan, PrefillLogitsPlan,
     PrefillMode, PrefillProjectionInputPlan, PrefillResidualHandoffPlan, Qwen3PrefillQkvPost,
+    qwen3_layer_plan_for_gpu,
 };
 use crate::model::forward::{ForwardContext, ForwardPass};
 use crate::model::shared::{
     encode_batch_logits, encode_dequant_batch, encode_dequant_batch_f16in,
-    encode_dequant_batch_pair_f16in, encode_dequant_matvec, encode_dequant_matvec_with_config,
+    encode_dequant_batch_pair_f16in, encode_dequant_matvec, encode_dequant_matvec_pair_with_config,
+    encode_dequant_matvec_with_config, encode_dequant_silu_down_matvec_with_config,
     gpu_decode_quant_supported, gpu_prefill_q5k_small_n_auto_eligible, gpu_prefill_uses_q5k,
     per_head_rms_norm,
 };
@@ -118,6 +120,7 @@ fn encode_qwen3_gpu_layers_only(
     gpu_kv: &crate::kv::GpuKv,
     cached: &crate::backend::metal::CachedModelKeys,
     weight_cache: &rustc_hash::FxHashMap<usize, ax_metal::MetalBuffer>,
+    fused_qkv_cache: &rustc_hash::FxHashMap<(usize, usize, usize), ax_metal::MetalBuffer>,
 ) -> anyhow::Result<()> {
     let dim = cfg.embedding_dim as usize;
     let n_layers = cfg.n_layers as usize;
@@ -128,19 +131,40 @@ fn encode_qwen3_gpu_layers_only(
     let q_dim = n_heads * head_dim;
     let kv_dim = n_kv_heads * head_dim;
     let eps = cfg.rms_norm_eps;
+    let layer_plans: Vec<_> = cached
+        .layers
+        .iter()
+        .map(|lw| {
+            qwen3_layer_plan_for_gpu(
+                exec_plan,
+                lw.wq_dtype,
+                lw.wk_dtype,
+                lw.wv_dtype,
+                lw.q_bias.is_some() && lw.k_bias.is_some() && lw.v_bias.is_some(),
+                lw.attn_q_norm.is_some() && lw.attn_k_norm.is_some(),
+            )
+        })
+        .collect();
     let decode_barrier = |encoder: &ax_metal::MetalEncoder| {
         if exec_plan.barriers == DecodeBarrierPlan::Explicit {
             ax_metal::barrier_buffers(encoder);
         }
     };
 
-    for layer in 0..n_layers {
+    for (layer, layer_plan) in layer_plans.iter().enumerate().take(n_layers) {
         let lw = &cached.layers[layer];
 
         let norm_w_buf = weight_cache.get(&lw.attn_norm).unwrap();
         let wq_buf = weight_cache.get(&lw.wq).unwrap();
         let wk_buf = weight_cache.get(&lw.wk).unwrap();
         let wv_buf = weight_cache.get(&lw.wv).unwrap();
+        let fused_qkv_key = (lw.wq, lw.wk, lw.wv);
+        let fused_qkv_buf = if layer_plan.qkv == crate::model::execution_plan::DecodeQkvPlan::Fused
+        {
+            fused_qkv_cache.get(&fused_qkv_key)
+        } else {
+            None
+        };
 
         metal_ops.elementwise.encode_rms_norm_out(
             encoder,
@@ -152,108 +176,199 @@ fn encode_qwen3_gpu_layers_only(
         );
         decode_barrier(encoder);
 
-        encode_dequant_matvec_with_config(
-            metal_ops,
-            encoder,
-            wq_buf,
-            &s.norm_buf,
-            &s.q_buf,
-            q_dim as u32,
-            dim as u32,
-            lw.wq_dtype,
-            exec_plan.dequant_dispatch,
-        );
-        encode_dequant_matvec_with_config(
-            metal_ops,
-            encoder,
-            wk_buf,
-            &s.norm_buf,
-            &s.k_buf,
-            kv_dim as u32,
-            dim as u32,
-            lw.wk_dtype,
-            exec_plan.dequant_dispatch,
-        );
-        encode_dequant_matvec_with_config(
-            metal_ops,
-            encoder,
-            wv_buf,
-            &s.norm_buf,
-            &s.v_buf,
-            kv_dim as u32,
-            dim as u32,
-            lw.wv_dtype,
-            exec_plan.dequant_dispatch,
-        );
-        decode_barrier(encoder);
-
-        if let (Some(qb_key), Some(kb_key), Some(vb_key)) = (lw.q_bias, lw.k_bias, lw.v_bias) {
-            let qb_buf = weight_cache.get(&qb_key).unwrap();
-            let kb_buf = weight_cache.get(&kb_key).unwrap();
-            let vb_buf = weight_cache.get(&vb_key).unwrap();
-            metal_ops
-                .elementwise
-                .encode_elementwise_add(encoder, &s.q_buf, qb_buf, q_dim as u32);
-            metal_ops
-                .elementwise
-                .encode_elementwise_add(encoder, &s.k_buf, kb_buf, kv_dim as u32);
-            metal_ops
-                .elementwise
-                .encode_elementwise_add(encoder, &s.v_buf, vb_buf, kv_dim as u32);
+        if let Some(fused_w) = fused_qkv_buf {
+            encode_dequant_matvec_with_config(
+                metal_ops,
+                encoder,
+                fused_w,
+                &s.norm_buf,
+                &s.qkv_buf,
+                (q_dim + 2 * kv_dim) as u32,
+                dim as u32,
+                lw.wq_dtype,
+                exec_plan.dequant_dispatch,
+            );
             decode_barrier(encoder);
-        }
 
-        if let (Some(q_norm_key), Some(k_norm_key)) = (lw.attn_q_norm, lw.attn_k_norm) {
-            let q_nw_buf = weight_cache.get(&q_norm_key).unwrap();
-            let k_nw_buf = weight_cache.get(&k_norm_key).unwrap();
-            metal_ops.elementwise.encode_per_head_rms_norm(
+            match layer_plan.qwen3_post {
+                Qwen3PrefillQkvPost::FusedBiasQkNorm => {
+                    let qb_buf = weight_cache.get(&lw.q_bias.unwrap()).unwrap();
+                    let kb_buf = weight_cache.get(&lw.k_bias.unwrap()).unwrap();
+                    let vb_buf = weight_cache.get(&lw.v_bias.unwrap()).unwrap();
+                    let q_nw_buf = weight_cache.get(&lw.attn_q_norm.unwrap()).unwrap();
+                    let k_nw_buf = weight_cache.get(&lw.attn_k_norm.unwrap()).unwrap();
+                    metal_ops
+                        .elementwise
+                        .encode_qkv_split_bias_qknorm_rope_append_kv_batch(
+                            encoder,
+                            &s.qkv_buf,
+                            &s.q_buf,
+                            &s.k_buf,
+                            &s.v_buf,
+                            q_nw_buf,
+                            k_nw_buf,
+                            gpu_kv.k_buffer(layer),
+                            gpu_kv.v_buffer(layer),
+                            exec_plan.kv_f16,
+                            qb_buf,
+                            kb_buf,
+                            vb_buf,
+                            1,
+                            n_heads as u32,
+                            n_kv_heads as u32,
+                            head_dim as u32,
+                            eps,
+                            rope_position,
+                            1.0,
+                            cfg.rope_freq_base,
+                            kv_offset,
+                            kv_dim as u32,
+                        );
+                }
+                Qwen3PrefillQkvPost::FusedQkNorm => {
+                    let q_nw_buf = weight_cache.get(&lw.attn_q_norm.unwrap()).unwrap();
+                    let k_nw_buf = weight_cache.get(&lw.attn_k_norm.unwrap()).unwrap();
+                    metal_ops
+                        .elementwise
+                        .encode_qkv_split_qk_norm_rope_append_kv_batch(
+                            encoder,
+                            &s.qkv_buf,
+                            &s.q_buf,
+                            &s.k_buf,
+                            &s.v_buf,
+                            q_nw_buf,
+                            k_nw_buf,
+                            gpu_kv.k_buffer(layer),
+                            gpu_kv.v_buffer(layer),
+                            exec_plan.kv_f16,
+                            1,
+                            n_heads as u32,
+                            n_kv_heads as u32,
+                            head_dim as u32,
+                            eps,
+                            rope_position,
+                            1.0,
+                            cfg.rope_freq_base,
+                            kv_offset,
+                            kv_dim as u32,
+                        );
+                }
+                _ => unreachable!("qwen3 fused decode path requires fused qwen3 post plan"),
+            }
+            decode_barrier(encoder);
+        } else {
+            encode_dequant_matvec_with_config(
+                metal_ops,
+                encoder,
+                wq_buf,
+                &s.norm_buf,
+                &s.q_buf,
+                q_dim as u32,
+                dim as u32,
+                lw.wq_dtype,
+                exec_plan.dequant_dispatch,
+            );
+            encode_dequant_matvec_with_config(
+                metal_ops,
+                encoder,
+                wk_buf,
+                &s.norm_buf,
+                &s.k_buf,
+                kv_dim as u32,
+                dim as u32,
+                lw.wk_dtype,
+                exec_plan.dequant_dispatch,
+            );
+            encode_dequant_matvec_with_config(
+                metal_ops,
+                encoder,
+                wv_buf,
+                &s.norm_buf,
+                &s.v_buf,
+                kv_dim as u32,
+                dim as u32,
+                lw.wv_dtype,
+                exec_plan.dequant_dispatch,
+            );
+            decode_barrier(encoder);
+
+            if let (Some(qb_key), Some(kb_key), Some(vb_key)) = (lw.q_bias, lw.k_bias, lw.v_bias) {
+                let qb_buf = weight_cache.get(&qb_key).unwrap();
+                let kb_buf = weight_cache.get(&kb_key).unwrap();
+                let vb_buf = weight_cache.get(&vb_key).unwrap();
+                metal_ops.elementwise.encode_elementwise_add(
+                    encoder,
+                    &s.q_buf,
+                    qb_buf,
+                    q_dim as u32,
+                );
+                metal_ops.elementwise.encode_elementwise_add(
+                    encoder,
+                    &s.k_buf,
+                    kb_buf,
+                    kv_dim as u32,
+                );
+                metal_ops.elementwise.encode_elementwise_add(
+                    encoder,
+                    &s.v_buf,
+                    vb_buf,
+                    kv_dim as u32,
+                );
+                decode_barrier(encoder);
+            }
+
+            if let (Some(q_norm_key), Some(k_norm_key)) = (lw.attn_q_norm, lw.attn_k_norm) {
+                let q_nw_buf = weight_cache.get(&q_norm_key).unwrap();
+                let k_nw_buf = weight_cache.get(&k_norm_key).unwrap();
+                metal_ops.elementwise.encode_per_head_rms_norm(
+                    encoder,
+                    &s.q_buf,
+                    q_nw_buf,
+                    n_heads as u32,
+                    head_dim as u32,
+                    eps,
+                );
+                metal_ops.elementwise.encode_per_head_rms_norm(
+                    encoder,
+                    &s.k_buf,
+                    k_nw_buf,
+                    n_kv_heads as u32,
+                    head_dim as u32,
+                    eps,
+                );
+                decode_barrier(encoder);
+            }
+
+            metal_ops.elementwise.encode_rope(
                 encoder,
                 &s.q_buf,
-                q_nw_buf,
-                n_heads as u32,
-                head_dim as u32,
-                eps,
-            );
-            metal_ops.elementwise.encode_per_head_rms_norm(
-                encoder,
                 &s.k_buf,
-                k_nw_buf,
+                n_heads as u32,
                 n_kv_heads as u32,
                 head_dim as u32,
-                eps,
+                rope_position,
+                cfg.rope_freq_base,
+            );
+            decode_barrier(encoder);
+
+            metal_ops.elementwise.encode_kv_append(
+                encoder,
+                &s.k_buf,
+                gpu_kv.k_buffer(layer),
+                exec_plan.kv_f16,
+                kv_offset,
+                kv_dim as u32,
+            );
+            metal_ops.elementwise.encode_kv_append(
+                encoder,
+                &s.v_buf,
+                gpu_kv.v_buffer(layer),
+                exec_plan.kv_f16,
+                kv_offset,
+                kv_dim as u32,
             );
             decode_barrier(encoder);
         }
-
-        metal_ops.elementwise.encode_rope(
-            encoder,
-            &s.q_buf,
-            &s.k_buf,
-            n_heads as u32,
-            n_kv_heads as u32,
-            head_dim as u32,
-            rope_position,
-            cfg.rope_freq_base,
-        );
-        decode_barrier(encoder);
-
-        metal_ops.elementwise.encode_kv_append(
-            encoder,
-            &s.k_buf,
-            gpu_kv.k_buffer(layer),
-            exec_plan.kv_f16,
-            kv_offset,
-            kv_dim as u32,
-        );
-        metal_ops.elementwise.encode_kv_append(
-            encoder,
-            &s.v_buf,
-            gpu_kv.v_buffer(layer),
-            exec_plan.kv_f16,
-            kv_offset,
-            kv_dim as u32,
-        );
-        decode_barrier(encoder);
 
         metal_ops
             .attention
@@ -307,50 +422,78 @@ fn encode_qwen3_gpu_layers_only(
 
         let wg_buf = weight_cache.get(&lw.wg).unwrap();
         let wu_buf = weight_cache.get(&lw.wu).unwrap();
-        encode_dequant_matvec_with_config(
+        if !encode_dequant_matvec_pair_with_config(
             metal_ops,
             encoder,
             wg_buf,
+            wu_buf,
             &s.norm_buf,
             &s.gate_buf,
+            &s.up_buf,
             inter_dim as u32,
             dim as u32,
             lw.wg_dtype,
-            exec_plan.dequant_dispatch,
-        );
-        encode_dequant_matvec_with_config(
-            metal_ops,
-            encoder,
-            wu_buf,
-            &s.norm_buf,
-            &s.up_buf,
-            inter_dim as u32,
-            dim as u32,
             lw.wu_dtype,
             exec_plan.dequant_dispatch,
-        );
-        decode_barrier(encoder);
-
-        metal_ops.elementwise.encode_silu_elementwise_mul(
-            encoder,
-            &s.gate_buf,
-            &s.up_buf,
-            inter_dim as u32,
-        );
+        ) {
+            encode_dequant_matvec_with_config(
+                metal_ops,
+                encoder,
+                wg_buf,
+                &s.norm_buf,
+                &s.gate_buf,
+                inter_dim as u32,
+                dim as u32,
+                lw.wg_dtype,
+                exec_plan.dequant_dispatch,
+            );
+            encode_dequant_matvec_with_config(
+                metal_ops,
+                encoder,
+                wu_buf,
+                &s.norm_buf,
+                &s.up_buf,
+                inter_dim as u32,
+                dim as u32,
+                lw.wu_dtype,
+                exec_plan.dequant_dispatch,
+            );
+        }
         decode_barrier(encoder);
 
         let wd_buf = weight_cache.get(&lw.wd).unwrap();
-        encode_dequant_matvec_with_config(
+        if !encode_dequant_silu_down_matvec_with_config(
             metal_ops,
             encoder,
             wd_buf,
             &s.gate_buf,
+            &s.up_buf,
             &s.down_buf,
             dim as u32,
             inter_dim as u32,
             lw.wd_dtype,
             exec_plan.dequant_dispatch,
-        );
+        ) {
+            metal_ops.elementwise.encode_silu_elementwise_mul(
+                encoder,
+                &s.gate_buf,
+                &s.up_buf,
+                inter_dim as u32,
+            );
+            decode_barrier(encoder);
+
+            encode_dequant_matvec_with_config(
+                metal_ops,
+                encoder,
+                wd_buf,
+                &s.gate_buf,
+                &s.down_buf,
+                dim as u32,
+                inter_dim as u32,
+                lw.wd_dtype,
+                exec_plan.dequant_dispatch,
+            );
+        }
         decode_barrier(encoder);
 
         metal_ops
@@ -437,12 +580,10 @@ fn encode_qwen3_pending_step(
         cfg.head_dim,
         full_seq_len,
     );
-    let rope_position = match cfg.rope_scaling {
-        crate::model::config::RopeScaling::Linear(factor) => position as f32 / factor,
-        crate::model::config::RopeScaling::None => position as f32,
-    };
+    let rope_position = cfg.rope_scaling.scaled_position(position);
 
     let weight_cache = metal_ops.lock_weight_cache();
+    let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
 
     metal_ops.device.encode_frame(|encoder| {
         encode_qwen3_gpu_layers_only(
@@ -458,6 +599,7 @@ fn encode_qwen3_pending_step(
             gpu_kv,
             cached,
             &weight_cache,
+            &fused_qkv_cache,
         )?;
         encode_qwen3_gpu_output_head(
             encoder,
@@ -494,6 +636,8 @@ impl Qwen3Forward {
         let q_dim = n_heads * head_dim;
         let kv_dim = n_kv_heads * head_dim;
         let use_precomputed_f16 = metal_ops.metal_precompute_f16_enabled();
+        let use_fused_qkv =
+            metal_ops.metal_fused_qkv_enabled() || metal_ops.metal_decode_fused_qkv_enabled();
 
         let mut layers = Vec::with_capacity(n_layers);
         for layer in 0..n_layers {
@@ -506,15 +650,23 @@ impl Qwen3Forward {
             let wq_key = metal_ops.ensure_quant_cached(wq_raw);
             let wk_key = metal_ops.ensure_quant_cached(wk_raw);
             let wv_key = metal_ops.ensure_quant_cached(wv_raw);
-            if use_precomputed_f16
-                && metal_ops.metal_fused_qkv_enabled()
+            if use_fused_qkv
                 && wq_dtype == wk_dtype
                 && wq_dtype == wv_dtype
-                && matches!(wq_dtype, GgmlType::Q4K | GgmlType::Q6K)
+                && matches!(wq_dtype, GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0)
             {
                 metal_ops.ensure_qkv_fused_quant_cached(wq_raw, wk_raw, wv_raw);
-                if wq_dtype == GgmlType::Q4K {
+                if use_precomputed_f16 && wq_dtype == GgmlType::Q4K {
                     metal_ops.ensure_precomputed_q4k_f16_fused_qkv(
+                        wq_raw,
+                        wk_raw,
+                        wv_raw,
+                        (q_dim + 2 * kv_dim) as u32,
+                        dim as u32,
+                    )?;
+                }
+                if use_precomputed_f16 && wq_dtype == GgmlType::Q8_0 {
+                    metal_ops.ensure_precomputed_q8_0_f16_fused_qkv(
                         wq_raw,
                         wk_raw,
                         wv_raw,
@@ -733,10 +885,7 @@ impl Qwen3Forward {
             weights.dequantize_row("token_embd.weight", token_id as usize, hidden_cpu)?;
         }
 
-        let rope_position = match cfg.rope_scaling {
-            crate::model::config::RopeScaling::Linear(factor) => position as f32 / factor,
-            crate::model::config::RopeScaling::None => position as f32,
-        };
+        let rope_position = cfg.rope_scaling.scaled_position(position);
 
         // Pre-cache weights and build cached keys (first call only)
         if !metal_ops.has_cached_model_keys() {
@@ -762,6 +911,7 @@ impl Qwen3Forward {
         // Single command buffer: all layers + final norm + LM head
         {
             let weight_cache = metal_ops.lock_weight_cache();
+            let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
             let exec_t = OpTimer::start();
             metal_ops.device.execute_sync(|encoder| {
                 encode_qwen3_gpu_layers_only(
@@ -777,6 +927,7 @@ impl Qwen3Forward {
                     gpu_kv,
                     cached,
                     &weight_cache,
+                    &fused_qkv_cache,
                 )?;
                 encode_qwen3_gpu_output_head(
                     encoder,
@@ -1149,12 +1300,7 @@ impl Qwen3Forward {
 
                     // ── Phase 1c+1d: Bias + QK norm + RoPE + KV append ──
                     let rope_kv_t = OpTimer::start();
-                    let (rope_start, rope_step) = match cfg.rope_scaling {
-                        crate::model::config::RopeScaling::Linear(f) => {
-                            (base_seq_len as f32 / f, 1.0f32 / f)
-                        }
-                        crate::model::config::RopeScaling::None => (base_seq_len as f32, 1.0f32),
-                    };
+                    let (rope_start, rope_step) = cfg.rope_scaling.scaled_start_step(base_seq_len);
                     let cache_offset = (base_seq_len * kv_dim) as u32;
 
                     // Try fused split+QKnorm+RoPE+append path.
@@ -1905,10 +2051,7 @@ impl ForwardPass for Qwen3Forward {
             }
 
             // 2e. RoPE on Q and K (apply linear scaling if configured)
-            let rope_position = match cfg.rope_scaling {
-                crate::model::config::RopeScaling::Linear(factor) => position as f32 / factor,
-                crate::model::config::RopeScaling::None => position as f32,
-            };
+            let rope_position = cfg.rope_scaling.scaled_position(position);
             timed!(
                 ops,
                 rope,

@@ -561,63 +561,46 @@ kernel void post_attn_norm_residual_add_rms_norm_out_batch_f32(
 //   x'[2i+1] = x[2i]*sin(theta) + x[2i+1]*cos(theta)
 //
 // Grid: ceil(total_pairs / 256) threadgroups × 256 threads.
-// total_pairs = (n_q_heads + n_kv_heads) * half_dim
+// total_pairs = rows * (n_q_heads + n_kv_heads) * half_dim
+//
+// Single-row and batched RoPE share the same indexing math with only one
+// structural difference: whether gid spans one row or a `[row, pair]` domain.
+// Use a function constant so Metal compiles two specialized pipelines from one
+// source kernel without keeping two almost-identical shader bodies.
 
-kernel void rope_f32(
-    device float* q            [[buffer(0)]],
-    device float* k            [[buffer(1)]],
-    constant uint& n_q_heads   [[buffer(2)]],
-    constant uint& n_kv_heads  [[buffer(3)]],
-    constant uint& head_dim    [[buffer(4)]],
-    constant float& position   [[buffer(5)]],
-    constant float& freq_base  [[buffer(6)]],
-    uint gid                   [[thread_position_in_grid]]
-) {
-    uint half_dim = head_dim / 2;
-    uint total_q_pairs = n_q_heads * half_dim;
-    uint total_pairs = total_q_pairs + n_kv_heads * half_dim;
+constant bool ROPE_BATCHED [[function_constant(0)]];
 
-    if (gid >= total_pairs) return;
+// ── G11: YaRN RoPE helpers (matching llama.cpp) ────────────────────────
+//
+// When ext_factor == 0, rope_yarn reduces to vanilla cos/sin with
+// mscale == attn_factor. For standard RoPE, pass ext_factor=0,
+// attn_factor=1 and there is zero overhead.
 
-    // Determine which buffer and which head/pair index
-    device float* buf;
-    uint pair_in_buf;
-    if (gid < total_q_pairs) {
-        buf = q;
-        pair_in_buf = gid;
-    } else {
-        buf = k;
-        pair_in_buf = gid - total_q_pairs;
-    }
-
-    uint i = pair_in_buf % half_dim;  // pair index within head
-    uint head = pair_in_buf / half_dim;
-    uint offset = head * head_dim + 2 * i;
-
-    float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
-    float theta = position * freq;
-    float cos_t = cos(theta);
-    float sin_t = sin(theta);
-
-    float v0 = buf[offset];
-    float v1 = buf[offset + 1];
-    buf[offset]     = v0 * cos_t - v1 * sin_t;
-    buf[offset + 1] = v0 * sin_t + v1 * cos_t;
+inline float rope_yarn_ramp(float low, float high, int i0) {
+    float y = (float(i0) / 2.0f - low) / max(0.001f, high - low);
+    return 1.0f - min(1.0f, max(0.0f, y));
 }
 
-// ── RoPE Batch ───────────────────────────────────────────────────────
-//
-// Applies RoPE to batched Q/K buffers:
-//   Q: [n_rows, n_q_heads, head_dim]
-//   K: [n_rows, n_kv_heads, head_dim]
-//
-// Position for row r:
-//   pos = start_pos + r * pos_step
-//
-// Grid: ceil(total_pairs / 256) threadgroups × 256 threads.
-// total_pairs = n_rows * (n_q_heads + n_kv_heads) * (head_dim/2)
+inline void rope_yarn(
+    float theta_extrap, float freq_scale, float corr_dim_low,
+    float corr_dim_high, int i0, float ext_factor, float mscale,
+    thread float& cos_theta, thread float& sin_theta
+) {
+    float theta = freq_scale * theta_extrap;
+    if (ext_factor != 0.0f) {
+        float ramp_mix = rope_yarn_ramp(corr_dim_low, corr_dim_high, i0) * ext_factor;
+        theta = theta * (1.0f - ramp_mix) + theta_extrap * ramp_mix;
+        mscale *= 1.0f + 0.1f * log(1.0f / freq_scale);
+    }
+    cos_theta = cos(theta) * mscale;
+    sin_theta = sin(theta) * mscale;
+}
 
-kernel void rope_batch_f32(
+inline float rope_yarn_corr_factor(uint n_dims, uint n_ctx_orig, float freq_base, float beta) {
+    return float(n_dims) * log(float(n_ctx_orig) / (beta * 2.0f * M_PI_F)) / (2.0f * log(freq_base));
+}
+
+kernel void rope_f32_generic(
     device float* q            [[buffer(0)]],
     device float* k            [[buffer(1)]],
     constant uint& n_rows      [[buffer(2)]],
@@ -627,15 +610,23 @@ kernel void rope_batch_f32(
     constant float& start_pos  [[buffer(6)]],
     constant float& pos_step   [[buffer(7)]],
     constant float& freq_base  [[buffer(8)]],
+    // G11: YaRN parameters (ext_factor==0 → vanilla RoPE, backward compatible)
+    constant float& freq_scale   [[buffer(9)]],
+    constant float& ext_factor   [[buffer(10)]],
+    constant float& attn_factor  [[buffer(11)]],
+    constant float& beta_fast    [[buffer(12)]],
+    constant float& beta_slow    [[buffer(13)]],
+    constant uint& n_ctx_orig    [[buffer(14)]],
     uint gid                   [[thread_position_in_grid]]
 ) {
     uint half_dim = head_dim / 2;
+    uint rows = ROPE_BATCHED ? n_rows : 1;
     uint pairs_per_row = (n_q_heads + n_kv_heads) * half_dim;
-    uint total_pairs = n_rows * pairs_per_row;
+    uint total_pairs = rows * pairs_per_row;
     if (gid >= total_pairs) return;
 
-    uint row = gid / pairs_per_row;
-    uint local = gid % pairs_per_row;
+    uint row = ROPE_BATCHED ? (gid / pairs_per_row) : 0;
+    uint local = ROPE_BATCHED ? (gid % pairs_per_row) : gid;
 
     uint q_pairs = n_q_heads * half_dim;
     device float* buf;
@@ -656,10 +647,21 @@ kernel void rope_batch_f32(
 
     uint offset = vec_base + 2 * i;
     float position = start_pos + float(row) * pos_step;
-    float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
-    float theta = position * freq;
-    float cos_t = cos(theta);
-    float sin_t = sin(theta);
+    float theta_extrap = position / pow(freq_base, 2.0f * float(i) / float(head_dim));
+
+    float cos_t, sin_t;
+    if (ext_factor == 0.0f) {
+        // Fast path: vanilla RoPE or linear scaling (no per-dim blend)
+        float theta = freq_scale * theta_extrap;
+        cos_t = cos(theta) * attn_factor;
+        sin_t = sin(theta) * attn_factor;
+    } else {
+        // YaRN: per-dimension interpolation/extrapolation blend
+        float corr_low  = max(0.0f, floor(rope_yarn_corr_factor(head_dim, n_ctx_orig, freq_base, beta_fast)));
+        float corr_high = min(float(head_dim) - 1.0f, ceil(rope_yarn_corr_factor(head_dim, n_ctx_orig, freq_base, beta_slow)));
+        rope_yarn(theta_extrap, freq_scale, corr_low, corr_high, int(2 * i),
+                  ext_factor, attn_factor, cos_t, sin_t);
+    }
 
     float v0 = buf[offset];
     float v1 = buf[offset + 1];
@@ -669,69 +671,13 @@ kernel void rope_batch_f32(
 
 // ── Per-Head RMSNorm ────────────────────────────────────────────────
 //
-// Applies RMSNorm independently to each head's vector.
-// buf contains n_heads concatenated vectors of size head_dim.
-// weight has length head_dim, shared across all heads.
-//
-// Grid: n_heads threadgroups × 256 threads.
+// Single-row and batched per-head RMSNorm differ only in whether the grid is
+// indexed by `head` or `[row, head]`. Use a function constant so the compiler
+// specializes away the unused row math in the single-row path.
 
-kernel void per_head_rms_norm_f32(
-    device float* buf          [[buffer(0)]],
-    device const float* weight [[buffer(1)]],
-    constant uint& n_heads     [[buffer(2)]],
-    constant uint& head_dim    [[buffer(3)]],
-    constant float& eps        [[buffer(4)]],
-    uint head                  [[threadgroup_position_in_grid]],
-    uint lid                   [[thread_index_in_threadgroup]],
-    uint simd_lane             [[thread_index_in_simdgroup]],
-    uint simd_id               [[simdgroup_index_in_threadgroup]]
-) {
-    if (head >= n_heads) return;
+constant bool PER_HEAD_RMS_BATCHED [[function_constant(1)]];
 
-    uint base = head * head_dim;
-
-    // Accumulate sum of squares
-    float sum_sq = 0.0f;
-    for (uint i = lid; i < head_dim; i += NORM_TG_SIZE) {
-        float v = buf[base + i];
-        sum_sq += v * v;
-    }
-
-    sum_sq = simd_sum(sum_sq);
-
-    constexpr uint n_groups = NORM_TG_SIZE / 32;
-    threadgroup float simd_sums[n_groups];
-    if (simd_lane == 0) {
-        simd_sums[simd_id] = sum_sq;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    threadgroup float shared_inv_rms;
-    if (simd_id == 0) {
-        sum_sq = (simd_lane < n_groups) ? simd_sums[simd_lane] : 0.0f;
-        sum_sq = simd_sum(sum_sq);
-        if (simd_lane == 0) {
-            shared_inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
-        }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    float inv_rms = shared_inv_rms;
-
-    for (uint i = lid; i < head_dim; i += NORM_TG_SIZE) {
-        buf[base + i] = buf[base + i] * inv_rms * weight[i];
-    }
-}
-
-// ── Per-Head RMSNorm Batch ──────────────────────────────────────────
-//
-// Applies per-head RMSNorm independently across batched rows.
-// buf layout: [n_rows, n_heads, head_dim]
-// weight layout: [head_dim] (shared for all rows and heads)
-//
-// Grid: (n_rows * n_heads) threadgroups × 256 threads.
-
-kernel void per_head_rms_norm_batch_f32(
+kernel void per_head_rms_norm_f32_generic(
     device float* buf          [[buffer(0)]],
     device const float* weight [[buffer(1)]],
     constant uint& n_rows      [[buffer(2)]],
@@ -743,10 +689,11 @@ kernel void per_head_rms_norm_batch_f32(
     uint simd_lane             [[thread_index_in_simdgroup]],
     uint simd_id               [[simdgroup_index_in_threadgroup]]
 ) {
-    uint total_heads = n_rows * n_heads;
+    uint rows = PER_HEAD_RMS_BATCHED ? n_rows : 1;
+    uint total_heads = rows * n_heads;
     if (row_head >= total_heads) return;
 
-    uint row = row_head / n_heads;
+    uint row = PER_HEAD_RMS_BATCHED ? (row_head / n_heads) : 0;
     uint head = row_head % n_heads;
     uint base = row * (n_heads * head_dim) + head * head_dim;
 

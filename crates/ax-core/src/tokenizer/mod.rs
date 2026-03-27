@@ -245,6 +245,11 @@ impl Tokenizer {
         self.vocab.eos_id
     }
 
+    /// Get the end-of-turn token ID when the vocabulary defines one.
+    pub fn eot_id(&self) -> Option<u32> {
+        self.vocab.eot_id
+    }
+
     /// Check if a token is an end-of-sequence token (EOS or end-of-turn).
     pub fn is_eos(&self, id: u32) -> bool {
         id == self.vocab.eos_id || self.vocab.eot_id == Some(id)

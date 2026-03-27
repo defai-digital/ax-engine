@@ -25,16 +25,21 @@ use crate::model::shared::{
 /// Whether the graph-IR prefill schedule is enabled.
 ///
 /// Controlled by `AX_METAL_PREFILL_GRAPH_IR`:
-/// - `1` / `true` / `on` -> enabled
-/// - unset / `0` / other -> disabled (default)
+/// - unset / `1` / `true` / `on` -> enabled (default since G23)
+/// - `0` / `false` / `off` -> disabled
+///
+/// G23: enabled by default. The graph-IR path pre-computes the full dispatch
+/// schedule (kernel variants, buffer bindings, barrier positions) before
+/// encoding, eliminating per-dispatch CPU overhead (plan computation, weight
+/// cache lookup, SmartBarrier conflict scanning).
 pub(crate) fn prefill_graph_ir_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| match std::env::var("AX_METAL_PREFILL_GRAPH_IR") {
         Ok(v) => {
             let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true" || v == "on"
+            !(v == "0" || v == "false" || v == "off")
         }
-        Err(_) => false,
+        Err(_) => true,
     })
 }
 
@@ -45,16 +50,20 @@ pub(crate) fn prefill_graph_ir_enabled() -> bool {
 /// immediately so the GPU starts while the second half encodes.
 ///
 /// Controlled by `AX_METAL_PREFILL_MULTI_CB`:
-/// - `1` / `true` / `on` -> enabled
-/// - unset / `0` / other -> disabled (default)
+/// - unset / `1` / `true` / `on` -> enabled (default since G25)
+/// - `0` / `false` / `off` -> disabled
+///
+/// G25: enabled by default. Splits the prefill schedule into 2 command
+/// buffers at the layer midpoint. CB1 is committed immediately so the GPU
+/// starts executing while the CPU encodes CB2. Requires graph-IR (G23).
 pub(crate) fn prefill_multi_cb_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| match std::env::var("AX_METAL_PREFILL_MULTI_CB") {
         Ok(v) => {
             let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true" || v == "on"
+            !(v == "0" || v == "false" || v == "off")
         }
-        Err(_) => false,
+        Err(_) => true,
     })
 }
 
@@ -563,10 +572,7 @@ pub(super) fn build_llama_prefill_schedule(
         }
 
         let lw = &cached.layers[layer];
-        let (rope_start, rope_step) = match cfg.rope_scaling {
-            crate::model::config::RopeScaling::Linear(f) => (base_seq_len as f32 / f, 1.0f32 / f),
-            crate::model::config::RopeScaling::None => (base_seq_len as f32, 1.0f32),
-        };
+        let (rope_start, rope_step) = cfg.rope_scaling.scaled_start_step(base_seq_len);
 
         let wq_buf = weight_cache.get(&lw.wq).unwrap();
         let wk_buf = weight_cache.get(&lw.wk).unwrap();
@@ -1295,7 +1301,6 @@ pub(super) fn encode_prefill_schedule(
                         *dtype,
                     );
                 }
-
                 PrefillOp::QkvSplitRopeBatch {
                     qkv,
                     q,

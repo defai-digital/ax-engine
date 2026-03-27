@@ -30,6 +30,14 @@ pub(super) fn env_flag_enabled(var: &str) -> bool {
         .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on"))
 }
 
+pub(super) fn decode_pair_matvec_enabled() -> bool {
+    env_flag_enabled("AX_METAL_DECODE_PAIR_MATVEC")
+}
+
+pub(super) fn decode_fused_silu_down_enabled() -> bool {
+    env_flag_enabled("AX_METAL_DECODE_FUSED_SILU_DOWN")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Q5KPrefillVariantOverride {
     Auto,
@@ -317,6 +325,125 @@ pub(super) fn encode_dequant_matvec_with_config(
             "GPU phased dispatch only supports Q4_0, Q8_0, Q4_K, Q5_K, and Q6_K, got {:?}",
             dtype
         ),
+    }
+}
+
+/// Encode a fused pair of decode-side dequant+matvec dispatches when supported.
+///
+/// Returns `true` if a paired kernel was encoded. Callers should fall back to
+/// separate `encode_dequant_matvec_with_config(...)` calls when this returns `false`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn encode_dequant_matvec_pair_with_config(
+    metal_ops: &MetalOps,
+    encoder: &ax_metal::MetalEncoder,
+    w0: &ax_metal::MetalBuffer,
+    w1: &ax_metal::MetalBuffer,
+    input: &ax_metal::MetalBuffer,
+    out0: &ax_metal::MetalBuffer,
+    out1: &ax_metal::MetalBuffer,
+    m: u32,
+    k: u32,
+    dtype0: GgmlType,
+    dtype1: GgmlType,
+    _dispatch_config: ax_metal::DequantDispatchConfig,
+) -> bool {
+    if !decode_pair_matvec_enabled() {
+        return false;
+    }
+
+    if dtype0 != dtype1 {
+        return false;
+    }
+
+    // If either weight has a precomputed (dequantized) f16 version in the
+    // cache, bail out and let the caller dispatch them individually via the
+    // precomputed path.  We must NOT call encode_precomputed_q4k_matvec_if_available
+    // here because it dispatches as a side effect — calling it for w0 and
+    // then returning false would cause the caller to dispatch w0 a second time.
+    if metal_ops.has_precomputed_weight(w0) || metal_ops.has_precomputed_weight(w1) {
+        return false;
+    }
+
+    match dtype0 {
+        GgmlType::Q4K => {
+            metal_ops
+                .dequant
+                .encode_fused_matvec_pair_q4_k(encoder, w0, w1, input, out0, out1, m, k);
+            true
+        }
+        GgmlType::Q5K => {
+            metal_ops
+                .dequant
+                .encode_fused_matvec_pair_q5_k(encoder, w0, w1, input, out0, out1, m, k);
+            true
+        }
+        GgmlType::Q6K => {
+            metal_ops
+                .dequant
+                .encode_fused_matvec_pair_q6_k(encoder, w0, w1, input, out0, out1, m, k);
+            true
+        }
+        GgmlType::Q8_0 => {
+            metal_ops
+                .dequant
+                .encode_fused_matvec_pair_q8_0(encoder, w0, w1, input, out0, out1, m, k);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Encode a fused decode-side `SiLU(gate) * up` + down projection matvec when supported.
+///
+/// Returns `true` if a fused kernel was encoded. Callers should fall back to the
+/// separate elementwise + matvec path when this returns `false`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn encode_dequant_silu_down_matvec_with_config(
+    metal_ops: &MetalOps,
+    encoder: &ax_metal::MetalEncoder,
+    weight: &ax_metal::MetalBuffer,
+    gate: &ax_metal::MetalBuffer,
+    up: &ax_metal::MetalBuffer,
+    output: &ax_metal::MetalBuffer,
+    m: u32,
+    k: u32,
+    dtype: GgmlType,
+    _dispatch_config: ax_metal::DequantDispatchConfig,
+) -> bool {
+    if !decode_fused_silu_down_enabled() {
+        return false;
+    }
+
+    if metal_ops.has_precomputed_weight(weight) {
+        return false;
+    }
+
+    match dtype {
+        GgmlType::Q4K => {
+            metal_ops
+                .dequant
+                .encode_fused_silu_down_matvec_q4_k(encoder, weight, gate, up, output, m, k);
+            true
+        }
+        GgmlType::Q5K => {
+            metal_ops
+                .dequant
+                .encode_fused_silu_down_matvec_q5_k(encoder, weight, gate, up, output, m, k);
+            true
+        }
+        GgmlType::Q6K => {
+            metal_ops
+                .dequant
+                .encode_fused_silu_down_matvec_q6_k(encoder, weight, gate, up, output, m, k);
+            true
+        }
+        GgmlType::Q8_0 => {
+            metal_ops
+                .dequant
+                .encode_fused_silu_down_matvec_q8_0(encoder, weight, gate, up, output, m, k);
+            true
+        }
+        _ => false,
     }
 }
 

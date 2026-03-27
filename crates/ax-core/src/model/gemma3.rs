@@ -36,9 +36,9 @@ use crate::model::execution_plan::{
 use crate::model::forward::{ForwardContext, ForwardPass};
 use crate::model::shared::{
     encode_batch_logits, encode_dequant_batch, encode_dequant_batch_f16in,
-    encode_dequant_batch_pair_f16in, encode_dequant_matvec, encode_dequant_matvec_with_config,
-    gpu_decode_quant_supported, gpu_prefill_q5k_small_n_auto_eligible, gpu_prefill_uses_q5k,
-    per_head_rms_norm,
+    encode_dequant_batch_pair_f16in, encode_dequant_matvec, encode_dequant_matvec_pair_with_config,
+    encode_dequant_matvec_with_config, gpu_decode_quant_supported,
+    gpu_prefill_q5k_small_n_auto_eligible, gpu_prefill_uses_q5k, per_head_rms_norm,
 };
 use crate::model::weights::WeightStore;
 
@@ -118,10 +118,7 @@ fn encode_gemma3_gpu_layers_only(
         let rope_position = if is_local {
             position as f32
         } else {
-            match cfg.rope_scaling {
-                crate::model::config::RopeScaling::Linear(factor) => position as f32 / factor,
-                crate::model::config::RopeScaling::None => position as f32,
-            }
+            cfg.rope_scaling.scaled_position(position)
         };
 
         metal_ops.elementwise.encode_rms_norm_out(
@@ -360,28 +357,43 @@ fn encode_gemma3_gpu_layers_only(
 
         let wg_buf = weight_cache.get(&lw.wg).unwrap();
         let wu_buf = weight_cache.get(&lw.wu).unwrap();
-        encode_dequant_matvec_with_config(
+        if !encode_dequant_matvec_pair_with_config(
             metal_ops,
             encoder,
             wg_buf,
-            &s.norm_buf,
-            &s.gate_buf,
-            inter_dim as u32,
-            dim as u32,
-            lw.wg_dtype,
-            exec_plan.dequant_dispatch,
-        );
-        encode_dequant_matvec_with_config(
-            metal_ops,
-            encoder,
             wu_buf,
             &s.norm_buf,
+            &s.gate_buf,
             &s.up_buf,
             inter_dim as u32,
             dim as u32,
+            lw.wg_dtype,
             lw.wu_dtype,
             exec_plan.dequant_dispatch,
-        );
+        ) {
+            encode_dequant_matvec_with_config(
+                metal_ops,
+                encoder,
+                wg_buf,
+                &s.norm_buf,
+                &s.gate_buf,
+                inter_dim as u32,
+                dim as u32,
+                lw.wg_dtype,
+                exec_plan.dequant_dispatch,
+            );
+            encode_dequant_matvec_with_config(
+                metal_ops,
+                encoder,
+                wu_buf,
+                &s.norm_buf,
+                &s.up_buf,
+                inter_dim as u32,
+                dim as u32,
+                lw.wu_dtype,
+                exec_plan.dequant_dispatch,
+            );
+        }
         decode_barrier(encoder);
 
         metal_ops.elementwise.encode_gelu_elementwise_mul(
@@ -1968,10 +1980,7 @@ impl ForwardPass for Gemma3Forward {
             let rope_position = if is_local {
                 position as f32
             } else {
-                match cfg.rope_scaling {
-                    crate::model::config::RopeScaling::Linear(factor) => position as f32 / factor,
-                    crate::model::config::RopeScaling::None => position as f32,
-                }
+                cfg.rope_scaling.scaled_position(position)
             };
             timed!(
                 ops,

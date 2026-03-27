@@ -148,9 +148,15 @@ impl MetalDevice {
     }
 
     /// Create a new command buffer from the queue.
+    ///
+    /// Prefer `commandBufferWithUnretainedReferences` to avoid ObjC
+    /// retain/release traffic on buffers that AX already owns explicitly.
+    /// Fall back to the regular retained command buffer if Metal declines
+    /// to create the unretained variant.
     pub fn command_buffer(&self) -> anyhow::Result<Retained<ProtocolObject<dyn MTLCommandBuffer>>> {
         self.queue
-            .commandBuffer()
+            .commandBufferWithUnretainedReferences()
+            .or_else(|| self.queue.commandBuffer())
             .context("Failed to create command buffer")
     }
 
@@ -380,6 +386,16 @@ mod tests {
         let cmd_buf = device
             .command_buffer()
             .expect("Should create command buffer");
+        drop(cmd_buf);
+    }
+
+    #[test]
+    fn test_unretained_command_buffer_creation() {
+        let device = MetalDevice::new().unwrap();
+        let cmd_buf = device
+            .queue()
+            .commandBufferWithUnretainedReferences()
+            .expect("Should create unretained command buffer");
         drop(cmd_buf);
     }
 
