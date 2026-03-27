@@ -49,8 +49,7 @@ use crate::model::forward::{ForwardContext, ForwardPass};
 use crate::model::shared::{
     encode_batch_logits, encode_dequant_batch, encode_dequant_batch_f16in,
     encode_dequant_batch_pair_f16in, encode_dequant_matvec, encode_dequant_matvec_with_config,
-    gpu_decode_quant_supported, gpu_prefill_experimental_q5k_small_n_auto_eligible,
-    gpu_prefill_uses_experimental_q5k,
+    gpu_decode_quant_supported, gpu_prefill_q5k_small_n_auto_eligible, gpu_prefill_uses_q5k,
 };
 use crate::model::weights::WeightStore;
 use std::sync::OnceLock;
@@ -176,22 +175,11 @@ fn encode_llama_gpu_layers_only(
         }
     };
 
-    for (layer, &layer_plan) in layer_plans.iter().enumerate().take(n_layers) {
-        let lw = &cached.layers[layer];
-
-        let norm_w_buf = weight_cache.get(&lw.attn_norm).unwrap();
-        let wq_buf = weight_cache.get(&lw.wq).unwrap();
-        let wk_buf = weight_cache.get(&lw.wk).unwrap();
-        let wv_buf = weight_cache.get(&lw.wv).unwrap();
-        let fused_qkv_key = (lw.wq, lw.wk, lw.wv);
-        let fused_qkv_buf = if layer_plan.qkv == LlamaLayerQkvPlan::Fused {
-            fused_qkv_cache.get(&fused_qkv_key)
-        } else {
-            None
-        };
-
-        // 1. RMSNorm: hidden → norm_buf
+    // Layer 0 starts with a standalone attn norm. Subsequent layers receive
+    // their attn norm from the previous layer's fused FFN residual handoff.
+    {
         let t = OpTimer::start();
+        let norm_w_buf = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
         metal_ops.elementwise.encode_rms_norm_out(
             encoder,
             hidden_buf,
@@ -204,8 +192,22 @@ fn encode_llama_gpu_layers_only(
             ops_ref.gpu_encode_layer_norm += t.elapsed();
         }
         decode_barrier(encoder);
+    }
 
-        // 2. QKV matmul
+    for (layer, &layer_plan) in layer_plans.iter().enumerate().take(n_layers) {
+        let lw = &cached.layers[layer];
+
+        let wq_buf = weight_cache.get(&lw.wq).unwrap();
+        let wk_buf = weight_cache.get(&lw.wk).unwrap();
+        let wv_buf = weight_cache.get(&lw.wv).unwrap();
+        let fused_qkv_key = (lw.wq, lw.wk, lw.wv);
+        let fused_qkv_buf = if layer_plan.qkv == LlamaLayerQkvPlan::Fused {
+            fused_qkv_cache.get(&fused_qkv_key)
+        } else {
+            None
+        };
+
+        // 1. QKV matmul
         if let Some(fused_w) = fused_qkv_buf {
             let t = OpTimer::start();
             encode_dequant_matvec_with_config(
@@ -332,7 +334,7 @@ fn encode_llama_gpu_layers_only(
             decode_barrier(encoder);
         }
 
-        // 5. Decode attention
+        // 4. Decode attention
         let t = OpTimer::start();
         metal_ops
             .attention
@@ -357,7 +359,7 @@ fn encode_llama_gpu_layers_only(
         }
         decode_barrier(encoder);
 
-        // 6. Output projection
+        // 5. Output projection
         let wo_buf = weight_cache.get(&lw.wo).unwrap();
         let t = OpTimer::start();
         encode_dequant_matvec_with_config(
@@ -376,33 +378,29 @@ fn encode_llama_gpu_layers_only(
         }
         decode_barrier(encoder);
 
-        // 7. Residual: hidden += proj
+        // 6. Residual + FFN norm: hidden += proj; norm_buf = RMSNorm(hidden)
+        let ffn_nw_buf = weight_cache.get(&lw.ffn_norm).unwrap();
         let t = OpTimer::start();
         metal_ops
             .elementwise
-            .encode_elementwise_add(encoder, hidden_buf, &s.proj_buf, dim as u32);
+            .encode_residual_add_rms_norm_out_batch(
+                encoder,
+                hidden_buf,
+                &s.proj_buf,
+                ffn_nw_buf,
+                &s.norm_buf,
+                dim as u32,
+                1,
+                eps,
+            );
         if let Some(ref mut ops_ref) = ops {
-            ops_ref.gpu_encode_layer_residual += t.elapsed();
+            let elapsed = t.elapsed();
+            ops_ref.gpu_encode_layer_residual += elapsed / 2;
+            ops_ref.gpu_encode_layer_norm += elapsed / 2;
         }
         decode_barrier(encoder);
 
-        // 8. FFN norm: hidden → norm_buf
-        let ffn_nw_buf = weight_cache.get(&lw.ffn_norm).unwrap();
-        let t = OpTimer::start();
-        metal_ops.elementwise.encode_rms_norm_out(
-            encoder,
-            hidden_buf,
-            ffn_nw_buf,
-            &s.norm_buf,
-            dim as u32,
-            eps,
-        );
-        if let Some(ref mut ops_ref) = ops {
-            ops_ref.gpu_encode_layer_norm += t.elapsed();
-        }
-        decode_barrier(encoder);
-
-        // 9. Gate + Up
+        // 7. Gate + Up
         let wg_buf = weight_cache.get(&lw.wg).unwrap();
         let wu_buf = weight_cache.get(&lw.wu).unwrap();
         let t = OpTimer::start();
@@ -433,7 +431,7 @@ fn encode_llama_gpu_layers_only(
         }
         decode_barrier(encoder);
 
-        // 10. SiLU(gate) * up
+        // 8. SiLU(gate) * up
         let t = OpTimer::start();
         metal_ops.elementwise.encode_silu_elementwise_mul(
             encoder,
@@ -446,7 +444,7 @@ fn encode_llama_gpu_layers_only(
         }
         decode_barrier(encoder);
 
-        // 11. Down projection
+        // 9. Down projection
         let wd_buf = weight_cache.get(&lw.wd).unwrap();
         let t = OpTimer::start();
         encode_dequant_matvec_with_config(
@@ -465,16 +463,42 @@ fn encode_llama_gpu_layers_only(
         }
         decode_barrier(encoder);
 
-        // 12. Residual: hidden += down
+        // 10. Residual handoff.
+        // For non-final layers, fuse the FFN residual add with the next
+        // layer's attn norm to avoid an extra dispatch on the decode path.
         let t = OpTimer::start();
-        metal_ops
-            .elementwise
-            .encode_elementwise_add(encoder, hidden_buf, &s.down_buf, dim as u32);
-        if let Some(ref mut ops_ref) = ops {
-            ops_ref.gpu_encode_layer_residual += t.elapsed();
-        }
         if layer + 1 < n_layers {
+            let next_norm_w = weight_cache
+                .get(&cached.layers[layer + 1].attn_norm)
+                .unwrap();
+            metal_ops
+                .elementwise
+                .encode_residual_add_rms_norm_out_batch(
+                    encoder,
+                    hidden_buf,
+                    &s.down_buf,
+                    next_norm_w,
+                    &s.norm_buf,
+                    dim as u32,
+                    1,
+                    eps,
+                );
+            if let Some(ref mut ops_ref) = ops {
+                let elapsed = t.elapsed();
+                ops_ref.gpu_encode_layer_residual += elapsed / 2;
+                ops_ref.gpu_encode_layer_norm += elapsed / 2;
+            }
             decode_barrier(encoder);
+        } else {
+            metal_ops.elementwise.encode_elementwise_add(
+                encoder,
+                hidden_buf,
+                &s.down_buf,
+                dim as u32,
+            );
+            if let Some(ref mut ops_ref) = ops {
+                ops_ref.gpu_encode_layer_residual += t.elapsed();
+            }
         }
     }
 
@@ -1143,9 +1167,8 @@ impl LlamaForward {
                     || lw.wu_dtype == GgmlType::Q8_0
                     || lw.wd_dtype == GgmlType::Q8_0
             }) || matches!(cached.lm_head_dtype, GgmlType::Q8_0);
-            let has_q5k_weights = gpu_prefill_uses_experimental_q5k(weights);
-            let q5k_small_n_auto_eligible =
-                gpu_prefill_experimental_q5k_small_n_auto_eligible(weights);
+            let has_q5k_weights = gpu_prefill_uses_q5k(weights);
+            let q5k_small_n_auto_eligible = gpu_prefill_q5k_small_n_auto_eligible(weights);
             let prefill_plan: GpuBatchPrefillExecutionPlan = DecodeExecutionPlan::llama_prefill(
                 metal_ops,
                 gpu_kv,
@@ -1297,7 +1320,7 @@ impl LlamaForward {
                                     lw.wq_dtype,
                                     false,
                                     prefill_plan.use_batch_simd,
-                                    prefill_plan.experimental_q5k_prefill_small_n,
+                                    prefill_plan.q5k_prefill_small_n,
                                 );
                             }
                         }
@@ -1397,7 +1420,7 @@ impl LlamaForward {
                                     &bs.matmul_in_f16, q_dim as u32, nt,
                                     dim as u32, lw.wq_dtype, false,
                                     prefill_plan.use_batch_simd,
-                                    prefill_plan.experimental_q5k_prefill_small_n,
+                                    prefill_plan.q5k_prefill_small_n,
                                 );
                                 sb.post_dispatch(&[&bs.norm_buf], &[&bs.q_buf]);
                                 sb.pre_dispatch(&[&bs.norm_buf], &[&bs.k_buf]);
@@ -1407,7 +1430,7 @@ impl LlamaForward {
                                     &bs.matmul_in_f16, kv_dim as u32, nt,
                                     dim as u32, lw.wk_dtype, false,
                                     prefill_plan.use_batch_simd,
-                                    prefill_plan.experimental_q5k_prefill_small_n,
+                                    prefill_plan.q5k_prefill_small_n,
                                 );
                                 sb.post_dispatch(&[&bs.norm_buf], &[&bs.k_buf]);
                                 sb.pre_dispatch(&[&bs.norm_buf], &[&bs.v_buf]);
@@ -1417,7 +1440,7 @@ impl LlamaForward {
                                     &bs.matmul_in_f16, kv_dim as u32, nt,
                                     dim as u32, lw.wv_dtype, false,
                                     prefill_plan.use_batch_simd,
-                                    prefill_plan.experimental_q5k_prefill_small_n,
+                                    prefill_plan.q5k_prefill_small_n,
                                 );
                                 sb.post_dispatch(&[&bs.norm_buf], &[&bs.v_buf]);
                             }
@@ -1601,7 +1624,7 @@ impl LlamaForward {
                             lw.wo_dtype,
                             false,
                             prefill_plan.use_batch_simd,
-                            prefill_plan.experimental_q5k_prefill_small_n,
+                            prefill_plan.q5k_prefill_small_n,
                         );
                     }
                     sb.post_dispatch(&[wo_input], &[&bs.proj_buf]);
@@ -1730,7 +1753,7 @@ impl LlamaForward {
                                 lw.wg_dtype,
                                 false,
                                 prefill_plan.use_batch_simd,
-                                prefill_plan.experimental_q5k_prefill_small_n,
+                                prefill_plan.q5k_prefill_small_n,
                             );
                             encode_dequant_batch(
                                 &metal_ops.dequant,
@@ -1746,7 +1769,7 @@ impl LlamaForward {
                                 lw.wu_dtype,
                                 false,
                                 prefill_plan.use_batch_simd,
-                                prefill_plan.experimental_q5k_prefill_small_n,
+                                prefill_plan.q5k_prefill_small_n,
                             );
                         }
                     }
@@ -1822,7 +1845,7 @@ impl LlamaForward {
                                 lw.wd_dtype,
                                 false,
                                 prefill_plan.use_batch_simd,
-                                prefill_plan.experimental_q5k_prefill_small_n,
+                                prefill_plan.q5k_prefill_small_n,
                             );
                         }
                         PrefillFfnActivationPlan::GeluMulGateF32 => unreachable!(),
@@ -2652,8 +2675,8 @@ impl LlamaModel {
                     n_tokens as u32,
                     self.config.head_dim,
                     self.prefill_plan_has_q8_weights(weights)?,
-                    gpu_prefill_uses_experimental_q5k(weights),
-                    gpu_prefill_experimental_q5k_small_n_auto_eligible(weights),
+                    gpu_prefill_uses_q5k(weights),
+                    gpu_prefill_q5k_small_n_auto_eligible(weights),
                     metal_prefill_attn_f16out_enabled(),
                     metal_prefill_use_cached0_enabled(),
                     metal_prefill_split_rope_append_enabled(),
@@ -2679,8 +2702,8 @@ impl LlamaModel {
                     n_tokens as u32,
                     self.config.head_dim,
                     sliding_window,
-                    gpu_prefill_uses_experimental_q5k(weights),
-                    gpu_prefill_experimental_q5k_small_n_auto_eligible(weights),
+                    gpu_prefill_uses_q5k(weights),
+                    gpu_prefill_q5k_small_n_auto_eligible(weights),
                 );
                 let route = self.prefill_attention_route(
                     plan,
@@ -2699,8 +2722,8 @@ impl LlamaModel {
                     metal_ops,
                     gpu_kv,
                     n_tokens as u32,
-                    gpu_prefill_uses_experimental_q5k(weights),
-                    gpu_prefill_experimental_q5k_small_n_auto_eligible(weights),
+                    gpu_prefill_uses_q5k(weights),
+                    gpu_prefill_q5k_small_n_auto_eligible(weights),
                 );
                 let route = self.prefill_attention_route(
                     plan,

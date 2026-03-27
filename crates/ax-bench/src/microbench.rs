@@ -705,22 +705,46 @@ fn run_gpu_suite(iterations: usize) -> anyhow::Result<MicrobenchSuiteResult> {
 
     let q5k_prefill_shapes = [
         Q5KPrefillBatchShape {
-            label: "proj",
+            model: "llama3_8b_q5k",
+            label: "attn_qkv",
             m: 4096,
-            n: 128,
+            n: 512,
             k: 4096,
         },
         Q5KPrefillBatchShape {
+            model: "llama3_8b_q5k",
             label: "ffn_up",
             m: 14336,
-            n: 128,
+            n: 512,
             k: 4096,
         },
         Q5KPrefillBatchShape {
-            label: "proj_small_n",
+            model: "llama3_8b_q5k",
+            label: "attn_qkv_small_window",
             m: 4096,
-            n: 32,
+            n: 8,
             k: 4096,
+        },
+        Q5KPrefillBatchShape {
+            model: "llama3_70b_mixed_q5k",
+            label: "attn_qkv",
+            m: 8192,
+            n: 512,
+            k: 8192,
+        },
+        Q5KPrefillBatchShape {
+            model: "llama3_70b_mixed_q5k",
+            label: "ffn_up",
+            m: 28672,
+            n: 512,
+            k: 8192,
+        },
+        Q5KPrefillBatchShape {
+            model: "llama3_70b_mixed_q5k",
+            label: "attn_qkv_small_window",
+            m: 8192,
+            n: 8,
+            k: 8192,
         },
     ];
     for shape in q5k_prefill_shapes {
@@ -728,6 +752,7 @@ fn run_gpu_suite(iterations: usize) -> anyhow::Result<MicrobenchSuiteResult> {
             iterations,
             &gpu,
             &kernels,
+            &elementwise,
             shape,
             q5k_prefill_batch_variants(shape),
         )?);
@@ -1179,6 +1204,7 @@ struct QuantShapeSweepResult {
 
 #[derive(Debug, Clone, Copy)]
 struct Q5KPrefillBatchShape {
+    model: &'static str,
     label: &'static str,
     m: usize,
     n: usize,
@@ -1188,6 +1214,7 @@ struct Q5KPrefillBatchShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Q5KPrefillBatchVariant {
     Base,
+    F16In,
     Small,
 }
 
@@ -1276,10 +1303,11 @@ fn quant_measurement_note(
 fn q5k_prefill_batch_measurement_note(variant: Q5KPrefillBatchVariant) -> String {
     let candidate = match variant {
         Q5KPrefillBatchVariant::Base => "q5_k.batch_base",
+        Q5KPrefillBatchVariant::F16In => "q5_k.batch_f16in",
         Q5KPrefillBatchVariant::Small => "q5_k.batch_small",
     };
     format!(
-        "experimental q5_k prefill batch matmul wall time; candidate={} tier=experimental observational_only=experimental",
+        "q5_k prefill batch matmul wall time; candidate={} observational_only=route_study",
         candidate
     )
 }
@@ -1316,10 +1344,14 @@ fn quant_prefill_pair_measurement_note(
 }
 
 fn q5k_prefill_batch_variants(shape: Q5KPrefillBatchShape) -> &'static [Q5KPrefillBatchVariant] {
-    if shape.n <= 32 {
-        &[Q5KPrefillBatchVariant::Base, Q5KPrefillBatchVariant::Small]
+    if (4..=8).contains(&shape.n) {
+        &[
+            Q5KPrefillBatchVariant::Base,
+            Q5KPrefillBatchVariant::F16In,
+            Q5KPrefillBatchVariant::Small,
+        ]
     } else {
-        &[Q5KPrefillBatchVariant::Base]
+        &[Q5KPrefillBatchVariant::Base, Q5KPrefillBatchVariant::F16In]
     }
 }
 
@@ -1787,6 +1819,7 @@ fn run_q5k_prefill_batch_case(
     iterations: usize,
     gpu: &MetalDevice,
     kernels: &DequantKernels,
+    elementwise: &ElementwiseKernels,
     shape: Q5KPrefillBatchShape,
     variants: &[Q5KPrefillBatchVariant],
 ) -> anyhow::Result<Vec<MicrobenchMeasurement>> {
@@ -1796,6 +1829,10 @@ fn run_q5k_prefill_batch_case(
         .collect();
     let buf_a = MetalBuffer::from_bytes(gpu.device(), &weight_bytes)?;
     let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input)?;
+    let buf_b_f16 = MetalBuffer::new(
+        gpu.device(),
+        batch_input.len() * std::mem::size_of::<half::f16>(),
+    )?;
     let buf_c = MetalBuffer::new(gpu.device(), shape.n * shape.m * std::mem::size_of::<f32>())?;
 
     let mut measurements = Vec::new();
@@ -1804,9 +1841,11 @@ fn run_q5k_prefill_batch_case(
         run_q5k_prefill_batch_variant(
             gpu,
             kernels,
+            elementwise,
             variant,
             &buf_a,
             &buf_b,
+            &buf_b_f16,
             &buf_c,
             shape.m as u32,
             shape.n as u32,
@@ -1819,9 +1858,11 @@ fn run_q5k_prefill_batch_case(
             run_q5k_prefill_batch_variant(
                 gpu,
                 kernels,
+                elementwise,
                 variant,
                 &buf_a,
                 &buf_b,
+                &buf_b_f16,
                 &buf_c,
                 shape.m as u32,
                 shape.n as u32,
@@ -1837,8 +1878,9 @@ fn run_q5k_prefill_batch_case(
             / elapsed
             / 1e9;
         let prefix = format!(
-            "gpu.prefill_matmul.q5_k.{}.{}.tokens{}.{}x{}",
+            "gpu.prefill_matmul.q5_k.{}.{}.{}.tokens{}.{}x{}",
             q5k_prefill_batch_variant_name(variant),
+            shape.model,
             shape.label,
             shape.n,
             shape.m,
@@ -2273,6 +2315,7 @@ fn run_quant_prefill_pair_variant(
 fn q5k_prefill_batch_variant_name(variant: Q5KPrefillBatchVariant) -> &'static str {
     match variant {
         Q5KPrefillBatchVariant::Base => "base",
+        Q5KPrefillBatchVariant::F16In => "f16in",
         Q5KPrefillBatchVariant::Small => "small",
     }
 }
@@ -2281,9 +2324,11 @@ fn q5k_prefill_batch_variant_name(variant: Q5KPrefillBatchVariant) -> &'static s
 fn run_q5k_prefill_batch_variant(
     gpu: &MetalDevice,
     kernels: &DequantKernels,
+    elementwise: &ElementwiseKernels,
     variant: Q5KPrefillBatchVariant,
     buf_a: &MetalBuffer,
     buf_b: &MetalBuffer,
+    buf_b_f16: &MetalBuffer,
     buf_c: &MetalBuffer,
     m: u32,
     n: u32,
@@ -2293,6 +2338,10 @@ fn run_q5k_prefill_batch_variant(
         match variant {
             Q5KPrefillBatchVariant::Base => {
                 kernels.encode_fused_batch_q5_k(encoder, buf_a, buf_b, buf_c, m, n, k);
+            }
+            Q5KPrefillBatchVariant::F16In => {
+                elementwise.encode_cast_f32_to_f16(encoder, buf_b, buf_b_f16, n * k);
+                kernels.encode_fused_batch_q5_k_f16in(encoder, buf_a, buf_b_f16, buf_c, m, n, k);
             }
             Q5KPrefillBatchVariant::Small => {
                 kernels.encode_fused_batch_q5_k_small(encoder, buf_a, buf_b, buf_c, m, n, k);
@@ -5477,19 +5526,24 @@ mod tests {
     }
 
     #[test]
-    fn test_q5k_prefill_measurement_note_marks_experimental_observational_only() {
+    fn test_q5k_prefill_measurement_note_marks_route_study_observational_only() {
         let note = q5k_prefill_batch_measurement_note(Q5KPrefillBatchVariant::Base);
         assert!(note.contains("candidate=q5_k.batch_base"));
-        assert!(note.contains("tier=experimental"));
-        assert!(note.contains("observational_only=experimental"));
+        assert!(note.contains("observational_only=route_study"));
     }
 
     #[test]
     fn test_q5k_prefill_small_measurement_note_marks_small_candidate() {
         let note = q5k_prefill_batch_measurement_note(Q5KPrefillBatchVariant::Small);
         assert!(note.contains("candidate=q5_k.batch_small"));
-        assert!(note.contains("tier=experimental"));
-        assert!(note.contains("observational_only=experimental"));
+        assert!(note.contains("observational_only=route_study"));
+    }
+
+    #[test]
+    fn test_q5k_prefill_f16in_measurement_note_marks_f16in_candidate() {
+        let note = q5k_prefill_batch_measurement_note(Q5KPrefillBatchVariant::F16In);
+        assert!(note.contains("candidate=q5_k.batch_f16in"));
+        assert!(note.contains("observational_only=route_study"));
     }
 
     #[test]
@@ -5529,7 +5583,13 @@ mod tests {
         };
 
         let profile = report.suggested_kernel_profile();
-        assert!(!profile.decode_matvec.contains_key("q5_k"));
+        // Q5_K is now in the default profile (G5 parity fix), so it will be
+        // present.  The invariant is that observational Q5_K decode results
+        // must NOT produce Q5_K-specific evidence or mutate the default entry.
+        let q5_default = ax_metal::profile::MatvecParams::default();
+        if let Some(q5) = profile.decode_matvec.get("q5_k") {
+            assert_eq!(q5.rows_per_simdgroup, q5_default.rows_per_simdgroup);
+        }
 
         let evidence = report.suggested_kernel_profile_evidence();
         assert!(
@@ -5569,7 +5629,7 @@ mod tests {
                 ]),
                 measurements: vec![
                     MicrobenchMeasurement {
-                        name: "gpu.prefill_matmul.q5_k.base.proj.tokens128.4096x4096".to_string(),
+                        name: "gpu.prefill_matmul.q5_k.base.llama3_8b_q5k.attn_qkv.tokens512.4096x4096".to_string(),
                         unit: "ms".to_string(),
                         value: 1.0,
                         note: Some(q5k_prefill_batch_measurement_note(
@@ -5577,7 +5637,7 @@ mod tests {
                         )),
                     },
                     MicrobenchMeasurement {
-                        name: "gpu.prefill_matmul.q5_k.base.ffn_up.tokens128.14336x4096"
+                        name: "gpu.prefill_matmul.q5_k.base.llama3_8b_q5k.ffn_up.tokens512.14336x4096"
                             .to_string(),
                         unit: "ms".to_string(),
                         value: 2.0,
@@ -5586,7 +5646,7 @@ mod tests {
                         )),
                     },
                     MicrobenchMeasurement {
-                        name: "gpu.prefill_matmul.q5_k.small.proj_small_n.tokens32.4096x4096"
+                        name: "gpu.prefill_matmul.q5_k.small.llama3_8b_q5k.attn_qkv_small_window.tokens8.4096x4096"
                             .to_string(),
                         unit: "ms".to_string(),
                         value: 0.8,
@@ -5603,7 +5663,13 @@ mod tests {
         };
 
         let profile = report.suggested_kernel_profile();
-        assert!(!profile.decode_matvec.contains_key("q5_k"));
+        // Q5_K is now in the default profile (G5 parity fix), so it will be
+        // present.  The invariant is that observational Q5_K prefill results
+        // must NOT produce Q5_K-specific evidence or mutate the default entry.
+        let q5_default = ax_metal::profile::MatvecParams::default();
+        if let Some(q5) = profile.decode_matvec.get("q5_k") {
+            assert_eq!(q5.rows_per_simdgroup, q5_default.rows_per_simdgroup);
+        }
 
         let evidence = report.suggested_kernel_profile_evidence();
         assert!(
@@ -5616,25 +5682,31 @@ mod tests {
     #[test]
     fn test_q5k_prefill_batch_variants_add_small_route_only_for_small_n() {
         let small = Q5KPrefillBatchShape {
-            label: "proj_small_n",
+            model: "llama3_8b_q5k",
+            label: "attn_qkv_small_window",
             m: 4096,
-            n: 32,
+            n: 8,
             k: 4096,
         };
         let large = Q5KPrefillBatchShape {
-            label: "proj",
+            model: "llama3_8b_q5k",
+            label: "attn_qkv",
             m: 4096,
-            n: 128,
+            n: 512,
             k: 4096,
         };
 
         assert_eq!(
             q5k_prefill_batch_variants(small),
-            &[Q5KPrefillBatchVariant::Base, Q5KPrefillBatchVariant::Small,]
+            &[
+                Q5KPrefillBatchVariant::Base,
+                Q5KPrefillBatchVariant::F16In,
+                Q5KPrefillBatchVariant::Small,
+            ]
         );
         assert_eq!(
             q5k_prefill_batch_variants(large),
-            &[Q5KPrefillBatchVariant::Base]
+            &[Q5KPrefillBatchVariant::Base, Q5KPrefillBatchVariant::F16In]
         );
     }
 

@@ -7,6 +7,10 @@
       "threadgroup_size": 64,
       "rows_per_simdgroup": 2
     },
+    "q5_k": {
+      "threadgroup_size": 64,
+      "rows_per_simdgroup": 1
+    },
     "q6_k": {
       "threadgroup_size": 64,
       "rows_per_simdgroup": 2

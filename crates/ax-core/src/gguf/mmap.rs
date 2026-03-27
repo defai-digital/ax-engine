@@ -9,7 +9,7 @@ use super::tensor::{GgmlType, TensorInfo};
 pub fn support_note_for_q5k_layer_presence(has_q5k_layer_weights: bool) -> Option<&'static str> {
     if has_q5k_layer_weights {
         Some(
-            "Mixed-quant Q5_K layers use AX's conservative GPU prefill route by default; profile tuning is not exposed yet.",
+            "Mixed-quant Q5_K layers use AX's GPU prefill route by default; AX selects the base or small-N path automatically.",
         )
     } else {
         None
@@ -231,11 +231,11 @@ mod tests {
     }
 
     #[test]
-    fn test_support_note_for_q5k_layer_presence_marks_conservative_q5k_prefill() {
+    fn test_support_note_for_q5k_layer_presence_marks_default_q5k_prefill() {
         assert!(
             support_note_for_q5k_layer_presence(true)
                 .unwrap()
-                .contains("conservative GPU prefill route")
+                .contains("GPU prefill route by default")
         );
         assert_eq!(support_note_for_q5k_layer_presence(false), None);
     }

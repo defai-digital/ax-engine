@@ -610,7 +610,7 @@ pub(super) fn build_llama_prefill_schedule(
                         k: dim as u32,
                         dtype: lw.wq_dtype,
                         use_simd: prefill_plan.use_batch_simd,
-                        use_q5k_small: prefill_plan.experimental_q5k_prefill_small_n,
+                        use_q5k_small: prefill_plan.q5k_prefill_small_n,
                     });
                 }
             }
@@ -693,7 +693,7 @@ pub(super) fn build_llama_prefill_schedule(
                         k: dim as u32,
                         dtype: lw.wq_dtype,
                         use_simd: prefill_plan.use_batch_simd,
-                        use_q5k_small: prefill_plan.experimental_q5k_prefill_small_n,
+                        use_q5k_small: prefill_plan.q5k_prefill_small_n,
                     });
                     ops.push(PrefillOp::DequantBatch {
                         weight: br(wk_buf),
@@ -705,7 +705,7 @@ pub(super) fn build_llama_prefill_schedule(
                         k: dim as u32,
                         dtype: lw.wk_dtype,
                         use_simd: prefill_plan.use_batch_simd,
-                        use_q5k_small: prefill_plan.experimental_q5k_prefill_small_n,
+                        use_q5k_small: prefill_plan.q5k_prefill_small_n,
                     });
                     ops.push(PrefillOp::DequantBatch {
                         weight: br(wv_buf),
@@ -717,7 +717,7 @@ pub(super) fn build_llama_prefill_schedule(
                         k: dim as u32,
                         dtype: lw.wv_dtype,
                         use_simd: prefill_plan.use_batch_simd,
-                        use_q5k_small: prefill_plan.experimental_q5k_prefill_small_n,
+                        use_q5k_small: prefill_plan.q5k_prefill_small_n,
                     });
                 }
             }

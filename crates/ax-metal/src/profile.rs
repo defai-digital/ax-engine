@@ -226,6 +226,7 @@ impl Default for KernelProfile {
     fn default() -> Self {
         let mut decode_matvec = HashMap::new();
         decode_matvec.insert("q4_k".to_string(), MatvecParams::default());
+        decode_matvec.insert("q5_k".to_string(), MatvecParams::default());
         decode_matvec.insert("q6_k".to_string(), MatvecParams::default());
         decode_matvec.insert("q8_0".to_string(), MatvecParams::default());
 
@@ -482,6 +483,9 @@ mod tests {
 
         let q4k_matvec = profile.matvec_params("q4_k");
         assert_eq!(q4k_matvec.threadgroup_size, 128);
+        let q5k_matvec = profile.matvec_params("q5_k");
+        assert_eq!(q5k_matvec.threadgroup_size, 128);
+        assert_eq!(q5k_matvec.rows_per_simdgroup, 1);
         assert!(!profile.batch_prefill.prefer_f16_io);
         assert!(profile.batch_prefill.prefer_pair_kernel);
         assert!(!profile.batch_prefill.use_bn32);
@@ -630,6 +634,10 @@ mod tests {
             let q6k = profile.matvec_params("q6_k");
             assert_eq!(q6k.threadgroup_size, 64);
             assert_eq!(q6k.rows_per_simdgroup, 2);
+
+            let q5k = profile.matvec_params("q5_k");
+            assert_eq!(q5k.threadgroup_size, 64);
+            assert_eq!(q5k.rows_per_simdgroup, 1);
         }
     }
 
@@ -656,6 +664,10 @@ mod tests {
             let q4k = profile.matvec_params("q4_k");
             assert_eq!(q4k.threadgroup_size, 64);
             assert_eq!(q4k.rows_per_simdgroup, 2);
+
+            let q5k = profile.matvec_params("q5_k");
+            assert_eq!(q5k.threadgroup_size, 64);
+            assert_eq!(q5k.rows_per_simdgroup, 1);
         }
     }
 
@@ -678,6 +690,19 @@ mod tests {
             assert!(
                 !profile.source.is_empty(),
                 "missing source in {}",
+                path.display()
+            );
+            let q5k = profile.matvec_params("q5_k");
+            assert_eq!(
+                q5k.threadgroup_size,
+                64,
+                "unexpected q5_k tg size in {}",
+                path.display()
+            );
+            assert_eq!(
+                q5k.rows_per_simdgroup,
+                1,
+                "unexpected q5_k rows_per_simdgroup in {}",
                 path.display()
             );
             profile_count += 1;

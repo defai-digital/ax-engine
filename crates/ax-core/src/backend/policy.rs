@@ -153,7 +153,7 @@ impl RuntimePolicy {
             batch_simd: ax_metal::batch_simd_enabled(),
             precompute_f16: false,
             autotune_f16in_batch_route: false,
-            q8_batch_native: false,
+            q8_batch_native: true,
             q8_native_m_min: 0,
             q8_native_m_max: u32::MAX,
             q8_native_k_min: 0,
@@ -274,7 +274,7 @@ impl RuntimePolicy {
         self.autotune_f16in_batch_route =
             env_bool_with_arch_override("AX_METAL_AUTOTUNE", architecture).unwrap_or(false);
         self.q8_batch_native =
-            env_bool_with_arch_override("AX_METAL_Q8_BATCH_NATIVE", architecture).unwrap_or(false);
+            env_bool_with_arch_override("AX_METAL_Q8_BATCH_NATIVE", architecture).unwrap_or(true);
         self.q8_native_m_min = env_u32("AX_METAL_Q8_NATIVE_M_MIN", 0);
         self.q8_native_m_max = env_u32("AX_METAL_Q8_NATIVE_M_MAX", u32::MAX);
         self.q8_native_k_min = env_u32("AX_METAL_Q8_NATIVE_K_MIN", 0);
@@ -321,7 +321,7 @@ mod tests {
         assert_eq!(policy.batch_simd_enabled(), ax_metal::batch_simd_enabled());
         assert!(!policy.precompute_f16_enabled());
         assert!(!policy.autotune_f16in_batch_route_enabled());
-        assert!(!policy.q8_batch_native_shape_enabled(128, 32, 4096));
+        assert!(policy.q8_batch_native_shape_enabled(128, 32, 4096));
         assert_eq!(policy.kv_precision_policy(), KvPrecisionPolicy::Auto);
         assert_eq!(policy.gpu_kv_dtype(128), GpuKvDtype::F32);
         assert_eq!(policy.gpu_kv_dtype(256), GpuKvDtype::F16);

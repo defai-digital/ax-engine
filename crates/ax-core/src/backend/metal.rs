@@ -27,15 +27,15 @@ fn metal_profile_llama() -> bool {
 /// Whether native Q8_0 batch dequant matmul kernel is enabled.
 ///
 /// Controlled by `AX_METAL_Q8_BATCH_NATIVE`:
-/// - `1` / `true` / `on` -> enabled
-/// - unset / any other value -> disabled (default)
+/// - `0` / `false` / `off` -> disabled
+/// - unset / any other value -> enabled (default)
 pub fn metal_q8_batch_native_enabled() -> bool {
     RuntimePolicy::resolved_defaults().q8_batch_native_enabled()
 }
 
 /// Whether native Q8_0 batch kernel should be used for a specific shape.
 ///
-/// Requires `AX_METAL_Q8_BATCH_NATIVE=1` to be globally enabled, then applies
+/// Enabled by default, unless `AX_METAL_Q8_BATCH_NATIVE=0` disables it, then applies
 /// optional shape gates:
 /// - `AX_METAL_Q8_NATIVE_M_MIN` (default: 0)
 /// - `AX_METAL_Q8_NATIVE_M_MAX` (default: u32::MAX)
@@ -314,6 +314,87 @@ impl MetalBackend {
             guard.1 = size_bytes;
         }
         guard
+    }
+
+    fn ensure_dense_weight_buffer(
+        &self,
+        a_quant: &[u8],
+        dtype: GgmlType,
+        m: usize,
+        k: usize,
+    ) -> usize {
+        let key = a_quant.as_ptr() as usize;
+        let mut cache = self.weight_cache.lock().unwrap();
+        cache.entry(key).or_insert_with(|| {
+            if dtype == GgmlType::F32 {
+                MetalBuffer::from_bytes(self.device.device(), a_quant)
+                    .expect("Failed to create Metal buffer for dense F32 weight tensor")
+            } else {
+                let mut a_f32 = vec![0.0f32; m * k];
+                crate::quant::dequantize(dtype, a_quant, &mut a_f32);
+                MetalBuffer::from_slice(self.device.device(), &a_f32)
+                    .expect("Failed to create Metal buffer for dequantized weight tensor")
+            }
+        });
+        key
+    }
+
+    fn safe_batch_dequant_matvec_dense(
+        &self,
+        ops: &[(&[u8], GgmlType, usize)],
+        x: &[f32],
+        k: usize,
+        outputs: &mut [&mut [f32]],
+    ) {
+        debug_assert_eq!(ops.len(), outputs.len());
+        if ops.is_empty() {
+            return;
+        }
+
+        let input_guard = self.prepare_input(x);
+        let buf_x = input_guard.0.as_ref().unwrap();
+
+        let mut weight_keys = Vec::with_capacity(ops.len());
+        for (a_quant, dtype, m) in ops {
+            weight_keys.push(self.ensure_dense_weight_buffer(a_quant, *dtype, *m, k));
+        }
+
+        let mut output_bufs: Vec<MetalBuffer> = Vec::with_capacity(ops.len());
+        for (_, _, m) in ops {
+            output_bufs.push(
+                MetalBuffer::new(self.device.device(), m * std::mem::size_of::<f32>())
+                    .expect("Failed to allocate output Metal buffer for safe batch matvec"),
+            );
+        }
+
+        let cache = self.weight_cache.lock().unwrap();
+        self.device
+            .execute_sync(|encoder| {
+                for (i, (_, _, m)) in ops.iter().enumerate() {
+                    let buf_a = cache.get(&weight_keys[i]).unwrap();
+                    self.matmul_kernels.encode_matvec(
+                        encoder,
+                        buf_a,
+                        buf_x,
+                        &output_bufs[i],
+                        *m as u32,
+                        k as u32,
+                    );
+                }
+                Ok(())
+            })
+            .expect("Metal safe batch matvec dispatch failed");
+        drop(cache);
+
+        for (i, (_, _, m)) in ops.iter().enumerate() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    output_bufs[i].contents().as_ptr() as *const f32,
+                    outputs[i].as_mut_ptr(),
+                    *m,
+                );
+            }
+        }
     }
 
     fn qwen35_recurrent_slot_buffer_key(
@@ -1217,6 +1298,17 @@ impl Backend for MetalBackend {
                 );
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn safe_batch_dequant_matvec(
+        &self,
+        ops: &[(&[u8], GgmlType, usize)],
+        x: &[f32],
+        k: usize,
+        outputs: &mut [&mut [f32]],
+    ) {
+        self.safe_batch_dequant_matvec_dense(ops, x, k, outputs);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2956,6 +3048,20 @@ impl Backend for HybridBackend {
         }
     }
 
+    fn safe_batch_dequant_matvec(
+        &self,
+        ops: &[(&[u8], GgmlType, usize)],
+        x: &[f32],
+        k: usize,
+        outputs: &mut [&mut [f32]],
+    ) {
+        if self.decode_on_cpu {
+            self.cpu.batch_dequant_matvec(ops, x, k, outputs);
+        } else {
+            self.metal.safe_batch_dequant_matvec(ops, x, k, outputs);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn attention_prefill(
         &self,
@@ -3422,6 +3528,16 @@ impl Backend for HybridCpuDecodeBackend {
         self.cpu.batch_dequant_matvec(ops, x, k, outputs);
     }
 
+    fn safe_batch_dequant_matvec(
+        &self,
+        ops: &[(&[u8], crate::gguf::tensor::GgmlType, usize)],
+        x: &[f32],
+        k: usize,
+        outputs: &mut [&mut [f32]],
+    ) {
+        self.cpu.batch_dequant_matvec(ops, x, k, outputs);
+    }
+
     fn metal_ops(&self) -> Option<&MetalOps> {
         // Return Some so prefill layers can still use Metal compute (norms, RoPE, etc.)
         // even though single-token decode routes to CPU.
@@ -3635,6 +3751,55 @@ mod tests {
         assert_eq!(
             counters.command_buffers, 1,
             "mixed-dtype batch matvec should use one command buffer"
+        );
+    }
+
+    #[test]
+    fn test_metal_backend_safe_batch_dequant_matvec_mixed_dtypes_share_command_buffer() {
+        let backend = MetalBackend::new().unwrap();
+        let cpu = super::super::cpu::CpuBackend;
+
+        let k = 32;
+        let mut q4_block = [0u8; 18];
+        let d_bytes = half::f16::from_f32(1.0).to_le_bytes();
+        q4_block[0] = d_bytes[0];
+        q4_block[1] = d_bytes[1];
+        q4_block[2..18].fill(0x99);
+
+        let f32_weight = [0.5f32; 32];
+        let f32_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                f32_weight.as_ptr() as *const u8,
+                std::mem::size_of_val(&f32_weight),
+            )
+        };
+
+        let x = [1.0f32; 32];
+        let mut q4_out = [0.0f32; 1];
+        let mut f32_out = [0.0f32; 1];
+        let mut expected_q4 = [0.0f32; 1];
+        let mut expected_f32 = [0.0f32; 1];
+
+        cpu.dequant_matmul(&q4_block, GgmlType::Q4_0, &x, &mut expected_q4, 1, 1, k);
+        cpu.dequant_matmul(f32_bytes, GgmlType::F32, &x, &mut expected_f32, 1, 1, k);
+
+        backend.device.reset_perf_counters();
+        backend.safe_batch_dequant_matvec(
+            &[
+                (&q4_block, GgmlType::Q4_0, 1),
+                (f32_bytes, GgmlType::F32, 1),
+            ],
+            &x,
+            k,
+            &mut [&mut q4_out, &mut f32_out],
+        );
+        let counters = backend.device.perf_counters();
+
+        assert!((q4_out[0] - expected_q4[0]).abs() < 1e-2);
+        assert!((f32_out[0] - expected_f32[0]).abs() < 1e-3);
+        assert_eq!(
+            counters.command_buffers, 1,
+            "safe mixed-dtype batch matvec should use one command buffer"
         );
     }
 

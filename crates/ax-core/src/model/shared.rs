@@ -18,10 +18,9 @@ const LAYER_SUFFIXES: &[&str] = &[
     "ffn_down.weight",
 ];
 
-pub(super) fn experimental_q5k_prefill_enabled() -> bool {
-    // Kept under the existing helper name so current call sites do not need to
-    // branch on a one-off mixed-quant special case. Q5_K GPU prefill is now
-    // enabled by default; the remaining env surface only selects the variant.
+pub(super) fn q5k_prefill_enabled() -> bool {
+    // Q5_K GPU prefill is a normal supported path now. The remaining env
+    // surface only selects the routing variant for validation.
     true
 }
 
@@ -32,20 +31,22 @@ pub(super) fn env_flag_enabled(var: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ExperimentalQ5KPrefillVariantOverride {
+pub(super) enum Q5KPrefillVariantOverride {
     Auto,
     Base,
     Small,
 }
 
-pub(super) fn experimental_q5k_prefill_variant_override() -> ExperimentalQ5KPrefillVariantOverride {
-    match std::env::var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT") {
+pub(super) fn q5k_prefill_variant_override() -> Q5KPrefillVariantOverride {
+    let raw = std::env::var("AX_METAL_Q5K_PREFILL_VARIANT")
+        .or_else(|_| std::env::var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT"));
+    match raw {
         Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
-            "base" => ExperimentalQ5KPrefillVariantOverride::Base,
-            "small" => ExperimentalQ5KPrefillVariantOverride::Small,
-            _ => ExperimentalQ5KPrefillVariantOverride::Auto,
+            "base" => Q5KPrefillVariantOverride::Base,
+            "small" => Q5KPrefillVariantOverride::Small,
+            _ => Q5KPrefillVariantOverride::Auto,
         },
-        Err(_) => ExperimentalQ5KPrefillVariantOverride::Auto,
+        Err(_) => Q5KPrefillVariantOverride::Auto,
     }
 }
 
@@ -65,11 +66,14 @@ fn gpu_prefill_quant_dtype_supported(dtype: GgmlType) -> bool {
     matches!(
         dtype,
         GgmlType::Q4_0 | GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0 | GgmlType::F32
-    ) || (dtype == GgmlType::Q5K && experimental_q5k_prefill_enabled())
+    ) || (dtype == GgmlType::Q5K && q5k_prefill_enabled())
 }
 
 fn gpu_batch_logits_dtype_supported(dtype: GgmlType) -> bool {
-    matches!(dtype, GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0)
+    matches!(
+        dtype,
+        GgmlType::Q4_0 | GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0
+    )
 }
 
 /// Check if all layer-0 weight tensors use quant types supported by decode-only GPU path.
@@ -84,12 +88,12 @@ pub(super) fn gpu_prefill_quant_blocker(weights: &WeightStore) -> Option<String>
     first_layer_mismatch(weights, LAYER_SUFFIXES, gpu_prefill_quant_dtype_supported)
 }
 
-pub(super) fn gpu_prefill_uses_experimental_q5k(weights: &WeightStore) -> bool {
-    experimental_q5k_prefill_enabled()
+pub(super) fn gpu_prefill_uses_q5k(weights: &WeightStore) -> bool {
+    q5k_prefill_enabled()
         && any_layers_match(weights, LAYER_SUFFIXES, |dtype| dtype == GgmlType::Q5K)
 }
 
-pub(super) fn gpu_prefill_experimental_q5k_small_n_auto_eligible(weights: &WeightStore) -> bool {
+pub(super) fn gpu_prefill_q5k_small_n_auto_eligible(weights: &WeightStore) -> bool {
     q5k_prefill_small_n_auto_eligible_for_model(
         weights.predominant_quant(),
         any_layers_match(weights, LAYER_SUFFIXES, |dtype| dtype == GgmlType::Q5K),
@@ -190,7 +194,7 @@ fn warn_gpu_path_issue_once(key: String, warn: impl FnOnce()) {
 
 fn gpu_batch_prefill_panic(dtype: GgmlType) -> ! {
     panic!(
-        "GPU batch matmul only supports Q4_K, Q5_K, and Q6_K, got {:?}",
+        "GPU batch matmul only supports Q4_0, Q4_K, Q5_K, Q6_K, and Q8_0, got {:?}",
         dtype
     )
 }
@@ -351,9 +355,12 @@ pub(super) fn encode_dequant_batch(
         }
     }
 
-    if use_f16_io {
+    if use_f16_io || dtype == GgmlType::Q4_0 {
         elementwise.encode_cast_f32_to_f16(encoder, input, input_f16, n * k);
         match dtype {
+            GgmlType::Q4_0 => {
+                dequant.encode_fused_batch_q4_0_f16in(encoder, weight, input_f16, output, m, n, k)
+            }
             GgmlType::Q4K => dequant.encode_fused_batch_q4_k_f16in_with_config(
                 encoder,
                 weight,
@@ -381,7 +388,7 @@ pub(super) fn encode_dequant_batch(
             GgmlType::Q4K => {
                 dequant.encode_fused_batch_q4_k(encoder, weight, input, output, m, n, k)
             }
-            GgmlType::Q5K if experimental_q5k_prefill_enabled() => {
+            GgmlType::Q5K => {
                 if use_q5k_small_n {
                     dequant.encode_fused_batch_q5_k_small(encoder, weight, input, output, m, n, k)
                 } else {
@@ -412,6 +419,11 @@ pub(super) fn encode_dequant_batch_f16in(
     dtype: GgmlType,
 ) {
     match dtype {
+        GgmlType::Q4_0 => {
+            metal_ops
+                .dequant
+                .encode_fused_batch_q4_0_f16in(encoder, weight, input_f16, output, m, n, k);
+        }
         GgmlType::Q8_0 => {
             if metal_ops.metal_q8_batch_native_shape_enabled(m, n, k) {
                 metal_ops.dequant.encode_fused_batch_q8_0_f16in_with_config(
@@ -470,6 +482,9 @@ pub(super) fn encode_dequant_batch_f16in(
                 metal_ops.dequant_dispatch_config(),
             )
         }
+        GgmlType::Q5K => metal_ops
+            .dequant
+            .encode_fused_batch_q5_k_f16in(encoder, weight, input_f16, output, m, n, k),
         _ => gpu_batch_prefill_panic(dtype),
     }
 }
@@ -492,7 +507,7 @@ pub(super) fn encode_batch_logits(
     use_batch_simd: bool,
 ) {
     match dtype {
-        GgmlType::Q8_0 => {
+        GgmlType::Q4_0 | GgmlType::Q8_0 => {
             metal_ops.elementwise.encode_cast_f32_to_f16(
                 encoder,
                 hidden,
@@ -620,27 +635,37 @@ mod tests {
     }
 
     #[test]
-    fn test_experimental_q5k_prefill_variant_override_parses_known_values() {
+    fn test_q5k_prefill_variant_override_parses_known_values() {
         assert_eq!(
-            experimental_q5k_prefill_variant_override(),
-            ExperimentalQ5KPrefillVariantOverride::Auto
+            q5k_prefill_variant_override(),
+            Q5KPrefillVariantOverride::Auto
         );
-        with_env_var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", "base", || {
+        with_env_var("AX_METAL_Q5K_PREFILL_VARIANT", "base", || {
             assert_eq!(
-                experimental_q5k_prefill_variant_override(),
-                ExperimentalQ5KPrefillVariantOverride::Base
+                q5k_prefill_variant_override(),
+                Q5KPrefillVariantOverride::Base
             );
         });
+        with_env_var("AX_METAL_Q5K_PREFILL_VARIANT", "small", || {
+            assert_eq!(
+                q5k_prefill_variant_override(),
+                Q5KPrefillVariantOverride::Small
+            );
+        });
+        with_env_var("AX_METAL_Q5K_PREFILL_VARIANT", "auto", || {
+            assert_eq!(
+                q5k_prefill_variant_override(),
+                Q5KPrefillVariantOverride::Auto
+            );
+        });
+    }
+
+    #[test]
+    fn test_q5k_prefill_variant_override_accepts_legacy_env_alias() {
         with_env_var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", "small", || {
             assert_eq!(
-                experimental_q5k_prefill_variant_override(),
-                ExperimentalQ5KPrefillVariantOverride::Small
-            );
-        });
-        with_env_var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", "auto", || {
-            assert_eq!(
-                experimental_q5k_prefill_variant_override(),
-                ExperimentalQ5KPrefillVariantOverride::Auto
+                q5k_prefill_variant_override(),
+                Q5KPrefillVariantOverride::Small
             );
         });
     }

@@ -228,36 +228,19 @@ impl Qwen35Forward {
     ) {
         debug_assert_eq!(input.len(), k);
         debug_assert!(output.len() >= m);
+        let ops = [(a_quant, dtype, m)];
+        let mut outputs = [output];
+        backend.safe_batch_dequant_matvec(&ops, input, k, &mut outputs);
+    }
 
-        if !backend.use_gpu_decode() {
-            backend.dequant_matmul(a_quant, dtype, input, output, m, 1, k);
-            return;
-        }
-
-        // Qwen3.5 decode still hits non-finite activations when routed through
-        // the fused Metal n=1 matvec kernels. Route single-token projections
-        // through the generic GPU matmul path instead by issuing a duplicated
-        // two-column batch and reading back the first column.
-        let mut duplicated_input = vec![0.0f32; k * 2];
-        for (row, &value) in input.iter().enumerate() {
-            let col0 = row * 2;
-            duplicated_input[col0] = value;
-            duplicated_input[col0 + 1] = value;
-        }
-
-        let mut duplicated_output = vec![0.0f32; m * 2];
-        backend.dequant_matmul(
-            a_quant,
-            dtype,
-            &duplicated_input,
-            &mut duplicated_output,
-            m,
-            2,
-            k,
-        );
-        for row in 0..m {
-            output[row] = duplicated_output[row * 2];
-        }
+    fn decode_project_ops_gpu_safe(
+        backend: &dyn crate::backend::Backend,
+        input_ops: &[QuantOp<'_>],
+        input: &[f32],
+        k: usize,
+        outputs: &mut [&mut [f32]],
+    ) {
+        backend.safe_batch_dequant_matvec(input_ops, input, k, outputs);
     }
 
     fn qwen35_recurrent_config(
@@ -856,9 +839,8 @@ impl Qwen35Forward {
 
         let input_ops = Self::ffn_input_ops(weights, prefix, inter_dim)?;
         timed_matmul_bucket!(ops, matmul_input_proj, {
-            Self::project_ffn_inputs(input_ops, [gate_buf, up_buf], |raw, dtype, rows, out| {
-                Self::decode_dequant_matmul_gpu_safe(backend, raw, dtype, norm_buf, out, rows, dim);
-            });
+            let mut outputs = [&mut *gate_buf, &mut *up_buf];
+            Self::decode_project_ops_gpu_safe(backend, &input_ops, norm_buf, dim, &mut outputs);
         });
         silu::silu_elementwise_mul(gate_buf, up_buf);
 
@@ -1041,15 +1023,8 @@ impl Qwen35Forward {
         let input_ops = Self::full_attention_input_ops(weights, prefix, q_dim, kv_dim)?;
 
         timed_matmul_bucket!(ops, matmul_input_proj, {
-            Self::project_full_attention_inputs(
-                input_ops,
-                [q_gate_buf, k_buf, v_buf],
-                |raw, dtype, rows, out| {
-                    Self::decode_dequant_matmul_gpu_safe(
-                        backend, raw, dtype, norm_buf, out, rows, dim,
-                    );
-                },
-            );
+            let mut outputs = [&mut *q_gate_buf, &mut *k_buf, &mut *v_buf];
+            Self::decode_project_ops_gpu_safe(backend, &input_ops, norm_buf, dim, &mut outputs);
         });
         Self::extract_q_from_q_gate(q_gate_buf, q_buf);
         let gate_attn = &mut q_gate_buf[q_dim..];
@@ -1230,15 +1205,8 @@ impl Qwen35Forward {
         Self::validate_recurrent_layer_state(qwen_kv, recurrent_slot, layer, "decode")?;
         let input_ops = Self::recurrent_input_ops(weights, prefix, dims)?;
         timed_matmul_bucket!(ops, matmul_input_proj, {
-            Self::project_recurrent_inputs(
-                input_ops,
-                [rec_qkv, rec_z, rec_beta, rec_alpha],
-                |raw, dtype, rows, out| {
-                    Self::decode_dequant_matmul_gpu_safe(
-                        backend, raw, dtype, norm_buf, out, rows, dim,
-                    );
-                },
-            );
+            let mut outputs = [&mut *rec_qkv, &mut *rec_z, &mut *rec_beta, &mut *rec_alpha];
+            Self::decode_project_ops_gpu_safe(backend, &input_ops, norm_buf, dim, &mut outputs);
         });
         Self::assert_finite_if_enabled("recurrent_qkv_input", rec_qkv, layer, position)?;
         Self::assert_finite_if_enabled(

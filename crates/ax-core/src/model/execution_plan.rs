@@ -5,16 +5,54 @@ use super::forward::ForwardContext;
 use super::gemma3::Gemma3Forward;
 use super::qwen3::ensure_supported_qwen3_layout;
 use super::shared::{
-    ExperimentalQ5KPrefillVariantOverride, env_flag_enabled, experimental_q5k_prefill_enabled,
-    experimental_q5k_prefill_variant_override, gpu_batch_logits_supported,
-    gpu_prefill_quant_blocker,
+    Q5KPrefillVariantOverride, env_flag_enabled, gpu_batch_logits_supported,
+    gpu_prefill_quant_blocker, q5k_prefill_enabled, q5k_prefill_variant_override,
 };
 use crate::backend::metal::MetalOps;
 use crate::gguf::tensor::GgmlType;
 use crate::kv::{GpuKv, ModelKv};
 use crate::model::weights::WeightStore;
 
-const EXPERIMENTAL_Q5K_PREFILL_SMALL_N_MAX: u32 = 32;
+// llama.cpp routes K-quant small-batch matvec through its dedicated ext kernels
+// only for BS in [4, 8]. Keep AX aligned with that crossover until Q5_K earns a
+// broader runtime policy from measured data.
+const Q5K_PREFILL_SMALL_N_MIN: u32 = 4;
+const Q5K_PREFILL_SMALL_N_MAX: u32 = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Q5KPrefillRoute {
+    enabled: bool,
+    small_n: bool,
+    forced_variant: bool,
+    use_f16_batch_io: bool,
+}
+
+fn q5k_prefill_route(
+    has_q5k_weights: bool,
+    q5k_small_n_auto_eligible: bool,
+    n_tokens: u32,
+) -> Q5KPrefillRoute {
+    let enabled = has_q5k_weights && q5k_prefill_enabled();
+    let override_variant = q5k_prefill_variant_override();
+    let small_n = enabled
+        && match override_variant {
+            Q5KPrefillVariantOverride::Auto => {
+                q5k_small_n_auto_eligible
+                    && (Q5K_PREFILL_SMALL_N_MIN..=Q5K_PREFILL_SMALL_N_MAX).contains(&n_tokens)
+            }
+            Q5KPrefillVariantOverride::Base => false,
+            Q5KPrefillVariantOverride::Small => true,
+        };
+    Q5KPrefillRoute {
+        enabled,
+        small_n,
+        forced_variant: enabled && !matches!(override_variant, Q5KPrefillVariantOverride::Auto),
+        // Real-model microbenching shows the large-N Q5_K route benefits from
+        // f16 input staging, while the dedicated small-N kernel remains better
+        // in the 4..=8 window.
+        use_f16_batch_io: enabled && !small_n,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeSyncPlan {
@@ -97,9 +135,9 @@ pub struct GpuBatchPrefillExecutionPlan {
     pub use_f16_pair: bool,
     pub use_fused_qkv: bool,
     pub use_batch_simd: bool,
-    pub experimental_q5k_prefill: bool,
-    pub experimental_q5k_prefill_small_n: bool,
-    pub experimental_q5k_prefill_forced_variant: bool,
+    pub q5k_prefill: bool,
+    pub q5k_prefill_small_n: bool,
+    pub q5k_prefill_forced_variant: bool,
     pub split_rope_append: bool,
     pub attention: PrefillAttentionPlan,
     pub attention_sliding_window: u32,
@@ -391,18 +429,9 @@ impl DecodeExecutionPlan {
         prefill_use_cached0_enabled: bool,
         prefill_split_rope_append_enabled: bool,
     ) -> GpuBatchPrefillExecutionPlan {
-        let experimental_q5k_prefill = has_q5k_weights && experimental_q5k_prefill_enabled();
-        let override_variant = experimental_q5k_prefill_variant_override();
-        let experimental_q5k_prefill_small_n = experimental_q5k_prefill
-            && match override_variant {
-                ExperimentalQ5KPrefillVariantOverride::Auto => {
-                    q5k_small_n_auto_eligible && n_tokens <= EXPERIMENTAL_Q5K_PREFILL_SMALL_N_MAX
-                }
-                ExperimentalQ5KPrefillVariantOverride::Base => false,
-                ExperimentalQ5KPrefillVariantOverride::Small => true,
-            };
-        let use_f16_batch_io =
-            !experimental_q5k_prefill && (metal_ops.metal_batch_f16_io_enabled() || has_q8_weights);
+        let q5k_route = q5k_prefill_route(has_q5k_weights, q5k_small_n_auto_eligible, n_tokens);
+        let use_f16_batch_io = q5k_route.use_f16_batch_io
+            || (!q5k_route.enabled && (metal_ops.metal_batch_f16_io_enabled() || has_q8_weights));
         let attention = prefill_attention_plan(
             base_seq_len,
             0,
@@ -414,16 +443,12 @@ impl DecodeExecutionPlan {
         GpuBatchPrefillExecutionPlan {
             kv_f16: gpu_kv.is_f16(),
             use_f16_batch_io,
-            use_f16_pair: !experimental_q5k_prefill && metal_ops.metal_batch_f16_pair_enabled(),
+            use_f16_pair: !q5k_route.enabled && metal_ops.metal_batch_f16_pair_enabled(),
             use_fused_qkv: metal_ops.metal_fused_qkv_enabled(),
-            use_batch_simd: !experimental_q5k_prefill && metal_ops.metal_batch_simd_enabled(),
-            experimental_q5k_prefill,
-            experimental_q5k_prefill_small_n,
-            experimental_q5k_prefill_forced_variant: experimental_q5k_prefill
-                && !matches!(
-                    override_variant,
-                    ExperimentalQ5KPrefillVariantOverride::Auto
-                ),
+            use_batch_simd: !q5k_route.enabled && metal_ops.metal_batch_simd_enabled(),
+            q5k_prefill: q5k_route.enabled,
+            q5k_prefill_small_n: q5k_route.small_n,
+            q5k_prefill_forced_variant: q5k_route.forced_variant,
             split_rope_append: prefill_split_rope_append_enabled,
             attention,
             attention_sliding_window: 0,
@@ -449,30 +474,18 @@ impl DecodeExecutionPlan {
         has_q5k_weights: bool,
         q5k_small_n_auto_eligible: bool,
     ) -> GpuBatchPrefillExecutionPlan {
-        let experimental_q5k_prefill = has_q5k_weights && experimental_q5k_prefill_enabled();
-        let override_variant = experimental_q5k_prefill_variant_override();
-        let experimental_q5k_prefill_small_n = experimental_q5k_prefill
-            && match override_variant {
-                ExperimentalQ5KPrefillVariantOverride::Auto => {
-                    q5k_small_n_auto_eligible && n_tokens <= EXPERIMENTAL_Q5K_PREFILL_SMALL_N_MAX
-                }
-                ExperimentalQ5KPrefillVariantOverride::Base => false,
-                ExperimentalQ5KPrefillVariantOverride::Small => true,
-            };
-        let use_f16_batch_io = !experimental_q5k_prefill && metal_ops.metal_batch_f16_io_enabled();
+        let q5k_route = q5k_prefill_route(has_q5k_weights, q5k_small_n_auto_eligible, n_tokens);
+        let use_f16_batch_io = q5k_route.use_f16_batch_io
+            || (!q5k_route.enabled && metal_ops.metal_batch_f16_io_enabled());
         GpuBatchPrefillExecutionPlan {
             kv_f16: gpu_kv.is_f16(),
             use_f16_batch_io,
-            use_f16_pair: !experimental_q5k_prefill && metal_ops.metal_batch_f16_pair_enabled(),
+            use_f16_pair: !q5k_route.enabled && metal_ops.metal_batch_f16_pair_enabled(),
             use_fused_qkv: metal_ops.metal_fused_qkv_enabled(),
-            use_batch_simd: !experimental_q5k_prefill && metal_ops.metal_batch_simd_enabled(),
-            experimental_q5k_prefill,
-            experimental_q5k_prefill_small_n,
-            experimental_q5k_prefill_forced_variant: experimental_q5k_prefill
-                && !matches!(
-                    override_variant,
-                    ExperimentalQ5KPrefillVariantOverride::Auto
-                ),
+            use_batch_simd: !q5k_route.enabled && metal_ops.metal_batch_simd_enabled(),
+            q5k_prefill: q5k_route.enabled,
+            q5k_prefill_small_n: q5k_route.small_n,
+            q5k_prefill_forced_variant: q5k_route.forced_variant,
             split_rope_append: false,
             attention: prefill_attention_plan(
                 base_seq_len,
@@ -495,30 +508,18 @@ impl DecodeExecutionPlan {
         has_q5k_weights: bool,
         q5k_small_n_auto_eligible: bool,
     ) -> GpuBatchPrefillExecutionPlan {
-        let experimental_q5k_prefill = has_q5k_weights && experimental_q5k_prefill_enabled();
-        let override_variant = experimental_q5k_prefill_variant_override();
-        let experimental_q5k_prefill_small_n = experimental_q5k_prefill
-            && match override_variant {
-                ExperimentalQ5KPrefillVariantOverride::Auto => {
-                    q5k_small_n_auto_eligible && n_tokens <= EXPERIMENTAL_Q5K_PREFILL_SMALL_N_MAX
-                }
-                ExperimentalQ5KPrefillVariantOverride::Base => false,
-                ExperimentalQ5KPrefillVariantOverride::Small => true,
-            };
-        let use_f16_batch_io = !experimental_q5k_prefill && metal_ops.metal_batch_f16_io_enabled();
+        let q5k_route = q5k_prefill_route(has_q5k_weights, q5k_small_n_auto_eligible, n_tokens);
+        let use_f16_batch_io = q5k_route.use_f16_batch_io
+            || (!q5k_route.enabled && metal_ops.metal_batch_f16_io_enabled());
         GpuBatchPrefillExecutionPlan {
             kv_f16: gpu_kv.is_f16(),
             use_f16_batch_io,
-            use_f16_pair: !experimental_q5k_prefill && metal_ops.metal_batch_f16_pair_enabled(),
+            use_f16_pair: !q5k_route.enabled && metal_ops.metal_batch_f16_pair_enabled(),
             use_fused_qkv: metal_ops.metal_fused_qkv_enabled(),
-            use_batch_simd: !experimental_q5k_prefill && metal_ops.metal_batch_simd_enabled(),
-            experimental_q5k_prefill,
-            experimental_q5k_prefill_small_n,
-            experimental_q5k_prefill_forced_variant: experimental_q5k_prefill
-                && !matches!(
-                    override_variant,
-                    ExperimentalQ5KPrefillVariantOverride::Auto
-                ),
+            use_batch_simd: !q5k_route.enabled && metal_ops.metal_batch_simd_enabled(),
+            q5k_prefill: q5k_route.enabled,
+            q5k_prefill_small_n: q5k_route.small_n,
+            q5k_prefill_forced_variant: q5k_route.forced_variant,
             split_rope_append: false,
             attention: PrefillAttentionPlan::Cached,
             attention_sliding_window: 0,
@@ -960,14 +961,14 @@ impl GpuBatchPrefillExecutionPlan {
             self.wo_input.label(),
             attention_route,
         );
-        if self.experimental_q5k_prefill_small_n {
-            if self.experimental_q5k_prefill_forced_variant {
+        if self.q5k_prefill_small_n {
+            if self.q5k_prefill_forced_variant {
                 summary.push_str(" q5k_prefill=small_n_forced");
             } else {
                 summary.push_str(" q5k_prefill=small_n");
             }
-        } else if self.experimental_q5k_prefill {
-            if self.experimental_q5k_prefill_forced_variant {
+        } else if self.q5k_prefill {
+            if self.q5k_prefill_forced_variant {
                 summary.push_str(" q5k_prefill=base_forced");
             } else {
                 summary.push_str(" q5k_prefill=base");
@@ -1567,12 +1568,12 @@ mod tests {
         };
 
         let plan =
-            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 32, 128, 4096, true, true);
+            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 8, 128, 4096, true, true);
         assert!(!plan.use_f16_batch_io);
         assert!(!plan.use_f16_pair);
         assert!(!plan.use_batch_simd);
-        assert!(plan.experimental_q5k_prefill);
-        assert!(plan.experimental_q5k_prefill_small_n);
+        assert!(plan.q5k_prefill);
+        assert!(plan.q5k_prefill_small_n);
         assert!(
             plan.summary_label("gpu_batch", "cache/stable")
                 .contains("q5k_prefill=small_n")
@@ -1594,9 +1595,35 @@ mod tests {
         };
 
         let plan =
-            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 128, 128, 4096, true, true);
-        assert!(plan.experimental_q5k_prefill);
-        assert!(!plan.experimental_q5k_prefill_small_n);
+            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 16, 128, 4096, true, true);
+        assert!(plan.q5k_prefill);
+        assert!(!plan.q5k_prefill_small_n);
+        assert!(plan.use_f16_batch_io);
+        assert!(
+            plan.summary_label("gpu_batch", "cache/stable")
+                .contains("q5k_prefill=base")
+        );
+    }
+
+    #[test]
+    fn test_q5k_prefill_plan_uses_base_route_below_small_batch_window() {
+        let Ok(backend) = MetalBackend::new() else {
+            return;
+        };
+        let model = LlamaModel::with_backend(tiny_config("qwen3"), Box::new(backend));
+        let kv = model.create_model_kv();
+        let Some(gpu_kv) = kv.as_gpu() else {
+            return;
+        };
+        let Some(metal_ops) = model.metal_ops() else {
+            return;
+        };
+
+        let plan =
+            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 2, 128, 4096, true, true);
+        assert!(plan.q5k_prefill);
+        assert!(!plan.q5k_prefill_small_n);
+        assert!(plan.use_f16_batch_io);
         assert!(
             plan.summary_label("gpu_batch", "cache/stable")
                 .contains("q5k_prefill=base")
@@ -1619,8 +1646,9 @@ mod tests {
 
         let plan =
             DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 16, 128, 4096, true, false);
-        assert!(plan.experimental_q5k_prefill);
-        assert!(!plan.experimental_q5k_prefill_small_n);
+        assert!(plan.q5k_prefill);
+        assert!(!plan.q5k_prefill_small_n);
+        assert!(plan.use_f16_batch_io);
         assert!(
             plan.summary_label("gpu_batch", "cache/stable")
                 .contains("q5k_prefill=base")
@@ -1641,13 +1669,13 @@ mod tests {
             return;
         };
 
-        let plan = with_env_vars(
-            &[("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", "base")],
-            || DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 32, 128, 4096, true, true),
-        );
-        assert!(plan.experimental_q5k_prefill);
-        assert!(!plan.experimental_q5k_prefill_small_n);
-        assert!(plan.experimental_q5k_prefill_forced_variant);
+        let plan = with_env_vars(&[("AX_METAL_Q5K_PREFILL_VARIANT", "base")], || {
+            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 8, 128, 4096, true, true)
+        });
+        assert!(plan.q5k_prefill);
+        assert!(!plan.q5k_prefill_small_n);
+        assert!(plan.q5k_prefill_forced_variant);
+        assert!(plan.use_f16_batch_io);
         assert!(
             plan.summary_label("gpu_batch", "cache/stable")
                 .contains("q5k_prefill=base_forced")
@@ -1668,17 +1696,13 @@ mod tests {
             return;
         };
 
-        let plan = with_env_vars(
-            &[("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", "small")],
-            || {
-                DecodeExecutionPlan::qwen3_prefill(
-                    metal_ops, gpu_kv, 0, 128, 128, 4096, true, false,
-                )
-            },
-        );
-        assert!(plan.experimental_q5k_prefill);
-        assert!(plan.experimental_q5k_prefill_small_n);
-        assert!(plan.experimental_q5k_prefill_forced_variant);
+        let plan = with_env_vars(&[("AX_METAL_Q5K_PREFILL_VARIANT", "small")], || {
+            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 128, 128, 4096, true, false)
+        });
+        assert!(plan.q5k_prefill);
+        assert!(plan.q5k_prefill_small_n);
+        assert!(plan.q5k_prefill_forced_variant);
+        assert!(!plan.use_f16_batch_io);
         assert!(
             plan.summary_label("gpu_batch", "cache/stable")
                 .contains("q5k_prefill=small_n_forced")
@@ -1724,9 +1748,9 @@ mod tests {
             use_f16_pair: false,
             use_fused_qkv: true,
             use_batch_simd: false,
-            experimental_q5k_prefill: false,
-            experimental_q5k_prefill_small_n: false,
-            experimental_q5k_prefill_forced_variant: false,
+            q5k_prefill: false,
+            q5k_prefill_small_n: false,
+            q5k_prefill_forced_variant: false,
             split_rope_append: true,
             attention: PrefillAttentionPlan::Cached,
             attention_sliding_window: 512,
@@ -1774,9 +1798,9 @@ mod tests {
             use_f16_pair: false,
             use_fused_qkv: false,
             use_batch_simd: false,
-            experimental_q5k_prefill: false,
-            experimental_q5k_prefill_small_n: false,
-            experimental_q5k_prefill_forced_variant: false,
+            q5k_prefill: false,
+            q5k_prefill_small_n: false,
+            q5k_prefill_forced_variant: false,
             split_rope_append: false,
             attention: PrefillAttentionPlan::Cached,
             attention_sliding_window: 0,
@@ -1804,9 +1828,9 @@ mod tests {
             use_f16_pair: false,
             use_fused_qkv: false,
             use_batch_simd: false,
-            experimental_q5k_prefill: false,
-            experimental_q5k_prefill_small_n: false,
-            experimental_q5k_prefill_forced_variant: false,
+            q5k_prefill: false,
+            q5k_prefill_small_n: false,
+            q5k_prefill_forced_variant: false,
             split_rope_append: false,
             attention: PrefillAttentionPlan::Cached,
             attention_sliding_window: 256,
@@ -1841,9 +1865,9 @@ mod tests {
             use_f16_pair: false,
             use_fused_qkv: false,
             use_batch_simd: false,
-            experimental_q5k_prefill: false,
-            experimental_q5k_prefill_small_n: false,
-            experimental_q5k_prefill_forced_variant: false,
+            q5k_prefill: false,
+            q5k_prefill_small_n: false,
+            q5k_prefill_forced_variant: false,
             split_rope_append: false,
             attention: PrefillAttentionPlan::Cached,
             attention_sliding_window: 0,
@@ -1868,9 +1892,9 @@ mod tests {
             use_f16_pair: false,
             use_fused_qkv: false,
             use_batch_simd: false,
-            experimental_q5k_prefill: false,
-            experimental_q5k_prefill_small_n: false,
-            experimental_q5k_prefill_forced_variant: false,
+            q5k_prefill: false,
+            q5k_prefill_small_n: false,
+            q5k_prefill_forced_variant: false,
             split_rope_append: false,
             attention: PrefillAttentionPlan::Cached,
             attention_sliding_window: 0,
@@ -1894,9 +1918,9 @@ mod tests {
             use_f16_pair: false,
             use_fused_qkv: false,
             use_batch_simd: false,
-            experimental_q5k_prefill: false,
-            experimental_q5k_prefill_small_n: false,
-            experimental_q5k_prefill_forced_variant: false,
+            q5k_prefill: false,
+            q5k_prefill_small_n: false,
+            q5k_prefill_forced_variant: false,
             split_rope_append: false,
             attention: PrefillAttentionPlan::Cached,
             attention_sliding_window: 0,
@@ -1961,9 +1985,9 @@ mod tests {
             use_f16_pair: false,
             use_fused_qkv: true,
             use_batch_simd: false,
-            experimental_q5k_prefill: false,
-            experimental_q5k_prefill_small_n: false,
-            experimental_q5k_prefill_forced_variant: false,
+            q5k_prefill: false,
+            q5k_prefill_small_n: false,
+            q5k_prefill_forced_variant: false,
             split_rope_append: false,
             attention: PrefillAttentionPlan::Cached,
             attention_sliding_window: 128,
@@ -1991,9 +2015,9 @@ mod tests {
             use_f16_pair: false,
             use_fused_qkv: true,
             use_batch_simd: false,
-            experimental_q5k_prefill: false,
-            experimental_q5k_prefill_small_n: false,
-            experimental_q5k_prefill_forced_variant: false,
+            q5k_prefill: false,
+            q5k_prefill_small_n: false,
+            q5k_prefill_forced_variant: false,
             split_rope_append: false,
             attention: PrefillAttentionPlan::Cached,
             attention_sliding_window: 128,
@@ -2021,9 +2045,9 @@ mod tests {
             use_f16_pair: false,
             use_fused_qkv: false,
             use_batch_simd: false,
-            experimental_q5k_prefill: false,
-            experimental_q5k_prefill_small_n: false,
-            experimental_q5k_prefill_forced_variant: false,
+            q5k_prefill: false,
+            q5k_prefill_small_n: false,
+            q5k_prefill_forced_variant: false,
             split_rope_append: false,
             attention: PrefillAttentionPlan::Cached,
             attention_sliding_window: 128,
@@ -2051,9 +2075,9 @@ mod tests {
             use_f16_pair: false,
             use_fused_qkv: true,
             use_batch_simd: false,
-            experimental_q5k_prefill: false,
-            experimental_q5k_prefill_small_n: false,
-            experimental_q5k_prefill_forced_variant: false,
+            q5k_prefill: false,
+            q5k_prefill_small_n: false,
+            q5k_prefill_forced_variant: false,
             split_rope_append: true,
             attention: PrefillAttentionPlan::Cached,
             attention_sliding_window: 0,
@@ -2082,9 +2106,9 @@ mod tests {
             use_f16_pair: false,
             use_fused_qkv: true,
             use_batch_simd: false,
-            experimental_q5k_prefill: false,
-            experimental_q5k_prefill_small_n: false,
-            experimental_q5k_prefill_forced_variant: false,
+            q5k_prefill: false,
+            q5k_prefill_small_n: false,
+            q5k_prefill_forced_variant: false,
             split_rope_append: false,
             attention: PrefillAttentionPlan::Cached,
             attention_sliding_window: 0,

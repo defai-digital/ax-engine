@@ -1045,11 +1045,11 @@ mod tests {
     }
 
     #[test]
-    fn test_support_note_for_quant_marks_conservative_q5k_prefill() {
+    fn test_support_note_for_quant_marks_default_q5k_prefill() {
         assert!(
             ax_core::gguf::mmap::support_note_for_q5k_layer_presence(true)
                 .unwrap()
-                .contains("conservative GPU prefill route")
+                .contains("GPU prefill route by default")
         );
         assert_eq!(
             ax_core::gguf::mmap::support_note_for_q5k_layer_presence(false),

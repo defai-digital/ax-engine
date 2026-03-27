@@ -9,6 +9,7 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::Context;
 use objc2::runtime::ProtocolObject;
+use objc2_foundation::NSUInteger;
 use objc2_metal::{MTLBarrierScope, MTLComputeCommandEncoder, MTLSize};
 
 use crate::barriers_enabled;
@@ -380,6 +381,7 @@ pub struct DequantDispatchConfig {
     pub q4_k_threadgroup_size: usize,
     pub q4_k_rows_per_simdgroup: u32,
     pub q5_k_rows_per_simdgroup: u32,
+    pub q5_k_ilp4: bool,
     pub q6_k_threadgroup_size: usize,
     pub q6_k_rows_per_simdgroup: u32,
     pub batch_f16in_small_n_threshold: u32,
@@ -405,6 +407,7 @@ pub enum MatvecCandidate {
     Q4KBlk2,
     Q4KN4,
     Q5KBase,
+    Q5KIlp4,
     Q5KNr2,
     Q6KBase,
     Q6KNr2,
@@ -503,6 +506,10 @@ impl DequantDispatchConfig {
         let q5_k_rows_per_simdgroup = legacy_kernel_override("AX_METAL_MATVEC_Q5K_NR")
             .and_then(|v| v.trim().parse::<u32>().ok())
             .unwrap_or(q5_params.rows_per_simdgroup);
+        let q5_k_ilp4 = match legacy_kernel_override("AX_METAL_MATVEC_Q5K_ILP4") {
+            Some(v) => parse_bool_env_flag(&v).unwrap_or(true),
+            None => true,
+        };
 
         let q6_k_threadgroup_size = match legacy_kernel_override("AX_METAL_MATVEC_Q6K_TG") {
             Some(v) => match v.trim() {
@@ -553,6 +560,7 @@ impl DequantDispatchConfig {
             q4_k_threadgroup_size,
             q4_k_rows_per_simdgroup,
             q5_k_rows_per_simdgroup,
+            q5_k_ilp4,
             q6_k_threadgroup_size,
             q6_k_rows_per_simdgroup,
             batch_f16in_small_n_threshold,
@@ -606,6 +614,7 @@ impl MatvecCandidate {
             Self::Q4KBlk2 => "q4_k.blk2",
             Self::Q4KN4 => "q4_k.n4",
             Self::Q5KBase => "q5_k.base",
+            Self::Q5KIlp4 => "q5_k.ilp4",
             Self::Q5KNr2 => "q5_k.nr2",
             Self::Q6KBase => "q6_k.base",
             Self::Q6KNr2 => "q6_k.nr2",
@@ -770,6 +779,13 @@ fn q5_k_matvec_candidate_selection(
             threadgroups: (m as usize).div_ceil(Q5K_NR2_ROWS),
             threadgroup_width: DEQUANT_MATVEC_Q5K_TG,
         }
+    } else if config.q5_k_ilp4 {
+        MatvecCandidateSelection {
+            candidate: MatvecCandidate::Q5KIlp4,
+            stability: KernelStabilityTier::Stable,
+            threadgroups: (m as usize).div_ceil(2),
+            threadgroup_width: DEQUANT_MATVEC_Q5K_TG,
+        }
     } else {
         MatvecCandidateSelection {
             candidate: MatvecCandidate::Q5KBase,
@@ -792,11 +808,7 @@ fn attention_decode_candidate_selection(
                 256 => AttentionDecodeCandidate::SplitKHd256,
                 _ => AttentionDecodeCandidate::SplitKHd128,
             },
-            stability: if head_dim == 256 {
-                KernelStabilityTier::ProfilePreferred
-            } else {
-                KernelStabilityTier::Experimental
-            },
+            stability: KernelStabilityTier::ProfilePreferred,
         };
     }
 
@@ -1291,14 +1303,18 @@ const SB_TG: usize = 128;
 const SBLK_TG_SIZE: usize = 64;
 /// Total output rows per threadgroup for simd batch kernels (SBLK_NS=2 * SBLK_NR=4 = 8).
 const SIMD_ROWS_PER_TG: usize = 8;
-/// Routing threshold for choosing small-vs-large batch kernels.
+/// Default routing threshold for choosing small-vs-large batch kernels.
 ///
-/// Disabled by default (`1`) because current small-N kernels regress prefill in
-/// benchmarked workloads (e.g. ~39 tokens). Keep plumbing for future retunes.
-const BATCH_SMALL_N_THRESHOLD: u32 = 1;
+/// Disabled by default (`1`) because current small-N kernels regressed the
+/// wider prompt-side workloads they were originally tested on. Keep the
+/// threshold overridable for narrow `N<=8` route studies.
+const DEFAULT_BATCH_SMALL_N_THRESHOLD: u32 = 1;
+const BLOCKED_BC_OUT_FC_INDEX: NSUInteger = 1;
 /// Q4_K and Q6_K blocks contain 256 quantized values. K must be a multiple of this.
 const Q4_K_BLOCK_VALUES: usize = 256;
+const Q5_K_BLOCK_VALUES: usize = 256;
 const Q6_K_BLOCK_VALUES: usize = 256;
+const Q8_0_BLOCK_VALUES: usize = 32;
 
 /// Pre-compiled dequantization compute pipelines.
 ///
@@ -1311,6 +1327,8 @@ pub struct DequantKernels {
     dequant_q6_k: ComputePipeline,
     fused_matvec_q4_0: ComputePipeline,
     fused_matvec_q5_k: ComputePipeline,
+    /// Q5_K decode matvec with llama.cpp-style 4-way block interleaving.
+    fused_matvec_q5_k_ilp4: ComputePipeline,
     /// Q5_K decode matvec with 2 rows per simdgroup and TG=64.
     fused_matvec_q5_k_nr2: ComputePipeline,
     fused_matvec_q8_0: ComputePipeline,
@@ -1341,20 +1359,38 @@ pub struct DequantKernels {
     fused_batch_q4_k_bn32_full: ComputePipeline,
     /// Inline-dequant full-tile: fuses Phase 1 into Phase 2, eliminates barrier.
     fused_batch_q4_k_inline: ComputePipeline,
-    /// Blocked-layout kernel (llama.cpp pattern): stride-8, 6KB TG, TG=128, 1.33 MACs/load.
+    /// Blocked-layout kernel (boundary-specialized): stride-8, 6KB TG, TG=128, 1.33 MACs/load.
     fused_batch_q4_k_blocked: ComputePipeline,
+    /// Blocked-layout full-tile specialization with output boundary handling compiled out.
+    fused_batch_q4_k_blocked_fulltile: ComputePipeline,
     /// BM=32 blocked variant for small M: 4KB TG, 2× more TGs.
     fused_batch_q4_k_blocked_bm32: ComputePipeline,
-    /// Experimental baseline B-transposed batch dequant+matmul for Q5_K.
+    /// BM=32 blocked full-tile specialization.
+    fused_batch_q4_k_blocked_bm32_fulltile: ComputePipeline,
+    /// Default B-transposed batch dequant+matmul for Q5_K.
     fused_batch_q5_k: ComputePipeline,
-    /// Experimental small-N B-transposed batch dequant+matmul for Q5_K.
+    /// Blocked-layout Q5_K kernel (boundary-specialized).
+    fused_batch_q5_k_blocked: ComputePipeline,
+    /// Blocked-layout Q5_K full-tile specialization.
+    fused_batch_q5_k_blocked_fulltile: ComputePipeline,
+    /// B-transposed batch dequant+matmul for Q5_K with f16 input and f32 output.
+    fused_batch_q5_k_f16in: ComputePipeline,
+    /// Blocked-layout Q5_K kernel with f16 input and f32 output (boundary-specialized).
+    fused_batch_q5_k_blocked_f16in: ComputePipeline,
+    /// Blocked-layout Q5_K f16-input full-tile specialization.
+    fused_batch_q5_k_blocked_f16in_fulltile: ComputePipeline,
+    /// Small-N B-transposed batch dequant+matmul for Q5_K.
     fused_batch_q5_k_small: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q6_K: C[N×M] = B[N×K] × dequant(A[M×K])^T.
     fused_batch_q6_k: ComputePipeline,
-    /// Blocked-layout Q6_K kernel (same architecture as Q4_K blocked).
+    /// Blocked-layout Q6_K kernel (boundary-specialized).
     fused_batch_q6_k_blocked: ComputePipeline,
+    /// Blocked-layout Q6_K full-tile specialization.
+    fused_batch_q6_k_blocked_fulltile: ComputePipeline,
     /// BM=32 blocked Q6_K variant for small M.
     fused_batch_q6_k_blocked_bm32: ComputePipeline,
+    /// BM=32 blocked Q6_K full-tile specialization.
+    fused_batch_q6_k_blocked_bm32_fulltile: ComputePipeline,
     /// Full-tile fast path for Q4_K batch dequant+matmul.
     fused_batch_q4_k_full: ComputePipeline,
     /// Full-tile fast path for Q6_K batch dequant+matmul.
@@ -1365,12 +1401,20 @@ pub struct DequantKernels {
     fused_batch_q6_k_f16io: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q4_K with f16 input and f32 output.
     fused_batch_q4_k_f16in: ComputePipeline,
+    /// Blocked-layout Q4_0 kernel with f16 input and f32 output (boundary-specialized).
+    fused_batch_q4_0_blocked_f16in: ComputePipeline,
+    /// Blocked-layout Q4_0 f16-input full-tile specialization.
+    fused_batch_q4_0_blocked_f16in_fulltile: ComputePipeline,
     /// Full-tile (BM=32, BN=64, TG=256) fast path for Q4_K with f16 input. No out_tile → 12 KB.
     fused_batch_q4_k_f16in_full: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q6_K with f16 input and f32 output.
     fused_batch_q6_k_f16in: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q8_0 with f16 input and f32 output.
     fused_batch_q8_0_f16in: ComputePipeline,
+    /// Blocked-layout Q8_0 kernel with f16 input and f32 output (boundary-specialized).
+    fused_batch_q8_0_blocked_f16in: ComputePipeline,
+    /// Blocked-layout Q8_0 f16-input full-tile specialization.
+    fused_batch_q8_0_blocked_f16in_fulltile: ComputePipeline,
     /// Full-tile fast path for Q8_0 with f16 input and f32 output.
     fused_batch_q8_0_f16in_full: ComputePipeline,
     /// 64x64 full-tile fast path for Q8_0 with f16 input and f32 output.
@@ -1476,6 +1520,7 @@ impl DequantKernels {
             MatvecCandidate::Q4KBlk2 => self.fused_matvec_q4_k_blk2.state(),
             MatvecCandidate::Q4KN4 => self.fused_matvec_q4_k_n4.state(),
             MatvecCandidate::Q5KBase
+            | MatvecCandidate::Q5KIlp4
             | MatvecCandidate::Q5KNr2
             | MatvecCandidate::Q6KBase
             | MatvecCandidate::Q6KNr2 => {
@@ -1509,6 +1554,7 @@ impl DequantKernels {
             | MatvecCandidate::Q4KBlk2
             | MatvecCandidate::Q4KN4
             | MatvecCandidate::Q5KBase
+            | MatvecCandidate::Q5KIlp4
             | MatvecCandidate::Q5KNr2 => unreachable!(),
         };
         (
@@ -1530,6 +1576,7 @@ impl DequantKernels {
         let selection = q5_k_matvec_candidate_selection(m, config);
         let pipeline = match selection.candidate {
             MatvecCandidate::Q5KBase => self.fused_matvec_q5_k.state(),
+            MatvecCandidate::Q5KIlp4 => self.fused_matvec_q5_k_ilp4.state(),
             MatvecCandidate::Q5KNr2 => self.fused_matvec_q5_k_nr2.state(),
             MatvecCandidate::Q4KBase
             | MatvecCandidate::Q4KNr2
@@ -1567,6 +1614,19 @@ impl DequantKernels {
             "dequant_matvec_q5_k",
         )
         .context("Failed to compile dequant_matvec_q5_k kernel")?;
+        let fused_matvec_q5_k_ilp4 = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_matvec_q5_k_ilp4",
+        )
+        .or_else(|err| {
+            tracing::warn!(
+                error = %err,
+                "q5_k ilp4 Metal kernel unavailable; falling back to baseline q5_k matvec"
+            );
+            ComputePipeline::from_source(device.device(), DEQUANT_SHADER_SRC, "dequant_matvec_q5_k")
+        })
+        .context("Failed to compile dequant_matvec_q5_k_ilp4 kernel")?;
         let fused_matvec_q5_k_nr2 = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -1668,18 +1728,46 @@ impl DequantKernels {
         let fused_batch_q4_k =
             ComputePipeline::from_source(device.device(), DEQUANT_SHADER_SRC, "dequant_batch_q4_k")
                 .context("Failed to compile dequant_batch_q4_k kernel")?;
-        let fused_batch_q4_k_blocked = ComputePipeline::from_source(
+        let fused_batch_q4_k_blocked = ComputePipeline::from_source_with_constants(
             device.device(),
             DEQUANT_SHADER_SRC,
             "dequant_batch_q4_k_blocked",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(true),
+            }],
         )
-        .context("Failed to compile dequant_batch_q4_k_blocked kernel")?;
-        let fused_batch_q4_k_blocked_bm32 = ComputePipeline::from_source(
+        .context("Failed to compile dequant_batch_q4_k_blocked boundary kernel")?;
+        let fused_batch_q4_k_blocked_fulltile = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q4_k_blocked",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(false),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q4_k_blocked fulltile kernel")?;
+        let fused_batch_q4_k_blocked_bm32 = ComputePipeline::from_source_with_constants(
             device.device(),
             DEQUANT_SHADER_SRC,
             "dequant_batch_q4_k_blocked_bm32",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(true),
+            }],
         )
-        .context("Failed to compile dequant_batch_q4_k_blocked_bm32 kernel")?;
+        .context("Failed to compile dequant_batch_q4_k_blocked_bm32 boundary kernel")?;
+        let fused_batch_q4_k_blocked_bm32_fulltile = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q4_k_blocked_bm32",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(false),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q4_k_blocked_bm32 fulltile kernel")?;
         let fused_batch_q4_k_inline = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -1701,6 +1789,52 @@ impl DequantKernels {
         let fused_batch_q5_k =
             ComputePipeline::from_source(device.device(), DEQUANT_SHADER_SRC, "dequant_batch_q5_k")
                 .context("Failed to compile dequant_batch_q5_k kernel")?;
+        let fused_batch_q5_k_blocked = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q5_k_blocked",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(true),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q5_k_blocked boundary kernel")?;
+        let fused_batch_q5_k_blocked_fulltile = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q5_k_blocked",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(false),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q5_k_blocked fulltile kernel")?;
+        let fused_batch_q5_k_f16in = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q5_k_f16in",
+        )
+        .context("Failed to compile dequant_batch_q5_k_f16in kernel")?;
+        let fused_batch_q5_k_blocked_f16in = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q5_k_blocked_f16in",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(true),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q5_k_blocked_f16in boundary kernel")?;
+        let fused_batch_q5_k_blocked_f16in_fulltile = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q5_k_blocked_f16in",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(false),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q5_k_blocked_f16in fulltile kernel")?;
         let fused_batch_q5_k_small = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -1710,18 +1844,46 @@ impl DequantKernels {
         let fused_batch_q6_k =
             ComputePipeline::from_source(device.device(), DEQUANT_SHADER_SRC, "dequant_batch_q6_k")
                 .context("Failed to compile dequant_batch_q6_k kernel")?;
-        let fused_batch_q6_k_blocked = ComputePipeline::from_source(
+        let fused_batch_q6_k_blocked = ComputePipeline::from_source_with_constants(
             device.device(),
             DEQUANT_SHADER_SRC,
             "dequant_batch_q6_k_blocked",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(true),
+            }],
         )
-        .context("Failed to compile dequant_batch_q6_k_blocked kernel")?;
-        let fused_batch_q6_k_blocked_bm32 = ComputePipeline::from_source(
+        .context("Failed to compile dequant_batch_q6_k_blocked boundary kernel")?;
+        let fused_batch_q6_k_blocked_fulltile = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q6_k_blocked",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(false),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q6_k_blocked fulltile kernel")?;
+        let fused_batch_q6_k_blocked_bm32 = ComputePipeline::from_source_with_constants(
             device.device(),
             DEQUANT_SHADER_SRC,
             "dequant_batch_q6_k_blocked_bm32",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(true),
+            }],
         )
-        .context("Failed to compile dequant_batch_q6_k_blocked_bm32 kernel")?;
+        .context("Failed to compile dequant_batch_q6_k_blocked_bm32 boundary kernel")?;
+        let fused_batch_q6_k_blocked_bm32_fulltile = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q6_k_blocked_bm32",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(false),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q6_k_blocked_bm32 fulltile kernel")?;
         let fused_batch_q4_k_full = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -1752,6 +1914,26 @@ impl DequantKernels {
             "dequant_batch_q4_k_f16in",
         )
         .context("Failed to compile dequant_batch_q4_k_f16in kernel")?;
+        let fused_batch_q4_0_blocked_f16in = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q4_0_blocked_f16in",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(true),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q4_0_blocked_f16in boundary kernel")?;
+        let fused_batch_q4_0_blocked_f16in_fulltile = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q4_0_blocked_f16in",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(false),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q4_0_blocked_f16in fulltile kernel")?;
         let fused_batch_q4_k_f16in_full = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -1770,6 +1952,26 @@ impl DequantKernels {
             "dequant_batch_q8_0_f16in",
         )
         .context("Failed to compile dequant_batch_q8_0_f16in kernel")?;
+        let fused_batch_q8_0_blocked_f16in = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q8_0_blocked_f16in",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(true),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q8_0_blocked_f16in boundary kernel")?;
+        let fused_batch_q8_0_blocked_f16in_fulltile = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q8_0_blocked_f16in",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(false),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q8_0_blocked_f16in fulltile kernel")?;
         let fused_batch_q8_0_f16in_full = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -1943,6 +2145,7 @@ impl DequantKernels {
             dequant_q6_k,
             fused_matvec_q4_0,
             fused_matvec_q5_k,
+            fused_matvec_q5_k_ilp4,
             fused_matvec_q5_k_nr2,
             fused_matvec_q8_0,
             fused_matvec_q8_0_n4,
@@ -1961,21 +2164,34 @@ impl DequantKernels {
             fused_batch_q4_k_v2,
             fused_batch_q4_k_inline,
             fused_batch_q4_k_blocked,
+            fused_batch_q4_k_blocked_fulltile,
             fused_batch_q4_k_blocked_bm32,
+            fused_batch_q4_k_blocked_bm32_fulltile,
             fused_batch_q4_k_bn32_full,
             fused_batch_q5_k,
+            fused_batch_q5_k_blocked,
+            fused_batch_q5_k_blocked_fulltile,
+            fused_batch_q5_k_f16in,
+            fused_batch_q5_k_blocked_f16in,
+            fused_batch_q5_k_blocked_f16in_fulltile,
             fused_batch_q5_k_small,
             fused_batch_q6_k,
             fused_batch_q6_k_blocked,
+            fused_batch_q6_k_blocked_fulltile,
             fused_batch_q6_k_blocked_bm32,
+            fused_batch_q6_k_blocked_bm32_fulltile,
             fused_batch_q4_k_full,
             fused_batch_q6_k_full,
             fused_batch_q4_k_f16io,
             fused_batch_q6_k_f16io,
             fused_batch_q4_k_f16in,
+            fused_batch_q4_0_blocked_f16in,
+            fused_batch_q4_0_blocked_f16in_fulltile,
             fused_batch_q4_k_f16in_full,
             fused_batch_q6_k_f16in,
             fused_batch_q8_0_f16in,
+            fused_batch_q8_0_blocked_f16in,
+            fused_batch_q8_0_blocked_f16in_fulltile,
             fused_batch_q8_0_f16in_full,
             fused_batch_q8_0_f16in_full64,
             fused_batch_q8_0_f16in_full32,
@@ -2942,10 +3158,31 @@ impl DequantKernels {
             const BLOCKED_TG: usize = 128;
             // Choose BM=32 for small M (doubles TG count for better GPU saturation).
             let use_bm32 = false; // BM=32 tested: no improvement on small M (GPU saturation not the bottleneck)
-            let (pipeline, bm, smem) = if use_bm32 {
-                (&self.fused_batch_q4_k_blocked_bm32, 32usize, 8192usize)
+            let full_tile = if use_bm32 {
+                (m as usize).is_multiple_of(32) && (n as usize).is_multiple_of(32)
             } else {
-                (&self.fused_batch_q4_k_blocked, 64usize, 8192usize)
+                (m as usize).is_multiple_of(64) && (n as usize).is_multiple_of(32)
+            };
+            let (pipeline, bm, smem) = if use_bm32 {
+                (
+                    if full_tile {
+                        &self.fused_batch_q4_k_blocked_bm32_fulltile
+                    } else {
+                        &self.fused_batch_q4_k_blocked_bm32
+                    },
+                    32usize,
+                    8192usize,
+                )
+            } else {
+                (
+                    if full_tile {
+                        &self.fused_batch_q4_k_blocked_fulltile
+                    } else {
+                        &self.fused_batch_q4_k_blocked
+                    },
+                    64usize,
+                    8192usize,
+                )
             };
             encoder.setComputePipelineState(pipeline.state());
             bind_buffers(encoder, a, b, c);
@@ -2994,7 +3231,7 @@ impl DequantKernels {
             );
             return;
         }
-        let use_small = n < BATCH_SMALL_N_THRESHOLD;
+        let use_small = n < batch_q4k_small_n_threshold();
 
         // BN=32 full-tile path: 8 KB TG memory → 3 TGs/SM (vs 12-20 KB → 1-2).
         // Higher occupancy hides memory latency. Use when both M and N are aligned.
@@ -3216,13 +3453,12 @@ impl DequantKernels {
         );
     }
 
-    /// Encode an experimental baseline B-transposed batch dequant Q5_K + matmul.
+    /// Encode the default B-transposed batch dequant Q5_K + matmul route.
     ///
     /// C[N × M] = B[N × K] × dequant(A[M × K])^T
     ///
-    /// This is intentionally a single conservative route with the same 32×64 tile
-    /// geometry as the existing Q4_K / Q6_K batch kernels. It is meant for
-    /// explicit opt-in validation, not default tuning.
+    /// Uses the blocked `kernel_mul_mm`-style path by default when K is
+    /// 256-aligned, matching the current Q4_K/Q6_K prefill architecture.
     #[allow(clippy::too_many_arguments)]
     pub fn encode_fused_batch_q5_k(
         &self,
@@ -3234,6 +3470,36 @@ impl DequantKernels {
         n: u32,
         k: u32,
     ) {
+        if batch_q5k_blocked_enabled() && k.is_multiple_of(Q5_K_BLOCK_VALUES as u32) {
+            const BLOCKED_TG: usize = 128;
+            let full_tile = (m as usize).is_multiple_of(64) && (n as usize).is_multiple_of(32);
+            encoder.setComputePipelineState(if full_tile {
+                self.fused_batch_q5_k_blocked_fulltile.state()
+            } else {
+                self.fused_batch_q5_k_blocked.state()
+            });
+            bind_buffers(encoder, a, b, c);
+            bind_u32(encoder, 3, m);
+            bind_u32(encoder, 4, n);
+            bind_u32(encoder, 5, k);
+            unsafe {
+                encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+            }
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: (n as usize).div_ceil(32),
+                    height: (m as usize).div_ceil(64),
+                    depth: 1,
+                },
+                MTLSize {
+                    width: BLOCKED_TG,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            return;
+        }
+
         let groups_x = (m as usize).div_ceil(DB_TILE_M);
         let groups_y = (n as usize).div_ceil(DB_TILE_N);
 
@@ -3256,10 +3522,78 @@ impl DequantKernels {
         );
     }
 
-    /// Encode an experimental small-N B-transposed batch dequant Q5_K + matmul.
+    /// Encode the default B-transposed batch dequant Q5_K + matmul with f16 input.
     ///
-    /// This variant is benchmark-only for now. Runtime planning does not route
-    /// to it automatically until it earns promotion from data.
+    /// C[N × M] = B[N × K] × dequant(A[M × K])^T
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fused_batch_q5_k_f16in(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) {
+        if batch_q5k_blocked_enabled() && k.is_multiple_of(Q5_K_BLOCK_VALUES as u32) {
+            const BLOCKED_TG: usize = 128;
+            let full_tile = (m as usize).is_multiple_of(64) && (n as usize).is_multiple_of(32);
+            encoder.setComputePipelineState(if full_tile {
+                self.fused_batch_q5_k_blocked_f16in_fulltile.state()
+            } else {
+                self.fused_batch_q5_k_blocked_f16in.state()
+            });
+            bind_buffers(encoder, a, b, c);
+            bind_u32(encoder, 3, m);
+            bind_u32(encoder, 4, n);
+            bind_u32(encoder, 5, k);
+            bind_u32(encoder, 6, m);
+            unsafe {
+                encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+            }
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: (n as usize).div_ceil(32),
+                    height: (m as usize).div_ceil(64),
+                    depth: 1,
+                },
+                MTLSize {
+                    width: BLOCKED_TG,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            return;
+        }
+
+        let groups_x = (m as usize).div_ceil(DB_TILE_M);
+        let groups_y = (n as usize).div_ceil(DB_TILE_N);
+
+        encoder.setComputePipelineState(self.fused_batch_q5_k_f16in.state());
+        bind_buffers(encoder, a, b, c);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, n);
+        bind_u32(encoder, 5, k);
+        bind_u32(encoder, 6, m);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: groups_x,
+                height: groups_y,
+                depth: 1,
+            },
+            MTLSize {
+                width: DB_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode the small-N B-transposed batch dequant Q5_K + matmul route.
+    ///
+    /// Runtime planning routes to this automatically for the current Q5_K
+    /// small-batch window.
     #[allow(clippy::too_many_arguments)]
     pub fn encode_fused_batch_q5_k_small(
         &self,
@@ -3318,10 +3652,31 @@ impl DequantKernels {
         if batch_q6k_blocked_enabled() && k.is_multiple_of(Q6_K_BLOCK_VALUES as u32) {
             const BLOCKED_TG: usize = 128;
             let use_bm32 = false; // BM=32 tested: no improvement on small M (GPU saturation not the bottleneck)
-            let (pipeline, bm, smem) = if use_bm32 {
-                (&self.fused_batch_q6_k_blocked_bm32, 32usize, 8192usize)
+            let full_tile = if use_bm32 {
+                (m as usize).is_multiple_of(32) && (n as usize).is_multiple_of(32)
             } else {
-                (&self.fused_batch_q6_k_blocked, 64usize, 8192usize)
+                (m as usize).is_multiple_of(64) && (n as usize).is_multiple_of(32)
+            };
+            let (pipeline, bm, smem) = if use_bm32 {
+                (
+                    if full_tile {
+                        &self.fused_batch_q6_k_blocked_bm32_fulltile
+                    } else {
+                        &self.fused_batch_q6_k_blocked_bm32
+                    },
+                    32usize,
+                    8192usize,
+                )
+            } else {
+                (
+                    if full_tile {
+                        &self.fused_batch_q6_k_blocked_fulltile
+                    } else {
+                        &self.fused_batch_q6_k_blocked
+                    },
+                    64usize,
+                    8192usize,
+                )
             };
             encoder.setComputePipelineState(pipeline.state());
             bind_buffers(encoder, a, b, c);
@@ -3346,7 +3701,7 @@ impl DequantKernels {
             return;
         }
 
-        let use_small = n < BATCH_SMALL_N_THRESHOLD;
+        let use_small = n < batch_q6k_small_n_threshold();
         if !use_small && m.is_multiple_of(DB_TILE_M as u32) {
             let groups_x = (m as usize).div_ceil(DB_TILE_M);
             let full_rows = (n as usize / DB_TILE_N) * DB_TILE_N;
@@ -3750,6 +4105,47 @@ impl DequantKernels {
         );
     }
 
+    /// Encode a blocked-layout B-transposed batch dequant Q4_0 + matmul with f16 input.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fused_batch_q4_0_f16in(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) {
+        const BLOCKED_TG: usize = 128;
+        let full_tile = (m as usize).is_multiple_of(64) && (n as usize).is_multiple_of(32);
+        encoder.setComputePipelineState(if full_tile {
+            self.fused_batch_q4_0_blocked_f16in_fulltile.state()
+        } else {
+            self.fused_batch_q4_0_blocked_f16in.state()
+        });
+        bind_buffers(encoder, a, b, c);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, n);
+        bind_u32(encoder, 5, k);
+        bind_u32(encoder, 6, m);
+        unsafe {
+            encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n as usize).div_ceil(32),
+                height: (m as usize).div_ceil(64),
+                depth: 1,
+            },
+            MTLSize {
+                width: BLOCKED_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
     /// Encode a B-transposed batch dequant Q6_K + matmul with f16 input and f32 output.
     #[allow(clippy::too_many_arguments)]
     pub fn encode_fused_batch_q6_k_f16in_with_config(
@@ -3965,6 +4361,37 @@ impl DequantKernels {
         k: u32,
         config: DequantDispatchConfig,
     ) {
+        if batch_q8_blocked_enabled() && k.is_multiple_of(Q8_0_BLOCK_VALUES as u32) {
+            const BLOCKED_TG: usize = 128;
+            let full_tile = (m as usize).is_multiple_of(64) && (n as usize).is_multiple_of(32);
+            encoder.setComputePipelineState(if full_tile {
+                self.fused_batch_q8_0_blocked_f16in_fulltile.state()
+            } else {
+                self.fused_batch_q8_0_blocked_f16in.state()
+            });
+            bind_buffers(encoder, a, b, c);
+            bind_u32(encoder, 3, m);
+            bind_u32(encoder, 4, n);
+            bind_u32(encoder, 5, k);
+            bind_u32(encoder, 6, m);
+            unsafe {
+                encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+            }
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: (n as usize).div_ceil(32),
+                    height: (m as usize).div_ceil(64),
+                    depth: 1,
+                },
+                MTLSize {
+                    width: BLOCKED_TG,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            return;
+        }
+
         let can_use_full =
             (k as usize).is_multiple_of(64) && (n as usize) >= config.q8_f16in_full_min_n;
         let can_use_full64 = can_use_full && (m as usize).is_multiple_of(DB64_TILE_M) && {
@@ -5701,6 +6128,44 @@ fn batch_q6k_blocked_enabled() -> bool {
     })
 }
 
+fn batch_q5k_blocked_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BATCH_Q5K_BLOCKED") {
+        Ok(v) => parse_bool_env_flag(&v).unwrap_or(true),
+        Err(_) => true, // Default ON
+    })
+}
+
+fn batch_q8_blocked_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BATCH_Q8_BLOCKED") {
+        Ok(v) => parse_bool_env_flag(&v).unwrap_or(true),
+        Err(_) => true,
+    })
+}
+
+fn batch_q4k_small_n_threshold() -> u32 {
+    static THRESHOLD: OnceLock<u32> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("AX_METAL_BATCH_Q4K_SMALL_N_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v > 1)
+            .unwrap_or(DEFAULT_BATCH_SMALL_N_THRESHOLD)
+    })
+}
+
+fn batch_q6k_small_n_threshold() -> u32 {
+    static THRESHOLD: OnceLock<u32> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("AX_METAL_BATCH_Q6K_SMALL_N_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v > 1)
+            .unwrap_or(DEFAULT_BATCH_SMALL_N_THRESHOLD)
+    })
+}
+
 fn batch_q4k_inline_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| match std::env::var("AX_METAL_BATCH_Q4K_INLINE") {
@@ -5926,7 +6391,7 @@ fn attention_decode_splitk_should_use_with_config(
         KernelMode::Off => false,
         KernelMode::On => true,
         KernelMode::Auto => {
-            head_dim == 256
+            matches!(head_dim, 128 | 256)
                 && attend_len >= attention_decode_splitk_auto_min_tokens_with_config(config)
         }
     }
@@ -8026,11 +8491,33 @@ mod tests {
     }
 
     #[test]
-    fn test_q5_k_candidate_selection_defaults_to_stable_base() {
+    fn test_q5_k_candidate_selection_defaults_to_stable_ilp4() {
         let selection = q5_k_matvec_candidate_selection(1, default_dequant_config());
-        assert_eq!(selection.candidate, MatvecCandidate::Q5KBase);
+        assert_eq!(selection.candidate, MatvecCandidate::Q5KIlp4);
         assert_eq!(selection.stability, KernelStabilityTier::Stable);
         assert_eq!(selection.threadgroups, 1);
+        assert_eq!(selection.threadgroup_width, DEQUANT_MATVEC_Q5K_TG);
+    }
+
+    #[test]
+    fn test_q5_k_candidate_selection_uses_ilp4_when_enabled() {
+        let mut config = default_dequant_config();
+        config.q5_k_ilp4 = true;
+        let selection = q5_k_matvec_candidate_selection(17, config);
+        assert_eq!(selection.candidate, MatvecCandidate::Q5KIlp4);
+        assert_eq!(selection.stability, KernelStabilityTier::Stable);
+        assert_eq!(selection.threadgroups, 9);
+        assert_eq!(selection.threadgroup_width, DEQUANT_MATVEC_Q5K_TG);
+    }
+
+    #[test]
+    fn test_q5_k_candidate_selection_can_disable_ilp4() {
+        let mut config = default_dequant_config();
+        config.q5_k_ilp4 = false;
+        let selection = q5_k_matvec_candidate_selection(17, config);
+        assert_eq!(selection.candidate, MatvecCandidate::Q5KBase);
+        assert_eq!(selection.stability, KernelStabilityTier::Stable);
+        assert_eq!(selection.threadgroups, 9);
         assert_eq!(selection.threadgroup_width, DEQUANT_MATVEC_Q5K_TG);
     }
 
@@ -8053,6 +8540,29 @@ mod tests {
         };
         let selection = config.decode_candidate_selection(true, 256, 512);
         assert_eq!(selection.candidate, AttentionDecodeCandidate::SplitKHd256);
+        assert_eq!(selection.stability, KernelStabilityTier::ProfilePreferred);
+    }
+
+    #[test]
+    fn test_attention_decode_candidate_selection_prefers_splitk_hd128_at_threshold() {
+        let config = AttentionDispatchConfig {
+            decode_splitk_auto_min_tokens: 512,
+            ..default_attention_config()
+        };
+        let selection = config.decode_candidate_selection(true, 128, 512);
+        assert_eq!(selection.candidate, AttentionDecodeCandidate::SplitKHd128);
+        assert_eq!(selection.stability, KernelStabilityTier::ProfilePreferred);
+    }
+
+    #[test]
+    fn test_attention_decode_candidate_selection_keeps_hd128_below_splitk_threshold() {
+        let config = AttentionDispatchConfig {
+            decode_splitk_auto_min_tokens: 512,
+            decode_hd128_n2_default: true,
+            ..default_attention_config()
+        };
+        let selection = config.decode_candidate_selection(true, 128, 511);
+        assert_eq!(selection.candidate, AttentionDecodeCandidate::F16KvHd128N2);
         assert_eq!(selection.stability, KernelStabilityTier::ProfilePreferred);
     }
 
@@ -8426,6 +8936,8 @@ mod tests {
 
     const Q4_0_BYTES_PER_BLOCK: usize = 18;
     const Q4_0_BLOCK_SIZE: usize = 32;
+    const Q8_0_BYTES_PER_BLOCK: usize = 34;
+    const Q8_0_BLOCK_SIZE: usize = 32;
     const Q4_K_BYTES_PER_BLOCK: usize = 144;
     const Q4_K_BLOCK_SIZE: usize = 256;
     const Q6_K_BYTES_PER_BLOCK: usize = 210;
@@ -8534,6 +9046,19 @@ mod tests {
                     let q = (ql | (qh_bit << 4)) as f32;
                     out[subblock * 32 + i] = d_scaled * q - d_min_scaled;
                 }
+            }
+        }
+    }
+
+    fn cpu_dequant_q8_0(blocks: &[u8], dst: &mut [f32]) {
+        let n_blocks = blocks.len() / Q8_0_BYTES_PER_BLOCK;
+        for b in 0..n_blocks {
+            let block = &blocks[b * Q8_0_BYTES_PER_BLOCK..][..Q8_0_BYTES_PER_BLOCK];
+            let d = half::f16::from_le_bytes([block[0], block[1]]).to_f32();
+            let qs = &block[2..34];
+            let out = &mut dst[b * Q8_0_BLOCK_SIZE..][..Q8_0_BLOCK_SIZE];
+            for i in 0..Q8_0_BLOCK_SIZE {
+                out[i] = d * f32::from(i8::from_le_bytes([qs[i]]));
             }
         }
     }
@@ -9028,6 +9553,8 @@ mod tests {
         let buf_base = MetalBuffer::new(gpu.device(), m * std::mem::size_of::<f32>()).unwrap();
         let buf_nr2 = MetalBuffer::new(gpu.device(), m * std::mem::size_of::<f32>()).unwrap();
 
+        let mut base_config = default_dequant_config();
+        base_config.q5_k_ilp4 = false;
         kernels
             .fused_matvec_q5_k_with_config(
                 &gpu,
@@ -9036,7 +9563,7 @@ mod tests {
                 &buf_base,
                 m as u32,
                 k as u32,
-                default_dequant_config(),
+                base_config,
             )
             .unwrap();
         kernels
@@ -9056,6 +9583,96 @@ mod tests {
         assert!(
             base_vs_nr2 < 0.03,
             "Q5_K NR2 diverged from base kernel: max_diff={base_vs_nr2}",
+        );
+    }
+
+    #[test]
+    fn test_fused_matvec_q5_k_ilp4_matches_base_and_cpu_reference() {
+        let gpu = MetalDevice::new().unwrap();
+        let kernels = DequantKernels::new(&gpu).unwrap();
+
+        let m = 34usize;
+        let k = 1024usize;
+        let blocks_per_row = k / 256;
+
+        let mut quant_data = Vec::new();
+        for row in 0..m {
+            for blk in 0..blocks_per_row {
+                let mut block = vec![0u8; 176];
+                let d = ((row + blk * 3) % 9) as f32 * 0.11 + 0.07;
+                let d_bytes = half::f16::from_f32(d).to_le_bytes();
+                block[0] = d_bytes[0];
+                block[1] = d_bytes[1];
+                let dmin = ((row * 5 + blk) % 7) as f32 * 0.025;
+                let dmin_bytes = half::f16::from_f32(dmin).to_le_bytes();
+                block[2] = dmin_bytes[0];
+                block[3] = dmin_bytes[1];
+                for i in 0..8 {
+                    block[4 + (i % 4)] = ((row + i * 2) % 8 + 1) as u8;
+                    block[8 + (i % 4)] = ((blk + i * 3) % 6) as u8;
+                }
+                for (i, byte) in block[16..48].iter_mut().enumerate() {
+                    *byte = ((row * 7 + blk * 13 + i) % 256) as u8;
+                }
+                for (i, byte) in block[48..176].iter_mut().enumerate() {
+                    *byte = ((row * 17 + blk * 19 + i) % 256) as u8;
+                }
+                quant_data.extend(block);
+            }
+        }
+
+        let x_data: Vec<f32> = (0..k).map(|i| ((i % 23) as f32 - 11.0) * 0.013).collect();
+        let mut a_f32 = vec![0.0f32; m * k];
+        cpu_dequant_q5_k(&quant_data, &mut a_f32);
+        let mut expected = vec![0.0f32; m];
+        cpu_matvec(&a_f32, &x_data, &mut expected, m, k);
+
+        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+        let buf_x = MetalBuffer::from_slice(gpu.device(), &x_data).unwrap();
+        let buf_base = MetalBuffer::new(gpu.device(), m * std::mem::size_of::<f32>()).unwrap();
+        let buf_ilp4 = MetalBuffer::new(gpu.device(), m * std::mem::size_of::<f32>()).unwrap();
+
+        let mut base_config = default_dequant_config();
+        base_config.q5_k_ilp4 = false;
+        kernels
+            .fused_matvec_q5_k_with_config(
+                &gpu,
+                &buf_a,
+                &buf_x,
+                &buf_base,
+                m as u32,
+                k as u32,
+                base_config,
+            )
+            .unwrap();
+
+        let mut ilp4_config = default_dequant_config();
+        ilp4_config.q5_k_ilp4 = true;
+        kernels
+            .fused_matvec_q5_k_with_config(
+                &gpu,
+                &buf_a,
+                &buf_x,
+                &buf_ilp4,
+                m as u32,
+                k as u32,
+                ilp4_config,
+            )
+            .unwrap();
+
+        let base = unsafe { buf_base.as_slice::<f32>() };
+        let ilp4 = unsafe { buf_ilp4.as_slice::<f32>() };
+        let base_diff = max_abs_diff(base, &expected);
+        let ilp4_diff = max_abs_diff(ilp4, &expected);
+        let base_vs_ilp4 = max_abs_diff(base, ilp4);
+
+        assert!(
+            ilp4_diff < 0.05,
+            "Q5_K ILP4 exceeded CPU tolerance: base_diff={base_diff}, ilp4_diff={ilp4_diff}",
+        );
+        assert!(
+            base_vs_ilp4 < 0.03,
+            "Q5_K ILP4 diverged from base kernel: max_diff={base_vs_ilp4}",
         );
     }
 
@@ -9116,6 +9733,257 @@ mod tests {
     }
 
     #[test]
+    fn test_fused_batch_q4_k() {
+        let gpu = MetalDevice::new().unwrap();
+        let kernels = DequantKernels::new(&gpu).unwrap();
+
+        let m = 32usize;
+        let n = 8usize;
+        let k = 256usize;
+
+        let mut quant_data = Vec::new();
+        for row in 0..m {
+            let mut block = vec![0u8; Q4_K_BYTES_PER_BLOCK];
+            let d = ((row % 7) as f32) * 0.18 + 0.1;
+            let d_bytes = half::f16::from_f32(d).to_le_bytes();
+            block[0] = d_bytes[0];
+            block[1] = d_bytes[1];
+            let dmin = ((row % 5) as f32) * 0.04;
+            let dmin_bytes = half::f16::from_f32(dmin).to_le_bytes();
+            block[2] = dmin_bytes[0];
+            block[3] = dmin_bytes[1];
+            for i in 0..4 {
+                block[4 + i] = ((row + i) % 8 + 1) as u8;
+                block[8 + i] = ((row * 3 + i) % 4) as u8;
+            }
+            for (i, byte) in block[16..144].iter_mut().enumerate() {
+                *byte = ((row * 5 + i * 3) % 256) as u8;
+            }
+            quant_data.extend(block);
+        }
+
+        let mut weights_f32 = vec![0.0f32; m * k];
+        cpu_dequant_q4_k(&quant_data, &mut weights_f32);
+        let batch_input: Vec<f32> = (0..n * k)
+            .map(|i| ((i % 19) as f32 - 9.0) * 0.015)
+            .collect();
+        let mut expected = vec![0.0f32; n * m];
+        cpu_batch_btrans_matmul(&weights_f32, &batch_input, &mut expected, m, n, k);
+
+        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+        let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input).unwrap();
+        let buf_c = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
+
+        gpu.execute_sync(|encoder| {
+            kernels.encode_fused_batch_q4_k(
+                encoder, &buf_a, &buf_b, &buf_c, m as u32, n as u32, k as u32,
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        let result = unsafe { buf_c.as_slice::<f32>() };
+        let diff = max_abs_diff(result, &expected);
+        assert!(diff < 0.1, "Fused Q4_K batch mismatch: max_diff={}", diff);
+    }
+
+    #[test]
+    fn test_fused_batch_q4_k_fulltile_specialization() {
+        let gpu = MetalDevice::new().unwrap();
+        let kernels = DequantKernels::new(&gpu).unwrap();
+
+        let m = 64usize;
+        let n = 32usize;
+        let k = 256usize;
+
+        let mut quant_data = Vec::new();
+        for row in 0..m {
+            let mut block = vec![0u8; Q4_K_BYTES_PER_BLOCK];
+            let d = ((row % 7) as f32) * 0.18 + 0.1;
+            let d_bytes = half::f16::from_f32(d).to_le_bytes();
+            block[0] = d_bytes[0];
+            block[1] = d_bytes[1];
+            let dmin = ((row % 5) as f32) * 0.04;
+            let dmin_bytes = half::f16::from_f32(dmin).to_le_bytes();
+            block[2] = dmin_bytes[0];
+            block[3] = dmin_bytes[1];
+            for i in 0..4 {
+                block[4 + i] = ((row + i) % 8 + 1) as u8;
+                block[8 + i] = ((row * 3 + i) % 4) as u8;
+            }
+            for (i, byte) in block[16..144].iter_mut().enumerate() {
+                *byte = ((row * 5 + i * 3) % 256) as u8;
+            }
+            quant_data.extend(block);
+        }
+
+        let mut weights_f32 = vec![0.0f32; m * k];
+        cpu_dequant_q4_k(&quant_data, &mut weights_f32);
+        let batch_input: Vec<f32> = (0..n * k)
+            .map(|i| ((i % 31) as f32 - 15.0) * 0.01)
+            .collect();
+        let mut expected = vec![0.0f32; n * m];
+        cpu_batch_btrans_matmul(&weights_f32, &batch_input, &mut expected, m, n, k);
+
+        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+        let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input).unwrap();
+        let buf_c = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
+
+        gpu.execute_sync(|encoder| {
+            kernels.encode_fused_batch_q4_k(
+                encoder, &buf_a, &buf_b, &buf_c, m as u32, n as u32, k as u32,
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        let result = unsafe { buf_c.as_slice::<f32>() };
+        let diff = max_abs_diff(result, &expected);
+        assert!(
+            diff < 0.1,
+            "Fused Q4_K fulltile batch mismatch: max_diff={diff}"
+        );
+    }
+
+    #[test]
+    fn test_fused_batch_q4_k_small() {
+        let gpu = MetalDevice::new().unwrap();
+        let kernels = DequantKernels::new(&gpu).unwrap();
+
+        let m = 32usize;
+        let n = 8usize;
+        let k = 256usize;
+
+        let mut quant_data = Vec::new();
+        for row in 0..m {
+            let mut block = vec![0u8; Q4_K_BYTES_PER_BLOCK];
+            let d = ((row % 7) as f32) * 0.18 + 0.1;
+            let d_bytes = half::f16::from_f32(d).to_le_bytes();
+            block[0] = d_bytes[0];
+            block[1] = d_bytes[1];
+            let dmin = ((row % 5) as f32) * 0.04;
+            let dmin_bytes = half::f16::from_f32(dmin).to_le_bytes();
+            block[2] = dmin_bytes[0];
+            block[3] = dmin_bytes[1];
+            for i in 0..4 {
+                block[4 + i] = ((row + i) % 8 + 1) as u8;
+                block[8 + i] = ((row * 3 + i) % 4) as u8;
+            }
+            for (i, byte) in block[16..144].iter_mut().enumerate() {
+                *byte = ((row * 5 + i * 3) % 256) as u8;
+            }
+            quant_data.extend(block);
+        }
+
+        let mut weights_f32 = vec![0.0f32; m * k];
+        cpu_dequant_q4_k(&quant_data, &mut weights_f32);
+        let batch_input: Vec<f32> = (0..n * k)
+            .map(|i| ((i % 19) as f32 - 9.0) * 0.015)
+            .collect();
+        let mut expected = vec![0.0f32; n * m];
+        cpu_batch_btrans_matmul(&weights_f32, &batch_input, &mut expected, m, n, k);
+
+        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+        let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input).unwrap();
+        let buf_c = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
+
+        gpu.execute_sync(|encoder| {
+            encoder.setComputePipelineState(kernels.fused_batch_q4_k_small.state());
+            bind_buffers(encoder, &buf_a, &buf_b, &buf_c);
+            bind_u32(encoder, 3, m as u32);
+            bind_u32(encoder, 4, n as u32);
+            bind_u32(encoder, 5, k as u32);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: m.div_ceil(DB_TILE_M) as usize,
+                    height: n.div_ceil(SB_TILE_N) as usize,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: SB_TG,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        let result = unsafe { buf_c.as_slice::<f32>() };
+        let diff = max_abs_diff(result, &expected);
+        assert!(
+            diff < 0.1,
+            "Fused small Q4_K batch mismatch: max_diff={diff}"
+        );
+    }
+
+    #[test]
+    fn test_fused_batch_q5_k_f16in() {
+        let gpu = MetalDevice::new().unwrap();
+        let kernels = DequantKernels::new(&gpu).unwrap();
+
+        let m = 32usize;
+        let n = 8usize;
+        let k = 256usize;
+
+        let mut quant_data = Vec::new();
+        for row in 0..m {
+            let mut block = vec![0u8; 176];
+            let d = ((row % 5) as f32) * 0.2 + 0.1;
+            let d_bytes = half::f16::from_f32(d).to_le_bytes();
+            block[0] = d_bytes[0];
+            block[1] = d_bytes[1];
+            let dmin = ((row % 3) as f32) * 0.05;
+            let dmin_bytes = half::f16::from_f32(dmin).to_le_bytes();
+            block[2] = dmin_bytes[0];
+            block[3] = dmin_bytes[1];
+            for i in 0..8 {
+                block[4 + (i % 4)] = ((row + i) % 8 + 1) as u8;
+                block[8 + (i % 4)] = ((row * 2 + i) % 4) as u8;
+            }
+            for (i, byte) in block[16..48].iter_mut().enumerate() {
+                *byte = ((row * 7 + i * 3) % 256) as u8;
+            }
+            for (i, byte) in block[48..176].iter_mut().enumerate() {
+                *byte = ((row * 11 + i * 5) % 256) as u8;
+            }
+            quant_data.extend(block);
+        }
+
+        let mut weights_f32 = vec![0.0f32; m * k];
+        cpu_dequant_q5_k(&quant_data, &mut weights_f32);
+        let batch_input: Vec<f32> = (0..n * k).map(|i| ((i % 17) as f32 - 8.0) * 0.02).collect();
+        let batch_input_f16: Vec<half::f16> = batch_input
+            .iter()
+            .copied()
+            .map(half::f16::from_f32)
+            .collect();
+        let batch_input_cpu: Vec<f32> = batch_input_f16.iter().map(|v| v.to_f32()).collect();
+        let mut expected = vec![0.0f32; n * m];
+        cpu_batch_btrans_matmul(&weights_f32, &batch_input_cpu, &mut expected, m, n, k);
+
+        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+        let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input_f16).unwrap();
+        let buf_c = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
+
+        gpu.execute_sync(|encoder| {
+            kernels.encode_fused_batch_q5_k_f16in(
+                encoder, &buf_a, &buf_b, &buf_c, m as u32, n as u32, k as u32,
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        let result = unsafe { buf_c.as_slice::<f32>() };
+        let diff = max_abs_diff(result, &expected);
+        assert!(
+            diff < 0.1,
+            "Fused Q5_K batch f16in mismatch: max_diff={}",
+            diff
+        );
+    }
+
+    #[test]
     fn test_fused_batch_q5_k_small() {
         let gpu = MetalDevice::new().unwrap();
         let kernels = DequantKernels::new(&gpu).unwrap();
@@ -9172,6 +10040,494 @@ mod tests {
             diff < 0.1,
             "Fused small Q5_K batch mismatch: max_diff={}",
             diff
+        );
+    }
+
+    #[test]
+    fn test_fused_batch_q6_k() {
+        let gpu = MetalDevice::new().unwrap();
+        let kernels = DequantKernels::new(&gpu).unwrap();
+
+        let m = 32usize;
+        let n = 8usize;
+        let k = 256usize;
+
+        let mut quant_data = Vec::new();
+        for row in 0..m {
+            let mut block = vec![0u8; Q6_K_BYTES_PER_BLOCK];
+            for (i, byte) in block[..128].iter_mut().enumerate() {
+                *byte = ((row * 5 + i * 3) % 16) as u8;
+            }
+            for (i, byte) in block[128..192].iter_mut().enumerate() {
+                *byte = ((row * 7 + i) % 4) as u8;
+            }
+            for (i, byte) in block[192..208].iter_mut().enumerate() {
+                *byte = ((row as i32 * 3 + i as i32 * 5) % 31 - 15) as i8 as u8;
+            }
+            let d = ((row % 11) as f32) * 0.11 + 0.07;
+            let d_bytes = half::f16::from_f32(d).to_le_bytes();
+            block[208] = d_bytes[0];
+            block[209] = d_bytes[1];
+            quant_data.extend(block);
+        }
+
+        let mut weights_f32 = vec![0.0f32; m * k];
+        cpu_dequant_q6_k(&quant_data, &mut weights_f32);
+        let batch_input: Vec<f32> = (0..n * k)
+            .map(|i| ((i % 23) as f32 - 11.0) * 0.0125)
+            .collect();
+        let mut expected = vec![0.0f32; n * m];
+        cpu_batch_btrans_matmul(&weights_f32, &batch_input, &mut expected, m, n, k);
+
+        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+        let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input).unwrap();
+        let buf_c = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
+
+        gpu.execute_sync(|encoder| {
+            kernels.encode_fused_batch_q6_k(
+                encoder, &buf_a, &buf_b, &buf_c, m as u32, n as u32, k as u32,
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        let result = unsafe { buf_c.as_slice::<f32>() };
+        let diff = max_abs_diff(result, &expected);
+        assert!(diff < 0.2, "Fused Q6_K batch mismatch: max_diff={}", diff);
+    }
+
+    #[test]
+    fn test_fused_batch_q6_k_fulltile_specialization() {
+        let gpu = MetalDevice::new().unwrap();
+        let kernels = DequantKernels::new(&gpu).unwrap();
+
+        let m = 64usize;
+        let n = 32usize;
+        let k = 256usize;
+
+        let mut quant_data = Vec::new();
+        for row in 0..m {
+            let mut block = vec![0u8; Q6_K_BYTES_PER_BLOCK];
+            for (i, byte) in block[..128].iter_mut().enumerate() {
+                *byte = ((row * 5 + i * 3) % 16) as u8;
+            }
+            for (i, byte) in block[128..192].iter_mut().enumerate() {
+                *byte = ((row * 7 + i) % 4) as u8;
+            }
+            for (i, byte) in block[192..208].iter_mut().enumerate() {
+                *byte = ((row as i32 * 3 + i as i32 * 5) % 31 - 15) as i8 as u8;
+            }
+            let d = ((row % 11) as f32) * 0.11 + 0.07;
+            let d_bytes = half::f16::from_f32(d).to_le_bytes();
+            block[208] = d_bytes[0];
+            block[209] = d_bytes[1];
+            quant_data.extend(block);
+        }
+
+        let mut weights_f32 = vec![0.0f32; m * k];
+        cpu_dequant_q6_k(&quant_data, &mut weights_f32);
+        let batch_input: Vec<f32> = (0..n * k)
+            .map(|i| ((i % 37) as f32 - 18.0) * 0.009)
+            .collect();
+        let mut expected = vec![0.0f32; n * m];
+        cpu_batch_btrans_matmul(&weights_f32, &batch_input, &mut expected, m, n, k);
+
+        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+        let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input).unwrap();
+        let buf_c = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
+
+        gpu.execute_sync(|encoder| {
+            kernels.encode_fused_batch_q6_k(
+                encoder, &buf_a, &buf_b, &buf_c, m as u32, n as u32, k as u32,
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        let result = unsafe { buf_c.as_slice::<f32>() };
+        let diff = max_abs_diff(result, &expected);
+        assert!(
+            diff < 0.2,
+            "Fused Q6_K fulltile batch mismatch: max_diff={diff}"
+        );
+    }
+
+    #[test]
+    fn test_fused_batch_q6_k_small() {
+        let gpu = MetalDevice::new().unwrap();
+        let kernels = DequantKernels::new(&gpu).unwrap();
+
+        let m = 32usize;
+        let n = 8usize;
+        let k = 256usize;
+
+        let mut quant_data = Vec::new();
+        for row in 0..m {
+            let mut block = vec![0u8; Q6_K_BYTES_PER_BLOCK];
+            for (i, byte) in block[..128].iter_mut().enumerate() {
+                *byte = ((row * 5 + i * 3) % 16) as u8;
+            }
+            for (i, byte) in block[128..192].iter_mut().enumerate() {
+                *byte = ((row * 7 + i) % 4) as u8;
+            }
+            for (i, byte) in block[192..208].iter_mut().enumerate() {
+                *byte = ((row as i32 * 3 + i as i32 * 5) % 31 - 15) as i8 as u8;
+            }
+            let d = ((row % 11) as f32) * 0.11 + 0.07;
+            let d_bytes = half::f16::from_f32(d).to_le_bytes();
+            block[208] = d_bytes[0];
+            block[209] = d_bytes[1];
+            quant_data.extend(block);
+        }
+
+        let mut weights_f32 = vec![0.0f32; m * k];
+        cpu_dequant_q6_k(&quant_data, &mut weights_f32);
+        let batch_input: Vec<f32> = (0..n * k)
+            .map(|i| ((i % 23) as f32 - 11.0) * 0.0125)
+            .collect();
+        let mut expected = vec![0.0f32; n * m];
+        cpu_batch_btrans_matmul(&weights_f32, &batch_input, &mut expected, m, n, k);
+
+        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+        let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input).unwrap();
+        let buf_c = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
+
+        gpu.execute_sync(|encoder| {
+            encoder.setComputePipelineState(kernels.fused_batch_q6_k_small.state());
+            bind_buffers(encoder, &buf_a, &buf_b, &buf_c);
+            bind_u32(encoder, 3, m as u32);
+            bind_u32(encoder, 4, n as u32);
+            bind_u32(encoder, 5, k as u32);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: m.div_ceil(DB_TILE_M) as usize,
+                    height: n.div_ceil(SB_TILE_N) as usize,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: SB_TG,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        let result = unsafe { buf_c.as_slice::<f32>() };
+        let diff = max_abs_diff(result, &expected);
+        assert!(
+            diff < 0.2,
+            "Fused small Q6_K batch mismatch: max_diff={diff}"
+        );
+    }
+
+    #[test]
+    fn test_fused_batch_q4_0_blocked_f16in() {
+        let gpu = MetalDevice::new().unwrap();
+        let kernels = DequantKernels::new(&gpu).unwrap();
+
+        let m = 37usize;
+        let n = 11usize;
+        let k = 64usize;
+        let blocks_per_row = k / Q4_0_BLOCK_SIZE;
+
+        let mut quant_data = Vec::new();
+        for row in 0..m {
+            for blk in 0..blocks_per_row {
+                let d = ((row + blk * 5) % 13) as f32 * 0.07 + 0.05;
+                let mut qs = [0u8; 16];
+                for (i, byte) in qs.iter_mut().enumerate() {
+                    let lo = ((row + blk + i) % 16) as u8;
+                    let hi = ((row * 3 + blk * 5 + i * 7) % 16) as u8;
+                    *byte = lo | (hi << 4);
+                }
+                quant_data.extend(make_q4_0_block(d, &qs));
+            }
+        }
+
+        let mut weights_f32 = vec![0.0f32; m * k];
+        cpu_dequant_q4_0(&quant_data, &mut weights_f32);
+        let batch_input_f32: Vec<f32> = (0..n * k)
+            .map(|i| ((i % 29) as f32 - 14.0) * 0.0125)
+            .collect();
+        let batch_input_f16: Vec<half::f16> = batch_input_f32
+            .iter()
+            .copied()
+            .map(half::f16::from_f32)
+            .collect();
+        let batch_input_cpu: Vec<f32> = batch_input_f16.iter().map(|v| v.to_f32()).collect();
+        let mut expected = vec![0.0f32; n * m];
+        cpu_batch_btrans_matmul(&weights_f32, &batch_input_cpu, &mut expected, m, n, k);
+
+        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+        let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input_f16).unwrap();
+        let buf_c = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
+
+        gpu.execute_sync(|encoder| {
+            encoder.setComputePipelineState(kernels.fused_batch_q4_0_blocked_f16in.state());
+            bind_buffers(encoder, &buf_a, &buf_b, &buf_c);
+            bind_u32(encoder, 3, m as u32);
+            bind_u32(encoder, 4, n as u32);
+            bind_u32(encoder, 5, k as u32);
+            bind_u32(encoder, 6, m as u32);
+            unsafe {
+                encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+            }
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: n.div_ceil(32),
+                    height: m.div_ceil(64),
+                    depth: 1,
+                },
+                MTLSize {
+                    width: 128,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        let result = unsafe { buf_c.as_slice::<f32>() };
+        let diff = max_abs_diff(result, &expected);
+        assert!(
+            diff < 0.15,
+            "Blocked Q4_0 f16in batch mismatch: max_diff={diff}"
+        );
+    }
+
+    #[test]
+    fn test_fused_batch_q4_0_blocked_f16in_fulltile_specialization() {
+        let gpu = MetalDevice::new().unwrap();
+        let kernels = DequantKernels::new(&gpu).unwrap();
+
+        let m = 64usize;
+        let n = 32usize;
+        let k = 64usize;
+        let blocks_per_row = k / Q4_0_BLOCK_SIZE;
+
+        let mut quant_data = Vec::new();
+        for row in 0..m {
+            for blk in 0..blocks_per_row {
+                let d = ((row + blk * 3) % 17) as f32 * 0.05 + 0.04;
+                let mut qs = [0u8; 16];
+                for (i, byte) in qs.iter_mut().enumerate() {
+                    let lo = ((row * 5 + blk * 11 + i * 3) % 16) as u8;
+                    let hi = ((row * 7 + blk * 13 + i * 5) % 16) as u8;
+                    *byte = lo | (hi << 4);
+                }
+                quant_data.extend(make_q4_0_block(d, &qs));
+            }
+        }
+
+        let mut weights_f32 = vec![0.0f32; m * k];
+        cpu_dequant_q4_0(&quant_data, &mut weights_f32);
+        let batch_input_f32: Vec<f32> = (0..n * k)
+            .map(|i| ((i % 31) as f32 - 15.0) * 0.01)
+            .collect();
+        let batch_input_f16: Vec<half::f16> = batch_input_f32
+            .iter()
+            .copied()
+            .map(half::f16::from_f32)
+            .collect();
+        let batch_input_cpu: Vec<f32> = batch_input_f16.iter().map(|v| v.to_f32()).collect();
+        let mut expected = vec![0.0f32; n * m];
+        cpu_batch_btrans_matmul(&weights_f32, &batch_input_cpu, &mut expected, m, n, k);
+
+        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+        let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input_f16).unwrap();
+        let buf_c = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
+
+        gpu.execute_sync(|encoder| {
+            encoder
+                .setComputePipelineState(kernels.fused_batch_q4_0_blocked_f16in_fulltile.state());
+            bind_buffers(encoder, &buf_a, &buf_b, &buf_c);
+            bind_u32(encoder, 3, m as u32);
+            bind_u32(encoder, 4, n as u32);
+            bind_u32(encoder, 5, k as u32);
+            bind_u32(encoder, 6, m as u32);
+            unsafe {
+                encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+            }
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: n.div_ceil(32),
+                    height: m.div_ceil(64),
+                    depth: 1,
+                },
+                MTLSize {
+                    width: 128,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        let result = unsafe { buf_c.as_slice::<f32>() };
+        let diff = max_abs_diff(result, &expected);
+        assert!(
+            diff < 0.15,
+            "Blocked Q4_0 fulltile f16in batch mismatch: max_diff={diff}"
+        );
+    }
+
+    #[test]
+    fn test_fused_batch_q8_0_blocked_f16in() {
+        let gpu = MetalDevice::new().unwrap();
+        let kernels = DequantKernels::new(&gpu).unwrap();
+
+        let m = 37usize;
+        let n = 11usize;
+        let k = 64usize;
+        let blocks_per_row = k / Q8_0_BLOCK_SIZE;
+
+        let mut quant_data = Vec::new();
+        for row in 0..m {
+            for blk in 0..blocks_per_row {
+                let mut block = vec![0u8; Q8_0_BYTES_PER_BLOCK];
+                let d = ((row + blk * 5) % 13) as f32 * 0.07 + 0.05;
+                let d_bytes = half::f16::from_f32(d).to_le_bytes();
+                block[0] = d_bytes[0];
+                block[1] = d_bytes[1];
+                for (i, byte) in block[2..34].iter_mut().enumerate() {
+                    *byte = ((row as i32 * 9 + blk as i32 * 7 + i as i32) % 127 - 63) as i8 as u8;
+                }
+                quant_data.extend(block);
+            }
+        }
+
+        let mut weights_f32 = vec![0.0f32; m * k];
+        cpu_dequant_q8_0(&quant_data, &mut weights_f32);
+        let batch_input_f32: Vec<f32> = (0..n * k)
+            .map(|i| ((i % 29) as f32 - 14.0) * 0.0125)
+            .collect();
+        let batch_input_f16: Vec<half::f16> = batch_input_f32
+            .iter()
+            .copied()
+            .map(half::f16::from_f32)
+            .collect();
+        let batch_input_cpu: Vec<f32> = batch_input_f16.iter().map(|v| v.to_f32()).collect();
+        let mut expected = vec![0.0f32; n * m];
+        cpu_batch_btrans_matmul(&weights_f32, &batch_input_cpu, &mut expected, m, n, k);
+
+        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+        let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input_f16).unwrap();
+        let buf_c = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
+
+        gpu.execute_sync(|encoder| {
+            encoder.setComputePipelineState(kernels.fused_batch_q8_0_blocked_f16in.state());
+            bind_buffers(encoder, &buf_a, &buf_b, &buf_c);
+            bind_u32(encoder, 3, m as u32);
+            bind_u32(encoder, 4, n as u32);
+            bind_u32(encoder, 5, k as u32);
+            bind_u32(encoder, 6, m as u32);
+            unsafe {
+                encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+            }
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: n.div_ceil(32),
+                    height: m.div_ceil(64),
+                    depth: 1,
+                },
+                MTLSize {
+                    width: 128,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        let result = unsafe { buf_c.as_slice::<f32>() };
+        let diff = max_abs_diff(result, &expected);
+        assert!(
+            diff < 0.15,
+            "Blocked Q8_0 f16in batch mismatch: max_diff={diff}"
+        );
+    }
+
+    #[test]
+    fn test_fused_batch_q8_0_blocked_f16in_fulltile_specialization() {
+        let gpu = MetalDevice::new().unwrap();
+        let kernels = DequantKernels::new(&gpu).unwrap();
+
+        let m = 64usize;
+        let n = 32usize;
+        let k = 64usize;
+        let blocks_per_row = k / Q8_0_BLOCK_SIZE;
+
+        let mut quant_data = Vec::new();
+        for row in 0..m {
+            for blk in 0..blocks_per_row {
+                let mut block = vec![0u8; Q8_0_BYTES_PER_BLOCK];
+                let d = ((row + blk * 3) % 17) as f32 * 0.05 + 0.04;
+                let d_bytes = half::f16::from_f32(d).to_le_bytes();
+                block[0] = d_bytes[0];
+                block[1] = d_bytes[1];
+                for (i, byte) in block[2..34].iter_mut().enumerate() {
+                    *byte =
+                        ((row as i32 * 5 + blk as i32 * 11 + i as i32 * 3) % 127 - 63) as i8 as u8;
+                }
+                quant_data.extend(block);
+            }
+        }
+
+        let mut weights_f32 = vec![0.0f32; m * k];
+        cpu_dequant_q8_0(&quant_data, &mut weights_f32);
+        let batch_input_f32: Vec<f32> = (0..n * k)
+            .map(|i| ((i % 31) as f32 - 15.0) * 0.01)
+            .collect();
+        let batch_input_f16: Vec<half::f16> = batch_input_f32
+            .iter()
+            .copied()
+            .map(half::f16::from_f32)
+            .collect();
+        let batch_input_cpu: Vec<f32> = batch_input_f16.iter().map(|v| v.to_f32()).collect();
+        let mut expected = vec![0.0f32; n * m];
+        cpu_batch_btrans_matmul(&weights_f32, &batch_input_cpu, &mut expected, m, n, k);
+
+        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+        let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input_f16).unwrap();
+        let buf_c = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
+
+        gpu.execute_sync(|encoder| {
+            encoder
+                .setComputePipelineState(kernels.fused_batch_q8_0_blocked_f16in_fulltile.state());
+            bind_buffers(encoder, &buf_a, &buf_b, &buf_c);
+            bind_u32(encoder, 3, m as u32);
+            bind_u32(encoder, 4, n as u32);
+            bind_u32(encoder, 5, k as u32);
+            bind_u32(encoder, 6, m as u32);
+            unsafe {
+                encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+            }
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: n.div_ceil(32),
+                    height: m.div_ceil(64),
+                    depth: 1,
+                },
+                MTLSize {
+                    width: 128,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        let result = unsafe { buf_c.as_slice::<f32>() };
+        let diff = max_abs_diff(result, &expected);
+        assert!(
+            diff < 0.15,
+            "Blocked Q8_0 fulltile f16in batch mismatch: max_diff={diff}"
         );
     }
 

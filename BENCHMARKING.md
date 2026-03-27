@@ -126,12 +126,12 @@ Use this to inspect the decode hot path and identify where time is actually spen
 - The selected prefill and decode plans are printed in the output. Keep them with the benchmark record.
 - `--llama-parity-preset` is not a cross-engine truth mode. It only applies a small set of AX env defaults and can change performance significantly.
 - If AX prints `PrefillPlan: mode=serial reason=unsupported_quant:...`, treat that prefill result as a fallback-path measurement, not a normal GPU-prefill comparison.
-- Mixed-quant GGUFs with active `Q5_K` layer tensors now use AX's conservative GPU prefill route by default.
+- Mixed-quant GGUFs with active `Q5_K` layer tensors now use AX's GPU prefill route by default.
 - For `Q5_K` prefill runs, also record whether AX auto-used:
   - `q5k_prefill=base`
   - `q5k_prefill=small_n`
 - AX currently auto-selects `small_n` only when the mapped model is
-  predominantly `Q5_K` and the prompt batch is small (`<= 32` tokens).
+  predominantly `Q5_K` and the prompt batch is in the small-batch window (`4..8` tokens).
 - `ax-bench bench`, `ax-bench profile`, and `ax-bench soak` JSON now emit this as a first-class field:
   - `q5k_prefill_mode`
 - `ax-bench soak` summary now also prints:
@@ -144,8 +144,8 @@ Use this to inspect the decode hot path and identify where time is actually spen
   - `--json`
   - `--json-output <path>`
 - If you are doing route A/B validation, record any forced override explicitly:
-  - `AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=base`
-  - `AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=small`
+  - `AX_METAL_Q5K_PREFILL_VARIANT=base`
+  - `AX_METAL_Q5K_PREFILL_VARIANT=small`
 
 ## `llama.cpp` Comparison Runs
 
@@ -310,8 +310,39 @@ Interpretation:
 - AX currently auto-uses the small-`N` route only on the
   predominant-`Q5_K` 8B file
 - the mixed-quant 70B file stays on the base conservative route
+- on the predominant-`Q5_K` 8B file, the shipped base route now uses
+  `f16` input staging outside the `4..8` small-window because that improved
+  real-model prompt throughput without hurting decode
 - benchmark records for `Q5_K` prefill should include the exact
   `q5k_prefill=...` label
+
+March 26 `Q5_K` large-batch production pass:
+
+- Exact-shape GPU microbench on the real `Q5_K` hot shapes showed the missing
+  large-batch `f16in` route was worthwhile, while the small-window still
+  preferred `small_n`.
+  - artifact: `automatosx/tmp/q5k-gpu-microbench-f16in-2026-03-26.json`
+  - `llama3_8b_q5k attn_qkv tokens512`: `4.45ms -> 3.70ms` (`1.20x`)
+  - `llama3_8b_q5k ffn_up tokens512`: `14.13ms -> 11.83ms` (`1.19x`)
+  - `llama3_8b_q5k attn_qkv_small_window tokens8`: `small_n` remained best
+- Shipped planner change: AX now keeps `q5k_prefill=small_n` with `f16_io=off`
+  for the `4..8` window, and uses `q5k_prefill=base` with `f16_io=on`
+  outside that window.
+- End-to-end `Meta-Llama-3-8B-Instruct-Q5_K_M.gguf` throughput improved from
+  the earlier cooled `317.2 tok/s` prefill / `32.3 tok/s` decode baseline to
+  `341.6 tok/s` prefill / `32.5 tok/s` decode on the new shipped default.
+  - artifact: `automatosx/tmp/llama3-8b-q5k-bench-default-f16in-promoted-2026-03-26.json`
+- Shipped kernel change: AX now uses the blocked `Q5_K` batch kernel by
+  default for the large-`N` base route. Same-build A/B on
+  `Meta-Llama-3-8B-Instruct-Q5_K_M.gguf` improved from `321.9 tok/s` prefill /
+  `30.4 tok/s` decode with `AX_METAL_BATCH_Q5K_BLOCKED=0` to
+  `343.1 tok/s` prefill / `32.8 tok/s` decode with the blocked route enabled.
+  - artifacts:
+    - `automatosx/tmp/llama3-8b-q5k-bench-post-blocked-kernel-disabled-2026-03-26.json`
+    - `automatosx/tmp/llama3-8b-q5k-bench-post-blocked-kernel-2026-03-26.json`
+- A short prompt sanity run still shows the intended small-window policy:
+  `PrefillPlan: ... q5k_prefill=small_n f16_io=off`.
+  - artifact: `automatosx/tmp/llama3-8b-q5k-bench-small-window-sanity-2026-03-26.json`
 
 Interpretation:
 
@@ -366,6 +397,8 @@ March 26 Qwen3 8B / 14B route pass:
   - artifact: `automatosx/tmp/qwen3-8b-bench-fa2hd128-hd128n2-2026-03-26.json`
 - Shipped change: AX now loads `perfs/qwen3-8b.json`, which keeps the existing `mistral_bc64` prefill route and sets `hd128_n2_default=true` for decode. The clean no-env post-change bench landed at `667.3 tok/s` prefill and `57.9 tok/s` decode.
   - artifact: `automatosx/tmp/qwen3-8b-bench-post-profile-2026-03-26.json`
+- Follow-up March 26 matmul-parity pass: vectorizing the blocked Q4_K/Q6_K B-load path moved `Qwen3 8B` further to `725.1 tok/s` prefill while decode stayed flat at `57.8 tok/s`.
+  - artifact: `automatosx/tmp/qwen3-8b-bench-post-blocked-bload-vectorize-2026-03-26.json`
 
 - Fresh current-default `Qwen3 14B` throughput landed at `357.2 tok/s` prefill and `35.3 tok/s` decode.
   - artifact: `automatosx/tmp/qwen3-14b-bench-refresh-2026-03-26.json`
@@ -389,7 +422,7 @@ March 26 Llama 3 8B / 70B route pass:
 
 - Fresh current-default `Llama 3 70B` throughput landed at `55.7 tok/s` prefill and `6.5 tok/s` decode.
   - artifact: `automatosx/tmp/llama3-70b-bench-refresh-2026-03-26.json`
-- Forcing `AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=small` improved prefill to `58.8 tok/s` but reduced decode to `5.9 tok/s`.
+- Forcing `AX_METAL_Q5K_PREFILL_VARIANT=small` improved prefill to `58.8 tok/s` but reduced decode to `5.9 tok/s`.
   - artifact: `automatosx/tmp/llama3-70b-bench-q5k-small-2026-03-26.json`
 - Forcing decode `hd128_n2` regressed to `54.2 tok/s` prefill and `5.8 tok/s` decode.
   - artifact: `automatosx/tmp/llama3-70b-bench-hd128n2-2026-03-26.json`

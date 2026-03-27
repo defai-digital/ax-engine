@@ -323,6 +323,23 @@ pub trait Backend {
         }
     }
 
+    /// Safe batched decode matvec: computes y_i = W_i × x for one or more
+    /// projections that share the same single-token input vector.
+    ///
+    /// Default behavior reuses the standard grouped decode route. Metal-backed
+    /// implementations may override this to avoid fused quantized `n=1` kernels
+    /// while still batching multiple projections into one command buffer.
+    #[allow(clippy::too_many_arguments)]
+    fn safe_batch_dequant_matvec(
+        &self,
+        ops: &[(&[u8], GgmlType, usize)],
+        x: &[f32],
+        k: usize,
+        outputs: &mut [&mut [f32]],
+    ) {
+        self.batch_dequant_matvec(ops, x, k, outputs);
+    }
+
     /// Multi-head attention for prefill (multiple tokens with causal masking).
     #[allow(clippy::too_many_arguments)]
     fn attention_prefill(
