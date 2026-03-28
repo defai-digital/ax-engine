@@ -39,6 +39,28 @@ impl Default for PrefillProfileConfig {
     }
 }
 
+fn merged_support_note(
+    support_note: Option<String>,
+    profile_note: Option<&'static str>,
+) -> Option<String> {
+    match (support_note, profile_note) {
+        (Some(note), Some(profile_note)) => Some(format!("{note} | {profile_note}")),
+        (Some(note), None) => Some(note),
+        (None, Some(profile_note)) => Some(profile_note.to_string()),
+        (None, None) => None,
+    }
+}
+
+fn prefill_profile_support_note(model: &LlamaModel) -> Option<&'static str> {
+    if model.arch_name() == "qwen35" && model.use_gpu_decode() && model.metal_device().is_some() {
+        Some(
+            "profile: Qwen3.5 prefill timing follows the native unified batch path; per-op buckets are still incomplete, so wall time, GPU aggregate, and submit counters are authoritative",
+        )
+    } else {
+        None
+    }
+}
+
 /// Result of a prefill profiling run.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PrefillProfileResult {
@@ -167,7 +189,10 @@ pub fn run_prefill_profile_with_backend(
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = LlamaModel::with_backend(model_config.clone(), backend)?;
     crate::report_planned_kv_budget(&mapped, &model)?;
-    let support_note = crate::support_note(&mapped);
+    let support_note = merged_support_note(
+        crate::support_note(&mapped),
+        prefill_profile_support_note(&model),
+    );
     let weights = WeightStore::new(&mapped);
 
     let vocab_size = model_config.vocab_size as usize;
@@ -453,6 +478,20 @@ mod tests {
         assert_eq!(c.prompt_tokens, 512);
         assert_eq!(c.warmup_iters, 1);
         assert_eq!(c.kernel_profile_path, None);
+    }
+
+    #[test]
+    fn test_merged_support_note_appends_prefill_profile_note() {
+        let merged =
+            merged_support_note(Some("support".into()), Some("profile: native unified path"))
+                .unwrap();
+        assert_eq!(merged, "support | profile: native unified path");
+    }
+
+    #[test]
+    fn test_merged_support_note_uses_profile_note_when_support_note_missing() {
+        let merged = merged_support_note(None, Some("profile: native unified path")).unwrap();
+        assert_eq!(merged, "profile: native unified path");
     }
 
     #[test]

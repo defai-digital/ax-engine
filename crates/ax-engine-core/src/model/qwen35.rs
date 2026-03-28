@@ -2692,9 +2692,11 @@ impl Qwen35Forward {
         weights: &WeightStore,
         logits: Option<&mut [f32]>,
         logits_all: Option<&mut Vec<f32>>,
+        mut ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<bool> {
         use crate::model::shared::encode_dequant_batch;
 
+        let total_t = OpTimer::start();
         let Some(metal_ops) = ctx.backend.metal_ops() else {
             return Ok(false);
         };
@@ -2855,6 +2857,7 @@ impl Qwen35Forward {
 
                     // Single CB: norm → QKV → split → QK norm → RoPE → KV append
                     //          → attention → gate → WO → residual → FFN
+                    let cb_t = OpTimer::start();
                     metal_ops.device.execute_sync(|encoder| {
                         // 1. RMSNorm: hidden → norm_buf
                         metal_ops.elementwise.encode_rms_norm_out_batch(
@@ -3124,6 +3127,11 @@ impl Qwen35Forward {
                         );
                         Ok(())
                     })?;
+                    if let Some(ref mut ops) = ops {
+                        let elapsed = cb_t.elapsed();
+                        ops.gpu_execute += elapsed;
+                        ops.gpu_execute_layers += elapsed;
+                    }
 
                     // CPU-only mirror: the GPU KV append already happened in the
                     // command buffer above.
@@ -3193,6 +3201,7 @@ impl Qwen35Forward {
                     let nw_buf = weight_cache.get(&nw_key).unwrap();
 
                     // CB1: norm + quantized input projections on GPU.
+                    let cb_t = OpTimer::start();
                     metal_ops.device.execute_sync(|encoder| {
                         metal_ops.elementwise.encode_rms_norm_out_batch(
                             encoder,
@@ -3224,8 +3233,14 @@ impl Qwen35Forward {
                         }
                         Ok(())
                     })?;
+                    if let Some(ref mut ops) = ops {
+                        let elapsed = cb_t.elapsed();
+                        ops.gpu_execute += elapsed;
+                        ops.gpu_execute_layers += elapsed;
+                    }
 
                     // Read GPU projection results and norm_buf before backend recurrent work.
+                    let readback_t = OpTimer::start();
                     unsafe {
                         for &i in &gpu_proj_indices {
                             let out_slice =
@@ -3242,6 +3257,9 @@ impl Qwen35Forward {
                             norm_for_cpu = bs.norm_buf.as_slice::<f32>()[..n_tokens * dim].to_vec();
                         }
                     }
+                    if let Some(ref mut ops) = ops {
+                        ops.gpu_readback += readback_t.elapsed();
+                    }
                 }
 
                 // CPU projections via Backend's optimized matmul (NEON SIMD).
@@ -3254,35 +3272,43 @@ impl Qwen35Forward {
                         3 => &mut rec_alpha_batch[..n_tokens * out_dim],
                         _ => unreachable!(),
                     };
-                    Self::batched_dequant_matmul_token_major(
-                        backend,
-                        raw,
-                        dtype,
-                        &norm_for_cpu,
-                        dst,
-                        n_tokens,
-                        out_dim,
-                        dim,
+                    timed_matmul_bucket!(
+                        ops,
+                        matmul_input_proj,
+                        Self::batched_dequant_matmul_token_major(
+                            backend,
+                            raw,
+                            dtype,
+                            &norm_for_cpu,
+                            dst,
+                            n_tokens,
+                            out_dim,
+                            dim,
+                        )
                     );
                 }
                 // Recurrent sequence via Backend (conv + gated_delta).
                 // Batch scratch buffers are intentionally unlocked here because the
                 // backend recurrent path may need them for other GPU work.
                 rec_out_batch.fill(0.0);
-                let runtime = Self::run_recurrent_sequence(
-                    backend,
-                    weights,
-                    &prefix,
-                    qwen_kv,
-                    layer,
-                    &recurrent_slot_indices,
-                    dims,
-                    eps,
-                    &rec_qkv_batch,
-                    &mut rec_beta_batch,
-                    &mut rec_alpha_batch,
-                    &mut rec_out_batch,
-                    n_tokens,
+                let runtime = timed!(
+                    ops,
+                    recurrent,
+                    Self::run_recurrent_sequence(
+                        backend,
+                        weights,
+                        &prefix,
+                        qwen_kv,
+                        layer,
+                        &recurrent_slot_indices,
+                        dims,
+                        eps,
+                        &rec_qkv_batch,
+                        &mut rec_beta_batch,
+                        &mut rec_alpha_batch,
+                        &mut rec_out_batch,
+                        n_tokens,
+                    )
                 )?;
 
                 let ssm_norm_key = if ssm_gpu {
@@ -3304,15 +3330,19 @@ impl Qwen35Forward {
                 // SSM output projection: handle Q8_0 (not GPU-batch-supported) via CPU.
                 let ssm_result = if !ssm_gpu {
                     let mut result = vec![0.0f32; n_tokens * dim];
-                    Self::batched_dequant_matmul_token_major(
-                        backend,
-                        ssm_out_raw,
-                        ssm_out_dtype,
-                        &rec_out_batch,
-                        &mut result,
-                        n_tokens,
-                        dim,
-                        dims.inner_size,
+                    timed_matmul_bucket!(
+                        ops,
+                        matmul_output_proj,
+                        Self::batched_dequant_matmul_token_major(
+                            backend,
+                            ssm_out_raw,
+                            ssm_out_dtype,
+                            &rec_out_batch,
+                            &mut result,
+                            n_tokens,
+                            dim,
+                            dims.inner_size,
+                        )
                     );
                     Some(result)
                 } else {
@@ -3347,6 +3377,7 @@ impl Qwen35Forward {
                     let wg_buf = weight_cache.get(&wg_key).unwrap();
                     let wu_buf = weight_cache.get(&wu_key).unwrap();
                     let wd_buf = weight_cache.get(&wd_key).unwrap();
+                    let cb_t = OpTimer::start();
                     metal_ops.device.execute_sync(|encoder| {
                         if ssm_gpu {
                             let ssm_norm_buf = weight_cache.get(&ssm_norm_key.unwrap()).unwrap();
@@ -3466,6 +3497,11 @@ impl Qwen35Forward {
                         );
                         Ok(())
                     })?;
+                    if let Some(ref mut ops) = ops {
+                        let elapsed = cb_t.elapsed();
+                        ops.gpu_execute += elapsed;
+                        ops.gpu_execute_layers += elapsed;
+                    }
                 } // end re-acquired bs_guard scope
             }
         }
@@ -3497,6 +3533,9 @@ impl Qwen35Forward {
             }
             _ => unreachable!("validated by caller"),
         }
+        if let Some(ref mut ops) = ops {
+            ops.gpu += total_t.elapsed();
+        }
         Ok(true)
     }
 
@@ -3509,6 +3548,7 @@ impl Qwen35Forward {
         weights: &WeightStore,
         mut logits: Option<&mut [f32]>,
         mut logits_all: Option<&mut Vec<f32>>,
+        mut ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
             !token_ids.is_empty(),
@@ -3540,6 +3580,7 @@ impl Qwen35Forward {
                 weights,
                 Some(&mut **logits),
                 None,
+                ops.as_deref_mut(),
             )? {
                 return Ok(());
             }
@@ -3551,6 +3592,7 @@ impl Qwen35Forward {
                 weights,
                 None,
                 Some(&mut **logits_all),
+                ops.as_deref_mut(),
             )?
         {
             return Ok(());
@@ -4715,7 +4757,37 @@ impl ForwardPass for Qwen35Forward {
         weights: &WeightStore,
         logits: &mut [f32],
     ) -> anyhow::Result<()> {
-        self.forward_batch_impl(ctx, token_ids, kv, weights, Some(logits), None)
+        self.forward_batch_impl(ctx, token_ids, kv, weights, Some(logits), None, None)
+    }
+
+    fn forward_batch_profiled(
+        &self,
+        ctx: &ForwardContext,
+        token_ids: &[u32],
+        kv: &mut ModelKv,
+        weights: &WeightStore,
+        logits: &mut [f32],
+        ops: &mut OpBreakdown,
+    ) -> anyhow::Result<()> {
+        let force_serial = env_flag_enabled("AX_SERIAL_PREFILL");
+        if !force_serial && ctx.backend.use_gpu_decode() && token_ids.len() > 1 {
+            return self.forward_batch_impl(
+                ctx,
+                token_ids,
+                kv,
+                weights,
+                Some(logits),
+                None,
+                Some(ops),
+            );
+        }
+
+        let start_pos = kv.seq_len();
+        for (i, &tid) in token_ids.iter().enumerate() {
+            logits.fill(0.0);
+            self.forward_single(ctx, tid, start_pos + i, kv, weights, logits, Some(ops))?;
+        }
+        Ok(())
     }
 
     fn forward_batch_all_logits(
@@ -4726,7 +4798,7 @@ impl ForwardPass for Qwen35Forward {
         weights: &WeightStore,
         logits_all: &mut Vec<f32>,
     ) -> anyhow::Result<()> {
-        self.forward_batch_impl(ctx, token_ids, kv, weights, None, Some(logits_all))
+        self.forward_batch_impl(ctx, token_ids, kv, weights, None, Some(logits_all), None)
     }
 
     fn validate_config(&self, config: &ModelConfig) -> anyhow::Result<()> {
