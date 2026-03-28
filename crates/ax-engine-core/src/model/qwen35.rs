@@ -255,15 +255,6 @@ impl Qwen35Forward {
         use crate::backend::metal::{CachedLayerKeys, CachedModelKeys};
 
         let n_layers = cfg.n_layers as usize;
-        let n_heads = cfg.n_heads as usize;
-        let n_kv_heads = cfg.n_kv_heads as usize;
-        let head_dim = cfg.head_dim as usize;
-        let inter_dim = cfg.intermediate_dim as usize;
-        let dim = cfg.embedding_dim as usize;
-        let q_dim = n_heads * head_dim;
-        let kv_dim = n_kv_heads * head_dim;
-        let dims = Self::recurrent_dims(cfg)?;
-
         let mut layers = Vec::with_capacity(n_layers);
         let mut layer_types = Vec::with_capacity(n_layers);
 
@@ -1108,8 +1099,7 @@ impl Qwen35Forward {
 
         // Read result from up_buf back to rec_out_batch.
         unsafe {
-            rec_out_batch[..total]
-                .copy_from_slice(&bs.up_buf.as_slice::<f32>()[..total]);
+            rec_out_batch[..total].copy_from_slice(&bs.up_buf.as_slice::<f32>()[..total]);
         }
         drop(bs_guard);
         Ok(true)
@@ -1806,8 +1796,7 @@ impl Qwen35Forward {
         for token_idx in 0..n_tokens {
             let src = token_idx * q_dim * 2 + q_dim;
             let dst = token_idx * q_dim;
-            gate_contiguous[dst..dst + q_dim]
-                .copy_from_slice(&q_gate_batch[src..src + q_dim]);
+            gate_contiguous[dst..dst + q_dim].copy_from_slice(&q_gate_batch[src..src + q_dim]);
         }
 
         metal_ops.init_batch_scratches(cfg, n_tokens);
@@ -1835,8 +1824,7 @@ impl Qwen35Forward {
 
         // Read back attn_out.
         unsafe {
-            attn_out_batch[..total]
-                .copy_from_slice(&bs.attn_out.as_slice::<f32>()[..total]);
+            attn_out_batch[..total].copy_from_slice(&bs.attn_out.as_slice::<f32>()[..total]);
         }
         drop(bs_guard);
         Ok(true)
@@ -2662,15 +2650,14 @@ impl Qwen35Forward {
         // Check that all projection dtypes are GPU-supported.
         // GPU batch dequant matmul only supports Q4K/Q5K/Q6K.
         // Other types (F32, Q8_0, etc.) are handled via CPU fallback.
-        let gpu_batch_supported =
-            |dt: crate::gguf::tensor::GgmlType| {
-                matches!(
-                    dt,
-                    crate::gguf::tensor::GgmlType::Q4K
-                        | crate::gguf::tensor::GgmlType::Q5K
-                        | crate::gguf::tensor::GgmlType::Q6K
-                )
-            };
+        let gpu_batch_supported = |dt: crate::gguf::tensor::GgmlType| {
+            matches!(
+                dt,
+                crate::gguf::tensor::GgmlType::Q4K
+                    | crate::gguf::tensor::GgmlType::Q5K
+                    | crate::gguf::tensor::GgmlType::Q6K
+            )
+        };
 
         // Quick check: verify at least one full-attention layer's weights are supported.
         for layer in 0..n_layers {
@@ -2686,15 +2673,15 @@ impl Qwen35Forward {
 
         // Init GPU batch scratch buffers.
         metal_ops.init_batch_scratches(cfg, n_tokens);
-        let mut bs_guard = metal_ops.batch_scratches();
-        let Some(bs) = bs_guard.as_mut() else {
-            return Ok(false);
-        };
 
         let nt = n_tokens as u32;
 
         // Embed tokens directly into GPU hidden buffer (UMA write).
         {
+            let mut bs_guard = metal_ops.batch_scratches();
+            let Some(bs) = bs_guard.as_mut() else {
+                return Ok(false);
+            };
             let h = unsafe {
                 std::slice::from_raw_parts_mut(
                     bs.hidden.contents().as_ptr() as *mut f32,
@@ -2702,7 +2689,11 @@ impl Qwen35Forward {
                 )
             };
             for (i, &tid) in token_ids.iter().enumerate() {
-                weights.dequantize_row("token_embd.weight", tid as usize, &mut h[i * dim..(i + 1) * dim])?;
+                weights.dequantize_row(
+                    "token_embd.weight",
+                    tid as usize,
+                    &mut h[i * dim..(i + 1) * dim],
+                )?;
             }
         }
 
@@ -2712,9 +2703,6 @@ impl Qwen35Forward {
         let mut rec_beta_batch = vec![0.0f32; n_tokens * dims.time_step_rank];
         let mut rec_alpha_batch = vec![0.0f32; n_tokens * dims.time_step_rank];
         let mut rec_out_batch = vec![0.0f32; n_tokens * dims.inner_size];
-        // CPU buffers for Q extraction (full-attention layers).
-        let mut q_batch_cpu = vec![0.0f32; n_tokens * q_dim];
-        let mut k_batch_cpu = vec![0.0f32; n_tokens * kv_dim];
 
         let (rope_start, rope_step) = cfg.rope_scaling.scaled_start_step(batch_position);
 
@@ -2728,10 +2716,15 @@ impl Qwen35Forward {
             let ffn_norm_w = weights.f32_slice(&format!("{prefix}.post_attention_norm.weight"))?;
             let ffn_nw_key = metal_ops.ensure_f32_cached(ffn_norm_w);
 
-            let (wg_raw, wg_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_gate.weight"))?;
+            let (wg_raw, wg_dtype) =
+                weights.raw_with_dtype(&format!("{prefix}.ffn_gate.weight"))?;
             let (wu_raw, wu_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_up.weight"))?;
-            let (wd_raw, wd_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_down.weight"))?;
-            if !gpu_batch_supported(wg_dtype) || !gpu_batch_supported(wu_dtype) || !gpu_batch_supported(wd_dtype) {
+            let (wd_raw, wd_dtype) =
+                weights.raw_with_dtype(&format!("{prefix}.ffn_down.weight"))?;
+            if !gpu_batch_supported(wg_dtype)
+                || !gpu_batch_supported(wu_dtype)
+                || !gpu_batch_supported(wd_dtype)
+            {
                 return Ok(false);
             }
             let wg_key = metal_ops.ensure_quant_cached(wg_raw);
@@ -2742,11 +2735,19 @@ impl Qwen35Forward {
                 // ══════════════════════════════════════════════════════════
                 // Full-attention layer: single CB with GPU Q+gate split
                 // ══════════════════════════════════════════════════════════
-                let (wq_raw, wq_dtype) = weights.raw_with_dtype(&format!("{prefix}.attn_q.weight"))?;
-                let (wk_raw, wk_dtype) = weights.raw_with_dtype(&format!("{prefix}.attn_k.weight"))?;
-                let (wv_raw, wv_dtype) = weights.raw_with_dtype(&format!("{prefix}.attn_v.weight"))?;
-                let (wo_raw, wo_dtype) = weights.raw_with_dtype(&format!("{prefix}.attn_output.weight"))?;
-                if !gpu_batch_supported(wq_dtype) || !gpu_batch_supported(wk_dtype) || !gpu_batch_supported(wv_dtype) || !gpu_batch_supported(wo_dtype) {
+                let (wq_raw, wq_dtype) =
+                    weights.raw_with_dtype(&format!("{prefix}.attn_q.weight"))?;
+                let (wk_raw, wk_dtype) =
+                    weights.raw_with_dtype(&format!("{prefix}.attn_k.weight"))?;
+                let (wv_raw, wv_dtype) =
+                    weights.raw_with_dtype(&format!("{prefix}.attn_v.weight"))?;
+                let (wo_raw, wo_dtype) =
+                    weights.raw_with_dtype(&format!("{prefix}.attn_output.weight"))?;
+                if !gpu_batch_supported(wq_dtype)
+                    || !gpu_batch_supported(wk_dtype)
+                    || !gpu_batch_supported(wv_dtype)
+                    || !gpu_batch_supported(wo_dtype)
+                {
                     return Ok(false);
                 }
                 let wq_key = metal_ops.ensure_quant_cached(wq_raw);
@@ -2758,151 +2759,302 @@ impl Qwen35Forward {
                 let q_norm_key = norm_weights.map(|nw| metal_ops.ensure_f32_cached(nw.q));
                 let k_norm_key = norm_weights.map(|nw| metal_ops.ensure_f32_cached(nw.k));
 
-                let weight_cache = metal_ops.lock_weight_cache();
-                let nw_buf = weight_cache.get(&nw_key).unwrap();
-                let wq_buf = weight_cache.get(&wq_key).unwrap();
-                let wk_buf = weight_cache.get(&wk_key).unwrap();
-                let wv_buf = weight_cache.get(&wv_key).unwrap();
-                let wo_buf = weight_cache.get(&wo_key).unwrap();
-                let ffn_nw_buf = weight_cache.get(&ffn_nw_key).unwrap();
-                let wg_buf = weight_cache.get(&wg_key).unwrap();
-                let wu_buf = weight_cache.get(&wu_key).unwrap();
-                let wd_buf = weight_cache.get(&wd_key).unwrap();
-
-                // Single CB: norm → QKV → split → QK norm → RoPE → KV append
-                //          → attention → gate → WO → residual → FFN
-                metal_ops.device.execute_sync(|encoder| {
-                    // 1. RMSNorm: hidden → norm_buf
-                    metal_ops.elementwise.encode_rms_norm_out_batch(
-                        encoder, &bs.hidden, nw_buf, &bs.norm_buf, dim as u32, nt, eps,
-                    );
-                    // 2. Q+gate matmul: norm_buf → gate_buf [N × q_dim*2]
-                    encode_dequant_batch(
-                        &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                        wq_buf, &bs.norm_buf, &bs.gate_buf, &bs.matmul_in_f16,
-                        (q_dim * 2) as u32, nt, dim as u32, wq_dtype,
-                        false, false, false,
-                    );
-                    // 3. K matmul: norm_buf → k_buf
-                    encode_dequant_batch(
-                        &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                        wk_buf, &bs.norm_buf, &bs.k_buf, &bs.matmul_in_f16,
-                        kv_dim as u32, nt, dim as u32, wk_dtype,
-                        false, false, false,
-                    );
-                    // 4. V matmul: norm_buf → v_buf
-                    encode_dequant_batch(
-                        &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                        wv_buf, &bs.norm_buf, &bs.v_buf, &bs.matmul_in_f16,
-                        kv_dim as u32, nt, dim as u32, wv_dtype,
-                        false, false, false,
-                    );
-                    // 5. GPU Q+gate split: gate_buf → q_buf (Q), up_buf (gate)
-                    metal_ops.elementwise.encode_split_qgate_batch(
-                        encoder, &bs.gate_buf, &bs.q_buf, &bs.up_buf,
-                        nt, q_dim as u32,
-                    );
-                    // 6. QK norm (if applicable)
-                    if let (Some(q_key), Some(k_key)) = (q_norm_key, k_norm_key) {
-                        let q_nw = weight_cache.get(&q_key).unwrap();
-                        let k_nw = weight_cache.get(&k_key).unwrap();
-                        metal_ops.elementwise.encode_per_head_rms_norm_batch(
-                            encoder, &bs.q_buf, q_nw, nt, n_heads as u32, head_dim as u32, eps,
-                        );
-                        metal_ops.elementwise.encode_per_head_rms_norm_batch(
-                            encoder, &bs.k_buf, k_nw, nt, n_kv_heads as u32, head_dim as u32, eps,
-                        );
-                    }
-                    // 7. RoPE
-                    metal_ops.elementwise.encode_rope_batch(
-                        encoder, &bs.q_buf, &bs.k_buf, nt,
-                        n_heads as u32, n_kv_heads as u32, head_dim as u32,
-                        rope_start, rope_step, cfg.rope_freq_base,
-                    );
-                    // 8. KV append (GPU f32/f16 aware)
-                    if let Some(gpu_attn) = qwen_kv.gpu_attention() {
-                        let cache_offset = (batch_position * kv_dim) as u32;
-                        metal_ops.elementwise.encode_kv_append_batch(
-                            encoder, &bs.k_buf, gpu_attn.k_buffer(layer), gpu_attn.is_f16(),
-                            cache_offset, kv_dim as u32, kv_dim as u32, nt,
-                        );
-                        metal_ops.elementwise.encode_kv_append_batch(
-                            encoder, &bs.v_buf, gpu_attn.v_buffer(layer), gpu_attn.is_f16(),
-                            cache_offset, kv_dim as u32, kv_dim as u32, nt,
-                        );
-                    }
-                    // 9. Attention prefill
-                    if batch_position == 0 {
-                        metal_ops.attention.encode_attention_prefill_with_config(
-                            encoder, &bs.q_buf, &bs.k_buf, &bs.v_buf, &bs.attn_out,
-                            nt, n_heads as u32, n_kv_heads as u32, head_dim as u32,
-                            metal_ops.attention_dispatch_config(),
-                        );
-                    } else if let Some(gpu_attn) = qwen_kv.gpu_attention() {
-                        metal_ops.attention.encode_attention_prefill_cached_with_config(
-                            encoder, &bs.q_buf,
-                            gpu_attn.k_buffer(layer), gpu_attn.v_buffer(layer),
-                            &bs.attn_out, gpu_attn.is_f16(),
-                            nt, n_heads as u32, n_kv_heads as u32, head_dim as u32,
-                            batch_position as u32, 0,
-                            metal_ops.attention_dispatch_config(),
-                        );
-                    }
-                    // 10. Attention gate: sigmoid(up_buf) × attn_out
-                    metal_ops.elementwise.encode_sigmoid_elementwise_mul(
-                        encoder, &bs.up_buf, &bs.attn_out,
-                        (n_tokens * q_dim) as u32,
-                    );
-                    // 11. WO projection: attn_out → proj_buf
-                    encode_dequant_batch(
-                        &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                        wo_buf, &bs.attn_out, &bs.proj_buf, &bs.matmul_in_f16,
-                        dim as u32, nt, q_dim as u32, wo_dtype,
-                        false, false, false,
-                    );
-                    // 12. Residual + FFN norm
-                    metal_ops.elementwise.encode_residual_add_rms_norm_out_batch(
-                        encoder, &bs.hidden, &bs.proj_buf, ffn_nw_buf, &bs.norm_buf,
-                        dim as u32, nt, eps,
-                    );
-                    // 13-14. Gate + Up matmul
-                    encode_dequant_batch(
-                        &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                        wg_buf, &bs.norm_buf, &bs.gate_buf, &bs.matmul_in_f16,
-                        inter_dim as u32, nt, dim as u32, wg_dtype,
-                        false, false, false,
-                    );
-                    encode_dequant_batch(
-                        &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                        wu_buf, &bs.norm_buf, &bs.up_buf, &bs.matmul_in_f16,
-                        inter_dim as u32, nt, dim as u32, wu_dtype,
-                        false, false, false,
-                    );
-                    // 15. SiLU
-                    metal_ops.elementwise.encode_silu_elementwise_mul_batch(
-                        encoder, &bs.gate_buf, &bs.up_buf, inter_dim as u32, nt,
-                    );
-                    // 16. Down projection: gate_buf → proj_buf
-                    encode_dequant_batch(
-                        &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                        wd_buf, &bs.gate_buf, &bs.proj_buf, &bs.matmul_in_f16,
-                        dim as u32, nt, inter_dim as u32, wd_dtype,
-                        false, false, false,
-                    );
-                    // 17. Final residual: hidden += proj_buf
-                    metal_ops.elementwise.encode_elementwise_add_batch(
-                        encoder, &bs.hidden, &bs.proj_buf, dim as u32, nt,
-                    );
-                    Ok(())
-                })?;
-
-                // CPU: sync KV append (CPU mirror — harmless duplicate GPU write).
                 {
-                    let k_after_rope = unsafe { &bs.k_buf.as_slice::<f32>()[..n_tokens * kv_dim] };
-                    let v_slice = unsafe { &bs.v_buf.as_slice::<f32>()[..n_tokens * kv_dim] };
-                    qwen_kv.attention_append_batch(layer, k_after_rope, v_slice, n_tokens);
+                    let mut bs_guard = metal_ops.batch_scratches();
+                    let Some(bs) = bs_guard.as_mut() else {
+                        return Ok(false);
+                    };
+                    let weight_cache = metal_ops.lock_weight_cache();
+                    let nw_buf = weight_cache.get(&nw_key).unwrap();
+                    let wq_buf = weight_cache.get(&wq_key).unwrap();
+                    let wk_buf = weight_cache.get(&wk_key).unwrap();
+                    let wv_buf = weight_cache.get(&wv_key).unwrap();
+                    let wo_buf = weight_cache.get(&wo_key).unwrap();
+                    let ffn_nw_buf = weight_cache.get(&ffn_nw_key).unwrap();
+                    let wg_buf = weight_cache.get(&wg_key).unwrap();
+                    let wu_buf = weight_cache.get(&wu_key).unwrap();
+                    let wd_buf = weight_cache.get(&wd_key).unwrap();
+
+                    // Single CB: norm → QKV → split → QK norm → RoPE → KV append
+                    //          → attention → gate → WO → residual → FFN
+                    metal_ops.device.execute_sync(|encoder| {
+                        // 1. RMSNorm: hidden → norm_buf
+                        metal_ops.elementwise.encode_rms_norm_out_batch(
+                            encoder,
+                            &bs.hidden,
+                            nw_buf,
+                            &bs.norm_buf,
+                            dim as u32,
+                            nt,
+                            eps,
+                        );
+                        // 2. Q+gate matmul: norm_buf → gate_buf [N × q_dim*2]
+                        encode_dequant_batch(
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wq_buf,
+                            &bs.norm_buf,
+                            &bs.gate_buf,
+                            &bs.matmul_in_f16,
+                            (q_dim * 2) as u32,
+                            nt,
+                            dim as u32,
+                            wq_dtype,
+                            false,
+                            false,
+                            false,
+                        );
+                        // 3. K matmul: norm_buf → k_buf
+                        encode_dequant_batch(
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wk_buf,
+                            &bs.norm_buf,
+                            &bs.k_buf,
+                            &bs.matmul_in_f16,
+                            kv_dim as u32,
+                            nt,
+                            dim as u32,
+                            wk_dtype,
+                            false,
+                            false,
+                            false,
+                        );
+                        // 4. V matmul: norm_buf → v_buf
+                        encode_dequant_batch(
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wv_buf,
+                            &bs.norm_buf,
+                            &bs.v_buf,
+                            &bs.matmul_in_f16,
+                            kv_dim as u32,
+                            nt,
+                            dim as u32,
+                            wv_dtype,
+                            false,
+                            false,
+                            false,
+                        );
+                        // 5. GPU Q+gate split: gate_buf → q_buf (Q), up_buf (gate)
+                        metal_ops.elementwise.encode_split_qgate_batch(
+                            encoder,
+                            &bs.gate_buf,
+                            &bs.q_buf,
+                            &bs.up_buf,
+                            nt,
+                            q_dim as u32,
+                        );
+                        // 6. QK norm (if applicable)
+                        if let (Some(q_key), Some(k_key)) = (q_norm_key, k_norm_key) {
+                            let q_nw = weight_cache.get(&q_key).unwrap();
+                            let k_nw = weight_cache.get(&k_key).unwrap();
+                            metal_ops.elementwise.encode_per_head_rms_norm_batch(
+                                encoder,
+                                &bs.q_buf,
+                                q_nw,
+                                nt,
+                                n_heads as u32,
+                                head_dim as u32,
+                                eps,
+                            );
+                            metal_ops.elementwise.encode_per_head_rms_norm_batch(
+                                encoder,
+                                &bs.k_buf,
+                                k_nw,
+                                nt,
+                                n_kv_heads as u32,
+                                head_dim as u32,
+                                eps,
+                            );
+                        }
+                        // 7. RoPE
+                        metal_ops.elementwise.encode_rope_batch(
+                            encoder,
+                            &bs.q_buf,
+                            &bs.k_buf,
+                            nt,
+                            n_heads as u32,
+                            n_kv_heads as u32,
+                            head_dim as u32,
+                            rope_start,
+                            rope_step,
+                            cfg.rope_freq_base,
+                        );
+                        // 8. KV append (GPU f32/f16 aware)
+                        if let Some(gpu_attn) = qwen_kv.gpu_attention() {
+                            let cache_offset = (batch_position * kv_dim) as u32;
+                            metal_ops.elementwise.encode_kv_append_batch(
+                                encoder,
+                                &bs.k_buf,
+                                gpu_attn.k_buffer(layer),
+                                gpu_attn.is_f16(),
+                                cache_offset,
+                                kv_dim as u32,
+                                kv_dim as u32,
+                                nt,
+                            );
+                            metal_ops.elementwise.encode_kv_append_batch(
+                                encoder,
+                                &bs.v_buf,
+                                gpu_attn.v_buffer(layer),
+                                gpu_attn.is_f16(),
+                                cache_offset,
+                                kv_dim as u32,
+                                kv_dim as u32,
+                                nt,
+                            );
+                        }
+                        // 9. Attention prefill
+                        if batch_position == 0 {
+                            metal_ops.attention.encode_attention_prefill_with_config(
+                                encoder,
+                                &bs.q_buf,
+                                &bs.k_buf,
+                                &bs.v_buf,
+                                &bs.attn_out,
+                                nt,
+                                n_heads as u32,
+                                n_kv_heads as u32,
+                                head_dim as u32,
+                                metal_ops.attention_dispatch_config(),
+                            );
+                        } else if let Some(gpu_attn) = qwen_kv.gpu_attention() {
+                            metal_ops
+                                .attention
+                                .encode_attention_prefill_cached_with_config(
+                                    encoder,
+                                    &bs.q_buf,
+                                    gpu_attn.k_buffer(layer),
+                                    gpu_attn.v_buffer(layer),
+                                    &bs.attn_out,
+                                    gpu_attn.is_f16(),
+                                    nt,
+                                    n_heads as u32,
+                                    n_kv_heads as u32,
+                                    head_dim as u32,
+                                    batch_position as u32,
+                                    0,
+                                    metal_ops.attention_dispatch_config(),
+                                );
+                        }
+                        // 10. Attention gate: sigmoid(up_buf) × attn_out
+                        metal_ops.elementwise.encode_sigmoid_elementwise_mul(
+                            encoder,
+                            &bs.up_buf,
+                            &bs.attn_out,
+                            (n_tokens * q_dim) as u32,
+                        );
+                        // 11. WO projection: attn_out → proj_buf
+                        encode_dequant_batch(
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wo_buf,
+                            &bs.attn_out,
+                            &bs.proj_buf,
+                            &bs.matmul_in_f16,
+                            dim as u32,
+                            nt,
+                            q_dim as u32,
+                            wo_dtype,
+                            false,
+                            false,
+                            false,
+                        );
+                        // 12. Residual + FFN norm
+                        metal_ops
+                            .elementwise
+                            .encode_residual_add_rms_norm_out_batch(
+                                encoder,
+                                &bs.hidden,
+                                &bs.proj_buf,
+                                ffn_nw_buf,
+                                &bs.norm_buf,
+                                dim as u32,
+                                nt,
+                                eps,
+                            );
+                        // 13-14. Gate + Up matmul
+                        encode_dequant_batch(
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wg_buf,
+                            &bs.norm_buf,
+                            &bs.gate_buf,
+                            &bs.matmul_in_f16,
+                            inter_dim as u32,
+                            nt,
+                            dim as u32,
+                            wg_dtype,
+                            false,
+                            false,
+                            false,
+                        );
+                        encode_dequant_batch(
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wu_buf,
+                            &bs.norm_buf,
+                            &bs.up_buf,
+                            &bs.matmul_in_f16,
+                            inter_dim as u32,
+                            nt,
+                            dim as u32,
+                            wu_dtype,
+                            false,
+                            false,
+                            false,
+                        );
+                        // 15. SiLU
+                        metal_ops.elementwise.encode_silu_elementwise_mul_batch(
+                            encoder,
+                            &bs.gate_buf,
+                            &bs.up_buf,
+                            inter_dim as u32,
+                            nt,
+                        );
+                        // 16. Down projection: gate_buf → proj_buf
+                        encode_dequant_batch(
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wd_buf,
+                            &bs.gate_buf,
+                            &bs.proj_buf,
+                            &bs.matmul_in_f16,
+                            dim as u32,
+                            nt,
+                            inter_dim as u32,
+                            wd_dtype,
+                            false,
+                            false,
+                            false,
+                        );
+                        // 17. Final residual: hidden += proj_buf
+                        metal_ops.elementwise.encode_elementwise_add_batch(
+                            encoder,
+                            &bs.hidden,
+                            &bs.proj_buf,
+                            dim as u32,
+                            nt,
+                        );
+                        Ok(())
+                    })?;
+
+                    // CPU: sync KV append (CPU mirror — harmless duplicate GPU write).
+                    {
+                        let k_after_rope =
+                            unsafe { &bs.k_buf.as_slice::<f32>()[..n_tokens * kv_dim] };
+                        let v_slice = unsafe { &bs.v_buf.as_slice::<f32>()[..n_tokens * kv_dim] };
+                        qwen_kv.attention_append_batch(layer, k_after_rope, v_slice, n_tokens);
+                    }
                 }
-                drop(weight_cache);
             } else {
                 // ══════════════════════════════════════════════════════════
                 // Recurrent layer: read hidden from GPU, process, write back
@@ -2928,12 +3080,13 @@ impl Qwen35Forward {
                         cpu_proj_indices.push(i);
                     }
                 }
-                let (ssm_out_raw, ssm_out_dtype, _) = Self::recurrent_output_op(weights, &prefix, dim)?;
+                let (ssm_out_raw, ssm_out_dtype, _) =
+                    Self::recurrent_output_op(weights, &prefix, dim)?;
                 let ssm_gpu = gpu_batch_supported(ssm_out_dtype);
                 let ssm_key = metal_ops.ensure_quant_cached(ssm_out_raw);
 
                 // Allocate temporary projection output buffers.
-                let mut temp_bufs: Vec<ax_engine_metal::MetalBuffer> = proj_dims
+                let temp_bufs: Vec<ax_engine_metal::MetalBuffer> = proj_dims
                     .iter()
                     .map(|&d| {
                         ax_engine_metal::MetalBuffer::new(
@@ -2944,43 +3097,66 @@ impl Qwen35Forward {
                     })
                     .collect();
 
-                // NOW lock weight cache for GPU encoding.
-                let weight_cache = metal_ops.lock_weight_cache();
-                let nw_buf = weight_cache.get(&nw_key).unwrap();
-
-                // CB1: norm + quantized input projections on GPU.
-                metal_ops.device.execute_sync(|encoder| {
-                    metal_ops.elementwise.encode_rms_norm_out_batch(
-                        encoder, &bs.hidden, nw_buf, &bs.norm_buf, dim as u32, nt, eps,
-                    );
-                    for &i in &gpu_proj_indices {
-                        let w_buf = weight_cache.get(&proj_keys[i]).unwrap();
-                        encode_dequant_batch(
-                            &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                            w_buf, &bs.norm_buf, &temp_bufs[i], &bs.matmul_in_f16,
-                            proj_dims[i] as u32, nt, dim as u32, proj_dtypes[i],
-                            false, false, false,
-                        );
-                    }
-                    Ok(())
-                })?;
-                drop(weight_cache);
-
-                // Read GPU projection results and norm_buf before releasing bs_guard.
                 let mut norm_for_cpu = Vec::new();
-                unsafe {
-                    for &i in &gpu_proj_indices {
-                        let out_slice = &temp_bufs[i].as_slice::<f32>()[..n_tokens * proj_dims[i]];
-                        match i {
-                            0 => rec_qkv_batch[..out_slice.len()].copy_from_slice(out_slice),
-                            1 => rec_z_batch[..out_slice.len()].copy_from_slice(out_slice),
-                            2 => rec_beta_batch[..out_slice.len()].copy_from_slice(out_slice),
-                            3 => rec_alpha_batch[..out_slice.len()].copy_from_slice(out_slice),
-                            _ => {}
+                {
+                    let mut bs_guard = metal_ops.batch_scratches();
+                    let Some(bs) = bs_guard.as_mut() else {
+                        return Ok(false);
+                    };
+
+                    // NOW lock weight cache for GPU encoding.
+                    let weight_cache = metal_ops.lock_weight_cache();
+                    let nw_buf = weight_cache.get(&nw_key).unwrap();
+
+                    // CB1: norm + quantized input projections on GPU.
+                    metal_ops.device.execute_sync(|encoder| {
+                        metal_ops.elementwise.encode_rms_norm_out_batch(
+                            encoder,
+                            &bs.hidden,
+                            nw_buf,
+                            &bs.norm_buf,
+                            dim as u32,
+                            nt,
+                            eps,
+                        );
+                        for &i in &gpu_proj_indices {
+                            let w_buf = weight_cache.get(&proj_keys[i]).unwrap();
+                            encode_dequant_batch(
+                                &metal_ops.dequant,
+                                &metal_ops.elementwise,
+                                encoder,
+                                w_buf,
+                                &bs.norm_buf,
+                                &temp_bufs[i],
+                                &bs.matmul_in_f16,
+                                proj_dims[i] as u32,
+                                nt,
+                                dim as u32,
+                                proj_dtypes[i],
+                                false,
+                                false,
+                                false,
+                            );
                         }
-                    }
-                    if !cpu_proj_indices.is_empty() {
-                        norm_for_cpu = bs.norm_buf.as_slice::<f32>()[..n_tokens * dim].to_vec();
+                        Ok(())
+                    })?;
+
+                    // Read GPU projection results and norm_buf before backend recurrent work.
+                    unsafe {
+                        for &i in &gpu_proj_indices {
+                            let out_slice =
+                                &temp_bufs[i].as_slice::<f32>()[..n_tokens * proj_dims[i]];
+                            match i {
+                                0 => rec_qkv_batch[..out_slice.len()].copy_from_slice(out_slice),
+                                1 => rec_z_batch[..out_slice.len()].copy_from_slice(out_slice),
+                                2 => rec_beta_batch[..out_slice.len()].copy_from_slice(out_slice),
+                                3 => rec_alpha_batch[..out_slice.len()].copy_from_slice(out_slice),
+                                _ => {}
+                            }
+                        }
+                        if !cpu_proj_indices.is_empty() {
+                            norm_for_cpu = bs.norm_buf.as_slice::<f32>()[..n_tokens * dim].to_vec();
+                        }
                     }
                 }
 
@@ -2995,131 +3171,216 @@ impl Qwen35Forward {
                         _ => unreachable!(),
                     };
                     Self::batched_dequant_matmul_token_major(
-                        backend, raw, dtype, &norm_for_cpu, dst, n_tokens, out_dim, dim,
+                        backend,
+                        raw,
+                        dtype,
+                        &norm_for_cpu,
+                        dst,
+                        n_tokens,
+                        out_dim,
+                        dim,
                     );
                 }
                 // Recurrent sequence via Backend (conv + gated_delta).
-                // NOTE: run_recurrent_sequence may lock batch_scratches internally,
-                // but `bs` is a reborrow from bs_guard which is held at the outer scope.
-                // This is safe because the Backend's recurrent path uses its OWN scratch
-                // buffers (Qwen35MetalRecurrentScratchBuffers), not the batch scratches.
+                // Batch scratch buffers are intentionally unlocked here because the
+                // backend recurrent path may need them for other GPU work.
                 rec_out_batch.fill(0.0);
                 let runtime = Self::run_recurrent_sequence(
-                    backend, weights, &prefix, qwen_kv, layer,
-                    &recurrent_slot_indices, dims, eps,
-                    &rec_qkv_batch, &mut rec_beta_batch, &mut rec_alpha_batch,
-                    &mut rec_out_batch, n_tokens,
+                    backend,
+                    weights,
+                    &prefix,
+                    qwen_kv,
+                    layer,
+                    &recurrent_slot_indices,
+                    dims,
+                    eps,
+                    &rec_qkv_batch,
+                    &mut rec_beta_batch,
+                    &mut rec_alpha_batch,
+                    &mut rec_out_batch,
+                    n_tokens,
                 )?;
 
-                // Finalize recurrent output on CPU (GPU variant would deadlock on
-                // batch_scratches which is held by the outer unified path).
+                // Finalize recurrent output on CPU.
                 Self::finalize_recurrent_output_batch(
-                    &mut rec_out_batch, &rec_z_batch, n_tokens, dims, runtime.ssm_norm, eps,
+                    &mut rec_out_batch,
+                    &rec_z_batch,
+                    n_tokens,
+                    dims,
+                    runtime.ssm_norm,
+                    eps,
                 );
 
                 // SSM output projection: handle Q8_0 (not GPU-batch-supported) via CPU.
-                let mut ssm_result = if !ssm_gpu {
+                let ssm_result = if !ssm_gpu {
                     let mut result = vec![0.0f32; n_tokens * dim];
                     Self::batched_dequant_matmul_token_major(
-                        backend, ssm_out_raw, ssm_out_dtype, &rec_out_batch, &mut result,
-                        n_tokens, dim, dims.inner_size,
+                        backend,
+                        ssm_out_raw,
+                        ssm_out_dtype,
+                        &rec_out_batch,
+                        &mut result,
+                        n_tokens,
+                        dim,
+                        dims.inner_size,
                     );
                     Some(result)
                 } else {
                     None
                 };
 
-                // Re-acquire batch_scratches for CB2.
                 {
-                let mut bs_guard = metal_ops.batch_scratches();
-                let bs = bs_guard.as_mut().unwrap();
+                    let mut bs_guard = metal_ops.batch_scratches();
+                    let Some(bs) = bs_guard.as_mut() else {
+                        return Ok(false);
+                    };
 
-                // CB2: residual + FFN (hidden on GPU).
-                if let Some(ref ssm_result) = ssm_result {
-                    // CPU SSM result → attn_out on GPU.
-                    unsafe {
-                        bs.attn_out.as_mut_slice::<f32>()[..n_tokens * dim]
-                            .copy_from_slice(ssm_result);
+                    // CB2: residual + FFN (hidden on GPU).
+                    if let Some(ref ssm_result) = ssm_result {
+                        // CPU SSM result → attn_out on GPU.
+                        unsafe {
+                            bs.attn_out.as_mut_slice::<f32>()[..n_tokens * dim]
+                                .copy_from_slice(ssm_result);
+                        }
+                    } else {
+                        // GPU SSM: upload rec_out to proj_buf for in-CB matmul.
+                        unsafe {
+                            bs.proj_buf.as_mut_slice::<f32>()[..n_tokens * dims.inner_size]
+                                .copy_from_slice(&rec_out_batch[..n_tokens * dims.inner_size]);
+                        }
                     }
-                } else {
-                    // GPU SSM: upload rec_out to proj_buf for in-CB matmul.
-                    unsafe {
-                        bs.proj_buf.as_mut_slice::<f32>()[..n_tokens * dims.inner_size]
-                            .copy_from_slice(&rec_out_batch[..n_tokens * dims.inner_size]);
-                    }
-                }
-                drop(ssm_result);
-                let weight_cache = metal_ops.lock_weight_cache();
-                let ffn_nw_buf = weight_cache.get(&ffn_nw_key).unwrap();
-                let wg_buf = weight_cache.get(&wg_key).unwrap();
-                let wu_buf = weight_cache.get(&wu_key).unwrap();
-                let wd_buf = weight_cache.get(&wd_key).unwrap();
-                metal_ops.device.execute_sync(|encoder| {
-                    if ssm_gpu {
-                        // GPU SSM: proj_buf (inner_size) → attn_out (dim)
-                        let ssm_buf = weight_cache.get(&ssm_key).unwrap();
+                    drop(ssm_result);
+                    let weight_cache = metal_ops.lock_weight_cache();
+                    let ffn_nw_buf = weight_cache.get(&ffn_nw_key).unwrap();
+                    let wg_buf = weight_cache.get(&wg_key).unwrap();
+                    let wu_buf = weight_cache.get(&wu_key).unwrap();
+                    let wd_buf = weight_cache.get(&wd_key).unwrap();
+                    metal_ops.device.execute_sync(|encoder| {
+                        if ssm_gpu {
+                            // GPU SSM: proj_buf (inner_size) → attn_out (dim)
+                            let ssm_buf = weight_cache.get(&ssm_key).unwrap();
+                            encode_dequant_batch(
+                                &metal_ops.dequant,
+                                &metal_ops.elementwise,
+                                encoder,
+                                ssm_buf,
+                                &bs.proj_buf,
+                                &bs.attn_out,
+                                &bs.matmul_in_f16,
+                                dim as u32,
+                                nt,
+                                dims.inner_size as u32,
+                                ssm_out_dtype,
+                                false,
+                                false,
+                                false,
+                            );
+                        }
+                        // Residual: hidden += attn_out (SSM output) + FFN norm
+                        metal_ops
+                            .elementwise
+                            .encode_residual_add_rms_norm_out_batch(
+                                encoder,
+                                &bs.hidden,
+                                &bs.attn_out,
+                                ffn_nw_buf,
+                                &bs.norm_buf,
+                                dim as u32,
+                                nt,
+                                eps,
+                            );
+                        // Gate + Up
                         encode_dequant_batch(
-                            &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                            ssm_buf, &bs.proj_buf, &bs.attn_out, &bs.matmul_in_f16,
-                            dim as u32, nt, dims.inner_size as u32, ssm_out_dtype,
-                            false, false, false,
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wg_buf,
+                            &bs.norm_buf,
+                            &bs.gate_buf,
+                            &bs.matmul_in_f16,
+                            inter_dim as u32,
+                            nt,
+                            dim as u32,
+                            wg_dtype,
+                            false,
+                            false,
+                            false,
                         );
-                    }
-                    // Residual: hidden += attn_out (SSM output) + FFN norm
-                    metal_ops.elementwise.encode_residual_add_rms_norm_out_batch(
-                        encoder, &bs.hidden, &bs.attn_out, ffn_nw_buf, &bs.norm_buf,
-                        dim as u32, nt, eps,
-                    );
-                    // Gate + Up
-                    encode_dequant_batch(
-                        &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                        wg_buf, &bs.norm_buf, &bs.gate_buf, &bs.matmul_in_f16,
-                        inter_dim as u32, nt, dim as u32, wg_dtype, false, false, false,
-                    );
-                    encode_dequant_batch(
-                        &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                        wu_buf, &bs.norm_buf, &bs.up_buf, &bs.matmul_in_f16,
-                        inter_dim as u32, nt, dim as u32, wu_dtype, false, false, false,
-                    );
-                    // SiLU
-                    metal_ops.elementwise.encode_silu_elementwise_mul_batch(
-                        encoder, &bs.gate_buf, &bs.up_buf, inter_dim as u32, nt,
-                    );
-                    // Down
-                    encode_dequant_batch(
-                        &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                        wd_buf, &bs.gate_buf, &bs.proj_buf, &bs.matmul_in_f16,
-                        dim as u32, nt, inter_dim as u32, wd_dtype, false, false, false,
-                    );
-                    // Final residual: hidden += proj_buf
-                    metal_ops.elementwise.encode_elementwise_add_batch(
-                        encoder, &bs.hidden, &bs.proj_buf, dim as u32, nt,
-                    );
-                    Ok(())
-                })?;
-                drop(weight_cache);
+                        encode_dequant_batch(
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wu_buf,
+                            &bs.norm_buf,
+                            &bs.up_buf,
+                            &bs.matmul_in_f16,
+                            inter_dim as u32,
+                            nt,
+                            dim as u32,
+                            wu_dtype,
+                            false,
+                            false,
+                            false,
+                        );
+                        // SiLU
+                        metal_ops.elementwise.encode_silu_elementwise_mul_batch(
+                            encoder,
+                            &bs.gate_buf,
+                            &bs.up_buf,
+                            inter_dim as u32,
+                            nt,
+                        );
+                        // Down
+                        encode_dequant_batch(
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wd_buf,
+                            &bs.gate_buf,
+                            &bs.proj_buf,
+                            &bs.matmul_in_f16,
+                            dim as u32,
+                            nt,
+                            inter_dim as u32,
+                            wd_dtype,
+                            false,
+                            false,
+                            false,
+                        );
+                        // Final residual: hidden += proj_buf
+                        metal_ops.elementwise.encode_elementwise_add_batch(
+                            encoder,
+                            &bs.hidden,
+                            &bs.proj_buf,
+                            dim as u32,
+                            nt,
+                        );
+                        Ok(())
+                    })?;
                 } // end re-acquired bs_guard scope
             }
         }
 
-        // Re-acquire for logits readback.
-        let mut bs_guard = metal_ops.batch_scratches();
-        let bs = bs_guard.as_mut().unwrap();
-
         qwen_kv.finalize_batch(n_tokens);
-
-        // Read hidden from GPU for logits.
-        let hidden = unsafe { &bs.hidden.as_slice::<f32>()[..n_tokens * dim] };
 
         match (logits, logits_all) {
             (Some(logits), None) => {
-                let last_hidden = &hidden[(n_tokens - 1) * dim..n_tokens * dim];
-                let mut h = last_hidden.to_vec();
+                let mut bs_guard = metal_ops.batch_scratches();
+                let Some(bs) = bs_guard.as_mut() else {
+                    return Ok(false);
+                };
+                let mut h = unsafe {
+                    bs.hidden.as_slice::<f32>()[((n_tokens - 1) * dim)..n_tokens * dim].to_vec()
+                };
                 drop(bs_guard);
                 Self::write_single_logits(backend, &mut h, dim, vocab_size, eps, weights, logits)?;
             }
             (None, Some(logits_all)) => {
-                let h = hidden.to_vec();
+                let mut bs_guard = metal_ops.batch_scratches();
+                let Some(bs) = bs_guard.as_mut() else {
+                    return Ok(false);
+                };
+                let h = unsafe { bs.hidden.as_slice::<f32>()[..n_tokens * dim].to_vec() };
                 drop(bs_guard);
                 Self::write_all_batch_logits(
                     backend, &h, n_tokens, dim, vocab_size, eps, weights, logits_all,
@@ -3162,10 +3423,29 @@ impl Qwen35Forward {
             );
         }
 
-        // GPU-unified prefill is disabled: the batch_scratches mutex is held
-        // for GPU-resident hidden, but Backend recurrent dispatch also needs it,
-        // causing deadlock. Requires Backend API changes to fix.
-        // The fallback path below uses Phase 2-3 GPU batch ops instead.
+        if let Some(logits) = logits.as_mut() {
+            if Self::try_forward_batch_gpu_unified(
+                ctx,
+                token_ids,
+                kv,
+                weights,
+                Some(&mut **logits),
+                None,
+            )? {
+                return Ok(());
+            }
+        } else if let Some(logits_all) = logits_all.as_mut()
+            && Self::try_forward_batch_gpu_unified(
+                ctx,
+                token_ids,
+                kv,
+                weights,
+                None,
+                Some(&mut **logits_all),
+            )?
+        {
+            return Ok(());
+        }
 
         let Some(qwen_kv) = kv.as_qwen35_mut() else {
             anyhow::bail!("Qwen35Forward requires ModelKv::Qwen35");
@@ -3508,8 +3788,6 @@ impl Qwen35Forward {
             if !is_recurrent {
                 // Full-attention layer: single CB — QKV + split + norm + RoPE
                 // + KV append + attention + gate + WO + FFN.
-                let gpu_attention = qwen_kv.gpu_attention().unwrap();
-
                 // Cache QK norm weights if present.
                 let q_norm_key = lw.attn_q_norm;
                 let k_norm_key = lw.attn_k_norm;
@@ -3520,21 +3798,47 @@ impl Qwen35Forward {
                     let wk = weight_cache.get(&lw.wk).unwrap();
                     let wv = weight_cache.get(&lw.wv).unwrap();
                     encode_dequant_matvec_with_config(
-                        metal_ops, encoder, wq, &s.norm_buf, &s.gate_buf,
-                        (q_dim * 2) as u32, dim as u32, lw.wq_dtype, exec_plan.dequant_dispatch,
+                        metal_ops,
+                        encoder,
+                        wq,
+                        &s.norm_buf,
+                        &s.gate_buf,
+                        (q_dim * 2) as u32,
+                        dim as u32,
+                        lw.wq_dtype,
+                        exec_plan.dequant_dispatch,
                     );
                     encode_dequant_matvec_with_config(
-                        metal_ops, encoder, wk, &s.norm_buf, &s.k_buf,
-                        kv_dim as u32, dim as u32, lw.wk_dtype, exec_plan.dequant_dispatch,
+                        metal_ops,
+                        encoder,
+                        wk,
+                        &s.norm_buf,
+                        &s.k_buf,
+                        kv_dim as u32,
+                        dim as u32,
+                        lw.wk_dtype,
+                        exec_plan.dequant_dispatch,
                     );
                     encode_dequant_matvec_with_config(
-                        metal_ops, encoder, wv, &s.norm_buf, &s.v_buf,
-                        kv_dim as u32, dim as u32, lw.wv_dtype, exec_plan.dequant_dispatch,
+                        metal_ops,
+                        encoder,
+                        wv,
+                        &s.norm_buf,
+                        &s.v_buf,
+                        kv_dim as u32,
+                        dim as u32,
+                        lw.wv_dtype,
+                        exec_plan.dequant_dispatch,
                     );
 
                     // 2. GPU Q+gate split: gate_buf → q_buf (Q), up_buf (gate).
                     metal_ops.elementwise.encode_split_qgate_batch(
-                        encoder, &s.gate_buf, &s.q_buf, &s.up_buf, 1, q_dim as u32,
+                        encoder,
+                        &s.gate_buf,
+                        &s.q_buf,
+                        &s.up_buf,
+                        1,
+                        q_dim as u32,
                     );
 
                     // 3. QK norm (if applicable).
@@ -3542,90 +3846,182 @@ impl Qwen35Forward {
                         let q_nw = weight_cache.get(&q_key).unwrap();
                         let k_nw = weight_cache.get(&k_key).unwrap();
                         metal_ops.elementwise.encode_per_head_rms_norm_batch(
-                            encoder, &s.q_buf, q_nw, 1, n_heads as u32, head_dim as u32, eps,
+                            encoder,
+                            &s.q_buf,
+                            q_nw,
+                            1,
+                            n_heads as u32,
+                            head_dim as u32,
+                            eps,
                         );
                         metal_ops.elementwise.encode_per_head_rms_norm_batch(
-                            encoder, &s.k_buf, k_nw, 1, n_kv_heads as u32, head_dim as u32, eps,
+                            encoder,
+                            &s.k_buf,
+                            k_nw,
+                            1,
+                            n_kv_heads as u32,
+                            head_dim as u32,
+                            eps,
                         );
                     }
 
                     // 4. RoPE.
                     metal_ops.elementwise.encode_rope_batch(
-                        encoder, &s.q_buf, &s.k_buf, 1,
-                        n_heads as u32, n_kv_heads as u32, head_dim as u32,
-                        rope_position, 0.0, cfg.rope_freq_base,
+                        encoder,
+                        &s.q_buf,
+                        &s.k_buf,
+                        1,
+                        n_heads as u32,
+                        n_kv_heads as u32,
+                        head_dim as u32,
+                        rope_position,
+                        0.0,
+                        cfg.rope_freq_base,
                     );
 
                     // 5. KV append (GPU, f16/f32 aware).
                     let gpu_attn = qwen_kv.gpu_attention().unwrap();
                     metal_ops.elementwise.encode_kv_append(
-                        encoder, &s.k_buf, gpu_attn.k_buffer(layer),
-                        gpu_attn.is_f16(), kv_offset, kv_dim as u32,
+                        encoder,
+                        &s.k_buf,
+                        gpu_attn.k_buffer(layer),
+                        gpu_attn.is_f16(),
+                        kv_offset,
+                        kv_dim as u32,
                     );
                     metal_ops.elementwise.encode_kv_append(
-                        encoder, &s.v_buf, gpu_attn.v_buffer(layer),
-                        gpu_attn.is_f16(), kv_offset, kv_dim as u32,
+                        encoder,
+                        &s.v_buf,
+                        gpu_attn.v_buffer(layer),
+                        gpu_attn.is_f16(),
+                        kv_offset,
+                        kv_dim as u32,
                     );
 
                     // 6. Attention decode.
-                    metal_ops.attention.encode_attention_decode_with_scratch_and_config(
-                        encoder, &s.q_buf,
-                        gpu_attn.k_buffer(layer), gpu_attn.v_buffer(layer),
-                        &s.attn_out, &s.splitk_partial_out, &s.splitk_partial_lse,
-                        gpu_attn.is_f16(),
-                        n_heads as u32, n_kv_heads as u32, head_dim as u32,
-                        0, full_seq_len as u32, exec_plan.attention_dispatch,
-                    );
+                    metal_ops
+                        .attention
+                        .encode_attention_decode_with_scratch_and_config(
+                            encoder,
+                            &s.q_buf,
+                            gpu_attn.k_buffer(layer),
+                            gpu_attn.v_buffer(layer),
+                            &s.attn_out,
+                            &s.splitk_partial_out,
+                            &s.splitk_partial_lse,
+                            gpu_attn.is_f16(),
+                            n_heads as u32,
+                            n_kv_heads as u32,
+                            head_dim as u32,
+                            0,
+                            full_seq_len as u32,
+                            exec_plan.attention_dispatch,
+                        );
 
                     // 7. Attention gate: sigmoid(up_buf) × attn_out.
                     metal_ops.elementwise.encode_sigmoid_elementwise_mul(
-                        encoder, &s.up_buf, &s.attn_out, q_dim as u32,
+                        encoder,
+                        &s.up_buf,
+                        &s.attn_out,
+                        q_dim as u32,
                     );
 
                     // 8. WO projection.
                     let wo = weight_cache.get(&lw.wo).unwrap();
                     encode_dequant_matvec_with_config(
-                        metal_ops, encoder, wo, &s.attn_out, &s.proj_buf,
-                        dim as u32, q_dim as u32, lw.wo_dtype, exec_plan.dequant_dispatch,
+                        metal_ops,
+                        encoder,
+                        wo,
+                        &s.attn_out,
+                        &s.proj_buf,
+                        dim as u32,
+                        q_dim as u32,
+                        lw.wo_dtype,
+                        exec_plan.dequant_dispatch,
                     );
 
                     // 9. Residual + FFN norm.
                     let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
-                    metal_ops.elementwise.encode_residual_add_rms_norm_out_batch(
-                        encoder, &s.hidden, &s.proj_buf, ffn_nw, &s.norm_buf,
-                        dim as u32, 1, eps,
-                    );
+                    metal_ops
+                        .elementwise
+                        .encode_residual_add_rms_norm_out_batch(
+                            encoder,
+                            &s.hidden,
+                            &s.proj_buf,
+                            ffn_nw,
+                            &s.norm_buf,
+                            dim as u32,
+                            1,
+                            eps,
+                        );
 
                     // 10. Gate + Up (pair or separate).
                     let wg = weight_cache.get(&lw.wg).unwrap();
                     let wu = weight_cache.get(&lw.wu).unwrap();
                     if !crate::model::shared::encode_dequant_matvec_pair_with_config(
-                        metal_ops, encoder, wg, wu, &s.norm_buf, &s.gate_buf, &s.up_buf,
-                        inter_dim as u32, dim as u32,
-                        lw.wg_dtype, lw.wu_dtype, exec_plan.dequant_dispatch,
+                        metal_ops,
+                        encoder,
+                        wg,
+                        wu,
+                        &s.norm_buf,
+                        &s.gate_buf,
+                        &s.up_buf,
+                        inter_dim as u32,
+                        dim as u32,
+                        lw.wg_dtype,
+                        lw.wu_dtype,
+                        exec_plan.dequant_dispatch,
                     ) {
                         encode_dequant_matvec_with_config(
-                            metal_ops, encoder, wg, &s.norm_buf, &s.gate_buf,
-                            inter_dim as u32, dim as u32, lw.wg_dtype, exec_plan.dequant_dispatch,
+                            metal_ops,
+                            encoder,
+                            wg,
+                            &s.norm_buf,
+                            &s.gate_buf,
+                            inter_dim as u32,
+                            dim as u32,
+                            lw.wg_dtype,
+                            exec_plan.dequant_dispatch,
                         );
                         encode_dequant_matvec_with_config(
-                            metal_ops, encoder, wu, &s.norm_buf, &s.up_buf,
-                            inter_dim as u32, dim as u32, lw.wu_dtype, exec_plan.dequant_dispatch,
+                            metal_ops,
+                            encoder,
+                            wu,
+                            &s.norm_buf,
+                            &s.up_buf,
+                            inter_dim as u32,
+                            dim as u32,
+                            lw.wu_dtype,
+                            exec_plan.dequant_dispatch,
                         );
                     }
 
                     // 11. SiLU + down + residual handoff.
                     let wd = weight_cache.get(&lw.wd).unwrap();
                     let next_norm = if layer + 1 < n_layers {
-                        Some(weight_cache.get(&cached.layers[layer + 1].attn_norm).unwrap())
+                        Some(
+                            weight_cache
+                                .get(&cached.layers[layer + 1].attn_norm)
+                                .unwrap(),
+                        )
                     } else {
                         None
                     };
                     crate::model::shared::encode_gpu_ffn_decode_tail(
-                        metal_ops, encoder, s, &s.hidden, wd, lw.wd_dtype,
-                        dim as u32, inter_dim as u32, eps, exec_plan.dequant_dispatch,
+                        metal_ops,
+                        encoder,
+                        s,
+                        &s.hidden,
+                        wd,
+                        lw.wd_dtype,
+                        dim as u32,
+                        inter_dim as u32,
+                        eps,
+                        exec_plan.dequant_dispatch,
                         crate::model::layer_ops::FfnActivation::SiLU,
-                        None, next_norm, &|_| {},
+                        None,
+                        next_norm,
+                        &|_| {},
                     );
                     Ok(())
                 })?;
