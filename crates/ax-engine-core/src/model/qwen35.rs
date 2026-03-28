@@ -3855,7 +3855,6 @@ impl Qwen35Forward {
 
         // CPU buffers for recurrent backend dispatch.
         let mut rec_qkv = vec![0.0f32; dims.conv_dim()];
-        let mut rec_conv = vec![0.0f32; dims.conv_dim()];
 
         // Layer 0 attention norm.
         {
@@ -4223,28 +4222,32 @@ impl Qwen35Forward {
                     );
                 }
 
-                crate::compute::gdn::depthwise_conv1d_step(
-                    qwen_kv.conv_state_for_slot_mut(recurrent_slot, layer),
-                    &rec_qkv,
-                    runtime.conv_kernel,
-                    conv_cache_len,
-                    dims.conv_dim(),
-                    &mut rec_conv,
-                );
-
-                unsafe {
-                    s.up_buf.as_mut_slice::<f32>()[..dims.conv_dim()].copy_from_slice(&rec_conv);
-                }
-
                 let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
                 let recurrent_state_stride = qwen_kv.recurrent_state_len();
-                metal_ops.sync_qwen35_recurrent_slot_buffer_from_kv(qwen_kv, layer, recurrent_slot);
+                metal_ops.sync_qwen35_slot_buffers_from_kv(qwen_kv, layer, recurrent_slot);
                 metal_ops.with_qwen35_recurrent_slot_buffer(
                     layer,
                     recurrent_slot,
                     conv_state_stride,
                     recurrent_state_stride,
                     |slot_buffers| -> anyhow::Result<()> {
+                        let conv_out =
+                            unsafe { &mut s.up_buf.as_mut_slice::<f32>()[..dims.conv_dim()] };
+                        let conv_state = unsafe {
+                            &mut slot_buffers.conv_state.as_mut_slice::<f32>()[..conv_state_stride]
+                        };
+                        crate::compute::gdn::depthwise_conv1d_step(
+                            conv_state,
+                            &rec_qkv,
+                            runtime.conv_kernel,
+                            conv_cache_len,
+                            dims.conv_dim(),
+                            conv_out,
+                        );
+                        let backend_generation =
+                            qwen_kv.note_backend_conv_state_update(recurrent_slot, layer);
+                        slot_buffers.conv_synced_generation = Some(backend_generation);
+
                         // CB2: gated-delta + recurrent finalize + SSM output projection + residual + FFN.
                         metal_ops.device.execute_sync(|encoder| {
                             metal_ops.gdn.encode_prepare_single_token_qkv(

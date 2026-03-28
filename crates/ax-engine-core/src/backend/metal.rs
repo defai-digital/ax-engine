@@ -191,9 +191,9 @@ struct Qwen35RecurrentSlotBufferKey {
 }
 
 pub(crate) struct Qwen35MetalSlotBuffers {
-    conv_state: MetalBuffer,
+    pub(crate) conv_state: MetalBuffer,
     pub(crate) recurrent_state: MetalBuffer,
-    conv_synced_generation: Option<u64>,
+    pub(crate) conv_synced_generation: Option<u64>,
     pub(crate) recurrent_synced_generation: Option<u64>,
 }
 
@@ -2758,7 +2758,7 @@ impl MetalOps {
         self.batch_scratches.lock().unwrap()
     }
 
-    pub(crate) fn sync_qwen35_recurrent_slot_buffer_from_kv(
+    pub(crate) fn sync_qwen35_slot_buffers_from_kv(
         &self,
         qwen_kv: &crate::kv::Qwen35Kv,
         layer_idx: usize,
@@ -2778,6 +2778,21 @@ impl MetalOps {
             Qwen35MetalSlotBuffers::new(&self.device, conv_state_stride, recurrent_state_stride)
                 .expect("Failed to allocate qwen35 recurrent Metal slot buffers")
         });
+        let conv_generation = qwen_kv.conv_state_generation(slot_idx, layer_idx);
+        if !qwen_kv.conv_state_cpu_stale(slot_idx, layer_idx) {
+            if slot_buffers.conv_synced_generation != Some(conv_generation) {
+                unsafe {
+                    slot_buffers.conv_state.as_mut_slice::<f32>()[..conv_state_stride]
+                        .copy_from_slice(qwen_kv.conv_state_for_slot(slot_idx, layer_idx));
+                }
+                slot_buffers.conv_synced_generation = Some(conv_generation);
+            }
+        } else if slot_buffers.conv_synced_generation != Some(conv_generation) {
+            panic!(
+                "qwen35 conv state for slot {slot_idx} layer {layer_idx} is backend-owned but Metal slot buffer lost generation {conv_generation}"
+            );
+        }
+
         if !qwen_kv.recurrent_state_cpu_stale(slot_idx, layer_idx) {
             if slot_buffers.recurrent_synced_generation != Some(recurrent_generation) {
                 unsafe {
