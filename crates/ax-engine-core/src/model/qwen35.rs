@@ -3564,7 +3564,11 @@ impl Qwen35Forward {
                                 eps,
                             );
                             metal_ops.elementwise.encode_silu_elementwise_mul_batch(
-                                encoder, rec_z_buf, &bs.gate_buf, dims.inner_size as u32, nt,
+                                encoder,
+                                rec_z_buf,
+                                &bs.gate_buf,
+                                dims.inner_size as u32,
+                                nt,
                             );
                             // GPU SSM: proj_buf (inner_size) → attn_out (dim)
                             if Self::qwen35_batch_projection_needs_f16_input(ssm_out_dtype) {
