@@ -4036,6 +4036,9 @@ impl Qwen35Forward {
                 // Recurrent layer: CB1 (norm + input projections), Backend (conv + gated_delta),
                 // CB2 (SSM out + residual + FFN) — total 4 CBs instead of 6.
                 let prefix = format!("blk.{layer}");
+                let (walpha_raw, walpha_dtype) =
+                    weights.raw_with_dtype(&format!("{prefix}.ssm_alpha.weight"))?;
+                let walpha_key = walpha_raw.as_ptr() as usize;
 
                 // CB1: Attention norm + 4 input projections in one command buffer.
                 metal_ops.device.execute_sync(|encoder| {
@@ -4072,37 +4075,46 @@ impl Qwen35Forward {
                         lw.wk_dtype,
                         exec_plan.dequant_dispatch,
                     );
-                    // Beta → q_buf (reuse)
-                    encode_dequant_matvec_with_config(
+                    // Beta + alpha share the same input and output shape. Pair
+                    // them when the decode-side kernel route supports it.
+                    let wbeta = weight_cache.get(&lw.wv).unwrap();
+                    let walpha = weight_cache.get(&walpha_key).unwrap();
+                    if !crate::model::shared::encode_dequant_matvec_pair_with_config(
                         metal_ops,
                         encoder,
-                        weight_cache.get(&lw.wv).unwrap(),
+                        wbeta,
+                        walpha,
                         &s.norm_buf,
                         &s.q_buf,
+                        &s.proj_buf,
                         dims.time_step_rank as u32,
                         dim as u32,
                         lw.wv_dtype,
+                        walpha_dtype,
                         exec_plan.dequant_dispatch,
-                    );
-                    // Alpha → proj_buf (reuse). Look up the alpha weight directly.
-                    let alpha_prefix = format!("blk.{layer}");
-                    if let Ok((walpha_raw, _)) =
-                        weights.raw_with_dtype(&format!("{alpha_prefix}.ssm_alpha.weight"))
-                    {
-                        let walpha_key = walpha_raw.as_ptr() as usize;
-                        if let Some(walpha_buf) = weight_cache.get(&walpha_key) {
-                            encode_dequant_matvec_with_config(
-                                metal_ops,
-                                encoder,
-                                walpha_buf,
-                                &s.norm_buf,
-                                &s.proj_buf,
-                                dims.time_step_rank as u32,
-                                dim as u32,
-                                lw.wv_dtype,
-                                exec_plan.dequant_dispatch,
-                            );
-                        }
+                    ) {
+                        encode_dequant_matvec_with_config(
+                            metal_ops,
+                            encoder,
+                            wbeta,
+                            &s.norm_buf,
+                            &s.q_buf,
+                            dims.time_step_rank as u32,
+                            dim as u32,
+                            lw.wv_dtype,
+                            exec_plan.dequant_dispatch,
+                        );
+                        encode_dequant_matvec_with_config(
+                            metal_ops,
+                            encoder,
+                            walpha,
+                            &s.norm_buf,
+                            &s.proj_buf,
+                            dims.time_step_rank as u32,
+                            dim as u32,
+                            walpha_dtype,
+                            exec_plan.dequant_dispatch,
+                        );
                     }
                     Ok(())
                 })?;
