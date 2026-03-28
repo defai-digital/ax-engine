@@ -36,7 +36,7 @@
   "attention_prefill": {
     "fa2_mode": "off",
     "fa2_hd128_mode": "off",
-    "mistral_bc64_mode": "off",
+    "mistral_bc64_mode": "auto",
     "fa2_auto_min_tokens": 512,
     "fa2_auto_min_base_seq": 256,
     "fa2_hd128_auto_min_tokens": 512,
