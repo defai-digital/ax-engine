@@ -1956,30 +1956,32 @@ fn prepare_multi_token_gdn_bh_buffers(
     );
 
     let repeats = time_step_rank / group_count;
-    let mut q_lin = vec![0.0f32; key_dim];
-    let mut k_lin = vec![0.0f32; key_dim];
 
     for token_idx in 0..n_tokens {
         let conv_start = token_idx * conv_dim;
         let conv_end = conv_start + conv_dim;
         let conv_token = &conv_out_batch[conv_start..conv_end];
-        q_lin.copy_from_slice(&conv_token[..key_dim]);
-        k_lin.copy_from_slice(&conv_token[key_dim..2 * key_dim]);
-
-        crate::compute::gdn::l2_norm_heads(&mut q_lin, group_count, state_size, rms_norm_eps);
-        crate::compute::gdn::l2_norm_heads(&mut k_lin, group_count, state_size, rms_norm_eps);
 
         for src_head in 0..group_count {
             let src_start = src_head * state_size;
-            let src_end = src_start + state_size;
-            let q_src = &q_lin[src_start..src_end];
-            let k_src = &k_lin[src_start..src_end];
+            let k_src_start = key_dim + src_start;
+            let mut q_sum_sq = 0.0f32;
+            let mut k_sum_sq = 0.0f32;
+            for lane in 0..state_size {
+                let q = conv_token[src_start + lane];
+                let k = conv_token[k_src_start + lane];
+                q_sum_sq = q.mul_add(q, q_sum_sq);
+                k_sum_sq = k.mul_add(k, k_sum_sq);
+            }
+            let q_inv = (q_sum_sq + rms_norm_eps).sqrt().recip();
+            let k_inv = (k_sum_sq + rms_norm_eps).sqrt().recip();
             for rep in 0..repeats {
                 let dst_head = src_head * repeats + rep;
                 let dst_start = dst_head * n_tokens * state_size + token_idx * state_size;
-                let dst_end = dst_start + state_size;
-                q_out[dst_start..dst_end].copy_from_slice(q_src);
-                k_out[dst_start..dst_end].copy_from_slice(k_src);
+                for lane in 0..state_size {
+                    q_out[dst_start + lane] = conv_token[src_start + lane] * q_inv;
+                    k_out[dst_start + lane] = conv_token[k_src_start + lane] * k_inv;
+                }
             }
         }
 
