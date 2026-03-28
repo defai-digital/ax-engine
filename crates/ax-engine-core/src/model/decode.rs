@@ -661,7 +661,7 @@ mod tests {
         assert_eq!(
             selection.fallback_reason.as_deref(),
             Some(
-                "qwen35 hybrid decode stays sequential because recurrent layers still require per-layer CPU intervention"
+                "qwen35 hybrid decode stays sequential because recurrent state is still backend-owned and pipelined decode is unavailable"
             )
         );
         let summary = model.decode_plan_summary(&kv, DecodeIntent::Throughput, true);

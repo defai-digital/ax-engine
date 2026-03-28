@@ -802,7 +802,7 @@ fn qwen35_hybrid_decode_selection(intent: DecodeIntent, allow_pipelined: bool) -
         mode: DecodeMode::Sequential,
         fallback_reason: if intent == DecodeIntent::Throughput && allow_pipelined {
             Some(
-                "qwen35 hybrid decode stays sequential because recurrent layers still require per-layer CPU intervention"
+                "qwen35 hybrid decode stays sequential because recurrent state is still backend-owned and pipelined decode is unavailable"
                     .to_string(),
             )
         } else {
