@@ -826,6 +826,60 @@ impl Qwen35Forward {
         silu::elementwise_mul(rec_out, &z_gate);
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn encode_recurrent_pair_matvec_with_config(
+        metal_ops: &crate::backend::metal::MetalOps,
+        encoder: &ax_engine_metal::MetalEncoder,
+        wbeta: &MetalBuffer,
+        walpha: &MetalBuffer,
+        input: &MetalBuffer,
+        beta_out: &MetalBuffer,
+        alpha_out: &MetalBuffer,
+        m: u32,
+        k: u32,
+        beta_dtype: crate::gguf::tensor::GgmlType,
+        alpha_dtype: crate::gguf::tensor::GgmlType,
+    ) -> bool {
+        if beta_dtype != alpha_dtype {
+            return false;
+        }
+
+        // Keep the precomputed-f16 route authoritative when either weight was
+        // densified ahead of time; the paired quant kernels are only for the
+        // raw quantized path.
+        if metal_ops.has_precomputed_weight(wbeta) || metal_ops.has_precomputed_weight(walpha) {
+            return false;
+        }
+
+        match beta_dtype {
+            crate::gguf::tensor::GgmlType::Q4K => {
+                metal_ops.dequant.encode_fused_matvec_pair_q4_k(
+                    encoder, wbeta, walpha, input, beta_out, alpha_out, m, k,
+                );
+                true
+            }
+            crate::gguf::tensor::GgmlType::Q5K => {
+                metal_ops.dequant.encode_fused_matvec_pair_q5_k(
+                    encoder, wbeta, walpha, input, beta_out, alpha_out, m, k,
+                );
+                true
+            }
+            crate::gguf::tensor::GgmlType::Q6K => {
+                metal_ops.dequant.encode_fused_matvec_pair_q6_k(
+                    encoder, wbeta, walpha, input, beta_out, alpha_out, m, k,
+                );
+                true
+            }
+            crate::gguf::tensor::GgmlType::Q8_0 => {
+                metal_ops.dequant.encode_fused_matvec_pair_q8_0(
+                    encoder, wbeta, walpha, input, beta_out, alpha_out, m, k,
+                );
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn rms_norm_token_major(
         input: &[f32],
         weight: &[f32],
@@ -4079,7 +4133,7 @@ impl Qwen35Forward {
                     // them when the decode-side kernel route supports it.
                     let wbeta = weight_cache.get(&lw.wv).unwrap();
                     let walpha = weight_cache.get(&walpha_key).unwrap();
-                    if !crate::model::shared::encode_dequant_matvec_pair_with_config(
+                    if !Self::encode_recurrent_pair_matvec_with_config(
                         metal_ops,
                         encoder,
                         wbeta,
@@ -4091,7 +4145,6 @@ impl Qwen35Forward {
                         dim as u32,
                         lw.wv_dtype,
                         walpha_dtype,
-                        exec_plan.dequant_dispatch,
                     ) {
                         encode_dequant_matvec_with_config(
                             metal_ops,
