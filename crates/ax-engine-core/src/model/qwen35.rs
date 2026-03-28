@@ -3867,6 +3867,7 @@ impl Qwen35Forward {
         let exec_t = OpTimer::start();
         metal_ops.device.execute_sync(|encoder| {
             // Layer 0 attention norm.
+            let layer0_norm_t = OpTimer::start();
             let norm_w = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
             metal_ops.elementwise.encode_rms_norm_out(
                 encoder,
@@ -3877,6 +3878,9 @@ impl Qwen35Forward {
                 eps,
             );
             decode_barrier(encoder);
+            if let Some(ref mut ops_ref) = ops {
+                ops_ref.gpu_encode_layer_norm += layer0_norm_t.elapsed();
+            }
 
             for layer in 0..n_layers {
                 let lw = &cached.layers[layer];
@@ -3895,6 +3899,7 @@ impl Qwen35Forward {
                     let k_norm_key = lw.attn_k_norm;
                     let gpu_attn = qwen_kv.gpu_attention().unwrap();
 
+                    let qkv_t = OpTimer::start();
                     let wq = weight_cache.get(&lw.wq).unwrap();
                     let wk = weight_cache.get(&lw.wk).unwrap();
                     let wv = weight_cache.get(&lw.wv).unwrap();
@@ -3940,8 +3945,12 @@ impl Qwen35Forward {
                         q_dim as u32,
                     );
                     decode_barrier(encoder);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_qkv += qkv_t.elapsed();
+                    }
 
                     if let (Some(q_key), Some(k_key)) = (q_norm_key, k_norm_key) {
+                        let qk_norm_t = OpTimer::start();
                         let q_nw = weight_cache.get(&q_key).unwrap();
                         let k_nw = weight_cache.get(&k_key).unwrap();
                         metal_ops.elementwise.encode_per_head_rms_norm_batch(
@@ -3963,8 +3972,12 @@ impl Qwen35Forward {
                             eps,
                         );
                         decode_barrier(encoder);
+                        if let Some(ref mut ops_ref) = ops {
+                            ops_ref.gpu_encode_layer_norm += qk_norm_t.elapsed();
+                        }
                     }
 
+                    let rope_t = OpTimer::start();
                     metal_ops.elementwise.encode_rope_batch(
                         encoder,
                         &s.q_buf,
@@ -3978,7 +3991,11 @@ impl Qwen35Forward {
                         cfg.rope_freq_base,
                     );
                     decode_barrier(encoder);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_rope += rope_t.elapsed();
+                    }
 
+                    let kv_append_t = OpTimer::start();
                     metal_ops.elementwise.encode_kv_append(
                         encoder,
                         &s.k_buf,
@@ -3996,7 +4013,11 @@ impl Qwen35Forward {
                         kv_dim as u32,
                     );
                     decode_barrier(encoder);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_kv_append += kv_append_t.elapsed();
+                    }
 
+                    let attn_t = OpTimer::start();
                     metal_ops
                         .attention
                         .encode_attention_decode_with_scratch_and_config(
@@ -4024,7 +4045,11 @@ impl Qwen35Forward {
                         q_dim as u32,
                     );
                     decode_barrier(encoder);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_attention += attn_t.elapsed();
+                    }
 
+                    let out_proj_t = OpTimer::start();
                     encode_dequant_matvec_with_config(
                         metal_ops,
                         encoder,
@@ -4037,7 +4062,11 @@ impl Qwen35Forward {
                         exec_plan.dequant_dispatch,
                     );
                     decode_barrier(encoder);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_out_proj += out_proj_t.elapsed();
+                    }
 
+                    let residual_norm_t = OpTimer::start();
                     let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
                     metal_ops
                         .elementwise
@@ -4052,7 +4081,13 @@ impl Qwen35Forward {
                             eps,
                         );
                     decode_barrier(encoder);
+                    if let Some(ref mut ops_ref) = ops {
+                        let elapsed = residual_norm_t.elapsed();
+                        ops_ref.gpu_encode_layer_residual += elapsed / 2;
+                        ops_ref.gpu_encode_layer_norm += elapsed / 2;
+                    }
 
+                    let gate_up_t = OpTimer::start();
                     let wg = weight_cache.get(&lw.wg).unwrap();
                     let wu = weight_cache.get(&lw.wu).unwrap();
                     if !crate::model::shared::encode_dequant_matvec_pair_with_config(
@@ -4094,7 +4129,11 @@ impl Qwen35Forward {
                         );
                     }
                     decode_barrier(encoder);
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_ffn += gate_up_t.elapsed();
+                    }
 
+                    let ffn_tail_t = OpTimer::start();
                     crate::model::shared::encode_gpu_ffn_decode_tail(
                         metal_ops,
                         encoder,
@@ -4112,6 +4151,9 @@ impl Qwen35Forward {
                         next_norm,
                         &decode_barrier,
                     );
+                    if let Some(ref mut ops_ref) = ops {
+                        ops_ref.gpu_encode_layer_ffn += ffn_tail_t.elapsed();
+                    }
                 } else {
                     let recurrent_keys = match &gpu_layer_keys[layer] {
                         Qwen35GpuLayerKeys::Recurrent(keys) => keys,
@@ -4128,6 +4170,7 @@ impl Qwen35Forward {
                         conv_state_stride,
                         recurrent_state_stride,
                         |slot_buffers| {
+                            let recurrent_norm_t = OpTimer::start();
                             let norm_w = weight_cache.get(&lw.attn_norm).unwrap();
                             metal_ops.elementwise.encode_rms_norm_out(
                                 encoder,
@@ -4138,7 +4181,11 @@ impl Qwen35Forward {
                                 eps,
                             );
                             decode_barrier(encoder);
+                            if let Some(ref mut ops_ref) = ops {
+                                ops_ref.gpu_encode_layer_norm += recurrent_norm_t.elapsed();
+                            }
 
+                            let recurrent_input_t = OpTimer::start();
                             encode_dequant_matvec_with_config(
                                 metal_ops,
                                 encoder,
@@ -4200,7 +4247,11 @@ impl Qwen35Forward {
                                 );
                             }
                             decode_barrier(encoder);
+                            if let Some(ref mut ops_ref) = ops {
+                                ops_ref.gpu_encode_layer_qkv += recurrent_input_t.elapsed();
+                            }
 
+                            let recurrent_core_t = OpTimer::start();
                             metal_ops.gdn.encode_causal_conv_sequence(
                                 encoder,
                                 &s.gate_buf,
@@ -4261,7 +4312,11 @@ impl Qwen35Forward {
                                 1,
                             );
                             decode_barrier(encoder);
+                            if let Some(ref mut ops_ref) = ops {
+                                ops_ref.gpu_encode_layer_attention += recurrent_core_t.elapsed();
+                            }
 
+                            let recurrent_out_proj_t = OpTimer::start();
                             encode_dequant_matvec_with_config(
                                 metal_ops,
                                 encoder,
@@ -4274,7 +4329,11 @@ impl Qwen35Forward {
                                 exec_plan.dequant_dispatch,
                             );
                             decode_barrier(encoder);
+                            if let Some(ref mut ops_ref) = ops {
+                                ops_ref.gpu_encode_layer_out_proj += recurrent_out_proj_t.elapsed();
+                            }
 
+                            let residual_norm_t = OpTimer::start();
                             let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
                             metal_ops
                                 .elementwise
@@ -4289,7 +4348,13 @@ impl Qwen35Forward {
                                     eps,
                                 );
                             decode_barrier(encoder);
+                            if let Some(ref mut ops_ref) = ops {
+                                let elapsed = residual_norm_t.elapsed();
+                                ops_ref.gpu_encode_layer_residual += elapsed / 2;
+                                ops_ref.gpu_encode_layer_norm += elapsed / 2;
+                            }
 
+                            let gate_up_t = OpTimer::start();
                             let wg = weight_cache.get(&lw.wg).unwrap();
                             let wu = weight_cache.get(&lw.wu).unwrap();
                             if !crate::model::shared::encode_dequant_matvec_pair_with_config(
@@ -4331,7 +4396,11 @@ impl Qwen35Forward {
                                 );
                             }
                             decode_barrier(encoder);
+                            if let Some(ref mut ops_ref) = ops {
+                                ops_ref.gpu_encode_layer_ffn += gate_up_t.elapsed();
+                            }
 
+                            let ffn_tail_t = OpTimer::start();
                             crate::model::shared::encode_gpu_ffn_decode_tail(
                                 metal_ops,
                                 encoder,
@@ -4349,6 +4418,9 @@ impl Qwen35Forward {
                                 next_norm,
                                 &decode_barrier,
                             );
+                            if let Some(ref mut ops_ref) = ops {
+                                ops_ref.gpu_encode_layer_ffn += ffn_tail_t.elapsed();
+                            }
                         },
                     );
                 }
