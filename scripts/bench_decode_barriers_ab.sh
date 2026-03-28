@@ -7,7 +7,7 @@ Usage:
   scripts/bench_decode_barriers_ab.sh
 
 Environment overrides:
-  AX_BENCH_BIN     Benchmark binary path (default: target/release/ax-bench)
+  AX_BENCH_BIN     Benchmark binary path (default: target/release/ax-engine-bench)
   PROMPT_TOKENS    Prompt token count (default: 64)
   DECODE_TOKENS    Decode token count (default: 128)
   WARMUP_ITERS     Warmup iterations (default: 1)
@@ -31,7 +31,7 @@ if [[ $# -ne 0 ]]; then
     exit 2
 fi
 
-AX_BENCH_BIN=${AX_BENCH_BIN:-target/release/ax-bench}
+AX_BENCH_BIN=${AX_BENCH_BIN:-target/release/ax-engine-bench}
 PROMPT_TOKENS=${PROMPT_TOKENS:-64}
 DECODE_TOKENS=${DECODE_TOKENS:-128}
 WARMUP_ITERS=${WARMUP_ITERS:-1}

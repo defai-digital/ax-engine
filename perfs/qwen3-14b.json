@@ -41,5 +41,13 @@
     "fa2_auto_min_base_seq": 256,
     "fa2_hd128_auto_min_tokens": 512,
     "mistral_bc64_min_tokens": 384
+  },
+  "decode_regimes": {
+    "short_max_attend_len": 384,
+    "long": {
+      "attention_decode": {
+        "splitk_threshold": 256
+      }
+    }
   }
 }

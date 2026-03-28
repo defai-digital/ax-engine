@@ -5661,6 +5661,7 @@ pub struct AttentionKernels {
 /// Pre-compiled GDN recurrence kernels.
 pub struct GdnKernels {
     causal_conv_sequence_f32: ComputePipeline,
+    prepare_single_token_qkv_f32: ComputePipeline,
     gated_delta_128_64: ComputePipeline,
     gated_delta_64_64: ComputePipeline,
     gated_delta_fallback: ComputePipeline,
@@ -6690,6 +6691,12 @@ impl GdnKernels {
             "qwen35_causal_conv_sequence_f32",
         )
         .context("Failed to compile qwen35_causal_conv_sequence_f32 kernel")?;
+        let prepare_single_token_qkv_f32 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "qwen35_prepare_single_token_gdn_qkv_f32",
+        )
+        .context("Failed to compile qwen35_prepare_single_token_gdn_qkv_f32 kernel")?;
         let gated_delta_128_64 = ComputePipeline::from_source(
             device.device(),
             GDN_SHADER_SRC,
@@ -6719,6 +6726,7 @@ impl GdnKernels {
         .context("Failed to compile chunked_gated_delta_rule_32_64_64 kernel")?;
         Ok(Self {
             causal_conv_sequence_f32,
+            prepare_single_token_qkv_f32,
             gated_delta_128_64,
             gated_delta_64_64,
             gated_delta_fallback,
@@ -6794,6 +6802,37 @@ impl GdnKernels {
             );
             Ok(())
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_prepare_single_token_qkv(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        conv_out: &MetalBuffer,
+        q_out: &MetalBuffer,
+        k_out: &MetalBuffer,
+        v_out: &MetalBuffer,
+        group_count: u32,
+        time_step_rank: u32,
+        state_size: u32,
+        eps: f32,
+    ) {
+        let dims = DispatchDims::d1((time_step_rank * state_size) as usize, 64);
+        encoder.setComputePipelineState(self.prepare_single_token_qkv_f32.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(conv_out.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(q_out.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(k_out.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(v_out.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, group_count);
+        bind_u32(encoder, 5, time_step_rank);
+        bind_u32(encoder, 6, state_size);
+        bind_f32(encoder, 7, eps);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
     }
 
     /// Encode gated delta net into an existing command encoder (no execute_sync).

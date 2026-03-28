@@ -1,84 +1,223 @@
 # AX Engine
 
-A Rust inference engine for LLM workloads on Apple Silicon M3+, built around one idea: **domain-specific kernel fusion beats general-purpose graph execution for local inference**.
+A native-first LLM inference engine for Apple Silicon M3+, built around one
+idea:
+
+**for supported local transformer workloads, a domain-specific fused runtime can
+extract more value from Apple GPUs and Apple UMA than a general-purpose graph
+executor.**
 
 > Requires macOS on Apple Silicon M3 or newer, Xcode, and Rust 1.88+.
 
+## Why Have AX Engine
+
+`llama.cpp` already provides excellent GGUF coverage. MLX and MLX-based engines
+already align well with Apple's high-level stack. AX exists for a narrower and
+more opinionated reason:
+
+- to own a **native Apple-silicon performance path** for supported transformer
+  model families
+- to optimize both the **execution path** and the **memory path**
+- to take Apple-only decisions that a portable engine cannot prioritize as
+  aggressively
+
+AX is therefore not trying to be:
+
+- a generic tensor graph executor
+- a universal GGUF engine
+- a thin wrapper around `llama.cpp`
+
+For supported native models, AX runs through its own Metal runtime.
+For unsupported models, AX can route to `llama.cpp` as a compatibility
+fallback so coverage does not collapse into crashes or dead ends.
+
+For a research-level implementation comparison, see
+[AX Engine vs llama.cpp](./docs/ax-engine-vs-llama-cpp.md).
+
 ## Design Philosophy
 
-Most inference engines are general tensor graph executors. They represent a forward pass as a DAG of individual operations (matmul, norm, add, RoPE, ...) and dispatch each as a separate GPU kernel. This is flexible but leaves performance on the table: every dispatch has overhead (pipeline binding, buffer binding, encoder calls), and adjacent operations that share data cannot reuse it in registers or threadgroup memory.
+Most inference engines execute a model as a graph of small ops:
 
-AX Engine takes a different approach. Because it only needs to run transformer inference (not arbitrary computation), it fuses operations across graph boundaries into domain-specific Metal kernels that a general executor cannot express.
+- matmul
+- add
+- norm
+- RoPE
+- KV updates
+- elementwise activation
 
-The runtime also leans into Apple UMA directly: mmap-backed model weights are
-now aliased into Metal buffers without an extra copy when Metal accepts the
-alias, with a safe fallback to copied buffers when it does not.
+That is flexible, but it creates overhead on Apple GPUs:
 
-The Metal API cleanup track is now fully shipped as well: command buffers
-prefer unretained references, shared buffers opt out of automatic hazard
-tracking, and the remaining single-vs-batch elementwise duplication has been
-collapsed behind function-constant-specialized pipelines.
+- more dispatches
+- more pipeline and resource binding churn
+- more intermediate memory traffic
+- fewer opportunities to reuse data in registers or threadgroup memory
 
-The next development phase follows that same idea more aggressively. The
-remaining high-value wins are no longer generic matmul cleanups; they are
-deeper decode fusions and prefill attention/runtime work.
+AX takes the opposite stance:
 
-The current FFN-side decode prototypes are both benchmark-gated:
-- `AX_METAL_DECODE_PAIR_MATVEC=1` for gate+up pair matvec
-- `AX_METAL_DECODE_FUSED_SILU_DOWN=1` for fused SiLU*Up + Down projection
+- it is **transformer-specific**, not a general graph runtime
+- it prefers **selective fusion** where the fused path is structurally faster
+- it treats **Apple UMA** as a first-class optimization surface, not just a
+  background hardware fact
 
-Neither is shipped by default yet because the first real-model results
-regressed decode on common `Q4_K`/`Q5_K` workloads.
+The project is benchmark-gated on purpose. AX does not assume that every
+possible fusion or every experimental kernel should ship by default. If a path
+is not yet stable across real models, it stays opt-in.
 
-The matmul-parity phase is therefore considered closed. Ongoing performance
-work is now a fusion-architecture follow-on, not another round of isolated
-kernel parity cleanup.
+## What AX Optimizes
 
-### Fusion Architecture
+AX's native edge is built on two structural surfaces.
 
-A standard transformer layer has ~15-20 logical operations. A general graph executor dispatches each as a separate Metal kernel. AX fuses them into fewer, larger kernels:
+### 1. Execution Path
+
+AX reduces work on the hot path by replacing split operator sequences with
+transformer-specific fused kernels and model-aware scheduling.
+
+Examples of the current fused path include:
+
+- QKV split + bias + QK norm + RoPE + KV append
+- residual add + RMSNorm
+- selected FFN-side pair kernels
+- pipelined decode with model-aware execution planning
+
+This is why some families benefit more than others. Llama 3 currently benefits
+the most because its decode path lines up well with AX's fusion depth. Qwen3
+improved materially once the post-QKV fused decode path shipped, but decode-side
+fusion is still the main near-term performance priority. AX is not trying to
+"fuse everything"; it is trying to fuse where dispatch savings, occupancy, and
+memory traffic all still make sense together.
+
+### 2. Memory Path
+
+AX is also designed around Apple Silicon's unified memory architecture.
+
+The most important upgrade in this direction is **mmap-backed no-copy Metal
+buffer aliasing** for model weights where Metal accepts the alias. That matters
+strategically because it is not just a shader trick. It improves the runtime's
+memory path itself:
+
+- less copy overhead on model load
+- better alignment with long-lived resident models
+- a stronger base for future KV and prompt-cache work
+- more direct use of Apple Silicon's shared address-space advantages
+
+This is one of the clearest reasons AX exists as a native Apple-silicon engine
+instead of just another frontend around someone else's runtime.
+
+## Native-First, Compatibility-Backed
+
+AX should be read as:
+
+- **native-first** for supported model families
+- **compatibility-backed** for unsupported coverage
+
+That means:
+
+- native AX is the product path
+- `llama.cpp` fallback is the safety net
+- benchmark claims should be made on AX's supported native set, not on fallback
+  coverage
+
+Use routing when you want coverage. Use AX native when you want to test or ship
+the Apple-specific path.
+
+## Current Optimization Posture
+
+AX's current optimization posture is deliberate rather than random:
+
+- Llama 3 benefits strongly from the current fusion depth
+- Qwen3 decode improved after the fused post-QKV path landed
+- deeper decode-side fusion remains the highest-value next step, especially for
+  dense transformer decode
+- FFN-side decode prototypes remain benchmark-gated and are not enabled by
+  default if they regress common workloads
+- profile-driven tuning exists today and is expected to become more
+  regime-sensitive over time
+
+This is the pattern AX wants: performance should be explainable by the runtime's
+structure, not by isolated one-off benchmark wins.
+
+## Fusion Architecture
+
+A standard transformer layer has roughly 15-20 logical operations. A generic
+executor may dispatch many of them independently. AX fuses selected regions into
+fewer, larger kernels where the fused path is worth owning.
 
 **Attention preparation** (4-9 ops fused into 1 dispatch):
-```
+
+```text
 QKV split + bias add + per-head QK norm + RoPE + KV cache append
 ```
-A single kernel reads the fused QKV projection output, splits it, adds per-component bias (Qwen3), normalizes Q and K heads (Gemma3), applies rotary position embedding, and writes K/V directly to the KV cache. llama.cpp does each of these as a separate dispatch because its graph IR cannot express cross-op fusion.
+
+A single kernel reads the fused QKV projection output, splits it, adds
+per-component bias when needed, normalizes Q and K heads for model families
+that require it, applies rotary position embedding, and writes K/V directly to
+the KV cache.
 
 **Residual + normalization** (2 ops fused into 1 dispatch):
-```
+
+```text
 hidden += projection_output; norm_out = RMSNorm(hidden)
 ```
-The residual addition at the end of one sub-block is fused with the RMSNorm at the start of the next. The data is read once, updated in-place, and normalized in one pass.
 
-**FFN gate+up pair kernel** (2 matmuls fused into 1 dispatch):
+The residual addition at the end of one sub-block is fused with the RMSNorm at
+the start of the next, reducing an extra pass over the same data.
+
+**Selected FFN pair kernels**:
+
+```text
+gate = W_gate @ x; up = W_up @ x
 ```
-gate = W_gate @ x; up = W_up @ x  // same input, one B-tile load
-```
-Both projections share the same input vector; the pair kernel loads it once and computes two independent outputs, halving input bandwidth.
 
-For a 32-layer model, these fusions reduce total Metal dispatches per forward pass by **~100-200 dispatches** compared to llama.cpp. At 10-15 microseconds per dispatch, this saves 1-3ms per token -- significant when decode tokens take 15-25ms total.
+Where the shape and the measured results justify it, AX computes multiple
+projections from the same input load instead of paying that bandwidth cost
+twice.
 
-### Blocked-Layout Batch Matmul
+For a 32-layer model, this kind of structural fusion can remove on the order of
+100-200 Metal dispatches per forward pass compared with a more split execution
+strategy.
 
-Prefill throughput depends on the batch (multi-token) matmul kernel. AX uses the same blocked threadgroup layout as llama.cpp's `kernel_mul_mm`:
+## Prefill Kernel Strategy
 
-- Tile: BM=64, BN=32, BK=32, TG=128 (4 simdgroups)
-- Blocked stride-8 layout: each `simdgroup_load` 8x8 fragment hits 1 cache line (vs 8 with row-major)
-- Vectorized B-tile load: `float2x4 -> half2x4` single transaction per thread
-- `BLOCKED_BC_OUT` function constant: compile-time elimination of boundary checks for full tiles
-- Covered types: Q4_K, Q5_K, Q6_K, Q8_0, Q4_0
+Prefill throughput depends heavily on the batched matmul path. AX uses a
+blocked-layout batch matmul design with bounded shader specialization:
 
-The inner loop achieves 1.33 MACs/load (8 multiply-accumulate ops per 6 simdgroup loads), matching llama.cpp's compute density.
+- tile family tuned for Apple GPU execution
+- blocked data layout to improve cache behavior
+- vectorized tile loading
+- function constants for profitable hot-path specialization such as full-tile
+  vs edge-tile handling
+- quantized coverage for common GGUF families including Q4_K, Q5_K, Q6_K,
+  Q8_0, and Q4_0
 
-### Per-Model Kernel Profiles
+The goal is not to copy `llama.cpp` parameter-for-parameter. The goal is to
+adopt similar structural wins only where AX's own runtime and buffer contracts
+actually match.
 
-Dispatch parameters (threadgroup size, tile dimensions, kernel variants, attention strategy) are driven by JSON profiles loaded at model initialization. Each model family and size has its own profile:
+## Tuning Model
 
-```
+AX uses JSON-driven kernel and routing profiles today:
+
+```text
 perfs/qwen3-8b.json    perfs/gemma3-12b.json    perfs/llama3-70b.json
 ```
 
-This enables per-model tuning without recompilation and drives the `ax-bench` auto-tuning workflow.
+These profiles currently control things like:
+
+- threadgroup sizing
+- tile choices
+- kernel variants
+- attention strategy
+
+This is useful, but it is not the end state. The direction is toward more
+regime-sensitive tuning across:
+
+- architecture
+- hidden size
+- head dimension
+- quant family
+- short vs long prefill
+- short vs long decode
+- memory-pressure mode
 
 ## Performance
 
@@ -91,19 +230,41 @@ AX Engine vs llama.cpp on Apple M3 Max (March 2026). Values over 100% mean AX wa
 | Qwen3 8B | 727.4 tok/s | 736.7 tok/s | 98.7% | 62.4 tok/s | 60.3 tok/s | **103.5%** |
 | Qwen3 14B | 391.6 tok/s | 408.2 tok/s | 95.9% | 37.1 tok/s | 35.6 tok/s | **104.2%** |
 | Qwen3 32B | 126.7 tok/s | 150.7 tok/s | 84.1% | 15.6 tok/s | 14.9 tok/s | **104.7%** |
+| Qwen3.5 9B | 240.5 tok/s | 732.2 tok/s | 32.8% | 26.8 tok/s | 48.9 tok/s | 54.8% |
 | Gemma 3 12B | 420.5 tok/s | 463.3 tok/s | 90.8% | 39.6 tok/s | 35.8 tok/s | **110.5%** |
 | Gemma 3 27B | 155.7 tok/s | 170.2 tok/s | 91.5% | 17.8 tok/s | 15.1 tok/s | **117.9%** |
 
 LLaMA 3 benefits most from AX's fusion depth (10 dispatches/layer vs ~20 in a
-per-op executor). Qwen3 decode now uses the shipped fused post-QKV path
-(`qkv=fused`) on the common route, and `Qwen3 14B` is now back near parity on
-both prefill and decode after restoring its shipped prefill route to
-`f16_io=off`. Synthetic throughput benches now mask stop tokens during decode
-measurement so long-context rows like `Qwen3 32B` do not collapse to `0 tok/s`
-when EOS wins the first sampled step. The remaining FFN decode fusions are
-still experimental: both the gate+up pair matvec and the fused SiLU+Down path
-are opt-in only until they show a stable real-model decode win. See
-[BENCHMARKING.md](./BENCHMARKING.md) for methodology.
+per-op executor). That is the cleanest example of AX's design philosophy
+showing up in measured results.
+
+Qwen3 benefits less, but its decode path improved once the fused post-QKV route
+(`qkv=fused`) shipped. That is the kind of movement AX wants to see: a runtime
+change with a clear structural explanation, not a random benchmark spike.
+
+Qwen3.5 9B is the first hybrid attention+SSM (Mamba-2/GDN) model supported. Its
+decode improved from 12.9 to 26.8 tok/s via GPU-unified decode, reaching ~55%
+of `llama.cpp` on decode. Prefill now measures 240.5 tok/s (~33% of
+`llama.cpp`) after re-enabling the GPU-unified prefill path. The remaining gap
+still traces to sequential host orchestration and hybrid recurrent state
+handling (10,496 decode cmd_buf submissions, 1,024 decode barriers, and 165
+prefill cmd_buf submissions for the 512/128 throughput benchmark, vs 128 decode
+submissions for the pure-transformer pipelined path).
+
+Prefill uses fused Q4K/Q5K/Q6K dequant batch matmul kernels with native
+token-major layout. GPU attention KV is f16 by default for all models.
+Synthetic throughput benches mask stop tokens during decode measurement so
+long-context rows like `Qwen3 32B` do not collapse to `0 tok/s` when EOS wins
+the first sampled step.
+
+These numbers should be read as a pattern, not a blanket claim:
+
+- AX wins most clearly where its fused native path is already deep
+- AX improves when a real fused path replaces a split one
+- AX still leaves performance on the table where decode fusion, specialization,
+  or resource policy is not yet deep enough
+
+See [BENCHMARKING.md](./BENCHMARKING.md) for methodology.
 
 ## Supported Models
 
@@ -135,7 +296,7 @@ Minimum: 6B+ parameters for generative models. MoE models are not supported.
 
 **Multi-model**: Per-model Metal command queues and KV caches, graceful OOM handling, explicit GPU/CPU backend per model, thread-safe (`Arc`/`Mutex`).
 
-**Integration**: Rust library (`ax-core`), llama.cpp-compatible CLI (`ax-llama`), drop-in `libllama` shim (`ax-shim`), experimental Python bindings (`ax-engine-py`), benchmarking tools (`ax-bench`).
+**Integration**: core runtime (`ax-engine-core`), high-level Rust SDK facade (`ax-engine-sdk`), llama.cpp-compatible CLI (`ax-engine`), basic OpenAI-compatible inference server built on the Rust SDK (`ax-engine-server`), drop-in `libllama` shim (`ax-engine-shim`), Python bindings built on the Rust SDK (`ax-engine-py`), Node.js / Next.js HTTP client SDK (`packages/ax-engine-js`), benchmarking tools (`ax-engine-bench`).
 
 ## Quick Start
 
@@ -143,29 +304,89 @@ Minimum: 6B+ parameters for generative models. MoE models are not supported.
 cargo build --workspace --release
 
 # Single prompt
-./target/release/ax-llama \
+./target/release/ax-engine \
   --model ./models/Qwen3-8B-Q4_K_M.gguf \
   --chat --prompt "Explain speculative decoding."
 
 # Interactive
-./target/release/ax-llama \
+./target/release/ax-engine \
   --model ./models/Qwen3-8B-Q4_K_M.gguf \
   --interactive --chat
 
 # Benchmark
-./target/release/ax-bench bench --model ./models/Qwen3-8B-Q4_K_M.gguf
+./target/release/ax-engine-bench bench --model ./models/Qwen3-8B-Q4_K_M.gguf
+
+# Basic inference server
+./target/release/ax-engine-server \
+  --model ./models/Qwen3-8B-Q4_K_M.gguf \
+  --host 127.0.0.1 --port 3000
 ```
+
+The server exposes `GET /healthz`, `GET /v1/models`, `POST /v1/completions`, and
+`POST /v1/chat/completions`. It is intentionally basic: one loaded model, one
+request at a time, OpenAI-compatible JSON plus SSE streaming, and it now shares
+the same high-level Rust SDK path used by `ax-engine-py`. For multi-model
+routing, continuous batching, and production serving concerns, keep using
+`ax-serving`.
+
+Inference routing is also built into the repo surfaces now. Set
+`AX_ROUTING=auto` to keep native AX for supported models and fall back to
+`llama.cpp` for unsupported GGUF architectures:
+
+```bash
+AX_ROUTING=auto \
+./target/release/ax-engine \
+  --model ./models/Mistral-7B-Instruct.Q4_K_M.gguf \
+  --prompt "Explain unified memory."
+```
+
+The CLI prints a one-line routing summary, and `ax-engine-server`,
+`ax-engine-sdk`, and `ax-engine-py` use the same routing behavior.
+
+Server documentation:
+
+- [docs/AX Engine Server Overview](./docs/ax-engine-server.md)
+- [docs/AX Engine Server API](./docs/ax-engine-server-api.md)
+- [docs/Inference Routing](./docs/routing.md)
+- [docs/JavaScript SDK](./docs/js-sdk.md)
+- [docs/Rust SDK](./docs/rust-sdk.md)
+- [docs/Index](./docs/README.md)
+
+For Node.js and Next.js software, use the JavaScript SDK over the built-in
+server instead of trying to bind Metal/Rust directly into a JS runtime:
+
+```js
+import { AxEngineClient } from "@defai.digital/ax-engine-js";
+
+const client = new AxEngineClient({
+  baseURL: "http://127.0.0.1:3000",
+  defaultModel: "Qwen3-8B-Q4_K_M",
+});
+
+const response = await client.chat.completions.create({
+  messages: [{ role: "user", content: "Summarize AX Engine in one sentence." }],
+});
+
+console.log(response.choices[0].message.content);
+```
+
+The JS SDK also exposes a client-side `responses` compatibility layer for apps
+that prefer that API shape, while the transport still runs over the existing AX
+server endpoints.
 
 See [QUICKSTART.md](./QUICKSTART.md) for setup details and [BENCHMARKING.md](./BENCHMARKING.md) for benchmark methodology.
 
 ## Workspace Layout
 
 ```
-crates/ax-core    Core inference engine (backends, models, KV, sampling)
-crates/ax-metal   Metal GPU backend (device, shaders, dispatch, profiles)
-crates/ax-cli     ax-llama CLI
-crates/ax-shim    llama.cpp-compatible C API shim (libllama.dylib)
-crates/ax-bench   Benchmarking, profiling, and soak testing
+crates/ax-engine-core    Core inference engine (backends, models, KV, sampling)
+crates/ax-engine-sdk     High-level Rust SDK facade
+crates/ax-engine-metal   Metal GPU backend (device, shaders, dispatch, profiles)
+crates/ax-engine-cli     ax-engine CLI
+crates/ax-engine-server  Basic OpenAI-compatible inference server
+crates/ax-engine-shim    llama.cpp-compatible C API shim (libllama.dylib)
+crates/ax-engine-bench   Benchmarking, profiling, and soak testing
+packages/ax-engine-js    Node.js / Next.js client SDK for ax-engine-server
 ```
 
 ## Development

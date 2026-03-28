@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-/Users/akiralam/code/ax-engine-v2}"
-AX_BENCH="${AX_BENCH:-$REPO_DIR/target/release/ax-bench}"
+AX_BENCH="${AX_BENCH:-$REPO_DIR/target/release/ax-engine-bench}"
 PROMPT_TOKENS="${PROMPT_TOKENS:-256}"
 WARMUP_ITERS="${WARMUP_ITERS:-1}"
 MEASURE_ITERS="${MEASURE_ITERS:-3}"
@@ -22,7 +22,7 @@ if [[ ! -x "$AX_BENCH" ]]; then
 fi
 
 if ! mkdir -p "$OUT_DIR" 2>/dev/null || [[ ! -w "$OUT_DIR" ]]; then
-  OUT_DIR="/tmp/ax-bench-prefill"
+  OUT_DIR="/tmp/ax-engine-bench-prefill"
 fi
 mkdir -p "$OUT_DIR"
 TSV_OUT="${TSV_OUT:-$OUT_DIR/prefill-v2-ab-$TIMESTAMP.tsv}"

@@ -37,7 +37,7 @@ cargo check --workspace
 The main CLI binary will be:
 
 ```text
-./target/release/ax-llama
+./target/release/ax-engine
 ```
 
 ## 3. Get a GGUF Model
@@ -54,7 +54,7 @@ models/
 AX Engine expects a direct path to the GGUF file:
 
 ```bash
-./target/release/ax-llama --model ./models/<model>.gguf --prompt "Hello"
+./target/release/ax-engine --model ./models/<model>.gguf --prompt "Hello"
 ```
 
 ## 4. First Successful Run
@@ -62,7 +62,7 @@ AX Engine expects a direct path to the GGUF file:
 For an instruction-tuned model, start with `--chat`:
 
 ```bash
-./target/release/ax-llama \
+./target/release/ax-engine \
   --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
   --chat \
   --prompt "Explain what AX Engine does in two sentences."
@@ -75,7 +75,7 @@ If the model is a plain base model instead of an instruct/chat model, omit `--ch
 Run the REPL:
 
 ```bash
-./target/release/ax-llama \
+./target/release/ax-engine \
   --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
   --interactive \
   --chat
@@ -93,7 +93,7 @@ Useful REPL commands:
 Example with explicit sampling settings:
 
 ```bash
-./target/release/ax-llama \
+./target/release/ax-engine \
   --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
   --chat \
   --prompt "Write a short paragraph about on-device inference." \
@@ -124,7 +124,7 @@ What these do:
 AX Engine can stop on specific output strings or token IDs without leaking the stop text:
 
 ```bash
-./target/release/ax-llama \
+./target/release/ax-engine \
   --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
   --chat \
   --prompt "Write one line and then END." \
@@ -143,7 +143,7 @@ You can repeat the flags:
 AX Engine can print top candidate logprobs for each emitted token:
 
 ```bash
-./target/release/ax-llama \
+./target/release/ax-engine \
   --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
   --chat \
   --prompt "Write one sentence about Rust." \
@@ -157,7 +157,7 @@ The generated text still streams normally. The logprob payload is printed afterw
 Use `--verbose` for metrics and decode mode details:
 
 ```bash
-./target/release/ax-llama \
+./target/release/ax-engine \
   --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
   --prompt "Hello" \
   --verbose
@@ -176,7 +176,7 @@ This prints:
 Speculative decoding is available behind `--experimental` and requires a draft model:
 
 ```bash
-./target/release/ax-llama \
+./target/release/ax-engine \
   --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
   --speculative-draft ./models/small-draft.gguf \
   --speculative-k 4 \
@@ -197,9 +197,9 @@ Current limitation:
 Run the benchmark tool after a release build:
 
 ```bash
-./target/release/ax-bench bench --model ./models/<model>.gguf
-./target/release/ax-bench profile --model ./models/<model>.gguf
-./target/release/ax-bench soak --model ./models/<model>.gguf --smoke
+./target/release/ax-engine-bench bench --model ./models/<model>.gguf
+./target/release/ax-engine-bench profile --model ./models/<model>.gguf
+./target/release/ax-engine-bench soak --model ./models/<model>.gguf --smoke
 ```
 
 Use these to compare models, inspect decode mode behavior, and catch stability regressions.
@@ -207,12 +207,12 @@ Use these to compare models, inspect decode mode behavior, and catch stability r
 If you need machine-readable artifacts, the same commands support JSON output:
 
 ```bash
-./target/release/ax-bench bench \
+./target/release/ax-engine-bench bench \
   --model ./models/<model>.gguf \
   --json \
-  --json-output /tmp/ax-bench.json
+  --json-output /tmp/ax-engine-bench.json
 
-./target/release/ax-bench speculative \
+./target/release/ax-engine-bench speculative \
   --model ./models/<target>.gguf \
   --draft-model ./models/<draft>.gguf \
   --json \
@@ -227,13 +227,149 @@ prefill route explicitly:
 
 This applies to:
 
-- `ax-bench bench`
-- `ax-bench profile`
-- `ax-bench soak`
+- `ax-engine-bench bench`
+- `ax-engine-bench profile`
+- `ax-engine-bench soak`
 
 For apples-to-apples AX vs `llama.cpp` comparisons, repeated-run guidance, and reporting rules, see [BENCHMARKING.md](./BENCHMARKING.md).
 
-## 12. Troubleshooting
+## 12. Basic Inference Server
+
+If you want other software to consume AX Engine over HTTP, start the built-in
+basic inference server:
+
+```bash
+./target/release/ax-engine-server \
+  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --host 127.0.0.1 \
+  --port 3000
+```
+
+Check that it is alive:
+
+```bash
+curl http://127.0.0.1:3000/healthz
+curl http://127.0.0.1:3000/v1/models
+```
+
+Example chat request:
+
+```bash
+curl http://127.0.0.1:3000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "Meta-Llama-3.1-8B-Instruct-Q8_0",
+    "messages": [
+      { "role": "system", "content": "Answer concisely." },
+      { "role": "user", "content": "Explain what AX Engine does in two sentences." }
+    ],
+    "max_tokens": 96
+  }'
+```
+
+Example streaming request:
+
+```bash
+curl http://127.0.0.1:3000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -N \
+  -d '{
+    "model": "Meta-Llama-3.1-8B-Instruct-Q8_0",
+    "messages": [
+      { "role": "user", "content": "List three uses for local inference." }
+    ],
+    "stream": true
+  }'
+```
+
+This server is intentionally basic:
+
+- one loaded model per process
+- one request at a time
+- OpenAI-compatible completions and chat completions
+
+### Routing and llama.cpp Fallback
+
+If you want AX to stay native for supported models but fall back to
+`llama.cpp` for unsupported GGUF architectures, enable routing:
+
+```bash
+AX_ROUTING=auto \
+./target/release/ax-engine \
+  --model ./models/Mistral-7B-Instruct.Q4_K_M.gguf \
+  --prompt "Explain unified memory."
+```
+
+Useful environment variables:
+
+```bash
+export AX_ROUTING=auto
+export AX_ROUTING_ARCH="mistral=llama_cpp,deepseek=llama_cpp"
+export AX_ROUTING_MODEL="/absolute/path/to/model.gguf=llama_cpp"
+export AX_LLAMA_SERVER_PATH=/opt/homebrew/bin/llama-server
+export AX_LLAMA_SERVER_TIMEOUT=120
+```
+
+The same routing behavior is used by:
+
+- `ax-engine`
+- `ax-engine-sdk`
+- `ax-engine-server`
+- `ax-engine-py`
+
+### JavaScript / Next.js Client
+
+For Node.js and Next.js integrations, use the JavaScript SDK against the
+built-in server:
+
+```bash
+npm install ./packages/ax-engine-js
+```
+
+```js
+import { AxEngineClient } from "@defai.digital/ax-engine-js";
+
+const client = new AxEngineClient({
+  baseURL: "http://127.0.0.1:3000",
+  defaultModel: "Meta-Llama-3.1-8B-Instruct-Q8_0",
+});
+
+const response = await client.chat.completions.create({
+  messages: [{ role: "user", content: "Explain AX Engine in one sentence." }],
+});
+
+console.log(response.choices[0].message.content);
+```
+
+Streaming text:
+
+```js
+for await (const text of client.chat.completions.streamText({
+  messages: [{ role: "user", content: "List three uses for local inference." }],
+})) {
+  process.stdout.write(text);
+}
+```
+
+Responses-style API:
+
+```js
+const response = await client.responses.create({
+  instructions: "Answer concisely.",
+  input: "Explain AX Engine in one sentence.",
+});
+
+console.log(response.output_text);
+```
+
+For detailed endpoint behavior and limits, see:
+
+- [docs/ax-engine-server.md](./docs/ax-engine-server.md)
+- [docs/ax-engine-server-api.md](./docs/ax-engine-server-api.md)
+- [docs/js-sdk.md](./docs/js-sdk.md)
+- [docs/routing.md](./docs/routing.md)
+
+## 13. Troubleshooting
 
 ### Build fails because Metal tooling is missing
 
@@ -281,10 +417,10 @@ If you are doing validation A/B runs, you can force the route:
 
 ```bash
 AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=base \
-./target/release/ax-bench bench --model ./models/<model>.gguf
+./target/release/ax-engine-bench bench --model ./models/<model>.gguf
 
 AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT=small \
-./target/release/ax-bench bench --model ./models/<model>.gguf
+./target/release/ax-engine-bench bench --model ./models/<model>.gguf
 ```
 
 The variant override is for validation only. It is not a recommended permanent
@@ -303,7 +439,7 @@ Try `--chat`. Many instruct models expect a model-family prompt wrapper.
 Increase the context size:
 
 ```bash
-./target/release/ax-llama \
+./target/release/ax-engine \
   --model ./models/<model>.gguf \
   --ctx-size 8192 \
   --prompt "..."
@@ -314,13 +450,13 @@ Increase the context size:
 Run:
 
 ```bash
-./target/release/ax-llama --help
+./target/release/ax-engine --help
 ```
 
-## 13. Next Steps
+## 14. Next Steps
 
 After the first successful run, the usual next checks are:
 
 1. `cargo test --workspace`
 2. `cargo clippy --workspace --tests -- -D warnings`
-3. `./target/release/ax-bench bench --model ./models/<model>.gguf`
+3. `./target/release/ax-engine-bench bench --model ./models/<model>.gguf`

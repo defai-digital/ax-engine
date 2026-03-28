@@ -3,8 +3,7 @@
 Direct Python bindings for `ax-engine` on Apple Silicon.
 
 This crate exposes a Python module named `ax_engine` built with PyO3. It is a
-local, in-process binding for `ax-core`; it does not route through
-`ax-serving`.
+local, in-process binding built on the high-level `ax-engine-sdk` facade.
 
 ## Status
 

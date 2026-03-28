@@ -7,7 +7,7 @@ Usage:
   scripts/bench_speculative_pairs.sh
 
 Environment overrides:
-  AX_BENCH_BIN     Benchmark binary path (default: target/release/ax-bench)
+  AX_BENCH_BIN     Benchmark binary path (default: target/release/ax-engine-bench)
   PROMPT_TOKENS    Prompt token count (default: 16)
   DECODE_TOKENS    Decode token count (default: 8)
   WARMUP_ITERS     Warmup iterations (default: 0)
@@ -29,7 +29,7 @@ if [[ $# -ne 0 ]]; then
     exit 2
 fi
 
-AX_BENCH_BIN=${AX_BENCH_BIN:-target/release/ax-bench}
+AX_BENCH_BIN=${AX_BENCH_BIN:-target/release/ax-engine-bench}
 PROMPT_TOKENS=${PROMPT_TOKENS:-16}
 DECODE_TOKENS=${DECODE_TOKENS:-8}
 WARMUP_ITERS=${WARMUP_ITERS:-0}

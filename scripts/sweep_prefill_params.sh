@@ -7,7 +7,7 @@ Usage:
   scripts/sweep_prefill_params.sh <model> <model_name> <prompt_tokens> [cooldown_seconds]
 
 Environment overrides:
-  AX_BENCH_BIN       Benchmark binary path (default: target/release/ax-bench)
+  AX_BENCH_BIN       Benchmark binary path (default: target/release/ax-engine-bench)
   DECODE_TOKENS      Decode token count (default: 128)
   WARMUP_ITERS       Warmup iterations (default: 3)
   MEASURE_ITERS      Measurement iterations (default: 5)
@@ -34,7 +34,7 @@ MODEL_NAME=$2
 PROMPT_TOKENS=$3
 COOLDOWN=${4:-30}
 
-AX_BENCH_BIN=${AX_BENCH_BIN:-target/release/ax-bench}
+AX_BENCH_BIN=${AX_BENCH_BIN:-target/release/ax-engine-bench}
 DECODE_TOKENS=${DECODE_TOKENS:-128}
 WARMUP_ITERS=${WARMUP_ITERS:-3}
 MEASURE_ITERS=${MEASURE_ITERS:-5}

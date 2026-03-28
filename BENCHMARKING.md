@@ -52,7 +52,7 @@ ps -axo pid,%cpu,%mem,etime,command | sort -k2 -nr | head -n 30
 What to look for:
 
 - no other inference engine using CPU or GPU
-- no parallel `ax-bench`, `llama-bench`, `ollama`, or model-serving job
+- no parallel `ax-engine-bench`, `llama-bench`, `ollama`, or model-serving job
 - enough free memory to avoid paging pressure
 
 Normal desktop processes such as `WindowServer`, editors, or browsers are usually acceptable if the machine is otherwise mostly idle, but fewer background apps is better.
@@ -68,7 +68,7 @@ cargo build --workspace --release
 AX benchmark binary:
 
 ```text
-./target/release/ax-bench
+./target/release/ax-engine-bench
 ```
 
 ## AX Engine Benchmarks
@@ -78,20 +78,20 @@ AX benchmark binary:
 Basic run:
 
 ```bash
-./target/release/ax-bench bench --model ./models/<model>.gguf
+./target/release/ax-engine-bench bench --model ./models/<model>.gguf
 ```
 
 Machine-readable artifact:
 
 ```bash
-./target/release/ax-bench bench --model ./models/<model>.gguf --json
-./target/release/ax-bench bench --model ./models/<model>.gguf --json-output /tmp/ax-bench.json
+./target/release/ax-engine-bench bench --model ./models/<model>.gguf --json
+./target/release/ax-engine-bench bench --model ./models/<model>.gguf --json-output /tmp/ax-engine-bench.json
 ```
 
 Recommended repeated run for publishable numbers:
 
 ```bash
-./target/release/ax-bench bench \
+./target/release/ax-engine-bench bench \
   --model ./models/<model>.gguf \
   --deterministic \
   --samples 5 \
@@ -106,7 +106,7 @@ This reports median and mean throughput. For throughput comparisons, prefer the 
 Latency mode disables the throughput-oriented decode path and keeps per-token latency meaningful:
 
 ```bash
-./target/release/ax-bench bench \
+./target/release/ax-engine-bench bench \
   --model ./models/<model>.gguf \
   --intent latency
 ```
@@ -116,7 +116,7 @@ Latency mode disables the throughput-oriented decode path and keeps per-token la
 Use this to inspect the decode hot path and identify where time is actually spent:
 
 ```bash
-./target/release/ax-bench profile --model ./models/<model>.gguf
+./target/release/ax-engine-bench profile --model ./models/<model>.gguf
 ```
 
 ### Important AX Notes
@@ -132,15 +132,15 @@ Use this to inspect the decode hot path and identify where time is actually spen
   - `q5k_prefill=small_n`
 - AX currently auto-selects `small_n` only when the mapped model is
   predominantly `Q5_K` and the prompt batch is in the small-batch window (`4..8` tokens).
-- `ax-bench bench`, `ax-bench profile`, and `ax-bench soak` JSON now emit this as a first-class field:
+- `ax-engine-bench bench`, `ax-engine-bench profile`, and `ax-engine-bench soak` JSON now emit this as a first-class field:
   - `q5k_prefill_mode`
-- `ax-bench soak` summary now also prints:
+- `ax-engine-bench soak` summary now also prints:
   - `PrefillPlan: ...`
   - `Q5KPrefill: ...` when present
-- `ax-bench speculative` summary now also prints:
+- `ax-engine-bench speculative` summary now also prints:
   - `PrefillPlan: ...`
   - `Q5KPrefill: ...` when present
-- `ax-bench speculative` also supports machine-readable artifacts now:
+- `ax-engine-bench speculative` also supports machine-readable artifacts now:
   - `--json`
   - `--json-output <path>`
 - If you are doing route A/B validation, record any forced override explicitly:
@@ -246,7 +246,7 @@ Retested on March 26, 2026 on Apple M3 Max with one fresh AX-vs-`llama.cpp` reru
 - AX command shape:
 
 ```bash
-./target/release/ax-bench bench \
+./target/release/ax-engine-bench bench \
   --model ./models/<model>.gguf \
   --deterministic \
   --samples 5 \
@@ -280,6 +280,7 @@ Recorded results:
 | Qwen3 8B Q4_K_M | 667.3 | 736.7 | 90.6% | 57.9 | 60.3 | 96.0% | `pipelined`, `attn=mistral_bc64/experimental`, `decode=f16kv_hd128_n2/profile_preferred` |
 | Qwen3 14B Q4_K_M | 357.2 | 408.2 | 87.5% | 35.3 | 35.6 | 99.1% | `pipelined`, `attn=mistral_hd128/profile_preferred` |
 | Qwen3 32B Q4_K_M | 126.0 | 150.7 | 83.6% | 16.6 | 14.9 | 111.4% | `pipelined`, `attn=mistral_bc64/experimental` |
+| Qwen3.5 9B Q4_K_M | 122.6 | 732.2 | 16.7% | 25.0 | 48.9 | 51.1% | `sequential`, hybrid attention+SSM, GPU-unified prefill |
 
 `llama.cpp` values above are medians from `samples_ts` on the current local Homebrew `llama-bench` build (`build_commit 342d6125b`, `build_number 8500`) with `-fa 1`, `-ctk f16`, and `-ctv f16`. `AX vs llama.cpp` over `100%` means AX was faster.
 
@@ -293,7 +294,7 @@ Recorded results:
 
 - `models/meta-llama-3.1-8b-instruct-q5_k_m.gguf`
   - command shape:
-    - `target/release/ax-bench bench --model ... --prompt-tokens 16 --decode-tokens 32 --warmup-iters 1 --measure-iters 1`
+    - `target/release/ax-engine-bench bench --model ... --prompt-tokens 16 --decode-tokens 32 --warmup-iters 1 --measure-iters 1`
   - result:
     - `PrefillPlan: ... q5k_prefill=small_n`
     - prefill `108.1 tok/s`
@@ -428,6 +429,97 @@ March 26 Llama 3 8B / 70B route pass:
   - artifact: `automatosx/tmp/llama3-70b-bench-hd128n2-2026-03-26.json`
 - Conclusion: keep `perfs/llama3-70b.json` unchanged for now. The forced `small_n` variant is a prompt-throughput tradeoff, not a clear shipped win, and `hd128_n2` is worse.
 
+March 27 Qwen3.5-9B and Qwen3-8B session:
+
+- Qwen3.5 9B is the first hybrid attention+SSM (Mamba-2) model benchmarked in this repo.
+- AX and `llama.cpp` benchmarks were run concurrently in this session; absolute numbers may be slightly depressed on both sides, but the ratios are representative.
+
+Qwen3.5 9B results (best complete run pair from multiple iterations):
+
+| Model | AX prefill | llama.cpp prefill | AX vs llama.cpp | AX decode | llama.cpp decode | AX vs llama.cpp | AX notes |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Qwen3.5 9B Q4_K_M | 234.4 | 722.2 | 32.5% | 12.9 | 49.0 | 26.3% | `sequential`, `PrefillPlan=mode=gpu_batch kv=qwen35_hybrid recurrent=backend_owned` |
+
+- AX command shape: `./target/release/ax-engine-bench bench --model ./models/Qwen3.5-9B-Q4_K_M.gguf`
+- `llama.cpp` command shape: `llama-bench -m ./models/Qwen3.5-9B-Q4_K_M.gguf -p 512 -n 128 -r 3`
+- `llama.cpp` was run without `-fa 1 -ctk f16 -ctv f16` in this session; with flash attention enabled, `llama.cpp` numbers would likely be higher.
+
+Key observations:
+
+- AX decode reports `Mode: sequential` with `Fallback: qwen35 hybrid decode currently uses sequential host orchestration`.
+- Decode used 20,608 Metal command buffer submissions and 1,024 barriers for 128 tokens (161 submits/token), compared to 128 submissions (1/token) for the pure-transformer Qwen3 8B pipelined path.
+- GPU attention KV allocated as F16, but the recurrent (SSM) state remains F32.
+- Multiple iterations during the session showed steady improvement as code was updated:
+  - Run 1: AX 225.5 prefill, 7.9 decode
+  - Run 2: AX 223.7 prefill, 12.2 decode
+  - Run 3: AX 234.4 prefill, 12.9 decode (used for headline)
+
+Root causes for the gap:
+
+1. No pipelined decode for the hybrid attention+SSM architecture. The double-buffered pipeline only supports pure-transformer models currently.
+2. Sequential host orchestration: each layer's recurrent state (conv1d + SSM) requires CPU round-trips between Metal command buffer submissions.
+3. Prefill uses 225 command buffer submissions vs 1 for pure-transformer models, because the recurrent layers are not yet fused into the GPU batch prefill graph.
+
+Qwen3 8B refresh (same session):
+
+| Model | AX prefill | llama.cpp prefill | AX vs llama.cpp | AX decode | llama.cpp decode | AX vs llama.cpp | AX notes |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Qwen3 8B Q4_K_M | 524.4 | 545.9 | 96.1% | 39.5 | 38.6 | 102.3% | `pipelined`, `attn=mistral_bc64/experimental`, `decode=f16kv_hd128_n2/profile_preferred` |
+
+- AX command shape: `./target/release/ax-engine-bench bench --model ./models/Qwen3-8B-Q4_K_M.gguf`
+- `llama.cpp` command shape: `llama-bench -m ./models/Qwen3-8B-Q4_K_M.gguf -p 512 -n 128 -r 3`
+- `llama.cpp` was run without `-fa 1 -ctk f16 -ctv f16`; the March 26 controlled run with those flags showed 736.7/60.3, so the ratio here overstates AX vs a properly-configured `llama.cpp`.
+- AX decode reports `Mode: pipelined` with 128 command buffer submissions (1/token) and 0 barriers. KV dtype F16 throughout.
+- The parity ratio (96% prefill, 102% decode) is consistent with the March 26 controlled run (98.7% prefill, 103.5% decode), confirming that Qwen3 8B remains near parity on the pure-transformer path.
+
+Interpretation:
+
+- Pure-transformer models (Qwen3 8B): AX is at parity with `llama.cpp` on both prefill and decode, thanks to the pipelined decode loop, F16 KV, and fused GPU dispatch.
+- Hybrid attention+SSM models (Qwen3.5 9B): AX has a significant performance gap due to the sequential host orchestration required for recurrent layers. Pipelined decode for the hybrid architecture is the highest-value optimization target.
+
+March 28 Qwen3.5-9B controlled retest:
+
+- The March 27 `llama.cpp` baseline was run without `-fa 1 -ctk f16 -ctv f16`, which inflated the gap. The March 28 retests use the full controlled settings on both sides.
+- Three sequential runs were performed to account for thermal warm-up. The third (thermally stable) run is used as the headline.
+
+Warmed run (headline):
+
+| Model | AX prefill | llama.cpp prefill | AX vs llama.cpp | AX decode | llama.cpp decode | AX vs llama.cpp | AX notes |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Qwen3.5 9B Q4_K_M | 240.7 | 735.2 | 32.7% | 25.7 | 48.7 | 52.8% | `sequential`, `PrefillPlan=mode=gpu_batch kv=qwen35_hybrid recurrent=backend_owned` |
+
+All five runs (sequential, AX then llama.cpp each iteration):
+
+| Run | AX prefill | AX decode | llama.cpp prefill | llama.cpp decode | Prefill % | Decode % |
+|---|---:|---:|---:|---:|---:|---:|
+| Run 1 (cold) | 221.3 | 20.5 | 489.9 | 34.3 | 45.2% | 59.8% |
+| Run 2 | 233.9 | 23.4 | 678.2 | 45.3 | 34.5% | 51.7% |
+| Run 3 | 239.6 | 26.1 | 732.4 | 48.9 | 32.7% | 53.4% |
+| Run 4 | 236.9 | 22.4 | 734.0 | 48.7 | 32.3% | 46.0% |
+| Run 5 (warm, headline) | 240.7 | 25.7 | 735.2 | 48.7 | 32.7% | 52.8% |
+
+Note: flash attention makes almost no difference for Qwen3.5 on `llama.cpp` (735 vs 727 without FA). The recurrent (SSM) layers don't use attention, so FA only affects the 8 full-attention layers out of 32.
+
+- AX command shape: `./target/release/ax-engine-bench bench --model ./models/Qwen3.5-9B-Q4_K_M.gguf --deterministic --samples 5 --measure-iters 1 --cooldown-ms 500`
+- `llama.cpp` command shape: `/opt/homebrew/bin/llama-bench -m ./models/Qwen3.5-9B-Q4_K_M.gguf -p 512 -n 128 -r 5 -ngl 99 -ctk f16 -ctv f16 -fa 1`
+- `llama.cpp` build: `342d6125b (8500)`
+- Machine idle, no concurrent inference jobs. Runs sequential (AX first, then llama.cpp each iteration).
+
+Key observations:
+
+- AX decode improved from 12.9 (Mar 27) to 25.7 tok/s (+99%) thanks to GPU-unified decode work.
+- Both engines show significant thermal warm-up: AX prefill 221→241, llama.cpp prefill 490→735. The cold run 1 overstated AX's relative position.
+- The thermally stable ratios are ~33% prefill and ~53% decode. Confirmed across 5 sequential runs.
+- AX GPU dispatch overhead remains the dominant bottleneck: 265 prefill cmd_buf, 12,544 decode cmd_buf (vs 1/128 for pure-transformer models).
+- Decode barriers: 1,024 (vs 0 for pipelined pure-transformer models).
+
+Progress summary:
+
+| Metric | Mar 27 AX | Mar 28 AX (warm) | Mar 27 ratio | Mar 28 ratio (warm) | Notes |
+|---|---:|---:|---:|---:|---|
+| Prefill | 234.4 | 240.7 | 32.5% | 32.7% | AX prefill stable; Mar 27 llama.cpp was without FA |
+| Decode | 12.9 | 25.7 | 26.3% | 52.8% | +99% AX improvement from GPU-unified decode |
+
 ## Common Mistakes
 
 - Comparing AX throughput mode against AX latency mode
@@ -442,7 +534,7 @@ March 26 Llama 3 8B / 70B route pass:
 If you only need one clean comparison for a PR or README update, use:
 
 ```bash
-./target/release/ax-bench bench \
+./target/release/ax-engine-bench bench \
   --model ./models/<model>.gguf \
   --deterministic \
   --samples 5 \

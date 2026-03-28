@@ -1,7 +1,7 @@
 {
   "model": "qwen35-9b",
-  "source": "qwen35-upstream-baseline-not-tuned-2026-03-25",
-  "generated": "2026-03-25",
+  "source": "ax-v3-qwen35-bootstrap-2026-03-27",
+  "generated": "2026-03-27",
   "decode_matvec": {
     "q4_k": {
       "threadgroup_size": 64,
@@ -31,7 +31,8 @@
   },
   "attention_decode": {
     "splitk_chunk_size": 256,
-    "splitk_threshold": 512
+    "splitk_threshold": 512,
+    "hd128_n2_default": true
   },
   "attention_prefill": {
     "fa2_mode": "off",
@@ -41,5 +42,13 @@
     "fa2_auto_min_base_seq": 256,
     "fa2_hd128_auto_min_tokens": 512,
     "mistral_bc64_min_tokens": 384
+  },
+  "decode_regimes": {
+    "short_max_attend_len": 384,
+    "long": {
+      "attention_decode": {
+        "splitk_threshold": 256
+      }
+    }
   }
 }

@@ -1,0 +1,53 @@
+name: JS SDK
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "packages/ax-engine-js/**"
+      - "docs/js-sdk.md"
+      - "README.md"
+      - "QUICKSTART.md"
+      - ".github/workflows/js-sdk.yml"
+  pull_request:
+    paths:
+      - "packages/ax-engine-js/**"
+      - "docs/js-sdk.md"
+      - "README.md"
+      - "QUICKSTART.md"
+      - ".github/workflows/js-sdk.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+
+    defaults:
+      run:
+        working-directory: packages/ax-engine-js
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Run tests
+        run: npm test
+
+      - name: ESM import smoke
+        run: node --input-type=module -e "import { AxEngineClient } from './index.js'; console.log(typeof AxEngineClient)"
+
+      - name: CommonJS require smoke
+        run: node -e "const { AxEngineClient } = require('./index.cjs'); console.log(typeof AxEngineClient)"
+
+      - name: Pack dry run
+        run: npm pack --dry-run

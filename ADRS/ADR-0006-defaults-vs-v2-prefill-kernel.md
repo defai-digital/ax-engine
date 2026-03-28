@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Historical. Superseded by ADR-0008 as the product and architecture baseline.
+Its benchmark-gated default policy remains active under ADR-0007 and ADR-0008.
 
 ## Context
 
