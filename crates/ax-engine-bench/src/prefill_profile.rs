@@ -54,7 +54,7 @@ fn merged_support_note(
 fn prefill_profile_support_note(model: &LlamaModel) -> Option<&'static str> {
     if model.arch_name() == "qwen35" && model.use_gpu_decode() && model.metal_device().is_some() {
         Some(
-            "profile: Qwen3.5 prefill timing follows the native unified batch path; per-op buckets are still incomplete, so wall time, GPU aggregate, and submit counters are authoritative",
+            "profile: Qwen3.5 prefill timing follows the native unified batch path; wall time, GPU aggregate, submit counters, and recurrent batch phase buckets are authoritative",
         )
     } else {
         None
@@ -122,6 +122,14 @@ pub struct PrefillProfileResult {
     #[serde(default)]
     pub recurrent_pct: f64,
     #[serde(default)]
+    pub recurrent_batch_conv_pct: f64,
+    #[serde(default)]
+    pub recurrent_batch_pack_pct: f64,
+    #[serde(default)]
+    pub recurrent_batch_gated_delta_pct: f64,
+    #[serde(default)]
+    pub recurrent_batch_unpack_pct: f64,
+    #[serde(default)]
     pub dequant_pct: f64,
     #[serde(default)]
     pub rope_pct: f64,
@@ -163,6 +171,14 @@ pub struct PrefillProfileResult {
     pub attention_ms: f64,
     #[serde(default)]
     pub recurrent_ms: f64,
+    #[serde(default)]
+    pub recurrent_batch_conv_ms: f64,
+    #[serde(default)]
+    pub recurrent_batch_pack_ms: f64,
+    #[serde(default)]
+    pub recurrent_batch_gated_delta_ms: f64,
+    #[serde(default)]
+    pub recurrent_batch_unpack_ms: f64,
     #[serde(default)]
     pub dequant_ms: f64,
     #[serde(default)]
@@ -228,6 +244,7 @@ pub fn run_prefill_profile_with_backend(
     model.forward_batch_profiled(&prompt_tokens, &mut kv, &weights, &mut logits, &mut ops)?;
     let wall_time = wall_timer.elapsed();
     let counters = model.read_metal_perf_counters();
+    let recurrent_counters = model.read_qwen35_recurrent_batch_perf_counters();
 
     let wall_ms = wall_time.as_secs_f64() * 1000.0;
     let tracked_ms = ops.total().as_secs_f64() * 1000.0;
@@ -283,6 +300,26 @@ pub fn run_prefill_profile_with_backend(
         matmul_pct: pct(ops.matmul),
         attention_pct: pct(ops.attention),
         recurrent_pct: pct(ops.recurrent),
+        recurrent_batch_conv_pct: if wall_ms > 0.0 {
+            recurrent_counters.conv_ns as f64 / 1_000_000.0 / wall_ms * 100.0
+        } else {
+            0.0
+        },
+        recurrent_batch_pack_pct: if wall_ms > 0.0 {
+            recurrent_counters.pack_ns as f64 / 1_000_000.0 / wall_ms * 100.0
+        } else {
+            0.0
+        },
+        recurrent_batch_gated_delta_pct: if wall_ms > 0.0 {
+            recurrent_counters.gated_delta_ns as f64 / 1_000_000.0 / wall_ms * 100.0
+        } else {
+            0.0
+        },
+        recurrent_batch_unpack_pct: if wall_ms > 0.0 {
+            recurrent_counters.unpack_ns as f64 / 1_000_000.0 / wall_ms * 100.0
+        } else {
+            0.0
+        },
         dequant_pct: pct(ops.dequant),
         rope_pct: pct(ops.rope),
         norm_pct: pct(ops.norm),
@@ -308,6 +345,10 @@ pub fn run_prefill_profile_with_backend(
         matmul_ms: ops.matmul.as_secs_f64() * 1000.0,
         attention_ms: ops.attention.as_secs_f64() * 1000.0,
         recurrent_ms: ops.recurrent.as_secs_f64() * 1000.0,
+        recurrent_batch_conv_ms: recurrent_counters.conv_ns as f64 / 1_000_000.0,
+        recurrent_batch_pack_ms: recurrent_counters.pack_ns as f64 / 1_000_000.0,
+        recurrent_batch_gated_delta_ms: recurrent_counters.gated_delta_ns as f64 / 1_000_000.0,
+        recurrent_batch_unpack_ms: recurrent_counters.unpack_ns as f64 / 1_000_000.0,
         dequant_ms: ops.dequant.as_secs_f64() * 1000.0,
         rope_ms: ops.rope.as_secs_f64() * 1000.0,
         norm_ms: ops.norm.as_secs_f64() * 1000.0,
@@ -435,6 +476,28 @@ impl PrefillProfileResult {
                 "  Recurrent: {:6.1}ms  ({:5.1}%)",
                 self.recurrent_ms, self.recurrent_pct
             );
+            if self.recurrent_batch_conv_ms > 0.0
+                || self.recurrent_batch_pack_ms > 0.0
+                || self.recurrent_batch_gated_delta_ms > 0.0
+                || self.recurrent_batch_unpack_ms > 0.0
+            {
+                eprintln!(
+                    "    BatchConv:{:5.1}ms  ({:5.1}%)",
+                    self.recurrent_batch_conv_ms, self.recurrent_batch_conv_pct
+                );
+                eprintln!(
+                    "    BatchPack:{:5.1}ms  ({:5.1}%)",
+                    self.recurrent_batch_pack_ms, self.recurrent_batch_pack_pct
+                );
+                eprintln!(
+                    "    BatchGDN: {:5.1}ms  ({:5.1}%)",
+                    self.recurrent_batch_gated_delta_ms, self.recurrent_batch_gated_delta_pct
+                );
+                eprintln!(
+                    "    BatchUnpk:{:5.1}ms  ({:5.1}%)",
+                    self.recurrent_batch_unpack_ms, self.recurrent_batch_unpack_pct
+                );
+            }
         }
         eprintln!(
             "  Dequant:   {:6.1}ms  ({:5.1}%)",
@@ -526,6 +589,10 @@ mod tests {
             matmul_pct: 0.0,
             attention_pct: 0.0,
             recurrent_pct: 0.0,
+            recurrent_batch_conv_pct: 0.0,
+            recurrent_batch_pack_pct: 0.0,
+            recurrent_batch_gated_delta_pct: 0.0,
+            recurrent_batch_unpack_pct: 0.0,
             dequant_pct: 0.0,
             rope_pct: 0.0,
             norm_pct: 0.0,
@@ -547,6 +614,10 @@ mod tests {
             matmul_ms: 0.0,
             attention_ms: 0.0,
             recurrent_ms: 0.0,
+            recurrent_batch_conv_ms: 0.0,
+            recurrent_batch_pack_ms: 0.0,
+            recurrent_batch_gated_delta_ms: 0.0,
+            recurrent_batch_unpack_ms: 0.0,
             dequant_ms: 0.0,
             rope_ms: 0.0,
             norm_ms: 0.0,

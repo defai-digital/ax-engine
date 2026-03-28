@@ -2668,12 +2668,24 @@ impl LlamaModel {
         if let Some(device) = self.metal_device() {
             device.reset_perf_counters();
         }
+        if let Some(ops) = self.backend.metal_ops() {
+            ops.reset_qwen35_recurrent_batch_perf_counters();
+        }
     }
 
     /// Read backend-local Metal performance counters for this model.
     pub fn read_metal_perf_counters(&self) -> ax_engine_metal::PerfCounters {
         self.metal_device()
             .map(ax_engine_metal::MetalDevice::perf_counters)
+            .unwrap_or_default()
+    }
+
+    pub fn read_qwen35_recurrent_batch_perf_counters(
+        &self,
+    ) -> crate::backend::metal::Qwen35RecurrentBatchPerfCounters {
+        self.backend
+            .metal_ops()
+            .map(crate::backend::metal::MetalOps::qwen35_recurrent_batch_perf_counters)
             .unwrap_or_default()
     }
 

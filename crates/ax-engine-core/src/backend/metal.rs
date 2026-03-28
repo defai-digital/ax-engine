@@ -2,7 +2,9 @@ use rustc_hash::FxHashMap;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::RwLock;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use std::time::Instant;
 
 use super::{Backend, RuntimePolicy};
@@ -180,6 +182,22 @@ pub struct MetalBackend {
         Mutex<FxHashMap<Qwen35RecurrentScratchBufferKey, Qwen35MetalRecurrentScratchBuffers>>,
     /// Metal GPU operations for phased forward pass dispatch.
     ops: MetalOps,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Qwen35RecurrentBatchPerfCounters {
+    pub conv_ns: u64,
+    pub pack_ns: u64,
+    pub gated_delta_ns: u64,
+    pub unpack_ns: u64,
+}
+
+#[derive(Default)]
+struct Qwen35RecurrentBatchPerfState {
+    conv_ns: AtomicU64,
+    pack_ns: AtomicU64,
+    gated_delta_ns: AtomicU64,
+    unpack_ns: AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -1046,6 +1064,7 @@ impl MetalBackend {
                         .copy_from_slice(&qkv_batch[qkv_start..qkv_end]);
                 }
 
+                let conv_t = Instant::now();
                 self.gdn_kernels
                     .causal_conv_sequence(
                         &self.device,
@@ -1058,8 +1077,11 @@ impl MetalBackend {
                         cfg.conv_dim as u32,
                     )
                     .expect("Metal qwen35 recurrent causal conv dispatch failed");
+                self.ops
+                    .record_qwen35_recurrent_batch_conv(conv_t.elapsed());
 
                 let conv_out = unsafe { scratch_buffers.conv_out.as_slice::<f32>() };
+                let pack_t = Instant::now();
                 unsafe {
                     prepare_multi_token_gdn_bh_buffers(
                         conv_out,
@@ -1079,6 +1101,9 @@ impl MetalBackend {
                         cfg.rms_norm_eps,
                     );
                 }
+                self.ops
+                    .record_qwen35_recurrent_batch_pack(pack_t.elapsed());
+                let gated_delta_t = Instant::now();
                 self.gdn_kernels
                     .gated_delta_sequence(
                         &self.device,
@@ -1094,8 +1119,11 @@ impl MetalBackend {
                         cfg.state_size as u32,
                     )
                     .expect("Metal qwen35 recurrent gated-delta dispatch failed");
+                self.ops
+                    .record_qwen35_recurrent_batch_gated_delta(gated_delta_t.elapsed());
 
                 let out_bhsv = unsafe { scratch_buffers.output.as_slice::<f32>() };
+                let unpack_t = Instant::now();
                 unpack_bhsk_to_token_major(
                     out_bhsv,
                     &mut output_batch[out_start..out_end],
@@ -1103,6 +1131,8 @@ impl MetalBackend {
                     cfg.time_step_rank,
                     cfg.state_size,
                 );
+                self.ops
+                    .record_qwen35_recurrent_batch_unpack(unpack_t.elapsed());
             }
         }
     }
@@ -2396,6 +2426,8 @@ pub struct MetalOps {
     /// Reusable recurrent state buffers keyed by logical Qwen3.5 slot.
     qwen35_recurrent_slot_buffers:
         Mutex<FxHashMap<Qwen35RecurrentSlotBufferKey, Qwen35MetalSlotBuffers>>,
+    /// Backend-local profiling for Qwen3.5 recurrent multi-token batch phases.
+    qwen35_recurrent_batch_perf: Qwen35RecurrentBatchPerfState,
     /// One-time runtime tuning state for f16in batch kernel routing.
     f16in_route_tuned: AtomicBool,
     /// Pre-computed weight cache keys, built once on first forward call.
@@ -2429,6 +2461,7 @@ impl MetalOps {
             scratches: Mutex::new(None),
             batch_scratches: Mutex::new(None),
             qwen35_recurrent_slot_buffers: Mutex::new(FxHashMap::default()),
+            qwen35_recurrent_batch_perf: Qwen35RecurrentBatchPerfState::default(),
             f16in_route_tuned: AtomicBool::new(false),
             cached_model_keys: Mutex::new(None),
         })
@@ -2461,6 +2494,66 @@ impl MetalOps {
             .read()
             .unwrap()
             .batch_prefill_prefers_f16_io()
+    }
+
+    fn record_qwen35_recurrent_batch_conv(&self, elapsed: Duration) {
+        self.qwen35_recurrent_batch_perf
+            .conv_ns
+            .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    fn record_qwen35_recurrent_batch_pack(&self, elapsed: Duration) {
+        self.qwen35_recurrent_batch_perf
+            .pack_ns
+            .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    fn record_qwen35_recurrent_batch_gated_delta(&self, elapsed: Duration) {
+        self.qwen35_recurrent_batch_perf
+            .gated_delta_ns
+            .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    fn record_qwen35_recurrent_batch_unpack(&self, elapsed: Duration) {
+        self.qwen35_recurrent_batch_perf
+            .unpack_ns
+            .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    pub fn reset_qwen35_recurrent_batch_perf_counters(&self) {
+        self.qwen35_recurrent_batch_perf
+            .conv_ns
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .pack_ns
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .gated_delta_ns
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .unpack_ns
+            .store(0, Ordering::Relaxed);
+    }
+
+    pub fn qwen35_recurrent_batch_perf_counters(&self) -> Qwen35RecurrentBatchPerfCounters {
+        Qwen35RecurrentBatchPerfCounters {
+            conv_ns: self
+                .qwen35_recurrent_batch_perf
+                .conv_ns
+                .load(Ordering::Relaxed),
+            pack_ns: self
+                .qwen35_recurrent_batch_perf
+                .pack_ns
+                .load(Ordering::Relaxed),
+            gated_delta_ns: self
+                .qwen35_recurrent_batch_perf
+                .gated_delta_ns
+                .load(Ordering::Relaxed),
+            unpack_ns: self
+                .qwen35_recurrent_batch_perf
+                .unpack_ns
+                .load(Ordering::Relaxed),
+        }
     }
 
     pub fn metal_batch_f16_pair_enabled(&self) -> bool {
