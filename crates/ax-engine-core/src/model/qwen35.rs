@@ -2667,6 +2667,9 @@ impl Qwen35Forward {
                     crate::gguf::tensor::GgmlType::Q4K
                         | crate::gguf::tensor::GgmlType::Q5K
                         | crate::gguf::tensor::GgmlType::Q6K
+                        | crate::gguf::tensor::GgmlType::Q8_0
+                        | crate::gguf::tensor::GgmlType::Q4_0
+                        | crate::gguf::tensor::GgmlType::Q5_0
                 )
             };
 
@@ -2905,23 +2908,26 @@ impl Qwen35Forward {
                 // ══════════════════════════════════════════════════════════
                 // Recurrent layer: read hidden from GPU, process, write back
                 // ══════════════════════════════════════════════════════════
-                let weight_cache = metal_ops.lock_weight_cache();
-                let nw_buf = weight_cache.get(&nw_key).unwrap();
 
-                // CB1: norm + 4 input projections (hidden on GPU → projections on GPU).
+                // Cache all weights BEFORE locking weight_cache (avoid deadlock).
                 let input_ops = Self::recurrent_input_ops(weights, &prefix, dims)?;
                 let mut proj_dtypes = Vec::new();
                 let mut proj_keys = Vec::new();
                 let mut proj_dims: Vec<usize> = Vec::new();
                 for (raw, dtype, out_dim) in &input_ops {
                     if !supported(*dtype) {
-                        drop(weight_cache);
                         return Ok(false);
                     }
                     proj_keys.push(metal_ops.ensure_quant_cached(raw));
                     proj_dtypes.push(*dtype);
                     proj_dims.push(*out_dim);
                 }
+                let (ssm_out_raw, ssm_out_dtype, _) = Self::recurrent_output_op(weights, &prefix, dim)?;
+                if !supported(ssm_out_dtype) {
+                    return Ok(false);
+                }
+                let ssm_key = metal_ops.ensure_quant_cached(ssm_out_raw);
+
                 // Allocate temporary projection output buffers.
                 let temp_bufs: Vec<ax_engine_metal::MetalBuffer> = proj_dims
                     .iter()
@@ -2934,6 +2940,11 @@ impl Qwen35Forward {
                     })
                     .collect();
 
+                // NOW lock weight cache for GPU encoding.
+                let weight_cache = metal_ops.lock_weight_cache();
+                let nw_buf = weight_cache.get(&nw_key).unwrap();
+
+                // CB1: norm + 4 input projections (hidden on GPU → projections on GPU).
                 metal_ops.device.execute_sync(|encoder| {
                     metal_ops.elementwise.encode_rms_norm_out_batch(
                         encoder, &bs.hidden, nw_buf, &bs.norm_buf, dim as u32, nt, eps,
@@ -2949,6 +2960,7 @@ impl Qwen35Forward {
                     }
                     Ok(())
                 })?;
+                drop(weight_cache);
 
                 // Read projections from GPU.
                 unsafe {
@@ -2982,20 +2994,13 @@ impl Qwen35Forward {
                     );
                 }
 
-                // SSM output projection.
-                let (ssm_out_raw, ssm_out_dtype, _) = Self::recurrent_output_op(weights, &prefix, dim)?;
-                if !supported(ssm_out_dtype) {
-                    drop(weight_cache);
-                    return Ok(false);
-                }
-                let ssm_key = metal_ops.ensure_quant_cached(ssm_out_raw);
-
                 // CB2: SSM out + residual + FFN (hidden on GPU).
                 // Upload rec_out to GPU proj_buf.
                 unsafe {
                     bs.proj_buf.as_mut_slice::<f32>()[..n_tokens * dims.inner_size]
                         .copy_from_slice(&rec_out_batch[..n_tokens * dims.inner_size]);
                 }
+                let weight_cache = metal_ops.lock_weight_cache();
                 let ssm_buf = weight_cache.get(&ssm_key).unwrap();
                 let ffn_nw_buf = weight_cache.get(&ffn_nw_key).unwrap();
                 let wg_buf = weight_cache.get(&wg_key).unwrap();
