@@ -179,6 +179,50 @@ impl GpuKv {
         &self.v_bufs[layer]
     }
 
+    /// Read a single token row from GPU KV into CPU f32 slices.
+    ///
+    /// This is primarily used by hybrid paths that write KV on GPU first and
+    /// materialize a CPU mirror only after the command buffer completes.
+    pub fn read_layer_token_into(
+        &self,
+        layer: usize,
+        token_idx: usize,
+        k_out: &mut [f32],
+        v_out: &mut [f32],
+    ) {
+        assert_eq!(k_out.len(), self.kv_stride);
+        assert_eq!(v_out.len(), self.kv_stride);
+        assert!(token_idx < self.capacity, "GPU KV read token out of bounds");
+
+        let offset_elems = token_idx
+            .checked_mul(self.kv_stride)
+            .expect("GPU KV read offset overflow");
+        match self.dtype {
+            GpuKvDtype::F32 => unsafe {
+                let k_src = &self.k_bufs[layer].as_slice::<f32>()
+                    [offset_elems..offset_elems + self.kv_stride];
+                let v_src = &self.v_bufs[layer].as_slice::<f32>()
+                    [offset_elems..offset_elems + self.kv_stride];
+                k_out.copy_from_slice(k_src);
+                v_out.copy_from_slice(v_src);
+            },
+            GpuKvDtype::F16 => unsafe {
+                let k_src = std::slice::from_raw_parts(
+                    self.k_bufs[layer].contents().as_ptr().cast::<half::f16>(),
+                    self.capacity * self.kv_stride,
+                );
+                let v_src = std::slice::from_raw_parts(
+                    self.v_bufs[layer].contents().as_ptr().cast::<half::f16>(),
+                    self.capacity * self.kv_stride,
+                );
+                for i in 0..self.kv_stride {
+                    k_out[i] = k_src[offset_elems + i].to_f32();
+                    v_out[i] = v_src[offset_elems + i].to_f32();
+                }
+            },
+        }
+    }
+
     // ── Mutation ─────────────────────────────────────────────────────────────
 
     /// Append one token's K and V for a single layer via CPU UMA write.

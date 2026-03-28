@@ -3793,7 +3793,6 @@ impl Qwen35Forward {
             return Ok(false);
         }
 
-        let backend = ctx.backend;
         let dims = Self::recurrent_dims(cfg)?;
         let n_layers = cfg.n_layers as usize;
         let dim = cfg.embedding_dim as usize;
@@ -3835,6 +3834,11 @@ impl Qwen35Forward {
             cfg.head_dim,
             full_seq_len,
         );
+        let decode_barrier = |encoder: &ax_engine_metal::MetalEncoder| {
+            if exec_plan.barriers == crate::model::execution_plan::DecodeBarrierPlan::Explicit {
+                ax_engine_metal::barrier_buffers(encoder);
+            }
+        };
 
         // Embed token.
         {
@@ -3847,35 +3851,42 @@ impl Qwen35Forward {
         let rope_position = Self::rope_position(cfg, position);
         let kv_offset = (seq_len * kv_dim) as u32;
 
-        // Layer 0 attention norm.
-        {
-            let norm_w = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
-            metal_ops.device.execute_sync(|encoder| {
-                metal_ops.elementwise.encode_rms_norm_out(
-                    encoder,
-                    &s.hidden,
-                    norm_w,
-                    &s.norm_buf,
-                    dim as u32,
-                    eps,
-                );
-                Ok(())
-            })?;
+        for layer in 0..n_layers {
+            if cfg.qwen35_is_recurrent_layer(layer) {
+                metal_ops.sync_qwen35_slot_buffers_from_kv(qwen_kv, layer, recurrent_slot);
+            }
         }
 
-        for layer in 0..n_layers {
-            let lw = &cached.layers[layer];
-            let is_recurrent = cfg.qwen35_is_recurrent_layer(layer);
+        metal_ops.device.execute_sync(|encoder| {
+            // Layer 0 attention norm.
+            let norm_w = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
+            metal_ops.elementwise.encode_rms_norm_out(
+                encoder,
+                &s.hidden,
+                norm_w,
+                &s.norm_buf,
+                dim as u32,
+                eps,
+            );
+            decode_barrier(encoder);
 
-            if !is_recurrent {
-                // Full-attention layer: single CB — QKV + split + norm + RoPE
-                // + KV append + attention + gate + WO + FFN.
-                // Cache QK norm weights if present.
-                let q_norm_key = lw.attn_q_norm;
-                let k_norm_key = lw.attn_k_norm;
+            for layer in 0..n_layers {
+                let lw = &cached.layers[layer];
+                let next_norm = if layer + 1 < n_layers {
+                    Some(
+                        weight_cache
+                            .get(&cached.layers[layer + 1].attn_norm)
+                            .unwrap(),
+                    )
+                } else {
+                    None
+                };
 
-                metal_ops.device.execute_sync(|encoder| {
-                    // 1. QKV projection.
+                if !cfg.qwen35_is_recurrent_layer(layer) {
+                    let q_norm_key = lw.attn_q_norm;
+                    let k_norm_key = lw.attn_k_norm;
+                    let gpu_attn = qwen_kv.gpu_attention().unwrap();
+
                     let wq = weight_cache.get(&lw.wq).unwrap();
                     let wk = weight_cache.get(&lw.wk).unwrap();
                     let wv = weight_cache.get(&lw.wv).unwrap();
@@ -3920,8 +3931,8 @@ impl Qwen35Forward {
                         1,
                         q_dim as u32,
                     );
+                    decode_barrier(encoder);
 
-                    // 3. QK norm (if applicable).
                     if let (Some(q_key), Some(k_key)) = (q_norm_key, k_norm_key) {
                         let q_nw = weight_cache.get(&q_key).unwrap();
                         let k_nw = weight_cache.get(&k_key).unwrap();
@@ -3943,9 +3954,9 @@ impl Qwen35Forward {
                             head_dim as u32,
                             eps,
                         );
+                        decode_barrier(encoder);
                     }
 
-                    // 4. RoPE.
                     metal_ops.elementwise.encode_rope_batch(
                         encoder,
                         &s.q_buf,
@@ -3958,9 +3969,8 @@ impl Qwen35Forward {
                         0.0,
                         cfg.rope_freq_base,
                     );
+                    decode_barrier(encoder);
 
-                    // 5. KV append (GPU, f16/f32 aware).
-                    let gpu_attn = qwen_kv.gpu_attention().unwrap();
                     metal_ops.elementwise.encode_kv_append(
                         encoder,
                         &s.k_buf,
@@ -3977,8 +3987,8 @@ impl Qwen35Forward {
                         kv_offset,
                         kv_dim as u32,
                     );
+                    decode_barrier(encoder);
 
-                    // 6. Attention decode.
                     metal_ops
                         .attention
                         .encode_attention_decode_with_scratch_and_config(
@@ -3997,16 +4007,16 @@ impl Qwen35Forward {
                             full_seq_len as u32,
                             exec_plan.attention_dispatch,
                         );
+                    decode_barrier(encoder);
 
-                    // 7. Attention gate: sigmoid(up_buf) × attn_out.
                     metal_ops.elementwise.encode_sigmoid_elementwise_mul(
                         encoder,
                         &s.up_buf,
                         &s.attn_out,
                         q_dim as u32,
                     );
+                    decode_barrier(encoder);
 
-                    // 8. WO projection.
                     encode_dequant_matvec_with_config(
                         metal_ops,
                         encoder,
@@ -4018,8 +4028,8 @@ impl Qwen35Forward {
                         lw.wo_dtype,
                         exec_plan.dequant_dispatch,
                     );
+                    decode_barrier(encoder);
 
-                    // 9. Residual + FFN norm.
                     let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
                     metal_ops
                         .elementwise
@@ -4033,8 +4043,8 @@ impl Qwen35Forward {
                             1,
                             eps,
                         );
+                    decode_barrier(encoder);
 
-                    // 10. Gate + Up (pair or separate).
                     let wg = weight_cache.get(&lw.wg).unwrap();
                     let wu = weight_cache.get(&lw.wu).unwrap();
                     if !crate::model::shared::encode_dequant_matvec_pair_with_config(
@@ -4075,24 +4085,14 @@ impl Qwen35Forward {
                             exec_plan.dequant_dispatch,
                         );
                     }
+                    decode_barrier(encoder);
 
-                    // 11. SiLU + down + residual handoff.
-                    let wd = weight_cache.get(&lw.wd).unwrap();
-                    let next_norm = if layer + 1 < n_layers {
-                        Some(
-                            weight_cache
-                                .get(&cached.layers[layer + 1].attn_norm)
-                                .unwrap(),
-                        )
-                    } else {
-                        None
-                    };
                     crate::model::shared::encode_gpu_ffn_decode_tail(
                         metal_ops,
                         encoder,
                         s,
                         &s.hidden,
-                        wd,
+                        weight_cache.get(&lw.wd).unwrap(),
                         lw.wd_dtype,
                         dim as u32,
                         inter_dim as u32,
@@ -4102,38 +4102,24 @@ impl Qwen35Forward {
                         crate::model::layer_ops::FfnActivation::SiLU,
                         None,
                         next_norm,
-                        &|_| {},
+                        &decode_barrier,
                     );
-                    Ok(())
-                })?;
-
-                // CPU-only mirror: the GPU KV append already happened in the
-                // command buffer above.
-                {
-                    let k_slice = unsafe { &s.k_buf.as_slice::<f32>()[..kv_dim] };
-                    let v_slice = unsafe { &s.v_buf.as_slice::<f32>()[..kv_dim] };
-                    qwen_kv.attention_append_cpu_mirror(layer, k_slice, v_slice);
-                }
-            } else {
-                let recurrent_keys = match &gpu_layer_keys[layer] {
-                    Qwen35GpuLayerKeys::Recurrent(keys) => keys,
-                    Qwen35GpuLayerKeys::FullAttention => {
-                        anyhow::bail!("expected recurrent qwen35 GPU keys for layer {layer}")
-                    }
-                };
-                // Recurrent layer stays on one Metal encoder so decode does not
-                // bounce out to a CPU conv phase between projections and SSM.
-                debug_assert!(kv_dim >= dims.time_step_rank);
-                let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
-                let recurrent_state_stride = qwen_kv.recurrent_state_len();
-                metal_ops.sync_qwen35_slot_buffers_from_kv(qwen_kv, layer, recurrent_slot);
-                metal_ops.with_qwen35_recurrent_slot_buffer(
-                    layer,
-                    recurrent_slot,
-                    conv_state_stride,
-                    recurrent_state_stride,
-                    |slot_buffers| -> anyhow::Result<()> {
-                        metal_ops.device.execute_sync(|encoder| {
+                } else {
+                    let recurrent_keys = match &gpu_layer_keys[layer] {
+                        Qwen35GpuLayerKeys::Recurrent(keys) => keys,
+                        Qwen35GpuLayerKeys::FullAttention => {
+                            anyhow::bail!("expected recurrent qwen35 GPU keys for layer {layer}")
+                        }
+                    };
+                    debug_assert!(kv_dim >= dims.time_step_rank);
+                    let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
+                    let recurrent_state_stride = qwen_kv.recurrent_state_len();
+                    metal_ops.with_qwen35_recurrent_slot_buffer(
+                        layer,
+                        recurrent_slot,
+                        conv_state_stride,
+                        recurrent_state_stride,
+                        |slot_buffers| {
                             let norm_w = weight_cache.get(&lw.attn_norm).unwrap();
                             metal_ops.elementwise.encode_rms_norm_out(
                                 encoder,
@@ -4143,6 +4129,8 @@ impl Qwen35Forward {
                                 dim as u32,
                                 eps,
                             );
+                            decode_barrier(encoder);
+
                             encode_dequant_matvec_with_config(
                                 metal_ops,
                                 encoder,
@@ -4203,6 +4191,8 @@ impl Qwen35Forward {
                                     exec_plan.dequant_dispatch,
                                 );
                             }
+                            decode_barrier(encoder);
+
                             metal_ops.gdn.encode_causal_conv_sequence(
                                 encoder,
                                 &s.gate_buf,
@@ -4213,6 +4203,8 @@ impl Qwen35Forward {
                                 conv_cache_len as u32,
                                 dims.conv_dim() as u32,
                             );
+                            decode_barrier(encoder);
+
                             metal_ops.gdn.encode_prepare_single_token_qkv(
                                 encoder,
                                 &s.up_buf,
@@ -4224,6 +4216,8 @@ impl Qwen35Forward {
                                 dims.state_size as u32,
                                 eps,
                             );
+                            decode_barrier(encoder);
+
                             metal_ops.gdn.encode_gated_delta_sequence(
                                 encoder,
                                 &s.q_buf,
@@ -4237,6 +4231,8 @@ impl Qwen35Forward {
                                 dims.time_step_rank as u32,
                                 dims.state_size as u32,
                             );
+                            decode_barrier(encoder);
+
                             let ssm_norm = weight_cache.get(&recurrent_keys.ssm_norm).unwrap();
                             metal_ops.elementwise.encode_per_head_rms_norm_batch(
                                 encoder,
@@ -4247,6 +4243,8 @@ impl Qwen35Forward {
                                 dims.state_size as u32,
                                 eps,
                             );
+                            decode_barrier(encoder);
+
                             metal_ops.elementwise.encode_silu_elementwise_mul_batch(
                                 encoder,
                                 &s.attn_out,
@@ -4254,7 +4252,8 @@ impl Qwen35Forward {
                                 dims.inner_size as u32,
                                 1,
                             );
-                            // SSM output projection.
+                            decode_barrier(encoder);
+
                             encode_dequant_matvec_with_config(
                                 metal_ops,
                                 encoder,
@@ -4266,7 +4265,8 @@ impl Qwen35Forward {
                                 recurrent_keys.wssm_out_dtype,
                                 exec_plan.dequant_dispatch,
                             );
-                            // Residual + FFN norm.
+                            decode_barrier(encoder);
+
                             let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
                             metal_ops
                                 .elementwise
@@ -4280,6 +4280,8 @@ impl Qwen35Forward {
                                     1,
                                     eps,
                                 );
+                            decode_barrier(encoder);
+
                             let wg = weight_cache.get(&lw.wg).unwrap();
                             let wu = weight_cache.get(&lw.wu).unwrap();
                             if !crate::model::shared::encode_dequant_matvec_pair_with_config(
@@ -4320,23 +4322,14 @@ impl Qwen35Forward {
                                     exec_plan.dequant_dispatch,
                                 );
                             }
+                            decode_barrier(encoder);
 
-                            let wd = weight_cache.get(&lw.wd).unwrap();
-                            let next_norm = if layer + 1 < n_layers {
-                                Some(
-                                    weight_cache
-                                        .get(&cached.layers[layer + 1].attn_norm)
-                                        .unwrap(),
-                                )
-                            } else {
-                                None
-                            };
                             crate::model::shared::encode_gpu_ffn_decode_tail(
                                 metal_ops,
                                 encoder,
                                 s,
                                 &s.hidden,
-                                wd,
+                                weight_cache.get(&lw.wd).unwrap(),
                                 lw.wd_dtype,
                                 dim as u32,
                                 inter_dim as u32,
@@ -4346,33 +4339,64 @@ impl Qwen35Forward {
                                 crate::model::layer_ops::FfnActivation::SiLU,
                                 None,
                                 next_norm,
-                                &|_| {},
+                                &decode_barrier,
                             );
-                            Ok(())
-                        })?;
-                        let conv_generation =
-                            qwen_kv.note_backend_conv_state_update(recurrent_slot, layer);
-                        slot_buffers.conv_synced_generation = Some(conv_generation);
-                        let recurrent_generation =
-                            qwen_kv.note_backend_recurrent_state_update(recurrent_slot, layer);
-                        slot_buffers.recurrent_synced_generation = Some(recurrent_generation);
-                        Ok(())
-                    },
-                )?;
+                        },
+                    );
+                }
             }
-        }
+
+            crate::model::shared::encode_gpu_output_head(
+                encoder,
+                metal_ops,
+                s,
+                &s.hidden,
+                &exec_plan,
+                cached,
+                &weight_cache,
+                dim as u32,
+                vocab_size as u32,
+                eps,
+            );
+            Ok(())
+        })?;
 
         drop(weight_cache);
         drop(cached_guard);
-        drop(scratch_guard);
+
+        let mut mirror_k = vec![0.0f32; kv_dim];
+        let mut mirror_v = vec![0.0f32; kv_dim];
+        for layer in 0..n_layers {
+            if cfg.qwen35_is_recurrent_layer(layer) {
+                let conv_generation = qwen_kv.note_backend_conv_state_update(recurrent_slot, layer);
+                let recurrent_generation =
+                    qwen_kv.note_backend_recurrent_state_update(recurrent_slot, layer);
+                let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
+                let recurrent_state_stride = qwen_kv.recurrent_state_len();
+                metal_ops.with_qwen35_recurrent_slot_buffer(
+                    layer,
+                    recurrent_slot,
+                    conv_state_stride,
+                    recurrent_state_stride,
+                    |slot_buffers| {
+                        slot_buffers.conv_synced_generation = Some(conv_generation);
+                        slot_buffers.recurrent_synced_generation = Some(recurrent_generation);
+                    },
+                );
+                continue;
+            }
+
+            {
+                let gpu_attention = qwen_kv.gpu_attention().unwrap();
+                gpu_attention.read_layer_token_into(layer, seq_len, &mut mirror_k, &mut mirror_v);
+            }
+            qwen_kv.attention_append_cpu_mirror(layer, &mirror_k, &mirror_v);
+        }
 
         qwen_kv.finalize_token();
 
-        // Final norm + LM head.
-        let mut scratch_guard = metal_ops.scratches();
-        let s = scratch_guard.as_mut().unwrap();
-        let h = unsafe { &mut s.hidden.as_mut_slice::<f32>()[..dim] };
-        Self::write_single_logits(backend, h, dim, vocab_size, eps, weights, logits)?;
+        let logits_gpu = unsafe { &s.logits_buf.as_slice::<f32>()[..vocab_size] };
+        logits[..vocab_size].copy_from_slice(logits_gpu);
         Ok(true)
     }
 }
