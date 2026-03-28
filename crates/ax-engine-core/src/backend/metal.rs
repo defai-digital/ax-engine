@@ -195,6 +195,7 @@ pub(crate) struct Qwen35MetalSlotBuffers {
     pub(crate) recurrent_state: MetalBuffer,
     pub(crate) conv_synced_generation: Option<u64>,
     pub(crate) recurrent_synced_generation: Option<u64>,
+    source_kv_identity: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -233,6 +234,7 @@ impl Qwen35MetalSlotBuffers {
             )?,
             conv_synced_generation: None,
             recurrent_synced_generation: None,
+            source_kv_identity: None,
         })
     }
 }
@@ -520,6 +522,11 @@ impl MetalBackend {
         recurrent_state_stride: usize,
         slot_buffers: &mut Qwen35MetalSlotBuffers,
     ) {
+        let kv_identity = qwen_kv as *const crate::kv::Qwen35Kv as usize;
+        if slot_buffers.source_kv_identity != Some(kv_identity) {
+            slot_buffers.conv_synced_generation = None;
+            slot_buffers.recurrent_synced_generation = None;
+        }
         let conv_generation = qwen_kv.conv_state_generation(slot_idx, layer_idx);
         // Only copy conv_state CPU→GPU if GPU doesn't have the latest.
         if !qwen_kv.conv_state_cpu_stale(slot_idx, layer_idx) {
@@ -551,6 +558,7 @@ impl MetalBackend {
                 "qwen35 recurrent state for slot {slot_idx} layer {layer_idx} is backend-owned but Metal slot buffer lost generation {recurrent_generation}"
             );
         }
+        slot_buffers.source_kv_identity = Some(kv_identity);
     }
 
     fn sync_qwen35_slot_from_backend_if_needed(
@@ -579,6 +587,12 @@ impl MetalBackend {
                 "qwen35 state for slot {slot_idx} layer {layer_idx} is backend-owned but Metal slot buffer is missing"
             )
         });
+        let kv_identity = qwen_kv as *const crate::kv::Qwen35Kv as usize;
+        assert_eq!(
+            slot_buffers.source_kv_identity,
+            Some(kv_identity),
+            "qwen35 state for slot {slot_idx} layer {layer_idx} is backend-owned by a different KV instance"
+        );
         if recurrent_stale {
             let generation = qwen_kv.recurrent_state_generation(slot_idx, layer_idx);
             assert_eq!(
@@ -730,6 +744,7 @@ impl MetalBackend {
             let slot_buffers = slot_cache
                 .get_mut(&slot_key)
                 .expect("qwen35 recurrent Metal slot buffers missing after allocation");
+            slot_buffers.source_kv_identity = None;
 
             {
                 let conv_state_src = state_batch.conv_state_for_slot_mut(batch_idx);
@@ -1012,6 +1027,8 @@ impl MetalBackend {
                 let backend_generation =
                     qwen_kv.note_backend_recurrent_state_update(slot_idx, layer_idx);
                 slot_buffers.recurrent_synced_generation = Some(backend_generation);
+                slot_buffers.source_kv_identity =
+                    Some(qwen_kv as *const crate::kv::Qwen35Kv as usize);
             } else {
                 self.sync_qwen35_slot_from_backend_if_needed(qwen_kv, layer_idx, slot_idx);
                 let (conv_state, recurrent_state) =
@@ -1756,6 +1773,7 @@ impl Backend for MetalBackend {
         let slot_cache = self.ops.qwen35_recurrent_slot_buffers.lock().unwrap();
         let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
         let recurrent_state_stride = qwen_kv.recurrent_state_len();
+        let kv_identity = qwen_kv as *const crate::kv::Qwen35Kv as usize;
         for (slot_key, slot_buffers) in slot_cache.iter() {
             if !qwen_kv.has_recurrent_slot(slot_key.slot_idx) {
                 continue;
@@ -1766,6 +1784,9 @@ impl Backend for MetalBackend {
             if slot_key.conv_state_stride != conv_state_stride
                 || slot_key.recurrent_state_stride != recurrent_state_stride
             {
+                continue;
+            }
+            if slot_buffers.source_kv_identity != Some(kv_identity) {
                 continue;
             }
             // Sync recurrent state GPU → CPU if backend-owned.
@@ -2778,6 +2799,11 @@ impl MetalOps {
             Qwen35MetalSlotBuffers::new(&self.device, conv_state_stride, recurrent_state_stride)
                 .expect("Failed to allocate qwen35 recurrent Metal slot buffers")
         });
+        let kv_identity = qwen_kv as *const crate::kv::Qwen35Kv as usize;
+        if slot_buffers.source_kv_identity != Some(kv_identity) {
+            slot_buffers.conv_synced_generation = None;
+            slot_buffers.recurrent_synced_generation = None;
+        }
         let conv_generation = qwen_kv.conv_state_generation(slot_idx, layer_idx);
         if !qwen_kv.conv_state_cpu_stale(slot_idx, layer_idx) {
             if slot_buffers.conv_synced_generation != Some(conv_generation) {
@@ -2806,6 +2832,7 @@ impl MetalOps {
                 "qwen35 recurrent state for slot {slot_idx} layer {layer_idx} is backend-owned but Metal slot buffer lost generation {recurrent_generation}"
             );
         }
+        slot_buffers.source_kv_identity = Some(kv_identity);
     }
 
     pub(crate) fn with_qwen35_recurrent_slot_buffer<R>(
