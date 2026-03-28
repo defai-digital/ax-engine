@@ -56,7 +56,7 @@ fn merged_support_note(
 fn profile_support_note(model: &LlamaModel) -> Option<&'static str> {
     if model.arch_name() == "qwen35" && model.use_gpu_decode() && model.metal_device().is_some() {
         Some(
-            "profile: Qwen3.5 decode timing breakdown still reflects the profiled host path; use bench for native hybrid decode shape",
+            "profile: Qwen3.5 decode timing breakdown follows the native hybrid single-CB path, but current buckets remain coarse GPU encode/execute/readback totals",
         )
     } else {
         None

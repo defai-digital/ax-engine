@@ -3779,6 +3779,7 @@ impl Qwen35Forward {
         kv: &mut ModelKv,
         weights: &WeightStore,
         logits: &mut [f32],
+        mut ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<bool> {
         use crate::model::shared::encode_dequant_matvec_with_config;
 
@@ -3840,6 +3841,8 @@ impl Qwen35Forward {
             }
         };
 
+        let setup_t = OpTimer::start();
+
         // Embed token.
         {
             let h = unsafe {
@@ -3857,6 +3860,11 @@ impl Qwen35Forward {
             }
         }
 
+        if let Some(ref mut ops_ref) = ops {
+            ops_ref.gpu_encode += setup_t.elapsed();
+        }
+
+        let exec_t = OpTimer::start();
         metal_ops.device.execute_sync(|encoder| {
             // Layer 0 attention norm.
             let norm_w = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
@@ -4360,10 +4368,14 @@ impl Qwen35Forward {
             );
             Ok(())
         })?;
+        if let Some(ref mut ops_ref) = ops {
+            ops_ref.gpu_execute += exec_t.elapsed();
+        }
 
         drop(weight_cache);
         drop(cached_guard);
 
+        let rb_t = OpTimer::start();
         let mut mirror_k = vec![0.0f32; kv_dim];
         let mut mirror_v = vec![0.0f32; kv_dim];
         for layer in 0..n_layers {
@@ -4397,6 +4409,9 @@ impl Qwen35Forward {
 
         let logits_gpu = unsafe { &s.logits_buf.as_slice::<f32>()[..vocab_size] };
         logits[..vocab_size].copy_from_slice(logits_gpu);
+        if let Some(ref mut ops_ref) = ops {
+            ops_ref.gpu_readback += rb_t.elapsed();
+        }
         Ok(true)
     }
 }
@@ -4416,9 +4431,24 @@ impl ForwardPass for Qwen35Forward {
         // Prefer the native Metal single-token decode path by default.
         // The host-orchestrated fallback remains available for debugging or
         // rollout control via `AX_QWEN35_GPU_DECODE=off`.
-        if ops.is_none() && Self::gpu_decode_enabled() {
-            if let Ok(true) =
-                Self::try_forward_single_gpu(ctx, token_id, position, kv, weights, logits)
+        if Self::gpu_decode_enabled() {
+            if let Some(ops_ref) = ops.as_deref_mut() {
+                let t = OpTimer::start();
+                let gpu_result = Self::try_forward_single_gpu(
+                    ctx,
+                    token_id,
+                    position,
+                    kv,
+                    weights,
+                    logits,
+                    Some(ops_ref),
+                );
+                ops_ref.gpu += t.elapsed();
+                if let Ok(true) = gpu_result {
+                    return Ok(());
+                }
+            } else if let Ok(true) =
+                Self::try_forward_single_gpu(ctx, token_id, position, kv, weights, logits, None)
             {
                 return Ok(());
             }
