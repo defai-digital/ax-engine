@@ -30,7 +30,8 @@ use crate::metrics::counters::OpTimer;
 use crate::model::config::ModelConfig;
 use crate::model::forward::{ForwardContext, ForwardPass};
 use crate::model::shared::{
-    encode_dequant_batch, env_flag_enabled, env_flag_override, per_head_rms_norm,
+    encode_dequant_batch, encode_dequant_batch_f16in, env_flag_enabled, env_flag_override,
+    per_head_rms_norm,
 };
 use crate::model::weights::WeightStore;
 
@@ -267,6 +268,78 @@ impl Qwen35Forward {
             dims.group_count
         );
         Ok(dims)
+    }
+
+    fn qwen35_batch_projection_needs_f16_input(dtype: crate::gguf::tensor::GgmlType) -> bool {
+        matches!(dtype, crate::gguf::tensor::GgmlType::Q8_0)
+    }
+
+    fn qwen35_batch_projection_supported(
+        metal_ops: &crate::backend::metal::MetalOps,
+        dtype: crate::gguf::tensor::GgmlType,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) -> bool {
+        matches!(
+            dtype,
+            crate::gguf::tensor::GgmlType::Q4K
+                | crate::gguf::tensor::GgmlType::Q5K
+                | crate::gguf::tensor::GgmlType::Q6K
+        ) || (dtype == crate::gguf::tensor::GgmlType::Q8_0
+            && (metal_ops.metal_q8_batch_native_shape_enabled(m, n, k)
+                || metal_ops.metal_precompute_f16_enabled()))
+    }
+
+    fn prepare_qwen35_batch_projection_weight(
+        metal_ops: &crate::backend::metal::MetalOps,
+        raw: &[u8],
+        dtype: crate::gguf::tensor::GgmlType,
+        m: u32,
+        k: u32,
+    ) -> anyhow::Result<()> {
+        if dtype == crate::gguf::tensor::GgmlType::Q8_0 && metal_ops.metal_precompute_f16_enabled()
+        {
+            metal_ops.ensure_precomputed_q8_0_f16_from_raw(raw, m, k)?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_qwen35_batch_projection(
+        metal_ops: &crate::backend::metal::MetalOps,
+        encoder: &ax_engine_metal::MetalEncoder,
+        weight: &MetalBuffer,
+        input_f32: &MetalBuffer,
+        input_f16: &MetalBuffer,
+        output: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+        dtype: crate::gguf::tensor::GgmlType,
+    ) {
+        if Self::qwen35_batch_projection_needs_f16_input(dtype) {
+            encode_dequant_batch_f16in(
+                metal_ops, encoder, weight, input_f16, output, m, n, k, dtype,
+            );
+        } else {
+            encode_dequant_batch(
+                &metal_ops.dequant,
+                &metal_ops.elementwise,
+                encoder,
+                weight,
+                input_f32,
+                output,
+                input_f16,
+                m,
+                n,
+                k,
+                dtype,
+                false,
+                false,
+                false,
+            );
+        }
     }
 
     /// Cache all Qwen3.5 model weights as GPU MetalBuffers.
@@ -1596,30 +1669,34 @@ impl Qwen35Forward {
             return Ok(false);
         };
 
-        // Check all dtypes are supported.
-        let supported = |dt: crate::gguf::tensor::GgmlType| {
-            matches!(
-                dt,
-                crate::gguf::tensor::GgmlType::Q4K
-                    | crate::gguf::tensor::GgmlType::Q5K
-                    | crate::gguf::tensor::GgmlType::Q6K
+        if !projections.iter().all(|(_, dtype, out_dim)| {
+            Self::qwen35_batch_projection_supported(
+                metal_ops,
+                *dtype,
+                *out_dim as u32,
+                n_tokens as u32,
+                dim as u32,
             )
-        };
-        if !projections.iter().all(|(_, dtype, _)| supported(*dtype)) {
+        }) {
             return Ok(false);
         }
 
         // Cache all weights + norm.
         let attn_norm_w = weights.f32_slice(&format!("{prefix}.attn_norm.weight"))?;
         let nw_key = metal_ops.ensure_f32_cached(attn_norm_w);
-        let proj_keys: Vec<usize> = projections
-            .iter()
-            .map(|(raw, _, _)| {
-                let key = raw.as_ptr() as usize;
-                metal_ops.ensure_quant_cached(raw);
-                key
-            })
-            .collect();
+        let mut proj_keys = Vec::with_capacity(projections.len());
+        for (raw, dtype, out_dim) in projections {
+            Self::prepare_qwen35_batch_projection_weight(
+                metal_ops,
+                raw,
+                *dtype,
+                *out_dim as u32,
+                dim as u32,
+            )?;
+            let key = raw.as_ptr() as usize;
+            metal_ops.ensure_quant_cached(raw);
+            proj_keys.push(key);
+        }
 
         metal_ops.init_batch_scratches(cfg, n_tokens);
 
@@ -1658,24 +1735,31 @@ impl Qwen35Forward {
                 n_tokens as u32,
                 rms_norm_eps,
             );
+            if projections
+                .iter()
+                .any(|(_, dtype, _)| Self::qwen35_batch_projection_needs_f16_input(*dtype))
+            {
+                metal_ops.elementwise.encode_cast_f32_to_f16(
+                    encoder,
+                    &bs.norm_buf,
+                    &bs.matmul_in_f16,
+                    (n_tokens * dim) as u32,
+                );
+            }
             // 2. All input projections from norm_buf.
             for (i, (_, dtype, out_dim)) in projections.iter().enumerate() {
                 let w_buf = weight_cache.get(&proj_keys[i]).unwrap();
-                encode_dequant_batch(
-                    &metal_ops.dequant,
-                    &metal_ops.elementwise,
+                Self::encode_qwen35_batch_projection(
+                    metal_ops,
                     encoder,
                     w_buf,
                     &bs.norm_buf,
-                    &temp_bufs[i],
                     &bs.matmul_in_f16,
+                    &temp_bufs[i],
                     *out_dim as u32,
                     n_tokens as u32,
                     dim as u32,
                     *dtype,
-                    false,
-                    false,
-                    false,
                 );
             }
             Ok(())
@@ -2694,8 +2778,6 @@ impl Qwen35Forward {
         logits_all: Option<&mut Vec<f32>>,
         mut ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<bool> {
-        use crate::model::shared::encode_dequant_batch;
-
         let total_t = OpTimer::start();
         let Some(metal_ops) = ctx.backend.metal_ops() else {
             return Ok(false);
@@ -2727,16 +2809,9 @@ impl Qwen35Forward {
             return Ok(false);
         }
 
-        // Check that all projection dtypes are GPU-supported.
-        // GPU batch dequant matmul only supports Q4K/Q5K/Q6K.
-        // Other types (F32, Q8_0, etc.) are handled via CPU fallback.
-        let gpu_batch_supported = |dt: crate::gguf::tensor::GgmlType| {
-            matches!(
-                dt,
-                crate::gguf::tensor::GgmlType::Q4K
-                    | crate::gguf::tensor::GgmlType::Q5K
-                    | crate::gguf::tensor::GgmlType::Q6K
-            )
+        // Check that all projection dtypes are GPU-supported for this batch shape.
+        let gpu_batch_supported = |dt: crate::gguf::tensor::GgmlType, m: u32, k: u32| {
+            Self::qwen35_batch_projection_supported(metal_ops, dt, m, n_tokens as u32, k)
         };
 
         // Quick check: verify at least one full-attention layer's weights are supported.
@@ -2744,7 +2819,7 @@ impl Qwen35Forward {
             if !cfg.qwen35_is_recurrent_layer(layer) {
                 let prefix = format!("blk.{layer}");
                 let (_, dt) = weights.raw_with_dtype(&format!("{prefix}.attn_q.weight"))?;
-                if !gpu_batch_supported(dt) {
+                if !gpu_batch_supported(dt, (q_dim * 2) as u32, dim as u32) {
                     return Ok(false);
                 }
                 break;
@@ -2801,12 +2876,33 @@ impl Qwen35Forward {
             let (wu_raw, wu_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_up.weight"))?;
             let (wd_raw, wd_dtype) =
                 weights.raw_with_dtype(&format!("{prefix}.ffn_down.weight"))?;
-            if !gpu_batch_supported(wg_dtype)
-                || !gpu_batch_supported(wu_dtype)
-                || !gpu_batch_supported(wd_dtype)
+            if !gpu_batch_supported(wg_dtype, inter_dim as u32, dim as u32)
+                || !gpu_batch_supported(wu_dtype, inter_dim as u32, dim as u32)
+                || !gpu_batch_supported(wd_dtype, dim as u32, inter_dim as u32)
             {
                 return Ok(false);
             }
+            Self::prepare_qwen35_batch_projection_weight(
+                metal_ops,
+                wg_raw,
+                wg_dtype,
+                inter_dim as u32,
+                dim as u32,
+            )?;
+            Self::prepare_qwen35_batch_projection_weight(
+                metal_ops,
+                wu_raw,
+                wu_dtype,
+                inter_dim as u32,
+                dim as u32,
+            )?;
+            Self::prepare_qwen35_batch_projection_weight(
+                metal_ops,
+                wd_raw,
+                wd_dtype,
+                dim as u32,
+                inter_dim as u32,
+            )?;
             let wg_key = metal_ops.ensure_quant_cached(wg_raw);
             let wu_key = metal_ops.ensure_quant_cached(wu_raw);
             let wd_key = metal_ops.ensure_quant_cached(wd_raw);
@@ -2823,13 +2919,41 @@ impl Qwen35Forward {
                     weights.raw_with_dtype(&format!("{prefix}.attn_v.weight"))?;
                 let (wo_raw, wo_dtype) =
                     weights.raw_with_dtype(&format!("{prefix}.attn_output.weight"))?;
-                if !gpu_batch_supported(wq_dtype)
-                    || !gpu_batch_supported(wk_dtype)
-                    || !gpu_batch_supported(wv_dtype)
-                    || !gpu_batch_supported(wo_dtype)
+                if !gpu_batch_supported(wq_dtype, (q_dim * 2) as u32, dim as u32)
+                    || !gpu_batch_supported(wk_dtype, kv_dim as u32, dim as u32)
+                    || !gpu_batch_supported(wv_dtype, kv_dim as u32, dim as u32)
+                    || !gpu_batch_supported(wo_dtype, dim as u32, q_dim as u32)
                 {
                     return Ok(false);
                 }
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wq_raw,
+                    wq_dtype,
+                    (q_dim * 2) as u32,
+                    dim as u32,
+                )?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wk_raw,
+                    wk_dtype,
+                    kv_dim as u32,
+                    dim as u32,
+                )?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wv_raw,
+                    wv_dtype,
+                    kv_dim as u32,
+                    dim as u32,
+                )?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wo_raw,
+                    wo_dtype,
+                    dim as u32,
+                    q_dim as u32,
+                )?;
                 let wq_key = metal_ops.ensure_quant_cached(wq_raw);
                 let wk_key = metal_ops.ensure_quant_cached(wk_raw);
                 let wv_key = metal_ops.ensure_quant_cached(wv_raw);
@@ -2859,6 +2983,12 @@ impl Qwen35Forward {
                     //          → attention → gate → WO → residual → FFN
                     let cb_t = OpTimer::start();
                     metal_ops.device.execute_sync(|encoder| {
+                        let qkv_uses_f16 = Self::qwen35_batch_projection_needs_f16_input(wq_dtype)
+                            || Self::qwen35_batch_projection_needs_f16_input(wk_dtype)
+                            || Self::qwen35_batch_projection_needs_f16_input(wv_dtype);
+                        let ffn_input_uses_f16 =
+                            Self::qwen35_batch_projection_needs_f16_input(wg_dtype)
+                                || Self::qwen35_batch_projection_needs_f16_input(wu_dtype);
                         // 1. RMSNorm: hidden → norm_buf
                         metal_ops.elementwise.encode_rms_norm_out_batch(
                             encoder,
@@ -2869,56 +2999,52 @@ impl Qwen35Forward {
                             nt,
                             eps,
                         );
+                        if qkv_uses_f16 {
+                            metal_ops.elementwise.encode_cast_f32_to_f16(
+                                encoder,
+                                &bs.norm_buf,
+                                &bs.matmul_in_f16,
+                                nt * dim as u32,
+                            );
+                        }
                         // 2. Q+gate matmul: norm_buf → gate_buf [N × q_dim*2]
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
+                        Self::encode_qwen35_batch_projection(
+                            metal_ops,
                             encoder,
                             wq_buf,
                             &bs.norm_buf,
-                            &bs.gate_buf,
                             &bs.matmul_in_f16,
+                            &bs.gate_buf,
                             (q_dim * 2) as u32,
                             nt,
                             dim as u32,
                             wq_dtype,
-                            false,
-                            false,
-                            false,
                         );
                         // 3. K matmul: norm_buf → k_buf
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
+                        Self::encode_qwen35_batch_projection(
+                            metal_ops,
                             encoder,
                             wk_buf,
                             &bs.norm_buf,
-                            &bs.k_buf,
                             &bs.matmul_in_f16,
+                            &bs.k_buf,
                             kv_dim as u32,
                             nt,
                             dim as u32,
                             wk_dtype,
-                            false,
-                            false,
-                            false,
                         );
                         // 4. V matmul: norm_buf → v_buf
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
+                        Self::encode_qwen35_batch_projection(
+                            metal_ops,
                             encoder,
                             wv_buf,
                             &bs.norm_buf,
-                            &bs.v_buf,
                             &bs.matmul_in_f16,
+                            &bs.v_buf,
                             kv_dim as u32,
                             nt,
                             dim as u32,
                             wv_dtype,
-                            false,
-                            false,
-                            false,
                         );
                         // 5. GPU Q+gate split: gate_buf → q_buf (Q), up_buf (gate)
                         metal_ops.elementwise.encode_split_qgate_batch(
@@ -3029,22 +3155,26 @@ impl Qwen35Forward {
                             &bs.attn_out,
                             (n_tokens * q_dim) as u32,
                         );
+                        if Self::qwen35_batch_projection_needs_f16_input(wo_dtype) {
+                            metal_ops.elementwise.encode_cast_f32_to_f16(
+                                encoder,
+                                &bs.attn_out,
+                                &bs.matmul_in_f16,
+                                nt * q_dim as u32,
+                            );
+                        }
                         // 11. WO projection: attn_out → proj_buf
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
+                        Self::encode_qwen35_batch_projection(
+                            metal_ops,
                             encoder,
                             wo_buf,
                             &bs.attn_out,
-                            &bs.proj_buf,
                             &bs.matmul_in_f16,
+                            &bs.proj_buf,
                             dim as u32,
                             nt,
                             q_dim as u32,
                             wo_dtype,
-                            false,
-                            false,
-                            false,
                         );
                         // 12. Residual + FFN norm
                         metal_ops
@@ -3059,38 +3189,38 @@ impl Qwen35Forward {
                                 nt,
                                 eps,
                             );
+                        if ffn_input_uses_f16 {
+                            metal_ops.elementwise.encode_cast_f32_to_f16(
+                                encoder,
+                                &bs.norm_buf,
+                                &bs.matmul_in_f16,
+                                nt * dim as u32,
+                            );
+                        }
                         // 13-14. Gate + Up matmul
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
+                        Self::encode_qwen35_batch_projection(
+                            metal_ops,
                             encoder,
                             wg_buf,
                             &bs.norm_buf,
-                            &bs.gate_buf,
                             &bs.matmul_in_f16,
+                            &bs.gate_buf,
                             inter_dim as u32,
                             nt,
                             dim as u32,
                             wg_dtype,
-                            false,
-                            false,
-                            false,
                         );
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
+                        Self::encode_qwen35_batch_projection(
+                            metal_ops,
                             encoder,
                             wu_buf,
                             &bs.norm_buf,
-                            &bs.up_buf,
                             &bs.matmul_in_f16,
+                            &bs.up_buf,
                             inter_dim as u32,
                             nt,
                             dim as u32,
                             wu_dtype,
-                            false,
-                            false,
-                            false,
                         );
                         // 15. SiLU
                         metal_ops.elementwise.encode_silu_elementwise_mul_batch(
@@ -3100,22 +3230,26 @@ impl Qwen35Forward {
                             inter_dim as u32,
                             nt,
                         );
+                        if Self::qwen35_batch_projection_needs_f16_input(wd_dtype) {
+                            metal_ops.elementwise.encode_cast_f32_to_f16(
+                                encoder,
+                                &bs.gate_buf,
+                                &bs.matmul_in_f16,
+                                nt * inter_dim as u32,
+                            );
+                        }
                         // 16. Down projection: gate_buf → proj_buf
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
+                        Self::encode_qwen35_batch_projection(
+                            metal_ops,
                             encoder,
                             wd_buf,
                             &bs.gate_buf,
-                            &bs.proj_buf,
                             &bs.matmul_in_f16,
+                            &bs.proj_buf,
                             dim as u32,
                             nt,
                             inter_dim as u32,
                             wd_dtype,
-                            false,
-                            false,
-                            false,
                         );
                         // 17. Final residual: hidden += proj_buf
                         metal_ops.elementwise.encode_elementwise_add_batch(
@@ -3163,10 +3297,19 @@ impl Qwen35Forward {
                 let mut proj_dtypes = Vec::new();
                 let mut proj_dims: Vec<usize> = Vec::new();
                 for (i, (raw, dtype, out_dim)) in input_ops.iter().enumerate() {
+                    if is_gpu_encodable(*dtype, *out_dim as u32, dim as u32) {
+                        Self::prepare_qwen35_batch_projection_weight(
+                            metal_ops,
+                            raw,
+                            *dtype,
+                            *out_dim as u32,
+                            dim as u32,
+                        )?;
+                    }
                     proj_keys.push(metal_ops.ensure_quant_cached(raw));
                     proj_dtypes.push(*dtype);
                     proj_dims.push(*out_dim);
-                    if is_gpu_encodable(*dtype) {
+                    if is_gpu_encodable(*dtype, *out_dim as u32, dim as u32) {
                         gpu_proj_indices.push(i);
                     } else {
                         cpu_proj_indices.push(i);
@@ -3174,7 +3317,17 @@ impl Qwen35Forward {
                 }
                 let (ssm_out_raw, ssm_out_dtype, _) =
                     Self::recurrent_output_op(weights, &prefix, dim)?;
-                let ssm_gpu = gpu_batch_supported(ssm_out_dtype);
+                let ssm_gpu =
+                    gpu_batch_supported(ssm_out_dtype, dim as u32, dims.inner_size as u32);
+                if ssm_gpu {
+                    Self::prepare_qwen35_batch_projection_weight(
+                        metal_ops,
+                        ssm_out_raw,
+                        ssm_out_dtype,
+                        dim as u32,
+                        dims.inner_size as u32,
+                    )?;
+                }
                 let ssm_key = metal_ops.ensure_quant_cached(ssm_out_raw);
 
                 // Allocate temporary projection output buffers.
@@ -3212,23 +3365,30 @@ impl Qwen35Forward {
                             nt,
                             eps,
                         );
+                        if gpu_proj_indices
+                            .iter()
+                            .any(|&i| Self::qwen35_batch_projection_needs_f16_input(proj_dtypes[i]))
+                        {
+                            metal_ops.elementwise.encode_cast_f32_to_f16(
+                                encoder,
+                                &bs.norm_buf,
+                                &bs.matmul_in_f16,
+                                nt * dim as u32,
+                            );
+                        }
                         for &i in &gpu_proj_indices {
                             let w_buf = weight_cache.get(&proj_keys[i]).unwrap();
-                            encode_dequant_batch(
-                                &metal_ops.dequant,
-                                &metal_ops.elementwise,
+                            Self::encode_qwen35_batch_projection(
+                                metal_ops,
                                 encoder,
                                 w_buf,
                                 &bs.norm_buf,
-                                &temp_bufs[i],
                                 &bs.matmul_in_f16,
+                                &temp_bufs[i],
                                 proj_dims[i] as u32,
                                 nt,
                                 dim as u32,
                                 proj_dtypes[i],
-                                false,
-                                false,
-                                false,
                             );
                         }
                         Ok(())
@@ -3327,7 +3487,7 @@ impl Qwen35Forward {
                     );
                 }
 
-                // SSM output projection: handle Q8_0 (not GPU-batch-supported) via CPU.
+                // SSM output projection: fall back to CPU if this batch shape cannot stay on GPU.
                 let ssm_result = if !ssm_gpu {
                     let mut result = vec![0.0f32; n_tokens * dim];
                     timed_matmul_bucket!(
@@ -3398,22 +3558,26 @@ impl Qwen35Forward {
                                 nt,
                             );
                             // GPU SSM: proj_buf (inner_size) → attn_out (dim)
+                            if Self::qwen35_batch_projection_needs_f16_input(ssm_out_dtype) {
+                                metal_ops.elementwise.encode_cast_f32_to_f16(
+                                    encoder,
+                                    &bs.up_buf,
+                                    &bs.matmul_in_f16,
+                                    nt * dims.inner_size as u32,
+                                );
+                            }
                             let ssm_buf = weight_cache.get(&ssm_key).unwrap();
-                            encode_dequant_batch(
-                                &metal_ops.dequant,
-                                &metal_ops.elementwise,
+                            Self::encode_qwen35_batch_projection(
+                                metal_ops,
                                 encoder,
                                 ssm_buf,
                                 &bs.up_buf,
-                                &bs.attn_out,
                                 &bs.matmul_in_f16,
+                                &bs.attn_out,
                                 dim as u32,
                                 nt,
                                 dims.inner_size as u32,
                                 ssm_out_dtype,
-                                false,
-                                false,
-                                false,
                             );
                         }
                         // Residual: hidden += attn_out (SSM output) + FFN norm
@@ -3429,38 +3593,40 @@ impl Qwen35Forward {
                                 nt,
                                 eps,
                             );
+                        if Self::qwen35_batch_projection_needs_f16_input(wg_dtype)
+                            || Self::qwen35_batch_projection_needs_f16_input(wu_dtype)
+                        {
+                            metal_ops.elementwise.encode_cast_f32_to_f16(
+                                encoder,
+                                &bs.norm_buf,
+                                &bs.matmul_in_f16,
+                                nt * dim as u32,
+                            );
+                        }
                         // Gate + Up
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
+                        Self::encode_qwen35_batch_projection(
+                            metal_ops,
                             encoder,
                             wg_buf,
                             &bs.norm_buf,
-                            &bs.gate_buf,
                             &bs.matmul_in_f16,
+                            &bs.gate_buf,
                             inter_dim as u32,
                             nt,
                             dim as u32,
                             wg_dtype,
-                            false,
-                            false,
-                            false,
                         );
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
+                        Self::encode_qwen35_batch_projection(
+                            metal_ops,
                             encoder,
                             wu_buf,
                             &bs.norm_buf,
-                            &bs.up_buf,
                             &bs.matmul_in_f16,
+                            &bs.up_buf,
                             inter_dim as u32,
                             nt,
                             dim as u32,
                             wu_dtype,
-                            false,
-                            false,
-                            false,
                         );
                         // SiLU
                         metal_ops.elementwise.encode_silu_elementwise_mul_batch(
@@ -3470,22 +3636,26 @@ impl Qwen35Forward {
                             inter_dim as u32,
                             nt,
                         );
+                        if Self::qwen35_batch_projection_needs_f16_input(wd_dtype) {
+                            metal_ops.elementwise.encode_cast_f32_to_f16(
+                                encoder,
+                                &bs.gate_buf,
+                                &bs.matmul_in_f16,
+                                nt * inter_dim as u32,
+                            );
+                        }
                         // Down
-                        encode_dequant_batch(
-                            &metal_ops.dequant,
-                            &metal_ops.elementwise,
+                        Self::encode_qwen35_batch_projection(
+                            metal_ops,
                             encoder,
                             wd_buf,
                             &bs.gate_buf,
-                            &bs.proj_buf,
                             &bs.matmul_in_f16,
+                            &bs.proj_buf,
                             dim as u32,
                             nt,
                             inter_dim as u32,
                             wd_dtype,
-                            false,
-                            false,
-                            false,
                         );
                         // Final residual: hidden += proj_buf
                         metal_ops.elementwise.encode_elementwise_add_batch(
