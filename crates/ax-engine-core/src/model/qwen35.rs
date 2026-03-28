@@ -3331,7 +3331,8 @@ impl Qwen35Forward {
                 let keep_rec_z_on_gpu = ssm_gpu && gpu_proj_indices.contains(&1);
                 let ssm_key = metal_ops.ensure_quant_cached(ssm_out_raw);
 
-                // Allocate temporary projection output buffers.
+                // Keep recurrent projection temps separate from batch scratches so
+                // backend recurrent work can run without holding the batch scratch lock.
                 let temp_bufs: Vec<ax_engine_metal::MetalBuffer> = proj_dims
                     .iter()
                     .map(|&d| {
@@ -3514,6 +3515,28 @@ impl Qwen35Forward {
                     None
                 };
 
+                let total_inner = n_tokens * dims.inner_size;
+                let rec_out_alias = if ssm_gpu {
+                    Some(unsafe {
+                        ax_engine_metal::MetalBuffer::from_mut_slice_no_copy(
+                            metal_ops.device.device(),
+                            &mut rec_out_batch[..total_inner],
+                        )
+                    }?)
+                } else {
+                    None
+                };
+                let rec_z_alias = if ssm_gpu && !keep_rec_z_on_gpu {
+                    Some(unsafe {
+                        ax_engine_metal::MetalBuffer::from_mut_slice_no_copy(
+                            metal_ops.device.device(),
+                            &mut rec_z_batch[..total_inner],
+                        )
+                    }?)
+                } else {
+                    None
+                };
+
                 {
                     let mut bs_guard = metal_ops.batch_scratches();
                     let Some(bs) = bs_guard.as_mut() else {
@@ -3528,15 +3551,8 @@ impl Qwen35Forward {
                                 .copy_from_slice(ssm_result);
                         }
                     } else {
-                        // GPU SSM: upload raw recurrent output and reuse GPU gate when available.
-                        unsafe {
-                            bs.gate_buf.as_mut_slice::<f32>()[..n_tokens * dims.inner_size]
-                                .copy_from_slice(&rec_out_batch[..n_tokens * dims.inner_size]);
-                            if !keep_rec_z_on_gpu {
-                                bs.up_buf.as_mut_slice::<f32>()[..n_tokens * dims.inner_size]
-                                    .copy_from_slice(&rec_z_batch[..n_tokens * dims.inner_size]);
-                            }
-                        }
+                        // GPU SSM: recurrent output already lives in shared memory, so alias it
+                        // directly instead of round-tripping through another upload buffer.
                     }
                     drop(ssm_result);
                     let weight_cache = metal_ops.lock_weight_cache();
@@ -3547,16 +3563,20 @@ impl Qwen35Forward {
                     let cb_t = OpTimer::start();
                     metal_ops.device.execute_sync(|encoder| {
                         if ssm_gpu {
-                            let rec_z_gpu_buf = if keep_rec_z_on_gpu {
-                                Some(&temp_bufs[1])
+                            let rec_out_buf = rec_out_alias
+                                .as_ref()
+                                .expect("gpu recurrent output alias missing");
+                            let rec_z_buf = if keep_rec_z_on_gpu {
+                                &temp_bufs[1]
                             } else {
-                                None
+                                rec_z_alias
+                                    .as_ref()
+                                    .expect("gpu recurrent gate alias missing")
                             };
-                            let rec_z_buf = rec_z_gpu_buf.unwrap_or(&bs.up_buf);
                             let ssm_norm_buf = weight_cache.get(&ssm_norm_key.unwrap()).unwrap();
                             metal_ops.elementwise.encode_per_head_rms_norm_batch(
                                 encoder,
-                                &bs.gate_buf,
+                                rec_out_buf,
                                 ssm_norm_buf,
                                 nt,
                                 dims.time_step_rank as u32,
@@ -3566,7 +3586,7 @@ impl Qwen35Forward {
                             metal_ops.elementwise.encode_silu_elementwise_mul_batch(
                                 encoder,
                                 rec_z_buf,
-                                &bs.gate_buf,
+                                rec_out_buf,
                                 dims.inner_size as u32,
                                 nt,
                             );
