@@ -84,6 +84,8 @@ struct Qwen35RecurrentLayerKeys {
     /// SSM output projection (ssm_out.weight).
     wssm_out: usize,
     wssm_out_dtype: crate::gguf::tensor::GgmlType,
+    /// Cached causal conv kernel for single-token GPU recurrent decode.
+    conv_kernel: usize,
     /// Cached recurrent norm tensor for the GPU finalize step.
     ssm_norm: usize,
 }
@@ -315,6 +317,8 @@ impl Qwen35Forward {
                 let wbeta_key = metal_ops.ensure_quant_cached(wbeta_raw);
                 let walpha_key = metal_ops.ensure_quant_cached(walpha_raw);
                 let wssm_out_key = metal_ops.ensure_quant_cached(wssm_out_raw);
+                let conv_kernel = weights.f32_slice(&format!("{prefix}.ssm_conv1d.weight"))?;
+                let conv_kernel_key = metal_ops.ensure_f32_cached(conv_kernel);
                 let ssm_norm = weights.f32_slice(&format!("{prefix}.ssm_norm.weight"))?;
                 let ssm_norm_key = metal_ops.ensure_f32_cached(ssm_norm);
 
@@ -369,6 +373,7 @@ impl Qwen35Forward {
                     walpha_dtype,
                     wssm_out: wssm_out_key,
                     wssm_out_dtype,
+                    conv_kernel: conv_kernel_key,
                     ssm_norm: ssm_norm_key,
                 }));
             } else {
@@ -3811,17 +3816,6 @@ impl Qwen35Forward {
         let cached = cached_guard.as_ref().unwrap();
         let gpu_layer_keys = Self::cached_gpu_layer_keys(cached.lm_head)
             .ok_or_else(|| anyhow::anyhow!("missing cached qwen35 gpu layer keys"))?;
-        let recurrent_runtime_tensors: Vec<Option<Qwen35RecurrentRuntimeTensors<'_>>> = (0
-            ..n_layers)
-            .map(|layer| {
-                if !cfg.qwen35_is_recurrent_layer(layer) {
-                    return Ok(None);
-                }
-                let prefix = format!("blk.{layer}");
-                Ok(Some(Self::recurrent_runtime_tensors(weights, &prefix)?))
-            })
-            .collect::<anyhow::Result<_>>()?;
-
         metal_ops.init_scratches(cfg);
         let mut scratch_guard = metal_ops.scratches();
         let s = scratch_guard.as_mut().unwrap();
@@ -3852,9 +3846,6 @@ impl Qwen35Forward {
 
         let rope_position = Self::rope_position(cfg, position);
         let kv_offset = (seq_len * kv_dim) as u32;
-
-        // CPU buffers for recurrent backend dispatch.
-        let mut rec_qkv = vec![0.0f32; dims.conv_dim()];
 
         // Layer 0 attention norm.
         {
@@ -4124,104 +4115,15 @@ impl Qwen35Forward {
                     qwen_kv.attention_append_cpu_mirror(layer, k_slice, v_slice);
                 }
             } else {
-                // Recurrent layer: CB1 (norm + input projections), Backend (conv + gated_delta),
-                // CB2 (SSM out + residual + FFN) — total 4 CBs instead of 6.
                 let recurrent_keys = match &gpu_layer_keys[layer] {
                     Qwen35GpuLayerKeys::Recurrent(keys) => keys,
                     Qwen35GpuLayerKeys::FullAttention => {
                         anyhow::bail!("expected recurrent qwen35 GPU keys for layer {layer}")
                     }
                 };
-                let runtime = recurrent_runtime_tensors[layer].ok_or_else(|| {
-                    anyhow::anyhow!("missing qwen35 recurrent runtime for layer {layer}")
-                })?;
-
-                // CB1: Attention norm + 4 input projections in one command buffer.
-                metal_ops.device.execute_sync(|encoder| {
-                    let norm_w = weight_cache.get(&lw.attn_norm).unwrap();
-                    metal_ops.elementwise.encode_rms_norm_out(
-                        encoder,
-                        &s.hidden,
-                        norm_w,
-                        &s.norm_buf,
-                        dim as u32,
-                        eps,
-                    );
-                    // QKV projection → gate_buf (large enough: inter_dim >= conv_dim)
-                    encode_dequant_matvec_with_config(
-                        metal_ops,
-                        encoder,
-                        weight_cache.get(&recurrent_keys.wqkv).unwrap(),
-                        &s.norm_buf,
-                        &s.gate_buf,
-                        dims.conv_dim() as u32,
-                        dim as u32,
-                        recurrent_keys.wqkv_dtype,
-                        exec_plan.dequant_dispatch,
-                    );
-                    // Z (gate) → attn_out (reuse)
-                    encode_dequant_matvec_with_config(
-                        metal_ops,
-                        encoder,
-                        weight_cache.get(&recurrent_keys.wgate).unwrap(),
-                        &s.norm_buf,
-                        &s.attn_out,
-                        dims.inner_size as u32,
-                        dim as u32,
-                        recurrent_keys.wgate_dtype,
-                        exec_plan.dequant_dispatch,
-                    );
-                    // Beta + alpha share the same input and output shape.
-                    let wbeta = weight_cache.get(&recurrent_keys.wbeta).unwrap();
-                    let walpha = weight_cache.get(&recurrent_keys.walpha).unwrap();
-                    if !Self::encode_recurrent_pair_matvec_with_config(
-                        metal_ops,
-                        encoder,
-                        wbeta,
-                        walpha,
-                        &s.norm_buf,
-                        &s.q_buf,
-                        &s.proj_buf,
-                        dims.time_step_rank as u32,
-                        dim as u32,
-                        recurrent_keys.wbeta_dtype,
-                        recurrent_keys.walpha_dtype,
-                    ) {
-                        encode_dequant_matvec_with_config(
-                            metal_ops,
-                            encoder,
-                            wbeta,
-                            &s.norm_buf,
-                            &s.q_buf,
-                            dims.time_step_rank as u32,
-                            dim as u32,
-                            recurrent_keys.wbeta_dtype,
-                            exec_plan.dequant_dispatch,
-                        );
-                        encode_dequant_matvec_with_config(
-                            metal_ops,
-                            encoder,
-                            walpha,
-                            &s.norm_buf,
-                            &s.proj_buf,
-                            dims.time_step_rank as u32,
-                            dim as u32,
-                            recurrent_keys.walpha_dtype,
-                            exec_plan.dequant_dispatch,
-                        );
-                    }
-                    Ok(())
-                })?;
-
-                unsafe {
-                    rec_qkv.copy_from_slice(&s.gate_buf.as_slice::<f32>()[..dims.conv_dim()]);
-                    std::ptr::copy_nonoverlapping(
-                        s.q_buf.contents().as_ptr() as *const f32,
-                        s.gate_buf.contents().as_ptr() as *mut f32,
-                        dims.time_step_rank,
-                    );
-                }
-
+                // Recurrent layer stays on one Metal encoder so decode does not
+                // bounce out to a CPU conv phase between projections and SSM.
+                debug_assert!(kv_dim >= dims.time_step_rank);
                 let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
                 let recurrent_state_stride = qwen_kv.recurrent_state_len();
                 metal_ops.sync_qwen35_slot_buffers_from_kv(qwen_kv, layer, recurrent_slot);
@@ -4231,25 +4133,86 @@ impl Qwen35Forward {
                     conv_state_stride,
                     recurrent_state_stride,
                     |slot_buffers| -> anyhow::Result<()> {
-                        let conv_out =
-                            unsafe { &mut s.up_buf.as_mut_slice::<f32>()[..dims.conv_dim()] };
-                        let conv_state = unsafe {
-                            &mut slot_buffers.conv_state.as_mut_slice::<f32>()[..conv_state_stride]
-                        };
-                        crate::compute::gdn::depthwise_conv1d_step(
-                            conv_state,
-                            &rec_qkv,
-                            runtime.conv_kernel,
-                            conv_cache_len,
-                            dims.conv_dim(),
-                            conv_out,
-                        );
-                        let backend_generation =
-                            qwen_kv.note_backend_conv_state_update(recurrent_slot, layer);
-                        slot_buffers.conv_synced_generation = Some(backend_generation);
-
-                        // CB2: gated-delta + recurrent finalize + SSM output projection + residual + FFN.
                         metal_ops.device.execute_sync(|encoder| {
+                            let norm_w = weight_cache.get(&lw.attn_norm).unwrap();
+                            metal_ops.elementwise.encode_rms_norm_out(
+                                encoder,
+                                &s.hidden,
+                                norm_w,
+                                &s.norm_buf,
+                                dim as u32,
+                                eps,
+                            );
+                            encode_dequant_matvec_with_config(
+                                metal_ops,
+                                encoder,
+                                weight_cache.get(&recurrent_keys.wqkv).unwrap(),
+                                &s.norm_buf,
+                                &s.gate_buf,
+                                dims.conv_dim() as u32,
+                                dim as u32,
+                                recurrent_keys.wqkv_dtype,
+                                exec_plan.dequant_dispatch,
+                            );
+                            encode_dequant_matvec_with_config(
+                                metal_ops,
+                                encoder,
+                                weight_cache.get(&recurrent_keys.wgate).unwrap(),
+                                &s.norm_buf,
+                                &s.attn_out,
+                                dims.inner_size as u32,
+                                dim as u32,
+                                recurrent_keys.wgate_dtype,
+                                exec_plan.dequant_dispatch,
+                            );
+                            let wbeta = weight_cache.get(&recurrent_keys.wbeta).unwrap();
+                            let walpha = weight_cache.get(&recurrent_keys.walpha).unwrap();
+                            if !Self::encode_recurrent_pair_matvec_with_config(
+                                metal_ops,
+                                encoder,
+                                wbeta,
+                                walpha,
+                                &s.norm_buf,
+                                &s.v_buf,
+                                &s.proj_buf,
+                                dims.time_step_rank as u32,
+                                dim as u32,
+                                recurrent_keys.wbeta_dtype,
+                                recurrent_keys.walpha_dtype,
+                            ) {
+                                encode_dequant_matvec_with_config(
+                                    metal_ops,
+                                    encoder,
+                                    wbeta,
+                                    &s.norm_buf,
+                                    &s.v_buf,
+                                    dims.time_step_rank as u32,
+                                    dim as u32,
+                                    recurrent_keys.wbeta_dtype,
+                                    exec_plan.dequant_dispatch,
+                                );
+                                encode_dequant_matvec_with_config(
+                                    metal_ops,
+                                    encoder,
+                                    walpha,
+                                    &s.norm_buf,
+                                    &s.proj_buf,
+                                    dims.time_step_rank as u32,
+                                    dim as u32,
+                                    recurrent_keys.walpha_dtype,
+                                    exec_plan.dequant_dispatch,
+                                );
+                            }
+                            metal_ops.gdn.encode_causal_conv_sequence(
+                                encoder,
+                                &s.gate_buf,
+                                weight_cache.get(&recurrent_keys.conv_kernel).unwrap(),
+                                &slot_buffers.conv_state,
+                                &s.up_buf,
+                                1,
+                                conv_cache_len as u32,
+                                dims.conv_dim() as u32,
+                            );
                             metal_ops.gdn.encode_prepare_single_token_qkv(
                                 encoder,
                                 &s.up_buf,
@@ -4267,7 +4230,7 @@ impl Qwen35Forward {
                                 &s.norm_buf,
                                 &s.down_buf,
                                 &s.proj_buf,
-                                &s.gate_buf,
+                                &s.v_buf,
                                 &slot_buffers.recurrent_state,
                                 &s.up_buf,
                                 1,
@@ -4387,9 +4350,12 @@ impl Qwen35Forward {
                             );
                             Ok(())
                         })?;
-                        let backend_generation =
+                        let conv_generation =
+                            qwen_kv.note_backend_conv_state_update(recurrent_slot, layer);
+                        slot_buffers.conv_synced_generation = Some(conv_generation);
+                        let recurrent_generation =
                             qwen_kv.note_backend_recurrent_state_update(recurrent_slot, layer);
-                        slot_buffers.recurrent_synced_generation = Some(backend_generation);
+                        slot_buffers.recurrent_synced_generation = Some(recurrent_generation);
                         Ok(())
                     },
                 )?;
