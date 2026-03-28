@@ -29,7 +29,9 @@ use crate::metrics::OpBreakdown;
 use crate::metrics::counters::OpTimer;
 use crate::model::config::ModelConfig;
 use crate::model::forward::{ForwardContext, ForwardPass};
-use crate::model::shared::{encode_dequant_batch, env_flag_enabled, per_head_rms_norm};
+use crate::model::shared::{
+    encode_dequant_batch, env_flag_enabled, env_flag_override, per_head_rms_norm,
+};
 use crate::model::weights::WeightStore;
 
 macro_rules! timed {
@@ -82,10 +84,7 @@ struct Qwen35RecurrentLayerKeys {
     /// SSM output projection (ssm_out.weight).
     wssm_out: usize,
     wssm_out_dtype: crate::gguf::tensor::GgmlType,
-    /// Runtime f32 tensors (bias, A, conv kernel, norm).
-    dt_bias: usize,
-    ssm_a: usize,
-    conv_kernel: usize,
+    /// Cached recurrent norm tensor for the GPU finalize step.
     ssm_norm: usize,
 }
 
@@ -183,6 +182,27 @@ impl Qwen35Forward {
             .clone()
     }
 
+    fn gpu_layer_keys_cache() -> &'static Mutex<HashMap<usize, Arc<[Qwen35GpuLayerKeys]>>> {
+        static CACHE: OnceLock<Mutex<HashMap<usize, Arc<[Qwen35GpuLayerKeys]>>>> = OnceLock::new();
+        CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn store_gpu_layer_keys(model_key: usize, layer_keys: Vec<Qwen35GpuLayerKeys>) {
+        let cache = Self::gpu_layer_keys_cache();
+        let mut cache = cache
+            .lock()
+            .expect("qwen35 gpu layer keys cache should not be poisoned");
+        cache.insert(model_key, Arc::<[Qwen35GpuLayerKeys]>::from(layer_keys));
+    }
+
+    fn cached_gpu_layer_keys(model_key: usize) -> Option<Arc<[Qwen35GpuLayerKeys]>> {
+        let cache = Self::gpu_layer_keys_cache();
+        let cache = cache
+            .lock()
+            .expect("qwen35 gpu layer keys cache should not be poisoned");
+        cache.get(&model_key).cloned()
+    }
+
     fn assert_finite_if_enabled(
         label: &str,
         values: &[f32],
@@ -197,6 +217,10 @@ impl Qwen35Forward {
             "qwen35 non-finite values at {label} (layer={layer}, position={position})"
         );
         Ok(())
+    }
+
+    fn gpu_decode_enabled() -> bool {
+        env_flag_override("AX_QWEN35_GPU_DECODE").unwrap_or(true)
     }
 
     fn recurrent_dims(cfg: &ModelConfig) -> anyhow::Result<Qwen35RecurrentDims> {
@@ -245,13 +269,11 @@ impl Qwen35Forward {
 
     /// Cache all Qwen3.5 model weights as GPU MetalBuffers.
     ///
-    /// Returns per-layer keys + a Vec of Qwen35GpuLayerKeys indicating
-    /// which layers are full-attention vs recurrent with their extra weight keys.
     fn build_cached_model_keys_qwen35(
         metal_ops: &crate::backend::metal::MetalOps,
         weights: &WeightStore,
         cfg: &ModelConfig,
-    ) -> anyhow::Result<Vec<Qwen35GpuLayerKeys>> {
+    ) -> anyhow::Result<()> {
         use crate::backend::metal::{CachedLayerKeys, CachedModelKeys};
 
         let n_layers = cfg.n_layers as usize;
@@ -293,13 +315,7 @@ impl Qwen35Forward {
                 let wbeta_key = metal_ops.ensure_quant_cached(wbeta_raw);
                 let walpha_key = metal_ops.ensure_quant_cached(walpha_raw);
                 let wssm_out_key = metal_ops.ensure_quant_cached(wssm_out_raw);
-                let dt_bias = weights.f32_slice(&format!("{prefix}.ssm_dt.bias"))?;
-                let ssm_a = weights.f32_slice(&format!("{prefix}.ssm_a"))?;
-                let conv_kernel = weights.f32_slice(&format!("{prefix}.ssm_conv1d.weight"))?;
                 let ssm_norm = weights.f32_slice(&format!("{prefix}.ssm_norm.weight"))?;
-                let dt_bias_key = metal_ops.ensure_f32_cached(dt_bias);
-                let ssm_a_key = metal_ops.ensure_f32_cached(ssm_a);
-                let conv_kernel_key = metal_ops.ensure_f32_cached(conv_kernel);
                 let ssm_norm_key = metal_ops.ensure_f32_cached(ssm_norm);
 
                 // Use dummy keys for wq/wk/wv/wo (recurrent layers don't have separate attention projections).
@@ -353,9 +369,6 @@ impl Qwen35Forward {
                     walpha_dtype,
                     wssm_out: wssm_out_key,
                     wssm_out_dtype,
-                    dt_bias: dt_bias_key,
-                    ssm_a: ssm_a_key,
-                    conv_kernel: conv_kernel_key,
                     ssm_norm: ssm_norm_key,
                 }));
             } else {
@@ -441,8 +454,9 @@ impl Qwen35Forward {
             lm_head: lm_key,
             lm_head_dtype: lm_dtype,
         });
+        Self::store_gpu_layer_keys(lm_key, layer_types);
 
-        Ok(layer_types)
+        Ok(())
     }
 
     fn layer_type(cfg: &ModelConfig, layer: usize) -> Qwen35LayerType {
@@ -788,6 +802,38 @@ impl Qwen35Forward {
             qwen35_cfg,
         );
         Ok(runtime)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_recurrent_sequence_with_runtime(
+        backend: &dyn crate::backend::Backend,
+        runtime: Qwen35RecurrentRuntimeTensors<'_>,
+        qwen_kv: &mut crate::kv::Qwen35Kv,
+        layer: usize,
+        recurrent_slot_indices: &[usize],
+        dims: Qwen35RecurrentDims,
+        rms_norm_eps: f32,
+        rec_qkv: &[f32],
+        rec_beta: &mut [f32],
+        rec_alpha: &mut [f32],
+        rec_out: &mut [f32],
+        n_tokens: usize,
+    ) {
+        let qwen35_cfg = Self::qwen35_recurrent_config(qwen_kv, dims, rms_norm_eps);
+        backend.qwen35_recurrent_sequence_for_kv(
+            rec_qkv,
+            rec_beta,
+            rec_alpha,
+            runtime.dt_bias,
+            runtime.a,
+            runtime.conv_kernel,
+            qwen_kv,
+            layer,
+            recurrent_slot_indices,
+            rec_out,
+            n_tokens,
+            qwen35_cfg,
+        );
     }
 
     fn ffn_input_ops<'a>(
@@ -3736,8 +3782,9 @@ impl Qwen35Forward {
     /// GPU-accelerated single-token decode for Qwen3.5.
     ///
     /// Encodes full-attention layers using the shared GPU layer encoder (1 CB
-    /// per layer) and recurrent layers with minimal CPU breaks. Reduces
-    /// command buffer count from ~161/token to ~56/token.
+    /// per layer) and recurrent layers with minimized CPU round-trips. This is
+    /// the default single-token decode path when Metal recurrent support and
+    /// GPU attention KV are available.
     ///
     /// Returns `Ok(true)` if GPU path was used, `Ok(false)` to fall back.
     #[allow(clippy::too_many_arguments)]
@@ -3783,6 +3830,18 @@ impl Qwen35Forward {
         }
         let cached_guard = metal_ops.cached_model_keys();
         let cached = cached_guard.as_ref().unwrap();
+        let gpu_layer_keys = Self::cached_gpu_layer_keys(cached.lm_head)
+            .ok_or_else(|| anyhow::anyhow!("missing cached qwen35 gpu layer keys"))?;
+        let recurrent_runtime_tensors: Vec<Option<Qwen35RecurrentRuntimeTensors<'_>>> = (0
+            ..n_layers)
+            .map(|layer| {
+                if !cfg.qwen35_is_recurrent_layer(layer) {
+                    return Ok(None);
+                }
+                let prefix = format!("blk.{layer}");
+                Ok(Some(Self::recurrent_runtime_tensors(weights, &prefix)?))
+            })
+            .collect::<anyhow::Result<_>>()?;
 
         metal_ops.init_scratches(cfg);
         let mut scratch_guard = metal_ops.scratches();
@@ -3793,7 +3852,7 @@ impl Qwen35Forward {
         let full_seq_len = seq_len + 1;
 
         // Build execution plan.
-        let exec_plan = crate::model::execution_plan::DecodeExecutionPlan::qwen3_single_cb(
+        let exec_plan = crate::model::execution_plan::DecodeExecutionPlan::qwen35_single_cb(
             metal_ops,
             qwen_kv.gpu_attention().unwrap(),
             cfg.embedding_dim,
@@ -3812,12 +3871,10 @@ impl Qwen35Forward {
         let rope_position = Self::rope_position(cfg, position);
         let kv_offset = (seq_len * kv_dim) as u32;
 
-        // CPU buffers for recurrent CPU breaks.
+        // CPU buffers for recurrent backend dispatch.
         let mut rec_qkv = vec![0.0f32; dims.conv_dim()];
-        let mut rec_z = vec![0.0f32; dims.inner_size];
         let mut rec_beta = vec![0.0f32; dims.time_step_rank];
         let mut rec_alpha = vec![0.0f32; dims.time_step_rank];
-        let mut rec_out = vec![0.0f32; dims.inner_size];
 
         // Layer 0 attention norm.
         {
@@ -3981,11 +4038,10 @@ impl Qwen35Forward {
                     );
 
                     // 8. WO projection.
-                    let wo = weight_cache.get(&lw.wo).unwrap();
                     encode_dequant_matvec_with_config(
                         metal_ops,
                         encoder,
-                        wo,
+                        weight_cache.get(&lw.wo).unwrap(),
                         &s.attn_out,
                         &s.proj_buf,
                         dim as u32,
@@ -4025,6 +4081,7 @@ impl Qwen35Forward {
                         lw.wg_dtype,
                         lw.wu_dtype,
                         exec_plan.dequant_dispatch,
+                        exec_plan.use_pair_matvec,
                     ) {
                         encode_dequant_matvec_with_config(
                             metal_ops,
@@ -4072,6 +4129,7 @@ impl Qwen35Forward {
                         inter_dim as u32,
                         eps,
                         exec_plan.dequant_dispatch,
+                        exec_plan.use_fused_silu_down,
                         crate::model::layer_ops::FfnActivation::SiLU,
                         None,
                         next_norm,
@@ -4089,10 +4147,15 @@ impl Qwen35Forward {
             } else {
                 // Recurrent layer: CB1 (norm + input projections), Backend (conv + gated_delta),
                 // CB2 (SSM out + residual + FFN) — total 4 CBs instead of 6.
-                let prefix = format!("blk.{layer}");
-                let (walpha_raw, walpha_dtype) =
-                    weights.raw_with_dtype(&format!("{prefix}.ssm_alpha.weight"))?;
-                let walpha_key = walpha_raw.as_ptr() as usize;
+                let recurrent_keys = match &gpu_layer_keys[layer] {
+                    Qwen35GpuLayerKeys::Recurrent(keys) => keys,
+                    Qwen35GpuLayerKeys::FullAttention => {
+                        anyhow::bail!("expected recurrent qwen35 GPU keys for layer {layer}")
+                    }
+                };
+                let runtime = recurrent_runtime_tensors[layer].ok_or_else(|| {
+                    anyhow::anyhow!("missing qwen35 recurrent runtime for layer {layer}")
+                })?;
 
                 // CB1: Attention norm + 4 input projections in one command buffer.
                 metal_ops.device.execute_sync(|encoder| {
@@ -4109,30 +4172,29 @@ impl Qwen35Forward {
                     encode_dequant_matvec_with_config(
                         metal_ops,
                         encoder,
-                        weight_cache.get(&lw.wq).unwrap(),
+                        weight_cache.get(&recurrent_keys.wqkv).unwrap(),
                         &s.norm_buf,
                         &s.gate_buf,
                         dims.conv_dim() as u32,
                         dim as u32,
-                        lw.wq_dtype,
+                        recurrent_keys.wqkv_dtype,
                         exec_plan.dequant_dispatch,
                     );
                     // Z (gate) → attn_out (reuse)
                     encode_dequant_matvec_with_config(
                         metal_ops,
                         encoder,
-                        weight_cache.get(&lw.wk).unwrap(),
+                        weight_cache.get(&recurrent_keys.wgate).unwrap(),
                         &s.norm_buf,
                         &s.attn_out,
                         dims.inner_size as u32,
                         dim as u32,
-                        lw.wk_dtype,
+                        recurrent_keys.wgate_dtype,
                         exec_plan.dequant_dispatch,
                     );
-                    // Beta + alpha share the same input and output shape. Pair
-                    // them when the decode-side kernel route supports it.
-                    let wbeta = weight_cache.get(&lw.wv).unwrap();
-                    let walpha = weight_cache.get(&walpha_key).unwrap();
+                    // Beta + alpha share the same input and output shape.
+                    let wbeta = weight_cache.get(&recurrent_keys.wbeta).unwrap();
+                    let walpha = weight_cache.get(&recurrent_keys.walpha).unwrap();
                     if !Self::encode_recurrent_pair_matvec_with_config(
                         metal_ops,
                         encoder,
@@ -4143,8 +4205,8 @@ impl Qwen35Forward {
                         &s.proj_buf,
                         dims.time_step_rank as u32,
                         dim as u32,
-                        lw.wv_dtype,
-                        walpha_dtype,
+                        recurrent_keys.wbeta_dtype,
+                        recurrent_keys.walpha_dtype,
                     ) {
                         encode_dequant_matvec_with_config(
                             metal_ops,
@@ -4154,7 +4216,7 @@ impl Qwen35Forward {
                             &s.q_buf,
                             dims.time_step_rank as u32,
                             dim as u32,
-                            lw.wv_dtype,
+                            recurrent_keys.wbeta_dtype,
                             exec_plan.dequant_dispatch,
                         );
                         encode_dequant_matvec_with_config(
@@ -4165,58 +4227,71 @@ impl Qwen35Forward {
                             &s.proj_buf,
                             dims.time_step_rank as u32,
                             dim as u32,
-                            walpha_dtype,
+                            recurrent_keys.walpha_dtype,
                             exec_plan.dequant_dispatch,
                         );
                     }
                     Ok(())
                 })?;
 
-                // Read projections from GPU to CPU for recurrent sequence.
                 unsafe {
                     rec_qkv.copy_from_slice(&s.gate_buf.as_slice::<f32>()[..dims.conv_dim()]);
-                    rec_z.copy_from_slice(&s.attn_out.as_slice::<f32>()[..dims.inner_size]);
                     rec_beta.copy_from_slice(&s.q_buf.as_slice::<f32>()[..dims.time_step_rank]);
                     rec_alpha.copy_from_slice(&s.proj_buf.as_slice::<f32>()[..dims.time_step_rank]);
                 }
 
                 // Recurrent sequence via Backend (conv + gated_delta — 2 CBs).
-                rec_out.fill(0.0);
-                let runtime = Self::run_recurrent_sequence(
-                    backend,
-                    weights,
-                    &prefix,
-                    qwen_kv,
-                    layer,
-                    &recurrent_slot_indices,
-                    dims,
-                    eps,
-                    &rec_qkv,
-                    &mut rec_beta,
-                    &mut rec_alpha,
-                    &mut rec_out,
-                    1,
-                )?;
-                Self::finalize_recurrent_output(&mut rec_out, &rec_z, dims, runtime.ssm_norm, eps);
-
-                // Write recurrent output to GPU scratch for SSM out projection.
+                // Reuse q_buf as the backend output target after copying beta
+                // to CPU so CB2 can consume the recurrent output without an
+                // extra CPU->GPU copy.
                 unsafe {
-                    s.q_buf.as_mut_slice::<f32>()[..dims.inner_size].copy_from_slice(&rec_out);
+                    let rec_out = &mut s.q_buf.as_mut_slice::<f32>()[..dims.inner_size];
+                    rec_out.fill(0.0);
+                    Self::run_recurrent_sequence_with_runtime(
+                        backend,
+                        runtime,
+                        qwen_kv,
+                        layer,
+                        &recurrent_slot_indices,
+                        dims,
+                        eps,
+                        &rec_qkv,
+                        &mut rec_beta,
+                        &mut rec_alpha,
+                        rec_out,
+                        1,
+                    );
                 }
 
-                // CB2: SSM output projection + residual + FFN in one command buffer.
+                // CB2: recurrent finalize + SSM output projection + residual + FFN.
                 metal_ops.device.execute_sync(|encoder| {
+                    let ssm_norm = weight_cache.get(&recurrent_keys.ssm_norm).unwrap();
+                    metal_ops.elementwise.encode_per_head_rms_norm_batch(
+                        encoder,
+                        &s.q_buf,
+                        ssm_norm,
+                        1,
+                        dims.time_step_rank as u32,
+                        dims.state_size as u32,
+                        eps,
+                    );
+                    metal_ops.elementwise.encode_silu_elementwise_mul_batch(
+                        encoder,
+                        &s.attn_out,
+                        &s.q_buf,
+                        dims.inner_size as u32,
+                        1,
+                    );
                     // SSM output projection.
-                    let wo = weight_cache.get(&lw.wo).unwrap();
                     encode_dequant_matvec_with_config(
                         metal_ops,
                         encoder,
-                        wo,
-                        &s.q_buf,
+                        weight_cache.get(&recurrent_keys.wssm_out).unwrap(),
+                        &s.attn_out,
                         &s.proj_buf,
                         dim as u32,
                         dims.inner_size as u32,
-                        lw.wo_dtype,
+                        recurrent_keys.wssm_out_dtype,
                         exec_plan.dequant_dispatch,
                     );
                     // Residual + FFN norm.
@@ -4248,6 +4323,7 @@ impl Qwen35Forward {
                         lw.wg_dtype,
                         lw.wu_dtype,
                         exec_plan.dequant_dispatch,
+                        exec_plan.use_pair_matvec,
                     ) {
                         encode_dequant_matvec_with_config(
                             metal_ops,
@@ -4294,6 +4370,7 @@ impl Qwen35Forward {
                         inter_dim as u32,
                         eps,
                         exec_plan.dequant_dispatch,
+                        exec_plan.use_fused_silu_down,
                         crate::model::layer_ops::FfnActivation::SiLU,
                         None,
                         next_norm,
@@ -4331,12 +4408,10 @@ impl ForwardPass for Qwen35Forward {
         logits: &mut [f32],
         mut ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<()> {
-        // GPU-accelerated path: available but not yet faster than the
-        // CPU-orchestrated path because it still uses per-call backend
-        // dispatches. Enable with AX_QWEN35_GPU_DECODE=1 for testing.
-        // Full speedup requires encoding all layers in one command buffer
-        // (like Qwen3's forward_single_gpu_unified).
-        if ops.is_none() {
+        // Prefer the native Metal single-token decode path by default.
+        // The host-orchestrated fallback remains available for debugging or
+        // rollout control via `AX_QWEN35_GPU_DECODE=off`.
+        if ops.is_none() && Self::gpu_decode_enabled() {
             if let Ok(true) =
                 Self::try_forward_single_gpu(ctx, token_id, position, kv, weights, logits)
             {
