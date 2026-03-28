@@ -1,0 +1,40 @@
+{
+  "name": "@defai.digital/ax-engine-js",
+  "version": "2.2.0",
+  "description": "Node.js and Next.js client SDK for ax-engine-server",
+  "type": "module",
+  "main": "./index.cjs",
+  "module": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js",
+      "require": "./index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.cjs",
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test ./test/*.test.mjs"
+  },
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "ax-engine",
+    "llm",
+    "inference",
+    "nodejs",
+    "nextjs",
+    "sse",
+    "openai-compatible"
+  ],
+  "license": "MIT"
+}

@@ -36,3 +36,7 @@ __pycache__/
 *.pyc
 /python/ax_engine/_ax_engine*.so
 *.dSYM/
+
+# Node / JavaScript
+node_modules/
+*.tsbuildinfo

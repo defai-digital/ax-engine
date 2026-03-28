@@ -11,7 +11,7 @@ name = "_ax_engine"
 crate-type = ["cdylib"]
 
 [dependencies]
-ax-core.workspace = true
+ax-engine-sdk.workspace = true
 anyhow.workspace = true
 pyo3.workspace = true
 tracing.workspace = true

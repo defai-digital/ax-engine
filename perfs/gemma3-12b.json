@@ -1,6 +1,6 @@
 {
   "model": "gemma3-12b",
-  "source": "llama.cpp-params-2026-03-22",
+  "source": "ax-bench-route-pass-2026-03-27",
   "generated": "2026-03-24",
   "decode_matvec": {
     "q4_k": {
@@ -21,7 +21,7 @@
     }
   },
   "batch_prefill": {
-    "prefer_f16_io": true,
+    "prefer_f16_io": false,
     "prefer_pair_kernel": true,
     "small_n_threshold": 1,
     "small_m_max": 0,

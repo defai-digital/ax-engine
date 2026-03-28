@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_DIR="/Users/akiralam/code/ax-engine-v2"
-AX_BENCH="${AX_BENCH:-$REPO_DIR/target/release/ax-bench}"
+AX_BENCH="${AX_BENCH:-$REPO_DIR/target/release/ax-engine-bench}"
 LLAMA_BENCH="${LLAMA_BENCH:-/opt/homebrew/bin/llama-bench}"
 OUT_DIR="${OUT_DIR:-$REPO_DIR/automatosx/tmp}"
 

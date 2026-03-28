@@ -1,0 +1,35 @@
+[package]
+name = "ax-engine-metal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "AX Engine Metal compute shader compilation and dispatch"
+
+[dependencies]
+objc2.workspace = true
+objc2-metal = { workspace = true, features = [
+    "MTLDevice",
+    "MTLTypes",
+    "MTLDataType",
+    "block2",
+    "MTLCommandQueue",
+    "MTLCommandBuffer",
+    "MTLAllocation",
+    "MTLBuffer",
+    "MTLResource",
+    "MTLLibrary",
+    "MTLFunctionConstantValues",
+    "MTLComputePipeline",
+    "MTLCommandEncoder",
+    "MTLComputeCommandEncoder",
+] }
+objc2-foundation.workspace = true
+block2.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+half.workspace = true
