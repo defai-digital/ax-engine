@@ -1237,7 +1237,7 @@ fn gemma3_prefill_layer_plan(
 
 fn decode_barrier_plan_for_arch(arch_name: &str) -> DecodeBarrierPlan {
     match arch_name {
-        "llama" | "qwen3" | "gemma3" => {
+        "llama" | "qwen3" | "qwen35" | "gemma3" => {
             if super::llama::metal_decode_barriers_enabled() {
                 DecodeBarrierPlan::Explicit
             } else {
@@ -1679,6 +1679,25 @@ mod tests {
     #[test]
     fn test_decode_barrier_plan_for_glm_stays_explicit() {
         let plan = decode_barrier_plan_for_arch("glm");
+        assert_eq!(plan, DecodeBarrierPlan::Explicit);
+    }
+
+    #[test]
+    fn test_decode_barrier_plan_for_qwen35_defaults_implicit() {
+        let _guard = env_lock();
+        let _restore = EnvVarRestore::many(&[("AX_METAL_DECODE_BARRIERS", "")]);
+        unsafe {
+            std::env::remove_var("AX_METAL_DECODE_BARRIERS");
+        }
+        let plan = decode_barrier_plan_for_arch("qwen35");
+        assert_eq!(plan, DecodeBarrierPlan::Implicit);
+    }
+
+    #[test]
+    fn test_decode_barrier_plan_for_qwen35_respects_env_override() {
+        let plan = with_env_vars(&[("AX_METAL_DECODE_BARRIERS", "on")], || {
+            decode_barrier_plan_for_arch("qwen35")
+        });
         assert_eq!(plan, DecodeBarrierPlan::Explicit);
     }
 

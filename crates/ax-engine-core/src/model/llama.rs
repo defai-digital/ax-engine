@@ -79,14 +79,13 @@ macro_rules! timed {
 /// each dispatch completes before the next starts, and writes are
 /// immediately visible via cache coherency. Barriers are redundant.
 pub(crate) fn metal_decode_barriers_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_DECODE_BARRIERS") {
+    match std::env::var("AX_METAL_DECODE_BARRIERS") {
         Ok(v) => {
             let v = v.trim().to_ascii_lowercase();
             v == "1" || v == "true" || v == "on"
         }
         Err(_) => false, // llama.cpp uses 0 barriers; safe on Apple Silicon UMA
-    })
+    }
 }
 
 /// Whether mistral-style HD128 prefill should write attention output in f16.
