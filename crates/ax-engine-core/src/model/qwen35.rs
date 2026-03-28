@@ -3451,216 +3451,136 @@ impl Qwen35Forward {
             let is_recurrent = cfg.qwen35_is_recurrent_layer(layer);
 
             if !is_recurrent {
-                // Full-attention layer: encode QKV + RoPE + KV + attention + WO + FFN in one CB.
+                // Full-attention layer: single CB — QKV + split + norm + RoPE
+                // + KV append + attention + gate + WO + FFN.
                 let gpu_attention = qwen_kv.gpu_attention().unwrap();
+
+                // Cache QK norm weights if present.
+                let q_norm_key = lw.attn_q_norm;
+                let k_norm_key = lw.attn_k_norm;
+
                 metal_ops.device.execute_sync(|encoder| {
-                    // QKV projection (Q+gate is q_dim*2 → use gate_buf which is large enough).
+                    // 1. QKV projection.
                     let wq = weight_cache.get(&lw.wq).unwrap();
                     let wk = weight_cache.get(&lw.wk).unwrap();
                     let wv = weight_cache.get(&lw.wv).unwrap();
                     encode_dequant_matvec_with_config(
-                        metal_ops,
-                        encoder,
-                        wq,
-                        &s.norm_buf,
-                        &s.gate_buf, // use gate_buf (inter_dim >= q_dim*2)
-                        (q_dim * 2) as u32,
-                        dim as u32,
-                        lw.wq_dtype,
-                        exec_plan.dequant_dispatch,
+                        metal_ops, encoder, wq, &s.norm_buf, &s.gate_buf,
+                        (q_dim * 2) as u32, dim as u32, lw.wq_dtype, exec_plan.dequant_dispatch,
                     );
                     encode_dequant_matvec_with_config(
-                        metal_ops,
-                        encoder,
-                        wk,
-                        &s.norm_buf,
-                        &s.k_buf,
-                        kv_dim as u32,
-                        dim as u32,
-                        lw.wk_dtype,
-                        exec_plan.dequant_dispatch,
+                        metal_ops, encoder, wk, &s.norm_buf, &s.k_buf,
+                        kv_dim as u32, dim as u32, lw.wk_dtype, exec_plan.dequant_dispatch,
                     );
                     encode_dequant_matvec_with_config(
-                        metal_ops,
-                        encoder,
-                        wv,
-                        &s.norm_buf,
-                        &s.v_buf,
-                        kv_dim as u32,
-                        dim as u32,
-                        lw.wv_dtype,
-                        exec_plan.dequant_dispatch,
+                        metal_ops, encoder, wv, &s.norm_buf, &s.v_buf,
+                        kv_dim as u32, dim as u32, lw.wv_dtype, exec_plan.dequant_dispatch,
                     );
-                    Ok(())
-                })?;
 
-                // CPU: extract Q from Q+gate, apply QK norm, RoPE, attention gate.
-                {
-                    let q_gate = unsafe { &s.gate_buf.as_slice::<f32>()[..q_dim * 2] };
-                    let mut q_buf = vec![0.0f32; q_dim];
-                    let mut k_buf = unsafe { s.k_buf.as_slice::<f32>()[..kv_dim].to_vec() };
-                    Self::extract_q_from_q_gate(q_gate, &mut q_buf);
-                    if let Some(nw) =
-                        Self::maybe_attention_qk_norm(weights, &format!("blk.{layer}"))?
-                    {
-                        Self::apply_attention_qk_norm(
-                            &mut q_buf, &mut k_buf, n_heads, n_kv_heads, head_dim, nw, eps,
+                    // 2. GPU Q+gate split: gate_buf → q_buf (Q), up_buf (gate).
+                    metal_ops.elementwise.encode_split_qgate_batch(
+                        encoder, &s.gate_buf, &s.q_buf, &s.up_buf, 1, q_dim as u32,
+                    );
+
+                    // 3. QK norm (if applicable).
+                    if let (Some(q_key), Some(k_key)) = (q_norm_key, k_norm_key) {
+                        let q_nw = weight_cache.get(&q_key).unwrap();
+                        let k_nw = weight_cache.get(&k_key).unwrap();
+                        metal_ops.elementwise.encode_per_head_rms_norm_batch(
+                            encoder, &s.q_buf, q_nw, 1, n_heads as u32, head_dim as u32, eps,
+                        );
+                        metal_ops.elementwise.encode_per_head_rms_norm_batch(
+                            encoder, &s.k_buf, k_nw, 1, n_kv_heads as u32, head_dim as u32, eps,
                         );
                     }
-                    Self::apply_rope(
-                        cfg, &mut q_buf, &mut k_buf, position, n_heads, n_kv_heads, head_dim,
+
+                    // 4. RoPE.
+                    metal_ops.elementwise.encode_rope_batch(
+                        encoder, &s.q_buf, &s.k_buf, 1,
+                        n_heads as u32, n_kv_heads as u32, head_dim as u32,
+                        rope_position, 0.0, cfg.rope_freq_base,
                     );
 
-                    // Write Q, K back to GPU.
-                    unsafe {
-                        let dst = s.q_buf.contents().as_ptr() as *mut f32;
-                        std::ptr::copy_nonoverlapping(q_buf.as_ptr(), dst, q_dim);
-                        let dst = s.k_buf.contents().as_ptr() as *mut f32;
-                        std::ptr::copy_nonoverlapping(k_buf.as_ptr(), dst, kv_dim);
-                    }
-
-                    // KV append (CPU side).
-                    let v_slice = unsafe { &s.v_buf.as_slice::<f32>()[..kv_dim] };
-                    qwen_kv.attention_append(layer, &k_buf, v_slice);
-                }
-
-                // Attention + WO + residual + FFN in one CB.
-                metal_ops.device.execute_sync(|encoder| {
-                    // Attention decode (GPU KV).
+                    // 5. KV append (GPU, f16/f32 aware).
                     let gpu_attn = qwen_kv.gpu_attention().unwrap();
-                    metal_ops
-                        .attention
-                        .encode_attention_decode_with_scratch_and_config(
-                            encoder,
-                            &s.q_buf,
-                            gpu_attn.k_buffer(layer),
-                            gpu_attn.v_buffer(layer),
-                            &s.attn_out,
-                            &s.splitk_partial_out,
-                            &s.splitk_partial_lse,
-                            gpu_attn.is_f16(),
-                            n_heads as u32,
-                            n_kv_heads as u32,
-                            head_dim as u32,
-                            0,
-                            full_seq_len as u32,
-                            exec_plan.attention_dispatch,
-                        );
+                    metal_ops.elementwise.encode_kv_append(
+                        encoder, &s.k_buf, gpu_attn.k_buffer(layer),
+                        gpu_attn.is_f16(), kv_offset, kv_dim as u32,
+                    );
+                    metal_ops.elementwise.encode_kv_append(
+                        encoder, &s.v_buf, gpu_attn.v_buffer(layer),
+                        gpu_attn.is_f16(), kv_offset, kv_dim as u32,
+                    );
 
-                    // Attention gate: sigmoid(gate) * attn_out.
-                    // gate is in s.q_buf[q_dim..q_dim*2] (second half of Q+gate projection).
-                    // For now, use separate sigmoid+mul as two dispatches would need
-                    // a view offset. Instead we do gate on CPU after reading back.
-                    Ok(())
-                })?;
+                    // 6. Attention decode.
+                    metal_ops.attention.encode_attention_decode_with_scratch_and_config(
+                        encoder, &s.q_buf,
+                        gpu_attn.k_buffer(layer), gpu_attn.v_buffer(layer),
+                        &s.attn_out, &s.splitk_partial_out, &s.splitk_partial_lse,
+                        gpu_attn.is_f16(),
+                        n_heads as u32, n_kv_heads as u32, head_dim as u32,
+                        0, full_seq_len as u32, exec_plan.attention_dispatch,
+                    );
 
-                // CPU: attention gate (sigmoid on gate half × attn_out).
-                {
-                    let q_gate = unsafe { &mut s.gate_buf.as_mut_slice::<f32>()[q_dim..q_dim * 2] };
-                    let attn = unsafe { &mut s.attn_out.as_mut_slice::<f32>()[..q_dim] };
-                    Self::apply_attention_gate(q_gate, attn);
-                }
+                    // 7. Attention gate: sigmoid(up_buf) × attn_out.
+                    metal_ops.elementwise.encode_sigmoid_elementwise_mul(
+                        encoder, &s.up_buf, &s.attn_out, q_dim as u32,
+                    );
 
-                // WO + residual + FFN in one CB.
-                metal_ops.device.execute_sync(|encoder| {
+                    // 8. WO projection.
                     let wo = weight_cache.get(&lw.wo).unwrap();
                     encode_dequant_matvec_with_config(
-                        metal_ops,
-                        encoder,
-                        wo,
-                        &s.attn_out,
-                        &s.proj_buf,
-                        dim as u32,
-                        q_dim as u32,
-                        lw.wo_dtype,
-                        exec_plan.dequant_dispatch,
+                        metal_ops, encoder, wo, &s.attn_out, &s.proj_buf,
+                        dim as u32, q_dim as u32, lw.wo_dtype, exec_plan.dequant_dispatch,
                     );
 
-                    // Residual + FFN norm.
+                    // 9. Residual + FFN norm.
                     let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
-                    metal_ops
-                        .elementwise
-                        .encode_residual_add_rms_norm_out_batch(
-                            encoder,
-                            &s.hidden,
-                            &s.proj_buf,
-                            ffn_nw,
-                            &s.norm_buf,
-                            dim as u32,
-                            1,
-                            eps,
-                        );
+                    metal_ops.elementwise.encode_residual_add_rms_norm_out_batch(
+                        encoder, &s.hidden, &s.proj_buf, ffn_nw, &s.norm_buf,
+                        dim as u32, 1, eps,
+                    );
 
-                    // Gate + Up (pair or separate).
+                    // 10. Gate + Up (pair or separate).
                     let wg = weight_cache.get(&lw.wg).unwrap();
                     let wu = weight_cache.get(&lw.wu).unwrap();
                     if !crate::model::shared::encode_dequant_matvec_pair_with_config(
-                        metal_ops,
-                        encoder,
-                        wg,
-                        wu,
-                        &s.norm_buf,
-                        &s.gate_buf,
-                        &s.up_buf,
-                        inter_dim as u32,
-                        dim as u32,
-                        lw.wg_dtype,
-                        lw.wu_dtype,
-                        exec_plan.dequant_dispatch,
+                        metal_ops, encoder, wg, wu, &s.norm_buf, &s.gate_buf, &s.up_buf,
+                        inter_dim as u32, dim as u32,
+                        lw.wg_dtype, lw.wu_dtype, exec_plan.dequant_dispatch,
                     ) {
                         encode_dequant_matvec_with_config(
-                            metal_ops,
-                            encoder,
-                            wg,
-                            &s.norm_buf,
-                            &s.gate_buf,
-                            inter_dim as u32,
-                            dim as u32,
-                            lw.wg_dtype,
-                            exec_plan.dequant_dispatch,
+                            metal_ops, encoder, wg, &s.norm_buf, &s.gate_buf,
+                            inter_dim as u32, dim as u32, lw.wg_dtype, exec_plan.dequant_dispatch,
                         );
                         encode_dequant_matvec_with_config(
-                            metal_ops,
-                            encoder,
-                            wu,
-                            &s.norm_buf,
-                            &s.up_buf,
-                            inter_dim as u32,
-                            dim as u32,
-                            lw.wu_dtype,
-                            exec_plan.dequant_dispatch,
+                            metal_ops, encoder, wu, &s.norm_buf, &s.up_buf,
+                            inter_dim as u32, dim as u32, lw.wu_dtype, exec_plan.dequant_dispatch,
                         );
                     }
 
-                    // SiLU + down + residual handoff.
+                    // 11. SiLU + down + residual handoff.
                     let wd = weight_cache.get(&lw.wd).unwrap();
                     let next_norm = if layer + 1 < n_layers {
-                        Some(
-                            weight_cache
-                                .get(&cached.layers[layer + 1].attn_norm)
-                                .unwrap(),
-                        )
+                        Some(weight_cache.get(&cached.layers[layer + 1].attn_norm).unwrap())
                     } else {
                         None
                     };
                     crate::model::shared::encode_gpu_ffn_decode_tail(
-                        metal_ops,
-                        encoder,
-                        s,
-                        &s.hidden,
-                        wd,
-                        lw.wd_dtype,
-                        dim as u32,
-                        inter_dim as u32,
-                        eps,
-                        exec_plan.dequant_dispatch,
+                        metal_ops, encoder, s, &s.hidden, wd, lw.wd_dtype,
+                        dim as u32, inter_dim as u32, eps, exec_plan.dequant_dispatch,
                         crate::model::layer_ops::FfnActivation::SiLU,
-                        None,
-                        next_norm,
-                        &|_| {}, // no barriers needed in sequential encoder
+                        None, next_norm, &|_| {},
                     );
                     Ok(())
                 })?;
+
+                // CPU: sync KV append (CPU mirror — harmless duplicate GPU write).
+                {
+                    let k_slice = unsafe { &s.k_buf.as_slice::<f32>()[..kv_dim] };
+                    let v_slice = unsafe { &s.v_buf.as_slice::<f32>()[..kv_dim] };
+                    qwen_kv.attention_append(layer, k_slice, v_slice);
+                }
             } else {
                 // Recurrent layer: CB1 (norm + input projections), Backend (conv + gated_delta),
                 // CB2 (SSM out + residual + FFN) — total 4 CBs instead of 6.
