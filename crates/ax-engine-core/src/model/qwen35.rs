@@ -3328,6 +3328,7 @@ impl Qwen35Forward {
                         dims.inner_size as u32,
                     )?;
                 }
+                let keep_rec_z_on_gpu = ssm_gpu && gpu_proj_indices.contains(&1);
                 let ssm_key = metal_ops.ensure_quant_cached(ssm_out_raw);
 
                 // Allocate temporary projection output buffers.
@@ -3407,7 +3408,11 @@ impl Qwen35Forward {
                                 &temp_bufs[i].as_slice::<f32>()[..n_tokens * proj_dims[i]];
                             match i {
                                 0 => rec_qkv_batch[..out_slice.len()].copy_from_slice(out_slice),
-                                1 => rec_z_batch[..out_slice.len()].copy_from_slice(out_slice),
+                                1 => {
+                                    if !keep_rec_z_on_gpu {
+                                        rec_z_batch[..out_slice.len()].copy_from_slice(out_slice);
+                                    }
+                                }
                                 2 => rec_beta_batch[..out_slice.len()].copy_from_slice(out_slice),
                                 3 => rec_alpha_batch[..out_slice.len()].copy_from_slice(out_slice),
                                 _ => {}
@@ -3523,12 +3528,14 @@ impl Qwen35Forward {
                                 .copy_from_slice(ssm_result);
                         }
                     } else {
-                        // GPU SSM: upload raw recurrent output + gate for in-CB finalize.
+                        // GPU SSM: upload raw recurrent output and reuse GPU gate when available.
                         unsafe {
                             bs.gate_buf.as_mut_slice::<f32>()[..n_tokens * dims.inner_size]
                                 .copy_from_slice(&rec_out_batch[..n_tokens * dims.inner_size]);
-                            bs.up_buf.as_mut_slice::<f32>()[..n_tokens * dims.inner_size]
-                                .copy_from_slice(&rec_z_batch[..n_tokens * dims.inner_size]);
+                            if !keep_rec_z_on_gpu {
+                                bs.up_buf.as_mut_slice::<f32>()[..n_tokens * dims.inner_size]
+                                    .copy_from_slice(&rec_z_batch[..n_tokens * dims.inner_size]);
+                            }
                         }
                     }
                     drop(ssm_result);
@@ -3540,6 +3547,12 @@ impl Qwen35Forward {
                     let cb_t = OpTimer::start();
                     metal_ops.device.execute_sync(|encoder| {
                         if ssm_gpu {
+                            let rec_z_gpu_buf = if keep_rec_z_on_gpu {
+                                Some(&temp_bufs[1])
+                            } else {
+                                None
+                            };
+                            let rec_z_buf = rec_z_gpu_buf.unwrap_or(&bs.up_buf);
                             let ssm_norm_buf = weight_cache.get(&ssm_norm_key.unwrap()).unwrap();
                             metal_ops.elementwise.encode_per_head_rms_norm_batch(
                                 encoder,
@@ -3551,17 +3564,13 @@ impl Qwen35Forward {
                                 eps,
                             );
                             metal_ops.elementwise.encode_silu_elementwise_mul_batch(
-                                encoder,
-                                &bs.up_buf,
-                                &bs.gate_buf,
-                                dims.inner_size as u32,
-                                nt,
+                                encoder, rec_z_buf, &bs.gate_buf, dims.inner_size as u32, nt,
                             );
                             // GPU SSM: proj_buf (inner_size) → attn_out (dim)
                             if Self::qwen35_batch_projection_needs_f16_input(ssm_out_dtype) {
                                 metal_ops.elementwise.encode_cast_f32_to_f16(
                                     encoder,
-                                    &bs.up_buf,
+                                    rec_z_buf,
                                     &bs.matmul_in_f16,
                                     nt * dims.inner_size as u32,
                                 );
@@ -3571,7 +3580,7 @@ impl Qwen35Forward {
                                 metal_ops,
                                 encoder,
                                 ssm_buf,
-                                &bs.up_buf,
+                                rec_z_buf,
                                 &bs.matmul_in_f16,
                                 &bs.attn_out,
                                 dim as u32,
