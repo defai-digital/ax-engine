@@ -3285,15 +3285,21 @@ impl Qwen35Forward {
                     n_tokens,
                 )?;
 
-                // Finalize recurrent output on CPU.
-                Self::finalize_recurrent_output_batch(
-                    &mut rec_out_batch,
-                    &rec_z_batch,
-                    n_tokens,
-                    dims,
-                    runtime.ssm_norm,
-                    eps,
-                );
+                let ssm_norm_key = if ssm_gpu {
+                    Some(metal_ops.ensure_f32_cached(runtime.ssm_norm))
+                } else {
+                    None
+                };
+                if !ssm_gpu {
+                    Self::finalize_recurrent_output_batch(
+                        &mut rec_out_batch,
+                        &rec_z_batch,
+                        n_tokens,
+                        dims,
+                        runtime.ssm_norm,
+                        eps,
+                    );
+                }
 
                 // SSM output projection: handle Q8_0 (not GPU-batch-supported) via CPU.
                 let ssm_result = if !ssm_gpu {
@@ -3327,10 +3333,12 @@ impl Qwen35Forward {
                                 .copy_from_slice(ssm_result);
                         }
                     } else {
-                        // GPU SSM: upload rec_out to proj_buf for in-CB matmul.
+                        // GPU SSM: upload raw recurrent output + gate for in-CB finalize.
                         unsafe {
-                            bs.proj_buf.as_mut_slice::<f32>()[..n_tokens * dims.inner_size]
+                            bs.gate_buf.as_mut_slice::<f32>()[..n_tokens * dims.inner_size]
                                 .copy_from_slice(&rec_out_batch[..n_tokens * dims.inner_size]);
+                            bs.up_buf.as_mut_slice::<f32>()[..n_tokens * dims.inner_size]
+                                .copy_from_slice(&rec_z_batch[..n_tokens * dims.inner_size]);
                         }
                     }
                     drop(ssm_result);
@@ -3341,6 +3349,23 @@ impl Qwen35Forward {
                     let wd_buf = weight_cache.get(&wd_key).unwrap();
                     metal_ops.device.execute_sync(|encoder| {
                         if ssm_gpu {
+                            let ssm_norm_buf = weight_cache.get(&ssm_norm_key.unwrap()).unwrap();
+                            metal_ops.elementwise.encode_per_head_rms_norm_batch(
+                                encoder,
+                                &bs.gate_buf,
+                                ssm_norm_buf,
+                                nt,
+                                dims.time_step_rank as u32,
+                                dims.state_size as u32,
+                                eps,
+                            );
+                            metal_ops.elementwise.encode_silu_elementwise_mul_batch(
+                                encoder,
+                                &bs.up_buf,
+                                &bs.gate_buf,
+                                dims.inner_size as u32,
+                                nt,
+                            );
                             // GPU SSM: proj_buf (inner_size) → attn_out (dim)
                             let ssm_buf = weight_cache.get(&ssm_key).unwrap();
                             encode_dequant_batch(
@@ -3348,7 +3373,7 @@ impl Qwen35Forward {
                                 &metal_ops.elementwise,
                                 encoder,
                                 ssm_buf,
-                                &bs.proj_buf,
+                                &bs.up_buf,
                                 &bs.attn_out,
                                 &bs.matmul_in_f16,
                                 dim as u32,
