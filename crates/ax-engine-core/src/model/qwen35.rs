@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use ax_engine_metal::MetalBuffer;
 
@@ -153,6 +154,12 @@ struct Qwen35RecurrentRuntimeTensors<'a> {
     a: &'a [f32],
     conv_kernel: &'a [f32],
     ssm_norm: &'a [f32],
+}
+
+#[derive(Default, Clone, Copy)]
+struct Qwen35RecurrentGpuPrefillStats {
+    gpu_execute: Duration,
+    gpu_readback: Duration,
 }
 
 impl Qwen35Forward {
@@ -1270,6 +1277,180 @@ impl Qwen35Forward {
                 rms_norm_eps,
             );
         }
+    }
+
+    fn can_run_recurrent_batch_from_gpu_qkv_single_slot(
+        metal_ops: &crate::backend::metal::MetalOps,
+        n_tokens: usize,
+        dims: Qwen35RecurrentDims,
+    ) -> bool {
+        let bs_guard = metal_ops.batch_scratches();
+        let Some(bs) = bs_guard.as_ref() else {
+            return false;
+        };
+        let total_inner = n_tokens * dims.inner_size;
+        let total_conv = n_tokens * dims.conv_dim();
+        let total_heads = n_tokens * dims.time_step_rank;
+        let f32_capacity = |buf: &MetalBuffer| buf.len() / std::mem::size_of::<f32>();
+        f32_capacity(&bs.qkv_buf) >= total_conv
+            && f32_capacity(&bs.q_buf) >= total_inner
+            && f32_capacity(&bs.k_buf) >= total_inner
+            && f32_capacity(&bs.v_buf) >= total_inner
+            && f32_capacity(&bs.proj_buf) >= total_inner
+            && f32_capacity(&bs.gate_buf) >= total_heads
+            && f32_capacity(&bs.up_buf) >= total_heads
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_run_recurrent_batch_from_gpu_qkv_single_slot(
+        metal_ops: &crate::backend::metal::MetalOps,
+        qwen_kv: &mut crate::kv::Qwen35Kv,
+        layer: usize,
+        recurrent_slot: usize,
+        qkv_gpu: &MetalBuffer,
+        runtime: Qwen35RecurrentRuntimeTensors<'_>,
+        rec_beta_batch: &mut [f32],
+        rec_alpha_batch: &mut [f32],
+        rec_out_batch: &mut [f32],
+        n_tokens: usize,
+        dims: Qwen35RecurrentDims,
+        rms_norm_eps: f32,
+        keep_output_on_gpu: bool,
+    ) -> anyhow::Result<Option<Qwen35RecurrentGpuPrefillStats>> {
+        if n_tokens <= 1
+            || qwen_kv.conv_cache_len() > 8
+            || !Self::can_run_recurrent_batch_from_gpu_qkv_single_slot(metal_ops, n_tokens, dims)
+        {
+            return Ok(None);
+        }
+
+        gdn::prepare_alpha_beta(rec_alpha_batch, rec_beta_batch, runtime.dt_bias, runtime.a);
+        metal_ops.sync_qwen35_slot_buffers_from_kv(qwen_kv, layer, recurrent_slot);
+
+        let total_inner = n_tokens * dims.inner_size;
+        let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
+        let recurrent_state_stride = qwen_kv.recurrent_state_len();
+        let conv_kernel_key = metal_ops.ensure_f32_cached(runtime.conv_kernel);
+        let mut stats = Qwen35RecurrentGpuPrefillStats::default();
+
+        let mut bs_guard = metal_ops.batch_scratches();
+        let Some(bs) = bs_guard.as_mut() else {
+            return Ok(None);
+        };
+        let weight_cache = metal_ops.lock_weight_cache();
+        let conv_kernel_buf = weight_cache
+            .get(&conv_kernel_key)
+            .expect("qwen35 conv kernel buffer missing after cache");
+
+        let conv_elapsed = metal_ops.with_qwen35_recurrent_slot_buffer(
+            layer,
+            recurrent_slot,
+            conv_state_stride,
+            recurrent_state_stride,
+            |slot_buffers| -> anyhow::Result<Duration> {
+                let t = OpTimer::start();
+                metal_ops.device.execute_sync(|encoder| {
+                    metal_ops.gdn.encode_causal_conv_sequence(
+                        encoder,
+                        qkv_gpu,
+                        conv_kernel_buf,
+                        &slot_buffers.conv_state,
+                        &bs.qkv_buf,
+                        n_tokens as u32,
+                        qwen_kv.conv_cache_len() as u32,
+                        dims.conv_dim() as u32,
+                    );
+                    Ok(())
+                })?;
+                Ok(t.elapsed())
+            },
+        )?;
+        stats.gpu_execute += conv_elapsed;
+        metal_ops.record_qwen35_recurrent_batch_conv(conv_elapsed);
+
+        let pack_t = OpTimer::start();
+        unsafe {
+            crate::backend::metal::prepare_multi_token_gdn_bh_buffers(
+                &bs.qkv_buf.as_slice::<f32>()[..n_tokens * dims.conv_dim()],
+                rec_alpha_batch,
+                rec_beta_batch,
+                &mut bs.q_buf.as_mut_slice::<f32>()[..total_inner],
+                &mut bs.k_buf.as_mut_slice::<f32>()[..total_inner],
+                &mut bs.v_buf.as_mut_slice::<f32>()[..total_inner],
+                &mut bs.gate_buf.as_mut_slice::<f32>()[..n_tokens * dims.time_step_rank],
+                &mut bs.up_buf.as_mut_slice::<f32>()[..n_tokens * dims.time_step_rank],
+                n_tokens,
+                dims.group_count,
+                dims.time_step_rank,
+                dims.state_size,
+                rms_norm_eps,
+            );
+        }
+        metal_ops.record_qwen35_recurrent_batch_pack(pack_t.elapsed());
+
+        let gated_delta_elapsed = metal_ops.with_qwen35_recurrent_slot_buffer(
+            layer,
+            recurrent_slot,
+            conv_state_stride,
+            recurrent_state_stride,
+            |slot_buffers| -> anyhow::Result<Duration> {
+                let t = OpTimer::start();
+                metal_ops.device.execute_sync(|encoder| {
+                    metal_ops.gdn.encode_gated_delta_sequence(
+                        encoder,
+                        &bs.q_buf,
+                        &bs.k_buf,
+                        &bs.v_buf,
+                        &bs.gate_buf,
+                        &bs.up_buf,
+                        &slot_buffers.recurrent_state,
+                        &bs.proj_buf,
+                        n_tokens as u32,
+                        dims.time_step_rank as u32,
+                        dims.state_size as u32,
+                    );
+                    Ok(())
+                })?;
+                Ok(t.elapsed())
+            },
+        )?;
+        stats.gpu_execute += gated_delta_elapsed;
+        metal_ops.record_qwen35_recurrent_batch_gated_delta(gated_delta_elapsed);
+
+        if !keep_output_on_gpu {
+            let unpack_t = OpTimer::start();
+            unsafe {
+                crate::backend::metal::unpack_bhsk_to_token_major(
+                    &bs.proj_buf.as_slice::<f32>()[..total_inner],
+                    &mut rec_out_batch[..total_inner],
+                    n_tokens,
+                    dims.time_step_rank,
+                    dims.state_size,
+                );
+            }
+            let unpack_elapsed = unpack_t.elapsed();
+            stats.gpu_readback += unpack_elapsed;
+            metal_ops.record_qwen35_recurrent_batch_unpack(unpack_elapsed);
+        }
+
+        drop(weight_cache);
+        drop(bs_guard);
+
+        let conv_generation = qwen_kv.note_backend_conv_state_update(recurrent_slot, layer);
+        let recurrent_generation =
+            qwen_kv.note_backend_recurrent_state_update(recurrent_slot, layer);
+        metal_ops.with_qwen35_recurrent_slot_buffer(
+            layer,
+            recurrent_slot,
+            conv_state_stride,
+            recurrent_state_stride,
+            |slot_buffers| {
+                slot_buffers.conv_synced_generation = Some(conv_generation);
+                slot_buffers.recurrent_synced_generation = Some(recurrent_generation);
+            },
+        );
+
+        Ok(Some(stats))
     }
 
     fn lm_head_weight_name(weights: &WeightStore) -> &'static str {
@@ -3330,6 +3511,11 @@ impl Qwen35Forward {
                 }
                 let keep_rec_z_on_gpu = ssm_gpu && gpu_proj_indices.contains(&1);
                 let ssm_key = metal_ops.ensure_quant_cached(ssm_out_raw);
+                let recurrent_runtime = Self::recurrent_runtime_tensors(weights, &prefix)?;
+                let qkv_gpu_fast_path_enabled = gpu_proj_indices.contains(&0)
+                    && Self::can_run_recurrent_batch_from_gpu_qkv_single_slot(
+                        metal_ops, n_tokens, dims,
+                    );
 
                 // Keep recurrent projection temps separate from batch scratches so
                 // backend recurrent work can run without holding the batch scratch lock.
@@ -3408,7 +3594,11 @@ impl Qwen35Forward {
                             let out_slice =
                                 &temp_bufs[i].as_slice::<f32>()[..n_tokens * proj_dims[i]];
                             match i {
-                                0 => rec_qkv_batch[..out_slice.len()].copy_from_slice(out_slice),
+                                0 => {
+                                    if !qkv_gpu_fast_path_enabled {
+                                        rec_qkv_batch[..out_slice.len()].copy_from_slice(out_slice);
+                                    }
+                                }
                                 1 => {
                                     if !keep_rec_z_on_gpu {
                                         rec_z_batch[..out_slice.len()].copy_from_slice(out_slice);
@@ -3453,32 +3643,71 @@ impl Qwen35Forward {
                         )
                     );
                 }
-                // Recurrent sequence via Backend (conv + gated_delta).
-                // Batch scratch buffers are intentionally unlocked here because the
-                // backend recurrent path may need them for other GPU work.
-                rec_out_batch.fill(0.0);
-                let runtime = timed!(
+                // Recurrent sequence via Metal slot buffers when the projected
+                // QKV already lives on GPU; otherwise fall back to the backend-owned
+                // recurrent path.
+                let mut recurrent_output_in_batch_scratch = false;
+                let used_gpu_qkv_handoff = timed!(
                     ops,
                     recurrent,
-                    Self::run_recurrent_sequence(
-                        backend,
-                        weights,
-                        &prefix,
+                    Self::try_run_recurrent_batch_from_gpu_qkv_single_slot(
+                        metal_ops,
                         qwen_kv,
                         layer,
-                        &recurrent_slot_indices,
-                        dims,
-                        eps,
-                        &rec_qkv_batch,
+                        recurrent_slot,
+                        &temp_bufs[0],
+                        recurrent_runtime,
                         &mut rec_beta_batch,
                         &mut rec_alpha_batch,
                         &mut rec_out_batch,
                         n_tokens,
+                        dims,
+                        eps,
+                        ssm_gpu,
                     )
                 )?;
+                if let Some(stats) = used_gpu_qkv_handoff {
+                    recurrent_output_in_batch_scratch = ssm_gpu;
+                    if let Some(ref mut ops) = ops {
+                        ops.gpu_execute += stats.gpu_execute;
+                        ops.gpu_execute_layers += stats.gpu_execute;
+                        ops.gpu_readback += stats.gpu_readback;
+                    }
+                } else {
+                    if qkv_gpu_fast_path_enabled {
+                        let readback_t = OpTimer::start();
+                        unsafe {
+                            let qkv_slice =
+                                &temp_bufs[0].as_slice::<f32>()[..n_tokens * dims.conv_dim()];
+                            rec_qkv_batch[..qkv_slice.len()].copy_from_slice(qkv_slice);
+                        }
+                        if let Some(ref mut ops) = ops {
+                            ops.gpu_readback += readback_t.elapsed();
+                        }
+                    }
+                    rec_out_batch.fill(0.0);
+                    timed!(
+                        ops,
+                        recurrent,
+                        backend.qwen35_recurrent_sequence_for_kv(
+                            &rec_qkv_batch,
+                            &mut rec_beta_batch,
+                            &mut rec_alpha_batch,
+                            recurrent_runtime.dt_bias,
+                            recurrent_runtime.a,
+                            recurrent_runtime.conv_kernel,
+                            qwen_kv,
+                            layer,
+                            &recurrent_slot_indices,
+                            &mut rec_out_batch,
+                            n_tokens,
+                            Self::qwen35_recurrent_config(qwen_kv, dims, eps),
+                        )
+                    );
+                }
 
                 let ssm_norm_key = if ssm_gpu {
-                    Some(metal_ops.ensure_f32_cached(runtime.ssm_norm))
+                    Some(metal_ops.ensure_f32_cached(recurrent_runtime.ssm_norm))
                 } else {
                     None
                 };
@@ -3488,7 +3717,7 @@ impl Qwen35Forward {
                         &rec_z_batch,
                         n_tokens,
                         dims,
-                        runtime.ssm_norm,
+                        recurrent_runtime.ssm_norm,
                         eps,
                     );
                 }
@@ -3516,7 +3745,7 @@ impl Qwen35Forward {
                 };
 
                 let total_inner = n_tokens * dims.inner_size;
-                let rec_out_alias = if ssm_gpu {
+                let rec_out_alias = if ssm_gpu && !recurrent_output_in_batch_scratch {
                     Some(unsafe {
                         ax_engine_metal::MetalBuffer::from_mut_slice_no_copy(
                             metal_ops.device.device(),
@@ -3563,9 +3792,13 @@ impl Qwen35Forward {
                     let cb_t = OpTimer::start();
                     metal_ops.device.execute_sync(|encoder| {
                         if ssm_gpu {
-                            let rec_out_buf = rec_out_alias
-                                .as_ref()
-                                .expect("gpu recurrent output alias missing");
+                            let rec_out_buf = if recurrent_output_in_batch_scratch {
+                                &bs.proj_buf
+                            } else {
+                                rec_out_alias
+                                    .as_ref()
+                                    .expect("gpu recurrent output alias missing")
+                            };
                             let rec_z_buf = if keep_rec_z_on_gpu {
                                 &temp_bufs[1]
                             } else {

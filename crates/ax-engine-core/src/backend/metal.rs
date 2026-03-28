@@ -1901,7 +1901,7 @@ fn pack_token_major_scalars_to_bhs(input: &[f32], n_tokens: usize, n_heads: usiz
     out
 }
 
-fn unpack_bhsk_to_token_major(
+pub(crate) fn unpack_bhsk_to_token_major(
     input: &[f32],
     output: &mut [f32],
     n_tokens: usize,
@@ -1922,7 +1922,7 @@ fn unpack_bhsk_to_token_major(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prepare_multi_token_gdn_bh_buffers(
+pub(crate) fn prepare_multi_token_gdn_bh_buffers(
     conv_out_batch: &[f32],
     alpha_batch: &[f32],
     beta_batch: &[f32],
@@ -2496,25 +2496,25 @@ impl MetalOps {
             .batch_prefill_prefers_f16_io()
     }
 
-    fn record_qwen35_recurrent_batch_conv(&self, elapsed: Duration) {
+    pub(crate) fn record_qwen35_recurrent_batch_conv(&self, elapsed: Duration) {
         self.qwen35_recurrent_batch_perf
             .conv_ns
             .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
     }
 
-    fn record_qwen35_recurrent_batch_pack(&self, elapsed: Duration) {
+    pub(crate) fn record_qwen35_recurrent_batch_pack(&self, elapsed: Duration) {
         self.qwen35_recurrent_batch_perf
             .pack_ns
             .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
     }
 
-    fn record_qwen35_recurrent_batch_gated_delta(&self, elapsed: Duration) {
+    pub(crate) fn record_qwen35_recurrent_batch_gated_delta(&self, elapsed: Duration) {
         self.qwen35_recurrent_batch_perf
             .gated_delta_ns
             .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
     }
 
-    fn record_qwen35_recurrent_batch_unpack(&self, elapsed: Duration) {
+    pub(crate) fn record_qwen35_recurrent_batch_unpack(&self, elapsed: Duration) {
         self.qwen35_recurrent_batch_perf
             .unpack_ns
             .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
