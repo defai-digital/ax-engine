@@ -175,9 +175,6 @@ pub struct MetalBackend {
     batch_output_buf: Mutex<(Option<MetalBuffer>, usize)>,
     /// Cached Metal buffers for per-layer Qwen3.5 conv kernels.
     qwen35_conv_kernel_cache: Mutex<FxHashMap<usize, MetalBuffer>>,
-    /// Reusable recurrent state buffers keyed by logical Qwen3.5 slot.
-    qwen35_recurrent_slot_buffers:
-        Mutex<FxHashMap<Qwen35RecurrentSlotBufferKey, Qwen35MetalSlotBuffers>>,
     /// Reusable recurrent scratch buffers keyed by per-slot sequence shape.
     qwen35_recurrent_scratch_buffers:
         Mutex<FxHashMap<Qwen35RecurrentScratchBufferKey, Qwen35MetalRecurrentScratchBuffers>>,
@@ -193,11 +190,11 @@ struct Qwen35RecurrentSlotBufferKey {
     recurrent_state_stride: usize,
 }
 
-struct Qwen35MetalSlotBuffers {
+pub(crate) struct Qwen35MetalSlotBuffers {
     conv_state: MetalBuffer,
-    recurrent_state: MetalBuffer,
+    pub(crate) recurrent_state: MetalBuffer,
     conv_synced_generation: Option<u64>,
-    recurrent_synced_generation: Option<u64>,
+    pub(crate) recurrent_synced_generation: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -303,7 +300,6 @@ impl MetalBackend {
             batch_input_buf: Mutex::new((None, 0)),
             batch_output_buf: Mutex::new((None, 0)),
             qwen35_conv_kernel_cache: Mutex::new(FxHashMap::default()),
-            qwen35_recurrent_slot_buffers: Mutex::new(FxHashMap::default()),
             qwen35_recurrent_scratch_buffers: Mutex::new(FxHashMap::default()),
             ops,
         })
@@ -466,7 +462,7 @@ impl MetalBackend {
             conv_state_stride,
             recurrent_state_stride,
         );
-        let mut cache = self.qwen35_recurrent_slot_buffers.lock().unwrap();
+        let mut cache = self.ops.qwen35_recurrent_slot_buffers.lock().unwrap();
         cache.entry(key).or_insert_with(|| {
             Qwen35MetalSlotBuffers::new(&self.device, conv_state_stride, recurrent_state_stride)
                 .expect("Failed to allocate qwen35 recurrent Metal slot buffers")
@@ -577,7 +573,7 @@ impl MetalBackend {
             conv_state_stride,
             recurrent_state_stride,
         );
-        let slot_cache = self.qwen35_recurrent_slot_buffers.lock().unwrap();
+        let slot_cache = self.ops.qwen35_recurrent_slot_buffers.lock().unwrap();
         let slot_buffers = slot_cache.get(&slot_key).unwrap_or_else(|| {
             panic!(
                 "qwen35 state for slot {slot_idx} layer {layer_idx} is backend-owned but Metal slot buffer is missing"
@@ -1757,7 +1753,7 @@ impl Backend for MetalBackend {
     }
 
     fn sync_qwen35_kv(&self, qwen_kv: &mut crate::kv::Qwen35Kv) {
-        let slot_cache = self.qwen35_recurrent_slot_buffers.lock().unwrap();
+        let slot_cache = self.ops.qwen35_recurrent_slot_buffers.lock().unwrap();
         let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
         let recurrent_state_stride = qwen_kv.recurrent_state_len();
         for (slot_key, slot_buffers) in slot_cache.iter() {
@@ -2374,6 +2370,9 @@ pub struct MetalOps {
     scratches: Mutex<Option<GpuScratchBuffers>>,
     /// GPU batch scratch buffers for prefill, allocated lazily.
     batch_scratches: Mutex<Option<GpuBatchScratchBuffers>>,
+    /// Reusable recurrent state buffers keyed by logical Qwen3.5 slot.
+    qwen35_recurrent_slot_buffers:
+        Mutex<FxHashMap<Qwen35RecurrentSlotBufferKey, Qwen35MetalSlotBuffers>>,
     /// One-time runtime tuning state for f16in batch kernel routing.
     f16in_route_tuned: AtomicBool,
     /// Pre-computed weight cache keys, built once on first forward call.
@@ -2406,6 +2405,7 @@ impl MetalOps {
             precomputed_f16_weight_cache: Mutex::new(FxHashMap::default()),
             scratches: Mutex::new(None),
             batch_scratches: Mutex::new(None),
+            qwen35_recurrent_slot_buffers: Mutex::new(FxHashMap::default()),
             f16in_route_tuned: AtomicBool::new(false),
             cached_model_keys: Mutex::new(None),
         })
@@ -2756,6 +2756,63 @@ impl MetalOps {
     /// Access GPU batch scratch buffers (must call init_batch_scratches first).
     pub fn batch_scratches(&self) -> std::sync::MutexGuard<'_, Option<GpuBatchScratchBuffers>> {
         self.batch_scratches.lock().unwrap()
+    }
+
+    pub(crate) fn sync_qwen35_recurrent_slot_buffer_from_kv(
+        &self,
+        qwen_kv: &crate::kv::Qwen35Kv,
+        layer_idx: usize,
+        slot_idx: usize,
+    ) {
+        let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
+        let recurrent_state_stride = qwen_kv.recurrent_state_len();
+        let slot_key = Qwen35RecurrentSlotBufferKey {
+            layer_idx,
+            slot_idx,
+            conv_state_stride,
+            recurrent_state_stride,
+        };
+        let recurrent_generation = qwen_kv.recurrent_state_generation(slot_idx, layer_idx);
+        let mut slot_cache = self.qwen35_recurrent_slot_buffers.lock().unwrap();
+        let slot_buffers = slot_cache.entry(slot_key).or_insert_with(|| {
+            Qwen35MetalSlotBuffers::new(&self.device, conv_state_stride, recurrent_state_stride)
+                .expect("Failed to allocate qwen35 recurrent Metal slot buffers")
+        });
+        if !qwen_kv.recurrent_state_cpu_stale(slot_idx, layer_idx) {
+            if slot_buffers.recurrent_synced_generation != Some(recurrent_generation) {
+                unsafe {
+                    slot_buffers.recurrent_state.as_mut_slice::<f32>()[..recurrent_state_stride]
+                        .copy_from_slice(qwen_kv.recurrent_state_for_slot(slot_idx, layer_idx));
+                }
+                slot_buffers.recurrent_synced_generation = Some(recurrent_generation);
+            }
+        } else if slot_buffers.recurrent_synced_generation != Some(recurrent_generation) {
+            panic!(
+                "qwen35 recurrent state for slot {slot_idx} layer {layer_idx} is backend-owned but Metal slot buffer lost generation {recurrent_generation}"
+            );
+        }
+    }
+
+    pub(crate) fn with_qwen35_recurrent_slot_buffer<R>(
+        &self,
+        layer_idx: usize,
+        slot_idx: usize,
+        conv_state_stride: usize,
+        recurrent_state_stride: usize,
+        f: impl FnOnce(&mut Qwen35MetalSlotBuffers) -> R,
+    ) -> R {
+        let key = Qwen35RecurrentSlotBufferKey {
+            layer_idx,
+            slot_idx,
+            conv_state_stride,
+            recurrent_state_stride,
+        };
+        let mut cache = self.qwen35_recurrent_slot_buffers.lock().unwrap();
+        let slot_buffers = cache.entry(key).or_insert_with(|| {
+            Qwen35MetalSlotBuffers::new(&self.device, conv_state_stride, recurrent_state_stride)
+                .expect("Failed to allocate qwen35 recurrent Metal slot buffers")
+        });
+        f(slot_buffers)
     }
 
     /// Get or create a cached MetalBuffer for an f32 weight slice.
@@ -4609,7 +4666,7 @@ mod tests {
         assert!(max_abs_diff(&metal_recurrent_state, &cpu_recurrent_state) < 1e-4);
 
         let first_ptrs = {
-            let cache = backend.qwen35_recurrent_slot_buffers.lock().unwrap();
+            let cache = backend.ops.qwen35_recurrent_slot_buffers.lock().unwrap();
             assert_eq!(cache.len(), 1);
             let buffers = cache.get(&slot_key).unwrap();
             (
@@ -4658,7 +4715,7 @@ mod tests {
             );
         }
 
-        let cache = backend.qwen35_recurrent_slot_buffers.lock().unwrap();
+        let cache = backend.ops.qwen35_recurrent_slot_buffers.lock().unwrap();
         assert_eq!(cache.len(), 1);
         let buffers = cache.get(&slot_key).unwrap();
         assert_eq!(buffers.conv_state.ptr_id(), first_ptrs.0);
@@ -4794,7 +4851,7 @@ mod tests {
             conv_state_stride: actual_kv.conv_cache_len() * actual_kv.conv_dim(),
             recurrent_state_stride: actual_kv.recurrent_state_len(),
         };
-        let slot_cache = backend.qwen35_recurrent_slot_buffers.lock().unwrap();
+        let slot_cache = backend.ops.qwen35_recurrent_slot_buffers.lock().unwrap();
         assert_eq!(slot_cache.len(), 1);
         let slot_buffers = slot_cache.get(&slot_key).unwrap();
         assert_eq!(
@@ -4927,6 +4984,7 @@ mod tests {
         );
         assert!(
             backend
+                .ops
                 .qwen35_recurrent_slot_buffers
                 .lock()
                 .unwrap()
@@ -5439,7 +5497,7 @@ mod tests {
             conv_state_stride: actual_kv.conv_cache_len() * actual_kv.conv_dim(),
             recurrent_state_stride: actual_kv.recurrent_state_len(),
         };
-        let slot_cache = backend.qwen35_recurrent_slot_buffers.lock().unwrap();
+        let slot_cache = backend.ops.qwen35_recurrent_slot_buffers.lock().unwrap();
         let slot_buffers = slot_cache.get(&slot_key).unwrap();
         assert!(
             actual_kv.recurrent_state_generation(0, layer_idx) > cpu_generation,

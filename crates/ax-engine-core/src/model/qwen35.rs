@@ -4236,153 +4236,160 @@ impl Qwen35Forward {
                     s.up_buf.as_mut_slice::<f32>()[..dims.conv_dim()].copy_from_slice(&rec_conv);
                 }
 
-                let recurrent_state_buf = unsafe {
-                    MetalBuffer::from_mut_slice_no_copy(
-                        metal_ops.device.device(),
-                        qwen_kv.recurrent_state_for_slot_mut(recurrent_slot, layer),
-                    )
-                }
-                .expect("Failed to alias qwen35 recurrent state into Metal buffer");
+                let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
+                let recurrent_state_stride = qwen_kv.recurrent_state_len();
+                metal_ops.sync_qwen35_recurrent_slot_buffer_from_kv(qwen_kv, layer, recurrent_slot);
+                metal_ops.with_qwen35_recurrent_slot_buffer(
+                    layer,
+                    recurrent_slot,
+                    conv_state_stride,
+                    recurrent_state_stride,
+                    |slot_buffers| -> anyhow::Result<()> {
+                        // CB2: gated-delta + recurrent finalize + SSM output projection + residual + FFN.
+                        metal_ops.device.execute_sync(|encoder| {
+                            metal_ops.gdn.encode_prepare_single_token_qkv(
+                                encoder,
+                                &s.up_buf,
+                                &s.q_buf,
+                                &s.norm_buf,
+                                &s.down_buf,
+                                dims.group_count as u32,
+                                dims.time_step_rank as u32,
+                                dims.state_size as u32,
+                                eps,
+                            );
+                            metal_ops.gdn.encode_gated_delta_sequence(
+                                encoder,
+                                &s.q_buf,
+                                &s.norm_buf,
+                                &s.down_buf,
+                                &s.proj_buf,
+                                &s.gate_buf,
+                                &slot_buffers.recurrent_state,
+                                &s.up_buf,
+                                1,
+                                dims.time_step_rank as u32,
+                                dims.state_size as u32,
+                            );
+                            let ssm_norm = weight_cache.get(&recurrent_keys.ssm_norm).unwrap();
+                            metal_ops.elementwise.encode_per_head_rms_norm_batch(
+                                encoder,
+                                &s.up_buf,
+                                ssm_norm,
+                                1,
+                                dims.time_step_rank as u32,
+                                dims.state_size as u32,
+                                eps,
+                            );
+                            metal_ops.elementwise.encode_silu_elementwise_mul_batch(
+                                encoder,
+                                &s.attn_out,
+                                &s.up_buf,
+                                dims.inner_size as u32,
+                                1,
+                            );
+                            // SSM output projection.
+                            encode_dequant_matvec_with_config(
+                                metal_ops,
+                                encoder,
+                                weight_cache.get(&recurrent_keys.wssm_out).unwrap(),
+                                &s.attn_out,
+                                &s.proj_buf,
+                                dim as u32,
+                                dims.inner_size as u32,
+                                recurrent_keys.wssm_out_dtype,
+                                exec_plan.dequant_dispatch,
+                            );
+                            // Residual + FFN norm.
+                            let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
+                            metal_ops
+                                .elementwise
+                                .encode_residual_add_rms_norm_out_batch(
+                                    encoder,
+                                    &s.hidden,
+                                    &s.proj_buf,
+                                    ffn_nw,
+                                    &s.norm_buf,
+                                    dim as u32,
+                                    1,
+                                    eps,
+                                );
+                            let wg = weight_cache.get(&lw.wg).unwrap();
+                            let wu = weight_cache.get(&lw.wu).unwrap();
+                            if !crate::model::shared::encode_dequant_matvec_pair_with_config(
+                                metal_ops,
+                                encoder,
+                                wg,
+                                wu,
+                                &s.norm_buf,
+                                &s.gate_buf,
+                                &s.up_buf,
+                                inter_dim as u32,
+                                dim as u32,
+                                lw.wg_dtype,
+                                lw.wu_dtype,
+                                exec_plan.dequant_dispatch,
+                                exec_plan.use_pair_matvec,
+                            ) {
+                                encode_dequant_matvec_with_config(
+                                    metal_ops,
+                                    encoder,
+                                    wg,
+                                    &s.norm_buf,
+                                    &s.gate_buf,
+                                    inter_dim as u32,
+                                    dim as u32,
+                                    lw.wg_dtype,
+                                    exec_plan.dequant_dispatch,
+                                );
+                                encode_dequant_matvec_with_config(
+                                    metal_ops,
+                                    encoder,
+                                    wu,
+                                    &s.norm_buf,
+                                    &s.up_buf,
+                                    inter_dim as u32,
+                                    dim as u32,
+                                    lw.wu_dtype,
+                                    exec_plan.dequant_dispatch,
+                                );
+                            }
 
-                // CB2: gated-delta + recurrent finalize + SSM output projection + residual + FFN.
-                metal_ops.device.execute_sync(|encoder| {
-                    metal_ops.gdn.encode_prepare_single_token_qkv(
-                        encoder,
-                        &s.up_buf,
-                        &s.q_buf,
-                        &s.norm_buf,
-                        &s.down_buf,
-                        dims.group_count as u32,
-                        dims.time_step_rank as u32,
-                        dims.state_size as u32,
-                        eps,
-                    );
-                    metal_ops.gdn.encode_gated_delta_sequence(
-                        encoder,
-                        &s.q_buf,
-                        &s.norm_buf,
-                        &s.down_buf,
-                        &s.proj_buf,
-                        &s.gate_buf,
-                        &recurrent_state_buf,
-                        &s.up_buf,
-                        1,
-                        dims.time_step_rank as u32,
-                        dims.state_size as u32,
-                    );
-                    let ssm_norm = weight_cache.get(&recurrent_keys.ssm_norm).unwrap();
-                    metal_ops.elementwise.encode_per_head_rms_norm_batch(
-                        encoder,
-                        &s.up_buf,
-                        ssm_norm,
-                        1,
-                        dims.time_step_rank as u32,
-                        dims.state_size as u32,
-                        eps,
-                    );
-                    metal_ops.elementwise.encode_silu_elementwise_mul_batch(
-                        encoder,
-                        &s.attn_out,
-                        &s.up_buf,
-                        dims.inner_size as u32,
-                        1,
-                    );
-                    // SSM output projection.
-                    encode_dequant_matvec_with_config(
-                        metal_ops,
-                        encoder,
-                        weight_cache.get(&recurrent_keys.wssm_out).unwrap(),
-                        &s.attn_out,
-                        &s.proj_buf,
-                        dim as u32,
-                        dims.inner_size as u32,
-                        recurrent_keys.wssm_out_dtype,
-                        exec_plan.dequant_dispatch,
-                    );
-                    // Residual + FFN norm.
-                    let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
-                    metal_ops
-                        .elementwise
-                        .encode_residual_add_rms_norm_out_batch(
-                            encoder,
-                            &s.hidden,
-                            &s.proj_buf,
-                            ffn_nw,
-                            &s.norm_buf,
-                            dim as u32,
-                            1,
-                            eps,
-                        );
-                    let wg = weight_cache.get(&lw.wg).unwrap();
-                    let wu = weight_cache.get(&lw.wu).unwrap();
-                    if !crate::model::shared::encode_dequant_matvec_pair_with_config(
-                        metal_ops,
-                        encoder,
-                        wg,
-                        wu,
-                        &s.norm_buf,
-                        &s.gate_buf,
-                        &s.up_buf,
-                        inter_dim as u32,
-                        dim as u32,
-                        lw.wg_dtype,
-                        lw.wu_dtype,
-                        exec_plan.dequant_dispatch,
-                        exec_plan.use_pair_matvec,
-                    ) {
-                        encode_dequant_matvec_with_config(
-                            metal_ops,
-                            encoder,
-                            wg,
-                            &s.norm_buf,
-                            &s.gate_buf,
-                            inter_dim as u32,
-                            dim as u32,
-                            lw.wg_dtype,
-                            exec_plan.dequant_dispatch,
-                        );
-                        encode_dequant_matvec_with_config(
-                            metal_ops,
-                            encoder,
-                            wu,
-                            &s.norm_buf,
-                            &s.up_buf,
-                            inter_dim as u32,
-                            dim as u32,
-                            lw.wu_dtype,
-                            exec_plan.dequant_dispatch,
-                        );
-                    }
-
-                    let wd = weight_cache.get(&lw.wd).unwrap();
-                    let next_norm = if layer + 1 < n_layers {
-                        Some(
-                            weight_cache
-                                .get(&cached.layers[layer + 1].attn_norm)
-                                .unwrap(),
-                        )
-                    } else {
-                        None
-                    };
-                    crate::model::shared::encode_gpu_ffn_decode_tail(
-                        metal_ops,
-                        encoder,
-                        s,
-                        &s.hidden,
-                        wd,
-                        lw.wd_dtype,
-                        dim as u32,
-                        inter_dim as u32,
-                        eps,
-                        exec_plan.dequant_dispatch,
-                        exec_plan.use_fused_silu_down,
-                        crate::model::layer_ops::FfnActivation::SiLU,
-                        None,
-                        next_norm,
-                        &|_| {},
-                    );
-                    Ok(())
-                })?;
+                            let wd = weight_cache.get(&lw.wd).unwrap();
+                            let next_norm = if layer + 1 < n_layers {
+                                Some(
+                                    weight_cache
+                                        .get(&cached.layers[layer + 1].attn_norm)
+                                        .unwrap(),
+                                )
+                            } else {
+                                None
+                            };
+                            crate::model::shared::encode_gpu_ffn_decode_tail(
+                                metal_ops,
+                                encoder,
+                                s,
+                                &s.hidden,
+                                wd,
+                                lw.wd_dtype,
+                                dim as u32,
+                                inter_dim as u32,
+                                eps,
+                                exec_plan.dequant_dispatch,
+                                exec_plan.use_fused_silu_down,
+                                crate::model::layer_ops::FfnActivation::SiLU,
+                                None,
+                                next_norm,
+                                &|_| {},
+                            );
+                            Ok(())
+                        })?;
+                        let backend_generation =
+                            qwen_kv.note_backend_recurrent_state_update(recurrent_slot, layer);
+                        slot_buffers.recurrent_synced_generation = Some(backend_generation);
+                        Ok(())
+                    },
+                )?;
             }
         }
 
