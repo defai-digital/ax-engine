@@ -4264,38 +4264,53 @@ impl Qwen35Forward {
                             );
                             decode_barrier(encoder);
 
-                            metal_ops.gdn.encode_prepare_single_token_qkv(
+                            if metal_ops.gdn.encode_single_token_gated_delta_fused(
                                 encoder,
                                 &s.up_buf,
+                                &s.proj_buf,
+                                &s.v_buf,
+                                &slot_buffers.recurrent_state,
                                 &s.q_buf,
-                                &s.norm_buf,
-                                &s.down_buf,
                                 dims.group_count as u32,
                                 dims.time_step_rank as u32,
                                 dims.state_size as u32,
                                 eps,
-                            );
-                            decode_barrier(encoder);
+                            ) {
+                                decode_barrier(encoder);
+                            } else {
+                                metal_ops.gdn.encode_prepare_single_token_qkv(
+                                    encoder,
+                                    &s.up_buf,
+                                    &s.q_buf,
+                                    &s.norm_buf,
+                                    &s.down_buf,
+                                    dims.group_count as u32,
+                                    dims.time_step_rank as u32,
+                                    dims.state_size as u32,
+                                    eps,
+                                );
+                                decode_barrier(encoder);
 
-                            metal_ops.gdn.encode_gated_delta_sequence(
-                                encoder,
-                                &s.q_buf,
-                                &s.norm_buf,
-                                &s.down_buf,
-                                &s.proj_buf,
-                                &s.v_buf,
-                                &slot_buffers.recurrent_state,
-                                &s.up_buf,
-                                1,
-                                dims.time_step_rank as u32,
-                                dims.state_size as u32,
-                            );
-                            decode_barrier(encoder);
+                                metal_ops.gdn.encode_gated_delta_sequence(
+                                    encoder,
+                                    &s.q_buf,
+                                    &s.norm_buf,
+                                    &s.down_buf,
+                                    &s.proj_buf,
+                                    &s.v_buf,
+                                    &slot_buffers.recurrent_state,
+                                    &s.q_buf,
+                                    1,
+                                    dims.time_step_rank as u32,
+                                    dims.state_size as u32,
+                                );
+                                decode_barrier(encoder);
+                            }
 
                             let ssm_norm = weight_cache.get(&recurrent_keys.ssm_norm).unwrap();
                             metal_ops.elementwise.encode_per_head_rms_norm_batch(
                                 encoder,
-                                &s.up_buf,
+                                &s.q_buf,
                                 ssm_norm,
                                 1,
                                 dims.time_step_rank as u32,
@@ -4307,7 +4322,7 @@ impl Qwen35Forward {
                             metal_ops.elementwise.encode_silu_elementwise_mul_batch(
                                 encoder,
                                 &s.attn_out,
-                                &s.up_buf,
+                                &s.q_buf,
                                 dims.inner_size as u32,
                                 1,
                             );

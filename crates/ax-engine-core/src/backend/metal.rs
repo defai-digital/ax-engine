@@ -4466,6 +4466,108 @@ mod tests {
     }
 
     #[test]
+    fn test_metal_backend_qwen35_single_token_fused_gated_delta_matches_cpu() {
+        let backend = MetalBackend::new().unwrap();
+        let cpu = super::super::cpu::CpuBackend;
+
+        let group_count = 2usize;
+        let time_step_rank = 4usize;
+        let state_size = 128usize;
+        let key_dim = group_count * state_size;
+        let value_dim = time_step_rank * state_size;
+        let conv_dim = 2 * key_dim + value_dim;
+        let state_len = time_step_rank * state_size * state_size;
+        let eps = 1e-5f32;
+
+        let conv_out: Vec<f32> = (0..conv_dim)
+            .map(|i| ((i % 29) as f32 - 14.0) * 0.03)
+            .collect();
+        let gate: Vec<f32> = (0..time_step_rank)
+            .map(|i| ((i % 7) as f32 - 3.0) * 0.2)
+            .collect();
+        let beta: Vec<f32> = (0..time_step_rank)
+            .map(|i| 0.1 + (i % 5) as f32 * 0.04)
+            .collect();
+        let initial_state: Vec<f32> = (0..state_len)
+            .map(|i| ((i % 17) as f32 - 8.0) * 0.01)
+            .collect();
+        let mut cpu_state = initial_state.clone();
+        let mut q = vec![0.0f32; value_dim];
+        let mut k = vec![0.0f32; value_dim];
+        let mut v = vec![0.0f32; value_dim];
+        let mut expected = vec![0.0f32; value_dim];
+
+        prepare_single_token_gdn_qkv(
+            &conv_out,
+            &mut q,
+            &mut k,
+            &mut v,
+            group_count,
+            time_step_rank,
+            state_size,
+            eps,
+        );
+        cpu.qwen35_gated_delta_sequence(
+            &q,
+            &k,
+            &v,
+            &gate,
+            &beta,
+            &mut cpu_state,
+            &mut expected,
+            1,
+            time_step_rank,
+            state_size,
+        );
+
+        let conv_out_buf = MetalBuffer::from_slice(backend.device.device(), &conv_out).unwrap();
+        let gate_buf = MetalBuffer::from_slice(backend.device.device(), &gate).unwrap();
+        let beta_buf = MetalBuffer::from_slice(backend.device.device(), &beta).unwrap();
+        let state_buf = MetalBuffer::from_slice(backend.device.device(), &initial_state).unwrap();
+        let output_buf = MetalBuffer::new(
+            backend.device.device(),
+            value_dim * std::mem::size_of::<f32>(),
+        )
+        .unwrap();
+
+        backend
+            .device
+            .execute_sync(|encoder| {
+                anyhow::ensure!(
+                    backend.gdn_kernels.encode_single_token_gated_delta_fused(
+                        encoder,
+                        &conv_out_buf,
+                        &gate_buf,
+                        &beta_buf,
+                        &state_buf,
+                        &output_buf,
+                        group_count as u32,
+                        time_step_rank as u32,
+                        state_size as u32,
+                        eps,
+                    ),
+                    "single-token fused gated-delta kernel should support head_dim={state_size}"
+                );
+                Ok(())
+            })
+            .unwrap();
+
+        let result = unsafe { output_buf.as_slice::<f32>()[..value_dim].to_vec() };
+        let metal_state = unsafe { state_buf.as_slice::<f32>()[..state_len].to_vec() };
+
+        let output_diff = max_abs_diff(&result, &expected);
+        let state_diff = max_abs_diff(&metal_state, &cpu_state);
+        assert!(
+            output_diff < 1e-4,
+            "Metal qwen35 single-token fused gated delta output mismatch: max_diff={output_diff}"
+        );
+        assert!(
+            state_diff < 1e-4,
+            "Metal qwen35 single-token fused gated delta state mismatch: max_diff={state_diff}"
+        );
+    }
+
+    #[test]
     fn test_metal_backend_qwen35_gated_delta_sequence_matches_cpu() {
         let backend = MetalBackend::new().unwrap();
         let cpu = super::super::cpu::CpuBackend;

@@ -95,6 +95,110 @@ constant uint QWEN35_MAX_CONV_CACHE = 8;
 }
 
 template <int BK, int BV>
+[[kernel]] void qwen35_single_token_gated_delta_fused_kernel(
+    const device float *conv_out [[buffer(0)]],
+    const device float *gate [[buffer(1)]],
+    const device float *beta [[buffer(2)]],
+    device float *state [[buffer(3)]],
+    device float *output [[buffer(4)]],
+    constant uint &group_count [[buffer(5)]],
+    constant uint &time_step_rank [[buffer(6)]],
+    constant float &eps [[buffer(7)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_id [[simdgroup_index_in_threadgroup]])
+{
+    const uint v_tile = tgpig.x;
+    const uint bh = tgpig.y;
+    const uint v_idx = v_tile * BV + tid;
+    if (bh >= time_step_rank || v_idx >= BK) return;
+
+    const uint repeats = time_step_rank / group_count;
+    const uint src_head = bh / repeats;
+    const uint key_dim = group_count * BK;
+    const uint src_base = src_head * BK;
+    const uint value_base = 2 * key_dim + bh * BK;
+    const float scale = rsqrt((float)BK);
+
+    threadgroup float q_buf[BK];
+    threadgroup float k_buf[BK];
+    constexpr uint simd_groups = BV / 32;
+    threadgroup float q_simd_sum[simd_groups];
+    threadgroup float k_simd_sum[simd_groups];
+    threadgroup float q_inv_shared;
+    threadgroup float k_inv_shared;
+
+    float q_sum_sq = 0.0f;
+    float k_sum_sq = 0.0f;
+    for (uint j = tid; j < BK; j += BV) {
+        const float q_val = conv_out[src_base + j];
+        const float k_val = conv_out[key_dim + src_base + j];
+        q_buf[j] = q_val;
+        k_buf[j] = k_val;
+        q_sum_sq = fma(q_val, q_val, q_sum_sq);
+        k_sum_sq = fma(k_val, k_val, k_sum_sq);
+    }
+
+    q_sum_sq = simd_sum(q_sum_sq);
+    k_sum_sq = simd_sum(k_sum_sq);
+    if (simd_lane == 0) {
+        q_simd_sum[simd_id] = q_sum_sq;
+        k_simd_sum[simd_id] = k_sum_sq;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd_id == 0) {
+        q_sum_sq = (simd_lane < simd_groups) ? q_simd_sum[simd_lane] : 0.0f;
+        k_sum_sq = (simd_lane < simd_groups) ? k_simd_sum[simd_lane] : 0.0f;
+        q_sum_sq = simd_sum(q_sum_sq);
+        k_sum_sq = simd_sum(k_sum_sq);
+        if (simd_lane == 0) {
+            q_inv_shared = rsqrt(q_sum_sq + eps);
+            k_inv_shared = rsqrt(k_sum_sq + eps);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const float q_inv = q_inv_shared;
+    const float k_inv = k_inv_shared;
+    for (uint j = tid; j < BK; j += BV) {
+        q_buf[j] *= q_inv;
+        k_buf[j] *= k_inv;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    device float *state_bh = state + bh * BK * BK;
+    device float *out_bh = output + bh * BK;
+    float s[BK];
+    for (uint j = 0; j < BK; ++j) {
+        s[j] = state_bh[j * BK + v_idx];
+    }
+
+    const float decay = exp(gate[bh]);
+    const float beta_t = beta[bh];
+    const float v_t = conv_out[value_base + v_idx];
+
+    float kv_mem = 0.0f;
+    for (uint j = 0; j < BK; ++j) {
+        s[j] *= decay;
+        kv_mem = fma(s[j], k_buf[j], kv_mem);
+    }
+
+    const float delta = (v_t - kv_mem) * beta_t;
+    float y_t = 0.0f;
+    for (uint j = 0; j < BK; ++j) {
+        s[j] = fma(k_buf[j], delta, s[j]);
+        y_t = fma(s[j], q_buf[j], y_t);
+    }
+
+    out_bh[v_idx] = y_t * scale;
+    for (uint j = 0; j < BK; ++j) {
+        state_bh[j * BK + v_idx] = s[j];
+    }
+}
+
+template <int BK, int BV>
 [[kernel]] void gated_delta_rule_kernel(
     const device float *q [[buffer(0)]],
     const device float *k [[buffer(1)]],
@@ -404,6 +508,20 @@ void gated_delta_rule_kernel<64, 64>(
     device float*, device float*,
     constant uint&, constant uint&,
     uint2, uint);
+
+template [[host_name("qwen35_single_token_gated_delta_fused_128_64")]] [[kernel]]
+void qwen35_single_token_gated_delta_fused_kernel<128, 64>(
+    const device float*, const device float*, const device float*,
+    device float*, device float*,
+    constant uint&, constant uint&, constant float&,
+    uint2, uint, uint, uint);
+
+template [[host_name("qwen35_single_token_gated_delta_fused_64_64")]] [[kernel]]
+void qwen35_single_token_gated_delta_fused_kernel<64, 64>(
+    const device float*, const device float*, const device float*,
+    device float*, device float*,
+    constant uint&, constant uint&, constant float&,
+    uint2, uint, uint, uint);
 
 template [[host_name("gated_delta_rule_fallback")]] [[kernel]]
 void gated_delta_rule_kernel_fallback<64, 256>(

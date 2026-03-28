@@ -5662,6 +5662,8 @@ pub struct AttentionKernels {
 pub struct GdnKernels {
     causal_conv_sequence_f32: ComputePipeline,
     prepare_single_token_qkv_f32: ComputePipeline,
+    single_token_gated_delta_fused_128_64: ComputePipeline,
+    single_token_gated_delta_fused_64_64: ComputePipeline,
     gated_delta_128_64: ComputePipeline,
     gated_delta_64_64: ComputePipeline,
     gated_delta_fallback: ComputePipeline,
@@ -6697,6 +6699,18 @@ impl GdnKernels {
             "qwen35_prepare_single_token_gdn_qkv_f32",
         )
         .context("Failed to compile qwen35_prepare_single_token_gdn_qkv_f32 kernel")?;
+        let single_token_gated_delta_fused_128_64 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "qwen35_single_token_gated_delta_fused_128_64",
+        )
+        .context("Failed to compile qwen35_single_token_gated_delta_fused_128_64 kernel")?;
+        let single_token_gated_delta_fused_64_64 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "qwen35_single_token_gated_delta_fused_64_64",
+        )
+        .context("Failed to compile qwen35_single_token_gated_delta_fused_64_64 kernel")?;
         let gated_delta_128_64 = ComputePipeline::from_source(
             device.device(),
             GDN_SHADER_SRC,
@@ -6727,6 +6741,8 @@ impl GdnKernels {
         Ok(Self {
             causal_conv_sequence_f32,
             prepare_single_token_qkv_f32,
+            single_token_gated_delta_fused_128_64,
+            single_token_gated_delta_fused_64_64,
             gated_delta_128_64,
             gated_delta_64_64,
             gated_delta_fallback,
@@ -6833,6 +6849,53 @@ impl GdnKernels {
             dims.threadgroups,
             dims.threads_per_threadgroup,
         );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_single_token_gated_delta_fused(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        conv_out: &MetalBuffer,
+        gate: &MetalBuffer,
+        beta: &MetalBuffer,
+        state: &MetalBuffer,
+        output: &MetalBuffer,
+        group_count: u32,
+        time_step_rank: u32,
+        head_dim: u32,
+        eps: f32,
+    ) -> bool {
+        let pipeline = match head_dim {
+            128 => &self.single_token_gated_delta_fused_128_64,
+            64 => &self.single_token_gated_delta_fused_64_64,
+            _ => return false,
+        };
+        let bv = 64usize;
+        let grid_x = (head_dim as usize).div_ceil(bv);
+        encoder.setComputePipelineState(pipeline.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(conv_out.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(beta.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(state.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 4);
+        }
+        bind_u32(encoder, 5, group_count);
+        bind_u32(encoder, 6, time_step_rank);
+        bind_f32(encoder, 7, eps);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: grid_x,
+                height: time_step_rank as usize,
+                depth: 1,
+            },
+            MTLSize {
+                width: bv,
+                height: 1,
+                depth: 1,
+            },
+        );
+        true
     }
 
     /// Encode gated delta net into an existing command encoder (no execute_sync).
