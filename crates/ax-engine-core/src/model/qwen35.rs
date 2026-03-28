@@ -2635,11 +2635,13 @@ impl Qwen35Forward {
         use crate::model::shared::encode_dequant_batch;
 
         let Some(metal_ops) = ctx.backend.metal_ops() else {
+            tracing::info!("qwen35 gpu-unified: no metal_ops");
             return Ok(false);
         };
         let cfg = ctx.config;
         let backend = ctx.backend;
         let Some(qwen_kv) = kv.as_qwen35_mut() else {
+            tracing::info!("qwen35 gpu-unified: kv is not Qwen35 variant");
             return Ok(false);
         };
 
@@ -2660,16 +2662,15 @@ impl Qwen35Forward {
         let recurrent_slot_indices = [recurrent_slot];
 
         // Check that all projection dtypes are GPU-supported.
-        let supported =
+        // GPU batch dequant matmul only supports Q4K/Q5K/Q6K.
+        // Other types (F32, Q8_0, etc.) are handled via CPU fallback.
+        let gpu_batch_supported =
             |dt: crate::gguf::tensor::GgmlType| {
                 matches!(
                     dt,
                     crate::gguf::tensor::GgmlType::Q4K
                         | crate::gguf::tensor::GgmlType::Q5K
                         | crate::gguf::tensor::GgmlType::Q6K
-                        | crate::gguf::tensor::GgmlType::Q8_0
-                        | crate::gguf::tensor::GgmlType::Q4_0
-                        | crate::gguf::tensor::GgmlType::Q5_0
                 )
             };
 
@@ -2678,7 +2679,8 @@ impl Qwen35Forward {
             if !cfg.qwen35_is_recurrent_layer(layer) {
                 let prefix = format!("blk.{layer}");
                 let (_, dt) = weights.raw_with_dtype(&format!("{prefix}.attn_q.weight"))?;
-                if !supported(dt) {
+                if !gpu_batch_supported(dt) {
+                    tracing::info!(?dt, layer, "qwen35 gpu-unified: attn_q dtype unsupported");
                     return Ok(false);
                 }
                 break;
@@ -2689,6 +2691,7 @@ impl Qwen35Forward {
         metal_ops.init_batch_scratches(cfg, n_tokens);
         let mut bs_guard = metal_ops.batch_scratches();
         let Some(bs) = bs_guard.as_mut() else {
+            tracing::info!("qwen35 gpu-unified: batch scratches not available");
             return Ok(false);
         };
 
@@ -2732,7 +2735,8 @@ impl Qwen35Forward {
             let (wg_raw, wg_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_gate.weight"))?;
             let (wu_raw, wu_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_up.weight"))?;
             let (wd_raw, wd_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_down.weight"))?;
-            if !supported(wg_dtype) || !supported(wu_dtype) || !supported(wd_dtype) {
+            if !gpu_batch_supported(wg_dtype) || !gpu_batch_supported(wu_dtype) || !gpu_batch_supported(wd_dtype) {
+                tracing::info!(?wg_dtype, ?wu_dtype, ?wd_dtype, layer, "qwen35 gpu-unified: FFN dtype unsupported");
                 return Ok(false);
             }
             let wg_key = metal_ops.ensure_quant_cached(wg_raw);
@@ -2747,7 +2751,8 @@ impl Qwen35Forward {
                 let (wk_raw, wk_dtype) = weights.raw_with_dtype(&format!("{prefix}.attn_k.weight"))?;
                 let (wv_raw, wv_dtype) = weights.raw_with_dtype(&format!("{prefix}.attn_v.weight"))?;
                 let (wo_raw, wo_dtype) = weights.raw_with_dtype(&format!("{prefix}.attn_output.weight"))?;
-                if !supported(wq_dtype) || !supported(wk_dtype) || !supported(wv_dtype) || !supported(wo_dtype) {
+                if !gpu_batch_supported(wq_dtype) || !gpu_batch_supported(wk_dtype) || !gpu_batch_supported(wv_dtype) || !gpu_batch_supported(wo_dtype) {
+                    tracing::info!(?wq_dtype, ?wk_dtype, ?wv_dtype, ?wo_dtype, layer, "qwen35 gpu-unified: attn dtype unsupported");
                     return Ok(false);
                 }
                 let wq_key = metal_ops.ensure_quant_cached(wq_raw);
@@ -2909,27 +2914,32 @@ impl Qwen35Forward {
                 // Recurrent layer: read hidden from GPU, process, write back
                 // ══════════════════════════════════════════════════════════
 
-                // Cache all weights BEFORE locking weight_cache (avoid deadlock).
+                // Cache quantized weights BEFORE locking weight_cache (avoid deadlock).
                 let input_ops = Self::recurrent_input_ops(weights, &prefix, dims)?;
-                let mut proj_dtypes = Vec::new();
+                // Route only GPU-batch-supported dtypes to GPU; everything else to CPU.
+                let is_gpu_encodable = &gpu_batch_supported;
+                // Separate GPU-encodable (quantized) from CPU-only (F32) projections.
+                let mut gpu_proj_indices = Vec::new();
+                let mut cpu_proj_indices = Vec::new();
                 let mut proj_keys = Vec::new();
+                let mut proj_dtypes = Vec::new();
                 let mut proj_dims: Vec<usize> = Vec::new();
-                for (raw, dtype, out_dim) in &input_ops {
-                    if !supported(*dtype) {
-                        return Ok(false);
-                    }
+                for (i, (raw, dtype, out_dim)) in input_ops.iter().enumerate() {
                     proj_keys.push(metal_ops.ensure_quant_cached(raw));
                     proj_dtypes.push(*dtype);
                     proj_dims.push(*out_dim);
+                    if is_gpu_encodable(*dtype) {
+                        gpu_proj_indices.push(i);
+                    } else {
+                        cpu_proj_indices.push(i);
+                    }
                 }
                 let (ssm_out_raw, ssm_out_dtype, _) = Self::recurrent_output_op(weights, &prefix, dim)?;
-                if !supported(ssm_out_dtype) {
-                    return Ok(false);
-                }
+                let ssm_gpu = gpu_batch_supported(ssm_out_dtype);
                 let ssm_key = metal_ops.ensure_quant_cached(ssm_out_raw);
 
                 // Allocate temporary projection output buffers.
-                let temp_bufs: Vec<ax_engine_metal::MetalBuffer> = proj_dims
+                let mut temp_bufs: Vec<ax_engine_metal::MetalBuffer> = proj_dims
                     .iter()
                     .map(|&d| {
                         ax_engine_metal::MetalBuffer::new(
@@ -2944,23 +2954,49 @@ impl Qwen35Forward {
                 let weight_cache = metal_ops.lock_weight_cache();
                 let nw_buf = weight_cache.get(&nw_key).unwrap();
 
-                // CB1: norm + 4 input projections (hidden on GPU → projections on GPU).
+                // CB1: norm + quantized input projections on GPU.
                 metal_ops.device.execute_sync(|encoder| {
                     metal_ops.elementwise.encode_rms_norm_out_batch(
                         encoder, &bs.hidden, nw_buf, &bs.norm_buf, dim as u32, nt, eps,
                     );
-                    for (i, (&key, &dtype)) in proj_keys.iter().zip(proj_dtypes.iter()).enumerate() {
-                        let w_buf = weight_cache.get(&key).unwrap();
+                    for &i in &gpu_proj_indices {
+                        let w_buf = weight_cache.get(&proj_keys[i]).unwrap();
                         encode_dequant_batch(
                             &metal_ops.dequant, &metal_ops.elementwise, encoder,
                             w_buf, &bs.norm_buf, &temp_bufs[i], &bs.matmul_in_f16,
-                            proj_dims[i] as u32, nt, dim as u32, dtype,
+                            proj_dims[i] as u32, nt, dim as u32, proj_dtypes[i],
                             false, false, false,
                         );
                     }
                     Ok(())
                 })?;
                 drop(weight_cache);
+
+                // CPU: F32 projections (ssm_beta, ssm_alpha — small, not quantized).
+                // Use norm_buf via UMA and write results directly to temp_bufs via UMA.
+                if !cpu_proj_indices.is_empty() {
+                    let norm_cpu = unsafe { &bs.norm_buf.as_slice::<f32>()[..n_tokens * dim] };
+                    for &i in &cpu_proj_indices {
+                        let (raw, _dtype, out_dim) = input_ops[i];
+                        // F32 weights: interpret raw bytes as f32, do direct matmul.
+                        let w_f32 = unsafe {
+                            std::slice::from_raw_parts(raw.as_ptr() as *const f32, out_dim * dim)
+                        };
+                        let out = unsafe {
+                            &mut temp_bufs[i].as_mut_slice::<f32>()[..n_tokens * out_dim]
+                        };
+                        // token-major matmul: out[t,o] = sum_k(norm[t,k] * w[o,k])
+                        for t in 0..n_tokens {
+                            for o in 0..out_dim {
+                                let mut acc = 0.0f32;
+                                for k in 0..dim {
+                                    acc += norm_cpu[t * dim + k] * w_f32[o * dim + k];
+                                }
+                                out[t * out_dim + o] = acc;
+                            }
+                        }
+                    }
+                }
 
                 // Read projections from GPU.
                 unsafe {
@@ -2973,8 +3009,11 @@ impl Qwen35Forward {
                     rec_alpha_batch[..n_tokens * dims.time_step_rank]
                         .copy_from_slice(&temp_bufs[3].as_slice::<f32>()[..n_tokens * dims.time_step_rank]);
                 }
-
                 // Recurrent sequence via Backend (conv + gated_delta).
+                // NOTE: run_recurrent_sequence may lock batch_scratches internally,
+                // but `bs` is a reborrow from bs_guard which is held at the outer scope.
+                // This is safe because the Backend's recurrent path uses its OWN scratch
+                // buffers (Qwen35MetalRecurrentScratchBuffers), not the batch scratches.
                 rec_out_batch.fill(0.0);
                 let runtime = Self::run_recurrent_sequence(
                     backend, weights, &prefix, qwen_kv, layer,
@@ -2983,37 +3022,47 @@ impl Qwen35Forward {
                     &mut rec_out_batch, n_tokens,
                 )?;
 
-                // Finalize recurrent output (GPU or CPU).
-                let used_gpu_fin = Self::try_finalize_recurrent_output_batch_gpu(
-                    cfg, backend, &mut rec_out_batch, &rec_z_batch, n_tokens, dims,
-                    runtime.ssm_norm, eps,
-                )?;
-                if !used_gpu_fin {
-                    Self::finalize_recurrent_output_batch(
-                        &mut rec_out_batch, &rec_z_batch, n_tokens, dims, runtime.ssm_norm, eps,
-                    );
-                }
+                // Finalize recurrent output on CPU (GPU variant would deadlock on
+                // batch_scratches which is held by the outer unified path).
+                Self::finalize_recurrent_output_batch(
+                    &mut rec_out_batch, &rec_z_batch, n_tokens, dims, runtime.ssm_norm, eps,
+                );
 
                 // CB2: SSM out + residual + FFN (hidden on GPU).
-                // Upload rec_out to GPU proj_buf.
-                unsafe {
-                    bs.proj_buf.as_mut_slice::<f32>()[..n_tokens * dims.inner_size]
-                        .copy_from_slice(&rec_out_batch[..n_tokens * dims.inner_size]);
+                if ssm_gpu {
+                    // GPU SSM out: upload rec_out to proj_buf, encode in CB.
+                    unsafe {
+                        bs.proj_buf.as_mut_slice::<f32>()[..n_tokens * dims.inner_size]
+                            .copy_from_slice(&rec_out_batch[..n_tokens * dims.inner_size]);
+                    }
+                } else {
+                    // CPU SSM out: matmul on CPU, upload result to attn_out.
+                    let mut ssm_result = vec![0.0f32; n_tokens * dim];
+                    Self::batched_dequant_matmul_token_major(
+                        backend, ssm_out_raw, ssm_out_dtype, &rec_out_batch, &mut ssm_result,
+                        n_tokens, dim, dims.inner_size,
+                    );
+                    unsafe {
+                        bs.attn_out.as_mut_slice::<f32>()[..n_tokens * dim]
+                            .copy_from_slice(&ssm_result);
+                    }
                 }
                 let weight_cache = metal_ops.lock_weight_cache();
-                let ssm_buf = weight_cache.get(&ssm_key).unwrap();
                 let ffn_nw_buf = weight_cache.get(&ffn_nw_key).unwrap();
                 let wg_buf = weight_cache.get(&wg_key).unwrap();
                 let wu_buf = weight_cache.get(&wu_key).unwrap();
                 let wd_buf = weight_cache.get(&wd_key).unwrap();
                 metal_ops.device.execute_sync(|encoder| {
-                    // SSM output projection: proj_buf (inner_size) → attn_out (reuse for dim output)
-                    encode_dequant_batch(
-                        &metal_ops.dequant, &metal_ops.elementwise, encoder,
-                        ssm_buf, &bs.proj_buf, &bs.attn_out, &bs.matmul_in_f16,
-                        dim as u32, nt, dims.inner_size as u32, ssm_out_dtype,
-                        false, false, false,
-                    );
+                    if ssm_gpu {
+                        // GPU SSM: proj_buf (inner_size) → attn_out (dim)
+                        let ssm_buf = weight_cache.get(&ssm_key).unwrap();
+                        encode_dequant_batch(
+                            &metal_ops.dequant, &metal_ops.elementwise, encoder,
+                            ssm_buf, &bs.proj_buf, &bs.attn_out, &bs.matmul_in_f16,
+                            dim as u32, nt, dims.inner_size as u32, ssm_out_dtype,
+                            false, false, false,
+                        );
+                    }
                     // Residual: hidden += attn_out (SSM output) + FFN norm
                     metal_ops.elementwise.encode_residual_add_rms_norm_out_batch(
                         encoder, &bs.hidden, &bs.attn_out, ffn_nw_buf, &bs.norm_buf,
@@ -3071,6 +3120,11 @@ impl Qwen35Forward {
             }
             _ => unreachable!("validated by caller"),
         }
+        tracing::info!(
+            n_tokens,
+            n_layers,
+            "qwen35 gpu-unified prefill completed successfully"
+        );
         Ok(true)
     }
 
@@ -3110,10 +3164,16 @@ impl Qwen35Forward {
         {
             let logits_ref = logits.as_mut().map(|s| &mut **s);
             let logits_all_ref = logits_all.as_mut().map(|v| &mut **v);
-            if let Ok(true) =
-                Self::try_forward_batch_gpu_unified(ctx, token_ids, kv, weights, logits_ref, logits_all_ref)
-            {
-                return Ok(());
+            match Self::try_forward_batch_gpu_unified(
+                ctx, token_ids, kv, weights, logits_ref, logits_all_ref,
+            ) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {
+                    tracing::info!("qwen35 gpu-unified prefill: not available, using fallback");
+                }
+                Err(e) => {
+                    tracing::warn!("qwen35 gpu-unified prefill failed: {e}, using fallback");
+                }
             }
         }
 
