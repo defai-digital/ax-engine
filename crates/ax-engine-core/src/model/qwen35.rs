@@ -3147,12 +3147,18 @@ impl Qwen35Forward {
                         Ok(())
                     })?;
 
-                    // CPU: sync KV append (CPU mirror — harmless duplicate GPU write).
+                    // CPU-only mirror: the GPU KV append already happened in the
+                    // command buffer above.
                     {
                         let k_after_rope =
                             unsafe { &bs.k_buf.as_slice::<f32>()[..n_tokens * kv_dim] };
                         let v_slice = unsafe { &bs.v_buf.as_slice::<f32>()[..n_tokens * kv_dim] };
-                        qwen_kv.attention_append_batch(layer, k_after_rope, v_slice, n_tokens);
+                        qwen_kv.attention_append_batch_cpu_mirror(
+                            layer,
+                            k_after_rope,
+                            v_slice,
+                            n_tokens,
+                        );
                     }
                 }
             } else {
@@ -3941,8 +3947,6 @@ impl Qwen35Forward {
                         lw.wv_dtype,
                         exec_plan.dequant_dispatch,
                     );
-
-                    // 2. GPU Q+gate split: gate_buf → q_buf (Q), up_buf (gate).
                     metal_ops.elementwise.encode_split_qgate_batch(
                         encoder,
                         &s.gate_buf,
@@ -4138,11 +4142,12 @@ impl Qwen35Forward {
                     Ok(())
                 })?;
 
-                // CPU: sync KV append (CPU mirror — harmless duplicate GPU write).
+                // CPU-only mirror: the GPU KV append already happened in the
+                // command buffer above.
                 {
                     let k_slice = unsafe { &s.k_buf.as_slice::<f32>()[..kv_dim] };
                     let v_slice = unsafe { &s.v_buf.as_slice::<f32>()[..kv_dim] };
-                    qwen_kv.attention_append(layer, k_slice, v_slice);
+                    qwen_kv.attention_append_cpu_mirror(layer, k_slice, v_slice);
                 }
             } else {
                 // Recurrent layer: CB1 (norm + input projections), Backend (conv + gated_delta),
