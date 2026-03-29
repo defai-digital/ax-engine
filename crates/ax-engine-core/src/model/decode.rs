@@ -248,6 +248,9 @@ where
             DecodeScratchPlan::HybridBackendOwned
         ) | (
             DecodeSyncPlan::SingleCommandBuffer | DecodeSyncPlan::Pipelined,
+            DecodeScratchPlan::HybridBackendOwned
+        ) | (
+            DecodeSyncPlan::SingleCommandBuffer | DecodeSyncPlan::Pipelined,
             DecodeScratchPlan::SharedGpuScratch
         )
     );
@@ -261,6 +264,10 @@ where
             (DecodeSyncPlan::Sequential, DecodeScratchPlan::CpuScratch)
                 | (
                     DecodeSyncPlan::Sequential,
+                    DecodeScratchPlan::HybridBackendOwned
+                )
+                | (
+                    DecodeSyncPlan::SingleCommandBuffer | DecodeSyncPlan::Pipelined,
                     DecodeScratchPlan::HybridBackendOwned
                 )
                 | (
@@ -433,6 +440,9 @@ where
     let mut hidden_b = model.alloc_metal_buf(hidden_bytes)?;
 
     model.prewarm_kv_capacity(kv, start_position + max_tokens + 2)?;
+    if let Some(active_slot) = kv.as_qwen35().map(crate::kv::Qwen35Kv::active_slot) {
+        model.prime_qwen35_recurrent_slot_buffers(kv, &[active_slot])?;
+    }
 
     let mut logits = vec![0.0f32; model.config.vocab_size as usize];
     let mut position = start_position;
@@ -648,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn test_select_decode_mode_qwen35_hybrid_stays_sequential_with_hybrid_reason() {
+    fn test_select_decode_mode_qwen35_hybrid_prefers_pipelined_when_available() {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
@@ -657,15 +667,26 @@ mod tests {
         assert!(matches!(kv, ModelKv::Qwen35(_)));
 
         let selection = select_decode_mode(&model, &kv, DecodeIntent::Throughput, true);
-        assert_eq!(selection.mode, DecodeMode::Sequential);
-        assert_eq!(
-            selection.fallback_reason.as_deref(),
-            Some(
-                "qwen35 hybrid decode stays sequential because recurrent state is still backend-owned and pipelined decode is unavailable"
-            )
-        );
+        assert_eq!(selection.mode, DecodeMode::Pipelined);
+        assert!(selection.fallback_reason.is_none());
         let summary = model.decode_plan_summary(&kv, DecodeIntent::Throughput, true);
-        assert!(summary.starts_with("sync=sequential scratch=hybrid_backend"));
+        assert!(summary.starts_with("sync=pipelined scratch=hybrid_backend"));
+    }
+
+    #[test]
+    fn test_select_decode_mode_qwen35_hybrid_latency_uses_single_cb() {
+        let Ok(backend) = MetalBackend::new() else {
+            return;
+        };
+        let model = LlamaModel::with_backend(tiny_config("qwen35"), Box::new(backend)).unwrap();
+        let kv = model.create_model_kv();
+        assert!(matches!(kv, ModelKv::Qwen35(_)));
+
+        let selection = select_decode_mode(&model, &kv, DecodeIntent::Latency, false);
+        assert_eq!(selection.mode, DecodeMode::SingleCb);
+        assert!(selection.fallback_reason.is_none());
+        let summary = model.decode_plan_summary(&kv, DecodeIntent::Latency, false);
+        assert!(summary.starts_with("sync=single_cb scratch=hybrid_backend"));
         assert!(summary.contains("attn="));
     }
 

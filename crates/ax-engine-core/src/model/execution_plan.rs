@@ -254,7 +254,11 @@ impl DecodeExecutionPlan {
         let supports_pipelined = has_gpu_decode && model.supports_pipelined_decode();
 
         let selection = if qwen35_hybrid_decode {
-            qwen35_hybrid_decode_selection(intent, allow_pipelined)
+            qwen35_hybrid_decode_selection(
+                intent,
+                allow_pipelined,
+                model.supports_pipelined_decode(),
+            )
         } else {
             select_decode_execution_mode(
                 intent,
@@ -283,14 +287,23 @@ impl DecodeExecutionPlan {
             model
                 .metal_ops()
                 .zip(qwen35_gpu_attention)
-                .map(|(metal_ops, gpu_kv)| {
-                    Self::qwen35_single_cb(
+                .map(|(metal_ops, gpu_kv)| match sync {
+                    DecodeSyncPlan::Sequential | DecodeSyncPlan::SingleCommandBuffer => {
+                        Self::qwen35_single_cb(
+                            metal_ops,
+                            gpu_kv,
+                            model.config.embedding_dim,
+                            model.config.head_dim,
+                            kv.seq_len().saturating_add(1),
+                        )
+                    }
+                    DecodeSyncPlan::Pipelined => Self::qwen35_pipelined(
                         metal_ops,
                         gpu_kv,
                         model.config.embedding_dim,
                         model.config.head_dim,
                         kv.seq_len().saturating_add(1),
-                    )
+                    ),
                 })
         } else {
             match sync {
@@ -413,6 +426,23 @@ impl DecodeExecutionPlan {
     ) -> GpuDecodeExecutionPlan {
         pipelined_gpu_decode_plan(
             "qwen3",
+            metal_ops,
+            gpu_kv,
+            embedding_dim,
+            head_dim,
+            attend_len,
+        )
+    }
+
+    pub(crate) fn qwen35_pipelined(
+        metal_ops: &MetalOps,
+        gpu_kv: &GpuKv,
+        embedding_dim: u32,
+        head_dim: u32,
+        attend_len: usize,
+    ) -> GpuDecodeExecutionPlan {
+        pipelined_gpu_decode_plan(
+            "qwen35",
             metal_ops,
             gpu_kv,
             embedding_dim,
@@ -796,18 +826,33 @@ fn qwen35_prefill_plan() -> PrefillExecutionPlan {
     }
 }
 
-fn qwen35_hybrid_decode_selection(intent: DecodeIntent, allow_pipelined: bool) -> DecodeSelection {
+fn qwen35_hybrid_decode_selection(
+    intent: DecodeIntent,
+    allow_pipelined: bool,
+    supports_pipelined: bool,
+) -> DecodeSelection {
+    if intent == DecodeIntent::Throughput && allow_pipelined {
+        if supports_pipelined {
+            return DecodeSelection {
+                intent,
+                mode: DecodeMode::Pipelined,
+                fallback_reason: None,
+            };
+        }
+        return DecodeSelection {
+            intent,
+            mode: DecodeMode::SingleCb,
+            fallback_reason: Some(
+                "qwen35 hybrid decode keeps the native single-CB path because pipelined decode is unavailable"
+                    .to_string(),
+            ),
+        };
+    }
+
     DecodeSelection {
         intent,
-        mode: DecodeMode::Sequential,
-        fallback_reason: if intent == DecodeIntent::Throughput && allow_pipelined {
-            Some(
-                "qwen35 hybrid decode stays sequential because recurrent state is still backend-owned and pipelined decode is unavailable"
-                    .to_string(),
-            )
-        } else {
-            None
-        },
+        mode: DecodeMode::SingleCb,
+        fallback_reason: None,
     }
 }
 

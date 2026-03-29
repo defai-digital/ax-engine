@@ -202,20 +202,41 @@ pub fn repeat_heads(
     n_dst_heads: usize,
     head_dim: usize,
 ) -> Vec<f32> {
+    let mut out = vec![0.0f32; n_dst_heads * head_dim];
+    repeat_heads_into(&mut out, input, n_src_heads, n_dst_heads, head_dim);
+    out
+}
+
+pub fn repeat_heads_into(
+    dst: &mut [f32],
+    input: &[f32],
+    n_src_heads: usize,
+    n_dst_heads: usize,
+    head_dim: usize,
+) {
+    assert_eq!(
+        input.len(),
+        n_src_heads * head_dim,
+        "repeat_heads input length mismatch"
+    );
+    assert_eq!(
+        dst.len(),
+        n_dst_heads * head_dim,
+        "repeat_heads output length mismatch"
+    );
     if n_src_heads == n_dst_heads {
-        return input.to_vec();
+        dst.copy_from_slice(input);
+        return;
     }
     assert!(n_dst_heads.is_multiple_of(n_src_heads));
     let repeat = n_dst_heads / n_src_heads;
-    let mut out = vec![0.0f32; n_dst_heads * head_dim];
     for src in 0..n_src_heads {
         let src_slice = &input[src * head_dim..(src + 1) * head_dim];
         for rep in 0..repeat {
-            let dst = src * repeat + rep;
-            out[dst * head_dim..(dst + 1) * head_dim].copy_from_slice(src_slice);
+            let dst_head = src * repeat + rep;
+            dst[dst_head * head_dim..(dst_head + 1) * head_dim].copy_from_slice(src_slice);
         }
     }
-    out
 }
 
 pub fn depthwise_conv1d_step(
@@ -387,7 +408,9 @@ pub fn prepare_alpha_beta(
             .zip(dt_bias.iter())
             .zip(a.iter())
         {
-            *alpha = (1.0 + (*alpha + bias).exp()).ln() * a_val;
+            let x = *alpha + bias;
+            let sp = if x > 20.0 { x } else { (1.0 + x.exp()).ln() };
+            *alpha = sp * a_val;
         }
     }
 }
@@ -424,12 +447,17 @@ pub fn qwen35_recurrent_sequence(
         cfg.conv_dim,
     );
 
+    let mut q_lin = vec![0.0f32; key_dim];
+    let mut k_lin = vec![0.0f32; key_dim];
+    let mut q_rep = vec![0.0f32; value_dim];
+    let mut k_rep = vec![0.0f32; value_dim];
+
     for token_idx in 0..n_tokens {
         let conv_start = token_idx * cfg.conv_dim;
         let conv_end = conv_start + cfg.conv_dim;
         let conv_out = &conv_out_batch[conv_start..conv_end];
-        let mut q_lin = conv_out[..key_dim].to_vec();
-        let mut k_lin = conv_out[key_dim..2 * key_dim].to_vec();
+        q_lin.copy_from_slice(&conv_out[..key_dim]);
+        k_lin.copy_from_slice(&conv_out[key_dim..2 * key_dim]);
         let v_lin = &conv_out[2 * key_dim..2 * key_dim + value_dim];
 
         l2_norm_heads(
@@ -445,8 +473,20 @@ pub fn qwen35_recurrent_sequence(
             cfg.rms_norm_eps,
         );
 
-        let q_rep = repeat_heads(&q_lin, cfg.group_count, cfg.time_step_rank, cfg.state_size);
-        let k_rep = repeat_heads(&k_lin, cfg.group_count, cfg.time_step_rank, cfg.state_size);
+        repeat_heads_into(
+            &mut q_rep,
+            &q_lin,
+            cfg.group_count,
+            cfg.time_step_rank,
+            cfg.state_size,
+        );
+        repeat_heads_into(
+            &mut k_rep,
+            &k_lin,
+            cfg.group_count,
+            cfg.time_step_rank,
+            cfg.state_size,
+        );
         let out_start = token_idx * value_dim;
         let out_end = out_start + value_dim;
         q_batch[out_start..out_end].copy_from_slice(&q_rep);
@@ -499,6 +539,14 @@ mod tests {
         let input = [1.0, 2.0, 3.0, 4.0];
         let repeated = repeat_heads(&input, 2, 4, 2);
         assert_eq!(repeated, vec![1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_repeat_heads_into_matches_allocating_version() {
+        let input = [1.0, 2.0, 3.0, 4.0];
+        let mut actual = vec![0.0f32; 8];
+        repeat_heads_into(&mut actual, &input, 2, 4, 2);
+        assert_eq!(actual, repeat_heads(&input, 2, 4, 2));
     }
 
     #[test]

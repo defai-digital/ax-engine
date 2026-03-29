@@ -5,6 +5,8 @@
 //! - a short convolution history of length `conv_kernel - 1`
 //! - the persistent delta-net state tensor
 
+use std::borrow::Cow;
+
 use super::page::{KvCacheConfig, KvDtype, recommended_page_size};
 use super::{CpuKv, CpuKvSnapshot, GpuKv, GpuKvDtype};
 
@@ -23,7 +25,38 @@ pub struct Qwen35KvSnapshot {
     active_slot: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub struct Qwen35AttentionSnapshot {
+    attention: CpuKvSnapshot,
+    seq_len: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Qwen35StateOwner {
+    CpuMaterialized,
+    BackendOwned,
+}
+
+impl Qwen35StateOwner {
+    fn from_cpu_stale(cpu_stale: bool) -> Self {
+        if cpu_stale {
+            Self::BackendOwned
+        } else {
+            Self::CpuMaterialized
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Qwen35LayerStateOwner {
+    CpuMaterialized,
+    BackendOwned,
+    Split,
+}
+
+impl Qwen35LayerStateOwner {}
+
+#[derive(Debug, Clone)]
 struct Qwen35RecurrentSlot {
     conv_states: Vec<Vec<f32>>,
     recurrent_states: Vec<Vec<f32>>,
@@ -31,6 +64,8 @@ struct Qwen35RecurrentSlot {
     recurrent_state_generations: Vec<u64>,
     cpu_materialized_conv_generations: Vec<u64>,
     cpu_materialized_recurrent_generations: Vec<u64>,
+    conv_state_pristine_zero: Vec<bool>,
+    recurrent_state_pristine_zero: Vec<bool>,
     seqlen_offset: usize,
 }
 
@@ -66,6 +101,8 @@ impl Qwen35RecurrentSlot {
             recurrent_state_generations: vec![1; recurrent_layers.len()],
             cpu_materialized_conv_generations: vec![1; recurrent_layers.len()],
             cpu_materialized_recurrent_generations: vec![1; recurrent_layers.len()],
+            conv_state_pristine_zero: recurrent_layers.iter().map(|_| true).collect(),
+            recurrent_state_pristine_zero: recurrent_layers.iter().map(|_| true).collect(),
             seqlen_offset: 0,
         }
     }
@@ -79,6 +116,8 @@ impl Qwen35RecurrentSlot {
             state.fill(0.0);
         }
         self.touch_all_state();
+        self.conv_state_pristine_zero.fill(true);
+        self.recurrent_state_pristine_zero.fill(true);
     }
 
     fn snapshot(&self) -> Qwen35RecurrentSlotSnapshot {
@@ -124,6 +163,68 @@ impl Qwen35RecurrentSlot {
         self.touch_all_state();
     }
 
+    fn clone_preserving_ownership_from(&mut self, src_slot: &Qwen35RecurrentSlot) {
+        assert_eq!(
+            self.conv_states.len(),
+            src_slot.conv_states.len(),
+            "qwen35 recurrent slot layer count mismatch"
+        );
+        assert_eq!(
+            self.recurrent_states.len(),
+            src_slot.recurrent_states.len(),
+            "qwen35 recurrent slot layer count mismatch"
+        );
+        for (layer_idx, (dst, src)) in self
+            .conv_states
+            .iter_mut()
+            .zip(src_slot.conv_states.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                dst.len(),
+                src.len(),
+                "qwen35 recurrent slot conv state size mismatch"
+            );
+            if src.is_empty()
+                || src_slot.cpu_materialized_conv_generations[layer_idx]
+                    == src_slot.conv_state_generations[layer_idx]
+            {
+                dst.copy_from_slice(src);
+            }
+        }
+        for (layer_idx, (dst, src)) in self
+            .recurrent_states
+            .iter_mut()
+            .zip(src_slot.recurrent_states.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                dst.len(),
+                src.len(),
+                "qwen35 recurrent slot recurrent state size mismatch"
+            );
+            if src.is_empty()
+                || src_slot.cpu_materialized_recurrent_generations[layer_idx]
+                    == src_slot.recurrent_state_generations[layer_idx]
+            {
+                dst.copy_from_slice(src);
+            }
+        }
+        self.conv_state_generations
+            .copy_from_slice(&src_slot.conv_state_generations);
+        self.recurrent_state_generations
+            .copy_from_slice(&src_slot.recurrent_state_generations);
+        self.cpu_materialized_conv_generations
+            .copy_from_slice(&src_slot.cpu_materialized_conv_generations);
+        self.cpu_materialized_recurrent_generations
+            .copy_from_slice(&src_slot.cpu_materialized_recurrent_generations);
+        self.conv_state_pristine_zero
+            .copy_from_slice(&src_slot.conv_state_pristine_zero);
+        self.recurrent_state_pristine_zero
+            .copy_from_slice(&src_slot.recurrent_state_pristine_zero);
+        self.seqlen_offset = src_slot.seqlen_offset;
+    }
+
     fn bump_conv_generation(&mut self, layer: usize) -> u64 {
         let generation = &mut self.conv_state_generations[layer];
         *generation = generation.wrapping_add(1);
@@ -145,11 +246,13 @@ impl Qwen35RecurrentSlot {
     fn touch_conv_state(&mut self, layer: usize) {
         let generation = self.bump_conv_generation(layer);
         self.cpu_materialized_conv_generations[layer] = generation;
+        self.conv_state_pristine_zero[layer] = false;
     }
 
     fn touch_recurrent_state(&mut self, layer: usize) {
         let generation = self.bump_recurrent_generation(layer);
         self.cpu_materialized_recurrent_generations[layer] = generation;
+        self.recurrent_state_pristine_zero[layer] = false;
     }
 
     fn touch_layer_state(&mut self, layer: usize) {
@@ -157,6 +260,8 @@ impl Qwen35RecurrentSlot {
         self.cpu_materialized_conv_generations[layer] = conv_generation;
         let recurrent_generation = self.bump_recurrent_generation(layer);
         self.cpu_materialized_recurrent_generations[layer] = recurrent_generation;
+        self.conv_state_pristine_zero[layer] = false;
+        self.recurrent_state_pristine_zero[layer] = false;
     }
 
     fn touch_all_state(&mut self) {
@@ -176,12 +281,21 @@ impl Qwen35RecurrentSlot {
     }
 
     fn note_backend_conv_state(&mut self, layer: usize) -> u64 {
+        self.conv_state_pristine_zero[layer] = false;
         self.bump_conv_generation(layer)
         // NOTE: do NOT update cpu_materialized_conv_generations — CPU is now stale
     }
 
     fn cpu_conv_state_stale(&self, layer: usize) -> bool {
         self.cpu_materialized_conv_generations[layer] != self.conv_state_generations[layer]
+    }
+
+    fn conv_state_owner(&self, layer: usize) -> Qwen35StateOwner {
+        Qwen35StateOwner::from_cpu_stale(self.cpu_conv_state_stale(layer))
+    }
+
+    fn conv_state_pristine_zero(&self, layer: usize) -> bool {
+        self.conv_state_pristine_zero[layer]
     }
 
     fn overwrite_conv_state_from_backend(
@@ -201,23 +315,63 @@ impl Qwen35RecurrentSlot {
         );
         self.conv_states[layer].copy_from_slice(conv_state);
         self.cpu_materialized_conv_generations[layer] = generation;
+        self.conv_state_pristine_zero[layer] = false;
     }
 
     fn conv_state_generation(&self, layer: usize) -> u64 {
         self.conv_state_generations[layer]
     }
 
+    fn mark_conv_state_backend_owned(&mut self, layer: usize) {
+        self.cpu_materialized_conv_generations[layer] = 0;
+        self.conv_state_pristine_zero[layer] = false;
+    }
+
     fn recurrent_state_generation(&self, layer: usize) -> u64 {
         self.recurrent_state_generations[layer]
     }
 
+    fn mark_recurrent_state_backend_owned(&mut self, layer: usize) {
+        self.cpu_materialized_recurrent_generations[layer] = 0;
+        self.recurrent_state_pristine_zero[layer] = false;
+    }
+
     fn note_backend_recurrent_state(&mut self, layer: usize) -> u64 {
+        self.recurrent_state_pristine_zero[layer] = false;
         self.bump_recurrent_generation(layer)
     }
 
     fn cpu_recurrent_state_stale(&self, layer: usize) -> bool {
         self.cpu_materialized_recurrent_generations[layer]
             != self.recurrent_state_generations[layer]
+    }
+
+    fn recurrent_state_owner(&self, layer: usize) -> Qwen35StateOwner {
+        Qwen35StateOwner::from_cpu_stale(self.cpu_recurrent_state_stale(layer))
+    }
+
+    fn recurrent_state_pristine_zero(&self, layer: usize) -> bool {
+        self.recurrent_state_pristine_zero[layer]
+    }
+
+    fn layer_state_owner(&self, layer: usize) -> Qwen35LayerStateOwner {
+        match (
+            self.conv_state_owner(layer),
+            self.recurrent_state_owner(layer),
+        ) {
+            (Qwen35StateOwner::CpuMaterialized, Qwen35StateOwner::CpuMaterialized) => {
+                Qwen35LayerStateOwner::CpuMaterialized
+            }
+            (Qwen35StateOwner::BackendOwned, Qwen35StateOwner::BackendOwned) => {
+                Qwen35LayerStateOwner::BackendOwned
+            }
+            _ => Qwen35LayerStateOwner::Split,
+        }
+    }
+
+    fn mark_layer_state_backend_owned(&mut self, layer: usize) {
+        self.mark_conv_state_backend_owned(layer);
+        self.mark_recurrent_state_backend_owned(layer);
     }
 
     fn overwrite_recurrent_state_from_backend(
@@ -237,6 +391,7 @@ impl Qwen35RecurrentSlot {
         );
         self.recurrent_states[layer].copy_from_slice(recurrent_state);
         self.cpu_materialized_recurrent_generations[layer] = generation;
+        self.recurrent_state_pristine_zero[layer] = false;
     }
 }
 
@@ -377,6 +532,15 @@ impl Qwen35RecurrentPool {
         (conv_state, recurrent_state)
     }
 
+    fn touch_buffers(&mut self, slot_idx: usize, layer: usize) -> (u64, u64) {
+        let slot = self.slot_mut(slot_idx);
+        slot.touch_layer_state(layer);
+        (
+            slot.conv_state_generation(layer),
+            slot.recurrent_state_generation(layer),
+        )
+    }
+
     fn snapshot(&self, slot_idx: usize) -> Qwen35RecurrentSlotSnapshot {
         self.slot(slot_idx).snapshot()
     }
@@ -384,6 +548,28 @@ impl Qwen35RecurrentPool {
     fn restore(&mut self, slot_idx: usize, snapshot: &Qwen35RecurrentSlotSnapshot) {
         self.slot_mut(slot_idx).restore(snapshot);
         self.free_slots.retain(|&s| s != slot_idx);
+    }
+
+    fn clone_slot_preserving_ownership(
+        &mut self,
+        src_slot_idx: usize,
+        dst_slot_idx: usize,
+        recurrent_layers: &[bool],
+        conv_cache_len: usize,
+        conv_dim: usize,
+        recurrent_state_len: usize,
+    ) {
+        self.ensure_allocated_slot(
+            dst_slot_idx,
+            recurrent_layers,
+            conv_cache_len,
+            conv_dim,
+            recurrent_state_len,
+        );
+        let src = self.slot(src_slot_idx).clone();
+        self.slot_mut(dst_slot_idx)
+            .clone_preserving_ownership_from(&src);
+        self.free_slots.retain(|&s| s != dst_slot_idx);
     }
 
     fn seqlen_offset(&self, slot_idx: usize) -> usize {
@@ -422,6 +608,33 @@ impl Qwen35RecurrentPool {
         self.slot(slot_idx).cpu_conv_state_stale(layer)
     }
 
+    #[allow(dead_code)]
+    fn conv_state_owner(&self, slot_idx: usize, layer: usize) -> Qwen35StateOwner {
+        self.slot(slot_idx).conv_state_owner(layer)
+    }
+
+    #[allow(dead_code)]
+    fn recurrent_state_owner(&self, slot_idx: usize, layer: usize) -> Qwen35StateOwner {
+        self.slot(slot_idx).recurrent_state_owner(layer)
+    }
+
+    fn layer_state_owner(&self, slot_idx: usize, layer: usize) -> Qwen35LayerStateOwner {
+        self.slot(slot_idx).layer_state_owner(layer)
+    }
+
+    fn mark_layer_state_backend_owned(&mut self, slot_idx: usize, layer: usize) {
+        self.slot_mut(slot_idx)
+            .mark_layer_state_backend_owned(layer);
+    }
+
+    fn conv_state_pristine_zero(&self, slot_idx: usize, layer: usize) -> bool {
+        self.slot(slot_idx).conv_state_pristine_zero(layer)
+    }
+
+    fn recurrent_state_pristine_zero(&self, slot_idx: usize, layer: usize) -> bool {
+        self.slot(slot_idx).recurrent_state_pristine_zero(layer)
+    }
+
     fn overwrite_recurrent_state_from_backend(
         &mut self,
         slot_idx: usize,
@@ -450,6 +663,8 @@ pub struct Qwen35Kv {
     attention: CpuKv,
     attention_gpu: Option<GpuKv>,
     attention_gpu_device: Option<ax_engine_metal::MetalDevice>,
+    attention_cpu_dirty: bool,
+    attention_cpu_valid_prefix_len: usize,
     seq_len: usize,
     attention_n_kv_heads: usize,
     attention_head_dim: usize,
@@ -460,6 +675,7 @@ pub struct Qwen35Kv {
     conv_dim: usize,
     recurrent_state_len: usize,
     active_slot: usize,
+    batch_slot_indices: Vec<usize>,
     recurrent_pool: Qwen35RecurrentPool,
 }
 
@@ -468,6 +684,7 @@ impl std::fmt::Debug for Qwen35Kv {
         f.debug_struct("Qwen35Kv")
             .field("seq_len", &self.seq_len)
             .field("active_slot", &self.active_slot)
+            .field("batch_slot_indices", &self.batch_slot_indices)
             .field("attention_n_kv_heads", &self.attention_n_kv_heads)
             .field("attention_head_dim", &self.attention_head_dim)
             .field("attention_max_seq_len", &self.attention_max_seq_len)
@@ -483,6 +700,7 @@ impl std::fmt::Debug for Qwen35Kv {
 
 pub(crate) enum Qwen35PreparedRecurrentStateBatch<'a> {
     Direct {
+        kind: Qwen35PreparedRecurrentStateBatchKind,
         layer_idx: usize,
         slot_indices: &'a [usize],
         conv_state: &'a mut [f32],
@@ -491,6 +709,7 @@ pub(crate) enum Qwen35PreparedRecurrentStateBatch<'a> {
         recurrent_state_stride: usize,
     },
     Gathered {
+        kind: Qwen35PreparedRecurrentStateBatchKind,
         qwen_kv: &'a mut Qwen35Kv,
         layer_idx: usize,
         slot_indices: &'a [usize],
@@ -501,7 +720,21 @@ pub(crate) enum Qwen35PreparedRecurrentStateBatch<'a> {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Qwen35PreparedRecurrentStateBatchKind {
+    CpuDirect,
+    CpuDirectMaterializedFromBackend,
+    CpuGathered,
+    CpuGatheredMaterializedFromBackend,
+}
+
 impl<'a> Qwen35PreparedRecurrentStateBatch<'a> {
+    pub(crate) fn kind(&self) -> Qwen35PreparedRecurrentStateBatchKind {
+        match self {
+            Self::Direct { kind, .. } | Self::Gathered { kind, .. } => *kind,
+        }
+    }
+
     pub(crate) fn state_batch(&mut self) -> crate::backend::Qwen35RecurrentStateBatch<'_> {
         match self {
             Self::Direct {
@@ -511,6 +744,7 @@ impl<'a> Qwen35PreparedRecurrentStateBatch<'a> {
                 recurrent_state,
                 conv_state_stride,
                 recurrent_state_stride,
+                ..
             } => crate::backend::Qwen35RecurrentStateBatch::new(
                 *layer_idx,
                 slot_indices,
@@ -642,6 +876,8 @@ impl Qwen35Kv {
             }),
             attention_gpu: None,
             attention_gpu_device: None,
+            attention_cpu_dirty: false,
+            attention_cpu_valid_prefix_len: 0,
             seq_len: 0,
             attention_n_kv_heads: n_kv_heads,
             attention_head_dim: head_dim,
@@ -652,6 +888,7 @@ impl Qwen35Kv {
             conv_dim,
             recurrent_state_len,
             active_slot: 0,
+            batch_slot_indices: Vec::new(),
             recurrent_pool,
         }
     }
@@ -662,6 +899,11 @@ impl Qwen35Kv {
 
     pub fn gpu_attention(&self) -> Option<&GpuKv> {
         self.attention_gpu.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gpu_attention_mut(&mut self) -> Option<&mut GpuKv> {
+        self.attention_gpu.as_mut()
     }
 
     pub fn enable_gpu_attention(
@@ -693,6 +935,10 @@ impl Qwen35Kv {
         self.recurrent_layers[layer]
     }
 
+    pub(crate) fn layer_count(&self) -> usize {
+        self.recurrent_layers.len()
+    }
+
     pub fn attention_append(&mut self, layer: usize, k: &[f32], v: &[f32]) {
         self.attention.append_and_advance(layer, k, v);
         if self.ensure_gpu_attention_capacity_for(self.seq_len + 1)
@@ -702,10 +948,6 @@ impl Qwen35Kv {
         }
     }
 
-    pub(crate) fn attention_append_cpu_mirror(&mut self, layer: usize, k: &[f32], v: &[f32]) {
-        self.attention.append_and_advance(layer, k, v);
-    }
-
     pub fn attention_append_batch(
         &mut self,
         layer: usize,
@@ -713,12 +955,16 @@ impl Qwen35Kv {
         v_batch: &[f32],
         n_tokens: usize,
     ) {
+        let gpu_ok = self.ensure_gpu_attention_capacity_for(self.seq_len + n_tokens)
+            && self.attention_gpu.is_some();
         self.attention
             .append_batch(layer, k_batch, v_batch, n_tokens);
-        if self.ensure_gpu_attention_capacity_for(self.seq_len + n_tokens)
-            && let Some(gpu_attention) = self.attention_gpu.as_mut()
-        {
-            gpu_attention.append_layer_batch(layer, k_batch, v_batch, n_tokens);
+        if gpu_ok {
+            if let Some(gpu_attention) = self.attention_gpu.as_mut() {
+                gpu_attention.append_layer_batch(layer, k_batch, v_batch, n_tokens);
+            }
+        } else if self.attention_gpu.is_some() {
+            self.attention_cpu_dirty = true;
         }
     }
 
@@ -731,6 +977,58 @@ impl Qwen35Kv {
     ) {
         self.attention
             .append_batch(layer, k_batch, v_batch, n_tokens);
+    }
+
+    pub(crate) fn mark_attention_cpu_dirty(&mut self) {
+        if self.attention_gpu.is_some() {
+            self.attention_cpu_dirty = true;
+        }
+    }
+
+    pub(crate) fn sync_attention_cpu_from_gpu_if_needed(&mut self) {
+        if !self.attention_cpu_dirty {
+            return;
+        }
+        let Some(kv_stride) = self.attention_gpu.as_ref().map(GpuKv::kv_stride) else {
+            self.attention_cpu_dirty = false;
+            self.attention_cpu_valid_prefix_len = self.seq_len;
+            return;
+        };
+        let valid_prefix = self.attention_cpu_valid_prefix_len.min(self.seq_len);
+        if valid_prefix == self.seq_len {
+            self.attention_cpu_dirty = false;
+            self.attention_cpu_valid_prefix_len = self.seq_len;
+            return;
+        }
+
+        let delta_tokens = self.seq_len - valid_prefix;
+        let prefix_elems = delta_tokens * kv_stride;
+        let mut k_prefix = vec![0.0f32; prefix_elems];
+        let mut v_prefix = vec![0.0f32; prefix_elems];
+        for layer in 0..self.recurrent_layers.len() {
+            self.attention_gpu
+                .as_ref()
+                .expect("gpu attention should exist while syncing cpu mirror")
+                .read_layer_range_into(
+                    layer,
+                    valid_prefix,
+                    delta_tokens,
+                    &mut k_prefix,
+                    &mut v_prefix,
+                );
+            for token_offset in 0..delta_tokens {
+                let src_start = token_offset * kv_stride;
+                let src_end = src_start + kv_stride;
+                self.attention
+                    .k_token_mut(layer, valid_prefix + token_offset)
+                    .copy_from_slice(&k_prefix[src_start..src_end]);
+                self.attention
+                    .v_token_mut(layer, valid_prefix + token_offset)
+                    .copy_from_slice(&v_prefix[src_start..src_end]);
+            }
+        }
+        self.attention_cpu_dirty = false;
+        self.attention_cpu_valid_prefix_len = self.seq_len;
     }
 
     pub fn attention_k_slice_including_current(&self, layer: usize, n: usize) -> &[f32] {
@@ -839,6 +1137,33 @@ impl Qwen35Kv {
             self.seq_len
         );
         self.active_slot = slot_idx;
+        self.clear_batch_slot_indices();
+    }
+
+    pub fn set_batch_slot_indices(&mut self, slot_indices: &[usize]) {
+        if slot_indices.is_empty() {
+            self.clear_batch_slot_indices();
+            return;
+        }
+        self.assert_valid_recurrent_slots_on_shared_timeline(slot_indices);
+        assert!(
+            slot_indices.contains(&self.active_slot),
+            "qwen35 recurrent slot batch requires the active slot to be included"
+        );
+        self.batch_slot_indices.clear();
+        self.batch_slot_indices.extend_from_slice(slot_indices);
+    }
+
+    pub fn clear_batch_slot_indices(&mut self) {
+        self.batch_slot_indices.clear();
+    }
+
+    pub(crate) fn recurrent_batch_slot_indices(&self) -> Cow<'_, [usize]> {
+        if self.batch_slot_indices.is_empty() {
+            Cow::Owned(vec![self.active_slot])
+        } else {
+            Cow::Borrowed(&self.batch_slot_indices)
+        }
     }
 
     pub fn allocate_recurrent_slot(&mut self) -> usize {
@@ -863,12 +1188,38 @@ impl Qwen35Kv {
             self.recurrent_pool.is_allocated_slot(slot_idx),
             "cannot free inactive qwen35 recurrent slot"
         );
+        self.clear_batch_slot_indices();
         self.recurrent_pool.free(slot_idx);
     }
 
     pub fn recurrent_slot_snapshot(&self, slot_idx: usize) -> Qwen35RecurrentSlotSnapshot {
         self.assert_slot_recurrent_state_materialized_on_cpu(slot_idx);
         self.recurrent_pool.snapshot(slot_idx)
+    }
+
+    pub fn clone_recurrent_slot(&mut self, src_slot_idx: usize, dst_slot_idx: usize) {
+        let snapshot = self.recurrent_slot_snapshot(src_slot_idx);
+        self.restore_recurrent_slot(dst_slot_idx, &snapshot);
+    }
+
+    pub(crate) fn clone_recurrent_slot_preserving_ownership(
+        &mut self,
+        src_slot_idx: usize,
+        dst_slot_idx: usize,
+    ) {
+        assert!(
+            self.has_recurrent_slot(src_slot_idx),
+            "cannot clone from free qwen35 recurrent slot"
+        );
+        self.clear_batch_slot_indices();
+        self.recurrent_pool.clone_slot_preserving_ownership(
+            src_slot_idx,
+            dst_slot_idx,
+            &self.recurrent_layers,
+            self.conv_cache_len,
+            self.conv_dim,
+            self.recurrent_state_len,
+        );
     }
 
     pub fn restore_recurrent_slot(
@@ -891,11 +1242,19 @@ impl Qwen35Kv {
             self.conv_dim,
             self.recurrent_state_len,
         );
+        self.clear_batch_slot_indices();
         self.recurrent_pool.restore(slot_idx, snapshot);
     }
 
     pub fn snapshot_active_slot(&self) -> Qwen35KvSnapshot {
         self.snapshot_slot(self.active_slot)
+    }
+
+    pub fn attention_snapshot(&self) -> Qwen35AttentionSnapshot {
+        Qwen35AttentionSnapshot {
+            attention: self.attention.snapshot(),
+            seq_len: self.seq_len,
+        }
     }
 
     pub fn snapshot_slot(&self, slot_idx: usize) -> Qwen35KvSnapshot {
@@ -938,7 +1297,36 @@ impl Qwen35Kv {
             .restore(snapshot.active_slot, &snapshot.recurrent_slot);
         self.seq_len = snapshot.seq_len;
         self.active_slot = snapshot.active_slot;
+        self.attention_cpu_dirty = false;
+        self.attention_cpu_valid_prefix_len = self.seq_len;
+        self.clear_batch_slot_indices();
         self.sync_gpu_attention_from_cpu();
+    }
+
+    pub fn restore_attention_snapshot(&mut self, snapshot: &Qwen35AttentionSnapshot) {
+        self.attention.restore(&snapshot.attention);
+        self.seq_len = snapshot.seq_len;
+        self.attention_cpu_dirty = false;
+        self.attention_cpu_valid_prefix_len = self.seq_len;
+        self.clear_batch_slot_indices();
+        self.sync_gpu_attention_from_cpu();
+    }
+
+    pub fn truncate_attention_to(&mut self, pos: usize) {
+        assert!(
+            pos <= self.seq_len,
+            "cannot truncate qwen35 attention to future pos {pos} > seq_len {}",
+            self.seq_len
+        );
+        self.attention.truncate_to(pos);
+        if let Some(gpu_attention) = self.attention_gpu.as_mut() {
+            gpu_attention.truncate_to(pos);
+        }
+        self.seq_len = pos;
+        self.clear_batch_slot_indices();
+        let valid_prefix = self.attention_cpu_valid_prefix_len.min(pos);
+        self.attention_cpu_valid_prefix_len = valid_prefix;
+        self.attention_cpu_dirty = self.attention_gpu.is_some() && valid_prefix < pos;
     }
 
     pub fn recurrent_seqlen_offset(&self, slot_idx: usize) -> usize {
@@ -953,6 +1341,7 @@ impl Qwen35Kv {
                 self.seq_len
             );
         }
+        self.clear_batch_slot_indices();
         self.recurrent_pool
             .set_seqlen_offset(slot_idx, seqlen_offset);
     }
@@ -969,6 +1358,11 @@ impl Qwen35Kv {
     pub fn recurrent_state_cpu_stale(&self, slot_idx: usize, layer: usize) -> bool {
         self.recurrent_pool
             .cpu_recurrent_state_stale(slot_idx, layer)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn recurrent_state_owner(&self, slot_idx: usize, layer: usize) -> Qwen35StateOwner {
+        self.recurrent_pool.recurrent_state_owner(slot_idx, layer)
     }
 
     pub(crate) fn note_backend_recurrent_state_update(
@@ -997,6 +1391,30 @@ impl Qwen35Kv {
 
     pub fn conv_state_cpu_stale(&self, slot_idx: usize, layer: usize) -> bool {
         self.recurrent_pool.cpu_conv_state_stale(slot_idx, layer)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn conv_state_owner(&self, slot_idx: usize, layer: usize) -> Qwen35StateOwner {
+        self.recurrent_pool.conv_state_owner(slot_idx, layer)
+    }
+
+    pub(crate) fn layer_state_owner(&self, slot_idx: usize, layer: usize) -> Qwen35LayerStateOwner {
+        self.recurrent_pool.layer_state_owner(slot_idx, layer)
+    }
+
+    pub(crate) fn conv_state_pristine_zero(&self, slot_idx: usize, layer: usize) -> bool {
+        self.recurrent_pool
+            .conv_state_pristine_zero(slot_idx, layer)
+    }
+
+    pub(crate) fn recurrent_state_pristine_zero(&self, slot_idx: usize, layer: usize) -> bool {
+        self.recurrent_pool
+            .recurrent_state_pristine_zero(slot_idx, layer)
+    }
+
+    pub(crate) fn mark_layer_state_backend_owned(&mut self, slot_idx: usize, layer: usize) {
+        self.recurrent_pool
+            .mark_layer_state_backend_owned(slot_idx, layer);
     }
 
     pub(crate) fn note_backend_conv_state_update(&mut self, slot_idx: usize, layer: usize) -> u64 {
@@ -1038,6 +1456,14 @@ impl Qwen35Kv {
         self.recurrent_pool.recurrent_buffers_mut(slot_idx, layer)
     }
 
+    pub(crate) fn note_cpu_visible_layer_state_update(
+        &mut self,
+        slot_idx: usize,
+        layer: usize,
+    ) -> (u64, u64) {
+        self.recurrent_pool.touch_buffers(slot_idx, layer)
+    }
+
     pub(crate) fn prepare_recurrent_state_batch<'a>(
         &'a mut self,
         slot_indices: &'a [usize],
@@ -1047,9 +1473,17 @@ impl Qwen35Kv {
         let conv_state_stride = self.conv_cache_len() * self.conv_dim();
         let recurrent_state_stride = self.recurrent_state_len();
         if slot_indices.len() == 1 {
+            let kind = if self.layer_state_owner(slot_indices[0], layer)
+                == Qwen35LayerStateOwner::CpuMaterialized
+            {
+                Qwen35PreparedRecurrentStateBatchKind::CpuDirect
+            } else {
+                Qwen35PreparedRecurrentStateBatchKind::CpuDirectMaterializedFromBackend
+            };
             let (conv_state, recurrent_state) =
                 self.recurrent_buffers_for_slot_mut(slot_indices[0], layer);
             Qwen35PreparedRecurrentStateBatch::Direct {
+                kind,
                 layer_idx: layer,
                 slot_indices,
                 conv_state,
@@ -1061,6 +1495,13 @@ impl Qwen35Kv {
             let mut conv_state_batch = vec![0.0f32; slot_indices.len() * conv_state_stride];
             let mut recurrent_state_batch =
                 vec![0.0f32; slot_indices.len() * recurrent_state_stride];
+            let kind = if slot_indices.iter().any(|&slot_idx| {
+                self.layer_state_owner(slot_idx, layer) != Qwen35LayerStateOwner::CpuMaterialized
+            }) {
+                Qwen35PreparedRecurrentStateBatchKind::CpuGatheredMaterializedFromBackend
+            } else {
+                Qwen35PreparedRecurrentStateBatchKind::CpuGathered
+            };
             self.gather_recurrent_state_batch(
                 slot_indices,
                 layer,
@@ -1068,6 +1509,7 @@ impl Qwen35Kv {
                 &mut recurrent_state_batch,
             );
             Qwen35PreparedRecurrentStateBatch::Gathered {
+                kind,
                 qwen_kv: self,
                 layer_idx: layer,
                 slot_indices,
@@ -1161,7 +1603,10 @@ impl Qwen35Kv {
         if let Some(gpu_attention) = self.attention_gpu.as_mut() {
             gpu_attention.clear();
         }
+        self.attention_cpu_dirty = false;
+        self.attention_cpu_valid_prefix_len = 0;
         self.active_slot = 0;
+        self.clear_batch_slot_indices();
         self.recurrent_pool.clear_all();
     }
 
@@ -1176,24 +1621,27 @@ impl Qwen35Kv {
         }
 
         // Qwen3.5 recurrent layers need historical state snapshots to support
-        // arbitrary rollback. AX does not store those yet, so the only safe
-        // fallback is to clear the hybrid state.
-        tracing::warn!(
-            pos,
-            seq_len = self.seq_len,
-            "Qwen35Kv truncate_to() falls back to clear() because recurrent history snapshots are not stored"
+        // arbitrary rollback. AX does not store those yet, so partial truncation
+        // is unsupported and would silently destroy all KV state.
+        panic!(
+            "Qwen35Kv::truncate_to({pos}) is unsupported (seq_len={}): \
+             recurrent history snapshots are not stored, so partial rollback \
+             cannot preserve correctness. Only truncate_to(0) (full clear) \
+             is safe.",
+            self.seq_len
         );
-        self.clear();
     }
 
     pub fn finalize_token(&mut self) {
         let active_slot = [self.active_slot];
         self.finalize_batch_for_slots(&active_slot, 1);
+        self.clear_batch_slot_indices();
     }
 
     pub fn finalize_batch(&mut self, n_tokens: usize) {
-        let active_slot = [self.active_slot];
-        self.finalize_batch_for_slots(&active_slot, n_tokens);
+        let slot_indices = self.recurrent_batch_slot_indices().into_owned();
+        self.finalize_batch_for_slots(&slot_indices, n_tokens);
+        self.clear_batch_slot_indices();
     }
 
     pub fn finalize_batch_for_slots(&mut self, slot_indices: &[usize], n_tokens: usize) {
@@ -1211,6 +1659,10 @@ impl Qwen35Kv {
             gpu_attention.finalize_batch(n_tokens);
         }
         self.seq_len += n_tokens;
+        if !self.attention_cpu_dirty {
+            self.attention_cpu_valid_prefix_len =
+                self.attention_cpu_valid_prefix_len.saturating_add(n_tokens);
+        }
         for &slot_idx in slot_indices {
             self.recurrent_pool
                 .increment_seqlen_offset(slot_idx, n_tokens);
@@ -1263,6 +1715,8 @@ impl Qwen35Kv {
 
     fn sync_gpu_attention_from_cpu(&mut self) {
         if self.attention_gpu.is_none() {
+            self.attention_cpu_dirty = false;
+            self.attention_cpu_valid_prefix_len = self.seq_len;
             return;
         }
         if !self.ensure_gpu_attention_capacity_for(self.seq_len) {
@@ -1283,6 +1737,8 @@ impl Qwen35Kv {
             );
         }
         gpu_attention.finalize_batch(self.seq_len);
+        self.attention_cpu_dirty = false;
+        self.attention_cpu_valid_prefix_len = self.seq_len;
     }
 }
 
@@ -1326,6 +1782,47 @@ mod tests {
         assert_eq!(kv.seq_len(), 2);
         assert_eq!(kv.recurrent_seqlen_offset(0), 2);
         assert_eq!(kv.recurrent_seqlen_offset(slot1), 2);
+    }
+
+    #[test]
+    fn test_qwen35_kv_finalize_batch_uses_explicit_batch_slot_indices() {
+        let mut kv = Qwen35Kv::new(4, 8, 128, 1024, 4, 4, 1024, 128, 8, 2);
+        let slot1 = kv.allocate_recurrent_slot();
+
+        kv.set_batch_slot_indices(&[0, slot1]);
+        kv.finalize_batch(2);
+
+        assert_eq!(kv.seq_len(), 2);
+        assert_eq!(kv.recurrent_seqlen_offset(0), 2);
+        assert_eq!(kv.recurrent_seqlen_offset(slot1), 2);
+        assert_eq!(kv.recurrent_batch_slot_indices().as_ref(), &[0]);
+    }
+
+    #[test]
+    fn test_qwen35_kv_recurrent_batch_slot_indices_fallback_to_active_slot() {
+        let mut kv = Qwen35Kv::new(4, 8, 128, 1024, 4, 4, 1024, 128, 8, 2);
+        let slot1 = kv.allocate_recurrent_slot();
+
+        assert_eq!(kv.recurrent_batch_slot_indices().as_ref(), &[0]);
+        kv.set_active_slot(slot1);
+        assert_eq!(kv.recurrent_batch_slot_indices().as_ref(), &[slot1]);
+
+        kv.set_batch_slot_indices(&[slot1]);
+        assert_eq!(kv.recurrent_batch_slot_indices().as_ref(), &[slot1]);
+
+        kv.clear_batch_slot_indices();
+        assert_eq!(kv.recurrent_batch_slot_indices().as_ref(), &[slot1]);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "qwen35 recurrent slot batch requires the active slot to be included"
+    )]
+    fn test_qwen35_kv_rejects_setting_batch_slot_indices_without_active_slot() {
+        let mut kv = Qwen35Kv::new(4, 8, 128, 1024, 4, 4, 1024, 128, 8, 2);
+        let slot1 = kv.allocate_recurrent_slot();
+
+        kv.set_batch_slot_indices(&[slot1]);
     }
 
     #[test]
@@ -1377,6 +1874,27 @@ mod tests {
                 .all(|&v| v == 2.5)
         );
         assert_eq!(kv.recurrent_seqlen_offset(slot1), 11);
+    }
+
+    #[test]
+    fn test_qwen35_kv_clone_recurrent_slot_copies_state_and_offset() {
+        let mut kv = Qwen35Kv::new(4, 8, 128, 1024, 4, 4, 1024, 128, 8, 2);
+        let slot1 = kv.allocate_recurrent_slot();
+        let slot2 = kv.allocate_recurrent_slot();
+
+        kv.conv_state_for_slot_mut(slot1, 0).fill(1.25);
+        kv.recurrent_state_for_slot_mut(slot1, 0).fill(2.75);
+        kv.set_recurrent_seqlen_offset(slot1, 9);
+
+        kv.clone_recurrent_slot(slot1, slot2);
+
+        assert!(kv.conv_state_for_slot(slot2, 0).iter().all(|&v| v == 1.25));
+        assert!(
+            kv.recurrent_state_for_slot(slot2, 0)
+                .iter()
+                .all(|&v| v == 2.75)
+        );
+        assert_eq!(kv.recurrent_seqlen_offset(slot2), 9);
     }
 
     #[test]
@@ -1670,6 +2188,99 @@ mod tests {
     }
 
     #[test]
+    fn test_qwen35_kv_layer_state_owner_tracks_cpu_backend_and_split() {
+        let mut kv = Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+        let layer = 0usize;
+
+        assert_eq!(
+            kv.layer_state_owner(0, layer),
+            Qwen35LayerStateOwner::CpuMaterialized
+        );
+        assert_eq!(
+            kv.conv_state_owner(0, layer),
+            Qwen35StateOwner::CpuMaterialized
+        );
+        assert_eq!(
+            kv.recurrent_state_owner(0, layer),
+            Qwen35StateOwner::CpuMaterialized
+        );
+
+        kv.note_backend_recurrent_state_update(0, layer);
+        assert_eq!(kv.layer_state_owner(0, layer), Qwen35LayerStateOwner::Split);
+        assert_eq!(
+            kv.conv_state_owner(0, layer),
+            Qwen35StateOwner::CpuMaterialized
+        );
+        assert_eq!(
+            kv.recurrent_state_owner(0, layer),
+            Qwen35StateOwner::BackendOwned
+        );
+
+        kv.note_backend_conv_state_update(0, layer);
+        assert_eq!(
+            kv.layer_state_owner(0, layer),
+            Qwen35LayerStateOwner::BackendOwned
+        );
+
+        kv.conv_state_for_slot_mut(0, layer)[0] = 1.0;
+        assert_eq!(kv.layer_state_owner(0, layer), Qwen35LayerStateOwner::Split);
+
+        kv.recurrent_buffers_for_slot_mut(0, layer).1[0] = 2.0;
+        assert_eq!(
+            kv.layer_state_owner(0, layer),
+            Qwen35LayerStateOwner::CpuMaterialized
+        );
+    }
+
+    #[test]
+    fn test_qwen35_kv_pristine_zero_flags_track_clear_cpu_write_and_backend_write() {
+        let mut kv = Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+        let layer = 0usize;
+
+        assert!(kv.conv_state_pristine_zero(0, layer));
+        assert!(kv.recurrent_state_pristine_zero(0, layer));
+
+        kv.conv_state_for_slot_mut(0, layer)[0] = 1.0;
+        assert!(!kv.conv_state_pristine_zero(0, layer));
+        assert!(kv.recurrent_state_pristine_zero(0, layer));
+
+        kv.clear();
+        assert!(kv.conv_state_pristine_zero(0, layer));
+        assert!(kv.recurrent_state_pristine_zero(0, layer));
+
+        kv.note_backend_conv_state_update(0, layer);
+        assert!(!kv.conv_state_pristine_zero(0, layer));
+        assert!(kv.recurrent_state_pristine_zero(0, layer));
+
+        kv.clear();
+        kv.note_backend_recurrent_state_update(0, layer);
+        assert!(kv.conv_state_pristine_zero(0, layer));
+        assert!(!kv.recurrent_state_pristine_zero(0, layer));
+    }
+
+    #[test]
+    fn test_qwen35_kv_mark_layer_state_backend_owned_makes_cpu_copy_stale_without_bump() {
+        let mut kv = Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+        let layer = 0usize;
+        let conv_generation = kv.conv_state_generation(0, layer);
+        let recurrent_generation = kv.recurrent_state_generation(0, layer);
+
+        kv.mark_layer_state_backend_owned(0, layer);
+
+        assert!(kv.conv_state_cpu_stale(0, layer));
+        assert!(kv.recurrent_state_cpu_stale(0, layer));
+        assert_eq!(kv.conv_state_generation(0, layer), conv_generation);
+        assert_eq!(
+            kv.recurrent_state_generation(0, layer),
+            recurrent_generation
+        );
+        assert_eq!(
+            kv.layer_state_owner(0, layer),
+            Qwen35LayerStateOwner::BackendOwned
+        );
+    }
+
+    #[test]
     #[should_panic(
         expected = "cannot snapshot qwen35 recurrent slot while backend-owned recurrent state is not materialized on CPU"
     )]
@@ -1716,6 +2327,122 @@ mod tests {
                 .all(|&v| v == 2.5)
         );
         assert_eq!(kv.recurrent_seqlen_offset(slot1), 1);
+    }
+
+    #[test]
+    fn test_qwen35_kv_attention_snapshot_restores_shared_timeline_only() {
+        let mut kv = Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+        let slot1 = kv.allocate_recurrent_slot();
+        kv.attention_append(3, &[10.0, 11.0], &[12.0, 13.0]);
+        kv.finalize_token();
+
+        let snapshot = kv.attention_snapshot();
+
+        kv.attention_append(3, &[20.0, 21.0], &[22.0, 23.0]);
+        kv.finalize_token();
+        kv.set_recurrent_seqlen_offset(slot1, 1);
+        kv.conv_state_for_slot_mut(slot1, 0).fill(7.0);
+        kv.recurrent_state_for_slot_mut(slot1, 0).fill(8.0);
+
+        kv.restore_attention_snapshot(&snapshot);
+
+        assert_eq!(kv.seq_len(), 1);
+        assert_eq!(kv.attention_k_slice_including_current(3, 1), &[10.0, 11.0]);
+        assert_eq!(kv.attention_v_slice_including_current(3, 1), &[12.0, 13.0]);
+        assert_eq!(kv.recurrent_seqlen_offset(slot1), 1);
+        assert!(kv.conv_state_for_slot(slot1, 0).iter().all(|&v| v == 7.0));
+        assert!(
+            kv.recurrent_state_for_slot(slot1, 0)
+                .iter()
+                .all(|&v| v == 8.0)
+        );
+    }
+
+    #[test]
+    fn test_qwen35_kv_sync_attention_cpu_from_gpu_if_needed_restores_cpu_mirror() {
+        let device = ax_engine_metal::MetalDevice::new().expect("metal device");
+        let mut kv = Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+        kv.enable_gpu_attention(&device, GpuKvDtype::F32)
+            .expect("enable gpu attention");
+
+        let k = [10.0f32, 11.0];
+        let v = [12.0f32, 13.0];
+        let gpu_attention = kv
+            .attention_gpu
+            .as_mut()
+            .expect("gpu attention should exist");
+        gpu_attention.append_layer(3, &k, &v);
+        gpu_attention.finalize_token();
+
+        kv.mark_attention_cpu_dirty();
+        kv.finalize_token();
+
+        assert_eq!(kv.attention_k_slice_including_current(3, 1), &[0.0, 0.0]);
+        assert_eq!(kv.attention_v_slice_including_current(3, 1), &[0.0, 0.0]);
+
+        kv.sync_attention_cpu_from_gpu_if_needed();
+
+        assert_eq!(kv.attention_k_slice_including_current(3, 1), &k);
+        assert_eq!(kv.attention_v_slice_including_current(3, 1), &v);
+    }
+
+    #[test]
+    fn test_qwen35_kv_incremental_attention_cpu_sync_preserves_valid_prefix() {
+        let device = ax_engine_metal::MetalDevice::new().expect("metal device");
+        let mut kv = Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+        kv.enable_gpu_attention(&device, GpuKvDtype::F32)
+            .expect("enable gpu attention");
+
+        kv.attention_append(3, &[1.0, 2.0], &[3.0, 4.0]);
+        kv.finalize_token();
+
+        let gpu_attention = kv
+            .attention_gpu
+            .as_mut()
+            .expect("gpu attention should exist");
+        gpu_attention.append_layer(3, &[5.0, 6.0], &[7.0, 8.0]);
+        gpu_attention.finalize_token();
+
+        kv.mark_attention_cpu_dirty();
+        kv.finalize_token();
+        kv.sync_attention_cpu_from_gpu_if_needed();
+
+        assert_eq!(
+            kv.attention_k_slice_including_current(3, 2),
+            &[1.0, 2.0, 5.0, 6.0]
+        );
+        assert_eq!(
+            kv.attention_v_slice_including_current(3, 2),
+            &[3.0, 4.0, 7.0, 8.0]
+        );
+    }
+
+    #[test]
+    fn test_qwen35_kv_truncate_attention_to_preserves_valid_cpu_prefix_when_gpu_dirty() {
+        let device = ax_engine_metal::MetalDevice::new().expect("metal device");
+        let mut kv = Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+        kv.enable_gpu_attention(&device, GpuKvDtype::F32)
+            .expect("enable gpu attention");
+
+        kv.attention_append(3, &[1.0, 2.0], &[3.0, 4.0]);
+        kv.finalize_token();
+
+        {
+            let gpu_attention = kv.gpu_attention_mut().expect("gpu attention should exist");
+            gpu_attention.append_layer(3, &[5.0, 6.0], &[7.0, 8.0]);
+            gpu_attention.finalize_token();
+        }
+        kv.mark_attention_cpu_dirty();
+        kv.finalize_token();
+
+        kv.truncate_attention_to(1);
+
+        assert_eq!(kv.seq_len(), 1);
+        assert_eq!(kv.attention_k_slice_including_current(3, 1), &[1.0, 2.0]);
+        assert_eq!(kv.attention_v_slice_including_current(3, 1), &[3.0, 4.0]);
+        kv.sync_attention_cpu_from_gpu_if_needed();
+        assert_eq!(kv.attention_k_slice_including_current(3, 1), &[1.0, 2.0]);
+        assert_eq!(kv.attention_v_slice_including_current(3, 1), &[3.0, 4.0]);
     }
 
     #[test]

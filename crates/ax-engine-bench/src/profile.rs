@@ -83,6 +83,27 @@ pub struct ProfileResult {
     /// Compact prefill execution-plan summary.
     #[serde(default)]
     pub prefill_plan: String,
+    /// Parsed `mode=...` from the prefill plan, when present.
+    #[serde(default)]
+    pub prefill_mode: String,
+    /// Normalized prefill runtime family derived from the plan.
+    #[serde(default)]
+    pub prefill_route_family: String,
+    /// Normalized prefill runtime detail derived from the plan.
+    #[serde(default)]
+    pub prefill_route_detail: String,
+    /// Parsed `attn_route=...` from the prefill plan, when present.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_attention_route: Option<String>,
+    /// Parsed `qkv=...` from the prefill plan, when present.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_qkv_plan: Option<String>,
+    /// Parsed `split_rope=...` from the prefill plan, when present.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_split_rope_append: Option<bool>,
     /// Parsed `q5k_prefill=...` mode from the prefill plan, when present.
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -395,6 +416,12 @@ pub fn run_profile_with_backend(
         }
     };
 
+    let prefill_mode = crate::prefill_mode(&prefill_plan);
+    let prefill_route_family = crate::prefill_route_family(&prefill_plan);
+    let prefill_route_detail = crate::prefill_route_detail(&prefill_plan);
+    let prefill_attention_route = crate::prefill_plan_field(&prefill_plan, "attn_route");
+    let prefill_qkv_plan = crate::prefill_plan_field(&prefill_plan, "qkv");
+    let prefill_split_rope_append = crate::prefill_bool_field(&prefill_plan, "split_rope");
     Ok(ProfileResult {
         model: config.model_path.clone(),
         tokens: tokens_generated,
@@ -406,6 +433,12 @@ pub fn run_profile_with_backend(
         },
         decode_intent: selection.intent.to_string(),
         decode_mode: selection.mode.to_string(),
+        prefill_mode,
+        prefill_route_family,
+        prefill_route_detail,
+        prefill_attention_route,
+        prefill_qkv_plan,
+        prefill_split_rope_append,
         q5k_prefill_mode: crate::q5k_prefill_mode(&prefill_plan),
         prefill_plan,
         decode_plan: plan_summary,
@@ -640,6 +673,12 @@ impl ProfileResult {
         eprintln!("Intent:      {}", self.decode_intent);
         eprintln!("Mode:        {}", self.decode_mode);
         eprintln!("PrefillPlan: {}", self.prefill_plan);
+        if !self.prefill_route_family.is_empty() {
+            eprintln!(
+                "PrefillRoute:{} / {}",
+                self.prefill_route_family, self.prefill_route_detail
+            );
+        }
         if let Some(mode) = &self.q5k_prefill_mode {
             eprintln!("Q5KPrefill:  {mode}");
         }
@@ -845,6 +884,12 @@ mod tests {
             decode_intent: "latency".into(),
             decode_mode: "single_cb".into(),
             prefill_plan: "mode=gpu_batch q5k_prefill=small_n".into(),
+            prefill_mode: "gpu_batch".into(),
+            prefill_route_family: "dense_gpu_batch".into(),
+            prefill_route_detail: "generic_gpu_batch".into(),
+            prefill_attention_route: None,
+            prefill_qkv_plan: None,
+            prefill_split_rope_append: None,
             q5k_prefill_mode: Some("small_n".into()),
             decode_plan: "sync=single_cb scratch=gpu_shared".into(),
             support_note: Some(q5k_support_note()),
@@ -920,6 +965,12 @@ mod tests {
             decode_intent: "latency".into(),
             decode_mode: "single_cb".into(),
             prefill_plan: "mode=gpu_batch q5k_prefill=small_n".into(),
+            prefill_mode: "gpu_batch".into(),
+            prefill_route_family: "dense_gpu_batch".into(),
+            prefill_route_detail: "generic_gpu_batch".into(),
+            prefill_attention_route: None,
+            prefill_qkv_plan: None,
+            prefill_split_rope_append: None,
             q5k_prefill_mode: Some("small_n".into()),
             decode_plan: "sync=single_cb scratch=gpu_shared".into(),
             support_note: Some(q5k_support_note()),
@@ -999,6 +1050,12 @@ mod tests {
             decode_intent: "latency".into(),
             decode_mode: "sequential".into(),
             prefill_plan: "mode=serial".into(),
+            prefill_mode: "serial".into(),
+            prefill_route_family: "serial_prefill".into(),
+            prefill_route_detail: "cpu_or_fallback".into(),
+            prefill_attention_route: None,
+            prefill_qkv_plan: None,
+            prefill_split_rope_append: None,
             q5k_prefill_mode: None,
             decode_plan: "sync=sequential scratch=cpu".into(),
             support_note: None,
@@ -1074,6 +1131,12 @@ mod tests {
             decode_intent: "latency".into(),
             decode_mode: "single_cb".into(),
             prefill_plan: "mode=gpu_batch".into(),
+            prefill_mode: "gpu_batch".into(),
+            prefill_route_family: "dense_gpu_batch".into(),
+            prefill_route_detail: "generic_gpu_batch".into(),
+            prefill_attention_route: None,
+            prefill_qkv_plan: None,
+            prefill_split_rope_append: None,
             q5k_prefill_mode: None,
             decode_plan: "sync=single_cb scratch=gpu_shared".into(),
             support_note: None,
@@ -1143,6 +1206,12 @@ mod tests {
             decode_intent: "latency".into(),
             decode_mode: "single_cb".into(),
             prefill_plan: "mode=gpu_batch".into(),
+            prefill_mode: "gpu_batch".into(),
+            prefill_route_family: "dense_gpu_batch".into(),
+            prefill_route_detail: "generic_gpu_batch".into(),
+            prefill_attention_route: None,
+            prefill_qkv_plan: None,
+            prefill_split_rope_append: None,
             q5k_prefill_mode: None,
             decode_plan: "sync=single_cb scratch=gpu_shared".into(),
             support_note: None,

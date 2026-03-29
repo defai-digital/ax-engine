@@ -4,6 +4,8 @@ pub mod metal;
 pub mod neon;
 pub mod policy;
 
+use std::sync::{Mutex, OnceLock};
+
 use crate::gguf::tensor::GgmlType;
 use crate::kv::Qwen35Kv;
 use crate::model::config::ModelConfig;
@@ -13,6 +15,17 @@ pub use kv_plan::{
     KvPlannerRequirements, KvRollbackPolicy, Qwen35KvPlan,
 };
 pub use policy::{KvPrecisionPolicy, RuntimePolicy};
+
+#[derive(Default)]
+struct TokenMajorMatmulScratch {
+    input_t: Vec<f32>,
+    output_mn: Vec<f32>,
+}
+
+fn token_major_matmul_scratch() -> &'static Mutex<TokenMajorMatmulScratch> {
+    static SCRATCH: OnceLock<Mutex<TokenMajorMatmulScratch>> = OnceLock::new();
+    SCRATCH.get_or_init(|| Mutex::new(TokenMajorMatmulScratch::default()))
+}
 
 /// Slot-indexed recurrent-state batch for Qwen3.5 hybrid layers.
 ///
@@ -115,6 +128,17 @@ impl<'a> Qwen35RecurrentStateBatch<'a> {
         let end = start + self.recurrent_state_stride;
         &mut self.recurrent_state_batch[start..end]
     }
+
+    pub fn recurrent_buffers_for_slot_mut(&mut self, batch_idx: usize) -> (&mut [f32], &mut [f32]) {
+        let conv_start = batch_idx * self.conv_state_stride;
+        let conv_end = conv_start + self.conv_state_stride;
+        let rec_start = batch_idx * self.recurrent_state_stride;
+        let rec_end = rec_start + self.recurrent_state_stride;
+        (
+            &mut self.conv_state_batch[conv_start..conv_end],
+            &mut self.recurrent_state_batch[rec_start..rec_end],
+        )
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -194,12 +218,17 @@ pub fn qwen35_recurrent_sequence_via_backend(
         );
     }
 
+    let mut q_lin = vec![0.0f32; key_dim];
+    let mut k_lin = vec![0.0f32; key_dim];
+    let mut q_rep = vec![0.0f32; value_dim];
+    let mut k_rep = vec![0.0f32; value_dim];
+
     for token_idx in 0..total_tokens {
         let conv_start = token_idx * cfg.conv_dim;
         let conv_end = conv_start + cfg.conv_dim;
         let conv_out = &conv_out_batch[conv_start..conv_end];
-        let mut q_lin = conv_out[..key_dim].to_vec();
-        let mut k_lin = conv_out[key_dim..2 * key_dim].to_vec();
+        q_lin.copy_from_slice(&conv_out[..key_dim]);
+        k_lin.copy_from_slice(&conv_out[key_dim..2 * key_dim]);
         let v_lin = &conv_out[2 * key_dim..2 * key_dim + value_dim];
 
         crate::compute::gdn::l2_norm_heads(
@@ -215,13 +244,15 @@ pub fn qwen35_recurrent_sequence_via_backend(
             cfg.rms_norm_eps,
         );
 
-        let q_rep = crate::compute::gdn::repeat_heads(
+        crate::compute::gdn::repeat_heads_into(
+            &mut q_rep,
             &q_lin,
             cfg.group_count,
             cfg.time_step_rank,
             cfg.state_size,
         );
-        let k_rep = crate::compute::gdn::repeat_heads(
+        crate::compute::gdn::repeat_heads_into(
+            &mut k_rep,
             &k_lin,
             cfg.group_count,
             cfg.time_step_rank,
@@ -282,6 +313,17 @@ pub trait Backend {
     /// that already owns routing and KV precision decisions.
     fn runtime_policy(&self) -> Option<RuntimePolicy> {
         None
+    }
+
+    /// Observe which prepared recurrent-state batch shape was used for Qwen3.5.
+    ///
+    /// Backends with performance instrumentation can override this to
+    /// distinguish backend-native slot-buffer execution from CPU direct and
+    /// gathered fallback paths.
+    fn note_qwen35_prepared_state_batch_kind(
+        &self,
+        _kind: crate::kv::qwen35_kv::Qwen35PreparedRecurrentStateBatchKind,
+    ) {
     }
 
     /// Matrix multiply: C = A × B (all f32, row-major).
@@ -360,22 +402,21 @@ pub trait Backend {
         out_dim: usize,
         in_dim: usize,
     ) {
+        let mut scratch = token_major_matmul_scratch()
+            .lock()
+            .expect("token-major matmul scratch mutex should not be poisoned");
+        let TokenMajorMatmulScratch { input_t, output_mn } = &mut *scratch;
+        input_t.resize(n_tokens * in_dim, 0.0);
+        output_mn.resize(out_dim * n_tokens, 0.0);
+
         // Default: transpose to column-major, matmul, transpose back.
-        let mut input_t = vec![0.0f32; n_tokens * in_dim];
         for row in 0..n_tokens {
             for col in 0..in_dim {
                 input_t[col * n_tokens + row] = input_token_major[row * in_dim + col];
             }
         }
-        let mut output_mn = vec![0.0f32; out_dim * n_tokens];
         self.dequant_matmul(
-            a_quant,
-            dtype,
-            &input_t,
-            &mut output_mn,
-            out_dim,
-            n_tokens,
-            in_dim,
+            a_quant, dtype, input_t, output_mn, out_dim, n_tokens, in_dim,
         );
         for row in 0..out_dim {
             for col in 0..n_tokens {
@@ -457,6 +498,7 @@ pub trait Backend {
     ) {
         let mut prepared_state_batch =
             qwen_kv.prepare_recurrent_state_batch(slot_indices, layer_idx);
+        self.note_qwen35_prepared_state_batch_kind(prepared_state_batch.kind());
         let mut state_batch = prepared_state_batch.state_batch();
         self.qwen35_recurrent_sequence(
             qkv_batch,
@@ -480,6 +522,20 @@ pub trait Backend {
     /// override this to flush the latest recurrent state before snapshotting or
     /// other host-side control paths.
     fn sync_qwen35_kv(&self, _qwen_kv: &mut Qwen35Kv) {}
+
+    /// Attempt to clone a Qwen3.5 recurrent slot without first materializing
+    /// backend-owned recurrent state back onto CPU.
+    ///
+    /// The default implementation returns `false`, which tells callers to fall
+    /// back to `sync_qwen35_kv()` followed by a CPU-visible snapshot/restore.
+    fn try_clone_qwen35_recurrent_slot(
+        &self,
+        _qwen_kv: &mut Qwen35Kv,
+        _src_slot_idx: usize,
+        _dst_slot_idx: usize,
+    ) -> bool {
+        false
+    }
 
     /// Qwen3.5 depthwise causal conv sequence primitive.
     #[allow(clippy::too_many_arguments)]
@@ -629,6 +685,7 @@ pub fn create_model_kv(backend: &dyn Backend, config: &ModelConfig) -> crate::kv
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::cpu::CpuBackend;
     use crate::model::ModelConfig;
     use crate::model::config::{GateActivation, RopeScaling};
     use std::sync::{Mutex, OnceLock};
@@ -1143,6 +1200,51 @@ mod tests {
             {
                 assert!((actual - expected).abs() < 1e-5);
             }
+        }
+    }
+
+    #[test]
+    fn test_dequant_matmul_token_major_matches_f32_reference() {
+        let backend = CpuBackend;
+        let n_tokens = 2usize;
+        let in_dim = 3usize;
+        let out_dim = 2usize;
+        let weights = [
+            1.0f32, 2.0, 3.0, //
+            -1.0, 0.5, 4.0,
+        ];
+        let input = [
+            0.5f32, -1.0, 2.0, //
+            3.0, 0.25, -2.0,
+        ];
+        let mut weight_bytes = Vec::with_capacity(weights.len() * std::mem::size_of::<f32>());
+        for value in weights {
+            weight_bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let mut actual = vec![0.0f32; n_tokens * out_dim];
+        backend.dequant_matmul_token_major(
+            &weight_bytes,
+            GgmlType::F32,
+            &input,
+            &mut actual,
+            n_tokens,
+            out_dim,
+            in_dim,
+        );
+
+        let expected = vec![
+            1.0 * 0.5 + 2.0 * -1.0 + 3.0 * 2.0,
+            -1.0 * 0.5 + 0.5 * -1.0 + 4.0 * 2.0,
+            1.0 * 3.0 + 2.0 * 0.25 + 3.0 * -2.0,
+            -1.0 * 3.0 + 0.5 * 0.25 + 4.0 * -2.0,
+        ];
+
+        for (idx, (actual, expected)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "token-major matmul mismatch at {idx}: actual={actual}, expected={expected}"
+            );
         }
     }
 }

@@ -215,6 +215,9 @@ pub fn run(
                 tok_per_sec,
             );
             eprint!(" | prefill {prefill_plan}");
+            if let Some(route) = crate::prefill_route_summary(&prefill_plan) {
+                eprint!(" | route {route}");
+            }
             eprint!(
                 " | mode {} ({})",
                 outcome.selection.mode, outcome.selection.intent

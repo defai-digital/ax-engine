@@ -8,6 +8,7 @@ pub mod baseline;
 pub mod microbench;
 pub mod parity;
 pub mod perf;
+pub mod prefill_gap;
 pub mod prefill_profile;
 pub mod profile;
 pub mod report;
@@ -77,6 +78,55 @@ pub(crate) fn q5k_prefill_mode(prefill_plan: &str) -> Option<String> {
         .find_map(|part| part.strip_prefix("q5k_prefill=").map(str::to_owned))
 }
 
+pub(crate) fn prefill_plan_field(prefill_plan: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    prefill_plan
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix(&prefix).map(str::to_owned))
+}
+
+pub(crate) fn prefill_mode(prefill_plan: &str) -> String {
+    prefill_plan_field(prefill_plan, "mode").unwrap_or_default()
+}
+
+pub(crate) fn prefill_bool_field(prefill_plan: &str, key: &str) -> Option<bool> {
+    match prefill_plan_field(prefill_plan, key)?.as_str() {
+        "on" | "true" => Some(true),
+        "off" | "false" => Some(false),
+        _ => None,
+    }
+}
+
+pub(crate) fn prefill_route_family(prefill_plan: &str) -> String {
+    if matches!(
+        prefill_plan_field(prefill_plan, "kv").as_deref(),
+        Some("qwen35_hybrid")
+    ) {
+        return "qwen35_hybrid".to_string();
+    }
+    match prefill_mode(prefill_plan).as_str() {
+        "gpu_batch" => "dense_gpu_batch".to_string(),
+        "gpu_chunked" => "dense_gpu_chunked".to_string(),
+        "serial" => "serial_prefill".to_string(),
+        _ => String::new(),
+    }
+}
+
+pub(crate) fn prefill_route_detail(prefill_plan: &str) -> String {
+    match prefill_route_family(prefill_plan).as_str() {
+        "qwen35_hybrid" => prefill_plan_field(prefill_plan, "recurrent")
+            .unwrap_or_else(|| "backend_owned".to_string()),
+        "dense_gpu_batch" => prefill_plan_field(prefill_plan, "attn_route")
+            .unwrap_or_else(|| "generic_gpu_batch".to_string()),
+        "dense_gpu_chunked" => prefill_plan_field(prefill_plan, "chunk")
+            .map(|chunk| format!("chunk_{chunk}"))
+            .unwrap_or_else(|| "generic_gpu_chunked".to_string()),
+        "serial_prefill" => prefill_plan_field(prefill_plan, "reason")
+            .unwrap_or_else(|| "cpu_or_fallback".to_string()),
+        _ => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +138,23 @@ mod tests {
             Some("small_n".into())
         );
         assert_eq!(q5k_prefill_mode("mode=gpu_batch kv=f16 attn=local"), None);
+    }
+
+    #[test]
+    fn test_prefill_route_helpers_extract_dense_metadata() {
+        let plan =
+            "mode=gpu_batch kv=f16 qkv=fused split_rope=on attn=local attn_route=cache/stable";
+        assert_eq!(prefill_mode(plan), "gpu_batch");
+        assert_eq!(prefill_plan_field(plan, "qkv"), Some("fused".into()));
+        assert_eq!(prefill_bool_field(plan, "split_rope"), Some(true));
+        assert_eq!(prefill_route_family(plan), "dense_gpu_batch");
+        assert_eq!(prefill_route_detail(plan), "cache/stable");
+    }
+
+    #[test]
+    fn test_prefill_route_helpers_classify_qwen35_hybrid() {
+        let plan = "mode=gpu_batch kv=qwen35_hybrid recurrent=backend_owned";
+        assert_eq!(prefill_route_family(plan), "qwen35_hybrid");
+        assert_eq!(prefill_route_detail(plan), "backend_owned");
     }
 }

@@ -18,7 +18,7 @@ use ax_engine_core::model::{
     DecodeControl, DecodeIntent, DecodeRunConfig, LlamaModel, ModelConfig, WeightStore, run_decode,
 };
 use ax_engine_core::sampling::{LogitBias, SampledTokenInfo, Sampler, SamplingConfig};
-use ax_engine_core::speculative::{SpecStep, SpeculativeDecoder};
+use ax_engine_core::speculative::{SpecStep, SpeculativeDecoder, target_verify_mode_label};
 use ax_engine_core::tokenizer::Tokenizer;
 use ax_engine_sdk::{
     GenerationOptions as SdkGenerationOptions, InferenceBackendKind, LoadOptions as SdkLoadOptions,
@@ -35,6 +35,70 @@ fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name)
         .ok()
         .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on"))
+}
+
+pub(crate) fn prefill_plan_field<'a>(prefill_plan: &'a str, key: &str) -> Option<&'a str> {
+    let prefix = format!("{key}=");
+    prefill_plan
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix(&prefix))
+}
+
+pub(crate) fn prefill_route_summary(prefill_plan: &str) -> Option<String> {
+    if matches!(
+        prefill_plan_field(prefill_plan, "kv"),
+        Some("qwen35_hybrid")
+    ) {
+        let detail = prefill_plan_field(prefill_plan, "recurrent").unwrap_or("backend_owned");
+        return Some(format!("qwen35_hybrid/{detail}"));
+    }
+    match prefill_plan_field(prefill_plan, "mode") {
+        Some("gpu_batch") => Some(format!(
+            "dense_gpu_batch/{}",
+            prefill_plan_field(prefill_plan, "attn_route").unwrap_or("generic_gpu_batch")
+        )),
+        Some("gpu_chunked") => Some(format!(
+            "dense_gpu_chunked/{}",
+            prefill_plan_field(prefill_plan, "chunk").unwrap_or("generic_gpu_chunked")
+        )),
+        Some("serial") => Some(format!(
+            "serial_prefill/{}",
+            prefill_plan_field(prefill_plan, "reason").unwrap_or("cpu_or_fallback")
+        )),
+        _ => None,
+    }
+}
+
+fn qwen35_spec_verify_branch_env(value: args::Qwen35SpecVerifyBranchArg) -> Option<&'static str> {
+    match value {
+        args::Qwen35SpecVerifyBranchArg::Auto => None,
+        args::Qwen35SpecVerifyBranchArg::On => Some("on"),
+        args::Qwen35SpecVerifyBranchArg::Off => Some("off"),
+    }
+}
+
+fn with_env_var_override<T>(key: &'static str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
+    struct EnvVarRestore {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(prev) => unsafe { std::env::set_var(self.key, prev) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    let previous = std::env::var_os(key);
+    let _restore = EnvVarRestore { key, previous };
+    match value {
+        Some(value) => unsafe { std::env::set_var(key, value) },
+        None => unsafe { std::env::remove_var(key) },
+    }
+    f()
 }
 
 fn main() -> anyhow::Result<()> {
@@ -94,6 +158,12 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn validate_mode_combinations(args: &args::CliArgs) -> anyhow::Result<()> {
+    if args.qwen35_spec_verify_branch != args::Qwen35SpecVerifyBranchArg::Auto
+        && args.speculative_draft.is_none()
+    {
+        anyhow::bail!("--qwen35-spec-verify-branch requires --speculative-draft");
+    }
+
     if !args.interactive {
         return Ok(());
     }
@@ -533,13 +603,19 @@ fn run_single(
         if !args.logit_bias.is_empty() {
             anyhow::bail!("--logit-bias is not supported with speculative decoding");
         }
-        return run_speculative(
-            args,
-            draft_path,
-            &model,
-            &weights,
-            &tokenizer,
-            &prompt_tokens,
+        return with_env_var_override(
+            "AX_QWEN35_SPEC_VERIFY_BRANCH",
+            qwen35_spec_verify_branch_env(args.qwen35_spec_verify_branch),
+            || {
+                run_speculative(
+                    args,
+                    draft_path,
+                    &model,
+                    &weights,
+                    &tokenizer,
+                    &prompt_tokens,
+                )
+            },
         );
     }
 
@@ -731,6 +807,9 @@ fn run_single(
             metrics.prefill_tok_per_sec(),
         );
         eprintln!("PrefillPlan: {prefill_plan}");
+        if let Some(route) = prefill_route_summary(&prefill_plan) {
+            eprintln!("PrefillRoute: {route}");
+        }
         eprintln!(
             "Decode:  {} tokens, {:.2}s ({:.1} tok/s)",
             metrics.decode_tokens,
@@ -805,6 +884,7 @@ fn run_speculative(
 
     let mut spec = SpeculativeDecoder::load(draft_path, args.speculative_k)?;
     let mut kv = model.create_model_kv_for_weights(weights);
+    let verify_mode = target_verify_mode_label(model, &kv);
     let mut sampler = Sampler::new(sampling_config(args));
     let mut metrics = InferenceMetrics::new();
 
@@ -823,6 +903,7 @@ fn run_speculative(
     model.forward_batch(prompt_tokens, &mut kv, weights, &mut logits)?;
     metrics.prefill_tokens = n_prompt as u64;
     metrics.prefill_duration = prefill_timer.elapsed();
+    spec.prewarm_target_verify_path(model, &mut kv)?;
 
     // Sample first decode token from prefill logits
     let mut kv_history: Vec<u32> = prompt_tokens.to_vec();
@@ -833,6 +914,9 @@ fn run_speculative(
     let mut total_steps = 0u64;
     let mut total_draft_duration = std::time::Duration::ZERO;
     let mut total_verify_duration = std::time::Duration::ZERO;
+    let mut total_verify_prepare_duration = std::time::Duration::ZERO;
+    let mut total_verify_forward_duration = std::time::Duration::ZERO;
+    let mut total_verify_cleanup_duration = std::time::Duration::ZERO;
     let mut total_accept_duration = std::time::Duration::ZERO;
     let mut total_verified_positions = 0u64;
     let mut total_drafted_tokens = 0u64;
@@ -862,38 +946,51 @@ fn run_speculative(
         // Run the speculative (or partial-fallback) step.
         // `position` must equal `target_kv.seq_len()` here — generate_step
         // feeds `last_token` as verify_tokens[0] at this position.
-        let step = if step_k < spec.k() {
+        let (step, history_already_pushed) = if step_k < spec.k() {
             // For the last partial step, just do one regular forward_single
             logits.fill(0.0);
             model.forward_single(last_token, position, &mut kv, weights, &mut logits)?;
+            // Push last_token before sampling so repetition penalty sees it
+            kv_history.push(last_token);
             let tok = sampler.sample(&mut logits, &kv_history);
-            SpecStep {
-                tokens: vec![tok],
-                n_accepted: 0,
-                metrics: Default::default(),
-            }
+            (
+                SpecStep {
+                    tokens: vec![tok],
+                    n_accepted: 0,
+                    metrics: Default::default(),
+                },
+                true,
+            )
         } else {
-            spec.generate_step(
-                &kv_history,
-                last_token,
-                position,
-                model,
-                &mut kv,
-                weights,
-                &mut sampler,
-            )?
+            (
+                spec.generate_step(
+                    &kv_history,
+                    last_token,
+                    position,
+                    model,
+                    &mut kv,
+                    weights,
+                    &mut sampler,
+                )?,
+                false,
+            )
         };
 
         total_accepted += step.n_accepted as u64;
         total_steps += 1;
         total_draft_duration += step.metrics.draft_duration;
         total_verify_duration += step.metrics.verify_duration;
+        total_verify_prepare_duration += step.metrics.verify_prepare_duration;
+        total_verify_forward_duration += step.metrics.verify_forward_duration;
+        total_verify_cleanup_duration += step.metrics.verify_cleanup_duration;
         total_accept_duration += step.metrics.accept_duration;
         total_verified_positions += step.metrics.verified_positions as u64;
         total_drafted_tokens += step.metrics.drafted_tokens as u64;
 
-        // last_token was fed into target KV by the step; record it in history.
-        kv_history.push(last_token);
+        // Record last_token in history (fallback path already did this before sampling)
+        if !history_already_pushed {
+            kv_history.push(last_token);
+        }
 
         // Emit all tokens from this step (except last which seeds next step)
         let n_emitted = step.tokens.len().saturating_sub(1);
@@ -953,6 +1050,7 @@ fn run_speculative(
                 total_accepted as f64 / total_steps as f64,
                 spec.k()
             );
+            eprintln!("VerifyMode:  {verify_mode}");
             eprintln!(
                 "Draft:       {:.2} ms/step, {:.2} ms/drafted token",
                 total_draft_duration.as_secs_f64() * 1000.0 / total_steps as f64,
@@ -970,6 +1068,12 @@ fn run_speculative(
                 } else {
                     0.0
                 }
+            );
+            eprintln!(
+                "VerifySub:   prep {:.2} ms | forward {:.2} ms | cleanup {:.2} ms",
+                total_verify_prepare_duration.as_secs_f64() * 1000.0 / total_steps as f64,
+                total_verify_forward_duration.as_secs_f64() * 1000.0 / total_steps as f64,
+                total_verify_cleanup_duration.as_secs_f64() * 1000.0 / total_steps as f64,
             );
             eprintln!(
                 "Accept:      {:.2} ms/step",
@@ -997,6 +1101,12 @@ fn run_reuse_bench(
 
     let vocab_size = model.config.vocab_size as usize;
     let mut run_results: Vec<(f64, f64)> = Vec::new(); // (elapsed_secs, tok_per_sec)
+    let prefill_plan = model.prefill_plan_summary(
+        weights,
+        &model.create_model_kv_for_weights(weights),
+        prompt_tokens.len(),
+    )?;
+    let prefill_route = prefill_route_summary(&prefill_plan);
 
     for _ in 0..2u64 {
         let mut kv = model.create_model_kv_for_weights(weights);
@@ -1022,6 +1132,8 @@ fn run_reuse_bench(
         let out = json!({
             "prompt_tokens": prompt_tokens.len(),
             "note": "prefix_cache deferred to v2.1 — both runs are full prefill",
+            "prefill_plan": prefill_plan,
+            "prefill_route": prefill_route,
             "run1": {
                 "computed_prefill_tokens": prompt_tokens.len(),
                 "prefill_seconds": r1_t,
@@ -1037,6 +1149,10 @@ fn run_reuse_bench(
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
         eprintln!("--- Reuse Bench (2-pass prefill, prefix cache deferred to v2.1) ---");
+        eprintln!("PrefillPlan: {prefill_plan}");
+        if let Some(route) = prefill_route {
+            eprintln!("PrefillRoute: {route}");
+        }
         eprintln!(
             "Run 1: tokens={} time={:.3}s ({:.1} tok/s)",
             prompt_tokens.len(),
@@ -1125,6 +1241,7 @@ mod tests {
             reuse_bench_json: false,
             speculative_draft: None,
             speculative_k: 4,
+            qwen35_spec_verify_branch: args::Qwen35SpecVerifyBranchArg::Auto,
         }
     }
 
@@ -1200,6 +1317,18 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_mode_combinations_rejects_qwen35_branch_without_speculative_draft() {
+        let mut args = make_args();
+        args.qwen35_spec_verify_branch = args::Qwen35SpecVerifyBranchArg::On;
+
+        let err = validate_mode_combinations(&args).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--qwen35-spec-verify-branch requires --speculative-draft")
+        );
+    }
+
+    #[test]
     fn test_support_note_for_quant_marks_default_q5k_prefill() {
         assert!(
             ax_engine_core::gguf::mmap::support_note_for_q5k_layer_presence(true)
@@ -1209,6 +1338,22 @@ mod tests {
         assert_eq!(
             ax_engine_core::gguf::mmap::support_note_for_q5k_layer_presence(false),
             None
+        );
+    }
+
+    #[test]
+    fn test_prefill_route_summary_classifies_dense_gpu_batch() {
+        assert_eq!(
+            prefill_route_summary("mode=gpu_batch kv=f16 attn_route=cache/stable"),
+            Some("dense_gpu_batch/cache/stable".into())
+        );
+    }
+
+    #[test]
+    fn test_prefill_route_summary_classifies_qwen35_hybrid() {
+        assert_eq!(
+            prefill_route_summary("mode=gpu_batch kv=qwen35_hybrid recurrent=backend_owned"),
+            Some("qwen35_hybrid/backend_owned".into())
         );
     }
 
@@ -1230,5 +1375,41 @@ mod tests {
         with_env_var(key, "bad", || {
             assert!(!env_flag_enabled(key));
         });
+    }
+
+    #[test]
+    fn test_qwen35_spec_verify_branch_env_maps_variants() {
+        assert_eq!(
+            qwen35_spec_verify_branch_env(args::Qwen35SpecVerifyBranchArg::Auto),
+            None
+        );
+        assert_eq!(
+            qwen35_spec_verify_branch_env(args::Qwen35SpecVerifyBranchArg::On),
+            Some("on")
+        );
+        assert_eq!(
+            qwen35_spec_verify_branch_env(args::Qwen35SpecVerifyBranchArg::Off),
+            Some("off")
+        );
+    }
+
+    #[test]
+    fn test_with_env_var_override_restores_previous_value() {
+        let key = "AX_QWEN35_SPEC_VERIFY_BRANCH";
+        let _guard = env_lock();
+        let _restore = EnvVarRestore {
+            key: key.to_string(),
+            previous: std::env::var_os(key),
+        };
+
+        unsafe { std::env::set_var(key, "off") };
+        let seen = with_env_var_override(key, Some("on"), || std::env::var(key).unwrap());
+        assert_eq!(seen, "on");
+        assert_eq!(std::env::var(key).as_deref(), Ok("off"));
+
+        with_env_var_override(key, None, || {
+            assert!(std::env::var(key).is_err());
+        });
+        assert_eq!(std::env::var(key).as_deref(), Ok("off"));
     }
 }

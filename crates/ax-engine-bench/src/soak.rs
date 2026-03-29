@@ -100,6 +100,27 @@ pub struct SoakResult {
     /// Prefill plan summary for the active model path.
     #[serde(default)]
     pub prefill_plan: String,
+    /// Parsed `mode=...` from the prefill plan, when present.
+    #[serde(default)]
+    pub prefill_mode: String,
+    /// Normalized prefill runtime family derived from the plan.
+    #[serde(default)]
+    pub prefill_route_family: String,
+    /// Normalized prefill runtime detail derived from the plan.
+    #[serde(default)]
+    pub prefill_route_detail: String,
+    /// Parsed `attn_route=...` from the prefill plan, when present.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_attention_route: Option<String>,
+    /// Parsed `qkv=...` from the prefill plan, when present.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_qkv_plan: Option<String>,
+    /// Parsed `split_rope=...` from the prefill plan, when present.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_split_rope_append: Option<bool>,
     /// Experimental Q5_K prefill mode, when present.
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -285,6 +306,12 @@ pub fn run_soak_test_with_backend(
         passed,
         failures,
         avg_tok_per_sec,
+        prefill_mode: crate::prefill_mode(&prefill_plan),
+        prefill_route_family: crate::prefill_route_family(&prefill_plan),
+        prefill_route_detail: crate::prefill_route_detail(&prefill_plan),
+        prefill_attention_route: crate::prefill_plan_field(&prefill_plan, "attn_route"),
+        prefill_qkv_plan: crate::prefill_plan_field(&prefill_plan, "qkv"),
+        prefill_split_rope_append: crate::prefill_bool_field(&prefill_plan, "split_rope"),
         prefill_plan,
         q5k_prefill_mode,
         support_note,
@@ -391,6 +418,12 @@ impl SoakResult {
         eprintln!("Tokens:      {}", self.total_tokens);
         eprintln!("Throughput:  {:.1} tok/s", self.avg_tok_per_sec);
         eprintln!("PrefillPlan: {}", self.prefill_plan);
+        if !self.prefill_route_family.is_empty() {
+            eprintln!(
+                "PrefillRoute:{} / {}",
+                self.prefill_route_family, self.prefill_route_detail
+            );
+        }
         if let Some(mode) = &self.q5k_prefill_mode {
             eprintln!("Q5KPrefill:  {mode}");
         }
@@ -479,6 +512,12 @@ mod tests {
             failures: vec![],
             avg_tok_per_sec: 10.0,
             prefill_plan: "mode=gpu_batch q5k_prefill=small_n".into(),
+            prefill_mode: "gpu_batch".into(),
+            prefill_route_family: "dense_gpu_batch".into(),
+            prefill_route_detail: "generic_gpu_batch".into(),
+            prefill_attention_route: None,
+            prefill_qkv_plan: None,
+            prefill_split_rope_append: None,
             q5k_prefill_mode: Some("small_n".into()),
             support_note: Some(q5k_support_note()),
         };
@@ -502,6 +541,12 @@ mod tests {
             failures: vec!["RSS drift 20.0% exceeds 5% threshold".into()],
             avg_tok_per_sec: 10.0,
             prefill_plan: "mode=serial".into(),
+            prefill_mode: "serial".into(),
+            prefill_route_family: "serial_prefill".into(),
+            prefill_route_detail: "cpu_or_fallback".into(),
+            prefill_attention_route: None,
+            prefill_qkv_plan: None,
+            prefill_split_rope_append: None,
             q5k_prefill_mode: None,
             support_note: None,
         };
@@ -525,6 +570,12 @@ mod tests {
             failures: vec![],
             avg_tok_per_sec: 1.39,
             prefill_plan: "mode=gpu_batch q5k_prefill=small_n".into(),
+            prefill_mode: "gpu_batch".into(),
+            prefill_route_family: "dense_gpu_batch".into(),
+            prefill_route_detail: "generic_gpu_batch".into(),
+            prefill_attention_route: None,
+            prefill_qkv_plan: None,
+            prefill_split_rope_append: None,
             q5k_prefill_mode: Some("small_n".into()),
             support_note: Some(q5k_support_note()),
         };
@@ -555,6 +606,12 @@ mod tests {
 
         let result = SoakResult::from_json(json).unwrap();
         assert!(result.prefill_plan.is_empty());
+        assert!(result.prefill_mode.is_empty());
+        assert!(result.prefill_route_family.is_empty());
+        assert!(result.prefill_route_detail.is_empty());
+        assert_eq!(result.prefill_attention_route, None);
+        assert_eq!(result.prefill_qkv_plan, None);
+        assert_eq!(result.prefill_split_rope_append, None);
         assert_eq!(result.q5k_prefill_mode, None);
         assert_eq!(result.support_note, None);
     }

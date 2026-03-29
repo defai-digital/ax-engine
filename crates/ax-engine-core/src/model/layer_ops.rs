@@ -136,6 +136,18 @@ pub fn apply_ffn_batch(
         wd_raw, wd_dtype, gate_buf, down_buf, n_tokens, dim, inter_dim,
     );
 
-    // 5. Residual add
+    // 5. Optional post-FFN norm (Gemma3: `post_ffw_norm.weight`)
+    if let Ok(post_ffw_norm_w) = weights.f32_slice(&format!("{prefix}.post_ffw_norm.weight")) {
+        for t in 0..n_tokens {
+            let start = t * dim;
+            rms_norm::rms_norm(
+                &mut down_buf[start..start + dim],
+                post_ffw_norm_w,
+                rms_norm_eps,
+            );
+        }
+    }
+
+    // 6. Residual add
     silu::elementwise_add(hidden, down_buf);
 }

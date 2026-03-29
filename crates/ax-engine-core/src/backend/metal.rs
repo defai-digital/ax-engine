@@ -190,6 +190,30 @@ pub struct Qwen35RecurrentBatchPerfCounters {
     pub pack_ns: u64,
     pub gated_delta_ns: u64,
     pub unpack_ns: u64,
+    pub qkv_handoff_ns: u64,
+    pub qkv_handoff_layers: u64,
+    pub qkv_handoff_fused_tail_layers: u64,
+    pub qkv_gpu_projection_layers: u64,
+    pub qkv_fast_path_eligible_layers: u64,
+    pub gpu_ssm_projection_layers: u64,
+    pub qkv_fast_reject_state_size_layers: u64,
+    pub qkv_fast_reject_group_divisibility_layers: u64,
+    pub qkv_fast_reject_missing_batch_scratches_layers: u64,
+    pub qkv_fast_reject_q_capacity_layers: u64,
+    pub qkv_fast_reject_k_capacity_layers: u64,
+    pub qkv_fast_reject_v_capacity_layers: u64,
+    pub qkv_fast_reject_gate_capacity_layers: u64,
+    pub qkv_fast_reject_up_capacity_layers: u64,
+    pub qkv_handoff_cpu_alias_layers: u64,
+    pub qkv_handoff_slot_buffer_layers: u64,
+    pub qkv_handoff_backend_carryover_layers: u64,
+    pub qkv_handoff_backend_zero_init_layers: u64,
+    pub qkv_handoff_cpu_materialization_layers: u64,
+    pub state_batch_backend_native_layers: u64,
+    pub state_batch_cpu_direct_layers: u64,
+    pub state_batch_cpu_direct_materialized_from_backend_layers: u64,
+    pub state_batch_cpu_gathered_layers: u64,
+    pub state_batch_cpu_gathered_materialized_from_backend_layers: u64,
 }
 
 #[derive(Default)]
@@ -198,6 +222,51 @@ struct Qwen35RecurrentBatchPerfState {
     pack_ns: AtomicU64,
     gated_delta_ns: AtomicU64,
     unpack_ns: AtomicU64,
+    qkv_handoff_ns: AtomicU64,
+    qkv_handoff_layers: AtomicU64,
+    qkv_handoff_fused_tail_layers: AtomicU64,
+    qkv_gpu_projection_layers: AtomicU64,
+    qkv_fast_path_eligible_layers: AtomicU64,
+    gpu_ssm_projection_layers: AtomicU64,
+    qkv_fast_reject_state_size_layers: AtomicU64,
+    qkv_fast_reject_group_divisibility_layers: AtomicU64,
+    qkv_fast_reject_missing_batch_scratches_layers: AtomicU64,
+    qkv_fast_reject_q_capacity_layers: AtomicU64,
+    qkv_fast_reject_k_capacity_layers: AtomicU64,
+    qkv_fast_reject_v_capacity_layers: AtomicU64,
+    qkv_fast_reject_gate_capacity_layers: AtomicU64,
+    qkv_fast_reject_up_capacity_layers: AtomicU64,
+    qkv_handoff_cpu_alias_layers: AtomicU64,
+    qkv_handoff_slot_buffer_layers: AtomicU64,
+    qkv_handoff_backend_carryover_layers: AtomicU64,
+    qkv_handoff_backend_zero_init_layers: AtomicU64,
+    qkv_handoff_cpu_materialization_layers: AtomicU64,
+    state_batch_backend_native_layers: AtomicU64,
+    state_batch_cpu_direct_layers: AtomicU64,
+    state_batch_cpu_direct_materialized_from_backend_layers: AtomicU64,
+    state_batch_cpu_gathered_layers: AtomicU64,
+    state_batch_cpu_gathered_materialized_from_backend_layers: AtomicU64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Qwen35SlotBufferSyncOutcome {
+    pub(crate) used_backend_carryover: bool,
+    pub(crate) used_backend_zero_init: bool,
+    pub(crate) used_cpu_materialization: bool,
+}
+
+impl Qwen35SlotBufferSyncOutcome {
+    fn note_backend_carryover(&mut self) {
+        self.used_backend_carryover = true;
+    }
+
+    fn note_backend_zero_init(&mut self) {
+        self.used_backend_zero_init = true;
+    }
+
+    fn note_cpu_materialization(&mut self) {
+        self.used_cpu_materialization = true;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -233,6 +302,53 @@ struct Qwen35MetalRecurrentScratchBuffers {
     gate: MetalBuffer,
     beta: MetalBuffer,
     output: MetalBuffer,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct Qwen35QkvHandoffScratchBufferKey {
+    n_tokens: usize,
+    conv_dim: usize,
+    inner_size: usize,
+    time_step_rank: usize,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct Qwen35BatchProjectionScratchBufferKey {
+    n_tokens: usize,
+    output_dims: Vec<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct Qwen35BatchLogitsScratchBufferKey {
+    hidden_len: usize,
+    logits_len: usize,
+}
+
+pub(crate) struct Qwen35MetalQkvHandoffScratchBuffers {
+    pub(crate) conv_out: MetalBuffer,
+    pub(crate) k: MetalBuffer,
+    pub(crate) v: MetalBuffer,
+    pub(crate) alpha: MetalBuffer,
+    pub(crate) beta: MetalBuffer,
+    pub(crate) alpha_f16: MetalBuffer,
+    pub(crate) beta_f16: MetalBuffer,
+}
+
+pub(crate) struct Qwen35MetalRecurrentProjectionScratchBuffers {
+    pub(crate) qkv: MetalBuffer,
+    pub(crate) z: MetalBuffer,
+    pub(crate) beta: MetalBuffer,
+    pub(crate) alpha: MetalBuffer,
+}
+
+pub(crate) struct Qwen35MetalBatchProjectionScratchBuffers {
+    pub(crate) outputs: Vec<MetalBuffer>,
+}
+
+pub(crate) struct Qwen35MetalBatchLogitsScratchBuffers {
+    pub(crate) hidden: MetalBuffer,
+    pub(crate) hidden_f16: MetalBuffer,
+    pub(crate) logits: MetalBuffer,
 }
 
 impl Qwen35MetalSlotBuffers {
@@ -297,6 +413,93 @@ impl Qwen35MetalRecurrentScratchBuffers {
     }
 }
 
+impl Qwen35MetalBatchLogitsScratchBuffers {
+    fn new(device: &MetalDevice, key: Qwen35BatchLogitsScratchBufferKey) -> anyhow::Result<Self> {
+        Ok(Self {
+            hidden: MetalBuffer::new(device.device(), key.hidden_len * std::mem::size_of::<f32>())?,
+            hidden_f16: MetalBuffer::new(
+                device.device(),
+                key.hidden_len * std::mem::size_of::<half::f16>(),
+            )?,
+            logits: MetalBuffer::new(device.device(), key.logits_len * std::mem::size_of::<f32>())?,
+        })
+    }
+}
+
+impl Qwen35MetalQkvHandoffScratchBuffers {
+    fn new(device: &MetalDevice, key: Qwen35QkvHandoffScratchBufferKey) -> anyhow::Result<Self> {
+        Ok(Self {
+            conv_out: MetalBuffer::new(
+                device.device(),
+                key.n_tokens * key.conv_dim * std::mem::size_of::<f32>(),
+            )?,
+            k: MetalBuffer::new(
+                device.device(),
+                key.n_tokens * key.inner_size * std::mem::size_of::<f32>(),
+            )?,
+            v: MetalBuffer::new(
+                device.device(),
+                key.n_tokens * key.inner_size * std::mem::size_of::<f32>(),
+            )?,
+            alpha: MetalBuffer::new(
+                device.device(),
+                key.n_tokens * key.time_step_rank * std::mem::size_of::<f32>(),
+            )?,
+            beta: MetalBuffer::new(
+                device.device(),
+                key.n_tokens * key.time_step_rank * std::mem::size_of::<f32>(),
+            )?,
+            alpha_f16: MetalBuffer::new(
+                device.device(),
+                key.n_tokens * key.time_step_rank * std::mem::size_of::<half::f16>(),
+            )?,
+            beta_f16: MetalBuffer::new(
+                device.device(),
+                key.n_tokens * key.time_step_rank * std::mem::size_of::<half::f16>(),
+            )?,
+        })
+    }
+}
+
+impl Qwen35MetalRecurrentProjectionScratchBuffers {
+    fn new(device: &MetalDevice, key: Qwen35QkvHandoffScratchBufferKey) -> anyhow::Result<Self> {
+        Ok(Self {
+            qkv: MetalBuffer::new(
+                device.device(),
+                key.n_tokens * key.conv_dim * std::mem::size_of::<f32>(),
+            )?,
+            z: MetalBuffer::new(
+                device.device(),
+                key.n_tokens * key.inner_size * std::mem::size_of::<f32>(),
+            )?,
+            beta: MetalBuffer::new(
+                device.device(),
+                key.n_tokens * key.time_step_rank * std::mem::size_of::<f32>(),
+            )?,
+            alpha: MetalBuffer::new(
+                device.device(),
+                key.n_tokens * key.time_step_rank * std::mem::size_of::<f32>(),
+            )?,
+        })
+    }
+}
+
+impl Qwen35MetalBatchProjectionScratchBuffers {
+    fn new(
+        device: &MetalDevice,
+        key: &Qwen35BatchProjectionScratchBufferKey,
+    ) -> anyhow::Result<Self> {
+        let mut outputs = Vec::with_capacity(key.output_dims.len());
+        for &out_dim in &key.output_dims {
+            outputs.push(MetalBuffer::new(
+                device.device(),
+                key.n_tokens * out_dim * std::mem::size_of::<f32>(),
+            )?);
+        }
+        Ok(Self { outputs })
+    }
+}
+
 impl MetalBackend {
     /// Initialize Metal device and compile all compute kernels.
     pub fn new() -> anyhow::Result<Self> {
@@ -323,6 +526,119 @@ impl MetalBackend {
             qwen35_recurrent_scratch_buffers: Mutex::new(FxHashMap::default()),
             ops,
         })
+    }
+
+    fn try_clone_qwen35_recurrent_slot_from_backend_owned(
+        &self,
+        qwen_kv: &mut crate::kv::Qwen35Kv,
+        src_slot_idx: usize,
+        dst_slot_idx: usize,
+    ) -> bool {
+        if !qwen_kv.has_recurrent_slot(src_slot_idx) {
+            return false;
+        }
+        let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
+        let recurrent_state_stride = qwen_kv.recurrent_state_len();
+        let kv_identity = qwen_kv as *const crate::kv::Qwen35Kv as usize;
+        let mut stale_layers = Vec::new();
+        {
+            let slot_cache = self.ops.qwen35_recurrent_slot_buffers.lock().unwrap();
+            for layer_idx in 0..qwen_kv.layer_count() {
+                if !qwen_kv.is_recurrent_layer(layer_idx) {
+                    continue;
+                }
+                let conv_stale = qwen_kv.conv_state_cpu_stale(src_slot_idx, layer_idx);
+                let recurrent_stale = qwen_kv.recurrent_state_cpu_stale(src_slot_idx, layer_idx);
+                if !conv_stale && !recurrent_stale {
+                    continue;
+                }
+                let slot_key = Qwen35RecurrentSlotBufferKey {
+                    layer_idx,
+                    slot_idx: src_slot_idx,
+                    conv_state_stride,
+                    recurrent_state_stride,
+                };
+                let Some(slot_buffers) = slot_cache.get(&slot_key) else {
+                    return false;
+                };
+                if slot_buffers.source_kv_identity != Some(kv_identity) {
+                    return false;
+                }
+                let conv_generation = qwen_kv.conv_state_generation(src_slot_idx, layer_idx);
+                let recurrent_generation =
+                    qwen_kv.recurrent_state_generation(src_slot_idx, layer_idx);
+                if conv_stale && slot_buffers.conv_synced_generation != Some(conv_generation) {
+                    return false;
+                }
+                if recurrent_stale
+                    && slot_buffers.recurrent_synced_generation != Some(recurrent_generation)
+                {
+                    return false;
+                }
+                stale_layers.push((layer_idx, conv_stale, recurrent_stale));
+            }
+        }
+
+        qwen_kv.clone_recurrent_slot_preserving_ownership(src_slot_idx, dst_slot_idx);
+
+        if stale_layers.is_empty() {
+            return true;
+        }
+
+        let mut slot_cache = self.ops.qwen35_recurrent_slot_buffers.lock().unwrap();
+        for (layer_idx, conv_stale, recurrent_stale) in stale_layers {
+            let src_key = Qwen35RecurrentSlotBufferKey {
+                layer_idx,
+                slot_idx: src_slot_idx,
+                conv_state_stride,
+                recurrent_state_stride,
+            };
+            let (src_conv_ptr, src_recurrent_ptr) = {
+                let src_buffers = slot_cache
+                    .get(&src_key)
+                    .expect("validated qwen35 source slot buffer should exist");
+                let conv =
+                    conv_stale.then(|| src_buffers.conv_state.contents().as_ptr() as *const f32);
+                let recurrent = recurrent_stale
+                    .then(|| src_buffers.recurrent_state.contents().as_ptr() as *const f32);
+                (conv, recurrent)
+            };
+            let dst_key = Qwen35RecurrentSlotBufferKey {
+                layer_idx,
+                slot_idx: dst_slot_idx,
+                conv_state_stride,
+                recurrent_state_stride,
+            };
+            let dst_buffers = slot_cache.entry(dst_key).or_insert_with(|| {
+                Qwen35MetalSlotBuffers::new(&self.device, conv_state_stride, recurrent_state_stride)
+                    .expect("Failed to allocate qwen35 recurrent Metal slot buffers")
+            });
+            if let Some(src_conv_ptr) = src_conv_ptr {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        src_conv_ptr,
+                        dst_buffers.conv_state.contents().as_ptr() as *mut f32,
+                        conv_state_stride,
+                    );
+                }
+                dst_buffers.conv_synced_generation =
+                    Some(qwen_kv.conv_state_generation(dst_slot_idx, layer_idx));
+            }
+            if let Some(src_recurrent_ptr) = src_recurrent_ptr {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        src_recurrent_ptr,
+                        dst_buffers.recurrent_state.contents().as_ptr() as *mut f32,
+                        recurrent_state_stride,
+                    );
+                }
+                dst_buffers.recurrent_synced_generation =
+                    Some(qwen_kv.recurrent_state_generation(dst_slot_idx, layer_idx));
+            }
+            dst_buffers.source_kv_identity = Some(kv_identity);
+        }
+
+        true
     }
 
     /// Get or grow the reusable input buffer. Copies `data` into it.
@@ -689,7 +1005,6 @@ impl MetalBackend {
         );
         let slot_count = state_batch.slot_count();
         let total_tokens = slot_count * tokens_per_slot;
-        let layer_idx = state_batch.layer_idx();
         let value_dim = cfg.value_dim();
         let conv_state_stride = state_batch.conv_state_stride();
         let recurrent_state_stride = state_batch.recurrent_state_stride();
@@ -737,7 +1052,6 @@ impl MetalBackend {
             .expect("qwen35 recurrent Metal scratch buffers missing after allocation");
 
         for batch_idx in 0..slot_count {
-            let slot_idx = state_batch.slot_index(batch_idx);
             let token_start = batch_idx * tokens_per_slot;
             let token_end = token_start + tokens_per_slot;
             let qkv_start = token_start * cfg.conv_dim;
@@ -746,38 +1060,16 @@ impl MetalBackend {
             let gate_end = token_end * cfg.time_step_rank;
             let out_start = token_start * value_dim;
             let out_end = token_end * value_dim;
-
-            let mut slot_cache = self.ensure_qwen35_recurrent_slot_buffers(
-                layer_idx,
-                slot_idx,
-                conv_state_stride,
-                recurrent_state_stride,
-            );
-            let slot_key = Self::qwen35_recurrent_slot_buffer_key(
-                layer_idx,
-                slot_idx,
-                conv_state_stride,
-                recurrent_state_stride,
-            );
-            let slot_buffers = slot_cache
-                .get_mut(&slot_key)
-                .expect("qwen35 recurrent Metal slot buffers missing after allocation");
-            slot_buffers.source_kv_identity = None;
-
-            {
-                let conv_state_src = state_batch.conv_state_for_slot_mut(batch_idx);
-                unsafe {
-                    slot_buffers.conv_state.as_mut_slice::<f32>()[..conv_state_src.len()]
-                        .copy_from_slice(conv_state_src);
-                }
+            let (conv_state_src, recurrent_state_src) =
+                state_batch.recurrent_buffers_for_slot_mut(batch_idx);
+            let conv_state_buf = unsafe {
+                MetalBuffer::from_mut_slice_no_copy(self.device.device(), conv_state_src)
             }
-            {
-                let recurrent_state_src = state_batch.recurrent_state_for_slot_mut(batch_idx);
-                unsafe {
-                    slot_buffers.recurrent_state.as_mut_slice::<f32>()[..recurrent_state_src.len()]
-                        .copy_from_slice(recurrent_state_src);
-                }
+            .expect("Failed to alias qwen35 conv state batch into Metal buffer");
+            let recurrent_state_buf = unsafe {
+                MetalBuffer::from_mut_slice_no_copy(self.device.device(), recurrent_state_src)
             }
+            .expect("Failed to alias qwen35 recurrent state batch into Metal buffer");
 
             unsafe {
                 scratch_buffers.input.as_mut_slice::<f32>()[..qkv_end - qkv_start]
@@ -788,7 +1080,7 @@ impl MetalBackend {
                     &self.device,
                     &scratch_buffers.input,
                     buf_kernel,
-                    &slot_buffers.conv_state,
+                    &conv_state_buf,
                     &scratch_buffers.conv_out,
                     tokens_per_slot as u32,
                     cfg.conv_cache_len as u32,
@@ -816,6 +1108,49 @@ impl MetalBackend {
                         .copy_from_slice(&alpha_batch[gate_start..gate_end]);
                     scratch_buffers.beta.as_mut_slice::<f32>()[..cfg.time_step_rank]
                         .copy_from_slice(&beta_batch[gate_start..gate_end]);
+                } else if cfg.state_size <= 256
+                    && cfg.time_step_rank.is_multiple_of(cfg.group_count)
+                {
+                    let alpha_buf = MetalBuffer::from_slice_no_copy(
+                        self.device.device(),
+                        &alpha_batch[gate_start..gate_end],
+                    )
+                    .unwrap_or_else(|_| {
+                        MetalBuffer::from_slice(
+                            self.device.device(),
+                            &alpha_batch[gate_start..gate_end],
+                        )
+                        .expect("Failed to create Metal buffer for qwen35 recurrent alpha batch")
+                    });
+                    let beta_buf = MetalBuffer::from_slice_no_copy(
+                        self.device.device(),
+                        &beta_batch[gate_start..gate_end],
+                    )
+                    .unwrap_or_else(|_| {
+                        MetalBuffer::from_slice(
+                            self.device.device(),
+                            &beta_batch[gate_start..gate_end],
+                        )
+                        .expect("Failed to create Metal buffer for qwen35 recurrent beta batch")
+                    });
+                    self.gdn_kernels
+                        .prepare_multi_token_qkv(
+                            &self.device,
+                            &scratch_buffers.conv_out,
+                            &alpha_buf,
+                            &beta_buf,
+                            &scratch_buffers.q,
+                            &scratch_buffers.k,
+                            &scratch_buffers.v,
+                            &scratch_buffers.gate,
+                            &scratch_buffers.beta,
+                            tokens_per_slot as u32,
+                            cfg.group_count as u32,
+                            cfg.time_step_rank as u32,
+                            cfg.state_size as u32,
+                            cfg.rms_norm_eps,
+                        )
+                        .expect("Metal qwen35 recurrent batch pack dispatch failed");
                 } else {
                     prepare_multi_token_gdn_bh_buffers(
                         conv_out,
@@ -844,7 +1179,7 @@ impl MetalBackend {
                     &scratch_buffers.v,
                     &scratch_buffers.gate,
                     &scratch_buffers.beta,
-                    &slot_buffers.recurrent_state,
+                    &recurrent_state_buf,
                     &scratch_buffers.output,
                     tokens_per_slot as u32,
                     cfg.time_step_rank as u32,
@@ -856,25 +1191,29 @@ impl MetalBackend {
             if tokens_per_slot == 1 {
                 output_batch[out_start..out_end].copy_from_slice(&out_bhsv[..value_dim]);
             } else {
-                unpack_bhsk_to_token_major(
-                    out_bhsv,
-                    &mut output_batch[out_start..out_end],
-                    tokens_per_slot,
-                    cfg.time_step_rank,
-                    cfg.state_size,
-                );
-            }
-
-            {
-                let conv_state_dst = state_batch.conv_state_for_slot_mut(batch_idx);
-                let conv_state_out = unsafe { slot_buffers.conv_state.as_slice::<f32>() };
-                conv_state_dst.copy_from_slice(&conv_state_out[..conv_state_dst.len()]);
-            }
-            {
-                let recurrent_state_dst = state_batch.recurrent_state_for_slot_mut(batch_idx);
-                let recurrent_state_out = unsafe { slot_buffers.recurrent_state.as_slice::<f32>() };
-                recurrent_state_dst
-                    .copy_from_slice(&recurrent_state_out[..recurrent_state_dst.len()]);
+                let output_slice = &mut output_batch[out_start..out_end];
+                if let Ok(output_buf) = unsafe {
+                    MetalBuffer::from_mut_slice_no_copy(self.device.device(), output_slice)
+                } {
+                    self.gdn_kernels
+                        .unpack_bhsk_to_token_major(
+                            &self.device,
+                            &scratch_buffers.output,
+                            &output_buf,
+                            tokens_per_slot as u32,
+                            cfg.time_step_rank as u32,
+                            cfg.state_size as u32,
+                        )
+                        .expect("Metal qwen35 recurrent batch unpack dispatch failed");
+                } else {
+                    unpack_bhsk_to_token_major(
+                        out_bhsv,
+                        output_slice,
+                        tokens_per_slot,
+                        cfg.time_step_rank,
+                        cfg.state_size,
+                    );
+                }
             }
         }
     }
@@ -977,6 +1316,23 @@ impl MetalBackend {
                     slot_buffers,
                 );
 
+                // Multi-token prefill can leave conv state device-primary.
+                // Single-token decode still runs the causal conv step on CPU,
+                // so materialize just the conv history back when needed while
+                // leaving recurrent state backend-owned.
+                if qwen_kv.conv_state_cpu_stale(slot_idx, layer_idx) {
+                    let generation = qwen_kv.conv_state_generation(slot_idx, layer_idx);
+                    assert_eq!(
+                        slot_buffers.conv_synced_generation,
+                        Some(generation),
+                        "qwen35 conv state for slot {slot_idx} layer {layer_idx} is backend-owned but Metal slot buffer generation does not match",
+                    );
+                    let conv_state =
+                        unsafe { &slot_buffers.conv_state.as_slice::<f32>()[..conv_state_stride] };
+                    qwen_kv
+                        .sync_conv_state_from_backend(slot_idx, layer_idx, conv_state, generation);
+                }
+
                 // Run conv1d on CPU for single-token decode (GPU dispatch
                 // overhead exceeds the compute savings for seq_len=1).
                 // Write to KV's CPU conv state, then sync to GPU slot buffer.
@@ -1048,17 +1404,33 @@ impl MetalBackend {
                 slot_buffers.source_kv_identity =
                     Some(qwen_kv as *const crate::kv::Qwen35Kv as usize);
             } else {
-                self.sync_qwen35_slot_from_backend_if_needed(qwen_kv, layer_idx, slot_idx);
-                let (conv_state, recurrent_state) =
-                    qwen_kv.recurrent_buffers_for_slot_mut(slot_idx, layer_idx);
-                let conv_state_buf = unsafe {
-                    MetalBuffer::from_mut_slice_no_copy(self.device.device(), conv_state)
-                }
-                .expect("Failed to alias qwen35 conv state into Metal buffer");
-                let recurrent_state_buf = unsafe {
-                    MetalBuffer::from_mut_slice_no_copy(self.device.device(), recurrent_state)
-                }
-                .expect("Failed to alias qwen35 recurrent state into Metal buffer");
+                let mut slot_cache = self.ensure_qwen35_recurrent_slot_buffers(
+                    layer_idx,
+                    slot_idx,
+                    conv_state_stride,
+                    recurrent_state_stride,
+                );
+                let slot_key = Self::qwen35_recurrent_slot_buffer_key(
+                    layer_idx,
+                    slot_idx,
+                    conv_state_stride,
+                    recurrent_state_stride,
+                );
+                let slot_buffers = slot_cache
+                    .get_mut(&slot_key)
+                    .expect("qwen35 recurrent Metal slot buffers missing after allocation");
+
+                // Keep the recurrent path device-primary for multi-token
+                // prefill. Only reload CPU state when the host owns a fresher
+                // version; otherwise keep using the cached backend buffers.
+                Self::qwen35_sync_slot_buffers_from_kv(
+                    qwen_kv,
+                    layer_idx,
+                    slot_idx,
+                    conv_state_stride,
+                    recurrent_state_stride,
+                    slot_buffers,
+                );
                 unsafe {
                     scratch_buffers.input.as_mut_slice::<f32>()[..qkv_end - qkv_start]
                         .copy_from_slice(&qkv_batch[qkv_start..qkv_end]);
@@ -1070,7 +1442,7 @@ impl MetalBackend {
                         &self.device,
                         &scratch_buffers.input,
                         buf_kernel,
-                        &conv_state_buf,
+                        &slot_buffers.conv_state,
                         &scratch_buffers.conv_out,
                         tokens_per_slot as u32,
                         cfg.conv_cache_len as u32,
@@ -1082,24 +1454,74 @@ impl MetalBackend {
 
                 let conv_out = unsafe { scratch_buffers.conv_out.as_slice::<f32>() };
                 let pack_t = Instant::now();
-                unsafe {
-                    prepare_multi_token_gdn_bh_buffers(
-                        conv_out,
-                        &alpha_batch[gate_start..gate_end],
-                        &beta_batch[gate_start..gate_end],
-                        &mut scratch_buffers.q.as_mut_slice::<f32>()[..tokens_per_slot * value_dim],
-                        &mut scratch_buffers.k.as_mut_slice::<f32>()[..tokens_per_slot * value_dim],
-                        &mut scratch_buffers.v.as_mut_slice::<f32>()[..tokens_per_slot * value_dim],
-                        &mut scratch_buffers.gate.as_mut_slice::<f32>()
-                            [..tokens_per_slot * cfg.time_step_rank],
-                        &mut scratch_buffers.beta.as_mut_slice::<f32>()
-                            [..tokens_per_slot * cfg.time_step_rank],
-                        tokens_per_slot,
-                        cfg.group_count,
-                        cfg.time_step_rank,
-                        cfg.state_size,
-                        cfg.rms_norm_eps,
-                    );
+                if cfg.state_size <= 256 && cfg.time_step_rank.is_multiple_of(cfg.group_count) {
+                    let alpha_buf = unsafe {
+                        MetalBuffer::from_slice_no_copy(
+                            self.device.device(),
+                            &alpha_batch[gate_start..gate_end],
+                        )
+                    }
+                    .unwrap_or_else(|_| {
+                        MetalBuffer::from_slice(
+                            self.device.device(),
+                            &alpha_batch[gate_start..gate_end],
+                        )
+                        .expect("Failed to create Metal buffer for qwen35 recurrent alpha batch")
+                    });
+                    let beta_buf = unsafe {
+                        MetalBuffer::from_slice_no_copy(
+                            self.device.device(),
+                            &beta_batch[gate_start..gate_end],
+                        )
+                    }
+                    .unwrap_or_else(|_| {
+                        MetalBuffer::from_slice(
+                            self.device.device(),
+                            &beta_batch[gate_start..gate_end],
+                        )
+                        .expect("Failed to create Metal buffer for qwen35 recurrent beta batch")
+                    });
+                    self.gdn_kernels
+                        .prepare_multi_token_qkv(
+                            &self.device,
+                            &scratch_buffers.conv_out,
+                            &alpha_buf,
+                            &beta_buf,
+                            &scratch_buffers.q,
+                            &scratch_buffers.k,
+                            &scratch_buffers.v,
+                            &scratch_buffers.gate,
+                            &scratch_buffers.beta,
+                            tokens_per_slot as u32,
+                            cfg.group_count as u32,
+                            cfg.time_step_rank as u32,
+                            cfg.state_size as u32,
+                            cfg.rms_norm_eps,
+                        )
+                        .expect("Metal qwen35 recurrent batch pack dispatch failed");
+                } else {
+                    unsafe {
+                        prepare_multi_token_gdn_bh_buffers(
+                            conv_out,
+                            &alpha_batch[gate_start..gate_end],
+                            &beta_batch[gate_start..gate_end],
+                            &mut scratch_buffers.q.as_mut_slice::<f32>()
+                                [..tokens_per_slot * value_dim],
+                            &mut scratch_buffers.k.as_mut_slice::<f32>()
+                                [..tokens_per_slot * value_dim],
+                            &mut scratch_buffers.v.as_mut_slice::<f32>()
+                                [..tokens_per_slot * value_dim],
+                            &mut scratch_buffers.gate.as_mut_slice::<f32>()
+                                [..tokens_per_slot * cfg.time_step_rank],
+                            &mut scratch_buffers.beta.as_mut_slice::<f32>()
+                                [..tokens_per_slot * cfg.time_step_rank],
+                            tokens_per_slot,
+                            cfg.group_count,
+                            cfg.time_step_rank,
+                            cfg.state_size,
+                            cfg.rms_norm_eps,
+                        );
+                    }
                 }
                 self.ops
                     .record_qwen35_recurrent_batch_pack(pack_t.elapsed());
@@ -1112,7 +1534,7 @@ impl MetalBackend {
                         &scratch_buffers.v,
                         &scratch_buffers.gate,
                         &scratch_buffers.beta,
-                        &recurrent_state_buf,
+                        &slot_buffers.recurrent_state,
                         &scratch_buffers.output,
                         tokens_per_slot as u32,
                         cfg.time_step_rank as u32,
@@ -1124,15 +1546,39 @@ impl MetalBackend {
 
                 let out_bhsv = unsafe { scratch_buffers.output.as_slice::<f32>() };
                 let unpack_t = Instant::now();
-                unpack_bhsk_to_token_major(
-                    out_bhsv,
-                    &mut output_batch[out_start..out_end],
-                    tokens_per_slot,
-                    cfg.time_step_rank,
-                    cfg.state_size,
-                );
+                let output_slice = &mut output_batch[out_start..out_end];
+                if let Ok(output_buf) = unsafe {
+                    MetalBuffer::from_mut_slice_no_copy(self.device.device(), output_slice)
+                } {
+                    self.gdn_kernels
+                        .unpack_bhsk_to_token_major(
+                            &self.device,
+                            &scratch_buffers.output,
+                            &output_buf,
+                            tokens_per_slot as u32,
+                            cfg.time_step_rank as u32,
+                            cfg.state_size as u32,
+                        )
+                        .expect("Metal qwen35 recurrent batch unpack dispatch failed");
+                } else {
+                    unpack_bhsk_to_token_major(
+                        out_bhsv,
+                        output_slice,
+                        tokens_per_slot,
+                        cfg.time_step_rank,
+                        cfg.state_size,
+                    );
+                }
                 self.ops
                     .record_qwen35_recurrent_batch_unpack(unpack_t.elapsed());
+
+                let conv_generation = qwen_kv.note_backend_conv_state_update(slot_idx, layer_idx);
+                let recurrent_generation =
+                    qwen_kv.note_backend_recurrent_state_update(slot_idx, layer_idx);
+                slot_buffers.conv_synced_generation = Some(conv_generation);
+                slot_buffers.recurrent_synced_generation = Some(recurrent_generation);
+                slot_buffers.source_kv_identity =
+                    Some(qwen_kv as *const crate::kv::Qwen35Kv as usize);
             }
         }
     }
@@ -1168,6 +1614,30 @@ fn qwen35_recurrent_sequence_with_backend(
 }
 
 impl Backend for MetalBackend {
+    fn note_qwen35_prepared_state_batch_kind(
+        &self,
+        kind: crate::kv::qwen35_kv::Qwen35PreparedRecurrentStateBatchKind,
+    ) {
+        match kind {
+            crate::kv::qwen35_kv::Qwen35PreparedRecurrentStateBatchKind::CpuDirect => {
+                self.ops
+                    .record_qwen35_recurrent_batch_state_batch_cpu_direct();
+            }
+            crate::kv::qwen35_kv::Qwen35PreparedRecurrentStateBatchKind::CpuDirectMaterializedFromBackend => {
+                self.ops
+                    .record_qwen35_recurrent_batch_state_batch_cpu_direct_materialized_from_backend();
+            }
+            crate::kv::qwen35_kv::Qwen35PreparedRecurrentStateBatchKind::CpuGathered => {
+                self.ops
+                    .record_qwen35_recurrent_batch_state_batch_cpu_gathered();
+            }
+            crate::kv::qwen35_kv::Qwen35PreparedRecurrentStateBatchKind::CpuGatheredMaterializedFromBackend => {
+                self.ops
+                    .record_qwen35_recurrent_batch_state_batch_cpu_gathered_materialized_from_backend();
+            }
+        }
+    }
+
     fn configure_for_model(
         &self,
         model_name: &str,
@@ -1764,6 +2234,8 @@ impl Backend for MetalBackend {
     ) {
         qwen_kv.assert_valid_recurrent_slot_batch(slot_indices, layer_idx);
         if cfg.conv_cache_len <= 8 {
+            self.ops
+                .record_qwen35_recurrent_batch_state_batch_backend_native();
             self.qwen35_recurrent_sequence_for_kv_with_slot_buffers(
                 qkv_batch,
                 beta_batch,
@@ -1820,41 +2292,49 @@ impl Backend for MetalBackend {
                 continue;
             }
             // Sync recurrent state GPU → CPU if backend-owned.
-            if let Some(generation) = slot_buffers.recurrent_synced_generation {
-                if qwen_kv.recurrent_state_cpu_stale(slot_key.slot_idx, slot_key.layer_idx)
-                    && qwen_kv.recurrent_state_generation(slot_key.slot_idx, slot_key.layer_idx)
-                        == generation
-                {
-                    let recurrent_state = unsafe {
-                        &slot_buffers.recurrent_state.as_slice::<f32>()
-                            [..slot_key.recurrent_state_stride]
-                    };
-                    qwen_kv.sync_recurrent_state_from_backend(
-                        slot_key.slot_idx,
-                        slot_key.layer_idx,
-                        recurrent_state,
-                        generation,
-                    );
-                }
+            if let Some(generation) = slot_buffers.recurrent_synced_generation
+                && qwen_kv.recurrent_state_cpu_stale(slot_key.slot_idx, slot_key.layer_idx)
+                && qwen_kv.recurrent_state_generation(slot_key.slot_idx, slot_key.layer_idx)
+                    == generation
+            {
+                let recurrent_state = unsafe {
+                    &slot_buffers.recurrent_state.as_slice::<f32>()
+                        [..slot_key.recurrent_state_stride]
+                };
+                qwen_kv.sync_recurrent_state_from_backend(
+                    slot_key.slot_idx,
+                    slot_key.layer_idx,
+                    recurrent_state,
+                    generation,
+                );
             }
             // Sync conv state GPU → CPU if backend-owned.
-            if let Some(generation) = slot_buffers.conv_synced_generation {
-                if qwen_kv.conv_state_cpu_stale(slot_key.slot_idx, slot_key.layer_idx)
-                    && qwen_kv.conv_state_generation(slot_key.slot_idx, slot_key.layer_idx)
-                        == generation
-                {
-                    let conv_state = unsafe {
-                        &slot_buffers.conv_state.as_slice::<f32>()[..slot_key.conv_state_stride]
-                    };
-                    qwen_kv.sync_conv_state_from_backend(
-                        slot_key.slot_idx,
-                        slot_key.layer_idx,
-                        conv_state,
-                        generation,
-                    );
-                }
+            if let Some(generation) = slot_buffers.conv_synced_generation
+                && qwen_kv.conv_state_cpu_stale(slot_key.slot_idx, slot_key.layer_idx)
+                && qwen_kv.conv_state_generation(slot_key.slot_idx, slot_key.layer_idx)
+                    == generation
+            {
+                let conv_state = unsafe {
+                    &slot_buffers.conv_state.as_slice::<f32>()[..slot_key.conv_state_stride]
+                };
+                qwen_kv.sync_conv_state_from_backend(
+                    slot_key.slot_idx,
+                    slot_key.layer_idx,
+                    conv_state,
+                    generation,
+                );
             }
         }
+        qwen_kv.sync_attention_cpu_from_gpu_if_needed();
+    }
+
+    fn try_clone_qwen35_recurrent_slot(
+        &self,
+        qwen_kv: &mut crate::kv::Qwen35Kv,
+        src_slot_idx: usize,
+        dst_slot_idx: usize,
+    ) -> bool {
+        self.try_clone_qwen35_recurrent_slot_from_backend_owned(qwen_kv, src_slot_idx, dst_slot_idx)
     }
 
     fn metal_ops(&self) -> Option<&MetalOps> {
@@ -2426,6 +2906,20 @@ pub struct MetalOps {
     /// Reusable recurrent state buffers keyed by logical Qwen3.5 slot.
     qwen35_recurrent_slot_buffers:
         Mutex<FxHashMap<Qwen35RecurrentSlotBufferKey, Qwen35MetalSlotBuffers>>,
+    /// Reusable scratch buffers for Qwen3.5 recurrent GPU QKV handoff prefill.
+    qwen35_qkv_handoff_scratch_buffers:
+        Mutex<FxHashMap<Qwen35QkvHandoffScratchBufferKey, Qwen35MetalQkvHandoffScratchBuffers>>,
+    /// Reusable projection temp buffers for Qwen3.5 unified recurrent prefill.
+    qwen35_recurrent_projection_scratch_buffers: Mutex<
+        FxHashMap<Qwen35QkvHandoffScratchBufferKey, Qwen35MetalRecurrentProjectionScratchBuffers>,
+    >,
+    /// Reusable projection temp buffers for Qwen3.5 batch RMSNorm+projection staging.
+    qwen35_batch_projection_scratch_buffers: Mutex<
+        FxHashMap<Qwen35BatchProjectionScratchBufferKey, Qwen35MetalBatchProjectionScratchBuffers>,
+    >,
+    /// Reusable buffers for Qwen3.5 batched LM-head GPU projection.
+    qwen35_batch_logits_scratch_buffers:
+        Mutex<FxHashMap<Qwen35BatchLogitsScratchBufferKey, Qwen35MetalBatchLogitsScratchBuffers>>,
     /// Backend-local profiling for Qwen3.5 recurrent multi-token batch phases.
     qwen35_recurrent_batch_perf: Qwen35RecurrentBatchPerfState,
     /// One-time runtime tuning state for f16in batch kernel routing.
@@ -2461,6 +2955,10 @@ impl MetalOps {
             scratches: Mutex::new(None),
             batch_scratches: Mutex::new(None),
             qwen35_recurrent_slot_buffers: Mutex::new(FxHashMap::default()),
+            qwen35_qkv_handoff_scratch_buffers: Mutex::new(FxHashMap::default()),
+            qwen35_recurrent_projection_scratch_buffers: Mutex::new(FxHashMap::default()),
+            qwen35_batch_projection_scratch_buffers: Mutex::new(FxHashMap::default()),
+            qwen35_batch_logits_scratch_buffers: Mutex::new(FxHashMap::default()),
             qwen35_recurrent_batch_perf: Qwen35RecurrentBatchPerfState::default(),
             f16in_route_tuned: AtomicBool::new(false),
             cached_model_keys: Mutex::new(None),
@@ -2520,6 +3018,159 @@ impl MetalOps {
             .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_handoff_gpu(&self, elapsed: Duration) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_ns
+            .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_handoff(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_handoff_fused_tail(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_fused_tail_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_gpu_projection(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_gpu_projection_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_fast_path_eligible(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_path_eligible_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_fast_reject_state_size(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_state_size_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_fast_reject_group_divisibility(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_group_divisibility_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_fast_reject_missing_batch_scratches(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_missing_batch_scratches_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_fast_reject_q_capacity(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_q_capacity_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_fast_reject_k_capacity(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_k_capacity_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_fast_reject_v_capacity(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_v_capacity_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_fast_reject_gate_capacity(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_gate_capacity_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_fast_reject_up_capacity(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_up_capacity_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_gpu_ssm_projection(&self) {
+        self.qwen35_recurrent_batch_perf
+            .gpu_ssm_projection_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_handoff_cpu_alias(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_cpu_alias_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_handoff_slot_buffer(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_slot_buffer_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_handoff_backend_carryover(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_backend_carryover_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_handoff_backend_zero_init(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_backend_zero_init_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn record_qwen35_recurrent_batch_qkv_handoff_cpu_materialization(&self) {
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_cpu_materialization_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_state_batch_backend_native(&self) {
+        self.qwen35_recurrent_batch_perf
+            .state_batch_backend_native_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_state_batch_cpu_direct(&self) {
+        self.qwen35_recurrent_batch_perf
+            .state_batch_cpu_direct_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_state_batch_cpu_direct_materialized_from_backend(
+        &self,
+    ) {
+        self.qwen35_recurrent_batch_perf
+            .state_batch_cpu_direct_materialized_from_backend_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_state_batch_cpu_gathered(&self) {
+        self.qwen35_recurrent_batch_perf
+            .state_batch_cpu_gathered_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_qwen35_recurrent_batch_state_batch_cpu_gathered_materialized_from_backend(
+        &self,
+    ) {
+        self.qwen35_recurrent_batch_perf
+            .state_batch_cpu_gathered_materialized_from_backend_layers
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn reset_qwen35_recurrent_batch_perf_counters(&self) {
         self.qwen35_recurrent_batch_perf
             .conv_ns
@@ -2532,6 +3183,78 @@ impl MetalOps {
             .store(0, Ordering::Relaxed);
         self.qwen35_recurrent_batch_perf
             .unpack_ns
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_ns
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_fused_tail_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_gpu_projection_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_path_eligible_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .gpu_ssm_projection_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_state_size_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_group_divisibility_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_missing_batch_scratches_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_q_capacity_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_k_capacity_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_v_capacity_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_gate_capacity_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_fast_reject_up_capacity_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_cpu_alias_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_slot_buffer_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_backend_carryover_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_backend_zero_init_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .qkv_handoff_cpu_materialization_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .state_batch_backend_native_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .state_batch_cpu_direct_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .state_batch_cpu_direct_materialized_from_backend_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .state_batch_cpu_gathered_layers
+            .store(0, Ordering::Relaxed);
+        self.qwen35_recurrent_batch_perf
+            .state_batch_cpu_gathered_materialized_from_backend_layers
             .store(0, Ordering::Relaxed);
     }
 
@@ -2552,6 +3275,102 @@ impl MetalOps {
             unpack_ns: self
                 .qwen35_recurrent_batch_perf
                 .unpack_ns
+                .load(Ordering::Relaxed),
+            qkv_handoff_ns: self
+                .qwen35_recurrent_batch_perf
+                .qkv_handoff_ns
+                .load(Ordering::Relaxed),
+            qkv_handoff_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_handoff_layers
+                .load(Ordering::Relaxed),
+            qkv_handoff_fused_tail_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_handoff_fused_tail_layers
+                .load(Ordering::Relaxed),
+            qkv_gpu_projection_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_gpu_projection_layers
+                .load(Ordering::Relaxed),
+            qkv_fast_path_eligible_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_fast_path_eligible_layers
+                .load(Ordering::Relaxed),
+            gpu_ssm_projection_layers: self
+                .qwen35_recurrent_batch_perf
+                .gpu_ssm_projection_layers
+                .load(Ordering::Relaxed),
+            qkv_fast_reject_state_size_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_fast_reject_state_size_layers
+                .load(Ordering::Relaxed),
+            qkv_fast_reject_group_divisibility_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_fast_reject_group_divisibility_layers
+                .load(Ordering::Relaxed),
+            qkv_fast_reject_missing_batch_scratches_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_fast_reject_missing_batch_scratches_layers
+                .load(Ordering::Relaxed),
+            qkv_fast_reject_q_capacity_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_fast_reject_q_capacity_layers
+                .load(Ordering::Relaxed),
+            qkv_fast_reject_k_capacity_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_fast_reject_k_capacity_layers
+                .load(Ordering::Relaxed),
+            qkv_fast_reject_v_capacity_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_fast_reject_v_capacity_layers
+                .load(Ordering::Relaxed),
+            qkv_fast_reject_gate_capacity_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_fast_reject_gate_capacity_layers
+                .load(Ordering::Relaxed),
+            qkv_fast_reject_up_capacity_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_fast_reject_up_capacity_layers
+                .load(Ordering::Relaxed),
+            qkv_handoff_cpu_alias_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_handoff_cpu_alias_layers
+                .load(Ordering::Relaxed),
+            qkv_handoff_slot_buffer_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_handoff_slot_buffer_layers
+                .load(Ordering::Relaxed),
+            qkv_handoff_backend_carryover_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_handoff_backend_carryover_layers
+                .load(Ordering::Relaxed),
+            qkv_handoff_backend_zero_init_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_handoff_backend_zero_init_layers
+                .load(Ordering::Relaxed),
+            qkv_handoff_cpu_materialization_layers: self
+                .qwen35_recurrent_batch_perf
+                .qkv_handoff_cpu_materialization_layers
+                .load(Ordering::Relaxed),
+            state_batch_backend_native_layers: self
+                .qwen35_recurrent_batch_perf
+                .state_batch_backend_native_layers
+                .load(Ordering::Relaxed),
+            state_batch_cpu_direct_layers: self
+                .qwen35_recurrent_batch_perf
+                .state_batch_cpu_direct_layers
+                .load(Ordering::Relaxed),
+            state_batch_cpu_direct_materialized_from_backend_layers: self
+                .qwen35_recurrent_batch_perf
+                .state_batch_cpu_direct_materialized_from_backend_layers
+                .load(Ordering::Relaxed),
+            state_batch_cpu_gathered_layers: self
+                .qwen35_recurrent_batch_perf
+                .state_batch_cpu_gathered_layers
+                .load(Ordering::Relaxed),
+            state_batch_cpu_gathered_materialized_from_backend_layers: self
+                .qwen35_recurrent_batch_perf
+                .state_batch_cpu_gathered_materialized_from_backend_layers
                 .load(Ordering::Relaxed),
         }
     }
@@ -2874,12 +3693,95 @@ impl MetalOps {
         self.batch_scratches.lock().unwrap()
     }
 
+    pub(crate) fn with_qwen35_qkv_handoff_scratch<R>(
+        &self,
+        n_tokens: usize,
+        conv_dim: usize,
+        inner_size: usize,
+        time_step_rank: usize,
+        f: impl FnOnce(&mut Qwen35MetalQkvHandoffScratchBuffers) -> R,
+    ) -> R {
+        let key = Qwen35QkvHandoffScratchBufferKey {
+            n_tokens,
+            conv_dim,
+            inner_size,
+            time_step_rank,
+        };
+        let mut cache = self.qwen35_qkv_handoff_scratch_buffers.lock().unwrap();
+        let scratch = cache.entry(key).or_insert_with(|| {
+            Qwen35MetalQkvHandoffScratchBuffers::new(&self.device, key)
+                .expect("Failed to allocate qwen35 recurrent handoff scratch buffers")
+        });
+        f(scratch)
+    }
+
+    pub(crate) fn with_qwen35_recurrent_projection_scratch<R>(
+        &self,
+        n_tokens: usize,
+        conv_dim: usize,
+        inner_size: usize,
+        time_step_rank: usize,
+        f: impl FnOnce(&mut Qwen35MetalRecurrentProjectionScratchBuffers) -> R,
+    ) -> R {
+        let key = Qwen35QkvHandoffScratchBufferKey {
+            n_tokens,
+            conv_dim,
+            inner_size,
+            time_step_rank,
+        };
+        let mut cache = self
+            .qwen35_recurrent_projection_scratch_buffers
+            .lock()
+            .unwrap();
+        let scratch = cache.entry(key).or_insert_with(|| {
+            Qwen35MetalRecurrentProjectionScratchBuffers::new(&self.device, key)
+                .expect("Failed to allocate qwen35 recurrent projection scratch buffers")
+        });
+        f(scratch)
+    }
+
+    pub(crate) fn with_qwen35_batch_projection_scratch<R>(
+        &self,
+        n_tokens: usize,
+        output_dims: &[usize],
+        f: impl FnOnce(&mut Qwen35MetalBatchProjectionScratchBuffers) -> R,
+    ) -> R {
+        let key = Qwen35BatchProjectionScratchBufferKey {
+            n_tokens,
+            output_dims: output_dims.to_vec(),
+        };
+        let mut cache = self.qwen35_batch_projection_scratch_buffers.lock().unwrap();
+        let scratch = cache.entry(key.clone()).or_insert_with(|| {
+            Qwen35MetalBatchProjectionScratchBuffers::new(&self.device, &key)
+                .expect("Failed to allocate qwen35 batch projection scratch buffers")
+        });
+        f(scratch)
+    }
+
+    pub(crate) fn with_qwen35_batch_logits_scratch<R>(
+        &self,
+        hidden_len: usize,
+        logits_len: usize,
+        f: impl FnOnce(&mut Qwen35MetalBatchLogitsScratchBuffers) -> R,
+    ) -> R {
+        let key = Qwen35BatchLogitsScratchBufferKey {
+            hidden_len,
+            logits_len,
+        };
+        let mut cache = self.qwen35_batch_logits_scratch_buffers.lock().unwrap();
+        let scratch = cache.entry(key).or_insert_with(|| {
+            Qwen35MetalBatchLogitsScratchBuffers::new(&self.device, key)
+                .expect("Failed to allocate qwen35 batch logits scratch buffers")
+        });
+        f(scratch)
+    }
+
     pub(crate) fn sync_qwen35_slot_buffers_from_kv(
         &self,
         qwen_kv: &crate::kv::Qwen35Kv,
         layer_idx: usize,
         slot_idx: usize,
-    ) {
+    ) -> Qwen35SlotBufferSyncOutcome {
         let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
         let recurrent_state_stride = qwen_kv.recurrent_state_len();
         let slot_key = Qwen35RecurrentSlotBufferKey {
@@ -2889,6 +3791,7 @@ impl MetalOps {
             recurrent_state_stride,
         };
         let recurrent_generation = qwen_kv.recurrent_state_generation(slot_idx, layer_idx);
+        let mut outcome = Qwen35SlotBufferSyncOutcome::default();
         let mut slot_cache = self.qwen35_recurrent_slot_buffers.lock().unwrap();
         let slot_buffers = slot_cache.entry(slot_key).or_insert_with(|| {
             Qwen35MetalSlotBuffers::new(&self.device, conv_state_stride, recurrent_state_stride)
@@ -2902,9 +3805,18 @@ impl MetalOps {
         let conv_generation = qwen_kv.conv_state_generation(slot_idx, layer_idx);
         if !qwen_kv.conv_state_cpu_stale(slot_idx, layer_idx) {
             if slot_buffers.conv_synced_generation != Some(conv_generation) {
-                unsafe {
-                    slot_buffers.conv_state.as_mut_slice::<f32>()[..conv_state_stride]
-                        .copy_from_slice(qwen_kv.conv_state_for_slot(slot_idx, layer_idx));
+                if qwen_kv.conv_state_pristine_zero(slot_idx, layer_idx) {
+                    unsafe {
+                        slot_buffers.conv_state.as_mut_slice::<f32>()[..conv_state_stride]
+                            .fill(0.0);
+                    }
+                    outcome.note_backend_zero_init();
+                } else {
+                    unsafe {
+                        slot_buffers.conv_state.as_mut_slice::<f32>()[..conv_state_stride]
+                            .copy_from_slice(qwen_kv.conv_state_for_slot(slot_idx, layer_idx));
+                    }
+                    outcome.note_cpu_materialization();
                 }
                 slot_buffers.conv_synced_generation = Some(conv_generation);
             }
@@ -2912,13 +3824,26 @@ impl MetalOps {
             panic!(
                 "qwen35 conv state for slot {slot_idx} layer {layer_idx} is backend-owned but Metal slot buffer lost generation {conv_generation}"
             );
+        } else {
+            outcome.note_backend_carryover();
         }
 
         if !qwen_kv.recurrent_state_cpu_stale(slot_idx, layer_idx) {
             if slot_buffers.recurrent_synced_generation != Some(recurrent_generation) {
-                unsafe {
-                    slot_buffers.recurrent_state.as_mut_slice::<f32>()[..recurrent_state_stride]
-                        .copy_from_slice(qwen_kv.recurrent_state_for_slot(slot_idx, layer_idx));
+                if qwen_kv.recurrent_state_pristine_zero(slot_idx, layer_idx) {
+                    unsafe {
+                        slot_buffers.recurrent_state.as_mut_slice::<f32>()
+                            [..recurrent_state_stride]
+                            .fill(0.0);
+                    }
+                    outcome.note_backend_zero_init();
+                } else {
+                    unsafe {
+                        slot_buffers.recurrent_state.as_mut_slice::<f32>()
+                            [..recurrent_state_stride]
+                            .copy_from_slice(qwen_kv.recurrent_state_for_slot(slot_idx, layer_idx));
+                    }
+                    outcome.note_cpu_materialization();
                 }
                 slot_buffers.recurrent_synced_generation = Some(recurrent_generation);
             }
@@ -2926,8 +3851,11 @@ impl MetalOps {
             panic!(
                 "qwen35 recurrent state for slot {slot_idx} layer {layer_idx} is backend-owned but Metal slot buffer lost generation {recurrent_generation}"
             );
+        } else {
+            outcome.note_backend_carryover();
         }
         slot_buffers.source_kv_identity = Some(kv_identity);
+        outcome
     }
 
     pub(crate) fn with_qwen35_recurrent_slot_buffer<R>(
@@ -3645,6 +4573,25 @@ impl Backend for HybridBackend {
         }
     }
 
+    fn try_clone_qwen35_recurrent_slot(
+        &self,
+        qwen_kv: &mut crate::kv::Qwen35Kv,
+        src_slot_idx: usize,
+        dst_slot_idx: usize,
+    ) -> bool {
+        if self.decode_on_cpu {
+            self.cpu
+                .try_clone_qwen35_recurrent_slot(qwen_kv, src_slot_idx, dst_slot_idx)
+        } else {
+            self.metal
+                .try_clone_qwen35_recurrent_slot_from_backend_owned(
+                    qwen_kv,
+                    src_slot_idx,
+                    dst_slot_idx,
+                )
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn qwen35_recurrent_sequence_for_kv(
         &self,
@@ -3929,6 +4876,16 @@ impl Backend for HybridCpuDecodeBackend {
         self.cpu.sync_qwen35_kv(qwen_kv);
     }
 
+    fn try_clone_qwen35_recurrent_slot(
+        &self,
+        qwen_kv: &mut crate::kv::Qwen35Kv,
+        src_slot_idx: usize,
+        dst_slot_idx: usize,
+    ) -> bool {
+        self.cpu
+            .try_clone_qwen35_recurrent_slot(qwen_kv, src_slot_idx, dst_slot_idx)
+    }
+
     fn dequant_matmul(
         &self,
         a_quant: &[u8],
@@ -4149,11 +5106,297 @@ mod tests {
             rms_norm_eps,
         );
 
-        assert_eq!(actual_q, expected_q);
-        assert_eq!(actual_k, expected_k);
-        assert_eq!(actual_v, expected_v);
-        assert_eq!(actual_gate, expected_gate);
-        assert_eq!(actual_beta, expected_beta);
+        for (actual, expected) in actual_q.iter().zip(expected_q.iter()) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        for (actual, expected) in actual_k.iter().zip(expected_k.iter()) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        for (actual, expected) in actual_v.iter().zip(expected_v.iter()) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        for (actual, expected) in actual_gate.iter().zip(expected_gate.iter()) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        for (actual, expected) in actual_beta.iter().zip(expected_beta.iter()) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_metal_gdn_prepare_multi_token_qkv_matches_cpu_pack_path() {
+        let backend = MetalBackend::new().unwrap();
+        let n_tokens = 3usize;
+        let group_count = 2usize;
+        let time_step_rank = 4usize;
+        let state_size = 4usize;
+        let key_dim = group_count * state_size;
+        let value_dim = time_step_rank * state_size;
+        let conv_dim = 2 * key_dim + value_dim;
+        let rms_norm_eps = 1e-5f32;
+
+        let conv_out: Vec<f32> = (0..n_tokens * conv_dim)
+            .map(|i| ((i % 23) as f32 - 11.0) * 0.05)
+            .collect();
+        let alpha: Vec<f32> = (0..n_tokens * time_step_rank)
+            .map(|i| ((i % 7) as f32 - 3.0) * 0.1)
+            .collect();
+        let beta: Vec<f32> = (0..n_tokens * time_step_rank)
+            .map(|i| 0.2 + (i % 5) as f32 * 0.03)
+            .collect();
+
+        let mut expected_q = vec![0.0f32; n_tokens * value_dim];
+        let mut expected_k = vec![0.0f32; n_tokens * value_dim];
+        let mut expected_v = vec![0.0f32; n_tokens * value_dim];
+        let mut expected_gate = vec![0.0f32; n_tokens * time_step_rank];
+        let mut expected_beta = vec![0.0f32; n_tokens * time_step_rank];
+        prepare_multi_token_gdn_bh_buffers(
+            &conv_out,
+            &alpha,
+            &beta,
+            &mut expected_q,
+            &mut expected_k,
+            &mut expected_v,
+            &mut expected_gate,
+            &mut expected_beta,
+            n_tokens,
+            group_count,
+            time_step_rank,
+            state_size,
+            rms_norm_eps,
+        );
+
+        let conv_buf = MetalBuffer::from_slice(backend.device.device(), &conv_out).unwrap();
+        let alpha_buf = MetalBuffer::from_slice(backend.device.device(), &alpha).unwrap();
+        let beta_buf = MetalBuffer::from_slice(backend.device.device(), &beta).unwrap();
+        let q_buf = MetalBuffer::new(
+            backend.device.device(),
+            n_tokens * value_dim * size_of::<f32>(),
+        )
+        .unwrap();
+        let k_buf = MetalBuffer::new(
+            backend.device.device(),
+            n_tokens * value_dim * size_of::<f32>(),
+        )
+        .unwrap();
+        let v_buf = MetalBuffer::new(
+            backend.device.device(),
+            n_tokens * value_dim * size_of::<f32>(),
+        )
+        .unwrap();
+        let gate_buf = MetalBuffer::new(
+            backend.device.device(),
+            n_tokens * time_step_rank * size_of::<f32>(),
+        )
+        .unwrap();
+        let beta_out_buf = MetalBuffer::new(
+            backend.device.device(),
+            n_tokens * time_step_rank * size_of::<f32>(),
+        )
+        .unwrap();
+
+        assert!(
+            backend
+                .gdn_kernels
+                .prepare_multi_token_qkv(
+                    &backend.device,
+                    &conv_buf,
+                    &alpha_buf,
+                    &beta_buf,
+                    &q_buf,
+                    &k_buf,
+                    &v_buf,
+                    &gate_buf,
+                    &beta_out_buf,
+                    n_tokens as u32,
+                    group_count as u32,
+                    time_step_rank as u32,
+                    state_size as u32,
+                    rms_norm_eps,
+                )
+                .unwrap()
+        );
+
+        let actual_q = unsafe { q_buf.as_slice::<f32>()[..n_tokens * value_dim].to_vec() };
+        let actual_k = unsafe { k_buf.as_slice::<f32>()[..n_tokens * value_dim].to_vec() };
+        let actual_v = unsafe { v_buf.as_slice::<f32>()[..n_tokens * value_dim].to_vec() };
+        let actual_gate =
+            unsafe { gate_buf.as_slice::<f32>()[..n_tokens * time_step_rank].to_vec() };
+        let actual_beta =
+            unsafe { beta_out_buf.as_slice::<f32>()[..n_tokens * time_step_rank].to_vec() };
+
+        for (actual, expected) in actual_q.iter().zip(expected_q.iter()) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        for (actual, expected) in actual_k.iter().zip(expected_k.iter()) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        for (actual, expected) in actual_v.iter().zip(expected_v.iter()) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        for (actual, expected) in actual_gate.iter().zip(expected_gate.iter()) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        for (actual, expected) in actual_beta.iter().zip(expected_beta.iter()) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_metal_gdn_prepare_multi_token_qkv_matches_cpu_pack_path_with_f16_alpha_beta_storage() {
+        let backend = MetalBackend::new().unwrap();
+        let n_tokens = 3usize;
+        let group_count = 2usize;
+        let time_step_rank = 4usize;
+        let state_size = 4usize;
+        let key_dim = group_count * state_size;
+        let value_dim = time_step_rank * state_size;
+        let conv_dim = 2 * key_dim + value_dim;
+        let rms_norm_eps = 1e-5f32;
+
+        let conv_out: Vec<f32> = (0..n_tokens * conv_dim)
+            .map(|i| ((i % 23) as f32 - 11.0) * 0.05)
+            .collect();
+        let alpha: Vec<f32> = (0..n_tokens * time_step_rank)
+            .map(|i| ((i % 7) as f32 - 3.0) * 0.1)
+            .collect();
+        let beta: Vec<f32> = (0..n_tokens * time_step_rank)
+            .map(|i| 0.2 + (i % 5) as f32 * 0.03)
+            .collect();
+        let alpha_f16: Vec<half::f16> = alpha.iter().copied().map(half::f16::from_f32).collect();
+        let beta_f16: Vec<half::f16> = beta.iter().copied().map(half::f16::from_f32).collect();
+
+        let mut expected_q = vec![0.0f32; n_tokens * value_dim];
+        let mut expected_k = vec![0.0f32; n_tokens * value_dim];
+        let mut expected_v = vec![0.0f32; n_tokens * value_dim];
+        let mut expected_gate = vec![0.0f32; n_tokens * time_step_rank];
+        let mut expected_beta = vec![0.0f32; n_tokens * time_step_rank];
+        prepare_multi_token_gdn_bh_buffers(
+            &conv_out,
+            &alpha,
+            &beta,
+            &mut expected_q,
+            &mut expected_k,
+            &mut expected_v,
+            &mut expected_gate,
+            &mut expected_beta,
+            n_tokens,
+            group_count,
+            time_step_rank,
+            state_size,
+            rms_norm_eps,
+        );
+
+        let conv_buf = MetalBuffer::from_slice(backend.device.device(), &conv_out).unwrap();
+        let alpha_buf = MetalBuffer::from_slice(backend.device.device(), &alpha_f16).unwrap();
+        let beta_buf = MetalBuffer::from_slice(backend.device.device(), &beta_f16).unwrap();
+        let q_buf = MetalBuffer::new(
+            backend.device.device(),
+            n_tokens * value_dim * size_of::<f32>(),
+        )
+        .unwrap();
+        let k_buf = MetalBuffer::new(
+            backend.device.device(),
+            n_tokens * value_dim * size_of::<f32>(),
+        )
+        .unwrap();
+        let v_buf = MetalBuffer::new(
+            backend.device.device(),
+            n_tokens * value_dim * size_of::<f32>(),
+        )
+        .unwrap();
+        let gate_buf = MetalBuffer::new(
+            backend.device.device(),
+            n_tokens * time_step_rank * size_of::<f32>(),
+        )
+        .unwrap();
+        let beta_out_buf = MetalBuffer::new(
+            backend.device.device(),
+            n_tokens * time_step_rank * size_of::<f32>(),
+        )
+        .unwrap();
+
+        backend
+            .device
+            .execute_sync(|encoder| {
+                assert!(
+                    backend
+                        .gdn_kernels
+                        .encode_prepare_multi_token_qkv_alpha_beta_f16(
+                            encoder,
+                            &conv_buf,
+                            &alpha_buf,
+                            &beta_buf,
+                            &q_buf,
+                            &k_buf,
+                            &v_buf,
+                            &gate_buf,
+                            &beta_out_buf,
+                            n_tokens as u32,
+                            group_count as u32,
+                            time_step_rank as u32,
+                            state_size as u32,
+                            rms_norm_eps,
+                        )
+                );
+                Ok(())
+            })
+            .unwrap();
+
+        let actual_q = unsafe { q_buf.as_slice::<f32>()[..n_tokens * value_dim].to_vec() };
+        let actual_k = unsafe { k_buf.as_slice::<f32>()[..n_tokens * value_dim].to_vec() };
+        let actual_v = unsafe { v_buf.as_slice::<f32>()[..n_tokens * value_dim].to_vec() };
+        let actual_gate =
+            unsafe { gate_buf.as_slice::<f32>()[..n_tokens * time_step_rank].to_vec() };
+        let actual_beta =
+            unsafe { beta_out_buf.as_slice::<f32>()[..n_tokens * time_step_rank].to_vec() };
+
+        for (actual, expected) in actual_q.iter().zip(expected_q.iter()) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        for (actual, expected) in actual_k.iter().zip(expected_k.iter()) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        for (actual, expected) in actual_v.iter().zip(expected_v.iter()) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        for (actual, expected) in actual_gate.iter().zip(expected_gate.iter()) {
+            assert!((actual - expected).abs() < 5e-4);
+        }
+        for (actual, expected) in actual_beta.iter().zip(expected_beta.iter()) {
+            assert!((actual - expected).abs() < 5e-4);
+        }
+    }
+
+    #[test]
+    fn test_metal_gdn_unpack_bhsk_to_token_major_matches_cpu() {
+        let backend = MetalBackend::new().unwrap();
+        let n_tokens = 3usize;
+        let n_heads = 4usize;
+        let head_dim = 4usize;
+        let input: Vec<f32> = (0..n_tokens * n_heads * head_dim)
+            .map(|i| i as f32 * 0.25 - 3.0)
+            .collect();
+        let mut expected = vec![0.0f32; input.len()];
+        unpack_bhsk_to_token_major(&input, &mut expected, n_tokens, n_heads, head_dim);
+
+        let input_buf = MetalBuffer::from_slice(backend.device.device(), &input).unwrap();
+        let output_buf =
+            MetalBuffer::new(backend.device.device(), input.len() * size_of::<f32>()).unwrap();
+        backend
+            .gdn_kernels
+            .unpack_bhsk_to_token_major(
+                &backend.device,
+                &input_buf,
+                &output_buf,
+                n_tokens as u32,
+                n_heads as u32,
+                head_dim as u32,
+            )
+            .unwrap();
+        let actual = unsafe { output_buf.as_slice::<f32>()[..input.len()].to_vec() };
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -4904,15 +6147,14 @@ mod tests {
         assert!(max_abs_diff(&metal_conv_state, &cpu_conv_state) < 1e-5);
         assert!(max_abs_diff(&metal_recurrent_state, &cpu_recurrent_state) < 1e-4);
 
-        let first_ptrs = {
+        {
             let cache = backend.ops.qwen35_recurrent_slot_buffers.lock().unwrap();
-            assert_eq!(cache.len(), 1);
-            let buffers = cache.get(&slot_key).unwrap();
-            (
-                buffers.conv_state.ptr_id(),
-                buffers.recurrent_state.ptr_id(),
-            )
-        };
+            assert_eq!(
+                cache.len(),
+                0,
+                "state-batch Metal recurrent path should alias CPU state directly without slot buffers"
+            );
+        }
         let first_scratch_ptrs = {
             let cache = backend.qwen35_recurrent_scratch_buffers.lock().unwrap();
             assert_eq!(cache.len(), 1);
@@ -4953,12 +6195,8 @@ mod tests {
                 cfg,
             );
         }
-
         let cache = backend.ops.qwen35_recurrent_slot_buffers.lock().unwrap();
-        assert_eq!(cache.len(), 1);
-        let buffers = cache.get(&slot_key).unwrap();
-        assert_eq!(buffers.conv_state.ptr_id(), first_ptrs.0);
-        assert_eq!(buffers.recurrent_state.ptr_id(), first_ptrs.1);
+        assert_eq!(cache.len(), 0);
         drop(cache);
 
         let cache = backend.qwen35_recurrent_scratch_buffers.lock().unwrap();
@@ -5123,8 +6361,146 @@ mod tests {
     }
 
     #[test]
-    fn test_metal_backend_qwen35_recurrent_sequence_for_kv_multi_token_matches_cpu_without_slot_cache()
-     {
+    fn test_metal_ops_qwen35_recurrent_projection_scratch_reuses_buffers_by_shape() {
+        let backend = MetalBackend::new().unwrap();
+
+        let first_ptrs =
+            backend
+                .ops
+                .with_qwen35_recurrent_projection_scratch(64, 4096, 2048, 128, |scratch| {
+                    (
+                        scratch.qkv.ptr_id(),
+                        scratch.z.ptr_id(),
+                        scratch.beta.ptr_id(),
+                        scratch.alpha.ptr_id(),
+                    )
+                });
+        let second_ptrs =
+            backend
+                .ops
+                .with_qwen35_recurrent_projection_scratch(64, 4096, 2048, 128, |scratch| {
+                    (
+                        scratch.qkv.ptr_id(),
+                        scratch.z.ptr_id(),
+                        scratch.beta.ptr_id(),
+                        scratch.alpha.ptr_id(),
+                    )
+                });
+
+        assert_eq!(first_ptrs, second_ptrs);
+
+        let third_ptrs =
+            backend
+                .ops
+                .with_qwen35_recurrent_projection_scratch(128, 4096, 2048, 128, |scratch| {
+                    (
+                        scratch.qkv.ptr_id(),
+                        scratch.z.ptr_id(),
+                        scratch.beta.ptr_id(),
+                        scratch.alpha.ptr_id(),
+                    )
+                });
+
+        assert_ne!(first_ptrs, third_ptrs);
+        let cache = backend
+            .ops
+            .qwen35_recurrent_projection_scratch_buffers
+            .lock()
+            .unwrap();
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn test_metal_ops_qwen35_batch_projection_scratch_reuses_buffers_by_shape() {
+        let backend = MetalBackend::new().unwrap();
+
+        let first_ptrs =
+            backend
+                .ops
+                .with_qwen35_batch_projection_scratch(64, &[4096, 4096, 1024], |scratch| {
+                    scratch
+                        .outputs
+                        .iter()
+                        .map(MetalBuffer::ptr_id)
+                        .collect::<Vec<_>>()
+                });
+        let second_ptrs =
+            backend
+                .ops
+                .with_qwen35_batch_projection_scratch(64, &[4096, 4096, 1024], |scratch| {
+                    scratch
+                        .outputs
+                        .iter()
+                        .map(MetalBuffer::ptr_id)
+                        .collect::<Vec<_>>()
+                });
+
+        assert_eq!(first_ptrs, second_ptrs);
+
+        let third_ptrs =
+            backend
+                .ops
+                .with_qwen35_batch_projection_scratch(128, &[4096, 4096, 1024], |scratch| {
+                    scratch
+                        .outputs
+                        .iter()
+                        .map(MetalBuffer::ptr_id)
+                        .collect::<Vec<_>>()
+                });
+
+        assert_ne!(first_ptrs, third_ptrs);
+        let cache = backend
+            .ops
+            .qwen35_batch_projection_scratch_buffers
+            .lock()
+            .unwrap();
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn test_metal_ops_qwen35_batch_logits_scratch_reuses_buffers_by_shape() {
+        let backend = MetalBackend::new().unwrap();
+
+        let first_ptrs = backend
+            .ops
+            .with_qwen35_batch_logits_scratch(4096, 32000, |scratch| {
+                vec![
+                    scratch.hidden.ptr_id(),
+                    scratch.hidden_f16.ptr_id(),
+                    scratch.logits.ptr_id(),
+                ]
+            });
+        let second_ptrs = backend
+            .ops
+            .with_qwen35_batch_logits_scratch(4096, 32000, |scratch| {
+                vec![
+                    scratch.hidden.ptr_id(),
+                    scratch.hidden_f16.ptr_id(),
+                    scratch.logits.ptr_id(),
+                ]
+            });
+        let third_ptrs = backend
+            .ops
+            .with_qwen35_batch_logits_scratch(8192, 32000, |scratch| {
+                vec![
+                    scratch.hidden.ptr_id(),
+                    scratch.hidden_f16.ptr_id(),
+                    scratch.logits.ptr_id(),
+                ]
+            });
+
+        assert_eq!(first_ptrs, second_ptrs);
+        assert_ne!(first_ptrs, third_ptrs);
+        let cache = backend
+            .ops
+            .qwen35_batch_logits_scratch_buffers
+            .lock()
+            .unwrap();
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn test_metal_backend_qwen35_recurrent_sequence_for_kv_multi_token_keeps_backend_owned_state() {
         let backend = MetalBackend::new().unwrap();
         let cpu = super::super::cpu::CpuBackend;
         let cfg = crate::compute::gdn::Qwen35RecurrentConfig {
@@ -5210,6 +6586,26 @@ mod tests {
         assert!(max_abs_diff(&actual_beta, &expected_beta) < 1e-5);
         assert!(max_abs_diff(&actual_out, &expected_out) < 1e-4);
         assert!(
+            actual_kv.conv_state_cpu_stale(0, layer_idx),
+            "multi-token qwen35 recurrent KV path should keep conv state backend-owned",
+        );
+        assert!(
+            actual_kv.recurrent_state_cpu_stale(0, layer_idx),
+            "multi-token qwen35 recurrent KV path should keep recurrent state backend-owned",
+        );
+        assert!(
+            !backend
+                .ops
+                .qwen35_recurrent_slot_buffers
+                .lock()
+                .unwrap()
+                .is_empty(),
+            "multi-token qwen35 recurrent KV path should populate cached Metal slot buffers",
+        );
+
+        backend.sync_qwen35_kv(&mut actual_kv);
+
+        assert!(
             max_abs_diff(
                 actual_kv.conv_state_for_slot(0, layer_idx),
                 expected_kv.conv_state_for_slot(0, layer_idx),
@@ -5220,15 +6616,6 @@ mod tests {
                 actual_kv.recurrent_state_for_slot(0, layer_idx),
                 expected_kv.recurrent_state_for_slot(0, layer_idx),
             ) < 1e-4
-        );
-        assert!(
-            backend
-                .ops
-                .qwen35_recurrent_slot_buffers
-                .lock()
-                .unwrap()
-                .is_empty(),
-            "multi-token qwen35 recurrent KV path should bypass cached Metal slot buffers"
         );
     }
 
@@ -5321,16 +6708,12 @@ mod tests {
         assert!(max_abs_diff(&warmup_actual_beta, &warmup_expected_beta) < 1e-5);
         assert!(max_abs_diff(&warmup_actual_out, &warmup_expected_out) < 1e-4);
         assert!(
-            max_abs_diff(
-                actual_kv.conv_state_for_slot(0, layer_idx),
-                expected_kv.conv_state_for_slot(0, layer_idx),
-            ) < 1e-5
+            actual_kv.conv_state_cpu_stale(0, layer_idx),
+            "multi-token warmup should leave conv state backend-owned",
         );
         assert!(
-            max_abs_diff(
-                actual_kv.recurrent_state_for_slot(0, layer_idx),
-                expected_kv.recurrent_state_for_slot(0, layer_idx),
-            ) < 1e-4
+            actual_kv.recurrent_state_cpu_stale(0, layer_idx),
+            "multi-token warmup should leave recurrent state backend-owned",
         );
 
         let decode_qkv: Vec<f32> = (0..cfg.conv_dim)
@@ -5395,7 +6778,7 @@ mod tests {
     }
 
     #[test]
-    fn test_metal_backend_qwen35_recurrent_sequence_for_kv_multi_slot_multi_token_syncs_backend_owned_state()
+    fn test_metal_backend_qwen35_recurrent_sequence_for_kv_multi_slot_multi_token_keeps_backend_owned_state()
      {
         let backend = MetalBackend::new().unwrap();
         let cpu = super::super::cpu::CpuBackend;
@@ -5568,13 +6951,24 @@ mod tests {
         assert!(max_abs_diff(&actual_beta, &expected_beta) < 1e-5);
         assert!(max_abs_diff(&actual_out, &expected_out) < 1e-4);
         assert!(
-            !actual_kv.recurrent_state_cpu_stale(0, layer_idx),
-            "multi-token slot 0 path should materialize recurrent state on CPU after syncing from backend"
+            actual_kv.conv_state_cpu_stale(0, layer_idx),
+            "multi-token slot 0 path should keep conv state backend-owned",
         );
         assert!(
-            !actual_kv.recurrent_state_cpu_stale(slot1, layer_idx),
-            "multi-token slot 1 path should materialize recurrent state on CPU after syncing from backend"
+            actual_kv.recurrent_state_cpu_stale(0, layer_idx),
+            "multi-token slot 0 path should keep recurrent state backend-owned",
         );
+        assert!(
+            actual_kv.conv_state_cpu_stale(slot1, layer_idx),
+            "multi-token slot 1 path should keep conv state backend-owned",
+        );
+        assert!(
+            actual_kv.recurrent_state_cpu_stale(slot1, layer_idx),
+            "multi-token slot 1 path should keep recurrent state backend-owned",
+        );
+
+        backend.sync_qwen35_kv(&mut actual_kv);
+
         assert!(
             max_abs_diff(
                 actual_kv.conv_state_for_slot(0, layer_idx),
@@ -6218,6 +7612,118 @@ mod tests {
 
         assert!(qwen_kv.recurrent_state_cpu_stale(0, layer_idx));
         let _ = qwen_kv.snapshot_active_slot();
+    }
+
+    #[test]
+    fn test_metal_backend_try_clone_qwen35_recurrent_slot_preserves_backend_owned_state() {
+        let backend = MetalBackend::new().unwrap();
+        let mut qwen_kv = crate::kv::Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+        let layer_idx = 0usize;
+        let dst_slot = qwen_kv.allocate_recurrent_slot();
+        let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
+        let recurrent_state_stride = qwen_kv.recurrent_state_len();
+
+        qwen_kv.conv_state_for_slot_mut(0, layer_idx).fill(-1.0);
+        qwen_kv
+            .recurrent_state_for_slot_mut(0, layer_idx)
+            .fill(-2.0);
+
+        let expected_conv: Vec<f32> = (0..conv_state_stride)
+            .map(|i| ((i % 13) as f32 - 6.0) * 0.1)
+            .collect();
+        let expected_recurrent: Vec<f32> = (0..recurrent_state_stride)
+            .map(|i| ((i % 17) as f32 - 8.0) * 0.05)
+            .collect();
+        let conv_generation = qwen_kv.note_backend_conv_state_update(0, layer_idx);
+        let recurrent_generation = qwen_kv.note_backend_recurrent_state_update(0, layer_idx);
+        let kv_identity = &qwen_kv as *const crate::kv::Qwen35Kv as usize;
+        backend.ops.with_qwen35_recurrent_slot_buffer(
+            layer_idx,
+            0,
+            conv_state_stride,
+            recurrent_state_stride,
+            |slot_buffers| {
+                unsafe {
+                    slot_buffers.conv_state.as_mut_slice::<f32>()[..conv_state_stride]
+                        .copy_from_slice(&expected_conv);
+                    slot_buffers.recurrent_state.as_mut_slice::<f32>()[..recurrent_state_stride]
+                        .copy_from_slice(&expected_recurrent);
+                }
+                slot_buffers.conv_synced_generation = Some(conv_generation);
+                slot_buffers.recurrent_synced_generation = Some(recurrent_generation);
+                slot_buffers.source_kv_identity = Some(kv_identity);
+            },
+        );
+
+        assert!(qwen_kv.conv_state_cpu_stale(0, layer_idx));
+        assert!(qwen_kv.recurrent_state_cpu_stale(0, layer_idx));
+        assert!(backend.try_clone_qwen35_recurrent_slot_from_backend_owned(
+            &mut qwen_kv,
+            0,
+            dst_slot
+        ));
+        assert!(qwen_kv.conv_state_cpu_stale(dst_slot, layer_idx));
+        assert!(qwen_kv.recurrent_state_cpu_stale(dst_slot, layer_idx));
+        assert_eq!(
+            qwen_kv.conv_state_generation(dst_slot, layer_idx),
+            conv_generation
+        );
+        assert_eq!(
+            qwen_kv.recurrent_state_generation(dst_slot, layer_idx),
+            recurrent_generation
+        );
+
+        backend.sync_qwen35_kv(&mut qwen_kv);
+
+        assert_eq!(
+            qwen_kv.conv_state_for_slot(dst_slot, layer_idx),
+            expected_conv.as_slice()
+        );
+        assert_eq!(
+            qwen_kv.recurrent_state_for_slot(dst_slot, layer_idx),
+            expected_recurrent.as_slice()
+        );
+    }
+
+    #[test]
+    fn test_sync_qwen35_slot_buffers_from_kv_zero_inits_pristine_cpu_state_without_copy() {
+        let backend = MetalBackend::new().unwrap();
+        let qwen_kv = crate::kv::Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+        let layer_idx = 0usize;
+        let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
+        let recurrent_state_stride = qwen_kv.recurrent_state_len();
+
+        let outcome = backend
+            .ops
+            .sync_qwen35_slot_buffers_from_kv(&qwen_kv, layer_idx, 0);
+        assert!(outcome.used_backend_zero_init);
+        assert!(!outcome.used_cpu_materialization);
+        assert!(!outcome.used_backend_carryover);
+
+        backend.ops.with_qwen35_recurrent_slot_buffer(
+            layer_idx,
+            0,
+            conv_state_stride,
+            recurrent_state_stride,
+            |slot_buffers| {
+                let conv = unsafe { slot_buffers.conv_state.as_slice::<f32>() };
+                let recurrent = unsafe { slot_buffers.recurrent_state.as_slice::<f32>() };
+                assert!(conv[..conv_state_stride].iter().all(|&v| v == 0.0));
+                assert!(
+                    recurrent[..recurrent_state_stride]
+                        .iter()
+                        .all(|&v| v == 0.0)
+                );
+                assert_eq!(
+                    slot_buffers.conv_synced_generation,
+                    Some(qwen_kv.conv_state_generation(0, layer_idx))
+                );
+                assert_eq!(
+                    slot_buffers.recurrent_synced_generation,
+                    Some(qwen_kv.recurrent_state_generation(0, layer_idx))
+                );
+            },
+        );
     }
 
     #[test]

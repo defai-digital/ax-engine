@@ -8,6 +8,7 @@ use std::thread;
 use std::time::Duration;
 
 use ax_engine_core::gguf::MappedModel;
+use ax_engine_core::kv::ModelKv;
 use ax_engine_core::metrics::LatencyHistogram;
 use ax_engine_core::metrics::counters::OpTimer;
 use ax_engine_core::model::{
@@ -15,7 +16,7 @@ use ax_engine_core::model::{
     LlamaModel, ModelConfig, WeightStore, run_decode,
 };
 use ax_engine_core::sampling::{Sampler, SamplingConfig};
-use ax_engine_core::speculative::SpeculativeDecoder;
+use ax_engine_core::speculative::{SpeculativeDecoder, target_verify_mode_label};
 use ax_engine_core::tokenizer::Tokenizer;
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +40,12 @@ pub struct BenchConfig {
     pub cooldown_ms: u64,
     /// Whether the benchmark is measuring throughput or latency semantics.
     pub intent: DecodeIntent,
+    /// Fan the same prompt out across this many Qwen3.5 recurrent slots on a
+    /// shared attention timeline during prefill. Only valid for qwen35 and
+    /// values >= 1.
+    pub qwen35_shared_timeline_slots: usize,
+    /// Optional source recurrent slot for Qwen3.5 shared-timeline prefill.
+    pub qwen35_shared_timeline_source_slot: Option<usize>,
     /// Optional kernel profile override path used for this run.
     pub kernel_profile_path: Option<String>,
 }
@@ -81,6 +88,8 @@ impl Default for BenchConfig {
             samples: 1,
             cooldown_ms: 0,
             intent: DecodeIntent::Throughput,
+            qwen35_shared_timeline_slots: 1,
+            qwen35_shared_timeline_source_slot: None,
             kernel_profile_path: None,
         }
     }
@@ -111,12 +120,21 @@ pub struct BenchResult {
     pub model: String,
     /// Prompt token count.
     pub prompt_tokens: usize,
+    /// Effective shared-timeline prompt advancement in slot-tokens.
+    #[serde(default)]
+    pub effective_prefill_tokens: usize,
     /// Decode token count.
     pub decode_tokens: usize,
     /// Average prefill throughput (tok/s).
     pub prefill_tok_per_sec: f64,
     /// Median prefill throughput (tok/s).
     pub prefill_tok_per_sec_median: f64,
+    /// Average effective shared-timeline prefill throughput (slot-tok/s).
+    #[serde(default)]
+    pub effective_prefill_tok_per_sec: f64,
+    /// Median effective shared-timeline prefill throughput (slot-tok/s).
+    #[serde(default)]
+    pub effective_prefill_tok_per_sec_median: f64,
     /// Average decode throughput (tok/s).
     pub decode_tok_per_sec: f64,
     /// Median decode throughput (tok/s).
@@ -155,6 +173,27 @@ pub struct BenchResult {
     /// Compact prefill execution-plan summary.
     #[serde(default)]
     pub prefill_plan: String,
+    /// Parsed `mode=...` from the prefill plan, when present.
+    #[serde(default)]
+    pub prefill_mode: String,
+    /// Normalized prefill runtime family derived from the plan.
+    #[serde(default)]
+    pub prefill_route_family: String,
+    /// Normalized prefill runtime detail derived from the plan.
+    #[serde(default)]
+    pub prefill_route_detail: String,
+    /// Parsed `attn_route=...` from the prefill plan, when present.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_attention_route: Option<String>,
+    /// Parsed `qkv=...` from the prefill plan, when present.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_qkv_plan: Option<String>,
+    /// Parsed `split_rope=...` from the prefill plan, when present.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_split_rope_append: Option<bool>,
     /// Parsed `q5k_prefill=...` mode from the prefill plan, when present.
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -174,6 +213,11 @@ pub struct BenchResult {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kernel_profile_path: Option<String>,
+    #[serde(default = "default_qwen35_shared_timeline_slots")]
+    pub qwen35_shared_timeline_slots: usize,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qwen35_shared_timeline_source_slot: Option<usize>,
     /// Whether f16 KV cache was active.
     pub kv_f16: bool,
     /// True when deterministic mode was enabled.
@@ -210,6 +254,9 @@ pub struct SpecBenchResult {
     /// Compact prefill execution-plan summary.
     #[serde(default)]
     pub prefill_plan: String,
+    /// Target verification implementation path used during speculative decode.
+    #[serde(default)]
+    pub target_verify_mode: String,
     /// Parsed `q5k_prefill=...` mode from the prefill plan, when present.
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -220,6 +267,15 @@ pub struct SpecBenchResult {
     pub draft_ms_per_step: f64,
     /// Average verification time per speculative step.
     pub verify_ms_per_step: f64,
+    /// Average verification prepare time per speculative step.
+    #[serde(default)]
+    pub verify_prepare_ms_per_step: f64,
+    /// Average verification forward time per speculative step.
+    #[serde(default)]
+    pub verify_forward_ms_per_step: f64,
+    /// Average verification cleanup time per speculative step.
+    #[serde(default)]
+    pub verify_cleanup_ms_per_step: f64,
     /// Average acceptance bookkeeping time per speculative step.
     pub accept_ms_per_step: f64,
     /// Average verification time per verified position.
@@ -244,6 +300,63 @@ pub struct SpecBenchResult {
     /// Cooldown between measured iterations (ms).
     #[serde(default)]
     pub cooldown_ms: u64,
+}
+
+fn default_qwen35_shared_timeline_slots() -> usize {
+    1
+}
+
+fn effective_qwen35_shared_timeline_tokens(prompt_tokens: usize, slot_count: usize) -> usize {
+    prompt_tokens.saturating_mul(slot_count.max(1))
+}
+
+fn prepare_qwen35_shared_timeline_source_slot(
+    model: &LlamaModel,
+    kv: &mut ModelKv,
+    source_slot: Option<usize>,
+) -> anyhow::Result<()> {
+    let Some(source_slot) = source_slot else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        model.arch_name() == "qwen35",
+        "qwen35 shared timeline source slot requires a qwen35 model"
+    );
+    if source_slot == 0 {
+        return Ok(());
+    }
+    kv.clone_qwen35_recurrent_slot(0, source_slot)?;
+    Ok(())
+}
+
+fn run_prefill_once(
+    model: &LlamaModel,
+    kv: &mut ModelKv,
+    prompt_tokens: &[u32],
+    qwen35_shared_timeline_slots: usize,
+    qwen35_shared_timeline_source_slot: Option<usize>,
+    weights: &WeightStore,
+    logits: &mut [f32],
+) -> anyhow::Result<()> {
+    prepare_qwen35_shared_timeline_source_slot(model, kv, qwen35_shared_timeline_source_slot)?;
+    if let Some(source_slot) = qwen35_shared_timeline_source_slot {
+        model.forward_batch_qwen35_shared_timeline_forked_from_slot(
+            prompt_tokens,
+            kv,
+            source_slot,
+            qwen35_shared_timeline_slots,
+            weights,
+            logits,
+        )
+    } else {
+        model.forward_batch_qwen35_shared_timeline_forked(
+            prompt_tokens,
+            kv,
+            qwen35_shared_timeline_slots,
+            weights,
+            logits,
+        )
+    }
 }
 
 /// Run a performance benchmark.
@@ -311,6 +424,8 @@ pub fn run_benchmark_with_backend(
             config.decode_tokens,
             &sampling,
             config.intent,
+            config.qwen35_shared_timeline_slots,
+            config.qwen35_shared_timeline_source_slot,
         )?;
     }
 
@@ -371,6 +486,8 @@ pub fn run_benchmark_with_backend(
                 config.decode_tokens,
                 &sampling,
                 config.intent,
+                config.qwen35_shared_timeline_slots,
+                config.qwen35_shared_timeline_source_slot,
             )?;
             match &decode_selection {
                 None => decode_selection = Some(iter_selection.clone()),
@@ -503,6 +620,10 @@ pub fn run_benchmark_with_backend(
     };
     let prefill_tok_per_sec_median = median(&mut sample_prefill_tok_per_sec);
     let decode_tok_per_sec_median = median(&mut sample_decode_tok_per_sec);
+    let effective_prefill_tokens = effective_qwen35_shared_timeline_tokens(
+        config.prompt_tokens,
+        config.qwen35_shared_timeline_slots,
+    );
 
     let avg_u64 = |vals: &[u64]| -> f64 {
         if vals.is_empty() {
@@ -512,12 +633,18 @@ pub fn run_benchmark_with_backend(
         }
     };
 
+    let prefill_plan = prefill_plan.unwrap_or_else(|| "mode=serial".to_string());
     Ok(BenchResult {
         model: config.model_path.clone(),
         prompt_tokens: config.prompt_tokens,
+        effective_prefill_tokens,
         decode_tokens: config.decode_tokens,
         prefill_tok_per_sec,
         prefill_tok_per_sec_median,
+        effective_prefill_tok_per_sec: prefill_tok_per_sec
+            * config.qwen35_shared_timeline_slots as f64,
+        effective_prefill_tok_per_sec_median: prefill_tok_per_sec_median
+            * config.qwen35_shared_timeline_slots as f64,
         decode_tok_per_sec,
         decode_tok_per_sec_median,
         p50_latency: latency.p50().unwrap_or(Duration::ZERO),
@@ -552,12 +679,20 @@ pub fn run_benchmark_with_backend(
             .as_ref()
             .map(|s| s.mode.to_string())
             .unwrap_or_else(|| "sequential".to_string()),
-        q5k_prefill_mode: prefill_plan.as_deref().and_then(crate::q5k_prefill_mode),
-        prefill_plan: prefill_plan.unwrap_or_else(|| "mode=serial".to_string()),
+        prefill_mode: crate::prefill_mode(&prefill_plan),
+        prefill_route_family: crate::prefill_route_family(&prefill_plan),
+        prefill_route_detail: crate::prefill_route_detail(&prefill_plan),
+        prefill_attention_route: crate::prefill_plan_field(&prefill_plan, "attn_route"),
+        prefill_qkv_plan: crate::prefill_plan_field(&prefill_plan, "qkv"),
+        prefill_split_rope_append: crate::prefill_bool_field(&prefill_plan, "split_rope"),
+        q5k_prefill_mode: crate::q5k_prefill_mode(&prefill_plan),
+        prefill_plan,
         decode_plan: decode_plan.unwrap_or_else(|| "sync=sequential scratch=cpu".to_string()),
         support_note,
         decode_fallback_reason: decode_selection.and_then(|s| s.fallback_reason),
         kernel_profile_path: config.kernel_profile_path.clone(),
+        qwen35_shared_timeline_slots: config.qwen35_shared_timeline_slots,
+        qwen35_shared_timeline_source_slot: config.qwen35_shared_timeline_source_slot,
         kv_f16,
         deterministic: config.deterministic,
         samples: sample_count,
@@ -600,6 +735,8 @@ pub fn run_speculative_benchmark_with_backend(
         &model.create_model_kv_for_weights(&weights),
         prompt_tokens.len(),
     )?;
+    let target_verify_mode =
+        target_verify_mode_label(&model, &model.create_model_kv_for_weights(&weights)).to_string();
 
     for _ in 0..config.warmup_iters {
         run_single_spec_bench(
@@ -630,6 +767,9 @@ pub fn run_speculative_benchmark_with_backend(
     let mut accepted_per_step_values = Vec::new();
     let mut draft_ms_per_step_values = Vec::new();
     let mut verify_ms_per_step_values = Vec::new();
+    let mut verify_prepare_ms_per_step_values = Vec::new();
+    let mut verify_forward_ms_per_step_values = Vec::new();
+    let mut verify_cleanup_ms_per_step_values = Vec::new();
     let mut accept_ms_per_step_values = Vec::new();
     let mut verify_ms_per_position_values = Vec::new();
     let mut draft_ms_per_drafted_token_values = Vec::new();
@@ -647,6 +787,9 @@ pub fn run_speculative_benchmark_with_backend(
                 avg_accepted_per_step,
                 draft_ms_per_step,
                 verify_ms_per_step,
+                verify_prepare_ms_per_step,
+                verify_forward_ms_per_step,
+                verify_cleanup_ms_per_step,
                 accept_ms_per_step,
                 verify_ms_per_position,
                 draft_ms_per_drafted_token,
@@ -670,6 +813,9 @@ pub fn run_speculative_benchmark_with_backend(
             accepted_per_step_values.push(avg_accepted_per_step);
             draft_ms_per_step_values.push(draft_ms_per_step);
             verify_ms_per_step_values.push(verify_ms_per_step);
+            verify_prepare_ms_per_step_values.push(verify_prepare_ms_per_step);
+            verify_forward_ms_per_step_values.push(verify_forward_ms_per_step);
+            verify_cleanup_ms_per_step_values.push(verify_cleanup_ms_per_step);
             accept_ms_per_step_values.push(accept_ms_per_step);
             verify_ms_per_position_values.push(verify_ms_per_position);
             draft_ms_per_drafted_token_values.push(draft_ms_per_drafted_token);
@@ -758,9 +904,13 @@ pub fn run_speculative_benchmark_with_backend(
         decode_tok_per_sec_median: median(&mut sample_decode_tok_per_sec),
         q5k_prefill_mode: crate::q5k_prefill_mode(&prefill_plan),
         prefill_plan,
+        target_verify_mode,
         avg_accepted_per_step: avg_metric(&accepted_per_step_values),
         draft_ms_per_step: avg_metric(&draft_ms_per_step_values),
         verify_ms_per_step: avg_metric(&verify_ms_per_step_values),
+        verify_prepare_ms_per_step: avg_metric(&verify_prepare_ms_per_step_values),
+        verify_forward_ms_per_step: avg_metric(&verify_forward_ms_per_step_values),
+        verify_cleanup_ms_per_step: avg_metric(&verify_cleanup_ms_per_step_values),
         accept_ms_per_step: avg_metric(&accept_ms_per_step_values),
         verify_ms_per_position: avg_metric(&verify_ms_per_position_values),
         draft_ms_per_drafted_token: avg_metric(&draft_ms_per_drafted_token_values),
@@ -789,6 +939,8 @@ fn run_single_bench(
     decode_count: usize,
     sampling_config: &SamplingConfig,
     intent: DecodeIntent,
+    qwen35_shared_timeline_slots: usize,
+    qwen35_shared_timeline_source_slot: Option<usize>,
 ) -> anyhow::Result<(
     Duration,
     Duration,
@@ -812,7 +964,15 @@ fn run_single_bench(
     model.reset_metal_perf_counters();
     let prefill_timer = OpTimer::start();
     logits.fill(0.0);
-    model.forward_batch(prompt_tokens, &mut kv, weights, &mut logits)?;
+    run_prefill_once(
+        model,
+        &mut kv,
+        prompt_tokens,
+        qwen35_shared_timeline_slots,
+        qwen35_shared_timeline_source_slot,
+        weights,
+        &mut logits,
+    )?;
     let prefill_dur = prefill_timer.elapsed();
     let prefill_counters = model.read_metal_perf_counters();
 
@@ -891,7 +1051,20 @@ fn run_single_spec_bench(
     sampling_config: &SamplingConfig,
     draft_model_path: &str,
     speculative_k: usize,
-) -> anyhow::Result<(Duration, Duration, usize, f64, f64, f64, f64, f64, f64)> {
+) -> anyhow::Result<(
+    Duration,
+    Duration,
+    usize,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+)> {
     let vocab_size = model.config.vocab_size as usize;
     let mut kv = model.create_model_kv_for_weights(weights);
     let mut logits = vec![0.0f32; vocab_size];
@@ -911,9 +1084,14 @@ fn run_single_spec_bench(
     let mut total_accepted = 0usize;
     let mut total_draft_duration = Duration::ZERO;
     let mut total_verify_duration = Duration::ZERO;
+    let mut total_verify_prepare_duration = Duration::ZERO;
+    let mut total_verify_forward_duration = Duration::ZERO;
+    let mut total_verify_cleanup_duration = Duration::ZERO;
     let mut total_accept_duration = Duration::ZERO;
     let mut total_verified_positions = 0usize;
     let mut total_drafted_tokens = 0usize;
+
+    spec.prewarm_target_verify_path(model, &mut kv)?;
 
     let decode_timer = OpTimer::start();
 
@@ -950,6 +1128,9 @@ fn run_single_spec_bench(
         total_accepted += step.n_accepted;
         total_draft_duration += step.metrics.draft_duration;
         total_verify_duration += step.metrics.verify_duration;
+        total_verify_prepare_duration += step.metrics.verify_prepare_duration;
+        total_verify_forward_duration += step.metrics.verify_forward_duration;
+        total_verify_cleanup_duration += step.metrics.verify_cleanup_duration;
         total_accept_duration += step.metrics.accept_duration;
         total_verified_positions += step.metrics.verified_positions;
         total_drafted_tokens += step.metrics.drafted_tokens;
@@ -983,6 +1164,9 @@ fn run_single_spec_bench(
         total_accepted as f64 / steps,
         total_draft_duration.as_secs_f64() * 1000.0 / steps,
         total_verify_duration.as_secs_f64() * 1000.0 / steps,
+        total_verify_prepare_duration.as_secs_f64() * 1000.0 / steps,
+        total_verify_forward_duration.as_secs_f64() * 1000.0 / steps,
+        total_verify_cleanup_duration.as_secs_f64() * 1000.0 / steps,
         total_accept_duration.as_secs_f64() * 1000.0 / steps,
         if total_verified_positions > 0 {
             total_verify_duration.as_secs_f64() * 1000.0 / total_verified_positions as f64
@@ -998,6 +1182,33 @@ fn run_single_spec_bench(
 }
 
 impl BenchResult {
+    fn effective_prefill_tokens_resolved(&self) -> usize {
+        if self.effective_prefill_tokens > 0 {
+            self.effective_prefill_tokens
+        } else {
+            effective_qwen35_shared_timeline_tokens(
+                self.prompt_tokens,
+                self.qwen35_shared_timeline_slots,
+            )
+        }
+    }
+
+    fn effective_prefill_tok_per_sec_resolved(&self) -> f64 {
+        if self.effective_prefill_tok_per_sec > 0.0 {
+            self.effective_prefill_tok_per_sec
+        } else {
+            self.prefill_tok_per_sec * self.qwen35_shared_timeline_slots.max(1) as f64
+        }
+    }
+
+    fn effective_prefill_tok_per_sec_median_resolved(&self) -> f64 {
+        if self.effective_prefill_tok_per_sec_median > 0.0 {
+            self.effective_prefill_tok_per_sec_median
+        } else {
+            self.prefill_tok_per_sec_median * self.qwen35_shared_timeline_slots.max(1) as f64
+        }
+    }
+
     /// Serialize to JSON.
     pub fn to_json(&self) -> serde_json::Result<String> {
         serde_json::to_string_pretty(self)
@@ -1023,6 +1234,21 @@ impl BenchResult {
             "Prefill:     {} tokens → median {:.1} tok/s (mean {:.1})",
             self.prompt_tokens, self.prefill_tok_per_sec_median, self.prefill_tok_per_sec,
         );
+        if self.qwen35_shared_timeline_slots > 1 {
+            eprintln!(
+                "Qwen35Fanout:{:>4} shared-timeline slots",
+                self.qwen35_shared_timeline_slots
+            );
+            if let Some(source_slot) = self.qwen35_shared_timeline_source_slot {
+                eprintln!("Qwen35Src:   slot {source_slot}");
+            }
+            eprintln!(
+                "PrefillEff:  {} slot-tok → median {:.1} tok/s (mean {:.1})",
+                self.effective_prefill_tokens_resolved(),
+                self.effective_prefill_tok_per_sec_median_resolved(),
+                self.effective_prefill_tok_per_sec_resolved(),
+            );
+        }
         eprintln!(
             "Decode:      {} tokens → median {:.1} tok/s (mean {:.1})",
             self.decode_tokens, self.decode_tok_per_sec_median, self.decode_tok_per_sec,
@@ -1030,6 +1256,12 @@ impl BenchResult {
         eprintln!("Intent:      {}", self.decode_intent);
         eprintln!("Mode:        {}", self.decode_mode);
         eprintln!("PrefillPlan: {}", self.prefill_plan);
+        if !self.prefill_route_family.is_empty() {
+            eprintln!(
+                "PrefillRoute:{} / {}",
+                self.prefill_route_family, self.prefill_route_detail
+            );
+        }
         if let Some(mode) = &self.q5k_prefill_mode {
             eprintln!("Q5KPrefill:  {mode}");
         }
@@ -1106,6 +1338,7 @@ impl SpecBenchResult {
             self.decode_tokens, self.decode_tok_per_sec_median, self.decode_tok_per_sec,
         );
         eprintln!("PrefillPlan: {}", self.prefill_plan);
+        eprintln!("VerifyMode:  {}", self.target_verify_mode);
         if let Some(mode) = &self.q5k_prefill_mode {
             eprintln!("Q5KPrefill:  {mode}");
         }
@@ -1121,6 +1354,12 @@ impl SpecBenchResult {
         eprintln!(
             "Verify:      {:.2} ms/step, {:.2} ms/position",
             self.verify_ms_per_step, self.verify_ms_per_position,
+        );
+        eprintln!(
+            "VerifySub:   prep {:.2} ms | forward {:.2} ms | cleanup {:.2} ms",
+            self.verify_prepare_ms_per_step,
+            self.verify_forward_ms_per_step,
+            self.verify_cleanup_ms_per_step,
         );
         eprintln!("Accept:      {:.2} ms/step", self.accept_ms_per_step);
         if let Some(note) = &self.support_note {
@@ -1184,6 +1423,8 @@ mod tests {
         assert!(!c.deterministic);
         assert_eq!(c.samples, 1);
         assert_eq!(c.cooldown_ms, 0);
+        assert_eq!(c.qwen35_shared_timeline_slots, 1);
+        assert_eq!(c.qwen35_shared_timeline_source_slot, None);
         assert_eq!(c.kernel_profile_path, None);
     }
 
@@ -1223,10 +1464,14 @@ mod tests {
             decode_tok_per_sec: 55.0,
             decode_tok_per_sec_median: 55.0,
             prefill_plan: "mode=gpu_batch q5k_prefill=small_n".into(),
+            target_verify_mode: "qwen35_branch".into(),
             q5k_prefill_mode: Some("small_n".into()),
             avg_accepted_per_step: 1.5,
             draft_ms_per_step: 2.0,
             verify_ms_per_step: 3.0,
+            verify_prepare_ms_per_step: 0.5,
+            verify_forward_ms_per_step: 2.0,
+            verify_cleanup_ms_per_step: 0.5,
             accept_ms_per_step: 0.2,
             verify_ms_per_position: 1.0,
             draft_ms_per_drafted_token: 0.5,
@@ -1250,9 +1495,12 @@ mod tests {
         let result = BenchResult {
             model: "test.gguf".into(),
             prompt_tokens: 16,
+            effective_prefill_tokens: 16,
             decode_tokens: 32,
             prefill_tok_per_sec: 100.0,
             prefill_tok_per_sec_median: 99.0,
+            effective_prefill_tok_per_sec: 100.0,
+            effective_prefill_tok_per_sec_median: 99.0,
             decode_tok_per_sec: 35.0,
             decode_tok_per_sec_median: 34.5,
             p50_latency: Duration::from_millis(10),
@@ -1269,6 +1517,12 @@ mod tests {
             decode_intent: "throughput".into(),
             decode_mode: "pipelined".into(),
             prefill_plan: "mode=gpu_batch q5k_prefill=small_n".into(),
+            prefill_mode: "gpu_batch".into(),
+            prefill_route_family: "dense_gpu_batch".into(),
+            prefill_route_detail: "generic_gpu_batch".into(),
+            prefill_attention_route: None,
+            prefill_qkv_plan: None,
+            prefill_split_rope_append: None,
             q5k_prefill_mode: Some("small_n".into()),
             decode_plan: "sync=pipelined scratch=gpu_shared".into(),
             support_note: Some(
@@ -1278,6 +1532,8 @@ mod tests {
             ),
             decode_fallback_reason: None,
             kernel_profile_path: None,
+            qwen35_shared_timeline_slots: 1,
+            qwen35_shared_timeline_source_slot: None,
             kv_f16: true,
             deterministic: false,
             samples: 1,
@@ -1286,6 +1542,8 @@ mod tests {
         let json = result.to_json().unwrap();
         assert!(json.contains("\"q5k_prefill_mode\": \"small_n\""));
         assert!(json.contains("\"prefill_plan\": \"mode=gpu_batch q5k_prefill=small_n\""));
+        assert!(json.contains("\"prefill_mode\": \"gpu_batch\""));
+        assert!(json.contains("\"prefill_route_family\": \"dense_gpu_batch\""));
     }
 
     #[test]
@@ -1312,7 +1570,18 @@ mod tests {
         let result = BenchResult::from_json(json).unwrap();
         assert_eq!(result.model, "test.gguf");
         assert_eq!(result.q5k_prefill_mode, None);
+        assert_eq!(result.qwen35_shared_timeline_slots, 1);
+        assert_eq!(result.qwen35_shared_timeline_source_slot, None);
+        assert_eq!(result.effective_prefill_tokens, 0);
+        assert_eq!(result.effective_prefill_tok_per_sec, 0.0);
+        assert_eq!(result.effective_prefill_tok_per_sec_median, 0.0);
         assert!(result.prefill_plan.is_empty());
+        assert!(result.prefill_mode.is_empty());
+        assert!(result.prefill_route_family.is_empty());
+        assert!(result.prefill_route_detail.is_empty());
+        assert_eq!(result.prefill_attention_route, None);
+        assert_eq!(result.prefill_qkv_plan, None);
+        assert_eq!(result.prefill_split_rope_append, None);
         assert!(result.decode_plan.is_empty());
         assert_eq!(result.samples, 0);
         assert_eq!(result.cooldown_ms, 0);
@@ -1331,10 +1600,14 @@ mod tests {
             decode_tok_per_sec: 55.0,
             decode_tok_per_sec_median: 55.0,
             prefill_plan: "mode=gpu_batch q5k_prefill=small_n".into(),
+            target_verify_mode: "qwen35_branch".into(),
             q5k_prefill_mode: Some("small_n".into()),
             avg_accepted_per_step: 1.5,
             draft_ms_per_step: 2.0,
             verify_ms_per_step: 3.0,
+            verify_prepare_ms_per_step: 0.5,
+            verify_forward_ms_per_step: 2.0,
+            verify_cleanup_ms_per_step: 0.5,
             accept_ms_per_step: 0.2,
             verify_ms_per_position: 1.0,
             draft_ms_per_drafted_token: 0.5,
@@ -1378,6 +1651,7 @@ mod tests {
         let result = SpecBenchResult::from_json(json).unwrap();
         assert_eq!(result.model, "target.gguf");
         assert_eq!(result.q5k_prefill_mode, None);
+        assert!(result.target_verify_mode.is_empty());
         assert!(result.prefill_plan.is_empty());
         assert_eq!(result.samples, 0);
         assert_eq!(result.cooldown_ms, 0);
