@@ -324,8 +324,14 @@ cargo build --workspace --release
   --model ./models/Qwen3-8B-Q4_K_M.gguf \
   --interactive --chat
 
-# Benchmark
+# Benchmark (single engine)
 ./target/release/ax-engine-bench bench --model ./models/Qwen3-8B-Q4_K_M.gguf
+
+# Benchmark (AX vs llama.cpp comparison)
+./benchmarks/run_apple_to_apple.py --model ./models/Qwen3-8B-Q4_K_M.gguf
+
+# Benchmark (AX only, fast iteration)
+./benchmarks/run_apple_to_apple.py --model ./models/Qwen3-8B-Q4_K_M.gguf --ax-only
 
 # Basic inference server
 ./target/release/ax-engine-server \

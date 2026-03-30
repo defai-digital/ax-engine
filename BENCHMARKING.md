@@ -520,6 +520,28 @@ Progress summary:
 | Prefill | 234.4 | 240.7 | 32.5% | 32.7% | AX prefill stable; Mar 27 llama.cpp was without FA |
 | Decode | 12.9 | 25.7 | 26.3% | 52.8% | +99% AX improvement from GPU-unified decode |
 
+March 29 Qwen3.5-9B PRD-0013 optimizations:
+
+After implementing GPU-resident recurrent state, parallel causal conv kernel,
+GDN BV=128 chunked kernel, CpuAlias cliff removal, and merged CB infrastructure:
+
+| Model | AX prefill | llama.cpp prefill | AX vs llama.cpp | AX decode | llama.cpp decode | AX vs llama.cpp | AX notes |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Qwen3.5 9B Q4_K_M | 322.3 | 708.9 | 45.5% | 54.5 | 48.1 | **113.3%** | `pipelined`, `recurrent=backend_owned`, `gpu_recurrent_state=active` |
+
+- AX command: `./benchmarks/run_apple_to_apple.py --model ./models/Qwen3.5-9B-Q4_K_M.gguf --ax-only --samples 5 --cooldown-seconds 15`
+- llama.cpp baseline from `benchmarks/results/20260329-193945-001/llama/summary.json`
+- 5-sample medians, 15s cooldown, Apple M3 Max
+
+Key changes from Mar 28:
+- Prefill: 240.7 → 322.3 tok/s (+34%), from 32.7% → 45.5% of llama.cpp
+- Decode: 25.7 → 54.5 tok/s (+112%), from 52.8% → **113.3%** of llama.cpp (now faster)
+- Prefill CB count: 265 → 105 (60% reduction)
+- Decode mode: `sequential` → `pipelined`
+
+Remaining prefill gap (45.5% of llama.cpp) traces to the GDN kernel's sequential
+token state dependency, not sync overhead or CB count. See PRD-0013 for analysis.
+
 ## Common Mistakes
 
 - Comparing AX throughput mode against AX latency mode
@@ -529,9 +551,67 @@ Progress summary:
 - Publishing a single run without reporting variance
 - Changing background workload halfway through a benchmark set
 
-## Minimal Benchmark Set
+## Automated Benchmark Tooling
 
-If you only need one clean comparison for a PR or README update, use:
+The `benchmarks/` directory provides a Python harness that automates the full
+comparison workflow. Use this instead of running `ax-engine-bench` and
+`llama-bench` manually.
+
+### Full comparison (AX + llama.cpp)
+
+```bash
+./benchmarks/run_apple_to_apple.py \
+  --model ./models/<model>.gguf \
+  --label my-test \
+  --samples 5 \
+  --cooldown-seconds 15
+```
+
+This runs both engines with aligned settings and writes a timestamped result
+directory under `benchmarks/results/` containing `ax.json`, `llama/summary.json`,
+`comparison.md`, and `comparison.json`.
+
+### AX-only (fast iteration)
+
+When iterating on AX code changes, skip `llama.cpp` entirely:
+
+```bash
+./benchmarks/run_apple_to_apple.py \
+  --model ./models/<model>.gguf \
+  --label my-change \
+  --ax-only
+```
+
+This produces `ax.json` and a standalone `summary.md` with prefill/decode
+throughput, prefill plan, and Metal command buffer count.
+
+### Reuse a previous llama.cpp baseline
+
+After running a full comparison once, reuse the `llama.cpp` baseline for
+subsequent AX-only retests:
+
+```bash
+./benchmarks/run_apple_to_apple.py \
+  --model ./models/<model>.gguf \
+  --label my-retest \
+  --llama-baseline ./benchmarks/results/<previous-run>/llama/summary.json
+```
+
+This runs only AX, then generates the full comparison output against the
+saved `llama.cpp` numbers.
+
+### Listing past results
+
+```bash
+./benchmarks/list_results.py
+./benchmarks/list_results.py --model-contains Qwen3.5
+```
+
+See `benchmarks/README.md` for all options and output format details.
+
+## Manual Benchmark Commands
+
+If you prefer to run benchmarks manually without the harness:
 
 ```bash
 ./target/release/ax-engine-bench bench \
