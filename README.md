@@ -225,31 +225,42 @@ AX Engine vs llama.cpp on Apple M3 Max (March 2026). Values over 100% mean AX wa
 
 | Model | AX prefill | llama.cpp prefill | AX vs llama.cpp | AX decode | llama.cpp decode | AX vs llama.cpp |
 |---|---:|---:|---:|---:|---:|---:|
-| Llama 3 8B | 675.8 tok/s | 639.2 tok/s | **105.7%** | 61.2 tok/s | 47.1 tok/s | **129.9%** |
-| Llama 3 70B | 55.7 tok/s | 66.8 tok/s | 83.4% | 6.5 tok/s | 6.3 tok/s | **103.2%** |
-| Qwen3 8B | 727.4 tok/s | 736.7 tok/s | 98.7% | 62.4 tok/s | 60.3 tok/s | **103.5%** |
-| Qwen3 14B | 391.6 tok/s | 408.2 tok/s | 95.9% | 37.1 tok/s | 35.6 tok/s | **104.2%** |
-| Qwen3 32B | 126.7 tok/s | 150.7 tok/s | 84.1% | 15.6 tok/s | 14.9 tok/s | **104.7%** |
-| Qwen3.5 9B | 240.5 tok/s | 732.2 tok/s | 32.8% | 26.8 tok/s | 48.9 tok/s | 54.8% |
-| Gemma 3 12B | 420.5 tok/s | 463.3 tok/s | 90.8% | 39.6 tok/s | 35.8 tok/s | **110.5%** |
-| Gemma 3 27B | 155.7 tok/s | 170.2 tok/s | 91.5% | 17.8 tok/s | 15.1 tok/s | **117.9%** |
+| Llama 3 8B | 684.8 tok/s | 749.2 tok/s | 91.4% | 59.1 tok/s | 64.2 tok/s | 92.2% |
+| Llama 3 70B | 41.6 tok/s | 76.6 tok/s | 54.4% | 7.8 tok/s | 8.0 tok/s | 97.1% |
+| Qwen3 8B | 646.1 tok/s | 742.0 tok/s | 87.1% | 60.0 tok/s | 62.0 tok/s | 96.8% |
+| Qwen3 14B | 355.7 tok/s | 398.7 tok/s | 89.2% | 35.7 tok/s | 36.6 tok/s | 97.5% |
+| Qwen3 32B | 151.1 tok/s | 169.2 tok/s | 89.3% | 17.0 tok/s | 17.2 tok/s | 98.8% |
+| Qwen3.5 9B | 322.3 tok/s | 708.9 tok/s | 45.5% | 54.5 tok/s | 48.1 tok/s | **113.3%** |
+| Qwen3.5 27B | 136.3 tok/s | 193.8 tok/s | 70.3% | 15.6 tok/s | 16.8 tok/s | 92.9% |
+| Gemma 3 12B | 412.8 tok/s | 477.0 tok/s | 86.5% | 36.8 tok/s | 39.3 tok/s | 93.5% |
+| Gemma 3 27B | 92.5 tok/s | 203.6 tok/s | 45.4% | 17.3 tok/s | 19.2 tok/s | 90.1% |
 
-LLaMA 3 benefits most from AX's fusion depth (10 dispatches/layer vs ~20 in a
-per-op executor). That is the cleanest example of AX's design philosophy
-showing up in measured results.
+After rerunning `Llama 3` with the same strict serial outer-median methodology
+used for the refreshed `Qwen3.5` rows, AX now lands below `llama.cpp` on both
+`8B` and `70B`. The gap is still smaller than the current `Qwen3.5` prefill
+deficit, but it shows that AX's dense path is no longer the clean showcase row
+it looked like under older mixed methodology numbers.
 
-Qwen3 benefits less, but its decode path improved once the fused post-QKV route
-(`qkv=fused`) shipped. That is the kind of movement AX wants to see: a runtime
-change with a clear structural explanation, not a random benchmark spike.
+After rerunning both AX and `llama.cpp` in a clean state, the earlier `Qwen3`
+comparison turned out to be polluted on both sides: the old `llama.cpp`
+numbers were severely understated, and the old AX artifacts also had unstable
+low samples. With corrected serial outer-median reruns, AX still trails
+`llama.cpp` across `8B`, `14B`, and `32B`, but the dense-path gap is now much
+smaller and decode is close to parity.
 
-Qwen3.5 9B is the first hybrid attention+SSM (Mamba-2/GDN) model supported. Its
-decode improved from 12.9 to 26.8 tok/s via GPU-unified decode, reaching ~55%
-of `llama.cpp` on decode. Prefill now measures 240.5 tok/s (~33% of
-`llama.cpp`) after re-enabling the GPU-unified prefill path. The remaining gap
-still traces to sequential host orchestration and hybrid recurrent state
-handling (10,496 decode cmd_buf submissions, 1,024 decode barriers, and 165
-prefill cmd_buf submissions for the 512/128 throughput benchmark, vs 128 decode
-submissions for the pure-transformer pipelined path).
+Qwen3.5 is the first hybrid attention+SSM (Mamba-2/GDN) family supported. The
+current table uses serial same-machine runs on Apple M3 Max with matching model
+files, prompt/decode shapes, full GPU offload, Flash Attention enabled in
+`llama.cpp`, and `15-20s` cooldown between cases. Both AX and `llama.cpp` values
+come from outer `5`-sample medians under that methodology. The `9B` model decodes
+at 54.5 tok/s versus `llama.cpp` at 48.1 tok/s (**113%**), while the `27B` model
+sits below `llama.cpp` on decode at 15.6 vs 16.8 tok/s. Prefill remains the main
+gap: `9B` measures 322.3 tok/s (~45.5% of `llama.cpp` at 708.9 tok/s) and `27B`
+measures 136.3 tok/s (~70.3% of `llama.cpp` at 193.8 tok/s). The remaining
+deficit traces to the hybrid recurrent GDN kernel's sequential token dependency
+rather than dense matmul or sync overhead: recurrent state is now GPU-resident
+and the fused prefill path encodes all recurrent ops (conv + SSM + FFN) into a
+single command buffer per layer.
 
 Prefill uses fused Q4K/Q5K/Q6K dequant batch matmul kernels with native
 token-major layout. GPU attention KV is f16 by default for all models.
