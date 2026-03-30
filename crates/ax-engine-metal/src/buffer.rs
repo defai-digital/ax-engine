@@ -17,6 +17,14 @@ pub struct MetalBuffer {
     buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
 }
 
+impl Clone for MetalBuffer {
+    fn clone(&self) -> Self {
+        Self {
+            buffer: self.buffer.clone(),
+        }
+    }
+}
+
 impl MetalBuffer {
     #[inline]
     fn shared_resource_options() -> MTLResourceOptions {

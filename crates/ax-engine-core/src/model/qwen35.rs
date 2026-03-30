@@ -254,6 +254,17 @@ impl Qwen35RecurrentQkvFastPathCheck {
     }
 }
 
+/// Parameters for encoding input projections into the fused recurrent CB.
+struct FusedProjectionParams<'a> {
+    nw_key: usize,
+    gpu_proj_indices: &'a [usize],
+    proj_keys: &'a [usize],
+    proj_dtypes: &'a [crate::gguf::tensor::GgmlType],
+    proj_dims: &'a [usize],
+    dim: usize,
+    eps: f32,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
 enum Qwen35PrefillRecurrentStateMode {
@@ -475,14 +486,9 @@ impl Qwen35Forward {
     fn qwen35_prefill_recurrent_state_mode_for_tokens(
         n_tokens: usize,
     ) -> Qwen35PrefillRecurrentStateMode {
+        let _ = n_tokens;
         match Self::qwen35_prefill_recurrent_state_mode() {
-            Qwen35PrefillRecurrentStateMode::Auto => {
-                if n_tokens <= 32 || n_tokens >= 96 {
-                    Qwen35PrefillRecurrentStateMode::BackendOwned
-                } else {
-                    Qwen35PrefillRecurrentStateMode::CpuAlias
-                }
-            }
+            Qwen35PrefillRecurrentStateMode::Auto => Qwen35PrefillRecurrentStateMode::BackendOwned,
             explicit => explicit,
         }
     }

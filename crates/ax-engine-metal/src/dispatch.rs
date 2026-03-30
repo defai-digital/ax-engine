@@ -5661,13 +5661,20 @@ pub struct AttentionKernels {
 /// Pre-compiled GDN recurrence kernels.
 pub struct GdnKernels {
     causal_conv_sequence_f32: ComputePipeline,
+    causal_conv_sequence_parallel_f32: ComputePipeline,
     prepare_single_token_qkv_f32: ComputePipeline,
+    prepare_multi_token_qk_f32: ComputePipeline,
+    prepare_multi_token_vgb_f32: ComputePipeline,
+    prepare_multi_token_vgb_ab_f16: ComputePipeline,
+    unpack_bhsk_to_token_major_f32: ComputePipeline,
     single_token_gated_delta_fused_128_64: ComputePipeline,
     single_token_gated_delta_fused_64_64: ComputePipeline,
     gated_delta_128_64: ComputePipeline,
+    gated_delta_128_128: ComputePipeline,
     gated_delta_64_64: ComputePipeline,
     gated_delta_fallback: ComputePipeline,
     chunked_gated_delta_32_128_64: ComputePipeline,
+    chunked_gated_delta_32_128_128: ComputePipeline,
     chunked_gated_delta_32_64_64: ComputePipeline,
 }
 
@@ -5931,7 +5938,6 @@ impl AttentionKernels {
     /// - `n_kv_heads`: number of KV heads (GQA: n_heads / n_kv_heads heads share one KV)
     /// - `head_dim`: dimension per head
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn attention_prefill_with_config(
         &self,
         device: &MetalDevice,
@@ -6049,7 +6055,6 @@ impl AttentionKernels {
     /// - `attend_start`: first token to attend to (sliding window offset)
     /// - `attend_len`: number of tokens to attend to
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn encode_attention_decode_with_config(
         &self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
@@ -6137,7 +6142,6 @@ impl AttentionKernels {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     fn encode_attention_decode_splitk_with_config(
         &self,
@@ -6322,7 +6326,6 @@ impl AttentionKernels {
     /// - `v`: [n_tokens × n_kv_heads × head_dim] value vectors
     /// - `o`: [n_tokens × n_heads × head_dim] output buffer
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn encode_attention_prefill_with_config(
         &self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
@@ -6479,7 +6482,6 @@ impl AttentionKernels {
     /// - `k_cache`/`v_cache`: KV cache buffers containing restored prefix + appended suffix
     /// - `base_seq_len`: prefix length already present in KV cache before current suffix
     /// - `sliding_window`: 0 disables sliding window, otherwise per-query window size
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub fn encode_attention_prefill_cached_with_config(
         &self,
@@ -6693,12 +6695,42 @@ impl GdnKernels {
             "qwen35_causal_conv_sequence_f32",
         )
         .context("Failed to compile qwen35_causal_conv_sequence_f32 kernel")?;
+        let causal_conv_sequence_parallel_f32 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "qwen35_causal_conv_sequence_parallel_f32",
+        )
+        .context("Failed to compile qwen35_causal_conv_sequence_parallel_f32 kernel")?;
         let prepare_single_token_qkv_f32 = ComputePipeline::from_source(
             device.device(),
             GDN_SHADER_SRC,
             "qwen35_prepare_single_token_gdn_qkv_f32",
         )
         .context("Failed to compile qwen35_prepare_single_token_gdn_qkv_f32 kernel")?;
+        let prepare_multi_token_qk_f32 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "qwen35_prepare_multi_token_gdn_qk_f32",
+        )
+        .context("Failed to compile qwen35_prepare_multi_token_gdn_qk_f32 kernel")?;
+        let prepare_multi_token_vgb_f32 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "qwen35_prepare_multi_token_gdn_vgb_f32",
+        )
+        .context("Failed to compile qwen35_prepare_multi_token_gdn_vgb_f32 kernel")?;
+        let prepare_multi_token_vgb_ab_f16 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "qwen35_prepare_multi_token_gdn_vgb_ab_f16",
+        )
+        .context("Failed to compile qwen35_prepare_multi_token_gdn_vgb_ab_f16 kernel")?;
+        let unpack_bhsk_to_token_major_f32 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "qwen35_unpack_bhsk_to_token_major_f32",
+        )
+        .context("Failed to compile qwen35_unpack_bhsk_to_token_major_f32 kernel")?;
         let single_token_gated_delta_fused_128_64 = ComputePipeline::from_source(
             device.device(),
             GDN_SHADER_SRC,
@@ -6717,6 +6749,12 @@ impl GdnKernels {
             "gated_delta_rule_128_64",
         )
         .context("Failed to compile gated_delta_rule_128_64 kernel")?;
+        let gated_delta_128_128 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "gated_delta_rule_128_128",
+        )
+        .context("Failed to compile gated_delta_rule_128_128 kernel")?;
         let gated_delta_64_64 =
             ComputePipeline::from_source(device.device(), GDN_SHADER_SRC, "gated_delta_rule_64_64")
                 .context("Failed to compile gated_delta_rule_64_64 kernel")?;
@@ -6732,6 +6770,12 @@ impl GdnKernels {
             "chunked_gated_delta_rule_32_128_64",
         )
         .context("Failed to compile chunked_gated_delta_rule_32_128_64 kernel")?;
+        let chunked_gated_delta_32_128_128 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "chunked_gated_delta_rule_32_128_128",
+        )
+        .context("Failed to compile chunked_gated_delta_rule_32_128_128 kernel")?;
         let chunked_gated_delta_32_64_64 = ComputePipeline::from_source(
             device.device(),
             GDN_SHADER_SRC,
@@ -6740,13 +6784,20 @@ impl GdnKernels {
         .context("Failed to compile chunked_gated_delta_rule_32_64_64 kernel")?;
         Ok(Self {
             causal_conv_sequence_f32,
+            causal_conv_sequence_parallel_f32,
             prepare_single_token_qkv_f32,
+            prepare_multi_token_qk_f32,
+            prepare_multi_token_vgb_f32,
+            prepare_multi_token_vgb_ab_f16,
+            unpack_bhsk_to_token_major_f32,
             single_token_gated_delta_fused_128_64,
             single_token_gated_delta_fused_64_64,
             gated_delta_128_64,
+            gated_delta_128_128,
             gated_delta_64_64,
             gated_delta_fallback,
             chunked_gated_delta_32_128_64,
+            chunked_gated_delta_32_128_128,
             chunked_gated_delta_32_64_64,
         })
     }
@@ -6764,32 +6815,65 @@ impl GdnKernels {
         conv_cache_len: u32,
         conv_dim: u32,
     ) {
-        let groups_x = (conv_dim as usize).div_ceil(256);
-        encoder.setComputePipelineState(self.causal_conv_sequence_f32.state());
-        unsafe {
-            encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 0);
-            encoder.setBuffer_offset_atIndex(Some(kernel.mtl_buffer()), 0, 1);
-            encoder.setBuffer_offset_atIndex(Some(conv_state.mtl_buffer()), 0, 2);
-            encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 3);
+        if seq_len > 1 && seq_len >= conv_cache_len {
+            // Parallel kernel: one thread per (channel, token). No sequential
+            // dependency — each output token reads conv_cache_len prior inputs
+            // directly from the input buffer (or from conv_state for the first
+            // few tokens). Requires seq_len >= conv_cache_len for state writeback.
+            let tg_x = 256.min(conv_dim as usize);
+            let groups_x = (conv_dim as usize).div_ceil(tg_x);
+            encoder.setComputePipelineState(self.causal_conv_sequence_parallel_f32.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(kernel.mtl_buffer()), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(conv_state.mtl_buffer()), 0, 2);
+                encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 3);
+            }
+            bind_u32(encoder, 4, seq_len);
+            bind_u32(encoder, 5, conv_cache_len);
+            bind_u32(encoder, 6, conv_dim);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: groups_x,
+                    height: seq_len as _,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: tg_x,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+        } else {
+            // Sequential kernel for decode (seq_len=1): one thread per channel.
+            let groups_x = (conv_dim as usize).div_ceil(256);
+            encoder.setComputePipelineState(self.causal_conv_sequence_f32.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(kernel.mtl_buffer()), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(conv_state.mtl_buffer()), 0, 2);
+                encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 3);
+            }
+            bind_u32(encoder, 4, seq_len);
+            bind_u32(encoder, 5, conv_cache_len);
+            bind_u32(encoder, 6, conv_dim);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: groups_x,
+                    height: 1,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: 256,
+                    height: 1,
+                    depth: 1,
+                },
+            );
         }
-        bind_u32(encoder, 4, seq_len);
-        bind_u32(encoder, 5, conv_cache_len);
-        bind_u32(encoder, 6, conv_dim);
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            MTLSize {
-                width: groups_x,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: 256,
-                height: 1,
-                depth: 1,
-            },
-        );
     }
 
     /// Dispatch causal conv in its own command buffer (legacy wrapper).
+    #[allow(clippy::too_many_arguments)]
     pub fn causal_conv_sequence(
         &self,
         device: &MetalDevice,
@@ -6849,6 +6933,238 @@ impl GdnKernels {
             dims.threadgroups,
             dims.threads_per_threadgroup,
         );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_prepare_multi_token_qkv(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        conv_out: &MetalBuffer,
+        alpha_in: &MetalBuffer,
+        beta_in: &MetalBuffer,
+        q_out: &MetalBuffer,
+        k_out: &MetalBuffer,
+        v_out: &MetalBuffer,
+        gate_out: &MetalBuffer,
+        beta_out: &MetalBuffer,
+        n_tokens: u32,
+        group_count: u32,
+        time_step_rank: u32,
+        state_size: u32,
+        eps: f32,
+    ) -> bool {
+        if state_size == 0 || state_size > 256 || group_count == 0 {
+            return false;
+        }
+        if !time_step_rank.is_multiple_of(group_count) {
+            return false;
+        }
+
+        encoder.setComputePipelineState(self.prepare_multi_token_qk_f32.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(conv_out.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(q_out.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(k_out.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, n_tokens);
+        bind_u32(encoder, 4, group_count);
+        bind_u32(encoder, 5, time_step_rank);
+        bind_u32(encoder, 6, state_size);
+        bind_f32(encoder, 7, eps);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: 1,
+                height: (n_tokens * group_count) as usize,
+                depth: 1,
+            },
+            MTLSize {
+                width: 256,
+                height: 1,
+                depth: 1,
+            },
+        );
+
+        let vgb_dims = DispatchDims::d2(
+            state_size as usize,
+            (n_tokens * time_step_rank) as usize,
+            128,
+            1,
+        );
+        encoder.setComputePipelineState(self.prepare_multi_token_vgb_f32.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(conv_out.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(alpha_in.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(beta_in.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(v_out.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(gate_out.mtl_buffer()), 0, 4);
+            encoder.setBuffer_offset_atIndex(Some(beta_out.mtl_buffer()), 0, 5);
+        }
+        bind_u32(encoder, 6, n_tokens);
+        bind_u32(encoder, 7, group_count);
+        bind_u32(encoder, 8, time_step_rank);
+        bind_u32(encoder, 9, state_size);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            vgb_dims.threadgroups,
+            vgb_dims.threads_per_threadgroup,
+        );
+        true
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_prepare_multi_token_qkv_alpha_beta_f16(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        conv_out: &MetalBuffer,
+        alpha_in: &MetalBuffer,
+        beta_in: &MetalBuffer,
+        q_out: &MetalBuffer,
+        k_out: &MetalBuffer,
+        v_out: &MetalBuffer,
+        gate_out: &MetalBuffer,
+        beta_out: &MetalBuffer,
+        n_tokens: u32,
+        group_count: u32,
+        time_step_rank: u32,
+        state_size: u32,
+        eps: f32,
+    ) -> bool {
+        if state_size == 0 || state_size > 256 || group_count == 0 {
+            return false;
+        }
+        if !time_step_rank.is_multiple_of(group_count) {
+            return false;
+        }
+
+        encoder.setComputePipelineState(self.prepare_multi_token_qk_f32.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(conv_out.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(q_out.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(k_out.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, n_tokens);
+        bind_u32(encoder, 4, group_count);
+        bind_u32(encoder, 5, time_step_rank);
+        bind_u32(encoder, 6, state_size);
+        bind_f32(encoder, 7, eps);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: 1,
+                height: (n_tokens * group_count) as usize,
+                depth: 1,
+            },
+            MTLSize {
+                width: 256,
+                height: 1,
+                depth: 1,
+            },
+        );
+
+        let vgb_dims = DispatchDims::d2(
+            state_size as usize,
+            (n_tokens * time_step_rank) as usize,
+            128,
+            1,
+        );
+        encoder.setComputePipelineState(self.prepare_multi_token_vgb_ab_f16.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(conv_out.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(alpha_in.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(beta_in.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(v_out.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(gate_out.mtl_buffer()), 0, 4);
+            encoder.setBuffer_offset_atIndex(Some(beta_out.mtl_buffer()), 0, 5);
+        }
+        bind_u32(encoder, 6, n_tokens);
+        bind_u32(encoder, 7, group_count);
+        bind_u32(encoder, 8, time_step_rank);
+        bind_u32(encoder, 9, state_size);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            vgb_dims.threadgroups,
+            vgb_dims.threads_per_threadgroup,
+        );
+        true
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_multi_token_qkv(
+        &self,
+        device: &MetalDevice,
+        conv_out: &MetalBuffer,
+        alpha_in: &MetalBuffer,
+        beta_in: &MetalBuffer,
+        q_out: &MetalBuffer,
+        k_out: &MetalBuffer,
+        v_out: &MetalBuffer,
+        gate_out: &MetalBuffer,
+        beta_out: &MetalBuffer,
+        n_tokens: u32,
+        group_count: u32,
+        time_step_rank: u32,
+        state_size: u32,
+        eps: f32,
+    ) -> anyhow::Result<bool> {
+        let mut encoded = false;
+        device.execute_sync(|encoder| {
+            encoded = self.encode_prepare_multi_token_qkv(
+                encoder,
+                conv_out,
+                alpha_in,
+                beta_in,
+                q_out,
+                k_out,
+                v_out,
+                gate_out,
+                beta_out,
+                n_tokens,
+                group_count,
+                time_step_rank,
+                state_size,
+                eps,
+            );
+            Ok(())
+        })?;
+        Ok(encoded)
+    }
+
+    pub fn encode_unpack_bhsk_to_token_major(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        input: &MetalBuffer,
+        output: &MetalBuffer,
+        n_tokens: u32,
+        n_heads: u32,
+        head_dim: u32,
+    ) {
+        let dims = DispatchDims::d2(head_dim as usize, (n_tokens * n_heads) as usize, 128, 1);
+        encoder.setComputePipelineState(self.unpack_bhsk_to_token_major_f32.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 1);
+        }
+        bind_u32(encoder, 2, n_tokens);
+        bind_u32(encoder, 3, n_heads);
+        bind_u32(encoder, 4, head_dim);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    pub fn unpack_bhsk_to_token_major(
+        &self,
+        device: &MetalDevice,
+        input: &MetalBuffer,
+        output: &MetalBuffer,
+        n_tokens: u32,
+        n_heads: u32,
+        head_dim: u32,
+    ) -> anyhow::Result<()> {
+        device.execute_sync(|encoder| {
+            self.encode_unpack_bhsk_to_token_major(
+                encoder, input, output, n_tokens, n_heads, head_dim,
+            );
+            Ok(())
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6915,16 +7231,17 @@ impl GdnKernels {
         head_dim: u32,
     ) {
         let v_dim = head_dim;
-        let bv = 64u32;
-        let grid_x = (v_dim as usize).div_ceil(bv as usize);
         let use_chunked = seq_len >= GDN_CHUNK_THRESHOLD;
-        let (pipeline, use_fallback) = match (head_dim, use_chunked) {
-            (128, true) => (&self.chunked_gated_delta_32_128_64, false),
-            (64, true) => (&self.chunked_gated_delta_32_64_64, false),
-            (128, false) => (&self.gated_delta_128_64, false),
-            (64, false) => (&self.gated_delta_64_64, false),
-            _ => (&self.gated_delta_fallback, true),
+        let (pipeline, use_fallback, bv) = match (head_dim, use_chunked) {
+            // BV=128 for chunked prefill (head_dim=128): 1 v-tile, single-element k/q loads
+            (128, true) => (&self.chunked_gated_delta_32_128_128, false, 128u32),
+            (64, true) => (&self.chunked_gated_delta_32_64_64, false, 64u32),
+            // Keep BV=64 for non-chunked (decode or short prefill) to preserve decode perf
+            (128, false) => (&self.gated_delta_128_64, false, 64u32),
+            (64, false) => (&self.gated_delta_64_64, false, 64u32),
+            _ => (&self.gated_delta_fallback, true, 64u32),
         };
+        let grid_x = (v_dim as usize).div_ceil(bv as usize);
 
         encoder.setComputePipelineState(pipeline.state());
         bind_buffers7(encoder, q, k, v, g, beta, state, output);
@@ -7664,6 +7981,7 @@ pub struct ElementwiseKernels {
     sigmoid_elementwise_mul: ComputePipeline,
     sigmoid_inplace: ComputePipeline,
     softplus_bias_mul: ComputePipeline,
+    softplus_bias_mul_batch: ComputePipeline,
     l2_norm_per_head: ComputePipeline,
     elementwise_add: ComputePipeline,
     elementwise_add_batch: ComputePipeline,
@@ -7878,6 +8196,12 @@ impl ElementwiseKernels {
             "softplus_bias_mul_f32",
         )
         .context("Failed to compile softplus_bias_mul_f32 kernel")?;
+        let softplus_bias_mul_batch = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "softplus_bias_mul_batch_f32",
+        )
+        .context("Failed to compile softplus_bias_mul_batch_f32 kernel")?;
         let l2_norm_per_head = ComputePipeline::from_source(
             device.device(),
             ELEMENTWISE_SHADER_SRC,
@@ -8009,6 +8333,7 @@ impl ElementwiseKernels {
             sigmoid_elementwise_mul,
             sigmoid_inplace,
             softplus_bias_mul,
+            softplus_bias_mul_batch,
             l2_norm_per_head,
             elementwise_add,
             elementwise_add_batch,
@@ -8881,6 +9206,31 @@ impl ElementwiseKernels {
         );
     }
 
+    /// Encode batched softplus(alpha + bias[head]) * a[head] in-place.
+    pub fn encode_softplus_bias_mul_batch(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        alpha: &MetalBuffer,
+        bias: &MetalBuffer,
+        a: &MetalBuffer,
+        n: u32,
+        head_dim: u32,
+    ) {
+        let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.softplus_bias_mul_batch.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(alpha.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(bias.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, n);
+        bind_u32(encoder, 4, head_dim);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
     /// Encode per-head L2 normalization.
     pub fn encode_l2_norm_per_head(
         &self,
@@ -9630,6 +9980,16 @@ mod tests {
 
     fn default_dequant_config() -> DequantDispatchConfig {
         DequantDispatchConfig::default()
+    }
+
+    /// Pinned TG=128 base config for cross-variant comparison tests, so they
+    /// don't break when the default profile changes.
+    fn tg128_base_dequant_config() -> DequantDispatchConfig {
+        DequantDispatchConfig {
+            q4_k_threadgroup_size: DEQUANT_MATVEC_TG,
+            q4_k_rows_per_simdgroup: 1,
+            ..DequantDispatchConfig::default()
+        }
     }
 
     fn default_attention_config() -> AttentionDispatchConfig {
@@ -11210,8 +11570,8 @@ mod tests {
             bind_u32(encoder, 5, k as u32);
             encoder.dispatchThreadgroups_threadsPerThreadgroup(
                 MTLSize {
-                    width: m.div_ceil(DB_TILE_M) as usize,
-                    height: n.div_ceil(SB_TILE_N) as usize,
+                    width: m.div_ceil(DB_TILE_M),
+                    height: n.div_ceil(SB_TILE_N),
                     depth: 1,
                 },
                 MTLSize {
@@ -11515,8 +11875,8 @@ mod tests {
             bind_u32(encoder, 5, k as u32);
             encoder.dispatchThreadgroups_threadsPerThreadgroup(
                 MTLSize {
-                    width: m.div_ceil(DB_TILE_M) as usize,
-                    height: n.div_ceil(SB_TILE_N) as usize,
+                    width: m.div_ceil(DB_TILE_M),
+                    height: n.div_ceil(SB_TILE_N),
                     depth: 1,
                 },
                 MTLSize {
@@ -11957,7 +12317,7 @@ mod tests {
                 &buf_base,
                 m as u32,
                 k as u32,
-                default_dequant_config(),
+                tg128_base_dequant_config(),
             )
             .unwrap();
         kernels
@@ -12017,7 +12377,7 @@ mod tests {
                 &buf_base,
                 m as u32,
                 k as u32,
-                default_dequant_config(),
+                tg128_base_dequant_config(),
             )
             .unwrap();
         kernels
@@ -12968,6 +13328,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn cpu_rope_batch(
         q: &mut [f32],
         k: &mut [f32],

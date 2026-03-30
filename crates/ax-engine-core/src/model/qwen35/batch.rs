@@ -1265,6 +1265,61 @@ impl Qwen35Forward {
                 let temp_alpha = &temp_scratch.alpha;
                 let recurrent_beta_gpu = gpu_proj_indices.contains(&2).then_some(temp_beta);
                 let recurrent_alpha_gpu = gpu_proj_indices.contains(&3).then_some(temp_alpha);
+                // Try merged projection + fused recurrent in a single CB
+                // when all projections are GPU-capable (no CPU fallback needed).
+                if fused_gpu_recurrent_layer_candidate && cpu_proj_indices.is_empty() {
+                    let proj_params = FusedProjectionParams {
+                        nw_key,
+                        gpu_proj_indices,
+                        proj_keys: &proj_keys,
+                        proj_dtypes: &proj_dtypes,
+                        proj_dims: &proj_dims,
+                        dim,
+                        eps,
+                    };
+                    let merged_stats = timed!(
+                        ops,
+                        recurrent,
+                        Self::try_run_recurrent_batch_layer_fused_gpu_single_slot(
+                            metal_ops,
+                            qwen_kv,
+                            layer,
+                            recurrent_slot,
+                            temp_qkv,
+                            temp_z,
+                            recurrent_beta_gpu,
+                            recurrent_alpha_gpu,
+                            recurrent_runtime,
+                            rec_beta_batch.as_slice(),
+                            rec_alpha_batch.as_slice(),
+                            n_tokens,
+                            dim,
+                            inter_dim,
+                            dims,
+                            eps,
+                            ssm_key,
+                            ssm_out_dtype,
+                            ffn_nw_key,
+                            wg_key,
+                            wg_dtype,
+                            wu_key,
+                            wu_dtype,
+                            wd_key,
+                            wd_dtype,
+                            Some(&proj_params),
+                        )
+                    )?;
+                    if let Some(stats) = merged_stats {
+                        if let Some(ref mut ops) = ops {
+                            ops.gpu_execute += stats.gpu_execute;
+                            ops.gpu_execute_layers += stats.gpu_execute;
+                            ops.gpu_readback += stats.gpu_readback;
+                        }
+                        return Ok(true);
+                    }
+                }
+
+                // Fallback: separate projection CB + fused/non-fused body CB.
                 if !Self::run_unified_recurrent_projection_phase(
                     metal_ops,
                     backend,
@@ -1326,6 +1381,7 @@ impl Qwen35Forward {
                             wu_dtype,
                             wd_key,
                             wd_dtype,
+                            None,
                         )
                     )?;
                     if let Some(stats) = fused_stats {

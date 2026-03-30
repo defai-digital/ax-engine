@@ -121,7 +121,12 @@ impl ModelKv {
     ///
     /// GPU KV snapshotting is not supported yet because AX does not maintain a
     /// CPU mirror of Metal buffers in v2.
-    pub fn snapshot(&self) -> Option<ModelKvSnapshot> {
+    /// Check whether this KV cache supports snapshotting (without performing one).
+    pub fn supports_snapshot(&self) -> bool {
+        matches!(self, Self::Cpu(_) | Self::Qwen35(_))
+    }
+
+    pub fn snapshot(&mut self) -> Option<ModelKvSnapshot> {
         match self {
             Self::Cpu(c) => Some(ModelKvSnapshot::Cpu(c.snapshot())),
             Self::Gpu(_) => None,
@@ -308,10 +313,10 @@ impl ModelKv {
 
     /// Snapshot the recurrent state for a specific Qwen3.5 slot.
     pub fn snapshot_qwen35_recurrent_slot(
-        &self,
+        &mut self,
         slot_idx: usize,
     ) -> anyhow::Result<Qwen35RecurrentSlotSnapshot> {
-        let qwen_kv = self.as_qwen35().ok_or_else(|| {
+        let qwen_kv = self.as_qwen35_mut().ok_or_else(|| {
             anyhow::anyhow!("qwen35 recurrent slot snapshots require ModelKv::Qwen35")
         })?;
         Ok(qwen_kv.recurrent_slot_snapshot(slot_idx))

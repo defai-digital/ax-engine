@@ -336,6 +336,14 @@ fn build_qwen35_kv(plan: &Qwen35KvPlan, backend: &dyn Backend) -> Qwen35Kv {
         } else {
             tracing::info!(kv_dtype = ?dtype, "Initialized Qwen3.5 GPU attention KV mirror");
         }
+
+        if let Err(err) = kv.enable_gpu_recurrent_state(&metal_ops.device) {
+            tracing::warn!(
+                "Qwen3.5 GPU recurrent state allocation failed, using CPU state with lazy sync: {err}"
+            );
+        } else {
+            tracing::info!("Initialized Qwen3.5 GPU-resident recurrent state");
+        }
     }
 
     kv

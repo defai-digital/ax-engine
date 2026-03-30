@@ -41,6 +41,30 @@ use crate::metrics::counters::OpTimer;
 use crate::model::{LlamaModel, WeightStore};
 use crate::sampling::Sampler;
 
+fn qwen35_speculative_branch_verify_enabled() -> bool {
+    match std::env::var("AX_QWEN35_SPEC_VERIFY_BRANCH") {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
+pub fn target_verify_mode_label(model: &LlamaModel, kv: &ModelKv) -> &'static str {
+    if model.arch_name() == "qwen35" && kv.as_qwen35().is_some() {
+        if qwen35_speculative_branch_verify_enabled() {
+            "qwen35_branch"
+        } else {
+            "snapshot_replay"
+        }
+    } else if kv.supports_snapshot() {
+        "snapshot_replay"
+    } else {
+        "truncate_only"
+    }
+}
+
 /// Timing and shape details for one speculative decode step.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SpecStepMetrics {
@@ -48,6 +72,12 @@ pub struct SpecStepMetrics {
     pub draft_duration: Duration,
     /// Target verification time for `[last_token] + draft_tokens`.
     pub verify_duration: Duration,
+    /// Time spent preparing the target verify path before the forward call.
+    pub verify_prepare_duration: Duration,
+    /// Time spent inside the target verify forward itself.
+    pub verify_forward_duration: Duration,
+    /// Time spent cleaning up the target verify path after forward.
+    pub verify_cleanup_duration: Duration,
     /// Acceptance/rejection bookkeeping time.
     pub accept_duration: Duration,
     /// Number of draft tokens proposed this step.
@@ -83,6 +113,19 @@ pub struct SpeculativeDecoder {
     draft_kv: ModelKv,
     /// Number of tokens to speculate per step.
     k: usize,
+    /// Reusable Qwen3.5 target-side verify branch slot, when enabled.
+    target_qwen35_branch_slot: Option<usize>,
+}
+
+enum TargetVerifyState {
+    Standard {
+        snapshot: Option<ModelKvSnapshot>,
+    },
+    Qwen35Branch {
+        source_seq_len: usize,
+        source_slot: usize,
+        branch_slot: usize,
+    },
 }
 
 impl SpeculativeDecoder {
@@ -102,12 +145,46 @@ impl SpeculativeDecoder {
             _draft_mapped: draft_mapped,
             draft_kv,
             k,
+            target_qwen35_branch_slot: None,
         })
     }
 
     /// The lookahead length K.
     pub fn k(&self) -> usize {
         self.k
+    }
+
+    /// Prewarm the target-side speculative verify path without advancing the
+    /// shared attention timeline. For Qwen3.5 this allocates/reuses the branch
+    /// slot and restores the original active slot immediately so subsequent
+    /// measured steps avoid first-use branch setup noise.
+    pub fn prewarm_target_verify_path(
+        &mut self,
+        target_model: &LlamaModel,
+        target_kv: &mut ModelKv,
+    ) -> anyhow::Result<()> {
+        let verify_state = {
+            let mut target_qwen35_branch_slot = self.target_qwen35_branch_slot;
+            let verify_state = prepare_target_verify_state_with_branch_slot_hint(
+                &mut target_qwen35_branch_slot,
+                target_model,
+                target_kv,
+            )?;
+            self.target_qwen35_branch_slot = target_qwen35_branch_slot;
+            verify_state
+        };
+
+        if let TargetVerifyState::Qwen35Branch {
+            source_seq_len,
+            source_slot,
+            ..
+        } = &verify_state
+        {
+            target_kv.truncate_qwen35_attention_timeline(*source_seq_len)?;
+            target_kv.set_qwen35_active_slot(*source_slot)?;
+        }
+
+        Ok(())
     }
 
     /// Run one speculative decode step starting from `last_token` at `position`.
@@ -172,9 +249,14 @@ impl SpeculativeDecoder {
         let mut draft_tokens: Vec<u32> = Vec::with_capacity(self.k);
         let mut draft_probs_all: Vec<Vec<f32>> = Vec::with_capacity(self.k);
         let mut draft_logits = vec![0.0f32; vocab];
-        let recent_limit = sampler.config().repeat_last_n.max(0) as usize;
+        let recent_limit = if sampler.config().repeat_last_n < 0 {
+            usize::MAX
+        } else {
+            sampler.config().repeat_last_n as usize
+        };
         let recent_start = history_tokens.len().saturating_sub(recent_limit);
         let mut draft_recent_tokens = history_tokens[recent_start..].to_vec();
+        draft_recent_tokens.push(last_token);
 
         let mut draft_pos = self.draft_kv.seq_len();
         let mut prev_tok = last_token;
@@ -211,17 +293,43 @@ impl SpeculativeDecoder {
             .chain(draft_tokens.iter().copied())
             .collect();
 
-        let verify_timer = OpTimer::start();
-        target_model.sync_model_kv(target_kv);
-        let target_step_snapshot = target_kv.snapshot();
+        let mut target_qwen35_branch_slot = self.target_qwen35_branch_slot;
+        let verify_prepare_timer = OpTimer::start();
+        let target_verify_state = prepare_target_verify_state_with_branch_slot_hint(
+            &mut target_qwen35_branch_slot,
+            target_model,
+            target_kv,
+        )?;
+        self.target_qwen35_branch_slot = target_qwen35_branch_slot;
+        let verify_prepare_duration = verify_prepare_timer.elapsed();
+
+        let verify_forward_timer = OpTimer::start();
         let mut target_logits_all: Vec<f32> = Vec::new();
-        target_model.forward_batch_all_logits(
+        if let Err(err) = target_model.forward_batch_all_logits(
             &verify_tokens,
             target_kv,
             target_weights,
             &mut target_logits_all,
-        )?;
-        let verify_duration = verify_timer.elapsed();
+        ) {
+            let verify_forward_duration = verify_forward_timer.elapsed();
+            let verify_cleanup_timer = OpTimer::start();
+            abort_target_verify_state(
+                &target_verify_state,
+                target_model,
+                target_kv,
+                target_weights,
+                position,
+            )?;
+            let verify_cleanup_duration = verify_cleanup_timer.elapsed();
+            let _ = (
+                verify_prepare_duration,
+                verify_forward_duration,
+                verify_cleanup_duration,
+            );
+            return Err(err);
+        }
+        let verify_forward_duration = verify_forward_timer.elapsed();
+        let verify_duration = verify_prepare_duration + verify_forward_duration;
         // target_logits_all[i*vocab..(i+1)*vocab] are next-token logits after
         // consuming verify_tokens[i]. That means:
         // - slot 0 verifies draft_tokens[0]
@@ -272,11 +380,12 @@ impl SpeculativeDecoder {
                 // then replay last_token + accepted drafts when precise
                 // truncate is unavailable.
                 let rewind_pos = position + n_accepted + 1;
-                restore_or_truncate_kv(
+                let verify_cleanup_timer = OpTimer::start();
+                restore_target_verify_state(
+                    &target_verify_state,
                     target_model,
                     target_kv,
                     target_weights,
-                    target_step_snapshot.as_ref(),
                     &verify_tokens[..n_accepted + 1],
                     rewind_pos,
                 )?;
@@ -288,6 +397,7 @@ impl SpeculativeDecoder {
                     &verify_tokens[..n_accepted],
                     position + n_accepted,
                 )?;
+                let verify_cleanup_duration = verify_cleanup_timer.elapsed();
 
                 return Ok(SpecStep {
                     tokens: accepted,
@@ -295,6 +405,9 @@ impl SpeculativeDecoder {
                     metrics: SpecStepMetrics {
                         draft_duration,
                         verify_duration,
+                        verify_prepare_duration,
+                        verify_forward_duration,
+                        verify_cleanup_duration,
                         accept_duration: accept_timer.elapsed(),
                         drafted_tokens: draft_tokens.len(),
                         verified_positions: verify_tokens.len(),
@@ -305,8 +418,16 @@ impl SpeculativeDecoder {
 
         // All K tokens accepted: sample bonus token from target_logits[K]
         let bonus_slot = &mut logits_slot(&target_logits_all, self.k, vocab).to_vec();
-        // Include last_token in context so repetition penalty covers the full window
-        let mut bonus_context = Vec::with_capacity(1 + accepted.len());
+        // Include history + last_token + accepted in context for repetition penalty
+        let bonus_recent_limit = if sampler.config().repeat_last_n < 0 {
+            usize::MAX
+        } else {
+            sampler.config().repeat_last_n as usize
+        };
+        let bonus_start = history_tokens.len().saturating_sub(bonus_recent_limit);
+        let mut bonus_context =
+            Vec::with_capacity(history_tokens[bonus_start..].len() + 1 + accepted.len());
+        bonus_context.extend_from_slice(&history_tokens[bonus_start..]);
         bonus_context.push(last_token);
         bonus_context.extend_from_slice(&accepted);
         let bonus_tok = sampler.sample(bonus_slot, &bonus_context);
@@ -327,6 +448,14 @@ impl SpeculativeDecoder {
             position + self.k,
             "draft KV seq_len mismatch after full acceptance"
         );
+        let verify_cleanup_timer = OpTimer::start();
+        commit_target_verify_state(
+            &target_verify_state,
+            &mut self.target_qwen35_branch_slot,
+            target_model,
+            target_kv,
+        )?;
+        let verify_cleanup_duration = verify_cleanup_timer.elapsed();
 
         Ok(SpecStep {
             tokens: accepted,
@@ -334,6 +463,9 @@ impl SpeculativeDecoder {
             metrics: SpecStepMetrics {
                 draft_duration,
                 verify_duration,
+                verify_prepare_duration,
+                verify_forward_duration,
+                verify_cleanup_duration,
                 accept_duration: accept_timer.elapsed(),
                 drafted_tokens: draft_tokens.len(),
                 verified_positions: verify_tokens.len(),
@@ -350,6 +482,60 @@ impl SpeculativeDecoder {
         validate_speculative_model_rollback("draft", &self.draft_model)?;
         validate_speculative_model_rollback("target", target_model)
     }
+}
+
+fn prepare_target_verify_state_with_branch_slot_hint(
+    target_qwen35_branch_slot: &mut Option<usize>,
+    target_model: &LlamaModel,
+    target_kv: &mut ModelKv,
+) -> anyhow::Result<TargetVerifyState> {
+    if target_model.arch_name() == "qwen35"
+        && target_kv.as_qwen35().is_some()
+        && qwen35_speculative_branch_verify_enabled()
+    {
+        let source_seq_len = target_kv.seq_len();
+        let source_slot = target_kv.qwen35_active_slot()?;
+        let branch_slot =
+            acquire_qwen35_verify_branch_slot(target_qwen35_branch_slot, target_kv, source_slot)?;
+        if !target_model.try_clone_qwen35_recurrent_slot_via_backend(
+            target_kv,
+            source_slot,
+            branch_slot,
+        )? {
+            target_model.sync_model_kv(target_kv);
+            target_kv.clone_qwen35_recurrent_slot(source_slot, branch_slot)?;
+        }
+        target_kv.set_qwen35_active_slot(branch_slot)?;
+        return Ok(TargetVerifyState::Qwen35Branch {
+            source_seq_len,
+            source_slot,
+            branch_slot,
+        });
+    }
+
+    target_model.sync_model_kv(target_kv);
+    Ok(TargetVerifyState::Standard {
+        snapshot: target_kv.snapshot(),
+    })
+}
+
+fn acquire_qwen35_verify_branch_slot(
+    target_qwen35_branch_slot: &mut Option<usize>,
+    target_kv: &mut ModelKv,
+    source_slot: usize,
+) -> anyhow::Result<usize> {
+    if let Some(branch_slot) = *target_qwen35_branch_slot
+        && branch_slot != source_slot
+        && target_kv
+            .as_qwen35()
+            .is_some_and(|qwen_kv| qwen_kv.has_recurrent_slot(branch_slot))
+    {
+        return Ok(branch_slot);
+    }
+
+    let branch_slot = target_kv.allocate_qwen35_recurrent_slot()?;
+    *target_qwen35_branch_slot = Some(branch_slot);
+    Ok(branch_slot)
 }
 
 fn validate_speculative_config(
@@ -386,6 +572,79 @@ fn validate_speculative_model_rollback(label: &str, model: &LlamaModel) -> anyho
     );
 }
 
+fn restore_target_verify_state(
+    verify_state: &TargetVerifyState,
+    target_model: &LlamaModel,
+    target_kv: &mut ModelKv,
+    target_weights: &WeightStore,
+    replay_tokens: &[u32],
+    truncate_pos: usize,
+) -> anyhow::Result<()> {
+    match verify_state {
+        TargetVerifyState::Standard { snapshot } => restore_or_truncate_kv(
+            target_model,
+            target_kv,
+            target_weights,
+            snapshot.as_ref(),
+            replay_tokens,
+            truncate_pos,
+        ),
+        TargetVerifyState::Qwen35Branch {
+            source_seq_len,
+            source_slot,
+            ..
+        } => {
+            target_kv.truncate_qwen35_attention_timeline(*source_seq_len)?;
+            target_kv.set_qwen35_active_slot(*source_slot)?;
+            if !replay_tokens.is_empty() {
+                let mut replay_logits = vec![0.0f32; target_model.config.vocab_size as usize];
+                target_model.forward_batch(
+                    replay_tokens,
+                    target_kv,
+                    target_weights,
+                    &mut replay_logits,
+                )?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn abort_target_verify_state(
+    verify_state: &TargetVerifyState,
+    target_model: &LlamaModel,
+    target_kv: &mut ModelKv,
+    target_weights: &WeightStore,
+    position: usize,
+) -> anyhow::Result<()> {
+    restore_target_verify_state(
+        verify_state,
+        target_model,
+        target_kv,
+        target_weights,
+        &[],
+        position,
+    )
+}
+
+fn commit_target_verify_state(
+    verify_state: &TargetVerifyState,
+    target_qwen35_branch_slot: &mut Option<usize>,
+    _target_model: &LlamaModel,
+    target_kv: &mut ModelKv,
+) -> anyhow::Result<()> {
+    if let TargetVerifyState::Qwen35Branch {
+        source_slot,
+        branch_slot,
+        ..
+    } = verify_state
+    {
+        target_kv.set_qwen35_active_slot(*branch_slot)?;
+        *target_qwen35_branch_slot = Some(*source_slot);
+    }
+    Ok(())
+}
+
 fn restore_or_truncate_kv(
     model: &LlamaModel,
     kv: &mut ModelKv,
@@ -410,6 +669,10 @@ fn restore_or_truncate_kv(
 /// Compute softmax of a logit slice, returning a probability vector.
 fn softmax(logits: &[f32]) -> Vec<f32> {
     let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    if !max.is_finite() {
+        let n = logits.len();
+        return vec![1.0 / n as f32; n];
+    }
     let mut probs: Vec<f32> = logits.iter().map(|&x| (x - max).exp()).collect();
     let sum: f32 = probs.iter().sum();
     if sum > 0.0 {
@@ -596,6 +859,258 @@ mod tests {
     fn test_validate_speculative_model_rollback_accepts_llama() {
         let model = LlamaModel::new(speculative_test_config("llama")).unwrap();
         validate_speculative_model_rollback("target", &model).unwrap();
+    }
+
+    #[test]
+    fn test_target_verify_mode_label_defaults_to_qwen35_branch() {
+        let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
+        let kv = model.create_model_kv();
+        assert_eq!(target_verify_mode_label(&model, &kv), "qwen35_branch");
+    }
+
+    #[test]
+    fn test_target_verify_mode_label_honors_branch_disable_env() {
+        let key = "AX_QWEN35_SPEC_VERIFY_BRANCH";
+        let previous = std::env::var_os(key);
+        unsafe { std::env::set_var(key, "off") };
+
+        let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
+        let kv = model.create_model_kv();
+        assert_eq!(target_verify_mode_label(&model, &kv), "snapshot_replay");
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+    }
+
+    #[test]
+    fn test_prepare_target_verify_state_qwen35_forks_branch_and_commit_restores_source() {
+        let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
+        let mut target_qwen35_branch_slot = None;
+        let mut kv = model.create_model_kv();
+        let kv_width = (model.config.n_kv_heads * model.config.head_dim) as usize;
+        {
+            let qwen_kv = kv.as_qwen35_mut().expect("expected qwen35 kv");
+            let k0 = vec![1.0; kv_width];
+            let v0 = vec![2.0; kv_width];
+            qwen_kv.attention_append(3, &k0, &v0);
+            qwen_kv.finalize_token();
+            qwen_kv.conv_state_for_slot_mut(0, 0).fill(1.0);
+            qwen_kv.recurrent_state_for_slot_mut(0, 0).fill(2.0);
+        }
+
+        let verify_state = prepare_target_verify_state_with_branch_slot_hint(
+            &mut target_qwen35_branch_slot,
+            &model,
+            &mut kv,
+        )
+        .expect("qwen35 verify branch preparation should succeed");
+        let (source_slot, branch_slot) = match &verify_state {
+            TargetVerifyState::Qwen35Branch {
+                source_slot,
+                branch_slot,
+                ..
+            } => (*source_slot, *branch_slot),
+            TargetVerifyState::Standard { .. } => panic!("expected qwen35 branch state"),
+        };
+
+        {
+            let qwen_kv = kv.as_qwen35_mut().expect("expected qwen35 kv");
+            assert_eq!(source_slot, 0);
+            assert_eq!(qwen_kv.active_slot(), branch_slot);
+            assert!(qwen_kv.has_recurrent_slot(branch_slot));
+            qwen_kv.conv_state_for_slot_mut(branch_slot, 0).fill(9.0);
+            qwen_kv
+                .recurrent_state_for_slot_mut(branch_slot, 0)
+                .fill(10.0);
+            let k1 = vec![5.0; kv_width];
+            let v1 = vec![6.0; kv_width];
+            qwen_kv.attention_append(3, &k1, &v1);
+            qwen_kv.finalize_token();
+        }
+
+        commit_target_verify_state(
+            &verify_state,
+            &mut target_qwen35_branch_slot,
+            &model,
+            &mut kv,
+        )
+        .expect("qwen35 verify branch commit should succeed");
+
+        let qwen_kv = kv.as_qwen35().expect("expected qwen35 kv");
+        assert_eq!(qwen_kv.active_slot(), branch_slot);
+        assert_eq!(qwen_kv.seq_len(), 2);
+        assert!(qwen_kv.has_recurrent_slot(branch_slot));
+        assert!(
+            qwen_kv
+                .conv_state_for_slot(branch_slot, 0)
+                .iter()
+                .all(|&v| v == 9.0)
+        );
+        assert!(
+            qwen_kv
+                .recurrent_state_for_slot(branch_slot, 0)
+                .iter()
+                .all(|&v| v == 10.0)
+        );
+        assert_eq!(target_qwen35_branch_slot, Some(source_slot));
+    }
+
+    #[test]
+    fn test_prepare_target_verify_state_qwen35_reuses_branch_slot_across_steps() {
+        let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
+        let mut target_qwen35_branch_slot = None;
+        let mut kv = model.create_model_kv();
+
+        let first = prepare_target_verify_state_with_branch_slot_hint(
+            &mut target_qwen35_branch_slot,
+            &model,
+            &mut kv,
+        )
+        .expect("first prepare should succeed");
+        let first_branch_slot = match &first {
+            TargetVerifyState::Qwen35Branch { branch_slot, .. } => *branch_slot,
+            TargetVerifyState::Standard { .. } => panic!("expected qwen35 branch state"),
+        };
+        match &first {
+            TargetVerifyState::Qwen35Branch {
+                source_seq_len,
+                source_slot,
+                ..
+            } => {
+                kv.truncate_qwen35_attention_timeline(*source_seq_len)
+                    .expect("truncate attention should succeed");
+                kv.set_qwen35_active_slot(*source_slot)
+                    .expect("restore source slot should succeed");
+            }
+            TargetVerifyState::Standard { .. } => panic!("expected qwen35 branch state"),
+        }
+
+        let second = prepare_target_verify_state_with_branch_slot_hint(
+            &mut target_qwen35_branch_slot,
+            &model,
+            &mut kv,
+        )
+        .expect("second prepare should succeed");
+        let second_branch_slot = match &second {
+            TargetVerifyState::Qwen35Branch { branch_slot, .. } => *branch_slot,
+            TargetVerifyState::Standard { .. } => panic!("expected qwen35 branch state"),
+        };
+
+        assert_eq!(first_branch_slot, second_branch_slot);
+    }
+
+    #[test]
+    fn test_commit_target_verify_state_qwen35_handoffs_active_slot_and_reuses_old_source() {
+        let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
+        let mut target_qwen35_branch_slot = None;
+        let mut kv = model.create_model_kv();
+
+        let first = prepare_target_verify_state_with_branch_slot_hint(
+            &mut target_qwen35_branch_slot,
+            &model,
+            &mut kv,
+        )
+        .expect("first prepare should succeed");
+        let (first_source_slot, first_branch_slot) = match &first {
+            TargetVerifyState::Qwen35Branch {
+                source_slot,
+                branch_slot,
+                ..
+            } => (*source_slot, *branch_slot),
+            TargetVerifyState::Standard { .. } => panic!("expected qwen35 branch state"),
+        };
+
+        commit_target_verify_state(&first, &mut target_qwen35_branch_slot, &model, &mut kv)
+            .expect("handoff commit should succeed");
+
+        {
+            let qwen_kv = kv.as_qwen35().expect("expected qwen35 kv");
+            assert_eq!(qwen_kv.active_slot(), first_branch_slot);
+            assert_eq!(target_qwen35_branch_slot, Some(first_source_slot));
+        }
+
+        let second = prepare_target_verify_state_with_branch_slot_hint(
+            &mut target_qwen35_branch_slot,
+            &model,
+            &mut kv,
+        )
+        .expect("second prepare should succeed");
+        let (second_source_slot, second_branch_slot) = match &second {
+            TargetVerifyState::Qwen35Branch {
+                source_slot,
+                branch_slot,
+                ..
+            } => (*source_slot, *branch_slot),
+            TargetVerifyState::Standard { .. } => panic!("expected qwen35 branch state"),
+        };
+
+        assert_eq!(second_source_slot, first_branch_slot);
+        assert_eq!(second_branch_slot, first_source_slot);
+    }
+
+    #[test]
+    fn test_prepare_target_verify_state_qwen35_uses_attention_truncate_from_gpu_dirty_state() {
+        let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
+        let mut target_qwen35_branch_slot = None;
+        let mut kv = model.create_model_kv();
+        let device = ax_engine_metal::MetalDevice::new().expect("metal device");
+        let kv_width = (model.config.n_kv_heads * model.config.head_dim) as usize;
+        let k0 = vec![3.0f32; kv_width];
+        let v0 = vec![4.0f32; kv_width];
+        {
+            let qwen_kv = kv.as_qwen35_mut().expect("expected qwen35 kv");
+            qwen_kv
+                .enable_gpu_attention(&device, crate::kv::GpuKvDtype::F32)
+                .expect("enable gpu attention");
+            let gpu_attention = qwen_kv
+                .gpu_attention_mut()
+                .expect("gpu attention should exist");
+            gpu_attention.append_layer(3, &k0, &v0);
+            gpu_attention.finalize_token();
+            qwen_kv.mark_attention_cpu_dirty();
+            qwen_kv.finalize_token();
+            assert!(
+                qwen_kv
+                    .attention_k_slice_including_current(3, 1)
+                    .iter()
+                    .all(|&v| v == 0.0)
+            );
+        }
+
+        let verify_state = prepare_target_verify_state_with_branch_slot_hint(
+            &mut target_qwen35_branch_slot,
+            &model,
+            &mut kv,
+        )
+        .expect("prepare should succeed");
+
+        let source_seq_len = match &verify_state {
+            TargetVerifyState::Qwen35Branch { source_seq_len, .. } => *source_seq_len,
+            TargetVerifyState::Standard { .. } => panic!("expected qwen35 branch state"),
+        };
+
+        {
+            let qwen_kv = kv.as_qwen35_mut().expect("expected qwen35 kv");
+            qwen_kv.attention_append(3, &vec![9.0; kv_width], &vec![10.0; kv_width]);
+            qwen_kv.finalize_token();
+        }
+        kv.truncate_qwen35_attention_timeline(source_seq_len)
+            .expect("truncate attention should succeed");
+        kv.sync_qwen35_attention_timeline_if_needed()
+            .expect("sync truncated attention should succeed");
+
+        let qwen_kv = kv.as_qwen35().expect("expected qwen35 kv");
+        assert_eq!(qwen_kv.seq_len(), 1);
+        assert_eq!(
+            qwen_kv.attention_k_slice_including_current(3, 1),
+            k0.as_slice()
+        );
+        assert_eq!(
+            qwen_kv.attention_v_slice_including_current(3, 1),
+            v0.as_slice()
+        );
     }
 
     #[test]

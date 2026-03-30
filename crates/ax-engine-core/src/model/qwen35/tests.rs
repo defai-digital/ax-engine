@@ -230,7 +230,7 @@ fn test_qwen35_prefill_recurrent_state_mode_auto_is_prompt_aware() {
         );
         assert_eq!(
             Qwen35Forward::qwen35_prefill_recurrent_state_mode_for_tokens(64),
-            Qwen35PrefillRecurrentStateMode::CpuAlias
+            Qwen35PrefillRecurrentStateMode::BackendOwned
         );
         assert_eq!(
             Qwen35Forward::qwen35_prefill_recurrent_state_mode_for_tokens(96),

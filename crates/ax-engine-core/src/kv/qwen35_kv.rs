@@ -658,6 +658,75 @@ impl Qwen35RecurrentPool {
     }
 }
 
+/// GPU-resident recurrent state buffers for one slot.
+struct Qwen35GpuRecurrentSlotBuffers {
+    /// conv_states[layer_idx] — `None` for non-recurrent layers.
+    conv_states: Vec<Option<ax_engine_metal::MetalBuffer>>,
+    /// recurrent_states[layer_idx] — `None` for non-recurrent layers.
+    recurrent_states: Vec<Option<ax_engine_metal::MetalBuffer>>,
+}
+
+/// GPU-resident recurrent state for all slots.
+struct Qwen35GpuRecurrentState {
+    device: ax_engine_metal::MetalDevice,
+    slots: Vec<Qwen35GpuRecurrentSlotBuffers>,
+    conv_state_stride: usize,
+    recurrent_state_stride: usize,
+}
+
+impl Qwen35GpuRecurrentState {
+    fn allocate_slot(
+        device: &ax_engine_metal::MetalDevice,
+        recurrent_layers: &[bool],
+        conv_state_stride: usize,
+        recurrent_state_stride: usize,
+    ) -> anyhow::Result<Qwen35GpuRecurrentSlotBuffers> {
+        let mut conv_states = Vec::with_capacity(recurrent_layers.len());
+        let mut recurrent_states = Vec::with_capacity(recurrent_layers.len());
+        for &is_recurrent in recurrent_layers {
+            if is_recurrent {
+                let mut conv_buf = ax_engine_metal::MetalBuffer::new(
+                    device.device(),
+                    conv_state_stride * std::mem::size_of::<f32>(),
+                )?;
+                unsafe {
+                    conv_buf.as_mut_slice::<f32>()[..conv_state_stride].fill(0.0);
+                }
+                let mut rec_buf = ax_engine_metal::MetalBuffer::new(
+                    device.device(),
+                    recurrent_state_stride * std::mem::size_of::<f32>(),
+                )?;
+                unsafe {
+                    rec_buf.as_mut_slice::<f32>()[..recurrent_state_stride].fill(0.0);
+                }
+                conv_states.push(Some(conv_buf));
+                recurrent_states.push(Some(rec_buf));
+            } else {
+                conv_states.push(None);
+                recurrent_states.push(None);
+            }
+        }
+        Ok(Qwen35GpuRecurrentSlotBuffers {
+            conv_states,
+            recurrent_states,
+        })
+    }
+
+    fn clear_slot(&mut self, slot_idx: usize) {
+        let slot = &mut self.slots[slot_idx];
+        for buf in slot.conv_states.iter_mut().flatten() {
+            unsafe {
+                buf.as_mut_slice::<f32>()[..self.conv_state_stride].fill(0.0);
+            }
+        }
+        for buf in slot.recurrent_states.iter_mut().flatten() {
+            unsafe {
+                buf.as_mut_slice::<f32>()[..self.recurrent_state_stride].fill(0.0);
+            }
+        }
+    }
+}
+
 /// CPU-side hybrid cache for Qwen3.5.
 pub struct Qwen35Kv {
     attention: CpuKv,
@@ -677,6 +746,9 @@ pub struct Qwen35Kv {
     active_slot: usize,
     batch_slot_indices: Vec<usize>,
     recurrent_pool: Qwen35RecurrentPool,
+    /// GPU-resident recurrent state (conv + SSM) for all slots.
+    /// When present, these buffers are authoritative — CPU state is lazy backup.
+    gpu_recurrent: Option<Qwen35GpuRecurrentState>,
 }
 
 impl std::fmt::Debug for Qwen35Kv {
@@ -690,6 +762,7 @@ impl std::fmt::Debug for Qwen35Kv {
             .field("attention_max_seq_len", &self.attention_max_seq_len)
             .field("attention_page_size", &self.attention_page_size)
             .field("has_gpu_attention", &self.attention_gpu.is_some())
+            .field("has_gpu_recurrent", &self.gpu_recurrent.is_some())
             .field("recurrent_layers", &self.recurrent_layers.len())
             .field("conv_cache_len", &self.conv_cache_len)
             .field("conv_dim", &self.conv_dim)
@@ -890,6 +963,7 @@ impl Qwen35Kv {
             active_slot: 0,
             batch_slot_indices: Vec::new(),
             recurrent_pool,
+            gpu_recurrent: None,
         }
     }
 
@@ -929,6 +1003,73 @@ impl Qwen35Kv {
         self.attention_gpu_device = Some(gpu_device);
         self.sync_gpu_attention_from_cpu();
         Ok(())
+    }
+
+    /// Allocate GPU-resident MetalBuffers for all recurrent layer state.
+    /// After this call, `gpu_recurrent_buffers()` returns direct buffer references
+    /// and `sync_qwen35_slot_buffers_from_kv` is no longer needed for prefill.
+    pub fn enable_gpu_recurrent_state(
+        &mut self,
+        device: &ax_engine_metal::MetalDevice,
+    ) -> anyhow::Result<()> {
+        if self.gpu_recurrent.is_some() {
+            return Ok(());
+        }
+        let conv_state_stride = self.conv_cache_len * self.conv_dim;
+        let recurrent_state_stride = self.recurrent_state_len;
+        let gpu_device = device.clone_sharing_device()?;
+        let mut slots = Vec::with_capacity(self.recurrent_pool.slots.len());
+        for _slot in &self.recurrent_pool.slots {
+            slots.push(Qwen35GpuRecurrentState::allocate_slot(
+                device,
+                &self.recurrent_layers,
+                conv_state_stride,
+                recurrent_state_stride,
+            )?);
+        }
+        self.gpu_recurrent = Some(Qwen35GpuRecurrentState {
+            device: gpu_device,
+            slots,
+            conv_state_stride,
+            recurrent_state_stride,
+        });
+        Ok(())
+    }
+
+    /// Returns `true` if GPU-resident recurrent state buffers are available.
+    pub fn has_gpu_recurrent_state(&self) -> bool {
+        self.gpu_recurrent.is_some()
+    }
+
+    /// Returns GPU MetalBuffer references for recurrent state at (slot, layer).
+    /// Returns `(conv_state, recurrent_state)`.
+    pub fn gpu_recurrent_buffers(
+        &self,
+        slot_idx: usize,
+        layer: usize,
+    ) -> Option<(&ax_engine_metal::MetalBuffer, &ax_engine_metal::MetalBuffer)> {
+        let gpu = self.gpu_recurrent.as_ref()?;
+        let slot = &gpu.slots[slot_idx];
+        let conv = slot.conv_states[layer].as_ref()?;
+        let rec = slot.recurrent_states[layer].as_ref()?;
+        Some((conv, rec))
+    }
+
+    /// Returns mutable GPU MetalBuffer references for recurrent state at (slot, layer).
+    #[allow(dead_code)]
+    pub(crate) fn gpu_recurrent_buffers_mut(
+        &mut self,
+        slot_idx: usize,
+        layer: usize,
+    ) -> Option<(
+        &mut ax_engine_metal::MetalBuffer,
+        &mut ax_engine_metal::MetalBuffer,
+    )> {
+        let gpu = self.gpu_recurrent.as_mut()?;
+        let slot = &mut gpu.slots[slot_idx];
+        let conv = slot.conv_states[layer].as_mut()?;
+        let rec = slot.recurrent_states[layer].as_mut()?;
+        Some((conv, rec))
     }
 
     pub fn is_recurrent_layer(&self, layer: usize) -> bool {
@@ -1167,12 +1308,29 @@ impl Qwen35Kv {
     }
 
     pub fn allocate_recurrent_slot(&mut self) -> usize {
-        self.recurrent_pool.allocate(
+        let slot_idx = self.recurrent_pool.allocate(
             &self.recurrent_layers,
             self.conv_cache_len,
             self.conv_dim,
             self.recurrent_state_len,
-        )
+        );
+        if let Some(gpu) = self.gpu_recurrent.as_mut() {
+            if slot_idx < gpu.slots.len() {
+                // Reused slot: zero GPU buffers to match cleared CPU state.
+                gpu.clear_slot(slot_idx);
+            }
+            while gpu.slots.len() <= slot_idx {
+                let new_slot = Qwen35GpuRecurrentState::allocate_slot(
+                    &gpu.device,
+                    &self.recurrent_layers,
+                    gpu.conv_state_stride,
+                    gpu.recurrent_state_stride,
+                )
+                .expect("Failed to allocate GPU recurrent slot buffers");
+                gpu.slots.push(new_slot);
+            }
+        }
+        slot_idx
     }
 
     pub fn free_recurrent_slot(&mut self, slot_idx: usize) {
@@ -1192,9 +1350,57 @@ impl Qwen35Kv {
         self.recurrent_pool.free(slot_idx);
     }
 
-    pub fn recurrent_slot_snapshot(&self, slot_idx: usize) -> Qwen35RecurrentSlotSnapshot {
+    pub fn recurrent_slot_snapshot(&mut self, slot_idx: usize) -> Qwen35RecurrentSlotSnapshot {
+        // If GPU-resident state is authoritative, materialize it to CPU first.
+        self.materialize_gpu_recurrent_to_cpu(slot_idx);
         self.assert_slot_recurrent_state_materialized_on_cpu(slot_idx);
         self.recurrent_pool.snapshot(slot_idx)
+    }
+
+    /// Copy GPU recurrent state back to CPU for the given slot,
+    /// making the CPU copy current for snapshotting/cloning.
+    fn materialize_gpu_recurrent_to_cpu(&mut self, slot_idx: usize) {
+        let Some(gpu) = self.gpu_recurrent.as_ref() else {
+            return;
+        };
+        if slot_idx >= gpu.slots.len() {
+            return;
+        }
+        let slot_cpu = &mut self.recurrent_pool.slots[slot_idx];
+        let gpu_slot = &gpu.slots[slot_idx];
+        for (layer_idx, &is_recurrent) in self.recurrent_layers.iter().enumerate() {
+            if !is_recurrent {
+                continue;
+            }
+            if slot_cpu.cpu_conv_state_stale(layer_idx) {
+                if let Some(buf) = gpu_slot.conv_states[layer_idx].as_ref() {
+                    let stride = gpu
+                        .conv_state_stride
+                        .min(slot_cpu.conv_states[layer_idx].len());
+                    let generation = slot_cpu.conv_state_generation(layer_idx);
+                    unsafe {
+                        slot_cpu.conv_states[layer_idx][..stride]
+                            .copy_from_slice(&buf.as_slice::<f32>()[..stride]);
+                    }
+                    slot_cpu.cpu_materialized_conv_generations[layer_idx] = generation;
+                    slot_cpu.conv_state_pristine_zero[layer_idx] = false;
+                }
+            }
+            if slot_cpu.cpu_recurrent_state_stale(layer_idx) {
+                if let Some(buf) = gpu_slot.recurrent_states[layer_idx].as_ref() {
+                    let stride = gpu
+                        .recurrent_state_stride
+                        .min(slot_cpu.recurrent_states[layer_idx].len());
+                    let generation = slot_cpu.recurrent_state_generation(layer_idx);
+                    unsafe {
+                        slot_cpu.recurrent_states[layer_idx][..stride]
+                            .copy_from_slice(&buf.as_slice::<f32>()[..stride]);
+                    }
+                    slot_cpu.cpu_materialized_recurrent_generations[layer_idx] = generation;
+                    slot_cpu.recurrent_state_pristine_zero[layer_idx] = false;
+                }
+            }
+        }
     }
 
     pub fn clone_recurrent_slot(&mut self, src_slot_idx: usize, dst_slot_idx: usize) {
@@ -1220,6 +1426,60 @@ impl Qwen35Kv {
             self.conv_dim,
             self.recurrent_state_len,
         );
+        // Copy GPU buffers from source to destination slot.
+        self.copy_gpu_recurrent_slot(src_slot_idx, dst_slot_idx);
+    }
+
+    /// Copy GPU recurrent buffers from one slot to another.
+    fn copy_gpu_recurrent_slot(&mut self, src_slot_idx: usize, dst_slot_idx: usize) {
+        let Some(gpu) = self.gpu_recurrent.as_mut() else {
+            return;
+        };
+        // Ensure destination slot has GPU buffers allocated.
+        while gpu.slots.len() <= dst_slot_idx {
+            let new_slot = Qwen35GpuRecurrentState::allocate_slot(
+                &gpu.device,
+                &self.recurrent_layers,
+                gpu.conv_state_stride,
+                gpu.recurrent_state_stride,
+            )
+            .expect("Failed to allocate GPU recurrent slot buffers for clone");
+            gpu.slots.push(new_slot);
+        }
+        if src_slot_idx >= gpu.slots.len() {
+            return;
+        }
+        for (layer_idx, &is_recurrent) in self.recurrent_layers.iter().enumerate() {
+            if !is_recurrent {
+                continue;
+            }
+            let conv_stride = gpu.conv_state_stride;
+            let rec_stride = gpu.recurrent_state_stride;
+            // Copy conv state.
+            let src_data: Vec<f32> =
+                if let Some(buf) = gpu.slots[src_slot_idx].conv_states[layer_idx].as_ref() {
+                    unsafe { buf.as_slice::<f32>()[..conv_stride].to_vec() }
+                } else {
+                    continue;
+                };
+            if let Some(buf) = gpu.slots[dst_slot_idx].conv_states[layer_idx].as_mut() {
+                unsafe {
+                    buf.as_mut_slice::<f32>()[..conv_stride].copy_from_slice(&src_data);
+                }
+            }
+            // Copy recurrent state.
+            let src_data: Vec<f32> =
+                if let Some(buf) = gpu.slots[src_slot_idx].recurrent_states[layer_idx].as_ref() {
+                    unsafe { buf.as_slice::<f32>()[..rec_stride].to_vec() }
+                } else {
+                    continue;
+                };
+            if let Some(buf) = gpu.slots[dst_slot_idx].recurrent_states[layer_idx].as_mut() {
+                unsafe {
+                    buf.as_mut_slice::<f32>()[..rec_stride].copy_from_slice(&src_data);
+                }
+            }
+        }
     }
 
     pub fn restore_recurrent_slot(
@@ -1244,9 +1504,43 @@ impl Qwen35Kv {
         );
         self.clear_batch_slot_indices();
         self.recurrent_pool.restore(slot_idx, snapshot);
+        // Sync restored CPU state to GPU buffers so they match.
+        self.sync_gpu_recurrent_from_cpu(slot_idx);
     }
 
-    pub fn snapshot_active_slot(&self) -> Qwen35KvSnapshot {
+    /// Copy CPU recurrent state to GPU buffers for the given slot.
+    /// Called after CPU state is modified (restore, clone) to keep GPU in sync.
+    fn sync_gpu_recurrent_from_cpu(&mut self, slot_idx: usize) {
+        let Some(gpu) = self.gpu_recurrent.as_mut() else {
+            return;
+        };
+        if slot_idx >= gpu.slots.len() {
+            return;
+        }
+        let slot_cpu = &self.recurrent_pool.slots[slot_idx];
+        let gpu_slot = &mut gpu.slots[slot_idx];
+        for (layer_idx, &is_recurrent) in self.recurrent_layers.iter().enumerate() {
+            if !is_recurrent {
+                continue;
+            }
+            if let Some(buf) = gpu_slot.conv_states[layer_idx].as_mut() {
+                let cpu_data = &slot_cpu.conv_states[layer_idx];
+                let stride = gpu.conv_state_stride.min(cpu_data.len());
+                unsafe {
+                    buf.as_mut_slice::<f32>()[..stride].copy_from_slice(&cpu_data[..stride]);
+                }
+            }
+            if let Some(buf) = gpu_slot.recurrent_states[layer_idx].as_mut() {
+                let cpu_data = &slot_cpu.recurrent_states[layer_idx];
+                let stride = gpu.recurrent_state_stride.min(cpu_data.len());
+                unsafe {
+                    buf.as_mut_slice::<f32>()[..stride].copy_from_slice(&cpu_data[..stride]);
+                }
+            }
+        }
+    }
+
+    pub fn snapshot_active_slot(&mut self) -> Qwen35KvSnapshot {
         self.snapshot_slot(self.active_slot)
     }
 
@@ -1257,7 +1551,8 @@ impl Qwen35Kv {
         }
     }
 
-    pub fn snapshot_slot(&self, slot_idx: usize) -> Qwen35KvSnapshot {
+    pub fn snapshot_slot(&mut self, slot_idx: usize) -> Qwen35KvSnapshot {
+        self.materialize_gpu_recurrent_to_cpu(slot_idx);
         self.assert_slot_recurrent_state_materialized_on_cpu(slot_idx);
         assert!(
             slot_idx == self.active_slot,
@@ -1608,6 +1903,11 @@ impl Qwen35Kv {
         self.active_slot = 0;
         self.clear_batch_slot_indices();
         self.recurrent_pool.clear_all();
+        if let Some(gpu) = self.gpu_recurrent.as_mut() {
+            for slot_idx in 0..gpu.slots.len() {
+                gpu.clear_slot(slot_idx);
+            }
+        }
     }
 
     pub fn truncate_to(&mut self, pos: usize) {

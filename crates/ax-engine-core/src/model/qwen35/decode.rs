@@ -314,7 +314,8 @@ impl Qwen35Forward {
                     debug_assert!(kv_dim >= dims.time_step_rank);
                     let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
                     let recurrent_state_stride = qwen_kv.recurrent_state_len();
-                    metal_ops.with_qwen35_recurrent_slot_buffer(
+                    metal_ops.with_qwen35_recurrent_slot_buffer_for_kv(
+                        qwen_kv,
                         layer,
                         recurrent_slot,
                         conv_state_stride,
@@ -994,7 +995,8 @@ impl Qwen35Forward {
                     debug_assert!(kv_dim >= dims.time_step_rank);
                     let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
                     let recurrent_state_stride = qwen_kv.recurrent_state_len();
-                    metal_ops.with_qwen35_recurrent_slot_buffer(
+                    metal_ops.with_qwen35_recurrent_slot_buffer_for_kv(
+                        qwen_kv,
                         layer,
                         recurrent_slot,
                         conv_state_stride,
@@ -1314,21 +1316,27 @@ impl Qwen35Forward {
         let rb_t = OpTimer::start();
         for layer in 0..n_layers {
             if cfg.qwen35_is_recurrent_layer(layer) {
-                let conv_generation = qwen_kv.note_backend_conv_state_update(recurrent_slot, layer);
-                let recurrent_generation =
-                    qwen_kv.note_backend_recurrent_state_update(recurrent_slot, layer);
-                let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
-                let recurrent_state_stride = qwen_kv.recurrent_state_len();
-                metal_ops.with_qwen35_recurrent_slot_buffer(
-                    layer,
-                    recurrent_slot,
-                    conv_state_stride,
-                    recurrent_state_stride,
-                    |slot_buffers| {
-                        slot_buffers.conv_synced_generation = Some(conv_generation);
-                        slot_buffers.recurrent_synced_generation = Some(recurrent_generation);
-                    },
-                );
+                let _ = qwen_kv.note_backend_conv_state_update(recurrent_slot, layer);
+                let _ = qwen_kv.note_backend_recurrent_state_update(recurrent_slot, layer);
+                if !qwen_kv.has_gpu_recurrent_state() {
+                    let conv_generation =
+                        qwen_kv.conv_state_generation(recurrent_slot, layer);
+                    let recurrent_generation =
+                        qwen_kv.recurrent_state_generation(recurrent_slot, layer);
+                    let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
+                    let recurrent_state_stride = qwen_kv.recurrent_state_len();
+                    metal_ops.with_qwen35_recurrent_slot_buffer(
+                        layer,
+                        recurrent_slot,
+                        conv_state_stride,
+                        recurrent_state_stride,
+                        |slot_buffers| {
+                            slot_buffers.conv_synced_generation = Some(conv_generation);
+                            slot_buffers.recurrent_synced_generation =
+                                Some(recurrent_generation);
+                        },
+                    );
+                }
             }
         }
         qwen_kv.mark_attention_cpu_dirty();

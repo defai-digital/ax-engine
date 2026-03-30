@@ -12,6 +12,7 @@
 using namespace metal;
 
 constant uint QWEN35_MAX_CONV_CACHE = 8;
+constant uint QWEN35_GDN_PACK_TG = 256;
 
 [[kernel]] void qwen35_causal_conv_sequence_f32(
     const device float *input [[buffer(0)]],
@@ -57,6 +58,52 @@ constant uint QWEN35_MAX_CONV_CACHE = 8;
     }
 }
 
+/// Parallel causal conv: one thread per (channel, token) pair.
+/// For tokens t >= conv_cache_len, all inputs come from the input buffer.
+/// For tokens t < conv_cache_len, reads initial history from conv_state.
+/// Grid: (conv_dim, seq_len, 1).  Threads: (min(conv_dim, 256), 1, 1).
+[[kernel]] void qwen35_causal_conv_sequence_parallel_f32(
+    const device float *input [[buffer(0)]],
+    const device float *weights [[buffer(1)]],
+    device float *conv_state [[buffer(2)]],
+    device float *output [[buffer(3)]],
+    constant uint &seq_len [[buffer(4)]],
+    constant uint &conv_cache_len [[buffer(5)]],
+    constant uint &conv_dim [[buffer(6)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    const uint ch = gid.x;
+    const uint t = gid.y;
+    if (ch >= conv_dim || t >= seq_len) return;
+
+    const uint offset = t * conv_dim + ch;
+    const float x = input[offset];
+    float acc = x * weights[conv_cache_len * conv_dim + ch];
+
+    for (uint i = 0; i < conv_cache_len; ++i) {
+        // history[i] corresponds to the input at position (t - conv_cache_len + i)
+        const int src_t = (int)t - (int)conv_cache_len + (int)i;
+        float h;
+        if (src_t < 0) {
+            // Read from initial conv_state: slot (conv_cache_len + src_t)
+            h = conv_state[((uint)((int)conv_cache_len + src_t)) * conv_dim + ch];
+        } else {
+            h = input[(uint)src_t * conv_dim + ch];
+        }
+        acc = fma(h, weights[i * conv_dim + ch], acc);
+    }
+    output[offset] = acc / (1.0f + exp(-acc));
+
+    // Update conv_state: after processing seq_len tokens, the state should
+    // hold the last conv_cache_len input values.
+    // This kernel is only dispatched when seq_len >= conv_cache_len (enforced
+    // by the dispatch code), so state[j] = input[seq_len - conv_cache_len + j].
+    const uint tail_start = seq_len - conv_cache_len;
+    if (t >= tail_start) {
+        conv_state[(t - tail_start) * conv_dim + ch] = x;
+    }
+}
+
 [[kernel]] void qwen35_prepare_single_token_gdn_qkv_f32(
     const device float *conv_out [[buffer(0)]],
     device float *q_out [[buffer(1)]],
@@ -92,6 +139,163 @@ constant uint QWEN35_MAX_CONV_CACHE = 8;
     q_out[gid] = conv_out[src_base + lane] * q_inv;
     k_out[gid] = conv_out[key_dim + src_base + lane] * k_inv;
     v_out[gid] = conv_out[2 * key_dim + gid];
+}
+
+[[kernel]] void qwen35_prepare_multi_token_gdn_qk_f32(
+    const device float *conv_out [[buffer(0)]],
+    device float *q_out [[buffer(1)]],
+    device float *k_out [[buffer(2)]],
+    constant uint &n_tokens [[buffer(3)]],
+    constant uint &group_count [[buffer(4)]],
+    constant uint &time_step_rank [[buffer(5)]],
+    constant uint &state_size [[buffer(6)]],
+    constant float &eps [[buffer(7)]],
+    uint2 tg_pos [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]])
+{
+    const uint token_src = tg_pos.y;
+    const uint token_idx = token_src / group_count;
+    if (token_idx >= n_tokens) return;
+
+    const uint src_head = token_src % group_count;
+    const uint repeats = time_step_rank / group_count;
+    const uint key_dim = group_count * state_size;
+    const uint value_dim = time_step_rank * state_size;
+    const uint conv_dim = 2 * key_dim + value_dim;
+    const uint conv_token_base = token_idx * conv_dim;
+    const uint src_base = src_head * state_size;
+
+    threadgroup float q_sum[QWEN35_GDN_PACK_TG];
+    threadgroup float k_sum[QWEN35_GDN_PACK_TG];
+
+    float q_local = 0.0f;
+    float k_local = 0.0f;
+    for (uint lane = tid; lane < state_size; lane += QWEN35_GDN_PACK_TG) {
+        const float q = conv_out[conv_token_base + src_base + lane];
+        const float k = conv_out[conv_token_base + key_dim + src_base + lane];
+        q_local = fma(q, q, q_local);
+        k_local = fma(k, k, k_local);
+    }
+    q_sum[tid] = q_local;
+    k_sum[tid] = k_local;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint stride = QWEN35_GDN_PACK_TG / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            q_sum[tid] += q_sum[tid + stride];
+            k_sum[tid] += k_sum[tid + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    const float q_inv = rsqrt(q_sum[0] + eps);
+    const float k_inv = rsqrt(k_sum[0] + eps);
+    for (uint lane = tid; lane < state_size; lane += QWEN35_GDN_PACK_TG) {
+        const float q = conv_out[conv_token_base + src_base + lane] * q_inv;
+        const float k = conv_out[conv_token_base + key_dim + src_base + lane] * k_inv;
+        for (uint rep = 0; rep < repeats; ++rep) {
+            const uint dst_head = src_head * repeats + rep;
+            const uint dst =
+                dst_head * n_tokens * state_size + token_idx * state_size + lane;
+            q_out[dst] = q;
+            k_out[dst] = k;
+        }
+    }
+}
+
+[[kernel]] void qwen35_prepare_multi_token_gdn_vgb_f32(
+    const device float *conv_out [[buffer(0)]],
+    const device float *alpha_in [[buffer(1)]],
+    const device float *beta_in [[buffer(2)]],
+    device float *v_out [[buffer(3)]],
+    device float *gate_out [[buffer(4)]],
+    device float *beta_out [[buffer(5)]],
+    constant uint &n_tokens [[buffer(6)]],
+    constant uint &group_count [[buffer(7)]],
+    constant uint &time_step_rank [[buffer(8)]],
+    constant uint &state_size [[buffer(9)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    const uint lane = gid.x;
+    if (lane >= state_size) return;
+
+    const uint token_head = gid.y;
+    const uint token_idx = token_head / time_step_rank;
+    if (token_idx >= n_tokens) return;
+
+    const uint dst_head = token_head % time_step_rank;
+    const uint key_dim = group_count * state_size;
+    const uint value_dim = time_step_rank * state_size;
+    const uint conv_dim = 2 * key_dim + value_dim;
+    const uint conv_token_base = token_idx * conv_dim;
+    const uint dst = dst_head * n_tokens * state_size + token_idx * state_size + lane;
+    const uint src = conv_token_base + 2 * key_dim + dst_head * state_size + lane;
+    v_out[dst] = conv_out[src];
+
+    if (lane == 0) {
+        const uint scalar_idx = token_idx * time_step_rank + dst_head;
+        const uint scalar_dst = dst_head * n_tokens + token_idx;
+        gate_out[scalar_dst] = alpha_in[scalar_idx];
+        beta_out[scalar_dst] = beta_in[scalar_idx];
+    }
+}
+
+[[kernel]] void qwen35_prepare_multi_token_gdn_vgb_ab_f16(
+    const device float *conv_out [[buffer(0)]],
+    const device half *alpha_in [[buffer(1)]],
+    const device half *beta_in [[buffer(2)]],
+    device float *v_out [[buffer(3)]],
+    device float *gate_out [[buffer(4)]],
+    device float *beta_out [[buffer(5)]],
+    constant uint &n_tokens [[buffer(6)]],
+    constant uint &group_count [[buffer(7)]],
+    constant uint &time_step_rank [[buffer(8)]],
+    constant uint &state_size [[buffer(9)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    const uint lane = gid.x;
+    if (lane >= state_size) return;
+
+    const uint token_head = gid.y;
+    const uint token_idx = token_head / time_step_rank;
+    if (token_idx >= n_tokens) return;
+
+    const uint dst_head = token_head % time_step_rank;
+    const uint key_dim = group_count * state_size;
+    const uint value_dim = time_step_rank * state_size;
+    const uint conv_dim = 2 * key_dim + value_dim;
+    const uint conv_token_base = token_idx * conv_dim;
+    const uint dst = dst_head * n_tokens * state_size + token_idx * state_size + lane;
+    const uint src = conv_token_base + 2 * key_dim + dst_head * state_size + lane;
+    v_out[dst] = conv_out[src];
+
+    if (lane == 0) {
+        const uint scalar_idx = token_idx * time_step_rank + dst_head;
+        const uint scalar_dst = dst_head * n_tokens + token_idx;
+        gate_out[scalar_dst] = float(alpha_in[scalar_idx]);
+        beta_out[scalar_dst] = float(beta_in[scalar_idx]);
+    }
+}
+
+[[kernel]] void qwen35_unpack_bhsk_to_token_major_f32(
+    const device float *input [[buffer(0)]],
+    device float *output [[buffer(1)]],
+    constant uint &n_tokens [[buffer(2)]],
+    constant uint &n_heads [[buffer(3)]],
+    constant uint &head_dim [[buffer(4)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    const uint lane = gid.x;
+    if (lane >= head_dim) return;
+
+    const uint token_head = gid.y;
+    const uint token_idx = token_head / n_heads;
+    if (token_idx >= n_tokens) return;
+    const uint head = token_head % n_heads;
+
+    const uint src = head * n_tokens * head_dim + token_idx * head_dim + lane;
+    const uint dst = token_idx * n_heads * head_dim + head * head_dim + lane;
+    output[dst] = input[src];
 }
 
 template <int BK, int BV>
@@ -501,6 +705,14 @@ void gated_delta_rule_kernel<128, 64>(
     constant uint&, constant uint&,
     uint2, uint);
 
+template [[host_name("gated_delta_rule_128_128")]] [[kernel]]
+void gated_delta_rule_kernel<128, 128>(
+    const device float*, const device float*, const device float*,
+    const device float*, const device float*,
+    device float*, device float*,
+    constant uint&, constant uint&,
+    uint2, uint);
+
 template [[host_name("gated_delta_rule_64_64")]] [[kernel]]
 void gated_delta_rule_kernel<64, 64>(
     const device float*, const device float*, const device float*,
@@ -534,6 +746,14 @@ void gated_delta_rule_kernel_fallback<64, 256>(
 
 template [[host_name("chunked_gated_delta_rule_32_128_64")]] [[kernel]]
 void chunked_gated_delta_rule_kernel<32, 128, 64>(
+    const device float*, const device float*, const device float*,
+    const device float*, const device float*,
+    device float*, device float*,
+    constant uint&, constant uint&,
+    uint2, uint);
+
+template [[host_name("chunked_gated_delta_rule_32_128_128")]] [[kernel]]
+void chunked_gated_delta_rule_kernel<32, 128, 128>(
     const device float*, const device float*, const device float*,
     const device float*, const device float*,
     device float*, device float*,

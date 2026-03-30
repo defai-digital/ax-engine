@@ -256,7 +256,7 @@ pub(crate) struct Qwen35SlotBufferSyncOutcome {
 }
 
 impl Qwen35SlotBufferSyncOutcome {
-    fn note_backend_carryover(&mut self) {
+    pub(crate) fn note_backend_carryover(&mut self) {
         self.used_backend_carryover = true;
     }
 
@@ -3782,6 +3782,12 @@ impl MetalOps {
         layer_idx: usize,
         slot_idx: usize,
     ) -> Qwen35SlotBufferSyncOutcome {
+        // Fast path: GPU-resident buffers live in Qwen35Kv directly — no sync needed.
+        if qwen_kv.has_gpu_recurrent_state() {
+            let mut outcome = Qwen35SlotBufferSyncOutcome::default();
+            outcome.note_backend_carryover();
+            return outcome;
+        }
         let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
         let recurrent_state_stride = qwen_kv.recurrent_state_len();
         let slot_key = Qwen35RecurrentSlotBufferKey {
@@ -3856,6 +3862,39 @@ impl MetalOps {
         }
         slot_buffers.source_kv_identity = Some(kv_identity);
         outcome
+    }
+
+    /// Provide mutable access to GPU slot buffers for a recurrent layer.
+    ///
+    /// When `qwen_kv` is provided and has GPU-resident state, uses those
+    /// buffers directly (no mutex, no cache lookup). Otherwise falls back
+    /// to the internal slot buffer cache.
+    pub(crate) fn with_qwen35_recurrent_slot_buffer_for_kv<R>(
+        &self,
+        qwen_kv: &crate::kv::Qwen35Kv,
+        layer_idx: usize,
+        slot_idx: usize,
+        conv_state_stride: usize,
+        recurrent_state_stride: usize,
+        f: impl FnOnce(&mut Qwen35MetalSlotBuffers) -> R,
+    ) -> R {
+        if let Some((conv_buf, rec_buf)) = qwen_kv.gpu_recurrent_buffers(slot_idx, layer_idx) {
+            let mut wrapper = Qwen35MetalSlotBuffers {
+                conv_state: conv_buf.clone(),
+                recurrent_state: rec_buf.clone(),
+                conv_synced_generation: None,
+                recurrent_synced_generation: None,
+                source_kv_identity: None,
+            };
+            return f(&mut wrapper);
+        }
+        self.with_qwen35_recurrent_slot_buffer(
+            layer_idx,
+            slot_idx,
+            conv_state_stride,
+            recurrent_state_stride,
+            f,
+        )
     }
 
     pub(crate) fn with_qwen35_recurrent_slot_buffer<R>(
