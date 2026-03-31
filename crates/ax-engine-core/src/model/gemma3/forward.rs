@@ -262,7 +262,7 @@ impl ForwardPass for Gemma3Forward {
             vocab_size,
             weights,
             logits,
-            ops.as_deref_mut(),
+            ops,
         )?;
 
         // Logit scaling (if configured)

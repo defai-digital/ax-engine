@@ -105,34 +105,15 @@ impl Qwen35Forward {
                 let beta_slice = unsafe {
                     &mut scratch.beta.as_mut_slice::<f32>()[..n_tokens * dims.time_step_rank]
                 };
-                if matches!(
-                    alpha_beta_storage_mode,
-                    Qwen35PrefillAlphaBetaStorageMode::F16
-                ) {
-                    if beta_gpu.is_none() || alpha_gpu.is_none() {
-                        Self::prepare_qwen35_handoff_alpha_beta(
-                            alpha_slice,
-                            beta_slice,
-                            &rec_alpha_batch[..total_heads],
-                            &rec_beta_batch[..total_heads],
-                            runtime.dt_bias,
-                            runtime.a,
-                        );
-                        let alpha_f16 = unsafe {
-                            &mut scratch.alpha_f16.as_mut_slice::<f16>()
-                                [..n_tokens * dims.time_step_rank]
-                        };
-                        let beta_f16 = unsafe {
-                            &mut scratch.beta_f16.as_mut_slice::<f16>()
-                                [..n_tokens * dims.time_step_rank]
-                        };
-                        for (dst, &src) in alpha_f16.iter_mut().zip(alpha_slice.iter()) {
-                            *dst = f16::from_f32(src);
-                        }
-                        for (dst, &src) in beta_f16.iter_mut().zip(beta_slice.iter()) {
-                            *dst = f16::from_f32(src);
-                        }
-                    }
+                // When alpha/beta GPU pointers aren't available, copy the
+                // CPU-projected values into UMA scratch buffers. The actual
+                // softplus/sigmoid/f16-cast is done on GPU inside run_handoff
+                // (same kernels as the GPU-primary path) instead of CPU.
+                let needs_gpu_alpha_beta_prep =
+                    beta_gpu.is_none() || alpha_gpu.is_none();
+                if needs_gpu_alpha_beta_prep {
+                    alpha_slice.copy_from_slice(&rec_alpha_batch[..total_heads]);
+                    beta_slice.copy_from_slice(&rec_beta_batch[..total_heads]);
                 }
                 let run_handoff = |conv_state: &MetalBuffer,
                                    recurrent_state: &MetalBuffer|
@@ -215,8 +196,40 @@ impl Qwen35Forward {
                                     ),
                                 }
                             } else {
+                                // Alpha/beta are in scratch (CPU-copied). Run
+                                // softplus/sigmoid/f16-cast on GPU instead of
+                                // CPU — same kernels as the GPU-primary path.
+                                if needs_gpu_alpha_beta_prep {
+                                    metal_ops.elementwise.encode_softplus_bias_mul_batch(
+                                        encoder,
+                                        &scratch.alpha,
+                                        dt_bias_buf,
+                                        ssm_a_buf,
+                                        total_heads as u32,
+                                        dims.time_step_rank as u32,
+                                    );
+                                    metal_ops.elementwise.encode_sigmoid_inplace(
+                                        encoder,
+                                        &scratch.beta,
+                                        total_heads as u32,
+                                    );
+                                }
                                 match alpha_beta_storage_mode {
                                     Qwen35PrefillAlphaBetaStorageMode::F16 => {
+                                        if needs_gpu_alpha_beta_prep {
+                                            metal_ops.elementwise.encode_cast_f32_to_f16(
+                                                encoder,
+                                                &scratch.alpha,
+                                                &scratch.alpha_f16,
+                                                total_heads as u32,
+                                            );
+                                            metal_ops.elementwise.encode_cast_f32_to_f16(
+                                                encoder,
+                                                &scratch.beta,
+                                                &scratch.beta_f16,
+                                                total_heads as u32,
+                                            );
+                                        }
                                         metal_ops.gdn.encode_prepare_multi_token_qkv_alpha_beta_f16(
                                             encoder,
                                             &scratch.conv_out,
@@ -287,62 +300,45 @@ impl Qwen35Forward {
                 let mut used_cpu_alias_state = false;
                 let mut slot_buffer_sync =
                     crate::backend::metal::Qwen35SlotBufferSyncOutcome::default();
-                let elapsed =
-                    if let Some((conv_buf, rec_buf)) =
-                        qwen_kv.gpu_recurrent_buffers(recurrent_slot, layer)
-                    {
-                        // GPU-resident path: buffers owned by Qwen35Kv, no sync needed.
-                        slot_buffer_sync.note_backend_carryover();
-                        run_handoff(conv_buf, rec_buf)?
-                    } else {
-                        let force_slot_buffer = force_slot_buffer_state
-                            || matches!(
-                                recurrent_state_mode,
-                                Qwen35PrefillRecurrentStateMode::SlotBuffer
-                                    | Qwen35PrefillRecurrentStateMode::BackendOwned
-                            );
-                        if cpu_state_fresh && !force_slot_buffer {
-                            let (conv_state_cpu, recurrent_state_cpu) =
-                                qwen_kv.recurrent_buffers_for_slot_mut(recurrent_slot, layer);
-                            let conv_state_alias = unsafe {
-                                MetalBuffer::from_mut_slice_no_copy(
-                                    metal_ops.device.device(),
-                                    conv_state_cpu,
-                                )
-                            };
-                            let recurrent_state_alias = unsafe {
-                                MetalBuffer::from_mut_slice_no_copy(
-                                    metal_ops.device.device(),
-                                    recurrent_state_cpu,
-                                )
-                            };
-                            if let (Ok(conv_state_alias), Ok(recurrent_state_alias)) =
-                                (conv_state_alias, recurrent_state_alias)
-                            {
-                                used_cpu_alias_state = true;
-                                run_handoff(&conv_state_alias, &recurrent_state_alias)?
-                            } else {
-                                slot_buffer_sync = metal_ops.sync_qwen35_slot_buffers_from_kv(
-                                    qwen_kv,
-                                    layer,
-                                    recurrent_slot,
-                                );
-                                metal_ops.with_qwen35_recurrent_slot_buffer(
-                                    layer,
-                                    recurrent_slot,
-                                    conv_state_stride,
-                                    recurrent_state_stride,
-                                    |slot_buffers| {
-                                        run_handoff(
-                                            &slot_buffers.conv_state,
-                                            &slot_buffers.recurrent_state,
-                                        )
-                                    },
-                                )?
-                            }
+                let elapsed = if let Some((conv_buf, rec_buf)) =
+                    qwen_kv.gpu_recurrent_buffers(recurrent_slot, layer)
+                {
+                    // GPU-resident path: buffers owned by Qwen35Kv, no sync needed.
+                    slot_buffer_sync.note_backend_carryover();
+                    run_handoff(conv_buf, rec_buf)?
+                } else {
+                    let force_slot_buffer = force_slot_buffer_state
+                        || matches!(
+                            recurrent_state_mode,
+                            Qwen35PrefillRecurrentStateMode::SlotBuffer
+                                | Qwen35PrefillRecurrentStateMode::BackendOwned
+                        );
+                    if cpu_state_fresh && !force_slot_buffer {
+                        let (conv_state_cpu, recurrent_state_cpu) =
+                            qwen_kv.recurrent_buffers_for_slot_mut(recurrent_slot, layer);
+                        let conv_state_alias = unsafe {
+                            MetalBuffer::from_mut_slice_no_copy(
+                                metal_ops.device.device(),
+                                conv_state_cpu,
+                            )
+                        };
+                        let recurrent_state_alias = unsafe {
+                            MetalBuffer::from_mut_slice_no_copy(
+                                metal_ops.device.device(),
+                                recurrent_state_cpu,
+                            )
+                        };
+                        if let (Ok(conv_state_alias), Ok(recurrent_state_alias)) =
+                            (conv_state_alias, recurrent_state_alias)
+                        {
+                            used_cpu_alias_state = true;
+                            run_handoff(&conv_state_alias, &recurrent_state_alias)?
                         } else {
-                            slot_buffer_sync = metal_ops
-                                .sync_qwen35_slot_buffers_from_kv(qwen_kv, layer, recurrent_slot);
+                            slot_buffer_sync = metal_ops.sync_qwen35_slot_buffers_from_kv(
+                                qwen_kv,
+                                layer,
+                                recurrent_slot,
+                            );
                             metal_ops.with_qwen35_recurrent_slot_buffer(
                                 layer,
                                 recurrent_slot,
@@ -356,7 +352,23 @@ impl Qwen35Forward {
                                 },
                             )?
                         }
-                    };
+                    } else {
+                        slot_buffer_sync = metal_ops.sync_qwen35_slot_buffers_from_kv(
+                            qwen_kv,
+                            layer,
+                            recurrent_slot,
+                        );
+                        metal_ops.with_qwen35_recurrent_slot_buffer(
+                            layer,
+                            recurrent_slot,
+                            conv_state_stride,
+                            recurrent_state_stride,
+                            |slot_buffers| {
+                                run_handoff(&slot_buffers.conv_state, &slot_buffers.recurrent_state)
+                            },
+                        )?
+                    }
+                };
                 Ok((elapsed, used_cpu_alias_state, slot_buffer_sync))
             },
         )?;
@@ -464,6 +476,7 @@ impl Qwen35Forward {
         wd_key: usize,
         wd_dtype: crate::gguf::tensor::GgmlType,
         merged_projection: Option<&FusedProjectionParams<'_>>,
+        record_backend_native_batch: bool,
     ) -> anyhow::Result<Option<Qwen35RecurrentGpuPrefillStats>> {
         if n_tokens <= 1
             || qwen_kv.conv_cache_len() > 8
@@ -901,6 +914,9 @@ impl Qwen35Forward {
         metal_ops.record_qwen35_recurrent_batch_qkv_handoff_gpu(elapsed);
         metal_ops.record_qwen35_recurrent_batch_qkv_handoff();
         metal_ops.record_qwen35_recurrent_batch_qkv_handoff_fused_tail();
+        if record_backend_native_batch {
+            metal_ops.record_qwen35_recurrent_batch_state_batch_backend_native();
+        }
         metal_ops.record_qwen35_recurrent_batch_qkv_handoff_slot_buffer();
         if slot_buffer_sync.used_backend_carryover {
             metal_ops.record_qwen35_recurrent_batch_qkv_handoff_backend_carryover();
@@ -916,8 +932,7 @@ impl Qwen35Forward {
         let _ = qwen_kv.note_backend_recurrent_state_update(recurrent_slot, layer);
         if !qwen_kv.has_gpu_recurrent_state() {
             let conv_generation = qwen_kv.conv_state_generation(recurrent_slot, layer);
-            let recurrent_generation =
-                qwen_kv.recurrent_state_generation(recurrent_slot, layer);
+            let recurrent_generation = qwen_kv.recurrent_state_generation(recurrent_slot, layer);
             metal_ops.with_qwen35_recurrent_slot_buffer(
                 layer,
                 recurrent_slot,
@@ -932,6 +947,7 @@ impl Qwen35Forward {
 
         Ok(Some(stats))
     }
+    #[allow(clippy::too_many_arguments)]
     fn run_recurrent_batch_layer(
         cfg: &ModelConfig,
         backend: &dyn crate::backend::Backend,
@@ -1340,8 +1356,8 @@ impl Qwen35Forward {
         batch_position: usize,
     ) -> anyhow::Result<()> {
         // Try GPU-encoded path first (single command buffer for entire FFN).
-        if n_tokens > 1 {
-            if let Ok(true) = Self::try_apply_layer_tail_batch_gpu(
+        if n_tokens > 1
+            && let Ok(true) = Self::try_apply_layer_tail_batch_gpu(
                 cfg,
                 backend,
                 weights,
@@ -1352,15 +1368,10 @@ impl Qwen35Forward {
                 dim,
                 inter_dim,
                 rms_norm_eps,
-            ) {
-                Self::assert_finite_if_enabled(
-                    "post_ffn_hidden_batch",
-                    hidden,
-                    layer,
-                    batch_position,
-                )?;
-                return Ok(());
-            }
+            )
+        {
+            Self::assert_finite_if_enabled("post_ffn_hidden_batch", hidden, layer, batch_position)?;
+            return Ok(());
         }
         // CPU fallback.
         silu::elementwise_add(hidden, proj_buf);

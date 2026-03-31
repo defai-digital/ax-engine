@@ -37,7 +37,7 @@ use crate::metrics::OpBreakdown;
 use crate::metrics::counters::OpTimer;
 use crate::model::config::ModelConfig;
 use crate::model::execution_plan::{
-    DecodeBarrierPlan, DecodeExecutionPlan, GpuBatchPrefillExecutionPlan, GpuDecodeExecutionPlan,
+    DecodeEncoderPlan, DecodeExecutionPlan, GpuBatchPrefillExecutionPlan, GpuDecodeExecutionPlan,
     PrefillAttentionPlan, PrefillExecutionPlan, PrefillFfnActivationPlan, PrefillLogitsPlan,
     PrefillMode, PrefillProjectionInputPlan, PrefillResidualHandoffPlan, Qwen3DecodeLayerPlan,
     Qwen3PrefillQkvPost, qwen3_layer_plan_for_gpu,

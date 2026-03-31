@@ -3,6 +3,9 @@
 // AX keeps the Qwen3.5 causal-conv path in token-major f32 layout:
 // - input/output: [seq_len, conv_dim]
 // - kernel: [conv_cache_len + 1, conv_dim]
+
+// fast::exp for gate decay — precision sufficient for state scaling.
+#define ax_exp(x) fast::exp(x)
 // - conv_state: [conv_cache_len, conv_dim]
 //
 // This matches the existing CPU helper and avoids extra layout transforms in
@@ -379,7 +382,7 @@ template <int BK, int BV>
         s[j] = state_bh[j * BK + v_idx];
     }
 
-    const float decay = exp(gate[bh]);
+    const float decay = ax_exp(gate[bh]);
     const float beta_t = beta[bh];
     const float v_t = conv_out[value_base + v_idx];
 
@@ -445,7 +448,7 @@ template <int BK, int BV>
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        float decay = exp(g_bh[t]);
+        float decay = ax_exp(g_bh[t]);
         float beta_t = beta_bh[t];
         float v_t = v_bh[t * v_dim + v_idx];
 
@@ -522,7 +525,7 @@ template <int BV, int MAX_K>
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        float decay = exp(g_bh[t]);
+        float decay = ax_exp(g_bh[t]);
         float beta_t = beta_bh[t];
         float v_t = v_bh[t * v_dim + v_idx];
 
@@ -553,6 +556,146 @@ template <int BV, int MAX_K>
         state_bh[j * v_dim + v_idx] = s[j];
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// gated_delta_rule_simd — llama.cpp-style fused GDN with simd_sum reductions
+//
+// Ports kernel_gated_delta_net_impl from llama.cpp:
+//   - State S_v dimension distributed across threadgroups (not just threads)
+//   - Each thread holds NSG state elements in registers (NSG=4)
+//   - simd_sum for k-dimension reductions (32 threads × 4 = 128 k-elements)
+//   - Grid: (S_v/NSG, n_heads, n_seqs) = (32, 32, 1) = 1024 TGs
+//   - TG: (32, NSG, 1) = 128 threads
+//   - 32x more TGs than the old kernel for the same head count
+//
+// Memory: state in registers (NSG floats per thread = 16 bytes), no TG memory.
+// ═══════════════════════════════════════════════════════════════════════════
+template <int NSG>
+[[kernel]] void gated_delta_rule_simd(
+    const device float *q [[buffer(0)]],
+    const device float *k [[buffer(1)]],
+    const device float *v [[buffer(2)]],
+    const device float *g [[buffer(3)]],
+    const device float *beta [[buffer(4)]],
+    device float *state [[buffer(5)]],
+    device float *output [[buffer(6)]],
+    constant uint &seq_len [[buffer(7)]],
+    constant uint &v_dim [[buffer(8)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    uint3 tpitg [[thread_position_in_threadgroup]])
+{
+    const uint tx = tpitg.x;     // SIMD lane: 0..31
+    const uint ty = tpitg.y;     // sub-row within TG tile: 0..NSG-1
+    const uint bh = tgpig.y;     // head index
+    const uint i20 = tgpig.x * NSG + ty;  // v-dimension element index
+
+    if (i20 >= v_dim) return;
+
+    const uint k_dim = v_dim;    // S_k == S_v for Qwen3.5
+    const float scale = rsqrt((float)k_dim);
+
+    // State pointer: state is [n_heads, k_dim, v_dim], stored row-major in k-dim.
+    // We load row i20 from the k-dim × v_dim state matrix for head bh.
+    // state_bh[j * v_dim + i20] for j = 0..k_dim-1
+    device const float *s_ptr = state + bh * k_dim * v_dim + i20;
+
+    // Each thread loads NSG consecutive elements of the k-dimension.
+    // 32 threads × NSG=4 = 128 = full k-dimension coverage.
+    float ls[NSG];
+    for (short j = 0; j < NSG; j++) {
+        const uint is = tx * NSG + j;
+        ls[j] = (is < k_dim) ? s_ptr[is * v_dim] : 0.0f;
+    }
+
+    // Input pointers — layout: [n_heads, seq_len, k_dim/v_dim]
+    const device float *q_bh = q + bh * seq_len * k_dim;
+    const device float *k_bh = k + bh * seq_len * k_dim;
+    const device float *v_bh = v + bh * seq_len * v_dim;
+    const device float *g_bh = g + bh * seq_len;
+    const device float *beta_bh = beta + bh * seq_len;
+    device float *out_bh = output + bh * seq_len * v_dim;
+
+    // Token-serial loop (same as llama.cpp autoregressive path).
+    for (uint t = 0; t < seq_len; t++) {
+        // 1. state *= exp(gate)  +  s_k = sum(state * k)
+        const float g_exp = ax_exp(g_bh[t]);
+        float s_k = 0.0f;
+        if (NSG == 4) {
+            float4 ls4 = *(thread float4*)(&ls[0]);
+            float4 k4 = *(device const float4*)(&k_bh[t * k_dim + tx * 4]);
+            ls4 *= g_exp;
+            *(thread float4*)(&ls[0]) = ls4;
+            s_k = dot(ls4, k4);
+        } else {
+            for (short j = 0; j < NSG; j++) {
+                const uint is = tx * NSG + j;
+                ls[j] *= g_exp;
+                s_k += ls[j] * k_bh[t * k_dim + is];
+            }
+        }
+        // Reduce s_k across all 32 SIMD lanes (covers full k_dim).
+        s_k = simd_sum(s_k);
+
+        // 2. delta = (v - s_k) * beta
+        const float d = (v_bh[t * v_dim + i20] - s_k) * beta_bh[t];
+
+        // 3. state += k * delta  +  y = sum(state * q)
+        float y = 0.0f;
+        if (NSG == 4) {
+            float4 ls4 = *(thread float4*)(&ls[0]);
+            float4 k4 = *(device const float4*)(&k_bh[t * k_dim + tx * 4]);
+            float4 q4 = *(device const float4*)(&q_bh[t * k_dim + tx * 4]);
+            ls4 += k4 * d;
+            *(thread float4*)(&ls[0]) = ls4;
+            y = dot(ls4, q4);
+        } else {
+            for (short j = 0; j < NSG; j++) {
+                const uint is = tx * NSG + j;
+                ls[j] += k_bh[t * k_dim + is] * d;
+                y += ls[j] * q_bh[t * k_dim + is];
+            }
+        }
+        y = simd_sum(y);
+
+        // 4. Write output (only lane 0 has the reduced sum).
+        if (tx == 0) {
+            out_bh[t * v_dim + i20] = y * scale;
+        }
+    }
+
+    // Write back state.
+    device float *state_out = state + bh * k_dim * v_dim + i20;
+    for (short j = 0; j < NSG; j++) {
+        const uint is = tx * NSG + j;
+        if (is < k_dim) {
+            state_out[is * v_dim] = ls[j];
+        }
+    }
+}
+
+template [[host_name("gated_delta_rule_simd_4")]] [[kernel]]
+void gated_delta_rule_simd<4>(
+    const device float*, const device float*, const device float*,
+    const device float*, const device float*,
+    device float*, device float*,
+    constant uint&, constant uint&,
+    uint3, uint3);
+
+template [[host_name("gated_delta_rule_simd_2")]] [[kernel]]
+void gated_delta_rule_simd<2>(
+    const device float*, const device float*, const device float*,
+    const device float*, const device float*,
+    device float*, device float*,
+    constant uint&, constant uint&,
+    uint3, uint3);
+
+template [[host_name("gated_delta_rule_simd_1")]] [[kernel]]
+void gated_delta_rule_simd<1>(
+    const device float*, const device float*, const device float*,
+    const device float*, const device float*,
+    device float*, device float*,
+    constant uint&, constant uint&,
+    uint3, uint3);
 
 template <int BT, int BK, int BV>
 [[kernel]] void chunked_gated_delta_rule_kernel(
@@ -587,6 +730,8 @@ template <int BT, int BK, int BV>
     threadgroup float k_chunk[BT * BK];
     threadgroup float kk_dot[BT * BT];
     threadgroup float gcum[BT];
+    threadgroup float decay[BT];     // precomputed exp(gcum[i])
+    threadgroup float decay_inv[BT]; // precomputed 1/exp(gcum[i])
     threadgroup float beta_s[BT];
     threadgroup float q_buf[BK];
 
@@ -614,6 +759,7 @@ template <int BT, int BK, int BV>
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
+        // Prefix sum of gate values (parallel scan).
         for (uint stride = 1; stride < BT; stride <<= 1) {
             float prev = 0.0f;
             if (tid < chunk_len && tid >= stride) {
@@ -625,6 +771,14 @@ template <int BT, int BK, int BV>
             }
             threadgroup_barrier(mem_flags::mem_threadgroup);
         }
+
+        // Precompute decay factors — eliminates all exp() from hot loops.
+        if (tid < chunk_len) {
+            const float d = ax_exp(gcum[tid]);
+            decay[tid] = d;
+            decay_inv[tid] = 1.0f / d;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
         for (uint idx = tid; idx < chunk_len * chunk_len; idx += BV) {
             const uint i = idx / chunk_len;
@@ -639,9 +793,10 @@ template <int BT, int BK, int BV>
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
+        // Delta computation: uses precomputed decay[] and decay_inv[].
         for (uint i = 0; i < chunk_len; ++i) {
             const float v_i = v_bh[(chunk_start + i) * v_dim + v_idx];
-            const float decay_i = exp(gcum[i]);
+            const float decay_i = decay[i];
             const float beta_i = beta_s[i];
 
             float kv_mem = 0.0f;
@@ -651,19 +806,20 @@ template <int BT, int BK, int BV>
 
             float rhs = beta_i * (v_i - kv_mem);
             for (uint j = 0; j < i; ++j) {
-                const float a_ij = beta_i * kk_dot[i * BT + j] * exp(gcum[i] - gcum[j]);
+                const float a_ij = beta_i * kk_dot[i * BT + j] * decay_i * decay_inv[j];
                 rhs -= a_ij * delta_arr[j];
             }
             delta_arr[i] = rhs;
         }
 
+        // Output computation: uses precomputed decay[]/decay_inv[].
         for (uint i = 0; i < chunk_len; ++i) {
             for (uint j = tid; j < BK; j += BV) {
                 q_buf[j] = q_bh[(chunk_start + i) * BK + j];
             }
             threadgroup_barrier(mem_flags::mem_threadgroup);
 
-            const float decay_i = exp(gcum[i]);
+            const float decay_i = decay[i];
             float o_val = 0.0f;
             for (uint d = 0; d < BK; ++d) {
                 o_val = fma(q_buf[d], s[d] * decay_i, o_val);
@@ -674,18 +830,19 @@ template <int BT, int BK, int BV>
                 for (uint d = 0; d < BK; ++d) {
                     qk_dot = fma(q_buf[d], k_chunk[j * BK + d], qk_dot);
                 }
-                o_val += qk_dot * delta_arr[j] * exp(gcum[i] - gcum[j]);
+                o_val += qk_dot * delta_arr[j] * decay_i * decay_inv[j];
             }
 
             out_bh[(chunk_start + i) * v_dim + v_idx] = o_val * scale;
             threadgroup_barrier(mem_flags::mem_threadgroup);
         }
 
-        const float g_total = gcum[chunk_len - 1];
+        // State update: uses precomputed decay[].
+        const float decay_total = decay[chunk_len - 1];
         for (uint d = 0; d < BK; ++d) {
-            float s_new = s[d] * exp(g_total);
+            float s_new = s[d] * decay_total;
             for (uint t = 0; t < chunk_len; ++t) {
-                s_new += k_chunk[t * BK + d] * delta_arr[t] * exp(g_total - gcum[t]);
+                s_new += k_chunk[t * BK + d] * delta_arr[t] * decay_total * decay_inv[t];
             }
             s[d] = s_new;
         }

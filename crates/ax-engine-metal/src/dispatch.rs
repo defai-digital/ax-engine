@@ -112,14 +112,14 @@ pub struct AttentionDispatchConfig {
     routing_mode: AttentionRoutingMode,
     prefill_fa2_mode: KernelMode,
     prefill_fa2_hd128_mode: KernelMode,
-    prefill_mistral_bc64_mode: KernelMode,
+    prefill_ax_bc64_mode: KernelMode,
     prefill_fa2_auto_min_tokens: u32,
     prefill_fa2_auto_min_base_seq: u32,
     prefill_fa2_hd128_auto_min_tokens: u32,
     prefill_fa2_auto_min_tokens_pinned: bool,
     prefill_fa2_auto_min_base_seq_pinned: bool,
     prefill_fa2_hd128_auto_min_tokens_pinned: bool,
-    prefill_mistral_bc64_min_tokens: u32,
+    prefill_ax_bc64_min_tokens: u32,
     decode_splitk_mode: KernelMode,
     decode_splitk_chunk_size: u32,
     decode_splitk_auto_min_tokens: u32,
@@ -206,9 +206,9 @@ impl AttentionDispatchConfig {
                 _ => mode,
             }
         };
-        let prefill_mistral_bc64_mode = {
+        let prefill_ax_bc64_mode = {
             let profile_default =
-                profile_kernel_mode(profile.attention_prefill.mistral_bc64_mode.clone());
+                profile_kernel_mode(profile.attention_prefill.ax_bc64_mode.clone());
             let mode = parse_kernel_mode("AX_METAL_PREFILL_MISTRAL_BC64_MODE", profile_default);
             match mode {
                 KernelMode::Off => match legacy_kernel_override("AX_METAL_PREFILL_MISTRAL_BC64")
@@ -256,9 +256,9 @@ impl AttentionDispatchConfig {
                 routing.prefill_fa2_hd128_auto_min_tokens
             },
         );
-        let prefill_mistral_bc64_min_tokens = parse_positive_u32_env(
+        let prefill_ax_bc64_min_tokens = parse_positive_u32_env(
             "AX_METAL_PREFILL_MISTRAL_BC64_MIN_TOKENS",
-            profile.attention_prefill.mistral_bc64_min_tokens,
+            profile.attention_prefill.ax_bc64_min_tokens,
         );
         let decode_splitk_mode = parse_kernel_mode("AX_METAL_DECODE_SPLITK_MODE", KernelMode::Auto);
         let decode_splitk_chunk_size = parse_positive_u32_env(
@@ -307,14 +307,14 @@ impl AttentionDispatchConfig {
             routing_mode,
             prefill_fa2_mode,
             prefill_fa2_hd128_mode,
-            prefill_mistral_bc64_mode,
+            prefill_ax_bc64_mode,
             prefill_fa2_auto_min_tokens,
             prefill_fa2_auto_min_base_seq,
             prefill_fa2_hd128_auto_min_tokens,
             prefill_fa2_auto_min_tokens_pinned,
             prefill_fa2_auto_min_base_seq_pinned,
             prefill_fa2_hd128_auto_min_tokens_pinned,
-            prefill_mistral_bc64_min_tokens,
+            prefill_ax_bc64_min_tokens,
             decode_splitk_mode,
             decode_splitk_chunk_size,
             decode_splitk_auto_min_tokens,
@@ -611,6 +611,10 @@ pub enum AttentionDecodeCandidate {
     SdpaHd256,
     SplitKHd128,
     SplitKHd256,
+    SdpaParallelHd128,
+    SdpaParallelHd256,
+    SdpaGqaHd128,
+    SdpaGqaHd256,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -625,15 +629,22 @@ pub enum AttentionPrefillCandidate {
     PrefillHd256,
     PrefillV2,
     PrefillV2Hd128,
-    MistralHd128,
-    MistralBc64,
-    MistralSmem,
-    MistralSmemF16,
+    AxHd128,
+    AxBc64,
+    AxSmem,
+    AxSmemF16,
     Fa2Hd128,
     Fa2SimdHd128,
+    Fa2HalfHd128,
+    Fa2v2Hd128,
+    Fa2v2Hd256,
+    Fa2SimdHd256,
     Fa2SimdHd64,
     Cache,
     CacheFa2Hd256,
+    CacheFa2SimdHd128,
+    CacheFa2SimdHd64,
+    CacheFa2SimdHd256,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -819,6 +830,10 @@ impl AttentionDecodeCandidate {
             Self::SdpaHd256 => "sdpa_hd256",
             Self::SplitKHd128 => "splitk_hd128",
             Self::SplitKHd256 => "splitk_hd256",
+            Self::SdpaParallelHd128 => "sdpa_parallel_hd128",
+            Self::SdpaParallelHd256 => "sdpa_parallel_hd256",
+            Self::SdpaGqaHd128 => "sdpa_gqa_hd128",
+            Self::SdpaGqaHd256 => "sdpa_gqa_hd256",
         }
     }
 
@@ -840,15 +855,22 @@ impl AttentionPrefillCandidate {
             Self::PrefillHd256 => "prefill_hd256",
             Self::PrefillV2 => "prefill_v2",
             Self::PrefillV2Hd128 => "prefill_v2_hd128",
-            Self::MistralHd128 => "mistral_hd128",
-            Self::MistralBc64 => "mistral_bc64",
-            Self::MistralSmem => "mistral_smem",
-            Self::MistralSmemF16 => "mistral_smem_f16",
+            Self::AxHd128 => "ax_hd128",
+            Self::AxBc64 => "ax_bc64",
+            Self::AxSmem => "ax_smem",
+            Self::AxSmemF16 => "ax_smem_f16",
             Self::Fa2Hd128 => "fa2_hd128",
             Self::Fa2SimdHd128 => "fa2_simd_hd128",
+            Self::Fa2HalfHd128 => "fa2_half_hd128",
+            Self::Fa2v2Hd128 => "fa2v2_hd128",
+            Self::Fa2v2Hd256 => "fa2v2_hd256",
+            Self::Fa2SimdHd256 => "fa2_simd_hd256",
             Self::Fa2SimdHd64 => "fa2_simd_hd64",
             Self::Cache => "cache",
             Self::CacheFa2Hd256 => "cache_fa2_hd256",
+            Self::CacheFa2SimdHd128 => "cache_fa2_simd_hd128",
+            Self::CacheFa2SimdHd64 => "cache_fa2_simd_hd64",
+            Self::CacheFa2SimdHd256 => "cache_fa2_simd_hd256",
         }
     }
 }
@@ -973,6 +995,26 @@ fn q5_k_matvec_candidate_selection(
     }
 }
 
+fn sdpa_parallel_decode_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("AX_METAL_DECODE_SDPA_PARALLEL")
+            .ok()
+            .and_then(|v| parse_bool_env_flag(&v))
+            .unwrap_or(true) // default ON; validated +6-12% decode; =0 to disable
+    })
+}
+
+fn sdpa_gqa_decode_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("AX_METAL_DECODE_SDPA_GQA")
+            .ok()
+            .and_then(|v| parse_bool_env_flag(&v))
+            .unwrap_or(false)
+    })
+}
+
 fn attention_decode_candidate_selection(
     kv_f16: bool,
     head_dim: u32,
@@ -1054,11 +1096,11 @@ fn attention_prefill_local_candidate_selection(
 ) -> AttentionPrefillCandidateSelection {
     let use_v2 = attention_prefill_v2_enabled();
     let use_v2_hd128 = attention_prefill_hd128_enabled() && head_dim == 128;
-    let use_mistral_hd128 = attention_prefill_mistral_hd128_enabled() && head_dim == 128;
-    let use_mistral_bc64 = use_mistral_hd128
-        && attention_prefill_mistral_bc64_should_use_with_config(n_tokens, config);
-    let use_mistral_smem = attention_prefill_mistral_smem_enabled() && use_mistral_hd128;
-    let use_mistral_smem_f16 = attention_prefill_mistral_smem_f16_enabled() && use_mistral_hd128;
+    let use_ax_hd128 = attention_prefill_ax_hd128_enabled() && head_dim == 128;
+    let use_ax_bc64 =
+        use_ax_hd128 && attention_prefill_ax_bc64_should_use_with_config(n_tokens, config);
+    let use_ax_smem = attention_prefill_ax_smem_enabled() && use_ax_hd128;
+    let use_ax_smem_f16 = attention_prefill_ax_smem_f16_enabled() && use_ax_hd128;
     let use_fa2_hd128 =
         attention_prefill_fa2_hd128_should_use_with_config(n_tokens, head_dim, config);
     // The simd kernel is an implementation variant of the FA2 HD128 route and
@@ -1066,6 +1108,29 @@ fn attention_prefill_local_candidate_selection(
     let use_fa2_simd_hd128 = use_fa2_hd128 && attention_prefill_fa2_simd_hd128_enabled();
     let use_fa2_simd_hd64 = attention_prefill_fa2_simd_hd128_enabled() && head_dim == 64;
     let use_hd256 = attention_prefill_hd256_enabled() && head_dim == 256 && !use_v2;
+
+    if attention_prefill_fa2v2_enabled() && head_dim == 256 {
+        return AttentionPrefillCandidateSelection {
+            candidate: AttentionPrefillCandidate::Fa2v2Hd256,
+            stability: KernelStabilityTier::Experimental,
+        };
+    }
+
+    if attention_prefill_fa2v2_enabled() && head_dim == 128 {
+        return AttentionPrefillCandidateSelection {
+            candidate: AttentionPrefillCandidate::Fa2v2Hd128,
+            stability: KernelStabilityTier::Experimental,
+        };
+    }
+
+    // Full-half FA2 (K/V staged as half, half×half→float MMA) is the
+    // fastest HD=128 path — matches llama.cpp's flash_attn_ext strategy.
+    if attention_prefill_fa2_half_hd128_enabled() && use_fa2_simd_hd128 {
+        return AttentionPrefillCandidateSelection {
+            candidate: AttentionPrefillCandidate::Fa2HalfHd128,
+            stability: KernelStabilityTier::Experimental,
+        };
+    }
 
     if use_fa2_simd_hd128 {
         AttentionPrefillCandidateSelection {
@@ -1082,24 +1147,24 @@ fn attention_prefill_local_candidate_selection(
             candidate: AttentionPrefillCandidate::Fa2Hd128,
             stability: KernelStabilityTier::ProfilePreferred,
         }
-    } else if use_mistral_bc64 {
+    } else if use_ax_bc64 {
         AttentionPrefillCandidateSelection {
-            candidate: AttentionPrefillCandidate::MistralBc64,
+            candidate: AttentionPrefillCandidate::AxBc64,
             stability: KernelStabilityTier::Experimental,
         }
-    } else if use_mistral_smem_f16 {
+    } else if use_ax_smem_f16 {
         AttentionPrefillCandidateSelection {
-            candidate: AttentionPrefillCandidate::MistralSmemF16,
+            candidate: AttentionPrefillCandidate::AxSmemF16,
             stability: KernelStabilityTier::Experimental,
         }
-    } else if use_mistral_smem {
+    } else if use_ax_smem {
         AttentionPrefillCandidateSelection {
-            candidate: AttentionPrefillCandidate::MistralSmem,
+            candidate: AttentionPrefillCandidate::AxSmem,
             stability: KernelStabilityTier::Experimental,
         }
-    } else if use_mistral_hd128 {
+    } else if use_ax_hd128 {
         AttentionPrefillCandidateSelection {
-            candidate: AttentionPrefillCandidate::MistralHd128,
+            candidate: AttentionPrefillCandidate::AxHd128,
             stability: KernelStabilityTier::ProfilePreferred,
         }
     } else if use_v2 {
@@ -1132,6 +1197,22 @@ fn attention_prefill_cached_candidate_selection(
     sliding_window: u32,
     config: AttentionDispatchConfig,
 ) -> AttentionPrefillCandidateSelection {
+    // FA2 SIMD cached: f16 KV + matching head_dim + FA2 SIMD enabled
+    if kv_f16 && attention_prefill_fa2_simd_hd128_enabled() {
+        let candidate = match head_dim {
+            128 => Some(AttentionPrefillCandidate::CacheFa2SimdHd128),
+            64 => Some(AttentionPrefillCandidate::CacheFa2SimdHd64),
+            256 => Some(AttentionPrefillCandidate::CacheFa2SimdHd256),
+            _ => None,
+        };
+        if let Some(candidate) = candidate {
+            return AttentionPrefillCandidateSelection {
+                candidate,
+                stability: KernelStabilityTier::ProfilePreferred,
+            };
+        }
+    }
+    // Legacy FA2 cached (HD=256 only, different architecture)
     if attention_prefill_fa2_cached_should_use_with_config(
         kv_f16,
         n_tokens,
@@ -1220,8 +1301,15 @@ pub struct MatmulKernels {
     /// Fallback 16×16 tiled matmul (kept for compatibility).
     #[allow(dead_code)]
     tiled_matmul: ComputePipeline,
-    /// High-performance simdgroup_matrix 32×32 tiled matmul.
+    /// High-performance simdgroup_matrix 32×32 tiled matmul (float tiles).
     simdgroup_matmul: ComputePipeline,
+    /// Half-tile simdgroup matmul: half A/B tiles, float accumulator.
+    simdgroup_matmul_half: ComputePipeline,
+    /// BFloat16-tile simdgroup matmul (Metal 3+/M3+ only).
+    simdgroup_matmul_bf16: Option<ComputePipeline>,
+    /// Metal Tensor API matmul (Metal 4+/M5+ only).
+    /// Uses mpp::tensor_ops::matmul2d for hardware-accelerated cooperative matmul.
+    simdgroup_matmul_tensor: Option<ComputePipeline>,
     matvec: ComputePipeline,
 }
 
@@ -1237,12 +1325,49 @@ impl MatmulKernels {
             "matmul_simdgroup_f32",
         )
         .context("Failed to compile matmul_simdgroup_f32 kernel")?;
+        let simdgroup_matmul_half = ComputePipeline::from_source(
+            device.device(),
+            MATMUL_SHADER_SRC,
+            "matmul_simdgroup_half_f32",
+        )
+        .context("Failed to compile matmul_simdgroup_half_f32 kernel")?;
+        // BFloat16 kernel only compiles on Metal 3+ (M3+) devices.
+        let has_metal3 = device.info().gpu_family.metal3;
+        let simdgroup_matmul_bf16 = if has_metal3 {
+            ComputePipeline::from_source(
+                device.device(),
+                MATMUL_SHADER_SRC,
+                "matmul_simdgroup_bf16_f32",
+            )
+            .ok()
+        } else {
+            None
+        };
+        // Metal Tensor API kernel (Metal 4+/M5+ only). Requires both:
+        // 1. SDK support (metal_tensor_api cfg set by build.rs)
+        // 2. Runtime GPU support (Metal4 family)
+        let has_metal4 = device.info().gpu_family.metal4;
+        let simdgroup_matmul_tensor = if cfg!(metal_tensor_api) && has_metal4 {
+            // The kernel is embedded in the precompiled metallib by build.rs.
+            // Try to load it — will fail gracefully if not linked.
+            ComputePipeline::from_source(
+                device.device(),
+                MATMUL_SHADER_SRC,
+                "matmul_simdgroup_tensor_f32",
+            )
+            .ok()
+        } else {
+            None
+        };
         let matvec = ComputePipeline::from_source(device.device(), MATMUL_SHADER_SRC, "matvec_f32")
             .context("Failed to compile matvec_f32 kernel")?;
 
         tracing::info!(
             matmul_max_threads = tiled_matmul.max_threads_per_threadgroup(),
             simdgroup_max_threads = simdgroup_matmul.max_threads_per_threadgroup(),
+            simdgroup_half_max_threads = simdgroup_matmul_half.max_threads_per_threadgroup(),
+            bf16_available = simdgroup_matmul_bf16.is_some(),
+            tensor_available = simdgroup_matmul_tensor.is_some(),
             matvec_max_threads = matvec.max_threads_per_threadgroup(),
             "Matmul Metal kernels compiled (tiled + simdgroup + matvec)",
         );
@@ -1250,6 +1375,9 @@ impl MatmulKernels {
         Ok(Self {
             tiled_matmul,
             simdgroup_matmul,
+            simdgroup_matmul_half,
+            simdgroup_matmul_bf16,
+            simdgroup_matmul_tensor,
             matvec,
         })
     }
@@ -1335,23 +1463,60 @@ impl MatmulKernels {
         let groups_x = (n as usize).div_ceil(SG_TILE);
         let groups_y = (m as usize).div_ceil(SG_TILE);
 
-        encoder.setComputePipelineState(self.simdgroup_matmul.state());
-        bind_buffers(encoder, a, b, c);
-        bind_u32(encoder, 3, m);
-        bind_u32(encoder, 4, n);
-        bind_u32(encoder, 5, k);
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            MTLSize {
-                width: groups_x,
-                height: groups_y,
-                depth: 1,
-            },
-            MTLSize {
-                width: SG_TG,
-                height: 1,
-                depth: 1,
-            },
-        );
+        // Prefer tensor API (Metal 4+/M5+) > bf16 (Metal 3+) > half.
+        if let Some(tensor_pipeline) = &self.simdgroup_matmul_tensor {
+            // Tensor API: NR0=64, NR1=32 tiles with dynamic TG memory.
+            encoder.setComputePipelineState(tensor_pipeline.state());
+            bind_buffers(encoder, a, b, c);
+            bind_u32(encoder, 3, m);
+            bind_u32(encoder, 4, n);
+            bind_u32(encoder, 5, k);
+            // 6 KB TG memory: sa(4KB) + sb(2KB). Boundary path reuses as float (8KB).
+            let smem = if (m as usize).is_multiple_of(64) && (n as usize).is_multiple_of(32) {
+                6144usize
+            } else {
+                8192usize
+            };
+            unsafe {
+                encoder.setThreadgroupMemoryLength_atIndex(smem, 0);
+            }
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: (n as usize).div_ceil(32),
+                    height: (m as usize).div_ceil(64),
+                    depth: 1,
+                },
+                MTLSize {
+                    width: SG_TG,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+        } else {
+            // Prefer bf16 tiles on Metal 3+ (M3+) for better dynamic range,
+            // fall back to half tiles otherwise. Both use float accumulators.
+            let pipeline = self
+                .simdgroup_matmul_bf16
+                .as_ref()
+                .unwrap_or(&self.simdgroup_matmul_half);
+            encoder.setComputePipelineState(pipeline.state());
+            bind_buffers(encoder, a, b, c);
+            bind_u32(encoder, 3, m);
+            bind_u32(encoder, 4, n);
+            bind_u32(encoder, 5, k);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: groups_x,
+                    height: groups_y,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: SG_TG,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+        }
     }
 
     /// Encode an f32 matvec dispatch into an existing command encoder.
@@ -1536,6 +1701,8 @@ pub struct DequantKernels {
     fused_matvec_q4_k_x2: ComputePipeline,
     /// N_DST=4 decode matvec for Q4_K (TG=32, 4 rows per TG, 1 simdgroup).
     fused_matvec_q4_k_n4: ComputePipeline,
+    /// TG=64 decode matvec for Q4_K (2 SGs × 4 rows each = 8 rows per TG).
+    fused_matvec_q4_k_tg64: ComputePipeline,
     fused_matvec_dense_f16: ComputePipeline,
     fused_matvec_q6_k: ComputePipeline,
     /// Q6_K decode matvec with 2 rows per simdgroup and TG=64.
@@ -1566,6 +1733,10 @@ pub struct DequantKernels {
     fused_batch_q4_k_blocked_bm32: ComputePipeline,
     /// BM=32 blocked full-tile specialization.
     fused_batch_q4_k_blocked_bm32_fulltile: ComputePipeline,
+    /// Fused SiLU activation + blocked Q4_K down projection (boundary-specialized).
+    fused_batch_q4_k_blocked_silu: ComputePipeline,
+    /// Fused SiLU activation + blocked Q4_K down projection (full-tile).
+    fused_batch_q4_k_blocked_silu_fulltile: ComputePipeline,
     /// Default B-transposed batch dequant+matmul for Q5_K.
     fused_batch_q5_k: ComputePipeline,
     /// Blocked-layout Q5_K kernel (boundary-specialized).
@@ -1945,6 +2116,12 @@ impl DequantKernels {
             "dequant_matvec_q4_k_n4",
         )
         .context("Failed to compile dequant_matvec_q4_k_n4 kernel")?;
+        let fused_matvec_q4_k_tg64 = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_matvec_q4_k_tg64",
+        )
+        .context("Failed to compile dequant_matvec_q4_k_tg64 kernel")?;
         let fused_matvec_dense_f16 = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -2039,6 +2216,26 @@ impl DequantKernels {
             }],
         )
         .context("Failed to compile dequant_batch_q4_k_blocked_bm32 fulltile kernel")?;
+        let fused_batch_q4_k_blocked_silu = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q4_k_blocked_silu",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(true),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q4_k_blocked_silu boundary kernel")?;
+        let fused_batch_q4_k_blocked_silu_fulltile = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q4_k_blocked_silu",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(false),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q4_k_blocked_silu fulltile kernel")?;
         let fused_batch_q4_k_inline = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -2435,6 +2632,7 @@ impl DequantKernels {
             fused_matvec_q4_k_tg256,
             fused_matvec_q4_k_x2,
             fused_matvec_q4_k_n4,
+            fused_matvec_q4_k_tg64,
             fused_matvec_dense_f16,
             fused_matvec_q6_k,
             fused_matvec_q6_k_nr2,
@@ -2450,6 +2648,8 @@ impl DequantKernels {
             fused_batch_q4_k_blocked_fulltile,
             fused_batch_q4_k_blocked_bm32,
             fused_batch_q4_k_blocked_bm32_fulltile,
+            fused_batch_q4_k_blocked_silu,
+            fused_batch_q4_k_blocked_silu_fulltile,
             fused_batch_q4_k_bn32_full,
             fused_batch_q5_k,
             fused_batch_q5_k_blocked,
@@ -3320,6 +3520,10 @@ impl DequantKernels {
         k: u32,
         config: DequantDispatchConfig,
     ) {
+        if matvec_q4k_tg64_enabled() {
+            self.encode_fused_matvec_q4_k_tg64(encoder, a, x, y, m, k);
+            return;
+        }
         let (groups, tg_width, pipeline) = self.q4_k_matvec_dispatch_with_config(m, config);
         let dims = DispatchDims::d1(groups, 1);
         encoder.setComputePipelineState(pipeline);
@@ -3330,6 +3534,38 @@ impl DequantKernels {
             dims.threadgroups,
             MTLSize {
                 width: tg_width,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode a TG=64 Q4_K matvec dispatch (2 SGs x 4 rows = 8 rows per TG).
+    ///
+    /// Experimental kernel for A/B testing. Enable with `AX_METAL_MATVEC_TG64=1`.
+    pub fn encode_fused_matvec_q4_k_tg64(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        x: &MetalBuffer,
+        y: &MetalBuffer,
+        m: u32,
+        k: u32,
+    ) {
+        encoder.setComputePipelineState(self.fused_matvec_q4_k_tg64.state());
+        bind_buffers(encoder, a, x, y);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, k);
+        // 8 rows per TG (2 SGs × 4 rows each)
+        let groups = (m as usize).div_ceil(8);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: groups as NSUInteger,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: 64,
                 height: 1,
                 depth: 1,
             },
@@ -4501,6 +4737,67 @@ impl DequantKernels {
         );
     }
 
+    /// Encode a fused SiLU activation + blocked Q4_K down projection.
+    ///
+    /// C[N × M] = (silu(gate) * up)[N × K] × dequant(A[M × K])^T
+    ///
+    /// Fuses the SiLU activation dispatch into the blocked Q4_K matmul,
+    /// saving one Metal dispatch per prefill layer.
+    /// - `a`: quantized weights [M × K/256] (Q4_K blocks)
+    /// - `gate`: gate activations [N × K] (f32)
+    /// - `up`: up activations [N × K] (f32)
+    /// - `c`: output [N × M] (f32)
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fused_batch_q4_k_silu(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        gate: &MetalBuffer,
+        up: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) {
+        if !batch_q4k_blocked_enabled() || !k.is_multiple_of(Q4_K_BLOCK_VALUES as u32) {
+            return; // fallback to separate silu+matmul
+        }
+        const BLOCKED_TG: usize = 128;
+        let full_tile = (m as usize).is_multiple_of(64) && (n as usize).is_multiple_of(32);
+        // Full-tile path needs only sa+sb (6 KB). Boundary path reuses sa
+        // as float output staging (8 KB).
+        let (pipeline, smem) = if full_tile {
+            (&self.fused_batch_q4_k_blocked_silu_fulltile, 6144usize)
+        } else {
+            (&self.fused_batch_q4_k_blocked_silu, 8192usize)
+        };
+        encoder.setComputePipelineState(pipeline.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, m);
+        bind_u32(encoder, 5, n);
+        bind_u32(encoder, 6, k);
+        unsafe {
+            encoder.setThreadgroupMemoryLength_atIndex(smem, 0);
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n as usize).div_ceil(32),
+                height: (m as usize).div_ceil(64),
+                depth: 1,
+            },
+            MTLSize {
+                width: BLOCKED_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
     /// Encode a B-transposed batch dequant Q4_K + matmul with f16 I/O.
     ///
     /// C[N × M] = B[N × K] × dequant(A[M × K])^T
@@ -5622,19 +5919,32 @@ pub struct AttentionKernels {
     prefill_hd256: ComputePipeline,
     prefill_v2: ComputePipeline,
     prefill_v2_hd128: ComputePipeline,
-    prefill_mistral_hd128: ComputePipeline,
-    prefill_mistral_f16out_hd128: ComputePipeline,
-    prefill_mistral_hd128_smem: ComputePipeline,
-    prefill_mistral_hd128_smem_f16: ComputePipeline,
-    prefill_mistral_hd128_bc64: ComputePipeline,
+    prefill_ax_hd128: ComputePipeline,
+    prefill_ax_f16out_hd128: ComputePipeline,
+    prefill_ax_hd128_smem: ComputePipeline,
+    prefill_ax_hd128_smem_f16: ComputePipeline,
+    prefill_ax_hd128_bc64: ComputePipeline,
     prefill_fa2_hd128: ComputePipeline,
-    /// FA2 with simdgroup_half8x8 matrix ops (HD=128) — llama.cpp-style.
+    /// FA2 with simdgroup_float8x8 matrix ops (HD=128).
     prefill_fa2_simd_hd128: ComputePipeline,
+    /// FA2 full-half prefill (HD=128) — K/V staged as half, half×half→float MMA.
+    prefill_fa2_half_hd128: ComputePipeline,
+    /// FA2 v2 prefill attention (HD=128) — experimental A/B test kernel.
+    prefill_fa2v2_hd128: ComputePipeline,
+    /// FA2 v2 prefill attention (HD=256) — experimental A/B test kernel.
+    prefill_fa2v2_hd256: ComputePipeline,
+    prefill_fa2_simd_hd256: ComputePipeline,
     prefill_fa2_simd_hd64: ComputePipeline,
     prefill_cache: ComputePipeline,
     prefill_cache_f16kv: ComputePipeline,
     /// FA2-style 8-query-per-TG prefill (HD=256, f16 KV).
     prefill_cache_fa2_hd256: ComputePipeline,
+    /// FA2 SIMD cached prefill (HD=128, f16 KV) with mask tile-skip.
+    prefill_cache_fa2_simd_hd128: ComputePipeline,
+    /// FA2 SIMD cached prefill (HD=64, f16 KV) with mask tile-skip.
+    prefill_cache_fa2_simd_hd64: ComputePipeline,
+    /// FA2 SIMD cached prefill (HD=256, f16 KV) with mask tile-skip.
+    prefill_cache_fa2_simd_hd256: ComputePipeline,
     decode: ComputePipeline,
     decode_hd256: ComputePipeline,
     decode_f16kv: ComputePipeline,
@@ -5656,6 +5966,30 @@ pub struct AttentionKernels {
     decode_splitk_f16kv_hd256_partial: ComputePipeline,
     /// Split-K reduction decode for head_dim=256, f16 KV.
     decode_splitk_f16kv_hd256_reduce: ComputePipeline,
+    /// sdpa_parallel decode for head_dim=128 — parallel reduction across simdgroups.
+    decode_sdpa_parallel_hd128: ComputePipeline,
+    /// sdpa_parallel decode for head_dim=256 — parallel reduction across simdgroups.
+    decode_sdpa_parallel_hd256: ComputePipeline,
+    /// sdpa_parallel decode for head_dim=128, f16 KV — parallel reduction across simdgroups.
+    decode_sdpa_parallel_f16kv_hd128: ComputePipeline,
+    /// sdpa_parallel decode for head_dim=256, f16 KV — parallel reduction across simdgroups.
+    decode_sdpa_parallel_f16kv_hd256: ComputePipeline,
+    /// Q8_0 KV decode attention (HD=128).
+    decode_q8kv_hd128: ComputePipeline,
+    /// Q8_0 KV decode attention (HD=256).
+    decode_q8kv_hd256: ComputePipeline,
+    /// Q8_0 KV cached prefill attention (generic HD).
+    prefill_cache_q8kv: ComputePipeline,
+    /// Q4_0 KV decode attention (HD=128).
+    decode_q4kv_hd128: ComputePipeline,
+    /// Q4_0 KV decode attention (HD=256).
+    decode_q4kv_hd256: ComputePipeline,
+    /// Q4_0 KV cached prefill attention (generic HD).
+    prefill_cache_q4kv: ComputePipeline,
+    /// GQA-aware sdpa decode for head_dim=128, f16 KV.
+    decode_sdpa_gqa_f16kv_hd128: ComputePipeline,
+    /// GQA-aware sdpa decode for head_dim=256, f16 KV.
+    decode_sdpa_gqa_f16kv_hd256: ComputePipeline,
 }
 
 /// Pre-compiled GDN recurrence kernels.
@@ -5670,12 +6004,15 @@ pub struct GdnKernels {
     single_token_gated_delta_fused_128_64: ComputePipeline,
     single_token_gated_delta_fused_64_64: ComputePipeline,
     gated_delta_128_64: ComputePipeline,
+    #[allow(dead_code)]
     gated_delta_128_128: ComputePipeline,
     gated_delta_64_64: ComputePipeline,
     gated_delta_fallback: ComputePipeline,
+    #[allow(dead_code)]
     chunked_gated_delta_32_128_64: ComputePipeline,
     chunked_gated_delta_32_128_128: ComputePipeline,
     chunked_gated_delta_32_64_64: ComputePipeline,
+    simd_gated_delta_4: ComputePipeline,
 }
 
 impl AttentionKernels {
@@ -5705,36 +6042,36 @@ impl AttentionKernels {
             "attention_prefill_f32_v2_hd128",
         )
         .context("Failed to compile attention_prefill_f32_v2_hd128 kernel")?;
-        let prefill_mistral_hd128 = ComputePipeline::from_source(
+        let prefill_ax_hd128 = ComputePipeline::from_source(
             device.device(),
             ATTENTION_SHADER_SRC,
-            "attention_prefill_f32_mistral_hd128",
+            "attention_prefill_f32_ax_hd128",
         )
-        .context("Failed to compile attention_prefill_f32_mistral_hd128 kernel")?;
-        let prefill_mistral_f16out_hd128 = ComputePipeline::from_source(
+        .context("Failed to compile attention_prefill_f32_ax_hd128 kernel")?;
+        let prefill_ax_f16out_hd128 = ComputePipeline::from_source(
             device.device(),
             ATTENTION_SHADER_SRC,
-            "attention_prefill_f16_mistral_hd128",
+            "attention_prefill_f16_ax_hd128",
         )
-        .context("Failed to compile attention_prefill_f16_mistral_hd128 kernel")?;
-        let prefill_mistral_hd128_smem = ComputePipeline::from_source(
+        .context("Failed to compile attention_prefill_f16_ax_hd128 kernel")?;
+        let prefill_ax_hd128_smem = ComputePipeline::from_source(
             device.device(),
             ATTENTION_SHADER_SRC,
-            "attention_prefill_f32_mistral_hd128_smem",
+            "attention_prefill_f32_ax_hd128_smem",
         )
-        .context("Failed to compile attention_prefill_f32_mistral_hd128_smem kernel")?;
-        let prefill_mistral_hd128_smem_f16 = ComputePipeline::from_source(
+        .context("Failed to compile attention_prefill_f32_ax_hd128_smem kernel")?;
+        let prefill_ax_hd128_smem_f16 = ComputePipeline::from_source(
             device.device(),
             ATTENTION_SHADER_SRC,
-            "attention_prefill_f32_mistral_hd128_smem_f16",
+            "attention_prefill_f32_ax_hd128_smem_f16",
         )
-        .context("Failed to compile attention_prefill_f32_mistral_hd128_smem_f16 kernel")?;
-        let prefill_mistral_hd128_bc64 = ComputePipeline::from_source(
+        .context("Failed to compile attention_prefill_f32_ax_hd128_smem_f16 kernel")?;
+        let prefill_ax_hd128_bc64 = ComputePipeline::from_source(
             device.device(),
             ATTENTION_SHADER_SRC,
-            "attention_prefill_f32_mistral_hd128_bc64",
+            "attention_prefill_f32_ax_hd128_bc64",
         )
-        .context("Failed to compile attention_prefill_f32_mistral_hd128_bc64 kernel")?;
+        .context("Failed to compile attention_prefill_f32_ax_hd128_bc64 kernel")?;
         let prefill_fa2_hd128 = ComputePipeline::from_source(
             device.device(),
             ATTENTION_SHADER_SRC,
@@ -5747,6 +6084,30 @@ impl AttentionKernels {
             "attention_prefill_fa2_simd_hd128",
         )
         .context("Failed to compile attention_prefill_fa2_simd_hd128 kernel")?;
+        let prefill_fa2_half_hd128 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_prefill_fa2_half_hd128",
+        )
+        .context("Failed to compile attention_prefill_fa2_half_hd128 kernel")?;
+        let prefill_fa2v2_hd128 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_prefill_fa2v2_hd128",
+        )
+        .context("Failed to compile attention_prefill_fa2v2_hd128 kernel")?;
+        let prefill_fa2v2_hd256 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_prefill_fa2v2_hd256",
+        )
+        .context("Failed to compile attention_prefill_fa2v2_hd256 kernel")?;
+        let prefill_fa2_simd_hd256 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_prefill_fa2_simd_hd256",
+        )
+        .context("Failed to compile attention_prefill_fa2_simd_hd256 kernel")?;
         let prefill_fa2_simd_hd64 = ComputePipeline::from_source(
             device.device(),
             ATTENTION_SHADER_SRC,
@@ -5808,6 +6169,24 @@ impl AttentionKernels {
             "attention_prefill_cache_fa2_hd256",
         )
         .context("Failed to compile attention_prefill_cache_fa2_hd256 kernel")?;
+        let prefill_cache_fa2_simd_hd128 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_prefill_fa2_simd_cached_f16kv_hd128",
+        )
+        .context("Failed to compile attention_prefill_fa2_simd_cached_f16kv_hd128 kernel")?;
+        let prefill_cache_fa2_simd_hd64 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_prefill_fa2_simd_cached_f16kv_hd64",
+        )
+        .context("Failed to compile attention_prefill_fa2_simd_cached_f16kv_hd64 kernel")?;
+        let prefill_cache_fa2_simd_hd256 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_prefill_fa2_simd_cached_f16kv_hd256",
+        )
+        .context("Failed to compile attention_prefill_fa2_simd_cached_f16kv_hd256 kernel")?;
         let decode_hd128 = ComputePipeline::from_source(
             device.device(),
             ATTENTION_SHADER_SRC,
@@ -5850,24 +6229,98 @@ impl AttentionKernels {
             "attention_decode_splitk_f16kv_hd256_reduce",
         )
         .context("Failed to compile attention_decode_splitk_f16kv_hd256_reduce kernel")?;
+        let decode_sdpa_parallel_hd128 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_decode_sdpa_parallel_hd128",
+        )
+        .context("Failed to compile attention_decode_sdpa_parallel_hd128 kernel")?;
+        let decode_sdpa_parallel_hd256 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_decode_sdpa_parallel_hd256",
+        )
+        .context("Failed to compile attention_decode_sdpa_parallel_hd256 kernel")?;
+        let decode_sdpa_parallel_f16kv_hd128 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_decode_sdpa_parallel_f16kv_hd128",
+        )
+        .context("Failed to compile attention_decode_sdpa_parallel_f16kv_hd128 kernel")?;
+        let decode_sdpa_parallel_f16kv_hd256 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_decode_sdpa_parallel_f16kv_hd256",
+        )
+        .context("Failed to compile attention_decode_sdpa_parallel_f16kv_hd256 kernel")?;
+        let decode_q8kv_hd128 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_decode_q8kv_hd128",
+        )
+        .context("Failed to compile attention_decode_q8kv_hd128 kernel")?;
+        let prefill_cache_q8kv = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_prefill_cache_q8kv",
+        )
+        .context("Failed to compile attention_prefill_cache_q8kv kernel")?;
+        let decode_q8kv_hd256 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_decode_q8kv_hd256",
+        )
+        .context("Failed to compile attention_decode_q8kv_hd256 kernel")?;
+        let decode_q4kv_hd128 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_decode_q4kv_hd128",
+        )
+        .context("Failed to compile attention_decode_q4kv_hd128 kernel")?;
+        let decode_q4kv_hd256 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_decode_q4kv_hd256",
+        )
+        .context("Failed to compile attention_decode_q4kv_hd256 kernel")?;
+        let prefill_cache_q4kv = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_prefill_cache_q4kv",
+        )
+        .context("Failed to compile attention_prefill_cache_q4kv kernel")?;
+        let decode_sdpa_gqa_f16kv_hd128 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_decode_sdpa_gqa_f16kv_hd128",
+        )
+        .context("Failed to compile attention_decode_sdpa_gqa_f16kv_hd128 kernel")?;
+        let decode_sdpa_gqa_f16kv_hd256 = ComputePipeline::from_source(
+            device.device(),
+            ATTENTION_SHADER_SRC,
+            "attention_decode_sdpa_gqa_f16kv_hd256",
+        )
+        .context("Failed to compile attention_decode_sdpa_gqa_f16kv_hd256 kernel")?;
 
         tracing::info!(
             prefill_max_threads = prefill.max_threads_per_threadgroup(),
             prefill_hd256_max_threads = prefill_hd256.max_threads_per_threadgroup(),
             prefill_v2_max_threads = prefill_v2.max_threads_per_threadgroup(),
             prefill_v2_hd128_max_threads = prefill_v2_hd128.max_threads_per_threadgroup(),
-            prefill_mistral_hd128_max_threads = prefill_mistral_hd128.max_threads_per_threadgroup(),
-            prefill_mistral_f16out_hd128_max_threads =
-                prefill_mistral_f16out_hd128.max_threads_per_threadgroup(),
-            prefill_mistral_hd128_smem_max_threads =
-                prefill_mistral_hd128_smem.max_threads_per_threadgroup(),
-            prefill_mistral_hd128_smem_f16_max_threads =
-                prefill_mistral_hd128_smem_f16.max_threads_per_threadgroup(),
-            prefill_mistral_hd128_bc64_max_threads =
-                prefill_mistral_hd128_bc64.max_threads_per_threadgroup(),
+            prefill_ax_hd128_max_threads = prefill_ax_hd128.max_threads_per_threadgroup(),
+            prefill_ax_f16out_hd128_max_threads =
+                prefill_ax_f16out_hd128.max_threads_per_threadgroup(),
+            prefill_ax_hd128_smem_max_threads = prefill_ax_hd128_smem.max_threads_per_threadgroup(),
+            prefill_ax_hd128_smem_f16_max_threads =
+                prefill_ax_hd128_smem_f16.max_threads_per_threadgroup(),
+            prefill_ax_hd128_bc64_max_threads = prefill_ax_hd128_bc64.max_threads_per_threadgroup(),
             prefill_fa2_hd128_max_threads = prefill_fa2_hd128.max_threads_per_threadgroup(),
             prefill_fa2_simd_hd128_max_threads =
                 prefill_fa2_simd_hd128.max_threads_per_threadgroup(),
+            prefill_fa2_half_hd128_max_threads =
+                prefill_fa2_half_hd128.max_threads_per_threadgroup(),
+            prefill_fa2v2_hd128_max_threads = prefill_fa2v2_hd128.max_threads_per_threadgroup(),
+            prefill_fa2v2_hd256_max_threads = prefill_fa2v2_hd256.max_threads_per_threadgroup(),
             prefill_fa2_simd_hd64_max_threads = prefill_fa2_simd_hd64.max_threads_per_threadgroup(),
             prefill_cache_max_threads = prefill_cache.max_threads_per_threadgroup(),
             prefill_cache_f16kv_max_threads = prefill_cache_f16kv.max_threads_per_threadgroup(),
@@ -5890,6 +6343,18 @@ impl AttentionKernels {
                 decode_splitk_f16kv_hd256_partial.max_threads_per_threadgroup(),
             decode_splitk_f16kv_hd256_reduce_max_threads =
                 decode_splitk_f16kv_hd256_reduce.max_threads_per_threadgroup(),
+            decode_sdpa_parallel_hd128_max_threads =
+                decode_sdpa_parallel_hd128.max_threads_per_threadgroup(),
+            decode_sdpa_parallel_hd256_max_threads =
+                decode_sdpa_parallel_hd256.max_threads_per_threadgroup(),
+            decode_sdpa_parallel_f16kv_hd128_max_threads =
+                decode_sdpa_parallel_f16kv_hd128.max_threads_per_threadgroup(),
+            decode_sdpa_parallel_f16kv_hd256_max_threads =
+                decode_sdpa_parallel_f16kv_hd256.max_threads_per_threadgroup(),
+            decode_sdpa_gqa_f16kv_hd128_max_threads =
+                decode_sdpa_gqa_f16kv_hd128.max_threads_per_threadgroup(),
+            decode_sdpa_gqa_f16kv_hd256_max_threads =
+                decode_sdpa_gqa_f16kv_hd256.max_threads_per_threadgroup(),
             "Attention Metal kernels compiled (prefill + decode)",
         );
 
@@ -5898,17 +6363,24 @@ impl AttentionKernels {
             prefill_hd256,
             prefill_v2,
             prefill_v2_hd128,
-            prefill_mistral_hd128,
-            prefill_mistral_f16out_hd128,
-            prefill_mistral_hd128_smem,
-            prefill_mistral_hd128_smem_f16,
-            prefill_mistral_hd128_bc64,
+            prefill_ax_hd128,
+            prefill_ax_f16out_hd128,
+            prefill_ax_hd128_smem,
+            prefill_ax_hd128_smem_f16,
+            prefill_ax_hd128_bc64,
             prefill_fa2_hd128,
             prefill_fa2_simd_hd128,
+            prefill_fa2_half_hd128,
+            prefill_fa2v2_hd128,
+            prefill_fa2v2_hd256,
+            prefill_fa2_simd_hd256,
             prefill_fa2_simd_hd64,
             prefill_cache,
             prefill_cache_f16kv,
             prefill_cache_fa2_hd256,
+            prefill_cache_fa2_simd_hd128,
+            prefill_cache_fa2_simd_hd64,
+            prefill_cache_fa2_simd_hd256,
             decode,
             decode_hd256,
             decode_f16kv,
@@ -5922,6 +6394,18 @@ impl AttentionKernels {
             decode_splitk_f16kv_hd128_reduce,
             decode_splitk_f16kv_hd256_partial,
             decode_splitk_f16kv_hd256_reduce,
+            decode_sdpa_parallel_hd128,
+            decode_sdpa_parallel_hd256,
+            decode_sdpa_parallel_f16kv_hd128,
+            decode_sdpa_parallel_f16kv_hd256,
+            decode_q8kv_hd128,
+            decode_q8kv_hd256,
+            prefill_cache_q8kv,
+            decode_q4kv_hd128,
+            decode_q4kv_hd256,
+            prefill_cache_q4kv,
+            decode_sdpa_gqa_f16kv_hd128,
+            decode_sdpa_gqa_f16kv_hd256,
         })
     }
 
@@ -5959,6 +6443,26 @@ impl AttentionKernels {
                 FA2S_TG,
                 (n_tokens as usize).div_ceil(8),
             ),
+            AttentionPrefillCandidate::Fa2HalfHd128 => (
+                &self.prefill_fa2_half_hd128,
+                FA2S_TG,
+                (n_tokens as usize).div_ceil(8),
+            ),
+            AttentionPrefillCandidate::Fa2v2Hd128 => (
+                &self.prefill_fa2v2_hd128,
+                FA2S_TG,
+                (n_tokens as usize).div_ceil(8),
+            ),
+            AttentionPrefillCandidate::Fa2v2Hd256 => (
+                &self.prefill_fa2v2_hd256,
+                FA2S_TG,
+                (n_tokens as usize).div_ceil(8),
+            ),
+            AttentionPrefillCandidate::Fa2SimdHd256 => (
+                &self.prefill_fa2_simd_hd256,
+                FA2S_TG,
+                (n_tokens as usize).div_ceil(8),
+            ),
             AttentionPrefillCandidate::Fa2SimdHd64 => (
                 &self.prefill_fa2_simd_hd64,
                 FA2S_TG,
@@ -5969,23 +6473,23 @@ impl AttentionKernels {
                 ATTN_TG,
                 (n_tokens as usize).div_ceil(8),
             ),
-            AttentionPrefillCandidate::MistralBc64 => (
-                &self.prefill_mistral_hd128_bc64,
+            AttentionPrefillCandidate::AxBc64 => (
+                &self.prefill_ax_hd128_bc64,
                 ATTN_TG,
                 (n_tokens as usize).div_ceil(8),
             ),
-            AttentionPrefillCandidate::MistralSmemF16 => (
-                &self.prefill_mistral_hd128_smem_f16,
+            AttentionPrefillCandidate::AxSmemF16 => (
+                &self.prefill_ax_hd128_smem_f16,
                 ATTN_TG,
                 (n_tokens as usize).div_ceil(8),
             ),
-            AttentionPrefillCandidate::MistralSmem => (
-                &self.prefill_mistral_hd128_smem,
+            AttentionPrefillCandidate::AxSmem => (
+                &self.prefill_ax_hd128_smem,
                 ATTN_TG,
                 (n_tokens as usize).div_ceil(8),
             ),
-            AttentionPrefillCandidate::MistralHd128 => (
-                &self.prefill_mistral_hd128,
+            AttentionPrefillCandidate::AxHd128 => (
+                &self.prefill_ax_hd128,
                 ATTN_TG,
                 (n_tokens as usize).div_ceil(8),
             ),
@@ -5997,7 +6501,11 @@ impl AttentionKernels {
                 (&self.prefill_hd256, ATTN_TG, n_tokens as usize)
             }
             AttentionPrefillCandidate::Prefill => (&self.prefill, ATTN_TG, n_tokens as usize),
-            AttentionPrefillCandidate::Cache | AttentionPrefillCandidate::CacheFa2Hd256 => {
+            AttentionPrefillCandidate::Cache
+            | AttentionPrefillCandidate::CacheFa2Hd256
+            | AttentionPrefillCandidate::CacheFa2SimdHd128
+            | AttentionPrefillCandidate::CacheFa2SimdHd64
+            | AttentionPrefillCandidate::CacheFa2SimdHd256 => {
                 unreachable!("cached prefill candidates are not valid for local prefill")
             }
         };
@@ -6100,6 +6608,13 @@ impl AttentionKernels {
             AttentionDecodeCandidate::Decode => (&self.decode, ATTN_DEC_TG, n_heads as usize),
             AttentionDecodeCandidate::SplitKHd128 | AttentionDecodeCandidate::SplitKHd256 => {
                 unreachable!("split-k attention candidate should use scratch path")
+            }
+            AttentionDecodeCandidate::SdpaParallelHd128
+            | AttentionDecodeCandidate::SdpaParallelHd256 => {
+                unreachable!("sdpa_parallel candidate should use dedicated path")
+            }
+            AttentionDecodeCandidate::SdpaGqaHd128 | AttentionDecodeCandidate::SdpaGqaHd256 => {
+                unreachable!("sdpa_gqa candidate should use dedicated path")
             }
         };
         if attention_kernel_routing_log_enabled() {
@@ -6281,7 +6796,20 @@ impl AttentionKernels {
                 "attention_decode_with_scratch kernel routing"
             );
         }
-        if use_splitk {
+        // GQA-aware decode: share KV reads across query heads in same TG
+        let use_sdpa_gqa = sdpa_gqa_decode_enabled() && kv_f16 && n_kv_heads < n_heads;
+        if use_sdpa_gqa {
+            self.encode_attention_decode_sdpa_gqa(
+                encoder, q, k_cache, v_cache, o, n_heads, n_kv_heads, head_dim, attend_len,
+            );
+            return;
+        }
+        let use_sdpa_parallel = sdpa_parallel_decode_enabled() && matches!(head_dim, 128 | 256);
+        if use_sdpa_parallel {
+            self.encode_attention_decode_sdpa_parallel(
+                encoder, q, k_cache, v_cache, o, kv_f16, n_heads, n_kv_heads, head_dim, attend_len,
+            );
+        } else if use_splitk {
             self.encode_attention_decode_splitk_with_config(
                 encoder,
                 q,
@@ -6314,6 +6842,115 @@ impl AttentionKernels {
                 config,
             );
         }
+    }
+
+    /// Encode sdpa_parallel decode attention (parallel reduction).
+    ///
+    /// Uses the `attention_decode_sdpa_parallel_[f16kv_]hd128` or `hd256` kernel
+    /// depending on `head_dim` and `kv_f16`. Each threadgroup handles one head
+    /// with 32 simdgroups (TG=1024) partitioning the KV sequence.
+    ///
+    /// - `q`: [n_heads × head_dim] query vector (single token)
+    /// - `k`: [seq_len × n_kv_heads × head_dim] key cache
+    /// - `v`: [seq_len × n_kv_heads × head_dim] value cache
+    /// - `o`: [n_heads × head_dim] output buffer
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_attention_decode_sdpa_parallel(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        q: &MetalBuffer,
+        k: &MetalBuffer,
+        v: &MetalBuffer,
+        o: &MetalBuffer,
+        kv_f16: bool,
+        n_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        seq_len: u32,
+    ) {
+        let pipeline = match (kv_f16, head_dim) {
+            (true, 256) => &self.decode_sdpa_parallel_f16kv_hd256,
+            (true, _) => &self.decode_sdpa_parallel_f16kv_hd128,
+            (false, 256) => &self.decode_sdpa_parallel_hd256,
+            (false, _) => &self.decode_sdpa_parallel_hd128,
+        };
+        encoder.setComputePipelineState(pipeline.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(k.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(v.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(o.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, n_heads);
+        bind_u32(encoder, 5, n_kv_heads);
+        bind_u32(encoder, 6, seq_len);
+        // Grid: (1, n_heads, 1) — one threadgroup per head
+        // TG: 1024 threads (32 simdgroups × 32 lanes)
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: 1,
+                height: n_heads as usize,
+                depth: 1,
+            },
+            MTLSize {
+                width: 1024,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode GQA-aware sdpa decode attention.
+    ///
+    /// Uses `attention_decode_sdpa_gqa_f16kv_hd128` or `hd256` depending on
+    /// `head_dim`. Each threadgroup handles one KV head and all its grouped
+    /// query heads, sharing KV reads across the GQA ratio.
+    ///
+    /// - `q`: [n_heads × head_dim] query vector (single token)
+    /// - `k`: [seq_len × n_kv_heads × head_dim] key cache (f16)
+    /// - `v`: [seq_len × n_kv_heads × head_dim] value cache (f16)
+    /// - `o`: [n_heads × head_dim] output buffer
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_attention_decode_sdpa_gqa(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        q: &MetalBuffer,
+        k: &MetalBuffer,
+        v: &MetalBuffer,
+        o: &MetalBuffer,
+        n_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        seq_len: u32,
+    ) {
+        let pipeline = if head_dim == 256 {
+            &self.decode_sdpa_gqa_f16kv_hd256
+        } else {
+            &self.decode_sdpa_gqa_f16kv_hd128
+        };
+        encoder.setComputePipelineState(pipeline.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(k.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(v.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(o.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, n_heads);
+        bind_u32(encoder, 5, n_kv_heads);
+        bind_u32(encoder, 6, seq_len);
+        // Grid: (1, n_kv_heads, 1) — one TG per KV head (not per query head)
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: 1,
+                height: n_kv_heads as usize,
+                depth: 1,
+            },
+            MTLSize {
+                width: 1024,
+                height: 1,
+                depth: 1,
+            },
+        );
     }
 
     /// Encode prefill attention into an existing command encoder.
@@ -6360,6 +6997,26 @@ impl AttentionKernels {
                 FA2S_TG,
                 (n_tokens as usize).div_ceil(8),
             ),
+            AttentionPrefillCandidate::Fa2HalfHd128 => (
+                &self.prefill_fa2_half_hd128,
+                FA2S_TG,
+                (n_tokens as usize).div_ceil(8),
+            ),
+            AttentionPrefillCandidate::Fa2v2Hd128 => (
+                &self.prefill_fa2v2_hd128,
+                FA2S_TG,
+                (n_tokens as usize).div_ceil(8),
+            ),
+            AttentionPrefillCandidate::Fa2v2Hd256 => (
+                &self.prefill_fa2v2_hd256,
+                FA2S_TG,
+                (n_tokens as usize).div_ceil(8),
+            ),
+            AttentionPrefillCandidate::Fa2SimdHd256 => (
+                &self.prefill_fa2_simd_hd256,
+                FA2S_TG,
+                (n_tokens as usize).div_ceil(8),
+            ),
             AttentionPrefillCandidate::Fa2SimdHd64 => (
                 &self.prefill_fa2_simd_hd64,
                 FA2S_TG,
@@ -6370,23 +7027,23 @@ impl AttentionKernels {
                 ATTN_TG,
                 (n_tokens as usize).div_ceil(8),
             ),
-            AttentionPrefillCandidate::MistralBc64 => (
-                &self.prefill_mistral_hd128_bc64,
+            AttentionPrefillCandidate::AxBc64 => (
+                &self.prefill_ax_hd128_bc64,
                 ATTN_TG,
                 (n_tokens as usize).div_ceil(8),
             ),
-            AttentionPrefillCandidate::MistralSmemF16 => (
-                &self.prefill_mistral_hd128_smem_f16,
+            AttentionPrefillCandidate::AxSmemF16 => (
+                &self.prefill_ax_hd128_smem_f16,
                 ATTN_TG,
                 (n_tokens as usize).div_ceil(8),
             ),
-            AttentionPrefillCandidate::MistralSmem => (
-                &self.prefill_mistral_hd128_smem,
+            AttentionPrefillCandidate::AxSmem => (
+                &self.prefill_ax_hd128_smem,
                 ATTN_TG,
                 (n_tokens as usize).div_ceil(8),
             ),
-            AttentionPrefillCandidate::MistralHd128 => (
-                &self.prefill_mistral_hd128,
+            AttentionPrefillCandidate::AxHd128 => (
+                &self.prefill_ax_hd128,
                 ATTN_TG,
                 (n_tokens as usize).div_ceil(8),
             ),
@@ -6398,7 +7055,11 @@ impl AttentionKernels {
                 (&self.prefill_hd256, ATTN_TG, n_tokens as usize)
             }
             AttentionPrefillCandidate::Prefill => (&self.prefill, ATTN_TG, n_tokens as usize),
-            AttentionPrefillCandidate::Cache | AttentionPrefillCandidate::CacheFa2Hd256 => {
+            AttentionPrefillCandidate::Cache
+            | AttentionPrefillCandidate::CacheFa2Hd256
+            | AttentionPrefillCandidate::CacheFa2SimdHd128
+            | AttentionPrefillCandidate::CacheFa2SimdHd64
+            | AttentionPrefillCandidate::CacheFa2SimdHd256 => {
                 unreachable!("cached prefill candidates are not valid for local prefill")
             }
         };
@@ -6450,7 +7111,7 @@ impl AttentionKernels {
         head_dim: u32,
     ) {
         debug_assert_eq!(head_dim, 128);
-        let pipeline = &self.prefill_mistral_f16out_hd128;
+        let pipeline = &self.prefill_ax_f16out_hd128;
         encoder.setComputePipelineState(pipeline.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
@@ -6532,15 +7193,26 @@ impl AttentionKernels {
                 "encode_attention_prefill_cached kernel routing"
             );
         }
-        if matches!(
-            selection.candidate,
-            AttentionPrefillCandidate::CacheFa2Hd256
-        ) {
-            // FA2 multi-query kernel: grid is (ceil(n_tokens/8), n_heads).
+        // FA2 multi-query kernels: grid is (ceil(n_tokens/8), n_heads).
+        let fa2_cached_pipeline = match selection.candidate {
+            AttentionPrefillCandidate::CacheFa2SimdHd128 => {
+                Some((&self.prefill_cache_fa2_simd_hd128, 128usize))
+            }
+            AttentionPrefillCandidate::CacheFa2SimdHd64 => {
+                Some((&self.prefill_cache_fa2_simd_hd64, 128usize))
+            }
+            AttentionPrefillCandidate::CacheFa2SimdHd256 => {
+                Some((&self.prefill_cache_fa2_simd_hd256, 128usize))
+            }
+            AttentionPrefillCandidate::CacheFa2Hd256 => {
+                Some((&self.prefill_cache_fa2_hd256, 256usize))
+            }
+            _ => None,
+        };
+        if let Some((pipeline, tg_size)) = fa2_cached_pipeline {
             const FA2_Q: usize = 8;
-            const FA2_TG: usize = 256;
             let n_tile_q = (n_tokens as usize).div_ceil(FA2_Q);
-            encoder.setComputePipelineState(self.prefill_cache_fa2_hd256.state());
+            encoder.setComputePipelineState(pipeline.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
@@ -6560,7 +7232,7 @@ impl AttentionKernels {
                     depth: 1,
                 },
                 MTLSize {
-                    width: FA2_TG,
+                    width: tg_size,
                     height: 1,
                     depth: 1,
                 },
@@ -6573,6 +7245,227 @@ impl AttentionKernels {
             &self.prefill_cache
         };
         encoder.setComputePipelineState(pipeline.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(v_cache.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(o.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, n_tokens);
+        bind_u32(encoder, 5, n_heads);
+        bind_u32(encoder, 6, n_kv_heads);
+        bind_u32(encoder, 7, head_dim);
+        bind_u32(encoder, 8, base_seq_len);
+        bind_u32(encoder, 9, sliding_window);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: n_tokens as usize,
+                height: n_heads as usize,
+                depth: 1,
+            },
+            MTLSize {
+                width: ATTN_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Dispatch Q8_0 KV cached prefill attention.
+    ///
+    /// Same interface as `encode_attention_prefill_cached_with_config` but reads
+    /// from Q8_0 quantized KV cache with inline dequant.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_attention_prefill_cached_q8kv(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        q: &MetalBuffer,
+        k_cache: &MetalBuffer,
+        v_cache: &MetalBuffer,
+        o: &MetalBuffer,
+        n_tokens: u32,
+        n_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        base_seq_len: u32,
+        sliding_window: u32,
+    ) {
+        encoder.setComputePipelineState(self.prefill_cache_q8kv.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(v_cache.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(o.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, n_tokens);
+        bind_u32(encoder, 5, n_heads);
+        bind_u32(encoder, 6, n_kv_heads);
+        bind_u32(encoder, 7, head_dim);
+        bind_u32(encoder, 8, base_seq_len);
+        bind_u32(encoder, 9, sliding_window);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: n_tokens as usize,
+                height: n_heads as usize,
+                depth: 1,
+            },
+            MTLSize {
+                width: ATTN_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Dispatch Q8_0 KV decode attention (HD=128).
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_attention_decode_q8kv(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        q: &MetalBuffer,
+        k_cache: &MetalBuffer,
+        v_cache: &MetalBuffer,
+        o: &MetalBuffer,
+        n_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        attend_start: u32,
+        attend_len: u32,
+    ) {
+        encoder.setComputePipelineState(self.decode_q8kv_hd128.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(v_cache.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(o.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, n_heads);
+        bind_u32(encoder, 5, n_kv_heads);
+        bind_u32(encoder, 6, head_dim);
+        bind_u32(encoder, 7, attend_start);
+        bind_u32(encoder, 8, attend_len);
+        const ATTN_DEC_Q8_TG: usize = 128;
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: n_heads as usize,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: ATTN_DEC_Q8_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Dispatch Q8_0 KV decode attention (HD=256).
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_attention_decode_q8kv_hd256(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        q: &MetalBuffer,
+        k_cache: &MetalBuffer,
+        v_cache: &MetalBuffer,
+        o: &MetalBuffer,
+        n_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        attend_start: u32,
+        attend_len: u32,
+    ) {
+        encoder.setComputePipelineState(self.decode_q8kv_hd256.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(v_cache.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(o.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, n_heads);
+        bind_u32(encoder, 5, n_kv_heads);
+        bind_u32(encoder, 6, head_dim);
+        bind_u32(encoder, 7, attend_start);
+        bind_u32(encoder, 8, attend_len);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: n_heads as usize,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: ATTN_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Dispatch Q4_0 KV decode attention.
+    ///
+    /// Selects `decode_q4kv_hd128` (TG=128) or `decode_q4kv_hd256` (TG=256)
+    /// based on `head_dim`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_attention_decode_q4kv(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        q: &MetalBuffer,
+        k_cache: &MetalBuffer,
+        v_cache: &MetalBuffer,
+        o: &MetalBuffer,
+        n_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        attend_start: u32,
+        attend_len: u32,
+    ) {
+        let (pipeline, tg) = if head_dim <= 128 {
+            (&self.decode_q4kv_hd128, ATTN_DEC2_TG)
+        } else {
+            (&self.decode_q4kv_hd256, ATTN_TG)
+        };
+        encoder.setComputePipelineState(pipeline.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(v_cache.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(o.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, n_heads);
+        bind_u32(encoder, 5, n_kv_heads);
+        bind_u32(encoder, 6, head_dim);
+        bind_u32(encoder, 7, attend_start);
+        bind_u32(encoder, 8, attend_len);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: n_heads as usize,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: tg,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Dispatch Q4_0 KV cached prefill attention (generic HD).
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_attention_prefill_cached_q4kv(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        q: &MetalBuffer,
+        k_cache: &MetalBuffer,
+        v_cache: &MetalBuffer,
+        o: &MetalBuffer,
+        n_tokens: u32,
+        n_heads: u32,
+        n_kv_heads: u32,
+        head_dim: u32,
+        base_seq_len: u32,
+        sliding_window: u32,
+    ) {
+        encoder.setComputePipelineState(self.prefill_cache_q4kv.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
@@ -6782,6 +7675,12 @@ impl GdnKernels {
             "chunked_gated_delta_rule_32_64_64",
         )
         .context("Failed to compile chunked_gated_delta_rule_32_64_64 kernel")?;
+        let simd_gated_delta_4 = ComputePipeline::from_source(
+            device.device(),
+            GDN_SHADER_SRC,
+            "gated_delta_rule_simd_4",
+        )
+        .context("Failed to compile gated_delta_rule_simd_4 kernel")?;
         Ok(Self {
             causal_conv_sequence_f32,
             causal_conv_sequence_parallel_f32,
@@ -6799,6 +7698,7 @@ impl GdnKernels {
             chunked_gated_delta_32_128_64,
             chunked_gated_delta_32_128_128,
             chunked_gated_delta_32_64_64,
+            simd_gated_delta_4,
         })
     }
 
@@ -7231,12 +8131,37 @@ impl GdnKernels {
         head_dim: u32,
     ) {
         let v_dim = head_dim;
+        let use_simd = seq_len >= GDN_CHUNK_THRESHOLD && head_dim == 128;
+
+        if use_simd {
+            // llama.cpp-style fused GDN: distribute v-dim across TGs, simd_sum for reductions.
+            // Grid: (S_v/NSG, n_heads, 1) = (32, 32, 1) = 1024 TGs — 32x more than old kernel.
+            // TG: (32, NSG, 1) = (32, 4, 1) = 128 threads.
+            const NSG: usize = 4;
+            let grid_x = (v_dim as usize).div_ceil(NSG);
+            encoder.setComputePipelineState(self.simd_gated_delta_4.state());
+            bind_buffers7(encoder, q, k, v, g, beta, state, output);
+            bind_u32(encoder, 7, seq_len);
+            bind_u32(encoder, 8, v_dim);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: grid_x,
+                    height: n_heads as usize,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: 32,
+                    height: NSG,
+                    depth: 1,
+                },
+            );
+            return;
+        }
+
         let use_chunked = seq_len >= GDN_CHUNK_THRESHOLD;
         let (pipeline, use_fallback, bv) = match (head_dim, use_chunked) {
-            // BV=128 for chunked prefill (head_dim=128): 1 v-tile, single-element k/q loads
             (128, true) => (&self.chunked_gated_delta_32_128_128, false, 128u32),
             (64, true) => (&self.chunked_gated_delta_32_64_64, false, 64u32),
-            // Keep BV=64 for non-chunked (decode or short prefill) to preserve decode perf
             (128, false) => (&self.gated_delta_128_64, false, 64u32),
             (64, false) => (&self.gated_delta_64_64, false, 64u32),
             _ => (&self.gated_delta_fallback, true, 64u32),
@@ -7410,14 +8335,14 @@ fn attention_prefill_hd128_enabled() -> bool {
     *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_PREFILL_HD128", false))
 }
 
-fn attention_prefill_mistral_hd128_enabled() -> bool {
+fn attention_prefill_ax_hd128_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     // Mistral-style prefill tiling for HD=128 (BR=8, BC=32).
     // Default ON; set AX_METAL_PREFILL_MISTRAL_HD128=0 to disable.
     *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_PREFILL_MISTRAL_HD128", true))
 }
 
-fn attention_prefill_mistral_smem_enabled() -> bool {
+fn attention_prefill_ax_smem_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     // Experimental: default OFF until sustained win is confirmed.
     // Set AX_METAL_PREFILL_MISTRAL_SMEM=1 to enable.
@@ -7432,7 +8357,7 @@ fn attention_prefill_mistral_smem_enabled() -> bool {
     )
 }
 
-fn attention_prefill_mistral_smem_f16_enabled() -> bool {
+fn attention_prefill_ax_smem_f16_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     // Experimental f16 shared-memory variant.
     // Set AX_METAL_PREFILL_MISTRAL_SMEM_F16=1 to enable.
@@ -7522,24 +8447,22 @@ fn attention_prefill_fa2_hd128_mode_with_config(config: AttentionDispatchConfig)
     config.prefill_fa2_hd128_mode
 }
 
-fn attention_prefill_mistral_bc64_mode_with_config(config: AttentionDispatchConfig) -> KernelMode {
-    config.prefill_mistral_bc64_mode
+fn attention_prefill_ax_bc64_mode_with_config(config: AttentionDispatchConfig) -> KernelMode {
+    config.prefill_ax_bc64_mode
 }
 
-fn attention_prefill_mistral_bc64_min_tokens_with_config(config: AttentionDispatchConfig) -> u32 {
-    config.prefill_mistral_bc64_min_tokens
+fn attention_prefill_ax_bc64_min_tokens_with_config(config: AttentionDispatchConfig) -> u32 {
+    config.prefill_ax_bc64_min_tokens
 }
 
-fn attention_prefill_mistral_bc64_should_use_with_config(
+fn attention_prefill_ax_bc64_should_use_with_config(
     n_tokens: u32,
     config: AttentionDispatchConfig,
 ) -> bool {
-    match attention_prefill_mistral_bc64_mode_with_config(config) {
+    match attention_prefill_ax_bc64_mode_with_config(config) {
         KernelMode::Off => false,
         KernelMode::On => true,
-        KernelMode::Auto => {
-            n_tokens >= attention_prefill_mistral_bc64_min_tokens_with_config(config)
-        }
+        KernelMode::Auto => n_tokens >= attention_prefill_ax_bc64_min_tokens_with_config(config),
     }
 }
 
@@ -7642,6 +8565,34 @@ fn attention_prefill_fa2_simd_hd128_enabled() -> bool {
     )
 }
 
+fn attention_prefill_fa2_half_hd128_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("AX_METAL_PREFILL_FA2_HALF")
+            .ok()
+            .and_then(|v| parse_bool_env_flag(&v))
+            // Default OFF: on Apple Silicon UMA, K/V staging through TG memory
+            // adds overhead that negates the half×half MMA throughput advantage.
+            // Direct device→register float loads (fa2_simd_hd128) are faster
+            // because UMA has no VRAM→shared memory bandwidth bottleneck.
+            .unwrap_or(false)
+    })
+}
+
+fn attention_prefill_fa2v2_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("AX_METAL_PREFILL_FA2V2")
+            .ok()
+            .and_then(|v| parse_bool_env_flag(&v))
+            // Default OFF: fa2v2 uses mixed half×float MMA which does not
+            // benefit from Apple Silicon's half×half throughput advantage.
+            // For HD=128, Fa2HalfHd128 is preferred. For HD=256, the
+            // D-blocking approach is sound but mixed precision limits gain.
+            .unwrap_or(false)
+    })
+}
+
 fn attention_decode_hd128_n2_enabled_with_config(
     config: AttentionDispatchConfig,
     attend_len: u32,
@@ -7742,6 +8693,19 @@ fn matvec_q4k_blk2_enabled() -> bool {
             None => false,
         },
     )
+}
+
+/// Whether the TG=64 Q4_K decode matvec is enabled (2 SGs × 4 rows = 8 rows/TG).
+/// Default OFF. Enable with `AX_METAL_MATVEC_TG64=1` to A/B test.
+fn matvec_q4k_tg64_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match legacy_kernel_override("AX_METAL_MATVEC_TG64") {
+        Some(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "on"
+        }
+        None => false,
+    })
 }
 
 /// Whether K-parallel simd_sum batch dequant+matmul kernels are enabled.
@@ -7892,6 +8856,9 @@ impl<'a> SmartBarrier<'a> {
 
     /// Register buffer ranges AFTER dispatching.
     pub fn post_dispatch(&mut self, reads: &[&MetalBuffer], writes: &[&MetalBuffer]) {
+        if !barriers_enabled() {
+            return;
+        }
         for buf in reads {
             self.pending.push((buf.ptr_id(), false));
         }
@@ -7973,21 +8940,27 @@ pub struct ElementwiseKernels {
     qkv_split_bias_qknorm_rope_append_kv_batch_f16: ComputePipeline,
     gelu_elementwise_mul: ComputePipeline,
     gelu_elementwise_mul_batch: ComputePipeline,
+    gelu_elementwise_mul_batch_vec4: ComputePipeline,
     gelu_inplace: ComputePipeline,
     gelu_inplace_batch: ComputePipeline,
     silu_elementwise_mul: ComputePipeline,
     silu_elementwise_mul_batch: ComputePipeline,
+    silu_elementwise_mul_batch_vec4: ComputePipeline,
     silu_elementwise_mul_batch_f16: ComputePipeline,
     sigmoid_elementwise_mul: ComputePipeline,
     sigmoid_inplace: ComputePipeline,
+    sigmoid_inplace_vec4: ComputePipeline,
     softplus_bias_mul: ComputePipeline,
     softplus_bias_mul_batch: ComputePipeline,
     l2_norm_per_head: ComputePipeline,
     elementwise_add: ComputePipeline,
     elementwise_add_batch: ComputePipeline,
+    elementwise_add_batch_vec4: ComputePipeline,
     elementwise_weighted_add: ComputePipeline,
     cast_f32_to_f16: ComputePipeline,
+    cast_f32_to_f16_vec4: ComputePipeline,
     cast_f16_to_f32: ComputePipeline,
+    cast_f16_to_f32_vec4: ComputePipeline,
     qkv_split_batch: ComputePipeline,
     split_qgate_batch: ComputePipeline,
     qkv_split_rope_batch: ComputePipeline,
@@ -7999,6 +8972,10 @@ pub struct ElementwiseKernels {
     kv_append_batch_f16: ComputePipeline,
     kv_append_batch2_f32: ComputePipeline,
     kv_append_batch2_f16: ComputePipeline,
+    kv_append_batch_q8_0: ComputePipeline,
+    kv_append_batch2_q8_0: ComputePipeline,
+    kv_append_batch_q4_0: ComputePipeline,
+    kv_append_batch2_q4_0: ComputePipeline,
 }
 
 impl ElementwiseKernels {
@@ -8147,6 +9124,12 @@ impl ElementwiseKernels {
             "gelu_elementwise_mul_batch_f32",
         )
         .context("Failed to compile gelu_elementwise_mul_batch_f32 kernel")?;
+        let gelu_elementwise_mul_batch_vec4 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "gelu_elementwise_mul_batch_f32_vec4",
+        )
+        .context("Failed to compile gelu_elementwise_mul_batch_f32_vec4 kernel")?;
         let gelu_inplace = ComputePipeline::from_source(
             device.device(),
             ELEMENTWISE_SHADER_SRC,
@@ -8172,6 +9155,12 @@ impl ElementwiseKernels {
             "silu_elementwise_mul_batch_f32",
         )
         .context("Failed to compile silu_elementwise_mul_batch_f32 kernel")?;
+        let silu_elementwise_mul_batch_vec4 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "silu_elementwise_mul_batch_f32_vec4",
+        )
+        .context("Failed to compile silu_elementwise_mul_batch_f32_vec4 kernel")?;
         let silu_elementwise_mul_batch_f16 = ComputePipeline::from_source(
             device.device(),
             ELEMENTWISE_SHADER_SRC,
@@ -8190,6 +9179,12 @@ impl ElementwiseKernels {
             "sigmoid_inplace_f32",
         )
         .context("Failed to compile sigmoid_inplace_f32 kernel")?;
+        let sigmoid_inplace_vec4 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "sigmoid_inplace_f32_vec4",
+        )
+        .context("Failed to compile sigmoid_inplace_f32_vec4 kernel")?;
         let softplus_bias_mul = ComputePipeline::from_source(
             device.device(),
             ELEMENTWISE_SHADER_SRC,
@@ -8221,6 +9216,12 @@ impl ElementwiseKernels {
             "elementwise_add_batch_f32",
         )
         .context("Failed to compile elementwise_add_batch_f32 kernel")?;
+        let elementwise_add_batch_vec4 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "elementwise_add_batch_f32_vec4",
+        )
+        .context("Failed to compile elementwise_add_batch_f32_vec4 kernel")?;
         let elementwise_weighted_add = ComputePipeline::from_source(
             device.device(),
             ELEMENTWISE_SHADER_SRC,
@@ -8239,6 +9240,18 @@ impl ElementwiseKernels {
             "cast_f16_to_f32",
         )
         .context("Failed to compile cast_f16_to_f32 kernel")?;
+        let cast_f32_to_f16_vec4 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "cast_f32_to_f16_vec4",
+        )
+        .context("Failed to compile cast_f32_to_f16_vec4 kernel")?;
+        let cast_f16_to_f32_vec4 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "cast_f16_to_f32_vec4",
+        )
+        .context("Failed to compile cast_f16_to_f32_vec4 kernel")?;
         let qkv_split_batch = ComputePipeline::from_source(
             device.device(),
             ELEMENTWISE_SHADER_SRC,
@@ -8300,6 +9313,30 @@ impl ElementwiseKernels {
             "kv_append_batch2_f16",
         )
         .context("Failed to compile kv_append_batch2_f16 kernel")?;
+        let kv_append_batch_q8_0 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "kv_append_batch_q8_0",
+        )
+        .context("Failed to compile kv_append_batch_q8_0 kernel")?;
+        let kv_append_batch2_q8_0 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "kv_append_batch2_q8_0",
+        )
+        .context("Failed to compile kv_append_batch2_q8_0 kernel")?;
+        let kv_append_batch_q4_0 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "kv_append_batch_q4_0",
+        )
+        .context("Failed to compile kv_append_batch_q4_0 kernel")?;
+        let kv_append_batch2_q4_0 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "kv_append_batch2_q4_0",
+        )
+        .context("Failed to compile kv_append_batch2_q4_0 kernel")?;
 
         tracing::info!("Elementwise Metal kernels compiled (8 kernels)");
 
@@ -8325,21 +9362,27 @@ impl ElementwiseKernels {
             qkv_split_bias_qknorm_rope_append_kv_batch_f16,
             gelu_elementwise_mul,
             gelu_elementwise_mul_batch,
+            gelu_elementwise_mul_batch_vec4,
             gelu_inplace,
             gelu_inplace_batch,
             silu_elementwise_mul,
             silu_elementwise_mul_batch,
+            silu_elementwise_mul_batch_vec4,
             silu_elementwise_mul_batch_f16,
             sigmoid_elementwise_mul,
             sigmoid_inplace,
+            sigmoid_inplace_vec4,
             softplus_bias_mul,
             softplus_bias_mul_batch,
             l2_norm_per_head,
             elementwise_add,
             elementwise_add_batch,
+            elementwise_add_batch_vec4,
             elementwise_weighted_add,
             cast_f32_to_f16,
+            cast_f32_to_f16_vec4,
             cast_f16_to_f32,
+            cast_f16_to_f32_vec4,
             qkv_split_batch,
             split_qgate_batch,
             qkv_split_rope_batch,
@@ -8351,6 +9394,10 @@ impl ElementwiseKernels {
             kv_append_batch_f16,
             kv_append_batch2_f32,
             kv_append_batch2_f16,
+            kv_append_batch_q8_0,
+            kv_append_batch2_q8_0,
+            kv_append_batch_q4_0,
+            kv_append_batch2_q4_0,
         })
     }
 
@@ -9088,18 +10135,33 @@ impl ElementwiseKernels {
         n_rows: u32,
     ) {
         let total = (n as usize) * (n_rows as usize);
-        let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.gelu_elementwise_mul_batch.state());
-        unsafe {
-            encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
-            encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 1);
+        if n.is_multiple_of(4) {
+            let dims = DispatchDims::d1(total / 4, ELEMENTWISE_TG_SIZE);
+            encoder.setComputePipelineState(self.gelu_elementwise_mul_batch_vec4.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 1);
+            }
+            bind_u32(encoder, 2, n);
+            bind_u32(encoder, 3, n_rows);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
+        } else {
+            let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
+            encoder.setComputePipelineState(self.gelu_elementwise_mul_batch.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 1);
+            }
+            bind_u32(encoder, 2, n);
+            bind_u32(encoder, 3, n_rows);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
         }
-        bind_u32(encoder, 2, n);
-        bind_u32(encoder, 3, n_rows);
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            dims.threadgroups,
-            dims.threads_per_threadgroup,
-        );
     }
 
     /// Encode in-place GELU: x[i] = GELU(x[i]).
@@ -9171,16 +10233,29 @@ impl ElementwiseKernels {
         x: &MetalBuffer,
         n: u32,
     ) {
-        let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.sigmoid_inplace.state());
-        unsafe {
-            encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
+        if n.is_multiple_of(4) {
+            let dims = DispatchDims::d1((n as usize) / 4, ELEMENTWISE_TG_SIZE);
+            encoder.setComputePipelineState(self.sigmoid_inplace_vec4.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
+            }
+            bind_u32(encoder, 1, n);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
+        } else {
+            let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
+            encoder.setComputePipelineState(self.sigmoid_inplace.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
+            }
+            bind_u32(encoder, 1, n);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
         }
-        bind_u32(encoder, 1, n);
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            dims.threadgroups,
-            dims.threads_per_threadgroup,
-        );
     }
 
     /// Encode softplus(alpha + bias) * a in-place.
@@ -9295,18 +10370,33 @@ impl ElementwiseKernels {
         n_rows: u32,
     ) {
         let total = (n as usize) * (n_rows as usize);
-        let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.silu_elementwise_mul_batch.state());
-        unsafe {
-            encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
-            encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 1);
+        if n.is_multiple_of(4) {
+            let dims = DispatchDims::d1(total / 4, ELEMENTWISE_TG_SIZE);
+            encoder.setComputePipelineState(self.silu_elementwise_mul_batch_vec4.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 1);
+            }
+            bind_u32(encoder, 2, n);
+            bind_u32(encoder, 3, n_rows);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
+        } else {
+            let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
+            encoder.setComputePipelineState(self.silu_elementwise_mul_batch.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 1);
+            }
+            bind_u32(encoder, 2, n);
+            bind_u32(encoder, 3, n_rows);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
         }
-        bind_u32(encoder, 2, n);
-        bind_u32(encoder, 3, n_rows);
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            dims.threadgroups,
-            dims.threads_per_threadgroup,
-        );
     }
 
     /// Encode batched SiLU(gate) * up across `n_rows` rows of length `n`,
@@ -9391,18 +10481,33 @@ impl ElementwiseKernels {
         n_rows: u32,
     ) {
         let total = (n as usize) * (n_rows as usize);
-        let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.elementwise_add_batch.state());
-        unsafe {
-            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
-            encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
+        if n.is_multiple_of(4) {
+            let dims = DispatchDims::d1(total / 4, ELEMENTWISE_TG_SIZE);
+            encoder.setComputePipelineState(self.elementwise_add_batch_vec4.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
+            }
+            bind_u32(encoder, 2, n);
+            bind_u32(encoder, 3, n_rows);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
+        } else {
+            let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
+            encoder.setComputePipelineState(self.elementwise_add_batch.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
+            }
+            bind_u32(encoder, 2, n);
+            bind_u32(encoder, 3, n_rows);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
         }
-        bind_u32(encoder, 2, n);
-        bind_u32(encoder, 3, n_rows);
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            dims.threadgroups,
-            dims.threads_per_threadgroup,
-        );
     }
 
     /// Encode f32->f16 cast over `n` elements.
@@ -9413,17 +10518,31 @@ impl ElementwiseKernels {
         dst: &MetalBuffer,
         n: u32,
     ) {
-        let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.cast_f32_to_f16.state());
-        unsafe {
-            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
-            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+        if n.is_multiple_of(4) {
+            let dims = DispatchDims::d1((n as usize) / 4, ELEMENTWISE_TG_SIZE);
+            encoder.setComputePipelineState(self.cast_f32_to_f16_vec4.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+            }
+            bind_u32(encoder, 2, n);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
+        } else {
+            let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
+            encoder.setComputePipelineState(self.cast_f32_to_f16.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+            }
+            bind_u32(encoder, 2, n);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
         }
-        bind_u32(encoder, 2, n);
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            dims.threadgroups,
-            dims.threads_per_threadgroup,
-        );
     }
 
     /// Encode f16->f32 cast over `n` elements.
@@ -9434,17 +10553,31 @@ impl ElementwiseKernels {
         dst: &MetalBuffer,
         n: u32,
     ) {
-        let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.cast_f16_to_f32.state());
-        unsafe {
-            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
-            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+        if n.is_multiple_of(4) {
+            let dims = DispatchDims::d1((n as usize) / 4, ELEMENTWISE_TG_SIZE);
+            encoder.setComputePipelineState(self.cast_f16_to_f32_vec4.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+            }
+            bind_u32(encoder, 2, n);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
+        } else {
+            let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
+            encoder.setComputePipelineState(self.cast_f16_to_f32.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+            }
+            bind_u32(encoder, 2, n);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
         }
-        bind_u32(encoder, 2, n);
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            dims.threadgroups,
-            dims.threads_per_threadgroup,
-        );
     }
 
     /// Encode batched split from fused QKV rows into Q/K/V output buffers.
@@ -9705,6 +10838,142 @@ impl ElementwiseKernels {
         bind_u32(encoder, 4, dst_offset);
         bind_u32(encoder, 5, dst_row_stride);
         bind_u32(encoder, 6, count);
+        bind_u32(encoder, 7, n_rows);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Encode batched KV append with Q8_0 quantization (single buffer).
+    ///
+    /// src: f32 tensor [n_rows × kv_stride]
+    /// dst: Q8_0 block buffer
+    /// dst_row_offset: block offset to first row (seq_len × blocks_per_row)
+    /// blocks_per_row: n_kv_heads × (head_dim / 32)
+    /// kv_stride: n_kv_heads × head_dim (element count per row)
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_kv_append_batch_q8(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src: &MetalBuffer,
+        dst: &MetalBuffer,
+        dst_row_offset: u32,
+        blocks_per_row: u32,
+        kv_stride: u32,
+        n_rows: u32,
+    ) {
+        let total_blocks = (blocks_per_row as usize) * (n_rows as usize);
+        let dims = DispatchDims::d1(total_blocks, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.kv_append_batch_q8_0.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+        }
+        bind_u32(encoder, 2, dst_row_offset);
+        bind_u32(encoder, 3, blocks_per_row);
+        bind_u32(encoder, 4, kv_stride);
+        bind_u32(encoder, 5, n_rows);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Encode batched K+V append with Q8_0 quantization (paired buffers).
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_kv_append_batch_pair_q8(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src_k: &MetalBuffer,
+        src_v: &MetalBuffer,
+        dst_k: &MetalBuffer,
+        dst_v: &MetalBuffer,
+        dst_row_offset: u32,
+        blocks_per_row: u32,
+        kv_stride: u32,
+        n_rows: u32,
+    ) {
+        let total_blocks = (blocks_per_row as usize) * (n_rows as usize);
+        let dims = DispatchDims::d1(total_blocks, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.kv_append_batch2_q8_0.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src_k.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(src_v.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(dst_k.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(dst_v.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, dst_row_offset);
+        bind_u32(encoder, 5, blocks_per_row);
+        bind_u32(encoder, 6, kv_stride);
+        bind_u32(encoder, 7, n_rows);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Encode batched KV append with Q4_0 quantization (single buffer).
+    ///
+    /// src: f32 source buffer [n_rows × kv_stride]
+    /// dst: Q4_0 block buffer
+    /// dst_row_offset: block offset to first row (seq_len × blocks_per_row)
+    /// blocks_per_row: n_kv_heads × (head_dim / 32)
+    /// kv_stride: n_kv_heads × head_dim (element count per row)
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_kv_append_batch_q4(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src: &MetalBuffer,
+        dst: &MetalBuffer,
+        dst_row_offset: u32,
+        blocks_per_row: u32,
+        kv_stride: u32,
+        n_rows: u32,
+    ) {
+        let total_blocks = (blocks_per_row as usize) * (n_rows as usize);
+        let dims = DispatchDims::d1(total_blocks, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.kv_append_batch_q4_0.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+        }
+        bind_u32(encoder, 2, dst_row_offset);
+        bind_u32(encoder, 3, blocks_per_row);
+        bind_u32(encoder, 4, kv_stride);
+        bind_u32(encoder, 5, n_rows);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Encode batched K+V append with Q4_0 quantization (paired buffers).
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_kv_append_batch_pair_q4(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src_k: &MetalBuffer,
+        src_v: &MetalBuffer,
+        dst_k: &MetalBuffer,
+        dst_v: &MetalBuffer,
+        dst_row_offset: u32,
+        blocks_per_row: u32,
+        kv_stride: u32,
+        n_rows: u32,
+    ) {
+        let total_blocks = (blocks_per_row as usize) * (n_rows as usize);
+        let dims = DispatchDims::d1(total_blocks, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.kv_append_batch2_q4_0.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src_k.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(src_v.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(dst_k.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(dst_v.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, dst_row_offset);
+        bind_u32(encoder, 5, blocks_per_row);
+        bind_u32(encoder, 6, kv_stride);
         bind_u32(encoder, 7, n_rows);
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             dims.threadgroups,
@@ -10102,10 +11371,12 @@ mod tests {
 
     #[test]
     fn test_attention_dispatch_config_defaults_to_auto_routing() {
-        let config = AttentionDispatchConfig::from_profile(&KernelProfile::default());
-        assert_eq!(config.routing_profile_name(), "auto");
-        assert_eq!(config.decode_routing_profile_name(64), "default");
-        assert_eq!(config.decode_routing_profile_name(512), "decode-balanced");
+        with_env_lock(|| {
+            let config = AttentionDispatchConfig::from_profile(&KernelProfile::default());
+            assert_eq!(config.routing_profile_name(), "auto");
+            assert_eq!(config.decode_routing_profile_name(64), "default");
+            assert_eq!(config.decode_routing_profile_name(512), "decode-balanced");
+        });
     }
 
     #[test]
@@ -10192,10 +11463,12 @@ mod tests {
 
     #[test]
     fn test_attention_decode_candidate_selection_auto_profile_uses_balanced_for_medium_context() {
-        let config = AttentionDispatchConfig::from_profile(&KernelProfile::default());
-        let selection = config.decode_candidate_selection(true, 128, 384);
-        assert_eq!(selection.candidate, AttentionDecodeCandidate::SplitKHd128);
-        assert_eq!(selection.stability, KernelStabilityTier::ProfilePreferred);
+        with_env_lock(|| {
+            let config = AttentionDispatchConfig::from_profile(&KernelProfile::default());
+            let selection = config.decode_candidate_selection(true, 128, 384);
+            assert_eq!(selection.candidate, AttentionDecodeCandidate::SplitKHd128);
+            assert_eq!(selection.stability, KernelStabilityTier::ProfilePreferred);
+        });
     }
 
     #[test]
@@ -10293,22 +11566,26 @@ mod tests {
         let selection = config.prefill_local_candidate_selection(512, 128);
         assert!(matches!(
             selection.candidate,
-            AttentionPrefillCandidate::Fa2Hd128 | AttentionPrefillCandidate::Fa2SimdHd128
+            AttentionPrefillCandidate::Fa2Hd128
+                | AttentionPrefillCandidate::Fa2SimdHd128
+                | AttentionPrefillCandidate::Fa2HalfHd128
         ));
         assert_ne!(selection.stability, KernelStabilityTier::Stable);
     }
 
     #[test]
     fn test_attention_prefill_cached_routing_profile_auto_prefers_long_context() {
-        let config = AttentionDispatchConfig::from_profile(&KernelProfile::default());
-        assert_eq!(
-            config.prefill_cached_routing_profile_name(64, 4096, 0),
-            "decode-long-context"
-        );
-        assert_eq!(
-            config.prefill_cached_routing_profile_name(64, 128, 0),
-            "default"
-        );
+        with_env_lock(|| {
+            let config = AttentionDispatchConfig::from_profile(&KernelProfile::default());
+            assert_eq!(
+                config.prefill_cached_routing_profile_name(64, 4096, 0),
+                "decode-long-context"
+            );
+            assert_eq!(
+                config.prefill_cached_routing_profile_name(64, 128, 0),
+                "default"
+            );
+        });
     }
 
     #[test]
@@ -10319,44 +11596,60 @@ mod tests {
         };
         let selection = config.prefill_local_candidate_selection(512, 128);
         assert_ne!(selection.candidate, AttentionPrefillCandidate::Fa2SimdHd128);
+        assert_ne!(selection.candidate, AttentionPrefillCandidate::Fa2HalfHd128);
         assert_ne!(selection.candidate, AttentionPrefillCandidate::Fa2Hd128);
     }
 
     #[test]
-    fn test_attention_prefill_local_candidate_selection_respects_mistral_bc64_mode_off() {
+    fn test_attention_prefill_local_candidate_selection_respects_ax_bc64_mode_off() {
         let config = AttentionDispatchConfig {
             prefill_fa2_hd128_mode: KernelMode::Off,
-            prefill_mistral_bc64_mode: KernelMode::Off,
+            prefill_ax_bc64_mode: KernelMode::Off,
             ..default_attention_config()
         };
         let selection = config.prefill_local_candidate_selection(512, 128);
-        assert_eq!(selection.candidate, AttentionPrefillCandidate::MistralHd128);
+        assert_eq!(selection.candidate, AttentionPrefillCandidate::AxHd128);
     }
 
     #[test]
-    fn test_attention_prefill_local_candidate_selection_respects_mistral_bc64_threshold() {
+    fn test_attention_prefill_local_candidate_selection_respects_ax_bc64_threshold() {
         let config = AttentionDispatchConfig {
             prefill_fa2_hd128_mode: KernelMode::Off,
-            prefill_mistral_bc64_mode: KernelMode::Auto,
-            prefill_mistral_bc64_min_tokens: 768,
+            prefill_ax_bc64_mode: KernelMode::Auto,
+            prefill_ax_bc64_min_tokens: 768,
             ..default_attention_config()
         };
         let selection = config.prefill_local_candidate_selection(512, 128);
-        assert_eq!(selection.candidate, AttentionPrefillCandidate::MistralHd128);
+        assert_eq!(selection.candidate, AttentionPrefillCandidate::AxHd128);
     }
 
     #[test]
-    fn test_attention_prefill_cached_candidate_selection_marks_cache_fa2_as_profile_preferred() {
-        let config = AttentionDispatchConfig {
-            prefill_fa2_mode: KernelMode::On,
-            ..default_attention_config()
-        };
+    fn test_attention_prefill_cached_candidate_selection_marks_cache_fa2_simd_as_profile_preferred()
+    {
+        let config = default_attention_config();
+        // FA2 SIMD cached takes priority when kv_f16 and head_dim matches
+        let selection = config.prefill_cached_candidate_selection(true, 512, 128, 512, 0);
+        assert_eq!(
+            selection.candidate,
+            AttentionPrefillCandidate::CacheFa2SimdHd128
+        );
+        assert_eq!(selection.stability, KernelStabilityTier::ProfilePreferred);
+
         let selection = config.prefill_cached_candidate_selection(true, 512, 256, 512, 0);
         assert_eq!(
             selection.candidate,
-            AttentionPrefillCandidate::CacheFa2Hd256
+            AttentionPrefillCandidate::CacheFa2SimdHd256
         );
-        assert_eq!(selection.stability, KernelStabilityTier::ProfilePreferred);
+
+        let selection = config.prefill_cached_candidate_selection(true, 512, 64, 512, 0);
+        assert_eq!(
+            selection.candidate,
+            AttentionPrefillCandidate::CacheFa2SimdHd64
+        );
+
+        // Falls back to Cache for non-f16 KV
+        let selection = config.prefill_cached_candidate_selection(false, 512, 128, 512, 0);
+        assert_eq!(selection.candidate, AttentionPrefillCandidate::Cache);
     }
 
     #[test]

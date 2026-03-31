@@ -24,7 +24,6 @@ pub fn gelu(x: &mut [f32]) {
     #[cfg(target_arch = "aarch64")]
     {
         gelu_vforce(x);
-        return;
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -44,7 +43,6 @@ pub fn gelu_elementwise_mul(x: &mut [f32], y: &[f32]) {
     #[cfg(target_arch = "aarch64")]
     {
         gelu_elementwise_mul_vforce(x, y);
-        return;
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -128,7 +126,7 @@ fn gelu_vforce(x: &mut [f32]) {
         }
 
         for i in simd_chunks * 4..len {
-            chunk[i] = chunk[i] / (1.0 + exp_neg_two_inner[i]);
+            chunk[i] /= 1.0 + exp_neg_two_inner[i];
         }
     }
 }

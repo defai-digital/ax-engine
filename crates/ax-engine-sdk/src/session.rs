@@ -44,7 +44,7 @@ pub struct TextStream {
 }
 
 enum TextStreamState {
-    Native(LiveTextStreamState),
+    Native(Box<LiveTextStreamState>),
     LlamaCpp(RemoteTextStreamState),
 }
 
@@ -232,9 +232,12 @@ impl Session {
             "context_length must be greater than zero"
         );
 
+        #[allow(clippy::arc_with_non_send_sync)]
+        let state = Arc::new(Mutex::new(state));
+
         Ok(Self {
             model,
-            state: Arc::new(Mutex::new(state)),
+            state,
             max_context_tokens,
             default_seed: options.seed,
         })
@@ -398,7 +401,7 @@ impl Session {
         drop(state_guard);
 
         Ok(TextStream {
-            state: Some(TextStreamState::Native(live_state)),
+            state: Some(TextStreamState::Native(Box::new(live_state))),
             text: String::new(),
             output: None,
         })
@@ -504,7 +507,8 @@ impl Session {
             .ok_or_else(|| anyhow!("llama.cpp model is not loaded"))?;
         let transcript = flatten_chat_messages(messages);
         let prompt_tokens = self.model.tokenize(&transcript, true);
-        let max_tokens = options.max_tokens.min(self.max_context_tokens);
+        let remaining = self.max_context_tokens.saturating_sub(prompt_tokens.len());
+        let max_tokens = options.max_tokens.min(remaining);
         if max_tokens == 0 {
             return Ok(completed_stream(GenerationOutput {
                 text: String::new(),
@@ -622,8 +626,10 @@ impl TextStream {
             return Ok(output);
         }
 
+        // Fallback: preserve any partial text accumulated from chunks before
+        // the stream terminated unexpectedly (e.g., remote process crash).
         Ok(GenerationOutput {
-            text: String::new(),
+            text: std::mem::take(&mut self.text),
             finish_reason: FinishReason::Stop,
             usage: Usage {
                 prompt_tokens: 0,
@@ -673,6 +679,7 @@ impl LiveTextStreamState {
             }
 
             if let Some(stop_at) = first_stop_match(&self.pending, &self.stop_strings) {
+                self.completion_tokens += 1;
                 let chunk = self.pending[..stop_at].to_string();
                 self.pending.clear();
                 self.finish_reason = FinishReason::Stop;

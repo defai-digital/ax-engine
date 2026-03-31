@@ -956,6 +956,30 @@ kernel void gelu_elementwise_mul_batch_f32(
     gate[gid] = 0.5f * x * (1.0f + tanh(inner)) * up[gid];
 }
 
+// ── GELU elementwise mul (batch, vec4) ─────────────────────────────
+//
+// Vectorized: processes 4 elements per thread.
+// total = n * n_rows must be divisible by 4 (always true for LLM dims).
+// Grid: ceil(total/4 / TG) threadgroups.
+
+kernel void gelu_elementwise_mul_batch_f32_vec4(
+    device float* gate       [[buffer(0)]],
+    device const float* up   [[buffer(1)]],
+    constant uint& n         [[buffer(2)]],
+    constant uint& n_rows    [[buffer(3)]],
+    uint gid                 [[thread_position_in_grid]]
+) {
+    uint total4 = (n * n_rows) / 4;
+    if (gid >= total4) return;
+    device float4* g4 = (device float4*)gate;
+    device const float4* u4 = (device const float4*)up;
+    float4 x = g4[gid];
+    float4 x3 = x * x * x;
+    float4 inner = SQRT_2_PI * (x + 0.044715f * x3);
+    inner = clamp(inner, -10.0f, 10.0f);
+    g4[gid] = 0.5f * x * (1.0f + tanh(inner)) * u4[gid];
+}
+
 // ── GELU inplace ────────────────────────────────────────────────────
 //
 // x[i] = GELU(x[i])
@@ -1023,6 +1047,18 @@ kernel void sigmoid_inplace_f32(
     x[gid] = 1.0f / (1.0f + exp(-x[gid]));
 }
 
+kernel void sigmoid_inplace_f32_vec4(
+    device float* x   [[buffer(0)]],
+    constant uint& n  [[buffer(1)]],
+    uint gid          [[thread_position_in_grid]]
+) {
+    uint n4 = n / 4;
+    if (gid >= n4) return;
+    device float4* x4 = (device float4*)x;
+    float4 v = x4[gid];
+    x4[gid] = 1.0f / (1.0f + exp(-v));
+}
+
 // ── Softplus + bias + mul ───────────────────────────────────────────
 //
 // alpha[i] = ln(1 + exp(alpha[i] + bias[i])) * a[i]
@@ -1043,6 +1079,28 @@ kernel void softplus_bias_mul_f32(
     // For large x, softplus ≈ x; for small x, use log(1+exp(x)).
     float sp = (x > 20.0f) ? x : log(1.0f + exp(x));
     alpha[gid] = sp * a[gid];
+}
+
+// ── Batched softplus + bias + mul ───────────────────────────────────
+//
+// alpha[t, h] = ln(1 + exp(alpha[t, h] + bias[h])) * a[h]
+//
+// Used by Qwen3.5 recurrent batch handoff where alpha is laid out as
+// token-major scalars with a per-head bias/A vector.
+
+kernel void softplus_bias_mul_batch_f32(
+    device float* alpha       [[buffer(0)]],
+    device const float* bias  [[buffer(1)]],
+    device const float* a     [[buffer(2)]],
+    constant uint& n          [[buffer(3)]],
+    constant uint& head_dim   [[buffer(4)]],
+    uint gid                  [[thread_position_in_grid]]
+) {
+    if (gid >= n) return;
+    uint head = gid % head_dim;
+    float x = alpha[gid] + bias[head];
+    float sp = (x > 20.0f) ? x : log(1.0f + exp(x));
+    alpha[gid] = sp * a[head];
 }
 
 // ── L2 norm per head ────────────────────────────────────────────────
@@ -1135,6 +1193,28 @@ kernel void silu_elementwise_mul_batch_f32(
     gate[gid] = s * up[gid];
 }
 
+// ── SiLU elementwise mul (batch, vec4) ─────────────────────────────
+//
+// Vectorized: processes 4 elements per thread.
+// total = n * n_rows must be divisible by 4 (always true for LLM dims).
+// Grid: ceil(total/4 / TG) threadgroups.
+
+kernel void silu_elementwise_mul_batch_f32_vec4(
+    device float* gate       [[buffer(0)]],
+    device const float* up   [[buffer(1)]],
+    constant uint& n         [[buffer(2)]],
+    constant uint& n_rows    [[buffer(3)]],
+    uint gid                 [[thread_position_in_grid]]
+) {
+    uint total4 = (n * n_rows) / 4;
+    if (gid >= total4) return;
+    device float4* g4 = (device float4*)gate;
+    device const float4* u4 = (device const float4*)up;
+    float4 x = g4[gid];
+    float4 s = x / (1.0f + exp(-x)); // SiLU
+    g4[gid] = s * u4[gid];
+}
+
 // ── SiLU elementwise mul (batch, f16 output) ───────────────────────
 //
 // out[row, i] = half(SiLU(gate[row, i]) * up[row, i])
@@ -1188,6 +1268,20 @@ kernel void elementwise_add_batch_f32(
     a[gid] += b[gid];
 }
 
+kernel void elementwise_add_batch_f32_vec4(
+    device float* a          [[buffer(0)]],
+    device const float* b    [[buffer(1)]],
+    constant uint& n         [[buffer(2)]],
+    constant uint& n_rows    [[buffer(3)]],
+    uint gid                 [[thread_position_in_grid]]
+) {
+    uint total4 = (n * n_rows) / 4;
+    if (gid >= total4) return;
+    device float4* a4 = (device float4*)a;
+    device const float4* b4 = (device const float4*)b;
+    a4[gid] += b4[gid];
+}
+
 // ── Type cast helpers ───────────────────────────────────────────────
 //
 // Used to stage f16 matmul inputs/outputs while keeping the rest of
@@ -1211,6 +1305,30 @@ kernel void cast_f16_to_f32(
 ) {
     if (gid >= n) return;
     dst[gid] = float(src[gid]);
+}
+
+kernel void cast_f32_to_f16_vec4(
+    device const float* src  [[buffer(0)]],
+    device half* dst         [[buffer(1)]],
+    constant uint& n         [[buffer(2)]],
+    uint gid                 [[thread_position_in_grid]]
+) {
+    uint n4 = n / 4;
+    if (gid >= n4) return;
+    float4 v = ((device const float4*)src)[gid];
+    ((device half4*)dst)[gid] = half4(v);
+}
+
+kernel void cast_f16_to_f32_vec4(
+    device const half* src   [[buffer(0)]],
+    device float* dst        [[buffer(1)]],
+    constant uint& n         [[buffer(2)]],
+    uint gid                 [[thread_position_in_grid]]
+) {
+    uint n4 = n / 4;
+    if (gid >= n4) return;
+    half4 v = ((device const half4*)src)[gid];
+    ((device float4*)dst)[gid] = float4(v);
 }
 
 // ── QKV split (batched) ─────────────────────────────────────────────
@@ -2089,6 +2207,193 @@ kernel void kv_append_batch2_f16(
 // MoE weighted elementwise add: dst[i] += scale * src[i]
 // Used to accumulate weighted expert outputs.
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Q8_0 KV cache append — quantize f32 → Q8_0 blocks on GPU
+//
+// Q8_0 block: half d (2 bytes) + char qs[32] (32 bytes) = 34 bytes per 32 values.
+// Each thread handles one Q8_0 block: finds max(abs), computes scale, quantizes.
+//
+// dst layout: [token_row][block_idx] where each block is 34 bytes.
+// src layout: [token_row][kv_stride] where kv_stride = n_kv_heads * head_dim.
+// ═══════════════════════════════════════════════════════════════════════════
+
+constant uint Q8_KV_BLOCK_SIZE = 32;
+constant uint Q8_KV_BLOCK_BYTES = 34;
+
+kernel void kv_append_batch_q8_0(
+    device const float* src          [[buffer(0)]],
+    device uchar*       dst          [[buffer(1)]],
+    constant uint& dst_row_offset    [[buffer(2)]],
+    constant uint& blocks_per_row    [[buffer(3)]],
+    constant uint& kv_stride         [[buffer(4)]],
+    constant uint& n_rows            [[buffer(5)]],
+    uint gid                         [[thread_position_in_grid]]
+) {
+    uint total_blocks = n_rows * blocks_per_row;
+    if (gid >= total_blocks) return;
+
+    uint row = gid / blocks_per_row;
+    uint block_in_row = gid % blocks_per_row;
+
+    device const float* block_src = src + row * kv_stride + block_in_row * Q8_KV_BLOCK_SIZE;
+    uint dst_block_idx = dst_row_offset + row * blocks_per_row + block_in_row;
+    device uchar* block_dst = dst + dst_block_idx * Q8_KV_BLOCK_BYTES;
+
+    float amax = 0.0f;
+    for (uint i = 0; i < Q8_KV_BLOCK_SIZE; i++) {
+        amax = max(amax, abs(block_src[i]));
+    }
+    float d = amax / 127.0f;
+    float id = (amax > 0.0f) ? (127.0f / amax) : 0.0f;
+    *reinterpret_cast<device half*>(block_dst) = half(d);
+    for (uint i = 0; i < Q8_KV_BLOCK_SIZE; i++) {
+        int q = clamp(int(round(block_src[i] * id)), -128, 127);
+        block_dst[2 + i] = uchar(char(q));
+    }
+}
+
+kernel void kv_append_batch2_q8_0(
+    device const float* src_k        [[buffer(0)]],
+    device const float* src_v        [[buffer(1)]],
+    device uchar*       dst_k        [[buffer(2)]],
+    device uchar*       dst_v        [[buffer(3)]],
+    constant uint& dst_row_offset    [[buffer(4)]],
+    constant uint& blocks_per_row    [[buffer(5)]],
+    constant uint& kv_stride         [[buffer(6)]],
+    constant uint& n_rows            [[buffer(7)]],
+    uint gid                         [[thread_position_in_grid]]
+) {
+    uint total_blocks = n_rows * blocks_per_row;
+    if (gid >= total_blocks) return;
+
+    uint row = gid / blocks_per_row;
+    uint block_in_row = gid % blocks_per_row;
+    uint dst_block_idx = dst_row_offset + row * blocks_per_row + block_in_row;
+
+    // Quantize K
+    {
+        device const float* bs = src_k + row * kv_stride + block_in_row * Q8_KV_BLOCK_SIZE;
+        device uchar* bd = dst_k + dst_block_idx * Q8_KV_BLOCK_BYTES;
+        float amax = 0.0f;
+        for (uint i = 0; i < Q8_KV_BLOCK_SIZE; i++) amax = max(amax, abs(bs[i]));
+        float d = amax / 127.0f;
+        float id = (amax > 0.0f) ? (127.0f / amax) : 0.0f;
+        *reinterpret_cast<device half*>(bd) = half(d);
+        for (uint i = 0; i < Q8_KV_BLOCK_SIZE; i++)
+            bd[2 + i] = uchar(char(clamp(int(round(bs[i] * id)), -128, 127)));
+    }
+
+    // Quantize V
+    {
+        device const float* bs = src_v + row * kv_stride + block_in_row * Q8_KV_BLOCK_SIZE;
+        device uchar* bd = dst_v + dst_block_idx * Q8_KV_BLOCK_BYTES;
+        float amax = 0.0f;
+        for (uint i = 0; i < Q8_KV_BLOCK_SIZE; i++) amax = max(amax, abs(bs[i]));
+        float d = amax / 127.0f;
+        float id = (amax > 0.0f) ? (127.0f / amax) : 0.0f;
+        *reinterpret_cast<device half*>(bd) = half(d);
+        for (uint i = 0; i < Q8_KV_BLOCK_SIZE; i++)
+            bd[2 + i] = uchar(char(clamp(int(round(bs[i] * id)), -128, 127)));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Q4_0 KV cache append — quantize f32 → Q4_0 blocks on GPU
+//
+// Q4_0 block: half d (2 bytes) + nibble pairs[16] (16 bytes) = 18 bytes per 32 values.
+// Each thread handles one Q4_0 block: finds amax, computes scale, packs nibbles.
+//
+// dst layout: [token_row][block_idx] where each block is 18 bytes.
+// src layout: [token_row][kv_stride] where kv_stride = n_kv_heads * head_dim.
+// ═══════════════════════════════════════════════════════════════════════════
+
+constant uint Q4_KV_BLOCK_SIZE = 32;
+constant uint Q4_KV_BLOCK_BYTES = 18;
+
+kernel void kv_append_batch_q4_0(
+    device const float* src          [[buffer(0)]],
+    device uchar*       dst          [[buffer(1)]],
+    constant uint& dst_row_offset    [[buffer(2)]],
+    constant uint& blocks_per_row    [[buffer(3)]],
+    constant uint& kv_stride         [[buffer(4)]],
+    constant uint& n_rows            [[buffer(5)]],
+    uint gid                         [[thread_position_in_grid]]
+) {
+    uint total_blocks = n_rows * blocks_per_row;
+    if (gid >= total_blocks) return;
+
+    uint row = gid / blocks_per_row;
+    uint block_in_row = gid % blocks_per_row;
+
+    device const float* block_src = src + row * kv_stride + block_in_row * Q4_KV_BLOCK_SIZE;
+    uint dst_block_idx = dst_row_offset + row * blocks_per_row + block_in_row;
+    device uchar* block_dst = dst + dst_block_idx * Q4_KV_BLOCK_BYTES;
+
+    float amax = 0.0f;
+    for (uint i = 0; i < Q4_KV_BLOCK_SIZE; i++) {
+        amax = max(amax, abs(block_src[i]));
+    }
+    float d = amax / 15.0f;
+    float id = (amax > 0.0f) ? (15.0f / amax) : 0.0f;
+    *reinterpret_cast<device half*>(block_dst) = half(d);
+    for (uint i = 0; i < 16; i++) {
+        uint q_lo = clamp(int(round(block_src[i] * id + 8.0f)), 0, 15);
+        uint q_hi = clamp(int(round(block_src[i + 16] * id + 8.0f)), 0, 15);
+        block_dst[2 + i] = uchar((q_lo & 0x0F) | (q_hi << 4));
+    }
+}
+
+kernel void kv_append_batch2_q4_0(
+    device const float* src_k        [[buffer(0)]],
+    device const float* src_v        [[buffer(1)]],
+    device uchar*       dst_k        [[buffer(2)]],
+    device uchar*       dst_v        [[buffer(3)]],
+    constant uint& dst_row_offset    [[buffer(4)]],
+    constant uint& blocks_per_row    [[buffer(5)]],
+    constant uint& kv_stride         [[buffer(6)]],
+    constant uint& n_rows            [[buffer(7)]],
+    uint gid                         [[thread_position_in_grid]]
+) {
+    uint total_blocks = n_rows * blocks_per_row;
+    if (gid >= total_blocks) return;
+
+    uint row = gid / blocks_per_row;
+    uint block_in_row = gid % blocks_per_row;
+    uint dst_block_idx = dst_row_offset + row * blocks_per_row + block_in_row;
+
+    // Quantize K
+    {
+        device const float* bs = src_k + row * kv_stride + block_in_row * Q4_KV_BLOCK_SIZE;
+        device uchar* bd = dst_k + dst_block_idx * Q4_KV_BLOCK_BYTES;
+        float amax = 0.0f;
+        for (uint i = 0; i < Q4_KV_BLOCK_SIZE; i++) amax = max(amax, abs(bs[i]));
+        float d = amax / 15.0f;
+        float id = (amax > 0.0f) ? (15.0f / amax) : 0.0f;
+        *reinterpret_cast<device half*>(bd) = half(d);
+        for (uint i = 0; i < 16; i++) {
+            uint q_lo = clamp(int(round(bs[i] * id + 8.0f)), 0, 15);
+            uint q_hi = clamp(int(round(bs[i + 16] * id + 8.0f)), 0, 15);
+            bd[2 + i] = uchar((q_lo & 0x0F) | (q_hi << 4));
+        }
+    }
+
+    // Quantize V
+    {
+        device const float* bs = src_v + row * kv_stride + block_in_row * Q4_KV_BLOCK_SIZE;
+        device uchar* bd = dst_v + dst_block_idx * Q4_KV_BLOCK_BYTES;
+        float amax = 0.0f;
+        for (uint i = 0; i < Q4_KV_BLOCK_SIZE; i++) amax = max(amax, abs(bs[i]));
+        float d = amax / 15.0f;
+        float id = (amax > 0.0f) ? (15.0f / amax) : 0.0f;
+        *reinterpret_cast<device half*>(bd) = half(d);
+        for (uint i = 0; i < 16; i++) {
+            uint q_lo = clamp(int(round(bs[i] * id + 8.0f)), 0, 15);
+            uint q_hi = clamp(int(round(bs[i + 16] * id + 8.0f)), 0, 15);
+            bd[2 + i] = uchar((q_lo & 0x0F) | (q_hi << 4));
+        }
+    }
+}
 
 kernel void elementwise_weighted_add_f32(
     device float* dst          [[buffer(0)]],

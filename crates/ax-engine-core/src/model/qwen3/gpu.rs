@@ -19,7 +19,7 @@ impl crate::model::shared::GpuDecodeLayerStrategy for Qwen3DecodeStrategy<'_> {
         gpu_kv: &crate::kv::GpuKv,
         layer: usize,
         exec_plan: &GpuDecodeExecutionPlan,
-        barrier_fn: &dyn Fn(&ax_engine_metal::MetalEncoder),
+        barrier: &crate::model::shared::DecodeBarrierCtx<'_>,
         used_fused_qkv: bool,
     ) {
         let d = self.dims;
@@ -92,7 +92,7 @@ impl crate::model::shared::GpuDecodeLayerStrategy for Qwen3DecodeStrategy<'_> {
                 }
                 _ => unreachable!("qwen3 fused decode path requires fused qwen3 post plan"),
             }
-            barrier_fn(encoder);
+            barrier.step(encoder);
         } else {
             // Separate path: optional bias → optional QK norm → RoPE → KV append
             if let (Some(qb_key), Some(kb_key), Some(vb_key)) = (lw.q_bias, lw.k_bias, lw.v_bias) {
@@ -108,7 +108,7 @@ impl crate::model::shared::GpuDecodeLayerStrategy for Qwen3DecodeStrategy<'_> {
                 metal_ops
                     .elementwise
                     .encode_elementwise_add(encoder, &s.v_buf, vb, d.kv_dim);
-                barrier_fn(encoder);
+                barrier.step(encoder);
             }
             if let (Some(qn_key), Some(kn_key)) = (lw.attn_q_norm, lw.attn_k_norm) {
                 let qn = weight_cache.get(&qn_key).unwrap();
@@ -124,7 +124,7 @@ impl crate::model::shared::GpuDecodeLayerStrategy for Qwen3DecodeStrategy<'_> {
                     d.head_dim,
                     eps,
                 );
-                barrier_fn(encoder);
+                barrier.step(encoder);
             }
             metal_ops.elementwise.encode_rope(
                 encoder,
@@ -136,7 +136,7 @@ impl crate::model::shared::GpuDecodeLayerStrategy for Qwen3DecodeStrategy<'_> {
                 self.rope_position,
                 self.cfg.rope_freq_base,
             );
-            barrier_fn(encoder);
+            barrier.step(encoder);
             metal_ops.elementwise.encode_kv_append(
                 encoder,
                 &s.k_buf,
@@ -153,29 +153,72 @@ impl crate::model::shared::GpuDecodeLayerStrategy for Qwen3DecodeStrategy<'_> {
                 self.kv_offset,
                 d.kv_dim,
             );
-            barrier_fn(encoder);
+            barrier.step(encoder);
         }
 
         // --- Attention ---
-        metal_ops
-            .attention
-            .encode_attention_decode_with_scratch_and_config(
+        if exec_plan.kv_q4 {
+            metal_ops.attention.encode_attention_decode_q4kv(
                 encoder,
                 &s.q_buf,
                 gpu_kv.k_buffer(layer),
                 gpu_kv.v_buffer(layer),
                 &s.attn_out,
-                &s.splitk_partial_out,
-                &s.splitk_partial_lse,
-                exec_plan.kv_f16,
                 d.n_heads,
                 d.n_kv_heads,
                 d.head_dim,
                 0,
                 self.full_seq_len as u32,
-                exec_plan.attention_dispatch,
             );
-        barrier_fn(encoder);
+        } else if exec_plan.kv_q8 {
+            if d.head_dim == 128 {
+                metal_ops.attention.encode_attention_decode_q8kv(
+                    encoder,
+                    &s.q_buf,
+                    gpu_kv.k_buffer(layer),
+                    gpu_kv.v_buffer(layer),
+                    &s.attn_out,
+                    d.n_heads,
+                    d.n_kv_heads,
+                    d.head_dim,
+                    0,
+                    self.full_seq_len as u32,
+                );
+            } else if d.head_dim == 256 {
+                metal_ops.attention.encode_attention_decode_q8kv_hd256(
+                    encoder,
+                    &s.q_buf,
+                    gpu_kv.k_buffer(layer),
+                    gpu_kv.v_buffer(layer),
+                    &s.attn_out,
+                    d.n_heads,
+                    d.n_kv_heads,
+                    d.head_dim,
+                    0,
+                    self.full_seq_len as u32,
+                );
+            }
+        } else {
+            metal_ops
+                .attention
+                .encode_attention_decode_with_scratch_and_config(
+                    encoder,
+                    &s.q_buf,
+                    gpu_kv.k_buffer(layer),
+                    gpu_kv.v_buffer(layer),
+                    &s.attn_out,
+                    &s.splitk_partial_out,
+                    &s.splitk_partial_lse,
+                    exec_plan.kv_f16,
+                    d.n_heads,
+                    d.n_kv_heads,
+                    d.head_dim,
+                    0,
+                    self.full_seq_len as u32,
+                    exec_plan.attention_dispatch,
+                );
+        }
+        barrier.step(encoder);
 
         // --- WO projection ---
         let wo_buf = weight_cache.get(&lw.wo).unwrap();
@@ -190,7 +233,7 @@ impl crate::model::shared::GpuDecodeLayerStrategy for Qwen3DecodeStrategy<'_> {
             lw.wo_dtype,
             exec_plan.dequant_dispatch,
         );
-        barrier_fn(encoder);
+        barrier.step(encoder);
 
         // --- Residual + FFN norm ---
         let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
@@ -206,7 +249,7 @@ impl crate::model::shared::GpuDecodeLayerStrategy for Qwen3DecodeStrategy<'_> {
                 1,
                 eps,
             );
-        barrier_fn(encoder);
+        barrier.step(encoder);
     }
 }
 
@@ -249,16 +292,13 @@ fn encode_qwen3_gpu_layers_only(
             )
         })
         .collect();
-    let decode_barrier = |encoder: &ax_engine_metal::MetalEncoder| {
-        if exec_plan.barriers == DecodeBarrierPlan::Explicit {
-            ax_engine_metal::barrier_buffers(encoder);
-        }
-    };
+    let barrier = crate::model::shared::DecodeBarrierCtx::new(encoder, exec_plan.barriers);
 
     // Layer 0 starts with a standalone attention norm. Later layers reuse the
     // next-layer handoff written by the previous FFN residual stage.
     {
         let norm_w_buf = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
+        barrier.pre_dispatch(&[hidden_buf], &[&s.norm_buf]);
         metal_ops.elementwise.encode_rms_norm_out(
             encoder,
             hidden_buf,
@@ -267,7 +307,8 @@ fn encode_qwen3_gpu_layers_only(
             dim as u32,
             eps,
         );
-        decode_barrier(encoder);
+        barrier.post_dispatch(&[hidden_buf], &[&s.norm_buf]);
+        barrier.step(encoder);
     }
 
     let gpu_dims = crate::model::shared::GpuLayerDims {
@@ -313,7 +354,7 @@ fn encode_qwen3_gpu_layers_only(
             &strategy,
             crate::model::layer_ops::FfnActivation::SiLU,
             None,
-            &decode_barrier,
+            &barrier,
         );
     }
 
@@ -330,6 +371,7 @@ fn encode_qwen3_gpu_output_head(
     exec_plan: &GpuDecodeExecutionPlan,
     cached: &crate::backend::metal::CachedModelKeys,
     weight_cache: &rustc_hash::FxHashMap<usize, ax_engine_metal::MetalBuffer>,
+    barrier: &crate::model::shared::DecodeBarrierCtx<'_>,
 ) {
     crate::model::shared::encode_gpu_output_head(
         encoder,
@@ -339,6 +381,7 @@ fn encode_qwen3_gpu_output_head(
         exec_plan,
         cached,
         weight_cache,
+        barrier,
         cfg.embedding_dim,
         cfg.vocab_size,
         cfg.rms_norm_eps,
@@ -382,7 +425,8 @@ fn encode_qwen3_pending_step(
     let weight_cache = metal_ops.lock_weight_cache();
     let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
 
-    metal_ops.device.encode_frame(|encoder| {
+    let encode_body = |encoder: &ax_engine_metal::MetalEncoder| -> anyhow::Result<()> {
+        let barrier = crate::model::shared::DecodeBarrierCtx::new(encoder, exec_plan.barriers);
         encode_qwen3_gpu_layers_only(
             encoder,
             metal_ops,
@@ -407,8 +451,15 @@ fn encode_qwen3_pending_step(
             &exec_plan,
             cached,
             &weight_cache,
+            &barrier,
         );
+        barrier.flush();
         Ok(())
-    })
+    };
+    if exec_plan.encoder == DecodeEncoderPlan::Concurrent {
+        metal_ops.device.encode_frame_concurrent(encode_body)
+    } else {
+        metal_ops.device.encode_frame(encode_body)
+    }
 }
 

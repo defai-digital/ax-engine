@@ -40,6 +40,38 @@ fn default_matvec_rows_per_sg() -> u32 {
     1
 }
 
+fn hardcoded_invariant_matvec_params(quant_type: &str) -> Option<MatvecParams> {
+    match quant_type {
+        "q4_k" => Some(MatvecParams {
+            threadgroup_size: 64,
+            rows_per_simdgroup: 2,
+        }),
+        "q5_k" => Some(MatvecParams {
+            threadgroup_size: 64,
+            rows_per_simdgroup: 1,
+        }),
+        "q6_k" => Some(MatvecParams {
+            threadgroup_size: 64,
+            rows_per_simdgroup: 2,
+        }),
+        "q8_0" => Some(MatvecParams {
+            threadgroup_size: 128,
+            rows_per_simdgroup: 2,
+        }),
+        _ => None,
+    }
+}
+
+fn default_decode_matvec_profile() -> HashMap<String, MatvecParams> {
+    let mut decode_matvec = HashMap::new();
+    for quant in ["q4_k", "q5_k", "q6_k", "q8_0"] {
+        if let Some(params) = hardcoded_invariant_matvec_params(quant) {
+            decode_matvec.insert(quant.to_string(), params);
+        }
+    }
+    decode_matvec
+}
+
 impl Default for MatvecParams {
     fn default() -> Self {
         Self {
@@ -235,18 +267,18 @@ impl Default for BatchPrefillParams {
 pub struct AttentionPrefillParams {
     #[serde(default = "default_profile_kernel_mode_off")]
     pub fa2_mode: ProfileKernelMode,
-    #[serde(default = "default_profile_kernel_mode_off")]
+    #[serde(default = "default_profile_kernel_mode_auto")]
     pub fa2_hd128_mode: ProfileKernelMode,
     #[serde(default = "default_profile_kernel_mode_auto")]
-    pub mistral_bc64_mode: ProfileKernelMode,
+    pub ax_bc64_mode: ProfileKernelMode,
     #[serde(default = "default_attention_prefill_fa2_auto_min_tokens")]
     pub fa2_auto_min_tokens: u32,
     #[serde(default = "default_attention_prefill_fa2_auto_min_base_seq")]
     pub fa2_auto_min_base_seq: u32,
     #[serde(default = "default_attention_prefill_fa2_hd128_auto_min_tokens")]
     pub fa2_hd128_auto_min_tokens: u32,
-    #[serde(default = "default_attention_prefill_mistral_bc64_min_tokens")]
-    pub mistral_bc64_min_tokens: u32,
+    #[serde(default = "default_attention_prefill_ax_bc64_min_tokens")]
+    pub ax_bc64_min_tokens: u32,
 }
 
 fn default_attention_prefill_fa2_auto_min_tokens() -> u32 {
@@ -258,10 +290,10 @@ fn default_attention_prefill_fa2_auto_min_base_seq() -> u32 {
 }
 
 fn default_attention_prefill_fa2_hd128_auto_min_tokens() -> u32 {
-    512
+    128
 }
 
-fn default_attention_prefill_mistral_bc64_min_tokens() -> u32 {
+fn default_attention_prefill_ax_bc64_min_tokens() -> u32 {
     384
 }
 
@@ -269,12 +301,12 @@ impl Default for AttentionPrefillParams {
     fn default() -> Self {
         Self {
             fa2_mode: default_profile_kernel_mode_off(),
-            fa2_hd128_mode: default_profile_kernel_mode_off(),
-            mistral_bc64_mode: default_profile_kernel_mode_auto(),
+            fa2_hd128_mode: default_profile_kernel_mode_auto(),
+            ax_bc64_mode: default_profile_kernel_mode_auto(),
             fa2_auto_min_tokens: default_attention_prefill_fa2_auto_min_tokens(),
             fa2_auto_min_base_seq: default_attention_prefill_fa2_auto_min_base_seq(),
             fa2_hd128_auto_min_tokens: default_attention_prefill_fa2_hd128_auto_min_tokens(),
-            mistral_bc64_min_tokens: default_attention_prefill_mistral_bc64_min_tokens(),
+            ax_bc64_min_tokens: default_attention_prefill_ax_bc64_min_tokens(),
         }
     }
 }
@@ -288,7 +320,7 @@ pub struct KernelProfile {
     pub source: String,
     #[serde(default)]
     pub generated: String,
-    #[serde(default)]
+    #[serde(default = "default_decode_matvec_profile")]
     pub decode_matvec: HashMap<String, MatvecParams>,
     #[serde(default)]
     pub batch_prefill: BatchPrefillParams,
@@ -302,17 +334,11 @@ pub struct KernelProfile {
 
 impl Default for KernelProfile {
     fn default() -> Self {
-        let mut decode_matvec = HashMap::new();
-        decode_matvec.insert("q4_k".to_string(), MatvecParams::default());
-        decode_matvec.insert("q5_k".to_string(), MatvecParams::default());
-        decode_matvec.insert("q6_k".to_string(), MatvecParams::default());
-        decode_matvec.insert("q8_0".to_string(), MatvecParams::default());
-
         Self {
             model: String::new(),
             source: "hardcoded".to_string(),
             generated: String::new(),
-            decode_matvec,
+            decode_matvec: default_decode_matvec_profile(),
             batch_prefill: BatchPrefillParams::default(),
             attention_decode: AttentionDecodeParams::default(),
             attention_prefill: AttentionPrefillParams::default(),
@@ -327,48 +353,55 @@ impl KernelProfile {
     }
 
     fn load_relative_to(base_dir: &Path, model_name: &str, quant: &str) -> Self {
-        if let Some(profile) = Self::try_load_from_env() {
+        if let Some(profile) = Self::try_load_from_env(model_name) {
             return profile;
         }
 
         let sanitized_model = sanitize_name(model_name);
         let sanitized_quant = sanitize_name(quant);
 
-        if let Some(profile) = Self::try_load_exact(base_dir, &sanitized_model, &sanitized_quant) {
+        if let Some(profile) =
+            Self::try_load_exact(base_dir, &sanitized_model, &sanitized_quant, model_name)
+        {
             return profile;
         }
 
         let arch = extract_architecture(model_name);
-        if let Some(profile) = Self::try_load_arch(base_dir, &arch) {
+        if let Some(profile) = Self::try_load_arch(base_dir, &arch, model_name) {
             return profile;
         }
 
-        if let Some(profile) = Self::try_load_default(base_dir) {
+        if let Some(profile) = Self::try_load_default(base_dir, model_name) {
             return profile;
         }
 
-        Self::default()
+        Self::default().apply_missing_model_heuristics(
+            model_name, true, true, true, true, true, true, true, true,
+        )
     }
 
-    fn try_load_from_env() -> Option<Self> {
+    fn try_load_from_env(model_name: &str) -> Option<Self> {
         let path = std::env::var("AX_KERNEL_PROFILE_PATH")
             .ok()
             .filter(|s| !s.is_empty())?;
-        Self::load_from_path(&path)
+        Self::load_from_path_with_model_heuristics(&path, model_name)
     }
 
-    fn try_load_exact(base_dir: &Path, model: &str, quant: &str) -> Option<Self> {
+    fn try_load_exact(base_dir: &Path, model: &str, quant: &str, model_name: &str) -> Option<Self> {
         let filename = base_dir.join("perfs").join(format!("{model}-{quant}.json"));
-        Self::load_from_path(&filename)
+        Self::load_from_path_with_model_heuristics(&filename, model_name)
     }
 
-    fn try_load_arch(base_dir: &Path, arch: &str) -> Option<Self> {
+    fn try_load_arch(base_dir: &Path, arch: &str, model_name: &str) -> Option<Self> {
         let filename = base_dir.join("perfs").join(format!("{arch}.json"));
-        Self::load_from_path(&filename)
+        Self::load_from_path_with_model_heuristics(&filename, model_name)
     }
 
-    fn try_load_default(base_dir: &Path) -> Option<Self> {
-        Self::load_from_path(base_dir.join("perfs").join("default.json"))
+    fn try_load_default(base_dir: &Path, model_name: &str) -> Option<Self> {
+        Self::load_from_path_with_model_heuristics(
+            base_dir.join("perfs").join("default.json"),
+            model_name,
+        )
     }
 
     pub fn load_from_path<P: AsRef<Path>>(path: P) -> Option<Self> {
@@ -400,6 +433,68 @@ impl KernelProfile {
         }
     }
 
+    fn load_from_path_with_model_heuristics<P: AsRef<Path>>(
+        path: P,
+        fallback_model_name: &str,
+    ) -> Option<Self> {
+        let path = path.as_ref();
+        let content = match std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(e) => {
+                tracing::debug!(path = %path.display(), error = %e, "Kernel profile not found");
+                return None;
+            }
+        };
+        let raw_json: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(value) => value,
+            Err(e) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to parse kernel profile JSON"
+                );
+                return None;
+            }
+        };
+        let profile: KernelProfile = match serde_json::from_value(raw_json.clone()) {
+            Ok(profile) => profile,
+            Err(e) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to decode kernel profile JSON"
+                );
+                return None;
+            }
+        };
+        let effective_model_name = if profile.model.is_empty() || profile.model == "default" {
+            fallback_model_name.to_string()
+        } else {
+            profile.model.clone()
+        };
+        let with_heuristics = profile.apply_missing_model_heuristics(
+            &effective_model_name,
+            !json_has_path(&raw_json, "attention_decode.splitk_threshold"),
+            !json_has_path(&raw_json, "batch_prefill.prefer_f16_io"),
+            !json_has_path(&raw_json, "decode_regimes.short_max_attend_len"),
+            !json_has_path(
+                &raw_json,
+                "decode_regimes.long.attention_decode.splitk_threshold",
+            ),
+            !json_has_path(&raw_json, "attention_prefill.fa2_mode"),
+            !json_has_path(&raw_json, "attention_prefill.ax_bc64_mode"),
+            !json_has_path(&raw_json, "attention_decode.hd128_n2_default"),
+            !json_has_path(&raw_json, "attention_prefill.ax_bc64_min_tokens"),
+        );
+        tracing::info!(
+            path = %path.display(),
+            model = %with_heuristics.model,
+            source = %with_heuristics.source,
+            "Loaded kernel profile"
+        );
+        Some(with_heuristics)
+    }
+
     pub fn matvec_params(&self, quant_type: &str) -> MatvecParams {
         self.decode_matvec
             .get(quant_type)
@@ -408,8 +503,72 @@ impl KernelProfile {
                 self.decode_matvec
                     .get("default")
                     .cloned()
+                    .or_else(|| hardcoded_invariant_matvec_params(quant_type))
                     .unwrap_or_default()
             })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_missing_model_heuristics(
+        mut self,
+        model_name: &str,
+        missing_splitk_threshold: bool,
+        missing_prefer_f16_io: bool,
+        missing_decode_regime_short_max_attend_len: bool,
+        missing_decode_regime_long_splitk_threshold: bool,
+        missing_fa2_mode: bool,
+        missing_ax_bc64_mode: bool,
+        missing_hd128_n2_default: bool,
+        missing_ax_bc64_min_tokens: bool,
+    ) -> Self {
+        let arch = extract_architecture(model_name);
+        if missing_splitk_threshold {
+            self.attention_decode.splitk_threshold =
+                heuristic_decode_splitk_threshold_for_arch(&arch);
+        }
+        if missing_prefer_f16_io {
+            self.batch_prefill.prefer_f16_io =
+                heuristic_batch_prefill_prefer_f16_io_for_arch(&arch);
+        }
+        if missing_fa2_mode {
+            self.attention_prefill.fa2_mode = heuristic_attention_prefill_fa2_mode_for_arch(&arch);
+        }
+        if missing_ax_bc64_mode {
+            self.attention_prefill.ax_bc64_mode =
+                heuristic_attention_prefill_ax_bc64_mode_for_arch(&arch);
+        }
+        if missing_hd128_n2_default {
+            self.attention_decode.hd128_n2_default =
+                heuristic_attention_decode_hd128_n2_default_for_arch(&arch);
+        }
+        if missing_ax_bc64_min_tokens {
+            self.attention_prefill.ax_bc64_min_tokens =
+                heuristic_attention_prefill_ax_bc64_min_tokens_for_arch(&arch);
+        }
+        let decode_regime_short_max_attend_len = if missing_decode_regime_short_max_attend_len {
+            heuristic_decode_regime_short_max_attend_len_for_arch(&arch)
+        } else {
+            None
+        };
+        let decode_regime_long_splitk_threshold = if missing_decode_regime_long_splitk_threshold {
+            heuristic_decode_regime_long_splitk_threshold_for_arch(&arch)
+        } else {
+            None
+        };
+        if decode_regime_short_max_attend_len.is_some()
+            || decode_regime_long_splitk_threshold.is_some()
+        {
+            let decode_regimes = self
+                .decode_regimes
+                .get_or_insert_with(DecodeRegimeProfile::default);
+            if let Some(short_max_attend_len) = decode_regime_short_max_attend_len {
+                decode_regimes.short_max_attend_len = short_max_attend_len;
+            }
+            if let Some(splitk_threshold) = decode_regime_long_splitk_threshold {
+                decode_regimes.long.attention_decode.splitk_threshold = Some(splitk_threshold);
+            }
+        }
+        self
     }
 
     pub fn effective_decode_profile(&self, attend_len: u32) -> Self {
@@ -534,6 +693,83 @@ fn extract_architecture(model_name: &str) -> String {
     "default".to_string()
 }
 
+fn heuristic_decode_splitk_threshold_for_arch(arch: &str) -> u32 {
+    match arch {
+        "gemma3-4b" | "gemma3-12b" => 256,
+        "default" | "qwen3-14b" | "qwen35-9b" => 512,
+        "gemma3-27b" | "llama3-8b" | "llama3-70b" | "qwen3-8b" | "qwen3-32b" | "qwen35-27b" => 1024,
+        _ => 512,
+    }
+}
+
+fn heuristic_batch_prefill_prefer_f16_io_for_arch(_arch: &str) -> bool {
+    // PRD-PREFILL-DISPATCH-CONSOLIDATION-2026-03-31:
+    // All architectures now use the blocked kernel (identical to llama.cpp's
+    // kernel_mul_mm) which does inline float→half cast in the B-loading phase.
+    // The separate f32→f16 cast + f16in kernel path added 224 extra dispatches
+    // per prefill and used a suboptimal tile geometry (BM=32/BN=64 vs
+    // llama.cpp's BM=64/BN=32). Override per-arch with AX_METAL_BATCH_F16_IO=1.
+    false
+}
+
+fn heuristic_decode_regime_short_max_attend_len_for_arch(arch: &str) -> Option<u32> {
+    match arch {
+        "qwen3-8b" | "qwen3-14b" | "qwen35-9b" => Some(384),
+        "qwen3-32b" | "qwen35-27b" => Some(512),
+        _ => None,
+    }
+}
+
+fn heuristic_decode_regime_long_splitk_threshold_for_arch(arch: &str) -> Option<u32> {
+    match arch {
+        "qwen3-8b" | "qwen3-14b" | "qwen35-9b" => Some(256),
+        "qwen3-32b" | "qwen35-27b" => Some(512),
+        _ => None,
+    }
+}
+
+fn heuristic_attention_prefill_fa2_mode_for_arch(arch: &str) -> ProfileKernelMode {
+    // PRD-FA2-HALF-PRECISION-ATTENTION-2026-03-31: benchmarks show FA2 simd
+    // is 7-24% faster than Mistral at P≥512 on Qwen3 8B (758 vs 700 tok/s
+    // at P=512, 748 vs 603 at P=1024). Enable for all HD=128 models.
+    // HD=256 models (Gemma3) are unaffected — they don't match FA2 HD=128.
+    match arch {
+        // Gemma3 uses HD=256, FA2 HD128 doesn't apply.
+        "gemma3-4b" | "gemma3-12b" | "gemma3-27b" => ProfileKernelMode::Off,
+        _ => ProfileKernelMode::Auto,
+    }
+}
+
+fn heuristic_attention_prefill_ax_bc64_mode_for_arch(_arch: &str) -> ProfileKernelMode {
+    // With FA2 now preferred for HD=128 models, Mistral bc64 is Auto for all.
+    ProfileKernelMode::Auto
+}
+
+fn heuristic_attention_decode_hd128_n2_default_for_arch(arch: &str) -> Option<bool> {
+    match arch {
+        "qwen3-8b" | "qwen35-9b" | "qwen35-27b" => Some(true),
+        _ => None,
+    }
+}
+
+fn heuristic_attention_prefill_ax_bc64_min_tokens_for_arch(arch: &str) -> u32 {
+    match arch {
+        "llama3-8b" | "qwen3-8b" | "qwen3-14b" | "qwen35-9b" | "qwen35-27b" => 384,
+        _ => default_attention_prefill_ax_bc64_min_tokens(),
+    }
+}
+
+fn json_has_path(value: &serde_json::Value, flat_path: &str) -> bool {
+    let mut current = value;
+    for part in flat_path.split('.') {
+        let Some(next) = current.get(part) else {
+            return false;
+        };
+        current = next;
+    }
+    true
+}
+
 /// Extract size bucket from model name for profile filename resolution.
 ///
 /// Uses numeric parsing to avoid substring false positives
@@ -579,6 +815,16 @@ fn extract_param_billions(name: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn perf_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("perfs")
+            .canonicalize()
+            .unwrap()
+    }
 
     #[test]
     fn test_default_profile() {
@@ -586,13 +832,21 @@ mod tests {
         assert_eq!(profile.source, "hardcoded");
 
         let q4k_matvec = profile.matvec_params("q4_k");
-        assert_eq!(q4k_matvec.threadgroup_size, 128);
+        assert_eq!(q4k_matvec.threadgroup_size, 64);
+        assert_eq!(q4k_matvec.rows_per_simdgroup, 2);
         let q5k_matvec = profile.matvec_params("q5_k");
-        assert_eq!(q5k_matvec.threadgroup_size, 128);
+        assert_eq!(q5k_matvec.threadgroup_size, 64);
         assert_eq!(q5k_matvec.rows_per_simdgroup, 1);
+        let q6k_matvec = profile.matvec_params("q6_k");
+        assert_eq!(q6k_matvec.threadgroup_size, 64);
+        assert_eq!(q6k_matvec.rows_per_simdgroup, 2);
+        let q80_matvec = profile.matvec_params("q8_0");
+        assert_eq!(q80_matvec.threadgroup_size, 128);
+        assert_eq!(q80_matvec.rows_per_simdgroup, 2);
         assert!(!profile.batch_prefill.prefer_f16_io);
         assert!(profile.batch_prefill.prefer_pair_kernel);
         assert!(!profile.batch_prefill.use_bn32);
+        // Default profile uses serde default (Off), not heuristic.
         assert_eq!(profile.attention_prefill.fa2_mode, ProfileKernelMode::Off);
     }
 
@@ -630,10 +884,570 @@ mod tests {
     }
 
     #[test]
+    fn test_heuristic_decode_splitk_threshold_matches_current_profile_buckets() {
+        let cases = [
+            ("default", 512),
+            ("gemma3-4b", 256),
+            ("gemma3-12b", 256),
+            ("gemma3-27b", 1024),
+            ("llama3-8b", 1024),
+            ("llama3-70b", 1024),
+            ("qwen3-8b", 1024),
+            ("qwen3-14b", 512),
+            ("qwen3-32b", 1024),
+            ("qwen35-9b", 512),
+            ("qwen35-27b", 1024),
+        ];
+        for (arch, expected) in cases {
+            assert_eq!(heuristic_decode_splitk_threshold_for_arch(arch), expected);
+        }
+    }
+
+    #[test]
+    fn test_heuristic_batch_prefill_prefer_f16_io_matches_current_profile_buckets() {
+        // PRD-PREFILL-DISPATCH-CONSOLIDATION-2026-03-31: all archs use blocked
+        // kernel (identical to llama.cpp kernel_mul_mm) with inline float→half.
+        let cases = [
+            ("default", false),
+            ("gemma3-4b", false),
+            ("gemma3-12b", false),
+            ("gemma3-27b", false),
+            ("llama3-8b", false),
+            ("llama3-70b", false),
+            ("qwen3-8b", false),
+            ("qwen3-14b", false),
+            ("qwen3-32b", false),
+            ("qwen35-9b", false),
+            ("qwen35-27b", false),
+        ];
+        for (arch, expected) in cases {
+            assert_eq!(
+                heuristic_batch_prefill_prefer_f16_io_for_arch(arch),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_heuristic_attention_prefill_fa2_mode_matches_current_profile_buckets() {
+        // FA2 simd is faster than Mistral at P≥512 for HD=128 models.
+        // Off only for Gemma3 (HD=256, FA2 HD128 doesn't apply).
+        let cases = [
+            ("default", ProfileKernelMode::Auto),
+            ("gemma3-4b", ProfileKernelMode::Off),
+            ("gemma3-12b", ProfileKernelMode::Off),
+            ("gemma3-27b", ProfileKernelMode::Off),
+            ("llama3-8b", ProfileKernelMode::Auto),
+            ("llama3-70b", ProfileKernelMode::Auto),
+            ("qwen3-8b", ProfileKernelMode::Auto),
+            ("qwen3-14b", ProfileKernelMode::Auto),
+            ("qwen3-32b", ProfileKernelMode::Auto),
+            ("qwen35-9b", ProfileKernelMode::Auto),
+            ("qwen35-27b", ProfileKernelMode::Auto),
+        ];
+        for (arch, expected) in cases {
+            assert_eq!(
+                heuristic_attention_prefill_fa2_mode_for_arch(arch),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_heuristic_attention_prefill_ax_bc64_mode_matches_current_profile_buckets() {
+        // With FA2 now the preferred HD=128 path, Mistral bc64 is Auto for all.
+        let cases = [
+            ("default", ProfileKernelMode::Auto),
+            ("gemma3-4b", ProfileKernelMode::Auto),
+            ("gemma3-12b", ProfileKernelMode::Auto),
+            ("gemma3-27b", ProfileKernelMode::Auto),
+            ("llama3-8b", ProfileKernelMode::Auto),
+            ("llama3-70b", ProfileKernelMode::Auto),
+            ("qwen3-8b", ProfileKernelMode::Auto),
+            ("qwen3-14b", ProfileKernelMode::Auto),
+            ("qwen3-32b", ProfileKernelMode::Auto),
+            ("qwen35-9b", ProfileKernelMode::Auto),
+            ("qwen35-27b", ProfileKernelMode::Auto),
+        ];
+        for (arch, expected) in cases {
+            assert_eq!(
+                heuristic_attention_prefill_ax_bc64_mode_for_arch(arch),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_heuristic_attention_decode_hd128_n2_default_matches_current_profile_buckets() {
+        let cases = [
+            ("default", None),
+            ("gemma3-4b", None),
+            ("gemma3-12b", None),
+            ("gemma3-27b", None),
+            ("llama3-8b", None),
+            ("llama3-70b", None),
+            ("qwen3-8b", Some(true)),
+            ("qwen3-14b", None),
+            ("qwen3-32b", None),
+            ("qwen35-9b", Some(true)),
+            ("qwen35-27b", Some(true)),
+        ];
+        for (arch, expected) in cases {
+            assert_eq!(
+                heuristic_attention_decode_hd128_n2_default_for_arch(arch),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_heuristic_attention_prefill_ax_bc64_min_tokens_matches_current_profile_buckets() {
+        let cases = [
+            ("default", 384),
+            ("gemma3-4b", 384),
+            ("gemma3-12b", 384),
+            ("gemma3-27b", 384),
+            ("llama3-8b", 384),
+            ("llama3-70b", 384),
+            ("qwen3-8b", 384),
+            ("qwen3-14b", 384),
+            ("qwen3-32b", 384),
+            ("qwen35-9b", 384),
+            ("qwen35-27b", 384),
+        ];
+        for (arch, expected) in cases {
+            assert_eq!(
+                heuristic_attention_prefill_ax_bc64_min_tokens_for_arch(arch),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_heuristic_decode_regime_short_max_attend_len_matches_current_profile_buckets() {
+        let cases = [
+            ("default", None),
+            ("gemma3-4b", None),
+            ("gemma3-12b", None),
+            ("gemma3-27b", None),
+            ("llama3-8b", None),
+            ("llama3-70b", None),
+            ("qwen3-8b", Some(384)),
+            ("qwen3-14b", Some(384)),
+            ("qwen3-32b", Some(512)),
+            ("qwen35-9b", Some(384)),
+            ("qwen35-27b", Some(512)),
+        ];
+        for (arch, expected) in cases {
+            assert_eq!(
+                heuristic_decode_regime_short_max_attend_len_for_arch(arch),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_heuristic_decode_regime_long_splitk_threshold_matches_current_profile_buckets() {
+        let cases = [
+            ("default", None),
+            ("gemma3-4b", None),
+            ("gemma3-12b", None),
+            ("gemma3-27b", None),
+            ("llama3-8b", None),
+            ("llama3-70b", None),
+            ("qwen3-8b", Some(256)),
+            ("qwen3-14b", Some(256)),
+            ("qwen3-32b", Some(512)),
+            ("qwen35-9b", Some(256)),
+            ("qwen35-27b", Some(512)),
+        ];
+        for (arch, expected) in cases {
+            assert_eq!(
+                heuristic_decode_regime_long_splitk_threshold_for_arch(arch),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn test_fallback_matvec_params() {
         let profile = KernelProfile::default();
         let unknown = profile.matvec_params("unknown_quant");
         assert_eq!(unknown.threadgroup_size, 128);
+    }
+
+    #[test]
+    fn test_profile_json_missing_decode_matvec_uses_hardcoded_invariants() {
+        let profile: KernelProfile = serde_json::from_str(
+            r#"{
+                "model": "test",
+                "source": "unit",
+                "generated": "2026-03-28"
+            }"#,
+        )
+        .unwrap();
+
+        let q4k = profile.matvec_params("q4_k");
+        assert_eq!(q4k.threadgroup_size, 64);
+        assert_eq!(q4k.rows_per_simdgroup, 2);
+
+        let q80 = profile.matvec_params("q8_0");
+        assert_eq!(q80.threadgroup_size, 128);
+        assert_eq!(q80.rows_per_simdgroup, 2);
+    }
+
+    #[test]
+    fn test_current_profiles_match_hardcoded_matvec_invariants() {
+        for entry in fs::read_dir(perf_dir()).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let profile = KernelProfile::load_from_path(&path).unwrap();
+            for quant in ["q4_k", "q5_k", "q6_k", "q8_0"] {
+                let expected = hardcoded_invariant_matvec_params(quant).unwrap();
+                let actual = profile.matvec_params(quant);
+                assert_eq!(
+                    actual,
+                    expected,
+                    "profile {} drifted from hardcoded invariant for {quant}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_current_profiles_match_non_matvec_invariant_defaults() {
+        let default_profile = KernelProfile::default();
+        for entry in fs::read_dir(perf_dir()).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let profile = KernelProfile::load_from_path(&path).unwrap();
+            assert_eq!(
+                profile.batch_prefill.prefer_pair_kernel,
+                default_profile.batch_prefill.prefer_pair_kernel,
+                "profile {} drifted on batch_prefill.prefer_pair_kernel",
+                path.display()
+            );
+            assert_eq!(
+                profile.batch_prefill.use_bk32,
+                default_profile.batch_prefill.use_bk32,
+                "profile {} drifted on batch_prefill.use_bk32",
+                path.display()
+            );
+            assert_eq!(
+                profile.batch_prefill.use_bn32,
+                default_profile.batch_prefill.use_bn32,
+                "profile {} drifted on batch_prefill.use_bn32",
+                path.display()
+            );
+            assert_eq!(
+                profile.batch_prefill.q8_f16in_full_min_n,
+                default_profile.batch_prefill.q8_f16in_full_min_n,
+                "profile {} drifted on batch_prefill.q8_f16in_full_min_n",
+                path.display()
+            );
+            assert_eq!(
+                profile.batch_prefill.small_n_threshold,
+                default_profile.batch_prefill.small_n_threshold,
+                "profile {} drifted on batch_prefill.small_n_threshold",
+                path.display()
+            );
+            assert_eq!(
+                profile.batch_prefill.small_m_max,
+                default_profile.batch_prefill.small_m_max,
+                "profile {} drifted on batch_prefill.small_m_max",
+                path.display()
+            );
+            assert_eq!(
+                profile.attention_decode.splitk_chunk_size,
+                default_profile.attention_decode.splitk_chunk_size,
+                "profile {} drifted on attention_decode.splitk_chunk_size",
+                path.display()
+            );
+            assert_eq!(
+                profile.attention_prefill.fa2_auto_min_tokens,
+                default_profile.attention_prefill.fa2_auto_min_tokens,
+                "profile {} drifted on attention_prefill.fa2_auto_min_tokens",
+                path.display()
+            );
+            assert_eq!(
+                profile.attention_prefill.fa2_auto_min_base_seq,
+                default_profile.attention_prefill.fa2_auto_min_base_seq,
+                "profile {} drifted on attention_prefill.fa2_auto_min_base_seq",
+                path.display()
+            );
+            assert_eq!(
+                profile.attention_prefill.fa2_hd128_auto_min_tokens,
+                default_profile.attention_prefill.fa2_hd128_auto_min_tokens,
+                "profile {} drifted on attention_prefill.fa2_hd128_auto_min_tokens",
+                path.display()
+            );
+            assert_eq!(
+                profile.attention_prefill.fa2_hd128_mode,
+                default_profile.attention_prefill.fa2_hd128_mode,
+                "profile {} drifted on attention_prefill.fa2_hd128_mode",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn test_current_profiles_match_splitk_threshold_heuristic() {
+        for entry in fs::read_dir(perf_dir()).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let raw_profile = KernelProfile::load_from_path(&path).unwrap();
+            let model_name = raw_profile.model.clone();
+            let effective_profile =
+                KernelProfile::load_from_path_with_model_heuristics(&path, &model_name).unwrap();
+            let expected =
+                heuristic_decode_splitk_threshold_for_arch(&extract_architecture(&model_name));
+            assert_eq!(
+                effective_profile.attention_decode.splitk_threshold,
+                expected,
+                "profile {} drifted from splitk threshold heuristic for model {}",
+                path.display(),
+                model_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_current_profiles_match_prefer_f16_io_heuristic() {
+        for entry in fs::read_dir(perf_dir()).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let raw_profile = KernelProfile::load_from_path(&path).unwrap();
+            let model_name = raw_profile.model.clone();
+            let effective_profile =
+                KernelProfile::load_from_path_with_model_heuristics(&path, &model_name).unwrap();
+            let expected =
+                heuristic_batch_prefill_prefer_f16_io_for_arch(&extract_architecture(&model_name));
+            assert_eq!(
+                effective_profile.batch_prefill.prefer_f16_io,
+                expected,
+                "profile {} drifted from prefer_f16_io heuristic for model {}",
+                path.display(),
+                model_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_current_profiles_match_decode_regime_short_max_attend_len_heuristic() {
+        for entry in fs::read_dir(perf_dir()).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let raw_profile = KernelProfile::load_from_path(&path).unwrap();
+            let model_name = raw_profile.model.clone();
+            let effective_profile =
+                KernelProfile::load_from_path_with_model_heuristics(&path, &model_name).unwrap();
+            let expected = heuristic_decode_regime_short_max_attend_len_for_arch(
+                &extract_architecture(&model_name),
+            );
+            assert_eq!(
+                effective_profile
+                    .decode_regimes
+                    .as_ref()
+                    .map(|regimes| regimes.short_max_attend_len),
+                expected,
+                "profile {} drifted from decode_regimes.short_max_attend_len heuristic for model {}",
+                path.display(),
+                model_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_current_profiles_match_decode_regime_long_splitk_threshold_heuristic() {
+        for entry in fs::read_dir(perf_dir()).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let raw_profile = KernelProfile::load_from_path(&path).unwrap();
+            let model_name = raw_profile.model.clone();
+            let effective_profile =
+                KernelProfile::load_from_path_with_model_heuristics(&path, &model_name).unwrap();
+            let expected = heuristic_decode_regime_long_splitk_threshold_for_arch(
+                &extract_architecture(&model_name),
+            );
+            assert_eq!(
+                effective_profile
+                    .decode_regimes
+                    .as_ref()
+                    .and_then(|regimes| { regimes.long.attention_decode.splitk_threshold }),
+                expected,
+                "profile {} drifted from decode_regimes.long.attention_decode.splitk_threshold heuristic for model {}",
+                path.display(),
+                model_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_current_profiles_match_attention_prefill_fa2_mode_heuristic() {
+        for entry in fs::read_dir(perf_dir()).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let raw_profile = KernelProfile::load_from_path(&path).unwrap();
+            let model_name = raw_profile.model.clone();
+            let effective_profile =
+                KernelProfile::load_from_path_with_model_heuristics(&path, &model_name).unwrap();
+            let expected =
+                heuristic_attention_prefill_fa2_mode_for_arch(&extract_architecture(&model_name));
+            assert_eq!(
+                effective_profile.attention_prefill.fa2_mode,
+                expected,
+                "profile {} drifted from attention_prefill.fa2_mode heuristic for model {}",
+                path.display(),
+                model_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_current_profiles_match_attention_prefill_ax_bc64_mode_heuristic() {
+        for entry in fs::read_dir(perf_dir()).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let raw_profile = KernelProfile::load_from_path(&path).unwrap();
+            let model_name = raw_profile.model.clone();
+            let effective_profile =
+                KernelProfile::load_from_path_with_model_heuristics(&path, &model_name).unwrap();
+            let expected = heuristic_attention_prefill_ax_bc64_mode_for_arch(
+                &extract_architecture(&model_name),
+            );
+            assert_eq!(
+                effective_profile.attention_prefill.ax_bc64_mode,
+                expected,
+                "profile {} drifted from attention_prefill.ax_bc64_mode heuristic for model {}",
+                path.display(),
+                model_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_current_profiles_match_attention_decode_hd128_n2_default_heuristic() {
+        for entry in fs::read_dir(perf_dir()).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let raw_profile = KernelProfile::load_from_path(&path).unwrap();
+            let model_name = raw_profile.model.clone();
+            let effective_profile =
+                KernelProfile::load_from_path_with_model_heuristics(&path, &model_name).unwrap();
+            let expected = heuristic_attention_decode_hd128_n2_default_for_arch(
+                &extract_architecture(&model_name),
+            );
+            assert_eq!(
+                effective_profile.attention_decode.hd128_n2_default,
+                expected,
+                "profile {} drifted from attention_decode.hd128_n2_default heuristic for model {}",
+                path.display(),
+                model_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_current_profiles_match_attention_prefill_ax_bc64_min_tokens_heuristic() {
+        for entry in fs::read_dir(perf_dir()).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let raw_profile = KernelProfile::load_from_path(&path).unwrap();
+            let model_name = raw_profile.model.clone();
+            let effective_profile =
+                KernelProfile::load_from_path_with_model_heuristics(&path, &model_name).unwrap();
+            let expected = heuristic_attention_prefill_ax_bc64_min_tokens_for_arch(
+                &extract_architecture(&model_name),
+            );
+            assert_eq!(
+                effective_profile.attention_prefill.ax_bc64_min_tokens,
+                expected,
+                "profile {} drifted from attention_prefill.ax_bc64_min_tokens heuristic for model {}",
+                path.display(),
+                model_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_qwen35_9b_heuristics_keep_prefill_f16_io_disabled() {
+        // PRD-PREFILL-DISPATCH-CONSOLIDATION: blocked kernel is now the
+        // default for all archs, so prefer_f16_io is always false.
+        let profile = KernelProfile::load("Qwen3.5-9B-Q4_K_M", "Q4_K");
+        assert!(!profile.batch_prefill.prefer_f16_io);
+    }
+
+    #[test]
+    fn test_qwen35_9b_heuristics_keep_hd128_n2_default_enabled() {
+        let profile = KernelProfile::load("Qwen3.5-9B-Q4_K_M", "Q4_K");
+        assert_eq!(profile.attention_decode.hd128_n2_default, Some(true));
+    }
+
+    #[test]
+    fn test_pruned_profile_load_restores_heuristic_fields_without_overriding_explicit_values() {
+        let pruned = r#"{
+            "model": "qwen35-9b",
+            "source": "unit",
+            "generated": "2026-03-29",
+            "attention_decode": {
+                "hd128_n2_default": true
+            }
+        }"#;
+        let tmp_dir = std::env::temp_dir();
+        let path = tmp_dir.join("ax-engine-pruned-qwen35-9b-test.json");
+        fs::write(&path, pruned).unwrap();
+
+        let profile =
+            KernelProfile::load_from_path_with_model_heuristics(&path, "Qwen3.5-9B-Q4_K_M")
+                .unwrap();
+
+        assert_eq!(profile.attention_decode.splitk_threshold, 512);
+        // PRD-PREFILL-DISPATCH-CONSOLIDATION: blocked kernel for all archs.
+        assert!(!profile.batch_prefill.prefer_f16_io);
+        assert_eq!(profile.attention_decode.hd128_n2_default, Some(true));
+        // FA2 now Auto for all HD=128 models.
+        assert_eq!(profile.attention_prefill.fa2_mode, ProfileKernelMode::Auto);
+        assert_eq!(
+            profile.attention_prefill.ax_bc64_mode,
+            ProfileKernelMode::Auto
+        );
+        assert_eq!(profile.attention_prefill.ax_bc64_min_tokens, 384);
+        let regimes = profile.decode_regimes.as_ref().unwrap();
+        assert_eq!(regimes.short_max_attend_len, 384);
+        assert_eq!(regimes.long.attention_decode.splitk_threshold, Some(256));
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -687,11 +1501,11 @@ mod tests {
             "attention_prefill": {
                 "fa2_mode": "auto",
                 "fa2_hd128_mode": "off",
-                "mistral_bc64_mode": "off",
+                "ax_bc64_mode": "off",
                 "fa2_auto_min_tokens": 640,
                 "fa2_auto_min_base_seq": 320,
                 "fa2_hd128_auto_min_tokens": 768,
-                "mistral_bc64_min_tokens": 1024
+                "ax_bc64_min_tokens": 1024
             }
         }"#;
         let profile: KernelProfile = serde_json::from_str(json).unwrap();
@@ -702,11 +1516,11 @@ mod tests {
         assert_eq!(profile.attention_decode.hd128_n2_default, Some(false));
         assert_eq!(profile.attention_prefill.fa2_mode, ProfileKernelMode::Auto);
         assert_eq!(
-            profile.attention_prefill.mistral_bc64_mode,
+            profile.attention_prefill.ax_bc64_mode,
             ProfileKernelMode::Off
         );
         assert_eq!(profile.attention_prefill.fa2_auto_min_base_seq, 320);
-        assert_eq!(profile.attention_prefill.mistral_bc64_min_tokens, 1024);
+        assert_eq!(profile.attention_prefill.ax_bc64_min_tokens, 1024);
     }
 
     #[test]

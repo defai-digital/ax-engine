@@ -1,0 +1,2 @@
+label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
+smart-barrier	models/Llama-3-8B-Instruct-GGUF-Q4_K_M.gguf	512	128	512	3	10	712.2460058753339	769.709863	92.53434834514182	61.47762062500168	66.369819	92.62888094512004

@@ -283,6 +283,82 @@ pub(super) fn encode_dequant_gelu_down_matvec_with_config(
     }
 }
 
+/// Barrier context for GPU decode dispatch.
+///
+/// In `Smart` mode, wraps a [`SmartBarrier`] that tracks per-dispatch buffer
+/// reads/writes and only inserts barriers on actual data conflicts (matching
+/// llama.cpp's strategy).  In `Explicit` mode, every `step()` call inserts a
+/// blanket `memoryBarrierWithScope(Buffers)`.  In `Implicit` mode, no barriers.
+pub(super) struct DecodeBarrierCtx<'a> {
+    plan: super::execution_plan::DecodeBarrierPlan,
+    sb: Option<std::cell::RefCell<ax_engine_metal::SmartBarrier<'a>>>,
+}
+
+impl<'a> DecodeBarrierCtx<'a> {
+    pub fn new(
+        encoder: &'a ax_engine_metal::MetalEncoder,
+        plan: super::execution_plan::DecodeBarrierPlan,
+    ) -> Self {
+        let sb = if plan == super::execution_plan::DecodeBarrierPlan::Smart {
+            Some(std::cell::RefCell::new(ax_engine_metal::SmartBarrier::new(encoder)))
+        } else {
+            None
+        };
+        Self { plan, sb }
+    }
+
+    /// Notify the barrier tracker that a dispatch is about to run with
+    /// the given buffer reads/writes.  In Smart mode this may insert a
+    /// barrier if a conflict is detected.
+    #[inline]
+    pub fn pre_dispatch(
+        &self,
+        reads: &[&ax_engine_metal::MetalBuffer],
+        writes: &[&ax_engine_metal::MetalBuffer],
+    ) {
+        if let Some(ref sb) = self.sb {
+            sb.borrow_mut().pre_dispatch(reads, writes);
+        }
+    }
+
+    /// Register a completed dispatch's buffer reads/writes for conflict
+    /// tracking.
+    #[inline]
+    pub fn post_dispatch(
+        &self,
+        reads: &[&ax_engine_metal::MetalBuffer],
+        writes: &[&ax_engine_metal::MetalBuffer],
+    ) {
+        if let Some(ref sb) = self.sb {
+            sb.borrow_mut().post_dispatch(reads, writes);
+        }
+    }
+
+    /// Legacy blanket barrier (Implicit/Explicit modes).
+    ///
+    /// In Smart mode, this is a no-op — barriers are handled automatically
+    /// by `pre_dispatch`/`post_dispatch`.
+    #[inline]
+    pub fn step(&self, encoder: &ax_engine_metal::MetalEncoder) {
+        match self.plan {
+            super::execution_plan::DecodeBarrierPlan::Explicit => {
+                ax_engine_metal::barrier_buffers(encoder);
+            }
+            super::execution_plan::DecodeBarrierPlan::Smart => {
+                // Barriers handled by pre/post_dispatch — nothing to do.
+            }
+            super::execution_plan::DecodeBarrierPlan::Implicit => {}
+        }
+    }
+
+    /// Flush pending barriers at the end of encoding.
+    pub fn flush(&self) {
+        if let Some(ref sb) = self.sb {
+            sb.borrow_mut().flush();
+        }
+    }
+}
+
 /// Strategy trait for the model-specific part of GPU decode layer encoding.
 ///
 /// Steps 1 (QKV matmul), 6 (WO projection), and 8-10 (FFN tail) are shared
@@ -310,7 +386,7 @@ pub(super) trait GpuDecodeLayerStrategy {
         gpu_kv: &crate::kv::GpuKv,
         layer: usize,
         exec_plan: &super::execution_plan::GpuDecodeExecutionPlan,
-        barrier_fn: &dyn Fn(&ax_engine_metal::MetalEncoder),
+        barrier: &DecodeBarrierCtx<'_>,
         used_fused_qkv: bool,
     );
 }
@@ -352,7 +428,7 @@ pub(super) fn encode_gpu_decode_layer(
     strategy: &dyn GpuDecodeLayerStrategy,
     activation: super::layer_ops::FfnActivation,
     post_ffn_norm_w: Option<&ax_engine_metal::MetalBuffer>,
-    barrier_fn: &dyn Fn(&ax_engine_metal::MetalEncoder),
+    barrier: &DecodeBarrierCtx<'_>,
 ) {
     let GpuLayerDims {
         dim,
@@ -372,6 +448,7 @@ pub(super) fn encode_gpu_decode_layer(
     };
 
     let used_fused = if let Some(fused_w) = fused_qkv_buf {
+        barrier.pre_dispatch(&[&s.norm_buf], &[&s.qkv_buf]);
         encode_dequant_matvec_with_config(
             metal_ops,
             encoder,
@@ -383,11 +460,15 @@ pub(super) fn encode_gpu_decode_layer(
             lw.wq_dtype,
             exec_plan.dequant_dispatch,
         );
+        barrier.post_dispatch(&[&s.norm_buf], &[&s.qkv_buf]);
         true
     } else {
         let wq_buf = weight_cache.get(&lw.wq).unwrap();
         let wk_buf = weight_cache.get(&lw.wk).unwrap();
         let wv_buf = weight_cache.get(&lw.wv).unwrap();
+        // Q/K/V all read norm_buf, write different outputs → SmartBarrier
+        // skips barriers between them (GPU can overlap).
+        barrier.pre_dispatch(&[&s.norm_buf], &[&s.q_buf]);
         encode_dequant_matvec_with_config(
             metal_ops,
             encoder,
@@ -399,6 +480,8 @@ pub(super) fn encode_gpu_decode_layer(
             lw.wq_dtype,
             exec_plan.dequant_dispatch,
         );
+        barrier.post_dispatch(&[&s.norm_buf], &[&s.q_buf]);
+        barrier.pre_dispatch(&[&s.norm_buf], &[&s.k_buf]);
         encode_dequant_matvec_with_config(
             metal_ops,
             encoder,
@@ -410,6 +493,8 @@ pub(super) fn encode_gpu_decode_layer(
             lw.wk_dtype,
             exec_plan.dequant_dispatch,
         );
+        barrier.post_dispatch(&[&s.norm_buf], &[&s.k_buf]);
+        barrier.pre_dispatch(&[&s.norm_buf], &[&s.v_buf]);
         encode_dequant_matvec_with_config(
             metal_ops,
             encoder,
@@ -421,9 +506,10 @@ pub(super) fn encode_gpu_decode_layer(
             lw.wv_dtype,
             exec_plan.dequant_dispatch,
         );
+        barrier.post_dispatch(&[&s.norm_buf], &[&s.v_buf]);
         false
     };
-    barrier_fn(encoder);
+    barrier.step(encoder);
 
     // --- Steps 2-7: Model-specific QKV post + attention + WO + residual + FFN norm ---
     // Strategy handles: QKV post-processing, KV append, attention dispatch,
@@ -439,12 +525,14 @@ pub(super) fn encode_gpu_decode_layer(
         gpu_kv,
         layer,
         exec_plan,
-        barrier_fn,
+        barrier,
         used_fused,
     );
 
     let wg_buf = weight_cache.get(&lw.wg).unwrap();
     let wu_buf = weight_cache.get(&lw.wu).unwrap();
+    // Gate/Up: both read norm_buf, write different outputs → can overlap.
+    barrier.pre_dispatch(&[&s.norm_buf], &[&s.gate_buf, &s.up_buf]);
     if !encode_dequant_matvec_pair_with_config(
         metal_ops,
         encoder,
@@ -483,7 +571,8 @@ pub(super) fn encode_gpu_decode_layer(
             exec_plan.dequant_dispatch,
         );
     }
-    barrier_fn(encoder);
+    barrier.post_dispatch(&[&s.norm_buf], &[&s.gate_buf, &s.up_buf]);
+    barrier.step(encoder);
 
     let wd_buf = weight_cache.get(&lw.wd).unwrap();
     let next_norm_w = next_attn_norm_key.and_then(|k| weight_cache.get(&k));
@@ -502,7 +591,7 @@ pub(super) fn encode_gpu_decode_layer(
         activation,
         post_ffn_norm_w,
         next_norm_w,
-        barrier_fn,
+        barrier,
     );
 }
 
@@ -530,11 +619,12 @@ pub(super) fn encode_gpu_ffn_decode_tail(
     activation: super::layer_ops::FfnActivation,
     post_ffn_norm_w: Option<&ax_engine_metal::MetalBuffer>,
     next_norm_w: Option<&ax_engine_metal::MetalBuffer>,
-    barrier_fn: &dyn Fn(&ax_engine_metal::MetalEncoder),
+    barrier: &DecodeBarrierCtx<'_>,
 ) {
     use super::layer_ops::FfnActivation;
 
     // 1. Fused activation+down or separate activation + down matvec.
+    barrier.pre_dispatch(&[&s.gate_buf, &s.up_buf], &[&s.down_buf]);
     let fused = match activation {
         FfnActivation::SiLU => encode_dequant_silu_down_matvec_with_config(
             metal_ops,
@@ -581,7 +671,9 @@ pub(super) fn encode_gpu_ffn_decode_tail(
                 );
             }
         }
-        barrier_fn(encoder);
+        barrier.post_dispatch(&[&s.gate_buf, &s.up_buf], &[&s.gate_buf]);
+        barrier.step(encoder);
+        barrier.pre_dispatch(&[&s.gate_buf], &[&s.down_buf]);
         encode_dequant_matvec_with_config(
             metal_ops,
             encoder,
@@ -594,10 +686,12 @@ pub(super) fn encode_gpu_ffn_decode_tail(
             exec_plan_dequant,
         );
     }
-    barrier_fn(encoder);
+    barrier.post_dispatch(&[&s.gate_buf, &s.up_buf], &[&s.down_buf]);
+    barrier.step(encoder);
 
     // 2. Residual handoff: fused residual+norm for next layer, or plain add for last.
     if let Some(next_nw) = next_norm_w {
+        barrier.pre_dispatch(&[hidden_buf, &s.down_buf], &[hidden_buf, &s.norm_buf]);
         if let Some(post_nw) = post_ffn_norm_w {
             metal_ops
                 .elementwise
@@ -626,24 +720,30 @@ pub(super) fn encode_gpu_ffn_decode_tail(
                     eps,
                 );
         }
-        barrier_fn(encoder);
+        barrier.post_dispatch(&[hidden_buf, &s.down_buf], &[hidden_buf, &s.norm_buf]);
+        barrier.step(encoder);
     } else {
         // Last layer: optional post-FFN norm then plain residual add.
         if let Some(post_nw) = post_ffn_norm_w {
+            barrier.pre_dispatch(&[&s.down_buf], &[&s.down_buf]);
             metal_ops
                 .elementwise
                 .encode_rms_norm(encoder, &s.down_buf, post_nw, dim, eps);
-            barrier_fn(encoder);
+            barrier.post_dispatch(&[&s.down_buf], &[&s.down_buf]);
+            barrier.step(encoder);
         }
+        barrier.pre_dispatch(&[hidden_buf, &s.down_buf], &[hidden_buf]);
         metal_ops
             .elementwise
             .encode_elementwise_add(encoder, hidden_buf, &s.down_buf, dim);
+        barrier.post_dispatch(&[hidden_buf, &s.down_buf], &[hidden_buf]);
     }
 }
 
 /// Encode the GPU output head: final RMSNorm + LM-head matvec → logits.
 ///
 /// Shared across LLaMA, Qwen3, and Gemma3 (identical logic).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn encode_gpu_output_head(
     encoder: &ax_engine_metal::MetalEncoder,
     metal_ops: &MetalOps,
@@ -652,24 +752,20 @@ pub(super) fn encode_gpu_output_head(
     exec_plan: &super::execution_plan::GpuDecodeExecutionPlan,
     cached: &crate::backend::metal::CachedModelKeys,
     weight_cache: &rustc_hash::FxHashMap<usize, ax_engine_metal::MetalBuffer>,
+    barrier: &DecodeBarrierCtx<'_>,
     dim: u32,
     vocab_size: u32,
     eps: f32,
 ) {
-    let decode_barrier = |encoder: &ax_engine_metal::MetalEncoder| {
-        if exec_plan.barriers == super::execution_plan::DecodeBarrierPlan::Explicit {
-            ax_engine_metal::barrier_buffers(encoder);
-        }
-    };
-
     let fnw_buf = weight_cache.get(&cached.output_norm).unwrap();
-    decode_barrier(encoder);
+    barrier.pre_dispatch(&[hidden_buf], &[hidden_buf]);
     metal_ops
         .elementwise
         .encode_rms_norm(encoder, hidden_buf, fnw_buf, dim, eps);
+    barrier.post_dispatch(&[hidden_buf], &[hidden_buf]);
 
-    decode_barrier(encoder);
     let lm_buf = weight_cache.get(&cached.lm_head).unwrap();
+    barrier.pre_dispatch(&[hidden_buf], &[&s.logits_buf]);
     encode_dequant_matvec_with_config(
         metal_ops,
         encoder,
@@ -681,5 +777,6 @@ pub(super) fn encode_gpu_output_head(
         cached.lm_head_dtype,
         exec_plan.dequant_dispatch,
     );
+    barrier.post_dispatch(&[hidden_buf], &[&s.logits_buf]);
 }
 

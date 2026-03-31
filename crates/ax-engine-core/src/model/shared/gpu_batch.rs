@@ -1,3 +1,4 @@
+#[allow(clippy::too_many_arguments)]
 pub(super) fn encode_dequant_batch(
     dequant: &ax_engine_metal::DequantKernels,
     elementwise: &ax_engine_metal::ElementwiseKernels,
@@ -71,6 +72,8 @@ pub(super) fn encode_dequant_batch(
             GgmlType::Q6K => {
                 dequant.encode_fused_batch_q6_k(encoder, weight, input, output, m, n, k)
             }
+            // F32 not handled here — use encode_qwen35_batch_projection which
+            // routes F32 directly to MatmulKernels::encode_matmul.
             _ => gpu_batch_prefill_panic(dtype),
         }
     }

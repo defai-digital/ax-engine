@@ -394,8 +394,8 @@ impl SpeculativeDecoder {
                     &mut self.draft_kv,
                     &draft_weights,
                     draft_step_snapshot.as_ref(),
-                    &verify_tokens[..n_accepted],
-                    position + n_accepted,
+                    &verify_tokens[..n_accepted + 1],
+                    position + n_accepted + 1,
                 )?;
                 let verify_cleanup_duration = verify_cleanup_timer.elapsed();
 

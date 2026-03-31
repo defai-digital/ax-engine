@@ -253,69 +253,65 @@ impl LlamaForward {
         {
             let weight_cache = metal_ops.lock_weight_cache();
             let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
+            let exec_gpu = |ops_arg: Option<&mut OpBreakdown>,
+                            encoder: &ax_engine_metal::MetalEncoder|
+             -> anyhow::Result<()> {
+                let barrier =
+                    crate::model::shared::DecodeBarrierCtx::new(encoder, exec_plan.barriers);
+                encode_llama_gpu_layers_only(
+                    encoder,
+                    metal_ops,
+                    s,
+                    &s.hidden,
+                    cfg,
+                    kv_offset,
+                    rope_position,
+                    cur_seq_len + 1,
+                    &exec_plan,
+                    gpu_kv,
+                    cached,
+                    &weight_cache,
+                    &fused_qkv_cache,
+                    ops_arg,
+                    &barrier,
+                )?;
+                encode_llama_gpu_output_head(
+                    encoder,
+                    metal_ops,
+                    s,
+                    &s.hidden,
+                    cfg,
+                    cached,
+                    &weight_cache,
+                    &exec_plan,
+                    &barrier,
+                );
+                barrier.flush();
+                Ok(())
+            };
+            let use_concurrent =
+                exec_plan.encoder == DecodeEncoderPlan::Concurrent;
             if let Some(ref mut ops_ref) = ops {
                 let exec_t = OpTimer::start();
-                metal_ops.device.execute_sync(|encoder| {
-                    encode_llama_gpu_layers_only(
-                        encoder,
-                        metal_ops,
-                        s,
-                        &s.hidden,
-                        cfg,
-                        kv_offset,
-                        rope_position,
-                        cur_seq_len + 1,
-                        &exec_plan,
-                        gpu_kv,
-                        cached,
-                        &weight_cache,
-                        &fused_qkv_cache,
-                        Some(ops_ref),
-                    )?;
-                    encode_llama_gpu_output_head(
-                        encoder,
-                        metal_ops,
-                        s,
-                        &s.hidden,
-                        cfg,
-                        cached,
-                        &weight_cache,
-                        &exec_plan,
-                    );
-                    Ok(())
-                })?;
+                if use_concurrent {
+                    metal_ops
+                        .device
+                        .execute_sync_concurrent(|e| exec_gpu(Some(ops_ref), e))?;
+                } else {
+                    metal_ops
+                        .device
+                        .execute_sync(|e| exec_gpu(Some(ops_ref), e))?;
+                }
                 ops_ref.gpu_execute += exec_t.elapsed();
             } else {
                 let exec_t = OpTimer::start();
-                metal_ops.device.execute_sync(|encoder| {
-                    encode_llama_gpu_layers_only(
-                        encoder,
-                        metal_ops,
-                        s,
-                        &s.hidden,
-                        cfg,
-                        kv_offset,
-                        rope_position,
-                        cur_seq_len + 1,
-                        &exec_plan,
-                        gpu_kv,
-                        cached,
-                        &weight_cache,
-                        &fused_qkv_cache,
-                        None,
-                    )?;
-                    encode_llama_gpu_output_head(
-                        encoder,
-                        metal_ops,
-                        s,
-                        &s.hidden,
-                        cfg,
-                        cached,
-                        &weight_cache,
-                        &exec_plan,
-                    );
-                    Ok(())
-                })?;
+                if use_concurrent {
+                    metal_ops
+                        .device
+                        .execute_sync_concurrent(|e| exec_gpu(None, e))?;
+                } else {
+                    metal_ops.device.execute_sync(|e| exec_gpu(None, e))?;
+                }
                 let _ = exec_t;
             }
         }
@@ -747,28 +743,72 @@ impl LlamaForward {
                         // K and V appends write to different KV buffers —
                         // SmartBarrier skips the barrier between them.
                         sb.pre_dispatch(&[&bs.k_buf], &[kv_k]);
-                        metal_ops.elementwise.encode_kv_append_batch(
-                            encoder,
-                            &bs.k_buf,
-                            kv_k,
-                            prefill_plan.kv_f16,
-                            cache_offset,
-                            kv_dim as u32,
-                            kv_dim as u32,
-                            nt,
-                        );
+                        if prefill_plan.kv_q4 {
+                            metal_ops.elementwise.encode_kv_append_batch_q4(
+                                encoder,
+                                &bs.k_buf,
+                                kv_k,
+                                cache_offset,
+                                kv_dim as u32 / 32,
+                                kv_dim as u32,
+                                nt,
+                            );
+                        } else if prefill_plan.kv_q8 {
+                            metal_ops.elementwise.encode_kv_append_batch_q8(
+                                encoder,
+                                &bs.k_buf,
+                                kv_k,
+                                cache_offset,
+                                kv_dim as u32 / 32,
+                                kv_dim as u32,
+                                nt,
+                            );
+                        } else {
+                            metal_ops.elementwise.encode_kv_append_batch(
+                                encoder,
+                                &bs.k_buf,
+                                kv_k,
+                                prefill_plan.kv_f16,
+                                cache_offset,
+                                kv_dim as u32,
+                                kv_dim as u32,
+                                nt,
+                            );
+                        }
                         sb.post_dispatch(&[&bs.k_buf], &[kv_k]);
                         sb.pre_dispatch(&[&bs.v_buf], &[kv_v]);
-                        metal_ops.elementwise.encode_kv_append_batch(
-                            encoder,
-                            &bs.v_buf,
-                            kv_v,
-                            prefill_plan.kv_f16,
-                            cache_offset,
-                            kv_dim as u32,
-                            kv_dim as u32,
-                            nt,
-                        );
+                        if prefill_plan.kv_q4 {
+                            metal_ops.elementwise.encode_kv_append_batch_q4(
+                                encoder,
+                                &bs.v_buf,
+                                kv_v,
+                                cache_offset,
+                                kv_dim as u32 / 32,
+                                kv_dim as u32,
+                                nt,
+                            );
+                        } else if prefill_plan.kv_q8 {
+                            metal_ops.elementwise.encode_kv_append_batch_q8(
+                                encoder,
+                                &bs.v_buf,
+                                kv_v,
+                                cache_offset,
+                                kv_dim as u32 / 32,
+                                kv_dim as u32,
+                                nt,
+                            );
+                        } else {
+                            metal_ops.elementwise.encode_kv_append_batch(
+                                encoder,
+                                &bs.v_buf,
+                                kv_v,
+                                prefill_plan.kv_f16,
+                                cache_offset,
+                                kv_dim as u32,
+                                kv_dim as u32,
+                                nt,
+                            );
+                        }
                         sb.post_dispatch(&[&bs.v_buf], &[kv_v]);
                     }
                     if let Some(ref mut ops_ref) = ops {
@@ -824,23 +864,57 @@ impl LlamaForward {
                         let kv_k = gpu_kv.k_buffer(layer);
                         let kv_v = gpu_kv.v_buffer(layer);
                         sb.pre_dispatch(&[&bs.q_buf, kv_k, kv_v], &[&bs.attn_out]);
-                        metal_ops
-                            .attention
-                            .encode_attention_prefill_cached_with_config(
-                                encoder,
-                                &bs.q_buf,
-                                kv_k,
-                                kv_v,
-                                &bs.attn_out,
-                                prefill_plan.kv_f16,
-                                nt,
-                                n_heads as u32,
-                                n_kv_heads as u32,
-                                head_dim as u32,
-                                base_seq_len as u32,
-                                0,
-                                prefill_plan.attention_dispatch,
-                        );
+                        if prefill_plan.kv_q4 {
+                            metal_ops
+                                .attention
+                                .encode_attention_prefill_cached_q4kv(
+                                    encoder,
+                                    &bs.q_buf,
+                                    kv_k,
+                                    kv_v,
+                                    &bs.attn_out,
+                                    nt,
+                                    n_heads as u32,
+                                    n_kv_heads as u32,
+                                    head_dim as u32,
+                                    base_seq_len as u32,
+                                    0,
+                                );
+                        } else if prefill_plan.kv_q8 {
+                            metal_ops
+                                .attention
+                                .encode_attention_prefill_cached_q8kv(
+                                    encoder,
+                                    &bs.q_buf,
+                                    kv_k,
+                                    kv_v,
+                                    &bs.attn_out,
+                                    nt,
+                                    n_heads as u32,
+                                    n_kv_heads as u32,
+                                    head_dim as u32,
+                                    base_seq_len as u32,
+                                    0,
+                                );
+                        } else {
+                            metal_ops
+                                .attention
+                                .encode_attention_prefill_cached_with_config(
+                                    encoder,
+                                    &bs.q_buf,
+                                    kv_k,
+                                    kv_v,
+                                    &bs.attn_out,
+                                    prefill_plan.kv_f16,
+                                    nt,
+                                    n_heads as u32,
+                                    n_kv_heads as u32,
+                                    head_dim as u32,
+                                    base_seq_len as u32,
+                                    0,
+                                    prefill_plan.attention_dispatch,
+                                );
+                        }
                         sb.post_dispatch(&[&bs.q_buf, kv_k, kv_v], &[&bs.attn_out]);
                     }
                     if let Some(ref mut ops_ref) = ops {

@@ -180,6 +180,220 @@ kernel void matmul_simdgroup_f32(
     }
 }
 
+// ── Half-tile Simdgroup Matmul ──────────────────────────────────────────
+//
+// Same architecture as matmul_simdgroup_f32 but stores A and B tiles as
+// half in threadgroup memory and uses simdgroup_half8x8 fragments with
+// float accumulators. On Apple Silicon, half×half→float MMA provides
+// higher throughput than float×float→float.
+//
+// Matches llama.cpp kernel_mul_mm's strategy: all fragments in half,
+// accumulator in float for precision.
+//
+// TG memory: tg_A(2KB half) + tg_B(2KB half) + out_tile(4KB float) = 8KB
+// Grid: ceil(N/32) × ceil(M/32) threadgroups.
+
+constant uint SGH_BM = 32;
+constant uint SGH_BN = 32;
+constant uint SGH_BK = 32;
+constant uint SGH_TG = 128;
+
+kernel void matmul_simdgroup_half_f32(
+    device const float* A [[buffer(0)]],
+    device const float* B [[buffer(1)]],
+    device float* C       [[buffer(2)]],
+    constant uint& M      [[buffer(3)]],
+    constant uint& N      [[buffer(4)]],
+    constant uint& K      [[buffer(5)]],
+    uint2 group_id        [[threadgroup_position_in_grid]],
+    uint  tid             [[thread_index_in_threadgroup]],
+    uint  simd_id         [[simdgroup_index_in_threadgroup]],
+    uint  simd_lane       [[thread_index_in_simdgroup]]
+) {
+    uint tile_row = group_id.y * SGH_BM;
+    uint tile_col = group_id.x * SGH_BN;
+
+    // Half-precision tiles: 2 KB each (32×32 × 2 bytes).
+    threadgroup half tg_A[SGH_BM * SGH_BK];
+    threadgroup half tg_B[SGH_BK * SGH_BN];
+
+    // Float accumulators for precision.
+    simdgroup_float8x8 acc0, acc1, acc2, acc3;
+    acc0 = simdgroup_float8x8(0);
+    acc1 = simdgroup_float8x8(0);
+    acc2 = simdgroup_float8x8(0);
+    acc3 = simdgroup_float8x8(0);
+
+    uint n_k_tiles = (K + SGH_BK - 1) / SGH_BK;
+
+    for (uint kt = 0; kt < n_k_tiles; kt++) {
+        uint k_offset = kt * SGH_BK;
+
+        // Cooperative load A tile: float→half cast inline.
+        for (uint i = tid; i < SGH_BM * SGH_BK; i += SGH_TG) {
+            uint r = i / SGH_BK;
+            uint c = i % SGH_BK;
+            uint gr = tile_row + r;
+            uint gc = k_offset + c;
+            tg_A[r * SGH_BK + c] = (gr < M && gc < K)
+                ? half(A[gr * K + gc]) : half(0.0h);
+        }
+
+        // Cooperative load B tile: float→half cast inline.
+        for (uint i = tid; i < SGH_BK * SGH_BN; i += SGH_TG) {
+            uint r = i / SGH_BN;
+            uint c = i % SGH_BN;
+            uint gr = k_offset + r;
+            uint gc = tile_col + c;
+            tg_B[r * SGH_BN + c] = (gr < K && gc < N)
+                ? half(B[gr * N + gc]) : half(0.0h);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // half×half→float simdgroup matmul.
+        for (uint kk = 0; kk < SGH_BK / 8; kk++) {
+            simdgroup_half8x8 a_frag;
+            simdgroup_load(a_frag, &tg_A[simd_id * 8 * SGH_BK + kk * 8], SGH_BK);
+
+            simdgroup_half8x8 b0, b1, b2, b3;
+            simdgroup_load(b0, &tg_B[kk * 8 * SGH_BN + 0],  SGH_BN);
+            simdgroup_load(b1, &tg_B[kk * 8 * SGH_BN + 8],  SGH_BN);
+            simdgroup_load(b2, &tg_B[kk * 8 * SGH_BN + 16], SGH_BN);
+            simdgroup_load(b3, &tg_B[kk * 8 * SGH_BN + 24], SGH_BN);
+
+            simdgroup_multiply_accumulate(acc0, a_frag, b0, acc0);
+            simdgroup_multiply_accumulate(acc1, a_frag, b1, acc1);
+            simdgroup_multiply_accumulate(acc2, a_frag, b2, acc2);
+            simdgroup_multiply_accumulate(acc3, a_frag, b3, acc3);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Store accumulators to TG, then cooperative write to global.
+    threadgroup float out_tile[SGH_BM * SGH_BN];
+
+    simdgroup_store(acc0, &out_tile[simd_id * 8 * SGH_BN + 0],  SGH_BN);
+    simdgroup_store(acc1, &out_tile[simd_id * 8 * SGH_BN + 8],  SGH_BN);
+    simdgroup_store(acc2, &out_tile[simd_id * 8 * SGH_BN + 16], SGH_BN);
+    simdgroup_store(acc3, &out_tile[simd_id * 8 * SGH_BN + 24], SGH_BN);
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = tid; i < SGH_BM * SGH_BN; i += SGH_TG) {
+        uint r = i / SGH_BN;
+        uint c = i % SGH_BN;
+        uint gr = tile_row + r;
+        uint gc = tile_col + c;
+        if (gr < M && gc < N) {
+            C[gr * N + gc] = out_tile[r * SGH_BN + c];
+        }
+    }
+}
+
+// ── BFloat16-tile Simdgroup Matmul ──────────────────────────────────────
+//
+// Same as matmul_simdgroup_half_f32 but uses bfloat tiles (Metal 3+, M3+).
+// BFloat16 has 8-bit exponent (same as f32) vs half's 5-bit, providing
+// better dynamic range for the same 2-byte bandwidth.
+//
+// Requires Metal 3+ GPU family (Apple9/M3+). Guarded at dispatch time
+// via GpuFamilySupport::metal3.
+
+constant uint SGBF_BM = 32;
+constant uint SGBF_BN = 32;
+constant uint SGBF_BK = 32;
+constant uint SGBF_TG = 128;
+
+kernel void matmul_simdgroup_bf16_f32(
+    device const float* A [[buffer(0)]],
+    device const float* B [[buffer(1)]],
+    device float* C       [[buffer(2)]],
+    constant uint& M      [[buffer(3)]],
+    constant uint& N      [[buffer(4)]],
+    constant uint& K      [[buffer(5)]],
+    uint2 group_id        [[threadgroup_position_in_grid]],
+    uint  tid             [[thread_index_in_threadgroup]],
+    uint  simd_id         [[simdgroup_index_in_threadgroup]],
+    uint  simd_lane       [[thread_index_in_simdgroup]]
+) {
+    uint tile_row = group_id.y * SGBF_BM;
+    uint tile_col = group_id.x * SGBF_BN;
+
+    threadgroup bfloat tg_A[SGBF_BM * SGBF_BK];
+    threadgroup bfloat tg_B[SGBF_BK * SGBF_BN];
+
+    simdgroup_float8x8 acc0, acc1, acc2, acc3;
+    acc0 = simdgroup_float8x8(0);
+    acc1 = simdgroup_float8x8(0);
+    acc2 = simdgroup_float8x8(0);
+    acc3 = simdgroup_float8x8(0);
+
+    uint n_k_tiles = (K + SGBF_BK - 1) / SGBF_BK;
+
+    for (uint kt = 0; kt < n_k_tiles; kt++) {
+        uint k_offset = kt * SGBF_BK;
+
+        for (uint i = tid; i < SGBF_BM * SGBF_BK; i += SGBF_TG) {
+            uint r = i / SGBF_BK;
+            uint c = i % SGBF_BK;
+            uint gr = tile_row + r;
+            uint gc = k_offset + c;
+            tg_A[r * SGBF_BK + c] = (gr < M && gc < K)
+                ? static_cast<bfloat>(A[gr * K + gc]) : static_cast<bfloat>(0.0f);
+        }
+
+        for (uint i = tid; i < SGBF_BK * SGBF_BN; i += SGBF_TG) {
+            uint r = i / SGBF_BN;
+            uint c = i % SGBF_BN;
+            uint gr = k_offset + r;
+            uint gc = tile_col + c;
+            tg_B[r * SGBF_BN + c] = (gr < K && gc < N)
+                ? static_cast<bfloat>(B[gr * N + gc]) : static_cast<bfloat>(0.0f);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint kk = 0; kk < SGBF_BK / 8; kk++) {
+            simdgroup_bfloat8x8 a_frag;
+            simdgroup_load(a_frag, &tg_A[simd_id * 8 * SGBF_BK + kk * 8], SGBF_BK);
+
+            simdgroup_bfloat8x8 b0, b1, b2, b3;
+            simdgroup_load(b0, &tg_B[kk * 8 * SGBF_BN + 0],  SGBF_BN);
+            simdgroup_load(b1, &tg_B[kk * 8 * SGBF_BN + 8],  SGBF_BN);
+            simdgroup_load(b2, &tg_B[kk * 8 * SGBF_BN + 16], SGBF_BN);
+            simdgroup_load(b3, &tg_B[kk * 8 * SGBF_BN + 24], SGBF_BN);
+
+            simdgroup_multiply_accumulate(acc0, a_frag, b0, acc0);
+            simdgroup_multiply_accumulate(acc1, a_frag, b1, acc1);
+            simdgroup_multiply_accumulate(acc2, a_frag, b2, acc2);
+            simdgroup_multiply_accumulate(acc3, a_frag, b3, acc3);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    threadgroup float out_tile[SGBF_BM * SGBF_BN];
+
+    simdgroup_store(acc0, &out_tile[simd_id * 8 * SGBF_BN + 0],  SGBF_BN);
+    simdgroup_store(acc1, &out_tile[simd_id * 8 * SGBF_BN + 8],  SGBF_BN);
+    simdgroup_store(acc2, &out_tile[simd_id * 8 * SGBF_BN + 16], SGBF_BN);
+    simdgroup_store(acc3, &out_tile[simd_id * 8 * SGBF_BN + 24], SGBF_BN);
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = tid; i < SGBF_BM * SGBF_BN; i += SGBF_TG) {
+        uint r = i / SGBF_BN;
+        uint c = i % SGBF_BN;
+        uint gr = tile_row + r;
+        uint gc = tile_col + c;
+        if (gr < M && gc < N) {
+            C[gr * N + gc] = out_tile[r * SGBF_BN + c];
+        }
+    }
+}
+
 // ── Optimized Matrix-Vector Multiply ────────────────────────────────────
 //
 // Specialized for N=1 (decode step). Each threadgroup computes one row's

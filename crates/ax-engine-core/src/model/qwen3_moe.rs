@@ -307,11 +307,14 @@ impl ForwardPass for Qwen3MoeForward {
                     1,
                     dim,
                 );
-                silu::silu_elementwise_mul(&mut gate_buf, &up_buf);
+                silu::silu_elementwise_mul(
+                    &mut gate_buf[..shared_inter_dim],
+                    &up_buf[..shared_inter_dim],
+                );
                 ctx.backend.dequant_matmul(
                     sd,
                     sd_dt,
-                    &gate_buf,
+                    &gate_buf[..shared_inter_dim],
                     &mut down_buf,
                     dim,
                     1,
@@ -1005,7 +1008,7 @@ impl Qwen3MoeForward {
                             encoder,
                             &s.gate_buf,
                             &s.up_buf,
-                            shared_inter_dim as u32,
+                            expert_inter_dim as u32,
                         );
                         decode_barrier(encoder);
                         encode_dequant_matvec_with_config(
@@ -1015,7 +1018,7 @@ impl Qwen3MoeForward {
                             &s.gate_buf,
                             &s.down_buf,
                             dim as u32,
-                            shared_inter_dim as u32,
+                            expert_inter_dim as u32,
                             expert_dtype,
                             exec_plan.dequant_dispatch,
                         );
@@ -1074,7 +1077,7 @@ impl Qwen3MoeForward {
                             su,
                             &s.norm_buf,
                             &s.up_buf,
-                            expert_inter_dim as u32,
+                            shared_inter_dim as u32,
                             dim as u32,
                             sd_dtype,
                             exec_plan.dequant_dispatch,
@@ -1090,7 +1093,7 @@ impl Qwen3MoeForward {
                         &s.up_buf,
                         &s.down_buf,
                         dim as u32,
-                        expert_inter_dim as u32,
+                        shared_inter_dim as u32,
                         sd_dtype,
                         exec_plan.dequant_dispatch,
                         exec_plan.use_fused_silu_down,
@@ -1099,7 +1102,7 @@ impl Qwen3MoeForward {
                             encoder,
                             &s.gate_buf,
                             &s.up_buf,
-                            expert_inter_dim as u32,
+                            shared_inter_dim as u32,
                         );
                         decode_barrier(encoder);
                         encode_dequant_matvec_with_config(
@@ -1109,7 +1112,7 @@ impl Qwen3MoeForward {
                             &s.gate_buf,
                             &s.down_buf,
                             dim as u32,
-                            expert_inter_dim as u32,
+                            shared_inter_dim as u32,
                             sd_dtype,
                             exec_plan.dequant_dispatch,
                         );

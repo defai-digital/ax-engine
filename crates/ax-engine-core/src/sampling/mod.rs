@@ -6,10 +6,10 @@
 //!   3. Banned-token masking
 //!   4. Repetition penalty
 //!   5. Presence/frequency penalties
-//!   6. Temperature scaling
-//!   7. Top-k filtering
-//!   8. Top-p (nucleus) filtering
-//!   9. Min-p filtering
+//!   6. Top-k filtering
+//!   7. Top-p (nucleus) filtering
+//!   8. Min-p filtering
+//!   9. Temperature scaling
 //!   10. Softmax to probabilities
 //!   11. Weighted random selection (or argmax if temperature = 0)
 
@@ -195,7 +195,8 @@ impl Sampler {
     /// Used by speculative decoding for accept/reject decisions.
     pub fn sample_uniform(&mut self) -> f32 {
         let r = xorshift64(&mut self.rng_state);
-        (r >> 11) as f32 / (1u64 << 53) as f32
+        let v = ((r >> 11) as f64 / (1u64 << 53) as f64) as f32;
+        v.min(1.0f32 - f32::EPSILON)
     }
 
     /// Sample a token directly from a pre-computed probability distribution.
@@ -316,21 +317,24 @@ fn apply_penalties_and_filters_with_scratch(
     allowed_tokens::apply_allowed_token_mask(logits, &config.allowed_token_ids);
     banned_tokens::apply_banned_token_mask(logits, &config.banned_token_ids);
 
-    if config.repeat_penalty != 1.0 && !recent_tokens.is_empty() && config.repeat_last_n != 0 {
-        let window = if config.repeat_last_n > 0 {
-            let start = recent_tokens
-                .len()
-                .saturating_sub(config.repeat_last_n as usize);
-            &recent_tokens[start..]
-        } else {
-            recent_tokens
-        };
-        repetition::apply_repetition_penalty(logits, window, config.repeat_penalty);
+    let penalty_window = if config.repeat_last_n > 0 {
+        let start = recent_tokens
+            .len()
+            .saturating_sub(config.repeat_last_n as usize);
+        &recent_tokens[start..]
+    } else if config.repeat_last_n < 0 {
+        recent_tokens
+    } else {
+        &[]
+    };
+
+    if config.repeat_penalty != 1.0 && !penalty_window.is_empty() {
+        repetition::apply_repetition_penalty(logits, penalty_window, config.repeat_penalty);
     }
 
     penalties::apply_presence_frequency_penalties_with_counts(
         logits,
-        recent_tokens,
+        penalty_window,
         config.presence_penalty,
         config.frequency_penalty,
         scratch_counts,
@@ -472,6 +476,7 @@ fn sample_filtered_logits_info_with_scratch(
         };
     }
 
+    scratch_indices.sort_unstable_by(|&a, &b| logits[b].total_cmp(&logits[a]));
     scratch_probs.clear();
     if scratch_probs.capacity() < scratch_indices.len() {
         scratch_probs.reserve(scratch_indices.len() - scratch_probs.capacity());

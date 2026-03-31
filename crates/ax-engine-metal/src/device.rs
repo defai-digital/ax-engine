@@ -10,9 +10,12 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::{
     MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
     MTLComputeCommandEncoder, MTLCreateSystemDefaultDevice, MTLDevice, MTLDispatchType,
+    MTLGPUFamily,
 };
 use std::sync::Arc;
 
+use crate::MetalBuffer;
+use crate::residency::ResidencyManager;
 use crate::{
     PerfCounterState, PerfCounters, inc_command_buffer_count, new_perf_counter_state,
     reset_perf_counter_state, snapshot_perf_counter_state, with_active_perf_counters,
@@ -53,6 +56,7 @@ pub struct MetalDevice {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     perf_counters: Arc<PerfCounterState>,
+    residency: Option<Arc<ResidencyManager>>,
 }
 
 /// Device capabilities.
@@ -66,6 +70,21 @@ pub struct DeviceInfo {
     pub max_working_set_bytes: u64,
     /// Maximum threads per threadgroup (width, height, depth).
     pub max_threads_per_threadgroup: (usize, usize, usize),
+    /// GPU family support flags (runtime-detected).
+    pub gpu_family: GpuFamilySupport,
+}
+
+/// Runtime GPU family feature detection.
+#[derive(Debug, Clone, Copy)]
+pub struct GpuFamilySupport {
+    /// Apple7+ (A14/M1+): simdgroup matrix multiply, simdgroup reduction.
+    pub apple7: bool,
+    /// Apple9 (M3+): bfloat16 native support, mesh shaders.
+    pub apple9: bool,
+    /// Metal 3 (M3+): bfloat16, ray tracing, mesh shaders.
+    pub metal3: bool,
+    /// Metal 4 (M5+): tensor API (mpp::tensor_ops).
+    pub metal4: bool,
 }
 
 impl MetalDevice {
@@ -86,23 +105,41 @@ impl MetalDevice {
             gpu = %info.name,
             unified_memory = info.unified_memory,
             working_set_mb = info.max_working_set_bytes / 1024 / 1024,
+            apple7 = info.gpu_family.apple7,
+            apple9 = info.gpu_family.apple9,
+            metal3 = info.gpu_family.metal3,
+            metal4 = info.gpu_family.metal4,
             "Metal device initialized",
         );
+
+        let residency = if crate::residency_enabled() {
+            ResidencyManager::try_new(&device, &queue).map(Arc::new)
+        } else {
+            None
+        };
 
         Ok(Self {
             device,
             queue,
             perf_counters: new_perf_counter_state(),
+            residency,
         })
     }
 
     fn read_device_info(device: &ProtocolObject<dyn MTLDevice>) -> DeviceInfo {
         let mtl_size = device.maxThreadsPerThreadgroup();
+        let gpu_family = GpuFamilySupport {
+            apple7: device.supportsFamily(MTLGPUFamily::Apple7),
+            apple9: device.supportsFamily(MTLGPUFamily::Apple9),
+            metal3: device.supportsFamily(MTLGPUFamily::Metal3),
+            metal4: device.supportsFamily(MTLGPUFamily(5002)),
+        };
         DeviceInfo {
             name: device.name().to_string(),
             unified_memory: device.hasUnifiedMemory(),
             max_working_set_bytes: device.recommendedMaxWorkingSetSize(),
             max_threads_per_threadgroup: (mtl_size.width, mtl_size.height, mtl_size.depth),
+            gpu_family,
         }
     }
 
@@ -115,10 +152,16 @@ impl MetalDevice {
             .device
             .newCommandQueue()
             .context("Failed to create Metal command queue for shared device")?;
+        // Attach the shared residency set to the new queue — each queue
+        // needs its own attachment for command buffers to benefit.
+        if let Some(ref rm) = self.residency {
+            rm.attach_to_queue(&queue);
+        }
         Ok(Self {
             device: self.device.clone(),
             queue,
             perf_counters: self.perf_counters.clone(),
+            residency: self.residency.clone(),
         })
     }
 
@@ -135,6 +178,39 @@ impl MetalDevice {
     /// Get device capabilities.
     pub fn info(&self) -> DeviceInfo {
         Self::read_device_info(&self.device)
+    }
+
+    /// Current GPU memory allocation in bytes.
+    pub fn current_allocated_bytes(&self) -> u64 {
+        self.device.currentAllocatedSize() as u64
+    }
+
+    /// Log memory pressure: current allocation vs recommended max.
+    pub fn log_memory_pressure(&self) {
+        let allocated = self.current_allocated_bytes();
+        let recommended = self.device.recommendedMaxWorkingSetSize();
+        let alloc_mb = allocated / 1024 / 1024;
+        let rec_mb = recommended / 1024 / 1024;
+        let pct = if recommended > 0 {
+            (allocated as f64 / recommended as f64 * 100.0) as u32
+        } else {
+            0
+        };
+        if allocated > recommended {
+            tracing::warn!(
+                allocated_mb = alloc_mb,
+                recommended_mb = rec_mb,
+                utilization_pct = pct,
+                "GPU memory pressure: allocated exceeds recommended working set",
+            );
+        } else {
+            tracing::info!(
+                allocated_mb = alloc_mb,
+                recommended_mb = rec_mb,
+                utilization_pct = pct,
+                "GPU memory utilization",
+            );
+        }
     }
 
     /// Access the underlying MTLDevice protocol object.
@@ -224,6 +300,31 @@ impl MetalDevice {
         })
     }
 
+    /// Encode and submit a serial command buffer without waiting for completion.
+    ///
+    /// Like [`execute_sync`] but returns an [`InflightFrame`] instead of blocking.
+    /// The caller must later call [`wait_frame`] before reading any GPU-written
+    /// buffers. Metal FIFO ordering guarantees this CB completes before any
+    /// subsequently committed CB starts.
+    pub fn execute_async<F>(&self, f: F) -> anyhow::Result<InflightFrame>
+    where
+        F: FnOnce(&ProtocolObject<dyn MTLComputeCommandEncoder>) -> anyhow::Result<()>,
+    {
+        with_active_perf_counters(&self.perf_counters, || {
+            inc_command_buffer_count();
+            let cmd_buf = self.command_buffer()?;
+            let encoder = cmd_buf
+                .computeCommandEncoder()
+                .context("Failed to create compute command encoder")?;
+
+            f(&encoder)?;
+
+            encoder.endEncoding();
+            cmd_buf.commit();
+            Ok(InflightFrame { cmd_buf })
+        })
+    }
+
     /// Encode and submit a concurrent command buffer without waiting for completion.
     ///
     /// Returns an [`InflightFrame`] that the caller can wait on via [`wait_frame`]
@@ -275,6 +376,29 @@ impl MetalDevice {
         })
     }
 
+    /// Like [`encode_frame`] but creates the encoder with `MTLDispatchTypeConcurrent`.
+    ///
+    /// Independent dispatches within the command buffer can execute in parallel
+    /// on the GPU.  The caller must insert explicit barriers (via
+    /// `barrier_buffers`) between dependent dispatches.
+    pub fn encode_frame_concurrent<F>(&self, f: F) -> anyhow::Result<PendingFrame>
+    where
+        F: FnOnce(&ProtocolObject<dyn MTLComputeCommandEncoder>) -> anyhow::Result<()>,
+    {
+        with_active_perf_counters(&self.perf_counters, || {
+            inc_command_buffer_count();
+            let cmd_buf = self.command_buffer()?;
+            let encoder = cmd_buf
+                .computeCommandEncoderWithDispatchType(MTLDispatchType::Concurrent)
+                .context("Failed to create concurrent compute command encoder")?;
+
+            f(&encoder)?;
+
+            encoder.endEncoding();
+            Ok(PendingFrame { cmd_buf })
+        })
+    }
+
     /// Commit a [`PendingFrame`] to the GPU (non-blocking).
     ///
     /// Returns an [`InflightFrame`] that can be waited on with [`wait_frame`].
@@ -301,6 +425,30 @@ impl MetalDevice {
         }
 
         Ok(())
+    }
+
+    // --- Residency management ---------------------------------------------------
+
+    /// Register a buffer in the residency set (no-op if residency is disabled).
+    pub fn register_resident_buffer(&self, buffer: &MetalBuffer) {
+        if let Some(ref rm) = self.residency {
+            rm.add_buffer(buffer);
+        }
+    }
+
+    /// Commit the residency set, making all registered buffers resident.
+    ///
+    /// Call once after all weight buffers have been cached (typically after the
+    /// model's first forward pass or after `build_cached_model_keys`).
+    pub fn commit_residency(&self) {
+        if let Some(ref rm) = self.residency {
+            rm.commit();
+        }
+    }
+
+    /// Whether this device has an active residency manager.
+    pub fn has_residency(&self) -> bool {
+        self.residency.is_some()
     }
 }
 

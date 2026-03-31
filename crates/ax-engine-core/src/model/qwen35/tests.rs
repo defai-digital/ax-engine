@@ -88,7 +88,7 @@ fn push_tensor_info(buf: &mut Vec<u8>, name: &str, shape: &[u64], dtype: GgmlTyp
 }
 
 fn f32_bytes(values: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(values.len() * std::mem::size_of::<f32>());
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
     for &value in values {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
@@ -315,6 +315,28 @@ fn test_qwen35_prefill_backend_state_batch_auto_prefers_backend_owned_layers() {
             )
         );
     });
+}
+
+#[test]
+fn test_qwen35_fused_recurrent_gpu_candidate_enabled_for_backend_state_batch() {
+    assert!(Qwen35Forward::qwen35_fused_recurrent_gpu_candidate(
+        1,
+        true,
+        &[2, 3],
+        true,
+        true,
+    ));
+}
+
+#[test]
+fn test_qwen35_fused_recurrent_gpu_candidate_enabled_when_eligible() {
+    assert!(Qwen35Forward::qwen35_fused_recurrent_gpu_candidate(
+        1,
+        true,
+        &[2, 3],
+        true,
+        true,
+    ));
 }
 
 #[test]
@@ -649,10 +671,10 @@ fn test_qwen35_prepare_full_attention_qk_batch_matches_staged_path() {
     let mut actual_k = vec![4.0f32, 3.0, 2.0, 1.0, 3.5, 2.5, 1.5, 0.5];
     let mut expected_q = actual_q.clone();
     let mut expected_k = actual_k.clone();
-    let norm_weights = Some(Qwen35AttentionNormWeights {
+    let norm_weights = Qwen35AttentionNormWeights {
         q: &[1.0f32, 1.1, 1.2, 1.3],
         k: &[0.9f32, 1.0, 1.1, 1.2],
-    });
+    };
 
     Qwen35Forward::extract_q_from_q_gate_batch(&q_gate_batch, &mut expected_q, 2, 4);
     Qwen35Forward::apply_attention_qk_norm_batch(
@@ -664,7 +686,7 @@ fn test_qwen35_prepare_full_attention_qk_batch_matches_staged_path() {
         1,
         1,
         4,
-        norm_weights.unwrap(),
+        norm_weights,
         cfg.rms_norm_eps,
     );
     Qwen35Forward::apply_rope_batch(&cfg, &mut expected_q, &mut expected_k, 2, 7, 4, 4, 1, 1, 4);
@@ -681,7 +703,7 @@ fn test_qwen35_prepare_full_attention_qk_batch_matches_staged_path() {
         1,
         1,
         4,
-        norm_weights,
+        Some(norm_weights),
         cfg.rms_norm_eps,
     );
 
@@ -785,7 +807,7 @@ fn test_qwen35_write_all_batch_logits_matches_per_token_reference() {
     let gguf = build_qwen35_logits_test_gguf(&output_norm, &output_weight, dim, vocab_size);
     let path = write_test_gguf_to_temp(&gguf);
 
-    let result = (|| {
+    {
         let model = MappedModel::open(&path).unwrap();
         let weights = WeightStore::new(&model);
         let backend = CpuBackend;
@@ -827,10 +849,9 @@ fn test_qwen35_write_all_batch_logits_matches_per_token_reference() {
                 "logit {idx} mismatch: actual={actual}, expected={expected}"
             );
         }
-    })();
+    }
 
     std::fs::remove_file(&path).ok();
-    result
 }
 
 #[test]
@@ -886,7 +907,7 @@ fn test_qwen35_write_all_batch_logits_gpu_q8_0_matches_cpu_reference() {
     );
     let path = write_test_gguf_to_temp(&gguf);
 
-    let result = (|| {
+    {
         let model = MappedModel::open(&path).unwrap();
         let weights = WeightStore::new(&model);
         let cpu_backend = CpuBackend;
@@ -924,10 +945,9 @@ fn test_qwen35_write_all_batch_logits_gpu_q8_0_matches_cpu_reference() {
                 "q8_0 gpu batch logit {idx} mismatch: actual={actual}, expected={expected}"
             );
         }
-    })();
+    }
 
     std::fs::remove_file(&path).ok();
-    result
 }
 
 #[test]

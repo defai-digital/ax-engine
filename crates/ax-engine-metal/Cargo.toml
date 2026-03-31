@@ -23,6 +23,7 @@ objc2-metal = { workspace = true, features = [
     "MTLComputePipeline",
     "MTLCommandEncoder",
     "MTLComputeCommandEncoder",
+    "MTLResidencySet",
 ] }
 objc2-foundation.workspace = true
 block2.workspace = true

@@ -47,10 +47,10 @@ fn q5k_prefill_route(
         enabled,
         small_n,
         forced_variant: enabled && !matches!(override_variant, Q5KPrefillVariantOverride::Auto),
-        // Real-model microbenching shows the large-N Q5_K route benefits from
-        // f16 input staging, while the dedicated small-N kernel remains better
-        // in the 4..=8 window.
-        use_f16_batch_io: enabled && !small_n,
+        // PRD-PREFILL-DISPATCH-CONSOLIDATION: blocked Q5K kernel (default ON)
+        // does inline float→half cast like Q4K blocked. The separate f16io
+        // path added extra cast dispatches and used a suboptimal kernel.
+        use_f16_batch_io: false,
     }
 }
 
@@ -63,8 +63,23 @@ pub enum DecodeSyncPlan {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeBarrierPlan {
+    /// No explicit barriers — relies on serial encoder ordering.
     Implicit,
+    /// Blanket `memoryBarrierWithScope(Buffers)` at every phase boundary.
     Explicit,
+    /// Per-dispatch SmartBarrier tracking (llama.cpp pattern).
+    ///
+    /// Barriers are inserted only when a new dispatch reads a buffer that a
+    /// pending dispatch wrote, or writes a buffer with any pending access.
+    /// Used with the concurrent encoder — allows the GPU to overlap
+    /// independent dispatches (e.g. separate Q/K/V matvecs, gate/up).
+    Smart,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeEncoderPlan {
+    Serial,
+    Concurrent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,9 +124,14 @@ pub enum PrefillWoInputPlan {
 
 #[derive(Debug, Clone, Copy)]
 pub struct GpuDecodeExecutionPlan {
+    pub encoder: DecodeEncoderPlan,
     pub barriers: DecodeBarrierPlan,
     pub qkv: DecodeQkvPlan,
     pub kv_f16: bool,
+    #[allow(dead_code)]
+    pub kv_q8: bool,
+    #[allow(dead_code)]
+    pub kv_q4: bool,
     pub use_pair_matvec: bool,
     pub use_fused_silu_down: bool,
     pub attention_route: &'static str,
@@ -141,6 +161,8 @@ pub struct Qwen3DecodeLayerPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuBatchPrefillExecutionPlan {
     pub kv_f16: bool,
+    pub kv_q8: bool,
+    pub kv_q4: bool,
     pub use_f16_batch_io: bool,
     pub use_f16_pair: bool,
     pub use_fused_qkv: bool,
@@ -512,6 +534,8 @@ impl DecodeExecutionPlan {
         );
         GpuBatchPrefillExecutionPlan {
             kv_f16: gpu_kv.is_f16(),
+            kv_q8: gpu_kv.is_q8(),
+            kv_q4: gpu_kv.is_q4(),
             use_f16_batch_io,
             use_f16_pair: !q5k_route.enabled && metal_ops.metal_batch_f16_pair_enabled(),
             use_fused_qkv: metal_ops.metal_fused_qkv_enabled(),
@@ -549,6 +573,8 @@ impl DecodeExecutionPlan {
             || (!q5k_route.enabled && metal_ops.metal_batch_f16_io_enabled());
         GpuBatchPrefillExecutionPlan {
             kv_f16: gpu_kv.is_f16(),
+            kv_q8: gpu_kv.is_q8(),
+            kv_q4: gpu_kv.is_q4(),
             use_f16_batch_io,
             use_f16_pair: !q5k_route.enabled && metal_ops.metal_batch_f16_pair_enabled(),
             use_fused_qkv: metal_ops.metal_fused_qkv_enabled(),
@@ -583,6 +609,8 @@ impl DecodeExecutionPlan {
             || (!q5k_route.enabled && metal_ops.metal_batch_f16_io_enabled());
         GpuBatchPrefillExecutionPlan {
             kv_f16: gpu_kv.is_f16(),
+            kv_q8: gpu_kv.is_q8(),
+            kv_q4: gpu_kv.is_q4(),
             use_f16_batch_io,
             use_f16_pair: !q5k_route.enabled && metal_ops.metal_batch_f16_pair_enabled(),
             use_fused_qkv: metal_ops.metal_fused_qkv_enabled(),
@@ -1091,6 +1119,7 @@ impl DecodeBarrierPlan {
         match self {
             Self::Implicit => "implicit",
             Self::Explicit => "explicit",
+            Self::Smart => "smart",
         }
     }
 }
@@ -1172,14 +1201,29 @@ fn single_cb_gpu_decode_plan(
         .q6_k_matvec_candidate_with_config(embedding_dim, dequant_dispatch);
     let attention_selection =
         attention_dispatch.decode_candidate_selection(gpu_kv.is_f16(), head_dim, attend_len as u32);
+    let encoder = if ax_engine_metal::concurrent_decode_enabled() {
+        DecodeEncoderPlan::Concurrent
+    } else {
+        DecodeEncoderPlan::Serial
+    };
+    // Concurrent dispatch requires barriers — use Smart (per-dispatch conflict
+    // detection) for minimal barrier count, matching llama.cpp's strategy.
+    let barriers = if encoder == DecodeEncoderPlan::Concurrent {
+        DecodeBarrierPlan::Smart
+    } else {
+        decode_barrier_plan_for_arch(arch_name)
+    };
     GpuDecodeExecutionPlan {
-        barriers: decode_barrier_plan_for_arch(arch_name),
+        encoder,
+        barriers,
         qkv: decode_qkv_plan_for_arch(
             arch_name,
             metal_ops.metal_fused_qkv_enabled(),
             metal_ops.metal_decode_fused_qkv_enabled(),
         ),
         kv_f16: gpu_kv.is_f16(),
+        kv_q8: gpu_kv.is_q8(),
+        kv_q4: gpu_kv.is_q4(),
         use_pair_matvec: decode_pair_matvec_plan_for_arch(arch_name),
         use_fused_silu_down: decode_fused_silu_down_plan_for_arch(arch_name),
         attention_route: attention_selection.label(),
@@ -1197,12 +1241,12 @@ fn single_cb_gpu_decode_plan(
 
 fn decode_pair_matvec_plan_for_arch(arch_name: &str) -> bool {
     env_flag_override("AX_METAL_DECODE_PAIR_MATVEC")
-        .unwrap_or(matches!(arch_name, "qwen3" | "qwen35"))
+        .unwrap_or(matches!(arch_name, "qwen3" | "qwen35" | "gemma3"))
 }
 
 fn decode_fused_silu_down_plan_for_arch(arch_name: &str) -> bool {
     env_flag_override("AX_METAL_DECODE_FUSED_SILU_DOWN")
-        .unwrap_or(matches!(arch_name, "qwen3" | "qwen35"))
+        .unwrap_or(matches!(arch_name, "qwen3" | "qwen35" | "gemma3"))
 }
 
 fn pipelined_gpu_decode_plan(
@@ -1487,7 +1531,9 @@ mod tests {
     #[test]
     fn test_supports_backend_prefill_kv_accepts_qwen35_hybrid_kv() {
         let cfg = tiny_config("qwen35");
-        let kv = ModelKv::Qwen35(crate::kv::Qwen35Kv::new(4, 2, 4, 32, 4, 4, 8, 2, 4, 2));
+        let kv = ModelKv::Qwen35(Box::new(crate::kv::Qwen35Kv::new(
+            4, 2, 4, 32, 4, 4, 8, 2, 4, 2,
+        )));
         assert!(supports_backend_prefill_kv(&cfg, &kv));
     }
 
@@ -1518,9 +1564,12 @@ mod tests {
             sync: DecodeSyncPlan::SingleCommandBuffer,
             scratch: DecodeScratchPlan::SharedGpuScratch,
             gpu: Some(GpuDecodeExecutionPlan {
+                encoder: DecodeEncoderPlan::Serial,
                 barriers: DecodeBarrierPlan::Implicit,
                 qkv: DecodeQkvPlan::Fused,
                 kv_f16: true,
+                kv_q8: false,
+                kv_q4: false,
                 use_pair_matvec: false,
                 use_fused_silu_down: false,
                 attention_route: "f16kv_hd128",
@@ -1556,9 +1605,12 @@ mod tests {
             sync: DecodeSyncPlan::SingleCommandBuffer,
             scratch: DecodeScratchPlan::SharedGpuScratch,
             gpu: Some(GpuDecodeExecutionPlan {
+                encoder: DecodeEncoderPlan::Serial,
                 barriers: DecodeBarrierPlan::Implicit,
                 qkv: DecodeQkvPlan::Fused,
                 kv_f16: true,
+                kv_q8: false,
+                kv_q4: false,
                 use_pair_matvec: false,
                 use_fused_silu_down: false,
                 attention_route: "f16kv_hd128",
@@ -1594,9 +1646,12 @@ mod tests {
             sync: DecodeSyncPlan::SingleCommandBuffer,
             scratch: DecodeScratchPlan::SharedGpuScratch,
             gpu: Some(GpuDecodeExecutionPlan {
+                encoder: DecodeEncoderPlan::Serial,
                 barriers: DecodeBarrierPlan::Implicit,
                 qkv: DecodeQkvPlan::Fused,
                 kv_f16: true,
+                kv_q8: false,
+                kv_q4: false,
                 use_pair_matvec: false,
                 use_fused_silu_down: false,
                 attention_route: "splitk_hd256",
@@ -1662,9 +1717,12 @@ mod tests {
     #[test]
     fn test_qwen3_layer_plan_uses_fused_qkv_when_supported() {
         let exec_plan = GpuDecodeExecutionPlan {
+            encoder: DecodeEncoderPlan::Serial,
             barriers: DecodeBarrierPlan::Explicit,
             qkv: DecodeQkvPlan::Fused,
             kv_f16: true,
+            kv_q8: false,
+            kv_q4: false,
             use_pair_matvec: true,
             use_fused_silu_down: true,
             attention_route: "f16kv_hd128",
@@ -1693,9 +1751,12 @@ mod tests {
     #[test]
     fn test_qwen3_layer_plan_falls_back_when_qk_norm_missing() {
         let exec_plan = GpuDecodeExecutionPlan {
+            encoder: DecodeEncoderPlan::Serial,
             barriers: DecodeBarrierPlan::Explicit,
             qkv: DecodeQkvPlan::Fused,
             kv_f16: true,
+            kv_q8: false,
+            kv_q4: false,
             use_pair_matvec: true,
             use_fused_silu_down: true,
             attention_route: "f16kv_hd128",
@@ -1851,7 +1912,8 @@ mod tests {
             DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 16, 128, 4096, true, true);
         assert!(plan.q5k_prefill);
         assert!(!plan.q5k_prefill_small_n);
-        assert!(plan.use_f16_batch_io);
+        // PRD-PREFILL-DISPATCH-CONSOLIDATION: blocked kernel for all quant types.
+        assert!(!plan.use_f16_batch_io);
         assert!(
             plan.summary_label("gpu_batch", "cache/stable")
                 .contains("q5k_prefill=base")
@@ -1876,7 +1938,8 @@ mod tests {
             DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 2, 128, 4096, true, true);
         assert!(plan.q5k_prefill);
         assert!(!plan.q5k_prefill_small_n);
-        assert!(plan.use_f16_batch_io);
+        // PRD-PREFILL-DISPATCH-CONSOLIDATION: blocked kernel for all quant types.
+        assert!(!plan.use_f16_batch_io);
         assert!(
             plan.summary_label("gpu_batch", "cache/stable")
                 .contains("q5k_prefill=base")
@@ -1901,7 +1964,8 @@ mod tests {
             DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 16, 128, 4096, true, false);
         assert!(plan.q5k_prefill);
         assert!(!plan.q5k_prefill_small_n);
-        assert!(plan.use_f16_batch_io);
+        // PRD-PREFILL-DISPATCH-CONSOLIDATION: blocked kernel for all quant types.
+        assert!(!plan.use_f16_batch_io);
         assert!(
             plan.summary_label("gpu_batch", "cache/stable")
                 .contains("q5k_prefill=base")
@@ -1928,7 +1992,8 @@ mod tests {
         assert!(plan.q5k_prefill);
         assert!(!plan.q5k_prefill_small_n);
         assert!(plan.q5k_prefill_forced_variant);
-        assert!(plan.use_f16_batch_io);
+        // PRD-PREFILL-DISPATCH-CONSOLIDATION: blocked kernel for all quant types.
+        assert!(!plan.use_f16_batch_io);
         assert!(
             plan.summary_label("gpu_batch", "cache/stable")
                 .contains("q5k_prefill=base_forced")
@@ -1997,6 +2062,8 @@ mod tests {
     fn test_gpu_batch_prefill_summary_label_includes_route_and_attention() {
         let plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
+            kv_q8: false,
+            kv_q4: false,
             use_f16_batch_io: true,
             use_f16_pair: false,
             use_fused_qkv: true,
@@ -2047,6 +2114,8 @@ mod tests {
     fn test_llama_prefill_ffn_layer_uses_pair_for_q8_f16in() {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
+            kv_q8: false,
+            kv_q4: false,
             use_f16_batch_io: true,
             use_f16_pair: false,
             use_fused_qkv: false,
@@ -2077,6 +2146,8 @@ mod tests {
     fn test_qwen3_prefill_ffn_layer_limits_q8_pair_to_small_batches() {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
+            kv_q8: false,
+            kv_q4: false,
             use_f16_batch_io: true,
             use_f16_pair: false,
             use_fused_qkv: false,
@@ -2114,6 +2185,8 @@ mod tests {
     fn test_gemma3_prefill_ffn_layer_requires_explicit_pair_toggle() {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
+            kv_q8: false,
+            kv_q4: false,
             use_f16_batch_io: true,
             use_f16_pair: false,
             use_fused_qkv: false,
@@ -2141,6 +2214,8 @@ mod tests {
     fn test_llama_prefill_ffn_layer_uses_norm_buf_input_without_f16_batch_io() {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
+            kv_q8: false,
+            kv_q4: false,
             use_f16_batch_io: false,
             use_f16_pair: false,
             use_fused_qkv: false,
@@ -2167,6 +2242,8 @@ mod tests {
     fn test_llama_prefill_residual_handoff_uses_f16_norm_path_when_enabled() {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
+            kv_q8: false,
+            kv_q4: false,
             use_f16_batch_io: true,
             use_f16_pair: false,
             use_fused_qkv: false,
@@ -2234,6 +2311,8 @@ mod tests {
     fn test_qwen3_prefill_qkv_layer_reports_fused_bias_post_path() {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
+            kv_q8: false,
+            kv_q4: false,
             use_f16_batch_io: false,
             use_f16_pair: false,
             use_fused_qkv: true,
@@ -2264,6 +2343,8 @@ mod tests {
     fn test_qwen3_prefill_qkv_layer_reports_fused_qknorm_post_path_without_bias() {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
+            kv_q8: false,
+            kv_q4: false,
             use_f16_batch_io: false,
             use_f16_pair: false,
             use_fused_qkv: true,
@@ -2294,6 +2375,8 @@ mod tests {
     fn test_qwen3_prefill_qkv_layer_reports_separate_bias_qknorm_variant() {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
+            kv_q8: false,
+            kv_q4: false,
             use_f16_batch_io: false,
             use_f16_pair: false,
             use_fused_qkv: false,
@@ -2324,6 +2407,8 @@ mod tests {
     fn test_llama_prefill_qkv_layer_reports_split_rope_append_variant() {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
+            kv_q8: false,
+            kv_q4: false,
             use_f16_batch_io: false,
             use_f16_pair: false,
             use_fused_qkv: true,
@@ -2355,6 +2440,8 @@ mod tests {
     fn test_llama_prefill_qkv_layer_uses_f16_input_mode_when_enabled() {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
+            kv_q8: false,
+            kv_q4: false,
             use_f16_batch_io: true,
             use_f16_pair: false,
             use_fused_qkv: true,

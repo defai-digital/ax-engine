@@ -53,14 +53,25 @@ impl Qwen35Forward {
         );
         let rope_position = Self::rope_position(cfg, position);
         let kv_offset = (position * kv_dim) as u32;
-        let decode_barrier = |encoder: &ax_engine_metal::MetalEncoder| {
-            if exec_plan.barriers == crate::model::execution_plan::DecodeBarrierPlan::Explicit {
-                ax_engine_metal::barrier_buffers(encoder);
-            }
-        };
-
-        metal_ops.device.encode_frame(|encoder| {
+        let use_concurrent = exec_plan.encoder
+            == crate::model::execution_plan::DecodeEncoderPlan::Concurrent;
+        // Macro to avoid duplicating the entire closure for serial vs concurrent.
+        macro_rules! with_encoder {
+            ($device:expr, $body:expr) => {
+                if use_concurrent {
+                    $device.encode_frame_concurrent($body)
+                } else {
+                    $device.encode_frame($body)
+                }
+            };
+        }
+        with_encoder!(metal_ops.device, |encoder| {
+            let barrier = crate::model::shared::DecodeBarrierCtx::new(
+                encoder,
+                exec_plan.barriers,
+            );
             let norm_w = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
+            barrier.pre_dispatch(&[hidden_buf], &[&s.norm_buf]);
             metal_ops.elementwise.encode_rms_norm_out(
                 encoder,
                 hidden_buf,
@@ -69,7 +80,8 @@ impl Qwen35Forward {
                 dim as u32,
                 eps,
             );
-            decode_barrier(encoder);
+            barrier.post_dispatch(&[hidden_buf], &[&s.norm_buf]);
+            barrier.step(encoder);
 
             for layer in 0..n_layers {
                 let lw = &cached.layers[layer];
@@ -87,9 +99,12 @@ impl Qwen35Forward {
                     let gpu_attn = qwen_kv.gpu_attention().ok_or_else(|| {
                         anyhow::anyhow!("qwen35 pending decode requires GPU attention KV")
                     })?;
+                    // Q/K/V matvecs all read norm_buf, write different outputs
+                    // → SmartBarrier skips barriers between them.
                     let wq = weight_cache.get(&lw.wq).unwrap();
                     let wk = weight_cache.get(&lw.wk).unwrap();
                     let wv = weight_cache.get(&lw.wv).unwrap();
+                    barrier.pre_dispatch(&[&s.norm_buf], &[&s.gate_buf]);
                     encode_dequant_matvec_with_config(
                         metal_ops,
                         encoder,
@@ -101,6 +116,8 @@ impl Qwen35Forward {
                         lw.wq_dtype,
                         exec_plan.dequant_dispatch,
                     );
+                    barrier.post_dispatch(&[&s.norm_buf], &[&s.gate_buf]);
+                    barrier.pre_dispatch(&[&s.norm_buf], &[&s.k_buf]);
                     encode_dequant_matvec_with_config(
                         metal_ops,
                         encoder,
@@ -112,6 +129,8 @@ impl Qwen35Forward {
                         lw.wk_dtype,
                         exec_plan.dequant_dispatch,
                     );
+                    barrier.post_dispatch(&[&s.norm_buf], &[&s.k_buf]);
+                    barrier.pre_dispatch(&[&s.norm_buf], &[&s.v_buf]);
                     encode_dequant_matvec_with_config(
                         metal_ops,
                         encoder,
@@ -123,6 +142,8 @@ impl Qwen35Forward {
                         lw.wv_dtype,
                         exec_plan.dequant_dispatch,
                     );
+                    barrier.post_dispatch(&[&s.norm_buf], &[&s.v_buf]);
+                    barrier.pre_dispatch(&[&s.gate_buf], &[&s.q_buf, &s.up_buf]);
                     metal_ops.elementwise.encode_split_qgate_batch(
                         encoder,
                         &s.gate_buf,
@@ -131,11 +152,13 @@ impl Qwen35Forward {
                         1,
                         q_dim as u32,
                     );
-                    decode_barrier(encoder);
+                    barrier.post_dispatch(&[&s.gate_buf], &[&s.q_buf, &s.up_buf]);
+                    barrier.step(encoder);
 
                     if let (Some(q_key), Some(k_key)) = (lw.attn_q_norm, lw.attn_k_norm) {
                         let q_nw = weight_cache.get(&q_key).unwrap();
                         let k_nw = weight_cache.get(&k_key).unwrap();
+                        barrier.pre_dispatch(&[&s.q_buf], &[&s.q_buf]);
                         metal_ops.elementwise.encode_per_head_rms_norm_batch(
                             encoder,
                             &s.q_buf,
@@ -145,6 +168,8 @@ impl Qwen35Forward {
                             head_dim as u32,
                             eps,
                         );
+                        barrier.post_dispatch(&[&s.q_buf], &[&s.q_buf]);
+                        barrier.pre_dispatch(&[&s.k_buf], &[&s.k_buf]);
                         metal_ops.elementwise.encode_per_head_rms_norm_batch(
                             encoder,
                             &s.k_buf,
@@ -154,9 +179,11 @@ impl Qwen35Forward {
                             head_dim as u32,
                             eps,
                         );
-                        decode_barrier(encoder);
+                        barrier.post_dispatch(&[&s.k_buf], &[&s.k_buf]);
+                        barrier.step(encoder);
                     }
 
+                    barrier.pre_dispatch(&[&s.q_buf, &s.k_buf], &[&s.q_buf, &s.k_buf]);
                     metal_ops.elementwise.encode_rope_batch(
                         encoder,
                         &s.q_buf,
@@ -169,33 +196,42 @@ impl Qwen35Forward {
                         0.0,
                         cfg.rope_freq_base,
                     );
-                    decode_barrier(encoder);
+                    barrier.post_dispatch(&[&s.q_buf, &s.k_buf], &[&s.q_buf, &s.k_buf]);
+                    barrier.step(encoder);
 
+                    // K/V appends write different KV buffers → can overlap.
+                    let kv_k = gpu_attn.k_buffer(layer);
+                    let kv_v = gpu_attn.v_buffer(layer);
+                    barrier.pre_dispatch(&[&s.k_buf], &[kv_k]);
                     metal_ops.elementwise.encode_kv_append(
                         encoder,
                         &s.k_buf,
-                        gpu_attn.k_buffer(layer),
+                        kv_k,
                         gpu_attn.is_f16(),
                         kv_offset,
                         kv_dim as u32,
                     );
+                    barrier.post_dispatch(&[&s.k_buf], &[kv_k]);
+                    barrier.pre_dispatch(&[&s.v_buf], &[kv_v]);
                     metal_ops.elementwise.encode_kv_append(
                         encoder,
                         &s.v_buf,
-                        gpu_attn.v_buffer(layer),
+                        kv_v,
                         gpu_attn.is_f16(),
                         kv_offset,
                         kv_dim as u32,
                     );
-                    decode_barrier(encoder);
+                    barrier.post_dispatch(&[&s.v_buf], &[kv_v]);
+                    barrier.step(encoder);
 
+                    barrier.pre_dispatch(&[&s.q_buf, kv_k, kv_v], &[&s.attn_out]);
                     metal_ops
                         .attention
                         .encode_attention_decode_with_scratch_and_config(
                             encoder,
                             &s.q_buf,
-                            gpu_attn.k_buffer(layer),
-                            gpu_attn.v_buffer(layer),
+                            kv_k,
+                            kv_v,
                             &s.attn_out,
                             &s.splitk_partial_out,
                             &s.splitk_partial_lse,
@@ -207,16 +243,20 @@ impl Qwen35Forward {
                             full_seq_len as u32,
                             exec_plan.attention_dispatch,
                         );
-                    decode_barrier(encoder);
+                    barrier.post_dispatch(&[&s.q_buf, kv_k, kv_v], &[&s.attn_out]);
+                    barrier.step(encoder);
 
+                    barrier.pre_dispatch(&[&s.up_buf, &s.attn_out], &[&s.attn_out]);
                     metal_ops.elementwise.encode_sigmoid_elementwise_mul(
                         encoder,
                         &s.up_buf,
                         &s.attn_out,
                         q_dim as u32,
                     );
-                    decode_barrier(encoder);
+                    barrier.post_dispatch(&[&s.up_buf, &s.attn_out], &[&s.attn_out]);
+                    barrier.step(encoder);
 
+                    barrier.pre_dispatch(&[&s.attn_out], &[&s.proj_buf]);
                     encode_dequant_matvec_with_config(
                         metal_ops,
                         encoder,
@@ -228,9 +268,14 @@ impl Qwen35Forward {
                         lw.wo_dtype,
                         exec_plan.dequant_dispatch,
                     );
-                    decode_barrier(encoder);
+                    barrier.post_dispatch(&[&s.attn_out], &[&s.proj_buf]);
+                    barrier.step(encoder);
 
                     let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
+                    barrier.pre_dispatch(
+                        &[hidden_buf, &s.proj_buf],
+                        &[hidden_buf, &s.norm_buf],
+                    );
                     metal_ops
                         .elementwise
                         .encode_residual_add_rms_norm_out_batch(
@@ -243,10 +288,16 @@ impl Qwen35Forward {
                             1,
                             eps,
                         );
-                    decode_barrier(encoder);
+                    barrier.post_dispatch(
+                        &[hidden_buf, &s.proj_buf],
+                        &[hidden_buf, &s.norm_buf],
+                    );
+                    barrier.step(encoder);
 
+                    // Gate/Up: both read norm_buf, write different outputs → can overlap.
                     let wg = weight_cache.get(&lw.wg).unwrap();
                     let wu = weight_cache.get(&lw.wu).unwrap();
+                    barrier.pre_dispatch(&[&s.norm_buf], &[&s.gate_buf, &s.up_buf]);
                     if !crate::model::shared::encode_dequant_matvec_pair_with_config(
                         metal_ops,
                         encoder,
@@ -285,7 +336,8 @@ impl Qwen35Forward {
                             exec_plan.dequant_dispatch,
                         );
                     }
-                    decode_barrier(encoder);
+                    barrier.post_dispatch(&[&s.norm_buf], &[&s.gate_buf, &s.up_buf]);
+                    barrier.step(encoder);
 
                     crate::model::shared::encode_gpu_ffn_decode_tail(
                         metal_ops,
@@ -302,7 +354,7 @@ impl Qwen35Forward {
                         crate::model::layer_ops::FfnActivation::SiLU,
                         None,
                         next_norm,
-                        &decode_barrier,
+                        &barrier,
                     );
                 } else {
                     let recurrent_keys = match &gpu_layer_keys[layer] {
@@ -322,239 +374,202 @@ impl Qwen35Forward {
                         recurrent_state_stride,
                         |slot_buffers| {
                             let norm_w = weight_cache.get(&lw.attn_norm).unwrap();
+                            barrier.pre_dispatch(&[hidden_buf], &[&s.norm_buf]);
                             metal_ops.elementwise.encode_rms_norm_out(
-                                encoder,
-                                hidden_buf,
-                                norm_w,
-                                &s.norm_buf,
-                                dim as u32,
-                                eps,
+                                encoder, hidden_buf, norm_w, &s.norm_buf,
+                                dim as u32, eps,
                             );
-                            decode_barrier(encoder);
+                            barrier.post_dispatch(&[hidden_buf], &[&s.norm_buf]);
+                            barrier.step(encoder);
 
+                            // Recurrent projections: all read norm_buf, write
+                            // different outputs → can overlap.
+                            barrier.pre_dispatch(&[&s.norm_buf], &[&s.gate_buf]);
                             encode_dequant_matvec_with_config(
-                                metal_ops,
-                                encoder,
+                                metal_ops, encoder,
                                 weight_cache.get(&recurrent_keys.wqkv).unwrap(),
-                                &s.norm_buf,
-                                &s.gate_buf,
-                                dims.conv_dim() as u32,
-                                dim as u32,
-                                recurrent_keys.wqkv_dtype,
-                                exec_plan.dequant_dispatch,
+                                &s.norm_buf, &s.gate_buf,
+                                dims.conv_dim() as u32, dim as u32,
+                                recurrent_keys.wqkv_dtype, exec_plan.dequant_dispatch,
                             );
+                            barrier.post_dispatch(&[&s.norm_buf], &[&s.gate_buf]);
+                            barrier.pre_dispatch(&[&s.norm_buf], &[&s.attn_out]);
                             encode_dequant_matvec_with_config(
-                                metal_ops,
-                                encoder,
+                                metal_ops, encoder,
                                 weight_cache.get(&recurrent_keys.wgate).unwrap(),
-                                &s.norm_buf,
-                                &s.attn_out,
-                                dims.inner_size as u32,
-                                dim as u32,
-                                recurrent_keys.wgate_dtype,
-                                exec_plan.dequant_dispatch,
+                                &s.norm_buf, &s.attn_out,
+                                dims.inner_size as u32, dim as u32,
+                                recurrent_keys.wgate_dtype, exec_plan.dequant_dispatch,
                             );
+                            barrier.post_dispatch(&[&s.norm_buf], &[&s.attn_out]);
                             let wbeta = weight_cache.get(&recurrent_keys.wbeta).unwrap();
                             let walpha = weight_cache.get(&recurrent_keys.walpha).unwrap();
+                            barrier.pre_dispatch(&[&s.norm_buf], &[&s.v_buf, &s.proj_buf]);
                             if !Self::encode_recurrent_pair_matvec_with_config(
-                                metal_ops,
-                                encoder,
-                                wbeta,
-                                walpha,
-                                &s.norm_buf,
-                                &s.v_buf,
-                                &s.proj_buf,
-                                dims.time_step_rank as u32,
-                                dim as u32,
-                                recurrent_keys.wbeta_dtype,
-                                recurrent_keys.walpha_dtype,
+                                metal_ops, encoder, wbeta, walpha,
+                                &s.norm_buf, &s.v_buf, &s.proj_buf,
+                                dims.time_step_rank as u32, dim as u32,
+                                recurrent_keys.wbeta_dtype, recurrent_keys.walpha_dtype,
                             ) {
                                 encode_dequant_matvec_with_config(
-                                    metal_ops,
-                                    encoder,
-                                    wbeta,
-                                    &s.norm_buf,
-                                    &s.v_buf,
-                                    dims.time_step_rank as u32,
-                                    dim as u32,
-                                    recurrent_keys.wbeta_dtype,
-                                    exec_plan.dequant_dispatch,
+                                    metal_ops, encoder, wbeta, &s.norm_buf, &s.v_buf,
+                                    dims.time_step_rank as u32, dim as u32,
+                                    recurrent_keys.wbeta_dtype, exec_plan.dequant_dispatch,
                                 );
                                 encode_dequant_matvec_with_config(
-                                    metal_ops,
-                                    encoder,
-                                    walpha,
-                                    &s.norm_buf,
-                                    &s.proj_buf,
-                                    dims.time_step_rank as u32,
-                                    dim as u32,
-                                    recurrent_keys.walpha_dtype,
-                                    exec_plan.dequant_dispatch,
+                                    metal_ops, encoder, walpha, &s.norm_buf, &s.proj_buf,
+                                    dims.time_step_rank as u32, dim as u32,
+                                    recurrent_keys.walpha_dtype, exec_plan.dequant_dispatch,
                                 );
                             }
-                            decode_barrier(encoder);
+                            barrier.post_dispatch(&[&s.norm_buf], &[&s.v_buf, &s.proj_buf]);
+                            barrier.step(encoder);
 
+                            // softplus(beta) and sigmoid(alpha) operate on different bufs.
                             let dt_bias_buf = weight_cache.get(&recurrent_keys.dt_bias).unwrap();
                             let ssm_a_buf = weight_cache.get(&recurrent_keys.ssm_a).unwrap();
+                            barrier.pre_dispatch(&[&s.proj_buf], &[&s.proj_buf]);
                             metal_ops.elementwise.encode_softplus_bias_mul(
-                                encoder,
-                                &s.proj_buf,
-                                dt_bias_buf,
-                                ssm_a_buf,
+                                encoder, &s.proj_buf, dt_bias_buf, ssm_a_buf,
                                 dims.time_step_rank as u32,
                             );
+                            barrier.post_dispatch(&[&s.proj_buf], &[&s.proj_buf]);
+                            barrier.pre_dispatch(&[&s.v_buf], &[&s.v_buf]);
                             metal_ops.elementwise.encode_sigmoid_inplace(
-                                encoder,
-                                &s.v_buf,
-                                dims.time_step_rank as u32,
+                                encoder, &s.v_buf, dims.time_step_rank as u32,
                             );
-                            decode_barrier(encoder);
+                            barrier.post_dispatch(&[&s.v_buf], &[&s.v_buf]);
+                            barrier.step(encoder);
 
+                            barrier.pre_dispatch(
+                                &[&s.gate_buf, &slot_buffers.conv_state],
+                                &[&s.up_buf, &slot_buffers.conv_state],
+                            );
                             metal_ops.gdn.encode_causal_conv_sequence(
-                                encoder,
-                                &s.gate_buf,
+                                encoder, &s.gate_buf,
                                 weight_cache.get(&recurrent_keys.conv_kernel).unwrap(),
-                                &slot_buffers.conv_state,
-                                &s.up_buf,
-                                1,
-                                conv_cache_len as u32,
-                                dims.conv_dim() as u32,
+                                &slot_buffers.conv_state, &s.up_buf,
+                                1, conv_cache_len as u32, dims.conv_dim() as u32,
                             );
-                            decode_barrier(encoder);
+                            barrier.post_dispatch(
+                                &[&s.gate_buf, &slot_buffers.conv_state],
+                                &[&s.up_buf, &slot_buffers.conv_state],
+                            );
+                            barrier.step(encoder);
 
+                            barrier.pre_dispatch(
+                                &[&s.up_buf, &s.proj_buf, &s.v_buf, &slot_buffers.recurrent_state],
+                                &[&s.q_buf, &slot_buffers.recurrent_state],
+                            );
                             if metal_ops.gdn.encode_single_token_gated_delta_fused(
-                                encoder,
-                                &s.up_buf,
-                                &s.proj_buf,
-                                &s.v_buf,
-                                &slot_buffers.recurrent_state,
-                                &s.q_buf,
-                                dims.group_count as u32,
-                                dims.time_step_rank as u32,
-                                dims.state_size as u32,
-                                eps,
+                                encoder, &s.up_buf, &s.proj_buf, &s.v_buf,
+                                &slot_buffers.recurrent_state, &s.q_buf,
+                                dims.group_count as u32, dims.time_step_rank as u32,
+                                dims.state_size as u32, eps,
                             ) {
-                                decode_barrier(encoder);
+                                barrier.post_dispatch(
+                                    &[&s.up_buf, &s.proj_buf, &s.v_buf, &slot_buffers.recurrent_state],
+                                    &[&s.q_buf, &slot_buffers.recurrent_state],
+                                );
+                                barrier.step(encoder);
                             } else {
+                                barrier.post_dispatch(
+                                    &[&s.up_buf], &[&s.q_buf, &s.norm_buf, &s.down_buf],
+                                );
                                 metal_ops.gdn.encode_prepare_single_token_qkv(
-                                    encoder,
-                                    &s.up_buf,
-                                    &s.q_buf,
-                                    &s.norm_buf,
-                                    &s.down_buf,
-                                    dims.group_count as u32,
-                                    dims.time_step_rank as u32,
-                                    dims.state_size as u32,
-                                    eps,
+                                    encoder, &s.up_buf, &s.q_buf, &s.norm_buf, &s.down_buf,
+                                    dims.group_count as u32, dims.time_step_rank as u32,
+                                    dims.state_size as u32, eps,
                                 );
-                                decode_barrier(encoder);
+                                barrier.post_dispatch(
+                                    &[&s.up_buf], &[&s.q_buf, &s.norm_buf, &s.down_buf],
+                                );
+                                barrier.step(encoder);
 
+                                barrier.pre_dispatch(
+                                    &[&s.q_buf, &s.norm_buf, &s.down_buf, &s.proj_buf,
+                                      &s.v_buf, &slot_buffers.recurrent_state],
+                                    &[&s.q_buf, &slot_buffers.recurrent_state],
+                                );
                                 metal_ops.gdn.encode_gated_delta_sequence(
-                                    encoder,
-                                    &s.q_buf,
-                                    &s.norm_buf,
-                                    &s.down_buf,
-                                    &s.proj_buf,
-                                    &s.v_buf,
-                                    &slot_buffers.recurrent_state,
-                                    &s.q_buf,
-                                    1,
-                                    dims.time_step_rank as u32,
+                                    encoder, &s.q_buf, &s.norm_buf, &s.down_buf,
+                                    &s.proj_buf, &s.v_buf, &slot_buffers.recurrent_state,
+                                    &s.q_buf, 1, dims.time_step_rank as u32,
                                     dims.state_size as u32,
                                 );
-                                decode_barrier(encoder);
+                                barrier.post_dispatch(
+                                    &[&s.q_buf, &s.norm_buf, &s.down_buf, &s.proj_buf,
+                                      &s.v_buf, &slot_buffers.recurrent_state],
+                                    &[&s.q_buf, &slot_buffers.recurrent_state],
+                                );
+                                barrier.step(encoder);
                             }
 
                             let ssm_norm = weight_cache.get(&recurrent_keys.ssm_norm).unwrap();
+                            barrier.pre_dispatch(&[&s.q_buf], &[&s.q_buf]);
                             metal_ops.elementwise.encode_per_head_rms_norm_batch(
-                                encoder,
-                                &s.q_buf,
-                                ssm_norm,
-                                1,
-                                dims.time_step_rank as u32,
-                                dims.state_size as u32,
-                                eps,
+                                encoder, &s.q_buf, ssm_norm, 1,
+                                dims.time_step_rank as u32, dims.state_size as u32, eps,
                             );
-                            decode_barrier(encoder);
+                            barrier.post_dispatch(&[&s.q_buf], &[&s.q_buf]);
+                            barrier.step(encoder);
 
+                            barrier.pre_dispatch(&[&s.attn_out, &s.q_buf], &[&s.attn_out]);
                             metal_ops.elementwise.encode_silu_elementwise_mul_batch(
-                                encoder,
-                                &s.attn_out,
-                                &s.q_buf,
-                                dims.inner_size as u32,
-                                1,
+                                encoder, &s.attn_out, &s.q_buf,
+                                dims.inner_size as u32, 1,
                             );
-                            decode_barrier(encoder);
+                            barrier.post_dispatch(&[&s.attn_out, &s.q_buf], &[&s.attn_out]);
+                            barrier.step(encoder);
 
+                            barrier.pre_dispatch(&[&s.attn_out], &[&s.proj_buf]);
                             encode_dequant_matvec_with_config(
-                                metal_ops,
-                                encoder,
+                                metal_ops, encoder,
                                 weight_cache.get(&recurrent_keys.wssm_out).unwrap(),
-                                &s.attn_out,
-                                &s.proj_buf,
-                                dim as u32,
-                                dims.inner_size as u32,
-                                recurrent_keys.wssm_out_dtype,
-                                exec_plan.dequant_dispatch,
+                                &s.attn_out, &s.proj_buf,
+                                dim as u32, dims.inner_size as u32,
+                                recurrent_keys.wssm_out_dtype, exec_plan.dequant_dispatch,
                             );
-                            decode_barrier(encoder);
+                            barrier.post_dispatch(&[&s.attn_out], &[&s.proj_buf]);
+                            barrier.step(encoder);
 
                             let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
-                            metal_ops
-                                .elementwise
-                                .encode_residual_add_rms_norm_out_batch(
-                                    encoder,
-                                    hidden_buf,
-                                    &s.proj_buf,
-                                    ffn_nw,
-                                    &s.norm_buf,
-                                    dim as u32,
-                                    1,
-                                    eps,
-                                );
-                            decode_barrier(encoder);
+                            barrier.pre_dispatch(
+                                &[hidden_buf, &s.proj_buf], &[hidden_buf, &s.norm_buf],
+                            );
+                            metal_ops.elementwise.encode_residual_add_rms_norm_out_batch(
+                                encoder, hidden_buf, &s.proj_buf, ffn_nw,
+                                &s.norm_buf, dim as u32, 1, eps,
+                            );
+                            barrier.post_dispatch(
+                                &[hidden_buf, &s.proj_buf], &[hidden_buf, &s.norm_buf],
+                            );
+                            barrier.step(encoder);
 
+                            // Gate/Up: both read norm_buf, write different → can overlap.
                             let wg = weight_cache.get(&lw.wg).unwrap();
                             let wu = weight_cache.get(&lw.wu).unwrap();
+                            barrier.pre_dispatch(&[&s.norm_buf], &[&s.gate_buf, &s.up_buf]);
                             if !crate::model::shared::encode_dequant_matvec_pair_with_config(
-                                metal_ops,
-                                encoder,
-                                wg,
-                                wu,
-                                &s.norm_buf,
-                                &s.gate_buf,
-                                &s.up_buf,
-                                inter_dim as u32,
-                                dim as u32,
-                                lw.wg_dtype,
-                                lw.wu_dtype,
-                                exec_plan.dequant_dispatch,
-                                exec_plan.use_pair_matvec,
+                                metal_ops, encoder, wg, wu,
+                                &s.norm_buf, &s.gate_buf, &s.up_buf,
+                                inter_dim as u32, dim as u32,
+                                lw.wg_dtype, lw.wu_dtype,
+                                exec_plan.dequant_dispatch, exec_plan.use_pair_matvec,
                             ) {
                                 encode_dequant_matvec_with_config(
-                                    metal_ops,
-                                    encoder,
-                                    wg,
-                                    &s.norm_buf,
-                                    &s.gate_buf,
-                                    inter_dim as u32,
-                                    dim as u32,
-                                    lw.wg_dtype,
-                                    exec_plan.dequant_dispatch,
+                                    metal_ops, encoder, wg, &s.norm_buf, &s.gate_buf,
+                                    inter_dim as u32, dim as u32,
+                                    lw.wg_dtype, exec_plan.dequant_dispatch,
                                 );
                                 encode_dequant_matvec_with_config(
-                                    metal_ops,
-                                    encoder,
-                                    wu,
-                                    &s.norm_buf,
-                                    &s.up_buf,
-                                    inter_dim as u32,
-                                    dim as u32,
-                                    lw.wu_dtype,
-                                    exec_plan.dequant_dispatch,
+                                    metal_ops, encoder, wu, &s.norm_buf, &s.up_buf,
+                                    inter_dim as u32, dim as u32,
+                                    lw.wu_dtype, exec_plan.dequant_dispatch,
                                 );
                             }
-                            decode_barrier(encoder);
+                            barrier.post_dispatch(&[&s.norm_buf], &[&s.gate_buf, &s.up_buf]);
+                            barrier.step(encoder);
 
                             crate::model::shared::encode_gpu_ffn_decode_tail(
                                 metal_ops,
@@ -571,7 +586,7 @@ impl Qwen35Forward {
                                 crate::model::layer_ops::FfnActivation::SiLU,
                                 None,
                                 next_norm,
-                                &decode_barrier,
+                                &barrier,
                             );
                         },
                     );
@@ -586,10 +601,12 @@ impl Qwen35Forward {
                 &exec_plan,
                 cached,
                 &weight_cache,
+                &barrier,
                 dim as u32,
                 vocab_size as u32,
                 eps,
             );
+            barrier.flush();
             Ok(())
         })
     }
@@ -666,12 +683,6 @@ impl Qwen35Forward {
             cfg.head_dim,
             full_seq_len,
         );
-        let decode_barrier = |encoder: &ax_engine_metal::MetalEncoder| {
-            if exec_plan.barriers == crate::model::execution_plan::DecodeBarrierPlan::Explicit {
-                ax_engine_metal::barrier_buffers(encoder);
-            }
-        };
-
         let setup_t = OpTimer::start();
 
         // Embed token.
@@ -696,7 +707,22 @@ impl Qwen35Forward {
         }
 
         let exec_t = OpTimer::start();
-        metal_ops.device.execute_sync(|encoder| {
+        let use_concurrent_sc = exec_plan.encoder
+            == crate::model::execution_plan::DecodeEncoderPlan::Concurrent;
+        macro_rules! exec_sync {
+            ($device:expr, $body:expr) => {
+                if use_concurrent_sc {
+                    $device.execute_sync_concurrent($body)
+                } else {
+                    $device.execute_sync($body)
+                }
+            };
+        }
+        exec_sync!(metal_ops.device, |encoder| {
+            let barrier = crate::model::shared::DecodeBarrierCtx::new(
+                encoder,
+                exec_plan.barriers,
+            );
             // Layer 0 attention norm.
             let layer0_norm_t = OpTimer::start();
             let norm_w = weight_cache.get(&cached.layers[0].attn_norm).unwrap();
@@ -708,7 +734,7 @@ impl Qwen35Forward {
                 dim as u32,
                 eps,
             );
-            decode_barrier(encoder);
+            barrier.step(encoder);
             if let Some(ref mut ops_ref) = ops {
                 ops_ref.gpu_encode_layer_norm += layer0_norm_t.elapsed();
             }
@@ -775,7 +801,7 @@ impl Qwen35Forward {
                         1,
                         q_dim as u32,
                     );
-                    decode_barrier(encoder);
+                    barrier.step(encoder);
                     if let Some(ref mut ops_ref) = ops {
                         ops_ref.gpu_encode_layer_qkv += qkv_t.elapsed();
                     }
@@ -802,7 +828,7 @@ impl Qwen35Forward {
                             head_dim as u32,
                             eps,
                         );
-                        decode_barrier(encoder);
+                        barrier.step(encoder);
                         if let Some(ref mut ops_ref) = ops {
                             ops_ref.gpu_encode_layer_norm += qk_norm_t.elapsed();
                         }
@@ -821,7 +847,7 @@ impl Qwen35Forward {
                         0.0,
                         cfg.rope_freq_base,
                     );
-                    decode_barrier(encoder);
+                    barrier.step(encoder);
                     if let Some(ref mut ops_ref) = ops {
                         ops_ref.gpu_encode_layer_rope += rope_t.elapsed();
                     }
@@ -843,7 +869,7 @@ impl Qwen35Forward {
                         kv_offset,
                         kv_dim as u32,
                     );
-                    decode_barrier(encoder);
+                    barrier.step(encoder);
                     if let Some(ref mut ops_ref) = ops {
                         ops_ref.gpu_encode_layer_kv_append += kv_append_t.elapsed();
                     }
@@ -867,7 +893,7 @@ impl Qwen35Forward {
                             full_seq_len as u32,
                             exec_plan.attention_dispatch,
                         );
-                    decode_barrier(encoder);
+                    barrier.step(encoder);
 
                     metal_ops.elementwise.encode_sigmoid_elementwise_mul(
                         encoder,
@@ -875,7 +901,7 @@ impl Qwen35Forward {
                         &s.attn_out,
                         q_dim as u32,
                     );
-                    decode_barrier(encoder);
+                    barrier.step(encoder);
                     if let Some(ref mut ops_ref) = ops {
                         ops_ref.gpu_encode_layer_attention += attn_t.elapsed();
                     }
@@ -892,7 +918,7 @@ impl Qwen35Forward {
                         lw.wo_dtype,
                         exec_plan.dequant_dispatch,
                     );
-                    decode_barrier(encoder);
+                    barrier.step(encoder);
                     if let Some(ref mut ops_ref) = ops {
                         ops_ref.gpu_encode_layer_out_proj += out_proj_t.elapsed();
                     }
@@ -911,7 +937,7 @@ impl Qwen35Forward {
                             1,
                             eps,
                         );
-                    decode_barrier(encoder);
+                    barrier.step(encoder);
                     if let Some(ref mut ops_ref) = ops {
                         let elapsed = residual_norm_t.elapsed();
                         ops_ref.gpu_encode_layer_residual += elapsed / 2;
@@ -959,7 +985,7 @@ impl Qwen35Forward {
                             exec_plan.dequant_dispatch,
                         );
                     }
-                    decode_barrier(encoder);
+                    barrier.step(encoder);
                     if let Some(ref mut ops_ref) = ops {
                         ops_ref.gpu_encode_layer_ffn += gate_up_t.elapsed();
                     }
@@ -980,7 +1006,7 @@ impl Qwen35Forward {
                         crate::model::layer_ops::FfnActivation::SiLU,
                         None,
                         next_norm,
-                        &decode_barrier,
+                        &barrier,
                     );
                     if let Some(ref mut ops_ref) = ops {
                         ops_ref.gpu_encode_layer_ffn += ffn_tail_t.elapsed();
@@ -1012,7 +1038,7 @@ impl Qwen35Forward {
                                 dim as u32,
                                 eps,
                             );
-                            decode_barrier(encoder);
+                            barrier.step(encoder);
                             if let Some(ref mut ops_ref) = ops {
                                 ops_ref.gpu_encode_layer_norm += recurrent_norm_t.elapsed();
                             }
@@ -1078,7 +1104,7 @@ impl Qwen35Forward {
                                     exec_plan.dequant_dispatch,
                                 );
                             }
-                            decode_barrier(encoder);
+                            barrier.step(encoder);
 
                             // Apply prepare_alpha_beta on GPU: softplus(alpha + dt_bias) * A
                             // for the decay factor, and sigmoid(beta) for the input gate.
@@ -1096,7 +1122,7 @@ impl Qwen35Forward {
                                 &s.v_buf,
                                 dims.time_step_rank as u32,
                             );
-                            decode_barrier(encoder);
+                            barrier.step(encoder);
 
                             if let Some(ref mut ops_ref) = ops {
                                 ops_ref.gpu_encode_layer_qkv += recurrent_input_t.elapsed();
@@ -1113,7 +1139,7 @@ impl Qwen35Forward {
                                 conv_cache_len as u32,
                                 dims.conv_dim() as u32,
                             );
-                            decode_barrier(encoder);
+                            barrier.step(encoder);
 
                             if metal_ops.gdn.encode_single_token_gated_delta_fused(
                                 encoder,
@@ -1127,7 +1153,7 @@ impl Qwen35Forward {
                                 dims.state_size as u32,
                                 eps,
                             ) {
-                                decode_barrier(encoder);
+                                barrier.step(encoder);
                             } else {
                                 metal_ops.gdn.encode_prepare_single_token_qkv(
                                     encoder,
@@ -1140,7 +1166,7 @@ impl Qwen35Forward {
                                     dims.state_size as u32,
                                     eps,
                                 );
-                                decode_barrier(encoder);
+                                barrier.step(encoder);
 
                                 metal_ops.gdn.encode_gated_delta_sequence(
                                     encoder,
@@ -1155,7 +1181,7 @@ impl Qwen35Forward {
                                     dims.time_step_rank as u32,
                                     dims.state_size as u32,
                                 );
-                                decode_barrier(encoder);
+                                barrier.step(encoder);
                             }
 
                             let ssm_norm = weight_cache.get(&recurrent_keys.ssm_norm).unwrap();
@@ -1168,7 +1194,7 @@ impl Qwen35Forward {
                                 dims.state_size as u32,
                                 eps,
                             );
-                            decode_barrier(encoder);
+                            barrier.step(encoder);
 
                             metal_ops.elementwise.encode_silu_elementwise_mul_batch(
                                 encoder,
@@ -1177,7 +1203,7 @@ impl Qwen35Forward {
                                 dims.inner_size as u32,
                                 1,
                             );
-                            decode_barrier(encoder);
+                            barrier.step(encoder);
                             if let Some(ref mut ops_ref) = ops {
                                 ops_ref.gpu_encode_layer_attention += recurrent_core_t.elapsed();
                             }
@@ -1194,7 +1220,7 @@ impl Qwen35Forward {
                                 recurrent_keys.wssm_out_dtype,
                                 exec_plan.dequant_dispatch,
                             );
-                            decode_barrier(encoder);
+                            barrier.step(encoder);
                             if let Some(ref mut ops_ref) = ops {
                                 ops_ref.gpu_encode_layer_out_proj += recurrent_out_proj_t.elapsed();
                             }
@@ -1213,7 +1239,7 @@ impl Qwen35Forward {
                                     1,
                                     eps,
                                 );
-                            decode_barrier(encoder);
+                            barrier.step(encoder);
                             if let Some(ref mut ops_ref) = ops {
                                 let elapsed = residual_norm_t.elapsed();
                                 ops_ref.gpu_encode_layer_residual += elapsed / 2;
@@ -1261,7 +1287,7 @@ impl Qwen35Forward {
                                     exec_plan.dequant_dispatch,
                                 );
                             }
-                            decode_barrier(encoder);
+                            barrier.step(encoder);
                             if let Some(ref mut ops_ref) = ops {
                                 ops_ref.gpu_encode_layer_ffn += gate_up_t.elapsed();
                             }
@@ -1282,7 +1308,7 @@ impl Qwen35Forward {
                                 crate::model::layer_ops::FfnActivation::SiLU,
                                 None,
                                 next_norm,
-                                &decode_barrier,
+                                &barrier,
                             );
                             if let Some(ref mut ops_ref) = ops {
                                 ops_ref.gpu_encode_layer_ffn += ffn_tail_t.elapsed();
@@ -1300,10 +1326,12 @@ impl Qwen35Forward {
                 &exec_plan,
                 cached,
                 &weight_cache,
+                &barrier,
                 dim as u32,
                 vocab_size as u32,
                 eps,
             );
+            barrier.flush();
             Ok(())
         })?;
         if let Some(ref mut ops_ref) = ops {

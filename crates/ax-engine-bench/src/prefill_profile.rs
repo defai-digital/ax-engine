@@ -248,6 +248,7 @@ fn classify_prefill_profile_route(
     (family, detail)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_qwen35_dtype_audit(
     model: &LlamaModel,
     runtime_policy: Option<&RuntimePolicy>,
@@ -696,6 +697,7 @@ fn run_prefill_once(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_prefill_profiled_once(
     model: &LlamaModel,
     kv: &mut ModelKv,
@@ -1631,11 +1633,12 @@ mod tests {
             ax_engine_core::backend::create_backend(BackendConfig::default()).expect("backend"),
         )
         .expect("model");
-        let mut recurrent_counters =
-            ax_engine_core::backend::metal::Qwen35RecurrentBatchPerfCounters::default();
-        recurrent_counters.qkv_handoff_slot_buffer_layers = 8;
-        recurrent_counters.qkv_handoff_backend_carryover_layers = 8;
-        recurrent_counters.qkv_handoff_layers = 8;
+        let recurrent_counters = ax_engine_core::backend::metal::Qwen35RecurrentBatchPerfCounters {
+            qkv_handoff_slot_buffer_layers: 8,
+            qkv_handoff_backend_carryover_layers: 8,
+            qkv_handoff_layers: 8,
+            ..Default::default()
+        };
         let audit = build_qwen35_dtype_audit(
             &model,
             None,
@@ -1666,11 +1669,12 @@ mod tests {
             ax_engine_core::backend::create_backend(BackendConfig::default()).expect("backend"),
         )
         .expect("model");
-        let mut recurrent_counters =
-            ax_engine_core::backend::metal::Qwen35RecurrentBatchPerfCounters::default();
-        recurrent_counters.qkv_handoff_slot_buffer_layers = 8;
-        recurrent_counters.qkv_handoff_backend_carryover_layers = 8;
-        recurrent_counters.qkv_handoff_layers = 8;
+        let recurrent_counters = ax_engine_core::backend::metal::Qwen35RecurrentBatchPerfCounters {
+            qkv_handoff_slot_buffer_layers: 8,
+            qkv_handoff_backend_carryover_layers: 8,
+            qkv_handoff_layers: 8,
+            ..Default::default()
+        };
         let audit = build_qwen35_dtype_audit(
             &model,
             None,

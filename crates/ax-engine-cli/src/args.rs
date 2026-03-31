@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 /// AX Engine — llama.cpp-compatible CLI
 ///
@@ -122,6 +122,22 @@ pub struct CliArgs {
     /// Number of tokens to speculate per step (speculative decoding lookahead K).
     #[arg(long = "speculative-k", default_value_t = 4)]
     pub speculative_k: usize,
+
+    /// Qwen3.5 target verify path for speculative decoding.
+    #[arg(
+        long = "qwen35-spec-verify-branch",
+        value_enum,
+        default_value_t = Qwen35SpecVerifyBranchArg::Auto
+    )]
+    pub qwen35_spec_verify_branch: Qwen35SpecVerifyBranchArg,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum Qwen35SpecVerifyBranchArg {
+    #[default]
+    Auto,
+    On,
+    Off,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -250,5 +266,22 @@ mod tests {
         assert!(parse_logit_bias("42").is_err());
         assert!(parse_logit_bias("abc=1.0").is_err());
         assert!(parse_logit_bias("42=abc").is_err());
+    }
+
+    #[test]
+    fn test_cli_args_parse_qwen35_spec_verify_branch() {
+        let parsed = CliArgs::try_parse_from([
+            "ax-engine",
+            "--model",
+            "model.gguf",
+            "--qwen35-spec-verify-branch",
+            "off",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            parsed.qwen35_spec_verify_branch,
+            Qwen35SpecVerifyBranchArg::Off
+        );
     }
 }

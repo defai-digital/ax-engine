@@ -483,7 +483,7 @@ unsafe fn fused_dot_q5_k_neon(quant_row: &[u8], b: &[f32], n_blocks: usize) -> f
 
                 for g in 0..8 {
                     let mut q_arr = [0i32; 4];
-                    for i in 0..4 {
+                    for (i, q_val) in q_arr.iter_mut().enumerate() {
                         let idx = g * 4 + i;
                         let ql_byte = qs[qs_group * 32 + idx];
                         let ql = if high_nibble {
@@ -492,7 +492,7 @@ unsafe fn fused_dot_q5_k_neon(quant_row: &[u8], b: &[f32], n_blocks: usize) -> f
                             ql_byte & 0x0F
                         };
                         let qh_bit = (qh[idx] >> subblock) & 0x01;
-                        q_arr[i] = (ql | (qh_bit << 4)) as i32;
+                        *q_val = (ql | (qh_bit << 4)) as i32;
                     }
 
                     let qv = vcvtq_f32_s32(vld1q_s32(q_arr.as_ptr()));
@@ -936,6 +936,7 @@ fn fused_dot_q6_k_scalar(quant_row: &[u8], b: &[f32], n_blocks: usize) -> f32 {
 /// Extract 6-bit scale and min values from the packed Q4_K scales array.
 #[inline]
 fn get_scale_min_k4(j: usize, scales: &[u8]) -> (u8, u8) {
+    debug_assert!(j < 8, "Q4_K scale index out of range: {j}");
     if j < 4 {
         let sc = scales[j] & 63;
         let m = scales[j + 4] & 63;

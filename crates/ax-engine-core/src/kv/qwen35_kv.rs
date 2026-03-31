@@ -1372,33 +1372,33 @@ impl Qwen35Kv {
             if !is_recurrent {
                 continue;
             }
-            if slot_cpu.cpu_conv_state_stale(layer_idx) {
-                if let Some(buf) = gpu_slot.conv_states[layer_idx].as_ref() {
-                    let stride = gpu
-                        .conv_state_stride
-                        .min(slot_cpu.conv_states[layer_idx].len());
-                    let generation = slot_cpu.conv_state_generation(layer_idx);
-                    unsafe {
-                        slot_cpu.conv_states[layer_idx][..stride]
-                            .copy_from_slice(&buf.as_slice::<f32>()[..stride]);
-                    }
-                    slot_cpu.cpu_materialized_conv_generations[layer_idx] = generation;
-                    slot_cpu.conv_state_pristine_zero[layer_idx] = false;
+            if slot_cpu.cpu_conv_state_stale(layer_idx)
+                && let Some(buf) = gpu_slot.conv_states[layer_idx].as_ref()
+            {
+                let stride = gpu
+                    .conv_state_stride
+                    .min(slot_cpu.conv_states[layer_idx].len());
+                let generation = slot_cpu.conv_state_generation(layer_idx);
+                unsafe {
+                    slot_cpu.conv_states[layer_idx][..stride]
+                        .copy_from_slice(&buf.as_slice::<f32>()[..stride]);
                 }
+                slot_cpu.cpu_materialized_conv_generations[layer_idx] = generation;
+                slot_cpu.conv_state_pristine_zero[layer_idx] = false;
             }
-            if slot_cpu.cpu_recurrent_state_stale(layer_idx) {
-                if let Some(buf) = gpu_slot.recurrent_states[layer_idx].as_ref() {
-                    let stride = gpu
-                        .recurrent_state_stride
-                        .min(slot_cpu.recurrent_states[layer_idx].len());
-                    let generation = slot_cpu.recurrent_state_generation(layer_idx);
-                    unsafe {
-                        slot_cpu.recurrent_states[layer_idx][..stride]
-                            .copy_from_slice(&buf.as_slice::<f32>()[..stride]);
-                    }
-                    slot_cpu.cpu_materialized_recurrent_generations[layer_idx] = generation;
-                    slot_cpu.recurrent_state_pristine_zero[layer_idx] = false;
+            if slot_cpu.cpu_recurrent_state_stale(layer_idx)
+                && let Some(buf) = gpu_slot.recurrent_states[layer_idx].as_ref()
+            {
+                let stride = gpu
+                    .recurrent_state_stride
+                    .min(slot_cpu.recurrent_states[layer_idx].len());
+                let generation = slot_cpu.recurrent_state_generation(layer_idx);
+                unsafe {
+                    slot_cpu.recurrent_states[layer_idx][..stride]
+                        .copy_from_slice(&buf.as_slice::<f32>()[..stride]);
                 }
+                slot_cpu.cpu_materialized_recurrent_generations[layer_idx] = generation;
+                slot_cpu.recurrent_state_pristine_zero[layer_idx] = false;
             }
         }
     }

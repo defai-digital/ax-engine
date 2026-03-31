@@ -174,8 +174,9 @@ impl Session {
         .map_err(py_runtime_error)
     }
 
-    pub fn reset(&self) {
-        if let Ok(()) = self.with_session(|session| session.reset()) {}
+    pub fn reset(&self) -> PyResult<()> {
+        self.with_session(|session| session.reset())
+            .map_err(py_runtime_error)
     }
 
     pub fn close(&self) {

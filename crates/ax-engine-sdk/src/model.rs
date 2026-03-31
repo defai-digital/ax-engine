@@ -34,8 +34,8 @@ pub(crate) struct LlamaCppLoadedModel {
 }
 
 pub(crate) enum LoadedModel {
-    Native(NativeLoadedModel),
-    LlamaCpp(LlamaCppLoadedModel),
+    Native(Box<NativeLoadedModel>),
+    LlamaCpp(Box<LlamaCppLoadedModel>),
 }
 
 // SAFETY: Both variants are immutable after construction. Session/KV state and
@@ -194,7 +194,7 @@ impl Model {
         let model = LlamaModel::with_backend(config.clone(), backend)?;
 
         Ok(Self {
-            inner: Arc::new(LoadedModel::Native(NativeLoadedModel {
+            inner: Arc::new(LoadedModel::Native(Box::new(NativeLoadedModel {
                 model_id,
                 mapped,
                 config,
@@ -202,7 +202,7 @@ impl Model {
                 model,
                 model_name,
                 support_note,
-            })),
+            }))),
         })
     }
 
@@ -238,7 +238,7 @@ impl Model {
         );
 
         Ok(Self {
-            inner: Arc::new(LoadedModel::LlamaCpp(LlamaCppLoadedModel {
+            inner: Arc::new(LoadedModel::LlamaCpp(Box::new(LlamaCppLoadedModel {
                 model_id,
                 config,
                 tokenizer,
@@ -247,7 +247,7 @@ impl Model {
                 model_name,
                 support_note,
                 routing_message,
-            })),
+            }))),
         })
     }
 

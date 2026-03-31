@@ -1068,7 +1068,7 @@ fn run_single_spec_bench(
     let vocab_size = model.config.vocab_size as usize;
     let mut kv = model.create_model_kv_for_weights(weights);
     let mut logits = vec![0.0f32; vocab_size];
-    let mut sampler = Sampler::new(sampling_config.clone());
+    let mut sampler = Sampler::new(bench_sampling_config(sampling_config, tokenizer));
     let mut spec = SpeculativeDecoder::load(draft_model_path, speculative_k)?;
 
     let prefill_timer = OpTimer::start();

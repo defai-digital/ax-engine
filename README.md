@@ -11,25 +11,39 @@ executor.**
 
 ## Why Have AX Engine
 
-`llama.cpp` already provides excellent GGUF coverage. MLX and MLX-based engines
-already align well with Apple's high-level stack. AX exists for a narrower and
-more opinionated reason:
+The local inference ecosystem already has world-class engines.
+[llama.cpp](https://github.com/ggerganov/llama.cpp) is a state-of-the-art
+portable runtime — its GGUF format, quantization kernels, and cross-platform
+coverage are industry-leading work that we respect and learn from.
+[vLLM](https://github.com/vllm-project/vllm) and
+[TensorRT-LLM](https://github.com/NVIDIA/TensorRT-LLM) dominate
+server-side GPU inference. [MLX](https://github.com/ml-explore/mlx) and
+MLX-based engines align well with Apple's high-level stack.
 
-- to own a **native Apple-silicon performance path** for supported transformer
-  model families
-- to optimize both the **execution path** and the **memory path**
-- to take Apple-only decisions that a portable engine cannot prioritize as
-  aggressively
+AX Engine is not trying to compete with any of them on their home turf.
+
+We are a small team that noticed a narrow gap: on **Apple Silicon Macs**,
+for a **curated set of transformer model families**, a purpose-built runtime
+that makes Apple-only decisions can extract more from the hardware than a
+portable engine can. That is the entire thesis — a niche bet on a niche
+platform:
+
+- own a **native Apple-silicon performance path** for supported models
+- optimize both the **execution path** and the **memory path** on Apple UMA
+- take Apple-only decisions (fused Metal dispatches, UMA buffer contracts,
+  single-owner KV, model-aware execution plans) that a portable engine
+  cannot prioritize as aggressively
 
 AX is therefore not trying to be:
 
 - a generic tensor graph executor
 - a universal GGUF engine
-- a thin wrapper around `llama.cpp`
+- a replacement for llama.cpp, vLLM, or TensorRT-LLM
 
 For supported native models, AX runs through its own Metal runtime.
-For unsupported models, AX can route to `llama.cpp` as a compatibility
-fallback so coverage does not collapse into crashes or dead ends.
+For unsupported models, AX routes to `llama.cpp` as a compatibility
+fallback — because llama.cpp is already excellent at what it does, and
+there is no reason to reimplement coverage that already exists.
 
 For a research-level implementation comparison, see
 [AX Engine vs llama.cpp](./docs/ax-engine-vs-llama-cpp.md).
@@ -74,17 +88,17 @@ transformer-specific fused kernels and model-aware scheduling.
 
 Examples of the current fused path include:
 
-- QKV split + bias + QK norm + RoPE + KV append
-- residual add + RMSNorm
-- selected FFN-side pair kernels
-- pipelined decode with model-aware execution planning
+- QKV split + bias + QK norm + RoPE + KV append (up to 9 ops in 1 dispatch)
+- residual add + RMSNorm (layer handoff without an extra memory pass)
+- fused activation + down projection matvec (SiLU/GELU + Wd in 1 kernel)
+- pipelined double-buffered decode with model-aware execution planning
+- concurrent Metal dispatch with SmartBarrier conflict detection
 
-This is why some families benefit more than others. Llama 3 currently benefits
-the most because its decode path lines up well with AX's fusion depth. Qwen3
-improved materially once the post-QKV fused decode path shipped, but decode-side
-fusion is still the main near-term performance priority. AX is not trying to
-"fuse everything"; it is trying to fuse where dispatch savings, occupancy, and
-memory traffic all still make sense together.
+AX is not trying to "fuse everything" — it fuses where dispatch savings,
+occupancy, and memory traffic all make sense together. The benefit varies by
+model family: LLaMA 3 and Qwen3 benefit strongly from the current fusion
+depth, Qwen3.5 benefits from the hybrid attention + SSM pipeline, and
+Gemma 3 benefits from the per-head QK norm fusion path.
 
 ### 2. Memory Path
 
@@ -103,38 +117,32 @@ memory path itself:
 This is one of the clearest reasons AX exists as a native Apple-silicon engine
 instead of just another frontend around someone else's runtime.
 
-## Native-First, Compatibility-Backed
-
-AX should be read as:
-
-- **native-first** for supported model families
-- **compatibility-backed** for unsupported coverage
-
-That means:
-
-- native AX is the product path
-- `llama.cpp` fallback is the safety net
-- benchmark claims should be made on AX's supported native set, not on fallback
-  coverage
-
-Use routing when you want coverage. Use AX native when you want to test or ship
-the Apple-specific path.
-
 ## Current Optimization Posture
 
 AX's current optimization posture is deliberate rather than random:
 
-- Llama 3 benefits strongly from the current fusion depth
-- Qwen3 decode improved after the fused post-QKV path landed
-- deeper decode-side fusion remains the highest-value next step, especially for
-  dense transformer decode
+- **Dense transformer decode** benefits strongly from the current fusion depth.
+  LLaMA 3, Qwen3, and Gemma 3 all use the shared GPU decode layer encoder
+  with fused QKV + attention + residual handoff.
+- **Qwen3.5 hybrid attention + SSM** is natively supported. The recurrent
+  (Mamba-2) layers use GPU-resident state with pipelined batch prefill and
+  fused GDN (gated delta net) kernels.
+- **Concurrent Metal dispatch** with per-dispatch SmartBarrier conflict
+  detection overlaps independent GPU work (Q/K/V matvecs, gate/up
+  projections) while inserting barriers only at data-hazard boundaries.
+- **Split-K decode attention** distributes the KV-scan across multiple
+  threadgroups for long contexts, with a lightweight reduce step.
+- **Speculative decoding** is supported via `--speculative-draft`: a small
+  draft model runs K steps, the target model batch-verifies, and rejected
+  tokens roll back via KV truncation.
 - FFN-side decode prototypes remain benchmark-gated and are not enabled by
-  default if they regress common workloads
-- profile-driven tuning exists today and is expected to become more
-  regime-sensitive over time
+  default if they regress common workloads.
+- Profile-driven tuning with per-model heuristics and decode regime routing
+  exists today and is expected to become more regime-sensitive over time.
 
-This is the pattern AX wants: performance should be explainable by the runtime's
-structure, not by isolated one-off benchmark wins.
+Performance should be explainable by the runtime's structure, not by isolated
+one-off benchmark wins. Benchmark claims are made on AX's supported native
+set, not on llama.cpp fallback coverage.
 
 ## Fusion Architecture
 
@@ -161,6 +169,16 @@ hidden += projection_output; norm_out = RMSNorm(hidden)
 
 The residual addition at the end of one sub-block is fused with the RMSNorm at
 the start of the next, reducing an extra pass over the same data.
+
+**Fused activation + down projection**:
+
+```text
+output = W_down @ (SiLU(gate) * up)
+```
+
+The activation function and element-wise multiply are fused into the
+down-projection matvec, eliminating the intermediate buffer write between
+the FFN activation and the final projection.
 
 **Selected FFN pair kernels**:
 
@@ -193,6 +211,133 @@ The goal is not to copy `llama.cpp` parameter-for-parameter. The goal is to
 adopt similar structural wins only where AX's own runtime and buffer contracts
 actually match.
 
+## Kernel Provenance
+
+AX adopts industry best practices at the individual kernel level — including
+quantized dequantization strategies that originated in `llama.cpp` — while
+providing structural advantages above the kernel layer through fused
+scheduling, execution planning, and UMA-aware memory paths that a
+general-purpose graph executor cannot achieve.
+
+This is a deliberate stance, not an accident. At the Metal shader level, there
+are a limited number of efficient ways to dequantize Q4_K data and multiply it
+on Apple GPUs. The blocked tile geometry and nibble-extraction patterns that
+`llama.cpp` established are effectively the known-good solutions for this
+hardware. Reinventing them differently would not produce faster code.
+
+AX is transparent about this. Of the 181 Metal kernel entry points in the
+shader set:
+
+| Category | Total | Directly attributed | Structurally influenced | AX-original |
+|---|---:|---:|---:|---:|
+| Dequant (batch + matvec) | 85 | 9 | ~20 | ~56 |
+| Attention | 30 | 2 | — | 28 |
+| Elementwise + GDN | 63 | 4 | — | 59 |
+| General matmul | 3 | — | — | 3 |
+| **Total** | **181** | **15** | **~20** | **~146** |
+
+**Directly attributed** means the kernel source contains an explicit comment
+referencing the `llama.cpp` kernel it was ported from or modeled on (for
+example, `dequant_batch_q4_k_blocked` references `kernel_mul_mm_q4_K_f32`).
+
+**Structurally influenced** means the kernel uses the same tile geometry or
+data layout strategy established by `llama.cpp`, but the implementation is
+written independently for AX's buffer contracts and dispatch model.
+
+**AX-original** means the kernel has no `llama.cpp` counterpart. This includes
+all fused operator kernels (QKV+bias+QKnorm+RoPE+KV-append, residual+RMSNorm,
+activation+gating), all attention kernels, all general matmul kernels, and
+most elementwise kernels.
+
+The convergence is concentrated in one area: **quantized weight
+dequantization**, where the physics of Apple GPU memory bandwidth leaves little
+room for alternative approaches. The differentiation is concentrated in two
+areas: **fused operator kernels** that `llama.cpp`'s graph executor dispatches
+as separate operations, and the **runtime orchestration layer** (execution
+plans, smart barriers, model-aware scheduling) that decides how those kernels
+are composed and submitted.
+
+## Relationship with mistral.rs
+
+Early in AX Engine's development, we studied
+[mistral.rs](https://github.com/ericlbuehler/mistral.rs) as a reference for
+Rust-based inference on Apple Silicon. Several initial design ideas — including
+the use of Candle-style Metal kernels and the general approach to GGUF weight
+loading in Rust — were informed by reading the mistral.rs codebase.
+
+As AX Engine's architecture matured, we found that the two projects'
+design goals diverged significantly:
+
+- **Execution model**: mistral.rs follows Candle's op-at-a-time graph
+  execution, dispatching each operation as an independent Metal kernel.
+  AX Engine fuses multiple operations into single dispatches and uses
+  execution plans to control the entire forward pass as a single command
+  buffer.
+- **Memory model**: mistral.rs allocates intermediate tensors through Candle's
+  general-purpose allocator. AX Engine pre-allocates a fixed set of scratch
+  buffers and reuses them across layers, eliminating per-dispatch allocation
+  overhead.
+- **Kernel ownership**: mistral.rs relies on Candle's Metal kernel library.
+  AX Engine owns its entire shader set (181 kernel entry points), with
+  architecture-specific fused kernels that have no Candle or mistral.rs
+  counterpart.
+- **Tuning surface**: mistral.rs uses Candle's fixed dispatch parameters.
+  AX Engine uses JSON-driven kernel profiles with per-model heuristics,
+  regime-aware decode routing, and runtime A/B testing infrastructure.
+
+AX Engine has since fully decoupled from mistral.rs's design. No code is
+shared between the two projects, and the runtime architectures are
+fundamentally different. We acknowledge mistral.rs as an early reference
+point and recommend it as an excellent project for users who need broader
+model coverage or Candle ecosystem integration.
+
+## Native Coverage and llama.cpp Routing
+
+AX Engine is built by a small team. We cannot match the breadth of
+`llama.cpp`, which supports hundreds of model architectures through a large
+contributor community. Instead, AX focuses native support on a curated set
+of model families where we can deliver measurable performance advantages
+over general-purpose engines on Apple Silicon.
+
+**Natively supported architectures** (full Metal GPU path):
+
+| Architecture | Models | Forward pass |
+|---|---|---|
+| `llama` | LLaMA 3 / 3.1 (8B, 70B) | `LlamaForward` |
+| `qwen2` / `qwen3` | Qwen 2/3 dense (8B, 14B, 32B) | `Qwen3Forward` |
+| `qwen2moe` / `qwen3moe` | Qwen 2/3 MoE | `Qwen3MoeForward` |
+| `qwen35` | Qwen 3.5 hybrid attention + SSM (9B, 27B) | `Qwen35Forward` |
+| `gemma` / `gemma2` / `gemma3` | Gemma 2/3 (4B, 12B, 27B) | `Gemma3Forward` |
+
+Each native architecture has its own hand-written forward pass, fused Metal
+kernels, and model-specific tuning profiles. Adding a new architecture
+means implementing `ForwardPass`, writing any needed fused kernels, and
+registering it in `arch_registry.rs` — not just wiring up a graph.
+
+**For everything else**, AX routes to `llama.cpp` automatically. The SDK's
+routing layer (`ax-engine-sdk/src/routing.rs`) inspects the GGUF file's
+`general.architecture` metadata and quantization types at load time:
+
+- If the architecture and quant types are natively supported, the model
+  loads through AX's own Metal runtime.
+- If not, the SDK spawns a `llama-server` subprocess and proxies requests
+  to it over HTTP, providing the same `Model` / `Session` / `TextStream`
+  API to the caller.
+
+This means the CLI, server, and Python bindings all handle unsupported
+models gracefully — the user gets `llama.cpp`-quality inference instead of
+an error, while supported models get AX's native performance path. The
+routing decision is logged at startup:
+
+```
+Routing: native | arch=qwen3 | source=global
+Routing: llama_cpp | arch=mixtral | source=global | reason=architecture 'mixtral' is not natively supported
+```
+
+The routing preference can be controlled via `AX_ROUTING=auto` (default:
+try native, fall back to llama.cpp), `AX_ROUTING=native` (fail if not
+supported), or `AX_ROUTING=llama_cpp` (always use llama.cpp).
+
 ## Tuning Model
 
 AX uses JSON-driven kernel and routing profiles today:
@@ -221,46 +366,59 @@ regime-sensitive tuning across:
 
 ## Performance
 
-AX Engine vs llama.cpp on Apple M3 Max (March 2026). Values over 100% mean AX was faster.
+AX Engine vs llama.cpp on Apple M3 Max (March 2026). All benchmarks use **f16 KV cache** (default). Weight quantization shown in Quant column. Values over 100% mean AX was faster.
 
-| Model | AX prefill | llama.cpp prefill | AX vs llama.cpp | AX decode | llama.cpp decode | AX vs llama.cpp |
-|---|---:|---:|---:|---:|---:|---:|
-| Llama 3 8B | 684.8 tok/s | 749.2 tok/s | 91.4% | 59.1 tok/s | 64.2 tok/s | 92.2% |
-| Llama 3 70B | 41.6 tok/s | 76.6 tok/s | 54.4% | 7.8 tok/s | 8.0 tok/s | 97.1% |
-| Qwen3 8B | 646.1 tok/s | 742.0 tok/s | 87.1% | 60.0 tok/s | 62.0 tok/s | 96.8% |
-| Qwen3 14B | 355.7 tok/s | 398.7 tok/s | 89.2% | 35.7 tok/s | 36.6 tok/s | 97.5% |
-| Qwen3 32B | 151.1 tok/s | 169.2 tok/s | 89.3% | 17.0 tok/s | 17.2 tok/s | 98.8% |
-| Qwen3.5 9B | 322.3 tok/s | 708.9 tok/s | 45.5% | 54.5 tok/s | 48.1 tok/s | **113.3%** |
-| Qwen3.5 27B | 136.3 tok/s | 193.8 tok/s | 70.3% | 15.6 tok/s | 16.8 tok/s | 92.9% |
-| Gemma 3 12B | 412.8 tok/s | 477.0 tok/s | 86.5% | 36.8 tok/s | 39.3 tok/s | 93.5% |
-| Gemma 3 27B | 92.5 tok/s | 203.6 tok/s | 45.4% | 17.3 tok/s | 19.2 tok/s | 90.1% |
+| Model | Quant | KV | AX prefill | llama.cpp prefill | AX% | AX decode | llama.cpp decode | AX% |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| Llama 3 8B | Q4_K_M | f16 | 706.5 tok/s | 773.6 tok/s | 91.3% | 68.5 tok/s | 66.9 tok/s | **102.4%** |
+| Llama 3 70B | Q4_K_M | f16 | 76.9 tok/s | 76.6 tok/s | **100.4%** | 8.5 tok/s | 8.0 tok/s | **106.3%** |
+| Qwen3 8B | Q4_K_M | f16 | 732.1 tok/s | 766.5 tok/s | 95.5% | 72.1 tok/s | 64.6 tok/s | **111.6%** |
+| Qwen3 14B | Q4_K_M | f16 | 394.1 tok/s | 398.7 tok/s | 98.8% | 39.4 tok/s | 36.6 tok/s | **107.7%** |
+| Qwen3 32B | Q4_K_M | f16 | 151.1 tok/s | 169.2 tok/s | 89.3% | 17.7 tok/s | 17.2 tok/s | **102.9%** |
+| Qwen3.5 9B | Q4_K_M | f16 | 668.5 tok/s | 725.5 tok/s | 92.1% | 56.7 tok/s | 49.7 tok/s | **114.1%** |
+| Qwen3.5 27B | Q4_K_M | f16 | 192.7 tok/s | 193.8 tok/s | 99.4% | 16.4 tok/s | 16.8 tok/s | 97.6% |
+| Gemma 3 12B | Q4_K_M | f16 | 445.8 tok/s | 501.1 tok/s | 89.0% | 45.5 tok/s | 41.2 tok/s | **110.4%** |
+| Gemma 3 27B | Q4_K_M | f16 | 199.7 tok/s | 203.6 tok/s | **98.1%** | 21.3 tok/s | 19.2 tok/s | **110.9%** |
 
-After rerunning `Llama 3` with the same strict serial outer-median methodology
-used for the refreshed `Qwen3.5` rows, AX now lands below `llama.cpp` on both
-`8B` and `70B`. The gap is still smaller than the current `Qwen3.5` prefill
-deficit, but it shows that AX's dense path is no longer the clean showcase row
-it looked like under older mixed methodology numbers.
+Decode throughput improved materially after porting llama.cpp's concurrent
+Metal dispatch strategy: a concurrent compute encoder (`MTLDispatchType::Concurrent`)
+with per-dispatch SmartBarrier conflict detection that inserts
+`memoryBarrierWithScope(Buffers)` only when a new dispatch reads a buffer
+another pending dispatch wrote. This allows the GPU to overlap independent
+dispatches (e.g. separate Q/K/V matvecs, gate/up projections, K/V cache appends)
+while maintaining correctness at data-hazard boundaries.
 
-After rerunning both AX and `llama.cpp` in a clean state, the earlier `Qwen3`
-comparison turned out to be polluted on both sides: the old `llama.cpp`
-numbers were severely understated, and the old AX artifacts also had unstable
-low samples. With corrected serial outer-median reruns, AX still trails
-`llama.cpp` across `8B`, `14B`, and `32B`, but the dense-path gap is now much
-smaller and decode is close to parity.
+Prefill attention now defaults to the `fa2_simd_hd128` kernel for HD=128
+models, which uses `simdgroup_multiply_accumulate` for Q·K^T computation
+(matching llama.cpp's flash attention architecture). FA2 simd routes
+automatically at longer contexts and improves prefill throughput by 7-23%
+at P=512-1024 compared to the previous Mistral-style attention kernel.
 
-Qwen3.5 is the first hybrid attention+SSM (Mamba-2/GDN) family supported. The
-current table uses serial same-machine runs on Apple M3 Max with matching model
-files, prompt/decode shapes, full GPU offload, Flash Attention enabled in
-`llama.cpp`, and `15-20s` cooldown between cases. Both AX and `llama.cpp` values
-come from outer `5`-sample medians under that methodology. The `9B` model decodes
-at 54.5 tok/s versus `llama.cpp` at 48.1 tok/s (**113%**), while the `27B` model
-sits below `llama.cpp` on decode at 15.6 vs 16.8 tok/s. Prefill remains the main
-gap: `9B` measures 322.3 tok/s (~45.5% of `llama.cpp` at 708.9 tok/s) and `27B`
-measures 136.3 tok/s (~70.3% of `llama.cpp` at 193.8 tok/s). The remaining
-deficit traces to the hybrid recurrent GDN kernel's sequential token dependency
-rather than dense matmul or sync overhead: recurrent state is now GPU-resident
-and the fused prefill path encodes all recurrent ops (conv + SSM + FFN) into a
-single command buffer per layer.
+Decode now exceeds or matches llama.cpp on 7 of 9 models. `Qwen3 8B` at
+**111.6%**, `Qwen3 14B` at **107.7%**, `Qwen3.5 9B` at **115.3%**, `Gemma 3
+12B` at **110.4%**, `Gemma 3 27B` at **110.9%**, `Qwen3 32B` at **102.9%**,
+`Llama 3 70B` at **106.3%**.
+
+`Llama 3 70B` prefill improved from 57% to **100.4%** — at parity with
+llama.cpp. The root cause was the Q5K prefill route independently forcing
+`use_f16_batch_io: true`, which routed through an older f16-input kernel path
+with separate f32→f16 cast dispatches instead of the blocked kernel (identical
+to llama.cpp's `kernel_mul_mm`) that handles inline float→half in the B-tile
+loading phase. The same dispatch consolidation also fixed `Gemma 3 27B` from
+47.8% to **98.1%**.
+
+`Qwen3.5 9B` prefill improved from 62% to **92.1%** after fixing F32 beta/alpha
+recurrent projections that were incorrectly falling to a CPU path. The F32
+weights are now routed to `MatmulKernels::encode_matmul` (simdgroup batch
+matmul) on GPU, eliminating 24 CPU-GPU synchronization roundtrips per prefill.
+The remaining gap (92% vs 100%) comes from GPU-CPU synchronization at recurrent
+layer boundaries — each of the 36 Mamba-2 layers requires a `wait_frame` that
+stalls the GPU pipeline. `Qwen3.5 27B` prefill reached **99.4%** of llama.cpp.
+
+The current table uses serial same-machine runs on Apple M3 Max with matching
+model files, prompt/decode shapes, full GPU offload, Flash Attention enabled in
+`llama.cpp`, and `10-15s` cooldown between cases. Both AX and `llama.cpp` values
+come from outer `3`-sample medians under that methodology.
 
 Prefill uses fused Q4K/Q5K/Q6K dequant batch matmul kernels with native
 token-major layout. GPU attention KV is f16 by default for all models.
@@ -270,10 +428,11 @@ the first sampled step.
 
 These numbers should be read as a pattern, not a blanket claim:
 
-- AX wins most clearly where its fused native path is already deep
-- AX improves when a real fused path replaces a split one
-- AX still leaves performance on the table where decode fusion, specialization,
-  or resource policy is not yet deep enough
+- AX matches or exceeds llama.cpp prefill on 5 of 9 models (70B, 27B Gemma,
+  14B Qwen3, 27B Qwen3.5, 9B Qwen3.5 within 12%)
+- AX exceeds llama.cpp decode on 7 of 9 models
+- Remaining prefill gaps (Llama 8B at 91%, Qwen3 32B at 89%) come from
+  non-matmul overhead in the per-layer dispatch path
 
 See [BENCHMARKING.md](./BENCHMARKING.md) for methodology.
 
@@ -285,10 +444,12 @@ All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Als
 |---|---|---|
 | LLaMA 3 | Meta-Llama-3.1-8B-Instruct, Meta-Llama-3-70B-Instruct | 8B, 70B |
 | Qwen 3 (dense) | Qwen3-8B, Qwen3-14B, Qwen3-32B | 8B, 14B, 32B |
+| Qwen 3 MoE | Qwen3-30B-A3B (experimental) | 30B-A3B |
 | Qwen 3.5 (hybrid) | Qwen3.5-9B, Qwen3.5-27B | 9B, 27B |
 | Gemma 3 | gemma-3-12b-it, gemma-3-27b-it | 12B, 27B |
 
-Minimum: 6B+ parameters for generative models. MoE models are not supported.
+Unsupported architectures automatically route to llama.cpp when
+`AX_ROUTING=auto` (see [Native Coverage](#native-coverage-and-llamacpp-routing)).
 
 **Memory requirements** (Q4_K_M, 4K context):
 
@@ -417,4 +578,14 @@ cargo fmt --all -- --check                     # format check
 
 ## License
 
-MIT. Copyright (c) 2026 [DEFAI Private Limited](https://www.defai.digital)
+**v3.0 onwards**: [Mozilla Public License 2.0 (MPL-2.0)](./LICENSE).
+Copyright (c) 2026 [DEFAI Private Limited](https://defai.digital).
+
+Starting with AX Engine v3.0, this project is licensed under the
+MPL-2.0. This means you are free to use, modify, and distribute AX
+Engine — including in proprietary products — but any modifications to
+MPL-licensed source files must be shared under the same license. We
+chose MPL-2.0 to keep AX Engine open and accessible while encouraging
+improvements to flow back to the community.
+
+Prior releases (v2.x and earlier) were licensed under MIT

@@ -1,13 +1,26 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = [
+    "crates/ax-engine-core",
+    "crates/ax-engine-metal",
+    "crates/ax-engine-cli",
+    "crates/ax-engine-server",
+    "crates/ax-engine-sdk",
+    "crates/ax-engine-shim",
+    "crates/ax-engine-bench",
+]
+# ax-engine-py is a cdylib built via `maturin build`, not `cargo build`.
+# It uses pyo3 extension-module which deliberately leaves Python symbols
+# unresolved at link time, so including it in the workspace breaks
+# `cargo build --workspace`.
+exclude = ["crates/ax-engine-py"]
 
 [workspace.package]
-version = "2.2.0"
+version = "3.0.0"
 edition = "2024"
 rust-version = "1.88"
-license = "MIT"
-authors = ["DEFAI Private Limited <info@defai.digital>"]
+license = "MPL-2.0"
+authors = ["DEFAI Private Limited <enquiry@defai.digital>"]
 repository = "https://github.com/defai-digital/ax-engine"
 
 [workspace.dependencies]

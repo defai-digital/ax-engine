@@ -73,7 +73,6 @@ pub fn sigmoid_in_place(buf: &mut [f32]) {
                 chunk[i] = 1.0 / (1.0 + exp_neg[i]);
             }
         }
-        return;
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -120,7 +119,6 @@ pub fn l2_norm_heads(buf: &mut [f32], n_heads: usize, head_dim: usize, eps: f32)
                 *v *= inv;
             }
         }
-        return;
     }
 
     #[cfg(not(target_arch = "aarch64"))]

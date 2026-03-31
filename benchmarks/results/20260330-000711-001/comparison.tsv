@@ -1,0 +1,2 @@
+label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
+verify-gdn-simd	models/Qwen3.5-9B-Q4_K_M.gguf	512	128	512	5	20	426.2173919793247	708.863219	60.126887748611594	54.20800109155942	48.104458	112.68810281899324

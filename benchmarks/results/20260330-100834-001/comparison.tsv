@@ -1,0 +1,2 @@
+label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
+prd-final	models/Qwen3-8B-Q4_K_M.gguf	512	128	512	5	20	693.6394649695983	768.198195	90.29433673293104	68.36590205235906	64.615555	105.80409322857176

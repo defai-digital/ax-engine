@@ -3,6 +3,7 @@ use crate::backend::metal::MetalOps;
 use crate::model::prefill_schedule;
 
 impl Qwen35Forward {
+    #[allow(clippy::too_many_arguments)]
     fn forward_batch_serial_fallback(
         &self,
         ctx: &ForwardContext,
@@ -59,12 +60,12 @@ impl Qwen35Forward {
         nt: u32,
         eps: f32,
         ops: Option<&mut OpBreakdown>,
+        defer_kv_readback: bool,
     ) -> anyhow::Result<bool> {
         let (wq_raw, wq_dtype) = weights.raw_with_dtype(&format!("{prefix}.attn_q.weight"))?;
         let (wk_raw, wk_dtype) = weights.raw_with_dtype(&format!("{prefix}.attn_k.weight"))?;
         let (wv_raw, wv_dtype) = weights.raw_with_dtype(&format!("{prefix}.attn_v.weight"))?;
-        let (wo_raw, wo_dtype) =
-            weights.raw_with_dtype(&format!("{prefix}.attn_output.weight"))?;
+        let (wo_raw, wo_dtype) = weights.raw_with_dtype(&format!("{prefix}.attn_output.weight"))?;
         let gpu_batch_supported = |dt: crate::gguf::tensor::GgmlType, m: u32, k: u32| {
             Self::qwen35_batch_projection_supported(metal_ops, dt, m, n_tokens as u32, k)
         };
@@ -321,21 +322,23 @@ impl Qwen35Forward {
                         metal_ops.attention_dispatch_config(),
                     );
                 } else if let Some(gpu_attn) = qwen_kv.gpu_attention() {
-                    metal_ops.attention.encode_attention_prefill_cached_with_config(
-                        encoder,
-                        &bs.q_buf,
-                        gpu_attn.k_buffer(layer),
-                        gpu_attn.v_buffer(layer),
-                        &bs.attn_out,
-                        gpu_attn.is_f16(),
-                        nt,
-                        n_heads as u32,
-                        n_kv_heads as u32,
-                        head_dim as u32,
-                        batch_position as u32,
-                        0,
-                        metal_ops.attention_dispatch_config(),
-                    );
+                    metal_ops
+                        .attention
+                        .encode_attention_prefill_cached_with_config(
+                            encoder,
+                            &bs.q_buf,
+                            gpu_attn.k_buffer(layer),
+                            gpu_attn.v_buffer(layer),
+                            &bs.attn_out,
+                            gpu_attn.is_f16(),
+                            nt,
+                            n_heads as u32,
+                            n_kv_heads as u32,
+                            head_dim as u32,
+                            batch_position as u32,
+                            0,
+                            metal_ops.attention_dispatch_config(),
+                        );
                 }
                 metal_ops.elementwise.encode_sigmoid_elementwise_mul(
                     encoder,
@@ -450,10 +453,30 @@ impl Qwen35Forward {
             ops.gpu_execute_layers += elapsed;
         }
 
+        if !defer_kv_readback {
+            let k_after_rope = unsafe { &bs.k_buf.as_slice::<f32>()[..n_tokens * kv_dim] };
+            let v_slice = unsafe { &bs.v_buf.as_slice::<f32>()[..n_tokens * kv_dim] };
+            qwen_kv.attention_append_batch_cpu_mirror(layer, k_after_rope, v_slice, n_tokens);
+        }
+        Ok(true)
+    }
+
+    /// Flush a deferred K/V CPU mirror readback from a completed full-attention layer.
+    /// Must be called before the next full-attention layer overwrites `bs.k_buf`/`bs.v_buf`.
+    fn flush_deferred_kv_readback(
+        metal_ops: &MetalOps,
+        qwen_kv: &mut crate::kv::Qwen35Kv,
+        layer: usize,
+        n_tokens: usize,
+        kv_dim: usize,
+    ) {
+        let bs_guard = metal_ops.batch_scratches();
+        let Some(bs) = bs_guard.as_ref() else {
+            return;
+        };
         let k_after_rope = unsafe { &bs.k_buf.as_slice::<f32>()[..n_tokens * kv_dim] };
         let v_slice = unsafe { &bs.v_buf.as_slice::<f32>()[..n_tokens * kv_dim] };
         qwen_kv.attention_append_batch_cpu_mirror(layer, k_after_rope, v_slice, n_tokens);
-        Ok(true)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -557,11 +580,12 @@ impl Qwen35Forward {
         nt: u32,
         eps: f32,
         ops: Option<&mut OpBreakdown>,
-    ) -> anyhow::Result<bool> {
+        pipelined: bool,
+    ) -> anyhow::Result<(bool, Option<ax_engine_metal::InflightFrame>)> {
         let active_total_inner = n_tokens * dims.inner_size;
         let mut bs_guard = metal_ops.batch_scratches();
         let Some(bs) = bs_guard.as_mut() else {
-            return Ok(false);
+            return Ok((false, None));
         };
 
         if let Some(ssm_result) = ssm_result {
@@ -604,25 +628,60 @@ impl Qwen35Forward {
         } else {
             None
         };
-        if !prefill_schedule::try_execute_qwen35_recurrent_tail_prefill_schedule(
-            &metal_ops.device,
-            metal_ops,
-            allow_graph_ir_schedule,
-            bs,
-            recurrent_projection,
-            ffn_nw_buf,
-            wg_buf,
-            wg_dtype,
-            wu_buf,
-            wu_dtype,
-            wd_buf,
-            wd_dtype,
-            n_tokens,
-            dim,
-            inter_dim,
-            eps,
-        )? {
-            metal_ops.device.execute_sync(|encoder| {
+        // --- Pipelined path: try async graph-IR schedule first ----------------
+        if pipelined
+            && let Some(frame) =
+                prefill_schedule::try_execute_qwen35_recurrent_tail_prefill_schedule_async(
+                    &metal_ops.device,
+                    metal_ops,
+                    allow_graph_ir_schedule,
+                    bs,
+                    recurrent_projection,
+                    ffn_nw_buf,
+                    wg_buf,
+                    wg_dtype,
+                    wu_buf,
+                    wu_dtype,
+                    wd_buf,
+                    wd_dtype,
+                    n_tokens,
+                    dim,
+                    inter_dim,
+                    eps,
+                )?
+        {
+            drop(weight_cache);
+            drop(bs_guard);
+            return Ok((true, Some(frame)));
+        }
+
+        // --- Try blocking graph-IR schedule (non-pipelined) ------------------
+        let used_schedule = if !pipelined {
+            prefill_schedule::try_execute_qwen35_recurrent_tail_prefill_schedule(
+                &metal_ops.device,
+                metal_ops,
+                allow_graph_ir_schedule,
+                bs,
+                recurrent_projection,
+                ffn_nw_buf,
+                wg_buf,
+                wg_dtype,
+                wu_buf,
+                wu_dtype,
+                wd_buf,
+                wd_dtype,
+                n_tokens,
+                dim,
+                inter_dim,
+                eps,
+            )?
+        } else {
+            false // pipelined path already tried graph-IR above
+        };
+
+        // --- Inline encoding closure (shared between sync and async) ---------
+        if !used_schedule {
+            let encode_inline = |encoder: &ax_engine_metal::MetalEncoder| -> anyhow::Result<()> {
                 if ssm_gpu {
                     let ssm_norm_buf = weight_cache.get(&ssm_norm_key.unwrap()).unwrap();
                     metal_ops.elementwise.encode_per_head_rms_norm_batch(
@@ -744,14 +803,23 @@ impl Qwen35Forward {
                     nt,
                 );
                 Ok(())
-            })?;
+            };
+
+            if pipelined {
+                let frame = metal_ops.device.execute_async(encode_inline)?;
+                drop(weight_cache);
+                drop(bs_guard);
+                return Ok((true, Some(frame)));
+            } else {
+                metal_ops.device.execute_sync(encode_inline)?;
+            }
         }
         if let Some(ops) = ops {
             let elapsed = cb_t.elapsed();
             ops.gpu_execute += elapsed;
             ops.gpu_execute_layers += elapsed;
         }
-        Ok(true)
+        Ok((true, None))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1051,6 +1119,20 @@ impl Qwen35Forward {
         ))
     }
 
+    fn qwen35_fused_recurrent_gpu_candidate(
+        recurrent_slot_count: usize,
+        qkv_gpu_fast_path_enabled: bool,
+        cpu_proj_indices: &[usize],
+        keep_rec_z_on_gpu: bool,
+        ssm_gpu: bool,
+    ) -> bool {
+        recurrent_slot_count == 1
+            && qkv_gpu_fast_path_enabled
+            && cpu_proj_indices.iter().all(|&i| i == 2 || i == 3)
+            && keep_rec_z_on_gpu
+            && ssm_gpu
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn run_unified_recurrent_batch_layer(
         metal_ops: &MetalOps,
@@ -1073,12 +1155,13 @@ impl Qwen35Forward {
         eps: f32,
         force_backend_state_batch: bool,
         mut ops: Option<&mut OpBreakdown>,
-    ) -> anyhow::Result<Option<&'static str>> {
+        pipelined: bool,
+    ) -> anyhow::Result<(Option<&'static str>, Option<ax_engine_metal::InflightFrame>)> {
         if !has_projection_phase {
-            return Ok(Some("unified_recurrent_projection_phase_disabled"));
+            return Ok((Some("unified_recurrent_projection_phase_disabled"), None));
         }
         if !has_runtime_phase {
-            return Ok(Some("unified_recurrent_runtime_phase_disabled"));
+            return Ok((Some("unified_recurrent_runtime_phase_disabled"), None));
         }
         let attn_norm_w = weights.f32_slice(&format!("{prefix}.attn_norm.weight"))?;
         let nw_key = metal_ops.ensure_f32_cached(attn_norm_w);
@@ -1095,7 +1178,7 @@ impl Qwen35Forward {
             || !gpu_batch_supported(wu_dtype, inter_dim as u32, dim as u32)
             || !gpu_batch_supported(wd_dtype, dim as u32, inter_dim as u32)
         {
-            return Ok(Some("unsupported_recurrent_ffn_projection_dtype"));
+            return Ok((Some("unsupported_recurrent_ffn_projection_dtype"), None));
         }
         Self::prepare_qwen35_batch_projection_weight(
             metal_ops,
@@ -1203,14 +1286,17 @@ impl Qwen35Forward {
                 dims.inner_size as u32,
             )?;
         }
-        let keep_rec_z_on_gpu = recurrent_slot_count == 1 && ssm_gpu && gpu_proj_indices.contains(&1);
+        let keep_rec_z_on_gpu =
+            recurrent_slot_count == 1 && ssm_gpu && gpu_proj_indices.contains(&1);
         let ssm_key = metal_ops.ensure_quant_cached(ssm_out_raw);
         let recurrent_runtime = Self::recurrent_runtime_tensors(weights, prefix)?;
         if gpu_proj_indices.contains(&0) {
             metal_ops.record_qwen35_recurrent_batch_qkv_gpu_projection();
         }
         let qkv_gpu_fast_path_check = (recurrent_slot_count == 1 && gpu_proj_indices.contains(&0))
-            .then(|| Self::recurrent_batch_from_gpu_qkv_single_slot_check(metal_ops, n_tokens, dims));
+            .then(|| {
+                Self::recurrent_batch_from_gpu_qkv_single_slot_check(metal_ops, n_tokens, dims)
+            });
         let qkv_gpu_fast_path_enabled = qkv_gpu_fast_path_check
             .map(Qwen35RecurrentQkvFastPathCheck::is_eligible)
             .unwrap_or(false);
@@ -1225,7 +1311,8 @@ impl Qwen35Forward {
                     metal_ops.record_qwen35_recurrent_batch_qkv_fast_reject_group_divisibility();
                 }
                 if check.missing_batch_scratches {
-                    metal_ops.record_qwen35_recurrent_batch_qkv_fast_reject_missing_batch_scratches();
+                    metal_ops
+                        .record_qwen35_recurrent_batch_qkv_fast_reject_missing_batch_scratches();
                 }
                 if check.q_capacity_too_small {
                     metal_ops.record_qwen35_recurrent_batch_qkv_fast_reject_q_capacity();
@@ -1247,18 +1334,31 @@ impl Qwen35Forward {
 
         let fused_gpu_recurrent_layer_uses_gpu_alpha_beta =
             gpu_proj_indices.contains(&2) && gpu_proj_indices.contains(&3);
-        let fused_gpu_recurrent_layer_candidate = recurrent_slot_count == 1
-            && qkv_gpu_fast_path_enabled
-            && cpu_proj_indices.iter().all(|&i| i == 2 || i == 3)
-            && keep_rec_z_on_gpu
-            && ssm_gpu;
+        let fused_gpu_recurrent_layer_candidate = Self::qwen35_fused_recurrent_gpu_candidate(
+            recurrent_slot_count,
+            qkv_gpu_fast_path_enabled,
+            cpu_proj_indices,
+            keep_rec_z_on_gpu,
+            ssm_gpu,
+        );
+        if !fused_gpu_recurrent_layer_candidate {
+            tracing::debug!(
+                layer,
+                recurrent_slot_count,
+                qkv_gpu_fast_path_enabled,
+                keep_rec_z_on_gpu,
+                ssm_gpu,
+                cpu_proj_count = cpu_proj_indices.len(),
+                "recurrent layer NOT fused candidate"
+            );
+        }
 
-        let layer_completed = metal_ops.with_qwen35_recurrent_projection_scratch(
+        let (layer_completed, tail_inflight) = metal_ops.with_qwen35_recurrent_projection_scratch(
             n_tokens,
             dims.conv_dim(),
             dims.inner_size,
             dims.time_step_rank,
-            |temp_scratch| -> anyhow::Result<bool> {
+            |temp_scratch| -> anyhow::Result<(bool, Option<ax_engine_metal::InflightFrame>)> {
                 let temp_qkv = &temp_scratch.qkv;
                 let temp_z = &temp_scratch.z;
                 let temp_beta = &temp_scratch.beta;
@@ -1307,6 +1407,7 @@ impl Qwen35Forward {
                             wd_key,
                             wd_dtype,
                             Some(&proj_params),
+                            force_backend_state_batch,
                         )
                     )?;
                     if let Some(stats) = merged_stats {
@@ -1315,7 +1416,7 @@ impl Qwen35Forward {
                             ops.gpu_execute_layers += stats.gpu_execute;
                             ops.gpu_readback += stats.gpu_readback;
                         }
-                        return Ok(true);
+                        return Ok((true, None));
                     }
                 }
 
@@ -1324,8 +1425,8 @@ impl Qwen35Forward {
                     metal_ops,
                     backend,
                     input_ops,
-                    &gpu_proj_indices,
-                    &cpu_proj_indices,
+                    gpu_proj_indices,
+                    cpu_proj_indices,
                     &proj_keys,
                     &proj_dtypes,
                     &proj_dims,
@@ -1349,7 +1450,7 @@ impl Qwen35Forward {
                     nw_key,
                     ops.as_deref_mut(),
                 )? {
-                    return Ok(false);
+                    return Ok((false, None));
                 }
                 if fused_gpu_recurrent_layer_candidate {
                     let fused_stats = timed!(
@@ -1382,6 +1483,7 @@ impl Qwen35Forward {
                             wd_key,
                             wd_dtype,
                             None,
+                            force_backend_state_batch,
                         )
                     )?;
                     if let Some(stats) = fused_stats {
@@ -1390,7 +1492,7 @@ impl Qwen35Forward {
                             ops.gpu_execute_layers += stats.gpu_execute;
                             ops.gpu_readback += stats.gpu_readback;
                         }
-                        return Ok(true);
+                        return Ok((true, None));
                     }
                 }
 
@@ -1499,7 +1601,7 @@ impl Qwen35Forward {
                     None
                 };
 
-                if !Self::run_unified_recurrent_tail_batch_layer(
+                let (tail_ok, tail_frame) = Self::run_unified_recurrent_tail_batch_layer(
                     metal_ops,
                     has_tail_graph_ir_schedule,
                     dims,
@@ -1511,7 +1613,7 @@ impl Qwen35Forward {
                     recurrent_output_in_qkv_temp,
                     keep_rec_z_on_gpu,
                     ssm_gpu,
-                    ssm_result.as_deref(),
+                    ssm_result,
                     ssm_norm_key,
                     ssm_key,
                     ssm_out_dtype,
@@ -1527,19 +1629,21 @@ impl Qwen35Forward {
                     inter_dim,
                     nt,
                     eps,
-                    ops.as_deref_mut(),
-                )? {
-                    return Ok(false);
+                    ops,
+                    pipelined,
+                )?;
+                if !tail_ok {
+                    return Ok((false, None));
                 }
-                Ok(false)
+                Ok((true, tail_frame))
             },
         )?;
 
         if layer_completed {
-            return Ok(None);
+            return Ok((None, tail_inflight));
         }
 
-        Ok(Some("unified_recurrent_layer_unavailable"))
+        Ok((Some("unified_recurrent_layer_unavailable"), None))
     }
 
     /// GPU-unified prefill: keeps hidden on GPU, encodes full-attention layers
@@ -1651,6 +1755,10 @@ impl Qwen35Forward {
         let _prefill_schedule_summary =
             prefill_schedule::summarize_qwen35_prefill_schedule(&prefill_schedule);
 
+        let pipelined = prefill_schedule::prefill_inter_step_pipelined_enabled();
+        let mut inflight: Option<ax_engine_metal::InflightFrame> = None;
+        let mut deferred_kv_layer: Option<usize> = None;
+
         let mut step_idx = 0usize;
         while step_idx < prefill_schedule.steps.len() {
             let step = prefill_schedule.steps[step_idx];
@@ -1661,6 +1769,20 @@ impl Qwen35Forward {
                     uses_graph_ir,
                     ..
                 } => {
+                    // Wait for any inflight recurrent tail before proceeding.
+                    if let Some(frame) = inflight.take() {
+                        metal_ops.device.wait_frame(frame)?;
+                    }
+                    // Flush deferred K/V readback before this FA overwrites bs.k_buf/v_buf.
+                    if let Some(prev_fa_layer) = deferred_kv_layer.take() {
+                        Self::flush_deferred_kv_readback(
+                            metal_ops,
+                            qwen_kv,
+                            prev_fa_layer,
+                            n_tokens,
+                            kv_dim,
+                        );
+                    }
                     if !Self::run_unified_full_attention_batch_layer(
                         metal_ops,
                         cfg,
@@ -1682,8 +1804,12 @@ impl Qwen35Forward {
                         nt,
                         eps,
                         ops.as_deref_mut(),
+                        pipelined,
                     )? {
                         return fallback("unified_full_attention_layer_unavailable");
+                    }
+                    if pipelined {
+                        deferred_kv_layer = Some(layer);
                     }
                     step_idx += 1;
                 }
@@ -1697,11 +1823,15 @@ impl Qwen35Forward {
                     force_backend_state_batch,
                     ..
                 } => {
-                    let is_first_step_for_layer = step_idx == 0
-                        || prefill_schedule.steps[step_idx - 1].layer != layer;
+                    let is_first_step_for_layer =
+                        step_idx == 0 || prefill_schedule.steps[step_idx - 1].layer != layer;
                     if !is_first_step_for_layer {
                         step_idx += 1;
                         continue;
+                    }
+                    // Wait for any inflight recurrent tail from previous layer.
+                    if let Some(frame) = inflight.take() {
+                        metal_ops.device.wait_frame(frame)?;
                     }
                     let mut end_step = step_idx;
                     let mut has_projection_phase = false;
@@ -1727,7 +1857,7 @@ impl Qwen35Forward {
                         }
                         end_step += 1;
                     }
-                    if let Some(reason) = Self::run_unified_recurrent_batch_layer(
+                    let (reason, tail_frame) = Self::run_unified_recurrent_batch_layer(
                         metal_ops,
                         backend,
                         qwen_kv,
@@ -1748,27 +1878,31 @@ impl Qwen35Forward {
                         eps,
                         force_backend_state_batch,
                         ops.as_deref_mut(),
-                    )? {
+                        pipelined,
+                    )?;
+                    if let Some(reason) = reason {
                         return fallback(reason);
                     }
+                    inflight = tail_frame;
                     step_idx = end_step;
                 }
             }
+        }
+
+        // Wait for any remaining inflight tail frame.
+        if let Some(frame) = inflight.take() {
+            metal_ops.device.wait_frame(frame)?;
+        }
+        // Flush any remaining deferred K/V readback.
+        if let Some(prev_fa_layer) = deferred_kv_layer.take() {
+            Self::flush_deferred_kv_readback(metal_ops, qwen_kv, prev_fa_layer, n_tokens, kv_dim);
         }
 
         qwen_kv.finalize_batch(n_tokens);
 
         let writes_last_logits = logits.is_some();
         if !Self::write_unified_batch_outputs(
-            metal_ops,
-            backend,
-            weights,
-            logits,
-            logits_all,
-            n_tokens,
-            dim,
-            vocab_size,
-            eps,
+            metal_ops, backend, weights, logits, logits_all, n_tokens, dim, vocab_size, eps,
         )? {
             let reason = if writes_last_logits {
                 "missing_batch_scratches_for_last_logits"
@@ -2092,5 +2226,4 @@ impl Qwen35Forward {
             _ => unreachable!("validated above"),
         }
     }
-
 }

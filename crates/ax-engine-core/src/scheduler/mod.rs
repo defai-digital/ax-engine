@@ -145,7 +145,7 @@ impl Scheduler {
     /// - Critical: 1 thread (minimum)
     pub fn recommended_concurrency(&self) -> usize {
         let state = match &self.thermal {
-            Some(monitor) => monitor.lock().unwrap().poll(),
+            Some(monitor) => monitor.lock().unwrap_or_else(|e| e.into_inner()).poll(),
             None => ThermalState::Nominal,
         };
         concurrency_for_state(self.config.decode_threads, state)
@@ -155,14 +155,16 @@ impl Scheduler {
     ///
     /// Returns `None` if thermal throttling is disabled.
     pub fn poll_thermal(&self) -> Option<ThrottleAction> {
-        self.thermal.as_ref().map(|m| m.lock().unwrap().recommend())
+        self.thermal
+            .as_ref()
+            .map(|m| m.lock().unwrap_or_else(|e| e.into_inner()).recommend())
     }
 
     /// Current thermal state, if monitoring is enabled.
     pub fn thermal_state(&self) -> Option<ThermalState> {
         self.thermal
             .as_ref()
-            .map(|m| m.lock().unwrap().last_state())
+            .map(|m| m.lock().unwrap_or_else(|e| e.into_inner()).last_state())
     }
 }
 

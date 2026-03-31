@@ -8,18 +8,22 @@
 //! - full-attention layers use doubled Q projection (`q + gate`)
 //! - every layer uses `post_attention_norm` before the FFN
 //!
-//! AX now routes the recurrent projections and recurrent primitives through the
+//! AX routes the recurrent projections and recurrent primitives through the
 //! active backend, including Metal kernels for the causal-conv and gated-delta
-//! steps. The hybrid `ModelKv::Qwen35` state remains CPU-owned today, so Metal
-//! recurrent execution still copies state through backend-owned kernels rather
-//! than keeping it GPU-resident end to end.
+//! steps. GPU-resident recurrent buffers are enabled by default when allocation
+//! succeeds, but CPU materialization and backend-owned state semantics still
+//! exist as fallback paths.
+//!
+//! The batch prefill path (`try_forward_batch_gpu_unified`) supports inter-step
+//! pipelining (`AX_QWEN35_PREFILL_PIPELINED`): recurrent tail command buffers
+//! are submitted asynchronously, and K/V CPU mirror copies are deferred, so CPU
+//! encoding of step N+1 overlaps GPU execution of step N.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use ax_engine_metal::MetalBuffer;
-use half::f16;
 use rayon::prelude::*;
 
 use crate::compute::attention::AttentionParams;
@@ -346,6 +350,7 @@ impl Qwen35Forward {
 
     fn full_attention_fused_quant_cache()
     -> &'static Mutex<HashMap<(usize, usize, usize), FusedQuantData>> {
+        #[allow(clippy::type_complexity)]
         static CACHE: OnceLock<Mutex<HashMap<(usize, usize, usize), FusedQuantData>>> =
             OnceLock::new();
         CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -588,6 +593,7 @@ impl Qwen35Forward {
             crate::gguf::tensor::GgmlType::Q4K
                 | crate::gguf::tensor::GgmlType::Q5K
                 | crate::gguf::tensor::GgmlType::Q6K
+                | crate::gguf::tensor::GgmlType::F32
         ) || (dtype == crate::gguf::tensor::GgmlType::Q8_0
             && (metal_ops.metal_q8_batch_native_shape_enabled(m, n, k)
                 || metal_ops.metal_precompute_f16_enabled()))
@@ -619,7 +625,12 @@ impl Qwen35Forward {
         k: u32,
         dtype: crate::gguf::tensor::GgmlType,
     ) {
-        if Self::qwen35_batch_projection_needs_f16_input(dtype) {
+        if dtype == crate::gguf::tensor::GgmlType::F32 {
+            // Dense f32 weights (beta/alpha): simdgroup matmul, no dequant.
+            metal_ops
+                .matmul
+                .encode_matmul(encoder, weight, input_f32, output, m, n, k);
+        } else if Self::qwen35_batch_projection_needs_f16_input(dtype) {
             encode_dequant_batch_f16in(
                 metal_ops, encoder, weight, input_f16, output, m, n, k, dtype,
             );

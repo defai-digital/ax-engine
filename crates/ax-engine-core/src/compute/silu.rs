@@ -21,7 +21,6 @@ pub fn silu(x: &mut [f32]) {
     #[cfg(target_arch = "aarch64")]
     {
         silu_vforce(x);
-        return;
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -40,7 +39,6 @@ pub fn silu_elementwise_mul(x: &mut [f32], y: &[f32]) {
     #[cfg(target_arch = "aarch64")]
     {
         silu_elementwise_mul_vforce(x, y);
-        return;
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -95,7 +93,7 @@ fn silu_vforce(x: &mut [f32]) {
         }
 
         for i in simd_chunks * 4..len {
-            chunk[i] = chunk[i] / (1.0 + exp_neg[i]);
+            chunk[i] /= 1.0 + exp_neg[i];
         }
     }
 }

@@ -50,7 +50,7 @@ pub enum ModelKv {
     /// GPU Metal buffer storage (f32 or f16). Used with MetalBackend or HybridBackend.
     Gpu(GpuKv),
     /// Hybrid recurrent state + attention KV for Qwen3.5.
-    Qwen35(Qwen35Kv),
+    Qwen35(Box<Qwen35Kv>),
 }
 
 impl ModelKv {
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn test_model_kv_qwen35_snapshot_round_trip() {
-        let mut kv = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        let mut kv = ModelKv::Qwen35(Box::new(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2)));
         if let ModelKv::Qwen35(qwen_kv) = &mut kv {
             let slot1 = qwen_kv.allocate_recurrent_slot();
             qwen_kv.set_active_slot(slot1);
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_model_kv_qwen35_snapshot_restores_into_fresh_kv() {
-        let mut source = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        let mut source = ModelKv::Qwen35(Box::new(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2)));
         if let ModelKv::Qwen35(qwen_kv) = &mut source {
             let slot1 = qwen_kv.allocate_recurrent_slot();
             qwen_kv.set_active_slot(slot1);
@@ -463,7 +463,7 @@ mod tests {
             .snapshot()
             .expect("qwen35 kv should support snapshots");
 
-        let mut restored = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        let mut restored = ModelKv::Qwen35(Box::new(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2)));
         restored
             .restore_snapshot(&snapshot)
             .expect("qwen35 restore into fresh kv should succeed");
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn test_model_kv_restore_rejects_mismatched_snapshot_variant() {
         let mut kv = ModelKv::Cpu(CpuKv::new(1, 1, 2, 16));
-        let qwen_snapshot = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2))
+        let qwen_snapshot = ModelKv::Qwen35(Box::new(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2)))
             .snapshot()
             .expect("qwen35 snapshot should exist");
         let err = kv
@@ -518,7 +518,7 @@ mod tests {
 
     #[test]
     fn test_model_kv_with_qwen35_batch_slot_indices_clears_after_success() {
-        let mut kv = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        let mut kv = ModelKv::Qwen35(Box::new(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2)));
         let slot1 = kv
             .as_qwen35_mut()
             .expect("expected qwen35 kv")
@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn test_model_kv_with_qwen35_batch_slot_indices_clears_after_error() {
-        let mut kv = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        let mut kv = ModelKv::Qwen35(Box::new(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2)));
         let slot1 = kv
             .as_qwen35_mut()
             .expect("expected qwen35 kv")
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn test_model_kv_with_qwen35_shared_timeline_branches_restores_active_and_frees_slots() {
-        let mut kv = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        let mut kv = ModelKv::Qwen35(Box::new(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2)));
 
         kv.with_qwen35_shared_timeline_branches(3, |kv, slot_indices| {
             assert_eq!(slot_indices, &[0, 1, 2]);
@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn test_model_kv_with_qwen35_shared_timeline_branches_cleans_up_after_error() {
-        let mut kv = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        let mut kv = ModelKv::Qwen35(Box::new(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2)));
 
         let err = kv
             .with_qwen35_shared_timeline_branches(2, |kv, slot_indices| -> anyhow::Result<()> {
@@ -613,7 +613,7 @@ mod tests {
 
     #[test]
     fn test_model_kv_with_qwen35_shared_timeline_branches_from_slot_restores_original_active() {
-        let mut kv = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        let mut kv = ModelKv::Qwen35(Box::new(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2)));
         let source_slot = kv
             .allocate_qwen35_recurrent_slot()
             .expect("qwen35 slot allocation should succeed");
@@ -648,7 +648,7 @@ mod tests {
     #[test]
     fn test_model_kv_with_qwen35_shared_timeline_branches_from_slot_commits_back_to_original_active()
      {
-        let mut kv = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        let mut kv = ModelKv::Qwen35(Box::new(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2)));
         let source_slot = kv
             .allocate_qwen35_recurrent_slot()
             .expect("qwen35 slot allocation should succeed");
@@ -680,7 +680,7 @@ mod tests {
 
     #[test]
     fn test_model_kv_qwen35_slot_lifecycle_wrappers() {
-        let mut kv = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        let mut kv = ModelKv::Qwen35(Box::new(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2)));
         let slot1 = kv
             .allocate_qwen35_recurrent_slot()
             .expect("qwen35 slot allocation should succeed");
@@ -702,7 +702,7 @@ mod tests {
 
     #[test]
     fn test_model_kv_qwen35_recurrent_slot_snapshot_wrappers_round_trip() {
-        let mut kv = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        let mut kv = ModelKv::Qwen35(Box::new(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2)));
         let slot1 = kv
             .allocate_qwen35_recurrent_slot()
             .expect("qwen35 slot allocation should succeed");
@@ -746,7 +746,7 @@ mod tests {
 
     #[test]
     fn test_model_kv_qwen35_attention_snapshot_wrapper_round_trip() {
-        let mut kv = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        let mut kv = ModelKv::Qwen35(Box::new(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2)));
         let slot1 = kv
             .allocate_qwen35_recurrent_slot()
             .expect("qwen35 slot allocation should succeed");
@@ -786,7 +786,7 @@ mod tests {
 
     #[test]
     fn test_model_kv_qwen35_clone_recurrent_slot_wrapper() {
-        let mut kv = ModelKv::Qwen35(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2));
+        let mut kv = ModelKv::Qwen35(Box::new(Qwen35Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2)));
         let slot1 = kv
             .allocate_qwen35_recurrent_slot()
             .expect("qwen35 slot allocation should succeed");

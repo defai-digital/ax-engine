@@ -1,0 +1,47 @@
+{
+  "model": "models/gemma-3-12b-it-Q4_K_M.gguf",
+  "prompt_tokens": 512,
+  "effective_prefill_tokens": 512,
+  "decode_tokens": 128,
+  "prefill_tok_per_sec": 321.74448516573636,
+  "prefill_tok_per_sec_median": 427.3795296676089,
+  "effective_prefill_tok_per_sec": 321.74448516573636,
+  "effective_prefill_tok_per_sec_median": 427.3795296676089,
+  "decode_tok_per_sec": 41.331674144658045,
+  "decode_tok_per_sec_median": 41.531547184785694,
+  "p50_latency": {
+    "secs": 0,
+    "nanos": 0
+  },
+  "p95_latency": {
+    "secs": 0,
+    "nanos": 0
+  },
+  "p99_latency": {
+    "secs": 0,
+    "nanos": 0
+  },
+  "prefill_command_buffers": 1.0,
+  "prefill_buffer_barriers": 476.0,
+  "decode_command_buffers": 0.0,
+  "decode_buffer_barriers": 0.0,
+  "decode_command_buffers_per_tok": 1.0,
+  "decode_buffer_barriers_per_tok": 195.0,
+  "decode_command_buffers_per_tok_max": 2.0,
+  "decode_buffer_barriers_per_tok_max": 390.0,
+  "decode_intent": "throughput",
+  "decode_mode": "pipelined",
+  "prefill_plan": "mode=gpu_batch kv=f16 f16_io=off pair=on qkv=fused batch_simd=off split_rope=off attn=cached window=0 wo_in=attn_f32 attn_route=cache/stable",
+  "prefill_mode": "gpu_batch",
+  "prefill_route_family": "dense_gpu_batch",
+  "prefill_route_detail": "cache/stable",
+  "prefill_attention_route": "cache/stable",
+  "prefill_qkv_plan": "fused",
+  "prefill_split_rope_append": false,
+  "decode_plan": "sync=pipelined scratch=gpu_shared barriers=smart qkv=fused kv=f16 attn=splitk_hd256/profile_preferred q4k=q4_k.nr2/profile_preferred q5k=q5_k.base/stable q6k=q6_k.nr2/profile_preferred",
+  "qwen35_shared_timeline_slots": 1,
+  "kv_f16": true,
+  "deterministic": true,
+  "samples": 5,
+  "cooldown_ms": 20000
+}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="/Users/akiralam/code/ax-engine-v2"
+REPO_DIR="/Users/akiralam/code/ax-engine"
 AX_BENCH="${AX_BENCH:-$REPO_DIR/target/release/ax-engine-bench}"
 LLAMA_BENCH="${LLAMA_BENCH:-/opt/homebrew/bin/llama-bench}"
 OUT_DIR="${OUT_DIR:-$REPO_DIR/automatosx/tmp}"
@@ -18,6 +18,7 @@ TSV_OUT="$OUT_DIR/phase3-cross-validate-defaults-$TIMESTAMP.tsv"
 MD_OUT="$OUT_DIR/phase3-cross-validate-defaults-$TIMESTAMP.md"
 
 MODELS=(
+  "qwen35-9b|$REPO_DIR/models/Qwen3.5-9B-Q4_K_M.gguf|perfs/qwen35-9b.json"
   "qwen3-8b|$REPO_DIR/models/Qwen3-8B-Q4_K_M.gguf|perfs/qwen3-8b.json"
   "gemma3-4b|$REPO_DIR/models/gemma-3-4b-it-Q4_K_M.gguf|perfs/gemma3-4b.json"
   "llama3-8b|$REPO_DIR/models/Llama-3-8B-Instruct-GGUF-Q4_K_M.gguf|perfs/llama3-8b.json"

@@ -3494,6 +3494,31 @@ impl MetalOps {
     pub fn set_cached_model_keys(&self, keys: CachedModelKeys) {
         let mut guard = self.cached_model_keys.lock().unwrap();
         *guard = Some(keys);
+        drop(guard);
+        // First key cache is also the final weight-loading event: commit residency
+        // so the OS keeps all model buffers wired for the GPU.
+        self.commit_weight_residency();
+    }
+
+    /// Register all cached weight buffers in the Metal residency set and commit.
+    ///
+    /// Call once after `build_cached_model_keys` so the OS keeps model weights
+    /// resident in GPU-accessible memory.  No-op if residency is disabled.
+    pub fn commit_weight_residency(&self) {
+        if !self.device.has_residency() {
+            return;
+        }
+        for buf in self.f32_weight_cache.lock().unwrap().values() {
+            self.device.register_resident_buffer(buf);
+        }
+        for buf in self.fused_qkv_weight_cache.lock().unwrap().values() {
+            self.device.register_resident_buffer(buf);
+        }
+        for buf in self.precomputed_f16_weight_cache.lock().unwrap().values() {
+            self.device.register_resident_buffer(buf);
+        }
+        self.device.commit_residency();
+        self.device.log_memory_pressure();
     }
 
     /// Access the cached model weight keys.

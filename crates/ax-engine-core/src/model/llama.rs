@@ -39,7 +39,7 @@ use crate::metrics::counters::OpTimer;
 use crate::model::config::ModelConfig;
 use crate::model::decode::DecodeIntent;
 use crate::model::execution_plan::{
-    DecodeBarrierPlan, DecodeExecutionPlan, DecodeScratchPlan, GpuBatchPrefillExecutionPlan,
+    DecodeEncoderPlan, DecodeExecutionPlan, DecodeScratchPlan, GpuBatchPrefillExecutionPlan,
     GpuDecodeExecutionPlan, PrefillAttentionPlan, PrefillExecutionPlan, PrefillFfnActivationPlan,
     PrefillLogitsPlan, PrefillMode, PrefillProjectionInputPlan, PrefillResidualHandoffPlan,
     PrefillWoInputPlan,

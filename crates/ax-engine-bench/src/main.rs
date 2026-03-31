@@ -4,6 +4,7 @@
 //!   ax-engine-bench soak --model <path> [--duration 24h] [--json] [--json-output <path>]
 //!   ax-engine-bench bench --model <path> [--prompt-tokens 512] [--decode-tokens 128] [--json] [--json-output <path>]
 //!   ax-engine-bench prefill-profile --model <path> [--prompt-tokens 512] [--json] [--json-output <path>]
+//!   ax-engine-bench prefill-gap --model <path> [--baseline-json <path> | --baseline-prefill-tok-s <n>] [--json]
 //!   ax-engine-bench profile --model <path> [--profile-tokens 64] [--json] [--json-output <path>]
 //!   ax-engine-bench speculative --model <target> --draft-model <draft> [--json] [--json-output <path>]
 //!   ax-engine-bench parity --model <path> [--prompt "Hello"] [--decode-tokens 8]
@@ -14,6 +15,7 @@ use std::process;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 
 use ax_engine_bench::microbench::{
     self, MicrobenchConfig, MicrobenchProfileExportAction, MicrobenchProfileExportStatus,
@@ -21,7 +23,8 @@ use ax_engine_bench::microbench::{
 };
 use ax_engine_bench::parity::{self, ParityConfig, ParityMode};
 use ax_engine_bench::perf::{self, BenchConfig, SpecBenchConfig};
-use ax_engine_bench::prefill_profile::{self, PrefillProfileConfig};
+use ax_engine_bench::prefill_gap::{self, PrefillGapConfig};
+use ax_engine_bench::prefill_profile::{self, PrefillProfileConfig, Qwen35RecurrentStateMode};
 use ax_engine_bench::profile::{self, ProfileConfig};
 use ax_engine_bench::soak::{self, SoakConfig};
 use ax_engine_core::backend::BackendConfig;
@@ -57,6 +60,28 @@ enum ParityBackendArg {
     Hybrid,
     Metal,
     HybridCpuDecode,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum Qwen35SpecVerifyBranchArg {
+    Auto,
+    On,
+    Off,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum Qwen35PrefillRecurrentStateModeArg {
+    Auto,
+    CpuAlias,
+    SlotBuffer,
+    BackendOwned,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum Qwen35PrefillAlphaBetaStorageModeArg {
+    Auto,
+    F32,
+    F16,
 }
 
 impl From<BenchIntentArg> for DecodeIntent {
@@ -198,6 +223,107 @@ enum Command {
         #[arg(long, default_value = "1")]
         warmup_iters: usize,
 
+        /// Fan the same prompt out across this many Qwen3.5 recurrent slots on
+        /// a shared attention timeline during prefill.
+        #[arg(long, default_value = "1")]
+        qwen35_shared_timeline_slots: usize,
+
+        /// Optional source recurrent slot for Qwen3.5 shared-timeline prefill.
+        #[arg(long)]
+        qwen35_shared_timeline_source_slot: Option<usize>,
+
+        /// Experimental Qwen3.5 recurrent state mode for GPU prefill handoff.
+        #[arg(long, value_enum, default_value = "auto")]
+        qwen35_recurrent_state_mode: Qwen35PrefillRecurrentStateModeArg,
+
+        /// Experimental Qwen3.5 alpha/beta scratch storage mode for recurrent handoff.
+        #[arg(long, value_enum, default_value = "auto")]
+        qwen35_alpha_beta_storage_mode: Qwen35PrefillAlphaBetaStorageModeArg,
+
+        /// Prime Qwen3.5 recurrent Metal slot buffers before timed prefill.
+        #[arg(long)]
+        qwen35_prime_slot_buffers: bool,
+
+        /// Run one unmeasured prefill on the same KV before timing the measured prefill.
+        #[arg(long)]
+        qwen35_prewarm_prefill_same_kv: bool,
+
+        /// Force Qwen3.5 recurrent prefill to bypass model-side GPU QKV handoff and use backend state batch.
+        #[arg(long)]
+        qwen35_force_backend_state_batch: bool,
+
+        /// Output results as JSON.
+        #[arg(long)]
+        json: bool,
+
+        /// Write JSON results to file.
+        #[arg(long)]
+        json_output: Option<String>,
+
+        /// Apply llama.cpp-aligned AX runtime preset (if vars are unset).
+        #[arg(long)]
+        llama_parity_preset: bool,
+
+        /// Override kernel profile path for this run.
+        #[arg(long)]
+        kernel_profile_path: Option<String>,
+    },
+
+    /// Attribute AX prefill gap versus a baseline artifact or inline baseline.
+    PrefillGap {
+        /// Path to GGUF model file.
+        #[arg(long)]
+        model: String,
+
+        /// Number of prompt tokens to process.
+        #[arg(long, default_value = "512")]
+        prompt_tokens: usize,
+
+        /// Number of unprofiled warmup prefills before measurement.
+        #[arg(long, default_value = "1")]
+        warmup_iters: usize,
+
+        /// Fan the same prompt out across this many Qwen3.5 recurrent slots on
+        /// a shared attention timeline during prefill.
+        #[arg(long, default_value = "1")]
+        qwen35_shared_timeline_slots: usize,
+
+        /// Optional source recurrent slot for Qwen3.5 shared-timeline prefill.
+        #[arg(long)]
+        qwen35_shared_timeline_source_slot: Option<usize>,
+
+        /// Experimental Qwen3.5 recurrent state mode for GPU prefill handoff.
+        #[arg(long, value_enum, default_value = "auto")]
+        qwen35_recurrent_state_mode: Qwen35PrefillRecurrentStateModeArg,
+
+        /// Experimental Qwen3.5 alpha/beta scratch storage mode for recurrent handoff.
+        #[arg(long, value_enum, default_value = "auto")]
+        qwen35_alpha_beta_storage_mode: Qwen35PrefillAlphaBetaStorageModeArg,
+
+        /// Prime Qwen3.5 recurrent Metal slot buffers before timed prefill.
+        #[arg(long)]
+        qwen35_prime_slot_buffers: bool,
+
+        /// Run one unmeasured prefill on the same KV before timing the measured prefill.
+        #[arg(long)]
+        qwen35_prewarm_prefill_same_kv: bool,
+
+        /// Force Qwen3.5 recurrent prefill to bypass model-side GPU QKV handoff and use backend state batch.
+        #[arg(long)]
+        qwen35_force_backend_state_batch: bool,
+
+        /// Baseline JSON artifact with prefill tok/s fields.
+        #[arg(long)]
+        baseline_json: Option<String>,
+
+        /// Inline baseline prefill throughput in tok/s.
+        #[arg(long)]
+        baseline_prefill_tok_s: Option<f64>,
+
+        /// Optional display label for the baseline.
+        #[arg(long)]
+        baseline_label: Option<String>,
+
         /// Output results as JSON.
         #[arg(long)]
         json: bool,
@@ -258,6 +384,15 @@ enum Command {
         #[arg(long, value_enum, default_value_t = BenchIntentArg::Throughput)]
         intent: BenchIntentArg,
 
+        /// Fan the same prompt out across this many Qwen3.5 recurrent slots on
+        /// a shared attention timeline during prefill.
+        #[arg(long, default_value = "1")]
+        qwen35_shared_timeline_slots: usize,
+
+        /// Optional source recurrent slot for Qwen3.5 shared-timeline prefill.
+        #[arg(long)]
+        qwen35_shared_timeline_source_slot: Option<usize>,
+
         /// Override kernel profile path for this run.
         #[arg(long)]
         kernel_profile_path: Option<String>,
@@ -312,6 +447,14 @@ enum Command {
         /// Speculative lookahead K.
         #[arg(long = "speculative-k", default_value = "4")]
         speculative_k: usize,
+
+        /// Force Qwen3.5 speculative target verify branch routing.
+        #[arg(long, value_enum, default_value = "auto")]
+        qwen35_spec_verify_branch: Qwen35SpecVerifyBranchArg,
+
+        /// Run branch `on` and `off` back-to-back and print a delta summary.
+        #[arg(long)]
+        qwen35_spec_verify_compare: bool,
 
         /// Apply llama.cpp-aligned AX runtime preset (if vars are unset).
         #[arg(long)]
@@ -426,6 +569,92 @@ fn apply_llama_parity_preset() {
     set_env_default("AX_METAL_F16_KV_CACHE", "on");
 }
 
+fn qwen35_spec_verify_branch_env(value: Qwen35SpecVerifyBranchArg) -> Option<&'static str> {
+    match value {
+        Qwen35SpecVerifyBranchArg::Auto => None,
+        Qwen35SpecVerifyBranchArg::On => Some("on"),
+        Qwen35SpecVerifyBranchArg::Off => Some("off"),
+    }
+}
+
+fn qwen35_prefill_recurrent_state_mode_env(
+    value: Qwen35PrefillRecurrentStateModeArg,
+) -> Option<&'static str> {
+    match value {
+        Qwen35PrefillRecurrentStateModeArg::Auto => None,
+        Qwen35PrefillRecurrentStateModeArg::CpuAlias => Some("cpu_alias"),
+        Qwen35PrefillRecurrentStateModeArg::SlotBuffer => Some("slot_buffer"),
+        Qwen35PrefillRecurrentStateModeArg::BackendOwned => Some("backend_owned"),
+    }
+}
+
+fn qwen35_prefill_alpha_beta_storage_mode_env(
+    value: Qwen35PrefillAlphaBetaStorageModeArg,
+) -> Option<&'static str> {
+    match value {
+        Qwen35PrefillAlphaBetaStorageModeArg::Auto => None,
+        Qwen35PrefillAlphaBetaStorageModeArg::F32 => Some("f32"),
+        Qwen35PrefillAlphaBetaStorageModeArg::F16 => Some("f16"),
+    }
+}
+
+fn qwen35_prefill_force_backend_state_batch_env(enabled: bool) -> Option<&'static str> {
+    if enabled { Some("1") } else { None }
+}
+
+impl From<Qwen35PrefillRecurrentStateModeArg> for Qwen35RecurrentStateMode {
+    fn from(value: Qwen35PrefillRecurrentStateModeArg) -> Self {
+        match value {
+            Qwen35PrefillRecurrentStateModeArg::Auto => Qwen35RecurrentStateMode::Auto,
+            Qwen35PrefillRecurrentStateModeArg::CpuAlias => Qwen35RecurrentStateMode::CpuAlias,
+            Qwen35PrefillRecurrentStateModeArg::SlotBuffer => Qwen35RecurrentStateMode::SlotBuffer,
+            Qwen35PrefillRecurrentStateModeArg::BackendOwned => {
+                Qwen35RecurrentStateMode::BackendOwned
+            }
+        }
+    }
+}
+
+impl From<Qwen35PrefillAlphaBetaStorageModeArg> for prefill_profile::Qwen35AlphaBetaStorageMode {
+    fn from(value: Qwen35PrefillAlphaBetaStorageModeArg) -> Self {
+        match value {
+            Qwen35PrefillAlphaBetaStorageModeArg::Auto => {
+                prefill_profile::Qwen35AlphaBetaStorageMode::Auto
+            }
+            Qwen35PrefillAlphaBetaStorageModeArg::F32 => {
+                prefill_profile::Qwen35AlphaBetaStorageMode::F32
+            }
+            Qwen35PrefillAlphaBetaStorageModeArg::F16 => {
+                prefill_profile::Qwen35AlphaBetaStorageMode::F16
+            }
+        }
+    }
+}
+
+fn with_env_var_override<T>(key: &'static str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
+    struct EnvVarRestore {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(prev) => unsafe { std::env::set_var(self.key, prev) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    let previous = std::env::var_os(key);
+    let _restore = EnvVarRestore { key, previous };
+    match value {
+        Some(value) => unsafe { std::env::set_var(key, value) },
+        None => unsafe { std::env::remove_var(key) },
+    }
+    f()
+}
+
 fn create_runtime_backend(context: &str) -> Box<dyn ax_engine_core::backend::Backend> {
     ax_engine_core::backend::create_backend(
         ax_engine_core::backend::resolve_backend_config_from_env(),
@@ -434,6 +663,115 @@ fn create_runtime_backend(context: &str) -> Box<dyn ax_engine_core::backend::Bac
         eprintln!("{context} error: {e}");
         process::exit(2);
     })
+}
+
+#[derive(Debug, Serialize)]
+struct SpecVerifyCompareDelta {
+    verify_ms_per_step: f64,
+    verify_ms_per_step_pct: f64,
+    verify_prepare_ms_per_step: f64,
+    verify_forward_ms_per_step: f64,
+    verify_cleanup_ms_per_step: f64,
+    decode_tok_per_sec: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct SpecVerifyCompareReport {
+    deterministic: bool,
+    samples: usize,
+    measure_iters: usize,
+    cooldown_ms: u64,
+    branch_on: perf::SpecBenchResult,
+    branch_off: perf::SpecBenchResult,
+    delta_on_minus_off: SpecVerifyCompareDelta,
+}
+
+fn build_spec_verify_compare_report(
+    branch_on: perf::SpecBenchResult,
+    branch_off: perf::SpecBenchResult,
+    measure_iters: usize,
+) -> SpecVerifyCompareReport {
+    let delta_pct = |on: f64, off: f64| {
+        if off.abs() <= f64::EPSILON {
+            0.0
+        } else {
+            ((on - off) / off) * 100.0
+        }
+    };
+
+    let delta = SpecVerifyCompareDelta {
+        verify_ms_per_step: branch_on.verify_ms_per_step - branch_off.verify_ms_per_step,
+        verify_ms_per_step_pct: delta_pct(
+            branch_on.verify_ms_per_step,
+            branch_off.verify_ms_per_step,
+        ),
+        verify_prepare_ms_per_step: branch_on.verify_prepare_ms_per_step
+            - branch_off.verify_prepare_ms_per_step,
+        verify_forward_ms_per_step: branch_on.verify_forward_ms_per_step
+            - branch_off.verify_forward_ms_per_step,
+        verify_cleanup_ms_per_step: branch_on.verify_cleanup_ms_per_step
+            - branch_off.verify_cleanup_ms_per_step,
+        decode_tok_per_sec: branch_on.decode_tok_per_sec - branch_off.decode_tok_per_sec,
+    };
+
+    SpecVerifyCompareReport {
+        deterministic: branch_on.deterministic || branch_off.deterministic,
+        samples: branch_on.samples.max(branch_off.samples),
+        measure_iters,
+        cooldown_ms: branch_on.cooldown_ms.max(branch_off.cooldown_ms),
+        branch_on,
+        branch_off,
+        delta_on_minus_off: delta,
+    }
+}
+
+fn print_spec_verify_compare(report: &SpecVerifyCompareReport) {
+    let branch_on = &report.branch_on;
+    let branch_off = &report.branch_off;
+    let delta = &report.delta_on_minus_off;
+
+    eprintln!();
+    eprintln!("=== Qwen3.5 Verify Compare ===");
+    if report.deterministic {
+        eprintln!(
+            "Mode:        deterministic (samples={}, measure-iters={}, cooldown={}ms)",
+            report.samples, report.measure_iters, report.cooldown_ms,
+        );
+    } else {
+        eprintln!(
+            "Mode:        standard (measure-iters={})",
+            report.measure_iters
+        );
+    }
+    eprintln!(
+        "Verify:      on {:.2} ms | off {:.2} ms | delta {:+.2} ms ({:+.1}%)",
+        branch_on.verify_ms_per_step,
+        branch_off.verify_ms_per_step,
+        delta.verify_ms_per_step,
+        delta.verify_ms_per_step_pct,
+    );
+    eprintln!(
+        "Prep:        on {:.2} ms | off {:.2} ms | delta {:+.2} ms",
+        branch_on.verify_prepare_ms_per_step,
+        branch_off.verify_prepare_ms_per_step,
+        delta.verify_prepare_ms_per_step,
+    );
+    eprintln!(
+        "Forward:     on {:.2} ms | off {:.2} ms | delta {:+.2} ms",
+        branch_on.verify_forward_ms_per_step,
+        branch_off.verify_forward_ms_per_step,
+        delta.verify_forward_ms_per_step,
+    );
+    eprintln!(
+        "Cleanup:     on {:.2} ms | off {:.2} ms | delta {:+.2} ms",
+        branch_on.verify_cleanup_ms_per_step,
+        branch_off.verify_cleanup_ms_per_step,
+        delta.verify_cleanup_ms_per_step,
+    );
+    eprintln!(
+        "Decode:      on {:.2} tok/s | off {:.2} tok/s | delta {:+.2} tok/s",
+        branch_on.decode_tok_per_sec, branch_off.decode_tok_per_sec, delta.decode_tok_per_sec,
+    );
 }
 
 fn main() {
@@ -497,7 +835,10 @@ fn main() {
                     if json {
                         match result.to_json() {
                             Ok(j) => println!("{j}"),
-                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
                         }
                     }
 
@@ -506,11 +847,15 @@ fn main() {
                             Ok(j) => {
                                 if let Err(e) = std::fs::write(&path, j) {
                                     eprintln!("Failed to write JSON output to {path}: {e}");
+                                    process::exit(2);
                                 } else {
                                     eprintln!("Results written to {path}");
                                 }
                             }
-                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
                         }
                     }
 
@@ -556,7 +901,10 @@ fn main() {
                     if json {
                         match result.to_json() {
                             Ok(j) => println!("{j}"),
-                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
                         }
                     }
 
@@ -565,11 +913,15 @@ fn main() {
                             Ok(j) => {
                                 if let Err(e) = std::fs::write(&path, j) {
                                     eprintln!("Failed to write JSON output to {path}: {e}");
+                                    process::exit(2);
                                 } else {
                                     eprintln!("Results written to {path}");
                                 }
                             }
-                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
                         }
                     }
 
@@ -605,6 +957,13 @@ fn main() {
             model,
             prompt_tokens,
             warmup_iters,
+            qwen35_shared_timeline_slots,
+            qwen35_shared_timeline_source_slot,
+            qwen35_recurrent_state_mode,
+            qwen35_alpha_beta_storage_mode,
+            qwen35_prime_slot_buffers,
+            qwen35_prewarm_prefill_same_kv,
+            qwen35_force_backend_state_batch,
             json,
             json_output,
             llama_parity_preset,
@@ -620,17 +979,49 @@ fn main() {
                 model_path: model,
                 prompt_tokens,
                 warmup_iters,
+                qwen35_shared_timeline_slots,
+                qwen35_shared_timeline_source_slot,
                 kernel_profile_path,
+                qwen35_recurrent_state_mode: qwen35_recurrent_state_mode.into(),
+                qwen35_alpha_beta_storage_mode: qwen35_alpha_beta_storage_mode.into(),
+                qwen35_prime_slot_buffers,
+                qwen35_prewarm_prefill_same_kv,
+                qwen35_force_backend_state_batch,
             };
 
-            match prefill_profile::run_prefill_profile_with_backend(&config, backend) {
+            match with_env_var_override(
+                "AX_QWEN35_PREFILL_RECURRENT_STATE_MODE",
+                qwen35_prefill_recurrent_state_mode_env(qwen35_recurrent_state_mode),
+                || {
+                    with_env_var_override(
+                        "AX_QWEN35_PREFILL_ALPHA_BETA_STORAGE_MODE",
+                        qwen35_prefill_alpha_beta_storage_mode_env(qwen35_alpha_beta_storage_mode),
+                        || {
+                            with_env_var_override(
+                                "AX_QWEN35_PREFILL_FORCE_BACKEND_STATE_BATCH",
+                                qwen35_prefill_force_backend_state_batch_env(
+                                    qwen35_force_backend_state_batch,
+                                ),
+                                || {
+                                    prefill_profile::run_prefill_profile_with_backend(
+                                        &config, backend,
+                                    )
+                                },
+                            )
+                        },
+                    )
+                },
+            ) {
                 Ok(result) => {
                     result.print_summary();
 
                     if json {
                         match result.to_json() {
                             Ok(j) => println!("{j}"),
-                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
                         }
                     }
 
@@ -639,16 +1030,120 @@ fn main() {
                             Ok(j) => {
                                 if let Err(e) = std::fs::write(&path, j) {
                                     eprintln!("Failed to write JSON output to {path}: {e}");
+                                    process::exit(2);
                                 } else {
                                     eprintln!("Results written to {path}");
                                 }
                             }
-                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
                         }
                     }
                 }
                 Err(e) => {
                     eprintln!("Prefill profile error: {e}");
+                    process::exit(2);
+                }
+            }
+        }
+
+        Command::PrefillGap {
+            model,
+            prompt_tokens,
+            warmup_iters,
+            qwen35_shared_timeline_slots,
+            qwen35_shared_timeline_source_slot,
+            qwen35_recurrent_state_mode,
+            qwen35_alpha_beta_storage_mode,
+            qwen35_prime_slot_buffers,
+            qwen35_prewarm_prefill_same_kv,
+            qwen35_force_backend_state_batch,
+            baseline_json,
+            baseline_prefill_tok_s,
+            baseline_label,
+            json,
+            json_output,
+            llama_parity_preset,
+            kernel_profile_path,
+        } => {
+            if llama_parity_preset {
+                apply_llama_parity_preset();
+            }
+            apply_kernel_profile_override(kernel_profile_path.as_deref());
+            let backend = create_runtime_backend("Prefill gap");
+            ax_engine_core::scheduler::init_global_threadpool();
+            let config = PrefillGapConfig {
+                profile: PrefillProfileConfig {
+                    model_path: model,
+                    prompt_tokens,
+                    warmup_iters,
+                    qwen35_shared_timeline_slots,
+                    qwen35_shared_timeline_source_slot,
+                    kernel_profile_path: kernel_profile_path.clone(),
+                    qwen35_recurrent_state_mode: qwen35_recurrent_state_mode.into(),
+                    qwen35_alpha_beta_storage_mode: qwen35_alpha_beta_storage_mode.into(),
+                    qwen35_prime_slot_buffers,
+                    qwen35_prewarm_prefill_same_kv,
+                    qwen35_force_backend_state_batch,
+                },
+                baseline_json,
+                baseline_prefill_tok_per_sec: baseline_prefill_tok_s,
+                baseline_label,
+            };
+
+            match with_env_var_override(
+                "AX_QWEN35_PREFILL_RECURRENT_STATE_MODE",
+                qwen35_prefill_recurrent_state_mode_env(qwen35_recurrent_state_mode),
+                || {
+                    with_env_var_override(
+                        "AX_QWEN35_PREFILL_ALPHA_BETA_STORAGE_MODE",
+                        qwen35_prefill_alpha_beta_storage_mode_env(qwen35_alpha_beta_storage_mode),
+                        || {
+                            with_env_var_override(
+                                "AX_QWEN35_PREFILL_FORCE_BACKEND_STATE_BATCH",
+                                qwen35_prefill_force_backend_state_batch_env(
+                                    qwen35_force_backend_state_batch,
+                                ),
+                                || prefill_gap::run_prefill_gap_with_backend(&config, backend),
+                            )
+                        },
+                    )
+                },
+            ) {
+                Ok(report) => {
+                    report.print_summary();
+
+                    if json {
+                        match report.to_json() {
+                            Ok(j) => println!("{j}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
+                        }
+                    }
+
+                    if let Some(path) = json_output {
+                        match report.to_json() {
+                            Ok(j) => {
+                                if let Err(e) = std::fs::write(&path, j) {
+                                    eprintln!("Failed to write JSON output to {path}: {e}");
+                                    process::exit(2);
+                                } else {
+                                    eprintln!("Results written to {path}");
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Prefill gap error: {e}");
                     process::exit(2);
                 }
             }
@@ -665,6 +1160,8 @@ fn main() {
             cooldown_ms,
             llama_parity_preset,
             intent,
+            qwen35_shared_timeline_slots,
+            qwen35_shared_timeline_source_slot,
             kernel_profile_path,
             json,
             json_output,
@@ -685,6 +1182,8 @@ fn main() {
                 samples,
                 cooldown_ms,
                 intent: intent.into(),
+                qwen35_shared_timeline_slots,
+                qwen35_shared_timeline_source_slot,
                 kernel_profile_path,
             };
 
@@ -695,7 +1194,10 @@ fn main() {
                     if json {
                         match result.to_json() {
                             Ok(j) => println!("{j}"),
-                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
                         }
                     }
 
@@ -704,11 +1206,15 @@ fn main() {
                             Ok(j) => {
                                 if let Err(e) = std::fs::write(&path, j) {
                                     eprintln!("Failed to write JSON output to {path}: {e}");
+                                    process::exit(2);
                                 } else {
                                     eprintln!("Results written to {path}");
                                 }
                             }
-                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
                         }
                     }
                 }
@@ -730,6 +1236,8 @@ fn main() {
             samples,
             cooldown_ms,
             speculative_k,
+            qwen35_spec_verify_branch,
+            qwen35_spec_verify_compare,
             llama_parity_preset,
             kernel_profile_path,
             json,
@@ -755,14 +1263,83 @@ fn main() {
                 kernel_profile_path,
             };
 
-            match perf::run_speculative_benchmark_with_backend(&config, backend) {
+            if qwen35_spec_verify_compare {
+                let branch_on =
+                    with_env_var_override("AX_QWEN35_SPEC_VERIFY_BRANCH", Some("on"), || {
+                        perf::run_speculative_benchmark_with_backend(
+                            &config,
+                            create_runtime_backend("Speculative benchmark"),
+                        )
+                    });
+                let branch_off =
+                    with_env_var_override("AX_QWEN35_SPEC_VERIFY_BRANCH", Some("off"), || {
+                        perf::run_speculative_benchmark_with_backend(
+                            &config,
+                            create_runtime_backend("Speculative benchmark"),
+                        )
+                    });
+
+                match (branch_on, branch_off) {
+                    (Ok(branch_on), Ok(branch_off)) => {
+                        let report = build_spec_verify_compare_report(
+                            branch_on,
+                            branch_off,
+                            config.measure_iters.max(1),
+                        );
+                        report.branch_on.print_summary();
+                        report.branch_off.print_summary();
+                        print_spec_verify_compare(&report);
+
+                        if json {
+                            match serde_json::to_string_pretty(&report) {
+                                Ok(j) => println!("{j}"),
+                                Err(e) => {
+                                    eprintln!("JSON serialization error: {e}");
+                                    process::exit(2);
+                                }
+                            }
+                        }
+
+                        if let Some(path) = json_output {
+                            match serde_json::to_string_pretty(&report) {
+                                Ok(j) => {
+                                    if let Err(e) = std::fs::write(&path, j) {
+                                        eprintln!("Failed to write JSON output to {path}: {e}");
+                                        process::exit(2);
+                                    } else {
+                                        eprintln!("Results written to {path}");
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("JSON serialization error: {e}");
+                                    process::exit(2);
+                                }
+                            }
+                        }
+                    }
+                    (Err(e), _) | (_, Err(e)) => {
+                        eprintln!("Speculative benchmark error: {e}");
+                        process::exit(2);
+                    }
+                }
+                return;
+            }
+
+            match with_env_var_override(
+                "AX_QWEN35_SPEC_VERIFY_BRANCH",
+                qwen35_spec_verify_branch_env(qwen35_spec_verify_branch),
+                || perf::run_speculative_benchmark_with_backend(&config, backend),
+            ) {
                 Ok(result) => {
                     result.print_summary();
 
                     if json {
                         match result.to_json() {
                             Ok(j) => println!("{j}"),
-                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
                         }
                     }
 
@@ -771,11 +1348,15 @@ fn main() {
                             Ok(j) => {
                                 if let Err(e) = std::fs::write(&path, j) {
                                     eprintln!("Failed to write JSON output to {path}: {e}");
+                                    process::exit(2);
                                 } else {
                                     eprintln!("Results written to {path}");
                                 }
                             }
-                            Err(e) => eprintln!("JSON serialization error: {e}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
                         }
                     }
                 }
@@ -1161,5 +1742,130 @@ mod tests {
                 assert!(std::env::var_os("AX_METAL_PREFILL_FA2_HD128_MODE").is_none());
             },
         );
+    }
+
+    #[test]
+    fn test_cli_parse_prefill_gap_accepts_baseline_flags() {
+        let cli = Cli::try_parse_from([
+            "ax-engine-bench",
+            "prefill-gap",
+            "--model",
+            "./models/Qwen3.5-9B-Q4_K_M.gguf",
+            "--prompt-tokens",
+            "512",
+            "--baseline-prefill-tok-s",
+            "720.5",
+            "--baseline-label",
+            "llama.cpp",
+            "--json",
+        ])
+        .expect("prefill-gap CLI should parse");
+
+        let Command::PrefillGap {
+            model,
+            prompt_tokens,
+            baseline_prefill_tok_s,
+            baseline_label,
+            json,
+            ..
+        } = cli.command
+        else {
+            panic!("expected prefill-gap command");
+        };
+
+        assert_eq!(model, "./models/Qwen3.5-9B-Q4_K_M.gguf");
+        assert_eq!(prompt_tokens, 512);
+        assert_eq!(baseline_prefill_tok_s, Some(720.5));
+        assert_eq!(baseline_label.as_deref(), Some("llama.cpp"));
+        assert!(json);
+    }
+
+    #[test]
+    fn test_qwen35_prefill_recurrent_state_mode_env_maps_variants() {
+        assert_eq!(
+            qwen35_prefill_recurrent_state_mode_env(Qwen35PrefillRecurrentStateModeArg::Auto),
+            None
+        );
+        assert_eq!(
+            qwen35_prefill_recurrent_state_mode_env(Qwen35PrefillRecurrentStateModeArg::CpuAlias),
+            Some("cpu_alias")
+        );
+        assert_eq!(
+            qwen35_prefill_recurrent_state_mode_env(Qwen35PrefillRecurrentStateModeArg::SlotBuffer),
+            Some("slot_buffer")
+        );
+        assert_eq!(
+            qwen35_prefill_recurrent_state_mode_env(
+                Qwen35PrefillRecurrentStateModeArg::BackendOwned
+            ),
+            Some("backend_owned")
+        );
+    }
+
+    #[test]
+    fn test_qwen35_prefill_alpha_beta_storage_mode_env_maps_variants() {
+        assert_eq!(
+            qwen35_prefill_alpha_beta_storage_mode_env(Qwen35PrefillAlphaBetaStorageModeArg::Auto,),
+            None
+        );
+        assert_eq!(
+            qwen35_prefill_alpha_beta_storage_mode_env(Qwen35PrefillAlphaBetaStorageModeArg::F32,),
+            Some("f32")
+        );
+        assert_eq!(
+            qwen35_prefill_alpha_beta_storage_mode_env(Qwen35PrefillAlphaBetaStorageModeArg::F16,),
+            Some("f16")
+        );
+    }
+
+    #[test]
+    fn test_qwen35_prefill_force_backend_state_batch_env_maps_variants() {
+        assert_eq!(qwen35_prefill_force_backend_state_batch_env(false), None);
+        assert_eq!(
+            qwen35_prefill_force_backend_state_batch_env(true),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_prefill_profile_accepts_qwen35_recurrent_state_mode() {
+        let cli = Cli::try_parse_from([
+            "ax-engine-bench",
+            "prefill-profile",
+            "--model",
+            "./models/Qwen3.5-9B-Q4_K_M.gguf",
+            "--qwen35-recurrent-state-mode",
+            "backend-owned",
+            "--qwen35-alpha-beta-storage-mode",
+            "f16",
+            "--qwen35-prime-slot-buffers",
+            "--qwen35-prewarm-prefill-same-kv",
+            "--qwen35-force-backend-state-batch",
+        ])
+        .expect("prefill-profile CLI should parse");
+
+        let Command::PrefillProfile {
+            qwen35_recurrent_state_mode,
+            qwen35_alpha_beta_storage_mode,
+            qwen35_prime_slot_buffers,
+            qwen35_prewarm_prefill_same_kv,
+            qwen35_force_backend_state_batch,
+            ..
+        } = cli.command
+        else {
+            panic!("expected prefill-profile command");
+        };
+
+        assert_eq!(
+            qwen35_recurrent_state_mode,
+            Qwen35PrefillRecurrentStateModeArg::BackendOwned
+        );
+        assert_eq!(
+            qwen35_alpha_beta_storage_mode,
+            Qwen35PrefillAlphaBetaStorageModeArg::F16
+        );
+        assert!(qwen35_prime_slot_buffers);
+        assert!(qwen35_prewarm_prefill_same_kv);
+        assert!(qwen35_force_backend_state_batch);
     }
 }

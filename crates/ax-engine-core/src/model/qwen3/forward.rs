@@ -218,7 +218,7 @@ impl ForwardPass for Qwen3Forward {
             vocab_size,
             weights,
             logits,
-            ops.as_deref_mut(),
+            ops,
         )?;
 
         Ok(())

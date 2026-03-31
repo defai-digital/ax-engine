@@ -92,7 +92,7 @@ impl LlamaModel {
     ) -> String {
         match plan.attention {
             PrefillAttentionPlan::BatchLocalF16OutHd128 => {
-                "mistral_f16out_hd128/profile_preferred".to_string()
+                "ax_f16out_hd128/profile_preferred".to_string()
             }
             PrefillAttentionPlan::BatchLocal => {
                 let selection = plan
@@ -251,8 +251,13 @@ impl LlamaModel {
         }
 
         if self.arch_name() == "qwen35" && matches!(kv, ModelKv::Qwen35(_)) {
+            let pipelined_label = if crate::model::prefill_schedule::prefill_inter_step_pipelined_enabled() {
+                "on"
+            } else {
+                "off"
+            };
             return Ok(format!(
-                "{} kv=qwen35_hybrid recurrent=backend_owned",
+                "{} kv=qwen35_hybrid recurrent=backend_owned pipelined={pipelined_label}",
                 mode_plan.summary_label()
             ));
         }
@@ -491,6 +496,7 @@ impl LlamaModel {
     }
 
     /// Profiled variant of `forward_batch_qwen35_shared_timeline_forked_from_slot`.
+    #[allow(clippy::too_many_arguments)]
     pub fn forward_batch_profiled_qwen35_shared_timeline_forked_from_slot(
         &self,
         token_ids: &[u32],

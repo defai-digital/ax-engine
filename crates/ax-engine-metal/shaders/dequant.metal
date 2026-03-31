@@ -1642,6 +1642,168 @@ kernel void dequant_batch_q4_k_blocked(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// dequant_batch_q4_k_blocked_silu — Fused SiLU activation + down projection
+//
+// Identical to dequant_batch_q4_k_blocked except the B-loading phase reads
+// from two buffers (gate, up) and computes silu(gate) * up inline, replacing
+// the separate SiLU activation dispatch.
+//
+// Saves 1 Metal dispatch per prefill layer.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// silu_f is defined later in this file for decode matvec kernels.
+// Forward-declare here so the batch kernel can use it.
+inline float silu_f_batch(float x) { return x / (1.0f + exp(-x)); }
+
+kernel void dequant_batch_q4_k_blocked_silu(
+    device const Q4_K_Block* A [[buffer(0)]],
+    device const float* gate   [[buffer(1)]],
+    device const float* up     [[buffer(2)]],
+    device float* C            [[buffer(3)]],
+    constant uint& M           [[buffer(4)]],
+    constant uint& N           [[buffer(5)]],
+    constant uint& K           [[buffer(6)]],
+    threadgroup char* shmem    [[threadgroup(0)]],
+    uint2 tgpig                [[threadgroup_position_in_grid]],
+    ushort tiitg               [[thread_index_in_threadgroup]],
+    ushort sgitg               [[simdgroup_index_in_threadgroup]]
+) {
+    threadgroup half* sa = (threadgroup half*)(shmem);
+    threadgroup half* sb = (threadgroup half*)(shmem + 4096);
+
+    constexpr short NR0 = 64;
+    constexpr short NR1 = 32;
+    constexpr short NK  = 32;
+    constexpr short NL0 = NK / 16;
+    constexpr short NL1 = NK / 8;
+    constexpr short QK_NL = 16;
+
+    const int r0 = tgpig.y * NR0;
+    const int r1 = tgpig.x * NR1;
+
+    const short nr0 = short(min(uint(NR0), M - uint(r0)));
+    const short nr1 = short(min(uint(NR1), N - uint(r1)));
+    const short lr0 = short(min(short(tiitg / NL0), short(nr0 - 1)));
+    const short lr1 = short(min(short(tiitg / NL1), short(nr1 - 1)));
+
+    const short il0 = short(tiitg % NL0);
+    short il = il0;
+
+    uint blocks_per_row = K / Q4_K_BLOCK_VALUES;
+    const short offset1 = il0 / QK_NL;
+    device const Q4_K_Block* x = A + uint(r0 + lr0) * blocks_per_row + offset1;
+
+    const short iy = short(8 * (tiitg % NL1));
+    // Two input pointers instead of one
+    device const float* g_ptr = gate + uint(r1 + lr1) * K + iy;
+    device const float* u_ptr = up   + uint(r1 + lr1) * K + iy;
+
+    simdgroup_half8x8 ma[4];
+    simdgroup_half8x8 mb[2];
+    simdgroup_float8x8 mc[8];
+    for (short i = 0; i < 8; i++) {
+        mc[i] = make_filled_simdgroup_matrix<float, 8>(0.0f);
+    }
+
+    for (uint loop_k = 0; loop_k < K; loop_k += NK) {
+        half4x4 temp_a;
+        dequantize_q4k_blocked(x, il, temp_a);
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        FOR_UNROLL (short i = 0; i < 16; i++) {
+            const short sx = 2 * il0 + i / 8;
+            const short sy = (tiitg / NL0) / 8;
+            const short lx = (tiitg / NL0) % 8;
+            const short ly = i % 8;
+            const short ib = 8 * sx + sy;
+            *(sa + 64 * ib + 8 * ly + lx) = temp_a[i / 4][i % 4];
+        }
+
+        // Fused B-loading: silu(gate) * up instead of plain B read
+        {
+            const short sx = short(tiitg % NL1);
+            const short sy = (tiitg / NL1) / 8;
+            const short ly = (tiitg / NL1) % 8;
+            const short ib = 4 * sx + sy;
+            float4 gv0 = *(device float4*)(g_ptr);
+            float4 gv1 = *(device float4*)(g_ptr + 4);
+            float4 uv0 = *(device float4*)(u_ptr);
+            float4 uv1 = *(device float4*)(u_ptr + 4);
+            // silu(g) * u for each element, store as half2x4
+            half4 s0 = half4(
+                silu_f_batch(gv0[0]) * uv0[0],
+                silu_f_batch(gv0[1]) * uv0[1],
+                silu_f_batch(gv0[2]) * uv0[2],
+                silu_f_batch(gv0[3]) * uv0[3]);
+            half4 s1 = half4(
+                silu_f_batch(gv1[0]) * uv1[0],
+                silu_f_batch(gv1[1]) * uv1[1],
+                silu_f_batch(gv1[2]) * uv1[2],
+                silu_f_batch(gv1[3]) * uv1[3]);
+            *(threadgroup half2x4*)(sb + 64 * ib + 8 * ly) = half2x4(s0, s1);
+        }
+
+        il = (il + 2 < QK_NL) ? il + 2 : il % 2;
+        x  = (il < 2) ? x + (2 + QK_NL - 1) / QK_NL : x;
+        g_ptr += NK;
+        u_ptr += NK;
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        threadgroup const half* lsma = sa + 4 * 64 * (sgitg % 2);
+        threadgroup const half* lsmb = sb + 2 * 64 * (sgitg / 2);
+
+        FOR_UNROLL (short ik = 0; ik < NK / 8; ik++) {
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 4; i++) {
+                simdgroup_load(ma[i], lsma + 64 * i, 8, ulong2(0, 0), false);
+            }
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 2; i++) {
+                simdgroup_load(mb[i], lsmb + 64 * i, 8, ulong2(0, 0), false);
+            }
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 8; i++) {
+                simdgroup_multiply_accumulate(mc[i], mb[i / 4], ma[i % 4], mc[i]);
+            }
+            lsma += 8 * 64;
+            lsmb += 4 * 64;
+        }
+    }
+
+    if (!BLOCKED_BC_OUT) {
+        device float* out = C
+            + uint(r0 + 32 * (sgitg & 1))
+            + uint(r1 + 16 * (sgitg >> 1)) * M;
+        for (short i = 0; i < 8; i++) {
+            simdgroup_store(mc[i], out + 8 * (i % 4) + 8 * M * (i / 4), M, ulong2(0, 0), false);
+        }
+    } else {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        threadgroup float* temp_str = ((threadgroup float*)shmem)
+            + 32 * (sgitg & 1) + 16 * (sgitg >> 1) * NR0;
+        for (short i = 0; i < 8; i++) {
+            simdgroup_store(mc[i], temp_str + 8 * (i % 4) + 8 * NR0 * (i / 4),
+                            NR0, ulong2(0, 0), false);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (sgitg == 0) {
+            for (int j = tiitg; j < nr1; j += NR1) {
+                device float*  D  = C + uint(r0) + uint(r1 + j) * M;
+                device float4* D4 = (device float4*)D;
+                threadgroup float*  Cs  = temp_str + j * NR0;
+                threadgroup float4* C4 = (threadgroup float4*)Cs;
+                int i = 0;
+                for (; i < nr0 / 4; i++) { *(D4 + i) = *(C4 + i); }
+                i *= 4;
+                for (; i < nr0; i++) { *(D + i) = *(Cs + i); }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // dequant_batch_q4_k_blocked_bm32 — BM=32 variant for small M dimensions
 //
 // Same blocked layout (stride 8) as dequant_batch_q4_k_blocked but with
@@ -2383,8 +2545,8 @@ kernel void dequant_batch_q6_k(
     uint tile_m = group_id.x * DB_BM;
     uint tile_n = group_id.y * DB_BN;
 
-    threadgroup float tg_A[DB_BM * DB_BK];
-    threadgroup float tg_B[DB_BN * DB_BK];
+    threadgroup half tg_A[DB_BM * DB_BK];
+    threadgroup half tg_B[DB_BN * DB_BK];
     threadgroup float out_tile[DB_BN * DB_BM];
 
     simdgroup_float8x8 acc0, acc1, acc2, acc3;
@@ -2440,9 +2602,9 @@ kernel void dequant_batch_q6_k(
                     }
                 }
 
-                tg_A[r * DB_BK + c] = d * sc * float(q);
+                tg_A[r * DB_BK + c] = half(d * sc * float(q));
             } else {
-                tg_A[r * DB_BK + c] = 0.0f;
+                tg_A[r * DB_BK + c] = half(0.0f);
             }
         }
 
@@ -2452,16 +2614,16 @@ kernel void dequant_batch_q6_k(
             uint c = i % DB_BK;
             uint gn = tile_n + r;
             uint gk = kt + c;
-            tg_B[r * DB_BK + c] = (gn < N && gk < K) ? B[gn * K + gk] : 0.0f;
+            tg_B[r * DB_BK + c] = (gn < N && gk < K) ? half(B[gn * K + gk]) : half(0.0f);
         }
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         for (uint kk = 0; kk < DB_BK / 8; kk++) {
-            simdgroup_float8x8 b_frag;
+            simdgroup_half8x8 b_frag;
             simdgroup_load(b_frag, &tg_B[simd_id * 8 * DB_BK + kk * 8], DB_BK);
 
-            simdgroup_float8x8 a0, a1, a2, a3;
+            simdgroup_half8x8 a0, a1, a2, a3;
             simdgroup_load(a0, &tg_A[0  * DB_BK + kk * 8], DB_BK, ulong2(0,0), true);
             simdgroup_load(a1, &tg_A[8  * DB_BK + kk * 8], DB_BK, ulong2(0,0), true);
             simdgroup_load(a2, &tg_A[16 * DB_BK + kk * 8], DB_BK, ulong2(0,0), true);
@@ -2906,8 +3068,8 @@ kernel void dequant_batch_q6_k_full(
     uint tile_m = group_id.x * DB_BM;
     uint tile_n = group_id.y * DB_BN;
 
-    threadgroup float tg_A[DB_BM * DB_BK];
-    threadgroup float tg_B[DB_BN * DB_BK];
+    threadgroup half tg_A[DB_BM * DB_BK];
+    threadgroup half tg_B[DB_BN * DB_BK];
 
     simdgroup_float8x8 acc0, acc1, acc2, acc3;
     acc0 = simdgroup_float8x8(0);
@@ -2958,7 +3120,7 @@ kernel void dequant_batch_q6_k_full(
                 }
             }
 
-            tg_A[r * DB_BK + c] = d * sc * float(q);
+            tg_A[r * DB_BK + c] = half(d * sc * float(q));
         }
 
         for (uint i = tid; i < DB_BN * DB_BK; i += DB_TG) {
@@ -2966,16 +3128,16 @@ kernel void dequant_batch_q6_k_full(
             uint c = i % DB_BK;
             uint gn = tile_n + r;
             uint gk = kt + c;
-            tg_B[r * DB_BK + c] = B[gn * K + gk];
+            tg_B[r * DB_BK + c] = half(B[gn * K + gk]);
         }
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         for (uint kk = 0; kk < DB_BK / 8; kk++) {
-            simdgroup_float8x8 b_frag;
+            simdgroup_half8x8 b_frag;
             simdgroup_load(b_frag, &tg_B[simd_id * 8 * DB_BK + kk * 8], DB_BK);
 
-            simdgroup_float8x8 a0, a1, a2, a3;
+            simdgroup_half8x8 a0, a1, a2, a3;
             simdgroup_load(a0, &tg_A[0  * DB_BK + kk * 8], DB_BK, ulong2(0,0), true);
             simdgroup_load(a1, &tg_A[8  * DB_BK + kk * 8], DB_BK, ulong2(0,0), true);
             simdgroup_load(a2, &tg_A[16 * DB_BK + kk * 8], DB_BK, ulong2(0,0), true);
@@ -8646,6 +8808,95 @@ kernel void dequant_matvec_q4_k_n4(
     s1 = simd_sum(s1);
     s2 = simd_sum(s2);
     s3 = simd_sum(s3);
+
+    if (lane == 0) {
+        y[r0] = s0;
+        if (v1) y[r0 + 1] = s1;
+        if (v2) y[r0 + 2] = s2;
+        if (v3) y[r0 + 3] = s3;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TG=64 multi-row decode matvec: 2 simdgroups × 4 rows = 8 rows per TG.
+// Each simdgroup independently processes 4 rows (same as n4 kernel).
+// The 2-SG structure distributes register pressure and may improve occupancy.
+// Grid: ceil(M / 8) threadgroups.
+// ═══════════════════════════════════════════════════════════════════════════
+
+kernel void dequant_matvec_q4_k_tg64(
+    device const Q4_K_Block* A [[buffer(0)]],
+    device const float* x      [[buffer(1)]],
+    device float* y            [[buffer(2)]],
+    constant uint& M           [[buffer(3)]],
+    constant uint& K           [[buffer(4)]],
+    uint tg_id                 [[threadgroup_position_in_grid]],
+    uint lane                  [[thread_index_in_simdgroup]],
+    uint sg_id                 [[simdgroup_index_in_threadgroup]]
+) {
+    constexpr uint ROWS_PER_SG = 4;
+    constexpr uint SG_PER_TG = 2;
+    uint r0 = tg_id * (ROWS_PER_SG * SG_PER_TG) + sg_id * ROWS_PER_SG;
+    if (r0 >= M) return;
+    bool v1 = (r0 + 1) < M;
+    bool v2 = (r0 + 2) < M;
+    bool v3 = (r0 + 3) < M;
+
+    uint blocks_per_row = K / Q4_K_BLOCK_VALUES;
+    device const Q4_K_Block* row0 = A + r0 * blocks_per_row;
+    device const Q4_K_Block* row1 = v1 ? A + (r0 + 1) * blocks_per_row : row0;
+    device const Q4_K_Block* row2 = v2 ? A + (r0 + 2) * blocks_per_row : row0;
+    device const Q4_K_Block* row3 = v3 ? A + (r0 + 3) * blocks_per_row : row0;
+
+    float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+
+    for (uint b = 0; b < blocks_per_row; b++) {
+        uint base = b * Q4_K_BLOCK_VALUES;
+        half rx0 = half(x[base +   0 + lane]);
+        half rx1 = half(x[base +  32 + lane]);
+        half rx2 = half(x[base +  64 + lane]);
+        half rx3 = half(x[base +  96 + lane]);
+        half rx4 = half(x[base + 128 + lane]);
+        half rx5 = half(x[base + 160 + lane]);
+        half rx6 = half(x[base + 192 + lane]);
+        half rx7 = half(x[base + 224 + lane]);
+
+        float d0 = float(row0[b].d),  dm0 = float(row0[b].dmin);
+        float d1 = float(row1[b].d),  dm1 = float(row1[b].dmin);
+        float d2 = float(row2[b].d),  dm2 = float(row2[b].dmin);
+        float d3 = float(row3[b].d),  dm3 = float(row3[b].dmin);
+
+        for (uint pair = 0; pair < 4; pair++) {
+            float2 sm0a = get_scale_min_q4k(pair * 2,     row0[b].scales);
+            float2 sm0b = get_scale_min_q4k(pair * 2 + 1, row0[b].scales);
+            float2 sm1a = get_scale_min_q4k(pair * 2,     row1[b].scales);
+            float2 sm1b = get_scale_min_q4k(pair * 2 + 1, row1[b].scales);
+            float2 sm2a = get_scale_min_q4k(pair * 2,     row2[b].scales);
+            float2 sm2b = get_scale_min_q4k(pair * 2 + 1, row2[b].scales);
+            float2 sm3a = get_scale_min_q4k(pair * 2,     row3[b].scales);
+            float2 sm3b = get_scale_min_q4k(pair * 2 + 1, row3[b].scales);
+
+            uchar q0b = row0[b].qs[pair * 32 + lane];
+            uchar q1b = row1[b].qs[pair * 32 + lane];
+            uchar q2b = row2[b].qs[pair * 32 + lane];
+            uchar q3b = row3[b].qs[pair * 32 + lane];
+
+            half lo = (pair == 0) ? rx0 : (pair == 1) ? rx2 : (pair == 2) ? rx4 : rx6;
+            half hi = (pair == 0) ? rx1 : (pair == 1) ? rx3 : (pair == 2) ? rx5 : rx7;
+
+            s0 += (d0 * sm0a.x * float(q0b & 0xF) - dm0 * sm0a.y) * float(lo);
+            s0 += (d0 * sm0b.x * float(q0b >> 4)  - dm0 * sm0b.y) * float(hi);
+            s1 += (d1 * sm1a.x * float(q1b & 0xF) - dm1 * sm1a.y) * float(lo);
+            s1 += (d1 * sm1b.x * float(q1b >> 4)  - dm1 * sm1b.y) * float(hi);
+            s2 += (d2 * sm2a.x * float(q2b & 0xF) - dm2 * sm2a.y) * float(lo);
+            s2 += (d2 * sm2b.x * float(q2b >> 4)  - dm2 * sm2b.y) * float(hi);
+            s3 += (d3 * sm3a.x * float(q3b & 0xF) - dm3 * sm3a.y) * float(lo);
+            s3 += (d3 * sm3b.x * float(q3b >> 4)  - dm3 * sm3b.y) * float(hi);
+        }
+    }
+
+    s0 = simd_sum(s0); s1 = simd_sum(s1);
+    s2 = simd_sum(s2); s3 = simd_sum(s3);
 
     if (lane == 0) {
         y[r0] = s0;

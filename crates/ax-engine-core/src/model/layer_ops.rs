@@ -13,6 +13,7 @@ use crate::model::weights::WeightStore;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FfnActivation {
     SiLU,
+    #[allow(clippy::upper_case_acronyms)]
     GELU,
 }
 

@@ -501,6 +501,8 @@ pub(super) fn build_qwen35_full_attention_prefill_schedule(
             src: br(&bs.k_buf),
             dst: br(gpu_kv.k_buffer(layer)),
             kv_f16: gpu_kv.is_f16(),
+            kv_q8: gpu_kv.is_q8(),
+            kv_q4: gpu_kv.is_q4(),
             cache_offset,
             row_stride: kv_dim as u32,
             kv_dim: kv_dim as u32,
@@ -510,6 +512,8 @@ pub(super) fn build_qwen35_full_attention_prefill_schedule(
             src: br(&bs.v_buf),
             dst: br(gpu_kv.v_buffer(layer)),
             kv_f16: gpu_kv.is_f16(),
+            kv_q8: gpu_kv.is_q8(),
+            kv_q4: gpu_kv.is_q4(),
             cache_offset,
             row_stride: kv_dim as u32,
             kv_dim: kv_dim as u32,
@@ -537,6 +541,8 @@ pub(super) fn build_qwen35_full_attention_prefill_schedule(
             kv_v: br(gpu_kv.v_buffer(layer)),
             out: br(&bs.attn_out),
             kv_f16: gpu_kv.is_f16(),
+            kv_q8: gpu_kv.is_q8(),
+            kv_q4: gpu_kv.is_q4(),
             n: nt,
             n_heads,
             n_kv_heads,
@@ -869,6 +875,51 @@ pub(super) fn try_execute_qwen35_recurrent_tail_prefill_schedule(
     Ok(true)
 }
 
+/// Like [`try_execute_qwen35_recurrent_tail_prefill_schedule`] but returns an
+/// [`InflightFrame`] instead of blocking. Returns `Ok(None)` when graph-IR is
+/// disabled and the caller should fall back to inline encoding.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn try_execute_qwen35_recurrent_tail_prefill_schedule_async(
+    device: &ax_engine_metal::MetalDevice,
+    metal_ops: &MetalOps,
+    allow_graph_ir_schedule: bool,
+    bs: &crate::backend::metal::GpuBatchScratchBuffers,
+    recurrent_projection: Option<Qwen35RecurrentTailProjection<'_>>,
+    ffn_norm: &ax_engine_metal::MetalBuffer,
+    wg: &ax_engine_metal::MetalBuffer,
+    wg_dtype: GgmlType,
+    wu: &ax_engine_metal::MetalBuffer,
+    wu_dtype: GgmlType,
+    wd: &ax_engine_metal::MetalBuffer,
+    wd_dtype: GgmlType,
+    n_tokens: usize,
+    dim: usize,
+    inter_dim: usize,
+    eps: f32,
+) -> anyhow::Result<Option<ax_engine_metal::InflightFrame>> {
+    if !allow_graph_ir_schedule {
+        return Ok(None);
+    }
+
+    let schedule = build_qwen35_recurrent_tail_prefill_schedule(
+        bs,
+        recurrent_projection,
+        ffn_norm,
+        wg,
+        wg_dtype,
+        wu,
+        wu_dtype,
+        wd,
+        wd_dtype,
+        n_tokens,
+        dim,
+        inter_dim,
+        eps,
+    );
+    let frame = execute_prefill_multi_cb_async(device, &schedule, metal_ops)?;
+    Ok(Some(frame))
+}
+
 // ---------------------------------------------------------------------------
 // Encoder: dispatch ops from the pre-computed schedule
 // ---------------------------------------------------------------------------
@@ -1098,6 +1149,48 @@ pub(super) fn encode_prefill_schedule(
                         *dtype,
                     );
                 }
+                PrefillOp::DequantBatchPair {
+                    w0,
+                    w1,
+                    input,
+                    out0,
+                    out1,
+                    m,
+                    n,
+                    k,
+                    dtype,
+                } => match dtype {
+                    GgmlType::Q4K => {
+                        metal_ops.dequant.encode_fused_batch_pair_q4_k(
+                            encoder,
+                            w0.get(),
+                            w1.get(),
+                            input.get(),
+                            out0.get(),
+                            out1.get(),
+                            *m,
+                            *n,
+                            *k,
+                        );
+                    }
+                    GgmlType::Q6K => {
+                        metal_ops.dequant.encode_fused_batch_pair_q6_k(
+                            encoder,
+                            w0.get(),
+                            w1.get(),
+                            input.get(),
+                            out0.get(),
+                            out1.get(),
+                            *m,
+                            *n,
+                            *k,
+                        );
+                    }
+                    _ => panic!(
+                        "DequantBatchPair: unsupported dtype {:?}",
+                        dtype
+                    ),
+                }
                 PrefillOp::QkvSplitRopeBatch {
                     qkv,
                     q,
@@ -1134,6 +1227,8 @@ pub(super) fn encode_prefill_schedule(
                     kv_k,
                     kv_v,
                     kv_f16,
+                    kv_q8: _,
+                    kv_q4: _,
                     n,
                     n_heads,
                     n_kv_heads,
@@ -1192,21 +1287,45 @@ pub(super) fn encode_prefill_schedule(
                     src,
                     dst,
                     kv_f16,
+                    kv_q8,
+                    kv_q4,
                     cache_offset,
                     row_stride,
                     kv_dim,
                     n,
                 } => {
-                    metal_ops.elementwise.encode_kv_append_batch(
-                        encoder,
-                        src.get(),
-                        dst.get(),
-                        *kv_f16,
-                        *cache_offset,
-                        *row_stride,
-                        *kv_dim,
-                        *n,
-                    );
+                    if *kv_q4 {
+                        metal_ops.elementwise.encode_kv_append_batch_q4(
+                            encoder,
+                            src.get(),
+                            dst.get(),
+                            *cache_offset,
+                            *kv_dim / 32,
+                            *row_stride,
+                            *n,
+                        );
+                    } else if *kv_q8 {
+                        metal_ops.elementwise.encode_kv_append_batch_q8(
+                            encoder,
+                            src.get(),
+                            dst.get(),
+                            *cache_offset,
+                            *kv_dim / 32,
+                            *row_stride,
+                            *n,
+                        );
+                    } else {
+                        metal_ops.elementwise.encode_kv_append_batch(
+                            encoder,
+                            src.get(),
+                            dst.get(),
+                            *kv_f16,
+                            *cache_offset,
+                            *row_stride,
+                            *kv_dim,
+                            *n,
+                        );
+                    }
                 }
 
                 PrefillOp::AttentionBatchLocal {
@@ -1261,6 +1380,8 @@ pub(super) fn encode_prefill_schedule(
                     kv_v,
                     out,
                     kv_f16,
+                    kv_q8,
+                    kv_q4,
                     n,
                     n_heads,
                     n_kv_heads,
@@ -1268,23 +1389,57 @@ pub(super) fn encode_prefill_schedule(
                     base_seq,
                     config,
                 } => {
-                    metal_ops
-                        .attention
-                        .encode_attention_prefill_cached_with_config(
-                            encoder,
-                            q.get(),
-                            kv_k.get(),
-                            kv_v.get(),
-                            out.get(),
-                            *kv_f16,
-                            *n,
-                            *n_heads,
-                            *n_kv_heads,
-                            *head_dim,
-                            *base_seq,
-                            0,
-                            *config,
-                        );
+                    if *kv_q4 {
+                        metal_ops
+                            .attention
+                            .encode_attention_prefill_cached_q4kv(
+                                encoder,
+                                q.get(),
+                                kv_k.get(),
+                                kv_v.get(),
+                                out.get(),
+                                *n,
+                                *n_heads,
+                                *n_kv_heads,
+                                *head_dim,
+                                *base_seq,
+                                0,
+                            );
+                    } else if *kv_q8 {
+                        metal_ops
+                            .attention
+                            .encode_attention_prefill_cached_q8kv(
+                                encoder,
+                                q.get(),
+                                kv_k.get(),
+                                kv_v.get(),
+                                out.get(),
+                                *n,
+                                *n_heads,
+                                *n_kv_heads,
+                                *head_dim,
+                                *base_seq,
+                                0,
+                            );
+                    } else {
+                        metal_ops
+                            .attention
+                            .encode_attention_prefill_cached_with_config(
+                                encoder,
+                                q.get(),
+                                kv_k.get(),
+                                kv_v.get(),
+                                out.get(),
+                                *kv_f16,
+                                *n,
+                                *n_heads,
+                                *n_kv_heads,
+                                *head_dim,
+                                *base_seq,
+                                0,
+                                *config,
+                            );
+                    }
                 }
 
                 PrefillOp::CastF32ToF16 {
@@ -1322,6 +1477,26 @@ pub(super) fn encode_prefill_schedule(
                         output.get(),
                         *dim,
                         *n,
+                    );
+                }
+                PrefillOp::FusedSiluDownBatchQ4K {
+                    weight,
+                    gate,
+                    up,
+                    output,
+                    m,
+                    n,
+                    k,
+                } => {
+                    metal_ops.dequant.encode_fused_batch_q4_k_silu(
+                        encoder,
+                        weight.get(),
+                        gate.get(),
+                        up.get(),
+                        output.get(),
+                        *m,
+                        *n,
+                        *k,
                     );
                 }
 
@@ -1436,6 +1611,32 @@ pub(super) fn execute_prefill_multi_cb(
     // execute_sync_concurrent commits CB2 and waits for it, which implicitly
     // means CB1 also finished (since CB2 can't start until CB1 completes).
     device.execute_sync_concurrent(|encoder| {
+        encode_prefill_schedule(&schedule.ops[schedule.split_index..], metal_ops, encoder)
+    })
+}
+
+/// Like [`execute_prefill_multi_cb`] but returns an [`InflightFrame`] instead
+/// of blocking. The caller must call `wait_frame` before reading GPU-written
+/// buffers.
+pub(super) fn execute_prefill_multi_cb_async(
+    device: &ax_engine_metal::MetalDevice,
+    schedule: &PrefillSchedule,
+    metal_ops: &MetalOps,
+) -> anyhow::Result<ax_engine_metal::InflightFrame> {
+    if !prefill_multi_cb_enabled() || schedule.split_index >= schedule.ops.len() {
+        return device.execute_async_concurrent(|encoder| {
+            encode_prefill_schedule(&schedule.ops, metal_ops, encoder)
+        });
+    }
+
+    // CB1: first half — commit immediately, GPU starts.
+    let _cb1 = device.execute_async_concurrent(|encoder| {
+        encode_prefill_schedule(&schedule.ops[..schedule.split_index], metal_ops, encoder)
+    })?;
+
+    // CB2: second half. FIFO ordering ensures CB2 runs after CB1.
+    // Return CB2's inflight frame — waiting on it guarantees both CBs complete.
+    device.execute_async_concurrent(|encoder| {
         encode_prefill_schedule(&schedule.ops[schedule.split_index..], metal_ops, encoder)
     })
 }

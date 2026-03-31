@@ -3011,6 +3011,13 @@ fn apply_decode_attention_recommendations(
     };
 }
 
+fn has_recommendations_for(suite: &MicrobenchSuiteResult, domain: &str, quant: &str) -> bool {
+    suite
+        .recommendations
+        .as_ref()
+        .is_some_and(|recs| recs.iter().any(|r| r.domain == domain && r.quant == quant))
+}
+
 fn apply_prefill_attention_recommendations(
     profile: &mut KernelProfile,
     suite: &MicrobenchSuiteResult,
@@ -3024,15 +3031,26 @@ fn apply_prefill_attention_recommendations(
         512,
     );
 
-    if local_hd128
-        .as_ref()
-        .is_some_and(|r| r.variant == "fa2_hd128")
-    {
-        profile.attention_prefill.fa2_hd128_mode = ProfileKernelMode::On;
+    // Only override when the suite actually evaluated this domain+quant.
+    // When no data exists (e.g., CPU-only suite), preserve the profile default.
+    if has_recommendations_for(suite, "prefill_attention", "prefill_local_hd128") {
+        profile.attention_prefill.fa2_hd128_mode = if local_hd128
+            .as_ref()
+            .is_some_and(|r| r.variant == "fa2_hd128")
+        {
+            ProfileKernelMode::On
+        } else {
+            ProfileKernelMode::Off
+        };
     }
 
-    if cached_hd256.as_ref().is_some_and(|r| r.variant == "fa2") {
-        profile.attention_prefill.fa2_mode = ProfileKernelMode::On;
+    if has_recommendations_for(suite, "prefill_attention", "prefill_cached_hd256_f16kv") {
+        profile.attention_prefill.fa2_mode =
+            if cached_hd256.as_ref().is_some_and(|r| r.variant == "fa2") {
+                ProfileKernelMode::On
+            } else {
+                ProfileKernelMode::Off
+            };
     }
 }
 
@@ -3845,10 +3863,10 @@ mod tests {
         let profile = report.suggested_kernel_profile();
         let q4 = profile.decode_matvec.get("q4_k").unwrap();
         let q6 = profile.decode_matvec.get("q6_k").unwrap();
-        assert_eq!(q4.threadgroup_size, 128);
-        assert_eq!(q4.rows_per_simdgroup, 1);
-        assert_eq!(q6.threadgroup_size, 128);
-        assert_eq!(q6.rows_per_simdgroup, 1);
+        assert_eq!(q4.threadgroup_size, 64);
+        assert_eq!(q4.rows_per_simdgroup, 2);
+        assert_eq!(q6.threadgroup_size, 64);
+        assert_eq!(q6.rows_per_simdgroup, 2);
     }
 
     #[test]
@@ -3952,8 +3970,8 @@ mod tests {
 
         let profile = report.suggested_kernel_profile();
         let q4 = profile.decode_matvec.get("q4_k").unwrap();
-        assert_eq!(q4.threadgroup_size, 128);
-        assert_eq!(q4.rows_per_simdgroup, 1);
+        assert_eq!(q4.threadgroup_size, 64);
+        assert_eq!(q4.rows_per_simdgroup, 2);
     }
 
     #[test]

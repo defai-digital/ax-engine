@@ -1,0 +1,2 @@
+label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
+prefill-pipe-off	models/Qwen3.5-9B-Q4_K_M.gguf	512	128	512	3	10	321.6998907737136	708.863219	45.38250570082317	53.641423227601145	48.104458	111.51029542334963

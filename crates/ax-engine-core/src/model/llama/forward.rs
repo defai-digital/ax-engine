@@ -189,7 +189,7 @@ impl ForwardPass for LlamaForward {
             vocab_size,
             weights,
             logits,
-            ops.as_deref_mut(),
+            ops,
         )?;
 
         Ok(())

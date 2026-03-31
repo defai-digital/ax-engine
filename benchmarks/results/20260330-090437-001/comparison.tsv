@@ -1,0 +1,2 @@
+label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
+fa2-simd-default	models/Qwen3-8B-Q4_K_M.gguf	512	128	512	3	20	695.2100326118274	766.467544	90.70312736057971	67.47210910038469	64.552052	104.52356975481536

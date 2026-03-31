@@ -16,6 +16,10 @@ use std::process::Command;
 
 const METAL_SOURCES: [&str; 5] = ["attention", "dequant", "elementwise", "gdn", "matmul"];
 
+/// Optional shader that requires Metal 4+ SDK (tensor API).
+/// Compiled separately — if it fails, the tensor kernel is unavailable at runtime.
+const METAL_TENSOR_SOURCE: &str = "matmul_tensor";
+
 fn main() {
     // Track changes to shader sources.
     for src in METAL_SOURCES {
@@ -23,6 +27,8 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=AX_METAL_SKIP_PRECOMPILE");
+
+    println!("cargo::rustc-check-cfg=cfg(metal_tensor_api)");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
     let shader_dir = PathBuf::from("shaders");
@@ -73,7 +79,37 @@ fn main() {
         }
     }
 
-    // Step 2: Link all .air into one .metallib
+    // Step 2: Try compiling the optional tensor API shader (Metal 4+ SDK).
+    // This requires <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+    // which is only available in newer Xcode SDKs.
+    println!("cargo:rerun-if-changed=shaders/{METAL_TENSOR_SOURCE}.metal");
+    let tensor_input = shader_dir.join(format!("{METAL_TENSOR_SOURCE}.metal"));
+    let tensor_output = out_dir.join(format!("{METAL_TENSOR_SOURCE}.air"));
+    let tensor_available = Command::new("xcrun")
+        .arg("--sdk")
+        .arg("macosx")
+        .arg("metal")
+        .arg("-std=metal3.1")
+        .arg("-O3")
+        .arg("-w")
+        .arg("-c")
+        .arg(&tensor_input)
+        .arg("-o")
+        .arg(&tensor_output)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if tensor_available {
+        println!("cargo:rustc-cfg=metal_tensor_api");
+        println!("cargo:warning=Metal Tensor API shader compiled (Metal 4+ SDK detected)");
+    } else {
+        println!(
+            "cargo:warning=Metal Tensor API shader not available (SDK lacks MetalPerformancePrimitives)"
+        );
+    }
+
+    // Step 3: Link all .air into one .metallib
     let metallib_path = out_dir.join("ax_engine_metal.metallib");
     let mut cmd = Command::new("xcrun");
     cmd.arg("--sdk")
@@ -84,6 +120,9 @@ fn main() {
 
     for src in METAL_SOURCES {
         cmd.arg(out_dir.join(format!("{src}.air")));
+    }
+    if tensor_available {
+        cmd.arg(&tensor_output);
     }
 
     let status = cmd.status().expect("Failed to run xcrun metallib");

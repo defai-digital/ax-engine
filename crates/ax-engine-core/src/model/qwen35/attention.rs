@@ -1,6 +1,7 @@
 use crate::compute::attention as compute_attention;
 
 impl Qwen35Forward {
+    #[allow(clippy::too_many_arguments)]
     fn full_attention_prefill_batch(
         backend: &dyn crate::backend::Backend,
         qwen_kv: &crate::kv::Qwen35Kv,
@@ -89,23 +90,53 @@ impl Qwen35Forward {
             q_len * std::mem::size_of::<f32>(),
         )?;
         metal_ops.device.execute_sync(|encoder| {
-            metal_ops
-                .attention
-                .encode_attention_prefill_cached_with_config(
+            if gpu_attention.is_q4() {
+                metal_ops.attention.encode_attention_prefill_cached_q4kv(
                     encoder,
                     &buf_q,
                     gpu_attention.k_buffer(layer),
                     gpu_attention.v_buffer(layer),
                     &buf_o,
-                    gpu_attention.is_f16(),
                     n_tokens as u32,
                     full_attn_params.n_heads as u32,
                     full_attn_params.n_kv_heads as u32,
                     full_attn_params.head_dim as u32,
                     prefix_len as u32,
                     0,
-                    metal_ops.attention_dispatch_config(),
                 );
+            } else if gpu_attention.is_q8() {
+                metal_ops.attention.encode_attention_prefill_cached_q8kv(
+                    encoder,
+                    &buf_q,
+                    gpu_attention.k_buffer(layer),
+                    gpu_attention.v_buffer(layer),
+                    &buf_o,
+                    n_tokens as u32,
+                    full_attn_params.n_heads as u32,
+                    full_attn_params.n_kv_heads as u32,
+                    full_attn_params.head_dim as u32,
+                    prefix_len as u32,
+                    0,
+                );
+            } else {
+                metal_ops
+                    .attention
+                    .encode_attention_prefill_cached_with_config(
+                        encoder,
+                        &buf_q,
+                        gpu_attention.k_buffer(layer),
+                        gpu_attention.v_buffer(layer),
+                        &buf_o,
+                        gpu_attention.is_f16(),
+                        n_tokens as u32,
+                        full_attn_params.n_heads as u32,
+                        full_attn_params.n_kv_heads as u32,
+                        full_attn_params.head_dim as u32,
+                        prefix_len as u32,
+                        0,
+                        metal_ops.attention_dispatch_config(),
+                    );
+            }
             Ok(())
         })?;
 
@@ -146,24 +177,67 @@ impl Qwen35Forward {
         }
 
         metal_ops.device.execute_sync(|encoder| {
-            metal_ops
-                .attention
-                .encode_attention_decode_with_scratch_and_config(
+            if gpu_attention.is_q4() {
+                metal_ops.attention.encode_attention_decode_q4kv(
                     encoder,
                     &scratches.q_buf,
                     gpu_attention.k_buffer(layer),
                     gpu_attention.v_buffer(layer),
                     &scratches.attn_out,
-                    &scratches.splitk_partial_out,
-                    &scratches.splitk_partial_lse,
-                    gpu_attention.is_f16(),
                     full_attn_params.n_heads as u32,
                     full_attn_params.n_kv_heads as u32,
                     full_attn_params.head_dim as u32,
                     0,
                     (qwen_kv.seq_len() + 1) as u32,
-                    metal_ops.attention_dispatch_config(),
                 );
+            } else if gpu_attention.is_q8() {
+                if full_attn_params.head_dim == 128 {
+                    metal_ops.attention.encode_attention_decode_q8kv(
+                        encoder,
+                        &scratches.q_buf,
+                        gpu_attention.k_buffer(layer),
+                        gpu_attention.v_buffer(layer),
+                        &scratches.attn_out,
+                        full_attn_params.n_heads as u32,
+                        full_attn_params.n_kv_heads as u32,
+                        full_attn_params.head_dim as u32,
+                        0,
+                        (qwen_kv.seq_len() + 1) as u32,
+                    );
+                } else if full_attn_params.head_dim == 256 {
+                    metal_ops.attention.encode_attention_decode_q8kv_hd256(
+                        encoder,
+                        &scratches.q_buf,
+                        gpu_attention.k_buffer(layer),
+                        gpu_attention.v_buffer(layer),
+                        &scratches.attn_out,
+                        full_attn_params.n_heads as u32,
+                        full_attn_params.n_kv_heads as u32,
+                        full_attn_params.head_dim as u32,
+                        0,
+                        (qwen_kv.seq_len() + 1) as u32,
+                    );
+                }
+            } else {
+                metal_ops
+                    .attention
+                    .encode_attention_decode_with_scratch_and_config(
+                        encoder,
+                        &scratches.q_buf,
+                        gpu_attention.k_buffer(layer),
+                        gpu_attention.v_buffer(layer),
+                        &scratches.attn_out,
+                        &scratches.splitk_partial_out,
+                        &scratches.splitk_partial_lse,
+                        gpu_attention.is_f16(),
+                        full_attn_params.n_heads as u32,
+                        full_attn_params.n_kv_heads as u32,
+                        full_attn_params.head_dim as u32,
+                        0,
+                        (qwen_kv.seq_len() + 1) as u32,
+                        metal_ops.attention_dispatch_config(),
+                    );
+            }
             Ok(())
         })?;
 
@@ -616,6 +690,7 @@ impl Qwen35Forward {
         Ok(true)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_full_attention_batch_layer(
         cfg: &ModelConfig,
         backend: &dyn crate::backend::Backend,

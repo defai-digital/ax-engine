@@ -11,6 +11,7 @@ pub mod device;
 pub mod dispatch;
 pub mod pipeline;
 pub mod profile;
+pub mod residency;
 
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -18,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::{cell::RefCell, thread_local};
 
 pub use buffer::MetalBuffer;
-pub use device::{DeviceInfo, InflightFrame, MetalDevice, PendingFrame};
+pub use device::{DeviceInfo, GpuFamilySupport, InflightFrame, MetalDevice, PendingFrame};
 pub use dispatch::{
     AttentionDecodeCandidate, AttentionDecodeCandidateSelection, AttentionDispatchConfig,
     AttentionKernels, AttentionPrefillCandidate, AttentionPrefillCandidateSelection,
@@ -122,6 +123,36 @@ pub(crate) fn with_active_perf_counters<R>(
 pub(crate) fn barriers_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_BARRIERS", true))
+}
+
+/// Whether concurrent Metal compute encoding is used for the decode path.
+///
+/// With a concurrent encoder (`MTLDispatchType::Concurrent`), independent
+/// kernel dispatches can execute in parallel on the GPU.  Explicit barriers
+/// are inserted between dependent dispatches.  This matches llama.cpp's
+/// default dispatch strategy.
+///
+/// Controlled by `AX_METAL_CONCURRENT_DECODE`:
+/// - unset / `1` / `true` / `on`  -> enabled (default)
+/// - `0` / `false` / `off`        -> disabled (serial encoder)
+pub fn concurrent_decode_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_CONCURRENT_DECODE", true))
+}
+
+/// Whether Metal residency sets are used for weight buffers.
+///
+/// When enabled on macOS 15+, model weight buffers are registered in a
+/// `MTLResidencySet` attached to the command queue.  This prevents the OS
+/// from paging weight buffers to disk under memory pressure, which is
+/// critical for large models (70B+) that approach the GPU working-set limit.
+///
+/// Controlled by `AX_METAL_RESIDENCY`:
+/// - unset / `1` / `true` / `on`  -> enabled (default)
+/// - `0` / `false` / `off`        -> disabled
+pub fn residency_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_RESIDENCY", true))
 }
 
 /// Whether smart barrier tracking is enabled for concurrent prefill dispatch.

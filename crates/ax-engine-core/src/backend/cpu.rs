@@ -75,6 +75,7 @@ impl Backend for CpuBackend {
     ) {
         let mut prepared_state_batch =
             qwen_kv.prepare_recurrent_state_batch(slot_indices, layer_idx);
+        self.note_qwen35_prepared_state_batch_kind(prepared_state_batch.kind());
         let mut state_batch = prepared_state_batch.state_batch();
         self.qwen35_recurrent_sequence(
             qkv_batch,

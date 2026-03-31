@@ -72,6 +72,8 @@ pub enum KvPrecisionPolicy {
     Auto,
     ForceF32,
     ForceF16,
+    ForceQ8_0,
+    ForceQ4_0,
 }
 
 impl KvPrecisionPolicy {
@@ -82,6 +84,8 @@ impl KvPrecisionPolicy {
                 Some(match v.as_str() {
                     "1" | "true" | "on" => Self::ForceF16,
                     "0" | "false" | "off" => Self::ForceF32,
+                    "q8" | "q8_0" => Self::ForceQ8_0,
+                    "q4" | "q4_0" => Self::ForceQ4_0,
                     _ => Self::Auto,
                 })
             }
@@ -100,6 +104,8 @@ impl KvPrecisionPolicy {
             }
             Self::ForceF32 => GpuKvDtype::F32,
             Self::ForceF16 => GpuKvDtype::F16,
+            Self::ForceQ8_0 => GpuKvDtype::Q8_0,
+            Self::ForceQ4_0 => GpuKvDtype::Q4_0,
         }
     }
 }

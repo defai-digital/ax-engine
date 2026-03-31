@@ -43,6 +43,26 @@ pub(crate) fn prefill_multi_cb_enabled() -> bool {
     })
 }
 
+/// Whether inter-step prefill pipelining is enabled for Qwen3.5.
+///
+/// When enabled, the prefill step loop submits GPU command buffers
+/// asynchronously (recurrent tail phase) and defers K/V CPU mirror copies
+/// so that CPU encoding of step N+1 overlaps GPU execution of step N.
+///
+/// Controlled by `AX_QWEN35_PREFILL_PIPELINED`:
+/// - unset / `1` / `true` / `on` -> enabled (default)
+/// - `0` / `false` / `off` -> disabled
+pub(crate) fn prefill_inter_step_pipelined_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| match std::env::var("AX_QWEN35_PREFILL_PIPELINED") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !(v == "0" || v == "false" || v == "off")
+        }
+        Err(_) => true,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // BufRef: lightweight buffer pointer for the schedule
 // ---------------------------------------------------------------------------
@@ -79,6 +99,7 @@ impl BufRef {
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::large_enum_variant)]
+#[allow(dead_code)]
 pub(super) enum PrefillOp {
     /// Memory barrier (pre-computed by offline barrier pass).
     Barrier,
@@ -178,6 +199,23 @@ pub(super) enum PrefillOp {
         k: u32,
         dtype: GgmlType,
     },
+    /// Pair gate+up batch matmul with f32 input (no cast needed).
+    /// Reads input once, produces both gate and up outputs.
+    /// Currently unused — the f32 pair kernel uses a non-blocked layout that
+    /// regresses vs two separate blocked matmuls. Retained for future use
+    /// when a blocked pair kernel is available.
+    #[allow(dead_code)]
+    DequantBatchPair {
+        w0: BufRef,
+        w1: BufRef,
+        input: BufRef,
+        out0: BufRef,
+        out1: BufRef,
+        m: u32,
+        n: u32,
+        k: u32,
+        dtype: GgmlType,
+    },
 
     // -- QKV / RoPE / KV append --
     QkvSplitRopeBatch {
@@ -201,6 +239,8 @@ pub(super) enum PrefillOp {
         kv_k: BufRef,
         kv_v: BufRef,
         kv_f16: bool,
+        kv_q8: bool,
+        kv_q4: bool,
         n: u32,
         n_heads: u32,
         n_kv_heads: u32,
@@ -226,6 +266,8 @@ pub(super) enum PrefillOp {
         src: BufRef,
         dst: BufRef,
         kv_f16: bool,
+        kv_q8: bool,
+        kv_q4: bool,
         cache_offset: u32,
         row_stride: u32,
         kv_dim: u32,
@@ -260,6 +302,8 @@ pub(super) enum PrefillOp {
         kv_v: BufRef,
         out: BufRef,
         kv_f16: bool,
+        kv_q8: bool,
+        kv_q4: bool,
         n: u32,
         n_heads: u32,
         n_kv_heads: u32,
@@ -286,6 +330,17 @@ pub(super) enum PrefillOp {
         output: BufRef,
         dim: u32,
         n: u32,
+    },
+    /// Fused SiLU activation + Q4_K down projection in one dispatch.
+    /// Replaces SiluMulBatch + DequantBatch(down) when down weight is Q4_K.
+    FusedSiluDownBatchQ4K {
+        weight: BufRef,
+        gate: BufRef,
+        up: BufRef,
+        output: BufRef,
+        m: u32,
+        n: u32,
+        k: u32,
     },
 
     // -- Post-loop (single-token logits path) --
@@ -335,6 +390,7 @@ pub(super) struct PrefillSchedule {
     split_index: usize,
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct Qwen35RecurrentTailProjection<'a> {
     pub rec_out: &'a ax_engine_metal::MetalBuffer,
     pub rec_z: &'a ax_engine_metal::MetalBuffer,
@@ -397,6 +453,9 @@ fn op_buffer_sets(op: &PrefillOp) -> (Vec<usize>, Vec<usize>) {
             out1,
             ..
         } => (vec![input_f16.ptr_id()], vec![out0.ptr_id(), out1.ptr_id()]),
+        PrefillOp::DequantBatchPair {
+            input, out0, out1, ..
+        } => (vec![input.ptr_id()], vec![out0.ptr_id(), out1.ptr_id()]),
         PrefillOp::QkvSplitRopeBatch { qkv, q, k, v, .. } => {
             (vec![qkv.ptr_id()], vec![q.ptr_id(), k.ptr_id(), v.ptr_id()])
         }
@@ -443,6 +502,12 @@ fn op_buffer_sets(op: &PrefillOp) -> (Vec<usize>, Vec<usize>) {
         PrefillOp::SiluMulBatchF16 {
             gate, up, output, ..
         } => (vec![gate.ptr_id(), up.ptr_id()], vec![output.ptr_id()]),
+        PrefillOp::FusedSiluDownBatchQ4K {
+            gate, up, output, ..
+        } => (
+            vec![gate.ptr_id(), up.ptr_id()],
+            vec![output.ptr_id()],
+        ),
         PrefillOp::RmsNorm { buf, .. } => (vec![buf.ptr_id()], vec![buf.ptr_id()]),
         PrefillOp::BufferCopy { src, dst, .. } => (vec![src.ptr_id()], vec![dst.ptr_id()]),
         PrefillOp::DequantMatvec { input, output, .. } => {
@@ -650,6 +715,8 @@ pub(super) fn build_llama_prefill_schedule(
                     kv_k: br(gpu_kv.k_buffer(layer)),
                     kv_v: br(gpu_kv.v_buffer(layer)),
                     kv_f16: prefill_plan.kv_f16,
+                    kv_q8: prefill_plan.kv_q8,
+                kv_q4: prefill_plan.kv_q4,
                     n: nt,
                     n_heads,
                     n_kv_heads,
@@ -770,6 +837,8 @@ pub(super) fn build_llama_prefill_schedule(
                 src: br(&bs.k_buf),
                 dst: br(gpu_kv.k_buffer(layer)),
                 kv_f16: prefill_plan.kv_f16,
+                kv_q8: prefill_plan.kv_q8,
+                kv_q4: prefill_plan.kv_q4,
                 cache_offset,
                 row_stride: kv_dim as u32,
                 kv_dim: kv_dim as u32,
@@ -779,6 +848,8 @@ pub(super) fn build_llama_prefill_schedule(
                 src: br(&bs.v_buf),
                 dst: br(gpu_kv.v_buffer(layer)),
                 kv_f16: prefill_plan.kv_f16,
+                kv_q8: prefill_plan.kv_q8,
+                kv_q4: prefill_plan.kv_q4,
                 cache_offset,
                 row_stride: kv_dim as u32,
                 kv_dim: kv_dim as u32,
@@ -820,6 +891,8 @@ pub(super) fn build_llama_prefill_schedule(
                     kv_v: br(gpu_kv.v_buffer(layer)),
                     out: br(&bs.attn_out),
                     kv_f16: prefill_plan.kv_f16,
+                    kv_q8: prefill_plan.kv_q8,
+                kv_q4: prefill_plan.kv_q4,
                     n: nt,
                     n_heads,
                     n_kv_heads,
@@ -831,8 +904,16 @@ pub(super) fn build_llama_prefill_schedule(
         }
 
         // Phase 3a: Output projection
+        // When attention outputs f32 and the matmul dtype supports f32 input
+        // (Q4K/Q5K/Q6K blocked kernels handle f32→half internally), skip the
+        // separate cast dispatch and use the f32-input kernel directly.
         let wo_buf = weight_cache.get(&lw.wo).unwrap();
-        if prefill_plan.use_f16_batch_io {
+        let wo_can_skip_cast = prefill_plan.wo_input == PrefillWoInputPlan::AttentionOutF32
+            && matches!(
+                lw.wo_dtype,
+                GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K
+            );
+        if prefill_plan.use_f16_batch_io && !wo_can_skip_cast {
             if prefill_plan.wo_input == PrefillWoInputPlan::AttentionOutF32 {
                 ops.push(PrefillOp::CastF32ToF16 {
                     input: br(&bs.attn_out),
@@ -956,57 +1037,75 @@ pub(super) fn build_llama_prefill_schedule(
             }
         }
 
-        // Phase 3d: Activation
-        match ffn_layer_plan.activation {
-            PrefillFfnActivationPlan::SiluMulScratchF16 => {
-                ops.push(PrefillOp::SiluMulBatchF16 {
-                    gate: br(&bs.gate_buf),
-                    up: br(&bs.up_buf),
-                    output: br(&bs.matmul_in_f16),
-                    dim: inter_dim as u32,
-                    n: nt,
-                });
-            }
-            PrefillFfnActivationPlan::SiluMulGateF32 => {
-                ops.push(PrefillOp::SiluMulBatch {
-                    gate: br(&bs.gate_buf),
-                    up: br(&bs.up_buf),
-                    dim: inter_dim as u32,
-                    n: nt,
-                });
-            }
-            PrefillFfnActivationPlan::GeluMulGateF32 => unreachable!(),
-        }
-
-        // Phase 3e: Down projection
+        // Phase 3d+3e: Activation + Down projection
+        // When using the f32 SiLU path with Q4_K down weights, fuse SiLU+down
+        // into a single dispatch (saves 1 dispatch per layer).
         let wd_buf = weight_cache.get(&lw.wd).unwrap();
-        match ffn_layer_plan.activation {
-            PrefillFfnActivationPlan::SiluMulScratchF16 => {
-                ops.push(PrefillOp::DequantBatchF16In {
-                    weight: br(wd_buf),
-                    input_f16: br(&bs.matmul_in_f16),
-                    output: br(&bs.proj_buf),
-                    m: dim as u32,
-                    n: nt,
-                    k: inter_dim as u32,
-                    dtype: lw.wd_dtype,
-                });
+        let can_fuse_silu_down = matches!(
+            ffn_layer_plan.activation,
+            PrefillFfnActivationPlan::SiluMulGateF32
+        ) && lw.wd_dtype == GgmlType::Q4K
+            && (inter_dim as u32).is_multiple_of(256); // Q4_K block size
+
+        if can_fuse_silu_down {
+            ops.push(PrefillOp::FusedSiluDownBatchQ4K {
+                weight: br(wd_buf),
+                gate: br(&bs.gate_buf),
+                up: br(&bs.up_buf),
+                output: br(&bs.proj_buf),
+                m: dim as u32,
+                n: nt,
+                k: inter_dim as u32,
+            });
+        } else {
+            match ffn_layer_plan.activation {
+                PrefillFfnActivationPlan::SiluMulScratchF16 => {
+                    ops.push(PrefillOp::SiluMulBatchF16 {
+                        gate: br(&bs.gate_buf),
+                        up: br(&bs.up_buf),
+                        output: br(&bs.matmul_in_f16),
+                        dim: inter_dim as u32,
+                        n: nt,
+                    });
+                }
+                PrefillFfnActivationPlan::SiluMulGateF32 => {
+                    ops.push(PrefillOp::SiluMulBatch {
+                        gate: br(&bs.gate_buf),
+                        up: br(&bs.up_buf),
+                        dim: inter_dim as u32,
+                        n: nt,
+                    });
+                }
+                PrefillFfnActivationPlan::GeluMulGateF32 => unreachable!(),
             }
-            PrefillFfnActivationPlan::SiluMulGateF32 => {
-                ops.push(PrefillOp::DequantBatch {
-                    weight: br(wd_buf),
-                    input: br(&bs.gate_buf),
-                    output: br(&bs.proj_buf),
-                    scratch_f16: br(&bs.matmul_in_f16),
-                    m: dim as u32,
-                    n: nt,
-                    k: inter_dim as u32,
-                    dtype: lw.wd_dtype,
-                    use_simd: prefill_plan.use_batch_simd,
-                    use_q5k_small: false,
-                });
+            match ffn_layer_plan.activation {
+                PrefillFfnActivationPlan::SiluMulScratchF16 => {
+                    ops.push(PrefillOp::DequantBatchF16In {
+                        weight: br(wd_buf),
+                        input_f16: br(&bs.matmul_in_f16),
+                        output: br(&bs.proj_buf),
+                        m: dim as u32,
+                        n: nt,
+                        k: inter_dim as u32,
+                        dtype: lw.wd_dtype,
+                    });
+                }
+                PrefillFfnActivationPlan::SiluMulGateF32 => {
+                    ops.push(PrefillOp::DequantBatch {
+                        weight: br(wd_buf),
+                        input: br(&bs.gate_buf),
+                        output: br(&bs.proj_buf),
+                        scratch_f16: br(&bs.matmul_in_f16),
+                        m: dim as u32,
+                        n: nt,
+                        k: inter_dim as u32,
+                        dtype: lw.wd_dtype,
+                        use_simd: prefill_plan.use_batch_simd,
+                        use_q5k_small: false,
+                    });
+                }
+                PrefillFfnActivationPlan::GeluMulGateF32 => unreachable!(),
             }
-            PrefillFfnActivationPlan::GeluMulGateF32 => unreachable!(),
         }
 
         // Phase 3f: Residual + next-layer norm

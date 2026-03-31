@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-/Users/akiralam/code/ax-engine-v2}"
+REPO_DIR="${REPO_DIR:-/Users/akiralam/code/ax-engine}"
 AX_BENCH="${AX_BENCH:-$REPO_DIR/target/release/ax-engine-bench}"
 PROMPT_TOKENS="${PROMPT_TOKENS:-256}"
 WARMUP_ITERS="${WARMUP_ITERS:-1}"
@@ -12,6 +12,7 @@ TSV_OUT="${TSV_OUT:-}"
 
 MODELS=(
   "qwen3-0.6B|$REPO_DIR/models/Qwen3-0.6B-Q4_K_M.gguf"
+  "qwen35-9b|$REPO_DIR/models/Qwen3.5-9B-Q4_K_M.gguf"
   "llama3-8b|$REPO_DIR/models/Llama-3-8B-Instruct-GGUF-Q4_K_M.gguf"
   "gemma3-4b|$REPO_DIR/models/gemma-3-4b-it-Q4_K_M.gguf"
 )

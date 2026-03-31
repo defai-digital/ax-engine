@@ -211,7 +211,7 @@ impl KvPlan {
     pub fn build(&self, backend: &dyn Backend) -> ModelKv {
         match self {
             Self::Cpu(plan) => ModelKv::Cpu(build_cpu_kv(plan)),
-            Self::Qwen35(plan) => ModelKv::Qwen35(build_qwen35_kv(plan, backend)),
+            Self::Qwen35(plan) => ModelKv::Qwen35(Box::new(build_qwen35_kv(plan, backend))),
             Self::Gpu(plan) => build_gpu_kv(plan, backend),
         }
     }
@@ -249,12 +249,12 @@ impl KvPlan {
                 }
             }
             Self::Gpu(plan) => {
-                let elem_size = plan.dtype.elem_size();
                 let stride = plan.n_kv_heads * plan.head_dim;
+                let row_bytes = plan.dtype.row_bytes(stride);
                 let initial_cap = initial_token_capacity(plan.page_size, plan.max_seq_len);
                 KvPlanMemoryEstimate {
-                    initial_bytes: 2 * plan.n_layers * initial_cap * stride * elem_size,
-                    max_bytes: 2 * plan.n_layers * plan.max_seq_len * stride * elem_size,
+                    initial_bytes: 2 * plan.n_layers * initial_cap * row_bytes,
+                    max_bytes: 2 * plan.n_layers * plan.max_seq_len * row_bytes,
                 }
             }
             Self::Qwen35(plan) => qwen35_memory_estimate(plan),
@@ -267,6 +267,8 @@ impl KvPlan {
             Self::Gpu(plan) => match plan.dtype {
                 GpuKvDtype::F32 => "gpu/f32".to_string(),
                 GpuKvDtype::F16 => "gpu/f16".to_string(),
+                GpuKvDtype::Q8_0 => "gpu/q8_0".to_string(),
+                GpuKvDtype::Q4_0 => "gpu/q4_0".to_string(),
             },
             Self::Qwen35(_) => "qwen35-hybrid".to_string(),
         }

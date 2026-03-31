@@ -74,13 +74,15 @@ pub fn standard_matrix() -> Vec<MatrixEntry> {
 
 /// Compare AX Engine results against baseline numbers.
 pub fn compare(ax: &BenchResult, baseline: &BaselineNumbers) -> ComparisonResult {
+    // Use median values for comparison — these are the headline metrics shown to
+    // the user and are more robust to outliers than the mean.
     let prefill_ratio = if baseline.prefill_tok_per_sec > 0.0 {
-        ax.prefill_tok_per_sec / baseline.prefill_tok_per_sec
+        ax.prefill_tok_per_sec_median / baseline.prefill_tok_per_sec
     } else {
         0.0
     };
     let decode_ratio = if baseline.decode_tok_per_sec > 0.0 {
-        ax.decode_tok_per_sec / baseline.decode_tok_per_sec
+        ax.decode_tok_per_sec_median / baseline.decode_tok_per_sec
     } else {
         0.0
     };
@@ -226,6 +228,7 @@ mod tests {
     fn test_compare_fails() {
         let mut ax = dummy_bench();
         ax.prefill_tok_per_sec = 900.0; // 90% of baseline
+        ax.prefill_tok_per_sec_median = 900.0;
         let baseline = BaselineNumbers {
             label: "7B/Q4_0/4k".into(),
             prefill_tok_per_sec: 1000.0,

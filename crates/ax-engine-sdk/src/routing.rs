@@ -30,11 +30,12 @@ pub struct RoutingPreview {
     pub source: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum RoutingPreference {
     Auto,
     Native,
     LlamaCpp,
+    #[default]
     Off,
 }
 
@@ -51,12 +52,6 @@ pub(crate) struct RoutingPolicy {
     global: RoutingPreference,
     arch_overrides: HashMap<String, RoutingPreference>,
     model_overrides: HashMap<String, RoutingPreference>,
-}
-
-impl Default for RoutingPreference {
-    fn default() -> Self {
-        Self::Off
-    }
 }
 
 impl FromStr for RoutingPreference {

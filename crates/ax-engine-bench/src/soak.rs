@@ -285,6 +285,23 @@ pub fn run_soak_test_with_backend(
         0.0
     };
 
+    // Validate final drift against thresholds (catches regressions that appear
+    // after the last periodic check interval).
+    if rss_drift > config.max_rss_drift {
+        failures.push(format!(
+            "Final RSS drift {:.1}% exceeds {:.0}% threshold",
+            rss_drift * 100.0,
+            config.max_rss_drift * 100.0,
+        ));
+    }
+    if p95_drift > config.max_p95_drift {
+        failures.push(format!(
+            "Final P95 drift {:.1}% exceeds {:.0}% threshold",
+            p95_drift * 100.0,
+            config.max_p95_drift * 100.0,
+        ));
+    }
+
     let passed = failures.is_empty();
     let elapsed = start.elapsed();
     let avg_tok_per_sec = if elapsed.as_secs_f64() > 0.0 {
