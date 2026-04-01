@@ -1907,6 +1907,9 @@ pub struct DequantKernels {
     /// because the only reads happen through cross-crate call paths (`ax-engine-core`).
     #[allow(dead_code)]
     fused_batch_q4_k_bn32: ComputePipeline,
+    // MoE unified dispatch (mul_mat_id).
+    pub moe_map0: ComputePipeline,
+    pub moe_mul_mat_id_q4_k: ComputePipeline,
 }
 
 impl DequantKernels {
@@ -2839,6 +2842,18 @@ impl DequantKernels {
             fused_batch_q6_k_f16in_full32,
             fused_batch_q4_k_f16in_tail32,
             fused_batch_q6_k_f16in_tail32,
+            moe_map0: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_id_map0",
+            )
+            .context("Failed to compile moe_mul_mat_id_map0 kernel")?,
+            moe_mul_mat_id_q4_k: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_id_q4_k",
+            )
+            .context("Failed to compile moe_mul_mat_id_q4_k kernel")?,
         })
     }
 
@@ -6409,6 +6424,92 @@ impl DequantKernels {
             },
             MTLSize {
                 width: P16_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode MoE map0: build routing index on GPU.
+    /// expert_ids: [n_tokens, n_expert_used] int32
+    /// tpe: [n_expert] uint32 (output: token count per expert)
+    /// hids: [n_expert, n_tokens] int32 (output: routing index)
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_moe_map0(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        expert_ids: &MetalBuffer,
+        tpe: &MetalBuffer,
+        hids: &MetalBuffer,
+        n_tokens: u32,
+        n_expert_used: u32,
+        n_expert: u32,
+    ) {
+        encoder.setComputePipelineState(self.moe_map0.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(expert_ids.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(tpe.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(hids.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, n_tokens);
+        bind_u32(encoder, 4, n_expert_used);
+        bind_u32(encoder, 5, n_expert);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: 1,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: n_expert as usize,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode MoE mul_mat_id for Q4_K: unified expert matmul.
+    /// weights: [n_expert, M, K/256] Q4_K blocks
+    /// input: [n_tokens, K] f32
+    /// output: [n_tokens * n_expert_used, M] f32
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_moe_mul_mat_id_q4_k(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        weights: &MetalBuffer,
+        input: &MetalBuffer,
+        tpe: &MetalBuffer,
+        hids: &MetalBuffer,
+        output: &MetalBuffer,
+        m: u32,
+        k: u32,
+        n_tokens: u32,
+        n_expert_used: u32,
+        n_expert: u32,
+        weight_stride: u32,
+    ) {
+        encoder.setComputePipelineState(self.moe_mul_mat_id_q4_k.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(tpe.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(hids.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 4);
+        }
+        bind_u32(encoder, 5, m);
+        bind_u32(encoder, 6, k);
+        bind_u32(encoder, 7, n_tokens);
+        bind_u32(encoder, 8, n_expert_used);
+        bind_u32(encoder, 9, weight_stride);
+        // Grid: (ceil(n_tokens/32), ceil(M/32), n_expert)
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n_tokens as usize).div_ceil(32),
+                height: (m as usize).div_ceil(32),
+                depth: n_expert as usize,
+            },
+            MTLSize {
+                width: 128,
                 height: 1,
                 depth: 1,
             },
@@ -10655,12 +10756,9 @@ impl ElementwiseKernels {
         )
         .context("Failed to compile kv_append_batch2_q8_0 kernel")?;
 
-        let argmax_f32 = ComputePipeline::from_source(
-            device.device(),
-            ELEMENTWISE_SHADER_SRC,
-            "argmax_f32",
-        )
-        .context("Failed to compile argmax_f32 kernel")?;
+        let argmax_f32 =
+            ComputePipeline::from_source(device.device(), ELEMENTWISE_SHADER_SRC, "argmax_f32")
+                .context("Failed to compile argmax_f32 kernel")?;
 
         tracing::info!("Elementwise Metal kernels compiled (8 kernels)");
 

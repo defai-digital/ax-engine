@@ -11065,3 +11065,189 @@ kernel void dequant_small_batch_q4_k(
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MoE mul_mat_id — unified expert dispatch (ported from llama.cpp)
+//
+// Stage 1 (map0): Build routing index — for each expert, which tokens use it.
+// Stage 2 (main): Tiled Q4_K GEMM with expert routing.
+//
+// Replaces the per-expert dispatch loop (48 dispatches/layer → 2 dispatches).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Stage 1: Build routing index from expert assignments.
+///
+/// expert_ids: [n_tokens, n_expert_used] — which experts each token uses.
+/// tpe (tokens per expert): [n_expert] uint32 — count of tokens per expert.
+/// hids: [n_expert, n_tokens] int32 — for expert e, hids[e*n_tokens + i] =
+///   token_idx * n_expert_used + position_in_assignment for the i-th assigned token.
+///
+/// Grid: (1, 1, 1). TG: (n_expert, 1, 1). One thread per expert.
+kernel void moe_mul_mat_id_map0(
+    device const int32_t *expert_ids [[buffer(0)]],
+    device uint32_t *tpe             [[buffer(1)]],
+    device int32_t *hids             [[buffer(2)]],
+    constant uint &n_tokens          [[buffer(3)]],
+    constant uint &n_expert_used     [[buffer(4)]],
+    constant uint &n_expert          [[buffer(5)]],
+    uint tid [[thread_index_in_threadgroup]])
+{
+    const uint ide = tid;  // This thread handles expert `ide`.
+    if (ide >= n_expert) return;
+
+    device int32_t *ids_out = hids + ide * n_tokens;
+    uint count = 0;
+
+    for (uint t = 0; t < n_tokens; t++) {
+        device const int32_t *assigns = expert_ids + t * n_expert_used;
+        for (uint k = 0; k < n_expert_used; k++) {
+            if ((uint)assigns[k] == ide) {
+                // Store flat index: token * n_expert_used + k
+                ids_out[count] = t * n_expert_used + k;
+                count++;
+                break;
+            }
+        }
+    }
+    tpe[ide] = count;
+}
+
+/// Stage 2: Tiled Q4_K GEMM with expert routing.
+///
+/// For each expert (grid.z), processes only the tokens assigned to it.
+/// Weights: [n_expert, M, K/256] Q4_K blocks (expert-strided).
+/// Input:   [n_tokens, K] f32 (shared across all experts).
+/// Output:  [n_tokens * n_expert_used, M] f32 (flat, indexed by hids).
+///
+/// Grid: (ceil(max_tokens/32), ceil(M/32), n_expert). TG: (128, 1, 1).
+kernel void moe_mul_mat_id_q4_k(
+    device const Q4_K_Block *weights [[buffer(0)]],
+    device const float *input        [[buffer(1)]],
+    device const uint32_t *tpe       [[buffer(2)]],
+    device const int32_t *hids       [[buffer(3)]],
+    device float *output             [[buffer(4)]],
+    constant uint &M                 [[buffer(5)]],
+    constant uint &K                 [[buffer(6)]],
+    constant uint &n_tokens          [[buffer(7)]],
+    constant uint &n_expert_used     [[buffer(8)]],
+    constant uint &weight_stride     [[buffer(9)]],
+    uint3 group_id  [[threadgroup_position_in_grid]],
+    uint  tid       [[thread_index_in_threadgroup]],
+    uint  simd_id   [[simdgroup_index_in_threadgroup]],
+    uint  simd_lane [[thread_index_in_simdgroup]])
+{
+    const uint expert = group_id.z;
+    const uint n_assigned = tpe[expert];
+
+    // Tile positions.
+    const uint tile_col = group_id.x * DQ_BN;  // Token tile (column = token index)
+    const uint tile_row = group_id.y * DQ_BM;  // Output row tile
+
+    // Early exit: no tokens for this expert, or this tile is past the token count.
+    if (tile_col >= n_assigned) return;
+
+    // Expert weight base: expert * (M * blocks_per_row) blocks.
+    const uint blocks_per_row = K / Q4_K_BLOCK_VALUES;
+    device const Q4_K_Block *W = weights + expert * weight_stride;
+
+    // hids for this expert.
+    device const int32_t *expert_hids = hids + expert * n_tokens;
+
+    threadgroup float tg_A[DQ_BM * DQ_BK];
+    threadgroup float tg_B[DQ_BK * DQ_BN];
+
+    simdgroup_float8x8 acc0, acc1, acc2, acc3;
+    acc0 = simdgroup_float8x8(0);
+    acc1 = simdgroup_float8x8(0);
+    acc2 = simdgroup_float8x8(0);
+    acc3 = simdgroup_float8x8(0);
+
+    for (uint kt = 0; kt < K; kt += DQ_BK) {
+        uint block_idx = kt / Q4_K_BLOCK_VALUES;
+        uint pair = (kt % Q4_K_BLOCK_VALUES) / DQ_BK;
+
+        // Load A tile: dequant weight rows [tile_row..tile_row+32, kt..kt+64].
+        for (uint i = tid; i < DQ_BM * DQ_BK; i += DQ_TG) {
+            uint r = i / DQ_BK;
+            uint c = i % DQ_BK;
+            uint global_r = tile_row + r;
+
+            if (global_r < M) {
+                device const Q4_K_Block& blk = W[global_r * blocks_per_row + block_idx];
+                float d    = float(blk.d);
+                float dmin = float(blk.dmin);
+                float2 sm1 = get_scale_min_q4k(pair * 2, blk.scales);
+                float2 sm2 = get_scale_min_q4k(pair * 2 + 1, blk.scales);
+                uchar byte = blk.qs[pair * 32 + (c < 32 ? c : c - 32)];
+                if (c < 32) {
+                    tg_A[r * DQ_BK + c] = d * sm1.x * float(byte & 0x0F) - dmin * sm1.y;
+                } else {
+                    tg_A[r * DQ_BK + c] = d * sm2.x * float(byte >> 4) - dmin * sm2.y;
+                }
+            } else {
+                tg_A[r * DQ_BK + c] = 0.0f;
+            }
+        }
+
+        // Load B tile: input rows for assigned tokens.
+        // B[r, c] = input[token_of(hids[tile_col + c]), kt + r]
+        for (uint i = tid; i < DQ_BK * DQ_BN; i += DQ_TG) {
+            uint r = i / DQ_BN;  // K dimension
+            uint c = i % DQ_BN;  // Token slot
+            uint slot = tile_col + c;
+            uint global_k = kt + r;
+
+            if (slot < n_assigned && global_k < K) {
+                int32_t hid = expert_hids[slot];
+                uint token_idx = hid / n_expert_used;
+                tg_B[r * DQ_BN + c] = input[token_idx * K + global_k];
+            } else {
+                tg_B[r * DQ_BN + c] = 0.0f;
+            }
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Simdgroup matmul.
+        for (uint kk = 0; kk < DQ_BK / 8; kk++) {
+            simdgroup_float8x8 a_frag;
+            simdgroup_load(a_frag, &tg_A[simd_id * 8 * DQ_BK + kk * 8], DQ_BK);
+
+            simdgroup_float8x8 b0, b1, b2, b3;
+            simdgroup_load(b0, &tg_B[kk * 8 * DQ_BN + 0],  DQ_BN);
+            simdgroup_load(b1, &tg_B[kk * 8 * DQ_BN + 8],  DQ_BN);
+            simdgroup_load(b2, &tg_B[kk * 8 * DQ_BN + 16], DQ_BN);
+            simdgroup_load(b3, &tg_B[kk * 8 * DQ_BN + 24], DQ_BN);
+
+            simdgroup_multiply_accumulate(acc0, a_frag, b0, acc0);
+            simdgroup_multiply_accumulate(acc1, a_frag, b1, acc1);
+            simdgroup_multiply_accumulate(acc2, a_frag, b2, acc2);
+            simdgroup_multiply_accumulate(acc3, a_frag, b3, acc3);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Store output via routing index.
+    threadgroup float out_tile[DQ_BM * DQ_BN];
+    simdgroup_store(acc0, &out_tile[simd_id * 8 * DQ_BN + 0],  DQ_BN);
+    simdgroup_store(acc1, &out_tile[simd_id * 8 * DQ_BN + 8],  DQ_BN);
+    simdgroup_store(acc2, &out_tile[simd_id * 8 * DQ_BN + 16], DQ_BN);
+    simdgroup_store(acc3, &out_tile[simd_id * 8 * DQ_BN + 24], DQ_BN);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Write to output: output[hid * M + row] = out_tile[row, col]
+    // hid = hids[expert * n_tokens + tile_col + c], output indexed by flat hid.
+    for (uint i = tid; i < DQ_BM * DQ_BN; i += DQ_TG) {
+        uint r = i / DQ_BN;
+        uint c = i % DQ_BN;
+        uint gr = tile_row + r;
+        uint slot = tile_col + c;
+
+        if (gr < M && slot < n_assigned) {
+            int32_t hid = expert_hids[slot];
+            // Output layout: [n_tokens * n_expert_used, M]
+            output[hid * M + gr] = out_tile[r * DQ_BN + c];
+        }
+    }
+}
