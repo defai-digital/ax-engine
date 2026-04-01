@@ -380,8 +380,8 @@ pub fn run_benchmark_with_backend(
     backend: Box<dyn ax_engine_core::backend::Backend>,
 ) -> anyhow::Result<BenchResult> {
     let mapped = MappedModel::open(Path::new(&config.model_path))?;
-    crate::configure_backend_for_model(&*backend, &config.model_path, &mapped)?;
     let model_config = ModelConfig::from_gguf(&mapped.header)?;
+    crate::configure_backend_for_model(&*backend, &config.model_path, &mapped, &model_config)?;
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = LlamaModel::with_backend(model_config.clone(), backend)?;
     crate::report_planned_kv_budget(&mapped, &model)?;
@@ -705,8 +705,8 @@ pub fn run_speculative_benchmark_with_backend(
     backend: Box<dyn ax_engine_core::backend::Backend>,
 ) -> anyhow::Result<SpecBenchResult> {
     let mapped = MappedModel::open(Path::new(&config.model_path))?;
-    crate::configure_backend_for_model(&*backend, &config.model_path, &mapped)?;
     let model_config = ModelConfig::from_gguf(&mapped.header)?;
+    crate::configure_backend_for_model(&*backend, &config.model_path, &mapped, &model_config)?;
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = LlamaModel::with_backend(model_config.clone(), backend)?;
     crate::report_planned_kv_budget(&mapped, &model)?;

@@ -133,3 +133,23 @@ fn test_model_selects_llama_forward() {
     let model = LlamaModel::new(config).unwrap();
     assert_eq!(model.arch_name(), "llama");
 }
+
+#[test]
+fn test_model_rejects_invalid_gqa_shape() {
+    let mut config = tiny_config();
+    config.n_kv_heads = 3;
+    let err = LlamaModel::new(config)
+        .err()
+        .expect("config should be rejected");
+    assert!(err.to_string().contains("must be a multiple of n_kv_heads"));
+}
+
+#[test]
+fn test_model_rejects_odd_head_dim() {
+    let mut config = tiny_config();
+    config.head_dim = 3;
+    let err = LlamaModel::new(config)
+        .err()
+        .expect("config should be rejected");
+    assert!(err.to_string().contains("must be even"));
+}

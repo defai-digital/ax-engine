@@ -1174,4 +1174,37 @@ impl ForwardPass for Qwen35Forward {
         )?;
         Ok(Some(frame))
     }
+
+    fn supports_fused_argmax(&self) -> bool {
+        true
+    }
+
+    fn encode_pending_decode_step_with_argmax(
+        &self,
+        ctx: &ForwardContext,
+        hidden_buf: &ax_engine_metal::MetalBuffer,
+        position: usize,
+        kv: &mut ModelKv,
+        weights: &WeightStore,
+    ) -> anyhow::Result<Option<ax_engine_metal::PendingFrame>> {
+        if Self::qwen35_is_moe(ctx.config) {
+            return Ok(None);
+        }
+        if !Self::gpu_decode_enabled() {
+            return Ok(None);
+        }
+        let Some(metal_ops) = ctx.backend.metal_ops() else {
+            return Ok(None);
+        };
+        let Some(qwen_kv) = kv.as_qwen35_mut() else {
+            return Ok(None);
+        };
+        if qwen_kv.gpu_attention().is_none() {
+            return Ok(None);
+        }
+        let frame = Self::encode_qwen35_pending_step_with_argmax(
+            metal_ops, ctx.config, hidden_buf, position, qwen_kv, weights,
+        )?;
+        Ok(Some(frame))
+    }
 }

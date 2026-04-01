@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::gguf::tensor::GgmlType;
 use crate::kv::Qwen35Kv;
-use crate::model::config::ModelConfig;
+use crate::model::{ModelFingerprint, config::ModelConfig};
 
 pub use kv_plan::{
     CpuKvPlan, GpuKvPlan, KvCapacityPolicy, KvPlan, KvPlanKind, KvPlanMemoryEstimate, KvPlanner,
@@ -305,6 +305,19 @@ pub trait Backend {
         _architecture: &str,
     ) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    /// Configure backend-local model policy from a richer fingerprint.
+    ///
+    /// Metal-backed implementations should prefer this over
+    /// `configure_for_model`, since it carries the model shape and quant
+    /// layout needed for persistent tuning and cache-safe policy selection.
+    fn configure_for_fingerprint(&self, fingerprint: &ModelFingerprint) -> anyhow::Result<()> {
+        self.configure_for_model(
+            &fingerprint.model_name,
+            &fingerprint.predominant_quant,
+            &fingerprint.architecture,
+        )
     }
 
     /// Return the resolved backend-local runtime policy when available.
@@ -688,7 +701,6 @@ mod tests {
     use crate::backend::cpu::CpuBackend;
     use crate::model::ModelConfig;
     use crate::model::config::{GateActivation, RopeScaling};
-    use std::sync::{Mutex, OnceLock};
 
     struct EnvVarRestore {
         key: &'static str,
@@ -705,10 +717,7 @@ mod tests {
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("backend env lock")
+        crate::test_env_lock()
     }
 
     fn test_model_config() -> ModelConfig {

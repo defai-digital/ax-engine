@@ -13,6 +13,14 @@ use std::io::{BufRead, Write};
 use crate::args::CliArgs;
 use crate::stream::{StreamAction, StreamPrinter};
 
+fn resolved_generation_budget(n_predict: i32, remaining_decode_capacity: usize) -> usize {
+    if n_predict < 0 {
+        remaining_decode_capacity
+    } else {
+        (n_predict as usize).min(remaining_decode_capacity)
+    }
+}
+
 /// Run interactive multi-turn REPL mode.
 pub fn run(
     args: &CliArgs,
@@ -54,11 +62,6 @@ pub fn run(
     eprintln!();
 
     let context_length = config.context_length as usize;
-    let user_max_tokens = if args.n_predict < 0 {
-        context_length
-    } else {
-        args.n_predict as usize
-    };
 
     let stdin = std::io::stdin();
     let mut all_tokens: Vec<u32> = Vec::new();
@@ -143,7 +146,10 @@ pub fn run(
         }
 
         // Generate response (limit to remaining context capacity)
-        let max_tokens = user_max_tokens.min(remaining_decode_capacity);
+        let max_tokens = resolved_generation_budget(args.n_predict, remaining_decode_capacity);
+        if max_tokens == 0 {
+            continue;
+        }
         let first_token_info = if args.top_logprobs > 0 {
             Some(sampler.sample_with_logprobs(&mut logits, &all_tokens, args.top_logprobs))
         } else {
@@ -390,6 +396,8 @@ pub fn run_routed(args: &CliArgs) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     fn can_fit_input(position: usize, input_tokens: usize, context_length: usize) -> bool {
         input_tokens <= context_length.saturating_sub(position)
     }
@@ -400,5 +408,16 @@ mod tests {
         assert!(!can_fit_input(4, 7, 10));
         assert!(can_fit_input(10, 0, 10));
         assert!(!can_fit_input(10, 1, 10));
+    }
+
+    #[test]
+    fn test_resolved_generation_budget_clamps_positive_request() {
+        assert_eq!(resolved_generation_budget(32, 8), 8);
+    }
+
+    #[test]
+    fn test_resolved_generation_budget_allows_zero_or_unlimited() {
+        assert_eq!(resolved_generation_budget(0, 8), 0);
+        assert_eq!(resolved_generation_budget(-1, 8), 8);
     }
 }

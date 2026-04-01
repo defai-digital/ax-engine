@@ -41,7 +41,9 @@ class RunConfig:
     timestamp: str
     llama: LlamaConfig
     ax_only: bool = False
+    llama_only: bool = False
     llama_baseline: Path | None = None
+    ax_baseline: Path | None = None
 
 
 @dataclass
@@ -67,6 +69,15 @@ def parse_args() -> RunConfig:
         "--ax-only",
         action="store_true",
         help="Run AX Engine only (skip llama.cpp). Use --llama-baseline to compare against a previous llama.cpp result.",
+    )
+    parser.add_argument(
+        "--llama-only",
+        action="store_true",
+        help="Run llama.cpp only (skip AX Engine). Use --ax-baseline to compare against a previous AX result.",
+    )
+    parser.add_argument(
+        "--ax-baseline",
+        help="Path to a previous ax.json to use as the AX baseline (implies --llama-only).",
     )
     parser.add_argument(
         "--llama-baseline",
@@ -103,7 +114,12 @@ def parse_args() -> RunConfig:
     label = args.label or model.stem.replace(" ", "-")
     timestamp = args.timestamp or time.strftime("%Y%m%d-%H%M%S")
     ax_only = args.ax_only or args.llama_baseline is not None
+    llama_only = args.llama_only or (args.ax_baseline is not None)
     llama_baseline = Path(args.llama_baseline) if args.llama_baseline else None
+    ax_baseline = Path(args.ax_baseline) if getattr(args, "ax_baseline", None) else None
+
+    if ax_only and llama_only:
+        parser.error("cannot use both --ax-only and --llama-only")
 
     return RunConfig(
         repo_dir=repo_dir,
@@ -120,7 +136,9 @@ def parse_args() -> RunConfig:
         timestamp=timestamp,
         llama=LlamaConfig(threads=args.threads),
         ax_only=ax_only,
+        llama_only=llama_only,
         llama_baseline=llama_baseline,
+        ax_baseline=ax_baseline,
     )
 def ensure_exists(path: Path, executable: bool = False) -> None:
     if executable:
@@ -500,13 +518,71 @@ def write_ax_only_summary(config: RunConfig, run_dir: Path, ax_json: Path, ax_co
     )
 
 
+def write_llama_only_summary(config: RunConfig, run_dir: Path, llama_json: Path) -> None:
+    """Write summary files when running llama-only (no AX comparison)."""
+    llama = json.loads(llama_json.read_text(encoding="utf-8"))
+    llama_prefill = float(llama["prefill_median_tok_per_s"])
+    llama_decode = float(llama["decode_median_tok_per_s"])
+    summary_md = run_dir / "summary.md"
+    summary_md.write_text(
+        "# llama.cpp Benchmark (llama-only)\n\n"
+        f"- Label: `{config.label}`\n"
+        f"- Model: `{config.model}`\n"
+        f"- Prompt: `{config.prompt_tokens}`\n"
+        f"- Decode: `{config.decode_tokens}` @ depth `{config.decode_depth}`\n"
+        f"- Samples: `{config.samples}`\n"
+        f"- Cooldown: `{config.cooldown_seconds}s`\n\n"
+        "| Phase | Median tok/s | Mean tok/s |\n"
+        "|---|---:|---:|\n"
+        f"| Prefill | {llama_prefill:.1f} | {float(llama['prefill_mean_tok_per_s']):.1f} |\n"
+        f"| Decode | {llama_decode:.1f} | {float(llama['decode_mean_tok_per_s']):.1f} |\n\n"
+        f"- Prefill samples: `{llama['prefill_samples_tok_per_s']}`\n"
+        f"- Decode samples: `{llama['decode_samples_tok_per_s']}`\n"
+        f"- llama.cpp artifact: `{llama_json}`\n",
+        encoding="utf-8",
+    )
+
+
 def main() -> int:
     config = parse_args()
-    ensure_exists(config.ax_bench, executable=True)
     ensure_exists(config.model)
     config.out_dir.mkdir(parents=True, exist_ok=True)
     run_dir = allocate_run_dir(config.out_dir, config.timestamp)
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── llama-only mode ──────────────────────────────────────────────────
+    if config.llama_only:
+        ensure_exists(config.llama_bench, executable=True)
+        llama_run_dir = run_dir / "llama"
+        llama_run_dir.mkdir(parents=True, exist_ok=True)
+        prefill_result = run_llama_phase(config, llama_run_dir, "prefill")
+        sleep_if_needed(config.cooldown_seconds)
+        decode_result = run_llama_phase(config, llama_run_dir, "decode")
+        llama_summary_json = write_llama_summary(
+            config, llama_run_dir, prefill_result, decode_result,
+        )
+
+        if config.ax_baseline is not None:
+            # Compare against a previous AX result.
+            ensure_exists(config.ax_baseline)
+            import shutil
+            ax_json_local = run_dir / "ax.json"
+            shutil.copy2(config.ax_baseline, ax_json_local)
+            build_comparison(config, run_dir, ax_json_local, llama_summary_json, [])
+            print(f"RUN_DIR:         {run_dir}")
+            print(f"LLAMA_JSON:      {llama_summary_json}")
+            print(f"AX_JSON:         {ax_json_local} (baseline from {config.ax_baseline})")
+            print(f"COMPARISON_JSON: {run_dir / 'comparison.json'}")
+            print(f"COMPARISON_MD:   {run_dir / 'comparison.md'}")
+        else:
+            write_llama_only_summary(config, run_dir, llama_summary_json)
+            print(f"RUN_DIR:    {run_dir}")
+            print(f"LLAMA_JSON: {llama_summary_json}")
+            print(f"SUMMARY_MD: {run_dir / 'summary.md'}")
+        return 0
+
+    # ── modes that need AX ───────────────────────────────────────────────
+    ensure_exists(config.ax_bench, executable=True)
 
     ax_json, ax_command = run_ax(config, run_dir)
 

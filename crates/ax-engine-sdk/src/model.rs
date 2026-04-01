@@ -5,7 +5,7 @@ use std::sync::{Arc, Once};
 use anyhow::{Context, anyhow, ensure};
 use ax_engine_core::backend::{BackendConfig, create_backend};
 use ax_engine_core::gguf::MappedModel;
-use ax_engine_core::model::{LlamaModel, ModelConfig};
+use ax_engine_core::model::{LlamaModel, ModelConfig, ModelFingerprint};
 use ax_engine_core::tokenizer::Tokenizer;
 
 use crate::llama_cpp_process::LlamaCppProcess;
@@ -182,14 +182,10 @@ impl Model {
         let model_id = infer_model_id(model_path, &mapped);
         let model_name = mapped.header.get_str("general.name").map(str::to_owned);
         let support_note = mapped.support_note().map(str::to_owned);
-        let profile_quant = mapped
-            .predominant_quant()
-            .map(|dtype| dtype.to_string())
-            .unwrap_or_else(|| "default".to_string());
-        let profile_architecture = mapped.header.architecture().unwrap_or("default");
 
         let backend = create_backend(options.backend.into_backend_config())?;
-        backend.configure_for_model(&model_id, &profile_quant, profile_architecture)?;
+        let fingerprint = ModelFingerprint::from_mapped_model(Some(model_path), &mapped, &config);
+        backend.configure_for_fingerprint(&fingerprint)?;
 
         let model = LlamaModel::with_backend(config.clone(), backend)?;
 

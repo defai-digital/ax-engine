@@ -121,6 +121,19 @@ impl Sampler {
         }
     }
 
+    /// Returns true when the sampler is a pure greedy argmax with no CPU-side
+    /// penalties or filters. When true, the GPU-side argmax kernel can be used
+    /// to avoid reading back the full logits buffer.
+    pub fn is_greedy(&self) -> bool {
+        self.config.temperature == 0.0
+            && self.config.logit_bias.is_empty()
+            && self.config.allowed_token_ids.is_empty()
+            && self.config.banned_token_ids.is_empty()
+            && self.config.repeat_penalty == 1.0
+            && self.config.presence_penalty == 0.0
+            && self.config.frequency_penalty == 0.0
+    }
+
     /// Sample a token from logits, applying the full sampling pipeline.
     ///
     /// `logits` is modified in-place (penalties, temperature, filtering applied).

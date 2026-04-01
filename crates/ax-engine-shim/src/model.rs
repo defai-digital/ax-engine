@@ -6,7 +6,7 @@ use std::path::Path;
 
 use ax_engine_core::backend::{BackendConfig, create_backend};
 use ax_engine_core::gguf::MappedModel;
-use ax_engine_core::model::{LlamaModel as CoreLlamaModel, ModelConfig};
+use ax_engine_core::model::{LlamaModel as CoreLlamaModel, ModelConfig, ModelFingerprint};
 use ax_engine_core::tokenizer::Tokenizer;
 
 use crate::types::*;
@@ -89,18 +89,9 @@ pub extern "C" fn llama_model_load_from_file(
 
     // Apply model-specific kernel profile (splitk thresholds, f16 IO preference, etc.)
     {
-        let profile_model_name = Path::new(path_str)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("default");
-        let profile_quant = mapped
-            .predominant_quant()
-            .map(|dtype| dtype.to_string())
-            .unwrap_or_else(|| "default".to_string());
-        let profile_architecture = mapped.header.architecture().unwrap_or("default");
-        if let Err(e) =
-            backend.configure_for_model(profile_model_name, &profile_quant, profile_architecture)
-        {
+        let fingerprint =
+            ModelFingerprint::from_mapped_model(Some(Path::new(path_str)), &mapped, &config);
+        if let Err(e) = backend.configure_for_fingerprint(&fingerprint) {
             tracing::warn!("Failed to configure backend for model: {e}");
         }
     }

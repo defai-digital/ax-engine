@@ -160,6 +160,16 @@ fn print_export_status_blockers(status: &MicrobenchProfileExportStatus) {
     }
 }
 
+fn parse_non_zero_usize(value: &str) -> Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|err| format!("invalid integer '{value}': {err}"))?;
+    if parsed == 0 {
+        return Err("value must be greater than zero".to_string());
+    }
+    Ok(parsed)
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Run a long-duration soak test (stability validation).
@@ -181,7 +191,7 @@ enum Command {
         max_p95_drift: f64,
 
         /// Tokens to generate per iteration.
-        #[arg(long, default_value = "128")]
+        #[arg(long, default_value = "128", value_parser = parse_non_zero_usize)]
         tokens_per_iter: usize,
 
         /// Interval between drift checks (e.g. "5m", "10m").
@@ -420,11 +430,11 @@ enum Command {
         qwen35_force_backend_state_batch: bool,
 
         /// Baseline JSON artifact with prefill tok/s fields.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "baseline_prefill_tok_s")]
         baseline_json: Option<String>,
 
         /// Inline baseline prefill throughput in tok/s.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "baseline_json")]
         baseline_prefill_tok_s: Option<f64>,
 
         /// Optional display label for the baseline.
@@ -2348,6 +2358,44 @@ mod tests {
         assert_eq!(baseline_prefill_tok_s, Some(720.5));
         assert_eq!(baseline_label.as_deref(), Some("llama.cpp"));
         assert!(json);
+    }
+
+    #[test]
+    fn test_cli_parse_prefill_gap_rejects_conflicting_baseline_flags() {
+        let err = match Cli::try_parse_from([
+            "ax-engine-bench",
+            "prefill-gap",
+            "--model",
+            "./models/Qwen3.5-9B-Q4_K_M.gguf",
+            "--baseline-json",
+            "./baseline.json",
+            "--baseline-prefill-tok-s",
+            "720.5",
+        ]) {
+            Ok(_) => panic!("expected conflicting baseline flags to fail"),
+            Err(err) => err,
+        };
+
+        let message = err.to_string();
+        assert!(message.contains("--baseline-json"));
+        assert!(message.contains("--baseline-prefill-tok-s"));
+    }
+
+    #[test]
+    fn test_cli_parse_soak_rejects_zero_tokens_per_iter() {
+        let err = match Cli::try_parse_from([
+            "ax-engine-bench",
+            "soak",
+            "--model",
+            "./models/Qwen3.5-9B-Q4_K_M.gguf",
+            "--tokens-per-iter",
+            "0",
+        ]) {
+            Ok(_) => panic!("expected zero tokens-per-iter to fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("--tokens-per-iter"));
     }
 
     #[test]

@@ -29,17 +29,12 @@ impl LlamaModel {
     /// The forward pass implementation is selected based on `config.architecture`
     /// via the architecture registry.
     pub fn with_backend(config: ModelConfig, backend: Box<dyn Backend>) -> anyhow::Result<Self> {
+        config.validate_invariants()?;
         let forward = crate::model::arch_registry::forward_for_arch_with_config(
             &config.architecture,
             &config,
         )?;
-
-        if let Err(e) = forward.validate_config(&config) {
-            tracing::warn!(
-                arch = config.architecture,
-                "Model config validation warning: {e}"
-            );
-        }
+        forward.validate_config(&config)?;
 
         let attn_params = AttentionParams::new(
             config.n_heads as usize,
@@ -728,6 +723,31 @@ impl LlamaModel {
         )
     }
 
+    /// Whether this model's forward pass supports fused argmax in the main CB.
+    pub fn supports_fused_argmax(&self) -> bool {
+        self.forward.supports_fused_argmax()
+    }
+
+    /// Like [`encode_pending_decode_step`] but fuses a GPU argmax dispatch
+    /// at the end of the command buffer. After `wait_frame`, call
+    /// [`read_gpu_argmax_result`] to get the greedy token — no separate CB
+    /// round-trip needed.
+    pub fn encode_pending_decode_step_with_argmax(
+        &self,
+        hidden_buf: &ax_engine_metal::MetalBuffer,
+        position: usize,
+        kv: &mut ModelKv,
+        weights: &WeightStore,
+    ) -> anyhow::Result<Option<ax_engine_metal::PendingFrame>> {
+        self.forward.encode_pending_decode_step_with_argmax(
+            &self.forward_context(),
+            hidden_buf,
+            position,
+            kv,
+            weights,
+        )
+    }
+
     /// Pre-allocate GPU KV capacity for at least `needed` positions.
     ///
     /// Must be called once before the pipelined decode loop starts, so that
@@ -810,5 +830,81 @@ impl LlamaModel {
         self.forward
             .postprocess_pipelined_logits(&self.forward_context(), &mut logits[..vocab])?;
         Ok(())
+    }
+
+    /// Run argmax on the GPU logits buffer and return the winning token index.
+    ///
+    /// This avoids reading back the full vocab-sized f32 buffer to the CPU
+    /// when doing greedy (temperature=0) decode. Only 4 bytes are read back.
+    ///
+    /// Note: this skips `postprocess_pipelined_logits` — currently safe because
+    /// `logit_scale` (the only postprocessor) is a positive scalar multiply that
+    /// does not change the argmax result.
+    pub fn gpu_argmax_logits(&self) -> anyhow::Result<u32> {
+        let Some(metal_ops) = self.backend.metal_ops() else {
+            anyhow::bail!("gpu_argmax_logits: no Metal backend");
+        };
+        metal_ops.init_scratches(&self.config);
+        let guard = metal_ops.scratches();
+        let s = guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("GPU scratch buffers not initialized"))?;
+        let vocab = self.config.vocab_size;
+
+        metal_ops.device.execute_sync(|encoder| {
+            metal_ops.elementwise.encode_argmax_f32(
+                encoder,
+                &s.logits_buf,
+                &s.argmax_idx,
+                &s.argmax_val,
+                vocab,
+            );
+            Ok(())
+        })?;
+
+        let idx = unsafe { *(s.argmax_idx.contents().as_ptr() as *const u32) };
+        Ok(idx)
+    }
+
+    /// Encode a GPU argmax dispatch into an existing command encoder.
+    ///
+    /// Unlike [`gpu_argmax_logits`], this does NOT create a separate command
+    /// buffer. The argmax runs as part of the caller's CB, so the result is
+    /// available after the CB completes (no extra round-trip).
+    pub fn encode_gpu_argmax_into(
+        &self,
+        encoder: &ax_engine_metal::MetalEncoder,
+    ) -> anyhow::Result<()> {
+        let Some(metal_ops) = self.backend.metal_ops() else {
+            anyhow::bail!("encode_gpu_argmax_into: no Metal backend");
+        };
+        metal_ops.init_scratches(&self.config);
+        let guard = metal_ops.scratches();
+        let s = guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("GPU scratch buffers not initialized"))?;
+        metal_ops.elementwise.encode_argmax_f32(
+            encoder,
+            &s.logits_buf,
+            &s.argmax_idx,
+            &s.argmax_val,
+            self.config.vocab_size,
+        );
+        Ok(())
+    }
+
+    /// Read the GPU argmax result after a command buffer containing
+    /// [`encode_gpu_argmax_into`] has completed.
+    pub fn read_gpu_argmax_result(&self) -> anyhow::Result<u32> {
+        let Some(metal_ops) = self.backend.metal_ops() else {
+            anyhow::bail!("read_gpu_argmax_result: no Metal backend");
+        };
+        metal_ops.init_scratches(&self.config);
+        let guard = metal_ops.scratches();
+        let s = guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("GPU scratch buffers not initialized"))?;
+        let idx = unsafe { *(s.argmax_idx.contents().as_ptr() as *const u32) };
+        Ok(idx)
     }
 }

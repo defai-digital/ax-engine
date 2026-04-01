@@ -10,6 +10,10 @@ use crate::errors::{py_runtime_error, py_value_error};
 use crate::gil::allow_threads_unsend;
 use crate::session::Session;
 
+fn option_state_is_closed<T>(state: &Mutex<Option<T>>) -> bool {
+    state.lock().map(|guard| guard.is_none()).unwrap_or(true)
+}
+
 #[pyclass(unsendable, module = "ax_engine")]
 pub struct Model {
     pub(crate) inner: Mutex<Option<SdkModel>>,
@@ -91,7 +95,7 @@ impl Model {
 
     #[getter]
     pub fn closed(&self) -> bool {
-        self.inner.lock().expect("model lock poisoned").is_none()
+        option_state_is_closed(&self.inner)
     }
 
     #[pyo3(signature = (text, add_special = false))]
@@ -146,8 +150,9 @@ impl Model {
     }
 
     pub fn close(&self) {
-        let mut inner = self.inner.lock().expect("model lock poisoned");
-        inner.take();
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.take();
+        }
     }
 }
 
@@ -155,7 +160,7 @@ impl Model {
     pub(crate) fn loaded_model(&self) -> PyResult<SdkModel> {
         self.inner
             .lock()
-            .expect("model lock poisoned")
+            .map_err(|_| py_runtime_error(anyhow::anyhow!("model lock poisoned")))?
             .clone()
             .ok_or_else(|| py_runtime_error(anyhow::anyhow!("model is closed")))
     }
@@ -180,4 +185,24 @@ fn init_tracing() {
             .with_env_filter("ax_engine_core=warn,ax_engine_py=info,ax_engine_sdk=info")
             .try_init();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    #[test]
+    fn test_option_state_is_closed_treats_poisoned_lock_as_closed() {
+        let state = Arc::new(Mutex::new(Some(1u8)));
+        let state_for_thread = Arc::clone(&state);
+        let _ = thread::spawn(move || {
+            let _guard = state_for_thread.lock().expect("lock");
+            panic!("poison");
+        })
+        .join();
+
+        assert!(option_state_is_closed(&state));
+    }
 }

@@ -1,4 +1,6 @@
 use rustc_hash::FxHashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::RwLock;
@@ -7,15 +9,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::time::Instant;
 
-use super::{Backend, RuntimePolicy};
+use super::{Backend, KvPrecisionPolicy, RuntimePolicy};
 use crate::gguf::tensor::GgmlType;
 use anyhow::Context;
 
 // v2: GpuKv is owned by LlamaModel via ModelKv, not stored in MetalOps.
-use crate::model::config::ModelConfig;
+use crate::model::{ModelFingerprint, config::ModelConfig};
+use ax_engine_metal::profile::MatvecParams;
 use ax_engine_metal::{
     AttentionDispatchConfig, AttentionKernels, DequantDispatchConfig, DequantKernels,
-    ElementwiseKernels, GdnKernels, MatmulKernels, MetalBuffer, MetalDevice,
+    ElementwiseKernels, GdnKernels, KernelProfile, KvPrecisionMode, MatmulKernels,
+    MatvecProfileVariant, MetalBuffer, MetalDevice,
 };
 
 fn metal_profile_llama() -> bool {
@@ -99,6 +103,70 @@ pub fn metal_autotune_enabled() -> bool {
     RuntimePolicy::resolved_defaults().autotune_f16in_batch_route_enabled()
 }
 
+fn parse_bool_env_flag(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" => Some(true),
+        "0" | "false" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn bool_env_with_default(var: &str, default: bool) -> bool {
+    std::env::var(var)
+        .ok()
+        .and_then(|value| parse_bool_env_flag(&value))
+        .unwrap_or(default)
+}
+
+/// Whether persistent load-time tuning should run when no cached profile exists.
+///
+/// Controlled by `AX_METAL_LOAD_AUTOTUNE`:
+/// - unset / `1` / `true` / `on` -> enabled (default)
+/// - `0` / `false` / `off` -> disabled
+fn metal_load_autotune_enabled() -> bool {
+    bool_env_with_default("AX_METAL_LOAD_AUTOTUNE", true)
+}
+
+/// Whether load-time tuning should ignore the cached profile and re-run probes.
+///
+/// Controlled by `AX_METAL_FORCE_RETUNE` or `AX_METAL_LOAD_AUTOTUNE_FORCE`.
+fn metal_force_retune_enabled() -> bool {
+    bool_env_with_default("AX_METAL_FORCE_RETUNE", false)
+        || bool_env_with_default("AX_METAL_LOAD_AUTOTUNE_FORCE", false)
+}
+
+fn metal_tune_cache_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("AX_METAL_TUNE_CACHE_DIR")
+        && !path.trim().is_empty()
+    {
+        return PathBuf::from(path);
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home)
+            .join("Library")
+            .join("Caches")
+            .join("ax-engine")
+            .join("kernel-profiles");
+    }
+
+    PathBuf::from(".ax-engine-kernel-profiles")
+}
+
+fn sanitize_cache_component(value: &str) -> String {
+    let sanitized: String = value
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect();
+    let sanitized = sanitized.trim_matches('-');
+    if sanitized.is_empty() {
+        "unknown".to_string()
+    } else {
+        sanitized.to_string()
+    }
+}
+
 /// Resolve whether GPU KV cache should use f16 storage for this model.
 ///
 /// Controlled by `AX_METAL_F16_KV_CACHE`:
@@ -163,6 +231,22 @@ fn create_mmap_weight_buffer_from_f32(device: &MetalDevice, data: &[f32]) -> Met
         MetalBuffer::from_slice(device.device(), data)
             .expect("Failed to create Metal buffer for f32 weight")
     })
+}
+
+#[derive(Debug)]
+struct ResolvedKernelProfile {
+    profile: KernelProfile,
+    skip_runtime_batch_route_autotune: bool,
+}
+
+fn profile_source_with_autotune(seed_source: &str) -> String {
+    if seed_source.is_empty() {
+        "load-autotune".to_string()
+    } else if seed_source.contains("load-autotune") {
+        seed_source.to_string()
+    } else {
+        format!("{seed_source}+load-autotune")
+    }
 }
 
 /// Metal compute backend — offloads matmul to GPU.
@@ -1642,6 +1726,20 @@ impl Backend for MetalBackend {
                     .record_qwen35_recurrent_batch_state_batch_cpu_gathered_materialized_from_backend();
             }
         }
+    }
+
+    fn configure_for_fingerprint(&self, fingerprint: &ModelFingerprint) -> anyhow::Result<()> {
+        let resolved = self.ops.resolve_kernel_profile_for_fingerprint(fingerprint);
+        self.ops
+            .apply_runtime_policy(RuntimePolicy::from_kernel_profile_for_arch(
+                resolved.profile,
+                &fingerprint.architecture,
+            ));
+        self.ops.f16in_route_tuned.store(
+            resolved.skip_runtime_batch_route_autotune,
+            Ordering::Relaxed,
+        );
+        Ok(())
     }
 
     fn configure_for_model(
@@ -3380,6 +3478,717 @@ impl MetalOps {
             .q8_batch_native_shape_enabled(m, n, k)
     }
 
+    fn resolve_kernel_profile_for_fingerprint(
+        &self,
+        fingerprint: &ModelFingerprint,
+    ) -> ResolvedKernelProfile {
+        let seed_profile =
+            KernelProfile::load(&fingerprint.model_name, &fingerprint.predominant_quant);
+        let cache_path = self.kernel_profile_cache_path(fingerprint);
+        let force_retune = metal_force_retune_enabled();
+
+        if !force_retune && let Some(profile) = KernelProfile::load_from_path(&cache_path) {
+            tracing::info!(
+                path = %cache_path.display(),
+                fingerprint = %fingerprint.stable_id(),
+                "Loaded cached kernel autotune profile"
+            );
+            return ResolvedKernelProfile {
+                profile,
+                skip_runtime_batch_route_autotune: true,
+            };
+        }
+
+        if !metal_load_autotune_enabled() && !force_retune {
+            tracing::debug!(
+                fingerprint = %fingerprint.stable_id(),
+                "Load-time kernel autotune disabled; using seeded kernel profile"
+            );
+            return ResolvedKernelProfile {
+                profile: seed_profile,
+                skip_runtime_batch_route_autotune: false,
+            };
+        }
+
+        let tuned = self.autotune_kernel_profile(fingerprint, seed_profile);
+        if let Err(error) = self.persist_kernel_profile_cache(&cache_path, &tuned) {
+            tracing::warn!(
+                path = %cache_path.display(),
+                fingerprint = %fingerprint.stable_id(),
+                error = %error,
+                "Failed to persist autotuned kernel profile cache"
+            );
+        }
+
+        ResolvedKernelProfile {
+            profile: tuned,
+            skip_runtime_batch_route_autotune: true,
+        }
+    }
+
+    fn kernel_profile_cache_path(&self, fingerprint: &ModelFingerprint) -> PathBuf {
+        let file_name = format!(
+            "{}-{}.json",
+            sanitize_cache_component(&fingerprint.model_name),
+            fingerprint.stable_id(),
+        );
+        metal_tune_cache_dir()
+            .join(format!("ax-{}", env!("CARGO_PKG_VERSION")))
+            .join(self.device_cache_key())
+            .join(sanitize_cache_component(&fingerprint.cache_namespace()))
+            .join(file_name)
+    }
+
+    fn device_cache_key(&self) -> String {
+        let info = self.device.info();
+        format!(
+            "{}-apple7{}-apple9{}-metal3{}-metal4{}-uma{}",
+            sanitize_cache_component(&info.name),
+            u8::from(info.gpu_family.apple7),
+            u8::from(info.gpu_family.apple9),
+            u8::from(info.gpu_family.metal3),
+            u8::from(info.gpu_family.metal4),
+            u8::from(info.unified_memory),
+        )
+    }
+
+    fn persist_kernel_profile_cache(
+        &self,
+        cache_path: &PathBuf,
+        profile: &KernelProfile,
+    ) -> anyhow::Result<()> {
+        let Some(parent) = cache_path.parent() else {
+            return Ok(());
+        };
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+        let json = serde_json::to_string_pretty(profile)
+            .context("failed to encode autotuned kernel profile")?;
+        fs::write(cache_path, json)
+            .with_context(|| format!("failed to write {}", cache_path.display()))?;
+        Ok(())
+    }
+
+    fn autotune_kernel_profile(
+        &self,
+        fingerprint: &ModelFingerprint,
+        mut profile: KernelProfile,
+    ) -> KernelProfile {
+        profile.kv_cache.precision = self.select_kv_precision_mode(fingerprint);
+        if fingerprint.has_q4k_layer_weights {
+            self.autotune_decode_matvec_quant(&mut profile, fingerprint, GgmlType::Q4K);
+        }
+        if fingerprint.has_q5k_layer_weights {
+            self.autotune_decode_matvec_quant(&mut profile, fingerprint, GgmlType::Q5K);
+        }
+        if fingerprint.has_q6k_layer_weights {
+            self.autotune_decode_matvec_quant(&mut profile, fingerprint, GgmlType::Q6K);
+        }
+        if fingerprint.has_q8_layer_weights {
+            self.autotune_decode_matvec_quant(&mut profile, fingerprint, GgmlType::Q8_0);
+        }
+        if let Some(batch_quant) = self.preferred_batch_prefill_quant(fingerprint) {
+            self.autotune_batch_prefill_route(&mut profile, fingerprint, batch_quant);
+        }
+
+        profile.model = fingerprint.model_name.clone();
+        profile.source = profile_source_with_autotune(&profile.source);
+        profile.generated = format!(
+            "ax-engine={} device={} fingerprint={}",
+            env!("CARGO_PKG_VERSION"),
+            self.device_cache_key(),
+            fingerprint.stable_id(),
+        );
+        profile
+    }
+
+    fn select_kv_precision_mode(&self, fingerprint: &ModelFingerprint) -> KvPrecisionMode {
+        let info = self.device.info();
+        let kv_f32_bytes =
+            Self::estimated_attention_kv_bytes(fingerprint, KvPrecisionPolicy::ForceF32)
+                .unwrap_or(0);
+        let kv_f16_bytes =
+            Self::estimated_attention_kv_bytes(fingerprint, KvPrecisionPolicy::ForceF16)
+                .unwrap_or(kv_f32_bytes / 2);
+        let kv_q8_bytes =
+            Self::estimated_attention_kv_bytes(fingerprint, KvPrecisionPolicy::ForceQ8_0)
+                .unwrap_or(u64::MAX);
+        let working_set = info.max_working_set_bytes.max(1);
+        let total_f16 = fingerprint.total_tensor_bytes.saturating_add(kv_f16_bytes);
+
+        let selected = if !Self::supports_q8_kv(fingerprint) {
+            if fingerprint.context_length < 256 && kv_f16_bytes < (128 << 20) {
+                KvPrecisionMode::F32
+            } else {
+                KvPrecisionMode::F16
+            }
+        } else if total_f16 > working_set.saturating_mul(85) / 100
+            || kv_f16_bytes >= (1 << 30)
+            || fingerprint.context_length >= 16_384
+        {
+            KvPrecisionMode::Q8_0
+        } else if fingerprint.context_length < 256 && kv_f16_bytes < (128 << 20) {
+            KvPrecisionMode::F32
+        } else {
+            KvPrecisionMode::F16
+        };
+
+        tracing::info!(
+            fingerprint = %fingerprint.stable_id(),
+            kv_f32_mb = kv_f32_bytes / 1024 / 1024,
+            kv_f16_mb = kv_f16_bytes / 1024 / 1024,
+            kv_q8_mb = if kv_q8_bytes == u64::MAX {
+                0
+            } else {
+                kv_q8_bytes / 1024 / 1024
+            },
+            working_set_mb = working_set / 1024 / 1024,
+            selected = ?selected,
+            "Selected load-time KV precision policy"
+        );
+        selected
+    }
+
+    fn supports_q8_kv(fingerprint: &ModelFingerprint) -> bool {
+        let kv_stride = fingerprint.n_kv_heads.saturating_mul(fingerprint.head_dim);
+        kv_stride > 0 && kv_stride % 32 == 0 && matches!(fingerprint.head_dim, 64 | 128 | 256)
+    }
+
+    fn estimated_attention_kv_layers(fingerprint: &ModelFingerprint) -> u64 {
+        if matches!(fingerprint.architecture.as_str(), "qwen35" | "qwen35moe")
+            && let Some(interval) = fingerprint.qwen35_full_attention_interval
+            && interval > 0
+        {
+            return (fingerprint.n_layers as u64).div_ceil(interval as u64);
+        }
+        fingerprint.n_layers as u64
+    }
+
+    fn estimated_attention_kv_bytes(
+        fingerprint: &ModelFingerprint,
+        policy: KvPrecisionPolicy,
+    ) -> Option<u64> {
+        let kv_stride = fingerprint.n_kv_heads as usize * fingerprint.head_dim as usize;
+        let context = fingerprint.context_length as usize;
+        let layers = Self::estimated_attention_kv_layers(fingerprint);
+        let row_bytes = match policy {
+            KvPrecisionPolicy::ForceF32 => (kv_stride * std::mem::size_of::<f32>()) as u64,
+            KvPrecisionPolicy::ForceF16 => (kv_stride * std::mem::size_of::<half::f16>()) as u64,
+            KvPrecisionPolicy::ForceQ8_0 => {
+                if kv_stride == 0 || !kv_stride.is_multiple_of(32) {
+                    return None;
+                }
+                ((kv_stride / 32) * 34) as u64
+            }
+            KvPrecisionPolicy::Auto => return None,
+        };
+
+        (layers)
+            .checked_mul(context as u64)?
+            .checked_mul(row_bytes)?
+            .checked_mul(2)
+    }
+
+    fn autotune_decode_matvec_quant(
+        &self,
+        profile: &mut KernelProfile,
+        fingerprint: &ModelFingerprint,
+        quant: GgmlType,
+    ) {
+        let (quant_key, mut candidates) = match quant {
+            GgmlType::Q4K => (
+                "q4_k",
+                vec![
+                    profile.matvec_params("q4_k"),
+                    MatvecParams {
+                        threadgroup_size: 128,
+                        rows_per_simdgroup: 1,
+                        variant: Some(MatvecProfileVariant::Base),
+                    },
+                    MatvecParams {
+                        threadgroup_size: 64,
+                        rows_per_simdgroup: 2,
+                        variant: Some(MatvecProfileVariant::Nr2),
+                    },
+                    MatvecParams {
+                        threadgroup_size: 256,
+                        rows_per_simdgroup: 1,
+                        variant: Some(MatvecProfileVariant::Tg256),
+                    },
+                ],
+            ),
+            GgmlType::Q5K => (
+                "q5_k",
+                vec![
+                    profile.matvec_params("q5_k"),
+                    MatvecParams {
+                        threadgroup_size: 64,
+                        rows_per_simdgroup: 1,
+                        variant: Some(MatvecProfileVariant::Base),
+                    },
+                    MatvecParams {
+                        threadgroup_size: 64,
+                        rows_per_simdgroup: 1,
+                        variant: Some(MatvecProfileVariant::Ilp4),
+                    },
+                    MatvecParams {
+                        threadgroup_size: 64,
+                        rows_per_simdgroup: 2,
+                        variant: Some(MatvecProfileVariant::Nr2),
+                    },
+                ],
+            ),
+            GgmlType::Q6K => (
+                "q6_k",
+                vec![
+                    profile.matvec_params("q6_k"),
+                    MatvecParams {
+                        threadgroup_size: 128,
+                        rows_per_simdgroup: 1,
+                        variant: Some(MatvecProfileVariant::Base),
+                    },
+                    MatvecParams {
+                        threadgroup_size: 64,
+                        rows_per_simdgroup: 2,
+                        variant: Some(MatvecProfileVariant::Nr2),
+                    },
+                    MatvecParams {
+                        threadgroup_size: 64,
+                        rows_per_simdgroup: 1,
+                        variant: Some(MatvecProfileVariant::Ilp4),
+                    },
+                ],
+            ),
+            GgmlType::Q8_0 => (
+                "q8_0",
+                vec![
+                    profile.matvec_params("q8_0"),
+                    MatvecParams {
+                        threadgroup_size: 128,
+                        rows_per_simdgroup: 1,
+                        variant: Some(MatvecProfileVariant::Base),
+                    },
+                    MatvecParams {
+                        threadgroup_size: 64,
+                        rows_per_simdgroup: 1,
+                        variant: Some(MatvecProfileVariant::Ilp4),
+                    },
+                    MatvecParams {
+                        threadgroup_size: 64,
+                        rows_per_simdgroup: 2,
+                        variant: Some(MatvecProfileVariant::Nr2),
+                    },
+                ],
+            ),
+            _ => return,
+        };
+
+        candidates.dedup();
+        let shapes = Self::decode_autotune_shapes(fingerprint);
+        let mut best: Option<(MatvecParams, u128)> = None;
+        for candidate in candidates {
+            let mut total_ns = 0u128;
+            let mut samples = 0u32;
+            for &(m, k) in &shapes {
+                if let Some(ns) = self.bench_matvec_variant(quant, m, k, candidate.clone()) {
+                    total_ns += ns;
+                    samples += 1;
+                }
+            }
+            if samples == 0 {
+                continue;
+            }
+            let avg_ns = total_ns / samples as u128;
+            match &best {
+                Some((_, best_avg_ns)) if *best_avg_ns <= avg_ns => {}
+                _ => best = Some((candidate, avg_ns)),
+            }
+        }
+
+        if let Some((best_params, best_avg_ns)) = best {
+            let old_params = profile.matvec_params(quant_key);
+            if old_params != best_params {
+                tracing::info!(
+                    quant = quant_key,
+                    fingerprint = %fingerprint.stable_id(),
+                    old_threadgroup_size = old_params.threadgroup_size,
+                    old_rows_per_simdgroup = old_params.rows_per_simdgroup,
+                    old_variant = ?old_params.variant,
+                    tuned_threadgroup_size = best_params.threadgroup_size,
+                    tuned_rows_per_simdgroup = best_params.rows_per_simdgroup,
+                    tuned_variant = ?best_params.variant,
+                    avg_ns = best_avg_ns,
+                    "Autotuned decode matvec profile"
+                );
+            }
+            profile
+                .decode_matvec
+                .insert(quant_key.to_string(), best_params);
+        }
+    }
+
+    fn preferred_batch_prefill_quant(&self, fingerprint: &ModelFingerprint) -> Option<GgmlType> {
+        match fingerprint.predominant_layer_quant.as_str() {
+            "Q4_K" => Some(GgmlType::Q4K),
+            "Q5_K" => Some(GgmlType::Q5K),
+            "Q6_K" => Some(GgmlType::Q6K),
+            "Q8_0" => Some(GgmlType::Q8_0),
+            _ if fingerprint.has_q4k_layer_weights => Some(GgmlType::Q4K),
+            _ if fingerprint.has_q5k_layer_weights => Some(GgmlType::Q5K),
+            _ if fingerprint.has_q6k_layer_weights => Some(GgmlType::Q6K),
+            _ if fingerprint.has_q8_layer_weights => Some(GgmlType::Q8_0),
+            _ => None,
+        }
+    }
+
+    fn autotune_batch_prefill_route(
+        &self,
+        profile: &mut KernelProfile,
+        fingerprint: &ModelFingerprint,
+        quant: GgmlType,
+    ) {
+        let Some((n_threshold, m_max)) = self.tune_f16in_batch_route(
+            quant,
+            fingerprint.embedding_dim,
+            fingerprint.intermediate_dim,
+        ) else {
+            return;
+        };
+
+        let old_n_threshold = profile.batch_prefill.small_n_threshold;
+        let old_m_max = profile.batch_prefill.small_m_max;
+        profile.batch_prefill.small_n_threshold = n_threshold;
+        profile.batch_prefill.small_m_max = m_max;
+
+        if old_n_threshold != n_threshold || old_m_max != m_max {
+            tracing::info!(
+                quant = %quant,
+                fingerprint = %fingerprint.stable_id(),
+                old_n_threshold,
+                old_m_max,
+                tuned_n_threshold = n_threshold,
+                tuned_m_max = m_max,
+                "Autotuned batch prefill routing profile"
+            );
+        }
+    }
+
+    fn decode_autotune_shapes(fingerprint: &ModelFingerprint) -> Vec<(u32, u32)> {
+        let dim = fingerprint.embedding_dim;
+        let inter = fingerprint.intermediate_dim;
+        let kv_dim = fingerprint.n_kv_heads.saturating_mul(fingerprint.head_dim);
+        let q_dim = fingerprint.n_heads.saturating_mul(fingerprint.head_dim);
+        let mut shapes = Vec::new();
+        for shape in [
+            (q_dim, dim),
+            (kv_dim, dim),
+            (kv_dim, dim),
+            (dim, dim),
+            (inter, dim),
+            (inter, dim),
+            (dim, inter),
+        ] {
+            if shape.0 > 0 && shape.1 > 0 {
+                shapes.push(shape);
+            }
+        }
+        shapes
+    }
+
+    fn tune_f16in_batch_route(&self, quant: GgmlType, dim: u32, inter: u32) -> Option<(u32, u32)> {
+        let k = dim;
+        let n_candidates = [32u32, 48u32, 64u32];
+        let m_candidates = [dim, inter];
+        let mut wins: Vec<(u32, u32)> = Vec::new();
+
+        for &m in &m_candidates {
+            for &n in &n_candidates {
+                let t_large = self.bench_f16in_variant(quant, m, n, k, false);
+                let t_small = self.bench_f16in_variant(quant, m, n, k, true);
+                if let (Some(large), Some(small)) = (t_large, t_small)
+                    && small < (large * 98 / 100)
+                {
+                    wins.push((m, n));
+                }
+            }
+        }
+
+        Some(if wins.is_empty() {
+            (1u32, 0u32)
+        } else {
+            let max_n = wins.iter().map(|(_, n)| *n).max().unwrap_or(32);
+            let max_m = wins.iter().map(|(m, _)| *m).max().unwrap_or(dim);
+            (max_n + 1, max_m)
+        })
+    }
+
+    fn bench_matvec_variant(
+        &self,
+        quant: GgmlType,
+        m: u32,
+        k: u32,
+        config_params: MatvecParams,
+    ) -> Option<u128> {
+        if m == 0 || k == 0 || !k.is_multiple_of(quant.block_size() as u32) {
+            return None;
+        }
+
+        let blocks_per_row = k as usize / quant.block_size();
+        if blocks_per_row == 0 {
+            return None;
+        }
+
+        let a_bytes = (m as usize)
+            .checked_mul(blocks_per_row)?
+            .checked_mul(quant.bytes_per_block())?;
+        let x_data = vec![0.0f32; k as usize];
+        let a_data = vec![0u8; a_bytes];
+        let a = MetalBuffer::from_bytes(self.device.device(), &a_data).ok()?;
+        let x = MetalBuffer::from_slice(self.device.device(), &x_data).ok()?;
+        let y = MetalBuffer::new(
+            self.device.device(),
+            m as usize * std::mem::size_of::<f32>(),
+        )
+        .ok()?;
+
+        let mut config = self.dequant_dispatch_config();
+        match quant {
+            GgmlType::Q4K => {
+                config.q4_k_threadgroup_size = config_params.threadgroup_size as usize;
+                config.q4_k_rows_per_simdgroup = config_params.rows_per_simdgroup;
+            }
+            GgmlType::Q5K => {
+                config.q5_k_rows_per_simdgroup = config_params.rows_per_simdgroup;
+                config.q5_k_ilp4 =
+                    matches!(config_params.variant, Some(MatvecProfileVariant::Ilp4));
+                config.q5_k_variant = config_params.variant;
+            }
+            GgmlType::Q6K => {
+                config.q6_k_threadgroup_size = config_params.threadgroup_size as usize;
+                config.q6_k_rows_per_simdgroup = config_params.rows_per_simdgroup;
+                config.q6_k_variant = config_params.variant;
+            }
+            GgmlType::Q8_0 => {
+                config.q8_0_variant = config_params.variant;
+            }
+            _ => return None,
+        }
+
+        let warmup = match quant {
+            GgmlType::Q4K => {
+                self.dequant
+                    .fused_matvec_q4_k_with_config(&self.device, &a, &x, &y, m, k, config)
+            }
+            GgmlType::Q5K => {
+                self.dequant
+                    .fused_matvec_q5_k_with_config(&self.device, &a, &x, &y, m, k, config)
+            }
+            GgmlType::Q6K => {
+                self.dequant
+                    .fused_matvec_q6_k_with_config(&self.device, &a, &x, &y, m, k, config)
+            }
+            GgmlType::Q8_0 => self.device.execute_sync(|encoder| {
+                self.dequant
+                    .encode_fused_matvec_q8_0_with_config(encoder, &a, &x, &y, m, k, config);
+                Ok(())
+            }),
+            _ => unreachable!(),
+        };
+        if warmup.is_err() {
+            return None;
+        }
+
+        let reps = 4;
+        let t0 = Instant::now();
+        for _ in 0..reps {
+            let dispatch = match quant {
+                GgmlType::Q4K => self.dequant.fused_matvec_q4_k_with_config(
+                    &self.device,
+                    &a,
+                    &x,
+                    &y,
+                    m,
+                    k,
+                    config,
+                ),
+                GgmlType::Q5K => self.dequant.fused_matvec_q5_k_with_config(
+                    &self.device,
+                    &a,
+                    &x,
+                    &y,
+                    m,
+                    k,
+                    config,
+                ),
+                GgmlType::Q6K => self.dequant.fused_matvec_q6_k_with_config(
+                    &self.device,
+                    &a,
+                    &x,
+                    &y,
+                    m,
+                    k,
+                    config,
+                ),
+                GgmlType::Q8_0 => self.device.execute_sync(|encoder| {
+                    self.dequant
+                        .encode_fused_matvec_q8_0_with_config(encoder, &a, &x, &y, m, k, config);
+                    Ok(())
+                }),
+                _ => unreachable!(),
+            };
+            if dispatch.is_err() {
+                return None;
+            }
+        }
+        Some(t0.elapsed().as_nanos() / reps as u128)
+    }
+
+    fn bench_f16in_variant(
+        &self,
+        quant: GgmlType,
+        m: u32,
+        n: u32,
+        k: u32,
+        use_small: bool,
+    ) -> Option<u128> {
+        if !k.is_multiple_of(quant.block_size() as u32) {
+            return None;
+        }
+
+        let blocks_per_row = k as usize / quant.block_size();
+        if blocks_per_row == 0 {
+            return None;
+        }
+
+        let a_bytes = (m as usize)
+            .checked_mul(blocks_per_row)?
+            .checked_mul(quant.bytes_per_block())?;
+        let b_len = (n as usize).checked_mul(k as usize)?;
+        let c_bytes = (n as usize)
+            .checked_mul(m as usize)?
+            .checked_mul(std::mem::size_of::<f32>())?;
+
+        let a_data = vec![0u8; a_bytes];
+        let b_data = vec![half::f16::from_f32(0.0); b_len];
+        let a = MetalBuffer::from_bytes(self.device.device(), &a_data).ok()?;
+        let b = MetalBuffer::from_slice(self.device.device(), &b_data).ok()?;
+        let c = MetalBuffer::new(self.device.device(), c_bytes).ok()?;
+
+        let mut bench_config = self.dequant_dispatch_config();
+        if use_small {
+            bench_config.batch_f16in_small_n_threshold = u32::MAX;
+            bench_config.batch_f16in_small_m_max = m;
+        } else {
+            bench_config.batch_f16in_small_n_threshold = 1;
+            bench_config.batch_f16in_small_m_max = 0;
+        }
+
+        let _ = self.device.execute_sync(|encoder| {
+            match quant {
+                GgmlType::Q4K => self.dequant.encode_fused_batch_q4_k_f16in_with_config(
+                    encoder,
+                    &a,
+                    &b,
+                    &c,
+                    m,
+                    n,
+                    k,
+                    bench_config,
+                ),
+                GgmlType::Q5K => self.dequant.encode_fused_batch_q5_k_f16in_with_config(
+                    encoder,
+                    &a,
+                    &b,
+                    &c,
+                    m,
+                    n,
+                    k,
+                    bench_config,
+                ),
+                GgmlType::Q6K => self.dequant.encode_fused_batch_q6_k_f16in_with_config(
+                    encoder,
+                    &a,
+                    &b,
+                    &c,
+                    m,
+                    n,
+                    k,
+                    bench_config,
+                ),
+                GgmlType::Q8_0 => self.dequant.encode_fused_batch_q8_0_f16in_with_config(
+                    encoder,
+                    &a,
+                    &b,
+                    &c,
+                    m,
+                    n,
+                    k,
+                    bench_config,
+                ),
+                _ => return Ok(()),
+            }
+            Ok(())
+        });
+
+        let reps = 3;
+        let t0 = Instant::now();
+        for _ in 0..reps {
+            if self
+                .device
+                .execute_sync(|encoder| {
+                    match quant {
+                        GgmlType::Q4K => self.dequant.encode_fused_batch_q4_k_f16in_with_config(
+                            encoder,
+                            &a,
+                            &b,
+                            &c,
+                            m,
+                            n,
+                            k,
+                            bench_config,
+                        ),
+                        GgmlType::Q5K => self.dequant.encode_fused_batch_q5_k_f16in_with_config(
+                            encoder,
+                            &a,
+                            &b,
+                            &c,
+                            m,
+                            n,
+                            k,
+                            bench_config,
+                        ),
+                        GgmlType::Q6K => self.dequant.encode_fused_batch_q6_k_f16in_with_config(
+                            encoder,
+                            &a,
+                            &b,
+                            &c,
+                            m,
+                            n,
+                            k,
+                            bench_config,
+                        ),
+                        GgmlType::Q8_0 => self.dequant.encode_fused_batch_q8_0_f16in_with_config(
+                            encoder,
+                            &a,
+                            &b,
+                            &c,
+                            m,
+                            n,
+                            k,
+                            bench_config,
+                        ),
+                        _ => return Ok(()),
+                    }
+                    Ok(())
+                })
+                .is_err()
+            {
+                return None;
+            }
+        }
+        Some(t0.elapsed().as_nanos() / reps as u128)
+    }
+
     /// Initialize scratch buffers sized to the model config.
     /// Called lazily on first forward pass.
     pub fn init_scratches(&self, config: &ModelConfig) {
@@ -3569,34 +4378,14 @@ impl MetalOps {
             return;
         }
 
-        let dim = config.embedding_dim;
-        let inter = config.intermediate_dim;
-        let k = dim;
-        let n_candidates = [32u32, 48u32, 64u32];
-        let m_candidates = [dim, inter];
-
-        // Keep this cheap: two shapes × three N values × small reps.
-        let mut wins: Vec<(u32, u32)> = Vec::new();
-        for &m in &m_candidates {
-            for &n in &n_candidates {
-                let t_large = self.bench_q4k_f16in_variant(m, n, k, false);
-                let t_small = self.bench_q4k_f16in_variant(m, n, k, true);
-                if let (Some(large), Some(small)) = (t_large, t_small)
-                    && small < (large * 98 / 100)
-                {
-                    wins.push((m, n));
-                }
-            }
-        }
-
         let old_policy = self.runtime_policy();
         let old_config = old_policy.dequant_dispatch_config();
-        let (n_threshold, m_max) = if wins.is_empty() {
-            (1u32, 0u32)
-        } else {
-            let max_n = wins.iter().map(|(_, n)| *n).max().unwrap_or(32);
-            let max_m = wins.iter().map(|(m, _)| *m).max().unwrap_or(dim);
-            (max_n + 1, max_m)
+        let Some((n_threshold, m_max)) = self.tune_f16in_batch_route(
+            GgmlType::Q4K,
+            config.embedding_dim,
+            config.intermediate_dim,
+        ) else {
+            return;
         };
         let mut tuned = old_config;
         tuned.batch_f16in_small_n_threshold = n_threshold;
@@ -3610,82 +4399,6 @@ impl MetalOps {
             tuned_m_max = m_max,
             "Autotuned f16in batch kernel routing"
         );
-    }
-
-    fn bench_q4k_f16in_variant(&self, m: u32, n: u32, k: u32, use_small: bool) -> Option<u128> {
-        if !k.is_multiple_of(256) {
-            return None;
-        }
-
-        const Q4K_BLOCK_VALUES: u32 = 256;
-        const Q4K_BYTES_PER_BLOCK: usize = 144;
-        let blocks_per_row = k / Q4K_BLOCK_VALUES;
-        if blocks_per_row == 0 {
-            return None;
-        }
-        let a_bytes = (m as usize)
-            .checked_mul(blocks_per_row as usize)?
-            .checked_mul(Q4K_BYTES_PER_BLOCK)?;
-        let b_len = (n as usize).checked_mul(k as usize)?;
-        let c_bytes = (n as usize)
-            .checked_mul(m as usize)?
-            .checked_mul(std::mem::size_of::<f32>())?;
-
-        let a_data = vec![0u8; a_bytes];
-        let b_data = vec![half::f16::from_f32(0.0); b_len];
-        let a = MetalBuffer::from_bytes(self.device.device(), &a_data).ok()?;
-        let b = MetalBuffer::from_slice(self.device.device(), &b_data).ok()?;
-        let c = MetalBuffer::new(self.device.device(), c_bytes).ok()?;
-
-        let old_config = self.dequant_dispatch_config();
-        let mut bench_config = old_config;
-        if use_small {
-            bench_config.batch_f16in_small_n_threshold = u32::MAX;
-            bench_config.batch_f16in_small_m_max = m;
-        } else {
-            bench_config.batch_f16in_small_n_threshold = 1;
-            bench_config.batch_f16in_small_m_max = 0;
-        }
-
-        // Warmup
-        let _ = self.device.execute_sync(|encoder| {
-            self.dequant.encode_fused_batch_q4_k_f16in_with_config(
-                encoder,
-                &a,
-                &b,
-                &c,
-                m,
-                n,
-                k,
-                bench_config,
-            );
-            Ok(())
-        });
-
-        let reps = 3;
-        let t0 = Instant::now();
-        for _ in 0..reps {
-            if self
-                .device
-                .execute_sync(|encoder| {
-                    self.dequant.encode_fused_batch_q4_k_f16in_with_config(
-                        encoder,
-                        &a,
-                        &b,
-                        &c,
-                        m,
-                        n,
-                        k,
-                        bench_config,
-                    );
-                    Ok(())
-                })
-                .is_err()
-            {
-                return None;
-            }
-        }
-        Some(t0.elapsed().as_nanos() / reps as u128)
     }
 
     /// Access GPU batch scratch buffers (must call init_batch_scratches first).
@@ -4002,7 +4715,8 @@ impl MetalOps {
         let mut ids_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * i4)?;
         let mut weights_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * f4)?;
         let tpe_gpu = MetalBuffer::new(dev, n_expert * u4)?;
-        let hids_gpu = MetalBuffer::new(dev, n_expert * n_tokens * i4)?;
+        // Extra space for active_experts list + atomic count (appended by map0 kernel).
+        let hids_gpu = MetalBuffer::new(dev, n_expert * n_tokens * i4 + (n_expert + 1) * u4)?;
         // Intermediate: gate_up output [n_tokens * n_expert_used, expert_inter_dim]
         let gate_out_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * expert_inter_dim * f4)?;
         let up_out_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * expert_inter_dim * f4)?;
@@ -4050,12 +4764,27 @@ impl MetalOps {
         let k_dim = dim as u32;
         let k_inter = expert_inter_dim as u32;
 
+        // Build active expert set on CPU from expert_ids (no GPU readback needed).
+        let mut active_set = std::collections::BTreeSet::new();
+        for &eid in expert_ids {
+            if eid >= 0 {
+                active_set.insert(eid as u32);
+            }
+        }
+        let active_list: Vec<u32> = active_set.into_iter().collect();
+        let n_active = active_list.len() as u32;
+
+        let mut active_buf = MetalBuffer::new(dev, (n_active as usize).max(1) * u4)?;
+        unsafe {
+            active_buf.as_mut_slice::<u32>()[..active_list.len()].copy_from_slice(&active_list);
+        }
+
+        // Single CB: map0 + 3× mul_mat_id + SiLU + scatter.
         self.device.execute_sync(|encoder| {
-            // Stage 1: Build routing index.
+            // Build routing index on GPU.
             self.dequant
                 .encode_moe_map0(encoder, &ids_gpu, &tpe_gpu, &hids_gpu, nt, neu, ne);
-
-            // Stage 2a: Gate matmul — gate_out = gate_weights × input (routed).
+            // Stage 2a: Gate matmul — compact grid (only active experts).
             self.dequant.encode_moe_mul_mat_id_q4_k(
                 encoder,
                 gate_buf,
@@ -4069,9 +4798,11 @@ impl MetalOps {
                 neu,
                 ne,
                 blocks_per_expert_gate as u32,
+                &active_buf,
+                n_active,
             );
 
-            // Stage 2b: Up matmul — up_out = up_weights × input (routed).
+            // Stage 2b: Up matmul.
             self.dequant.encode_moe_mul_mat_id_q4_k(
                 encoder,
                 up_buf,
@@ -4084,7 +4815,9 @@ impl MetalOps {
                 nt,
                 neu,
                 ne,
-                blocks_per_expert_gate as u32, // same shape as gate
+                blocks_per_expert_gate as u32,
+                &active_buf,
+                n_active,
             );
 
             // Stage 3: SiLU(gate) * up — in-place on gate_out.
@@ -4131,6 +4864,8 @@ impl MetalOps {
                 neu,
                 ne,
                 blocks_per_expert_down as u32,
+                &active_buf,
+                n_active,
             );
 
             // Stage 5: Weighted scatter (pre-built tok_idx_buf, same CB).
@@ -4747,6 +5482,10 @@ impl HybridBackend {
 }
 
 impl Backend for HybridBackend {
+    fn configure_for_fingerprint(&self, fingerprint: &ModelFingerprint) -> anyhow::Result<()> {
+        self.metal.configure_for_fingerprint(fingerprint)
+    }
+
     fn configure_for_model(
         &self,
         model_name: &str,
@@ -5108,6 +5847,10 @@ impl HybridCpuDecodeBackend {
 }
 
 impl Backend for HybridCpuDecodeBackend {
+    fn configure_for_fingerprint(&self, fingerprint: &ModelFingerprint) -> anyhow::Result<()> {
+        self.metal.configure_for_fingerprint(fingerprint)
+    }
+
     fn configure_for_model(
         &self,
         model_name: &str,
@@ -5386,6 +6129,97 @@ impl Backend for HybridCpuDecodeBackend {
 mod tests {
     use super::*;
     use crate::backend::Qwen35RecurrentStateBatch;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(previous) => unsafe { std::env::set_var(self.key, previous) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    fn test_fingerprint() -> ModelFingerprint {
+        ModelFingerprint {
+            model_name: "Qwen3-8B".to_string(),
+            architecture: "qwen3".to_string(),
+            family: "qwen3".to_string(),
+            size_label: "8b".to_string(),
+            n_layers: 36,
+            n_heads: 32,
+            n_kv_heads: 8,
+            embedding_dim: 4096,
+            head_dim: 128,
+            intermediate_dim: 14336,
+            context_length: 4096,
+            sliding_window_size: None,
+            sliding_window_pattern: None,
+            n_expert: None,
+            n_expert_used: None,
+            qwen35_full_attention_interval: None,
+            total_tensor_bytes: 0,
+            predominant_quant: "Q4_K".to_string(),
+            predominant_layer_quant: "Q4_K".to_string(),
+            lm_head_quant: None,
+            layer_quant_histogram: vec![],
+            has_mixed_layer_quants: false,
+            has_q4k_layer_weights: true,
+            has_q5k_layer_weights: false,
+            has_q6k_layer_weights: false,
+            has_q8_layer_weights: false,
+            has_f32_layer_weights: false,
+        }
+    }
+
+    #[test]
+    fn test_supports_q8_kv_requires_supported_alignment_and_head_dim() {
+        let fingerprint = test_fingerprint();
+        assert!(MetalOps::supports_q8_kv(&fingerprint));
+
+        let mut unsupported_head_dim = fingerprint.clone();
+        unsupported_head_dim.head_dim = 96;
+        assert!(!MetalOps::supports_q8_kv(&unsupported_head_dim));
+
+        let mut unsupported_stride = fingerprint;
+        unsupported_stride.n_kv_heads = 0;
+        assert!(!MetalOps::supports_q8_kv(&unsupported_stride));
+    }
+
+    #[test]
+    fn test_estimated_attention_kv_bytes_respects_sparse_attention_layers() {
+        let mut fingerprint = test_fingerprint();
+        fingerprint.architecture = "qwen35".to_string();
+        fingerprint.n_layers = 28;
+        fingerprint.context_length = 8192;
+        fingerprint.qwen35_full_attention_interval = Some(4);
+
+        let estimated =
+            MetalOps::estimated_attention_kv_bytes(&fingerprint, KvPrecisionPolicy::ForceQ8_0)
+                .unwrap();
+        let kv_stride = fingerprint.n_kv_heads as u64 * fingerprint.head_dim as u64;
+        let row_bytes = (kv_stride / 32) * 34;
+        let expected_layers = 7u64;
+        let expected = expected_layers * fingerprint.context_length as u64 * row_bytes * 2;
+
+        assert_eq!(
+            MetalOps::estimated_attention_kv_layers(&fingerprint),
+            expected_layers
+        );
+        assert_eq!(estimated, expected);
+    }
 
     #[test]
     fn test_qwen35moe_scratch_dims_cover_q_projection_and_recurrent_inner_size() {
@@ -8206,6 +9040,68 @@ mod tests {
             expected.fused_qkv_prefill_enabled()
         );
         assert_eq!(after.batch_simd_enabled(), expected.batch_simd_enabled());
+    }
+
+    #[test]
+    fn test_configure_for_fingerprint_uses_seed_profile_when_load_autotune_disabled() {
+        let backend = MetalBackend::new().unwrap();
+        let temp_cache_dir =
+            std::env::temp_dir().join(format!("ax-engine-metal-test-{}", std::process::id()));
+        let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "off");
+        let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
+        let _cache_dir = EnvVarGuard::set(
+            "AX_METAL_TUNE_CACHE_DIR",
+            temp_cache_dir
+                .to_str()
+                .unwrap_or("/tmp/ax-engine-metal-test"),
+        );
+
+        let fingerprint = ModelFingerprint {
+            model_name: "Qwen3-8B".to_string(),
+            architecture: "qwen3".to_string(),
+            family: "qwen3".to_string(),
+            size_label: "8b".to_string(),
+            n_layers: 36,
+            n_heads: 32,
+            n_kv_heads: 8,
+            embedding_dim: 4096,
+            head_dim: 128,
+            intermediate_dim: 14336,
+            context_length: 4096,
+            sliding_window_size: None,
+            sliding_window_pattern: None,
+            n_expert: None,
+            n_expert_used: None,
+            qwen35_full_attention_interval: None,
+            total_tensor_bytes: 0,
+            predominant_quant: "Q4_K".to_string(),
+            predominant_layer_quant: "Q4_K".to_string(),
+            lm_head_quant: None,
+            layer_quant_histogram: vec![],
+            has_mixed_layer_quants: false,
+            has_q4k_layer_weights: true,
+            has_q5k_layer_weights: false,
+            has_q6k_layer_weights: false,
+            has_q8_layer_weights: false,
+            has_f32_layer_weights: false,
+        };
+
+        backend.configure_for_fingerprint(&fingerprint).unwrap();
+
+        let after = backend.ops.runtime_policy();
+        let expected = RuntimePolicy::for_model("Qwen3-8B", "Q4_K", "qwen3");
+        assert_eq!(
+            after.dequant_dispatch_config(),
+            expected.dequant_dispatch_config()
+        );
+        assert_eq!(
+            after.attention_dispatch_config(),
+            expected.attention_dispatch_config()
+        );
+        assert_eq!(
+            after.batch_prefill_prefers_f16_io(),
+            expected.batch_prefill_prefers_f16_io()
+        );
     }
 
     #[test]

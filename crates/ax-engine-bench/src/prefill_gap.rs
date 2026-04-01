@@ -112,14 +112,23 @@ pub fn build_prefill_gap_report(
     baseline_prefill_tok_per_sec: Option<f64>,
     baseline_label: Option<&str>,
 ) -> anyhow::Result<PrefillGapReport> {
+    anyhow::ensure!(
+        baseline_json.is_none() || baseline_prefill_tok_per_sec.is_none(),
+        "baseline_json and baseline_prefill_tok_per_sec are mutually exclusive"
+    );
     let baseline = if let Some(path) = baseline_json {
         Some(load_prefill_baseline(path, baseline_label)?)
     } else {
-        baseline_prefill_tok_per_sec.map(|prefill_tok_per_sec| PrefillBaseline {
-            label: baseline_label.unwrap_or("baseline").to_string(),
-            prefill_tok_per_sec,
-            source: Some("inline".to_string()),
-        })
+        baseline_prefill_tok_per_sec
+            .map(|prefill_tok_per_sec| -> anyhow::Result<PrefillBaseline> {
+                validate_baseline_prefill_tok_per_sec(prefill_tok_per_sec, "inline baseline")?;
+                Ok(PrefillBaseline {
+                    label: baseline_label.unwrap_or("baseline").to_string(),
+                    prefill_tok_per_sec,
+                    source: Some("inline".to_string()),
+                })
+            })
+            .transpose()?
     };
 
     let prefill_ratio = baseline.as_ref().and_then(|b| {
@@ -166,6 +175,7 @@ fn load_prefill_baseline(
         .or_else(|| json.get("prefill_tok_per_sec").and_then(|v| v.as_f64()))
         .or_else(|| json.get("tok_per_sec").and_then(|v| v.as_f64()))
         .ok_or_else(|| anyhow::anyhow!("baseline JSON missing prefill tok/s field"))?;
+    validate_baseline_prefill_tok_per_sec(prefill_tok_per_sec, path)?;
     let label = label_override
         .map(str::to_owned)
         .or_else(|| {
@@ -190,6 +200,17 @@ fn load_prefill_baseline(
         prefill_tok_per_sec,
         source,
     })
+}
+
+fn validate_baseline_prefill_tok_per_sec(
+    prefill_tok_per_sec: f64,
+    source: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        prefill_tok_per_sec.is_finite() && prefill_tok_per_sec > 0.0,
+        "baseline prefill tok/s from {source} must be finite and greater than zero"
+    );
+    Ok(())
 }
 
 fn classify_prefill_route(result: &PrefillProfileResult) -> (String, String) {
@@ -499,6 +520,42 @@ mod tests {
         let baseline = load_prefill_baseline(path.to_str().unwrap(), None).unwrap();
         assert_eq!(baseline.label, "llama.cpp");
         assert_eq!(baseline.prefill_tok_per_sec, 720.5);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_build_prefill_gap_report_rejects_conflicting_baseline_sources() {
+        let err = build_prefill_gap_report(
+            sample_prefill_result(),
+            Some("/tmp/baseline.json"),
+            Some(400.0),
+            Some("llama"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn test_build_prefill_gap_report_rejects_non_positive_inline_baseline() {
+        let err =
+            build_prefill_gap_report(sample_prefill_result(), None, Some(0.0), None).unwrap_err();
+        assert!(err.to_string().contains("greater than zero"));
+    }
+
+    #[test]
+    fn test_load_prefill_baseline_rejects_non_positive_values() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ax-engine-prefill-baseline-invalid.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "label":"llama.cpp",
+              "prefill_tok_per_sec": 0.0
+            }"#,
+        )
+        .unwrap();
+        let err = load_prefill_baseline(path.to_str().unwrap(), None).unwrap_err();
+        assert!(err.to_string().contains("greater than zero"));
         let _ = std::fs::remove_file(path);
     }
 }

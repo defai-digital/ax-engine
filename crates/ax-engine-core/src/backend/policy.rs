@@ -1,5 +1,7 @@
 use crate::kv::gpu_kv::GpuKvDtype;
-use ax_engine_metal::{AttentionDispatchConfig, DequantDispatchConfig, KernelProfile};
+use ax_engine_metal::{
+    AttentionDispatchConfig, DequantDispatchConfig, KernelProfile, KvPrecisionMode,
+};
 
 fn normalized_arch_name(arch: &str) -> &str {
     match arch {
@@ -76,6 +78,15 @@ pub enum KvPrecisionPolicy {
 }
 
 impl KvPrecisionPolicy {
+    pub fn from_profile_mode(mode: KvPrecisionMode) -> Self {
+        match mode {
+            KvPrecisionMode::Auto => Self::Auto,
+            KvPrecisionMode::F32 => Self::ForceF32,
+            KvPrecisionMode::F16 => Self::ForceF16,
+            KvPrecisionMode::Q8_0 => Self::ForceQ8_0,
+        }
+    }
+
     fn from_env_override() -> Option<Self> {
         match std::env::var("AX_METAL_F16_KV_CACHE") {
             Ok(v) => {
@@ -144,11 +155,12 @@ impl RuntimePolicy {
         let attention_dispatch = AttentionDispatchConfig::from_profile(&kernel_profile);
         let batch_prefill_f16_io = kernel_profile.batch_prefill.prefer_f16_io;
         let batch_prefill_pair_kernel = kernel_profile.batch_prefill.prefer_pair_kernel;
+        let kv_precision = KvPrecisionPolicy::from_profile_mode(kernel_profile.kv_cache.precision);
         Self {
             kernel_profile,
             dequant_dispatch,
             attention_dispatch,
-            kv_precision: KvPrecisionPolicy::default(),
+            kv_precision,
             batch_prefill_f16_io,
             batch_prefill_pair_kernel,
             fused_qkv_prefill: true,
@@ -171,6 +183,10 @@ impl RuntimePolicy {
     pub fn for_model(model_name: &str, quant: &str, architecture: &str) -> Self {
         Self::from_kernel_profile(KernelProfile::load(model_name, quant))
             .with_env_overrides(architecture)
+    }
+
+    pub fn from_kernel_profile_for_arch(kernel_profile: KernelProfile, architecture: &str) -> Self {
+        Self::from_kernel_profile(kernel_profile).with_env_overrides(architecture)
     }
 
     pub fn kernel_profile(&self) -> &KernelProfile {
@@ -340,6 +356,17 @@ mod tests {
     fn test_runtime_policy_keeps_decode_fused_qkv_disabled_for_qwen3_by_default() {
         let policy = RuntimePolicy::for_model("qwen3-8b", "q4_k_m", "qwen3");
         assert!(!policy.decode_fused_qkv_enabled());
+    }
+
+    #[test]
+    fn test_runtime_policy_uses_profile_kv_precision_before_env_overrides() {
+        let mut profile = KernelProfile::default();
+        profile.kv_cache.precision = KvPrecisionMode::Q8_0;
+
+        let policy = RuntimePolicy::from_kernel_profile(profile);
+
+        assert_eq!(policy.kv_precision_policy(), KvPrecisionPolicy::ForceQ8_0);
+        assert_eq!(policy.gpu_kv_dtype(4096), GpuKvDtype::Q8_0);
     }
 
     #[test]

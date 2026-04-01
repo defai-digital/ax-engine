@@ -3,10 +3,7 @@ use std::ffi::OsString;
 use std::sync::MutexGuard;
 
 fn env_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .expect("shared env test lock")
+    crate::test_env_lock()
 }
 
 struct EnvVarRestore {

@@ -779,9 +779,9 @@ pub fn run_prefill_profile_with_backend(
     backend: Box<dyn ax_engine_core::backend::Backend>,
 ) -> anyhow::Result<PrefillProfileResult> {
     let mapped = MappedModel::open(Path::new(&config.model_path))?;
-    crate::configure_backend_for_model(&*backend, &config.model_path, &mapped)?;
-    let runtime_policy = backend.runtime_policy();
     let model_config = ModelConfig::from_gguf(&mapped.header)?;
+    crate::configure_backend_for_model(&*backend, &config.model_path, &mapped, &model_config)?;
+    let runtime_policy = backend.runtime_policy();
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = LlamaModel::with_backend(model_config.clone(), backend)?;
     crate::report_planned_kv_budget(&mapped, &model)?;

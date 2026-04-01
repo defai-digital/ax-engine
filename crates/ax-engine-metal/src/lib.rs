@@ -28,7 +28,7 @@ pub use dispatch::{
     SmartBarrier, barrier_buffers, batch_simd_enabled,
 };
 pub use pipeline::{ComputePipeline, FunctionConstant, FunctionConstantValue};
-pub use profile::KernelProfile;
+pub use profile::{KernelProfile, KvCacheParams, KvPrecisionMode, MatvecProfileVariant};
 
 /// Type alias for the Metal compute command encoder protocol object.
 /// Re-exported so downstream crates can reference the encoder type

@@ -210,11 +210,21 @@ pub fn run_parity(config: &ParityConfig) -> anyhow::Result<ParityResult> {
     );
 
     let reference_backend = ax_engine_core::backend::create_backend(BackendConfig::Cpu)?;
-    crate::configure_backend_for_model(&*reference_backend, &config.model_path, &mapped)?;
+    crate::configure_backend_for_model(
+        &*reference_backend,
+        &config.model_path,
+        &mapped,
+        &model_config,
+    )?;
     let reference_model = LlamaModel::with_backend(model_config.clone(), reference_backend)?;
 
     let compare_backend = ax_engine_core::backend::create_backend(config.compare_backend)?;
-    crate::configure_backend_for_model(&*compare_backend, &config.model_path, &mapped)?;
+    crate::configure_backend_for_model(
+        &*compare_backend,
+        &config.model_path,
+        &mapped,
+        &model_config,
+    )?;
     let compare_model = LlamaModel::with_backend(model_config.clone(), compare_backend)?;
 
     match config.mode {

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "ax-engine"
-version = "2.0.0"
+version = "3.0.0"
 description = "Python bindings for local AX Engine inference on Apple Silicon"
 requires-python = ">=3.10"
 readme = "crates/ax-engine-py/README.md"

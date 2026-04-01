@@ -17,7 +17,7 @@ use crate::buffer::MetalBuffer;
 use crate::device::MetalDevice;
 use crate::inc_buffer_barrier_count;
 use crate::pipeline::{ComputePipeline, FunctionConstant, FunctionConstantValue};
-use crate::profile::{KernelProfile, ProfileKernelMode};
+use crate::profile::{KernelProfile, MatvecProfileVariant, ProfileKernelMode};
 
 /// Embedded Metal shader source for matmul kernels.
 const MATMUL_SHADER_SRC: &str = include_str!("../shaders/matmul.metal");
@@ -559,8 +559,11 @@ pub struct DequantDispatchConfig {
     pub q4_k_rows_per_simdgroup: u32,
     pub q5_k_rows_per_simdgroup: u32,
     pub q5_k_ilp4: bool,
+    pub q5_k_variant: Option<MatvecProfileVariant>,
     pub q6_k_threadgroup_size: usize,
     pub q6_k_rows_per_simdgroup: u32,
+    pub q6_k_variant: Option<MatvecProfileVariant>,
+    pub q8_0_variant: Option<MatvecProfileVariant>,
     pub batch_f16in_small_n_threshold: u32,
     pub batch_f16in_small_m_max: u32,
     pub batch_f16in_use_bn32: bool,
@@ -586,6 +589,7 @@ pub enum MatvecCandidate {
     Q5KBase,
     Q5KIlp4,
     Q5KNr2,
+    Q8_0Base,
     Q8_0Nr2,
     Q8_0Ilp4,
     Q4KIlp4,
@@ -676,6 +680,9 @@ impl DequantDispatchConfig {
         let q4_params = profile.matvec_params("q4_k");
         let q5_params = profile.matvec_params("q5_k");
         let q6_params = profile.matvec_params("q6_k");
+        let q5_profile_override = profile.decode_matvec.get("q5_k");
+        let q6_profile_override = profile.decode_matvec.get("q6_k");
+        let q8_profile_override = profile.decode_matvec.get("q8_0");
 
         let q4_k_threadgroup_size = match legacy_kernel_override("AX_METAL_MATVEC_Q4K_TG") {
             Some(v) => match v.trim() {
@@ -695,15 +702,38 @@ impl DequantDispatchConfig {
         let q4_k_rows_per_simdgroup = legacy_kernel_override("AX_METAL_MATVEC_Q4K_NR")
             .and_then(|v| v.trim().parse::<u32>().ok())
             .unwrap_or(q4_params.rows_per_simdgroup);
-        let q5_k_rows_per_simdgroup = legacy_kernel_override("AX_METAL_MATVEC_Q5K_NR")
-            .and_then(|v| v.trim().parse::<u32>().ok())
-            .unwrap_or(q5_params.rows_per_simdgroup);
-        let q5_k_ilp4 = match legacy_kernel_override("AX_METAL_MATVEC_Q5K_ILP4") {
-            Some(v) => parse_bool_env_flag(&v).unwrap_or(false),
-            None => false,
+        let q5_profile_variant = q5_profile_override.map(|params| {
+            params.variant.unwrap_or_else(|| {
+                if params.rows_per_simdgroup >= 2 {
+                    MatvecProfileVariant::Nr2
+                } else {
+                    MatvecProfileVariant::Base
+                }
+            })
+        });
+        let q5_k_nr_override = legacy_kernel_override("AX_METAL_MATVEC_Q5K_NR")
+            .and_then(|v| v.trim().parse::<u32>().ok());
+        let q5_k_rows_per_simdgroup = q5_k_nr_override.unwrap_or(q5_params.rows_per_simdgroup);
+        let q5_k_ilp4_override = legacy_kernel_override("AX_METAL_MATVEC_Q5K_ILP4");
+        let q5_k_variant = if q5_k_nr_override.is_some() {
+            if q5_k_rows_per_simdgroup >= 2 {
+                Some(MatvecProfileVariant::Nr2)
+            } else {
+                Some(MatvecProfileVariant::Base)
+            }
+        } else if let Some(ilp4_override) = q5_k_ilp4_override.as_deref() {
+            if parse_bool_env_flag(ilp4_override).unwrap_or(false) {
+                Some(MatvecProfileVariant::Ilp4)
+            } else {
+                Some(MatvecProfileVariant::Base)
+            }
+        } else {
+            q5_profile_variant
         };
+        let q5_k_ilp4 = matches!(q5_k_variant, Some(MatvecProfileVariant::Ilp4));
 
-        let q6_k_threadgroup_size = match legacy_kernel_override("AX_METAL_MATVEC_Q6K_TG") {
+        let q6_k_tg_override = legacy_kernel_override("AX_METAL_MATVEC_Q6K_TG");
+        let q6_k_threadgroup_size = match q6_k_tg_override.as_deref() {
             Some(v) => match v.trim() {
                 "64" => DEQUANT_MATVEC_Q6K_NR2_TG,
                 "128" => DEQUANT_MATVEC_TG,
@@ -717,9 +747,46 @@ impl DequantDispatchConfig {
             },
             None => q6_params.threadgroup_size as usize,
         };
-        let q6_k_rows_per_simdgroup = legacy_kernel_override("AX_METAL_MATVEC_Q6K_NR")
-            .and_then(|v| v.trim().parse::<u32>().ok())
-            .unwrap_or(q6_params.rows_per_simdgroup);
+        let q6_k_nr_override = legacy_kernel_override("AX_METAL_MATVEC_Q6K_NR")
+            .and_then(|v| v.trim().parse::<u32>().ok());
+        let q6_k_rows_per_simdgroup = q6_k_nr_override.unwrap_or(q6_params.rows_per_simdgroup);
+        let q6_profile_variant = q6_profile_override.map(|params| {
+            params.variant.unwrap_or_else(|| {
+                if params.rows_per_simdgroup >= 2
+                    || params.threadgroup_size == DEQUANT_MATVEC_Q6K_NR2_TG as u32
+                {
+                    MatvecProfileVariant::Nr2
+                } else {
+                    MatvecProfileVariant::Base
+                }
+            })
+        });
+        let q6_k_variant = if let Some(rows_per_sg) = q6_k_nr_override {
+            if rows_per_sg >= 2 {
+                Some(MatvecProfileVariant::Nr2)
+            } else {
+                Some(MatvecProfileVariant::Base)
+            }
+        } else if let Some(tg_override) = q6_k_tg_override.as_deref() {
+            match tg_override.trim() {
+                "64" => Some(MatvecProfileVariant::Nr2),
+                "128" => Some(MatvecProfileVariant::Base),
+                _ => None,
+            }
+        } else {
+            q6_profile_variant
+        };
+        let q8_0_variant = q8_profile_override.map(|params| {
+            params.variant.unwrap_or_else(|| {
+                if params.rows_per_simdgroup >= 2 {
+                    MatvecProfileVariant::Nr2
+                } else if params.threadgroup_size == DEQUANT_MATVEC_Q8_0_ILP4_TG as u32 {
+                    MatvecProfileVariant::Ilp4
+                } else {
+                    MatvecProfileVariant::Base
+                }
+            })
+        });
 
         let batch_f16in_small_n_threshold = legacy_kernel_override("AX_METAL_F16IN_SMALL_N")
             .and_then(|v| v.trim().parse::<u32>().ok())
@@ -753,8 +820,11 @@ impl DequantDispatchConfig {
             q4_k_rows_per_simdgroup,
             q5_k_rows_per_simdgroup,
             q5_k_ilp4,
+            q5_k_variant,
             q6_k_threadgroup_size,
             q6_k_rows_per_simdgroup,
+            q6_k_variant,
+            q8_0_variant,
             batch_f16in_small_n_threshold,
             batch_f16in_small_m_max,
             batch_f16in_use_bn32,
@@ -808,6 +878,7 @@ impl MatvecCandidate {
             Self::Q5KBase => "q5_k.base",
             Self::Q5KIlp4 => "q5_k.ilp4",
             Self::Q5KNr2 => "q5_k.nr2",
+            Self::Q8_0Base => "q8_0.base",
             Self::Q8_0Nr2 => "q8_0.nr2",
             Self::Q8_0Ilp4 => "q8_0.ilp4",
             Self::Q4KIlp4 => "q4_k.ilp4",
@@ -954,16 +1025,55 @@ fn q6_k_matvec_candidate_selection(
     m: u32,
     config: DequantDispatchConfig,
 ) -> MatvecCandidateSelection {
-    let q6k_tg = config.q6_k_threadgroup_size;
-    let q6k_rows_per_sg = config.q6_k_rows_per_simdgroup;
-    if (matvec_q6k_nr2_enabled() || q6k_rows_per_sg >= 2 || q6k_tg == DEQUANT_MATVEC_Q6K_NR2_TG)
-        && m >= 2
-    {
-        MatvecCandidateSelection {
+    match config.q6_k_variant {
+        Some(MatvecProfileVariant::Nr2) if m >= 2 => {
+            return MatvecCandidateSelection {
+                candidate: MatvecCandidate::Q6KNr2,
+                stability: KernelStabilityTier::ProfilePreferred,
+                threadgroups: (m as usize).div_ceil(Q6K_NR2_ROWS),
+                threadgroup_width: DEQUANT_MATVEC_Q6K_NR2_TG,
+            };
+        }
+        Some(MatvecProfileVariant::Ilp4) => {
+            return MatvecCandidateSelection {
+                candidate: MatvecCandidate::Q6KIlp4,
+                stability: KernelStabilityTier::ProfilePreferred,
+                threadgroups: (m as usize).div_ceil(Q6K_ILP4_ROWS),
+                threadgroup_width: DEQUANT_MATVEC_Q6K_ILP4_TG,
+            };
+        }
+        Some(MatvecProfileVariant::Base) => {
+            return MatvecCandidateSelection {
+                candidate: MatvecCandidate::Q6KBase,
+                stability: KernelStabilityTier::ProfilePreferred,
+                threadgroups: m as usize,
+                threadgroup_width: DEQUANT_MATVEC_TG,
+            };
+        }
+        _ => {}
+    }
+    if matvec_q6k_nr2_enabled() && m >= 2 {
+        return MatvecCandidateSelection {
             candidate: MatvecCandidate::Q6KNr2,
             stability: KernelStabilityTier::ProfilePreferred,
             threadgroups: (m as usize).div_ceil(Q6K_NR2_ROWS),
             threadgroup_width: DEQUANT_MATVEC_Q6K_NR2_TG,
+        };
+    }
+    // Dimension-aware auto-selection when no profile preference.
+    if m >= 2 && m <= 4096 {
+        MatvecCandidateSelection {
+            candidate: MatvecCandidate::Q6KNr2,
+            stability: KernelStabilityTier::Stable,
+            threadgroups: (m as usize).div_ceil(Q6K_NR2_ROWS),
+            threadgroup_width: DEQUANT_MATVEC_Q6K_NR2_TG,
+        }
+    } else if m > 4096 {
+        MatvecCandidateSelection {
+            candidate: MatvecCandidate::Q6KIlp4,
+            stability: KernelStabilityTier::Stable,
+            threadgroups: (m as usize).div_ceil(Q6K_ILP4_ROWS),
+            threadgroup_width: DEQUANT_MATVEC_Q6K_ILP4_TG,
         }
     } else {
         MatvecCandidateSelection {
@@ -979,14 +1089,58 @@ fn q5_k_matvec_candidate_selection(
     m: u32,
     config: DequantDispatchConfig,
 ) -> MatvecCandidateSelection {
+    match config.q5_k_variant {
+        Some(MatvecProfileVariant::Nr2) if m >= 2 => {
+            return MatvecCandidateSelection {
+                candidate: MatvecCandidate::Q5KNr2,
+                stability: KernelStabilityTier::ProfilePreferred,
+                threadgroups: (m as usize).div_ceil(Q5K_NR2_ROWS),
+                threadgroup_width: DEQUANT_MATVEC_Q5K_TG,
+            };
+        }
+        Some(MatvecProfileVariant::Ilp4) => {
+            return MatvecCandidateSelection {
+                candidate: MatvecCandidate::Q5KIlp4,
+                stability: KernelStabilityTier::ProfilePreferred,
+                threadgroups: (m as usize).div_ceil(2),
+                threadgroup_width: DEQUANT_MATVEC_Q5K_TG,
+            };
+        }
+        Some(MatvecProfileVariant::Base) => {
+            return MatvecCandidateSelection {
+                candidate: MatvecCandidate::Q5KBase,
+                stability: KernelStabilityTier::ProfilePreferred,
+                threadgroups: (m as usize).div_ceil(2),
+                threadgroup_width: DEQUANT_MATVEC_Q5K_TG,
+            };
+        }
+        _ => {}
+    }
     if config.q5_k_rows_per_simdgroup >= 2 && m >= 2 {
-        MatvecCandidateSelection {
+        return MatvecCandidateSelection {
             candidate: MatvecCandidate::Q5KNr2,
             stability: KernelStabilityTier::ProfilePreferred,
             threadgroups: (m as usize).div_ceil(Q5K_NR2_ROWS),
             threadgroup_width: DEQUANT_MATVEC_Q5K_TG,
+        };
+    }
+    if config.q5_k_ilp4 {
+        return MatvecCandidateSelection {
+            candidate: MatvecCandidate::Q5KIlp4,
+            stability: KernelStabilityTier::ProfilePreferred,
+            threadgroups: (m as usize).div_ceil(2),
+            threadgroup_width: DEQUANT_MATVEC_Q5K_TG,
+        };
+    }
+    // Dimension-aware auto-selection when no profile preference.
+    if m >= 2 && m <= 4096 {
+        MatvecCandidateSelection {
+            candidate: MatvecCandidate::Q5KNr2,
+            stability: KernelStabilityTier::Stable,
+            threadgroups: (m as usize).div_ceil(Q5K_NR2_ROWS),
+            threadgroup_width: DEQUANT_MATVEC_Q5K_TG,
         }
-    } else if config.q5_k_ilp4 {
+    } else if m > 4096 {
         MatvecCandidateSelection {
             candidate: MatvecCandidate::Q5KIlp4,
             stability: KernelStabilityTier::Stable,
@@ -999,6 +1153,66 @@ fn q5_k_matvec_candidate_selection(
             stability: KernelStabilityTier::Stable,
             threadgroups: (m as usize).div_ceil(2),
             threadgroup_width: DEQUANT_MATVEC_Q5K_TG,
+        }
+    }
+}
+
+fn q8_0_matvec_candidate_selection(
+    m: u32,
+    config: DequantDispatchConfig,
+) -> MatvecCandidateSelection {
+    // Explicit profile variant takes priority.
+    match config.q8_0_variant {
+        Some(MatvecProfileVariant::Nr2) if m >= 2 => {
+            return MatvecCandidateSelection {
+                candidate: MatvecCandidate::Q8_0Nr2,
+                stability: KernelStabilityTier::ProfilePreferred,
+                threadgroups: (m as usize).div_ceil(Q8_0_NR2_ROWS),
+                threadgroup_width: DEQUANT_MATVEC_Q8_0_NR2_TG,
+            };
+        }
+        Some(MatvecProfileVariant::Ilp4) => {
+            return MatvecCandidateSelection {
+                candidate: MatvecCandidate::Q8_0Ilp4,
+                stability: KernelStabilityTier::Stable,
+                threadgroups: (m as usize).div_ceil(Q8_0_ILP4_ROWS),
+                threadgroup_width: DEQUANT_MATVEC_Q8_0_ILP4_TG,
+            };
+        }
+        Some(MatvecProfileVariant::Base) => {
+            return MatvecCandidateSelection {
+                candidate: MatvecCandidate::Q8_0Base,
+                stability: KernelStabilityTier::Stable,
+                threadgroups: m as usize,
+                threadgroup_width: DEQUANT_MATVEC_TG,
+            };
+        }
+        _ => {}
+    }
+    // Dimension-aware auto-selection: nr2 for small/medium M (x-vector
+    // reuse dominates), ilp4 for large M (block interleaving reduces
+    // memory stalls). Threshold ~4096 rows aligns with typical FFN gate/up
+    // projection sizes where ILP starts to win.
+    if m < 2 {
+        MatvecCandidateSelection {
+            candidate: MatvecCandidate::Q8_0Base,
+            stability: KernelStabilityTier::Stable,
+            threadgroups: m as usize,
+            threadgroup_width: DEQUANT_MATVEC_TG,
+        }
+    } else if m <= 4096 {
+        MatvecCandidateSelection {
+            candidate: MatvecCandidate::Q8_0Nr2,
+            stability: KernelStabilityTier::Stable,
+            threadgroups: (m as usize).div_ceil(Q8_0_NR2_ROWS),
+            threadgroup_width: DEQUANT_MATVEC_Q8_0_NR2_TG,
+        }
+    } else {
+        MatvecCandidateSelection {
+            candidate: MatvecCandidate::Q8_0Ilp4,
+            stability: KernelStabilityTier::Stable,
+            threadgroups: (m as usize).div_ceil(Q8_0_ILP4_ROWS),
+            threadgroup_width: DEQUANT_MATVEC_Q8_0_ILP4_TG,
         }
     }
 }
@@ -1958,6 +2172,7 @@ impl DequantKernels {
             MatvecCandidate::Q5KBase
             | MatvecCandidate::Q5KIlp4
             | MatvecCandidate::Q5KNr2
+            | MatvecCandidate::Q8_0Base
             | MatvecCandidate::Q8_0Nr2
             | MatvecCandidate::Q8_0Ilp4
             | MatvecCandidate::Q6KBase
@@ -1997,6 +2212,7 @@ impl DequantKernels {
             | MatvecCandidate::Q5KBase
             | MatvecCandidate::Q5KIlp4
             | MatvecCandidate::Q5KNr2
+            | MatvecCandidate::Q8_0Base
             | MatvecCandidate::Q8_0Nr2
             | MatvecCandidate::Q8_0Ilp4 => unreachable!(),
         };
@@ -2028,6 +2244,7 @@ impl DequantKernels {
             | MatvecCandidate::Q4KBlk2
             | MatvecCandidate::Q4KN4
             | MatvecCandidate::Q4KIlp4
+            | MatvecCandidate::Q8_0Base
             | MatvecCandidate::Q8_0Nr2
             | MatvecCandidate::Q8_0Ilp4
             | MatvecCandidate::Q6KBase
@@ -3469,22 +3686,16 @@ impl DequantKernels {
         y: &MetalBuffer,
         m: u32,
         k: u32,
-        _config: DequantDispatchConfig,
+        config: DequantDispatchConfig,
     ) {
-        // NR2 is the preferred default: 2 rows/SG shares x loads across rows.
-        let (groups, tg_width, pipeline) = if m >= 2 {
-            (
-                (m as usize).div_ceil(Q8_0_NR2_ROWS),
-                DEQUANT_MATVEC_Q8_0_NR2_TG,
-                self.fused_matvec_q8_0_nr2.state(),
-            )
-        } else {
-            (
-                m as usize,
-                DEQUANT_MATVEC_TG,
-                self.fused_matvec_q8_0.state(),
-            )
+        let selection = q8_0_matvec_candidate_selection(m, config);
+        let pipeline = match selection.candidate {
+            MatvecCandidate::Q8_0Nr2 => self.fused_matvec_q8_0_nr2.state(),
+            MatvecCandidate::Q8_0Ilp4 => self.fused_matvec_q8_0_ilp4.state(),
+            _ => self.fused_matvec_q8_0.state(),
         };
+        let groups = selection.threadgroups;
+        let tg_width = selection.threadgroup_width;
         let dims = DispatchDims::d1(groups, 1);
         encoder.setComputePipelineState(pipeline);
         bind_buffers(encoder, a, x, y);
@@ -6485,8 +6696,10 @@ impl DequantKernels {
         k: u32,
         n_tokens: u32,
         n_expert_used: u32,
-        n_expert: u32,
+        _n_expert: u32,
         weight_stride: u32,
+        active_experts: &MetalBuffer,
+        n_active_experts: u32,
     ) {
         encoder.setComputePipelineState(self.moe_mul_mat_id_q4_k.state());
         unsafe {
@@ -6501,12 +6714,15 @@ impl DequantKernels {
         bind_u32(encoder, 7, n_tokens);
         bind_u32(encoder, 8, n_expert_used);
         bind_u32(encoder, 9, weight_stride);
-        // Grid: (ceil(n_tokens/32), ceil(M/32), n_expert)
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(active_experts.mtl_buffer()), 0, 10);
+        }
+        // Compact grid: only dispatch active experts (not all n_expert).
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
                 width: (n_tokens as usize).div_ceil(32),
                 height: (m as usize).div_ceil(32),
-                depth: n_expert as usize,
+                depth: n_active_experts as usize,
             },
             MTLSize {
                 width: 128,
@@ -12987,6 +13203,7 @@ mod tests {
             crate::profile::MatvecParams {
                 threadgroup_size: 64,
                 rows_per_simdgroup: 2,
+                variant: Some(crate::profile::MatvecProfileVariant::Nr2),
             },
         );
 
@@ -12994,6 +13211,57 @@ mod tests {
             let config = DequantDispatchConfig::from_profile(&profile);
             assert_eq!(config.q5_k_rows_per_simdgroup, 2);
         });
+    }
+
+    #[test]
+    fn test_dequant_dispatch_config_honors_q5k_profile_variant() {
+        let mut profile = KernelProfile::default();
+        profile.decode_matvec.insert(
+            "q5_k".to_string(),
+            crate::profile::MatvecParams {
+                threadgroup_size: 64,
+                rows_per_simdgroup: 1,
+                variant: Some(crate::profile::MatvecProfileVariant::Ilp4),
+            },
+        );
+
+        with_env_lock(|| {
+            let config = DequantDispatchConfig::from_profile(&profile);
+            assert_eq!(
+                config.q5_k_variant,
+                Some(crate::profile::MatvecProfileVariant::Ilp4)
+            );
+        });
+    }
+
+    #[test]
+    fn test_dequant_dispatch_config_infers_legacy_q8_profile_as_nr2() {
+        let mut profile = KernelProfile::default();
+        profile.decode_matvec.insert(
+            "q8_0".to_string(),
+            crate::profile::MatvecParams {
+                threadgroup_size: 128,
+                rows_per_simdgroup: 2,
+                variant: None,
+            },
+        );
+
+        with_env_lock(|| {
+            let config = DequantDispatchConfig::from_profile(&profile);
+            assert_eq!(
+                config.q8_0_variant,
+                Some(crate::profile::MatvecProfileVariant::Nr2)
+            );
+        });
+    }
+
+    #[test]
+    fn test_q8_0_candidate_selection_honors_profile_variant() {
+        let mut config = default_dequant_config();
+        config.q8_0_variant = Some(crate::profile::MatvecProfileVariant::Base);
+        let selection = q8_0_matvec_candidate_selection(1, config);
+        assert_eq!(selection.candidate, MatvecCandidate::Q8_0Base);
+        assert_eq!(selection.threadgroup_width, DEQUANT_MATVEC_TG);
     }
 
     #[test]
@@ -13053,6 +13321,22 @@ mod tests {
     }
 
     #[test]
+    fn test_q6_k_candidate_selection_uses_ilp4_for_large_m_without_explicit_override() {
+        let selection = q6_k_matvec_candidate_selection(4097, default_dequant_config());
+        assert_eq!(selection.candidate, MatvecCandidate::Q6KIlp4);
+        assert_eq!(selection.stability, KernelStabilityTier::Stable);
+    }
+
+    #[test]
+    fn test_q6_k_candidate_selection_honors_explicit_base_override_for_large_m() {
+        let mut config = default_dequant_config();
+        config.q6_k_variant = Some(crate::profile::MatvecProfileVariant::Base);
+        let selection = q6_k_matvec_candidate_selection(4097, config);
+        assert_eq!(selection.candidate, MatvecCandidate::Q6KBase);
+        assert_eq!(selection.stability, KernelStabilityTier::ProfilePreferred);
+    }
+
+    #[test]
     fn test_q5_k_candidate_selection_defaults_to_stable_base() {
         let selection = q5_k_matvec_candidate_selection(1, default_dequant_config());
         assert_eq!(selection.candidate, MatvecCandidate::Q5KBase);
@@ -13077,21 +13361,39 @@ mod tests {
         let mut config = default_dequant_config();
         config.q5_k_ilp4 = false;
         let selection = q5_k_matvec_candidate_selection(17, config);
-        assert_eq!(selection.candidate, MatvecCandidate::Q5KBase);
-        assert_eq!(selection.stability, KernelStabilityTier::Stable);
-        assert_eq!(selection.threadgroups, 9);
+        // With dimension-aware auto-selection, M=17 picks nr2 (M ≤ 4096).
+        // The key invariant: ilp4 is NOT selected when explicitly disabled.
+        assert_ne!(selection.candidate, MatvecCandidate::Q5KIlp4);
+        assert_eq!(selection.candidate, MatvecCandidate::Q5KNr2);
         assert_eq!(selection.threadgroup_width, DEQUANT_MATVEC_Q5K_TG);
+    }
+
+    #[test]
+    fn test_q5_k_candidate_selection_honors_explicit_base_override_for_large_m() {
+        let mut config = default_dequant_config();
+        config.q5_k_variant = Some(crate::profile::MatvecProfileVariant::Base);
+        let selection = q5_k_matvec_candidate_selection(4097, config);
+        assert_eq!(selection.candidate, MatvecCandidate::Q5KBase);
+        assert_eq!(selection.stability, KernelStabilityTier::ProfilePreferred);
     }
 
     #[test]
     fn test_q5_k_candidate_selection_uses_nr2_when_profile_prefers_multi_row() {
         let mut config = default_dequant_config();
         config.q5_k_rows_per_simdgroup = 2;
+        config.q5_k_variant = Some(crate::profile::MatvecProfileVariant::Nr2);
         let selection = q5_k_matvec_candidate_selection(4096, config);
         assert_eq!(selection.candidate, MatvecCandidate::Q5KNr2);
         assert_eq!(selection.stability, KernelStabilityTier::ProfilePreferred);
         assert_eq!(selection.threadgroups, 1024);
         assert_eq!(selection.threadgroup_width, DEQUANT_MATVEC_Q5K_TG);
+    }
+
+    #[test]
+    fn test_q8_0_candidate_selection_uses_ilp4_for_large_m_without_explicit_override() {
+        let selection = q8_0_matvec_candidate_selection(4097, default_dequant_config());
+        assert_eq!(selection.candidate, MatvecCandidate::Q8_0Ilp4);
+        assert_eq!(selection.stability, KernelStabilityTier::Stable);
     }
 
     #[test]

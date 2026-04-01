@@ -15,7 +15,8 @@ use ax_engine_core::memory::MemoryBudget;
 use ax_engine_core::metrics::counters::OpTimer;
 use ax_engine_core::metrics::{InferenceMetrics, LatencyHistogram, current_rss_bytes};
 use ax_engine_core::model::{
-    DecodeControl, DecodeIntent, DecodeRunConfig, LlamaModel, ModelConfig, WeightStore, run_decode,
+    DecodeControl, DecodeIntent, DecodeRunConfig, LlamaModel, ModelConfig, ModelFingerprint,
+    WeightStore, run_decode,
 };
 use ax_engine_core::sampling::{LogitBias, SampledTokenInfo, Sampler, SamplingConfig};
 use ax_engine_core::speculative::{SpecStep, SpeculativeDecoder, target_verify_mode_label};
@@ -194,20 +195,6 @@ pub(crate) fn load_model(
     let rss_before = current_rss_bytes();
     let timer = OpTimer::start();
     let mapped = MappedModel::open(Path::new(model_path))?;
-    let profile_model_name = Path::new(model_path)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .map(str::to_owned)
-        .or_else(|| mapped.header.get_str("general.name").map(str::to_owned))
-        .or_else(|| mapped.header.architecture().map(str::to_owned))
-        .unwrap_or_else(|| "default".to_string());
-    let profile_quant = mapped
-        .predominant_quant()
-        .map(|dtype| dtype.to_string())
-        .unwrap_or_else(|| "default".to_string());
-    let profile_architecture = mapped.header.architecture().unwrap_or("default");
-    backend.configure_for_model(&profile_model_name, &profile_quant, profile_architecture)?;
-
     let mut config = ModelConfig::from_gguf(&mapped.header)?;
     // Apply user-specified context size override
     if ctx_size > 0 && ctx_size != config.context_length {
@@ -218,6 +205,9 @@ pub(crate) fn load_model(
         );
         config.context_length = ctx_size;
     }
+    let fingerprint =
+        ModelFingerprint::from_mapped_model(Some(Path::new(model_path)), &mapped, &config);
+    backend.configure_for_fingerprint(&fingerprint)?;
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = LlamaModel::with_backend(config.clone(), backend)?;
     let kv_plan = model.kv_plan();
@@ -325,6 +315,27 @@ fn sampling_config(args: &args::CliArgs) -> SamplingConfig {
     }
 }
 
+fn remaining_decode_capacity_for_prompt(
+    prompt_tokens: usize,
+    context_length: usize,
+) -> anyhow::Result<usize> {
+    anyhow::ensure!(
+        prompt_tokens <= context_length,
+        "prompt does not fit in context window: {} tokens requested, {} available",
+        prompt_tokens,
+        context_length
+    );
+    Ok(context_length - prompt_tokens)
+}
+
+fn resolved_max_tokens(n_predict: i32, remaining_decode_capacity: usize) -> usize {
+    if n_predict < 0 {
+        remaining_decode_capacity
+    } else {
+        (n_predict as usize).min(remaining_decode_capacity)
+    }
+}
+
 fn validate_sampling_token_ids(args: &args::CliArgs, vocab_size: usize) -> anyhow::Result<()> {
     for &token in &args.allow_token_id {
         if token as usize >= vocab_size {
@@ -387,8 +398,8 @@ fn validate_sampling_args(args: &args::CliArgs) -> anyhow::Result<()> {
         "--min-p must be a finite value between 0.0 and 1.0"
     );
     anyhow::ensure!(
-        args.repeat_penalty.is_finite() && args.repeat_penalty >= 0.0,
-        "--repeat-penalty must be a finite non-negative value"
+        args.repeat_penalty.is_finite() && args.repeat_penalty > 0.0,
+        "--repeat-penalty must be a finite value greater than zero"
     );
     anyhow::ensure!(
         args.frequency_penalty.is_finite(),
@@ -523,10 +534,28 @@ fn run_single_routed(args: &args::CliArgs) -> anyhow::Result<()> {
         prompt.to_string()
     };
 
-    let max_tokens = if args.n_predict < 0 {
-        session.context_length()
-    } else {
-        args.n_predict as usize
+    let prompt_tokens = model.tokenize(&effective_prompt, true);
+    let remaining_decode_capacity =
+        remaining_decode_capacity_for_prompt(prompt_tokens.len(), session.context_length())?;
+    let max_tokens = resolved_max_tokens(args.n_predict, remaining_decode_capacity);
+    if max_tokens == 0 {
+        if args.chat {
+            print!("{prompt}\n\n");
+        } else {
+            print!("{effective_prompt}");
+        }
+        std::io::stdout().flush()?;
+        println!();
+        if args.n_predict == 0 {
+            eprintln!("No completion generated because --n-predict is 0.");
+        } else {
+            eprintln!(
+                "Warning: prompt ({} tokens) fills the context window ({} tokens). No room to generate.",
+                prompt_tokens.len(),
+                session.context_length(),
+            );
+        }
+        return Ok(());
     };
 
     if args.chat {
@@ -601,18 +630,27 @@ fn run_single(
         eprintln!("Token IDs: {:?}", prompt_tokens);
     }
 
-    // Determine max tokens to generate
-    let max_tokens = if args.n_predict < 0 {
-        (model.config.context_length as usize).saturating_sub(n_prompt)
-    } else {
-        args.n_predict as usize
-    };
+    let remaining_decode_capacity =
+        remaining_decode_capacity_for_prompt(n_prompt, model.config.context_length as usize)?;
+    let max_tokens = resolved_max_tokens(args.n_predict, remaining_decode_capacity);
 
     if max_tokens == 0 {
-        eprintln!(
-            "Warning: prompt ({n_prompt} tokens) fills or exceeds context window ({} tokens). No room to generate.",
-            model.config.context_length
-        );
+        if args.chat {
+            print!("{prompt}\n\n");
+        } else {
+            let prompt_text = tokenizer.decode(&prompt_tokens);
+            print!("{prompt_text}");
+        }
+        std::io::stdout().flush()?;
+        println!();
+        if args.n_predict == 0 {
+            eprintln!("No completion generated because --n-predict is 0.");
+        } else {
+            eprintln!(
+                "Warning: prompt ({n_prompt} tokens) fills the context window ({} tokens). No room to generate.",
+                model.config.context_length
+            );
+        }
         return Ok(());
     }
 
@@ -902,11 +940,29 @@ fn run_speculative(
 ) -> anyhow::Result<()> {
     let prompt = args.prompt.as_deref().unwrap_or("");
     let n_prompt = prompt_tokens.len();
-    let max_tokens = if args.n_predict < 0 {
-        (model.config.context_length as usize).saturating_sub(n_prompt)
-    } else {
-        args.n_predict as usize
-    };
+    let remaining_decode_capacity =
+        remaining_decode_capacity_for_prompt(n_prompt, model.config.context_length as usize)?;
+    let max_tokens = resolved_max_tokens(args.n_predict, remaining_decode_capacity);
+
+    if max_tokens == 0 {
+        if args.chat {
+            print!("{prompt}\n\n");
+        } else {
+            let prompt_text = tokenizer.decode(prompt_tokens);
+            print!("{prompt_text}");
+        }
+        std::io::stdout().flush()?;
+        println!();
+        if args.n_predict == 0 {
+            eprintln!("No completion generated because --n-predict is 0.");
+        } else {
+            eprintln!(
+                "Warning: prompt ({n_prompt} tokens) fills the context window ({} tokens). No room to generate.",
+                model.config.context_length
+            );
+        }
+        return Ok(());
+    }
 
     eprintln!(
         "Speculative decoding: draft={draft_path}, k={}, max_tokens={max_tokens}",
@@ -1332,6 +1388,15 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_sampling_args_rejects_zero_repeat_penalty() {
+        let mut args = make_args();
+        args.repeat_penalty = 0.0;
+
+        let err = validate_sampling_args(&args).unwrap_err();
+        assert!(err.to_string().contains("--repeat-penalty"));
+    }
+
+    #[test]
     fn test_validate_sampling_args_rejects_repeat_last_n_below_neg_one() {
         let mut args = make_args();
         args.repeat_last_n = -2;
@@ -1387,6 +1452,31 @@ mod tests {
             err.to_string()
                 .contains("--qwen35-spec-verify-branch requires --speculative-draft")
         );
+    }
+
+    #[test]
+    fn test_remaining_decode_capacity_for_prompt_rejects_prompt_overflow() {
+        let err = remaining_decode_capacity_for_prompt(17, 16).unwrap_err();
+        assert!(err.to_string().contains("does not fit"));
+    }
+
+    #[test]
+    fn test_remaining_decode_capacity_for_prompt_allows_exact_fit() {
+        assert_eq!(
+            remaining_decode_capacity_for_prompt(16, 16).expect("exact fit should succeed"),
+            0
+        );
+    }
+
+    #[test]
+    fn test_resolved_max_tokens_clamps_to_remaining_capacity() {
+        assert_eq!(resolved_max_tokens(64, 12), 12);
+    }
+
+    #[test]
+    fn test_resolved_max_tokens_preserves_zero_request() {
+        assert_eq!(resolved_max_tokens(0, 12), 0);
+        assert_eq!(resolved_max_tokens(-1, 12), 12);
     }
 
     #[test]

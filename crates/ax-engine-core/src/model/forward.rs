@@ -168,6 +168,28 @@ pub trait ForwardPass: Send + Sync + std::fmt::Debug {
         Ok(None)
     }
 
+    /// Whether this forward pass supports fused argmax in `encode_pending_decode_step_with_argmax`.
+    /// Architectures that don't override should return false (the default).
+    fn supports_fused_argmax(&self) -> bool {
+        false
+    }
+
+    /// Like [`encode_pending_decode_step`] but also appends a GPU argmax
+    /// dispatch at the end of the command buffer, so the caller can read
+    /// the greedy token index without a separate CB round-trip.
+    fn encode_pending_decode_step_with_argmax(
+        &self,
+        ctx: &ForwardContext,
+        hidden_buf: &ax_engine_metal::MetalBuffer,
+        position: usize,
+        kv: &mut ModelKv,
+        weights: &WeightStore,
+    ) -> anyhow::Result<Option<ax_engine_metal::PendingFrame>> {
+        // Default: fall back to the non-argmax path (callers must use
+        // separate gpu_argmax_logits if the architecture doesn't override).
+        self.encode_pending_decode_step(ctx, hidden_buf, position, kv, weights)
+    }
+
     /// Apply architecture-specific postprocessing to logits produced by a
     /// pipelined decode step after GPU readback.
     fn postprocess_pipelined_logits(

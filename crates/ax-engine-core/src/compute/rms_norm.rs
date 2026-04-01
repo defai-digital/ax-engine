@@ -19,6 +19,9 @@ pub fn rms_norm(x: &mut [f32], weight: &[f32], eps: f32) {
         n,
         weight.len()
     );
+    if x.is_empty() {
+        return;
+    }
 
     #[cfg(target_arch = "aarch64")]
     {
@@ -92,6 +95,9 @@ pub fn rms_norm_out(x: &[f32], weight: &[f32], out: &mut [f32], eps: f32) {
     let n = x.len();
     assert_eq!(n, weight.len());
     assert!(out.len() >= n);
+    if x.is_empty() {
+        return;
+    }
 
     #[cfg(target_arch = "aarch64")]
     {
@@ -221,5 +227,22 @@ mod tests {
         let rms = (12.5f32).sqrt();
         assert!((out[0] - 3.0 / rms).abs() < 1e-4);
         assert!((out[1] - 4.0 / rms).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_rms_norm_empty_is_noop() {
+        let mut x = [];
+        let w = [];
+        rms_norm(&mut x, &w, 1e-5);
+        assert!(x.is_empty());
+    }
+
+    #[test]
+    fn test_rms_norm_out_empty_is_noop() {
+        let x = [];
+        let w = [];
+        let mut out = [];
+        rms_norm_out(&x, &w, &mut out, 1e-5);
+        assert!(out.is_empty());
     }
 }

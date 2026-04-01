@@ -7,6 +7,33 @@ impl Qwen35Forward {
         qwen_kv: &mut crate::kv::Qwen35Kv,
         weights: &WeightStore,
     ) -> anyhow::Result<ax_engine_metal::PendingFrame> {
+        Self::encode_qwen35_pending_step_inner(
+            metal_ops, cfg, hidden_buf, position, qwen_kv, weights, false,
+        )
+    }
+
+    fn encode_qwen35_pending_step_with_argmax(
+        metal_ops: &crate::backend::metal::MetalOps,
+        cfg: &ModelConfig,
+        hidden_buf: &MetalBuffer,
+        position: usize,
+        qwen_kv: &mut crate::kv::Qwen35Kv,
+        weights: &WeightStore,
+    ) -> anyhow::Result<ax_engine_metal::PendingFrame> {
+        Self::encode_qwen35_pending_step_inner(
+            metal_ops, cfg, hidden_buf, position, qwen_kv, weights, true,
+        )
+    }
+
+    fn encode_qwen35_pending_step_inner(
+        metal_ops: &crate::backend::metal::MetalOps,
+        cfg: &ModelConfig,
+        hidden_buf: &MetalBuffer,
+        position: usize,
+        qwen_kv: &mut crate::kv::Qwen35Kv,
+        weights: &WeightStore,
+        fuse_argmax: bool,
+    ) -> anyhow::Result<ax_engine_metal::PendingFrame> {
         use crate::model::shared::encode_dequant_matvec_with_config;
 
         let dims = Self::recurrent_dims(cfg)?;
@@ -607,6 +634,15 @@ impl Qwen35Forward {
                 eps,
             );
             barrier.flush();
+            if fuse_argmax {
+                metal_ops.elementwise.encode_argmax_f32(
+                    encoder,
+                    &s.logits_buf,
+                    &s.argmax_idx,
+                    &s.argmax_val,
+                    cfg.vocab_size,
+                );
+            }
             Ok(())
         })
     }

@@ -147,8 +147,8 @@ pub fn run_soak_test_with_backend(
 ) -> anyhow::Result<SoakResult> {
     // Load model
     let mapped = MappedModel::open(Path::new(&config.model_path))?;
-    crate::configure_backend_for_model(&*backend, &config.model_path, &mapped)?;
     let model_config = ModelConfig::from_gguf(&mapped.header)?;
+    crate::configure_backend_for_model(&*backend, &config.model_path, &mapped, &model_config)?;
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = LlamaModel::with_backend(model_config.clone(), backend)?;
     crate::report_planned_kv_budget(&mapped, &model)?;
@@ -344,6 +344,10 @@ fn run_one_iteration(
     vocab_size: usize,
     max_tokens: usize,
 ) -> anyhow::Result<u64> {
+    if max_tokens == 0 {
+        return Ok(0);
+    }
+
     let mut kv = model.create_model_kv_for_weights(weights);
     let mut logits = vec![0.0f32; vocab_size];
 
@@ -388,6 +392,10 @@ fn run_timed_iteration(
     max_tokens: usize,
     latency: &mut LatencyHistogram,
 ) -> anyhow::Result<()> {
+    if max_tokens == 0 {
+        return Ok(());
+    }
+
     let mut kv = model.create_model_kv_for_weights(weights);
     let mut logits = vec![0.0f32; vocab_size];
 

@@ -8,13 +8,7 @@ use crate::gguf::tensor::GgmlType;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-fn env_var_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
 
 struct EnvVarRestore {
     key: &'static str,
@@ -31,9 +25,7 @@ impl Drop for EnvVarRestore {
 }
 
 fn with_env_var<T>(key: &'static str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
-    let _lock = env_var_lock()
-        .lock()
-        .expect("qwen35 test env mutex should not be poisoned");
+    let _lock = crate::test_env_lock();
     let _restore = EnvVarRestore {
         key,
         previous: std::env::var_os(key),

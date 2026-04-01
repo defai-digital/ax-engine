@@ -73,7 +73,11 @@ impl MappedModel {
 
         // Compute data offset: align to the file's alignment boundary
         let alignment = header.alignment() as usize;
-        let data_offset = align_up(after_tensor_info, alignment);
+        let data_offset = align_up(after_tensor_info, alignment).ok_or_else(|| {
+            GgufError::InvalidMetadata(format!(
+                "tensor data offset overflow: offset={after_tensor_info}, alignment={alignment}"
+            ))
+        })?;
 
         // Validate that data_offset doesn't exceed file size
         if data_offset > file_size {
@@ -203,11 +207,16 @@ impl MappedModel {
 }
 
 /// Round `offset` up to the next multiple of `alignment`.
-fn align_up(offset: usize, alignment: usize) -> usize {
+fn align_up(offset: usize, alignment: usize) -> Option<usize> {
     if alignment == 0 {
-        return offset;
+        return Some(offset);
     }
-    offset.div_ceil(alignment) * alignment
+    let remainder = offset % alignment;
+    if remainder == 0 {
+        Some(offset)
+    } else {
+        offset.checked_add(alignment - remainder)
+    }
 }
 
 #[cfg(test)]
@@ -216,18 +225,23 @@ mod tests {
 
     #[test]
     fn test_align_up() {
-        assert_eq!(align_up(0, 32), 0);
-        assert_eq!(align_up(1, 32), 32);
-        assert_eq!(align_up(31, 32), 32);
-        assert_eq!(align_up(32, 32), 32);
-        assert_eq!(align_up(33, 32), 64);
-        assert_eq!(align_up(100, 64), 128);
-        assert_eq!(align_up(128, 64), 128);
+        assert_eq!(align_up(0, 32), Some(0));
+        assert_eq!(align_up(1, 32), Some(32));
+        assert_eq!(align_up(31, 32), Some(32));
+        assert_eq!(align_up(32, 32), Some(32));
+        assert_eq!(align_up(33, 32), Some(64));
+        assert_eq!(align_up(100, 64), Some(128));
+        assert_eq!(align_up(128, 64), Some(128));
     }
 
     #[test]
     fn test_align_up_zero() {
-        assert_eq!(align_up(42, 0), 42);
+        assert_eq!(align_up(42, 0), Some(42));
+    }
+
+    #[test]
+    fn test_align_up_returns_none_on_overflow() {
+        assert_eq!(align_up(usize::MAX - 7, 16), None);
     }
 
     #[test]
@@ -304,7 +318,7 @@ mod tests {
 
         // --- Padding to alignment ---
         let current = buf.len();
-        let data_start = align_up(current, alignment as usize);
+        let data_start = align_up(current, alignment as usize).expect("test GGUF alignment");
         buf.resize(data_start, 0);
 
         // --- Tensor data ---

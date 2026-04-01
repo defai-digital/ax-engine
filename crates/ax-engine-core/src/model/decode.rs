@@ -452,13 +452,19 @@ where
     let decode_timer = OpTimer::start();
     let mut perf_observer = DecodePerfObserver::from_config(model, collect_metal_perf);
 
+    let greedy = sampler.is_greedy() && top_logprobs == 0;
+    let use_fused_argmax = greedy && model.supports_fused_argmax();
+
     model.embed_token_into(first_token, &hidden_a, weights)?;
     if let Some(observer) = perf_observer.as_ref() {
         observer.begin_token(model);
     }
-    let pending = model
-        .encode_pending_decode_step(&hidden_a, position, kv, weights)?
-        .ok_or_else(|| anyhow::anyhow!("pipelined decode became unavailable during setup"))?;
+    let pending = if use_fused_argmax {
+        model.encode_pending_decode_step_with_argmax(&hidden_a, position, kv, weights)?
+    } else {
+        model.encode_pending_decode_step(&hidden_a, position, kv, weights)?
+    }
+    .ok_or_else(|| anyhow::anyhow!("pipelined decode became unavailable during setup"))?;
     let mut inflight = Some(metal_dev.commit_frame(pending));
 
     for step_idx in 0..max_tokens {
@@ -469,7 +475,16 @@ where
         let should_prepare_next = step_idx + 1 < max_tokens;
         let next_position = position + 1;
         let pending_next = if should_prepare_next {
-            model.encode_pending_decode_step(&hidden_b, next_position, kv, weights)?
+            if use_fused_argmax {
+                model.encode_pending_decode_step_with_argmax(
+                    &hidden_b,
+                    next_position,
+                    kv,
+                    weights,
+                )?
+            } else {
+                model.encode_pending_decode_step(&hidden_b, next_position, kv, weights)?
+            }
         } else {
             None
         };
@@ -482,16 +497,31 @@ where
         }
         model.advance_gpu_kv_token(kv);
 
-        model.read_gpu_logits(&mut logits)?;
-        let sampled_info = if top_logprobs > 0 {
-            Some(sampler.sample_with_logprobs(&mut logits, history, top_logprobs))
+        // Greedy decode fast paths:
+        // - Fused: argmax dispatched inside the main CB → just read 4 bytes.
+        // - CPU greedy: read logits back + CPU argmax (faster than a separate
+        //   GPU CB round-trip on Apple UMA where readback is zero-copy).
+        // - Full: read all logits to CPU for sampling with penalties/top-p.
+        let (sampled, sampled_info) = if use_fused_argmax {
+            let idx = model.read_gpu_argmax_result()?;
+            (idx, None)
+        } else if greedy {
+            model.read_gpu_logits(&mut logits)?;
+            let idx = crate::sampling::argmax(&logits);
+            (idx, None)
         } else {
-            None
+            model.read_gpu_logits(&mut logits)?;
+            let info = if top_logprobs > 0 {
+                Some(sampler.sample_with_logprobs(&mut logits, history, top_logprobs))
+            } else {
+                None
+            };
+            let token = info
+                .as_ref()
+                .map(|i| i.token)
+                .unwrap_or_else(|| sampler.sample(&mut logits, history));
+            (token, info)
         };
-        let sampled = sampled_info
-            .as_ref()
-            .map(|info| info.token)
-            .unwrap_or_else(|| sampler.sample(&mut logits, history));
 
         if matches!(
             on_token(next_token, next_token_info.as_ref())?,

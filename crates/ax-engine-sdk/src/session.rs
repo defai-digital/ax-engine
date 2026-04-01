@@ -343,13 +343,8 @@ impl Session {
             return Err(anyhow!("expected native session state"));
         };
         let position = state.history.len();
-        let remaining_context = self.max_context_tokens.saturating_sub(position);
-        ensure!(
-            prompt_tokens.len() <= remaining_context,
-            "prompt does not fit in remaining context: {} tokens requested, {} available",
-            prompt_tokens.len(),
-            remaining_context
-        );
+        let remaining_decode_capacity =
+            remaining_decode_capacity(prompt_tokens.len(), position, self.max_context_tokens)?;
 
         let mut logits = vec![0.0f32; self.model.config().vocab_size as usize];
         native
@@ -359,7 +354,6 @@ impl Session {
         state.history.extend_from_slice(&prompt_tokens);
 
         let decode_position = position + prompt_tokens.len();
-        let remaining_decode_capacity = self.max_context_tokens.saturating_sub(decode_position);
         let max_tokens = options.max_tokens.min(remaining_decode_capacity);
         let sampling = build_sampling_config(&options, self.default_seed);
 
@@ -430,14 +424,11 @@ impl Session {
             return Err(anyhow!("expected llama.cpp session state"));
         };
         let full_prompt = format!("{}{}", state.prompt_prefix, prompt);
-        let remaining_context = self.max_context_tokens.saturating_sub(state.history.len());
-        ensure!(
-            prompt_tokens.len() <= remaining_context,
-            "prompt does not fit in remaining context: {} tokens requested, {} available",
+        let remaining_decode_capacity = remaining_decode_capacity(
             prompt_tokens.len(),
-            remaining_context
-        );
-        let remaining_decode_capacity = remaining_context.saturating_sub(prompt_tokens.len());
+            state.history.len(),
+            self.max_context_tokens,
+        )?;
         let max_tokens = options.max_tokens.min(remaining_decode_capacity);
         drop(state_guard);
 
@@ -507,7 +498,7 @@ impl Session {
             .ok_or_else(|| anyhow!("llama.cpp model is not loaded"))?;
         let transcript = flatten_chat_messages(messages);
         let prompt_tokens = self.model.tokenize(&transcript, true);
-        let remaining = self.max_context_tokens.saturating_sub(prompt_tokens.len());
+        let remaining = remaining_decode_capacity(prompt_tokens.len(), 0, self.max_context_tokens)?;
         let max_tokens = options.max_tokens.min(remaining);
         if max_tokens == 0 {
             return Ok(completed_stream(GenerationOutput {
@@ -869,6 +860,21 @@ fn build_sampling_config(options: &GenerationOptions, default_seed: Option<u64>)
     }
 }
 
+fn remaining_decode_capacity(
+    prompt_tokens_len: usize,
+    used_context_tokens: usize,
+    max_context_tokens: usize,
+) -> anyhow::Result<usize> {
+    let remaining_context = max_context_tokens.saturating_sub(used_context_tokens);
+    ensure!(
+        prompt_tokens_len <= remaining_context,
+        "prompt does not fit in remaining context: {} tokens requested, {} available",
+        prompt_tokens_len,
+        remaining_context
+    );
+    Ok(remaining_context - prompt_tokens_len)
+}
+
 fn validate_generation_options(options: &GenerationOptions) -> anyhow::Result<()> {
     ensure!(
         options.max_tokens > 0,
@@ -887,8 +893,8 @@ fn validate_generation_options(options: &GenerationOptions) -> anyhow::Result<()
         "min_p must be finite and between 0.0 and 1.0"
     );
     ensure!(
-        options.repeat_penalty.is_finite() && options.repeat_penalty >= 0.0,
-        "repeat_penalty must be finite and non-negative"
+        options.repeat_penalty.is_finite() && options.repeat_penalty > 0.0,
+        "repeat_penalty must be finite and greater than zero"
     );
     ensure!(
         options.frequency_penalty.is_finite(),
@@ -990,5 +996,29 @@ mod tests {
         };
         let err = validate_generation_options(&options).unwrap_err();
         assert!(err.to_string().contains("frequency_penalty"));
+    }
+
+    #[test]
+    fn test_validate_generation_options_rejects_zero_repeat_penalty() {
+        let options = GenerationOptions {
+            repeat_penalty: 0.0,
+            ..GenerationOptions::default()
+        };
+        let err = validate_generation_options(&options).unwrap_err();
+        assert!(err.to_string().contains("repeat_penalty"));
+    }
+
+    #[test]
+    fn test_remaining_decode_capacity_rejects_prompt_overflow() {
+        let err = remaining_decode_capacity(17, 0, 16).unwrap_err();
+        assert!(err.to_string().contains("does not fit"));
+    }
+
+    #[test]
+    fn test_remaining_decode_capacity_returns_zero_for_exact_fit() {
+        assert_eq!(
+            remaining_decode_capacity(16, 0, 16).expect("exact-fit prompt should succeed"),
+            0
+        );
     }
 }

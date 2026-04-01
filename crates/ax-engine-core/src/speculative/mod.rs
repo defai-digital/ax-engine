@@ -668,6 +668,9 @@ fn restore_or_truncate_kv(
 
 /// Compute softmax of a logit slice, returning a probability vector.
 fn softmax(logits: &[f32]) -> Vec<f32> {
+    if logits.is_empty() {
+        return Vec::new();
+    }
     let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     if !max.is_finite() {
         let n = logits.len();
@@ -691,15 +694,12 @@ fn logits_slot(logits_all: &[f32], slot: usize, vocab: usize) -> &[f32] {
 mod tests {
     use super::*;
     use std::ffi::OsString;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::MutexGuard;
 
     use crate::model::{LlamaModel, ModelConfig};
 
     fn env_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("speculative env test lock")
+        crate::test_env_lock()
     }
 
     struct EnvVarRestore {
@@ -784,6 +784,11 @@ mod tests {
         let probs = softmax(&logits);
         let sum: f32 = probs.iter().sum();
         assert!((sum - 1.0).abs() < 1e-5, "sum={sum}");
+    }
+
+    #[test]
+    fn test_softmax_empty_returns_empty() {
+        assert!(softmax(&[]).is_empty());
     }
 
     #[test]

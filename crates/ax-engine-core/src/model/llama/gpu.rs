@@ -344,6 +344,29 @@ fn encode_llama_pending_step(
     gpu_kv: &mut crate::kv::GpuKv,
     weights: &WeightStore,
 ) -> anyhow::Result<ax_engine_metal::PendingFrame> {
+    encode_llama_pending_step_inner(metal_ops, cfg, hidden_buf, position, gpu_kv, weights, false)
+}
+
+fn encode_llama_pending_step_with_argmax(
+    metal_ops: &MetalOps,
+    cfg: &ModelConfig,
+    hidden_buf: &ax_engine_metal::MetalBuffer,
+    position: usize,
+    gpu_kv: &mut crate::kv::GpuKv,
+    weights: &WeightStore,
+) -> anyhow::Result<ax_engine_metal::PendingFrame> {
+    encode_llama_pending_step_inner(metal_ops, cfg, hidden_buf, position, gpu_kv, weights, true)
+}
+
+fn encode_llama_pending_step_inner(
+    metal_ops: &MetalOps,
+    cfg: &ModelConfig,
+    hidden_buf: &ax_engine_metal::MetalBuffer,
+    position: usize,
+    gpu_kv: &mut crate::kv::GpuKv,
+    weights: &WeightStore,
+    fuse_argmax: bool,
+) -> anyhow::Result<ax_engine_metal::PendingFrame> {
     let kv_dim = (cfg.n_kv_heads * cfg.head_dim) as usize;
     let exec_plan = DecodeExecutionPlan::llama_pipelined(
         metal_ops,
@@ -426,6 +449,15 @@ fn encode_llama_pending_step(
             &barrier,
         );
         barrier.flush();
+        if fuse_argmax {
+            metal_ops.elementwise.encode_argmax_f32(
+                encoder,
+                &s.logits_buf,
+                &s.argmax_idx,
+                &s.argmax_val,
+                cfg.vocab_size,
+            );
+        }
         Ok(())
     };
     if exec_plan.encoder == DecodeEncoderPlan::Concurrent {

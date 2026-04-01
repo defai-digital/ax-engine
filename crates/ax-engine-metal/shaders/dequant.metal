@@ -11110,16 +11110,29 @@ kernel void moe_mul_mat_id_map0(
         }
     }
     tpe[ide] = count;
+
+    // Build active expert list: experts with count > 0.
+    // Use atomic counter at active_experts[n_expert] as the list length.
+    // Each expert thread with count > 0 appends itself.
+    device uint32_t *active_experts = (device uint32_t *)(hids) +
+        n_expert * n_tokens;  // Placed after hids data
+    device atomic_uint *active_count = (device atomic_uint *)(active_experts + n_expert);
+    if (ide == 0) {
+        atomic_store_explicit(active_count, 0, memory_order_relaxed);
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+    if (count > 0) {
+        uint slot = atomic_fetch_add_explicit(active_count, 1, memory_order_relaxed);
+        active_experts[slot] = ide;
+    }
 }
 
-/// Stage 2: Tiled Q4_K GEMM with expert routing.
+/// Stage 2: Tiled Q4_K GEMM with expert routing (compact grid).
 ///
-/// For each expert (grid.z), processes only the tokens assigned to it.
-/// Weights: [n_expert, M, K/256] Q4_K blocks (expert-strided).
-/// Input:   [n_tokens, K] f32 (shared across all experts).
-/// Output:  [n_tokens * n_expert_used, M] f32 (flat, indexed by hids).
+/// Grid.z = n_active_experts (NOT n_expert). Uses active_experts[grid.z]
+/// to look up the real expert index. Only active experts are dispatched.
 ///
-/// Grid: (ceil(max_tokens/32), ceil(M/32), n_expert). TG: (128, 1, 1).
+/// Grid: (ceil(max_tokens/32), ceil(M/32), n_active_experts). TG: (128, 1, 1).
 kernel void moe_mul_mat_id_q4_k(
     device const Q4_K_Block *weights [[buffer(0)]],
     device const float *input        [[buffer(1)]],
@@ -11131,12 +11144,13 @@ kernel void moe_mul_mat_id_q4_k(
     constant uint &n_tokens          [[buffer(7)]],
     constant uint &n_expert_used     [[buffer(8)]],
     constant uint &weight_stride     [[buffer(9)]],
+    device const uint32_t *active_experts [[buffer(10)]],
     uint3 group_id  [[threadgroup_position_in_grid]],
     uint  tid       [[thread_index_in_threadgroup]],
     uint  simd_id   [[simdgroup_index_in_threadgroup]],
     uint  simd_lane [[thread_index_in_simdgroup]])
 {
-    const uint expert = group_id.z;
+    const uint expert = active_experts[group_id.z];
     const uint n_assigned = tpe[expert];
 
     // Tile positions.

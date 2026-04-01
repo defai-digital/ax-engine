@@ -20,6 +20,18 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MatvecProfileVariant {
+    Base,
+    Nr2,
+    Ilp4,
+    Tg256,
+    Blk2,
+    X2,
+    N4,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MatvecParams {
@@ -30,6 +42,8 @@ pub struct MatvecParams {
     /// Default: 1 (current AX kernel).
     #[serde(default = "default_matvec_rows_per_sg")]
     pub rows_per_simdgroup: u32,
+    #[serde(default)]
+    pub variant: Option<MatvecProfileVariant>,
 }
 
 fn default_matvec_tg_size() -> u32 {
@@ -45,31 +59,29 @@ fn hardcoded_invariant_matvec_params(quant_type: &str) -> Option<MatvecParams> {
         "q4_k" => Some(MatvecParams {
             threadgroup_size: 64,
             rows_per_simdgroup: 2,
+            variant: Some(MatvecProfileVariant::Nr2),
         }),
         "q5_k" => Some(MatvecParams {
             threadgroup_size: 64,
             rows_per_simdgroup: 1,
+            variant: Some(MatvecProfileVariant::Base),
         }),
         "q6_k" => Some(MatvecParams {
             threadgroup_size: 64,
             rows_per_simdgroup: 2,
+            variant: Some(MatvecProfileVariant::Nr2),
         }),
         "q8_0" => Some(MatvecParams {
             threadgroup_size: 128,
             rows_per_simdgroup: 2,
+            variant: Some(MatvecProfileVariant::Nr2),
         }),
         _ => None,
     }
 }
 
 fn default_decode_matvec_profile() -> HashMap<String, MatvecParams> {
-    let mut decode_matvec = HashMap::new();
-    for quant in ["q4_k", "q5_k", "q6_k", "q8_0"] {
-        if let Some(params) = hardcoded_invariant_matvec_params(quant) {
-            decode_matvec.insert(quant.to_string(), params);
-        }
-    }
-    decode_matvec
+    HashMap::new()
 }
 
 impl Default for MatvecParams {
@@ -77,6 +89,7 @@ impl Default for MatvecParams {
         Self {
             threadgroup_size: default_matvec_tg_size(),
             rows_per_simdgroup: default_matvec_rows_per_sg(),
+            variant: None,
         }
     }
 }
@@ -119,6 +132,8 @@ pub struct MatvecParamsOverride {
     pub threadgroup_size: Option<u32>,
     #[serde(default)]
     pub rows_per_simdgroup: Option<u32>,
+    #[serde(default)]
+    pub variant: Option<MatvecProfileVariant>,
 }
 
 impl MatvecParamsOverride {
@@ -126,6 +141,35 @@ impl MatvecParamsOverride {
         MatvecParams {
             threadgroup_size: self.threadgroup_size.unwrap_or(base.threadgroup_size),
             rows_per_simdgroup: self.rows_per_simdgroup.unwrap_or(base.rows_per_simdgroup),
+            variant: self.variant.or(base.variant),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KvPrecisionMode {
+    Auto,
+    F32,
+    F16,
+    Q8_0,
+}
+
+fn default_kv_precision_mode() -> KvPrecisionMode {
+    KvPrecisionMode::Auto
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct KvCacheParams {
+    #[serde(default = "default_kv_precision_mode")]
+    pub precision: KvPrecisionMode,
+}
+
+impl Default for KvCacheParams {
+    fn default() -> Self {
+        Self {
+            precision: default_kv_precision_mode(),
         }
     }
 }
@@ -329,6 +373,8 @@ pub struct KernelProfile {
     #[serde(default)]
     pub attention_prefill: AttentionPrefillParams,
     #[serde(default)]
+    pub kv_cache: KvCacheParams,
+    #[serde(default)]
     pub decode_regimes: Option<DecodeRegimeProfile>,
 }
 
@@ -342,6 +388,7 @@ impl Default for KernelProfile {
             batch_prefill: BatchPrefillParams::default(),
             attention_decode: AttentionDecodeParams::default(),
             attention_prefill: AttentionPrefillParams::default(),
+            kv_cache: KvCacheParams::default(),
             decode_regimes: None,
         }
     }
@@ -1281,6 +1328,12 @@ mod tests {
                 "profile {} drifted on attention_prefill.fa2_hd128_mode",
                 path.display()
             );
+            assert_eq!(
+                profile.kv_cache.precision,
+                default_profile.kv_cache.precision,
+                "profile {} drifted on kv_cache.precision",
+                path.display()
+            );
         }
     }
 
@@ -1650,6 +1703,9 @@ mod tests {
                 "fa2_auto_min_base_seq": 320,
                 "fa2_hd128_auto_min_tokens": 768,
                 "ax_bc64_min_tokens": 1024
+            },
+            "kv_cache": {
+                "precision": "q8_0"
             }
         }"#;
         let profile: KernelProfile = serde_json::from_str(json).unwrap();
@@ -1663,6 +1719,7 @@ mod tests {
             profile.attention_prefill.fa2_hd128_mode,
             ProfileKernelMode::Off
         );
+        assert_eq!(profile.kv_cache.precision, KvPrecisionMode::Q8_0);
         assert_eq!(
             profile.attention_prefill.ax_bc64_mode,
             ProfileKernelMode::Off

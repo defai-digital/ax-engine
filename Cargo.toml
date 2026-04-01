@@ -8,12 +8,8 @@ members = [
     "crates/ax-engine-sdk",
     "crates/ax-engine-shim",
     "crates/ax-engine-bench",
+    "crates/ax-engine-py",
 ]
-# ax-engine-py is a cdylib built via `maturin build`, not `cargo build`.
-# It uses pyo3 extension-module which deliberately leaves Python symbols
-# unresolved at link time, so including it in the workspace breaks
-# `cargo build --workspace`.
-exclude = ["crates/ax-engine-py"]
 
 [workspace.package]
 version = "3.0.0"

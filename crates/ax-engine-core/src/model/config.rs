@@ -204,6 +204,133 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
+    pub fn validate_invariants(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.n_layers > 0, "model block_count must be > 0");
+        anyhow::ensure!(self.n_heads > 0, "model attention.head_count must be > 0");
+        anyhow::ensure!(
+            self.n_kv_heads > 0,
+            "model attention.head_count_kv must be > 0"
+        );
+        anyhow::ensure!(self.embedding_dim > 0, "model embedding_length must be > 0");
+        anyhow::ensure!(self.head_dim > 0, "model attention.key_length must be > 0");
+        anyhow::ensure!(
+            self.head_dim.is_multiple_of(2),
+            "model attention.key_length must be even"
+        );
+        anyhow::ensure!(
+            self.intermediate_dim > 0,
+            "model feed_forward_length must be > 0"
+        );
+        anyhow::ensure!(self.context_length > 0, "model context_length must be > 0");
+        anyhow::ensure!(self.vocab_size > 0, "model vocab_size must be > 0");
+        anyhow::ensure!(
+            self.n_heads >= self.n_kv_heads && self.n_heads.is_multiple_of(self.n_kv_heads),
+            "n_heads ({}) must be a multiple of n_kv_heads ({})",
+            self.n_heads,
+            self.n_kv_heads
+        );
+        anyhow::ensure!(
+            self.rms_norm_eps.is_finite() && self.rms_norm_eps >= 0.0,
+            "model attention.layer_norm_rms_epsilon must be finite and >= 0"
+        );
+        anyhow::ensure!(
+            self.rope_freq_base.is_finite() && self.rope_freq_base > 0.0,
+            "model rope.freq_base must be finite and > 0"
+        );
+        if let Some(size) = self.sliding_window_size {
+            anyhow::ensure!(
+                size > 0,
+                "model attention.sliding_window must be > 0 when present"
+            );
+        }
+        if let Some(pattern) = self.sliding_window_pattern {
+            anyhow::ensure!(
+                pattern > 0,
+                "model attention.sliding_window_pattern must be > 0 when present"
+            );
+        }
+        match &self.rope_scaling {
+            RopeScaling::None => {}
+            RopeScaling::Linear(factor) => anyhow::ensure!(
+                factor.is_finite() && *factor > 0.0,
+                "model rope.scaling.factor must be finite and > 0"
+            ),
+            RopeScaling::Yarn {
+                factor,
+                ext_factor,
+                attn_factor,
+                beta_fast,
+                beta_slow,
+                orig_ctx_len,
+            } => {
+                anyhow::ensure!(
+                    factor.is_finite() && *factor > 0.0,
+                    "model rope.scaling.factor must be finite and > 0"
+                );
+                anyhow::ensure!(
+                    ext_factor.is_finite(),
+                    "model rope.scaling.yarn_ext_factor must be finite"
+                );
+                anyhow::ensure!(
+                    attn_factor.is_finite(),
+                    "model rope.scaling.attn_factor must be finite"
+                );
+                anyhow::ensure!(
+                    beta_fast.is_finite(),
+                    "model rope.scaling.yarn_beta_fast must be finite"
+                );
+                anyhow::ensure!(
+                    beta_slow.is_finite(),
+                    "model rope.scaling.yarn_beta_slow must be finite"
+                );
+                anyhow::ensure!(
+                    *orig_ctx_len > 0,
+                    "model rope.scaling.original_context_length must be > 0"
+                );
+            }
+        }
+        if let Some(n_expert) = self.n_expert {
+            anyhow::ensure!(n_expert > 0, "model expert_count must be > 0 when present");
+        }
+        if let Some(n_expert_used) = self.n_expert_used {
+            anyhow::ensure!(
+                n_expert_used > 0,
+                "model expert_used_count must be > 0 when present"
+            );
+        }
+        if let (Some(n_expert), Some(n_expert_used)) = (self.n_expert, self.n_expert_used) {
+            anyhow::ensure!(
+                n_expert_used <= n_expert,
+                "expert_used_count ({n_expert_used}) must be <= expert_count ({n_expert})"
+            );
+        }
+        if let Some(expert_intermediate_dim) = self.expert_intermediate_dim {
+            anyhow::ensure!(
+                expert_intermediate_dim > 0,
+                "model expert_feed_forward_length must be > 0 when present"
+            );
+        }
+        if let Some(interval) = self.qwen35_full_attention_interval {
+            anyhow::ensure!(interval > 0, "qwen35 full_attention_interval must be > 0");
+        }
+        if let Some(conv_kernel) = self.qwen35_ssm_conv_kernel {
+            anyhow::ensure!(conv_kernel > 0, "qwen35 conv_kernel must be > 0");
+        }
+        if let Some(inner_size) = self.qwen35_ssm_inner_size {
+            anyhow::ensure!(inner_size > 0, "qwen35 inner_size must be > 0");
+        }
+        if let Some(state_size) = self.qwen35_ssm_state_size {
+            anyhow::ensure!(state_size > 0, "qwen35 state_size must be > 0");
+        }
+        if let Some(time_step_rank) = self.qwen35_ssm_time_step_rank {
+            anyhow::ensure!(time_step_rank > 0, "qwen35 time_step_rank must be > 0");
+        }
+        if let Some(group_count) = self.qwen35_ssm_group_count {
+            anyhow::ensure!(group_count > 0, "qwen35 group_count must be > 0");
+        }
+        Ok(())
+    }
+
     /// Extract model config from GGUF header metadata.
     ///
     /// Reads architecture-prefixed keys (e.g. `llama.embedding_length`)
@@ -234,11 +361,23 @@ impl ModelConfig {
         let n_kv_heads = header
             .get_u32(&format!("{arch}.attention.head_count_kv"))
             .unwrap_or(n_heads);
+        anyhow::ensure!(n_kv_heads > 0, "GGUF {arch}.attention.head_count_kv is 0");
 
         // Explicit head_dim from GGUF; fall back to embedding_dim / n_heads
-        let head_dim = header
-            .get_u32(&format!("{arch}.attention.key_length"))
-            .unwrap_or(embedding_dim / n_heads);
+        let head_dim = match header.get_u32(&format!("{arch}.attention.key_length")) {
+            Some(head_dim) => head_dim,
+            None => {
+                anyhow::ensure!(
+                    embedding_dim.is_multiple_of(n_heads),
+                    "GGUF {arch}.embedding_length ({embedding_dim}) must be divisible by attention.head_count ({n_heads}) when attention.key_length is absent"
+                );
+                embedding_dim / n_heads
+            }
+        };
+        anyhow::ensure!(
+            head_dim > 0,
+            "GGUF {arch}.attention.key_length resolved to 0"
+        );
 
         let expert_intermediate_dim = header.get_u32(&format!("{arch}.expert_feed_forward_length"));
         let shared_expert_intermediate_dim =
@@ -256,10 +395,12 @@ impl ModelConfig {
                 }
             })
             .ok_or_else(|| anyhow::anyhow!("missing GGUF key: {arch}.feed_forward_length"))?;
+        anyhow::ensure!(intermediate_dim > 0, "GGUF {arch}.feed_forward_length is 0");
 
         let context_length = header
             .get_u32(&format!("{arch}.context_length"))
             .unwrap_or(4096);
+        anyhow::ensure!(context_length > 0, "GGUF {arch}.context_length is 0");
 
         // Vocab size can come from tokenizer metadata or model metadata
         let vocab_size = header
@@ -270,6 +411,7 @@ impl ModelConfig {
                     .map(|t| t.len() as u32)
             })
             .unwrap_or(32000);
+        anyhow::ensure!(vocab_size > 0, "GGUF vocab size resolved to 0");
 
         let rms_norm_eps = get_f32_or("attention.layer_norm_rms_epsilon", 1e-5);
         let rope_freq_base = get_f32_or("rope.freq_base", 10000.0);
@@ -432,7 +574,7 @@ impl ModelConfig {
             "model config loaded"
         );
 
-        Ok(Self {
+        let config = Self {
             architecture: arch,
             n_layers,
             n_heads,
@@ -462,7 +604,9 @@ impl ModelConfig {
             qwen35_ssm_state_size,
             qwen35_ssm_time_step_rank,
             qwen35_ssm_group_count,
-        })
+        };
+        config.validate_invariants()?;
+        Ok(config)
     }
 
     pub fn qwen35_is_recurrent_layer(&self, layer: usize) -> bool {
@@ -571,6 +715,113 @@ mod tests {
             err.to_string().contains("head_count is 0"),
             "expected head_count error, got: {err}"
         );
+    }
+
+    #[test]
+    fn test_config_non_divisible_embedding_dim_without_key_length_rejected() {
+        let header = make_header(vec![
+            (
+                "general.architecture",
+                MetadataValue::String("llama".into()),
+            ),
+            ("llama.block_count", MetadataValue::Uint32(32)),
+            ("llama.attention.head_count", MetadataValue::Uint32(3)),
+            ("llama.embedding_length", MetadataValue::Uint32(10)),
+            ("llama.feed_forward_length", MetadataValue::Uint32(11008)),
+        ]);
+
+        let err = ModelConfig::from_gguf(&header).unwrap_err();
+        assert!(err.to_string().contains("must be divisible"));
+    }
+
+    #[test]
+    fn test_config_odd_head_dim_rejected() {
+        let header = make_header(vec![
+            (
+                "general.architecture",
+                MetadataValue::String("llama".into()),
+            ),
+            ("llama.block_count", MetadataValue::Uint32(32)),
+            ("llama.attention.head_count", MetadataValue::Uint32(32)),
+            ("llama.embedding_length", MetadataValue::Uint32(4096)),
+            ("llama.feed_forward_length", MetadataValue::Uint32(11008)),
+            ("llama.attention.key_length", MetadataValue::Uint32(127)),
+        ]);
+
+        let err = ModelConfig::from_gguf(&header).unwrap_err();
+        assert!(err.to_string().contains("must be even"));
+    }
+
+    #[test]
+    fn test_config_zero_kv_heads_rejected() {
+        let header = make_header(vec![
+            (
+                "general.architecture",
+                MetadataValue::String("llama".into()),
+            ),
+            ("llama.block_count", MetadataValue::Uint32(32)),
+            ("llama.attention.head_count", MetadataValue::Uint32(32)),
+            ("llama.attention.head_count_kv", MetadataValue::Uint32(0)),
+            ("llama.embedding_length", MetadataValue::Uint32(4096)),
+            ("llama.feed_forward_length", MetadataValue::Uint32(11008)),
+        ]);
+
+        let err = ModelConfig::from_gguf(&header).unwrap_err();
+        assert!(err.to_string().contains("head_count_kv is 0"));
+    }
+
+    #[test]
+    fn test_config_zero_head_dim_rejected() {
+        let header = make_header(vec![
+            (
+                "general.architecture",
+                MetadataValue::String("llama".into()),
+            ),
+            ("llama.block_count", MetadataValue::Uint32(32)),
+            ("llama.attention.head_count", MetadataValue::Uint32(32)),
+            ("llama.embedding_length", MetadataValue::Uint32(4096)),
+            ("llama.feed_forward_length", MetadataValue::Uint32(11008)),
+            ("llama.attention.key_length", MetadataValue::Uint32(0)),
+        ]);
+
+        let err = ModelConfig::from_gguf(&header).unwrap_err();
+        assert!(err.to_string().contains("key_length resolved to 0"));
+    }
+
+    #[test]
+    fn test_config_zero_context_length_rejected() {
+        let header = make_header(vec![
+            (
+                "general.architecture",
+                MetadataValue::String("llama".into()),
+            ),
+            ("llama.block_count", MetadataValue::Uint32(32)),
+            ("llama.attention.head_count", MetadataValue::Uint32(32)),
+            ("llama.embedding_length", MetadataValue::Uint32(4096)),
+            ("llama.feed_forward_length", MetadataValue::Uint32(11008)),
+            ("llama.context_length", MetadataValue::Uint32(0)),
+        ]);
+
+        let err = ModelConfig::from_gguf(&header).unwrap_err();
+        assert!(err.to_string().contains("context_length is 0"));
+    }
+
+    #[test]
+    fn test_config_zero_vocab_size_rejected() {
+        let header = make_header(vec![
+            (
+                "general.architecture",
+                MetadataValue::String("llama".into()),
+            ),
+            ("llama.block_count", MetadataValue::Uint32(32)),
+            ("llama.attention.head_count", MetadataValue::Uint32(32)),
+            ("llama.embedding_length", MetadataValue::Uint32(4096)),
+            ("llama.feed_forward_length", MetadataValue::Uint32(11008)),
+            ("llama.vocab_size", MetadataValue::Uint32(0)),
+        ]);
+
+        let err = ModelConfig::from_gguf(&header).unwrap_err();
+        assert!(err.to_string().contains("vocab size resolved to 0"));
     }
 
     #[test]

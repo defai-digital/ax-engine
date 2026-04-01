@@ -2,7 +2,7 @@ use std::path::Path;
 
 use ax_engine_core::gguf::MappedModel;
 use ax_engine_core::memory::MemoryBudget;
-use ax_engine_core::model::LlamaModel;
+use ax_engine_core::model::{LlamaModel, ModelConfig, ModelFingerprint};
 
 pub mod baseline;
 pub mod microbench;
@@ -18,20 +18,11 @@ pub(crate) fn configure_backend_for_model(
     backend: &dyn ax_engine_core::backend::Backend,
     model_path: &str,
     mapped: &MappedModel,
+    config: &ModelConfig,
 ) -> anyhow::Result<()> {
-    let profile_model_name = Path::new(model_path)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .map(str::to_owned)
-        .or_else(|| mapped.header.get_str("general.name").map(str::to_owned))
-        .or_else(|| mapped.header.architecture().map(str::to_owned))
-        .unwrap_or_else(|| "default".to_string());
-    let profile_quant = mapped
-        .predominant_quant()
-        .map(|dtype| dtype.to_string())
-        .unwrap_or_else(|| "default".to_string());
-    let profile_architecture = mapped.header.architecture().unwrap_or("default");
-    backend.configure_for_model(&profile_model_name, &profile_quant, profile_architecture)
+    let fingerprint =
+        ModelFingerprint::from_mapped_model(Some(Path::new(model_path)), mapped, config);
+    backend.configure_for_fingerprint(&fingerprint)
 }
 
 pub(crate) fn report_planned_kv_budget(

@@ -19,3 +19,13 @@ pub mod scheduler;
 pub mod speculative;
 pub mod thermal;
 pub mod tokenizer;
+
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("ax-engine-core test env lock")
+}

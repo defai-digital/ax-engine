@@ -2,6 +2,7 @@ pub mod arch_registry;
 pub mod config;
 pub mod decode;
 pub(crate) mod execution_plan;
+pub mod fingerprint;
 pub mod forward;
 pub mod gemma3;
 pub(crate) mod layer_ops;
@@ -19,6 +20,7 @@ pub use decode::{
     DecodeControl, DecodeIntent, DecodeMetalPerfSummary, DecodeMode, DecodeRunConfig,
     DecodeRunResult, DecodeSelection, run_decode, select_decode_mode,
 };
+pub use fingerprint::ModelFingerprint;
 pub use forward::ForwardPass;
 pub use llama::LlamaModel;
 pub use weights::WeightStore;

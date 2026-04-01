@@ -5,6 +5,10 @@ use std::os::raw::c_char;
 
 use crate::types::*;
 
+fn has_valid_token_output_capacity(tokens: *mut LlamaToken, n_tokens_max: i32) -> bool {
+    tokens.is_null() || n_tokens_max >= 0
+}
+
 /// Tokenize text into token IDs.
 ///
 /// Returns the number of tokens written.
@@ -21,6 +25,10 @@ pub extern "C" fn llama_tokenize(
     _parse_special: bool,
 ) -> i32 {
     if model.is_null() || text.is_null() {
+        return -1;
+    }
+    if !has_valid_token_output_capacity(tokens, n_tokens_max) {
+        tracing::error!("llama_tokenize: negative output capacity: {n_tokens_max}");
         return -1;
     }
 
@@ -124,4 +132,32 @@ pub extern "C" fn llama_token_to_piece(
     out.copy_from_slice(bytes);
 
     n as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_has_valid_token_output_capacity_allows_count_only_calls() {
+        assert!(has_valid_token_output_capacity(std::ptr::null_mut(), -1));
+    }
+
+    #[test]
+    fn test_has_valid_token_output_capacity_rejects_negative_lengths_for_output_buffers() {
+        let mut token = 0;
+        assert!(!has_valid_token_output_capacity(
+            std::ptr::from_mut(&mut token),
+            -1
+        ));
+    }
+
+    #[test]
+    fn test_has_valid_token_output_capacity_accepts_non_negative_lengths() {
+        let mut token = 0;
+        assert!(has_valid_token_output_capacity(
+            std::ptr::from_mut(&mut token),
+            0
+        ));
+    }
 }

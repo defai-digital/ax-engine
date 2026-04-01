@@ -676,7 +676,11 @@ impl MessageContent {
                 for part in parts {
                     match part.part_type.as_str() {
                         "text" => {
-                            rendered.push_str(part.text.as_deref().unwrap_or_default());
+                            rendered.push_str(part.text.as_deref().ok_or_else(|| {
+                                AppError::bad_request(
+                                    "text content parts must include a text field",
+                                )
+                            })?);
                         }
                         other => {
                             return Err(AppError::bad_request(format!(
@@ -796,5 +800,16 @@ mod tests {
             },
         ]);
         assert_eq!(content.to_text().unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_message_content_parts_reject_missing_text_field() {
+        let content = MessageContent::Parts(vec![MessageContentPart {
+            part_type: "text".to_string(),
+            text: None,
+        }]);
+        let err = content.to_text().unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("text field"));
     }
 }

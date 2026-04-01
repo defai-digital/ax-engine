@@ -4,6 +4,10 @@ use ax_engine_core::sampling::{self as core_sampling};
 
 use crate::types::*;
 
+fn is_valid_repetition_penalty(penalty: f32) -> bool {
+    penalty.is_finite() && penalty > 0.0
+}
+
 /// Apply temperature scaling to logits.
 #[unsafe(no_mangle)]
 pub extern "C" fn llama_sample_temperature(
@@ -59,7 +63,12 @@ pub extern "C" fn llama_sample_repetition_penalty(
     last_n: i32,
     penalty: f32,
 ) {
-    if logits.is_null() || n_vocab <= 0 || last_tokens.is_null() || last_n <= 0 {
+    if logits.is_null()
+        || n_vocab <= 0
+        || last_tokens.is_null()
+        || last_n <= 0
+        || !is_valid_repetition_penalty(penalty)
+    {
         return;
     }
     let logits = unsafe { std::slice::from_raw_parts_mut(logits, n_vocab as usize) };
@@ -134,4 +143,25 @@ fn xorshift64(state: &mut u64) -> u64 {
     x ^= x << 17;
     *state = x;
     x
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_valid_repetition_penalty_rejects_zero() {
+        assert!(!is_valid_repetition_penalty(0.0));
+    }
+
+    #[test]
+    fn test_is_valid_repetition_penalty_rejects_non_finite_values() {
+        assert!(!is_valid_repetition_penalty(f32::NAN));
+        assert!(!is_valid_repetition_penalty(f32::INFINITY));
+    }
+
+    #[test]
+    fn test_is_valid_repetition_penalty_accepts_positive_values() {
+        assert!(is_valid_repetition_penalty(1.1));
+    }
 }

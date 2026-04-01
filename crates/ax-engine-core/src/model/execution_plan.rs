@@ -1412,7 +1412,7 @@ mod tests {
     use crate::backend::metal::MetalBackend;
     use crate::model::LlamaModel;
     use crate::model::config::{GateActivation, RopeScaling};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::MutexGuard;
 
     fn tiny_config(arch: &str) -> crate::model::ModelConfig {
         let is_gemma3 = arch == "gemma3";
@@ -1455,10 +1455,7 @@ mod tests {
     }
 
     fn env_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("execution_plan env test lock")
+        crate::test_env_lock()
     }
 
     struct EnvVarRestore {

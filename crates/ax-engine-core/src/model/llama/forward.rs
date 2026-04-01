@@ -356,4 +356,28 @@ impl ForwardPass for LlamaForward {
         )?;
         Ok(Some(frame))
     }
+
+    fn supports_fused_argmax(&self) -> bool {
+        true
+    }
+
+    fn encode_pending_decode_step_with_argmax(
+        &self,
+        ctx: &ForwardContext,
+        hidden_buf: &ax_engine_metal::MetalBuffer,
+        position: usize,
+        kv: &mut ModelKv,
+        weights: &WeightStore,
+    ) -> anyhow::Result<Option<ax_engine_metal::PendingFrame>> {
+        let Some(metal_ops) = ctx.backend.metal_ops() else {
+            return Ok(None);
+        };
+        let Some(gpu_kv) = kv.as_gpu_mut() else {
+            return Ok(None);
+        };
+        let frame = encode_llama_pending_step_with_argmax(
+            metal_ops, ctx.config, hidden_buf, position, gpu_kv, weights,
+        )?;
+        Ok(Some(frame))
+    }
 }
