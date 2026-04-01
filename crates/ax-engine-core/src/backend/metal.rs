@@ -1331,88 +1331,79 @@ impl MetalBackend {
                     slot_buffers,
                 );
 
-                // Multi-token prefill can leave conv state device-primary.
-                // Single-token decode still runs the causal conv step on CPU,
-                // so materialize just the conv history back when needed while
-                // leaving recurrent state backend-owned.
-                if qwen_kv.conv_state_cpu_stale(slot_idx, layer_idx) {
-                    let generation = qwen_kv.conv_state_generation(slot_idx, layer_idx);
-                    assert_eq!(
-                        slot_buffers.conv_synced_generation,
-                        Some(generation),
-                        "qwen35 conv state for slot {slot_idx} layer {layer_idx} is backend-owned but Metal slot buffer generation does not match",
-                    );
-                    let conv_state =
-                        unsafe { &slot_buffers.conv_state.as_slice::<f32>()[..conv_state_stride] };
-                    qwen_kv
-                        .sync_conv_state_from_backend(slot_idx, layer_idx, conv_state, generation);
-                }
+                // GPU-resident single-token decode: conv1d + QKV prep + GDN
+                // all run on GPU in one command buffer, eliminating CPU↔GPU
+                // sync overhead for conv state (~4.2 MB per layer).
 
-                // Run conv1d on CPU for single-token decode (GPU dispatch
-                // overhead exceeds the compute savings for seq_len=1).
-                // Write to KV's CPU conv state, then sync to GPU slot buffer.
-                {
-                    let conv_out_dst = unsafe {
-                        &mut scratch_buffers.conv_out.as_mut_slice::<f32>()[..cfg.conv_dim]
-                    };
-                    let conv_state_cpu = qwen_kv.conv_state_for_slot_mut(slot_idx, layer_idx);
-                    crate::compute::gdn::depthwise_conv1d_step(
-                        conv_state_cpu,
-                        &qkv_batch[qkv_start..qkv_end],
-                        conv_kernel,
-                        cfg.conv_cache_len,
-                        cfg.conv_dim,
-                        conv_out_dst,
-                    );
-                    // Sync updated conv state to GPU slot buffer.
-                    unsafe {
-                        slot_buffers.conv_state.as_mut_slice::<f32>()[..conv_state_stride]
-                            .copy_from_slice(conv_state_cpu);
-                    }
-                    slot_buffers.conv_synced_generation =
-                        Some(qwen_kv.conv_state_generation(slot_idx, layer_idx));
-                }
-
-                let conv_out = unsafe { scratch_buffers.conv_out.as_slice::<f32>() };
+                // Copy input QKV to GPU scratch buffer.
                 unsafe {
-                    let q_dst = &mut scratch_buffers.q.as_mut_slice::<f32>()[..value_dim];
-                    let k_dst = &mut scratch_buffers.k.as_mut_slice::<f32>()[..value_dim];
-                    let v_dst = &mut scratch_buffers.v.as_mut_slice::<f32>()[..value_dim];
-                    prepare_single_token_gdn_qkv(
-                        &conv_out[..cfg.conv_dim],
-                        q_dst,
-                        k_dst,
-                        v_dst,
-                        cfg.group_count,
-                        cfg.time_step_rank,
-                        cfg.state_size,
-                        cfg.rms_norm_eps,
-                    );
+                    scratch_buffers.input.as_mut_slice::<f32>()[..cfg.conv_dim]
+                        .copy_from_slice(&qkv_batch[qkv_start..qkv_end]);
+                }
+
+                // Copy gate/beta to GPU scratch buffers.
+                unsafe {
                     scratch_buffers.gate.as_mut_slice::<f32>()[..cfg.time_step_rank]
                         .copy_from_slice(&alpha_batch[gate_start..gate_end]);
                     scratch_buffers.beta.as_mut_slice::<f32>()[..cfg.time_step_rank]
                         .copy_from_slice(&beta_batch[gate_start..gate_end]);
                 }
-                self.gdn_kernels
-                    .gated_delta_sequence(
-                        &self.device,
-                        &scratch_buffers.q,
-                        &scratch_buffers.k,
-                        &scratch_buffers.v,
-                        &scratch_buffers.gate,
-                        &scratch_buffers.beta,
-                        &slot_buffers.recurrent_state,
-                        &scratch_buffers.output,
-                        tokens_per_slot as u32,
-                        cfg.time_step_rank as u32,
-                        cfg.state_size as u32,
-                    )
-                    .expect("Metal qwen35 recurrent gated-delta dispatch failed");
 
+                // Single CB: conv1d → QKV prep → GDN, all GPU-resident.
+                self.device
+                    .execute_sync(|encoder| {
+                        // 1. GPU causal conv1d (updates conv_state in-place on GPU).
+                        self.gdn_kernels.encode_causal_conv_sequence(
+                            encoder,
+                            &scratch_buffers.input,
+                            buf_kernel,
+                            &slot_buffers.conv_state,
+                            &scratch_buffers.conv_out,
+                            tokens_per_slot as u32,
+                            cfg.conv_cache_len as u32,
+                            cfg.conv_dim as u32,
+                        );
+
+                        // 2. GPU QKV preparation (norm + head split).
+                        self.gdn_kernels.encode_prepare_single_token_qkv(
+                            encoder,
+                            &scratch_buffers.conv_out,
+                            &scratch_buffers.q,
+                            &scratch_buffers.k,
+                            &scratch_buffers.v,
+                            cfg.group_count as u32,
+                            cfg.time_step_rank as u32,
+                            cfg.state_size as u32,
+                            cfg.rms_norm_eps,
+                        );
+
+                        // 3. GPU gated delta net (updates recurrent_state in-place).
+                        self.gdn_kernels.encode_gated_delta_sequence(
+                            encoder,
+                            &scratch_buffers.q,
+                            &scratch_buffers.k,
+                            &scratch_buffers.v,
+                            &scratch_buffers.gate,
+                            &scratch_buffers.beta,
+                            &slot_buffers.recurrent_state,
+                            &scratch_buffers.output,
+                            tokens_per_slot as u32,
+                            cfg.time_step_rank as u32,
+                            cfg.state_size as u32,
+                        );
+                        Ok(())
+                    })
+                    .expect("Metal qwen35 GPU-resident recurrent decode failed");
+
+                // Read back only the output (16 KB), not conv/recurrent state.
                 let out_bhsv = unsafe { scratch_buffers.output.as_slice::<f32>() };
                 output_batch[out_start..out_end].copy_from_slice(&out_bhsv[..value_dim]);
 
-                // Mark recurrent state as backend-owned (GPU has the latest).
+                // Mark both conv and recurrent state as backend-owned
+                // (GPU has the latest — no CPU copy needed until slot
+                // clear/restore/snapshot).
+                let conv_generation = qwen_kv.note_backend_conv_state_update(slot_idx, layer_idx);
+                slot_buffers.conv_synced_generation = Some(conv_generation);
                 let backend_generation =
                     qwen_kv.note_backend_recurrent_state_update(slot_idx, layer_idx);
                 slot_buffers.recurrent_synced_generation = Some(backend_generation);
@@ -4033,6 +4024,15 @@ impl MetalOps {
                 .copy_from_slice(expert_weights_flat);
         }
 
+        // Pre-build token index buffer for weighted scatter (deterministic).
+        let mut tok_idx_buf = MetalBuffer::new(dev, n_tokens * n_expert_used * u4)?;
+        unsafe {
+            let s = tok_idx_buf.as_mut_slice::<u32>();
+            for i in 0..(n_tokens * n_expert_used) {
+                s[i] = (i / n_expert_used) as u32;
+            }
+        }
+
         let cache = self.moe_quant_cache.lock().unwrap();
         let gate_buf = cache.get(&gate_key).unwrap();
         let up_buf = cache.get(&up_key).unwrap();
@@ -4133,57 +4133,21 @@ impl MetalOps {
                 blocks_per_expert_down as u32,
             );
 
-            // Stage 5: Weighted accumulation.
-            // down_out is [n_tokens * n_expert_used, dim].
-            // For each (token t, expert slot s): accum[t] += weight[t*neu+s] * down_out[(t*neu+s)*dim..]
-            // Use a simple elementwise kernel.
-            let total = nt * neu * m_dim;
-            let dims = ax_engine_metal::dispatch::DispatchDims::d1(total as usize, 256);
-            // We need a kernel: accum[token*dim + d] += weight * down_out[hid*dim + d]
-            // where token = hid / neu, weight = expert_weights[hid].
-            // Since down_out is indexed by flat hid, and we need to accumulate
-            // back to token-major layout, use the weighted scatter:
-            // For each hid in 0..n_tokens*n_expert_used:
-            //   token = hid / n_expert_used
-            //   accum[token*dim + d] += weights[hid] * down_out[hid*dim + d]
-            // This is exactly moe_weighted_scatter_add with indices = [0,0,..,1,1,..,2,2,..].
-            // Build these indices.
-            // Actually simpler: use a new kernel or build token_indices buffer.
-
-            // Build token_indices: [0,0,...,0, 1,1,...,1, ...] where each token
-            // repeats n_expert_used times. Write via UMA before encode.
-            // But we can't UMA write inside execute_sync...
-            //
-            // Alternative: use the existing moe_weighted_scatter_add kernel with
-            // a pre-built index buffer.
-
-            Ok(())
-        })?;
-
-        drop(cache);
-
-        // For the accumulation step, we need a separate small dispatch.
-        // Build token index buffer: token_indices[i] = i / n_expert_used.
-        let mut tok_idx_buf = MetalBuffer::new(dev, n_tokens * n_expert_used * u4)?;
-        unsafe {
-            let s = tok_idx_buf.as_mut_slice::<u32>();
-            for i in 0..(n_tokens * n_expert_used) {
-                s[i] = (i / n_expert_used) as u32;
-            }
-        }
-
-        self.device.execute_sync(|encoder| {
+            // Stage 5: Weighted scatter (pre-built tok_idx_buf, same CB).
             self.elementwise.encode_moe_weighted_scatter(
                 encoder,
                 &down_out_gpu,
                 &tok_idx_buf,
                 &weights_gpu,
                 &accum_gpu,
-                dim as u32,
-                (n_tokens * n_expert_used) as u32,
+                m_dim,
+                (nt * neu) as u32,
             );
+
             Ok(())
         })?;
+
+        drop(cache);
 
         // Download.
         unsafe {
