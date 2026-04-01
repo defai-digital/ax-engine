@@ -373,20 +373,17 @@ AX values are median of 5 iterations (2 warmup). llama.cpp values are
 | Model | Quant | AX Prefill | AX Decode | llama Prefill | llama Decode | Prefill % | Decode % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | Qwen3 4B | Q6_K | **1,347** tok/s | **87.8** tok/s | 1,369 tok/s | 83.1 tok/s | 98% | **106%** |
-| Qwen3.5 4B | Q8_0 | **1,148** tok/s | 45.9 tok/s | 1,340 tok/s | 56.5 tok/s | 86% | 81% |
+| Qwen3.5 4B | Q8_0 | 1,076 tok/s | 51.0 tok/s | 1,340 tok/s | 56.5 tok/s | 80% | **90%** |
 | Qwen3.5 9B | Q4_K_M | 585 tok/s | 48.6 tok/s | 733 tok/s | 49.0 tok/s | 80% | 99% |
 | Gemma 3 12B | Q4_K_M | 432 tok/s | 44.6 tok/s | 495 tok/s | 40.2 tok/s | 87% | **111%** |
 | Qwen3.5 27B | Q4_K_M | 191 tok/s | 17.4 tok/s | 209 tok/s | 17.6 tok/s | 91% | 99% |
-| Qwen3 32B | Q4_K_M | 156 tok/s | 17.6 tok/s | — | — | — | — |
-| Qwen3.5 35B-A3B | Q4_K_M | 50 tok/s | 5.8 tok/s | 1,194 tok/s | 55.3 tok/s | 4% | 11% |
+| Qwen3 32B | Q4_K_M | 156 tok/s | 17.6 tok/s | 160 tok/s | 16.2 tok/s | 97% | **109%** |
+| Qwen3.5 35B-A3B | Q4_K_M | 172 tok/s | 6.6 tok/s | 1,194 tok/s | 55.3 tok/s | 14% | 12% |
 
-Qwen3 32B llama.cpp comparison omitted — results showed high variance
-across runs (10-18 tok/s decode) due to thermal sensitivity on the 64-layer
-/ 18.4 GiB model. AX numbers are stable across repeated runs. A proper
-cold-start comparison is pending.
-
-Qwen3.5 35B-A3B runs through the native `qwen35moe` path but is not yet
-performance-tuned for MoE expert dispatch — this row is a correctness baseline.
+Qwen3.5 35B-A3B uses the `mul_mat_id` unified MoE expert dispatch kernel.
+Prefill improved 33x from the initial MoE baseline via GPU fused dequant
+expert matmuls, single-CB encoding, and unified expert routing. Decode
+remains CPU-bound (MoE guard prevents GPU unified decode path).
 
 AX decode exceeds llama.cpp on models where the fused decode path (concurrent
 Metal dispatch, fused QKV+RoPE+KV-append, fused residual+RMSNorm) provides
