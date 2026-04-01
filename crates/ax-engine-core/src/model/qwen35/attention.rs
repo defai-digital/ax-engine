@@ -606,12 +606,11 @@ impl Qwen35Forward {
         _shared_inter_dim_hint: usize,
         rms_norm_eps: f32,
     ) -> anyhow::Result<()> {
-        // Use CPU backend for expert matmuls to avoid per-dispatch GPU command
-        // buffer overhead. Batched-by-expert: group tokens by expert assignment,
-        // run one batched matmul per active expert via BLAS, then scatter back.
-        // Reduces O(n_tokens × n_expert_used × 3) individual matvecs to
+        // Batched-by-expert: group tokens by expert assignment, run one batched
+        // dequant+matmul per active expert, then scatter back. With the GPU backend,
+        // each expert dispatch uses fused batch dequant kernels (no intermediate f32
+        // buffer). Reduces O(n_tokens × n_expert_used × 3) individual matvecs to
         // O(n_active_experts × 3) batched matmuls.
-        let cpu = crate::backend::cpu::CpuBackend;
 
         let ffn_norm_w = weights.f32_slice(&format!("{prefix}.post_attention_norm.weight"))?;
         for token_idx in 0..n_tokens {
@@ -715,7 +714,7 @@ impl Qwen35Forward {
                 Self::expert_quant_slice(down_exps_raw, down_stride, eid, &down_exps_name)?;
 
             // Batched gate matmul: [n_assigned × dim] → [n_assigned × expert_inter_dim]
-            cpu.dequant_matmul_token_major(
+            backend.dequant_matmul_token_major(
                 expert_gate,
                 gate_exps_dtype,
                 &gather_buf[..n_assigned * dim],
@@ -725,7 +724,7 @@ impl Qwen35Forward {
                 dim,
             );
             // Batched up matmul
-            cpu.dequant_matmul_token_major(
+            backend.dequant_matmul_token_major(
                 expert_up,
                 up_exps_dtype,
                 &gather_buf[..n_assigned * dim],
@@ -740,7 +739,7 @@ impl Qwen35Forward {
                 &up_batch[..n_assigned * expert_inter_dim],
             );
             // Batched down matmul: [n_assigned × expert_inter_dim] → [n_assigned × dim]
-            cpu.dequant_matmul_token_major(
+            backend.dequant_matmul_token_major(
                 expert_down,
                 down_exps_dtype,
                 &gate_batch[..n_assigned * expert_inter_dim],
@@ -775,7 +774,7 @@ impl Qwen35Forward {
             // Batched shared expert gate matmul: all tokens at once.
             let mut shared_gate_batch = vec![0.0f32; n_tokens * shared_inter_dim];
             let mut shared_up_batch = vec![0.0f32; n_tokens * shared_inter_dim];
-            cpu.dequant_matmul_token_major(
+            backend.dequant_matmul_token_major(
                 shared_gate_raw,
                 shared_gate_dtype,
                 norm_buf,
@@ -784,7 +783,7 @@ impl Qwen35Forward {
                 shared_inter_dim,
                 dim,
             );
-            cpu.dequant_matmul_token_major(
+            backend.dequant_matmul_token_major(
                 shared_up_raw,
                 shared_up_dtype,
                 norm_buf,
@@ -795,7 +794,7 @@ impl Qwen35Forward {
             );
             silu::silu_elementwise_mul(&mut shared_gate_batch, &shared_up_batch);
             let mut shared_down_batch = vec![0.0f32; n_tokens * dim];
-            cpu.dequant_matmul_token_major(
+            backend.dequant_matmul_token_major(
                 shared_down_raw,
                 shared_down_dtype,
                 &shared_gate_batch,
@@ -811,7 +810,7 @@ impl Qwen35Forward {
                 let (shared_gate_inp_raw, shared_gate_inp_dtype) =
                     weights.raw_with_dtype(&shared_gate_inp_name)?;
                 let mut shared_gate_logits = vec![0.0f32; n_tokens * gate_rows];
-                cpu.dequant_matmul_token_major(
+                backend.dequant_matmul_token_major(
                     shared_gate_inp_raw,
                     shared_gate_inp_dtype,
                     norm_buf,

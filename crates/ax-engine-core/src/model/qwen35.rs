@@ -922,16 +922,11 @@ impl ForwardPass for Qwen35Forward {
         let recurrent_slot = qwen_kv.active_slot();
 
         let dims = Self::recurrent_dims(cfg)?;
-        // For MoE models, use CPU backend for all n=1 matmuls to avoid
-        // per-dispatch GPU CB overhead (~280 CBs/token → 0).
-        // CPU NEON matvec is competitive for single-token decode with
-        // small active params (3B of 35B for qwen35moe).
-        let cpu_backend = crate::backend::cpu::CpuBackend;
-        let backend: &dyn crate::backend::Backend = if Self::qwen35_is_moe(cfg) {
-            &cpu_backend
-        } else {
-            ctx.backend
-        };
+        // MoE expert matmuls use CpuBackend internally (in attention.rs).
+        // Projections and recurrent ops use the default backend (GPU on Metal)
+        // for better throughput — GPU fused dequant matvec is faster than
+        // CPU NEON for the large projection weights.
+        let backend = ctx.backend;
         let n_layers = cfg.n_layers as usize;
         let dim = cfg.embedding_dim as usize;
         let n_heads = cfg.n_heads as usize;
