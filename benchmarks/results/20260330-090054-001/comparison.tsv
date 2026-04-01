@@ -1,2 +1,0 @@
-label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
-fa2-simd-default	models/Llama-3-8B-Instruct-GGUF-Q4_K_M.gguf	512	128	512	3	10	512.6250180532614	644.459525	79.54340003792503	44.7105901783687	55.609145	80.40150622414478

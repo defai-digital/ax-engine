@@ -1,6 +1,4 @@
-pub mod q4_0;
 pub mod q4_k;
-pub mod q5_0;
 pub mod q5_k;
 pub mod q6_k;
 pub mod q8_0;
@@ -13,8 +11,6 @@ pub fn dequant_supported(dtype: GgmlType) -> bool {
         dtype,
         GgmlType::F32
             | GgmlType::F16
-            | GgmlType::Q4_0
-            | GgmlType::Q5_0
             | GgmlType::Q4K
             | GgmlType::Q5K
             | GgmlType::Q6K
@@ -24,7 +20,7 @@ pub fn dequant_supported(dtype: GgmlType) -> bool {
 
 /// Dequantize a block of quantized data to f32.
 ///
-/// Supports F32, F16, Q4_0, Q4_K, Q6_K, and Q8_0.
+/// Supports F32, F16, Q4_K, Q5_K, Q6_K, and Q8_0.
 pub fn dequantize(dtype: GgmlType, src: &[u8], dst: &mut [f32]) {
     match dtype {
         GgmlType::F32 => {
@@ -33,8 +29,6 @@ pub fn dequantize(dtype: GgmlType, src: &[u8], dst: &mut [f32]) {
             dst[..floats.len()].copy_from_slice(floats);
         }
         GgmlType::F16 => dequantize_f16(src, dst),
-        GgmlType::Q4_0 => q4_0::dequantize(src, dst),
-        GgmlType::Q5_0 => q5_0::dequantize(src, dst),
         GgmlType::Q4K => q4_k::dequantize(src, dst),
         GgmlType::Q5K => q5_k::dequantize(src, dst),
         GgmlType::Q6K => q6_k::dequantize(src, dst),

@@ -35,14 +35,16 @@ use crate::backend::metal::MetalOps;
 pub struct Qwen3MoeForward;
 
 /// Compute byte size of `n_elements` in the given quantization type.
-fn expert_byte_stride(dtype: GgmlType, n_elements: usize) -> usize {
+pub(crate) fn expert_byte_stride(dtype: GgmlType, n_elements: usize) -> usize {
     let bs = dtype.block_size();
-    (n_elements / bs) * dtype.bytes_per_block()
+    // Quantized GGUF tensors still allocate a full trailing block for
+    // partially filled experts, so the per-expert byte stride must round up.
+    n_elements.div_ceil(bs) * dtype.bytes_per_block()
 }
 
 /// Softmax over all experts, then select top-k.
 /// Matches llama.cpp: softmax(all logits) → argsort_top_k → extract weights.
-fn top_k_softmax(logits: &[f32], k: usize) -> (Vec<usize>, Vec<f32>) {
+pub(crate) fn top_k_softmax(logits: &[f32], k: usize) -> (Vec<usize>, Vec<f32>) {
     // Step 1: Softmax over ALL expert logits
     let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let mut probs: Vec<f32> = logits.iter().map(|x| (x - max).exp()).collect();
@@ -1967,6 +1969,12 @@ mod tests {
         let stride = expert_byte_stride(GgmlType::Q8_0, 4096 * 4096);
         let n_blocks = (4096 * 4096) / 32;
         assert_eq!(stride, n_blocks * 34);
+    }
+
+    #[test]
+    fn test_expert_byte_stride_rounds_up_partial_quant_block() {
+        let stride = expert_byte_stride(GgmlType::Q8_0, 33);
+        assert_eq!(stride, 2 * GgmlType::Q8_0.bytes_per_block());
     }
 
     #[test]

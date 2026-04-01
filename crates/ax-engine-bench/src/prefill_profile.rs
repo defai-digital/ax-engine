@@ -44,6 +44,8 @@ pub struct PrefillProfileConfig {
     pub qwen35_prewarm_prefill_same_kv: bool,
     /// Force Qwen3.5 recurrent prefill to bypass model-side GPU QKV handoff and use backend state batch.
     pub qwen35_force_backend_state_batch: bool,
+    /// Force a specific local HD128 attention prefill route for benchmarking.
+    pub local_hd128_route: LocalPrefillHd128Route,
 }
 
 impl Default for PrefillProfileConfig {
@@ -60,6 +62,7 @@ impl Default for PrefillProfileConfig {
             qwen35_prime_slot_buffers: false,
             qwen35_prewarm_prefill_same_kv: false,
             qwen35_force_backend_state_batch: false,
+            local_hd128_route: LocalPrefillHd128Route::Auto,
         }
     }
 }
@@ -117,6 +120,36 @@ impl Qwen35AlphaBetaStorageMode {
             Self::Auto => "auto",
             Self::F32 => "f32",
             Self::F16 => "f16",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalPrefillHd128Route {
+    #[default]
+    Auto,
+    AxBc64,
+    Fa2SimdHd128,
+    Fa2HalfHd128,
+}
+
+impl LocalPrefillHd128Route {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::AxBc64 => "ax_bc64",
+            Self::Fa2SimdHd128 => "fa2_simd_hd128",
+            Self::Fa2HalfHd128 => "fa2_half_hd128",
+        }
+    }
+
+    pub fn expected_attention_route_prefix(self) -> Option<&'static str> {
+        match self {
+            Self::Auto => None,
+            Self::AxBc64 => Some("ax_bc64/"),
+            Self::Fa2SimdHd128 => Some("fa2_simd_hd128/"),
+            Self::Fa2HalfHd128 => Some("fa2_half_hd128/"),
         }
     }
 }
@@ -508,6 +541,8 @@ pub struct PrefillProfileResult {
     pub qwen35_prewarm_prefill_same_kv: bool,
     #[serde(default)]
     pub qwen35_force_backend_state_batch: bool,
+    #[serde(default)]
+    pub local_hd128_route: LocalPrefillHd128Route,
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub qwen35_dtype_audit: Option<Qwen35PrefillDTypeAudit>,
@@ -908,6 +943,7 @@ pub fn run_prefill_profile_with_backend(
         qwen35_prime_slot_buffers: config.qwen35_prime_slot_buffers,
         qwen35_prewarm_prefill_same_kv: config.qwen35_prewarm_prefill_same_kv,
         qwen35_force_backend_state_batch: config.qwen35_force_backend_state_batch,
+        local_hd128_route: config.local_hd128_route,
         qwen35_dtype_audit,
         prefill_command_buffers: counters.command_buffers as f64,
         prefill_buffer_barriers: counters.buffer_barriers as f64,
@@ -1096,6 +1132,9 @@ impl PrefillProfileResult {
         }
         if let Some(path) = &self.kernel_profile_path {
             eprintln!("KernelProf:  {path}");
+        }
+        if self.local_hd128_route != LocalPrefillHd128Route::Auto {
+            eprintln!("RouteForce:  {}", self.local_hd128_route.label());
         }
         if let Some(audit) = &self.qwen35_dtype_audit {
             eprintln!(
@@ -1410,6 +1449,7 @@ mod tests {
         assert!(!c.qwen35_prime_slot_buffers);
         assert!(!c.qwen35_prewarm_prefill_same_kv);
         assert!(!c.qwen35_force_backend_state_batch);
+        assert_eq!(c.local_hd128_route, LocalPrefillHd128Route::Auto);
     }
 
     #[test]
@@ -1452,6 +1492,7 @@ mod tests {
             qwen35_prime_slot_buffers: false,
             qwen35_prewarm_prefill_same_kv: false,
             qwen35_force_backend_state_batch: false,
+            local_hd128_route: LocalPrefillHd128Route::Auto,
             qwen35_dtype_audit: None,
             prefill_command_buffers: 1.0,
             prefill_buffer_barriers: 10.0,

@@ -14,12 +14,13 @@
 # =============================================================================
 set -euo pipefail
 
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MODEL=""
+BENCH_BIN="$REPO_DIR/target/release/ax-engine-bench"
 SAMPLES=3
 COOLDOWN_MS=20000
 WARMUP=1
 MEASURE=2
-BENCH_BIN="./target/release/ax-engine-bench"
 PROFILE_PROMPT_TOKENS=512
 
 while [[ $# -gt 0 ]]; do
@@ -36,14 +37,25 @@ if [[ -z "$MODEL" ]]; then
     exit 1
 fi
 
+if [[ ! -f "$MODEL" ]]; then
+    if [[ -f "$REPO_DIR/$MODEL" ]]; then
+        MODEL="$REPO_DIR/$MODEL"
+    else
+        echo "Model not found: $MODEL"
+        exit 1
+    fi
+fi
+
 MODEL_BASENAME="$(basename "$MODEL" .gguf | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
 DATE="$(date +%Y%m%d-%H%M%S)"
-OUTDIR="automatosx/tmp/quicktune-${MODEL_BASENAME}-${DATE}"
+OUTDIR="$REPO_DIR/automatosx/tmp/quicktune-${MODEL_BASENAME}-${DATE}"
 mkdir -p "$OUTDIR"
 
 if [[ ! -x "$BENCH_BIN" ]]; then
     echo "Building..."
+    pushd "$REPO_DIR" >/dev/null
     cargo build -p ax-engine-bench --release
+    popd >/dev/null
 fi
 
 echo "═══════════════════════════════════════════"
@@ -227,7 +239,7 @@ for bk in 0 1; do
     val=$(metric "$OUTDIR/${label}.json" "prefill_tok_per_sec_median")
     better=$(python3 -c "print('y' if float('$val')>float('$BEST_PREFILL_VAL')*1.005 else 'n')")
     if [[ "$better" == "y" ]]; then
-        local candidate_env="$BEST_PREFILL_ENV AX_METAL_F16IN_BK32=$bk"
+        candidate_env="$BEST_PREFILL_ENV AX_METAL_F16IN_BK32=$bk"
         if qwen35_prefill_candidate_ok "$label" "$candidate_env"; then
             BEST_PREFILL_VAL=$val
             BEST_PREFILL_ENV="$candidate_env"
@@ -243,7 +255,7 @@ for fqkv in 0 1; do
     val=$(metric "$OUTDIR/${label}.json" "prefill_tok_per_sec_median")
     better=$(python3 -c "print('y' if float('$val')>float('$BEST_PREFILL_VAL')*1.005 else 'n')")
     if [[ "$better" == "y" ]]; then
-        local candidate_env="$BEST_PREFILL_ENV AX_METAL_FUSED_QKV=$fqkv"
+        candidate_env="$BEST_PREFILL_ENV AX_METAL_FUSED_QKV=$fqkv"
         if qwen35_prefill_candidate_ok "$label" "$candidate_env"; then
             BEST_PREFILL_VAL=$val
             BEST_PREFILL_ENV="$candidate_env"
@@ -259,7 +271,7 @@ for fp in 0 1; do
     val=$(metric "$OUTDIR/${label}.json" "prefill_tok_per_sec_median")
     better=$(python3 -c "print('y' if float('$val')>float('$BEST_PREFILL_VAL')*1.005 else 'n')")
     if [[ "$better" == "y" ]]; then
-        local candidate_env="$BEST_PREFILL_ENV AX_METAL_BATCH_F16_PAIR=$fp"
+        candidate_env="$BEST_PREFILL_ENV AX_METAL_BATCH_F16_PAIR=$fp"
         if qwen35_prefill_candidate_ok "$label" "$candidate_env"; then
             BEST_PREFILL_VAL=$val
             BEST_PREFILL_ENV="$candidate_env"

@@ -1,2 +1,0 @@
-label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
-final-bv128-gdn	models/Qwen3.5-9B-Q4_K_M.gguf	512	128	512	3	10	316.3286599171892	708.747471	44.63206894704943	50.39121842472229	48.130912	104.69616371433455

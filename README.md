@@ -204,8 +204,7 @@ blocked-layout batch matmul design with bounded shader specialization:
 - vectorized tile loading
 - function constants for profitable hot-path specialization such as full-tile
   vs edge-tile handling
-- quantized coverage for common GGUF families including Q4_K, Q5_K, Q6_K,
-  Q8_0, and Q4_0
+- quantized coverage for common GGUF families: Q4_K, Q5_K, Q6_K, Q8_0
 
 The goal is not to copy `llama.cpp` parameter-for-parameter. The goal is to
 adopt similar structural wins only where AX's own runtime and buffer contracts
@@ -225,16 +224,16 @@ on Apple GPUs. The blocked tile geometry and nibble-extraction patterns that
 `llama.cpp` established are effectively the known-good solutions for this
 hardware. Reinventing them differently would not produce faster code.
 
-AX is transparent about this. Of the 181 Metal kernel entry points in the
+AX is transparent about this. Of the 200+ Metal kernel entry points in the
 shader set:
 
 | Category | Total | Directly attributed | Structurally influenced | AX-original |
 |---|---:|---:|---:|---:|
-| Dequant (batch + matvec) | 85 | 9 | ~20 | ~56 |
+| Dequant (batch + matvec) | 100+ | 9 | ~20 | ~70+ |
 | Attention | 30 | 2 | — | 28 |
 | Elementwise + GDN | 63 | 4 | — | 59 |
 | General matmul | 3 | — | — | 3 |
-| **Total** | **181** | **15** | **~20** | **~146** |
+| **Total** | **~200** | **15** | **~20** | **~165** |
 
 **Directly attributed** means the kernel source contains an explicit comment
 referencing the `llama.cpp` kernel it was ported from or modeled on (for
@@ -306,7 +305,8 @@ over general-purpose engines on Apple Silicon.
 | `llama` | LLaMA 3 / 3.1 (8B, 70B) | `LlamaForward` |
 | `qwen2` / `qwen3` | Qwen 2/3 dense (8B, 14B, 32B) | `Qwen3Forward` |
 | `qwen2moe` / `qwen3moe` | Qwen 2/3 MoE | `Qwen3MoeForward` |
-| `qwen35` | Qwen 3.5 hybrid attention + SSM (9B, 27B) | `Qwen35Forward` |
+| `qwen35` | Qwen 3.5 hybrid attention + SSM dense (9B, 27B) | `Qwen35Forward` |
+| `qwen35moe` | Qwen 3.5 hybrid attention + SSM MoE (35B-A3B) | `Qwen35Forward` |
 | `gemma` / `gemma2` / `gemma3` | Gemma 2/3 (4B, 12B, 27B) | `Gemma3Forward` |
 
 Each native architecture has its own hand-written forward pass, fused Metal
@@ -366,86 +366,50 @@ regime-sensitive tuning across:
 
 ## Performance
 
-AX Engine vs llama.cpp on Apple M3 Max (March 2026). All benchmarks use **f16 KV cache** (default). Weight quantization shown in Quant column. Values over 100% mean AX was faster.
+Apple M3 Max, April 2026. P=512 prefill, 128-token decode, f16 KV cache.
+AX values are median of 5 iterations (2 warmup). llama.cpp values are
+3-sample medians with 20s cooldown. AX% over 100% means AX was faster.
 
-| Model | Quant | KV | AX prefill | llama.cpp prefill | AX% | AX decode | llama.cpp decode | AX% |
-|---|---|---|---:|---:|---:|---:|---:|---:|
-| Llama 3 8B | Q4_K_M | f16 | 706.5 tok/s | 773.6 tok/s | 91.3% | 68.5 tok/s | 66.9 tok/s | **102.4%** |
-| Llama 3 70B | Q4_K_M | f16 | 76.9 tok/s | 76.6 tok/s | **100.4%** | 8.5 tok/s | 8.0 tok/s | **106.3%** |
-| Qwen3 8B | Q4_K_M | f16 | 732.1 tok/s | 766.5 tok/s | 95.5% | 72.1 tok/s | 64.6 tok/s | **111.6%** |
-| Qwen3 14B | Q4_K_M | f16 | 394.1 tok/s | 398.7 tok/s | 98.8% | 39.4 tok/s | 36.6 tok/s | **107.7%** |
-| Qwen3 32B | Q4_K_M | f16 | 151.1 tok/s | 169.2 tok/s | 89.3% | 17.7 tok/s | 17.2 tok/s | **102.9%** |
-| Qwen3.5 9B | Q4_K_M | f16 | 668.5 tok/s | 725.5 tok/s | 92.1% | 56.7 tok/s | 49.7 tok/s | **114.1%** |
-| Qwen3.5 27B | Q4_K_M | f16 | 192.7 tok/s | 193.8 tok/s | 99.4% | 16.4 tok/s | 16.8 tok/s | 97.6% |
-| Gemma 3 12B | Q4_K_M | f16 | 445.8 tok/s | 501.1 tok/s | 89.0% | 45.5 tok/s | 41.2 tok/s | **110.4%** |
-| Gemma 3 27B | Q4_K_M | f16 | 199.7 tok/s | 203.6 tok/s | **98.1%** | 21.3 tok/s | 19.2 tok/s | **110.9%** |
+| Model | Quant | AX Prefill | AX Decode | llama Prefill | llama Decode | Prefill % | Decode % |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Qwen3 4B | Q6_K | **1,347** tok/s | **87.8** tok/s | 1,369 tok/s | 83.1 tok/s | 98% | **106%** |
+| Qwen3.5 4B | Q8_0 | **1,148** tok/s | 45.9 tok/s | 1,340 tok/s | 56.5 tok/s | 86% | 81% |
+| Qwen3.5 9B | Q4_K_M | 585 tok/s | 48.6 tok/s | 733 tok/s | 49.0 tok/s | 80% | 99% |
+| Gemma 3 12B | Q4_K_M | 432 tok/s | 44.6 tok/s | 495 tok/s | 40.2 tok/s | 87% | **111%** |
+| Qwen3.5 27B | Q4_K_M | 191 tok/s | 17.4 tok/s | 209 tok/s | 17.6 tok/s | 91% | 99% |
+| Qwen3 32B | Q4_K_M | 156 tok/s | 17.6 tok/s | 119 tok/s | 11.8 tok/s | **131%** | **149%** |
+| Qwen3.5 35B-A3B | Q4_K_M | 50 tok/s | 5.8 tok/s | 1,194 tok/s | 55.3 tok/s | 4% | 11% |
 
-Decode throughput improved materially after porting llama.cpp's concurrent
-Metal dispatch strategy: a concurrent compute encoder (`MTLDispatchType::Concurrent`)
-with per-dispatch SmartBarrier conflict detection that inserts
-`memoryBarrierWithScope(Buffers)` only when a new dispatch reads a buffer
-another pending dispatch wrote. This allows the GPU to overlap independent
-dispatches (e.g. separate Q/K/V matvecs, gate/up projections, K/V cache appends)
-while maintaining correctness at data-hazard boundaries.
+Qwen3 32B: llama.cpp shows a depth-dependent decode regression at d=512
+(11.8 tok/s vs 17.9 at d=0). AX does not have this issue (17.6 at d=512).
+The prefill and decode wins are real but partially reflect a llama.cpp
+depth-handling inefficiency on this model.
 
-Prefill attention now defaults to the `fa2_simd_hd128` kernel for HD=128
-models, which uses `simdgroup_multiply_accumulate` for Q·K^T computation
-(matching llama.cpp's flash attention architecture). FA2 simd routes
-automatically at longer contexts and improves prefill throughput by 7-23%
-at P=512-1024 compared to the previous Mistral-style attention kernel.
+Qwen3.5 35B-A3B runs through the native `qwen35moe` path but is not yet
+performance-tuned for MoE expert dispatch — this row is a correctness baseline.
 
-Decode now exceeds or matches llama.cpp on 7 of 9 models. `Qwen3 8B` at
-**111.6%**, `Qwen3 14B` at **107.7%**, `Qwen3.5 9B` at **115.3%**, `Gemma 3
-12B` at **110.4%**, `Gemma 3 27B` at **110.9%**, `Qwen3 32B` at **102.9%**,
-`Llama 3 70B` at **106.3%**.
+AX decode exceeds llama.cpp on models where the fused decode path (concurrent
+Metal dispatch, fused QKV+RoPE+KV-append, fused residual+RMSNorm) provides
+structural advantages.
 
-`Llama 3 70B` prefill improved from 57% to **100.4%** — at parity with
-llama.cpp. The root cause was the Q5K prefill route independently forcing
-`use_f16_batch_io: true`, which routed through an older f16-input kernel path
-with separate f32→f16 cast dispatches instead of the blocked kernel (identical
-to llama.cpp's `kernel_mul_mm`) that handles inline float→half in the B-tile
-loading phase. The same dispatch consolidation also fixed `Gemma 3 27B` from
-47.8% to **98.1%**.
-
-`Qwen3.5 9B` prefill improved from 62% to **92.1%** after fixing F32 beta/alpha
-recurrent projections that were incorrectly falling to a CPU path. The F32
-weights are now routed to `MatmulKernels::encode_matmul` (simdgroup batch
-matmul) on GPU, eliminating 24 CPU-GPU synchronization roundtrips per prefill.
-The remaining gap (92% vs 100%) comes from GPU-CPU synchronization at recurrent
-layer boundaries — each of the 36 Mamba-2 layers requires a `wait_frame` that
-stalls the GPU pipeline. `Qwen3.5 27B` prefill reached **99.4%** of llama.cpp.
-
-The current table uses serial same-machine runs on Apple M3 Max with matching
-model files, prompt/decode shapes, full GPU offload, Flash Attention enabled in
-`llama.cpp`, and `10-15s` cooldown between cases. Both AX and `llama.cpp` values
-come from outer `3`-sample medians under that methodology.
-
-Prefill uses fused Q4K/Q5K/Q6K dequant batch matmul kernels with native
-token-major layout. GPU attention KV is f16 by default for all models.
-Synthetic throughput benches mask stop tokens during decode measurement so
-long-context rows like `Qwen3 32B` do not collapse to `0 tok/s` when EOS wins
-the first sampled step.
-
-These numbers should be read as a pattern, not a blanket claim:
-
-- AX matches or exceeds llama.cpp prefill on 5 of 9 models (70B, 27B Gemma,
-  14B Qwen3, 27B Qwen3.5, 9B Qwen3.5 within 12%)
-- AX exceeds llama.cpp decode on 7 of 9 models
-- Remaining prefill gaps (Llama 8B at 91%, Qwen3 32B at 89%) come from
-  non-matmul overhead in the per-layer dispatch path
+Prefill uses config-driven kernel selection across all supported quant types
+(Q4_K, Q5_K, Q6_K, Q8_0) with f16-input full-tile kernels (64x64, 64x32,
+tail, small-N variants), blocked layout, and pair (gate+up fused) batch
+dispatch. GPU attention KV is f16 by default for all models.
 
 See [BENCHMARKING.md](./BENCHMARKING.md) for methodology.
 
 ## Supported Models
 
-All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Also supported: Q5_K, Q6_K, Q8_0.
+All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Also supported: Q5_K, Q6_K, Q8_0. Legacy formats (Q4_0, Q5_0) are not supported — use K-quant equivalents.
 
 | Architecture | Models | Sizes |
 |---|---|---|
 | LLaMA 3 | Meta-Llama-3.1-8B-Instruct, Meta-Llama-3-70B-Instruct | 8B, 70B |
-| Qwen 3 (dense) | Qwen3-8B, Qwen3-14B, Qwen3-32B | 8B, 14B, 32B |
+| Qwen 3 (dense) | Qwen3-4B, Qwen3-8B, Qwen3-14B, Qwen3-32B | 4B, 8B, 14B, 32B |
 | Qwen 3 MoE | Qwen3-30B-A3B (experimental) | 30B-A3B |
-| Qwen 3.5 (hybrid) | Qwen3.5-9B, Qwen3.5-27B | 9B, 27B |
+| Qwen 3.5 (hybrid dense) | Qwen3.5-4B, Qwen3.5-9B, Qwen3.5-27B | 4B, 9B, 27B |
+| Qwen 3.5 MoE | Qwen3.5-35B-A3B | 35B-A3B |
 | Gemma 3 | gemma-3-12b-it, gemma-3-27b-it | 12B, 27B |
 
 Unsupported architectures automatically route to llama.cpp when
@@ -464,7 +428,7 @@ Unsupported architectures automatically route to llama.cpp when
 
 **Inference**: Metal GPU prefill and decode, pipelined double-buffered decode, CPU and hybrid backends, speculative decoding with draft models.
 
-**GPU kernels**: Blocked-layout batch matmul (Q4_K/Q5_K/Q6_K/Q8_0/Q4_0), simdgroup-matrix Flash Attention (HD=64/128), split-K decode attention, fused QKV+bias+QKnorm+RoPE+KV-append, fused residual+RMSNorm, gate+up pair kernel, concurrent dispatch with smart barriers.
+**GPU kernels**: Blocked-layout batch matmul (Q4_K/Q5_K/Q6_K/Q8_0) with config-driven kernel selection (full-tile 64x64/64x32, tail, small-N, f16-input, pair, fused-SiLU variants), simdgroup-matrix Flash Attention (HD=64/128), split-K decode attention, fused QKV+bias+QKnorm+RoPE+KV-append, fused residual+RMSNorm, NR2/ILP4 decode matvec, gate+up pair kernel, concurrent dispatch with smart barriers.
 
 **Multi-model**: Per-model Metal command queues and KV caches, graceful OOM handling, explicit GPU/CPU backend per model, thread-safe (`Arc`/`Mutex`).
 
@@ -499,6 +463,20 @@ cargo build --workspace --release
   --model ./models/Qwen3-8B-Q4_K_M.gguf \
   --host 127.0.0.1 --port 3000
 ```
+
+## Script Helpers
+
+Frequently used benchmark helpers live under `./scripts`:
+
+- `scripts/autotune.sh` and `scripts/autotune_quick.sh` for model-specific tuning.
+- `scripts/qwen35_prefill_*_ab.sh` for Qwen3.5 prefill state-path sweeps.
+- `scripts/bench_*` for quick cross-script comparisons (`_decode_barriers_ab.sh`, `_speculative_pairs.sh`, `cross_validate_defaults.sh`).
+- Benchmark outputs are generated via `benchmarks/run_apple_to_apple.py`.
+
+Legacy scripts kept for reference:
+
+- `scripts/bench_prefill_v2_ab.sh` (legacy v2 prefill toggle matrix).
+- `scripts/bench_llama_serial_median.sh` (legacy llama-bench serial median baseline; prefer `benchmarks/run_apple_to_apple.py --ax-only`).
 
 The server exposes `GET /healthz`, `GET /v1/models`, `POST /v1/completions`, and
 `POST /v1/chat/completions`. It is intentionally basic: one loaded model, one

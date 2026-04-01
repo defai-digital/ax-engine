@@ -124,6 +124,21 @@ pub fn metal_precompute_f16_enabled_for_model(config: &ModelConfig) -> bool {
     RuntimePolicy::for_model("default", "default", &config.architecture).precompute_f16_enabled()
 }
 
+fn qwen35_gate_up_scratch_dims(
+    config: &ModelConfig,
+    q_dim: usize,
+    inter_dim: usize,
+) -> (usize, usize) {
+    if !matches!(config.architecture.as_str(), "qwen35" | "qwen35moe") {
+        return (inter_dim, inter_dim);
+    }
+
+    let recurrent_inner_dim = config.qwen35_ssm_inner_size.unwrap_or(0) as usize;
+    let gate_dim = inter_dim.max(q_dim * 2).max(recurrent_inner_dim);
+    let up_dim = inter_dim.max(q_dim).max(recurrent_inner_dim);
+    (gate_dim, up_dim)
+}
+
 fn create_mmap_weight_buffer_from_bytes(device: &MetalDevice, data: &[u8]) -> MetalBuffer {
     unsafe { MetalBuffer::from_bytes_no_copy(device.device(), data) }.unwrap_or_else(|err| {
         tracing::debug!(
@@ -1689,10 +1704,6 @@ impl Backend for MetalBackend {
         // Fused dequant+matvec for decode (N=1) with supported quant types
         if n == 1 {
             match dtype {
-                GgmlType::Q4_0 => {
-                    self.fused_matvec_q4_0(a_quant, b, c, m, k);
-                    return;
-                }
                 GgmlType::Q8_0 => {
                     self.fused_matvec_q8_0(a_quant, b, c, m, k);
                     return;
@@ -1889,12 +1900,7 @@ impl Backend for MetalBackend {
             && ops.iter().all(|(_, dtype, _)| {
                 matches!(
                     dtype,
-                    GgmlType::F32
-                        | GgmlType::Q4_0
-                        | GgmlType::Q8_0
-                        | GgmlType::Q4K
-                        | GgmlType::Q5K
-                        | GgmlType::Q6K
+                    GgmlType::F32 | GgmlType::Q8_0 | GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K
                 )
             });
 
@@ -1942,16 +1948,6 @@ impl Backend for MetalBackend {
                     match dtype {
                         GgmlType::F32 => {
                             self.matmul_kernels.encode_matvec(
-                                encoder,
-                                buf_a,
-                                buf_x,
-                                &output_bufs[i],
-                                *m as u32,
-                                k as u32,
-                            );
-                        }
-                        GgmlType::Q4_0 => {
-                            self.dequant_kernels.encode_fused_matvec_q4_0(
                                 encoder,
                                 buf_a,
                                 buf_x,
@@ -2594,38 +2590,6 @@ impl MetalBackend {
             .entry(key)
             .or_insert_with(|| create_mmap_weight_buffer_from_bytes(&self.device, data));
         cache
-    }
-
-    fn fused_matvec_q4_0(&self, a_quant: &[u8], x: &[f32], y: &mut [f32], m: usize, k: usize) {
-        let y_bytes = m * std::mem::size_of::<f32>();
-        let input_guard = self.prepare_input(x);
-        let output_guard = self.prepare_output(y_bytes);
-
-        let key = a_quant.as_ptr() as usize;
-        let cache = self.get_weight_buffer(a_quant);
-        let buf_a = cache.get(&key).unwrap();
-
-        self.dequant_kernels
-            .fused_matvec_q4_0(
-                &self.device,
-                buf_a,
-                input_guard.0.as_ref().unwrap(),
-                output_guard.0.as_ref().unwrap(),
-                m as u32,
-                k as u32,
-            )
-            .expect("Metal fused Q4_0 matvec failed");
-
-        drop(cache);
-
-        // Read back output via raw pointer
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                output_guard.0.as_ref().unwrap().contents().as_ptr() as *const f32,
-                y.as_mut_ptr(),
-                m,
-            );
-        }
     }
 
     fn fused_matvec_q8_0(&self, a_quant: &[u8], x: &[f32], y: &mut [f32], m: usize, k: usize) {
@@ -3433,6 +3397,8 @@ impl MetalOps {
         let inter_dim = config.intermediate_dim as usize;
         let q_dim = n_heads * head_dim;
         let kv_dim = n_kv_heads * head_dim;
+        let (gate_scratch_dim, up_scratch_dim) =
+            qwen35_gate_up_scratch_dims(config, q_dim, inter_dim);
         let max_chunks = config
             .context_length
             .div_ceil(self.attention_dispatch_config().decode_splitk_chunk_size())
@@ -3450,7 +3416,6 @@ impl MetalOps {
             .expect("Failed to allocate GPU decode f16 scratch buffer")
         };
         let max_input_dim = dim.max(inter_dim);
-
         let vocab_size = config.vocab_size as usize;
         let scratches = GpuScratchBuffers {
             hidden: alloc(dim),
@@ -3462,8 +3427,8 @@ impl MetalOps {
             v_buf: alloc(kv_dim),
             attn_out: alloc(q_dim),
             proj_buf: alloc(dim),
-            gate_buf: alloc(inter_dim),
-            up_buf: alloc(inter_dim),
+            gate_buf: alloc(gate_scratch_dim),
+            up_buf: alloc(up_scratch_dim),
             down_buf: alloc(dim),
             logits_buf: alloc(vocab_size),
             splitk_partial_out: alloc(max_chunks * n_heads * head_dim),
@@ -3474,6 +3439,8 @@ impl MetalOps {
             q_dim,
             kv_dim,
             inter_dim,
+            gate_scratch_dim,
+            up_scratch_dim,
             max_chunks,
             "GPU scratch buffers allocated for phased dispatch"
         );
@@ -3544,6 +3511,8 @@ impl MetalOps {
         let inter_dim = config.intermediate_dim as usize;
         let q_dim = n_heads * head_dim;
         let kv_dim = n_kv_heads * head_dim;
+        let (gate_scratch_dim, up_scratch_dim) =
+            qwen35_gate_up_scratch_dims(config, q_dim, inter_dim);
 
         let alloc = |size: usize| -> MetalBuffer {
             MetalBuffer::new(self.device.device(), size * std::mem::size_of::<f32>())
@@ -3558,7 +3527,11 @@ impl MetalOps {
         };
         let max_input_dim = dim.max(inter_dim);
 
-        let max_output_dim = dim.max(inter_dim).max(q_dim).max(kv_dim);
+        let max_output_dim = dim
+            .max(kv_dim)
+            .max(q_dim)
+            .max(gate_scratch_dim)
+            .max(up_scratch_dim);
 
         let bs = GpuBatchScratchBuffers {
             hidden: alloc(n_tokens * dim),
@@ -3569,8 +3542,8 @@ impl MetalOps {
             attn_out: alloc(n_tokens * q_dim),
             norm_buf: alloc(n_tokens * dim),
             proj_buf: alloc(n_tokens * dim),
-            gate_buf: alloc(n_tokens * inter_dim),
-            up_buf: alloc(n_tokens * inter_dim),
+            gate_buf: alloc(n_tokens * gate_scratch_dim),
+            up_buf: alloc(n_tokens * up_scratch_dim),
             matmul_in_f16: alloc_f16(n_tokens * max_input_dim),
             matmul_out_f16: alloc_f16(n_tokens * max_output_dim),
             batch_size: n_tokens,
@@ -3581,6 +3554,8 @@ impl MetalOps {
             q_dim,
             kv_dim,
             inter_dim,
+            gate_scratch_dim,
+            up_scratch_dim,
             "GPU batch scratch buffers allocated for prefill"
         );
         *guard = Some(bs);
@@ -5027,6 +5002,48 @@ mod tests {
     use super::*;
     use crate::backend::Qwen35RecurrentStateBatch;
 
+    #[test]
+    fn test_qwen35moe_scratch_dims_cover_q_projection_and_recurrent_inner_size() {
+        let config = ModelConfig {
+            architecture: "qwen35moe".into(),
+            n_layers: 40,
+            n_heads: 16,
+            n_kv_heads: 2,
+            embedding_dim: 2048,
+            head_dim: 256,
+            intermediate_dim: 1024,
+            context_length: 128,
+            vocab_size: 32_000,
+            rms_norm_eps: 1e-6,
+            rope_freq_base: 1_000_000.0,
+            has_qkv_bias: false,
+            sliding_window_size: None,
+            sliding_window_pattern: None,
+            gate_activation: crate::model::config::GateActivation::SiLU,
+            tie_word_embeddings: false,
+            logit_scale: None,
+            rope_scaling: crate::model::config::RopeScaling::None,
+            embed_scale: false,
+            rope_freq_base_local: None,
+            n_expert: Some(256),
+            n_expert_used: Some(8),
+            expert_intermediate_dim: Some(512),
+            qwen35_full_attention_interval: Some(4),
+            qwen35_ssm_conv_kernel: Some(4),
+            qwen35_ssm_inner_size: Some(8192),
+            qwen35_ssm_state_size: Some(128),
+            qwen35_ssm_time_step_rank: Some(32),
+            qwen35_ssm_group_count: Some(16),
+        };
+
+        let q_dim = config.n_heads as usize * config.head_dim as usize;
+        let (gate_dim, up_dim) =
+            qwen35_gate_up_scratch_dims(&config, q_dim, config.intermediate_dim as usize);
+
+        assert_eq!(gate_dim, 8192);
+        assert_eq!(up_dim, 8192);
+    }
+
     fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
         a.iter()
             .zip(b.iter())
@@ -5469,11 +5486,13 @@ mod tests {
         let cpu = super::super::cpu::CpuBackend;
 
         let k = 32;
-        let mut q4_block = [0u8; 18];
+        // Q8_0 block: 2 bytes f16 scale + 32 i8 values = 34 bytes, 32 values
+        let mut q8_block = [0u8; 34];
         let d_bytes = half::f16::from_f32(1.0).to_le_bytes();
-        q4_block[0] = d_bytes[0];
-        q4_block[1] = d_bytes[1];
-        q4_block[2..18].fill(0x99);
+        q8_block[0] = d_bytes[0];
+        q8_block[1] = d_bytes[1];
+        // Fill i8 quantized values with 1 (signed)
+        q8_block[2..34].fill(1);
 
         let f32_weight = [0.5f32; 32];
         let f32_bytes: &[u8] = unsafe {
@@ -5484,27 +5503,27 @@ mod tests {
         };
 
         let x = [1.0f32; 32];
-        let mut q4_out = [0.0f32; 1];
+        let mut q8_out = [0.0f32; 1];
         let mut f32_out = [0.0f32; 1];
-        let mut expected_q4 = [0.0f32; 1];
+        let mut expected_q8 = [0.0f32; 1];
         let mut expected_f32 = [0.0f32; 1];
 
-        cpu.dequant_matmul(&q4_block, GgmlType::Q4_0, &x, &mut expected_q4, 1, 1, k);
+        cpu.dequant_matmul(&q8_block, GgmlType::Q8_0, &x, &mut expected_q8, 1, 1, k);
         cpu.dequant_matmul(f32_bytes, GgmlType::F32, &x, &mut expected_f32, 1, 1, k);
 
         backend.device.reset_perf_counters();
         backend.batch_dequant_matvec(
             &[
-                (&q4_block, GgmlType::Q4_0, 1),
+                (&q8_block, GgmlType::Q8_0, 1),
                 (f32_bytes, GgmlType::F32, 1),
             ],
             &x,
             k,
-            &mut [&mut q4_out, &mut f32_out],
+            &mut [&mut q8_out, &mut f32_out],
         );
         let counters = backend.device.perf_counters();
 
-        assert!((q4_out[0] - expected_q4[0]).abs() < 1e-2);
+        assert!((q8_out[0] - expected_q8[0]).abs() < 1e-2);
         assert!((f32_out[0] - expected_f32[0]).abs() < 1e-3);
         assert_eq!(
             counters.command_buffers, 1,
@@ -5518,11 +5537,13 @@ mod tests {
         let cpu = super::super::cpu::CpuBackend;
 
         let k = 32;
-        let mut q4_block = [0u8; 18];
+        // Q8_0 block: 2 bytes f16 scale + 32 i8 values = 34 bytes, 32 values
+        let mut q8_block = [0u8; 34];
         let d_bytes = half::f16::from_f32(1.0).to_le_bytes();
-        q4_block[0] = d_bytes[0];
-        q4_block[1] = d_bytes[1];
-        q4_block[2..18].fill(0x99);
+        q8_block[0] = d_bytes[0];
+        q8_block[1] = d_bytes[1];
+        // Fill i8 quantized values with 1 (signed)
+        q8_block[2..34].fill(1);
 
         let f32_weight = [0.5f32; 32];
         let f32_bytes: &[u8] = unsafe {
@@ -5533,68 +5554,31 @@ mod tests {
         };
 
         let x = [1.0f32; 32];
-        let mut q4_out = [0.0f32; 1];
+        let mut q8_out = [0.0f32; 1];
         let mut f32_out = [0.0f32; 1];
-        let mut expected_q4 = [0.0f32; 1];
+        let mut expected_q8 = [0.0f32; 1];
         let mut expected_f32 = [0.0f32; 1];
 
-        cpu.dequant_matmul(&q4_block, GgmlType::Q4_0, &x, &mut expected_q4, 1, 1, k);
+        cpu.dequant_matmul(&q8_block, GgmlType::Q8_0, &x, &mut expected_q8, 1, 1, k);
         cpu.dequant_matmul(f32_bytes, GgmlType::F32, &x, &mut expected_f32, 1, 1, k);
 
         backend.device.reset_perf_counters();
         backend.safe_batch_dequant_matvec(
             &[
-                (&q4_block, GgmlType::Q4_0, 1),
+                (&q8_block, GgmlType::Q8_0, 1),
                 (f32_bytes, GgmlType::F32, 1),
             ],
             &x,
             k,
-            &mut [&mut q4_out, &mut f32_out],
+            &mut [&mut q8_out, &mut f32_out],
         );
         let counters = backend.device.perf_counters();
 
-        assert!((q4_out[0] - expected_q4[0]).abs() < 1e-2);
+        assert!((q8_out[0] - expected_q8[0]).abs() < 1e-2);
         assert!((f32_out[0] - expected_f32[0]).abs() < 1e-3);
         assert_eq!(
             counters.command_buffers, 1,
             "safe mixed-dtype batch matvec should use one command buffer"
-        );
-    }
-
-    #[test]
-    fn test_metal_backend_fused_q4_0_matvec() {
-        let backend = MetalBackend::new().unwrap();
-
-        // Create Q4_0 data: 2 rows × 32 cols (1 block per row)
-        let m = 2;
-        let k = 32;
-        let mut quant_data = Vec::new();
-        for row in 0..m {
-            let d = half::f16::from_f32((row as f32 + 1.0) * 0.5).to_le_bytes();
-            let mut block = vec![0u8; 18];
-            block[0] = d[0];
-            block[1] = d[1];
-            block[2..18].fill(0x99); // nibble 9: (9-8)=1
-            quant_data.extend(block);
-        }
-
-        // Input vector
-        let x: Vec<f32> = (0..k).map(|i| i as f32 * 0.1).collect();
-
-        // CPU reference: dequant then matmul
-        let mut weights = vec![0.0f32; m * k];
-        crate::quant::q4_0::dequantize(&quant_data, &mut weights);
-        let mut expected = vec![0.0f32; m];
-        crate::compute::matmul::matmul_f32(&weights, &x, &mut expected, m, 1, k);
-
-        // GPU fused dequant+matvec
-        let mut result = vec![0.0f32; m];
-        backend.dequant_matmul(&quant_data, GgmlType::Q4_0, &x, &mut result, m, 1, k);
-
-        let diff = max_abs_diff(&result, &expected);
-        assert!(
-            diff < 1e-2,
-            "Fused Q4_0 matvec mismatch: max_diff={diff}, result={result:?}, expected={expected:?}"
         );
     }
 

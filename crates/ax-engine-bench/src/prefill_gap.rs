@@ -346,6 +346,7 @@ mod tests {
             qwen35_prime_slot_buffers: false,
             qwen35_prewarm_prefill_same_kv: false,
             qwen35_force_backend_state_batch: false,
+            local_hd128_route: crate::prefill_profile::LocalPrefillHd128Route::Auto,
             qwen35_dtype_audit: Some(crate::prefill_profile::Qwen35PrefillDTypeAudit {
                 requested_recurrent_state_mode:
                     crate::prefill_profile::Qwen35RecurrentStateMode::Auto,

@@ -80,7 +80,7 @@ fn unsupported_qwen3_layout_reason(
     has_fused_qkv: bool,
     has_ssm: bool,
 ) -> Option<&'static str> {
-    if architecture == "qwen35" || has_fused_qkv || has_ssm {
+    if matches!(architecture, "qwen35" | "qwen35moe") || has_fused_qkv || has_ssm {
         Some(
             "unsupported qwen35 hybrid layout: found fused attention/SSM tensors \
              (attn_qkv/ssm_*). This model cannot run through Qwen3Forward and needs \

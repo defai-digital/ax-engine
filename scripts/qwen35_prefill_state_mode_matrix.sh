@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-/Users/akiralam/code/ax-engine}"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 MODEL="${MODEL:-$REPO_DIR/models/Qwen3.5-9B-Q4_K_M.gguf}"
 PROMPT_LENGTHS="${PROMPT_LENGTHS:-32 64 128}"
 WARMUP_ITERS="${WARMUP_ITERS:-0}"
 COOLDOWN_S="${COOLDOWN_S:-1}"
 OUT_DIR="${OUT_DIR:-$REPO_DIR/automatosx/tmp}"
 TIMESTAMP="${TIMESTAMP:-$(date +%Y%m%d-%H%M%S)-$$}"
+
+if [[ ! -f "$MODEL" ]]; then
+  if [[ -f "$REPO_DIR/$MODEL" ]]; then
+    MODEL="$REPO_DIR/$MODEL"
+  else
+    echo "error: missing model file: $MODEL" >&2
+    exit 1
+  fi
+fi
 
 mkdir -p "$OUT_DIR"
 RUN_DIR="$OUT_DIR/qwen35-prefill-state-matrix-$TIMESTAMP"
@@ -19,7 +28,7 @@ printf "prompt_tokens\tbest_state_mode\tbest_effective_state_path\tbest_effectiv
 
 for prompt_tokens in $PROMPT_LENGTHS; do
   echo "--- qwen35 state matrix prompt=$prompt_tokens ---" >&2
-  output=$(PROMPT_TOKENS="$prompt_tokens" WARMUP_ITERS="$WARMUP_ITERS" COOLDOWN_S="$COOLDOWN_S" "$REPO_DIR/scripts/qwen35_prefill_recovery_report.sh")
+  output=$(PROMPT_TOKENS="$prompt_tokens" WARMUP_ITERS="$WARMUP_ITERS" COOLDOWN_S="$COOLDOWN_S" MODEL="$MODEL" "$REPO_DIR/scripts/qwen35_prefill_recovery_report.sh")
   report_json=$(printf "%s\n" "$output" | awk '/^JSON: /{print $2}' | tail -n1)
   python3 - "$prompt_tokens" "$report_json" >>"$TSV_OUT" <<'PY'
 import json

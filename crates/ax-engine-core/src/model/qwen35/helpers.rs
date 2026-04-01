@@ -406,6 +406,43 @@ impl Qwen35Forward {
         Ok((raw, dtype, dim))
     }
 
+    fn qwen35_is_moe(cfg: &ModelConfig) -> bool {
+        matches!(cfg.architecture.as_str(), "qwen35moe") || cfg.n_expert.is_some_and(|n| n > 0)
+    }
+
+    fn qwen35_layer_uses_moe(weights: &WeightStore, prefix: &str) -> bool {
+        weights.has(&format!("{prefix}.ffn_gate_inp.weight"))
+    }
+
+    fn tensor_output_rows(weights: &WeightStore, name: &str) -> anyhow::Result<usize> {
+        let info = weights.info(name)?;
+        match info.shape.as_slice() {
+            [_input_dim] => Ok(1),
+            [_input_dim, output_dim, ..] => Ok(*output_dim as usize),
+            [] => anyhow::bail!("{name} has empty shape"),
+        }
+    }
+
+    fn expert_quant_slice<'a>(
+        full: &'a [u8],
+        stride: usize,
+        eid: usize,
+        name: &str,
+    ) -> anyhow::Result<&'a [u8]> {
+        let start = eid
+            .checked_mul(stride)
+            .ok_or_else(|| anyhow::anyhow!("expert slice overflow for {name}"))?;
+        let end = start
+            .checked_add(stride)
+            .ok_or_else(|| anyhow::anyhow!("expert slice overflow for {name}"))?;
+        anyhow::ensure!(
+            end <= full.len(),
+            "expert slice out of bounds for {name}: expert={eid}, end={end}, len={}",
+            full.len()
+        );
+        Ok(&full[start..end])
+    }
+
     fn finalize_recurrent_output(
         rec_out: &mut [f32],
         rec_z: &[f32],

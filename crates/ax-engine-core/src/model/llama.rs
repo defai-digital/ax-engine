@@ -91,14 +91,14 @@ pub(crate) fn metal_decode_barriers_enabled() -> bool {
     }
 }
 
-/// Whether mistral-style HD128 prefill should write attention output in f16.
+/// Whether AX HD128 prefill should write attention output in f16.
 ///
-/// Controlled by `AX_METAL_PREFILL_MISTRAL_F16OUT`:
+/// Controlled by `AX_METAL_PREFILL_AX_F16OUT`:
 /// - `1` / `true` / `on` -> enabled
 /// - unset / other       -> disabled (default)
 fn metal_prefill_attn_f16out_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_PREFILL_MISTRAL_F16OUT") {
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_PREFILL_AX_F16OUT") {
         Ok(v) => {
             let v = v.trim().to_ascii_lowercase();
             v == "1" || v == "true" || v == "on"

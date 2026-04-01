@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 usage() {
     cat <<'EOF'
 Usage:
@@ -31,7 +32,7 @@ if [[ $# -ne 0 ]]; then
     exit 2
 fi
 
-AX_BENCH_BIN=${AX_BENCH_BIN:-target/release/ax-engine-bench}
+AX_BENCH_BIN=${AX_BENCH_BIN:-$REPO_DIR/target/release/ax-engine-bench}
 PROMPT_TOKENS=${PROMPT_TOKENS:-64}
 DECODE_TOKENS=${DECODE_TOKENS:-128}
 WARMUP_ITERS=${WARMUP_ITERS:-1}
@@ -44,16 +45,16 @@ if [[ ! -x "$AX_BENCH_BIN" ]]; then
 fi
 
 STAMP=$(date +%Y%m%d-%H%M%S)
-OUT_PREFIX=${OUT_PREFIX:-automatosx/tmp/barrier-ab-${STAMP}}
+OUT_PREFIX=${OUT_PREFIX:-$REPO_DIR/automatosx/tmp/barrier-ab-${STAMP}}
 OUT_TSV="${OUT_PREFIX}.tsv"
 OUT_MD="${OUT_PREFIX}.md"
 LOG_DIR="${OUT_PREFIX}-logs"
 mkdir -p "$(dirname "$OUT_PREFIX")" "$LOG_DIR"
 
 MODELS=(
-  "qwen3-8b|models/Qwen3-8B-Q4_K_M.gguf"
-  "gemma3-4b|models/gemma-3-4b-it-Q4_K_M.gguf"
-  "llama3-8b|models/Llama-3-8B-Instruct-GGUF-Q4_K_M.gguf"
+  "qwen3-8b|$REPO_DIR/models/Qwen3-8B-Q4_K_M.gguf"
+  "gemma3-4b|$REPO_DIR/models/gemma-3-4b-it-Q4_K_M.gguf"
+  "llama3-8b|$REPO_DIR/models/Llama-3-8B-Instruct-GGUF-Q4_K_M.gguf"
 )
 
 printf "timestamp\tmodel\tconfig\tprofile\tprefill_tok_s\tdecode_tok_s\texit_code\tlog_path\n" >"$OUT_TSV"

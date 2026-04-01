@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 usage() {
     cat <<'EOF'
 Usage:
@@ -29,7 +30,7 @@ if [[ $# -ne 0 ]]; then
     exit 2
 fi
 
-AX_BENCH_BIN=${AX_BENCH_BIN:-target/release/ax-engine-bench}
+AX_BENCH_BIN=${AX_BENCH_BIN:-$REPO_DIR/target/release/ax-engine-bench}
 PROMPT_TOKENS=${PROMPT_TOKENS:-16}
 DECODE_TOKENS=${DECODE_TOKENS:-8}
 WARMUP_ITERS=${WARMUP_ITERS:-0}
@@ -43,16 +44,16 @@ if [[ ! -x "$AX_BENCH_BIN" ]]; then
 fi
 
 STAMP=$(date +%Y%m%d-%H%M%S)
-OUT_PREFIX=${OUT_PREFIX:-automatosx/tmp/spec-pairs-${STAMP}}
+OUT_PREFIX=${OUT_PREFIX:-$REPO_DIR/automatosx/tmp/spec-pairs-${STAMP}}
 OUT_TSV="${OUT_PREFIX}.tsv"
 OUT_MD="${OUT_PREFIX}.md"
 LOG_DIR="${OUT_PREFIX}-logs"
 mkdir -p "$(dirname "$OUT_PREFIX")" "$LOG_DIR"
 
 PAIRS=(
-  "llama3-8b|models/Llama-3-8B-Instruct-GGUF-Q4_K_M.gguf|llama3.1-8b-q8|models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf"
-  "llama3-8b|models/Llama-3-8B-Instruct-GGUF-Q4_K_M.gguf|deepseek-llama-8b-q4|models/DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf"
-  "qwen3-8b|models/Qwen3-8B-Q4_K_M.gguf|deepseek-qwen-7b-q4|models/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
+  "llama3-8b|$REPO_DIR/models/Llama-3-8B-Instruct-GGUF-Q4_K_M.gguf|llama3.1-8b-q8|$REPO_DIR/models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf"
+  "llama3-8b|$REPO_DIR/models/Llama-3-8B-Instruct-GGUF-Q4_K_M.gguf|deepseek-llama-8b-q4|$REPO_DIR/models/DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf"
+  "qwen3-8b|$REPO_DIR/models/Qwen3-8B-Q4_K_M.gguf|deepseek-qwen-7b-q4|$REPO_DIR/models/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
 )
 
 printf "timestamp\ttarget\tdraft\tvalid\tdecode_tok_s\taccepted_per_step\tdraft_ms_per_step\tverify_ms_per_step\taccept_ms_per_step\texit_code\tlog_path\n" >"$OUT_TSV"

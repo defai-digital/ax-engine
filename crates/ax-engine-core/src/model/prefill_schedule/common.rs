@@ -240,7 +240,6 @@ pub(super) enum PrefillOp {
         kv_v: BufRef,
         kv_f16: bool,
         kv_q8: bool,
-        kv_q4: bool,
         n: u32,
         n_heads: u32,
         n_kv_heads: u32,
@@ -267,7 +266,6 @@ pub(super) enum PrefillOp {
         dst: BufRef,
         kv_f16: bool,
         kv_q8: bool,
-        kv_q4: bool,
         cache_offset: u32,
         row_stride: u32,
         kv_dim: u32,
@@ -303,7 +301,6 @@ pub(super) enum PrefillOp {
         out: BufRef,
         kv_f16: bool,
         kv_q8: bool,
-        kv_q4: bool,
         n: u32,
         n_heads: u32,
         n_kv_heads: u32,
@@ -334,6 +331,17 @@ pub(super) enum PrefillOp {
     /// Fused SiLU activation + Q4_K down projection in one dispatch.
     /// Replaces SiluMulBatch + DequantBatch(down) when down weight is Q4_K.
     FusedSiluDownBatchQ4K {
+        weight: BufRef,
+        gate: BufRef,
+        up: BufRef,
+        output: BufRef,
+        m: u32,
+        n: u32,
+        k: u32,
+    },
+    /// Fused SiLU activation + Q6_K down projection in one dispatch.
+    /// Replaces SiluMulBatch + DequantBatch(down) when down weight is Q6_K.
+    FusedSiluDownBatchQ6K {
         weight: BufRef,
         gate: BufRef,
         up: BufRef,
@@ -503,6 +511,12 @@ fn op_buffer_sets(op: &PrefillOp) -> (Vec<usize>, Vec<usize>) {
             gate, up, output, ..
         } => (vec![gate.ptr_id(), up.ptr_id()], vec![output.ptr_id()]),
         PrefillOp::FusedSiluDownBatchQ4K {
+            gate, up, output, ..
+        } => (
+            vec![gate.ptr_id(), up.ptr_id()],
+            vec![output.ptr_id()],
+        ),
+        PrefillOp::FusedSiluDownBatchQ6K {
             gate, up, output, ..
         } => (
             vec![gate.ptr_id(), up.ptr_id()],
@@ -716,7 +730,6 @@ pub(super) fn build_llama_prefill_schedule(
                     kv_v: br(gpu_kv.v_buffer(layer)),
                     kv_f16: prefill_plan.kv_f16,
                     kv_q8: prefill_plan.kv_q8,
-                kv_q4: prefill_plan.kv_q4,
                     n: nt,
                     n_heads,
                     n_kv_heads,
@@ -838,7 +851,6 @@ pub(super) fn build_llama_prefill_schedule(
                 dst: br(gpu_kv.k_buffer(layer)),
                 kv_f16: prefill_plan.kv_f16,
                 kv_q8: prefill_plan.kv_q8,
-                kv_q4: prefill_plan.kv_q4,
                 cache_offset,
                 row_stride: kv_dim as u32,
                 kv_dim: kv_dim as u32,
@@ -849,7 +861,6 @@ pub(super) fn build_llama_prefill_schedule(
                 dst: br(gpu_kv.v_buffer(layer)),
                 kv_f16: prefill_plan.kv_f16,
                 kv_q8: prefill_plan.kv_q8,
-                kv_q4: prefill_plan.kv_q4,
                 cache_offset,
                 row_stride: kv_dim as u32,
                 kv_dim: kv_dim as u32,
@@ -892,7 +903,6 @@ pub(super) fn build_llama_prefill_schedule(
                     out: br(&bs.attn_out),
                     kv_f16: prefill_plan.kv_f16,
                     kv_q8: prefill_plan.kv_q8,
-                kv_q4: prefill_plan.kv_q4,
                     n: nt,
                     n_heads,
                     n_kv_heads,
@@ -1044,19 +1054,35 @@ pub(super) fn build_llama_prefill_schedule(
         let can_fuse_silu_down = matches!(
             ffn_layer_plan.activation,
             PrefillFfnActivationPlan::SiluMulGateF32
-        ) && lw.wd_dtype == GgmlType::Q4K
-            && (inter_dim as u32).is_multiple_of(256); // Q4_K block size
+        ) && matches!(lw.wd_dtype, GgmlType::Q4K | GgmlType::Q6K)
+            && (inter_dim as u32).is_multiple_of(256); // Q4_K/Q6_K block size
 
         if can_fuse_silu_down {
-            ops.push(PrefillOp::FusedSiluDownBatchQ4K {
-                weight: br(wd_buf),
-                gate: br(&bs.gate_buf),
-                up: br(&bs.up_buf),
-                output: br(&bs.proj_buf),
-                m: dim as u32,
-                n: nt,
-                k: inter_dim as u32,
-            });
+            match lw.wd_dtype {
+                GgmlType::Q4K => {
+                    ops.push(PrefillOp::FusedSiluDownBatchQ4K {
+                        weight: br(wd_buf),
+                        gate: br(&bs.gate_buf),
+                        up: br(&bs.up_buf),
+                        output: br(&bs.proj_buf),
+                        m: dim as u32,
+                        n: nt,
+                        k: inter_dim as u32,
+                    });
+                }
+                GgmlType::Q6K => {
+                    ops.push(PrefillOp::FusedSiluDownBatchQ6K {
+                        weight: br(wd_buf),
+                        gate: br(&bs.gate_buf),
+                        up: br(&bs.up_buf),
+                        output: br(&bs.proj_buf),
+                        m: dim as u32,
+                        n: nt,
+                        k: inter_dim as u32,
+                    });
+                }
+                _ => unreachable!(),
+            }
         } else {
             match ffn_layer_plan.activation {
                 PrefillFfnActivationPlan::SiluMulScratchF16 => {

@@ -49,7 +49,7 @@ pub struct ComparisonResult {
 pub fn standard_matrix() -> Vec<MatrixEntry> {
     vec![
         MatrixEntry {
-            label: "7B/Q4_0/4k".into(),
+            label: "7B/Q8_0/4k".into(),
             model_path: String::new(), // set by caller
             prompt_tokens: 512,
             decode_tokens: 128,
@@ -210,7 +210,7 @@ mod tests {
     fn test_compare_passes() {
         let ax = dummy_bench();
         let baseline = BaselineNumbers {
-            label: "7B/Q4_0/4k".into(),
+            label: "7B/Q8_0/4k".into(),
             prefill_tok_per_sec: 1000.0,
             decode_tok_per_sec: 50.0,
             p95_latency: Duration::from_millis(25),
@@ -230,7 +230,7 @@ mod tests {
         ax.prefill_tok_per_sec = 900.0; // 90% of baseline
         ax.prefill_tok_per_sec_median = 900.0;
         let baseline = BaselineNumbers {
-            label: "7B/Q4_0/4k".into(),
+            label: "7B/Q8_0/4k".into(),
             prefill_tok_per_sec: 1000.0,
             decode_tok_per_sec: 50.0,
             p95_latency: Duration::from_millis(25),
@@ -243,7 +243,7 @@ mod tests {
     fn test_standard_matrix_has_entries() {
         let matrix = standard_matrix();
         assert_eq!(matrix.len(), 3);
-        assert_eq!(matrix[0].label, "7B/Q4_0/4k");
+        assert_eq!(matrix[0].label, "7B/Q8_0/4k");
         assert_eq!(matrix[1].label, "20B/Q4_K/8k");
         assert_eq!(matrix[2].label, "70B/Q4_K/32k");
     }

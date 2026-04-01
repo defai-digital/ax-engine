@@ -743,17 +743,7 @@ impl LlamaForward {
                         // K and V appends write to different KV buffers —
                         // SmartBarrier skips the barrier between them.
                         sb.pre_dispatch(&[&bs.k_buf], &[kv_k]);
-                        if prefill_plan.kv_q4 {
-                            metal_ops.elementwise.encode_kv_append_batch_q4(
-                                encoder,
-                                &bs.k_buf,
-                                kv_k,
-                                cache_offset,
-                                kv_dim as u32 / 32,
-                                kv_dim as u32,
-                                nt,
-                            );
-                        } else if prefill_plan.kv_q8 {
+                        if prefill_plan.kv_q8 {
                             metal_ops.elementwise.encode_kv_append_batch_q8(
                                 encoder,
                                 &bs.k_buf,
@@ -777,17 +767,7 @@ impl LlamaForward {
                         }
                         sb.post_dispatch(&[&bs.k_buf], &[kv_k]);
                         sb.pre_dispatch(&[&bs.v_buf], &[kv_v]);
-                        if prefill_plan.kv_q4 {
-                            metal_ops.elementwise.encode_kv_append_batch_q4(
-                                encoder,
-                                &bs.v_buf,
-                                kv_v,
-                                cache_offset,
-                                kv_dim as u32 / 32,
-                                kv_dim as u32,
-                                nt,
-                            );
-                        } else if prefill_plan.kv_q8 {
+                        if prefill_plan.kv_q8 {
                             metal_ops.elementwise.encode_kv_append_batch_q8(
                                 encoder,
                                 &bs.v_buf,
@@ -864,23 +844,7 @@ impl LlamaForward {
                         let kv_k = gpu_kv.k_buffer(layer);
                         let kv_v = gpu_kv.v_buffer(layer);
                         sb.pre_dispatch(&[&bs.q_buf, kv_k, kv_v], &[&bs.attn_out]);
-                        if prefill_plan.kv_q4 {
-                            metal_ops
-                                .attention
-                                .encode_attention_prefill_cached_q4kv(
-                                    encoder,
-                                    &bs.q_buf,
-                                    kv_k,
-                                    kv_v,
-                                    &bs.attn_out,
-                                    nt,
-                                    n_heads as u32,
-                                    n_kv_heads as u32,
-                                    head_dim as u32,
-                                    base_seq_len as u32,
-                                    0,
-                                );
-                        } else if prefill_plan.kv_q8 {
+                        if prefill_plan.kv_q8 {
                             metal_ops
                                 .attention
                                 .encode_attention_prefill_cached_q8kv(

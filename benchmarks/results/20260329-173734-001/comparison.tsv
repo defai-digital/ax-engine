@@ -1,2 +1,0 @@
-label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
-llama3-8b	models/Llama-3-8B-Instruct-GGUF-Q4_K_M.gguf	512	128	512	5	20	684.7824920889867	749.249241	91.3958205916937	59.12775816700716	64.154689	92.16435943911621

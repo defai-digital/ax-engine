@@ -1,0 +1,2 @@
+label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
+qwen3-32b	models/Qwen3-32B-Q4_K_M.gguf	512	128	512	3	20	162.26479397624328	100.87339	160.85986004459977	18.541390458343354	9.601325	193.11283034730474

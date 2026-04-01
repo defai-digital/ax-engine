@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-/Users/akiralam/code/ax-engine}"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 LLAMA_BENCH="${LLAMA_BENCH:-/opt/homebrew/bin/llama-bench}"
 MODEL="${MODEL:-$REPO_DIR/models/Qwen3.5-9B-Q4_K_M.gguf}"
 PROMPT_TOKENS="${PROMPT_TOKENS:-512}"

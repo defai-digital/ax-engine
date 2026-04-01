@@ -1,2 +1,0 @@
-label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
-ws1-ws2-ws4-e2e	models/Qwen3.5-9B-Q4_K_M.gguf	512	128	512	3	10	319.8256618323889	711.565352	44.94677276422376	53.93364002824143	47.445659	113.67455140256652

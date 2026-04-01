@@ -875,20 +875,28 @@ fn validate_generation_options(options: &GenerationOptions) -> anyhow::Result<()
         "max_tokens must be greater than zero"
     );
     ensure!(
-        options.temperature >= 0.0,
-        "temperature must be non-negative"
+        options.temperature.is_finite() && options.temperature >= 0.0,
+        "temperature must be finite and non-negative"
     );
     ensure!(
-        (0.0..=1.0).contains(&options.top_p),
-        "top_p must be between 0.0 and 1.0"
+        options.top_p.is_finite() && (0.0..=1.0).contains(&options.top_p),
+        "top_p must be finite and between 0.0 and 1.0"
     );
     ensure!(
-        (0.0..=1.0).contains(&options.min_p),
-        "min_p must be between 0.0 and 1.0"
+        options.min_p.is_finite() && (0.0..=1.0).contains(&options.min_p),
+        "min_p must be finite and between 0.0 and 1.0"
     );
     ensure!(
-        options.repeat_penalty >= 0.0,
-        "repeat_penalty must be non-negative"
+        options.repeat_penalty.is_finite() && options.repeat_penalty >= 0.0,
+        "repeat_penalty must be finite and non-negative"
+    );
+    ensure!(
+        options.frequency_penalty.is_finite(),
+        "frequency_penalty must be finite"
+    );
+    ensure!(
+        options.presence_penalty.is_finite(),
+        "presence_penalty must be finite"
     );
     ensure!(
         options.repeat_last_n >= -1,
@@ -965,5 +973,22 @@ mod tests {
             longest_partial_stop_suffix("hello s", &[String::from("stop")]),
             1
         );
+    }
+
+    #[test]
+    fn test_validate_generation_options_rejects_non_finite_sampling_values() {
+        let options = GenerationOptions {
+            repeat_penalty: f32::INFINITY,
+            ..GenerationOptions::default()
+        };
+        let err = validate_generation_options(&options).unwrap_err();
+        assert!(err.to_string().contains("repeat_penalty"));
+
+        let options = GenerationOptions {
+            frequency_penalty: f32::NAN,
+            ..GenerationOptions::default()
+        };
+        let err = validate_generation_options(&options).unwrap_err();
+        assert!(err.to_string().contains("frequency_penalty"));
     }
 }

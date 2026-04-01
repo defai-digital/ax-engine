@@ -2337,7 +2337,7 @@ kernel void attention_prefill_f32_v2_hd128(
     }
 }
 
-// Mistral-style prefill specialization for head_dim == 128:
+// AX prefill specialization for head_dim == 128:
 // - BR=8 queries per threadgroup (one simdgroup per query)
 // - BC=32 keys per tile (one lane per key)
 // - TG=256 threads (8 simdgroups)
@@ -2520,7 +2520,7 @@ kernel void attention_prefill_f16_ax_hd128(
     o_ptr[3] = half(outv[3]);
 }
 
-// Mistral-style HD128 prefill with explicit K/V tile staging in threadgroup memory.
+// AX HD128 prefill with explicit K/V tile staging in threadgroup memory.
 // BC=32 keeps shared memory usage bounded (K+V = 32 * 128 * 4 * 2 = 32KB).
 kernel void attention_prefill_f32_ax_hd128_smem(
     device const float* Q      [[buffer(0)]],
@@ -2633,7 +2633,7 @@ kernel void attention_prefill_f32_ax_hd128_smem(
     o_ptr[3] = outv[3];
 }
 
-// Mistral-style HD128 prefill with f16 K/V threadgroup staging.
+// AX HD128 prefill with f16 K/V threadgroup staging.
 // Same BR/BC as smem variant, but halves shared-memory footprint.
 kernel void attention_prefill_f32_ax_hd128_smem_f16(
     device const float* Q      [[buffer(0)]],
@@ -2745,7 +2745,7 @@ kernel void attention_prefill_f32_ax_hd128_smem_f16(
     o_ptr[3] = outv[3];
 }
 
-// Mistral-style prefill specialization for head_dim == 128, BC=64.
+// AX prefill specialization for head_dim == 128, BC=64.
 // Each lane computes two logits per tile (offsets +0 and +32) to reduce
 // tile-loop overhead on long prompts.
 kernel void attention_prefill_f32_ax_hd128_bc64(

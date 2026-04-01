@@ -1,2 +1,0 @@
-label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
-concurrent-decode	models/Qwen3.5-9B-Q4_K_M.gguf	512	128	512	3	10	430.4135963619963	642.274421	67.01397133204475	45.46915217748173	48.024987	94.67811449377743

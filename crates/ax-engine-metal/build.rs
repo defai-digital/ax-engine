@@ -2,8 +2,8 @@
 //!
 //! Compiles all .metal shader files to Metal AIR (intermediate representation)
 //! using `xcrun metal`, then links them into a single `.metallib` binary using
-//! `xcrun metallib`. The .metallib is embedded into the binary at compile time
-//! via `include_bytes!` in pipeline.rs.
+//! `xcrun metallib`. The resulting `.metallib` is emitted into `OUT_DIR` and
+//! loaded by `pipeline.rs` at runtime.
 //!
 //! Reference: mistral.rs build.rs:145-318, llama.cpp embeds ggml.metallib.
 //!

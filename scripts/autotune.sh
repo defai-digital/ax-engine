@@ -18,6 +18,7 @@
 set -euo pipefail
 
 # ─── defaults ───────────────────────────────────────────────────────────────
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MODEL=""
 PROMPT_TOKENS="256"
 DECODE_TOKENS="64"
@@ -28,7 +29,7 @@ MEASURE=3
 PHASE="all"         # all | prefill | decode | attention
 APPLY=false
 DRY_RUN=false
-BENCH_BIN="./target/release/ax-engine-bench"
+BENCH_BIN="$REPO_DIR/target/release/ax-engine-bench"
 
 # ─── parse args ─────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -52,20 +53,26 @@ if [[ -z "$MODEL" ]]; then
 fi
 
 if [[ ! -f "$MODEL" ]]; then
-    echo "Model not found: $MODEL"
-    exit 1
+    if [[ -f "$REPO_DIR/$MODEL" ]]; then
+        MODEL="$REPO_DIR/$MODEL"
+    else
+        echo "Model not found: $MODEL"
+        exit 1
+    fi
 fi
 
 # ─── setup ──────────────────────────────────────────────────────────────────
 MODEL_BASENAME="$(basename "$MODEL" .gguf | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
 DATE="$(date +%Y%m%d-%H%M%S)"
-OUTDIR="automatosx/tmp/autotune-${MODEL_BASENAME}-${DATE}"
+OUTDIR="$REPO_DIR/automatosx/tmp/autotune-${MODEL_BASENAME}-${DATE}"
 mkdir -p "$OUTDIR"
 
 # Build if needed
 if [[ ! -x "$BENCH_BIN" ]]; then
     echo "Building ax-engine-bench (release)..."
+    pushd "$REPO_DIR" >/dev/null
     cargo build -p ax-engine-bench --release
+    popd >/dev/null
 fi
 
 echo "═══════════════════════════════════════════════════════════════"

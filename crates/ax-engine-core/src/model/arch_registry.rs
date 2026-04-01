@@ -37,6 +37,7 @@ pub fn is_arch_supported(arch: &str) -> bool {
             | "qwen2moe"
             | "qwen3moe"
             | "qwen35"
+            | "qwen35moe"
             | "gemma"
             | "gemma2"
             | "gemma3"
@@ -48,8 +49,6 @@ pub fn is_quant_supported(dtype: GgmlType) -> bool {
         dtype,
         GgmlType::F32
             | GgmlType::F16
-            | GgmlType::Q4_0
-            | GgmlType::Q5_0
             | GgmlType::Q8_0
             | GgmlType::Q4K
             | GgmlType::Q5K
@@ -104,10 +103,10 @@ pub fn forward_for_arch(arch: &str) -> anyhow::Result<Box<dyn ForwardPass>> {
         ),
         "qwen2" | "qwen3" => Ok(Box::new(Qwen3Forward)),
         "qwen2moe" | "qwen3moe" => Ok(Box::new(Qwen3MoeForward)),
-        "qwen35" => Ok(Box::new(Qwen35Forward)),
+        "qwen35" | "qwen35moe" => Ok(Box::new(Qwen35Forward)),
         "gemma" | "gemma2" | "gemma3" => Ok(Box::new(Gemma3Forward)),
         _ => anyhow::bail!(
-            "unsupported architecture: '{arch}'. Supported: llama, qwen2, qwen3, qwen3moe, qwen35, gemma, gemma2, gemma3"
+            "unsupported architecture: '{arch}'. Supported: llama, qwen2, qwen3, qwen3moe, qwen35, qwen35moe, gemma, gemma2, gemma3"
         ),
     }
 }
@@ -139,6 +138,7 @@ mod tests {
         assert!(is_arch_supported("llama"));
         assert!(is_arch_supported("qwen3"));
         assert!(is_arch_supported("qwen35"));
+        assert!(is_arch_supported("qwen35moe"));
         assert!(is_arch_supported("gemma3"));
         assert!(!is_arch_supported("mistral"));
     }
@@ -148,6 +148,8 @@ mod tests {
         assert!(is_quant_supported(GgmlType::F32));
         assert!(is_quant_supported(GgmlType::Q4K));
         assert!(is_quant_supported(GgmlType::Q6K));
+        assert!(!is_quant_supported(GgmlType::Q4_0));
+        assert!(!is_quant_supported(GgmlType::Q5_0));
         assert!(!is_quant_supported(GgmlType::Q2K));
         assert!(!is_quant_supported(GgmlType::Q3K));
         assert!(!is_quant_supported(GgmlType::Q8K));
@@ -180,6 +182,12 @@ mod tests {
     #[test]
     fn test_qwen35_variant() {
         let fwd = forward_for_arch("qwen35").unwrap();
+        assert_eq!(fwd.arch_name(), "qwen35");
+    }
+
+    #[test]
+    fn test_qwen35moe_variant() {
+        let fwd = forward_for_arch("qwen35moe").unwrap();
         assert_eq!(fwd.arch_name(), "qwen35");
     }
 

@@ -22,21 +22,12 @@ pub enum GpuKvDtype {
     /// Block size 32 values → 34 bytes (2 byte scale + 32 byte i8 data).
     /// ~1.88× smaller than F16, ~3.76× smaller than F32.
     Q8_0,
-    /// Q4_0: block-quantized 4-bit with per-block f16 scale.
-    /// Block size 32 values → 18 bytes (2 byte scale + 16 byte nibble pairs).
-    /// ~3.56× smaller than F16, ~7.11× smaller than F32.
-    Q4_0,
 }
 
 /// Q8_0 block size: 32 values per block.
 pub const Q8_0_BLOCK_VALUES: usize = 32;
 /// Q8_0 block byte size: half(2) + i8×32(32) = 34 bytes.
 pub const Q8_0_BLOCK_BYTES: usize = 34;
-
-/// Q4_0 block size: 32 values per block.
-pub const Q4_0_BLOCK_VALUES: usize = 32;
-/// Q4_0 block byte size: half(2) + nibble_pairs×16(16) = 18 bytes.
-pub const Q4_0_BLOCK_BYTES: usize = 18;
 
 impl GpuKvDtype {
     /// Per-element byte size (only valid for F32/F16).
@@ -47,7 +38,6 @@ impl GpuKvDtype {
             Self::F32 => std::mem::size_of::<f32>(),
             Self::F16 => std::mem::size_of::<half::f16>(),
             Self::Q8_0 => panic!("Q8_0 is block-quantized; use row_bytes() instead of elem_size()"),
-            Self::Q4_0 => panic!("Q4_0 is block-quantized; use row_bytes() instead of elem_size()"),
         }
     }
 
@@ -63,13 +53,6 @@ impl GpuKvDtype {
                     "kv_stride must be multiple of Q8_0 block size (32)"
                 );
                 (kv_stride / Q8_0_BLOCK_VALUES) * Q8_0_BLOCK_BYTES
-            }
-            Self::Q4_0 => {
-                debug_assert!(
-                    kv_stride.is_multiple_of(Q4_0_BLOCK_VALUES),
-                    "kv_stride must be multiple of Q4_0 block size (32)"
-                );
-                (kv_stride / Q4_0_BLOCK_VALUES) * Q4_0_BLOCK_BYTES
             }
         }
     }
@@ -219,11 +202,6 @@ impl GpuKv {
         self.dtype == GpuKvDtype::Q8_0
     }
 
-    /// True when KV buffers are stored as Q4_0 (block-quantized 4-bit).
-    pub fn is_q4(&self) -> bool {
-        self.dtype == GpuKvDtype::Q4_0
-    }
-
     /// Get the K buffer for a layer (for GPU binding).
     pub fn k_buffer(&self, layer: usize) -> &MetalBuffer {
         &self.k_bufs[layer]
@@ -295,16 +273,6 @@ impl GpuKv {
                 };
                 dequantize_row_q8_0(k_src, k_out, self.kv_stride / Q8_0_BLOCK_VALUES);
                 dequantize_row_q8_0(v_src, v_out, self.kv_stride / Q8_0_BLOCK_VALUES);
-            }
-            GpuKvDtype::Q4_0 => {
-                let k_src = unsafe {
-                    (self.k_bufs[layer].contents().as_ptr() as *const u8).add(offset_bytes)
-                };
-                let v_src = unsafe {
-                    (self.v_bufs[layer].contents().as_ptr() as *const u8).add(offset_bytes)
-                };
-                dequantize_row_q4_0(k_src, k_out, self.kv_stride / Q4_0_BLOCK_VALUES);
-                dequantize_row_q4_0(v_src, v_out, self.kv_stride / Q4_0_BLOCK_VALUES);
             }
         }
     }
@@ -387,26 +355,6 @@ impl GpuKv {
                     );
                 }
             }
-            GpuKvDtype::Q4_0 => {
-                let row_bytes = self.dtype.row_bytes(self.kv_stride);
-                let n_blocks_per_row = self.kv_stride / Q4_0_BLOCK_VALUES;
-                let k_base = self.k_bufs[layer].contents().as_ptr() as *const u8;
-                let v_base = self.v_bufs[layer].contents().as_ptr() as *const u8;
-                for t in 0..n_tokens {
-                    let src_byte_off = (start_token + t) * row_bytes;
-                    let dst_elem_off = t * self.kv_stride;
-                    dequantize_row_q4_0(
-                        unsafe { k_base.add(src_byte_off) },
-                        &mut k_out[dst_elem_off..dst_elem_off + self.kv_stride],
-                        n_blocks_per_row,
-                    );
-                    dequantize_row_q4_0(
-                        unsafe { v_base.add(src_byte_off) },
-                        &mut v_out[dst_elem_off..dst_elem_off + self.kv_stride],
-                        n_blocks_per_row,
-                    );
-                }
-            }
         }
     }
 
@@ -478,17 +426,6 @@ impl GpuKv {
                 };
                 quantize_row_q8_0(k_new, k_dst, n_blocks);
                 quantize_row_q8_0(v_new, v_dst, n_blocks);
-            }
-            GpuKvDtype::Q4_0 => {
-                let n_blocks = self.kv_stride / Q4_0_BLOCK_VALUES;
-                let k_dst = unsafe {
-                    (self.k_bufs[layer].contents().as_ptr() as *mut u8).add(offset_bytes)
-                };
-                let v_dst = unsafe {
-                    (self.v_bufs[layer].contents().as_ptr() as *mut u8).add(offset_bytes)
-                };
-                quantize_row_q4_0(k_new, k_dst, n_blocks);
-                quantize_row_q4_0(v_new, v_dst, n_blocks);
             }
         }
     }
@@ -573,29 +510,6 @@ impl GpuKv {
                         n_blocks,
                     );
                     quantize_row_q8_0(
-                        &v_batch[src_off..src_off + self.kv_stride],
-                        unsafe { v_dst.add(dst_off) },
-                        n_blocks,
-                    );
-                }
-            }
-            GpuKvDtype::Q4_0 => {
-                let n_blocks = self.kv_stride / Q4_0_BLOCK_VALUES;
-                let k_dst = unsafe {
-                    (self.k_bufs[layer].contents().as_ptr() as *mut u8).add(offset_bytes)
-                };
-                let v_dst = unsafe {
-                    (self.v_bufs[layer].contents().as_ptr() as *mut u8).add(offset_bytes)
-                };
-                for t in 0..n_tokens {
-                    let src_off = t * self.kv_stride;
-                    let dst_off = t * row_bytes;
-                    quantize_row_q4_0(
-                        &k_batch[src_off..src_off + self.kv_stride],
-                        unsafe { k_dst.add(dst_off) },
-                        n_blocks,
-                    );
-                    quantize_row_q4_0(
                         &v_batch[src_off..src_off + self.kv_stride],
                         unsafe { v_dst.add(dst_off) },
                         n_blocks,
@@ -744,50 +658,6 @@ fn dequantize_row_q8_0(src: *const u8, dst: &mut [f32], n_blocks: usize) {
         for i in 0..Q8_0_BLOCK_VALUES {
             let q = unsafe { *block_src.add(2 + i) } as i8;
             dst[b * Q8_0_BLOCK_VALUES + i] = q as f32 * d;
-        }
-    }
-}
-
-/// Quantize a row of f32 values into Q4_0 blocks at `dst`.
-///
-/// `n_blocks` = number of Q4_0 blocks (each block covers 32 values).
-/// `src` must have `n_blocks * 32` elements.
-/// `dst` must have space for `n_blocks * 18` bytes.
-fn quantize_row_q4_0(src: &[f32], dst: *mut u8, n_blocks: usize) {
-    debug_assert_eq!(src.len(), n_blocks * Q4_0_BLOCK_VALUES);
-    for b in 0..n_blocks {
-        let block_src = &src[b * Q4_0_BLOCK_VALUES..(b + 1) * Q4_0_BLOCK_VALUES];
-        let amax = block_src.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
-        let d = amax / 15.0;
-        let id = if amax > 0.0 { 15.0 / amax } else { 0.0 };
-        let d_f16 = half::f16::from_f32(d);
-        let block_dst = unsafe { dst.add(b * Q4_0_BLOCK_BYTES) };
-        // Write scale (2 bytes)
-        unsafe {
-            std::ptr::copy_nonoverlapping(&d_f16 as *const half::f16 as *const u8, block_dst, 2);
-        }
-        // Pack nibble pairs (16 bytes)
-        for i in 0..16 {
-            let lo = (block_src[i] * id + 8.0).round().clamp(0.0, 15.0) as u8;
-            let hi = (block_src[i + 16] * id + 8.0).round().clamp(0.0, 15.0) as u8;
-            unsafe { *block_dst.add(2 + i) = (lo & 0x0F) | (hi << 4) };
-        }
-    }
-}
-
-/// Dequantize Q4_0 blocks at `src` into f32 values.
-fn dequantize_row_q4_0(src: *const u8, dst: &mut [f32], n_blocks: usize) {
-    debug_assert_eq!(dst.len(), n_blocks * Q4_0_BLOCK_VALUES);
-    for b in 0..n_blocks {
-        let block_src = unsafe { src.add(b * Q4_0_BLOCK_BYTES) };
-        let d_f16: half::f16 = unsafe { std::ptr::read_unaligned(block_src as *const half::f16) };
-        let d = d_f16.to_f32();
-        for i in 0..16 {
-            let byte = unsafe { *block_src.add(2 + i) };
-            let lo = (byte & 0x0F) as i32 - 8;
-            let hi = (byte >> 4) as i32 - 8;
-            dst[b * Q4_0_BLOCK_VALUES + i] = lo as f32 * d;
-            dst[b * Q4_0_BLOCK_VALUES + i + 16] = hi as f32 * d;
         }
     }
 }

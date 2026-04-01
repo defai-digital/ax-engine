@@ -27,10 +27,6 @@ impl Backend for CpuBackend {
         // f32 allocation. For prefill (n>1), fall back to dequant + BLAS.
         if n == 1 {
             match dtype {
-                GgmlType::Q4_0 => {
-                    neon::fused_matvec_q4_0(a_quant, b, c, m, k);
-                    return;
-                }
                 GgmlType::Q4K => {
                     neon::fused_matvec_q4_k(a_quant, b, c, m, k);
                     return;
@@ -109,46 +105,6 @@ mod tests {
         assert!((c[1] - 22.0).abs() < 1e-4);
         assert!((c[2] - 43.0).abs() < 1e-4);
         assert!((c[3] - 50.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn test_cpu_dequant_matmul_q4_0_fused() {
-        // Verify the fused path is used for n=1 and produces correct results
-        let backend = CpuBackend;
-
-        // Create a Q4_0 block: d=1.0, all nibbles=9 → dequant to 1.0
-        let mut block = [0u8; 18];
-        let d_bytes = half::f16::from_f32(1.0).to_le_bytes();
-        block[0] = d_bytes[0];
-        block[1] = d_bytes[1];
-        block[2..18].fill(0x99); // nibble 9 → (9-8)*1 = 1.0
-
-        let b = [1.0f32; 32]; // k=32
-        let mut c = [0.0f32; 1]; // m=1, n=1
-
-        backend.dequant_matmul(&block, GgmlType::Q4_0, &b, &mut c, 1, 1, 32);
-        assert!((c[0] - 32.0).abs() < 0.5, "expected ~32.0, got {}", c[0]);
-    }
-
-    #[test]
-    fn test_cpu_dequant_matmul_q4_0_fallback() {
-        // Verify n>1 falls back to dequant+BLAS
-        let backend = CpuBackend;
-
-        // m=1, n=2, k=32 → not a matvec, should use fallback
-        let mut block = [0u8; 18];
-        let d_bytes = half::f16::from_f32(1.0).to_le_bytes();
-        block[0] = d_bytes[0];
-        block[1] = d_bytes[1];
-        block[2..18].fill(0x88); // nibble 8 → (8-8)*1 = 0
-
-        let b = [1.0f32; 64]; // k=32, n=2 → b is 32×2
-        let mut c = [0.0f32; 2]; // m=1, n=2
-
-        backend.dequant_matmul(&block, GgmlType::Q4_0, &b, &mut c, 1, 2, 32);
-        // All dequanted values are 0, so dot products should be 0
-        assert!(c[0].abs() < 1e-4);
-        assert!(c[1].abs() < 1e-4);
     }
 
     #[test]

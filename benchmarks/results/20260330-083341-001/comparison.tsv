@@ -1,2 +1,0 @@
-label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
-smart-barrier	models/Qwen3.5-9B-Q4_K_M.gguf	512	128	512	3	10	437.6142867744747	725.458523	60.3224406220774	65.04064766342798	49.684699	130.90679620184068

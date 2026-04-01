@@ -1,0 +1,2 @@
+label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
+qwen35-27b	models/Qwen3.5-27B-Q4_K_M.gguf	512	128	512	3	20	191.40931086666546	209.352406	91.42923863347693	17.40181370743245	17.577888	98.99831940806796

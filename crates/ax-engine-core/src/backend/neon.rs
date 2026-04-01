@@ -5,7 +5,7 @@
 //! are decoded directly into NEON registers and accumulated with the input
 //! vector, so the dequantized values never touch memory.
 //!
-//! Supported formats: Q4_0, Q4_K, Q5_K, Q8_0, Q6_K.
+//! Supported formats: Q4_K, Q5_K, Q8_0, Q6_K.
 //! Unsupported formats fall back to the default dequantize-then-matmul path.
 
 use rayon::prelude::*;
@@ -14,10 +14,6 @@ use rayon::prelude::*;
 /// sequential iteration avoids rayon scheduling overhead. All production
 /// matmuls (smallest is K projection at 1024 rows) exceed this.
 const PARALLEL_ROW_THRESHOLD: usize = 128;
-
-// --- Q4_0 constants ---
-const Q4_0_BLOCK_SIZE: usize = 32;
-const Q4_0_BYTES_PER_BLOCK: usize = 18;
 
 // --- Q4_K constants ---
 const Q4_K_BLOCK_SIZE: usize = 256;
@@ -34,182 +30,6 @@ const Q8_0_BYTES_PER_BLOCK: usize = 34;
 // --- Q6_K constants ---
 const Q6_K_BLOCK_SIZE: usize = 256;
 const Q6_K_BYTES_PER_BLOCK: usize = 210;
-
-// ---------------------------------------------------------------------------
-// Q4_0 fused matvec
-// ---------------------------------------------------------------------------
-
-/// Fused dequant+matvec for Q4_0: c[i] = dot(dequant(A_row[i]), b) for each row.
-///
-/// `a_quant`: row-major quantized weight matrix (m rows, k values per row)
-/// `b`: input vector [k]
-/// `c`: output vector [m]
-/// `m`: number of rows (output dimension)
-/// `k`: number of columns (must be a multiple of 32)
-pub fn fused_matvec_q4_0(a_quant: &[u8], b: &[f32], c: &mut [f32], m: usize, k: usize) {
-    debug_assert_eq!(
-        k % Q4_0_BLOCK_SIZE,
-        0,
-        "k must be a multiple of Q4_0 block size"
-    );
-    let blocks_per_row = k / Q4_0_BLOCK_SIZE;
-    let row_bytes = blocks_per_row * Q4_0_BYTES_PER_BLOCK;
-    let expected_bytes = m * row_bytes;
-    assert!(
-        a_quant.len() >= expected_bytes,
-        "Q4_0 tensor data too small: have {} bytes, need {} (m={m}, k={k})",
-        a_quant.len(),
-        expected_bytes,
-    );
-    assert!(
-        b.len() >= k,
-        "Q4_0 input vector too small: have {}, need {k}",
-        b.len(),
-    );
-
-    if m >= PARALLEL_ROW_THRESHOLD {
-        c[..m].par_iter_mut().enumerate().for_each(|(row, c_val)| {
-            let row_data = &a_quant[row * row_bytes..(row + 1) * row_bytes];
-            *c_val = fused_dot_q4_0(row_data, b, blocks_per_row);
-        });
-    } else {
-        for row in 0..m {
-            let row_data = &a_quant[row * row_bytes..(row + 1) * row_bytes];
-            c[row] = fused_dot_q4_0(row_data, b, blocks_per_row);
-        }
-    }
-}
-
-/// Compute dot product of one Q4_0-quantized row with an f32 vector.
-#[cfg(target_arch = "aarch64")]
-fn fused_dot_q4_0(quant_row: &[u8], b: &[f32], n_blocks: usize) -> f32 {
-    // SAFETY: NEON is always available on aarch64. Pointer arithmetic is
-    // bounded by n_blocks which is derived from validated slice lengths.
-    unsafe { fused_dot_q4_0_neon(quant_row, b, n_blocks) }
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-fn fused_dot_q4_0(quant_row: &[u8], b: &[f32], n_blocks: usize) -> f32 {
-    fused_dot_q4_0_scalar(quant_row, b, n_blocks)
-}
-
-/// NEON-optimized Q4_0 fused dot product.
-///
-/// For each Q4_0 block (32 values in 18 bytes):
-///   1. Load f16 scale -> f32
-///   2. Load 16 quant bytes, extract low/high nibbles via NEON masks
-///   3. Widen nibbles to f32, FMA with input vector into block accumulator
-///   4. Multiply block accumulator by scale (deferred) and add to global acc
-///
-/// The scale multiply is deferred to the end of each block, reducing
-/// 8 multiplies per block to 1.
-#[cfg(target_arch = "aarch64")]
-#[inline]
-unsafe fn fused_dot_q4_0_neon(quant_row: &[u8], b: &[f32], n_blocks: usize) -> f32 {
-    use std::arch::aarch64::*;
-
-    unsafe {
-        let mut acc = vdupq_n_f32(0.0);
-        let sub8 = vdupq_n_s16(8);
-        let mask_lo = vdupq_n_u8(0x0F);
-
-        let mut q_ptr = quant_row.as_ptr();
-        let mut b_ptr = b.as_ptr();
-
-        for _ in 0..n_blocks {
-            // Load f16 scale -> f32
-            let d_bits = (q_ptr as *const u16).read_unaligned();
-            let d = half::f16::from_bits(d_bits).to_f32();
-            q_ptr = q_ptr.add(2);
-
-            // Load 16 quant bytes
-            let qvec = vld1q_u8(q_ptr);
-            q_ptr = q_ptr.add(16);
-
-            // Extract nibbles
-            let lo = vandq_u8(qvec, mask_lo); // low nibbles -> elements 0..16
-            let hi = vshrq_n_u8::<4>(qvec); // high nibbles -> elements 16..32
-
-            // Block accumulator (deferred scale multiplication)
-            let mut blk_acc = vdupq_n_f32(0.0);
-
-            // --- Low nibbles: elements 0-15 ---
-            let lo_lo = vget_low_u8(lo);
-            let lo_hi = vget_high_u8(lo);
-
-            // Widen u8 -> i16, subtract 8
-            let s0 = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(lo_lo)), sub8);
-            let s1 = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(lo_hi)), sub8);
-
-            // Elements 0-3: widen i16 -> i32 -> f32, FMA with b
-            let f0 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(s0)));
-            blk_acc = vfmaq_f32(blk_acc, f0, vld1q_f32(b_ptr));
-
-            // Elements 4-7
-            let f1 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(s0)));
-            blk_acc = vfmaq_f32(blk_acc, f1, vld1q_f32(b_ptr.add(4)));
-
-            // Elements 8-11
-            let f2 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(s1)));
-            blk_acc = vfmaq_f32(blk_acc, f2, vld1q_f32(b_ptr.add(8)));
-
-            // Elements 12-15
-            let f3 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(s1)));
-            blk_acc = vfmaq_f32(blk_acc, f3, vld1q_f32(b_ptr.add(12)));
-
-            // --- High nibbles: elements 16-31 ---
-            let hi_lo = vget_low_u8(hi);
-            let hi_hi = vget_high_u8(hi);
-
-            let s2 = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(hi_lo)), sub8);
-            let s3 = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(hi_hi)), sub8);
-
-            let f4 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(s2)));
-            blk_acc = vfmaq_f32(blk_acc, f4, vld1q_f32(b_ptr.add(16)));
-
-            let f5 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(s2)));
-            blk_acc = vfmaq_f32(blk_acc, f5, vld1q_f32(b_ptr.add(20)));
-
-            let f6 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(s3)));
-            blk_acc = vfmaq_f32(blk_acc, f6, vld1q_f32(b_ptr.add(24)));
-
-            let f7 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(s3)));
-            blk_acc = vfmaq_f32(blk_acc, f7, vld1q_f32(b_ptr.add(28)));
-
-            // Apply deferred scale: acc += blk_acc * d
-            acc = vfmaq_n_f32(acc, blk_acc, d);
-
-            b_ptr = b_ptr.add(32);
-        }
-
-        // Horizontal sum of 4 lanes
-        vaddvq_f32(acc)
-    }
-}
-
-/// Scalar fallback for Q4_0 fused dot product.
-#[allow(dead_code)]
-fn fused_dot_q4_0_scalar(quant_row: &[u8], b: &[f32], n_blocks: usize) -> f32 {
-    let mut sum = 0.0f32;
-
-    for blk in 0..n_blocks {
-        let block = &quant_row[blk * Q4_0_BYTES_PER_BLOCK..][..Q4_0_BYTES_PER_BLOCK];
-        let d = half::f16::from_le_bytes([block[0], block[1]]).to_f32();
-        let qs = &block[2..18];
-        let b_off = blk * Q4_0_BLOCK_SIZE;
-
-        let mut blk_sum = 0.0f32;
-        for i in 0..16 {
-            let lo = (qs[i] & 0x0F) as i32 - 8;
-            let hi = (qs[i] >> 4) as i32 - 8;
-            blk_sum += lo as f32 * b[b_off + i];
-            blk_sum += hi as f32 * b[b_off + 16 + i];
-        }
-        sum += d * blk_sum;
-    }
-
-    sum
-}
 
 // ---------------------------------------------------------------------------
 // Q4_K fused matvec
@@ -956,117 +776,6 @@ fn get_scale_min_k4(j: usize, scales: &[u8]) -> (u8, u8) {
 mod tests {
     use super::*;
 
-    // Helper: create a Q4_0 block with given scale and nibble pattern.
-    fn make_q4_0_block(d: f32, nibble_lo: u8, nibble_hi: u8) -> [u8; Q4_0_BYTES_PER_BLOCK] {
-        let mut block = [0u8; Q4_0_BYTES_PER_BLOCK];
-        let d_bytes = half::f16::from_f32(d).to_le_bytes();
-        block[0] = d_bytes[0];
-        block[1] = d_bytes[1];
-        block[2..18].fill((nibble_hi << 4) | nibble_lo);
-        block
-    }
-
-    #[test]
-    fn test_fused_dot_q4_0_zeros() {
-        let block = make_q4_0_block(0.0, 0x8, 0x8);
-        let b = [1.0f32; 32];
-        let result = fused_dot_q4_0(&block, &b, 1);
-        assert!(result.abs() < 1e-6, "expected 0, got {result}");
-    }
-
-    #[test]
-    fn test_fused_dot_q4_0_unit_scale() {
-        // d=1.0, all nibbles=9 -> dequant = (9-8)*1 = 1.0
-        // b = all 1.0 -> dot = 32 * 1.0 = 32.0
-        let block = make_q4_0_block(1.0, 9, 9);
-        let b = [1.0f32; 32];
-        let result = fused_dot_q4_0(&block, &b, 1);
-        assert!((result - 32.0).abs() < 0.1, "expected 32.0, got {result}");
-    }
-
-    #[test]
-    fn test_fused_dot_q4_0_mixed() {
-        // d=2.0, lo=10(->4.0), hi=6(->-4.0), b=1 -> dot = 16*4 + 16*(-4) = 0
-        let block = make_q4_0_block(2.0, 10, 6);
-        let b = [1.0f32; 32];
-        let result = fused_dot_q4_0(&block, &b, 1);
-        assert!(result.abs() < 0.1, "expected ~0, got {result}");
-    }
-
-    #[test]
-    fn test_fused_dot_q4_0_matches_dequant() {
-        let block = make_q4_0_block(0.5, 12, 3);
-        let mut b = [0.0f32; 32];
-        for (i, val) in b.iter_mut().enumerate() {
-            *val = (i as f32 + 1.0) * 0.1;
-        }
-
-        // Reference: dequant then dot
-        let mut dequanted = [0.0f32; 32];
-        crate::quant::q4_0::dequantize(&block, &mut dequanted);
-        let ref_dot: f32 = dequanted.iter().zip(b.iter()).map(|(a, b)| a * b).sum();
-
-        let fused_result = fused_dot_q4_0(&block, &b, 1);
-        assert!(
-            (fused_result - ref_dot).abs() < 0.01,
-            "fused={fused_result}, ref={ref_dot}"
-        );
-    }
-
-    #[test]
-    fn test_fused_matvec_q4_0_single_row() {
-        let block = make_q4_0_block(1.0, 9, 9);
-        let b = [1.0f32; 32];
-        let mut c = [0.0f32; 1];
-        fused_matvec_q4_0(&block, &b, &mut c, 1, 32);
-        assert!((c[0] - 32.0).abs() < 0.1, "expected 32.0, got {}", c[0]);
-    }
-
-    #[test]
-    fn test_fused_matvec_q4_0_multi_row() {
-        let block1 = make_q4_0_block(1.0, 9, 9); // dequant to 1.0
-        let block2 = make_q4_0_block(2.0, 9, 9); // dequant to 2.0
-        let mut quant = Vec::new();
-        quant.extend_from_slice(&block1);
-        quant.extend_from_slice(&block2);
-
-        let b = [1.0f32; 32];
-        let mut c = [0.0f32; 2];
-        fused_matvec_q4_0(&quant, &b, &mut c, 2, 32);
-
-        assert!((c[0] - 32.0).abs() < 0.1, "row0: got {}", c[0]);
-        assert!((c[1] - 64.0).abs() < 0.1, "row1: got {}", c[1]);
-    }
-
-    #[test]
-    fn test_fused_matvec_q4_0_multi_block() {
-        let block1 = make_q4_0_block(1.0, 9, 9); // dequant to 1.0
-        let block2 = make_q4_0_block(0.5, 10, 10); // dequant to (10-8)*0.5 = 1.0
-        let mut quant = Vec::new();
-        quant.extend_from_slice(&block1);
-        quant.extend_from_slice(&block2);
-
-        let b = [1.0f32; 64];
-        let mut c = [0.0f32; 1];
-        fused_matvec_q4_0(&quant, &b, &mut c, 1, 64);
-
-        assert!((c[0] - 64.0).abs() < 0.1, "expected 64.0, got {}", c[0]);
-    }
-
-    #[test]
-    fn test_fused_dot_q4_0_scalar_matches_neon() {
-        let block = make_q4_0_block(1.5, 11, 5);
-        let mut b = [0.0f32; 32];
-        for (i, val) in b.iter_mut().enumerate() {
-            *val = (i as f32 - 16.0) * 0.1;
-        }
-
-        let scalar = fused_dot_q4_0_scalar(&block, &b, 1);
-        let neon = fused_dot_q4_0(&block, &b, 1);
-
-        assert!((scalar - neon).abs() < 0.01, "scalar={scalar}, neon={neon}");
-    }
-
     // --- Q4_K tests ---
 
     fn make_q4_k_block_simple(d: f32, dmin: f32, sc: u8, m: u8, nibble: u8) -> Vec<u8> {
@@ -1146,30 +855,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Q4_0 tensor data too small")]
-    fn test_fused_matvec_q4_0_validates_data_size() {
-        let too_small = [0u8; 10]; // way too small for any valid Q4_0 data
-        let b = [1.0f32; 32];
-        let mut c = [0.0f32; 2];
-        fused_matvec_q4_0(&too_small, &b, &mut c, 2, 32);
-    }
-
-    #[test]
     #[should_panic(expected = "Q4_K tensor data too small")]
     fn test_fused_matvec_q4_k_validates_data_size() {
         let too_small = [0u8; 10]; // way too small for any valid Q4_K data
         let b = [1.0f32; 256];
         let mut c = [0.0f32; 2];
         fused_matvec_q4_k(&too_small, &b, &mut c, 2, 256);
-    }
-
-    #[test]
-    #[should_panic(expected = "Q4_0 input vector too small")]
-    fn test_fused_matvec_q4_0_validates_input_size() {
-        let block = make_q4_0_block(1.0, 9, 9);
-        let b_too_small = [1.0f32; 16]; // need 32
-        let mut c = [0.0f32; 1];
-        fused_matvec_q4_0(&block, &b_too_small, &mut c, 1, 32);
     }
 
     #[test]

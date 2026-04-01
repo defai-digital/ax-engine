@@ -380,19 +380,38 @@ pub fn argmax(logits: &[f32]) -> u32 {
 
 /// Sample from a categorical probability distribution using xorshift64.
 fn sample_categorical(probs: &[f32], rng: &mut u64) -> u32 {
+    assert!(
+        !probs.is_empty(),
+        "cannot sample from empty probability distribution"
+    );
+
     let r = xorshift64(rng);
-    // Convert to [0, 1) float
-    let threshold = (r >> 11) as f64 / (1u64 << 53) as f64;
+    let total_mass: f64 = probs
+        .iter()
+        .filter_map(|&p| (p.is_finite() && p > 0.0).then_some(p as f64))
+        .sum();
+
+    if !total_mass.is_finite() || total_mass <= 0.0 {
+        return (r as usize % probs.len()) as u32;
+    }
+
+    // Convert to [0, total_mass)
+    let threshold = ((r >> 11) as f64 / (1u64 << 53) as f64) * total_mass;
 
     let mut cumsum = 0.0f64;
+    let mut last_positive = 0usize;
     for (i, &p) in probs.iter().enumerate() {
+        if !p.is_finite() || p <= 0.0 {
+            continue;
+        }
         cumsum += p as f64;
+        last_positive = i;
         if cumsum > threshold {
             return i as u32;
         }
     }
-    // Fallback: return last token (rounding errors)
-    (probs.len() - 1) as u32
+    // Fallback: return the last positive-mass token when rounding leaves a gap.
+    last_positive as u32
 }
 
 fn sample_filtered_logits_with_scratch(
@@ -855,6 +874,23 @@ mod tests {
         }
         // Index 0 should get the vast majority
         assert!(counts[0] > 900, "expected >900, got {}", counts[0]);
+    }
+
+    #[test]
+    fn test_categorical_zero_mass_falls_back_to_uniform_index() {
+        let probs = [0.0, 0.0, 0.0];
+        let mut rng = 7u64;
+        for _ in 0..20 {
+            let idx = sample_categorical(&probs, &mut rng);
+            assert!(idx < probs.len() as u32, "token {idx} out of range");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot sample from empty probability distribution")]
+    fn test_categorical_empty_panics() {
+        let mut rng = 1u64;
+        let _ = sample_categorical(&[], &mut rng);
     }
 
     #[test]

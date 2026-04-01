@@ -1,2 +1,0 @@
-label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
-baseline-reuse-test	models/Qwen3.5-9B-Q4_K_M.gguf	512	128	512	1	0	326.0366017107448	708.863219	45.994289585328985	54.80470845233109	48.104458	113.92854369616032

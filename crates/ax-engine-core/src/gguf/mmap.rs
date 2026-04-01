@@ -283,24 +283,24 @@ mod tests {
         buf.extend_from_slice(&4u32.to_le_bytes()); // type: uint32
         buf.extend_from_slice(&(alignment as u32).to_le_bytes());
 
-        // --- Tensor info 1: "weight.q" [32] Q4_0 at offset 0 ---
+        // --- Tensor info 1: "weight.q" [32] Q8_0 at offset 0 ---
         let t1_name = "weight.q";
         buf.extend_from_slice(&(t1_name.len() as u64).to_le_bytes());
         buf.extend_from_slice(t1_name.as_bytes());
         buf.extend_from_slice(&1u32.to_le_bytes()); // n_dims = 1
         buf.extend_from_slice(&32u64.to_le_bytes()); // shape[0] = 32
-        buf.extend_from_slice(&2u32.to_le_bytes()); // type = Q4_0
+        buf.extend_from_slice(&8u32.to_le_bytes()); // type = Q8_0
         buf.extend_from_slice(&0u64.to_le_bytes()); // offset = 0
 
-        // --- Tensor info 2: "bias" [32] F32 at offset 32 (after first tensor, aligned) ---
+        // --- Tensor info 2: "bias" [32] F32 at offset 64 (after first tensor, aligned) ---
         let t2_name = "bias";
         buf.extend_from_slice(&(t2_name.len() as u64).to_le_bytes());
         buf.extend_from_slice(t2_name.as_bytes());
         buf.extend_from_slice(&1u32.to_le_bytes()); // n_dims = 1
         buf.extend_from_slice(&32u64.to_le_bytes()); // shape[0] = 32
         buf.extend_from_slice(&0u32.to_le_bytes()); // type = F32
-        // Q4_0 tensor: 32 elements = 1 block × 18 bytes; aligned to 32 = 32
-        buf.extend_from_slice(&32u64.to_le_bytes()); // offset = 32
+        // Q8_0 tensor: 32 elements = 1 block × 34 bytes; aligned to 64 = 64
+        buf.extend_from_slice(&64u64.to_le_bytes()); // offset = 64
 
         // --- Padding to alignment ---
         let current = buf.len();
@@ -308,10 +308,10 @@ mod tests {
         buf.resize(data_start, 0);
 
         // --- Tensor data ---
-        // Tensor 1: Q4_0, 1 block = 18 bytes
-        buf.extend_from_slice(&[0u8; 18]);
-        // Pad to 32
-        buf.extend_from_slice(&[0u8; 14]);
+        // Tensor 1: Q8_0, 1 block = 34 bytes
+        buf.extend_from_slice(&[0u8; 34]);
+        // Pad to 64
+        buf.extend_from_slice(&[0u8; 30]);
         // Tensor 2: F32, 32 elements = 128 bytes
         buf.extend_from_slice(&[0u8; 128]);
 
@@ -338,7 +338,7 @@ mod tests {
         // Verify tensors
         assert_eq!(model.tensors.len(), 2);
         assert_eq!(model.tensors[0].name, "weight.q");
-        assert_eq!(model.tensors[0].dtype, GgmlType::Q4_0);
+        assert_eq!(model.tensors[0].dtype, GgmlType::Q8_0);
         assert_eq!(model.tensors[1].name, "bias");
         assert_eq!(model.tensors[1].dtype, GgmlType::F32);
 
@@ -348,16 +348,16 @@ mod tests {
 
         // Verify tensor data access
         let data_bytes = model.tensor_data(&model.tensors[0]).unwrap();
-        assert_eq!(data_bytes.len(), 18); // 1 Q4_0 block
+        assert_eq!(data_bytes.len(), 34); // 1 Q8_0 block
 
         let bias_data = model.tensor_data_by_name("bias").unwrap();
         assert_eq!(bias_data.len(), 128); // 32 × f32
 
         // Verify total size
-        assert_eq!(model.total_tensor_bytes(), 18 + 128);
+        assert_eq!(model.total_tensor_bytes(), 34 + 128);
 
         // Verify predominant quant
-        // F32 has 128 bytes, Q4_0 has 18 bytes → F32 is predominant
+        // F32 has 128 bytes, Q8_0 has 34 bytes → F32 is predominant
         assert_eq!(model.predominant_quant(), Some(GgmlType::F32));
 
         // Cleanup

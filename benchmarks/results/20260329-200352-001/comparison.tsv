@@ -1,2 +1,0 @@
-label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
-prd-alignment	models/Qwen3.5-9B-Q4_K_M.gguf	512	128	512	3	10	323.7013990523041	708.863219	45.66486035330663	53.66288120094254	48.104458	111.55490246027206

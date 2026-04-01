@@ -112,7 +112,7 @@ impl KvPlanner {
         let max_seq_len = max_seq_len.min(config.context_length as usize);
         let page_size = recommended_page_size(config.n_kv_heads as usize, config.head_dim as usize);
 
-        let plan = if config.architecture == "qwen35" {
+        let plan = if matches!(config.architecture.as_str(), "qwen35" | "qwen35moe") {
             KvPlan::Qwen35(validate_qwen35_plan(config, page_size, max_seq_len)?)
         } else {
             let cpu_fallback = CpuKvPlan {
@@ -268,7 +268,6 @@ impl KvPlan {
                 GpuKvDtype::F32 => "gpu/f32".to_string(),
                 GpuKvDtype::F16 => "gpu/f16".to_string(),
                 GpuKvDtype::Q8_0 => "gpu/q8_0".to_string(),
-                GpuKvDtype::Q4_0 => "gpu/q4_0".to_string(),
             },
             Self::Qwen35(_) => "qwen35-hybrid".to_string(),
         }

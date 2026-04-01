@@ -4,6 +4,7 @@
 //!   ax-engine-bench soak --model <path> [--duration 24h] [--json] [--json-output <path>]
 //!   ax-engine-bench bench --model <path> [--prompt-tokens 512] [--decode-tokens 128] [--json] [--json-output <path>]
 //!   ax-engine-bench prefill-profile --model <path> [--prompt-tokens 512] [--json] [--json-output <path>]
+//!   ax-engine-bench prefill-route-compare --model <path> [--prompt-tokens 512] [--samples 3] [--json]
 //!   ax-engine-bench prefill-gap --model <path> [--baseline-json <path> | --baseline-prefill-tok-s <n>] [--json]
 //!   ax-engine-bench profile --model <path> [--profile-tokens 64] [--json] [--json-output <path>]
 //!   ax-engine-bench speculative --model <target> --draft-model <draft> [--json] [--json-output <path>]
@@ -11,9 +12,10 @@
 //!   ax-engine-bench parity --model <path> [--prompt "Hello"] --speculative-verify-k 2
 //!   ax-engine-bench microbench [--suite gpu] [--json] [--profile-output <path>]
 
-use std::process;
+use std::process::{self, Command as ProcessCommand};
 use std::time::Duration;
 
+use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
@@ -24,7 +26,10 @@ use ax_engine_bench::microbench::{
 use ax_engine_bench::parity::{self, ParityConfig, ParityMode};
 use ax_engine_bench::perf::{self, BenchConfig, SpecBenchConfig};
 use ax_engine_bench::prefill_gap::{self, PrefillGapConfig};
-use ax_engine_bench::prefill_profile::{self, PrefillProfileConfig, Qwen35RecurrentStateMode};
+use ax_engine_bench::prefill_profile::{
+    self, LocalPrefillHd128Route, PrefillProfileConfig, PrefillProfileResult,
+    Qwen35RecurrentStateMode,
+};
 use ax_engine_bench::profile::{self, ProfileConfig};
 use ax_engine_bench::soak::{self, SoakConfig};
 use ax_engine_core::backend::BackendConfig;
@@ -40,13 +45,13 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, ValueEnum)]
 enum BenchIntentArg {
     Throughput,
     Latency,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, ValueEnum)]
 enum MicrobenchSuiteArg {
     Cpu,
     Gpu,
@@ -55,21 +60,21 @@ enum MicrobenchSuiteArg {
     All,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, ValueEnum)]
 enum ParityBackendArg {
     Hybrid,
     Metal,
     HybridCpuDecode,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, ValueEnum)]
 enum Qwen35SpecVerifyBranchArg {
     Auto,
     On,
     Off,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, ValueEnum)]
 enum Qwen35PrefillRecurrentStateModeArg {
     Auto,
     CpuAlias,
@@ -77,11 +82,19 @@ enum Qwen35PrefillRecurrentStateModeArg {
     BackendOwned,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, ValueEnum)]
 enum Qwen35PrefillAlphaBetaStorageModeArg {
     Auto,
     F32,
     F16,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, ValueEnum)]
+enum LocalPrefillHd128RouteArg {
+    Auto,
+    AxBc64,
+    Fa2SimdHd128,
+    Fa2HalfHd128,
 }
 
 impl From<BenchIntentArg> for DecodeIntent {
@@ -111,6 +124,28 @@ impl From<ParityBackendArg> for BackendConfig {
             ParityBackendArg::Hybrid => BackendConfig::Hybrid,
             ParityBackendArg::Metal => BackendConfig::Metal,
             ParityBackendArg::HybridCpuDecode => BackendConfig::HybridCpuDecode,
+        }
+    }
+}
+
+impl From<LocalPrefillHd128RouteArg> for LocalPrefillHd128Route {
+    fn from(value: LocalPrefillHd128RouteArg) -> Self {
+        match value {
+            LocalPrefillHd128RouteArg::Auto => LocalPrefillHd128Route::Auto,
+            LocalPrefillHd128RouteArg::AxBc64 => LocalPrefillHd128Route::AxBc64,
+            LocalPrefillHd128RouteArg::Fa2SimdHd128 => LocalPrefillHd128Route::Fa2SimdHd128,
+            LocalPrefillHd128RouteArg::Fa2HalfHd128 => LocalPrefillHd128Route::Fa2HalfHd128,
+        }
+    }
+}
+
+impl LocalPrefillHd128RouteArg {
+    fn cli_value(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::AxBc64 => "ax-bc64",
+            Self::Fa2SimdHd128 => "fa2-simd-hd128",
+            Self::Fa2HalfHd128 => "fa2-half-hd128",
         }
     }
 }
@@ -222,6 +257,78 @@ enum Command {
         /// Number of unprofiled warmup prefills before measurement.
         #[arg(long, default_value = "1")]
         warmup_iters: usize,
+
+        /// Fan the same prompt out across this many Qwen3.5 recurrent slots on
+        /// a shared attention timeline during prefill.
+        #[arg(long, default_value = "1")]
+        qwen35_shared_timeline_slots: usize,
+
+        /// Optional source recurrent slot for Qwen3.5 shared-timeline prefill.
+        #[arg(long)]
+        qwen35_shared_timeline_source_slot: Option<usize>,
+
+        /// Experimental Qwen3.5 recurrent state mode for GPU prefill handoff.
+        #[arg(long, value_enum, default_value = "auto")]
+        qwen35_recurrent_state_mode: Qwen35PrefillRecurrentStateModeArg,
+
+        /// Experimental Qwen3.5 alpha/beta scratch storage mode for recurrent handoff.
+        #[arg(long, value_enum, default_value = "auto")]
+        qwen35_alpha_beta_storage_mode: Qwen35PrefillAlphaBetaStorageModeArg,
+
+        /// Prime Qwen3.5 recurrent Metal slot buffers before timed prefill.
+        #[arg(long)]
+        qwen35_prime_slot_buffers: bool,
+
+        /// Run one unmeasured prefill on the same KV before timing the measured prefill.
+        #[arg(long)]
+        qwen35_prewarm_prefill_same_kv: bool,
+
+        /// Force Qwen3.5 recurrent prefill to bypass model-side GPU QKV handoff and use backend state batch.
+        #[arg(long)]
+        qwen35_force_backend_state_batch: bool,
+
+        /// Force a specific local HD128 attention prefill route for this run.
+        #[arg(long, value_enum, default_value = "auto")]
+        local_hd128_route: LocalPrefillHd128RouteArg,
+
+        /// Output results as JSON.
+        #[arg(long)]
+        json: bool,
+
+        /// Write JSON results to file.
+        #[arg(long)]
+        json_output: Option<String>,
+
+        /// Apply llama.cpp-aligned AX runtime preset (if vars are unset).
+        #[arg(long)]
+        llama_parity_preset: bool,
+
+        /// Override kernel profile path for this run.
+        #[arg(long)]
+        kernel_profile_path: Option<String>,
+    },
+
+    /// Compare local HD128 prefill attention routes via fresh subprocess runs.
+    PrefillRouteCompare {
+        /// Path to GGUF model file.
+        #[arg(long)]
+        model: String,
+
+        /// Number of prompt tokens to process.
+        #[arg(long, default_value = "512")]
+        prompt_tokens: usize,
+
+        /// Number of unprofiled warmup prefills before each measured run.
+        #[arg(long, default_value = "1")]
+        warmup_iters: usize,
+
+        /// Number of measured runs to execute per route.
+        #[arg(long, default_value = "3")]
+        samples: usize,
+
+        /// Restrict comparison to specific routes. Repeat the flag to add more.
+        #[arg(long, value_enum)]
+        route: Vec<LocalPrefillHd128RouteArg>,
 
         /// Fan the same prompt out across this many Qwen3.5 recurrent slots on
         /// a shared attention timeline during prefill.
@@ -665,6 +772,358 @@ fn create_runtime_backend(context: &str) -> Box<dyn ax_engine_core::backend::Bac
     })
 }
 
+fn with_env_var_overrides<T>(
+    overrides: &[(&'static str, Option<&str>)],
+    f: impl FnOnce() -> T,
+) -> T {
+    struct EnvVarsRestore {
+        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl Drop for EnvVarsRestore {
+        fn drop(&mut self) {
+            for (key, previous) in self.previous.iter().rev() {
+                match previous {
+                    Some(prev) => unsafe { std::env::set_var(key, prev) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
+            }
+        }
+    }
+
+    let previous = overrides
+        .iter()
+        .map(|(key, _)| (*key, std::env::var_os(key)))
+        .collect();
+    let _restore = EnvVarsRestore { previous };
+
+    for (key, value) in overrides {
+        match value {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+    }
+
+    f()
+}
+
+fn local_hd128_prefill_route_env_overrides(
+    route: LocalPrefillHd128Route,
+) -> Vec<(&'static str, Option<&'static str>)> {
+    let mut overrides = vec![
+        ("AX_METAL_PREFILL_FA2_MODE", None),
+        ("AX_METAL_PREFILL_FA2", None),
+        ("AX_METAL_PREFILL_FA2_HD128_MODE", None),
+        ("AX_METAL_PREFILL_FA2_HD128", None),
+        ("AX_METAL_PREFILL_BC64_MODE", None),
+        ("AX_METAL_PREFILL_BC64", None),
+        ("AX_METAL_PREFILL_BC64_MIN_TOKENS", None),
+        ("AX_METAL_PREFILL_FA2_SIMD", None),
+        ("AX_METAL_PREFILL_FA2_HALF", None),
+        ("AX_METAL_PREFILL_FA2V2", None),
+        ("AX_METAL_PREFILL_AX_SMEM", None),
+        ("AX_METAL_PREFILL_AX_SMEM_F16", None),
+    ];
+
+    match route {
+        LocalPrefillHd128Route::Auto => {}
+        LocalPrefillHd128Route::AxBc64 => {
+            overrides.extend_from_slice(&[
+                ("AX_METAL_PREFILL_FA2_HD128_MODE", Some("off")),
+                ("AX_METAL_PREFILL_BC64_MODE", Some("on")),
+                ("AX_METAL_PREFILL_FA2_SIMD", Some("off")),
+                ("AX_METAL_PREFILL_FA2_HALF", Some("off")),
+                ("AX_METAL_PREFILL_FA2V2", Some("off")),
+            ]);
+        }
+        LocalPrefillHd128Route::Fa2SimdHd128 => {
+            overrides.extend_from_slice(&[
+                ("AX_METAL_PREFILL_FA2_HD128_MODE", Some("on")),
+                ("AX_METAL_PREFILL_BC64_MODE", Some("off")),
+                ("AX_METAL_PREFILL_FA2_SIMD", Some("on")),
+                ("AX_METAL_PREFILL_FA2_HALF", Some("off")),
+                ("AX_METAL_PREFILL_FA2V2", Some("off")),
+            ]);
+        }
+        LocalPrefillHd128Route::Fa2HalfHd128 => {
+            overrides.extend_from_slice(&[
+                ("AX_METAL_PREFILL_FA2_HD128_MODE", Some("on")),
+                ("AX_METAL_PREFILL_BC64_MODE", Some("off")),
+                ("AX_METAL_PREFILL_FA2_SIMD", Some("on")),
+                ("AX_METAL_PREFILL_FA2_HALF", Some("on")),
+                ("AX_METAL_PREFILL_FA2V2", Some("off")),
+            ]);
+        }
+    }
+
+    overrides
+}
+
+fn with_prefill_profile_env_overrides<T>(
+    qwen35_recurrent_state_mode: Qwen35PrefillRecurrentStateModeArg,
+    qwen35_alpha_beta_storage_mode: Qwen35PrefillAlphaBetaStorageModeArg,
+    qwen35_force_backend_state_batch: bool,
+    local_hd128_route: LocalPrefillHd128Route,
+    f: impl FnOnce() -> T,
+) -> T {
+    let mut overrides = vec![
+        (
+            "AX_QWEN35_PREFILL_RECURRENT_STATE_MODE",
+            qwen35_prefill_recurrent_state_mode_env(qwen35_recurrent_state_mode),
+        ),
+        (
+            "AX_QWEN35_PREFILL_ALPHA_BETA_STORAGE_MODE",
+            qwen35_prefill_alpha_beta_storage_mode_env(qwen35_alpha_beta_storage_mode),
+        ),
+        (
+            "AX_QWEN35_PREFILL_FORCE_BACKEND_STATE_BATCH",
+            qwen35_prefill_force_backend_state_batch_env(qwen35_force_backend_state_batch),
+        ),
+    ];
+    overrides.extend(local_hd128_prefill_route_env_overrides(local_hd128_route));
+    with_env_var_overrides(&overrides, f)
+}
+
+#[derive(Debug, Serialize)]
+struct PrefillRouteCompareVariant {
+    route: LocalPrefillHd128Route,
+    expected_attention_route_prefix: Option<String>,
+    observed_attention_routes: Vec<String>,
+    matched_expected_route: bool,
+    sample_results: Vec<PrefillProfileResult>,
+    median_tok_per_sec: f64,
+    mean_tok_per_sec: f64,
+    median_effective_tok_per_sec: f64,
+    mean_effective_tok_per_sec: f64,
+    median_total_ms: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct PrefillRouteCompareReport {
+    model: String,
+    prompt_tokens: usize,
+    warmup_iters: usize,
+    samples_per_route: usize,
+    kernel_profile_path: Option<String>,
+    qwen35_shared_timeline_slots: usize,
+    qwen35_shared_timeline_source_slot: Option<usize>,
+    qwen35_recurrent_state_mode: Qwen35PrefillRecurrentStateModeArg,
+    qwen35_alpha_beta_storage_mode: Qwen35PrefillAlphaBetaStorageModeArg,
+    qwen35_prime_slot_buffers: bool,
+    qwen35_prewarm_prefill_same_kv: bool,
+    qwen35_force_backend_state_batch: bool,
+    variants: Vec<PrefillRouteCompareVariant>,
+    winner_by_median_effective_tok_per_sec: Option<LocalPrefillHd128Route>,
+}
+
+impl PrefillRouteCompareReport {
+    fn print_summary(&self) {
+        eprintln!();
+        eprintln!("=== Prefill Route Compare ===");
+        eprintln!("Model:       {}", self.model);
+        eprintln!("Prompt:      {} tokens", self.prompt_tokens);
+        eprintln!("Samples:     {} per route", self.samples_per_route);
+        if let Some(path) = &self.kernel_profile_path {
+            eprintln!("KernelProf:  {path}");
+        }
+        eprintln!();
+        eprintln!(
+            "{:<18} {:>12} {:>12} {:>10} {:>7}  Observed",
+            "Route", "Median tok/s", "Mean tok/s", "Median ms", "Match"
+        );
+        for variant in &self.variants {
+            let observed = if variant.observed_attention_routes.is_empty() {
+                "-".to_string()
+            } else {
+                variant.observed_attention_routes.join(",")
+            };
+            eprintln!(
+                "{:<18} {:>12.1} {:>12.1} {:>10.1} {:>7}  {}",
+                variant.route.label(),
+                variant.median_effective_tok_per_sec,
+                variant.mean_effective_tok_per_sec,
+                variant.median_total_ms,
+                if variant.matched_expected_route {
+                    "yes"
+                } else {
+                    "no"
+                },
+                observed,
+            );
+        }
+        if let Some(winner) = self.winner_by_median_effective_tok_per_sec {
+            eprintln!();
+            eprintln!("Winner:      {}", winner.label());
+        }
+    }
+}
+
+fn prefill_profile_effective_tok_per_sec(result: &PrefillProfileResult) -> f64 {
+    if result.effective_tok_per_sec > 0.0 {
+        result.effective_tok_per_sec
+    } else {
+        result.tok_per_sec * result.qwen35_shared_timeline_slots.max(1) as f64
+    }
+}
+
+fn median_f64(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let mid = sorted.len() / 2;
+    if sorted.len().is_multiple_of(2) {
+        (sorted[mid - 1] + sorted[mid]) * 0.5
+    } else {
+        sorted[mid]
+    }
+}
+
+fn mean_f64(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        0.0
+    } else {
+        values.iter().sum::<f64>() / values.len() as f64
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_prefill_profile_subprocess(
+    model: &str,
+    prompt_tokens: usize,
+    warmup_iters: usize,
+    local_hd128_route: LocalPrefillHd128RouteArg,
+    qwen35_shared_timeline_slots: usize,
+    qwen35_shared_timeline_source_slot: Option<usize>,
+    qwen35_recurrent_state_mode: Qwen35PrefillRecurrentStateModeArg,
+    qwen35_alpha_beta_storage_mode: Qwen35PrefillAlphaBetaStorageModeArg,
+    qwen35_prime_slot_buffers: bool,
+    qwen35_prewarm_prefill_same_kv: bool,
+    qwen35_force_backend_state_batch: bool,
+    llama_parity_preset: bool,
+    kernel_profile_path: Option<&str>,
+) -> anyhow::Result<PrefillProfileResult> {
+    let current_exe = std::env::current_exe().context("resolve current bench executable")?;
+    let mut cmd = ProcessCommand::new(current_exe);
+    cmd.arg("prefill-profile")
+        .arg("--model")
+        .arg(model)
+        .arg("--prompt-tokens")
+        .arg(prompt_tokens.to_string())
+        .arg("--warmup-iters")
+        .arg(warmup_iters.to_string())
+        .arg("--local-hd128-route")
+        .arg(local_hd128_route.cli_value())
+        .arg("--qwen35-shared-timeline-slots")
+        .arg(qwen35_shared_timeline_slots.to_string())
+        .arg("--qwen35-recurrent-state-mode")
+        .arg(match qwen35_recurrent_state_mode {
+            Qwen35PrefillRecurrentStateModeArg::Auto => "auto",
+            Qwen35PrefillRecurrentStateModeArg::CpuAlias => "cpu-alias",
+            Qwen35PrefillRecurrentStateModeArg::SlotBuffer => "slot-buffer",
+            Qwen35PrefillRecurrentStateModeArg::BackendOwned => "backend-owned",
+        })
+        .arg("--qwen35-alpha-beta-storage-mode")
+        .arg(match qwen35_alpha_beta_storage_mode {
+            Qwen35PrefillAlphaBetaStorageModeArg::Auto => "auto",
+            Qwen35PrefillAlphaBetaStorageModeArg::F32 => "f32",
+            Qwen35PrefillAlphaBetaStorageModeArg::F16 => "f16",
+        })
+        .arg("--json");
+
+    if let Some(source_slot) = qwen35_shared_timeline_source_slot {
+        cmd.arg("--qwen35-shared-timeline-source-slot")
+            .arg(source_slot.to_string());
+    }
+    if qwen35_prime_slot_buffers {
+        cmd.arg("--qwen35-prime-slot-buffers");
+    }
+    if qwen35_prewarm_prefill_same_kv {
+        cmd.arg("--qwen35-prewarm-prefill-same-kv");
+    }
+    if qwen35_force_backend_state_batch {
+        cmd.arg("--qwen35-force-backend-state-batch");
+    }
+    if llama_parity_preset {
+        cmd.arg("--llama-parity-preset");
+    }
+    if let Some(path) = kernel_profile_path {
+        cmd.arg("--kernel-profile-path").arg(path);
+    }
+
+    let output = cmd.output().context("run prefill-profile subprocess")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "prefill-profile subprocess failed for route {} (status={}):\nstdout:\n{}\nstderr:\n{}",
+            local_hd128_route.cli_value(),
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string()),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ));
+    }
+
+    serde_json::from_slice::<PrefillProfileResult>(&output.stdout).with_context(|| {
+        format!(
+            "parse prefill-profile JSON for route {}",
+            local_hd128_route.cli_value()
+        )
+    })
+}
+
+fn build_prefill_route_compare_variant(
+    route: LocalPrefillHd128Route,
+    sample_results: Vec<PrefillProfileResult>,
+) -> PrefillRouteCompareVariant {
+    let tok_per_sec: Vec<f64> = sample_results.iter().map(|r| r.tok_per_sec).collect();
+    let effective_tok_per_sec: Vec<f64> = sample_results
+        .iter()
+        .map(prefill_profile_effective_tok_per_sec)
+        .collect();
+    let total_ms: Vec<f64> = sample_results.iter().map(|r| r.total_ms).collect();
+    let expected_prefix = route.expected_attention_route_prefix().map(str::to_owned);
+    let mut observed_attention_routes: Vec<String> = sample_results
+        .iter()
+        .filter_map(|r| r.prefill_attention_route.clone())
+        .collect();
+    observed_attention_routes.sort();
+    observed_attention_routes.dedup();
+    let matched_expected_route = expected_prefix.as_ref().is_none_or(|prefix| {
+        sample_results.iter().all(|result| {
+            result
+                .prefill_attention_route
+                .as_deref()
+                .is_some_and(|route| route.starts_with(prefix))
+        })
+    });
+
+    PrefillRouteCompareVariant {
+        route,
+        expected_attention_route_prefix: expected_prefix,
+        observed_attention_routes,
+        matched_expected_route,
+        sample_results,
+        median_tok_per_sec: median_f64(&tok_per_sec),
+        mean_tok_per_sec: mean_f64(&tok_per_sec),
+        median_effective_tok_per_sec: median_f64(&effective_tok_per_sec),
+        mean_effective_tok_per_sec: mean_f64(&effective_tok_per_sec),
+        median_total_ms: median_f64(&total_ms),
+    }
+}
+
+fn default_prefill_route_compare_routes() -> Vec<LocalPrefillHd128RouteArg> {
+    vec![
+        LocalPrefillHd128RouteArg::Auto,
+        LocalPrefillHd128RouteArg::AxBc64,
+        LocalPrefillHd128RouteArg::Fa2SimdHd128,
+        LocalPrefillHd128RouteArg::Fa2HalfHd128,
+    ]
+}
+
 #[derive(Debug, Serialize)]
 struct SpecVerifyCompareDelta {
     verify_ms_per_step: f64,
@@ -964,6 +1423,7 @@ fn main() {
             qwen35_prime_slot_buffers,
             qwen35_prewarm_prefill_same_kv,
             qwen35_force_backend_state_batch,
+            local_hd128_route,
             json,
             json_output,
             llama_parity_preset,
@@ -973,8 +1433,6 @@ fn main() {
                 apply_llama_parity_preset();
             }
             apply_kernel_profile_override(kernel_profile_path.as_deref());
-            let backend = create_runtime_backend("Prefill profile");
-            ax_engine_core::scheduler::init_global_threadpool();
             let config = PrefillProfileConfig {
                 model_path: model,
                 prompt_tokens,
@@ -987,29 +1445,18 @@ fn main() {
                 qwen35_prime_slot_buffers,
                 qwen35_prewarm_prefill_same_kv,
                 qwen35_force_backend_state_batch,
+                local_hd128_route: local_hd128_route.into(),
             };
 
-            match with_env_var_override(
-                "AX_QWEN35_PREFILL_RECURRENT_STATE_MODE",
-                qwen35_prefill_recurrent_state_mode_env(qwen35_recurrent_state_mode),
+            match with_prefill_profile_env_overrides(
+                qwen35_recurrent_state_mode,
+                qwen35_alpha_beta_storage_mode,
+                qwen35_force_backend_state_batch,
+                local_hd128_route.into(),
                 || {
-                    with_env_var_override(
-                        "AX_QWEN35_PREFILL_ALPHA_BETA_STORAGE_MODE",
-                        qwen35_prefill_alpha_beta_storage_mode_env(qwen35_alpha_beta_storage_mode),
-                        || {
-                            with_env_var_override(
-                                "AX_QWEN35_PREFILL_FORCE_BACKEND_STATE_BATCH",
-                                qwen35_prefill_force_backend_state_batch_env(
-                                    qwen35_force_backend_state_batch,
-                                ),
-                                || {
-                                    prefill_profile::run_prefill_profile_with_backend(
-                                        &config, backend,
-                                    )
-                                },
-                            )
-                        },
-                    )
+                    let backend = create_runtime_backend("Prefill profile");
+                    ax_engine_core::scheduler::init_global_threadpool();
+                    prefill_profile::run_prefill_profile_with_backend(&config, backend)
                 },
             ) {
                 Ok(result) => {
@@ -1044,6 +1491,128 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("Prefill profile error: {e}");
+                    process::exit(2);
+                }
+            }
+        }
+
+        Command::PrefillRouteCompare {
+            model,
+            prompt_tokens,
+            warmup_iters,
+            samples,
+            route,
+            qwen35_shared_timeline_slots,
+            qwen35_shared_timeline_source_slot,
+            qwen35_recurrent_state_mode,
+            qwen35_alpha_beta_storage_mode,
+            qwen35_prime_slot_buffers,
+            qwen35_prewarm_prefill_same_kv,
+            qwen35_force_backend_state_batch,
+            json,
+            json_output,
+            llama_parity_preset,
+            kernel_profile_path,
+        } => {
+            let routes = if route.is_empty() {
+                default_prefill_route_compare_routes()
+            } else {
+                route
+            };
+
+            let variants_result = routes
+                .iter()
+                .map(|route| {
+                    let route_label: LocalPrefillHd128Route = (*route).into();
+                    eprintln!(
+                        "Route compare: {} ({} samples)",
+                        route_label.label(),
+                        samples
+                    );
+                    let sample_results = (0..samples)
+                        .map(|sample_idx| {
+                            eprintln!("  sample {}/{}", sample_idx + 1, samples);
+                            run_prefill_profile_subprocess(
+                                &model,
+                                prompt_tokens,
+                                warmup_iters,
+                                *route,
+                                qwen35_shared_timeline_slots,
+                                qwen35_shared_timeline_source_slot,
+                                qwen35_recurrent_state_mode,
+                                qwen35_alpha_beta_storage_mode,
+                                qwen35_prime_slot_buffers,
+                                qwen35_prewarm_prefill_same_kv,
+                                qwen35_force_backend_state_batch,
+                                llama_parity_preset,
+                                kernel_profile_path.as_deref(),
+                            )
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()?;
+                    Ok(build_prefill_route_compare_variant(
+                        route_label,
+                        sample_results,
+                    ))
+                })
+                .collect::<anyhow::Result<Vec<_>>>();
+
+            match variants_result {
+                Ok(variants) => {
+                    let winner_by_median_effective_tok_per_sec = variants
+                        .iter()
+                        .max_by(|a, b| {
+                            a.median_effective_tok_per_sec
+                                .total_cmp(&b.median_effective_tok_per_sec)
+                        })
+                        .map(|variant| variant.route);
+                    let report = PrefillRouteCompareReport {
+                        model,
+                        prompt_tokens,
+                        warmup_iters,
+                        samples_per_route: samples,
+                        kernel_profile_path,
+                        qwen35_shared_timeline_slots,
+                        qwen35_shared_timeline_source_slot,
+                        qwen35_recurrent_state_mode,
+                        qwen35_alpha_beta_storage_mode,
+                        qwen35_prime_slot_buffers,
+                        qwen35_prewarm_prefill_same_kv,
+                        qwen35_force_backend_state_batch,
+                        variants,
+                        winner_by_median_effective_tok_per_sec,
+                    };
+
+                    report.print_summary();
+
+                    if json {
+                        match serde_json::to_string_pretty(&report) {
+                            Ok(j) => println!("{j}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
+                        }
+                    }
+
+                    if let Some(path) = json_output {
+                        match serde_json::to_string_pretty(&report) {
+                            Ok(j) => {
+                                if let Err(e) = std::fs::write(&path, j) {
+                                    eprintln!("Failed to write JSON output to {path}: {e}");
+                                    process::exit(2);
+                                } else {
+                                    eprintln!("Results written to {path}");
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Prefill route compare error: {e:?}");
                     process::exit(2);
                 }
             }
@@ -1087,6 +1656,7 @@ fn main() {
                     qwen35_prime_slot_buffers,
                     qwen35_prewarm_prefill_same_kv,
                     qwen35_force_backend_state_batch,
+                    local_hd128_route: LocalPrefillHd128Route::Auto,
                 },
                 baseline_json,
                 baseline_prefill_tok_per_sec: baseline_prefill_tok_s,
@@ -1828,6 +2398,27 @@ mod tests {
     }
 
     #[test]
+    fn test_local_hd128_prefill_route_env_overrides_force_ax_bc64() {
+        let overrides = local_hd128_prefill_route_env_overrides(LocalPrefillHd128Route::AxBc64);
+        assert!(overrides.contains(&("AX_METAL_PREFILL_BC64_MODE", Some("on"))));
+        assert!(overrides.contains(&("AX_METAL_PREFILL_FA2_HD128_MODE", Some("off"))));
+        assert!(overrides.contains(&("AX_METAL_PREFILL_FA2_HALF", Some("off"))));
+    }
+
+    #[test]
+    fn test_default_prefill_route_compare_routes_covers_auto_bc64_and_fa2_variants() {
+        assert_eq!(
+            default_prefill_route_compare_routes(),
+            vec![
+                LocalPrefillHd128RouteArg::Auto,
+                LocalPrefillHd128RouteArg::AxBc64,
+                LocalPrefillHd128RouteArg::Fa2SimdHd128,
+                LocalPrefillHd128RouteArg::Fa2HalfHd128,
+            ]
+        );
+    }
+
+    #[test]
     fn test_cli_parse_prefill_profile_accepts_qwen35_recurrent_state_mode() {
         let cli = Cli::try_parse_from([
             "ax-engine-bench",
@@ -1841,6 +2432,8 @@ mod tests {
             "--qwen35-prime-slot-buffers",
             "--qwen35-prewarm-prefill-same-kv",
             "--qwen35-force-backend-state-batch",
+            "--local-hd128-route",
+            "fa2-half-hd128",
         ])
         .expect("prefill-profile CLI should parse");
 
@@ -1850,6 +2443,7 @@ mod tests {
             qwen35_prime_slot_buffers,
             qwen35_prewarm_prefill_same_kv,
             qwen35_force_backend_state_batch,
+            local_hd128_route,
             ..
         } = cli.command
         else {
@@ -1867,5 +2461,36 @@ mod tests {
         assert!(qwen35_prime_slot_buffers);
         assert!(qwen35_prewarm_prefill_same_kv);
         assert!(qwen35_force_backend_state_batch);
+        assert_eq!(local_hd128_route, LocalPrefillHd128RouteArg::Fa2HalfHd128);
+    }
+
+    #[test]
+    fn test_cli_parse_prefill_route_compare_accepts_multiple_routes() {
+        let cli = Cli::try_parse_from([
+            "ax-engine-bench",
+            "prefill-route-compare",
+            "--model",
+            "./models/Llama-3-8B-Instruct-GGUF-Q4_K_M.gguf",
+            "--samples",
+            "5",
+            "--route",
+            "ax-bc64",
+            "--route",
+            "fa2-simd-hd128",
+        ])
+        .expect("prefill-route-compare CLI should parse");
+
+        let Command::PrefillRouteCompare { samples, route, .. } = cli.command else {
+            panic!("expected prefill-route-compare command");
+        };
+
+        assert_eq!(samples, 5);
+        assert_eq!(
+            route,
+            vec![
+                LocalPrefillHd128RouteArg::AxBc64,
+                LocalPrefillHd128RouteArg::Fa2SimdHd128,
+            ]
+        );
     }
 }

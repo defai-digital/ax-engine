@@ -43,7 +43,7 @@ fn with_env_var<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
 fn test_q5k_is_supported_gpu_prefill_quant() {
     assert!(gpu_decode_quant_dtype_supported(GgmlType::Q5K));
     assert!(gpu_prefill_quant_dtype_supported(GgmlType::Q5K));
-    assert!(!gpu_batch_logits_dtype_supported(GgmlType::Q5K));
+    assert!(gpu_batch_logits_dtype_supported(GgmlType::Q5K));
 }
 
 #[test]

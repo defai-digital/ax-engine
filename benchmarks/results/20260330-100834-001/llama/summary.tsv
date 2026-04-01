@@ -1,2 +1,0 @@
-model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_s	prefill_median_tok_per_s	prefill_mean_tok_per_s	decode_median_tok_per_s	decode_mean_tok_per_s
-models/Qwen3-8B-Q4_K_M.gguf	512	128	512	5	20	768.198195	768.0253618	64.615555	64.581685

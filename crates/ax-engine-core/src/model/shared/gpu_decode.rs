@@ -41,18 +41,21 @@ pub(super) fn encode_dequant_matvec_with_config(
     dispatch_config: ax_engine_metal::DequantDispatchConfig,
 ) {
     match dtype {
-        GgmlType::Q4_0 => metal_ops
-            .dequant
-            .encode_fused_matvec_q4_0(encoder, weight, input, output, m, k),
         GgmlType::Q8_0 => {
             if metal_ops
                 .encode_precomputed_q4k_matvec_if_available(encoder, weight, input, output, m, k)
             {
                 return;
             }
-            metal_ops
-                .dequant
-                .encode_fused_matvec_q8_0(encoder, weight, input, output, m, k)
+            metal_ops.dequant.encode_fused_matvec_q8_0_with_config(
+                encoder,
+                weight,
+                input,
+                output,
+                m,
+                k,
+                dispatch_config,
+            )
         }
         GgmlType::Q4K => {
             if metal_ops
@@ -102,7 +105,7 @@ pub(super) fn encode_dequant_matvec_with_config(
                 .encode_matvec(encoder, weight, input, output, m, k);
         }
         _ => panic!(
-            "GPU phased dispatch only supports F32, Q4_0, Q8_0, Q4_K, Q5_K, and Q6_K, got {:?}",
+            "GPU phased dispatch only supports F32, Q8_0, Q4_K, Q5_K, and Q6_K, got {:?}",
             dtype
         ),
     }

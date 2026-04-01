@@ -51,8 +51,7 @@ pub(super) fn q5k_prefill_variant_override() -> Q5KPrefillVariantOverride {
 fn gpu_decode_quant_dtype_supported(dtype: GgmlType) -> bool {
     matches!(
         dtype,
-        GgmlType::Q4_0
-            | GgmlType::Q4K
+        GgmlType::Q4K
             | GgmlType::Q5K
             | GgmlType::Q6K
             | GgmlType::Q8_0
@@ -63,14 +62,14 @@ fn gpu_decode_quant_dtype_supported(dtype: GgmlType) -> bool {
 fn gpu_prefill_quant_dtype_supported(dtype: GgmlType) -> bool {
     matches!(
         dtype,
-        GgmlType::Q4_0 | GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0 | GgmlType::F32
+        GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0 | GgmlType::F32
     ) || (dtype == GgmlType::Q5K && q5k_prefill_enabled())
 }
 
 fn gpu_batch_logits_dtype_supported(dtype: GgmlType) -> bool {
     matches!(
         dtype,
-        GgmlType::Q4_0 | GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0
+        GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0
     )
 }
 
@@ -467,7 +466,7 @@ fn warn_gpu_path_issue_once(key: String, warn: impl FnOnce()) {
 
 fn gpu_batch_prefill_panic(dtype: GgmlType) -> ! {
     panic!(
-        "GPU batch matmul only supports Q4_0, Q4_K, Q5_K, Q6_K, and Q8_0, got {:?}",
+        "GPU batch matmul only supports Q4_K, Q5_K, Q6_K, and Q8_0, got {:?}",
         dtype
     )
 }

@@ -10,6 +10,8 @@ same prompt/decode shapes, and the same serial outer-sample methodology.
 # Build release binaries first
 cargo build -p ax-engine-bench --release
 
+export REPO_DIR=$(pwd)
+
 # Full comparison: AX Engine vs llama.cpp
 ./benchmarks/run_apple_to_apple.py \
   --model ./models/Qwen3-8B-Q4_K_M.gguf \
@@ -17,9 +19,21 @@ cargo build -p ax-engine-bench --release
 
 # AX Engine only (fast iteration, no llama.cpp needed)
 ./benchmarks/run_apple_to_apple.py \
+  --repo-dir "$REPO_DIR" \
   --model ./models/Qwen3-8B-Q4_K_M.gguf \
   --label qwen3-8b-dev \
   --ax-only
+
+# AX Engine only for Qwen 3.5 9B
+./benchmarks/run_apple_to_apple.py \
+  --repo-dir "$REPO_DIR" \
+  --model ./models/Qwen3.5-9B-Q4_K_M.gguf \
+  --label qwen3.5-9b-ax-only \
+  --ax-only \
+  --prompt-tokens 512 \
+  --decode-tokens 128 \
+  --samples 5 \
+  --cooldown-seconds 20
 
 # AX Engine only, compared against a previous llama.cpp baseline
 ./benchmarks/run_apple_to_apple.py \
@@ -80,6 +94,7 @@ Current default settings:
 --decode-depth N           Decode start depth (default: prompt-tokens)
 --samples N                Outer sample count (default: 5)
 --cooldown-seconds N       Cooldown between samples (default: 20)
+--repo-dir PATH            Repository directory (defaults to script location or $REPO_DIR)
 --ax-only                  Skip llama.cpp, report AX results only
 --llama-baseline PATH      Reuse a previous llama/summary.json as baseline
 --ax-bench PATH            AX bench binary (default: target/release/ax-engine-bench)
@@ -95,6 +110,8 @@ Current default settings:
 ./benchmarks/list_results.py --model-contains Qwen3.5
 ./benchmarks/list_results.py --json --limit 10
 ```
+AX-only runs are included via `ax.json` and show in `ax_*` columns even when
+`manifest.json`/`comparison.json` are not present.
 
 ## Output
 

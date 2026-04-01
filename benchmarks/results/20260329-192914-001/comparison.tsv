@@ -1,2 +1,0 @@
-label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
-bv128-merged-cb	models/Qwen3.5-9B-Q4_K_M.gguf	512	128	512	3	10	315.98074155639165	720.88249	43.83248947500329	55.10112078047294	48.349	113.96537835420162

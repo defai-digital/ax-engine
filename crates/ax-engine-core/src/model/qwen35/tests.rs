@@ -183,6 +183,49 @@ fn build_qwen35_logits_test_gguf(
     )
 }
 
+fn build_test_gguf_with_tensors(
+    architecture: &str,
+    tensors: &[(&str, &[u64], GgmlType, Vec<u8>)],
+) -> Vec<u8> {
+    let alignment = 32usize;
+    let mut offsets = Vec::with_capacity(tensors.len());
+    let mut data_cursor = 0usize;
+    for (_, _, _, bytes) in tensors {
+        offsets.push(data_cursor);
+        data_cursor = align_to(data_cursor + bytes.len(), alignment);
+    }
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&crate::gguf::GGUF_MAGIC.to_le_bytes());
+    buf.extend_from_slice(&crate::gguf::GGUF_VERSION.to_le_bytes());
+    buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+    buf.extend_from_slice(&2u64.to_le_bytes());
+    push_string_metadata(&mut buf, "general.architecture", architecture);
+    push_u32_metadata(&mut buf, "general.alignment", alignment as u32);
+    for ((name, shape, dtype, _), offset) in tensors.iter().zip(offsets.iter()) {
+        push_tensor_info(&mut buf, name, shape, *dtype, *offset as u64);
+    }
+
+    let data_start = align_to(buf.len(), alignment);
+    buf.resize(data_start, 0);
+    for (((_, _, _, bytes), offset), next_offset) in tensors
+        .iter()
+        .zip(offsets.iter())
+        .zip(offsets.iter().skip(1).chain(std::iter::once(&data_cursor)))
+    {
+        let target = data_start + *offset;
+        if buf.len() < target {
+            buf.resize(target, 0);
+        }
+        buf.extend_from_slice(bytes);
+        let next_target = data_start + *next_offset;
+        if buf.len() < next_target {
+            buf.resize(next_target, 0);
+        }
+    }
+    buf
+}
+
 #[test]
 fn test_qwen35_prefill_recurrent_state_mode_defaults_to_auto() {
     with_env_var("AX_QWEN35_PREFILL_RECURRENT_STATE_MODE", None, || {
@@ -468,6 +511,190 @@ fn test_qwen35_validate_requires_recurrent_dims() {
         qwen35_ssm_group_count: Some(2),
     };
     fwd.validate_config(&cfg).unwrap();
+}
+
+#[test]
+fn test_qwen35_validate_accepts_qwen35moe_architecture() {
+    let fwd = Qwen35Forward;
+    let cfg = ModelConfig {
+        architecture: "qwen35moe".into(),
+        n_layers: 4,
+        n_heads: 16,
+        n_kv_heads: 8,
+        embedding_dim: 2048,
+        head_dim: 128,
+        intermediate_dim: 8192,
+        context_length: 4096,
+        vocab_size: 1000,
+        rms_norm_eps: 1e-6,
+        rope_freq_base: 10000.0,
+        has_qkv_bias: false,
+        sliding_window_size: None,
+        sliding_window_pattern: None,
+        gate_activation: crate::model::config::GateActivation::SiLU,
+        tie_word_embeddings: false,
+        logit_scale: None,
+        rope_scaling: crate::model::config::RopeScaling::None,
+        embed_scale: false,
+        rope_freq_base_local: None,
+        n_expert: Some(128),
+        n_expert_used: Some(8),
+        expert_intermediate_dim: Some(128),
+        qwen35_full_attention_interval: Some(4),
+        qwen35_ssm_conv_kernel: Some(4),
+        qwen35_ssm_inner_size: Some(1024),
+        qwen35_ssm_state_size: Some(128),
+        qwen35_ssm_time_step_rank: Some(8),
+        qwen35_ssm_group_count: Some(2),
+    };
+    fwd.validate_config(&cfg).unwrap();
+}
+
+#[test]
+fn test_qwen35moe_shared_expert_gate_scales_output() {
+    let dim = 2usize;
+    let shape_norm = [dim as u64];
+    let shape_router = [dim as u64, 2];
+    let shape_expert_in = [dim as u64, 1, 2];
+    let shape_expert_out = [1, dim as u64, 2];
+    let shape_shared_in = [dim as u64, 1];
+    let shape_shared_out = [1, dim as u64];
+    let shape_shared_gate = [dim as u64];
+    let tensors: Vec<(&str, &[u64], GgmlType, Vec<u8>)> = vec![
+        (
+            "blk.0.post_attention_norm.weight",
+            &shape_norm,
+            GgmlType::F32,
+            f32_bytes(&[1.0, 1.0]),
+        ),
+        (
+            "blk.0.ffn_gate_inp.weight",
+            &shape_router,
+            GgmlType::F32,
+            f32_bytes(&[0.0, 0.0, 0.0, 0.0]),
+        ),
+        (
+            "blk.0.ffn_gate_exps.weight",
+            &shape_expert_in,
+            GgmlType::F32,
+            f32_bytes(&[0.0, 0.0, 0.0, 0.0]),
+        ),
+        (
+            "blk.0.ffn_up_exps.weight",
+            &shape_expert_in,
+            GgmlType::F32,
+            f32_bytes(&[0.0, 0.0, 0.0, 0.0]),
+        ),
+        (
+            "blk.0.ffn_down_exps.weight",
+            &shape_expert_out,
+            GgmlType::F32,
+            f32_bytes(&[0.0, 0.0, 0.0, 0.0]),
+        ),
+        (
+            "blk.0.ffn_gate_shexp.weight",
+            &shape_shared_in,
+            GgmlType::F32,
+            f32_bytes(&[1.0, 0.0]),
+        ),
+        (
+            "blk.0.ffn_up_shexp.weight",
+            &shape_shared_in,
+            GgmlType::F32,
+            f32_bytes(&[2.0, 0.0]),
+        ),
+        (
+            "blk.0.ffn_down_shexp.weight",
+            &shape_shared_out,
+            GgmlType::F32,
+            f32_bytes(&[1.0, 1.0]),
+        ),
+        (
+            "blk.0.ffn_gate_inp_shexp.weight",
+            &shape_shared_gate,
+            GgmlType::F32,
+            f32_bytes(&[0.0, 0.0]),
+        ),
+    ];
+    let gguf = build_test_gguf_with_tensors("qwen35moe", &tensors);
+    let path = write_test_gguf_to_temp(&gguf);
+
+    let cfg = ModelConfig {
+        architecture: "qwen35moe".into(),
+        n_layers: 1,
+        n_heads: 1,
+        n_kv_heads: 1,
+        embedding_dim: dim as u32,
+        head_dim: dim as u32,
+        intermediate_dim: 1,
+        context_length: 128,
+        vocab_size: 16,
+        rms_norm_eps: 1e-6,
+        rope_freq_base: 10000.0,
+        has_qkv_bias: false,
+        sliding_window_size: None,
+        sliding_window_pattern: None,
+        gate_activation: crate::model::config::GateActivation::SiLU,
+        tie_word_embeddings: false,
+        logit_scale: None,
+        rope_scaling: crate::model::config::RopeScaling::None,
+        embed_scale: false,
+        rope_freq_base_local: None,
+        n_expert: Some(2),
+        n_expert_used: Some(1),
+        expert_intermediate_dim: Some(1),
+        qwen35_full_attention_interval: Some(4),
+        qwen35_ssm_conv_kernel: Some(4),
+        qwen35_ssm_inner_size: Some(16),
+        qwen35_ssm_state_size: Some(4),
+        qwen35_ssm_time_step_rank: Some(4),
+        qwen35_ssm_group_count: Some(1),
+    };
+
+    let mut hidden = vec![1.0f32, 0.0];
+    let mut norm_buf = vec![0.0f32; dim];
+    let mut gate_buf = vec![0.0f32; 1];
+    let mut up_buf = vec![0.0f32; 1];
+    let mut down_buf = vec![0.0f32; dim];
+
+    {
+        let model = MappedModel::open(&path).unwrap();
+        let weights = WeightStore::new(&model);
+
+        Qwen35Forward::apply_post_attention_ffn_single(
+            &cfg,
+            &CpuBackend,
+            &weights,
+            "blk.0",
+            &mut hidden,
+            &mut norm_buf,
+            &mut gate_buf,
+            &mut up_buf,
+            &mut down_buf,
+            dim,
+            1,
+            cfg.rms_norm_eps,
+            None,
+        )
+        .unwrap();
+    }
+
+    let mut norm = vec![0.0f32; dim];
+    rms_norm::rms_norm_out(&[1.0f32, 0.0], &[1.0f32, 1.0], &mut norm, cfg.rms_norm_eps);
+    let mut shared_gate = vec![norm[0]];
+    let shared_up = vec![2.0 * norm[0]];
+    silu::silu_elementwise_mul(&mut shared_gate, &shared_up);
+    let expected_add = shared_gate[0] * 0.5;
+    let expected = [1.0 + expected_add, expected_add];
+
+    for (actual, expected) in hidden.iter().zip(expected.iter()) {
+        assert!(
+            (actual - expected).abs() < 1e-5,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    std::fs::remove_file(&path).ok();
 }
 
 #[test]

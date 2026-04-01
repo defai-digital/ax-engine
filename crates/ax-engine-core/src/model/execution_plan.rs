@@ -130,8 +130,6 @@ pub struct GpuDecodeExecutionPlan {
     pub kv_f16: bool,
     #[allow(dead_code)]
     pub kv_q8: bool,
-    #[allow(dead_code)]
-    pub kv_q4: bool,
     pub use_pair_matvec: bool,
     pub use_fused_silu_down: bool,
     pub attention_route: &'static str,
@@ -162,7 +160,6 @@ pub struct Qwen3DecodeLayerPlan {
 pub struct GpuBatchPrefillExecutionPlan {
     pub kv_f16: bool,
     pub kv_q8: bool,
-    pub kv_q4: bool,
     pub use_f16_batch_io: bool,
     pub use_f16_pair: bool,
     pub use_fused_qkv: bool,
@@ -535,7 +532,6 @@ impl DecodeExecutionPlan {
         GpuBatchPrefillExecutionPlan {
             kv_f16: gpu_kv.is_f16(),
             kv_q8: gpu_kv.is_q8(),
-            kv_q4: gpu_kv.is_q4(),
             use_f16_batch_io,
             use_f16_pair: !q5k_route.enabled && metal_ops.metal_batch_f16_pair_enabled(),
             use_fused_qkv: metal_ops.metal_fused_qkv_enabled(),
@@ -574,7 +570,6 @@ impl DecodeExecutionPlan {
         GpuBatchPrefillExecutionPlan {
             kv_f16: gpu_kv.is_f16(),
             kv_q8: gpu_kv.is_q8(),
-            kv_q4: gpu_kv.is_q4(),
             use_f16_batch_io,
             use_f16_pair: !q5k_route.enabled && metal_ops.metal_batch_f16_pair_enabled(),
             use_fused_qkv: metal_ops.metal_fused_qkv_enabled(),
@@ -610,7 +605,6 @@ impl DecodeExecutionPlan {
         GpuBatchPrefillExecutionPlan {
             kv_f16: gpu_kv.is_f16(),
             kv_q8: gpu_kv.is_q8(),
-            kv_q4: gpu_kv.is_q4(),
             use_f16_batch_io,
             use_f16_pair: !q5k_route.enabled && metal_ops.metal_batch_f16_pair_enabled(),
             use_fused_qkv: metal_ops.metal_fused_qkv_enabled(),
@@ -843,7 +837,9 @@ impl DecodeExecutionPlan {
 }
 
 fn supports_backend_prefill_kv(config: &ModelConfig, kv: &ModelKv) -> bool {
-    kv.as_gpu().is_some() || (config.architecture == "qwen35" && matches!(kv, ModelKv::Qwen35(_)))
+    kv.as_gpu().is_some()
+        || (matches!(config.architecture.as_str(), "qwen35" | "qwen35moe")
+            && matches!(kv, ModelKv::Qwen35(_)))
 }
 
 fn qwen35_prefill_plan() -> PrefillExecutionPlan {
@@ -1018,7 +1014,7 @@ impl PrefillExecutionPlan {
                     }
                 }
             }
-            "qwen35" => qwen35_prefill_plan(),
+            "qwen35" | "qwen35moe" => qwen35_prefill_plan(),
             _ => Self {
                 mode: PrefillMode::Serial,
                 chunk_len: None,
@@ -1223,7 +1219,6 @@ fn single_cb_gpu_decode_plan(
         ),
         kv_f16: gpu_kv.is_f16(),
         kv_q8: gpu_kv.is_q8(),
-        kv_q4: gpu_kv.is_q4(),
         use_pair_matvec: decode_pair_matvec_plan_for_arch(arch_name),
         use_fused_silu_down: decode_fused_silu_down_plan_for_arch(arch_name),
         attention_route: attention_selection.label(),
@@ -1569,7 +1564,7 @@ mod tests {
                 qkv: DecodeQkvPlan::Fused,
                 kv_f16: true,
                 kv_q8: false,
-                kv_q4: false,
+
                 use_pair_matvec: false,
                 use_fused_silu_down: false,
                 attention_route: "f16kv_hd128",
@@ -1610,7 +1605,7 @@ mod tests {
                 qkv: DecodeQkvPlan::Fused,
                 kv_f16: true,
                 kv_q8: false,
-                kv_q4: false,
+
                 use_pair_matvec: false,
                 use_fused_silu_down: false,
                 attention_route: "f16kv_hd128",
@@ -1651,7 +1646,7 @@ mod tests {
                 qkv: DecodeQkvPlan::Fused,
                 kv_f16: true,
                 kv_q8: false,
-                kv_q4: false,
+
                 use_pair_matvec: false,
                 use_fused_silu_down: false,
                 attention_route: "splitk_hd256",
@@ -1722,7 +1717,6 @@ mod tests {
             qkv: DecodeQkvPlan::Fused,
             kv_f16: true,
             kv_q8: false,
-            kv_q4: false,
             use_pair_matvec: true,
             use_fused_silu_down: true,
             attention_route: "f16kv_hd128",
@@ -1756,7 +1750,6 @@ mod tests {
             qkv: DecodeQkvPlan::Fused,
             kv_f16: true,
             kv_q8: false,
-            kv_q4: false,
             use_pair_matvec: true,
             use_fused_silu_down: true,
             attention_route: "f16kv_hd128",
@@ -2063,7 +2056,6 @@ mod tests {
         let plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
             kv_q8: false,
-            kv_q4: false,
             use_f16_batch_io: true,
             use_f16_pair: false,
             use_fused_qkv: true,
@@ -2115,7 +2107,6 @@ mod tests {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
             kv_q8: false,
-            kv_q4: false,
             use_f16_batch_io: true,
             use_f16_pair: false,
             use_fused_qkv: false,
@@ -2147,7 +2138,6 @@ mod tests {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
             kv_q8: false,
-            kv_q4: false,
             use_f16_batch_io: true,
             use_f16_pair: false,
             use_fused_qkv: false,
@@ -2186,7 +2176,6 @@ mod tests {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
             kv_q8: false,
-            kv_q4: false,
             use_f16_batch_io: true,
             use_f16_pair: false,
             use_fused_qkv: false,
@@ -2215,7 +2204,6 @@ mod tests {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
             kv_q8: false,
-            kv_q4: false,
             use_f16_batch_io: false,
             use_f16_pair: false,
             use_fused_qkv: false,
@@ -2243,7 +2231,6 @@ mod tests {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
             kv_q8: false,
-            kv_q4: false,
             use_f16_batch_io: true,
             use_f16_pair: false,
             use_fused_qkv: false,
@@ -2312,7 +2299,6 @@ mod tests {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
             kv_q8: false,
-            kv_q4: false,
             use_f16_batch_io: false,
             use_f16_pair: false,
             use_fused_qkv: true,
@@ -2344,7 +2330,6 @@ mod tests {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
             kv_q8: false,
-            kv_q4: false,
             use_f16_batch_io: false,
             use_f16_pair: false,
             use_fused_qkv: true,
@@ -2376,7 +2361,6 @@ mod tests {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
             kv_q8: false,
-            kv_q4: false,
             use_f16_batch_io: false,
             use_f16_pair: false,
             use_fused_qkv: false,
@@ -2408,7 +2392,6 @@ mod tests {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
             kv_q8: false,
-            kv_q4: false,
             use_f16_batch_io: false,
             use_f16_pair: false,
             use_fused_qkv: true,
@@ -2441,7 +2424,6 @@ mod tests {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
             kv_q8: false,
-            kv_q4: false,
             use_f16_batch_io: true,
             use_f16_pair: false,
             use_fused_qkv: true,

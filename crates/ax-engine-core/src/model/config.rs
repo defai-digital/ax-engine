@@ -240,8 +240,22 @@ impl ModelConfig {
             .get_u32(&format!("{arch}.attention.key_length"))
             .unwrap_or(embedding_dim / n_heads);
 
-        // feed_forward_length is the intermediate dim for MLP
-        let intermediate_dim = get_u32("feed_forward_length")?;
+        let expert_intermediate_dim = header.get_u32(&format!("{arch}.expert_feed_forward_length"));
+        let shared_expert_intermediate_dim =
+            header.get_u32(&format!("{arch}.expert_shared_feed_forward_length"));
+
+        // Dense models use feed_forward_length directly. qwen35moe GGUFs instead
+        // publish the shared-expert width via expert_shared_feed_forward_length.
+        let intermediate_dim = header
+            .get_u32(&format!("{arch}.feed_forward_length"))
+            .or_else(|| {
+                if arch == "qwen35moe" {
+                    shared_expert_intermediate_dim.or(expert_intermediate_dim)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| anyhow::anyhow!("missing GGUF key: {arch}.feed_forward_length"))?;
 
         let context_length = header
             .get_u32(&format!("{arch}.context_length"))
@@ -377,7 +391,6 @@ impl ModelConfig {
         // MoE: expert count, experts-per-token, and per-expert FFN dimension
         let n_expert = header.get_u32(&format!("{arch}.expert_count"));
         let n_expert_used = header.get_u32(&format!("{arch}.expert_used_count"));
-        let expert_intermediate_dim = header.get_u32(&format!("{arch}.expert_feed_forward_length"));
         let qwen35_full_attention_interval =
             header.get_u32(&format!("{arch}.full_attention_interval"));
         let qwen35_ssm_conv_kernel = header.get_u32(&format!("{arch}.ssm.conv_kernel"));
@@ -408,6 +421,8 @@ impl ModelConfig {
             ?rope_freq_base_local,
             ?n_expert,
             ?n_expert_used,
+            ?expert_intermediate_dim,
+            ?shared_expert_intermediate_dim,
             ?qwen35_full_attention_interval,
             ?qwen35_ssm_conv_kernel,
             ?qwen35_ssm_inner_size,
@@ -642,6 +657,66 @@ mod tests {
         let config = ModelConfig::from_gguf(&header).unwrap();
         assert!(config.has_qkv_bias);
         assert_eq!(config.gate_activation, GateActivation::SiLU);
+    }
+
+    #[test]
+    fn test_config_qwen35moe_features() {
+        let header = make_header(vec![
+            (
+                "general.architecture",
+                MetadataValue::String("qwen35moe".into()),
+            ),
+            ("qwen35moe.block_count", MetadataValue::Uint32(40)),
+            ("qwen35moe.attention.head_count", MetadataValue::Uint32(16)),
+            (
+                "qwen35moe.attention.head_count_kv",
+                MetadataValue::Uint32(2),
+            ),
+            ("qwen35moe.embedding_length", MetadataValue::Uint32(2048)),
+            ("qwen35moe.context_length", MetadataValue::Uint32(4096)),
+            ("qwen35moe.attention.key_length", MetadataValue::Uint32(128)),
+            (
+                "qwen35moe.attention.layer_norm_rms_epsilon",
+                MetadataValue::Float32(1e-6),
+            ),
+            (
+                "qwen35moe.rope.freq_base",
+                MetadataValue::Float32(1_000_000.0),
+            ),
+            ("qwen35moe.expert_count", MetadataValue::Uint32(256)),
+            ("qwen35moe.expert_used_count", MetadataValue::Uint32(8)),
+            (
+                "qwen35moe.expert_feed_forward_length",
+                MetadataValue::Uint32(512),
+            ),
+            (
+                "qwen35moe.expert_shared_feed_forward_length",
+                MetadataValue::Uint32(768),
+            ),
+            (
+                "qwen35moe.full_attention_interval",
+                MetadataValue::Uint32(4),
+            ),
+            ("qwen35moe.ssm.conv_kernel", MetadataValue::Uint32(4)),
+            ("qwen35moe.ssm.inner_size", MetadataValue::Uint32(4096)),
+            ("qwen35moe.ssm.state_size", MetadataValue::Uint32(128)),
+            ("qwen35moe.ssm.time_step_rank", MetadataValue::Uint32(32)),
+            ("qwen35moe.ssm.group_count", MetadataValue::Uint32(16)),
+        ]);
+
+        let config = ModelConfig::from_gguf(&header).unwrap();
+        assert_eq!(config.architecture, "qwen35moe");
+        assert_eq!(config.head_dim, 128);
+        assert_eq!(config.intermediate_dim, 768);
+        assert_eq!(config.n_expert, Some(256));
+        assert_eq!(config.n_expert_used, Some(8));
+        assert_eq!(config.expert_intermediate_dim, Some(512));
+        assert_eq!(config.qwen35_full_attention_interval, Some(4));
+        assert_eq!(config.qwen35_ssm_conv_kernel, Some(4));
+        assert_eq!(config.qwen35_ssm_inner_size, Some(4096));
+        assert_eq!(config.qwen35_ssm_state_size, Some(128));
+        assert_eq!(config.qwen35_ssm_time_step_rank, Some(32));
+        assert_eq!(config.qwen35_ssm_group_count, Some(16));
     }
 
     #[test]

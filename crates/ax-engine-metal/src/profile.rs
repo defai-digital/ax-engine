@@ -376,7 +376,7 @@ impl KernelProfile {
         }
 
         Self::default().apply_missing_model_heuristics(
-            model_name, true, true, true, true, true, true, true, true,
+            model_name, true, true, true, true, true, true, true, true, true, true,
         )
     }
 
@@ -482,8 +482,10 @@ impl KernelProfile {
                 "decode_regimes.long.attention_decode.splitk_threshold",
             ),
             !json_has_path(&raw_json, "attention_prefill.fa2_mode"),
+            !json_has_path(&raw_json, "attention_prefill.fa2_hd128_mode"),
             !json_has_path(&raw_json, "attention_prefill.ax_bc64_mode"),
             !json_has_path(&raw_json, "attention_decode.hd128_n2_default"),
+            !json_has_path(&raw_json, "attention_prefill.fa2_hd128_auto_min_tokens"),
             !json_has_path(&raw_json, "attention_prefill.ax_bc64_min_tokens"),
         );
         tracing::info!(
@@ -517,8 +519,10 @@ impl KernelProfile {
         missing_decode_regime_short_max_attend_len: bool,
         missing_decode_regime_long_splitk_threshold: bool,
         missing_fa2_mode: bool,
+        missing_fa2_hd128_mode: bool,
         missing_ax_bc64_mode: bool,
         missing_hd128_n2_default: bool,
+        missing_fa2_hd128_auto_min_tokens: bool,
         missing_ax_bc64_min_tokens: bool,
     ) -> Self {
         let arch = extract_architecture(model_name);
@@ -533,6 +537,10 @@ impl KernelProfile {
         if missing_fa2_mode {
             self.attention_prefill.fa2_mode = heuristic_attention_prefill_fa2_mode_for_arch(&arch);
         }
+        if missing_fa2_hd128_mode {
+            self.attention_prefill.fa2_hd128_mode =
+                heuristic_attention_prefill_fa2_hd128_mode_for_arch(&arch);
+        }
         if missing_ax_bc64_mode {
             self.attention_prefill.ax_bc64_mode =
                 heuristic_attention_prefill_ax_bc64_mode_for_arch(&arch);
@@ -540,6 +548,10 @@ impl KernelProfile {
         if missing_hd128_n2_default {
             self.attention_decode.hd128_n2_default =
                 heuristic_attention_decode_hd128_n2_default_for_arch(&arch);
+        }
+        if missing_fa2_hd128_auto_min_tokens {
+            self.attention_prefill.fa2_hd128_auto_min_tokens =
+                heuristic_attention_prefill_fa2_hd128_auto_min_tokens_for_arch(&arch);
         }
         if missing_ax_bc64_min_tokens {
             self.attention_prefill.ax_bc64_min_tokens =
@@ -611,8 +623,10 @@ fn approx_size(size: f32, target: f32) -> bool {
 fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
     match family {
         "qwen3" => {
-            // Generative models: 6B+ only
-            if approx_size(size, 6.0) || approx_size(size, 7.0) || approx_size(size, 8.0) {
+            // Generative models: 4B+ only
+            if approx_size(size, 4.0) {
+                Some("4b")
+            } else if approx_size(size, 6.0) || approx_size(size, 7.0) || approx_size(size, 8.0) {
                 Some("8b")
             } else if approx_size(size, 14.0) {
                 Some("14b")
@@ -740,6 +754,25 @@ fn heuristic_attention_prefill_fa2_mode_for_arch(arch: &str) -> ProfileKernelMod
     }
 }
 
+fn heuristic_attention_prefill_fa2_hd128_mode_for_arch(arch: &str) -> ProfileKernelMode {
+    match arch {
+        // Llama3 8B now keeps FA2 available behind a long-prompt threshold.
+        "llama3-8b" => ProfileKernelMode::Auto,
+        _ => ProfileKernelMode::Auto,
+    }
+}
+
+fn heuristic_attention_prefill_fa2_hd128_auto_min_tokens_for_arch(arch: &str) -> u32 {
+    match arch {
+        // Bench sweep 2026-04-01: Llama3 8B keeps BC64 at medium prompts but
+        // FA2 wins again at 1024 prompt tokens.
+        "llama3-8b" => 1024,
+        // Bench sweep 2026-04-01: Qwen3 4B prefers BC64 at 256, then FA2 from 384+.
+        "qwen3-4b" => 384,
+        _ => default_attention_prefill_fa2_hd128_auto_min_tokens(),
+    }
+}
+
 fn heuristic_attention_prefill_ax_bc64_mode_for_arch(_arch: &str) -> ProfileKernelMode {
     // With FA2 now preferred for HD=128 models, Mistral bc64 is Auto for all.
     ProfileKernelMode::Auto
@@ -754,6 +787,7 @@ fn heuristic_attention_decode_hd128_n2_default_for_arch(arch: &str) -> Option<bo
 
 fn heuristic_attention_prefill_ax_bc64_min_tokens_for_arch(arch: &str) -> u32 {
     match arch {
+        "qwen3-4b" => 256,
         "llama3-8b" | "qwen3-8b" | "qwen3-14b" | "qwen35-9b" | "qwen35-27b" => 384,
         _ => default_attention_prefill_ax_bc64_min_tokens(),
     }
@@ -866,7 +900,8 @@ mod tests {
 
     #[test]
     fn test_extract_architecture() {
-        // Core families (6B+ generative only)
+        // Core families
+        assert_eq!(extract_architecture("Qwen3-4B-Q6_K"), "qwen3-4b");
         assert_eq!(extract_architecture("Qwen3-8B-Q4_K_M"), "qwen3-8b");
         assert_eq!(extract_architecture("Qwen2.5-7B-Instruct"), "qwen3-8b");
         assert_eq!(extract_architecture("Qwen3-14B"), "qwen3-14b");
@@ -934,6 +969,7 @@ mod tests {
         // Off only for Gemma3 (HD=256, FA2 HD128 doesn't apply).
         let cases = [
             ("default", ProfileKernelMode::Auto),
+            ("qwen3-4b", ProfileKernelMode::Auto),
             ("gemma3-4b", ProfileKernelMode::Off),
             ("gemma3-12b", ProfileKernelMode::Off),
             ("gemma3-27b", ProfileKernelMode::Off),
@@ -954,10 +990,35 @@ mod tests {
     }
 
     #[test]
+    fn test_heuristic_attention_prefill_fa2_hd128_mode_matches_current_profile_buckets() {
+        let cases = [
+            ("default", ProfileKernelMode::Auto),
+            ("qwen3-4b", ProfileKernelMode::Auto),
+            ("gemma3-4b", ProfileKernelMode::Auto),
+            ("gemma3-12b", ProfileKernelMode::Auto),
+            ("gemma3-27b", ProfileKernelMode::Auto),
+            ("llama3-8b", ProfileKernelMode::Auto),
+            ("llama3-70b", ProfileKernelMode::Auto),
+            ("qwen3-8b", ProfileKernelMode::Auto),
+            ("qwen3-14b", ProfileKernelMode::Auto),
+            ("qwen3-32b", ProfileKernelMode::Auto),
+            ("qwen35-9b", ProfileKernelMode::Auto),
+            ("qwen35-27b", ProfileKernelMode::Auto),
+        ];
+        for (arch, expected) in cases {
+            assert_eq!(
+                heuristic_attention_prefill_fa2_hd128_mode_for_arch(arch),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn test_heuristic_attention_prefill_ax_bc64_mode_matches_current_profile_buckets() {
         // With FA2 now the preferred HD=128 path, Mistral bc64 is Auto for all.
         let cases = [
             ("default", ProfileKernelMode::Auto),
+            ("qwen3-4b", ProfileKernelMode::Auto),
             ("gemma3-4b", ProfileKernelMode::Auto),
             ("gemma3-12b", ProfileKernelMode::Auto),
             ("gemma3-27b", ProfileKernelMode::Auto),
@@ -1004,6 +1065,7 @@ mod tests {
     fn test_heuristic_attention_prefill_ax_bc64_min_tokens_matches_current_profile_buckets() {
         let cases = [
             ("default", 384),
+            ("qwen3-4b", 256),
             ("gemma3-4b", 384),
             ("gemma3-12b", 384),
             ("gemma3-27b", 384),
@@ -1018,6 +1080,31 @@ mod tests {
         for (arch, expected) in cases {
             assert_eq!(
                 heuristic_attention_prefill_ax_bc64_min_tokens_for_arch(arch),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_heuristic_attention_prefill_fa2_hd128_auto_min_tokens_matches_current_profile_buckets()
+    {
+        let cases = [
+            ("default", 128),
+            ("qwen3-4b", 384),
+            ("gemma3-4b", 128),
+            ("gemma3-12b", 128),
+            ("gemma3-27b", 128),
+            ("llama3-8b", 1024),
+            ("llama3-70b", 128),
+            ("qwen3-8b", 128),
+            ("qwen3-14b", 128),
+            ("qwen3-32b", 128),
+            ("qwen35-9b", 128),
+            ("qwen35-27b", 128),
+        ];
+        for (arch, expected) in cases {
+            assert_eq!(
+                heuristic_attention_prefill_fa2_hd128_auto_min_tokens_for_arch(arch),
                 expected
             );
         }
@@ -1326,6 +1413,58 @@ mod tests {
     }
 
     #[test]
+    fn test_current_profiles_match_attention_prefill_fa2_hd128_mode_heuristic() {
+        for entry in fs::read_dir(perf_dir()).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let raw_profile = KernelProfile::load_from_path(&path).unwrap();
+            let model_name = raw_profile.model.clone();
+            let effective_profile =
+                KernelProfile::load_from_path_with_model_heuristics(&path, &model_name).unwrap();
+            let expected = heuristic_attention_prefill_fa2_hd128_mode_for_arch(
+                &extract_architecture(&model_name),
+            );
+            assert_eq!(
+                effective_profile.attention_prefill.fa2_hd128_mode,
+                expected,
+                "profile {} drifted from attention_prefill.fa2_hd128_mode heuristic for model {}",
+                path.display(),
+                model_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_current_profiles_match_attention_prefill_fa2_hd128_auto_min_tokens_heuristic() {
+        for entry in fs::read_dir(perf_dir()).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let raw_profile = KernelProfile::load_from_path(&path).unwrap();
+            let model_name = raw_profile.model.clone();
+            let effective_profile =
+                KernelProfile::load_from_path_with_model_heuristics(&path, &model_name).unwrap();
+            let expected = heuristic_attention_prefill_fa2_hd128_auto_min_tokens_for_arch(
+                &extract_architecture(&model_name),
+            );
+            assert_eq!(
+                effective_profile
+                    .attention_prefill
+                    .fa2_hd128_auto_min_tokens,
+                expected,
+                "profile {} drifted from attention_prefill.fa2_hd128_auto_min_tokens heuristic for model {}",
+                path.display(),
+                model_name
+            );
+        }
+    }
+
+    #[test]
     fn test_current_profiles_match_attention_prefill_ax_bc64_mode_heuristic() {
         for entry in fs::read_dir(perf_dir()).unwrap() {
             let entry = entry.unwrap();
@@ -1436,8 +1575,13 @@ mod tests {
         // PRD-PREFILL-DISPATCH-CONSOLIDATION: blocked kernel for all archs.
         assert!(!profile.batch_prefill.prefer_f16_io);
         assert_eq!(profile.attention_decode.hd128_n2_default, Some(true));
-        // FA2 now Auto for all HD=128 models.
+        // Qwen35 keeps FA2 HD128 on Auto after heuristic restoration.
         assert_eq!(profile.attention_prefill.fa2_mode, ProfileKernelMode::Auto);
+        assert_eq!(
+            profile.attention_prefill.fa2_hd128_mode,
+            ProfileKernelMode::Auto
+        );
+        assert_eq!(profile.attention_prefill.fa2_hd128_auto_min_tokens, 128);
         assert_eq!(
             profile.attention_prefill.ax_bc64_mode,
             ProfileKernelMode::Auto
@@ -1516,11 +1660,82 @@ mod tests {
         assert_eq!(profile.attention_decode.hd128_n2_default, Some(false));
         assert_eq!(profile.attention_prefill.fa2_mode, ProfileKernelMode::Auto);
         assert_eq!(
+            profile.attention_prefill.fa2_hd128_mode,
+            ProfileKernelMode::Off
+        );
+        assert_eq!(
             profile.attention_prefill.ax_bc64_mode,
             ProfileKernelMode::Off
         );
         assert_eq!(profile.attention_prefill.fa2_auto_min_base_seq, 320);
         assert_eq!(profile.attention_prefill.ax_bc64_min_tokens, 1024);
+    }
+
+    #[test]
+    fn test_llama3_8b_heuristics_keep_prefill_fa2_hd128_auto_with_long_prompt_threshold() {
+        let profile = KernelProfile::load("Llama-3-8B-Instruct-GGUF-Q4_K_M", "Q4_K_M");
+        assert_eq!(
+            profile.attention_prefill.fa2_hd128_mode,
+            ProfileKernelMode::Auto
+        );
+        assert_eq!(profile.attention_prefill.fa2_hd128_auto_min_tokens, 1024);
+    }
+
+    #[test]
+    fn test_llama3_8b_profile_prefers_ax_bc64_prefill_route() {
+        let profile = KernelProfile::load("Llama-3-8B-Instruct-GGUF-Q4_K_M", "Q4_K_M");
+        let config = crate::dispatch::AttentionDispatchConfig::from_profile(&profile);
+        let selection = config.prefill_local_candidate_selection(512, 128);
+        assert_eq!(
+            selection.candidate,
+            crate::dispatch::AttentionPrefillCandidate::AxBc64
+        );
+    }
+
+    #[test]
+    fn test_llama3_8b_profile_prefers_fa2_prefill_route_at_1024() {
+        let profile = KernelProfile::load("Llama-3-8B-Instruct-GGUF-Q4_K_M", "Q4_K_M");
+        let config = crate::dispatch::AttentionDispatchConfig::from_profile(&profile);
+        let selection = config.prefill_local_candidate_selection(1024, 128);
+        assert!(matches!(
+            selection.candidate,
+            crate::dispatch::AttentionPrefillCandidate::Fa2SimdHd128
+                | crate::dispatch::AttentionPrefillCandidate::Fa2Hd128
+                | crate::dispatch::AttentionPrefillCandidate::Fa2HalfHd128
+        ));
+    }
+
+    #[test]
+    fn test_qwen3_4b_profile_prefers_ax_bc64_at_256_and_fa2_at_384() {
+        let profile = KernelProfile::load("Qwen3-4B-Q6_K", "Q6_K");
+        let config = crate::dispatch::AttentionDispatchConfig::from_profile(&profile);
+
+        let short = config.prefill_local_candidate_selection(256, 128);
+        assert_eq!(
+            short.candidate,
+            crate::dispatch::AttentionPrefillCandidate::AxBc64
+        );
+
+        let medium = config.prefill_local_candidate_selection(384, 128);
+        assert!(matches!(
+            medium.candidate,
+            crate::dispatch::AttentionPrefillCandidate::Fa2SimdHd128
+                | crate::dispatch::AttentionPrefillCandidate::Fa2Hd128
+                | crate::dispatch::AttentionPrefillCandidate::Fa2HalfHd128
+        ));
+    }
+
+    #[test]
+    fn test_qwen3_8b_profile_keeps_fa2_prefill_route() {
+        let profile = KernelProfile::load("Qwen3-8B-Q4_K_M", "Q4_K_M");
+        let config = crate::dispatch::AttentionDispatchConfig::from_profile(&profile);
+        let selection = config.prefill_local_candidate_selection(512, 128);
+        assert!(matches!(
+            selection.candidate,
+            crate::dispatch::AttentionPrefillCandidate::Fa2SimdHd128
+                | crate::dispatch::AttentionPrefillCandidate::Fa2Hd128
+                | crate::dispatch::AttentionPrefillCandidate::Fa2HalfHd128
+        ));
     }
 
     #[test]

@@ -1,2 +1,0 @@
-model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_s	prefill_median_tok_per_s	prefill_mean_tok_per_s	decode_median_tok_per_s	decode_mean_tok_per_s
-models/Llama-3-8B-Instruct-GGUF-Q4_K_M.gguf	512	128	512	3	10	769.709863	769.7573996666666	66.369819	66.243683

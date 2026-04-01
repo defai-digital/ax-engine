@@ -108,6 +108,7 @@ fn main() -> anyhow::Result<()> {
     let args = args::CliArgs::parse();
 
     validate_mode_combinations(&args)?;
+    validate_sampling_args(&args)?;
 
     if args.speculative_draft.is_some() && !args.experimental {
         anyhow::bail!(
@@ -368,6 +369,39 @@ fn validate_sampling_token_ids(args: &args::CliArgs, vocab_size: usize) -> anyho
             anyhow::bail!("--ban-token-id excludes the entire vocabulary");
         }
     }
+
+    Ok(())
+}
+
+fn validate_sampling_args(args: &args::CliArgs) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        args.temperature.is_finite() && args.temperature >= 0.0,
+        "--temp must be a finite non-negative value"
+    );
+    anyhow::ensure!(
+        args.top_p.is_finite() && (0.0..=1.0).contains(&args.top_p),
+        "--top-p must be a finite value between 0.0 and 1.0"
+    );
+    anyhow::ensure!(
+        args.min_p.is_finite() && (0.0..=1.0).contains(&args.min_p),
+        "--min-p must be a finite value between 0.0 and 1.0"
+    );
+    anyhow::ensure!(
+        args.repeat_penalty.is_finite() && args.repeat_penalty >= 0.0,
+        "--repeat-penalty must be a finite non-negative value"
+    );
+    anyhow::ensure!(
+        args.frequency_penalty.is_finite(),
+        "--frequency-penalty must be finite"
+    );
+    anyhow::ensure!(
+        args.presence_penalty.is_finite(),
+        "--presence-penalty must be finite"
+    );
+    anyhow::ensure!(
+        args.repeat_last_n >= -1,
+        "--repeat-last-n must be -1 or greater"
+    );
 
     Ok(())
 }
@@ -1277,6 +1311,33 @@ mod tests {
         args.ban_token_id = vec![2];
 
         validate_sampling_token_ids(&args, 8).unwrap();
+    }
+
+    #[test]
+    fn test_validate_sampling_args_rejects_non_finite_temperature() {
+        let mut args = make_args();
+        args.temperature = f32::INFINITY;
+
+        let err = validate_sampling_args(&args).unwrap_err();
+        assert!(err.to_string().contains("--temp"));
+    }
+
+    #[test]
+    fn test_validate_sampling_args_rejects_non_finite_penalties() {
+        let mut args = make_args();
+        args.frequency_penalty = f32::NAN;
+
+        let err = validate_sampling_args(&args).unwrap_err();
+        assert!(err.to_string().contains("--frequency-penalty"));
+    }
+
+    #[test]
+    fn test_validate_sampling_args_rejects_repeat_last_n_below_neg_one() {
+        let mut args = make_args();
+        args.repeat_last_n = -2;
+
+        let err = validate_sampling_args(&args).unwrap_err();
+        assert!(err.to_string().contains("--repeat-last-n"));
     }
 
     #[test]

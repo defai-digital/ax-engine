@@ -29,13 +29,20 @@ pub(super) fn encode_dequant_batch(
         }
     }
 
-    if use_f16_io || dtype == GgmlType::Q4_0 {
+    if use_f16_io {
         elementwise.encode_cast_f32_to_f16(encoder, input, input_f16, n * k);
         match dtype {
-            GgmlType::Q4_0 => {
-                dequant.encode_fused_batch_q4_0_f16in(encoder, weight, input_f16, output, m, n, k)
-            }
             GgmlType::Q4K => dequant.encode_fused_batch_q4_k_f16in_with_config(
+                encoder,
+                weight,
+                input_f16,
+                output,
+                m,
+                n,
+                k,
+                ax_engine_metal::DequantDispatchConfig::default(),
+            ),
+            GgmlType::Q5K => dequant.encode_fused_batch_q5_k_f16in_with_config(
                 encoder,
                 weight,
                 input_f16,
@@ -72,6 +79,9 @@ pub(super) fn encode_dequant_batch(
             GgmlType::Q6K => {
                 dequant.encode_fused_batch_q6_k(encoder, weight, input, output, m, n, k)
             }
+            GgmlType::Q8_0 => {
+                dequant.encode_fused_batch_q8_0(encoder, weight, input, output, m, n, k)
+            }
             // F32 not handled here — use encode_qwen35_batch_projection which
             // routes F32 directly to MatmulKernels::encode_matmul.
             _ => gpu_batch_prefill_panic(dtype),
@@ -95,11 +105,6 @@ pub(super) fn encode_dequant_batch_f16in(
     dtype: GgmlType,
 ) {
     match dtype {
-        GgmlType::Q4_0 => {
-            metal_ops
-                .dequant
-                .encode_fused_batch_q4_0_f16in(encoder, weight, input_f16, output, m, n, k);
-        }
         GgmlType::Q8_0 => {
             if metal_ops.metal_q8_batch_native_shape_enabled(m, n, k) {
                 metal_ops.dequant.encode_fused_batch_q8_0_f16in_with_config(
@@ -158,9 +163,16 @@ pub(super) fn encode_dequant_batch_f16in(
                 metal_ops.dequant_dispatch_config(),
             )
         }
-        GgmlType::Q5K => metal_ops
-            .dequant
-            .encode_fused_batch_q5_k_f16in(encoder, weight, input_f16, output, m, n, k),
+        GgmlType::Q5K => metal_ops.dequant.encode_fused_batch_q5_k_f16in_with_config(
+            encoder,
+            weight,
+            input_f16,
+            output,
+            m,
+            n,
+            k,
+            metal_ops.dequant_dispatch_config(),
+        ),
         _ => gpu_batch_prefill_panic(dtype),
     }
 }
@@ -183,7 +195,7 @@ pub(super) fn encode_batch_logits(
     use_batch_simd: bool,
 ) {
     match dtype {
-        GgmlType::Q4_0 | GgmlType::Q8_0 => {
+        GgmlType::Q8_0 => {
             metal_ops.elementwise.encode_cast_f32_to_f16(
                 encoder,
                 hidden,
@@ -194,7 +206,7 @@ pub(super) fn encode_batch_logits(
                 metal_ops, encoder, weight, hidden_f16, logits, vocab, n_rows, hidden_dim, dtype,
             );
         }
-        GgmlType::Q4K | GgmlType::Q6K => {
+        GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K => {
             if prefer_f16_io {
                 metal_ops.elementwise.encode_cast_f32_to_f16(
                     encoder,

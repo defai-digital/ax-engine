@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
 usage() {
     cat <<'EOF'
 Usage:
@@ -35,23 +37,27 @@ MODEL_NAME=$2
 PROMPT_TOKENS=$3
 COOLDOWN=${4:-30}
 
-AX_BENCH_BIN=${AX_BENCH_BIN:-target/release/ax-engine-bench}
+AX_BENCH_BIN=${AX_BENCH_BIN:-$REPO_DIR/target/release/ax-engine-bench}
 DECODE_TOKENS=${DECODE_TOKENS:-128}
 WARMUP_ITERS=${WARMUP_ITERS:-3}
 MEASURE_ITERS=${MEASURE_ITERS:-5}
+OUT_DIR="${OUT_DIR:-$REPO_DIR/automatosx/tmp}"
+
+if [[ ! -f "$MODEL" ]]; then
+    if [[ -f "$REPO_DIR/$MODEL" ]]; then
+        MODEL="$REPO_DIR/$MODEL"
+    else
+        echo "error: model not found: $MODEL" >&2
+        exit 1
+    fi
+fi
 
 if [[ ! -x "$AX_BENCH_BIN" ]]; then
     echo "error: benchmark binary not found or not executable: $AX_BENCH_BIN" >&2
     exit 1
 fi
 
-if [[ ! -f "$MODEL" ]]; then
-    echo "error: model not found: $MODEL" >&2
-    exit 1
-fi
-
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-OUT_DIR="automatosx/tmp"
 LOG_DIR="$OUT_DIR/sweep-logs"
 mkdir -p "$OUT_DIR" "$LOG_DIR"
 

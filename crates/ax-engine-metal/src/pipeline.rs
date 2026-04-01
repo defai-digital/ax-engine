@@ -72,14 +72,20 @@ impl ComputePipeline {
         Self::from_library(device, &library, function_name)
     }
 
-    /// Compile a compute pipeline from Metal source code, specializing the entry
-    /// function with Metal function constants.
+    /// Create a specialized compute pipeline, preferring the precompiled
+    /// metallib and falling back to runtime source compilation when needed.
     pub fn from_source_with_constants(
         device: &ProtocolObject<dyn MTLDevice>,
         source: &str,
         function_name: &str,
         constants: &[FunctionConstant],
     ) -> anyhow::Result<Self> {
+        if let Some(lib) = precompiled_library(device)
+            && let Ok(pipeline) =
+                Self::from_library_with_constants(device, &lib, function_name, constants)
+        {
+            return Ok(pipeline);
+        }
         let library = compile_library(device, source)?;
         Self::from_library_with_constants(device, &library, function_name, constants)
     }
@@ -429,5 +435,27 @@ mod tests {
         let mul_out = unsafe { mul_buf.as_slice::<f32>() };
         assert_eq!(add_out, &[4.0, 5.0, 6.0, 7.0]);
         assert_eq!(mul_out, &[3.0, 6.0, 9.0, 12.0]);
+    }
+
+    #[test]
+    fn test_specialized_pipeline_loads_from_precompiled_library_when_available() {
+        let gpu = MetalDevice::new().unwrap();
+        let Some(lib) = precompiled_library(gpu.device()) else {
+            return;
+        };
+
+        let pipeline = ComputePipeline::from_library_with_constants(
+            gpu.device(),
+            &lib,
+            "rope_f32_generic",
+            &[FunctionConstant {
+                index: 0,
+                value: FunctionConstantValue::Bool(false),
+            }],
+        )
+        .unwrap();
+
+        assert!(pipeline.max_threads_per_threadgroup() > 0);
+        assert!(pipeline.thread_execution_width() > 0);
     }
 }

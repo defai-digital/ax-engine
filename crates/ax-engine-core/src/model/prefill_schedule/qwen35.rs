@@ -502,7 +502,6 @@ pub(super) fn build_qwen35_full_attention_prefill_schedule(
             dst: br(gpu_kv.k_buffer(layer)),
             kv_f16: gpu_kv.is_f16(),
             kv_q8: gpu_kv.is_q8(),
-            kv_q4: gpu_kv.is_q4(),
             cache_offset,
             row_stride: kv_dim as u32,
             kv_dim: kv_dim as u32,
@@ -513,7 +512,6 @@ pub(super) fn build_qwen35_full_attention_prefill_schedule(
             dst: br(gpu_kv.v_buffer(layer)),
             kv_f16: gpu_kv.is_f16(),
             kv_q8: gpu_kv.is_q8(),
-            kv_q4: gpu_kv.is_q4(),
             cache_offset,
             row_stride: kv_dim as u32,
             kv_dim: kv_dim as u32,
@@ -542,7 +540,6 @@ pub(super) fn build_qwen35_full_attention_prefill_schedule(
             out: br(&bs.attn_out),
             kv_f16: gpu_kv.is_f16(),
             kv_q8: gpu_kv.is_q8(),
-            kv_q4: gpu_kv.is_q4(),
             n: nt,
             n_heads,
             n_kv_heads,
@@ -1228,7 +1225,6 @@ pub(super) fn encode_prefill_schedule(
                     kv_v,
                     kv_f16,
                     kv_q8: _,
-                    kv_q4: _,
                     n,
                     n_heads,
                     n_kv_heads,
@@ -1288,23 +1284,12 @@ pub(super) fn encode_prefill_schedule(
                     dst,
                     kv_f16,
                     kv_q8,
-                    kv_q4,
                     cache_offset,
                     row_stride,
                     kv_dim,
                     n,
                 } => {
-                    if *kv_q4 {
-                        metal_ops.elementwise.encode_kv_append_batch_q4(
-                            encoder,
-                            src.get(),
-                            dst.get(),
-                            *cache_offset,
-                            *kv_dim / 32,
-                            *row_stride,
-                            *n,
-                        );
-                    } else if *kv_q8 {
+                    if *kv_q8 {
                         metal_ops.elementwise.encode_kv_append_batch_q8(
                             encoder,
                             src.get(),
@@ -1381,7 +1366,6 @@ pub(super) fn encode_prefill_schedule(
                     out,
                     kv_f16,
                     kv_q8,
-                    kv_q4,
                     n,
                     n_heads,
                     n_kv_heads,
@@ -1389,23 +1373,7 @@ pub(super) fn encode_prefill_schedule(
                     base_seq,
                     config,
                 } => {
-                    if *kv_q4 {
-                        metal_ops
-                            .attention
-                            .encode_attention_prefill_cached_q4kv(
-                                encoder,
-                                q.get(),
-                                kv_k.get(),
-                                kv_v.get(),
-                                out.get(),
-                                *n,
-                                *n_heads,
-                                *n_kv_heads,
-                                *head_dim,
-                                *base_seq,
-                                0,
-                            );
-                    } else if *kv_q8 {
+                    if *kv_q8 {
                         metal_ops
                             .attention
                             .encode_attention_prefill_cached_q8kv(
@@ -1489,6 +1457,26 @@ pub(super) fn encode_prefill_schedule(
                     k,
                 } => {
                     metal_ops.dequant.encode_fused_batch_q4_k_silu(
+                        encoder,
+                        weight.get(),
+                        gate.get(),
+                        up.get(),
+                        output.get(),
+                        *m,
+                        *n,
+                        *k,
+                    );
+                }
+                PrefillOp::FusedSiluDownBatchQ6K {
+                    weight,
+                    gate,
+                    up,
+                    output,
+                    m,
+                    n,
+                    k,
+                } => {
+                    metal_ops.dequant.encode_fused_batch_q6_k_silu(
                         encoder,
                         weight.get(),
                         gate.get(),

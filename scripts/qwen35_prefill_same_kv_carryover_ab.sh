@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-/Users/akiralam/code/ax-engine}"
-AX_BENCH="${AX_BENCH:-}"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+AX_BENCH="${AX_BENCH:-$REPO_DIR/target/release/ax-engine-bench}"
 MODEL="${MODEL:-$REPO_DIR/models/Qwen3.5-9B-Q4_K_M.gguf}"
 PROMPT_TOKENS="${PROMPT_TOKENS:-64}"
 WARMUP_ITERS="${WARMUP_ITERS:-0}"
@@ -13,8 +13,12 @@ TIMESTAMP="${TIMESTAMP:-$(date +%Y%m%d-%H%M%S)-$$}"
 STATE_MODE="${STATE_MODE:-auto}"
 
 if [[ ! -f "$MODEL" ]]; then
-  echo "error: missing model file: $MODEL" >&2
-  exit 1
+  if [[ -f "$REPO_DIR/$MODEL" ]]; then
+    MODEL="$REPO_DIR/$MODEL"
+  else
+    echo "error: missing model file: $MODEL" >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "$OUT_DIR"
@@ -24,11 +28,14 @@ TSV_OUT="$RUN_DIR/summary.tsv"
 MD_OUT="$RUN_DIR/summary.md"
 
 run_ax_bench() {
-  if [[ -n "$AX_BENCH" && -x "$AX_BENCH" ]]; then
+  if [[ -x "$AX_BENCH" ]]; then
     "$AX_BENCH" "$@"
-  else
-    cargo run --release -p ax-engine-bench -- "$@"
+    return
   fi
+
+  echo "error: benchmark binary not found or not executable: $AX_BENCH" >&2
+  echo "build it with: cargo build --release -p ax-engine-bench" >&2
+  exit 1
 }
 
 run_sample() {

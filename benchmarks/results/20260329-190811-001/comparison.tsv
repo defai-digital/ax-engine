@@ -1,2 +1,0 @@
-label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
-ws1-cliff-pp64	models/Qwen3.5-9B-Q4_K_M.gguf	64	1	64	3	10	188.38149755196036	499.459246	37.717090845878616	40.76841615355538	45.315595	89.96553207246947

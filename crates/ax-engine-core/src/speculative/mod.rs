@@ -690,7 +690,47 @@ fn logits_slot(logits_all: &[f32], slot: usize, vocab: usize) -> &[f32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
     use crate::model::{LlamaModel, ModelConfig};
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("speculative env test lock")
+    }
+
+    struct EnvVarRestore {
+        key: String,
+        previous: Option<OsString>,
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(prev) => unsafe {
+                    std::env::set_var(&self.key, prev);
+                },
+                None => unsafe {
+                    std::env::remove_var(&self.key);
+                },
+            }
+        }
+    }
+
+    fn with_env_var<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
+        let _guard = env_lock();
+        let _restore = EnvVarRestore {
+            key: key.to_string(),
+            previous: std::env::var_os(key),
+        };
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        f()
+    }
 
     fn tiny_config() -> ModelConfig {
         ModelConfig {
@@ -863,6 +903,16 @@ mod tests {
 
     #[test]
     fn test_target_verify_mode_label_defaults_to_qwen35_branch() {
+        let _guard = env_lock();
+        let key = "AX_QWEN35_SPEC_VERIFY_BRANCH";
+        let _restore = EnvVarRestore {
+            key: key.to_string(),
+            previous: std::env::var_os(key),
+        };
+        unsafe {
+            std::env::remove_var(key);
+        }
+
         let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
         let kv = model.create_model_kv();
         assert_eq!(target_verify_mode_label(&model, &kv), "qwen35_branch");
@@ -870,18 +920,11 @@ mod tests {
 
     #[test]
     fn test_target_verify_mode_label_honors_branch_disable_env() {
-        let key = "AX_QWEN35_SPEC_VERIFY_BRANCH";
-        let previous = std::env::var_os(key);
-        unsafe { std::env::set_var(key, "off") };
-
-        let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
-        let kv = model.create_model_kv();
-        assert_eq!(target_verify_mode_label(&model, &kv), "snapshot_replay");
-
-        match previous {
-            Some(value) => unsafe { std::env::set_var(key, value) },
-            None => unsafe { std::env::remove_var(key) },
-        }
+        with_env_var("AX_QWEN35_SPEC_VERIFY_BRANCH", "off", || {
+            let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
+            let kv = model.create_model_kv();
+            assert_eq!(target_verify_mode_label(&model, &kv), "snapshot_replay");
+        });
     }
 
     #[test]

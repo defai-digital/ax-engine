@@ -115,20 +115,7 @@ impl crate::model::shared::GpuDecodeLayerStrategy for Gemma3DecodeStrategy<'_> {
         } else {
             (0u32, self.full_seq_len as u32)
         };
-        if exec_plan.kv_q4 {
-            metal_ops.attention.encode_attention_decode_q4kv(
-                encoder,
-                &s.q_buf,
-                gpu_kv.k_buffer(layer),
-                gpu_kv.v_buffer(layer),
-                &s.attn_out,
-                d.n_heads,
-                d.n_kv_heads,
-                d.head_dim,
-                attend_start,
-                attend_len,
-            );
-        } else if exec_plan.kv_q8 {
+        if exec_plan.kv_q8 {
             if d.head_dim == 128 {
                 metal_ops.attention.encode_attention_decode_q8kv(
                     encoder,

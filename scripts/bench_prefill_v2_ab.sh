@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-/Users/akiralam/code/ax-engine}"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 AX_BENCH="${AX_BENCH:-$REPO_DIR/target/release/ax-engine-bench}"
 PROMPT_TOKENS="${PROMPT_TOKENS:-256}"
 WARMUP_ITERS="${WARMUP_ITERS:-1}"

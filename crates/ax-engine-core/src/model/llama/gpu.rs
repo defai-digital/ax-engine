@@ -106,20 +106,7 @@ impl crate::model::shared::GpuDecodeLayerStrategy for LlamaDecodeStrategy<'_> {
 
         // Attention
         barrier.pre_dispatch(&[&s.q_buf, kv_k, kv_v], &[&s.attn_out]);
-        if exec_plan.kv_q4 {
-            metal_ops.attention.encode_attention_decode_q4kv(
-                encoder,
-                &s.q_buf,
-                kv_k,
-                kv_v,
-                &s.attn_out,
-                d.n_heads,
-                d.n_kv_heads,
-                d.head_dim,
-                0,
-                self.full_seq_len as u32,
-            );
-        } else if exec_plan.kv_q8 {
+        if exec_plan.kv_q8 {
             if d.head_dim == 128 {
                 metal_ops.attention.encode_attention_decode_q8kv(
                     encoder,

@@ -4,17 +4,23 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import os
 from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
-    repo_dir = Path("/Users/akiralam/code/ax-engine")
+    default_repo_dir = Path(os.getenv("REPO_DIR", Path(__file__).resolve().parent.parent))
     parser = argparse.ArgumentParser(
         description="List apple-to-apple benchmark results from benchmarks/results."
     )
     parser.add_argument(
+        "--repo-dir",
+        default=str(default_repo_dir),
+        help="repository directory (defaults to script location or $REPO_DIR)",
+    )
+    parser.add_argument(
         "--results-dir",
-        default=str(repo_dir / "benchmarks" / "results"),
+        default=None,
         help="results directory to scan (default: benchmarks/results)",
     )
     parser.add_argument("--json", action="store_true", help="print JSON instead of a table")
@@ -31,7 +37,10 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="limit the number of rows shown after sorting by folder name descending",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.results_dir is None:
+        args.results_dir = str(Path(args.repo_dir) / "benchmarks" / "results")
+    return args
 
 
 def load_json(path: Path) -> dict | None:
@@ -44,9 +53,13 @@ def load_json(path: Path) -> dict | None:
 def build_entry(run_dir: Path) -> dict | None:
     manifest_path = run_dir / "manifest.json"
     comparison_path = run_dir / "comparison.json"
+    ax_path = run_dir / "ax.json"
+    if not ax_path.exists():
+        ax_path = None
     manifest = load_json(manifest_path)
     comparison = load_json(comparison_path)
-    if manifest is None and comparison is None:
+    ax_only = load_json(ax_path) if ax_path is not None else None
+    if manifest is None and comparison is None and ax_only is None:
         return None
 
     label = None
@@ -77,6 +90,12 @@ def build_entry(run_dir: Path) -> dict | None:
         llama_decode = (comparison.get("llama") or {}).get("decode_median_tok_per_s")
         prefill_ratio = (comparison.get("ratios") or {}).get("prefill_percent")
         decode_ratio = (comparison.get("ratios") or {}).get("decode_percent")
+
+    if comparison is None and ax_only is not None:
+        model = ax_only.get("model", model)
+        ax_engine = "ax-engine"
+        ax_prefill = ax_only.get("prefill_tok_per_sec_median")
+        ax_decode = ax_only.get("decode_tok_per_sec_median")
 
     return {
         "folder": run_dir.name,

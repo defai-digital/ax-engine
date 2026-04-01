@@ -30,9 +30,9 @@ HEURISTIC_COVERED_FIELDS = {
     "decode_regimes.short_max_attend_len",
     "decode_regimes.long.attention_decode.splitk_threshold",
     "attention_prefill.fa2_mode",
-    "attention_prefill.mistral_bc64_mode",
+    "attention_prefill.ax_bc64_mode",
     "attention_decode.hd128_n2_default",
-    "attention_prefill.mistral_bc64_min_tokens",
+    "attention_prefill.ax_bc64_min_tokens",
 }
 
 

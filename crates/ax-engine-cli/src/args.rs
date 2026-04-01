@@ -156,6 +156,9 @@ fn parse_logit_bias(input: &str) -> Result<LogitBiasArg, String> {
     let bias = bias
         .parse::<f32>()
         .map_err(|_| format!("invalid bias value: {bias}"))?;
+    if !bias.is_finite() {
+        return Err("bias value must be finite".to_string());
+    }
 
     Ok(LogitBiasArg { token, bias })
 }
@@ -266,6 +269,8 @@ mod tests {
         assert!(parse_logit_bias("42").is_err());
         assert!(parse_logit_bias("abc=1.0").is_err());
         assert!(parse_logit_bias("42=abc").is_err());
+        assert!(parse_logit_bias("42=NaN").is_err());
+        assert!(parse_logit_bias("42=inf").is_err());
     }
 
     #[test]

@@ -51,7 +51,7 @@ class LlamaPhaseResult:
 
 
 def parse_args() -> RunConfig:
-    repo_dir = Path("/Users/akiralam/code/ax-engine")
+    default_repo_dir = Path(os.getenv("REPO_DIR", Path(__file__).resolve().parent.parent))
     parser = argparse.ArgumentParser(
         description="Run apple-to-apple AX Engine vs llama.cpp benchmark."
     )
@@ -74,18 +74,29 @@ def parse_args() -> RunConfig:
     )
     parser.add_argument(
         "--out-dir",
-        default=str(repo_dir / "benchmarks" / "results"),
-        help="directory for benchmark result folders (default: benchmarks/results)",
+        default=None,
+        help="directory for benchmark result folders (default: <repo-dir>/benchmarks/results)",
     )
     parser.add_argument(
-        "--ax-bench", default=str(repo_dir / "target" / "release" / "ax-engine-bench")
+        "--ax-bench",
+        default=None,
+        help="AX bench binary path (default: <repo-dir>/target/release/ax-engine-bench)",
     )
     parser.add_argument("--llama-bench", default="/opt/homebrew/bin/llama-bench")
     parser.add_argument(
         "--timestamp",
         help="override datetime prefix for result folder naming (YYYYMMDD-HHMMSS)",
     )
+    parser.add_argument(
+        "--repo-dir",
+        default=str(default_repo_dir),
+        help="repository directory (defaults to script location or $REPO_DIR)",
+    )
     args = parser.parse_args()
+
+    repo_dir = Path(args.repo_dir)
+    out_dir = Path(args.out_dir) if args.out_dir is not None else repo_dir / "benchmarks" / "results"
+    ax_bench = Path(args.ax_bench) if args.ax_bench is not None else repo_dir / "target" / "release" / "ax-engine-bench"
 
     model = Path(args.model)
     decode_depth = args.decode_depth if args.decode_depth is not None else args.prompt_tokens
@@ -96,7 +107,7 @@ def parse_args() -> RunConfig:
 
     return RunConfig(
         repo_dir=repo_dir,
-        ax_bench=Path(args.ax_bench),
+        ax_bench=ax_bench,
         llama_bench=Path(args.llama_bench),
         model=model,
         label=label,
@@ -105,7 +116,7 @@ def parse_args() -> RunConfig:
         decode_depth=decode_depth,
         samples=args.samples,
         cooldown_seconds=args.cooldown_seconds,
-        out_dir=Path(args.out_dir),
+        out_dir=out_dir,
         timestamp=timestamp,
         llama=LlamaConfig(threads=args.threads),
         ax_only=ax_only,
