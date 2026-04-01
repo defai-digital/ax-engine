@@ -1819,7 +1819,99 @@ impl Qwen35Forward {
                         ops.as_deref_mut(),
                         pipelined,
                     )? {
-                        return fallback("unified_full_attention_layer_unavailable");
+                        // MoE layer: process on CPU using UMA access to hidden buffer.
+                        if !Self::qwen35_layer_uses_moe(weights, &prefix) {
+                            return fallback("unified_full_attention_layer_unavailable");
+                        }
+                        // Wait for any inflight GPU work.
+                        if let Some(frame) = inflight.take() {
+                            metal_ops.device.wait_frame(frame)?;
+                        }
+                        if let Some(prev_fa_layer) = deferred_kv_layer.take() {
+                            Self::flush_deferred_kv_readback(
+                                metal_ops,
+                                qwen_kv,
+                                prev_fa_layer,
+                                n_tokens,
+                                kv_dim,
+                            );
+                        }
+                        // Access hidden buffer via UMA for CPU layer processing.
+                        {
+                            let mut bs_guard = metal_ops.batch_scratches();
+                            let Some(bs) = bs_guard.as_mut() else {
+                                return fallback("moe_fa_missing_batch_scratches");
+                            };
+                            let hidden = unsafe {
+                                std::slice::from_raw_parts_mut(
+                                    bs.hidden.contents().as_ptr() as *mut f32,
+                                    n_tokens * dim,
+                                )
+                            };
+                            let full_attn_params =
+                                AttentionParams::new(n_heads, n_kv_heads, head_dim);
+                            let mut norm_buf = vec![0.0f32; n_tokens * dim];
+                            let mut q_gate_batch = vec![0.0f32; n_tokens * q_dim * 2];
+                            let mut q_batch = vec![0.0f32; n_tokens * q_dim];
+                            let mut k_batch = vec![0.0f32; n_tokens * kv_dim];
+                            let mut v_batch = vec![0.0f32; n_tokens * kv_dim];
+                            let mut fused_input_batch = vec![0.0f32; n_tokens * q_dim * 2];
+                            let mut attn_out_batch = vec![0.0f32; n_tokens * q_dim];
+                            let mut proj_buf = vec![0.0f32; n_tokens * dim];
+
+                            Self::apply_attention_norm_batch(
+                                weights,
+                                &prefix,
+                                hidden,
+                                &mut norm_buf,
+                                n_tokens,
+                                dim,
+                                eps,
+                            )?;
+                            Self::run_full_attention_batch_layer(
+                                cfg,
+                                backend,
+                                weights,
+                                &prefix,
+                                qwen_kv,
+                                layer,
+                                batch_position,
+                                &norm_buf,
+                                &mut q_gate_batch,
+                                &mut q_batch,
+                                &mut k_batch,
+                                &mut v_batch,
+                                &mut fused_input_batch,
+                                &mut attn_out_batch,
+                                &mut proj_buf,
+                                n_tokens,
+                                dim,
+                                q_dim,
+                                kv_dim,
+                                n_heads,
+                                n_kv_heads,
+                                head_dim,
+                                &full_attn_params,
+                                false, // not gpu_projected
+                            )?;
+                            // Apply residual + MoE FFN.
+                            silu::elementwise_add(hidden, &proj_buf);
+                            Self::apply_post_attention_ffn_batch(
+                                cfg,
+                                backend,
+                                weights,
+                                &prefix,
+                                hidden,
+                                &mut norm_buf,
+                                &mut q_gate_batch, // reuse as gate_buf
+                                &mut q_batch,      // reuse as up_buf
+                                &mut proj_buf,     // reuse as down_buf
+                                n_tokens,
+                                dim,
+                                inter_dim,
+                                eps,
+                            )?;
+                        }
                     }
                     if pipelined {
                         deferred_kv_layer = Some(layer);
@@ -1894,9 +1986,88 @@ impl Qwen35Forward {
                         pipelined,
                     )?;
                     if let Some(reason) = reason {
-                        return fallback(reason);
+                        // MoE recurrent layer: process on CPU via UMA.
+                        if !reason.contains("moe") && !reason.contains("qwen35moe") {
+                            return fallback(reason);
+                        }
+                        // Wait for any inflight GPU work.
+                        if let Some(frame) = inflight.take() {
+                            metal_ops.device.wait_frame(frame)?;
+                        }
+                        // Access hidden buffer via UMA.
+                        {
+                            let mut bs_guard = metal_ops.batch_scratches();
+                            let Some(bs) = bs_guard.as_mut() else {
+                                return fallback("moe_rec_missing_batch_scratches");
+                            };
+                            let hidden = unsafe {
+                                std::slice::from_raw_parts_mut(
+                                    bs.hidden.contents().as_ptr() as *mut f32,
+                                    n_tokens * dim,
+                                )
+                            };
+                            let mut norm_buf = vec![0.0f32; n_tokens * dim];
+                            let mut rec_qkv = vec![0.0f32; n_tokens * dims.conv_dim()];
+                            let mut rec_z = vec![0.0f32; n_tokens * dims.inner_size];
+                            let mut rec_beta = vec![0.0f32; n_tokens * dims.time_step_rank];
+                            let mut rec_alpha = vec![0.0f32; n_tokens * dims.time_step_rank];
+                            let mut rec_out = vec![0.0f32; n_tokens * dims.inner_size];
+                            let mut proj_buf = vec![0.0f32; n_tokens * dim];
+
+                            Self::apply_attention_norm_batch(
+                                weights,
+                                &prefix,
+                                hidden,
+                                &mut norm_buf,
+                                n_tokens,
+                                dim,
+                                eps,
+                            )?;
+                            Self::run_recurrent_batch_layer(
+                                cfg,
+                                backend,
+                                weights,
+                                &prefix,
+                                qwen_kv,
+                                recurrent_slot,
+                                layer,
+                                batch_position,
+                                dims,
+                                &recurrent_slot_indices,
+                                &norm_buf,
+                                &mut rec_qkv,
+                                &mut rec_z,
+                                &mut rec_beta,
+                                &mut rec_alpha,
+                                &mut rec_out,
+                                &mut proj_buf,
+                                n_tokens,
+                                dim,
+                                false, // skip_input_projections = false
+                            )?;
+                            // Apply residual + MoE FFN.
+                            Self::apply_layer_tail_batch(
+                                cfg,
+                                backend,
+                                weights,
+                                &prefix,
+                                hidden,
+                                &proj_buf,
+                                &mut norm_buf,
+                                &mut rec_qkv,  // reuse as gate_buf
+                                &mut rec_z,    // reuse as up_buf
+                                &mut rec_out,  // reuse as down_buf
+                                n_tokens,
+                                dim,
+                                inter_dim,
+                                eps,
+                                layer,
+                                batch_position,
+                            )?;
+                        }
+                    } else {
+                        inflight = tail_frame;
                     }
-                    inflight = tail_frame;
                     step_idx = end_step;
                 }
             }
