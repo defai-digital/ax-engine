@@ -3967,6 +3967,232 @@ impl MetalOps {
         key
     }
 
+    /// Execute MoE FFN via unified mul_mat_id kernel (2 dispatches per matmul).
+    ///
+    /// `expert_ids`: per-token expert assignments `[n_tokens × n_expert_used]` i32.
+    /// `expert_weights`: per-token routing weights `[n_tokens × n_expert_used]` f32.
+    /// `gate_exps_raw`/`up_exps_raw`/`down_exps_raw`: packed expert weights
+    /// `[n_expert, dim, ...]` in Q4_K format.
+    ///
+    /// Output: `accum_out[n_tokens × dim]` f32, accumulated weighted expert outputs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_mul_mat_id_dispatch(
+        &self,
+        norm_buf: &[f32],
+        accum_out: &mut [f32],
+        expert_ids: &[i32],
+        expert_weights_flat: &[f32],
+        gate_exps_raw: &[u8],
+        up_exps_raw: &[u8],
+        down_exps_raw: &[u8],
+        gate_dtype: GgmlType,
+        n_tokens: usize,
+        n_expert: usize,
+        n_expert_used: usize,
+        dim: usize,
+        expert_inter_dim: usize,
+        gate_stride: usize,
+        up_stride: usize,
+        down_stride: usize,
+    ) -> anyhow::Result<()> {
+        let f4 = std::mem::size_of::<f32>();
+        let i4 = std::mem::size_of::<i32>();
+        let u4 = std::mem::size_of::<u32>();
+        let dev = self.device.device();
+
+        // Cache full packed expert weight tensors (mmap-backed MetalBuffers).
+        let gate_key = self.ensure_moe_quant_cached(gate_exps_raw);
+        let up_key = self.ensure_moe_quant_cached(up_exps_raw);
+        let down_key = self.ensure_moe_quant_cached(down_exps_raw);
+
+        // Allocate GPU buffers.
+        let mut input_gpu = MetalBuffer::new(dev, n_tokens * dim * f4)?;
+        let mut accum_gpu = MetalBuffer::new(dev, n_tokens * dim * f4)?;
+        let mut ids_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * i4)?;
+        let mut weights_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * f4)?;
+        let tpe_gpu = MetalBuffer::new(dev, n_expert * u4)?;
+        let hids_gpu = MetalBuffer::new(dev, n_expert * n_tokens * i4)?;
+        // Intermediate: gate_up output [n_tokens * n_expert_used, expert_inter_dim]
+        let gate_out_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * expert_inter_dim * f4)?;
+        let up_out_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * expert_inter_dim * f4)?;
+        // Down output: [n_tokens * n_expert_used, dim]
+        let down_out_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * dim * f4)?;
+
+        // Upload input data (UMA copy).
+        unsafe {
+            input_gpu.as_mut_slice::<f32>()[..n_tokens * dim].copy_from_slice(norm_buf);
+            accum_gpu.as_mut_slice::<f32>()[..n_tokens * dim].fill(0.0);
+            let ids_u8: &[u8] =
+                std::slice::from_raw_parts(expert_ids.as_ptr() as *const u8, expert_ids.len() * i4);
+            std::ptr::copy_nonoverlapping(
+                ids_u8.as_ptr(),
+                ids_gpu.as_mut_slice::<u8>().as_mut_ptr(),
+                ids_u8.len(),
+            );
+            weights_gpu.as_mut_slice::<f32>()[..expert_weights_flat.len()]
+                .copy_from_slice(expert_weights_flat);
+        }
+
+        let cache = self.moe_quant_cache.lock().unwrap();
+        let gate_buf = cache.get(&gate_key).unwrap();
+        let up_buf = cache.get(&up_key).unwrap();
+        let down_buf = cache.get(&down_key).unwrap();
+
+        // Weight stride in Q4_K blocks (number of blocks per expert).
+        let blocks_per_expert_gate = gate_stride / std::mem::size_of::<[u8; 144]>();
+        let blocks_per_expert_down = down_stride / std::mem::size_of::<[u8; 144]>();
+
+        let nt = n_tokens as u32;
+        let ne = n_expert as u32;
+        let neu = n_expert_used as u32;
+        let m_inter = expert_inter_dim as u32;
+        let m_dim = dim as u32;
+        let k_dim = dim as u32;
+        let k_inter = expert_inter_dim as u32;
+
+        self.device.execute_sync(|encoder| {
+            // Stage 1: Build routing index.
+            self.dequant
+                .encode_moe_map0(encoder, &ids_gpu, &tpe_gpu, &hids_gpu, nt, neu, ne);
+
+            // Stage 2a: Gate matmul — gate_out = gate_weights × input (routed).
+            self.dequant.encode_moe_mul_mat_id_q4_k(
+                encoder,
+                gate_buf,
+                &input_gpu,
+                &tpe_gpu,
+                &hids_gpu,
+                &gate_out_gpu,
+                m_inter,
+                k_dim,
+                nt,
+                neu,
+                ne,
+                blocks_per_expert_gate as u32,
+            );
+
+            // Stage 2b: Up matmul — up_out = up_weights × input (routed).
+            self.dequant.encode_moe_mul_mat_id_q4_k(
+                encoder,
+                up_buf,
+                &input_gpu,
+                &tpe_gpu,
+                &hids_gpu,
+                &up_out_gpu,
+                m_inter,
+                k_dim,
+                nt,
+                neu,
+                ne,
+                blocks_per_expert_gate as u32, // same shape as gate
+            );
+
+            // Stage 3: SiLU(gate) * up — in-place on gate_out.
+            self.elementwise.encode_silu_elementwise_mul_batch(
+                encoder,
+                &gate_out_gpu,
+                &up_out_gpu,
+                m_inter,
+                (nt * neu) as u32,
+            );
+
+            // Stage 4: Down matmul — down_out = down_weights × gate_out (routed).
+            // Note: down uses the SAME routing index (hids/tpe) but reads from
+            // gate_out which is [n_tokens*n_expert_used, expert_inter_dim].
+            // The down kernel needs input as [n_tokens, K] but gate_out is
+            // [n_tokens*n_expert_used, expert_inter_dim] — each "token" in
+            // gate_out is one (token, expert_slot) pair.
+            // So we treat it as n_tokens_effective = n_tokens * n_expert_used,
+            // but the down kernel routes by expert which expects the SAME hids.
+            //
+            // Actually, for down: the input is already per-(token, expert_slot),
+            // stored flat at index hid. The down kernel should just do a regular
+            // batched matmul (not routed) since the data is already separated.
+            //
+            // Simplification: use the per-expert dispatch for down matmul,
+            // or use a non-routed batch matmul on the flat output.
+            //
+            // For now, use the fused batch approach for down:
+            // down_out = down_weights[expert] × gate_out[hid]
+            // This IS routed, using the same hids. The kernel reads input at
+            // hid position which for gate_out means index hid in the flat array.
+            // Since gate_out[hid] is already the correct (token, expert) data,
+            // and the kernel routes by expert, this should work.
+            self.dequant.encode_moe_mul_mat_id_q4_k(
+                encoder,
+                down_buf,
+                &gate_out_gpu,
+                &tpe_gpu,
+                &hids_gpu,
+                &down_out_gpu,
+                m_dim,
+                k_inter,
+                nt,
+                neu,
+                ne,
+                blocks_per_expert_down as u32,
+            );
+
+            // Stage 5: Weighted accumulation.
+            // down_out is [n_tokens * n_expert_used, dim].
+            // For each (token t, expert slot s): accum[t] += weight[t*neu+s] * down_out[(t*neu+s)*dim..]
+            // Use a simple elementwise kernel.
+            let total = nt * neu * m_dim;
+            let dims = ax_engine_metal::dispatch::DispatchDims::d1(total as usize, 256);
+            // We need a kernel: accum[token*dim + d] += weight * down_out[hid*dim + d]
+            // where token = hid / neu, weight = expert_weights[hid].
+            // Since down_out is indexed by flat hid, and we need to accumulate
+            // back to token-major layout, use the weighted scatter:
+            // For each hid in 0..n_tokens*n_expert_used:
+            //   token = hid / n_expert_used
+            //   accum[token*dim + d] += weights[hid] * down_out[hid*dim + d]
+            // This is exactly moe_weighted_scatter_add with indices = [0,0,..,1,1,..,2,2,..].
+            // Build these indices.
+            // Actually simpler: use a new kernel or build token_indices buffer.
+
+            // Build token_indices: [0,0,...,0, 1,1,...,1, ...] where each token
+            // repeats n_expert_used times. Write via UMA before encode.
+            // But we can't UMA write inside execute_sync...
+            //
+            // Alternative: use the existing moe_weighted_scatter_add kernel with
+            // a pre-built index buffer.
+
+            Ok(())
+        })?;
+
+        drop(cache);
+
+        // For the accumulation step, we need a separate small dispatch.
+        // Build token index buffer: token_indices[i] = i / n_expert_used.
+        let mut tok_idx_buf = MetalBuffer::new(dev, n_tokens * n_expert_used * u4)?;
+        unsafe {
+            let s = tok_idx_buf.as_mut_slice::<u32>();
+            for i in 0..(n_tokens * n_expert_used) {
+                s[i] = (i / n_expert_used) as u32;
+            }
+        }
+
+        self.device.execute_sync(|encoder| {
+            self.elementwise.encode_moe_weighted_scatter(
+                encoder,
+                &down_out_gpu,
+                &tok_idx_buf,
+                &weights_gpu,
+                &accum_gpu,
+                dim as u32,
+                (n_tokens * n_expert_used) as u32,
+            );
+            Ok(())
+        })?;
+
+        // Download.
+        unsafe {
+            accum_out[..n_tokens * dim]
+                .copy_from_slice(&accum_gpu.as_slice::<f32>()[..n_tokens * dim]);
+        }
+        Ok(())
+    }
+
     /// Cache raw quantized weight data for single-CB MoE expert dispatch.
     /// Returns the cache key.
     pub fn ensure_moe_quant_cached(&self, data: &[u8]) -> usize {

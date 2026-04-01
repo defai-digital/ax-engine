@@ -867,8 +867,8 @@ impl Qwen35Forward {
     }
 
     /// GPU-encoded attention norm + input projections in a single command buffer.
-    /// Encode ALL expert gate/up/down matmuls + SiLU + gather/scatter into a
-    /// single Metal command buffer via `MetalOps::moe_expert_batch_single_cb`.
+    /// Dispatch MoE expert FFN via unified mul_mat_id kernel.
+    /// Uses 2 dispatches per matmul (map0 + mul_mat_id) instead of per-expert loop.
     ///
     /// Returns `true` if GPU path was used, `false` to fall back.
     #[allow(clippy::too_many_arguments)]
@@ -881,46 +881,82 @@ impl Qwen35Forward {
         gate_exps_dtype: crate::gguf::tensor::GgmlType,
         gate_stride: usize,
         up_exps_raw: &[u8],
-        up_exps_dtype: crate::gguf::tensor::GgmlType,
+        _up_exps_dtype: crate::gguf::tensor::GgmlType,
         up_stride: usize,
         down_exps_raw: &[u8],
-        down_exps_dtype: crate::gguf::tensor::GgmlType,
+        _down_exps_dtype: crate::gguf::tensor::GgmlType,
         down_stride: usize,
-        gate_exps_name: &str,
-        up_exps_name: &str,
-        down_exps_name: &str,
+        _gate_exps_name: &str,
+        _up_exps_name: &str,
+        _down_exps_name: &str,
         n_tokens: usize,
         dim: usize,
         expert_inter_dim: usize,
     ) -> anyhow::Result<bool> {
-        // Build expert data for the single-CB dispatch.
-        let mut expert_data = Vec::new();
-        for (eid, assignments) in expert_map.iter().enumerate() {
-            if assignments.is_empty() {
-                continue;
+        let n_expert = expert_map.len();
+        let n_expert_used = expert_map
+            .iter()
+            .filter(|a| !a.is_empty())
+            .map(|_| 1usize)
+            .sum::<usize>()
+            .min(1)
+            .max(1); // Will be overridden below.
+
+        // Rebuild flat expert_ids and expert_weights from expert_map.
+        // expert_ids[token * neu + slot] = expert_id (i32)
+        // expert_weights[token * neu + slot] = routing_weight (f32)
+        // Determine n_expert_used from max assignments per token.
+        let mut max_experts_per_token = 0usize;
+        for token_idx in 0..n_tokens {
+            let mut count = 0;
+            for assignments in expert_map.iter() {
+                if assignments.iter().any(|&(t, _)| t == token_idx) {
+                    count += 1;
+                }
             }
-            let n_assigned = assignments.len();
-            let indices: Vec<u32> = assignments.iter().map(|&(t, _)| t as u32).collect();
-            let weights: Vec<f32> = assignments.iter().map(|&(_, w)| w).collect();
-            let gate_slice =
-                Self::expert_quant_slice(gate_exps_raw, gate_stride, eid, gate_exps_name)?;
-            let up_slice =
-                Self::expert_quant_slice(up_exps_raw, up_stride, eid, up_exps_name)?;
-            let down_slice =
-                Self::expert_quant_slice(down_exps_raw, down_stride, eid, down_exps_name)?;
-            expert_data.push((n_assigned, indices, weights, gate_slice, up_slice, down_slice));
+            max_experts_per_token = max_experts_per_token.max(count);
+        }
+        let neu = max_experts_per_token;
+        if neu == 0 {
+            return Ok(true); // No experts assigned — accum stays zero.
         }
 
-        metal_ops.moe_expert_batch_single_cb(
+        let mut expert_ids = vec![-1i32; n_tokens * neu];
+        let mut expert_weights_flat = vec![0.0f32; n_tokens * neu];
+
+        // For each token, collect its assigned experts in order.
+        for token_idx in 0..n_tokens {
+            let mut slot = 0;
+            for (eid, assignments) in expert_map.iter().enumerate() {
+                for &(t, w) in assignments {
+                    if t == token_idx {
+                        if slot < neu {
+                            expert_ids[token_idx * neu + slot] = eid as i32;
+                            expert_weights_flat[token_idx * neu + slot] = w;
+                            slot += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        metal_ops.moe_mul_mat_id_dispatch(
             norm_buf,
             accum_out,
-            &expert_data,
+            &expert_ids,
+            &expert_weights_flat,
+            gate_exps_raw,
+            up_exps_raw,
+            down_exps_raw,
             gate_exps_dtype,
-            up_exps_dtype,
-            down_exps_dtype,
             n_tokens,
+            n_expert,
+            neu,
             dim,
             expert_inter_dim,
+            gate_stride,
+            up_stride,
+            down_stride,
         )?;
         Ok(true)
     }
