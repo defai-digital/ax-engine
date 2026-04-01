@@ -957,6 +957,7 @@ impl Qwen35Forward {
             gate_stride,
             up_stride,
             down_stride,
+            None, // shared expert handled separately for now
         )?;
         Ok(true)
     }

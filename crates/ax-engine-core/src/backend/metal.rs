@@ -2987,6 +2987,17 @@ pub struct MetalOps {
     moe_quant_cache: Mutex<FxHashMap<usize, MetalBuffer>>,
 }
 
+/// Shared expert weight data for fused MoE dispatch.
+pub struct SharedExpertWeights<'a> {
+    pub gate_raw: &'a [u8],
+    pub up_raw: &'a [u8],
+    pub down_raw: &'a [u8],
+    pub gate_inp_raw: Option<&'a [u8]>,
+    pub dtype: GgmlType,
+    pub inter_dim: usize,
+    pub gate_inp_rows: usize,
+}
+
 impl MetalOps {
     /// Create MetalOps sharing the same GPU as an existing MetalDevice.
     ///
@@ -4680,6 +4691,7 @@ impl MetalOps {
     ///
     /// Output: `accum_out[n_tokens × dim]` f32, accumulated weighted expert outputs.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn moe_mul_mat_id_dispatch(
         &self,
         norm_buf: &[f32],
@@ -4698,6 +4710,7 @@ impl MetalOps {
         gate_stride: usize,
         up_stride: usize,
         down_stride: usize,
+        shared_expert: Option<&SharedExpertWeights<'_>>,
     ) -> anyhow::Result<()> {
         let f4 = std::mem::size_of::<f32>();
         let i4 = std::mem::size_of::<i32>();
@@ -4708,6 +4721,16 @@ impl MetalOps {
         let gate_key = self.ensure_moe_quant_cached(gate_exps_raw);
         let up_key = self.ensure_moe_quant_cached(up_exps_raw);
         let down_key = self.ensure_moe_quant_cached(down_exps_raw);
+
+        // Cache shared expert weights if present.
+        if let Some(se) = shared_expert {
+            self.ensure_moe_quant_cached(se.gate_raw);
+            self.ensure_moe_quant_cached(se.up_raw);
+            self.ensure_moe_quant_cached(se.down_raw);
+            if let Some(gi) = se.gate_inp_raw {
+                self.ensure_moe_quant_cached(gi);
+            }
+        }
 
         // Allocate GPU buffers.
         let mut input_gpu = MetalBuffer::new(dev, n_tokens * dim * f4)?;
@@ -4878,6 +4901,108 @@ impl MetalOps {
                 m_dim,
                 (nt * neu) as u32,
             );
+
+            // Helper for shared expert fused batch dequant.
+            let se_encode = |enc: &ax_engine_metal::MetalEncoder,
+                             w: &MetalBuffer,
+                             b: &MetalBuffer,
+                             c: &MetalBuffer,
+                             m: u32,
+                             n: u32,
+                             k: u32,
+                             dt: GgmlType| {
+                match dt {
+                    GgmlType::Q4K => self.dequant.encode_fused_batch_q4_k(enc, w, b, c, m, n, k),
+                    GgmlType::Q5K => self.dequant.encode_fused_batch_q5_k(enc, w, b, c, m, n, k),
+                    GgmlType::Q6K => self.dequant.encode_fused_batch_q6_k(enc, w, b, c, m, n, k),
+                    GgmlType::Q8_0 => self.dequant.encode_fused_batch_q8_0(enc, w, b, c, m, n, k),
+                    _ => {}
+                }
+            };
+
+            // Stage 6: Shared expert (fused into same CB).
+            if let Some(se) = shared_expert {
+                let se_inter = se.inter_dim as u32;
+                let se_gate_key = se.gate_raw.as_ptr() as usize;
+                let se_up_key = se.up_raw.as_ptr() as usize;
+                let se_down_key = se.down_raw.as_ptr() as usize;
+
+                let se_gate_w = cache.get(&se_gate_key).unwrap();
+                let se_up_w = cache.get(&se_up_key).unwrap();
+                let se_down_w = cache.get(&se_down_key).unwrap();
+
+                // Shared expert uses the same input (norm_buf via input_gpu).
+                // Reuse gate_out_gpu/up_out_gpu for shared expert intermediates
+                // (same or smaller dims since shared_inter_dim ≤ expert_inter_dim typically).
+                encode_dequant_matmul(
+                    encoder,
+                    se_gate_w,
+                    &input_gpu,
+                    &gate_out_gpu,
+                    se_inter,
+                    nt,
+                    m_dim,
+                    se.dtype,
+                );
+                encode_dequant_matmul(
+                    encoder,
+                    se_up_w,
+                    &input_gpu,
+                    &up_out_gpu,
+                    se_inter,
+                    nt,
+                    m_dim,
+                    se.dtype,
+                );
+                self.elementwise.encode_silu_elementwise_mul_batch(
+                    encoder,
+                    &gate_out_gpu,
+                    &up_out_gpu,
+                    se_inter,
+                    nt,
+                );
+                encode_dequant_matmul(
+                    encoder,
+                    se_down_w,
+                    &gate_out_gpu,
+                    &down_out_gpu,
+                    m_dim,
+                    nt,
+                    se_inter,
+                    se.dtype,
+                );
+
+                // Optional: sigmoid gate.
+                if let Some(gate_inp_raw) = se.gate_inp_raw {
+                    let gi_key = gate_inp_raw.as_ptr() as usize;
+                    let gi_w = cache.get(&gi_key).unwrap();
+                    // gate_logits: [n_tokens, gate_rows] — reuse up_out_gpu.
+                    let gate_rows = se.gate_inp_rows as u32;
+                    encode_dequant_matmul(
+                        encoder,
+                        gi_w,
+                        &input_gpu,
+                        &up_out_gpu,
+                        gate_rows,
+                        nt,
+                        m_dim,
+                        se.dtype,
+                    );
+                    // Sigmoid + elementwise mul on down_out_gpu.
+                    // sigmoid(up_out_gpu[t]) → multiply into down_out_gpu[t*dim..]
+                    // For simplicity, use per-token sigmoid + scale on CPU after download.
+                    // TODO: add GPU sigmoid_gate kernel for full fusion.
+                }
+
+                // Add shared expert output to accum.
+                self.elementwise.encode_elementwise_add_batch(
+                    encoder,
+                    &accum_gpu,
+                    &down_out_gpu,
+                    m_dim,
+                    nt,
+                );
+            }
 
             Ok(())
         })?;
