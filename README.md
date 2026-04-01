@@ -377,13 +377,13 @@ AX values are median of 5 iterations (2 warmup). llama.cpp values are
 | Qwen3.5 9B | Q4_K_M | 585 tok/s | 48.6 tok/s | 733 tok/s | 49.0 tok/s | 80% | 99% |
 | Gemma 3 12B | Q4_K_M | 432 tok/s | 44.6 tok/s | 495 tok/s | 40.2 tok/s | 87% | **111%** |
 | Qwen3.5 27B | Q4_K_M | 191 tok/s | 17.4 tok/s | 209 tok/s | 17.6 tok/s | 91% | 99% |
-| Qwen3 32B | Q4_K_M | 156 tok/s | 17.6 tok/s | 119 tok/s | 11.8 tok/s | **131%** | **149%** |
+| Qwen3 32B | Q4_K_M | 156 tok/s | 17.6 tok/s | — | — | — | — |
 | Qwen3.5 35B-A3B | Q4_K_M | 50 tok/s | 5.8 tok/s | 1,194 tok/s | 55.3 tok/s | 4% | 11% |
 
-Qwen3 32B: llama.cpp shows a depth-dependent decode regression at d=512
-(11.8 tok/s vs 17.9 at d=0). AX does not have this issue (17.6 at d=512).
-The prefill and decode wins are real but partially reflect a llama.cpp
-depth-handling inefficiency on this model.
+Qwen3 32B llama.cpp comparison omitted — results showed high variance
+across runs (10-18 tok/s decode) due to thermal sensitivity on the 64-layer
+/ 18.4 GiB model. AX numbers are stable across repeated runs. A proper
+cold-start comparison is pending.
 
 Qwen3.5 35B-A3B runs through the native `qwen35moe` path but is not yet
 performance-tuned for MoE expert dispatch — this row is a correctness baseline.
