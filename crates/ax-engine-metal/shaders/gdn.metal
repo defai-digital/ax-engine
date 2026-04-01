@@ -924,3 +924,395 @@ void chunked_gated_delta_rule_kernel<32, 64, 64>(
     device float*, device float*,
     constant uint&, constant uint&,
     uint2, uint);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Prefix sum (cumsum) — ported from llama.cpp kernel_cumsum_blk.
+//
+// Computes inclusive prefix sum along dimension 0 (contiguous).
+// Uses simd_prefix_inclusive_sum within simdgroups and shared memory
+// across simdgroups. Single-block variant: covers ne0 <= 1024.
+//
+// Layout: src/dst are row-major [ne0, ne1, ne2] where ne0 is the
+// cumsum axis. Each threadgroup handles one (i1, i2) slice.
+// Grid: (ne1, ne2, 1).  TG: (nth, 1, 1) where nth = min(ne0, 1024).
+// ═══════════════════════════════════════════════════════════════════════════
+[[kernel]] void gdn_cumsum_f32(
+    const device float *src [[buffer(0)]],
+    device float *dst [[buffer(1)]],
+    constant uint &ne0 [[buffer(2)]],
+    constant uint &ne1 [[buffer(3)]],
+    threadgroup float *shmem [[threadgroup(0)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    uint  tpitg [[thread_index_in_threadgroup]],
+    uint  sgitg [[simdgroup_index_in_threadgroup]],
+    uint  tiisg [[thread_index_in_simdgroup]])
+{
+    const uint i1 = tgpig.x;
+    const uint i2 = tgpig.y;
+    const uint row_offset = i2 * ne1 * ne0 + i1 * ne0;
+
+    float v = (tpitg < ne0) ? src[row_offset + tpitg] : 0.0f;
+
+    // Phase 1: inclusive prefix sum within each simdgroup (32 lanes).
+    float s = simd_prefix_inclusive_sum(v);
+
+    // Phase 2: last lane of each simdgroup writes its sum to shared memory.
+    if (tiisg == 31) {
+        shmem[sgitg] = s;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Phase 3: first simdgroup computes exclusive prefix sum of simdgroup sums.
+    if (sgitg == 0) {
+        float sg_val = (tiisg < 32) ? shmem[tiisg] : 0.0f;
+        sg_val = simd_prefix_exclusive_sum(sg_val);
+        shmem[tiisg] = sg_val;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Phase 4: add the cumulative sum of prior simdgroups to local result.
+    s += shmem[sgitg];
+
+    if (tpitg < ne0) {
+        dst[row_offset + tpitg] = s;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Triangular solve — ported from llama.cpp kernel_solve_tri_f32.
+//
+// Solves L × X = B for X where L is lower-triangular with unit diagonal.
+// Both L and B/X are [N, N] per (i2, i3) slice. In-place: dst overwrites B.
+//
+// The solve uses forward substitution with simd_sum for dot products.
+// One simdgroup per column of X (K columns processed per threadgroup).
+//
+// Grid: (ceil(K/NSG), ne2, 1).  TG: (32, NSG, 1).
+// ═══════════════════════════════════════════════════════════════════════════
+template <int NSG>
+[[kernel]] void gdn_solve_tri_lower_f32(
+    const device float *L [[buffer(0)]],
+    const device float *B [[buffer(1)]],
+    device float *X [[buffer(2)]],
+    constant uint &N [[buffer(3)]],
+    constant uint &K [[buffer(4)]],
+    threadgroup float *shmem [[threadgroup(0)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    uint  sgitg [[simdgroup_index_in_threadgroup]],
+    uint  tiisg [[thread_index_in_simdgroup]])
+{
+    const uint i2 = tgpig.y;
+    const uint col = tgpig.x * NSG + sgitg;
+    if (col >= K) return;
+
+    // L is [N, N] per slice, B and X are [N, K] per slice.
+    const device float *L_slice = L + i2 * N * N;
+    const device float *B_col = B + i2 * N * K + col;
+    device float *X_col = X + i2 * N * K + col;
+
+    // Forward substitution: X[r] = B[r] - sum_{j<r} L[r,j] * X[j]
+    // Load L row by row into shared memory for simd_sum reduction.
+    threadgroup float *sh = shmem + sgitg * N;
+
+    for (uint r = 0; r < N; r++) {
+        // Load L[r, 0..r-1] into shared memory.
+        for (uint t = tiisg; t < r; t += 32) {
+            sh[t] = L_slice[r * N + t];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Dot product: sum = L[r, 0..r-1] · X[0..r-1, col]
+        float sum = 0.0f;
+        for (uint t = tiisg; t < r; t += 32) {
+            sum += sh[t] * X_col[t * K];
+        }
+        sum = simd_sum(sum);
+
+        if (tiisg == 0) {
+            // L has unit diagonal → no division needed.
+            X_col[r * K] = B_col[r * K] - sum;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+}
+
+template [[host_name("gdn_solve_tri_lower_f32_1")]] [[kernel]]
+void gdn_solve_tri_lower_f32<1>(
+    const device float*, const device float*, device float*,
+    constant uint&, constant uint&,
+    threadgroup float*,
+    uint3, uint, uint);
+
+template [[host_name("gdn_solve_tri_lower_f32_4")]] [[kernel]]
+void gdn_solve_tri_lower_f32<4>(
+    const device float*, const device float*, device float*,
+    constant uint&, constant uint&,
+    threadgroup float*,
+    uint3, uint, uint);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Lower-triangular mask (with optional diagonal).
+//
+// Sets dst[i,j] = (j <= i) ? src[i,j] : 0  (lower-diag).
+// Grid: (ceil(N*N / TG), n_slices, 1).  TG: 256.
+// ═══════════════════════════════════════════════════════════════════════════
+[[kernel]] void gdn_tri_lower_diag_f32(
+    const device float *src [[buffer(0)]],
+    device float *dst [[buffer(1)]],
+    constant uint &N [[buffer(2)]],
+    constant uint &n_slices [[buffer(3)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint  tid [[thread_index_in_threadgroup]])
+{
+    const uint slice = tgpig.y;
+    const uint idx = tgpig.x * 256 + tid;
+    if (idx >= N * N) return;
+    const uint i = idx / N;
+    const uint j = idx % N;
+    const uint offset = slice * N * N + idx;
+    dst[offset] = (j <= i) ? src[offset] : 0.0f;
+}
+
+// Strict lower triangular: dst[i,j] = (j < i) ? src[i,j] : 0
+[[kernel]] void gdn_tri_lower_strict_f32(
+    const device float *src [[buffer(0)]],
+    device float *dst [[buffer(1)]],
+    constant uint &N [[buffer(2)]],
+    constant uint &n_slices [[buffer(3)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint  tid [[thread_index_in_threadgroup]])
+{
+    const uint slice = tgpig.y;
+    const uint idx = tgpig.x * 256 + tid;
+    if (idx >= N * N) return;
+    const uint i = idx / N;
+    const uint j = idx % N;
+    const uint offset = slice * N * N + idx;
+    dst[offset] = (j < i) ? src[offset] : 0.0f;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Identity matrix construction: dst[i,j] = (i == j) ? 1 : 0
+// Grid: (ceil(N*N / 256), n_slices, 1).  TG: 256.
+// ═══════════════════════════════════════════════════════════════════════════
+[[kernel]] void gdn_diag_identity_f32(
+    device float *dst [[buffer(0)]],
+    constant uint &N [[buffer(1)]],
+    constant uint &n_slices [[buffer(2)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint  tid [[thread_index_in_threadgroup]])
+{
+    const uint slice = tgpig.y;
+    const uint idx = tgpig.x * 256 + tid;
+    if (idx >= N * N) return;
+    const uint i = idx / N;
+    const uint j = idx % N;
+    dst[slice * N * N + idx] = (i == j) ? 1.0f : 0.0f;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Batched strided f32 matmul for GDN chunked graph.
+//
+// Computes C[b] = A[b] × B[b] for b = 0..n_batch-1, where:
+//   A[b] is [M, K] starting at A + b*stride_a
+//   B[b] is [K, N] starting at B + b*stride_b
+//   C[b] is [M, N] starting at C + b*stride_c
+//
+// Grid: (ceil(N/8), ceil(M/8), n_batch).  TG: (8, 8, 1) = 64 threads.
+// Each thread computes one output element via dot product.
+// Optimized for small matrices (CS=64, head_dim=128) typical in GDN.
+// ═══════════════════════════════════════════════════════════════════════════
+[[kernel]] void gdn_batched_matmul_f32(
+    const device float *A [[buffer(0)]],
+    const device float *B [[buffer(1)]],
+    device float *C       [[buffer(2)]],
+    constant uint &M      [[buffer(3)]],
+    constant uint &N      [[buffer(4)]],
+    constant uint &K      [[buffer(5)]],
+    constant uint &stride_a [[buffer(6)]],
+    constant uint &stride_b [[buffer(7)]],
+    constant uint &stride_c [[buffer(8)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    uint3 tpitg [[thread_position_in_threadgroup]])
+{
+    const uint col = tgpig.x * 8 + tpitg.x;
+    const uint row = tgpig.y * 8 + tpitg.y;
+    const uint batch = tgpig.z;
+    if (row >= M || col >= N) return;
+
+    const device float *a_row = A + batch * stride_a + row * K;
+    const device float *b_col = B + batch * stride_b + col;
+
+    float acc = 0.0f;
+    for (uint i = 0; i < K; i++) {
+        acc = fma(a_row[i], b_col[i * N], acc);
+    }
+    C[batch * stride_c + row * N + col] = acc;
+}
+
+// Batched C = A^T × B: A is [K, M] per batch, B is [K, N], result [M, N].
+// stride_a/stride_b/stride_c are in floats.
+[[kernel]] void gdn_batched_matmul_atrans_f32(
+    const device float *A [[buffer(0)]],
+    const device float *B [[buffer(1)]],
+    device float *C       [[buffer(2)]],
+    constant uint &M      [[buffer(3)]],
+    constant uint &N      [[buffer(4)]],
+    constant uint &K      [[buffer(5)]],
+    constant uint &stride_a [[buffer(6)]],
+    constant uint &stride_b [[buffer(7)]],
+    constant uint &stride_c [[buffer(8)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    uint3 tpitg [[thread_position_in_threadgroup]])
+{
+    const uint col = tgpig.x * 8 + tpitg.x;
+    const uint row = tgpig.y * 8 + tpitg.y;
+    const uint batch = tgpig.z;
+    if (row >= M || col >= N) return;
+
+    // A^T[row, k] = A[k, row] = A[k * M + row]
+    const device float *a_ptr = A + batch * stride_a + row;
+    const device float *b_col = B + batch * stride_b + col;
+
+    float acc = 0.0f;
+    for (uint i = 0; i < K; i++) {
+        acc = fma(a_ptr[i * M], b_col[i * N], acc);
+    }
+    C[batch * stride_c + row * N + col] = acc;
+}
+
+// Batched C = A × B^T: A is [M, K] per batch, B is [N, K], result [M, N].
+// Both A and B are row-major. B^T[k, col] = B[col, k] = B[col * K + k].
+[[kernel]] void gdn_batched_matmul_btrans_f32(
+    const device float *A [[buffer(0)]],
+    const device float *B [[buffer(1)]],
+    device float *C       [[buffer(2)]],
+    constant uint &M      [[buffer(3)]],
+    constant uint &N      [[buffer(4)]],
+    constant uint &K      [[buffer(5)]],
+    constant uint &stride_a [[buffer(6)]],
+    constant uint &stride_b [[buffer(7)]],
+    constant uint &stride_c [[buffer(8)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    uint3 tpitg [[thread_position_in_threadgroup]])
+{
+    const uint col = tgpig.x * 8 + tpitg.x;
+    const uint row = tgpig.y * 8 + tpitg.y;
+    const uint batch = tgpig.z;
+    if (row >= M || col >= N) return;
+
+    const device float *a_row = A + batch * stride_a + row * K;
+    // B^T[k, col] = B[col, k] = B[col * K + k]
+    const device float *b_row = B + batch * stride_b + col * K;
+
+    float acc = 0.0f;
+    for (uint i = 0; i < K; i++) {
+        acc = fma(a_row[i], b_row[i], acc);
+    }
+    C[batch * stride_c + row * N + col] = acc;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Broadcast multiply: dst[h, t, d] = src[h, t, d] * scale[h, t]
+//
+// Broadcasts scalar-per-token `scale` across the inner `dim` dimension.
+// Used for k*beta and v*beta in the chunked GDN decomposition.
+// Grid: (ceil(total/256), 1, 1) where total = n_heads * seq_len * dim.
+// ═══════════════════════════════════════════════════════════════════════════
+[[kernel]] void gdn_broadcast_mul_f32(
+    const device float *src   [[buffer(0)]],
+    const device float *scale [[buffer(1)]],
+    device float *dst         [[buffer(2)]],
+    constant uint &dim        [[buffer(3)]],
+    constant uint &total      [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= total) return;
+    // token index = gid / dim (integer division)
+    const uint token_idx = gid / dim;
+    dst[gid] = src[gid] * scale[token_idx];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Build decay mask from cumsum: dst[s, i, j] = exp(g_cs[s*CS+j] - g_cs[s*CS+i])
+// for j <= i (lower-triangular with diagonal), 0 otherwise.
+//
+// g_cs is [n_slices, CS]. dst is [n_slices, CS, CS].
+// Each element of the CS×CS matrix compares two positions in the cumsum.
+// Grid: (ceil(CS*CS / 256), n_slices, 1).  TG: 256.
+// ═══════════════════════════════════════════════════════════════════════════
+[[kernel]] void gdn_build_decay_mask_f32(
+    const device float *g_cs [[buffer(0)]],
+    device float *dst        [[buffer(1)]],
+    constant uint &CS        [[buffer(2)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint  tid [[thread_index_in_threadgroup]])
+{
+    const uint slice = tgpig.y;
+    const uint idx = tgpig.x * 256 + tid;
+    const uint cs2 = CS * CS;
+    if (idx >= cs2) return;
+    const uint i = idx / CS;  // row
+    const uint j = idx % CS;  // col
+    if (j <= i) {
+        const float diff = g_cs[slice * CS + j] - g_cs[slice * CS + i];
+        dst[slice * cs2 + idx] = exp(diff);
+    } else {
+        dst[slice * cs2 + idx] = 0.0f;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Extract last element per chunk from cumsum for inter-chunk decay.
+// g_cs is [n_slices, CS]. g_last is [n_slices].
+// g_last[s] = g_cs[s * CS + CS - 1].
+// Grid: (ceil(n_slices/256), 1, 1).  TG: 256.
+// ═══════════════════════════════════════════════════════════════════════════
+[[kernel]] void gdn_extract_last_cumsum_f32(
+    const device float *g_cs  [[buffer(0)]],
+    device float *g_last      [[buffer(1)]],
+    constant uint &CS         [[buffer(2)]],
+    constant uint &n_slices   [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= n_slices) return;
+    g_last[gid] = g_cs[gid * CS + CS - 1];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Build g_diff_exp for inter-chunk state update:
+// g_diff_exp[s, t] = exp(g_last[s] - g_cs[s*CS + t])
+//
+// g_cs is [n_slices, CS], g_last is [n_slices], dst is [n_slices, CS].
+// Grid: (ceil(n_slices*CS / 256), 1, 1).  TG: 256.
+// ═══════════════════════════════════════════════════════════════════════════
+[[kernel]] void gdn_build_g_diff_exp_f32(
+    const device float *g_cs   [[buffer(0)]],
+    const device float *g_last [[buffer(1)]],
+    device float *dst          [[buffer(2)]],
+    constant uint &CS          [[buffer(3)]],
+    constant uint &total       [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= total) return;
+    const uint slice = gid / CS;
+    const uint t = gid % CS;
+    dst[gid] = exp(g_last[slice] - g_cs[gid]);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Strided gather: dst[h] = src[h * stride + offset] for h = 0..n_heads-1.
+// Used to extract per-chunk decay scalars from g_last_exp[H*n_chunks].
+// Grid: (ceil(n_heads/256), 1, 1).  TG: 256.
+// ═══════════════════════════════════════════════════════════════════════════
+[[kernel]] void gdn_gather_stride_f32(
+    const device float *src [[buffer(0)]],
+    device float *dst       [[buffer(1)]],
+    constant uint &stride   [[buffer(2)]],
+    constant uint &offset   [[buffer(3)]],
+    constant uint &count    [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= count) return;
+    dst[gid] = src[gid * stride + offset];
+}

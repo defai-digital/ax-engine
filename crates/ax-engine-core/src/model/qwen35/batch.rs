@@ -113,6 +113,14 @@ impl Qwen35Forward {
         let nw_key = metal_ops.ensure_f32_cached(attn_norm_w);
         let ffn_norm_w = weights.f32_slice(&format!("{prefix}.post_attention_norm.weight"))?;
         let ffn_nw_key = metal_ops.ensure_f32_cached(ffn_norm_w);
+
+        // MoE layers lack dense FFN tensors — cannot encode FFN on GPU.
+        // Return false to let the caller fall back to the CPU batch path for
+        // this layer, which handles MoE FFN via CPU NEON matmuls.
+        if Self::qwen35_layer_uses_moe(weights, prefix) {
+            return Ok(false);
+        }
+
         let (wg_raw, wg_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_gate.weight"))?;
         let (wu_raw, wu_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_up.weight"))?;
         let (wd_raw, wd_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_down.weight"))?;
@@ -1167,6 +1175,11 @@ impl Qwen35Forward {
         let nw_key = metal_ops.ensure_f32_cached(attn_norm_w);
         let ffn_norm_w = weights.f32_slice(&format!("{prefix}.post_attention_norm.weight"))?;
         let ffn_nw_key = metal_ops.ensure_f32_cached(ffn_norm_w);
+
+        // MoE layers lack dense FFN tensors — fall back to CPU batch path.
+        if Self::qwen35_layer_uses_moe(weights, prefix) {
+            return Ok((Some("qwen35moe_recurrent_ffn_uses_cpu_path"), None));
+        }
 
         let (wg_raw, wg_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_gate.weight"))?;
         let (wu_raw, wu_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_up.weight"))?;

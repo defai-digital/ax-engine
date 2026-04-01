@@ -269,8 +269,10 @@ impl Qwen35Forward {
                             encoded,
                             "qwen35 recurrent batch Metal pack kernel does not support this shape"
                         );
-                        metal_ops.gdn.encode_gated_delta_sequence(
+                        metal_ops.gdn.encode_gated_delta_sequence_auto(
                             encoder,
+                            &metal_ops.elementwise,
+                            &metal_ops.device,
                             &bs.q_buf,
                             &scratch.k,
                             &scratch.v,
@@ -774,8 +776,10 @@ impl Qwen35Forward {
                                 encoded,
                                 "qwen35 fused recurrent layer Metal pack kernel does not support this shape"
                             );
-                            metal_ops.gdn.encode_gated_delta_sequence(
+                            metal_ops.gdn.encode_gated_delta_sequence_auto(
                                 encoder,
+                                &metal_ops.elementwise,
+                                &metal_ops.device,
                                 &bs.q_buf,
                                 &scratch.k,
                                 &scratch.v,
@@ -1187,6 +1191,9 @@ impl Qwen35Forward {
         inter_dim: usize,
         rms_norm_eps: f32,
     ) -> anyhow::Result<bool> {
+        if Self::qwen35_is_moe(cfg) && Self::qwen35_layer_uses_moe(weights, prefix) {
+            return Ok(false);
+        }
         let Some(metal_ops) = backend.metal_ops() else {
             return Ok(false);
         };
@@ -1377,6 +1384,7 @@ impl Qwen35Forward {
         silu::elementwise_add(hidden, proj_buf);
         Self::assert_finite_if_enabled("layer_hidden_batch", hidden, layer, batch_position)?;
         Self::apply_post_attention_ffn_batch(
+            cfg,
             backend,
             weights,
             prefix,
@@ -1396,6 +1404,7 @@ impl Qwen35Forward {
 
     #[allow(clippy::too_many_arguments)]
     fn apply_layer_tail_single(
+        cfg: &ModelConfig,
         backend: &dyn crate::backend::Backend,
         weights: &WeightStore,
         prefix: &str,
@@ -1415,6 +1424,7 @@ impl Qwen35Forward {
         silu::elementwise_add(hidden, proj_buf);
         Self::assert_finite_if_enabled("layer_hidden", hidden, layer, position)?;
         Self::apply_post_attention_ffn_single(
+            cfg,
             backend,
             weights,
             prefix,

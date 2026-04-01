@@ -2406,3 +2406,73 @@ kernel void elementwise_weighted_add_f32(
         dst[gid] += scale * src[gid];
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// General-purpose elementwise ops for GDN chunked graph and other uses.
+// All operate on flat f32 buffers of `count` elements.
+// Grid: (ceil(count/256), 1, 1).  TG: 256.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// dst = exp(src)
+kernel void elementwise_exp_f32(
+    const device float *src [[buffer(0)]],
+    device float *dst       [[buffer(1)]],
+    constant uint &count    [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid < count) dst[gid] = exp(src[gid]);
+}
+
+/// dst = src_a * src_b (elementwise)
+kernel void elementwise_mul_f32(
+    const device float *src_a [[buffer(0)]],
+    const device float *src_b [[buffer(1)]],
+    device float *dst         [[buffer(2)]],
+    constant uint &count      [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid < count) dst[gid] = src_a[gid] * src_b[gid];
+}
+
+/// dst = src_a + src_b (elementwise)
+kernel void elementwise_add_out_f32(
+    const device float *src_a [[buffer(0)]],
+    const device float *src_b [[buffer(1)]],
+    device float *dst         [[buffer(2)]],
+    constant uint &count      [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid < count) dst[gid] = src_a[gid] + src_b[gid];
+}
+
+/// dst = src_a - src_b (elementwise)
+kernel void elementwise_sub_f32(
+    const device float *src_a [[buffer(0)]],
+    const device float *src_b [[buffer(1)]],
+    device float *dst         [[buffer(2)]],
+    constant uint &count      [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid < count) dst[gid] = src_a[gid] - src_b[gid];
+}
+
+/// dst = -src (elementwise negate)
+kernel void elementwise_neg_f32(
+    const device float *src [[buffer(0)]],
+    device float *dst       [[buffer(1)]],
+    constant uint &count    [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid < count) dst[gid] = -src[gid];
+}
+
+/// dst = src * scale (elementwise broadcast scalar)
+kernel void elementwise_scale_f32(
+    const device float *src [[buffer(0)]],
+    device float *dst       [[buffer(1)]],
+    constant float &scale   [[buffer(2)]],
+    constant uint &count    [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid < count) dst[gid] = src[gid] * scale;
+}

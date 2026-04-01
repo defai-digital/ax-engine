@@ -90,21 +90,7 @@ impl Qwen35Forward {
             q_len * std::mem::size_of::<f32>(),
         )?;
         metal_ops.device.execute_sync(|encoder| {
-            if gpu_attention.is_q4() {
-                metal_ops.attention.encode_attention_prefill_cached_q4kv(
-                    encoder,
-                    &buf_q,
-                    gpu_attention.k_buffer(layer),
-                    gpu_attention.v_buffer(layer),
-                    &buf_o,
-                    n_tokens as u32,
-                    full_attn_params.n_heads as u32,
-                    full_attn_params.n_kv_heads as u32,
-                    full_attn_params.head_dim as u32,
-                    prefix_len as u32,
-                    0,
-                );
-            } else if gpu_attention.is_q8() {
+            if gpu_attention.is_q8() {
                 metal_ops.attention.encode_attention_prefill_cached_q8kv(
                     encoder,
                     &buf_q,
@@ -177,20 +163,7 @@ impl Qwen35Forward {
         }
 
         metal_ops.device.execute_sync(|encoder| {
-            if gpu_attention.is_q4() {
-                metal_ops.attention.encode_attention_decode_q4kv(
-                    encoder,
-                    &scratches.q_buf,
-                    gpu_attention.k_buffer(layer),
-                    gpu_attention.v_buffer(layer),
-                    &scratches.attn_out,
-                    full_attn_params.n_heads as u32,
-                    full_attn_params.n_kv_heads as u32,
-                    full_attn_params.head_dim as u32,
-                    0,
-                    (qwen_kv.seq_len() + 1) as u32,
-                );
-            } else if gpu_attention.is_q8() {
+            if gpu_attention.is_q8() {
                 if full_attn_params.head_dim == 128 {
                     metal_ops.attention.encode_attention_decode_q8kv(
                         encoder,
@@ -273,6 +246,7 @@ impl Qwen35Forward {
 
     #[allow(clippy::too_many_arguments)]
     fn apply_post_attention_ffn_batch(
+        cfg: &ModelConfig,
         backend: &dyn crate::backend::Backend,
         weights: &WeightStore,
         prefix: &str,
@@ -286,6 +260,21 @@ impl Qwen35Forward {
         inter_dim: usize,
         rms_norm_eps: f32,
     ) -> anyhow::Result<()> {
+        if Self::qwen35_is_moe(cfg) && Self::qwen35_layer_uses_moe(weights, prefix) {
+            return Self::apply_post_attention_moe_batch(
+                cfg,
+                backend,
+                weights,
+                prefix,
+                hidden,
+                norm_buf,
+                down_buf,
+                n_tokens,
+                dim,
+                inter_dim,
+                rms_norm_eps,
+            );
+        }
         let ffn_norm_w = weights.f32_slice(&format!("{prefix}.post_attention_norm.weight"))?;
         crate::model::layer_ops::apply_ffn_batch(
             backend,
@@ -308,6 +297,7 @@ impl Qwen35Forward {
 
     #[allow(clippy::too_many_arguments)]
     fn apply_post_attention_ffn_single(
+        cfg: &ModelConfig,
         backend: &dyn crate::backend::Backend,
         weights: &WeightStore,
         prefix: &str,
@@ -321,6 +311,19 @@ impl Qwen35Forward {
         rms_norm_eps: f32,
         ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<()> {
+        if Self::qwen35_is_moe(cfg) && Self::qwen35_layer_uses_moe(weights, prefix) {
+            return Self::apply_post_attention_moe_single(
+                cfg,
+                backend,
+                weights,
+                prefix,
+                hidden,
+                norm_buf,
+                dim,
+                inter_dim,
+                rms_norm_eps,
+            );
+        }
         if ops.is_some() {
             // Profiled path: keep inline for per-op timing.
             let mut ops = ops;
@@ -369,6 +372,468 @@ impl Qwen35Forward {
                 crate::model::layer_ops::FfnActivation::SiLU,
             );
         }
+        Ok(())
+    }
+
+    fn apply_shared_expert_gate(
+        down_buf: &mut [f32],
+        gate_buf: &[f32],
+        gate_name: &str,
+    ) -> anyhow::Result<()> {
+        match gate_buf.len() {
+            0 => Ok(()),
+            1 => {
+                let scale = 1.0 / (1.0 + (-gate_buf[0]).exp());
+                for value in down_buf.iter_mut() {
+                    *value *= scale;
+                }
+                Ok(())
+            }
+            len if len == down_buf.len() => {
+                let mut sigmoid = gate_buf.to_vec();
+                for value in &mut sigmoid {
+                    *value = 1.0 / (1.0 + (-*value).exp());
+                }
+                silu::elementwise_mul(down_buf, &sigmoid);
+                Ok(())
+            }
+            other => anyhow::bail!(
+                "unsupported shared expert gate width for {gate_name}: expected 1 or {}, got {other}",
+                down_buf.len()
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_post_attention_moe_single(
+        cfg: &ModelConfig,
+        _backend: &dyn crate::backend::Backend,
+        weights: &WeightStore,
+        prefix: &str,
+        hidden: &mut [f32],
+        norm_buf: &mut [f32],
+        dim: usize,
+        shared_inter_dim_hint: usize,
+        rms_norm_eps: f32,
+    ) -> anyhow::Result<()> {
+        // Use CPU backend for per-token expert matmuls (same rationale as batch path).
+        let cpu = crate::backend::cpu::CpuBackend;
+
+        let ffn_norm_w = weights.f32_slice(&format!("{prefix}.post_attention_norm.weight"))?;
+        rms_norm::rms_norm_out(hidden, ffn_norm_w, norm_buf, rms_norm_eps);
+
+        let router_name = format!("{prefix}.ffn_gate_inp.weight");
+        let n_expert =
+            cfg.n_expert.unwrap_or(Self::tensor_output_rows(weights, &router_name)? as u32) as usize;
+        let n_expert_used = cfg.n_expert_used.unwrap_or(0) as usize;
+        anyhow::ensure!(n_expert > 0, "qwen35moe requires n_expert > 0");
+        anyhow::ensure!(n_expert_used > 0, "qwen35moe requires n_expert_used > 0");
+        anyhow::ensure!(
+            n_expert_used <= n_expert,
+            "qwen35moe n_expert_used ({n_expert_used}) > n_expert ({n_expert})"
+        );
+
+        let (router_raw, router_dtype) = weights.raw_with_dtype(&router_name)?;
+        let mut router_logits = vec![0.0f32; n_expert];
+        cpu.dequant_matmul(
+            router_raw,
+            router_dtype,
+            norm_buf,
+            &mut router_logits,
+            n_expert,
+            1,
+            dim,
+        );
+        let (expert_ids, expert_weights) =
+            crate::model::qwen3_moe::top_k_softmax(&router_logits, n_expert_used);
+
+        let gate_exps_name = format!("{prefix}.ffn_gate_exps.weight");
+        let up_exps_name = format!("{prefix}.ffn_up_exps.weight");
+        let down_exps_name = format!("{prefix}.ffn_down_exps.weight");
+        let expert_inter_dim = Self::tensor_output_rows(weights, &gate_exps_name)?;
+        let (gate_exps_raw, gate_exps_dtype) = weights.raw_with_dtype(&gate_exps_name)?;
+        let (up_exps_raw, up_exps_dtype) = weights.raw_with_dtype(&up_exps_name)?;
+        let (down_exps_raw, down_exps_dtype) = weights.raw_with_dtype(&down_exps_name)?;
+        let gate_stride = crate::model::qwen3_moe::expert_byte_stride(
+            gate_exps_dtype,
+            expert_inter_dim * dim,
+        );
+        let up_stride =
+            crate::model::qwen3_moe::expert_byte_stride(up_exps_dtype, expert_inter_dim * dim);
+        let down_stride = crate::model::qwen3_moe::expert_byte_stride(
+            down_exps_dtype,
+            dim * expert_inter_dim,
+        );
+
+        let shared_gate_name = format!("{prefix}.ffn_gate_shexp.weight");
+        let shared_up_name = format!("{prefix}.ffn_up_shexp.weight");
+        let shared_down_name = format!("{prefix}.ffn_down_shexp.weight");
+        let shared_gate_inp_name = format!("{prefix}.ffn_gate_inp_shexp.weight");
+        let shared_inter_dim = if weights.has(&shared_gate_name) {
+            Self::tensor_output_rows(weights, &shared_gate_name)?
+        } else {
+            shared_inter_dim_hint
+        };
+        let max_inter_dim = expert_inter_dim.max(shared_inter_dim.max(1));
+        let mut gate_buf = vec![0.0f32; max_inter_dim];
+        let mut up_buf = vec![0.0f32; max_inter_dim];
+        let mut down_buf = vec![0.0f32; dim];
+        let mut expert_accum = vec![0.0f32; dim];
+
+        for (i, &eid) in expert_ids.iter().enumerate() {
+            let expert_gate = Self::expert_quant_slice(
+                gate_exps_raw,
+                gate_stride,
+                eid,
+                &gate_exps_name,
+            )?;
+            let expert_up =
+                Self::expert_quant_slice(up_exps_raw, up_stride, eid, &up_exps_name)?;
+            let expert_down =
+                Self::expert_quant_slice(down_exps_raw, down_stride, eid, &down_exps_name)?;
+
+            cpu.dequant_matmul(
+                expert_gate,
+                gate_exps_dtype,
+                norm_buf,
+                &mut gate_buf[..expert_inter_dim],
+                expert_inter_dim,
+                1,
+                dim,
+            );
+            cpu.dequant_matmul(
+                expert_up,
+                up_exps_dtype,
+                norm_buf,
+                &mut up_buf[..expert_inter_dim],
+                expert_inter_dim,
+                1,
+                dim,
+            );
+            silu::silu_elementwise_mul(
+                &mut gate_buf[..expert_inter_dim],
+                &up_buf[..expert_inter_dim],
+            );
+            cpu.dequant_matmul(
+                expert_down,
+                down_exps_dtype,
+                &gate_buf[..expert_inter_dim],
+                &mut down_buf,
+                dim,
+                1,
+                expert_inter_dim,
+            );
+            for (dst, src) in expert_accum.iter_mut().zip(down_buf.iter()) {
+                *dst += expert_weights[i] * src;
+            }
+        }
+
+        if weights.has(&shared_gate_name) {
+            let (shared_gate_raw, shared_gate_dtype) = weights.raw_with_dtype(&shared_gate_name)?;
+            let (shared_up_raw, shared_up_dtype) = weights.raw_with_dtype(&shared_up_name)?;
+            let (shared_down_raw, shared_down_dtype) = weights.raw_with_dtype(&shared_down_name)?;
+            cpu.dequant_matmul(
+                shared_gate_raw,
+                shared_gate_dtype,
+                norm_buf,
+                &mut gate_buf[..shared_inter_dim],
+                shared_inter_dim,
+                1,
+                dim,
+            );
+            cpu.dequant_matmul(
+                shared_up_raw,
+                shared_up_dtype,
+                norm_buf,
+                &mut up_buf[..shared_inter_dim],
+                shared_inter_dim,
+                1,
+                dim,
+            );
+            silu::silu_elementwise_mul(
+                &mut gate_buf[..shared_inter_dim],
+                &up_buf[..shared_inter_dim],
+            );
+            cpu.dequant_matmul(
+                shared_down_raw,
+                shared_down_dtype,
+                &gate_buf[..shared_inter_dim],
+                &mut down_buf,
+                dim,
+                1,
+                shared_inter_dim,
+            );
+
+            if weights.has(&shared_gate_inp_name) {
+                let gate_rows = Self::tensor_output_rows(weights, &shared_gate_inp_name)?;
+                let (shared_gate_inp_raw, shared_gate_inp_dtype) =
+                    weights.raw_with_dtype(&shared_gate_inp_name)?;
+                let mut shared_gate_buf = vec![0.0f32; gate_rows];
+                cpu.dequant_matmul(
+                    shared_gate_inp_raw,
+                    shared_gate_inp_dtype,
+                    norm_buf,
+                    &mut shared_gate_buf,
+                    gate_rows,
+                    1,
+                    dim,
+                );
+                Self::apply_shared_expert_gate(
+                    &mut down_buf,
+                    &shared_gate_buf,
+                    &shared_gate_inp_name,
+                )?;
+            }
+
+            silu::elementwise_add(&mut expert_accum, &down_buf);
+        }
+
+        silu::elementwise_add(hidden, &expert_accum);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_post_attention_moe_batch(
+        cfg: &ModelConfig,
+        backend: &dyn crate::backend::Backend,
+        weights: &WeightStore,
+        prefix: &str,
+        hidden: &mut [f32],
+        norm_buf: &mut [f32],
+        down_buf: &mut [f32],
+        n_tokens: usize,
+        dim: usize,
+        _shared_inter_dim_hint: usize,
+        rms_norm_eps: f32,
+    ) -> anyhow::Result<()> {
+        // Use CPU backend for expert matmuls to avoid per-dispatch GPU command
+        // buffer overhead. Batched-by-expert: group tokens by expert assignment,
+        // run one batched matmul per active expert via BLAS, then scatter back.
+        // Reduces O(n_tokens × n_expert_used × 3) individual matvecs to
+        // O(n_active_experts × 3) batched matmuls.
+        let cpu = crate::backend::cpu::CpuBackend;
+
+        let ffn_norm_w = weights.f32_slice(&format!("{prefix}.post_attention_norm.weight"))?;
+        for token_idx in 0..n_tokens {
+            let start = token_idx * dim;
+            rms_norm::rms_norm_out(
+                &hidden[start..start + dim],
+                ffn_norm_w,
+                &mut norm_buf[start..start + dim],
+                rms_norm_eps,
+            );
+        }
+
+        let router_name = format!("{prefix}.ffn_gate_inp.weight");
+        let n_expert =
+            cfg.n_expert.unwrap_or(Self::tensor_output_rows(weights, &router_name)? as u32) as usize;
+        let n_expert_used = cfg.n_expert_used.unwrap_or(0) as usize;
+        anyhow::ensure!(n_expert > 0, "qwen35moe requires n_expert > 0");
+        anyhow::ensure!(n_expert_used > 0, "qwen35moe requires n_expert_used > 0");
+        anyhow::ensure!(
+            n_expert_used <= n_expert,
+            "qwen35moe n_expert_used ({n_expert_used}) > n_expert ({n_expert})"
+        );
+
+        let gate_exps_name = format!("{prefix}.ffn_gate_exps.weight");
+        let up_exps_name = format!("{prefix}.ffn_up_exps.weight");
+        let down_exps_name = format!("{prefix}.ffn_down_exps.weight");
+        let expert_inter_dim = Self::tensor_output_rows(weights, &gate_exps_name)?;
+        let (gate_exps_raw, gate_exps_dtype) = weights.raw_with_dtype(&gate_exps_name)?;
+        let (up_exps_raw, up_exps_dtype) = weights.raw_with_dtype(&up_exps_name)?;
+        let (down_exps_raw, down_exps_dtype) = weights.raw_with_dtype(&down_exps_name)?;
+        let gate_stride = crate::model::qwen3_moe::expert_byte_stride(
+            gate_exps_dtype,
+            expert_inter_dim * dim,
+        );
+        let up_stride =
+            crate::model::qwen3_moe::expert_byte_stride(up_exps_dtype, expert_inter_dim * dim);
+        let down_stride = crate::model::qwen3_moe::expert_byte_stride(
+            down_exps_dtype,
+            dim * expert_inter_dim,
+        );
+
+        // Use GPU backend for the batched router matmul (one dispatch for all tokens).
+        let (router_raw, router_dtype) = weights.raw_with_dtype(&router_name)?;
+        let mut router_logits = vec![0.0f32; n_tokens * n_expert];
+        backend.dequant_matmul_token_major(
+            router_raw,
+            router_dtype,
+            norm_buf,
+            &mut router_logits,
+            n_tokens,
+            n_expert,
+            dim,
+        );
+
+        // --- Phase 2: Per-token routing → build expert assignment map ---
+        // expert_map[eid] = Vec<(token_idx, router_weight)>
+        let mut expert_map: Vec<Vec<(usize, f32)>> = vec![Vec::new(); n_expert];
+        for token_idx in 0..n_tokens {
+            let (expert_ids, expert_weights) = crate::model::qwen3_moe::top_k_softmax(
+                &router_logits[token_idx * n_expert..(token_idx + 1) * n_expert],
+                n_expert_used,
+            );
+            for (i, &eid) in expert_ids.iter().enumerate() {
+                expert_map[eid].push((token_idx, expert_weights[i]));
+            }
+        }
+
+        // Zero the accumulator (down_buf is reused as expert_accum).
+        down_buf[..n_tokens * dim].fill(0.0);
+
+        // --- Phase 3: Batched-by-expert matmul ---
+        // For each active expert, gather assigned tokens, run batched FFN, scatter back.
+        // This transforms O(n_tokens × n_expert_used × 3) individual matvecs into
+        // O(n_active_experts × 3) batched matmuls — typically 20-50× fewer calls.
+        let mut gather_buf = vec![0.0f32; n_tokens * dim]; // reusable gather buffer
+        let mut gate_batch = vec![0.0f32; n_tokens * expert_inter_dim];
+        let mut up_batch = vec![0.0f32; n_tokens * expert_inter_dim];
+        let mut down_batch = vec![0.0f32; n_tokens * dim];
+
+        for (eid, assignments) in expert_map.iter().enumerate() {
+            if assignments.is_empty() {
+                continue;
+            }
+            let n_assigned = assignments.len();
+
+            // Gather: copy assigned tokens' norm_rows into contiguous buffer.
+            for (slot, &(token_idx, _)) in assignments.iter().enumerate() {
+                gather_buf[slot * dim..(slot + 1) * dim]
+                    .copy_from_slice(&norm_buf[token_idx * dim..(token_idx + 1) * dim]);
+            }
+
+            let expert_gate = Self::expert_quant_slice(
+                gate_exps_raw,
+                gate_stride,
+                eid,
+                &gate_exps_name,
+            )?;
+            let expert_up =
+                Self::expert_quant_slice(up_exps_raw, up_stride, eid, &up_exps_name)?;
+            let expert_down =
+                Self::expert_quant_slice(down_exps_raw, down_stride, eid, &down_exps_name)?;
+
+            // Batched gate matmul: [n_assigned × dim] → [n_assigned × expert_inter_dim]
+            cpu.dequant_matmul_token_major(
+                expert_gate,
+                gate_exps_dtype,
+                &gather_buf[..n_assigned * dim],
+                &mut gate_batch[..n_assigned * expert_inter_dim],
+                n_assigned,
+                expert_inter_dim,
+                dim,
+            );
+            // Batched up matmul
+            cpu.dequant_matmul_token_major(
+                expert_up,
+                up_exps_dtype,
+                &gather_buf[..n_assigned * dim],
+                &mut up_batch[..n_assigned * expert_inter_dim],
+                n_assigned,
+                expert_inter_dim,
+                dim,
+            );
+            // SiLU elementwise mul across all assigned tokens
+            silu::silu_elementwise_mul(
+                &mut gate_batch[..n_assigned * expert_inter_dim],
+                &up_batch[..n_assigned * expert_inter_dim],
+            );
+            // Batched down matmul: [n_assigned × expert_inter_dim] → [n_assigned × dim]
+            cpu.dequant_matmul_token_major(
+                expert_down,
+                down_exps_dtype,
+                &gate_batch[..n_assigned * expert_inter_dim],
+                &mut down_batch[..n_assigned * dim],
+                n_assigned,
+                dim,
+                expert_inter_dim,
+            );
+
+            // Scatter: accumulate weighted results back to per-token expert_accum.
+            for (slot, &(token_idx, weight)) in assignments.iter().enumerate() {
+                let accum = &mut down_buf[token_idx * dim..(token_idx + 1) * dim];
+                let result = &down_batch[slot * dim..(slot + 1) * dim];
+                for (dst, src) in accum.iter_mut().zip(result.iter()) {
+                    *dst += weight * src;
+                }
+            }
+        }
+
+        // --- Phase 4: Shared expert (batched across all tokens) ---
+        let shared_gate_name = format!("{prefix}.ffn_gate_shexp.weight");
+        let shared_up_name = format!("{prefix}.ffn_up_shexp.weight");
+        let shared_down_name = format!("{prefix}.ffn_down_shexp.weight");
+        let shared_gate_inp_name = format!("{prefix}.ffn_gate_inp_shexp.weight");
+
+        if weights.has(&shared_gate_name) {
+            let shared_inter_dim = Self::tensor_output_rows(weights, &shared_gate_name)?;
+            let (shared_gate_raw, shared_gate_dtype) = weights.raw_with_dtype(&shared_gate_name)?;
+            let (shared_up_raw, shared_up_dtype) = weights.raw_with_dtype(&shared_up_name)?;
+            let (shared_down_raw, shared_down_dtype) = weights.raw_with_dtype(&shared_down_name)?;
+
+            // Batched shared expert gate matmul: all tokens at once.
+            let mut shared_gate_batch = vec![0.0f32; n_tokens * shared_inter_dim];
+            let mut shared_up_batch = vec![0.0f32; n_tokens * shared_inter_dim];
+            cpu.dequant_matmul_token_major(
+                shared_gate_raw,
+                shared_gate_dtype,
+                norm_buf,
+                &mut shared_gate_batch,
+                n_tokens,
+                shared_inter_dim,
+                dim,
+            );
+            cpu.dequant_matmul_token_major(
+                shared_up_raw,
+                shared_up_dtype,
+                norm_buf,
+                &mut shared_up_batch,
+                n_tokens,
+                shared_inter_dim,
+                dim,
+            );
+            silu::silu_elementwise_mul(&mut shared_gate_batch, &shared_up_batch);
+            let mut shared_down_batch = vec![0.0f32; n_tokens * dim];
+            cpu.dequant_matmul_token_major(
+                shared_down_raw,
+                shared_down_dtype,
+                &shared_gate_batch,
+                &mut shared_down_batch,
+                n_tokens,
+                dim,
+                shared_inter_dim,
+            );
+
+            // Optional: shared expert gating (sigmoid gate per token).
+            if weights.has(&shared_gate_inp_name) {
+                let gate_rows = Self::tensor_output_rows(weights, &shared_gate_inp_name)?;
+                let (shared_gate_inp_raw, shared_gate_inp_dtype) =
+                    weights.raw_with_dtype(&shared_gate_inp_name)?;
+                let mut shared_gate_logits = vec![0.0f32; n_tokens * gate_rows];
+                cpu.dequant_matmul_token_major(
+                    shared_gate_inp_raw,
+                    shared_gate_inp_dtype,
+                    norm_buf,
+                    &mut shared_gate_logits,
+                    n_tokens,
+                    gate_rows,
+                    dim,
+                );
+                for token_idx in 0..n_tokens {
+                    Self::apply_shared_expert_gate(
+                        &mut shared_down_batch[token_idx * dim..(token_idx + 1) * dim],
+                        &shared_gate_logits[token_idx * gate_rows..(token_idx + 1) * gate_rows],
+                        &shared_gate_inp_name,
+                    )?;
+                }
+            }
+
+            silu::elementwise_add(down_buf, &shared_down_batch);
+        }
+
+        // Final residual: hidden += expert_accum (stored in down_buf).
+        silu::elementwise_add(hidden, down_buf);
         Ok(())
     }
 

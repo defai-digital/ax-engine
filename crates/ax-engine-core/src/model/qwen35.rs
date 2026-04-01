@@ -671,19 +671,40 @@ impl Qwen35Forward {
             let prefix = format!("blk.{layer}");
             let is_recurrent = cfg.qwen35_is_recurrent_layer(layer);
 
-            // Common weights: attn_norm, FFN (gate/up/down), post_attention_norm.
+            // Common weights: attn_norm, post_attention_norm.
             let attn_norm_w = weights.f32_slice(&format!("{prefix}.attn_norm.weight"))?;
             let attn_norm_key = metal_ops.ensure_f32_cached(attn_norm_w);
             let ffn_norm_w = weights.f32_slice(&format!("{prefix}.post_attention_norm.weight"))?;
             let ffn_norm_key = metal_ops.ensure_f32_cached(ffn_norm_w);
-            let (wg_raw, wg_dtype) =
-                weights.raw_with_dtype(&format!("{prefix}.ffn_gate.weight"))?;
-            let (wu_raw, wu_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_up.weight"))?;
-            let (wd_raw, wd_dtype) =
-                weights.raw_with_dtype(&format!("{prefix}.ffn_down.weight"))?;
-            let wg_key = metal_ops.ensure_quant_cached(wg_raw);
-            let wu_key = metal_ops.ensure_quant_cached(wu_raw);
-            let wd_key = metal_ops.ensure_quant_cached(wd_raw);
+
+            // FFN weights: dense (ffn_gate/up/down) or MoE (ffn_gate_exps/etc).
+            // MoE layers lack dense FFN tensors — use sentinel key 0 and handle
+            // the MoE FFN on CPU during the forward pass.
+            let layer_is_moe = Self::qwen35_layer_uses_moe(weights, &prefix);
+            let (wg_key, wg_dtype, wu_key, wu_dtype, wd_key, wd_dtype) = if layer_is_moe {
+                // MoE layer: no dense FFN weights to cache.
+                // Use sentinel key 0 (never looked up — the per-layer encoding
+                // detects MoE and falls back to CPU for the FFN step).
+                (
+                    0usize,
+                    crate::gguf::tensor::GgmlType::F32,
+                    0usize,
+                    crate::gguf::tensor::GgmlType::F32,
+                    0usize,
+                    crate::gguf::tensor::GgmlType::F32,
+                )
+            } else {
+                let (wg_raw, wg_dtype) =
+                    weights.raw_with_dtype(&format!("{prefix}.ffn_gate.weight"))?;
+                let (wu_raw, wu_dtype) =
+                    weights.raw_with_dtype(&format!("{prefix}.ffn_up.weight"))?;
+                let (wd_raw, wd_dtype) =
+                    weights.raw_with_dtype(&format!("{prefix}.ffn_down.weight"))?;
+                let wg_key = metal_ops.ensure_quant_cached(wg_raw);
+                let wu_key = metal_ops.ensure_quant_cached(wu_raw);
+                let wd_key = metal_ops.ensure_quant_cached(wd_raw);
+                (wg_key, wg_dtype, wu_key, wu_dtype, wd_key, wd_dtype)
+            };
 
             if is_recurrent {
                 // Recurrent layer: attn_qkv, attn_gate, ssm_* weights.
@@ -901,7 +922,16 @@ impl ForwardPass for Qwen35Forward {
         let recurrent_slot = qwen_kv.active_slot();
 
         let dims = Self::recurrent_dims(cfg)?;
-        let backend = ctx.backend;
+        // For MoE models, use CPU backend for all n=1 matmuls to avoid
+        // per-dispatch GPU CB overhead (~280 CBs/token → 0).
+        // CPU NEON matvec is competitive for single-token decode with
+        // small active params (3B of 35B for qwen35moe).
+        let cpu_backend = crate::backend::cpu::CpuBackend;
+        let backend: &dyn crate::backend::Backend = if Self::qwen35_is_moe(cfg) {
+            &cpu_backend
+        } else {
+            ctx.backend
+        };
         let n_layers = cfg.n_layers as usize;
         let dim = cfg.embedding_dim as usize;
         let n_heads = cfg.n_heads as usize;
@@ -998,6 +1028,7 @@ impl ForwardPass for Qwen35Forward {
             }
 
             Self::apply_layer_tail_single(
+                cfg,
                 backend,
                 weights,
                 &prefix,
@@ -1082,8 +1113,8 @@ impl ForwardPass for Qwen35Forward {
 
     fn validate_config(&self, config: &ModelConfig) -> anyhow::Result<()> {
         anyhow::ensure!(
-            config.architecture == "qwen35",
-            "Qwen35Forward only supports qwen35, got {}",
+            matches!(config.architecture.as_str(), "qwen35" | "qwen35moe"),
+            "Qwen35Forward only supports qwen35/qwen35moe, got {}",
             config.architecture
         );
         let _ = Self::recurrent_dims(config)?;
@@ -1099,7 +1130,9 @@ impl ForwardPass for Qwen35Forward {
     }
 
     fn supports_pipelined_decode(&self, ctx: &ForwardContext) -> bool {
-        Self::gpu_decode_enabled() && ctx.backend.metal_ops().is_some()
+        Self::gpu_decode_enabled()
+            && ctx.backend.metal_ops().is_some()
+            && !Self::qwen35_is_moe(ctx.config)
     }
 
     fn embed_pipelined_token(
@@ -1126,6 +1159,9 @@ impl ForwardPass for Qwen35Forward {
         kv: &mut ModelKv,
         weights: &WeightStore,
     ) -> anyhow::Result<Option<ax_engine_metal::PendingFrame>> {
+        if Self::qwen35_is_moe(ctx.config) {
+            return Ok(None);
+        }
         if !Self::gpu_decode_enabled() {
             return Ok(None);
         }

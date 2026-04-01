@@ -209,9 +209,9 @@ impl AttentionDispatchConfig {
         let prefill_ax_bc64_mode = {
             let profile_default =
                 profile_kernel_mode(profile.attention_prefill.ax_bc64_mode.clone());
-            let mode = parse_kernel_mode("AX_METAL_PREFILL_MISTRAL_BC64_MODE", profile_default);
+            let mode = parse_kernel_mode("AX_METAL_PREFILL_BC64_MODE", profile_default);
             match mode {
-                KernelMode::Off => match legacy_kernel_override("AX_METAL_PREFILL_MISTRAL_BC64")
+                KernelMode::Off => match legacy_kernel_override("AX_METAL_PREFILL_BC64")
                     .and_then(|v| parse_bool_env_flag(&v))
                 {
                     Some(true) => KernelMode::On,
@@ -257,7 +257,7 @@ impl AttentionDispatchConfig {
             },
         );
         let prefill_ax_bc64_min_tokens = parse_positive_u32_env(
-            "AX_METAL_PREFILL_MISTRAL_BC64_MIN_TOKENS",
+            "AX_METAL_PREFILL_BC64_MIN_TOKENS",
             profile.attention_prefill.ax_bc64_min_tokens,
         );
         let decode_splitk_mode = parse_kernel_mode("AX_METAL_DECODE_SPLITK_MODE", KernelMode::Auto);
@@ -586,8 +586,12 @@ pub enum MatvecCandidate {
     Q5KBase,
     Q5KIlp4,
     Q5KNr2,
+    Q8_0Nr2,
+    Q8_0Ilp4,
+    Q4KIlp4,
     Q6KBase,
     Q6KNr2,
+    Q6KIlp4,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -804,8 +808,12 @@ impl MatvecCandidate {
             Self::Q5KBase => "q5_k.base",
             Self::Q5KIlp4 => "q5_k.ilp4",
             Self::Q5KNr2 => "q5_k.nr2",
+            Self::Q8_0Nr2 => "q8_0.nr2",
+            Self::Q8_0Ilp4 => "q8_0.ilp4",
+            Self::Q4KIlp4 => "q4_k.ilp4",
             Self::Q6KBase => "q6_k.base",
             Self::Q6KNr2 => "q6_k.nr2",
+            Self::Q6KIlp4 => "q6_k.ilp4",
         }
     }
 }
@@ -1101,12 +1109,14 @@ fn attention_prefill_local_candidate_selection(
         use_ax_hd128 && attention_prefill_ax_bc64_should_use_with_config(n_tokens, config);
     let use_ax_smem = attention_prefill_ax_smem_enabled() && use_ax_hd128;
     let use_ax_smem_f16 = attention_prefill_ax_smem_f16_enabled() && use_ax_hd128;
-    let use_fa2_hd128 =
-        attention_prefill_fa2_hd128_should_use_with_config(n_tokens, head_dim, config);
+    let use_fa2_hd64_or_hd128 =
+        attention_prefill_fa2_hd64_or_hd128_should_use_with_config(n_tokens, head_dim, config);
+    let use_fa2_hd128 = use_fa2_hd64_or_hd128 && head_dim == 128;
     // The simd kernel is an implementation variant of the FA2 HD128 route and
     // must not bypass the profile's mode/threshold gating.
     let use_fa2_simd_hd128 = use_fa2_hd128 && attention_prefill_fa2_simd_hd128_enabled();
-    let use_fa2_simd_hd64 = attention_prefill_fa2_simd_hd128_enabled() && head_dim == 64;
+    let use_fa2_simd_hd64 =
+        use_fa2_hd64_or_hd128 && head_dim == 64 && attention_prefill_fa2_simd_hd128_enabled();
     let use_hd256 = attention_prefill_hd256_enabled() && head_dim == 256 && !use_v2;
 
     if attention_prefill_fa2v2_enabled() && head_dim == 256 {
@@ -1197,17 +1207,33 @@ fn attention_prefill_cached_candidate_selection(
     sliding_window: u32,
     config: AttentionDispatchConfig,
 ) -> AttentionPrefillCandidateSelection {
-    // FA2 SIMD cached: f16 KV + matching head_dim + FA2 SIMD enabled
+    // SIMD cached kernels are route variants, not unconditional overrides.
     if kv_f16 && attention_prefill_fa2_simd_hd128_enabled() {
-        let candidate = match head_dim {
-            128 => Some(AttentionPrefillCandidate::CacheFa2SimdHd128),
-            64 => Some(AttentionPrefillCandidate::CacheFa2SimdHd64),
-            256 => Some(AttentionPrefillCandidate::CacheFa2SimdHd256),
-            _ => None,
-        };
-        if let Some(candidate) = candidate {
+        if attention_prefill_fa2_hd64_or_hd128_should_use_with_config(n_tokens, head_dim, config) {
+            let candidate = match head_dim {
+                128 => Some(AttentionPrefillCandidate::CacheFa2SimdHd128),
+                64 => Some(AttentionPrefillCandidate::CacheFa2SimdHd64),
+                _ => None,
+            };
+            if let Some(candidate) = candidate {
+                return AttentionPrefillCandidateSelection {
+                    candidate,
+                    stability: KernelStabilityTier::ProfilePreferred,
+                };
+            }
+        }
+        if head_dim == 256
+            && attention_prefill_fa2_cached_should_use_with_config(
+                kv_f16,
+                n_tokens,
+                head_dim,
+                base_seq_len,
+                sliding_window,
+                config,
+            )
+        {
             return AttentionPrefillCandidateSelection {
-                candidate,
+                candidate: AttentionPrefillCandidate::CacheFa2SimdHd256,
                 stability: KernelStabilityTier::ProfilePreferred,
             };
         }
@@ -1595,6 +1621,22 @@ const Q5K_NR2_ROWS: usize = 4;
 const Q6K_NR2_ROWS: usize = 4;
 /// Number of output rows per threadgroup for N_DST=4 kernels (must match shader NDST4_ROWS).
 const NDST4_ROWS: usize = 4;
+/// Threadgroup size for the Q8_0 NR2 decode matvec kernel.
+const DEQUANT_MATVEC_Q8_0_NR2_TG: usize = 64;
+/// Number of output rows per threadgroup for Q8_0 NR2 (2 SGs × 2 rows/SG).
+const Q8_0_NR2_ROWS: usize = 4;
+/// Threadgroup size for the Q8_0 ILP4 decode matvec kernel.
+const DEQUANT_MATVEC_Q8_0_ILP4_TG: usize = 64;
+/// Number of output rows per threadgroup for Q8_0 ILP4 (2 SGs × 1 row/SG).
+const Q8_0_ILP4_ROWS: usize = 2;
+/// Threadgroup size for the Q4_K ILP4 decode matvec kernel.
+const DEQUANT_MATVEC_Q4K_ILP4_TG: usize = 64;
+/// Number of output rows per threadgroup for Q4_K ILP4.
+const Q4K_ILP4_ROWS: usize = 2;
+/// Threadgroup size for the Q6_K ILP4 decode matvec kernel.
+const DEQUANT_MATVEC_Q6K_ILP4_TG: usize = 64;
+/// Number of output rows per threadgroup for Q6_K ILP4.
+const Q6K_ILP4_ROWS: usize = 2;
 
 /// Threadgroup size for standalone dequant kernels.
 const DEQUANT_TG_SIZE: usize = 256;
@@ -1658,14 +1700,12 @@ const Q8_0_BLOCK_VALUES: usize = 32;
 
 /// Pre-compiled dequantization compute pipelines.
 ///
-/// Supports standalone dequant (Q4_0, Q4_K → f32), fused dequant+matvec (N=1),
+/// Supports standalone dequant (Q4_K → f32), fused dequant+matvec (N=1),
 /// and fused dequant+matmul with simdgroup_matrix (N>1).
 /// Create once at init time, reuse for all dequant dispatches.
 pub struct DequantKernels {
-    dequant_q4_0: ComputePipeline,
     dequant_q4_k: ComputePipeline,
     dequant_q6_k: ComputePipeline,
-    fused_matvec_q4_0: ComputePipeline,
     fused_matvec_q5_k: ComputePipeline,
     /// Q5_K decode matvec with llama.cpp-style 4-way block interleaving.
     fused_matvec_q5_k_ilp4: ComputePipeline,
@@ -1679,6 +1719,10 @@ pub struct DequantKernels {
     fused_gelu_down_matvec_q5_k: ComputePipeline,
     fused_matvec_q8_0: ComputePipeline,
     fused_matvec_q8_0_n4: ComputePipeline,
+    /// Q8_0 decode matvec with 2 rows per simdgroup and TG=64 (4 rows per TG).
+    fused_matvec_q8_0_nr2: ComputePipeline,
+    /// Q8_0 decode matvec with 4-way block interleaving and TG=64 (2 rows per TG).
+    fused_matvec_q8_0_ilp4: ComputePipeline,
     /// Dual-output Q8_0 decode matvec for gate+up experiments.
     fused_matvec_pair_q8_0: ComputePipeline,
     /// Fused SiLU(gate)*up + down projection for Q8_0 decode.
@@ -1703,10 +1747,14 @@ pub struct DequantKernels {
     fused_matvec_q4_k_n4: ComputePipeline,
     /// TG=64 decode matvec for Q4_K (2 SGs × 4 rows each = 8 rows per TG).
     fused_matvec_q4_k_tg64: ComputePipeline,
+    /// Q4_K decode matvec with 4-way block interleaving and TG=64 (2 rows per TG).
+    fused_matvec_q4_k_ilp4: ComputePipeline,
     fused_matvec_dense_f16: ComputePipeline,
     fused_matvec_q6_k: ComputePipeline,
     /// Q6_K decode matvec with 2 rows per simdgroup and TG=64.
     fused_matvec_q6_k_nr2: ComputePipeline,
+    /// Q6_K decode matvec with 4-way block interleaving and TG=64 (2 rows per TG).
+    fused_matvec_q6_k_ilp4: ComputePipeline,
     /// Dual-output Q6_K decode matvec for gate+up experiments.
     fused_matvec_pair_q6_k: ComputePipeline,
     /// Fused SiLU(gate)*up + down projection for Q6_K decode.
@@ -1751,6 +1799,14 @@ pub struct DequantKernels {
     fused_batch_q5_k_blocked_f16in_fulltile: ComputePipeline,
     /// Small-N B-transposed batch dequant+matmul for Q5_K.
     fused_batch_q5_k_small: ComputePipeline,
+    /// 64x64 full-tile fast path for Q5_K with f16 input and f32 output.
+    fused_batch_q5_k_f16in_full64: ComputePipeline,
+    /// 64x32 full-tile fast path for Q5_K with f16 input and f32 output.
+    fused_batch_q5_k_f16in_full32: ComputePipeline,
+    /// Tail-N (N<32) fast path for Q5_K with f16 input and f32 output.
+    fused_batch_q5_k_f16in_tail32: ComputePipeline,
+    /// Small-N B-transposed batch dequant+matmul for Q5_K with f16 input/f32 output.
+    fused_batch_q5_k_f16in_small: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q6_K: C[N×M] = B[N×K] × dequant(A[M×K])^T.
     fused_batch_q6_k: ComputePipeline,
     /// Blocked-layout Q6_K kernel (boundary-specialized).
@@ -1761,6 +1817,10 @@ pub struct DequantKernels {
     fused_batch_q6_k_blocked_bm32: ComputePipeline,
     /// BM=32 blocked Q6_K full-tile specialization.
     fused_batch_q6_k_blocked_bm32_fulltile: ComputePipeline,
+    /// Fused SiLU activation + blocked Q6_K down projection (boundary-specialized).
+    fused_batch_q6_k_blocked_silu: ComputePipeline,
+    /// Fused SiLU activation + blocked Q6_K down projection (full-tile).
+    fused_batch_q6_k_blocked_silu_fulltile: ComputePipeline,
     /// Full-tile fast path for Q4_K batch dequant+matmul.
     fused_batch_q4_k_full: ComputePipeline,
     /// Full-tile fast path for Q6_K batch dequant+matmul.
@@ -1771,14 +1831,12 @@ pub struct DequantKernels {
     fused_batch_q6_k_f16io: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q4_K with f16 input and f32 output.
     fused_batch_q4_k_f16in: ComputePipeline,
-    /// Blocked-layout Q4_0 kernel with f16 input and f32 output (boundary-specialized).
-    fused_batch_q4_0_blocked_f16in: ComputePipeline,
-    /// Blocked-layout Q4_0 f16-input full-tile specialization.
-    fused_batch_q4_0_blocked_f16in_fulltile: ComputePipeline,
     /// Full-tile (BM=32, BN=64, TG=256) fast path for Q4_K with f16 input. No out_tile → 12 KB.
     fused_batch_q4_k_f16in_full: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q6_K with f16 input and f32 output.
     fused_batch_q6_k_f16in: ComputePipeline,
+    /// B-transposed batch dequant+matmul for Q8_0 with f32 input and f32 output.
+    fused_batch_q8_0: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q8_0 with f16 input and f32 output.
     fused_batch_q8_0_f16in: ComputePipeline,
     /// Blocked-layout Q8_0 kernel with f16 input and f32 output (boundary-specialized).
@@ -1795,6 +1853,8 @@ pub struct DequantKernels {
     fused_batch_q8_0_f16in_tail32: ComputePipeline,
     /// 32x32 full-tile fast path for Q8_0 with f16 input and f32 output.
     fused_batch_q8_0_f16in_full32x32: ComputePipeline,
+    /// Small-N B-transposed batch dequant+matmul for Q8_0 with f16 input/f32 output.
+    fused_batch_q8_0_f16in_small: ComputePipeline,
     /// 64x64 full-tile fast path for Q4_K with f16 input and f32 output.
     fused_batch_q4_k_f16in_full64: ComputePipeline,
     /// 64x64 full-tile BK=32 fast path for Q4_K with f16 input and f32 output.
@@ -1819,6 +1879,8 @@ pub struct DequantKernels {
     fused_batch_pair_q6_k: ComputePipeline,
     /// Dual-output B-transposed batch dequant+matmul for Q4_K with f16 input.
     fused_batch_pair_q4_k_f16in: ComputePipeline,
+    /// Dual-output B-transposed batch dequant+matmul for Q5_K with f16 input.
+    fused_batch_pair_q5_k_f16in: ComputePipeline,
     /// Dual-output B-transposed batch dequant+matmul for Q6_K with f16 input.
     fused_batch_pair_q6_k_f16in: ComputePipeline,
     /// Dual-output B-transposed batch dequant+matmul for Q8_0 with f16 input.
@@ -1889,11 +1951,15 @@ impl DequantKernels {
             MatvecCandidate::Q4KTg256 => self.fused_matvec_q4_k_tg256.state(),
             MatvecCandidate::Q4KBlk2 => self.fused_matvec_q4_k_blk2.state(),
             MatvecCandidate::Q4KN4 => self.fused_matvec_q4_k_n4.state(),
+            MatvecCandidate::Q4KIlp4 => self.fused_matvec_q4_k_ilp4.state(),
             MatvecCandidate::Q5KBase
             | MatvecCandidate::Q5KIlp4
             | MatvecCandidate::Q5KNr2
+            | MatvecCandidate::Q8_0Nr2
+            | MatvecCandidate::Q8_0Ilp4
             | MatvecCandidate::Q6KBase
-            | MatvecCandidate::Q6KNr2 => {
+            | MatvecCandidate::Q6KNr2
+            | MatvecCandidate::Q6KIlp4 => {
                 unreachable!()
             }
         };
@@ -1917,15 +1983,19 @@ impl DequantKernels {
         let pipeline = match selection.candidate {
             MatvecCandidate::Q6KBase => self.fused_matvec_q6_k.state(),
             MatvecCandidate::Q6KNr2 => self.fused_matvec_q6_k_nr2.state(),
+            MatvecCandidate::Q6KIlp4 => self.fused_matvec_q6_k_ilp4.state(),
             MatvecCandidate::Q4KBase
             | MatvecCandidate::Q4KNr2
             | MatvecCandidate::Q4KX2
             | MatvecCandidate::Q4KTg256
             | MatvecCandidate::Q4KBlk2
             | MatvecCandidate::Q4KN4
+            | MatvecCandidate::Q4KIlp4
             | MatvecCandidate::Q5KBase
             | MatvecCandidate::Q5KIlp4
-            | MatvecCandidate::Q5KNr2 => unreachable!(),
+            | MatvecCandidate::Q5KNr2
+            | MatvecCandidate::Q8_0Nr2
+            | MatvecCandidate::Q8_0Ilp4 => unreachable!(),
         };
         (
             selection.threadgroups,
@@ -1954,8 +2024,12 @@ impl DequantKernels {
             | MatvecCandidate::Q4KTg256
             | MatvecCandidate::Q4KBlk2
             | MatvecCandidate::Q4KN4
+            | MatvecCandidate::Q4KIlp4
+            | MatvecCandidate::Q8_0Nr2
+            | MatvecCandidate::Q8_0Ilp4
             | MatvecCandidate::Q6KBase
-            | MatvecCandidate::Q6KNr2 => unreachable!(),
+            | MatvecCandidate::Q6KNr2
+            | MatvecCandidate::Q6KIlp4 => unreachable!(),
         };
         (
             selection.threadgroups,
@@ -1966,18 +2040,9 @@ impl DequantKernels {
 
     /// Compile dequant kernels from embedded Metal source.
     pub fn new(device: &MetalDevice) -> anyhow::Result<Self> {
-        let dequant_q4_0 =
-            ComputePipeline::from_source(device.device(), DEQUANT_SHADER_SRC, "dequant_q4_0")
-                .context("Failed to compile dequant_q4_0 kernel")?;
         let dequant_q4_k =
             ComputePipeline::from_source(device.device(), DEQUANT_SHADER_SRC, "dequant_q4_k")
                 .context("Failed to compile dequant_q4_k kernel")?;
-        let fused_matvec_q4_0 = ComputePipeline::from_source(
-            device.device(),
-            DEQUANT_SHADER_SRC,
-            "dequant_matvec_q4_0",
-        )
-        .context("Failed to compile dequant_matvec_q4_0 kernel")?;
         let fused_matvec_q5_k = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -2040,6 +2105,18 @@ impl DequantKernels {
             "dequant_matvec_q8_0_n4",
         )
         .context("Failed to compile dequant_matvec_q8_0_n4 kernel")?;
+        let fused_matvec_q8_0_nr2 = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_matvec_q8_0_nr2",
+        )
+        .context("Failed to compile dequant_matvec_q8_0_nr2 kernel")?;
+        let fused_matvec_q8_0_ilp4 = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_matvec_q8_0_ilp4",
+        )
+        .context("Failed to compile dequant_matvec_q8_0_ilp4 kernel")?;
         let fused_matvec_pair_q8_0 = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -2122,6 +2199,12 @@ impl DequantKernels {
             "dequant_matvec_q4_k_tg64",
         )
         .context("Failed to compile dequant_matvec_q4_k_tg64 kernel")?;
+        let fused_matvec_q4_k_ilp4 = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_matvec_q4_k_ilp4",
+        )
+        .context("Failed to compile dequant_matvec_q4_k_ilp4 kernel")?;
         let fused_matvec_dense_f16 = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -2143,6 +2226,12 @@ impl DequantKernels {
             "dequant_matvec_q6_k_nr2",
         )
         .context("Failed to compile dequant_matvec_q6_k_nr2 kernel")?;
+        let fused_matvec_q6_k_ilp4 = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_matvec_q6_k_ilp4",
+        )
+        .context("Failed to compile dequant_matvec_q6_k_ilp4 kernel")?;
         let fused_matvec_pair_q6_k = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -2309,6 +2398,30 @@ impl DequantKernels {
             "dequant_batch_q5_k_small",
         )
         .context("Failed to compile dequant_batch_q5_k_small kernel")?;
+        let fused_batch_q5_k_f16in_full64 = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q5_k_f16in_full64",
+        )
+        .context("Failed to compile dequant_batch_q5_k_f16in_full64 kernel")?;
+        let fused_batch_q5_k_f16in_full32 = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q5_k_f16in_full32",
+        )
+        .context("Failed to compile dequant_batch_q5_k_f16in_full32 kernel")?;
+        let fused_batch_q5_k_f16in_tail32 = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q5_k_f16in_tail32",
+        )
+        .context("Failed to compile dequant_batch_q5_k_f16in_tail32 kernel")?;
+        let fused_batch_q5_k_f16in_small = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q5_k_f16in_small",
+        )
+        .context("Failed to compile dequant_batch_q5_k_f16in_small kernel")?;
         let fused_batch_q6_k =
             ComputePipeline::from_source(device.device(), DEQUANT_SHADER_SRC, "dequant_batch_q6_k")
                 .context("Failed to compile dequant_batch_q6_k kernel")?;
@@ -2352,6 +2465,26 @@ impl DequantKernels {
             }],
         )
         .context("Failed to compile dequant_batch_q6_k_blocked_bm32 fulltile kernel")?;
+        let fused_batch_q6_k_blocked_silu = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q6_k_blocked_silu",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(true),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q6_k_blocked_silu boundary kernel")?;
+        let fused_batch_q6_k_blocked_silu_fulltile = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q6_k_blocked_silu",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(false),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q6_k_blocked_silu fulltile kernel")?;
         let fused_batch_q4_k_full = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -2382,26 +2515,6 @@ impl DequantKernels {
             "dequant_batch_q4_k_f16in",
         )
         .context("Failed to compile dequant_batch_q4_k_f16in kernel")?;
-        let fused_batch_q4_0_blocked_f16in = ComputePipeline::from_source_with_constants(
-            device.device(),
-            DEQUANT_SHADER_SRC,
-            "dequant_batch_q4_0_blocked_f16in",
-            &[FunctionConstant {
-                index: BLOCKED_BC_OUT_FC_INDEX,
-                value: FunctionConstantValue::Bool(true),
-            }],
-        )
-        .context("Failed to compile dequant_batch_q4_0_blocked_f16in boundary kernel")?;
-        let fused_batch_q4_0_blocked_f16in_fulltile = ComputePipeline::from_source_with_constants(
-            device.device(),
-            DEQUANT_SHADER_SRC,
-            "dequant_batch_q4_0_blocked_f16in",
-            &[FunctionConstant {
-                index: BLOCKED_BC_OUT_FC_INDEX,
-                value: FunctionConstantValue::Bool(false),
-            }],
-        )
-        .context("Failed to compile dequant_batch_q4_0_blocked_f16in fulltile kernel")?;
         let fused_batch_q4_k_f16in_full = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -2414,6 +2527,9 @@ impl DequantKernels {
             "dequant_batch_q6_k_f16in",
         )
         .context("Failed to compile dequant_batch_q6_k_f16in kernel")?;
+        let fused_batch_q8_0 =
+            ComputePipeline::from_source(device.device(), DEQUANT_SHADER_SRC, "dequant_batch_q8_0")
+                .context("Failed to compile dequant_batch_q8_0 kernel")?;
         let fused_batch_q8_0_f16in = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -2470,6 +2586,12 @@ impl DequantKernels {
             "dequant_batch_q8_0_f16in_full32x32",
         )
         .context("Failed to compile dequant_batch_q8_0_f16in_full32x32 kernel")?;
+        let fused_batch_q8_0_f16in_small = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q8_0_f16in_small",
+        )
+        .context("Failed to compile dequant_batch_q8_0_f16in_small kernel")?;
         let fused_batch_q4_k_f16in_full64 = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -2518,6 +2640,12 @@ impl DequantKernels {
             "dequant_batch_pair_q4_k_f16in",
         )
         .context("Failed to compile dequant_batch_pair_q4_k_f16in kernel")?;
+        let fused_batch_pair_q5_k_f16in = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_pair_q5_k_f16in",
+        )
+        .context("Failed to compile dequant_batch_pair_q5_k_f16in kernel")?;
         let fused_batch_pair_q6_k_f16in = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -2604,14 +2732,12 @@ impl DequantKernels {
         .context("Failed to compile dequant_batch_q6_k_f16in_tail32 kernel")?;
 
         tracing::info!(
-            "Dequant Metal kernels compiled (Q4_0 + Q8_0 + Q4_K + Q5_K + Q6_K, standalone + fused matvec + fused matmul + batch + simd + full32 + tail32)"
+            "Dequant Metal kernels compiled (Q8_0 + Q4_K + Q5_K + Q6_K, standalone + fused matvec + fused matmul + batch + simd + full32 + tail32)"
         );
 
         Ok(Self {
-            dequant_q4_0,
             dequant_q4_k,
             dequant_q6_k,
-            fused_matvec_q4_0,
             fused_matvec_q5_k,
             fused_matvec_q5_k_ilp4,
             fused_matvec_q5_k_nr2,
@@ -2620,6 +2746,8 @@ impl DequantKernels {
             fused_gelu_down_matvec_q5_k,
             fused_matvec_q8_0,
             fused_matvec_q8_0_n4,
+            fused_matvec_q8_0_nr2,
+            fused_matvec_q8_0_ilp4,
             fused_matvec_pair_q8_0,
             fused_silu_down_matvec_q8_0,
             fused_gelu_down_matvec_q8_0,
@@ -2633,9 +2761,11 @@ impl DequantKernels {
             fused_matvec_q4_k_x2,
             fused_matvec_q4_k_n4,
             fused_matvec_q4_k_tg64,
+            fused_matvec_q4_k_ilp4,
             fused_matvec_dense_f16,
             fused_matvec_q6_k,
             fused_matvec_q6_k_nr2,
+            fused_matvec_q6_k_ilp4,
             fused_matvec_pair_q6_k,
             fused_silu_down_matvec_q6_k,
             fused_gelu_down_matvec_q6_k,
@@ -2658,20 +2788,25 @@ impl DequantKernels {
             fused_batch_q5_k_blocked_f16in,
             fused_batch_q5_k_blocked_f16in_fulltile,
             fused_batch_q5_k_small,
+            fused_batch_q5_k_f16in_full64,
+            fused_batch_q5_k_f16in_full32,
+            fused_batch_q5_k_f16in_tail32,
+            fused_batch_q5_k_f16in_small,
             fused_batch_q6_k,
             fused_batch_q6_k_blocked,
             fused_batch_q6_k_blocked_fulltile,
             fused_batch_q6_k_blocked_bm32,
             fused_batch_q6_k_blocked_bm32_fulltile,
+            fused_batch_q6_k_blocked_silu,
+            fused_batch_q6_k_blocked_silu_fulltile,
             fused_batch_q4_k_full,
             fused_batch_q6_k_full,
             fused_batch_q4_k_f16io,
             fused_batch_q6_k_f16io,
             fused_batch_q4_k_f16in,
-            fused_batch_q4_0_blocked_f16in,
-            fused_batch_q4_0_blocked_f16in_fulltile,
             fused_batch_q4_k_f16in_full,
             fused_batch_q6_k_f16in,
+            fused_batch_q8_0,
             fused_batch_q8_0_f16in,
             fused_batch_q8_0_blocked_f16in,
             fused_batch_q8_0_blocked_f16in_fulltile,
@@ -2680,6 +2815,7 @@ impl DequantKernels {
             fused_batch_q8_0_f16in_full32,
             fused_batch_q8_0_f16in_tail32,
             fused_batch_q8_0_f16in_full32x32,
+            fused_batch_q8_0_f16in_small,
             fused_batch_q4_k_f16in_full64,
             fused_batch_q4_k_f16in_full64_bk32,
             fused_batch_q6_k_f16in_full64,
@@ -2688,6 +2824,7 @@ impl DequantKernels {
             fused_batch_pair_q4_k,
             fused_batch_pair_q6_k,
             fused_batch_pair_q4_k_f16in,
+            fused_batch_pair_q5_k_f16in,
             fused_batch_pair_q6_k_f16in,
             fused_batch_pair_q8_0_f16in,
             fused_batch_pair_q8_0_f16in_full,
@@ -2883,35 +3020,6 @@ impl DequantKernels {
         );
     }
 
-    /// Dequantize Q4_0 data on GPU: quantized blocks → f32 output.
-    ///
-    /// - `src`: buffer containing `n_blocks` Q4_0 blocks (18 bytes each)
-    /// - `dst`: output buffer for `n_blocks * 32` f32 values
-    /// - `n_blocks`: number of Q4_0 blocks
-    pub fn dequant_q4_0(
-        &self,
-        device: &MetalDevice,
-        src: &MetalBuffer,
-        dst: &MetalBuffer,
-        n_blocks: u32,
-    ) -> anyhow::Result<()> {
-        let dims = DispatchDims::d1(n_blocks as usize, DEQUANT_TG_SIZE);
-
-        device.execute_sync(|encoder| {
-            encoder.setComputePipelineState(self.dequant_q4_0.state());
-            unsafe {
-                encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
-                encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
-            }
-            bind_u32(encoder, 2, n_blocks);
-            encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                dims.threadgroups,
-                dims.threads_per_threadgroup,
-            );
-            Ok(())
-        })
-    }
-
     /// Dequantize Q4_K data on GPU: quantized blocks → f32 output.
     ///
     /// - `src`: buffer containing `n_blocks` Q4_K blocks (144 bytes each)
@@ -2936,41 +3044,6 @@ impl DequantKernels {
             encoder.dispatchThreadgroups_threadsPerThreadgroup(
                 dims.threadgroups,
                 dims.threads_per_threadgroup,
-            );
-            Ok(())
-        })
-    }
-
-    /// Fused dequant Q4_0 + matvec: y = dequant(A) × x.
-    ///
-    /// - `a`: M × (K/32) Q4_0 blocks (quantized weight matrix)
-    /// - `x`: K f32 values (input vector)
-    /// - `y`: M f32 values (output vector)
-    /// - `m`: number of rows
-    /// - `k`: number of columns (must be multiple of 32)
-    pub fn fused_matvec_q4_0(
-        &self,
-        device: &MetalDevice,
-        a: &MetalBuffer,
-        x: &MetalBuffer,
-        y: &MetalBuffer,
-        m: u32,
-        k: u32,
-    ) -> anyhow::Result<()> {
-        let dims = DispatchDims::d1(m as usize, 1);
-
-        device.execute_sync(|encoder| {
-            encoder.setComputePipelineState(self.fused_matvec_q4_0.state());
-            bind_buffers(encoder, a, x, y);
-            bind_u32(encoder, 3, m);
-            bind_u32(encoder, 4, k);
-            encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                dims.threadgroups,
-                MTLSize {
-                    width: DEQUANT_MATVEC_TG,
-                    height: 1,
-                    depth: 1,
-                },
             );
             Ok(())
         })
@@ -3177,34 +3250,6 @@ impl DequantKernels {
         })
     }
 
-    /// Encode a fused Q4_0 matvec dispatch into an existing encoder.
-    ///
-    /// Does NOT create or commit a command buffer. Used for batching
-    /// multiple matvec operations into a single command buffer.
-    pub fn encode_fused_matvec_q4_0(
-        &self,
-        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
-        a: &MetalBuffer,
-        x: &MetalBuffer,
-        y: &MetalBuffer,
-        m: u32,
-        k: u32,
-    ) {
-        let dims = DispatchDims::d1(m as usize, 1);
-        encoder.setComputePipelineState(self.fused_matvec_q4_0.state());
-        bind_buffers(encoder, a, x, y);
-        bind_u32(encoder, 3, m);
-        bind_u32(encoder, 4, k);
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            dims.threadgroups,
-            MTLSize {
-                width: DEQUANT_MATVEC_TG,
-                height: 1,
-                depth: 1,
-            },
-        );
-    }
-
     /// Encode a fused Q5_K matvec dispatch into an existing encoder.
     pub fn encode_fused_matvec_q5_k(
         &self,
@@ -3397,6 +3442,103 @@ impl DequantKernels {
         );
     }
 
+    /// Encode a Q8_0 matvec with config-driven candidate selection.
+    ///
+    /// Selects between NR2 (preferred for x-reuse), ILP4, or base depending on config.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fused_matvec_q8_0_with_config(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        x: &MetalBuffer,
+        y: &MetalBuffer,
+        m: u32,
+        k: u32,
+        _config: DequantDispatchConfig,
+    ) {
+        // NR2 is the preferred default: 2 rows/SG shares x loads across rows.
+        let (groups, tg_width, pipeline) = if m >= 2 {
+            (
+                (m as usize).div_ceil(Q8_0_NR2_ROWS),
+                DEQUANT_MATVEC_Q8_0_NR2_TG,
+                self.fused_matvec_q8_0_nr2.state(),
+            )
+        } else {
+            (
+                m as usize,
+                DEQUANT_MATVEC_TG,
+                self.fused_matvec_q8_0.state(),
+            )
+        };
+        let dims = DispatchDims::d1(groups, 1);
+        encoder.setComputePipelineState(pipeline);
+        bind_buffers(encoder, a, x, y);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, k);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            MTLSize {
+                width: tg_width,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode a NR2 Q8_0 matvec dispatch (TG=64, 4 rows per TG) into an existing encoder.
+    ///
+    /// Does NOT create or commit a command buffer. Standalone method for A/B benchmarking.
+    pub fn encode_fused_matvec_q8_0_nr2(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        x: &MetalBuffer,
+        y: &MetalBuffer,
+        m: u32,
+        k: u32,
+    ) {
+        let dims = DispatchDims::d1((m as usize).div_ceil(Q8_0_NR2_ROWS), 1);
+        encoder.setComputePipelineState(self.fused_matvec_q8_0_nr2.state());
+        bind_buffers(encoder, a, x, y);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, k);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            MTLSize {
+                width: DEQUANT_MATVEC_Q8_0_NR2_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode an ILP4 Q8_0 matvec dispatch (TG=64, 2 rows per TG) into an existing encoder.
+    ///
+    /// Does NOT create or commit a command buffer. Standalone method for A/B benchmarking.
+    pub fn encode_fused_matvec_q8_0_ilp4(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        x: &MetalBuffer,
+        y: &MetalBuffer,
+        m: u32,
+        k: u32,
+    ) {
+        let dims = DispatchDims::d1((m as usize).div_ceil(Q8_0_ILP4_ROWS), 1);
+        encoder.setComputePipelineState(self.fused_matvec_q8_0_ilp4.state());
+        bind_buffers(encoder, a, x, y);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, k);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            MTLSize {
+                width: DEQUANT_MATVEC_Q8_0_ILP4_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
     /// Encode a dual-output Q8_0 matvec dispatch into an existing encoder.
     ///
     /// Computes `y0 = dequant(A0) × x` and `y1 = dequant(A1) × x` in one dispatch.
@@ -3566,6 +3708,33 @@ impl DequantKernels {
             },
             MTLSize {
                 width: 64,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode an ILP4 Q4_K matvec dispatch (TG=64, 2 rows per TG) into an existing encoder.
+    ///
+    /// Does NOT create or commit a command buffer. Standalone method for A/B benchmarking.
+    pub fn encode_fused_matvec_q4_k_ilp4(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        x: &MetalBuffer,
+        y: &MetalBuffer,
+        m: u32,
+        k: u32,
+    ) {
+        let dims = DispatchDims::d1((m as usize).div_ceil(Q4K_ILP4_ROWS), 1);
+        encoder.setComputePipelineState(self.fused_matvec_q4_k_ilp4.state());
+        bind_buffers(encoder, a, x, y);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, k);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            MTLSize {
+                width: DEQUANT_MATVEC_Q4K_ILP4_TG,
                 height: 1,
                 depth: 1,
             },
@@ -3849,6 +4018,33 @@ impl DequantKernels {
             );
             Ok(())
         })
+    }
+
+    /// Encode an ILP4 Q6_K matvec dispatch (TG=64, 2 rows per TG) into an existing encoder.
+    ///
+    /// Does NOT create or commit a command buffer. Standalone method for A/B benchmarking.
+    pub fn encode_fused_matvec_q6_k_ilp4(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        x: &MetalBuffer,
+        y: &MetalBuffer,
+        m: u32,
+        k: u32,
+    ) {
+        let dims = DispatchDims::d1((m as usize).div_ceil(Q6K_ILP4_ROWS), 1);
+        encoder.setComputePipelineState(self.fused_matvec_q6_k_ilp4.state());
+        bind_buffers(encoder, a, x, y);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, k);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            MTLSize {
+                width: DEQUANT_MATVEC_Q6K_ILP4_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
     }
 
     /// Encode a fused Q6_K matvec dispatch into an existing encoder.
@@ -4574,6 +4770,211 @@ impl DequantKernels {
         );
     }
 
+    /// Encode a B-transposed batch dequant Q5_K + matmul with f16 input and f32 output,
+    /// selecting the best kernel variant based on M/N alignment and config.
+    ///
+    /// Selection priority: full64 > full32 > tail32 > small > base f16in.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fused_batch_q5_k_f16in_with_config(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+        config: DequantDispatchConfig,
+    ) {
+        let small_n_threshold = config.batch_f16in_small_n_threshold;
+        let small_m_max = config.batch_f16in_small_m_max;
+        let use_small =
+            small_n_threshold > 1 && n < small_n_threshold && small_m_max > 0 && m <= small_m_max;
+
+        if !use_small {
+            let m_full = (m as usize / DB64_TILE_M) * DB64_TILE_M;
+            let m_tail = (m as usize).saturating_sub(m_full);
+            // BN=32 occupancy gate (same logic as Q4_K/Q6_K).
+            let bn32_preferred = config.batch_f16in_use_bn32;
+            let tgs_bn32 = m_full.div_ceil(DB64_TILE_M) * (n as usize / DB32_TILE_N).max(1);
+            let use_bn32 = bn32_preferred && (tgs_bn32 * DB32_TG) >= 32768;
+            let n_tile = if use_bn32 { DB32_TILE_N } else { DB64_TILE_N };
+            let n_full = (n as usize / n_tile) * n_tile;
+            let n_tail = (n as usize).saturating_sub(n_full);
+            let blocks_per_row = (k as usize) / 256;
+            let a_row_bytes = blocks_per_row
+                .checked_mul(176) // Q5_K bytes per block
+                .expect("A row bytes overflow");
+
+            // Full-tile occupancy gate (same logic as Q4_K/Q6_K).
+            let tgs_full = m_full.div_ceil(DB64_TILE_M) * (n_full / n_tile).max(1);
+            let tg_size_full = if use_bn32 { DB32_TG } else { DB64_TG };
+            let use_full_tiles = (tgs_full * tg_size_full) >= 32768;
+
+            if use_full_tiles && m_full > 0 && n_full > 0 {
+                let groups_x = m_full.div_ceil(DB64_TILE_M);
+                if use_bn32 {
+                    encoder.setComputePipelineState(self.fused_batch_q5_k_f16in_full32.state());
+                    bind_buffers(encoder, a, b, c);
+                    bind_u32(encoder, 3, m_full as u32);
+                    bind_u32(encoder, 4, n_full as u32);
+                    bind_u32(encoder, 5, k);
+                    bind_u32(encoder, 6, m); // destination row stride
+                    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                        MTLSize {
+                            width: groups_x,
+                            height: n_full / DB32_TILE_N,
+                            depth: 1,
+                        },
+                        MTLSize {
+                            width: DB32_TG,
+                            height: 1,
+                            depth: 1,
+                        },
+                    );
+                } else {
+                    encoder.setComputePipelineState(self.fused_batch_q5_k_f16in_full64.state());
+                    bind_buffers(encoder, a, b, c);
+                    bind_u32(encoder, 3, m_full as u32);
+                    bind_u32(encoder, 4, n_full as u32);
+                    bind_u32(encoder, 5, k);
+                    bind_u32(encoder, 6, m); // destination row stride
+                    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                        MTLSize {
+                            width: groups_x,
+                            height: n_full / DB64_TILE_N,
+                            depth: 1,
+                        },
+                        MTLSize {
+                            width: DB64_TG,
+                            height: 1,
+                            depth: 1,
+                        },
+                    );
+                }
+
+                let encode_tail =
+                    |a_off: usize, b_off: usize, c_off: usize, out_cols: usize, n_rows: usize| {
+                        if out_cols == 0 || n_rows == 0 {
+                            return;
+                        }
+                        let groups_x = out_cols.div_ceil(DB_TILE_M);
+                        encoder.setComputePipelineState(self.fused_batch_q5_k_f16in.state());
+                        unsafe {
+                            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), a_off, 0);
+                            encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
+                            encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), c_off, 2);
+                        }
+                        bind_u32(encoder, 3, out_cols as u32);
+                        bind_u32(encoder, 4, n_rows as u32);
+                        bind_u32(encoder, 5, k);
+                        bind_u32(encoder, 6, m); // destination row stride
+                        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                            MTLSize {
+                                width: groups_x,
+                                height: n_rows.div_ceil(DB_TILE_N),
+                                depth: 1,
+                            },
+                            MTLSize {
+                                width: DB_TG,
+                                height: 1,
+                                depth: 1,
+                            },
+                        );
+                    };
+
+                if m_full > 0 && n_tail > 0 {
+                    let b_off = n_full
+                        .checked_mul(k as usize)
+                        .and_then(|x| x.checked_mul(2))
+                        .expect("B offset overflow");
+                    let c_off = n_full
+                        .checked_mul(m as usize)
+                        .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
+                        .expect("C offset overflow");
+                    if use_bn32 {
+                        encoder.setComputePipelineState(self.fused_batch_q5_k_f16in_tail32.state());
+                        unsafe {
+                            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+                            encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
+                            encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), c_off, 2);
+                        }
+                        bind_u32(encoder, 3, m_full as u32);
+                        bind_u32(encoder, 4, n_tail as u32);
+                        bind_u32(encoder, 5, k);
+                        bind_u32(encoder, 6, m);
+                        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                            MTLSize {
+                                width: m_full / DB64_TILE_M,
+                                height: 1,
+                                depth: 1,
+                            },
+                            MTLSize {
+                                width: DB32_TG,
+                                height: 1,
+                                depth: 1,
+                            },
+                        );
+                    } else {
+                        encode_tail(0, b_off, c_off, m_full, n_tail);
+                    }
+                }
+
+                if m_tail > 0 && n_full > 0 {
+                    let a_off = m_full.checked_mul(a_row_bytes).expect("A offset overflow");
+                    let c_off = m_full
+                        .checked_mul(std::mem::size_of::<f32>())
+                        .expect("C col offset overflow");
+                    encode_tail(a_off, 0, c_off, m_tail, n_full);
+                }
+
+                if m_tail > 0 && n_tail > 0 {
+                    let a_off = m_full.checked_mul(a_row_bytes).expect("A offset overflow");
+                    let b_off = n_full
+                        .checked_mul(k as usize)
+                        .and_then(|x| x.checked_mul(2))
+                        .expect("B offset overflow");
+                    let c_off = n_full
+                        .checked_mul(m as usize)
+                        .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
+                        .and_then(|x| x.checked_add(m_full * std::mem::size_of::<f32>()))
+                        .expect("C offset overflow");
+                    encode_tail(a_off, b_off, c_off, m_tail, n_tail);
+                }
+                return;
+            }
+        }
+
+        let groups_x = (m as usize).div_ceil(DB_TILE_M);
+        let groups_y = if use_small {
+            (n as usize).div_ceil(SB_TILE_N)
+        } else {
+            (n as usize).div_ceil(DB_TILE_N)
+        };
+        encoder.setComputePipelineState(if use_small {
+            self.fused_batch_q5_k_f16in_small.state()
+        } else {
+            self.fused_batch_q5_k_f16in.state()
+        });
+        bind_buffers(encoder, a, b, c);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, n);
+        bind_u32(encoder, 5, k);
+        bind_u32(encoder, 6, m);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: groups_x,
+                height: groups_y,
+                depth: 1,
+            },
+            MTLSize {
+                width: if use_small { SB_TG } else { DB_TG },
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
     /// Encode a B-transposed batch dequant Q6_K + matmul.
     ///
     /// C[N × M] = B[N × K] × dequant(A[M × K])^T
@@ -4788,6 +5189,64 @@ impl DequantKernels {
             MTLSize {
                 width: (n as usize).div_ceil(32),
                 height: (m as usize).div_ceil(64),
+                depth: 1,
+            },
+            MTLSize {
+                width: BLOCKED_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode a fused SiLU activation + blocked Q6_K down projection.
+    ///
+    /// C[N × M] = dequant(A[M × K]) × silu(gate[N × K]) * up[N × K]
+    /// - `a`: Q6_K quantized down weights [M × K]
+    /// - `gate`: gate activations [N × K] (f32)
+    /// - `up`: up activations [N × K] (f32)
+    /// - `c`: output [N × M] (f32)
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fused_batch_q6_k_silu(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        gate: &MetalBuffer,
+        up: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) {
+        if !batch_q6k_blocked_enabled() || !k.is_multiple_of(Q6_K_BLOCK_VALUES as u32) {
+            return; // fallback to separate silu+matmul
+        }
+        const BLOCKED_TG: usize = 128;
+        let full_tile = (m as usize).is_multiple_of(32) && (n as usize).is_multiple_of(32);
+        // Both paths use 4096 bytes: sa[2KB] + sb[2KB] = 4KB, and boundary
+        // output staging = NR0*NR1*4 = 32*32*4 = 4096 bytes (same size).
+        let (pipeline, smem) = if full_tile {
+            (&self.fused_batch_q6_k_blocked_silu_fulltile, 4096usize)
+        } else {
+            (&self.fused_batch_q6_k_blocked_silu, 4096usize)
+        };
+        encoder.setComputePipelineState(pipeline.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, m);
+        bind_u32(encoder, 5, n);
+        bind_u32(encoder, 6, k);
+        unsafe {
+            encoder.setThreadgroupMemoryLength_atIndex(smem, 0);
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n as usize).div_ceil(32),
+                height: (m as usize).div_ceil(32),
                 depth: 1,
             },
             MTLSize {
@@ -5115,48 +5574,6 @@ impl DequantKernels {
         );
     }
 
-    /// Encode a blocked-layout B-transposed batch dequant Q4_0 + matmul with f16 input.
-    #[allow(clippy::too_many_arguments)]
-    pub fn encode_fused_batch_q4_0_f16in(
-        &self,
-        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
-        a: &MetalBuffer,
-        b: &MetalBuffer,
-        c: &MetalBuffer,
-        m: u32,
-        n: u32,
-        k: u32,
-    ) {
-        const BLOCKED_TG: usize = 128;
-        let full_tile = (m as usize).is_multiple_of(64) && (n as usize).is_multiple_of(32);
-        encoder.setComputePipelineState(if full_tile {
-            self.fused_batch_q4_0_blocked_f16in_fulltile.state()
-        } else {
-            self.fused_batch_q4_0_blocked_f16in.state()
-        });
-        bind_buffers(encoder, a, b, c);
-        bind_u32(encoder, 3, m);
-        bind_u32(encoder, 4, n);
-        bind_u32(encoder, 5, k);
-        bind_u32(encoder, 6, m);
-        unsafe {
-            // G24: full-tile needs only sa+sb = 6 KB; boundary needs 8 KB.
-            encoder.setThreadgroupMemoryLength_atIndex(if full_tile { 6144 } else { 8192 }, 0);
-        }
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            MTLSize {
-                width: (n as usize).div_ceil(32),
-                height: (m as usize).div_ceil(64),
-                depth: 1,
-            },
-            MTLSize {
-                width: BLOCKED_TG,
-                height: 1,
-                depth: 1,
-            },
-        );
-    }
-
     /// Encode a B-transposed batch dequant Q6_K + matmul with f16 input and f32 output.
     #[allow(clippy::too_many_arguments)]
     pub fn encode_fused_batch_q6_k_f16in_with_config(
@@ -5359,6 +5776,39 @@ impl DequantKernels {
         );
     }
 
+    /// Encode a B-transposed batch dequant Q8_0 + matmul with f32 input and f32 output.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fused_batch_q8_0(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) {
+        // DB_BM=32, DB_BN=64, DB_TG=256
+        encoder.setComputePipelineState(self.fused_batch_q8_0.state());
+        bind_buffers(encoder, a, b, c);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, n);
+        bind_u32(encoder, 5, k);
+        bind_u32(encoder, 6, m); // C_STRIDE = M
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n as usize).div_ceil(64),  // DB_BN=64
+                height: (m as usize).div_ceil(32), // DB_BM=32
+                depth: 1,
+            },
+            MTLSize {
+                width: 256, // DB_TG
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
     /// Encode a B-transposed batch dequant Q8_0 + matmul with f16 input and f32 output.
     #[allow(clippy::too_many_arguments)]
     pub fn encode_fused_batch_q8_0_f16in_with_config(
@@ -5372,6 +5822,33 @@ impl DequantKernels {
         k: u32,
         config: DequantDispatchConfig,
     ) {
+        // Small-N fast path: route to dedicated small kernel before other selection.
+        let small_n_threshold = config.batch_f16in_small_n_threshold;
+        let small_m_max = config.batch_f16in_small_m_max;
+        if small_n_threshold > 1 && n < small_n_threshold && small_m_max > 0 && m <= small_m_max {
+            let groups_x = (m as usize).div_ceil(DB_TILE_M);
+            let groups_y = (n as usize).div_ceil(SB_TILE_N);
+            encoder.setComputePipelineState(self.fused_batch_q8_0_f16in_small.state());
+            bind_buffers(encoder, a, b, c);
+            bind_u32(encoder, 3, m);
+            bind_u32(encoder, 4, n);
+            bind_u32(encoder, 5, k);
+            bind_u32(encoder, 6, m);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: groups_x,
+                    height: groups_y,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: SB_TG,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+            return;
+        }
+
         if batch_q8_blocked_enabled() && k.is_multiple_of(Q8_0_BLOCK_VALUES as u32) {
             const BLOCKED_TG: usize = 128;
             let full_tile = (m as usize).is_multiple_of(64) && (n as usize).is_multiple_of(32);
@@ -5785,6 +6262,47 @@ impl DequantKernels {
         );
     }
 
+    /// Encode dual-output B-transposed batch dequant Q5_K + matmul with f16 input.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fused_batch_pair_q5_k_f16in(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a0: &MetalBuffer,
+        a1: &MetalBuffer,
+        b_f16: &MetalBuffer,
+        c0: &MetalBuffer,
+        c1: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) {
+        let groups_x = (m as usize).div_ceil(DB_TILE_M);
+        let groups_y = (n as usize).div_ceil(P16_TILE_N);
+        encoder.setComputePipelineState(self.fused_batch_pair_q5_k_f16in.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(a0.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(a1.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(b_f16.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(c0.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(c1.mtl_buffer()), 0, 4);
+        }
+        bind_u32(encoder, 5, m);
+        bind_u32(encoder, 6, n);
+        bind_u32(encoder, 7, k);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: groups_x,
+                height: groups_y,
+                depth: 1,
+            },
+            MTLSize {
+                width: P16_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
     /// Encode dual-output B-transposed batch dequant Q8_0 + matmul with f16 input.
     #[allow(clippy::too_many_arguments)]
     pub fn encode_fused_batch_pair_q8_0_f16in(
@@ -5980,12 +6498,6 @@ pub struct AttentionKernels {
     decode_q8kv_hd256: ComputePipeline,
     /// Q8_0 KV cached prefill attention (generic HD).
     prefill_cache_q8kv: ComputePipeline,
-    /// Q4_0 KV decode attention (HD=128).
-    decode_q4kv_hd128: ComputePipeline,
-    /// Q4_0 KV decode attention (HD=256).
-    decode_q4kv_hd256: ComputePipeline,
-    /// Q4_0 KV cached prefill attention (generic HD).
-    prefill_cache_q4kv: ComputePipeline,
     /// GQA-aware sdpa decode for head_dim=128, f16 KV.
     decode_sdpa_gqa_f16kv_hd128: ComputePipeline,
     /// GQA-aware sdpa decode for head_dim=256, f16 KV.
@@ -6013,6 +6525,21 @@ pub struct GdnKernels {
     chunked_gated_delta_32_128_128: ComputePipeline,
     chunked_gated_delta_32_64_64: ComputePipeline,
     simd_gated_delta_4: ComputePipeline,
+    // Chunked GDN graph building blocks (llama.cpp-style decomposition).
+    cumsum_f32: ComputePipeline,
+    solve_tri_lower_f32_1: ComputePipeline,
+    solve_tri_lower_f32_4: ComputePipeline,
+    tri_lower_diag_f32: ComputePipeline,
+    tri_lower_strict_f32: ComputePipeline,
+    diag_identity_f32: ComputePipeline,
+    batched_matmul_f32: ComputePipeline,
+    batched_matmul_atrans_f32: ComputePipeline,
+    batched_matmul_btrans_f32: ComputePipeline,
+    broadcast_mul_f32: ComputePipeline,
+    build_decay_mask_f32: ComputePipeline,
+    extract_last_cumsum_f32: ComputePipeline,
+    build_g_diff_exp_f32: ComputePipeline,
+    gather_stride_f32: ComputePipeline,
 }
 
 impl AttentionKernels {
@@ -6271,24 +6798,6 @@ impl AttentionKernels {
             "attention_decode_q8kv_hd256",
         )
         .context("Failed to compile attention_decode_q8kv_hd256 kernel")?;
-        let decode_q4kv_hd128 = ComputePipeline::from_source(
-            device.device(),
-            ATTENTION_SHADER_SRC,
-            "attention_decode_q4kv_hd128",
-        )
-        .context("Failed to compile attention_decode_q4kv_hd128 kernel")?;
-        let decode_q4kv_hd256 = ComputePipeline::from_source(
-            device.device(),
-            ATTENTION_SHADER_SRC,
-            "attention_decode_q4kv_hd256",
-        )
-        .context("Failed to compile attention_decode_q4kv_hd256 kernel")?;
-        let prefill_cache_q4kv = ComputePipeline::from_source(
-            device.device(),
-            ATTENTION_SHADER_SRC,
-            "attention_prefill_cache_q4kv",
-        )
-        .context("Failed to compile attention_prefill_cache_q4kv kernel")?;
         let decode_sdpa_gqa_f16kv_hd128 = ComputePipeline::from_source(
             device.device(),
             ATTENTION_SHADER_SRC,
@@ -6401,9 +6910,6 @@ impl AttentionKernels {
             decode_q8kv_hd128,
             decode_q8kv_hd256,
             prefill_cache_q8kv,
-            decode_q4kv_hd128,
-            decode_q4kv_hd256,
-            prefill_cache_q4kv,
             decode_sdpa_gqa_f16kv_hd128,
             decode_sdpa_gqa_f16kv_hd256,
         })
@@ -7094,7 +7600,7 @@ impl AttentionKernels {
         );
     }
 
-    /// Encode mistral-style HD128 prefill attention with f16 output.
+    /// Encode AX HD128 prefill attention with f16 output.
     ///
     /// Output buffer stores [n_tokens × n_heads × head_dim] in half precision.
     #[allow(clippy::too_many_arguments)]
@@ -7400,98 +7906,6 @@ impl AttentionKernels {
         );
     }
 
-    /// Dispatch Q4_0 KV decode attention.
-    ///
-    /// Selects `decode_q4kv_hd128` (TG=128) or `decode_q4kv_hd256` (TG=256)
-    /// based on `head_dim`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn encode_attention_decode_q4kv(
-        &self,
-        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
-        q: &MetalBuffer,
-        k_cache: &MetalBuffer,
-        v_cache: &MetalBuffer,
-        o: &MetalBuffer,
-        n_heads: u32,
-        n_kv_heads: u32,
-        head_dim: u32,
-        attend_start: u32,
-        attend_len: u32,
-    ) {
-        let (pipeline, tg) = if head_dim <= 128 {
-            (&self.decode_q4kv_hd128, ATTN_DEC2_TG)
-        } else {
-            (&self.decode_q4kv_hd256, ATTN_TG)
-        };
-        encoder.setComputePipelineState(pipeline.state());
-        unsafe {
-            encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
-            encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
-            encoder.setBuffer_offset_atIndex(Some(v_cache.mtl_buffer()), 0, 2);
-            encoder.setBuffer_offset_atIndex(Some(o.mtl_buffer()), 0, 3);
-        }
-        bind_u32(encoder, 4, n_heads);
-        bind_u32(encoder, 5, n_kv_heads);
-        bind_u32(encoder, 6, head_dim);
-        bind_u32(encoder, 7, attend_start);
-        bind_u32(encoder, 8, attend_len);
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            MTLSize {
-                width: n_heads as usize,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: tg,
-                height: 1,
-                depth: 1,
-            },
-        );
-    }
-
-    /// Dispatch Q4_0 KV cached prefill attention (generic HD).
-    #[allow(clippy::too_many_arguments)]
-    pub fn encode_attention_prefill_cached_q4kv(
-        &self,
-        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
-        q: &MetalBuffer,
-        k_cache: &MetalBuffer,
-        v_cache: &MetalBuffer,
-        o: &MetalBuffer,
-        n_tokens: u32,
-        n_heads: u32,
-        n_kv_heads: u32,
-        head_dim: u32,
-        base_seq_len: u32,
-        sliding_window: u32,
-    ) {
-        encoder.setComputePipelineState(self.prefill_cache_q4kv.state());
-        unsafe {
-            encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
-            encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
-            encoder.setBuffer_offset_atIndex(Some(v_cache.mtl_buffer()), 0, 2);
-            encoder.setBuffer_offset_atIndex(Some(o.mtl_buffer()), 0, 3);
-        }
-        bind_u32(encoder, 4, n_tokens);
-        bind_u32(encoder, 5, n_heads);
-        bind_u32(encoder, 6, n_kv_heads);
-        bind_u32(encoder, 7, head_dim);
-        bind_u32(encoder, 8, base_seq_len);
-        bind_u32(encoder, 9, sliding_window);
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            MTLSize {
-                width: n_tokens as usize,
-                height: n_heads as usize,
-                depth: 1,
-            },
-            MTLSize {
-                width: ATTN_TG,
-                height: 1,
-                depth: 1,
-            },
-        );
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn attention_decode_with_config(
         &self,
@@ -7699,6 +8113,90 @@ impl GdnKernels {
             chunked_gated_delta_32_128_128,
             chunked_gated_delta_32_64_64,
             simd_gated_delta_4,
+            cumsum_f32: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_cumsum_f32",
+            )
+            .context("Failed to compile gdn_cumsum_f32 kernel")?,
+            solve_tri_lower_f32_1: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_solve_tri_lower_f32_1",
+            )
+            .context("Failed to compile gdn_solve_tri_lower_f32_1 kernel")?,
+            solve_tri_lower_f32_4: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_solve_tri_lower_f32_4",
+            )
+            .context("Failed to compile gdn_solve_tri_lower_f32_4 kernel")?,
+            tri_lower_diag_f32: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_tri_lower_diag_f32",
+            )
+            .context("Failed to compile gdn_tri_lower_diag_f32 kernel")?,
+            tri_lower_strict_f32: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_tri_lower_strict_f32",
+            )
+            .context("Failed to compile gdn_tri_lower_strict_f32 kernel")?,
+            diag_identity_f32: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_diag_identity_f32",
+            )
+            .context("Failed to compile gdn_diag_identity_f32 kernel")?,
+            batched_matmul_f32: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_batched_matmul_f32",
+            )
+            .context("Failed to compile gdn_batched_matmul_f32 kernel")?,
+            batched_matmul_atrans_f32: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_batched_matmul_atrans_f32",
+            )
+            .context("Failed to compile gdn_batched_matmul_atrans_f32 kernel")?,
+            batched_matmul_btrans_f32: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_batched_matmul_btrans_f32",
+            )
+            .context("Failed to compile gdn_batched_matmul_btrans_f32 kernel")?,
+            broadcast_mul_f32: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_broadcast_mul_f32",
+            )
+            .context("Failed to compile gdn_broadcast_mul_f32 kernel")?,
+            build_decay_mask_f32: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_build_decay_mask_f32",
+            )
+            .context("Failed to compile gdn_build_decay_mask_f32 kernel")?,
+            extract_last_cumsum_f32: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_extract_last_cumsum_f32",
+            )
+            .context("Failed to compile gdn_extract_last_cumsum_f32 kernel")?,
+            build_g_diff_exp_f32: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_build_g_diff_exp_f32",
+            )
+            .context("Failed to compile gdn_build_g_diff_exp_f32 kernel")?,
+            gather_stride_f32: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_gather_stride_f32",
+            )
+            .context("Failed to compile gdn_gather_stride_f32 kernel")?,
         })
     }
 
@@ -8115,6 +8613,54 @@ impl GdnKernels {
     }
 
     /// Encode gated delta net into an existing command encoder (no execute_sync).
+    ///
+    /// When `device` is `Some` and `AX_METAL_GDN_CHUNKED_GRAPH=1`, uses the
+    /// graph-based chunked decomposition (cumsum + matmul + solve_tri) instead
+    /// of the fused kernel. The device is needed to allocate scratch buffers.
+    #[allow(clippy::too_many_arguments)]
+    /// Encode gated delta sequence, optionally using the graph-based chunked
+    /// decomposition when `AX_METAL_GDN_CHUNKED_GRAPH=1`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_gated_delta_sequence_auto(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        elementwise: &ElementwiseKernels,
+        device: &MetalDevice,
+        q: &MetalBuffer,
+        k: &MetalBuffer,
+        v: &MetalBuffer,
+        g: &MetalBuffer,
+        beta: &MetalBuffer,
+        state: &MetalBuffer,
+        output: &MetalBuffer,
+        seq_len: u32,
+        n_heads: u32,
+        head_dim: u32,
+    ) {
+        if Self::chunked_graph_enabled() && seq_len >= 64 && head_dim >= 64 {
+            self.encode_chunked_gdn_graph(
+                encoder,
+                elementwise,
+                device,
+                q,
+                k,
+                v,
+                g,
+                beta,
+                state,
+                output,
+                seq_len,
+                n_heads,
+                head_dim,
+            );
+            return;
+        }
+        self.encode_gated_delta_sequence(
+            encoder, q, k, v, g, beta, state, output, seq_len, n_heads, head_dim,
+        );
+    }
+
+    /// Encode gated delta net into an existing command encoder (fused kernels).
     #[allow(clippy::too_many_arguments)]
     pub fn encode_gated_delta_sequence(
         &self,
@@ -8217,6 +8763,779 @@ impl GdnKernels {
             );
             Ok(())
         })
+    }
+
+    /// Encode inclusive prefix sum along the fastest dimension.
+    ///
+    /// `src` and `dst` are `[ne2, ne1, ne0]` row-major. Cumsum is computed
+    /// along `ne0`. Requires `ne0 <= 1024`.
+    /// Grid: `(ne1, ne2, 1)`.  TG: `(nth, 1, 1)` where `nth = next_pow2(ne0)`.
+    pub fn encode_cumsum(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src: &MetalBuffer,
+        dst: &MetalBuffer,
+        ne0: u32,
+        ne1: u32,
+        ne2: u32,
+    ) {
+        let nth = (ne0 as usize).next_power_of_two().min(1024);
+        encoder.setComputePipelineState(self.cumsum_f32.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+        }
+        bind_u32(encoder, 2, ne0);
+        bind_u32(encoder, 3, ne1);
+        // Shared memory: 32 floats for simdgroup sums.
+        let smem = 32 * std::mem::size_of::<f32>();
+        unsafe { encoder.setThreadgroupMemoryLength_atIndex(smem, 0) };
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: ne1 as _,
+                height: ne2 as _,
+                depth: 1,
+            },
+            MTLSize {
+                width: nth,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode lower-triangular solve: L × X = B, L unit-diagonal.
+    ///
+    /// `L` is `[n_slices, N, N]`, `B`/`X` are `[n_slices, N, K]`.
+    /// `X` is written to `dst` (may alias `B` for in-place).
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_solve_tri_lower(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        l_buf: &MetalBuffer,
+        b_buf: &MetalBuffer,
+        x_buf: &MetalBuffer,
+        n: u32,
+        k: u32,
+        n_slices: u32,
+    ) {
+        let nsg: usize = if k >= 4 { 4 } else { 1 };
+        let pipeline = if nsg == 4 {
+            &self.solve_tri_lower_f32_4
+        } else {
+            &self.solve_tri_lower_f32_1
+        };
+        encoder.setComputePipelineState(pipeline.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(l_buf.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(b_buf.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(x_buf.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, n);
+        bind_u32(encoder, 4, k);
+        let smem = nsg * n as usize * std::mem::size_of::<f32>();
+        unsafe { encoder.setThreadgroupMemoryLength_atIndex(smem, 0) };
+        let grid_x = (k as usize).div_ceil(nsg);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: grid_x,
+                height: n_slices as _,
+                depth: 1,
+            },
+            MTLSize {
+                width: 32,
+                height: nsg,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode lower-triangular mask (with diagonal): dst[i,j] = (j<=i) ? src[i,j] : 0.
+    pub fn encode_tri_lower_diag(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src: &MetalBuffer,
+        dst: &MetalBuffer,
+        n: u32,
+        n_slices: u32,
+    ) {
+        encoder.setComputePipelineState(self.tri_lower_diag_f32.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+        }
+        bind_u32(encoder, 2, n);
+        bind_u32(encoder, 3, n_slices);
+        let total = (n * n) as usize;
+        let groups = total.div_ceil(256);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: groups,
+                height: n_slices as _,
+                depth: 1,
+            },
+            MTLSize {
+                width: 256,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode strict lower-triangular mask: dst[i,j] = (j<i) ? src[i,j] : 0.
+    pub fn encode_tri_lower_strict(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src: &MetalBuffer,
+        dst: &MetalBuffer,
+        n: u32,
+        n_slices: u32,
+    ) {
+        encoder.setComputePipelineState(self.tri_lower_strict_f32.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+        }
+        bind_u32(encoder, 2, n);
+        bind_u32(encoder, 3, n_slices);
+        let total = (n * n) as usize;
+        let groups = total.div_ceil(256);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: groups,
+                height: n_slices as _,
+                depth: 1,
+            },
+            MTLSize {
+                width: 256,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode identity matrix: dst[i,j] = (i==j) ? 1 : 0.
+    pub fn encode_diag_identity(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        dst: &MetalBuffer,
+        n: u32,
+        n_slices: u32,
+    ) {
+        encoder.setComputePipelineState(self.diag_identity_f32.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 0);
+        }
+        bind_u32(encoder, 1, n);
+        bind_u32(encoder, 2, n_slices);
+        let total = (n * n) as usize;
+        let groups = total.div_ceil(256);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: groups,
+                height: n_slices as _,
+                depth: 1,
+            },
+            MTLSize {
+                width: 256,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode batched C[b] = A[b] × B[b] for b = 0..n_batch-1.
+    /// A[b] is [M, K], B[b] is [K, N], C[b] is [M, N] (row-major f32).
+    /// Strides are in float elements.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_batched_matmul(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+        n_batch: u32,
+    ) {
+        encoder.setComputePipelineState(self.batched_matmul_f32.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, n);
+        bind_u32(encoder, 5, k);
+        bind_u32(encoder, 6, m * k); // stride_a
+        bind_u32(encoder, 7, k * n); // stride_b
+        bind_u32(encoder, 8, m * n); // stride_c
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n as usize).div_ceil(8),
+                height: (m as usize).div_ceil(8),
+                depth: n_batch as _,
+            },
+            MTLSize {
+                width: 8,
+                height: 8,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode batched C[b] = A[b]^T × B[b] for b = 0..n_batch-1.
+    /// A[b] is [K, M] (transposed), B[b] is [K, N], C[b] is [M, N].
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_batched_matmul_atrans(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+        n_batch: u32,
+    ) {
+        encoder.setComputePipelineState(self.batched_matmul_atrans_f32.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, n);
+        bind_u32(encoder, 5, k);
+        bind_u32(encoder, 6, k * m); // stride_a (A is [K, M])
+        bind_u32(encoder, 7, k * n); // stride_b
+        bind_u32(encoder, 8, m * n); // stride_c
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n as usize).div_ceil(8),
+                height: (m as usize).div_ceil(8),
+                depth: n_batch as _,
+            },
+            MTLSize {
+                width: 8,
+                height: 8,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode batched C[b] = A[b] × B[b]^T for b = 0..n_batch-1.
+    /// A[b] is [M, K], B[b] is [N, K] (both row-major), C[b] is [M, N].
+    /// result[i,j] = dot(A[i,:], B[j,:]) — inner product of rows.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_batched_matmul_btrans(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+        n_batch: u32,
+    ) {
+        encoder.setComputePipelineState(self.batched_matmul_btrans_f32.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, n);
+        bind_u32(encoder, 5, k);
+        bind_u32(encoder, 6, m * k); // stride_a
+        bind_u32(encoder, 7, n * k); // stride_b (B is [N, K])
+        bind_u32(encoder, 8, m * n); // stride_c
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n as usize).div_ceil(8),
+                height: (m as usize).div_ceil(8),
+                depth: n_batch as _,
+            },
+            MTLSize {
+                width: 8,
+                height: 8,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode C[b] = A[b] × B[b] with custom strides and byte offsets.
+    /// Strides are in f32 elements. Offsets are in bytes.
+    #[allow(clippy::too_many_arguments)]
+    fn encode_matmul_strided(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        pipeline: &ComputePipeline,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        c: &MetalBuffer,
+        a_off: usize,
+        b_off: usize,
+        c_off: usize,
+        m: u32,
+        n: u32,
+        k: u32,
+        stride_a: u32,
+        stride_b: u32,
+        stride_c: u32,
+        n_batch: u32,
+    ) {
+        encoder.setComputePipelineState(pipeline.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), a_off, 0);
+            encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
+            encoder.setBuffer_offset_atIndex(Some(c.mtl_buffer()), c_off, 2);
+        }
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, n);
+        bind_u32(encoder, 5, k);
+        bind_u32(encoder, 6, stride_a);
+        bind_u32(encoder, 7, stride_b);
+        bind_u32(encoder, 8, stride_c);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n as usize).div_ceil(8),
+                height: (m as usize).div_ceil(8),
+                depth: n_batch as _,
+            },
+            MTLSize {
+                width: 8,
+                height: 8,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Check if the env-gated chunked GDN graph decomposition is enabled.
+    /// Enable with `AX_METAL_GDN_CHUNKED_GRAPH=1`. Default OFF.
+    pub fn chunked_graph_enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            std::env::var("AX_METAL_GDN_CHUNKED_GRAPH")
+                .ok()
+                .and_then(|v| parse_bool_env_flag(&v))
+                .unwrap_or(false)
+        })
+    }
+
+    /// Encode the graph-based chunked GDN decomposition (GDA path, CS=64).
+    ///
+    /// All operations encoded into one command encoder — no sync points.
+    /// Scratch buffers allocated from `device` and released on return.
+    /// Input layout: `[H, T, D]` for Q/K/V, `[H, T]` for gate/beta,
+    /// `[H, D, D]` for state, `[H, T, D]` for output.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_chunked_gdn_graph(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        elementwise: &ElementwiseKernels,
+        device: &MetalDevice,
+        q: &MetalBuffer,
+        k: &MetalBuffer,
+        v: &MetalBuffer,
+        g: &MetalBuffer,
+        beta: &MetalBuffer,
+        state: &MetalBuffer,
+        output: &MetalBuffer,
+        seq_len: u32,
+        n_heads: u32,
+        head_dim: u32,
+    ) {
+        let cs: u32 = 64;
+        let h = n_heads;
+        let d = head_dim;
+        let t = seq_len;
+        let scale = 1.0 / (d as f32).sqrt();
+
+        // Guard: seq_len must be a multiple of CS for correct layout.
+        // Non-aligned lengths fall back to the fused kernel.
+        if !t.is_multiple_of(cs) || t == 0 {
+            self.encode_gated_delta_sequence(
+                encoder, q, k, v, g, beta, state, output, seq_len, n_heads, head_dim,
+            );
+            return;
+        }
+
+        let n_chunks = t / cs;
+        let hc = h * n_chunks; // independent (head, chunk) slices
+
+        let f4 = std::mem::size_of::<f32>();
+        let alloc = |n: usize| -> MetalBuffer {
+            let mut buf =
+                MetalBuffer::new(device.device(), (n * f4).max(f4)).expect("GDN graph alloc");
+            unsafe { buf.as_mut_slice::<f32>().fill(0.0) };
+            buf
+        };
+
+        let q_s = alloc((h * t * d) as usize);
+        let kb = alloc((h * t * d) as usize);
+        let vb = alloc((h * t * d) as usize);
+        let g_cs = alloc((hc * cs) as usize);
+        let decay = alloc((hc * cs * cs) as usize);
+        let kk = alloc((hc * cs * cs) as usize);
+        let kq_m = alloc((hc * cs * cs) as usize);
+        let g_last = alloc(hc as usize);
+        let g_last_exp = alloc(hc as usize);
+        let g_diff_exp = alloc((hc * cs) as usize);
+
+        let htd = h * t * d;
+
+        // ── 1. q_scaled = q * scale ──
+        elementwise.encode_gen_scale(encoder, q, &q_s, scale, htd);
+
+        // ── 2. kb = k * beta, vb = v * beta (broadcast beta across D) ──
+        let encode_bcast = |enc: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+                            src: &MetalBuffer,
+                            sc: &MetalBuffer,
+                            dst: &MetalBuffer| {
+            enc.setComputePipelineState(self.broadcast_mul_f32.state());
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(sc.mtl_buffer()), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 2);
+            }
+            bind_u32(enc, 3, d);
+            bind_u32(enc, 4, htd);
+            let dims = DispatchDims::d1(htd as usize, 256);
+            enc.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
+        };
+        encode_bcast(encoder, k, beta, &kb);
+        encode_bcast(encoder, v, beta, &vb);
+
+        // ── 3. cumsum(gate) per chunk ──
+        self.encode_cumsum(encoder, g, &g_cs, cs, hc, 1);
+
+        // ── 4. Build decay mask: decay[s,i,j] = exp(g_cs[j]-g_cs[i]) for j<=i ──
+        {
+            let cs2 = (cs * cs) as usize;
+            encoder.setComputePipelineState(self.build_decay_mask_f32.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(g_cs.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(decay.mtl_buffer()), 0, 1);
+            }
+            bind_u32(encoder, 2, cs);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: cs2.div_ceil(256),
+                    height: hc as _,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: 256,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+        }
+
+        // ── 5. Intra-chunk correlations (parallel across all H*n_chunks) ──
+        // kk[i,j] = sum_d k[i,d]*kb[j,d] = (k × kb^T)[i,j]  →  [CS, CS]
+        // kq[i,j] = sum_d k[i,d]*q_s[j,d] = (k × q_s^T)[i,j] → [CS, CS]
+        self.encode_batched_matmul_btrans(encoder, k, &kb, &kk, cs, cs, d, hc);
+        self.encode_batched_matmul_btrans(encoder, k, &q_s, &kq_m, cs, cs, d, hc);
+
+        // ── 6. Apply decay mask: kk *= decay, kq *= decay ──
+        let hcc = hc * cs * cs;
+        elementwise.encode_gen_mul(encoder, &kk, &decay, &kk, hcc);
+        elementwise.encode_gen_mul(encoder, &kq_m, &decay, &kq_m, hcc);
+
+        // ── 7. Triangular masks ──
+        // kq = tri_lower_diag(kq)
+        self.encode_tri_lower_diag(encoder, &kq_m, &kq_m, cs, hc);
+        // attn_a = tri_lower_strict(kk) (= A, strict lower without diagonal)
+        let attn_a = alloc((hc * cs * cs) as usize);
+        self.encode_tri_lower_strict(encoder, &kk, &attn_a, cs, hc);
+
+        // ── 8. Triangular solve: correction = (I + A)^{-1} × (-A) + I ──
+        // Build lhs = I + A using diag_identity for all slices at once.
+        let lhs = alloc((hc * cs * cs) as usize);
+        self.encode_diag_identity(encoder, &lhs, cs, hc); // lhs = I (per slice)
+        elementwise.encode_gen_add(encoder, &lhs, &attn_a, &lhs, hcc); // lhs = I + A
+        // neg_a = -A
+        let neg_a = alloc((hc * cs * cs) as usize);
+        elementwise.encode_gen_neg(encoder, &attn_a, &neg_a, hcc);
+        // solve: (I + A) × X = -A → X
+        let solved = alloc((hc * cs * cs) as usize);
+        self.encode_solve_tri_lower(encoder, &lhs, &neg_a, &solved, cs, cs, hc);
+        // attn_corr = X + I
+        let ident_all = alloc((hc * cs * cs) as usize);
+        self.encode_diag_identity(encoder, &ident_all, cs, hc);
+        let attn_corr = alloc((hc * cs * cs) as usize);
+        elementwise.encode_gen_add(encoder, &solved, &ident_all, &attn_corr, hcc);
+
+        // ── 9. Pre-compute inter-chunk decay factors ──
+        // g_last[s] = g_cs[s * CS + CS - 1]
+        {
+            let dims = DispatchDims::d1(hc as usize, 256);
+            encoder.setComputePipelineState(self.extract_last_cumsum_f32.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(g_cs.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(g_last.mtl_buffer()), 0, 1);
+            }
+            bind_u32(encoder, 2, cs);
+            bind_u32(encoder, 3, hc);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
+        }
+        elementwise.encode_gen_exp(encoder, &g_last, &g_last_exp, hc);
+        // g_diff_exp[s, t] = exp(g_last[s] - g_cs[s*CS + t])
+        {
+            let total = hc * cs;
+            let dims = DispatchDims::d1(total as usize, 256);
+            encoder.setComputePipelineState(self.build_g_diff_exp_f32.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(g_cs.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(g_last.mtl_buffer()), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(g_diff_exp.mtl_buffer()), 0, 2);
+            }
+            bind_u32(encoder, 3, cs);
+            bind_u32(encoder, 4, total);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
+        }
+
+        // ── 10. Pre-compute g_exp-scaled tensors for per-chunk loop ──
+        let g_exp = alloc((hc * cs) as usize);
+        elementwise.encode_gen_exp(encoder, &g_cs, &g_exp, hc * cs);
+        // q_gexp = q_s * g_exp (broadcast g_exp across D)
+        let q_gexp = alloc((h * t * d) as usize);
+        encode_bcast(encoder, &q_s, &g_exp, &q_gexp);
+        // kg = k * g_diff_exp (broadcast g_diff_exp across D)
+        let kg = alloc((h * t * d) as usize);
+        encode_bcast(encoder, k, &g_diff_exp, &kg);
+
+        // ── 11. Corrected v: vb_corr = attn_corr^T × vb ──
+        // llama.cpp: v = mul_mat(transpose(v_b), attn) = v_b × attn in col-major.
+        // In row-major: vb_corr[t, d] = sum_j attn_corr[j, t] * vb[j, d].
+        // This is attn_corr^T × vb: use batched_matmul_atrans.
+        let vb_corr = alloc((hc * cs * d) as usize);
+        self.encode_batched_matmul_atrans(encoder, &attn_corr, &vb, &vb_corr, cs, d, cs, hc);
+
+        // ── 12. k_cd = attn_corr^T × kbg ──
+        // kbg = kb * g_exp (broadcast). k_cd follows same transpose rule as vb_corr.
+        let kbg = alloc((hc * cs * d) as usize);
+        encode_bcast(encoder, &kb, &g_exp, &kbg);
+        let k_cd = alloc((hc * cs * d) as usize);
+        self.encode_batched_matmul_atrans(encoder, &attn_corr, &kbg, &k_cd, cs, d, cs, hc);
+
+        // ── 13. Per-chunk sequential loop ──
+        // Layout [H*n_chunks, ...]: head h chunk c is at batch index h*n_chunks + c.
+        // For chunk c across all H heads: batch stride = n_chunks, offset = c.
+        // Use encode_matmul_strided with stride = n_chunks * slice_size.
+        let f4 = std::mem::size_of::<f32>();
+        let stride_cd = n_chunks * cs * d; // stride between heads in [H*nc, CS, D]
+        let stride_cc = n_chunks * cs * cs; // stride between heads in [H*nc, CS, CS]
+        let stride_dd = d * d; // stride between heads in [H, D, D]
+        let off_cd = |c: u32| (c * cs * d) as usize * f4; // byte offset for chunk c in [H*nc, CS, D]
+        let off_cc = |c: u32| (c * cs * cs) as usize * f4; // byte offset for chunk c in [H*nc, CS, CS]
+
+        let ch_v_prime = alloc((h * cs * d) as usize);
+        let ch_v_new = alloc((h * cs * d) as usize);
+        let ch_v_attn = alloc((h * cs * d) as usize);
+        let ch_attn_inter = alloc((h * cs * d) as usize);
+        let ch_kgv = alloc((h * d * d) as usize);
+        let ch_out = alloc((h * cs * d) as usize);
+
+        for c in 0..n_chunks {
+            // 13a. v_prime = k_cd[c] × state: [CS, D] × [D, D] → [CS, D]
+            self.encode_matmul_strided(
+                encoder,
+                &self.batched_matmul_f32,
+                &k_cd,
+                state,
+                &ch_v_prime,
+                off_cd(c),
+                0,
+                0,
+                cs,
+                d,
+                d,
+                stride_cd,
+                stride_dd,
+                cs * d,
+                h,
+            );
+
+            // 13b. v_new[h] = vb_corr[h*nc+c] - v_prime[h] (per head with offsets)
+            for hh in 0..h {
+                let vbc_off = ((hh * n_chunks + c) * cs * d) as usize * f4;
+                let vp_off = (hh * cs * d) as usize * f4;
+                let vn_off = (hh * cs * d) as usize * f4;
+                let count = cs * d;
+                encoder.setComputePipelineState(elementwise.gen_sub.state());
+                unsafe {
+                    encoder.setBuffer_offset_atIndex(Some(vb_corr.mtl_buffer()), vbc_off, 0);
+                    encoder.setBuffer_offset_atIndex(Some(ch_v_prime.mtl_buffer()), vp_off, 1);
+                    encoder.setBuffer_offset_atIndex(Some(ch_v_new.mtl_buffer()), vn_off, 2);
+                }
+                bind_u32(encoder, 3, count);
+                let dims = DispatchDims::d1(count as usize, 256);
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                    dims.threadgroups,
+                    dims.threads_per_threadgroup,
+                );
+            }
+
+            // 13c. v_attn[t, d] = sum_j kq[j, t] * v_new[j, d] = (kq^T × v_new)[t, d]
+            // Use atrans variant for kq^T × v_new.
+            self.encode_matmul_strided(
+                encoder,
+                &self.batched_matmul_atrans_f32,
+                &kq_m,
+                &ch_v_new,
+                &ch_v_attn,
+                off_cc(c),
+                0,
+                0,
+                cs,
+                d,
+                cs,
+                stride_cc,
+                cs * d,
+                cs * d,
+                h,
+            );
+
+            // 13d. attn_inter[t, d] = sum_d2 state[d, d2] * q_gexp[t, d2]
+            //     = sum_d2 q_gexp[t, d2] * state[d, d2] = (q_gexp × state^T)[t, d]
+            // Use btrans: C = A × B^T where A=q_gexp[CS,D], B=state[D,D].
+            self.encode_matmul_strided(
+                encoder,
+                &self.batched_matmul_btrans_f32,
+                &q_gexp,
+                state,
+                &ch_attn_inter,
+                off_cd(c),
+                0,
+                0,
+                cs,
+                d,
+                d,
+                stride_cd,
+                stride_dd,
+                cs * d,
+                h,
+            );
+
+            // 13e. output[c] = attn_inter + v_attn → write directly to output[c]
+            // output is [H, T, D]. Chunk c starts at (h*T + c*CS) * D per head.
+            // ch_attn_inter/ch_v_attn are [H, CS, D] contiguous (stride = CS*D).
+            // output stride between heads = T*D.
+            // Use gen_add with custom offsets: can't easily do strided output.
+            // Instead write to ch_out, then use strided matmul as identity copy.
+            elementwise.encode_gen_add(encoder, &ch_attn_inter, &ch_v_attn, &ch_out, h * cs * d);
+
+            // Copy ch_out → output[chunk c] using identity matmul trick:
+            // output[h, c*CS:, :] = I × ch_out[h, :, :] with I=[CS,CS].
+            // Or simpler: use the elementwise add with offset. Since both GPU
+            // buffers are accessible, encode a scaled add: output[offset] = 0 + ch_out.
+            // Use gen_scale(ch_out → output_at_offset) but we need offset support.
+            //
+            // Simplest correct approach: write via UMA after encoder commit.
+            // But we're inside an encoder... So use a copy kernel.
+            // Actually, we can use the gen_add dispatch with output buffer offset:
+            {
+                // For each head, copy CS*D floats from ch_out to output.
+                // ch_out is [H, CS, D] contiguous. Output is [H, T, D].
+                // Head h: src = ch_out + h * CS * D, dst = output + h*T*D + c*CS*D.
+                // Since heads have different dst strides, dispatch per-head.
+                for hh in 0..h {
+                    let src_off = (hh * cs * d) as usize * f4;
+                    let dst_off = (hh * t * d + c * cs * d) as usize * f4;
+                    let count = cs * d;
+                    // Use gen_scale with scale=1.0 as a copy (src → dst).
+                    encoder.setComputePipelineState(elementwise.gen_scale.state());
+                    unsafe {
+                        encoder.setBuffer_offset_atIndex(Some(ch_out.mtl_buffer()), src_off, 0);
+                        encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), dst_off, 1);
+                    }
+                    bind_f32(encoder, 2, 1.0);
+                    bind_u32(encoder, 3, count);
+                    let dims = DispatchDims::d1(count as usize, 256);
+                    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                        dims.threadgroups,
+                        dims.threads_per_threadgroup,
+                    );
+                }
+            }
+
+            // 13f. kgv = kg[c]^T × v_new: [D, CS]^T × [CS, D] → ...
+            // kg[c] is [CS, D] per head. kg^T is [D, CS]. kg^T × v_new = [D, CS] × [CS, D] = [D, D].
+            // Using atrans: A=kg[c]=[CS, D], A^T=[D, CS]. B=v_new=[CS, D].
+            // C = A^T × B = [D, CS] × [CS, D] = [D, D]. ✓
+            self.encode_matmul_strided(
+                encoder,
+                &self.batched_matmul_atrans_f32,
+                &kg,
+                &ch_v_new,
+                &ch_kgv,
+                off_cd(c),
+                0,
+                0,
+                d,
+                d,
+                cs,
+                stride_cd,
+                cs * d,
+                stride_dd,
+                h,
+            );
+
+            // 13g. state = state * g_last_exp[c] + kgv
+            // g_last_exp is [H*n_chunks]. For chunk c of head h: g_last_exp[h*nc + c].
+            // Gather these H values into ch_g_scale via GPU kernel.
+            let ch_g_scale = alloc(h as usize);
+            {
+                let dims = DispatchDims::d1(h as usize, 256);
+                encoder.setComputePipelineState(self.gather_stride_f32.state());
+                unsafe {
+                    encoder.setBuffer_offset_atIndex(Some(g_last_exp.mtl_buffer()), 0, 0);
+                    encoder.setBuffer_offset_atIndex(Some(ch_g_scale.mtl_buffer()), 0, 1);
+                }
+                bind_u32(encoder, 2, n_chunks); // stride
+                bind_u32(encoder, 3, c); // offset
+                bind_u32(encoder, 4, h); // count
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                    dims.threadgroups,
+                    dims.threads_per_threadgroup,
+                );
+            }
+            // state *= g_scale (broadcast scalar per head across D*D)
+            encoder.setComputePipelineState(self.broadcast_mul_f32.state());
+            unsafe {
+                encoder.setBuffer_offset_atIndex(Some(state.mtl_buffer()), 0, 0);
+                encoder.setBuffer_offset_atIndex(Some(ch_g_scale.mtl_buffer()), 0, 1);
+                encoder.setBuffer_offset_atIndex(Some(state.mtl_buffer()), 0, 2);
+            }
+            bind_u32(encoder, 3, d * d);
+            bind_u32(encoder, 4, h * d * d);
+            let dims = DispatchDims::d1((h * d * d) as usize, 256);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                dims.threadgroups,
+                dims.threads_per_threadgroup,
+            );
+
+            // state += kgv
+            elementwise.encode_gen_add(encoder, state, &ch_kgv, state, h * d * d);
+        }
+
+        // Output and state are now fully computed by the graph.
+        // Output was written per-chunk in step 13e via strided scatter.
+        // State was updated in-place in steps 13f-13g.
     }
 }
 
@@ -8337,17 +9656,17 @@ fn attention_prefill_hd128_enabled() -> bool {
 
 fn attention_prefill_ax_hd128_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    // Mistral-style prefill tiling for HD=128 (BR=8, BC=32).
-    // Default ON; set AX_METAL_PREFILL_MISTRAL_HD128=0 to disable.
-    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_PREFILL_MISTRAL_HD128", true))
+    // AX prefill tiling for HD=128 (BR=8, BC=32).
+    // Default ON; set AX_METAL_PREFILL_AX_HD128=0 to disable.
+    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_PREFILL_AX_HD128", true))
 }
 
 fn attention_prefill_ax_smem_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     // Experimental: default OFF until sustained win is confirmed.
-    // Set AX_METAL_PREFILL_MISTRAL_SMEM=1 to enable.
+    // Set AX_METAL_PREFILL_AX_SMEM=1 to enable.
     *ENABLED.get_or_init(
-        || match legacy_kernel_override("AX_METAL_PREFILL_MISTRAL_SMEM") {
+        || match legacy_kernel_override("AX_METAL_PREFILL_AX_SMEM") {
             Some(v) => {
                 let v = v.trim().to_ascii_lowercase();
                 v == "1" || v == "true" || v == "on"
@@ -8360,9 +9679,9 @@ fn attention_prefill_ax_smem_enabled() -> bool {
 fn attention_prefill_ax_smem_f16_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     // Experimental f16 shared-memory variant.
-    // Set AX_METAL_PREFILL_MISTRAL_SMEM_F16=1 to enable.
+    // Set AX_METAL_PREFILL_AX_SMEM_F16=1 to enable.
     *ENABLED.get_or_init(
-        || match legacy_kernel_override("AX_METAL_PREFILL_MISTRAL_SMEM_F16") {
+        || match legacy_kernel_override("AX_METAL_PREFILL_AX_SMEM_F16") {
             Some(v) => {
                 let v = v.trim().to_ascii_lowercase();
                 v == "1" || v == "true" || v == "on"
@@ -8535,12 +9854,12 @@ fn attention_prefill_fa2_cached_should_use_with_config(
     }
 }
 
-fn attention_prefill_fa2_hd128_should_use_with_config(
+fn attention_prefill_fa2_hd64_or_hd128_should_use_with_config(
     n_tokens: u32,
     head_dim: u32,
     config: AttentionDispatchConfig,
 ) -> bool {
-    if head_dim != 128 {
+    if !matches!(head_dim, 64 | 128) {
         return false;
     }
     match attention_prefill_fa2_hd128_mode_with_config(config) {
@@ -8974,8 +10293,13 @@ pub struct ElementwiseKernels {
     kv_append_batch2_f16: ComputePipeline,
     kv_append_batch_q8_0: ComputePipeline,
     kv_append_batch2_q8_0: ComputePipeline,
-    kv_append_batch_q4_0: ComputePipeline,
-    kv_append_batch2_q4_0: ComputePipeline,
+    // General-purpose elementwise ops for GDN chunked graph.
+    gen_exp: ComputePipeline,
+    gen_mul: ComputePipeline,
+    gen_add: ComputePipeline,
+    gen_sub: ComputePipeline,
+    gen_neg: ComputePipeline,
+    gen_scale: ComputePipeline,
 }
 
 impl ElementwiseKernels {
@@ -9325,18 +10649,6 @@ impl ElementwiseKernels {
             "kv_append_batch2_q8_0",
         )
         .context("Failed to compile kv_append_batch2_q8_0 kernel")?;
-        let kv_append_batch_q4_0 = ComputePipeline::from_source(
-            device.device(),
-            ELEMENTWISE_SHADER_SRC,
-            "kv_append_batch_q4_0",
-        )
-        .context("Failed to compile kv_append_batch_q4_0 kernel")?;
-        let kv_append_batch2_q4_0 = ComputePipeline::from_source(
-            device.device(),
-            ELEMENTWISE_SHADER_SRC,
-            "kv_append_batch2_q4_0",
-        )
-        .context("Failed to compile kv_append_batch2_q4_0 kernel")?;
 
         tracing::info!("Elementwise Metal kernels compiled (8 kernels)");
 
@@ -9396,8 +10708,42 @@ impl ElementwiseKernels {
             kv_append_batch2_f16,
             kv_append_batch_q8_0,
             kv_append_batch2_q8_0,
-            kv_append_batch_q4_0,
-            kv_append_batch2_q4_0,
+            gen_exp: ComputePipeline::from_source(
+                device.device(),
+                ELEMENTWISE_SHADER_SRC,
+                "elementwise_exp_f32",
+            )
+            .context("Failed to compile elementwise_exp_f32")?,
+            gen_mul: ComputePipeline::from_source(
+                device.device(),
+                ELEMENTWISE_SHADER_SRC,
+                "elementwise_mul_f32",
+            )
+            .context("Failed to compile elementwise_mul_f32")?,
+            gen_add: ComputePipeline::from_source(
+                device.device(),
+                ELEMENTWISE_SHADER_SRC,
+                "elementwise_add_out_f32",
+            )
+            .context("Failed to compile elementwise_add_out_f32")?,
+            gen_sub: ComputePipeline::from_source(
+                device.device(),
+                ELEMENTWISE_SHADER_SRC,
+                "elementwise_sub_f32",
+            )
+            .context("Failed to compile elementwise_sub_f32")?,
+            gen_neg: ComputePipeline::from_source(
+                device.device(),
+                ELEMENTWISE_SHADER_SRC,
+                "elementwise_neg_f32",
+            )
+            .context("Failed to compile elementwise_neg_f32")?,
+            gen_scale: ComputePipeline::from_source(
+                device.device(),
+                ELEMENTWISE_SHADER_SRC,
+                "elementwise_scale_f32",
+            )
+            .context("Failed to compile elementwise_scale_f32")?,
         })
     }
 
@@ -10471,6 +11817,142 @@ impl ElementwiseKernels {
         );
     }
 
+    // ── General-purpose elementwise ops (GDN graph building blocks) ───────
+
+    /// Encode dst = exp(src) for `count` f32 elements.
+    pub fn encode_gen_exp(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src: &MetalBuffer,
+        dst: &MetalBuffer,
+        count: u32,
+    ) {
+        let dims = DispatchDims::d1(count as usize, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.gen_exp.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+        }
+        bind_u32(encoder, 2, count);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Encode dst = a * b (elementwise) for `count` f32 elements.
+    pub fn encode_gen_mul(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        dst: &MetalBuffer,
+        count: u32,
+    ) {
+        let dims = DispatchDims::d1(count as usize, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.gen_mul.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, count);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Encode dst = a + b (elementwise, out-of-place) for `count` f32 elements.
+    pub fn encode_gen_add(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        dst: &MetalBuffer,
+        count: u32,
+    ) {
+        let dims = DispatchDims::d1(count as usize, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.gen_add.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, count);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Encode dst = a - b (elementwise) for `count` f32 elements.
+    pub fn encode_gen_sub(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        dst: &MetalBuffer,
+        count: u32,
+    ) {
+        let dims = DispatchDims::d1(count as usize, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.gen_sub.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, count);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Encode dst = -src (elementwise negate) for `count` f32 elements.
+    pub fn encode_gen_neg(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src: &MetalBuffer,
+        dst: &MetalBuffer,
+        count: u32,
+    ) {
+        let dims = DispatchDims::d1(count as usize, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.gen_neg.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+        }
+        bind_u32(encoder, 2, count);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Encode dst = src * scale (broadcast scalar multiply) for `count` f32 elements.
+    pub fn encode_gen_scale(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src: &MetalBuffer,
+        dst: &MetalBuffer,
+        scale: f32,
+        count: u32,
+    ) {
+        let dims = DispatchDims::d1(count as usize, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.gen_scale.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+        }
+        bind_f32(encoder, 2, scale);
+        bind_u32(encoder, 3, count);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
     /// Encode batched a += b across `n_rows` rows of length `n`.
     pub fn encode_elementwise_add_batch(
         &self,
@@ -10913,74 +12395,6 @@ impl ElementwiseKernels {
         );
     }
 
-    /// Encode batched KV append with Q4_0 quantization (single buffer).
-    ///
-    /// src: f32 source buffer [n_rows × kv_stride]
-    /// dst: Q4_0 block buffer
-    /// dst_row_offset: block offset to first row (seq_len × blocks_per_row)
-    /// blocks_per_row: n_kv_heads × (head_dim / 32)
-    /// kv_stride: n_kv_heads × head_dim (element count per row)
-    #[allow(clippy::too_many_arguments)]
-    pub fn encode_kv_append_batch_q4(
-        &self,
-        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
-        src: &MetalBuffer,
-        dst: &MetalBuffer,
-        dst_row_offset: u32,
-        blocks_per_row: u32,
-        kv_stride: u32,
-        n_rows: u32,
-    ) {
-        let total_blocks = (blocks_per_row as usize) * (n_rows as usize);
-        let dims = DispatchDims::d1(total_blocks, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.kv_append_batch_q4_0.state());
-        unsafe {
-            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
-            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
-        }
-        bind_u32(encoder, 2, dst_row_offset);
-        bind_u32(encoder, 3, blocks_per_row);
-        bind_u32(encoder, 4, kv_stride);
-        bind_u32(encoder, 5, n_rows);
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            dims.threadgroups,
-            dims.threads_per_threadgroup,
-        );
-    }
-
-    /// Encode batched K+V append with Q4_0 quantization (paired buffers).
-    #[allow(clippy::too_many_arguments)]
-    pub fn encode_kv_append_batch_pair_q4(
-        &self,
-        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
-        src_k: &MetalBuffer,
-        src_v: &MetalBuffer,
-        dst_k: &MetalBuffer,
-        dst_v: &MetalBuffer,
-        dst_row_offset: u32,
-        blocks_per_row: u32,
-        kv_stride: u32,
-        n_rows: u32,
-    ) {
-        let total_blocks = (blocks_per_row as usize) * (n_rows as usize);
-        let dims = DispatchDims::d1(total_blocks, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.kv_append_batch2_q4_0.state());
-        unsafe {
-            encoder.setBuffer_offset_atIndex(Some(src_k.mtl_buffer()), 0, 0);
-            encoder.setBuffer_offset_atIndex(Some(src_v.mtl_buffer()), 0, 1);
-            encoder.setBuffer_offset_atIndex(Some(dst_k.mtl_buffer()), 0, 2);
-            encoder.setBuffer_offset_atIndex(Some(dst_v.mtl_buffer()), 0, 3);
-        }
-        bind_u32(encoder, 4, dst_row_offset);
-        bind_u32(encoder, 5, blocks_per_row);
-        bind_u32(encoder, 6, kv_stride);
-        bind_u32(encoder, 7, n_rows);
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            dims.threadgroups,
-            dims.threads_per_threadgroup,
-        );
-    }
-
     /// Encode a GPU buffer copy with custom source byte offset.
     ///
     /// Copies `count` floats: dst[dst_float_offset..] = src[src_byte_offset..].
@@ -11328,6 +12742,22 @@ mod tests {
     }
 
     #[test]
+    fn test_attention_dispatch_config_honors_bc64_mode_env_name() {
+        let config = with_env_var("AX_METAL_PREFILL_BC64_MODE", "on", || {
+            AttentionDispatchConfig::from_profile(&KernelProfile::default())
+        });
+        assert_eq!(config.prefill_ax_bc64_mode, KernelMode::On);
+    }
+
+    #[test]
+    fn test_attention_dispatch_config_honors_bc64_min_tokens_env_name() {
+        let config = with_env_var("AX_METAL_PREFILL_BC64_MIN_TOKENS", "768", || {
+            AttentionDispatchConfig::from_profile(&KernelProfile::default())
+        });
+        assert_eq!(config.prefill_ax_bc64_min_tokens, 768);
+    }
+
+    #[test]
     fn test_dequant_dispatch_config_honors_legacy_q4k_nr_alias() {
         let config = with_env_var("AX_METAL_MATVEC_Q4K_NR", "2", || {
             DequantDispatchConfig::from_profile(&KernelProfile::default())
@@ -11601,6 +13031,16 @@ mod tests {
     }
 
     #[test]
+    fn test_attention_prefill_local_candidate_selection_does_not_bypass_hd64_fa2_mode() {
+        let config = AttentionDispatchConfig {
+            prefill_fa2_hd128_mode: KernelMode::Off,
+            ..default_attention_config()
+        };
+        let selection = config.prefill_local_candidate_selection(512, 64);
+        assert_ne!(selection.candidate, AttentionPrefillCandidate::Fa2SimdHd64);
+    }
+
+    #[test]
     fn test_attention_prefill_local_candidate_selection_respects_ax_bc64_mode_off() {
         let config = AttentionDispatchConfig {
             prefill_fa2_hd128_mode: KernelMode::Off,
@@ -11626,7 +13066,11 @@ mod tests {
     #[test]
     fn test_attention_prefill_cached_candidate_selection_marks_cache_fa2_simd_as_profile_preferred()
     {
-        let config = default_attention_config();
+        let config = AttentionDispatchConfig {
+            prefill_fa2_mode: KernelMode::On,
+            prefill_fa2_hd128_mode: KernelMode::On,
+            ..default_attention_config()
+        };
         // FA2 SIMD cached takes priority when kv_f16 and head_dim matches
         let selection = config.prefill_cached_candidate_selection(true, 512, 128, 512, 0);
         assert_eq!(
@@ -11649,6 +13093,26 @@ mod tests {
 
         // Falls back to Cache for non-f16 KV
         let selection = config.prefill_cached_candidate_selection(false, 512, 128, 512, 0);
+        assert_eq!(selection.candidate, AttentionPrefillCandidate::Cache);
+    }
+
+    #[test]
+    fn test_attention_prefill_cached_candidate_selection_respects_hd128_fa2_mode_off() {
+        let config = AttentionDispatchConfig {
+            prefill_fa2_hd128_mode: KernelMode::Off,
+            ..default_attention_config()
+        };
+        let selection = config.prefill_cached_candidate_selection(true, 512, 128, 512, 0);
+        assert_eq!(selection.candidate, AttentionPrefillCandidate::Cache);
+    }
+
+    #[test]
+    fn test_attention_prefill_cached_candidate_selection_respects_hd256_fa2_mode_off() {
+        let config = AttentionDispatchConfig {
+            prefill_fa2_mode: KernelMode::Off,
+            ..default_attention_config()
+        };
+        let selection = config.prefill_cached_candidate_selection(true, 512, 256, 512, 0);
         assert_eq!(selection.candidate, AttentionPrefillCandidate::Cache);
     }
 
@@ -11902,41 +13366,12 @@ mod tests {
 
     // ── Dequant test helpers ───────────────────────────────────────────
 
-    const Q4_0_BYTES_PER_BLOCK: usize = 18;
-    const Q4_0_BLOCK_SIZE: usize = 32;
     const Q8_0_BYTES_PER_BLOCK: usize = 34;
     const Q8_0_BLOCK_SIZE: usize = 32;
     const Q4_K_BYTES_PER_BLOCK: usize = 144;
     const Q4_K_BLOCK_SIZE: usize = 256;
     const Q6_K_BYTES_PER_BLOCK: usize = 210;
     const Q6_K_BLOCK_SIZE: usize = 256;
-
-    /// Create Q4_0 block bytes from an f16 scale and 16 quant bytes.
-    fn make_q4_0_block(d_f32: f32, qs: &[u8; 16]) -> Vec<u8> {
-        let d_bytes = half::f16::from_f32(d_f32).to_le_bytes();
-        let mut block = Vec::with_capacity(Q4_0_BYTES_PER_BLOCK);
-        block.extend_from_slice(&d_bytes);
-        block.extend_from_slice(qs);
-        block
-    }
-
-    /// CPU reference dequant for Q4_0.
-    fn cpu_dequant_q4_0(blocks: &[u8], dst: &mut [f32]) {
-        let n_blocks = blocks.len() / Q4_0_BYTES_PER_BLOCK;
-        for b in 0..n_blocks {
-            let block = &blocks[b * Q4_0_BYTES_PER_BLOCK..][..Q4_0_BYTES_PER_BLOCK];
-            let d = half::f16::from_le_bytes([block[0], block[1]]).to_f32();
-            let qs = &block[2..18];
-            let out = &mut dst[b * Q4_0_BLOCK_SIZE..][..Q4_0_BLOCK_SIZE];
-            for i in 0..16 {
-                let byte = qs[i];
-                let lo = (byte & 0x0F) as i32 - 8;
-                let hi = (byte >> 4) as i32 - 8;
-                out[i] = d * lo as f32;
-                out[i + 16] = d * hi as f32;
-            }
-        }
-    }
 
     /// CPU reference for Q4_K scale/min extraction.
     fn get_scale_min_k4(j: usize, scales: &[u8]) -> (u8, u8) {
@@ -12131,43 +13566,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dequant_q4_0_standalone() {
-        let gpu = MetalDevice::new().unwrap();
-        let kernels = DequantKernels::new(&gpu).unwrap();
-
-        // Two blocks with known values
-        let mut src = Vec::new();
-        // Block 0: d=1.0, all quants = 0x99 → lo=(9-8)*1=1, hi=(9-8)*1=1
-        src.extend(make_q4_0_block(1.0, &[0x99; 16]));
-        // Block 1: d=2.0, quants[0] = 0x0F, rest 0x88
-        let mut qs1 = [0x88u8; 16];
-        qs1[0] = 0x0F;
-        src.extend(make_q4_0_block(2.0, &qs1));
-
-        let n_blocks = 2u32;
-        let n_values = n_blocks as usize * Q4_0_BLOCK_SIZE;
-
-        let buf_src = MetalBuffer::from_bytes(gpu.device(), &src).unwrap();
-        let buf_dst =
-            MetalBuffer::new(gpu.device(), n_values * std::mem::size_of::<f32>()).unwrap();
-
-        kernels
-            .dequant_q4_0(&gpu, &buf_src, &buf_dst, n_blocks)
-            .unwrap();
-
-        let gpu_result = unsafe { buf_dst.as_slice::<f32>() };
-        let mut cpu_result = vec![0.0f32; n_values];
-        cpu_dequant_q4_0(&src, &mut cpu_result);
-
-        let diff = max_abs_diff(gpu_result, &cpu_result);
-        assert!(
-            diff < 1e-3,
-            "Q4_0 standalone dequant mismatch: max_diff={}",
-            diff
-        );
-    }
-
-    #[test]
     fn test_dequant_q4_k_standalone() {
         let gpu = MetalDevice::new().unwrap();
         let kernels = DequantKernels::new(&gpu).unwrap();
@@ -12212,94 +13610,6 @@ mod tests {
             diff < 1e-3,
             "Q4_K standalone dequant mismatch: max_diff={}",
             diff
-        );
-    }
-
-    #[test]
-    fn test_dequant_q4_0_multiple_blocks() {
-        let gpu = MetalDevice::new().unwrap();
-        let kernels = DequantKernels::new(&gpu).unwrap();
-
-        // 8 blocks with varying scales and quant patterns
-        let mut src = Vec::new();
-        for i in 0..8u8 {
-            let d = (i as f32 + 1.0) * 0.5;
-            let q = 0x33u8.wrapping_add(i * 0x11);
-            src.extend(make_q4_0_block(d, &[q; 16]));
-        }
-
-        let n_blocks = 8u32;
-        let n_values = n_blocks as usize * Q4_0_BLOCK_SIZE;
-
-        let buf_src = MetalBuffer::from_bytes(gpu.device(), &src).unwrap();
-        let buf_dst =
-            MetalBuffer::new(gpu.device(), n_values * std::mem::size_of::<f32>()).unwrap();
-
-        kernels
-            .dequant_q4_0(&gpu, &buf_src, &buf_dst, n_blocks)
-            .unwrap();
-
-        let gpu_result = unsafe { buf_dst.as_slice::<f32>() };
-        let mut cpu_result = vec![0.0f32; n_values];
-        cpu_dequant_q4_0(&src, &mut cpu_result);
-
-        let diff = max_abs_diff(gpu_result, &cpu_result);
-        assert!(
-            diff < 1e-3,
-            "Q4_0 multi-block dequant mismatch: max_diff={}",
-            diff
-        );
-    }
-
-    #[test]
-    fn test_fused_matvec_q4_0() {
-        let gpu = MetalDevice::new().unwrap();
-        let kernels = DequantKernels::new(&gpu).unwrap();
-
-        // 4 rows × 64 cols (K=64 → 2 blocks per row)
-        let m = 4usize;
-        let k = 64usize;
-        let blocks_per_row = k / Q4_0_BLOCK_SIZE;
-
-        // Create quantized weight data
-        let mut quant_data = Vec::new();
-        for row in 0..m {
-            for _blk in 0..blocks_per_row {
-                let d = (row as f32 + 1.0) * 0.5;
-                let q = 0x55u8 + row as u8;
-                quant_data.extend(make_q4_0_block(d, &[q; 16]));
-            }
-        }
-
-        // Dequantize on CPU to get reference weights
-        let total_values = m * k;
-        let mut weights_f32 = vec![0.0f32; total_values];
-        cpu_dequant_q4_0(&quant_data, &mut weights_f32);
-
-        // Create input vector
-        let x_data: Vec<f32> = (0..k).map(|i| ((i % 5) as f32 - 2.0) * 0.1).collect();
-
-        // CPU reference: y = weights × x
-        let mut expected = vec![0.0f32; m];
-        cpu_matmul(&weights_f32, &x_data, &mut expected, m, 1, k);
-
-        // GPU fused dequant+matvec
-        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
-        let buf_x = MetalBuffer::from_slice(gpu.device(), &x_data).unwrap();
-        let buf_y = MetalBuffer::new(gpu.device(), m * std::mem::size_of::<f32>()).unwrap();
-
-        kernels
-            .fused_matvec_q4_0(&gpu, &buf_a, &buf_x, &buf_y, m as u32, k as u32)
-            .unwrap();
-
-        let result = unsafe { buf_y.as_slice::<f32>() };
-        let diff = max_abs_diff(result, &expected);
-        assert!(
-            diff < 1e-3,
-            "Fused Q4_0 matvec mismatch: max_diff={}, got {:?}, expected {:?}",
-            diff,
-            result,
-            expected
         );
     }
 
@@ -12368,50 +13678,6 @@ mod tests {
             diff,
             result,
             expected
-        );
-    }
-
-    #[test]
-    fn test_fused_matvec_q4_0_larger() {
-        // 64 rows × 256 cols (K=256 → 8 blocks per row)
-        let gpu = MetalDevice::new().unwrap();
-        let kernels = DequantKernels::new(&gpu).unwrap();
-
-        let m = 64usize;
-        let k = 256usize;
-        let blocks_per_row = k / Q4_0_BLOCK_SIZE;
-
-        let mut quant_data = Vec::new();
-        for row in 0..m {
-            for blk in 0..blocks_per_row {
-                let d = ((row * blocks_per_row + blk) % 10) as f32 * 0.1 + 0.1;
-                let q = ((row + blk) % 16) as u8 * 0x11;
-                quant_data.extend(make_q4_0_block(d, &[q; 16]));
-            }
-        }
-
-        let mut weights_f32 = vec![0.0f32; m * k];
-        cpu_dequant_q4_0(&quant_data, &mut weights_f32);
-
-        let x_data: Vec<f32> = (0..k).map(|i| ((i % 11) as f32 - 5.0) * 0.02).collect();
-
-        let mut expected = vec![0.0f32; m];
-        cpu_matmul(&weights_f32, &x_data, &mut expected, m, 1, k);
-
-        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
-        let buf_x = MetalBuffer::from_slice(gpu.device(), &x_data).unwrap();
-        let buf_y = MetalBuffer::new(gpu.device(), m * std::mem::size_of::<f32>()).unwrap();
-
-        kernels
-            .fused_matvec_q4_0(&gpu, &buf_a, &buf_x, &buf_y, m as u32, k as u32)
-            .unwrap();
-
-        let result = unsafe { buf_y.as_slice::<f32>() };
-        let diff = max_abs_diff(result, &expected);
-        assert!(
-            diff < 0.1,
-            "Larger fused Q4_0 matvec failed: max_diff={}",
-            diff
         );
     }
 
@@ -13187,159 +14453,6 @@ mod tests {
         assert!(
             diff < 0.2,
             "Fused small Q6_K batch mismatch: max_diff={diff}"
-        );
-    }
-
-    #[test]
-    fn test_fused_batch_q4_0_blocked_f16in() {
-        let gpu = MetalDevice::new().unwrap();
-        let kernels = DequantKernels::new(&gpu).unwrap();
-
-        let m = 37usize;
-        let n = 11usize;
-        let k = 64usize;
-        let blocks_per_row = k / Q4_0_BLOCK_SIZE;
-
-        let mut quant_data = Vec::new();
-        for row in 0..m {
-            for blk in 0..blocks_per_row {
-                let d = ((row + blk * 5) % 13) as f32 * 0.07 + 0.05;
-                let mut qs = [0u8; 16];
-                for (i, byte) in qs.iter_mut().enumerate() {
-                    let lo = ((row + blk + i) % 16) as u8;
-                    let hi = ((row * 3 + blk * 5 + i * 7) % 16) as u8;
-                    *byte = lo | (hi << 4);
-                }
-                quant_data.extend(make_q4_0_block(d, &qs));
-            }
-        }
-
-        let mut weights_f32 = vec![0.0f32; m * k];
-        cpu_dequant_q4_0(&quant_data, &mut weights_f32);
-        let batch_input_f32: Vec<f32> = (0..n * k)
-            .map(|i| ((i % 29) as f32 - 14.0) * 0.0125)
-            .collect();
-        let batch_input_f16: Vec<half::f16> = batch_input_f32
-            .iter()
-            .copied()
-            .map(half::f16::from_f32)
-            .collect();
-        let batch_input_cpu: Vec<f32> = batch_input_f16.iter().map(|v| v.to_f32()).collect();
-        let mut expected = vec![0.0f32; n * m];
-        cpu_batch_btrans_matmul(&weights_f32, &batch_input_cpu, &mut expected, m, n, k);
-
-        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
-        let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input_f16).unwrap();
-        let buf_c = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
-
-        gpu.execute_sync(|encoder| {
-            encoder.setComputePipelineState(kernels.fused_batch_q4_0_blocked_f16in.state());
-            bind_buffers(encoder, &buf_a, &buf_b, &buf_c);
-            bind_u32(encoder, 3, m as u32);
-            bind_u32(encoder, 4, n as u32);
-            bind_u32(encoder, 5, k as u32);
-            bind_u32(encoder, 6, m as u32);
-            unsafe {
-                encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
-            }
-            encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                MTLSize {
-                    width: n.div_ceil(32),
-                    height: m.div_ceil(64),
-                    depth: 1,
-                },
-                MTLSize {
-                    width: 128,
-                    height: 1,
-                    depth: 1,
-                },
-            );
-            Ok(())
-        })
-        .unwrap();
-
-        let result = unsafe { buf_c.as_slice::<f32>() };
-        let diff = max_abs_diff(result, &expected);
-        assert!(
-            diff < 0.15,
-            "Blocked Q4_0 f16in batch mismatch: max_diff={diff}"
-        );
-    }
-
-    #[test]
-    fn test_fused_batch_q4_0_blocked_f16in_fulltile_specialization() {
-        let gpu = MetalDevice::new().unwrap();
-        let kernels = DequantKernels::new(&gpu).unwrap();
-
-        let m = 64usize;
-        let n = 32usize;
-        let k = 64usize;
-        let blocks_per_row = k / Q4_0_BLOCK_SIZE;
-
-        let mut quant_data = Vec::new();
-        for row in 0..m {
-            for blk in 0..blocks_per_row {
-                let d = ((row + blk * 3) % 17) as f32 * 0.05 + 0.04;
-                let mut qs = [0u8; 16];
-                for (i, byte) in qs.iter_mut().enumerate() {
-                    let lo = ((row * 5 + blk * 11 + i * 3) % 16) as u8;
-                    let hi = ((row * 7 + blk * 13 + i * 5) % 16) as u8;
-                    *byte = lo | (hi << 4);
-                }
-                quant_data.extend(make_q4_0_block(d, &qs));
-            }
-        }
-
-        let mut weights_f32 = vec![0.0f32; m * k];
-        cpu_dequant_q4_0(&quant_data, &mut weights_f32);
-        let batch_input_f32: Vec<f32> = (0..n * k)
-            .map(|i| ((i % 31) as f32 - 15.0) * 0.01)
-            .collect();
-        let batch_input_f16: Vec<half::f16> = batch_input_f32
-            .iter()
-            .copied()
-            .map(half::f16::from_f32)
-            .collect();
-        let batch_input_cpu: Vec<f32> = batch_input_f16.iter().map(|v| v.to_f32()).collect();
-        let mut expected = vec![0.0f32; n * m];
-        cpu_batch_btrans_matmul(&weights_f32, &batch_input_cpu, &mut expected, m, n, k);
-
-        let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
-        let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input_f16).unwrap();
-        let buf_c = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
-
-        gpu.execute_sync(|encoder| {
-            encoder
-                .setComputePipelineState(kernels.fused_batch_q4_0_blocked_f16in_fulltile.state());
-            bind_buffers(encoder, &buf_a, &buf_b, &buf_c);
-            bind_u32(encoder, 3, m as u32);
-            bind_u32(encoder, 4, n as u32);
-            bind_u32(encoder, 5, k as u32);
-            bind_u32(encoder, 6, m as u32);
-            unsafe {
-                encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
-            }
-            encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                MTLSize {
-                    width: n.div_ceil(32),
-                    height: m.div_ceil(64),
-                    depth: 1,
-                },
-                MTLSize {
-                    width: 128,
-                    height: 1,
-                    depth: 1,
-                },
-            );
-            Ok(())
-        })
-        .unwrap();
-
-        let result = unsafe { buf_c.as_slice::<f32>() };
-        let diff = max_abs_diff(result, &expected);
-        assert!(
-            diff < 0.15,
-            "Blocked Q4_0 fulltile f16in batch mismatch: max_diff={diff}"
         );
     }
 

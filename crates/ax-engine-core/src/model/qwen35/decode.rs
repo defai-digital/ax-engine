@@ -635,6 +635,9 @@ impl Qwen35Forward {
             return Ok(false);
         };
         let cfg = ctx.config;
+        if Self::qwen35_is_moe(cfg) {
+            return Ok(false);
+        }
         let qwen_kv = kv
             .as_qwen35_mut()
             .ok_or_else(|| anyhow::anyhow!("Qwen35Forward requires ModelKv::Qwen35"))?;
