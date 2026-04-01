@@ -671,10 +671,10 @@ impl Qwen35Forward {
             return Ok(false);
         };
         let cfg = ctx.config;
-        // MoE models can't use the single-CB pipelined decode (FFN needs CPU
-        // round-trip for router top-k). The CPU fallback handles MoE FFN
-        // via NEON matvec. The projection/attention/recurrent parts still
-        // run on GPU through the per-operation Metal dispatch in forward_single.
+        // MoE models use the CPU fallback for now. The pipelined single-CB
+        // decode path can't handle MoE FFN mid-closure. A per-layer GPU path
+        // would help (41 CBs vs 121) but requires restructuring the closure
+        // into per-layer segments. This is a future optimization.
         if Self::qwen35_is_moe(cfg) {
             return Ok(false);
         }

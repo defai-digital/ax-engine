@@ -2124,6 +2124,7 @@ pub struct DequantKernels {
     // MoE unified dispatch (mul_mat_id).
     pub moe_map0: ComputePipeline,
     pub moe_mul_mat_id_q4_k: ComputePipeline,
+    pub moe_mul_mat_id_q4_k_blocked: ComputePipeline,
 }
 
 impl DequantKernels {
@@ -3071,6 +3072,12 @@ impl DequantKernels {
                 "moe_mul_mat_id_q4_k",
             )
             .context("Failed to compile moe_mul_mat_id_q4_k kernel")?,
+            moe_mul_mat_id_q4_k_blocked: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_id_q4_k_blocked",
+            )
+            .context("Failed to compile moe_mul_mat_id_q4_k_blocked kernel")?,
         })
     }
 
@@ -6701,7 +6708,13 @@ impl DequantKernels {
         active_experts: &MetalBuffer,
         n_active_experts: u32,
     ) {
-        encoder.setComputePipelineState(self.moe_mul_mat_id_q4_k.state());
+        // Use blocked 64×32 kernel when M >= 64, else fallback to 32×32.
+        let use_blocked = m >= 64;
+        if use_blocked {
+            encoder.setComputePipelineState(self.moe_mul_mat_id_q4_k_blocked.state());
+        } else {
+            encoder.setComputePipelineState(self.moe_mul_mat_id_q4_k.state());
+        }
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
@@ -6717,11 +6730,19 @@ impl DequantKernels {
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(active_experts.mtl_buffer()), 0, 10);
         }
-        // Compact grid: only dispatch active experts (not all n_expert).
+        // Blocked kernel needs threadgroup memory (8 KB for sa+sb, or 8 KB for output staging).
+        if use_blocked {
+            let smem = 8192usize; // 6 KB blocked + 2 KB margin (or 8 KB output staging)
+            unsafe {
+                encoder.setThreadgroupMemoryLength_atIndex(smem, 0);
+            }
+        }
+        // Compact grid: only dispatch active experts.
+        let m_tile = if use_blocked { 64usize } else { 32 };
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
                 width: (n_tokens as usize).div_ceil(32),
-                height: (m as usize).div_ceil(32),
+                height: (m as usize).div_ceil(m_tile),
                 depth: n_active_experts as usize,
             },
             MTLSize {
