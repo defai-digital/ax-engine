@@ -607,10 +607,11 @@ impl Qwen35Forward {
         rms_norm_eps: f32,
     ) -> anyhow::Result<()> {
         // Batched-by-expert: group tokens by expert assignment, run one batched
-        // dequant+matmul per active expert, then scatter back. With the GPU backend,
-        // each expert dispatch uses fused batch dequant kernels (no intermediate f32
-        // buffer). Reduces O(n_tokens × n_expert_used × 3) individual matvecs to
-        // O(n_active_experts × 3) batched matmuls.
+        // dequant+matmul per active expert, then scatter back.
+        //
+        // When Metal is available, ALL expert ops (gather, gate/up/down matmul,
+        // SiLU, scatter) are encoded into a SINGLE command buffer — eliminating
+        // the per-expert execute_sync overhead that dominates at ~30μs per CB.
 
         let ffn_norm_w = weights.f32_slice(&format!("{prefix}.post_attention_norm.weight"))?;
         for token_idx in 0..n_tokens {
@@ -681,80 +682,109 @@ impl Qwen35Forward {
         // Zero the accumulator (down_buf is reused as expert_accum).
         down_buf[..n_tokens * dim].fill(0.0);
 
-        // --- Phase 3: Batched-by-expert matmul ---
-        // For each active expert, gather assigned tokens, run batched FFN, scatter back.
-        // This transforms O(n_tokens × n_expert_used × 3) individual matvecs into
-        // O(n_active_experts × 3) batched matmuls — typically 20-50× fewer calls.
-        let mut gather_buf = vec![0.0f32; n_tokens * dim]; // reusable gather buffer
-        let mut gate_batch = vec![0.0f32; n_tokens * expert_inter_dim];
-        let mut up_batch = vec![0.0f32; n_tokens * expert_inter_dim];
-        let mut down_batch = vec![0.0f32; n_tokens * dim];
-
-        for (eid, assignments) in expert_map.iter().enumerate() {
-            if assignments.is_empty() {
-                continue;
-            }
-            let n_assigned = assignments.len();
-
-            // Gather: copy assigned tokens' norm_rows into contiguous buffer.
-            for (slot, &(token_idx, _)) in assignments.iter().enumerate() {
-                gather_buf[slot * dim..(slot + 1) * dim]
-                    .copy_from_slice(&norm_buf[token_idx * dim..(token_idx + 1) * dim]);
-            }
-
-            let expert_gate = Self::expert_quant_slice(
-                gate_exps_raw,
-                gate_stride,
-                eid,
-                &gate_exps_name,
-            )?;
-            let expert_up =
-                Self::expert_quant_slice(up_exps_raw, up_stride, eid, &up_exps_name)?;
-            let expert_down =
-                Self::expert_quant_slice(down_exps_raw, down_stride, eid, &down_exps_name)?;
-
-            // Batched gate matmul: [n_assigned × dim] → [n_assigned × expert_inter_dim]
-            backend.dequant_matmul_token_major(
-                expert_gate,
+        // --- Phase 3: Batched-by-expert matmul (single CB when Metal available) ---
+        //
+        // Try to encode ALL expert ops into one Metal command buffer.
+        // This eliminates ~24 execute_sync calls per layer (each ~30μs).
+        let metal_dispatched = if let Some(metal_ops) = backend.metal_ops() {
+            let has_fused = matches!(
                 gate_exps_dtype,
-                &gather_buf[..n_assigned * dim],
-                &mut gate_batch[..n_assigned * expert_inter_dim],
-                n_assigned,
-                expert_inter_dim,
-                dim,
+                crate::gguf::tensor::GgmlType::Q4K
+                    | crate::gguf::tensor::GgmlType::Q5K
+                    | crate::gguf::tensor::GgmlType::Q6K
             );
-            // Batched up matmul
-            backend.dequant_matmul_token_major(
-                expert_up,
-                up_exps_dtype,
-                &gather_buf[..n_assigned * dim],
-                &mut up_batch[..n_assigned * expert_inter_dim],
-                n_assigned,
-                expert_inter_dim,
-                dim,
-            );
-            // SiLU elementwise mul across all assigned tokens
-            silu::silu_elementwise_mul(
-                &mut gate_batch[..n_assigned * expert_inter_dim],
-                &up_batch[..n_assigned * expert_inter_dim],
-            );
-            // Batched down matmul: [n_assigned × expert_inter_dim] → [n_assigned × dim]
-            backend.dequant_matmul_token_major(
-                expert_down,
-                down_exps_dtype,
-                &gate_batch[..n_assigned * expert_inter_dim],
-                &mut down_batch[..n_assigned * dim],
-                n_assigned,
-                dim,
-                expert_inter_dim,
-            );
+            if has_fused && n_tokens > 1 {
+                Self::try_moe_expert_dispatch_single_cb(
+                    metal_ops,
+                    &expert_map,
+                    norm_buf,
+                    down_buf,
+                    gate_exps_raw,
+                    gate_exps_dtype,
+                    gate_stride,
+                    up_exps_raw,
+                    up_exps_dtype,
+                    up_stride,
+                    down_exps_raw,
+                    down_exps_dtype,
+                    down_stride,
+                    &gate_exps_name,
+                    &up_exps_name,
+                    &down_exps_name,
+                    n_tokens,
+                    dim,
+                    expert_inter_dim,
+                )?
+            } else {
+                false
+            }
+        } else {
+            false
+        };
 
-            // Scatter: accumulate weighted results back to per-token expert_accum.
-            for (slot, &(token_idx, weight)) in assignments.iter().enumerate() {
-                let accum = &mut down_buf[token_idx * dim..(token_idx + 1) * dim];
-                let result = &down_batch[slot * dim..(slot + 1) * dim];
-                for (dst, src) in accum.iter_mut().zip(result.iter()) {
-                    *dst += weight * src;
+        if !metal_dispatched {
+            // CPU fallback: per-expert dispatch with individual backend calls.
+            let mut gather_buf = vec![0.0f32; n_tokens * dim];
+            let mut gate_batch = vec![0.0f32; n_tokens * expert_inter_dim];
+            let mut up_batch = vec![0.0f32; n_tokens * expert_inter_dim];
+            let mut down_batch = vec![0.0f32; n_tokens * dim];
+
+            for (eid, assignments) in expert_map.iter().enumerate() {
+                if assignments.is_empty() {
+                    continue;
+                }
+                let n_assigned = assignments.len();
+
+                for (slot, &(token_idx, _)) in assignments.iter().enumerate() {
+                    gather_buf[slot * dim..(slot + 1) * dim]
+                        .copy_from_slice(&norm_buf[token_idx * dim..(token_idx + 1) * dim]);
+                }
+
+                let expert_gate =
+                    Self::expert_quant_slice(gate_exps_raw, gate_stride, eid, &gate_exps_name)?;
+                let expert_up =
+                    Self::expert_quant_slice(up_exps_raw, up_stride, eid, &up_exps_name)?;
+                let expert_down =
+                    Self::expert_quant_slice(down_exps_raw, down_stride, eid, &down_exps_name)?;
+
+                backend.dequant_matmul_token_major(
+                    expert_gate,
+                    gate_exps_dtype,
+                    &gather_buf[..n_assigned * dim],
+                    &mut gate_batch[..n_assigned * expert_inter_dim],
+                    n_assigned,
+                    expert_inter_dim,
+                    dim,
+                );
+                backend.dequant_matmul_token_major(
+                    expert_up,
+                    up_exps_dtype,
+                    &gather_buf[..n_assigned * dim],
+                    &mut up_batch[..n_assigned * expert_inter_dim],
+                    n_assigned,
+                    expert_inter_dim,
+                    dim,
+                );
+                silu::silu_elementwise_mul(
+                    &mut gate_batch[..n_assigned * expert_inter_dim],
+                    &up_batch[..n_assigned * expert_inter_dim],
+                );
+                backend.dequant_matmul_token_major(
+                    expert_down,
+                    down_exps_dtype,
+                    &gate_batch[..n_assigned * expert_inter_dim],
+                    &mut down_batch[..n_assigned * dim],
+                    n_assigned,
+                    dim,
+                    expert_inter_dim,
+                );
+
+                for (slot, &(token_idx, weight)) in assignments.iter().enumerate() {
+                    let accum = &mut down_buf[token_idx * dim..(token_idx + 1) * dim];
+                    let result = &down_batch[slot * dim..(slot + 1) * dim];
+                    for (dst, src) in accum.iter_mut().zip(result.iter()) {
+                        *dst += weight * src;
+                    }
                 }
             }
         }
@@ -837,6 +867,64 @@ impl Qwen35Forward {
     }
 
     /// GPU-encoded attention norm + input projections in a single command buffer.
+    /// Encode ALL expert gate/up/down matmuls + SiLU + gather/scatter into a
+    /// single Metal command buffer via `MetalOps::moe_expert_batch_single_cb`.
+    ///
+    /// Returns `true` if GPU path was used, `false` to fall back.
+    #[allow(clippy::too_many_arguments)]
+    fn try_moe_expert_dispatch_single_cb(
+        metal_ops: &crate::backend::metal::MetalOps,
+        expert_map: &[Vec<(usize, f32)>],
+        norm_buf: &[f32],
+        accum_out: &mut [f32],
+        gate_exps_raw: &[u8],
+        gate_exps_dtype: crate::gguf::tensor::GgmlType,
+        gate_stride: usize,
+        up_exps_raw: &[u8],
+        up_exps_dtype: crate::gguf::tensor::GgmlType,
+        up_stride: usize,
+        down_exps_raw: &[u8],
+        down_exps_dtype: crate::gguf::tensor::GgmlType,
+        down_stride: usize,
+        gate_exps_name: &str,
+        up_exps_name: &str,
+        down_exps_name: &str,
+        n_tokens: usize,
+        dim: usize,
+        expert_inter_dim: usize,
+    ) -> anyhow::Result<bool> {
+        // Build expert data for the single-CB dispatch.
+        let mut expert_data = Vec::new();
+        for (eid, assignments) in expert_map.iter().enumerate() {
+            if assignments.is_empty() {
+                continue;
+            }
+            let n_assigned = assignments.len();
+            let indices: Vec<u32> = assignments.iter().map(|&(t, _)| t as u32).collect();
+            let weights: Vec<f32> = assignments.iter().map(|&(_, w)| w).collect();
+            let gate_slice =
+                Self::expert_quant_slice(gate_exps_raw, gate_stride, eid, gate_exps_name)?;
+            let up_slice =
+                Self::expert_quant_slice(up_exps_raw, up_stride, eid, up_exps_name)?;
+            let down_slice =
+                Self::expert_quant_slice(down_exps_raw, down_stride, eid, down_exps_name)?;
+            expert_data.push((n_assigned, indices, weights, gate_slice, up_slice, down_slice));
+        }
+
+        metal_ops.moe_expert_batch_single_cb(
+            norm_buf,
+            accum_out,
+            &expert_data,
+            gate_exps_dtype,
+            up_exps_dtype,
+            down_exps_dtype,
+            n_tokens,
+            dim,
+            expert_inter_dim,
+        )?;
+        Ok(true)
+    }
+
     ///
     /// Encodes: RMSNorm(hidden) → norm_buf, then for each (weight, out_dim):
     /// fused dequant matmul → output buffer. All in one execute_sync.

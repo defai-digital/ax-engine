@@ -10300,6 +10300,11 @@ pub struct ElementwiseKernels {
     gen_sub: ComputePipeline,
     gen_neg: ComputePipeline,
     gen_scale: ComputePipeline,
+    // MoE expert dispatch
+    pub moe_gather_rows: ComputePipeline,
+    pub moe_weighted_scatter_add: ComputePipeline,
+    // GPU-side argmax for greedy decode
+    argmax_f32: ComputePipeline,
 }
 
 impl ElementwiseKernels {
@@ -10650,6 +10655,13 @@ impl ElementwiseKernels {
         )
         .context("Failed to compile kv_append_batch2_q8_0 kernel")?;
 
+        let argmax_f32 = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "argmax_f32",
+        )
+        .context("Failed to compile argmax_f32 kernel")?;
+
         tracing::info!("Elementwise Metal kernels compiled (8 kernels)");
 
         Ok(Self {
@@ -10744,6 +10756,19 @@ impl ElementwiseKernels {
                 "elementwise_scale_f32",
             )
             .context("Failed to compile elementwise_scale_f32")?,
+            moe_gather_rows: ComputePipeline::from_source(
+                device.device(),
+                ELEMENTWISE_SHADER_SRC,
+                "moe_gather_rows_f32",
+            )
+            .context("Failed to compile moe_gather_rows_f32")?,
+            moe_weighted_scatter_add: ComputePipeline::from_source(
+                device.device(),
+                ELEMENTWISE_SHADER_SRC,
+                "moe_weighted_scatter_add_f32",
+            )
+            .context("Failed to compile moe_weighted_scatter_add_f32")?,
+            argmax_f32,
         })
     }
 
@@ -11953,6 +11978,62 @@ impl ElementwiseKernels {
         );
     }
 
+    /// Encode MoE gather: dst[slot*dim..] = src[indices[slot]*dim..] for slot in 0..n_slots.
+    pub fn encode_moe_gather(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src: &MetalBuffer,
+        indices: &MetalBuffer,
+        dst: &MetalBuffer,
+        dim: u32,
+        n_slots: u32,
+    ) {
+        let total = n_slots * dim;
+        let dims = DispatchDims::d1(total as usize, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.moe_gather_rows.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(indices.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, dim);
+        bind_u32(encoder, 4, n_slots);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Encode MoE weighted scatter-add:
+    /// dst[indices[s]*dim + d] += weights[s] * src[s*dim + d].
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_moe_weighted_scatter(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src: &MetalBuffer,
+        indices: &MetalBuffer,
+        weights: &MetalBuffer,
+        dst: &MetalBuffer,
+        dim: u32,
+        n_slots: u32,
+    ) {
+        let total = n_slots * dim;
+        let dims = DispatchDims::d1(total as usize, ELEMENTWISE_TG_SIZE);
+        encoder.setComputePipelineState(self.moe_weighted_scatter_add.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(indices.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, dim);
+        bind_u32(encoder, 5, n_slots);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
     /// Encode batched a += b across `n_rows` rows of length `n`.
     pub fn encode_elementwise_add_batch(
         &self,
@@ -12420,6 +12501,41 @@ impl ElementwiseKernels {
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             dims.threadgroups,
             dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Dispatch GPU-side argmax: find index and value of maximum element.
+    ///
+    /// Runs a single threadgroup (TG=1024) parallel reduction. Results are
+    /// written to `result_idx` (u32) and `result_val` (f32). Caller must
+    /// sync the command buffer before reading results.
+    pub fn encode_argmax_f32(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        data: &MetalBuffer,
+        result_idx: &MetalBuffer,
+        result_val: &MetalBuffer,
+        n: u32,
+    ) {
+        encoder.setComputePipelineState(self.argmax_f32.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(data.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(result_idx.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(result_val.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, n);
+        // Single threadgroup of 1024 threads
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: 1,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: 1024,
+                height: 1,
+                depth: 1,
+            },
         );
     }
 
@@ -15680,6 +15796,9 @@ mod tests {
 
     fn cpu_rms_norm(x: &mut [f32], weight: &[f32], eps: f32) {
         let n = x.len();
+        if n == 0 {
+            return;
+        }
         let sum_sq: f32 = x.iter().map(|v| v * v).sum();
         let inv_rms = 1.0 / (sum_sq / n as f32 + eps).sqrt();
         for (xi, &wi) in x.iter_mut().zip(weight.iter()) {
@@ -15689,6 +15808,9 @@ mod tests {
 
     fn cpu_rms_norm_out(x: &[f32], weight: &[f32], out: &mut [f32], eps: f32) {
         let n = x.len();
+        if n == 0 {
+            return;
+        }
         let sum_sq: f32 = x.iter().map(|v| v * v).sum();
         let inv_rms = 1.0 / (sum_sq / n as f32 + eps).sqrt();
         for i in 0..n {

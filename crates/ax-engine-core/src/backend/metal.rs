@@ -2813,6 +2813,10 @@ pub struct GpuScratchBuffers {
     pub splitk_partial_out: MetalBuffer,
     /// Split-K decode scratch: partial log-sum-exp terms [max_chunks × n_heads].
     pub splitk_partial_lse: MetalBuffer,
+    /// GPU-side argmax result: winning index (1 × u32).
+    pub argmax_idx: MetalBuffer,
+    /// GPU-side argmax result: winning value (1 × f32).
+    pub argmax_val: MetalBuffer,
 }
 
 /// GPU-resident batch scratch buffers for prefill (N-token capacity).
@@ -2890,6 +2894,8 @@ pub struct MetalOps {
     f16in_route_tuned: AtomicBool,
     /// Pre-computed weight cache keys, built once on first forward call.
     cached_model_keys: Mutex<Option<CachedModelKeys>>,
+    /// Cache of raw quantized expert weight buffers for single-CB MoE dispatch.
+    moe_quant_cache: Mutex<FxHashMap<usize, MetalBuffer>>,
 }
 
 impl MetalOps {
@@ -2926,6 +2932,7 @@ impl MetalOps {
             qwen35_recurrent_batch_perf: Qwen35RecurrentBatchPerfState::default(),
             f16in_route_tuned: AtomicBool::new(false),
             cached_model_keys: Mutex::new(None),
+            moe_quant_cache: Mutex::new(FxHashMap::default()),
         })
     }
 
@@ -3433,6 +3440,8 @@ impl MetalOps {
             logits_buf: alloc(vocab_size),
             splitk_partial_out: alloc(max_chunks * n_heads * head_dim),
             splitk_partial_lse: alloc(max_chunks * n_heads),
+            argmax_idx: alloc(1), // 1 × u32 (4 bytes)
+            argmax_val: alloc(1), // 1 × f32 (4 bytes)
         };
         tracing::info!(
             dim,
@@ -3956,6 +3965,192 @@ impl MetalOps {
             .entry(key)
             .or_insert_with(|| create_mmap_weight_buffer_from_f32(&self.device, data));
         key
+    }
+
+    /// Cache raw quantized weight data for single-CB MoE expert dispatch.
+    /// Returns the cache key.
+    pub fn ensure_moe_quant_cached(&self, data: &[u8]) -> usize {
+        let key = data.as_ptr() as usize;
+        let mut cache = self.moe_quant_cache.lock().unwrap();
+        cache
+            .entry(key)
+            .or_insert_with(|| create_mmap_weight_buffer_from_bytes(&self.device, data));
+        key
+    }
+
+    /// Execute batched MoE expert FFN in a single command buffer.
+    ///
+    /// For each active expert: GPU gather → gate matmul → up matmul → SiLU →
+    /// down matmul → weighted scatter. All encoded in ONE execute_sync.
+    ///
+    /// `expert_assignments[eid]` = `(indices: &[u32], weights: &[f32])` for each
+    /// active expert. `norm_buf_gpu` is the input, `accum_gpu` is output.
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_expert_batch_single_cb(
+        &self,
+        norm_buf: &[f32],
+        accum_out: &mut [f32],
+        expert_data: &[(
+            usize,    // n_assigned
+            Vec<u32>, // token indices
+            Vec<f32>, // routing weights
+            &[u8],    // gate weight raw
+            &[u8],    // up weight raw
+            &[u8],    // down weight raw
+        )],
+        gate_dtype: GgmlType,
+        up_dtype: GgmlType,
+        down_dtype: GgmlType,
+        n_tokens: usize,
+        dim: usize,
+        expert_inter_dim: usize,
+    ) -> anyhow::Result<()> {
+        let f4 = std::mem::size_of::<f32>();
+        let u4 = std::mem::size_of::<u32>();
+        let dev = self.device.device();
+
+        // Pre-cache all expert weights.
+        for &(_, _, _, gate_raw, up_raw, down_raw) in expert_data {
+            self.ensure_moe_quant_cached(gate_raw);
+            self.ensure_moe_quant_cached(up_raw);
+            self.ensure_moe_quant_cached(down_raw);
+        }
+
+        // Allocate GPU buffers.
+        let mut norm_gpu = MetalBuffer::new(dev, n_tokens * dim * f4)?;
+        let mut accum_gpu = MetalBuffer::new(dev, n_tokens * dim * f4)?;
+        let gather_gpu = MetalBuffer::new(dev, n_tokens * dim * f4)?;
+        let gate_gpu = MetalBuffer::new(dev, n_tokens * expert_inter_dim * f4)?;
+        let up_gpu = MetalBuffer::new(dev, n_tokens * expert_inter_dim * f4)?;
+        let down_gpu = MetalBuffer::new(dev, n_tokens * dim * f4)?;
+
+        // Upload input, zero accumulator.
+        unsafe {
+            norm_gpu.as_mut_slice::<f32>()[..n_tokens * dim].copy_from_slice(norm_buf);
+            accum_gpu.as_mut_slice::<f32>()[..n_tokens * dim].fill(0.0);
+        }
+
+        // Build per-expert GPU index/weight buffers.
+        struct Egd {
+            n: u32,
+            idx_buf: MetalBuffer,
+            wt_buf: MetalBuffer,
+            gate_key: usize,
+            up_key: usize,
+            down_key: usize,
+        }
+        let mut egds = Vec::new();
+        for &(n_assigned, ref indices, ref weights, gate_raw, up_raw, down_raw) in expert_data {
+            let mut idx_buf = MetalBuffer::new(dev, n_assigned * u4)?;
+            let mut wt_buf = MetalBuffer::new(dev, n_assigned * f4)?;
+            unsafe {
+                idx_buf.as_mut_slice::<u32>()[..n_assigned].copy_from_slice(indices);
+                wt_buf.as_mut_slice::<f32>()[..n_assigned].copy_from_slice(weights);
+            }
+            egds.push(Egd {
+                n: n_assigned as u32,
+                idx_buf,
+                wt_buf,
+                gate_key: gate_raw.as_ptr() as usize,
+                up_key: up_raw.as_ptr() as usize,
+                down_key: down_raw.as_ptr() as usize,
+            });
+        }
+
+        // Lock weight cache ONCE for the entire encode.
+        let cache = self.moe_quant_cache.lock().unwrap();
+
+        let encode_dequant_matmul = |enc: &ax_engine_metal::MetalEncoder,
+                                     w: &MetalBuffer,
+                                     b: &MetalBuffer,
+                                     c: &MetalBuffer,
+                                     m: u32,
+                                     n: u32,
+                                     k: u32,
+                                     dt: GgmlType| {
+            match dt {
+                GgmlType::Q4K => self.dequant.encode_fused_batch_q4_k(enc, w, b, c, m, n, k),
+                GgmlType::Q5K => self.dequant.encode_fused_batch_q5_k(enc, w, b, c, m, n, k),
+                GgmlType::Q6K => self.dequant.encode_fused_batch_q6_k(enc, w, b, c, m, n, k),
+                GgmlType::Q8_0 => self.dequant.encode_fused_batch_q8_0(enc, w, b, c, m, n, k),
+                _ => panic!("unsupported MoE expert dtype: {dt:?}"),
+            }
+        };
+
+        self.device.execute_sync(|encoder| {
+            for egd in &egds {
+                let n = egd.n;
+                let m_inter = expert_inter_dim as u32;
+                let m_dim = dim as u32;
+
+                // Gather
+                self.elementwise.encode_moe_gather(
+                    encoder,
+                    &norm_gpu,
+                    &egd.idx_buf,
+                    &gather_gpu,
+                    m_dim,
+                    n,
+                );
+
+                // Gate matmul
+                let gw = cache.get(&egd.gate_key).unwrap();
+                encode_dequant_matmul(
+                    encoder,
+                    gw,
+                    &gather_gpu,
+                    &gate_gpu,
+                    m_inter,
+                    n,
+                    m_dim,
+                    gate_dtype,
+                );
+
+                // Up matmul
+                let uw = cache.get(&egd.up_key).unwrap();
+                encode_dequant_matmul(
+                    encoder,
+                    uw,
+                    &gather_gpu,
+                    &up_gpu,
+                    m_inter,
+                    n,
+                    m_dim,
+                    up_dtype,
+                );
+
+                // SiLU
+                self.elementwise
+                    .encode_silu_elementwise_mul_batch(encoder, &gate_gpu, &up_gpu, m_inter, n);
+
+                // Down matmul
+                let dw = cache.get(&egd.down_key).unwrap();
+                encode_dequant_matmul(
+                    encoder, dw, &gate_gpu, &down_gpu, m_dim, n, m_inter, down_dtype,
+                );
+
+                // Weighted scatter
+                self.elementwise.encode_moe_weighted_scatter(
+                    encoder,
+                    &down_gpu,
+                    &egd.idx_buf,
+                    &egd.wt_buf,
+                    &accum_gpu,
+                    m_dim,
+                    n,
+                );
+            }
+            Ok(())
+        })?;
+
+        drop(cache);
+
+        // Download result.
+        unsafe {
+            accum_out[..n_tokens * dim]
+                .copy_from_slice(&accum_gpu.as_slice::<f32>()[..n_tokens * dim]);
+        }
+        Ok(())
     }
 
     /// Ensure quantized weight data is cached as a MetalBuffer.

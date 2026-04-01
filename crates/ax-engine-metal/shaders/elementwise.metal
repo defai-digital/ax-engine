@@ -2476,3 +2476,112 @@ kernel void elementwise_scale_f32(
 {
     if (gid < count) dst[gid] = src[gid] * scale;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MoE GPU gather/scatter kernels for expert dispatch.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Gather rows by index: for each slot s, dst[s*dim..] = src[indices[s]*dim..].
+/// indices is [n_slots], src is [n_tokens, dim], dst is [n_slots, dim].
+/// Grid: (ceil(n_slots * dim / 256), 1, 1).  TG: 256.
+kernel void moe_gather_rows_f32(
+    const device float *src     [[buffer(0)]],
+    const device uint  *indices [[buffer(1)]],
+    device float *dst           [[buffer(2)]],
+    constant uint &dim          [[buffer(3)]],
+    constant uint &n_slots      [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    const uint total = n_slots * dim;
+    if (gid >= total) return;
+    const uint slot = gid / dim;
+    const uint d = gid % dim;
+    dst[gid] = src[indices[slot] * dim + d];
+}
+
+/// Weighted scatter-add: for each slot s, dst[indices[s]*dim + d] += weights[s] * src[s*dim + d].
+/// indices is [n_slots], weights is [n_slots], src is [n_slots, dim], dst is [n_tokens, dim].
+/// Grid: (ceil(n_slots * dim / 256), 1, 1).  TG: 256.
+/// NOTE: Multiple slots may map to the same dst row. The caller must ensure
+/// no two slots in the same dispatch map to the same index (split by expert).
+kernel void moe_weighted_scatter_add_f32(
+    const device float *src     [[buffer(0)]],
+    const device uint  *indices [[buffer(1)]],
+    const device float *weights [[buffer(2)]],
+    device float *dst           [[buffer(3)]],
+    constant uint &dim          [[buffer(4)]],
+    constant uint &n_slots      [[buffer(5)]],
+    uint gid [[thread_position_in_grid]])
+{
+    const uint total = n_slots * dim;
+    if (gid >= total) return;
+    const uint slot = gid / dim;
+    const uint d = gid % dim;
+    dst[indices[slot] * dim + d] += weights[slot] * src[gid];
+}
+
+// ---------------------------------------------------------------------------
+// argmax_f32 — GPU-side argmax for greedy (temperature=0) decode.
+//
+// Finds the index and value of the maximum element in an f32 buffer, avoiding
+// the need to read back 248K+ logit floats to the CPU.
+//
+// Single threadgroup dispatch: TG = 1024.
+// Phase 1: each thread scans ceil(n / TG) elements for a local max.
+// Phase 2: within-simdgroup reduction via simd_max + simd_shuffle.
+// Phase 3: cross-simdgroup reduction in threadgroup memory; thread 0 writes.
+// ---------------------------------------------------------------------------
+kernel void argmax_f32(
+    device const float* data   [[buffer(0)]],
+    device uint*  result_idx   [[buffer(1)]],
+    device float* result_val   [[buffer(2)]],
+    constant uint& n           [[buffer(3)]],
+    uint tid                   [[thread_index_in_threadgroup]],
+    uint simd_lane             [[thread_index_in_simdgroup]],
+    uint simd_id               [[simdgroup_index_in_threadgroup]])
+{
+    constexpr uint TG = 1024;
+    constexpr uint N_SIMD = TG / 32;  // 32 simdgroups
+
+    // Phase 1: each thread finds its local max over a strided chunk.
+    float local_max = -INFINITY;
+    uint local_idx = 0;
+    for (uint i = tid; i < n; i += TG) {
+        float v = data[i];
+        if (v > local_max) {
+            local_max = v;
+            local_idx = i;
+        }
+    }
+
+    // Phase 2: within-simdgroup reduction.
+    // Find the simdgroup-wide maximum value.
+    float sg_max = simd_max(local_max);
+    // Identify which lane holds the max (ties: take lowest lane index).
+    bool is_max_lane = (local_max == sg_max);
+    uint max_lane = simd_min(is_max_lane ? simd_lane : 32u);
+    uint sg_idx = simd_shuffle(local_idx, max_lane);
+
+    // Phase 3: cross-simdgroup reduction via threadgroup memory.
+    threadgroup float sg_maxvals[N_SIMD];
+    threadgroup uint  sg_maxidxs[N_SIMD];
+    if (simd_lane == 0) {
+        sg_maxvals[simd_id] = sg_max;
+        sg_maxidxs[simd_id] = sg_idx;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Thread 0 reduces across all simdgroups and writes the result.
+    if (tid == 0) {
+        float best_val = sg_maxvals[0];
+        uint best_idx = sg_maxidxs[0];
+        for (uint s = 1; s < N_SIMD; s++) {
+            if (sg_maxvals[s] > best_val) {
+                best_val = sg_maxvals[s];
+                best_idx = sg_maxidxs[s];
+            }
+        }
+        *result_idx = best_idx;
+        *result_val = best_val;
+    }
+}
