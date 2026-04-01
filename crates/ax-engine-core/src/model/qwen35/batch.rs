@@ -1836,17 +1836,18 @@ impl Qwen35Forward {
                                 kv_dim,
                             );
                         }
-                        // Access hidden buffer via UMA for CPU layer processing.
-                        {
-                            let mut bs_guard = metal_ops.batch_scratches();
-                            let Some(bs) = bs_guard.as_mut() else {
+                        // Access hidden buffer via UMA (drop guard to avoid
+                        // deadlock with inner batch_scratches locks).
+                        let hidden_ptr = {
+                            let bs_guard = metal_ops.batch_scratches();
+                            let Some(bs) = bs_guard.as_ref() else {
                                 return fallback("moe_fa_missing_batch_scratches");
                             };
+                            bs.hidden.contents().as_ptr() as *mut f32
+                        };
+                        {
                             let hidden = unsafe {
-                                std::slice::from_raw_parts_mut(
-                                    bs.hidden.contents().as_ptr() as *mut f32,
-                                    n_tokens * dim,
-                                )
+                                std::slice::from_raw_parts_mut(hidden_ptr, n_tokens * dim)
                             };
                             let full_attn_params =
                                 AttentionParams::new(n_heads, n_kv_heads, head_dim);
@@ -1859,15 +1860,44 @@ impl Qwen35Forward {
                             let mut attn_out_batch = vec![0.0f32; n_tokens * q_dim];
                             let mut proj_buf = vec![0.0f32; n_tokens * dim];
 
-                            Self::apply_attention_norm_batch(
-                                weights,
-                                &prefix,
-                                hidden,
-                                &mut norm_buf,
-                                n_tokens,
-                                dim,
-                                eps,
+                            // Batch projections into 1 CB via try_norm_and_project_batch_gpu.
+                            let input_plan = Self::full_attention_input_plan(
+                                weights, &prefix, q_dim, kv_dim,
                             )?;
+                            let gpu_projected = match &input_plan {
+                                Qwen35FullAttentionInputPlan::Split(ops) => {
+                                    let mut outs: [&mut [f32]; 3] = [
+                                        &mut q_gate_batch,
+                                        &mut k_batch,
+                                        &mut v_batch,
+                                    ];
+                                    Self::try_norm_and_project_batch_gpu(
+                                        cfg,
+                                        backend,
+                                        weights,
+                                        &prefix,
+                                        hidden,
+                                        &mut norm_buf,
+                                        ops,
+                                        &mut outs,
+                                        n_tokens,
+                                        dim,
+                                        eps,
+                                    )?
+                                }
+                                _ => false,
+                            };
+                            if !gpu_projected {
+                                Self::apply_attention_norm_batch(
+                                    weights,
+                                    &prefix,
+                                    hidden,
+                                    &mut norm_buf,
+                                    n_tokens,
+                                    dim,
+                                    eps,
+                                )?;
+                            }
                             Self::run_full_attention_batch_layer(
                                 cfg,
                                 backend,
@@ -1892,10 +1922,13 @@ impl Qwen35Forward {
                                 n_kv_heads,
                                 head_dim,
                                 &full_attn_params,
-                                false, // not gpu_projected
+                                gpu_projected,
                             )?;
                             // Apply residual + MoE FFN.
                             silu::elementwise_add(hidden, &proj_buf);
+                            let mut ffn_gate = vec![0.0f32; n_tokens * inter_dim];
+                            let mut ffn_up = vec![0.0f32; n_tokens * inter_dim];
+                            let mut ffn_down = vec![0.0f32; n_tokens * dim];
                             Self::apply_post_attention_ffn_batch(
                                 cfg,
                                 backend,
@@ -1903,9 +1936,9 @@ impl Qwen35Forward {
                                 &prefix,
                                 hidden,
                                 &mut norm_buf,
-                                &mut q_gate_batch, // reuse as gate_buf
-                                &mut q_batch,      // reuse as up_buf
-                                &mut proj_buf,     // reuse as down_buf
+                                &mut ffn_gate,
+                                &mut ffn_up,
+                                &mut ffn_down,
                                 n_tokens,
                                 dim,
                                 inter_dim,
@@ -1994,17 +2027,17 @@ impl Qwen35Forward {
                         if let Some(frame) = inflight.take() {
                             metal_ops.device.wait_frame(frame)?;
                         }
-                        // Access hidden buffer via UMA.
-                        {
-                            let mut bs_guard = metal_ops.batch_scratches();
-                            let Some(bs) = bs_guard.as_mut() else {
+                        // Access hidden buffer via UMA (drop guard for inner locks).
+                        let rec_hidden_ptr = {
+                            let bs_guard = metal_ops.batch_scratches();
+                            let Some(bs) = bs_guard.as_ref() else {
                                 return fallback("moe_rec_missing_batch_scratches");
                             };
+                            bs.hidden.contents().as_ptr() as *mut f32
+                        };
+                        {
                             let hidden = unsafe {
-                                std::slice::from_raw_parts_mut(
-                                    bs.hidden.contents().as_ptr() as *mut f32,
-                                    n_tokens * dim,
-                                )
+                                std::slice::from_raw_parts_mut(rec_hidden_ptr, n_tokens * dim)
                             };
                             let mut norm_buf = vec![0.0f32; n_tokens * dim];
                             let mut rec_qkv = vec![0.0f32; n_tokens * dims.conv_dim()];
@@ -2014,15 +2047,39 @@ impl Qwen35Forward {
                             let mut rec_out = vec![0.0f32; n_tokens * dims.inner_size];
                             let mut proj_buf = vec![0.0f32; n_tokens * dim];
 
-                            Self::apply_attention_norm_batch(
+                            // Batch recurrent projections into 1 CB.
+                            let input_ops =
+                                Self::recurrent_input_ops(weights, &prefix, dims)?;
+                            let mut rec_outs: [&mut [f32]; 4] = [
+                                &mut rec_qkv,
+                                &mut rec_z,
+                                &mut rec_beta,
+                                &mut rec_alpha,
+                            ];
+                            let gpu_projected = Self::try_norm_and_project_batch_gpu(
+                                cfg,
+                                backend,
                                 weights,
                                 &prefix,
                                 hidden,
                                 &mut norm_buf,
+                                &input_ops,
+                                &mut rec_outs,
                                 n_tokens,
                                 dim,
                                 eps,
                             )?;
+                            if !gpu_projected {
+                                Self::apply_attention_norm_batch(
+                                    weights,
+                                    &prefix,
+                                    hidden,
+                                    &mut norm_buf,
+                                    n_tokens,
+                                    dim,
+                                    eps,
+                                )?;
+                            }
                             Self::run_recurrent_batch_layer(
                                 cfg,
                                 backend,
@@ -2043,9 +2100,12 @@ impl Qwen35Forward {
                                 &mut proj_buf,
                                 n_tokens,
                                 dim,
-                                false, // skip_input_projections = false
+                                gpu_projected, // skip projections if already done on GPU
                             )?;
-                            // Apply residual + MoE FFN.
+                            // Apply residual + MoE FFN with properly-sized buffers.
+                            let mut rec_ffn_gate = vec![0.0f32; n_tokens * inter_dim];
+                            let mut rec_ffn_up = vec![0.0f32; n_tokens * inter_dim];
+                            let mut rec_ffn_down = vec![0.0f32; n_tokens * dim];
                             Self::apply_layer_tail_batch(
                                 cfg,
                                 backend,
@@ -2054,9 +2114,9 @@ impl Qwen35Forward {
                                 hidden,
                                 &proj_buf,
                                 &mut norm_buf,
-                                &mut rec_qkv,  // reuse as gate_buf
-                                &mut rec_z,    // reuse as up_buf
-                                &mut rec_out,  // reuse as down_buf
+                                &mut rec_ffn_gate,
+                                &mut rec_ffn_up,
+                                &mut rec_ffn_down,
                                 n_tokens,
                                 dim,
                                 inter_dim,
