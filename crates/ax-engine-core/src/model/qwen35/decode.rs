@@ -672,13 +672,8 @@ impl Qwen35Forward {
             return Ok(false);
         };
         let cfg = ctx.config;
-        // MoE single-token decode (both GPU and CPU paths) produces incorrect
-        // output — expert weight tensor layout handling needs investigation.
-        // Disable GPU decode for MoE; CPU path also has the same issue but
-        // at least doesn't crash.
-        if Self::qwen35_is_moe(cfg) {
-            return Ok(false);
-        }
+        // MoE single-token GPU decode uses the same mul_mat_id expert
+        // dispatch as batch prefill.
         let qwen_kv = kv
             .as_qwen35_mut()
             .ok_or_else(|| anyhow::anyhow!("Qwen35Forward requires ModelKv::Qwen35"))?;

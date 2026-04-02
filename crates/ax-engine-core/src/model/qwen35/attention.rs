@@ -447,6 +447,23 @@ impl Qwen35Forward {
         let (expert_ids, expert_weights) =
             crate::model::qwen3_moe::top_k_softmax(&router_logits, n_expert_used);
 
+        if std::env::var("AX_DEBUG_MOE").is_ok() {
+            let top5: Vec<(usize, f32)> = {
+                let mut indexed: Vec<(usize, f32)> = router_logits.iter().copied().enumerate().collect();
+                indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+                indexed.into_iter().take(5).collect()
+            };
+            eprintln!(
+                "[MOE DEBUG] {prefix}: norm_buf[0..4]={:?} router_top5={:?} expert_ids={:?} expert_weights={:?} expert_inter_dim={} dim={}",
+                &norm_buf[..4.min(norm_buf.len())],
+                top5,
+                expert_ids,
+                expert_weights,
+                cfg.expert_intermediate_dim.unwrap_or(0),
+                dim,
+            );
+        }
+
         let gate_exps_name = format!("{prefix}.ffn_gate_exps.weight");
         let up_exps_name = format!("{prefix}.ffn_up_exps.weight");
         let down_exps_name = format!("{prefix}.ffn_down_exps.weight");
@@ -472,11 +489,10 @@ impl Qwen35Forward {
         let shared_up_name = format!("{prefix}.ffn_up_shexp.weight");
         let shared_down_name = format!("{prefix}.ffn_down_shexp.weight");
         let shared_gate_inp_name = format!("{prefix}.ffn_gate_inp_shexp.weight");
-        let shared_inter_dim = if weights.has(&shared_gate_name) {
-            Self::tensor_output_rows(weights, &shared_gate_name)?
-        } else {
-            shared_inter_dim_hint
-        };
+        // Use the hint from caller (cfg.intermediate_dim or shared_expert_intermediate_dim).
+        // Don't infer from tensor_output_rows — the GGUF tensor shape [dim, inter_dim]
+        // has dim as the first dimension, not inter_dim.
+        let shared_inter_dim = shared_inter_dim_hint;
         let max_inter_dim = expert_inter_dim.max(shared_inter_dim.max(1));
         let mut gate_buf = vec![0.0f32; max_inter_dim];
         let mut up_buf = vec![0.0f32; max_inter_dim];
@@ -513,6 +529,18 @@ impl Qwen35Forward {
                 1,
                 dim,
             );
+
+            if std::env::var("AX_DEBUG_MOE").is_ok() && i == 0 {
+                let gate_sum: f32 = gate_buf[..expert_inter_dim].iter().map(|v| v.abs()).sum();
+                let up_sum: f32 = up_buf[..expert_inter_dim].iter().map(|v| v.abs()).sum();
+                eprintln!(
+                    "[MOE DEBUG] {prefix} expert[{eid}]: gate_abs_sum={gate_sum:.4} up_abs_sum={up_sum:.4} gate[0..4]={:?} up[0..4]={:?} gate_stride={gate_stride} expert_slice_len={}",
+                    &gate_buf[..4.min(expert_inter_dim)],
+                    &up_buf[..4.min(expert_inter_dim)],
+                    expert_gate.len(),
+                );
+            }
+
             silu::silu_elementwise_mul(
                 &mut gate_buf[..expert_inter_dim],
                 &up_buf[..expert_inter_dim],
@@ -526,6 +554,15 @@ impl Qwen35Forward {
                 1,
                 expert_inter_dim,
             );
+
+            if std::env::var("AX_DEBUG_MOE").is_ok() && i == 0 {
+                let down_sum: f32 = down_buf.iter().map(|v| v.abs()).sum();
+                eprintln!(
+                    "[MOE DEBUG] {prefix} expert[{eid}] down_abs_sum={down_sum:.4} down[0..4]={:?}",
+                    &down_buf[..4.min(dim)],
+                );
+            }
+
             for (dst, src) in expert_accum.iter_mut().zip(down_buf.iter()) {
                 *dst += expert_weights[i] * src;
             }
@@ -572,10 +609,12 @@ impl Qwen35Forward {
                 let (shared_gate_inp_raw, shared_gate_inp_dtype) =
                     weights.raw_with_dtype(&shared_gate_inp_name)?;
                 let mut shared_gate_buf = vec![0.0f32; gate_rows];
+                // llama.cpp computes the shared expert gate from the PRE-norm
+                // hidden state (before FFN norm), not from norm_buf.
                 cpu.dequant_matmul(
                     shared_gate_inp_raw,
                     shared_gate_inp_dtype,
-                    norm_buf,
+                    hidden,
                     &mut shared_gate_buf,
                     gate_rows,
                     1,
