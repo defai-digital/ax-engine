@@ -4935,7 +4935,7 @@ impl MetalOps {
         let blocks_per_expert_gate = gate_stride / 144;
         let blocks_per_expert_down = down_stride / 144;
 
-        // SINGLE CB: RMSNorm + router + GPU softmax+topk + map0 + mul_mat_id + scatter + residual.
+        // Encode MoE FFN in a single CB.
         {
             let cache = self.moe_quant_cache.lock().unwrap();
             let rbuf = cache.get(&router_key_local).unwrap();

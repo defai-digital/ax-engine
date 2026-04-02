@@ -55,6 +55,26 @@ fn ensure_matching_moe_dtypes(
     Ok(gate_dtype)
 }
 
+fn qwen3_moe_has_shared_expert(
+    gate: Option<usize>,
+    up: Option<usize>,
+    down: Option<usize>,
+) -> bool {
+    gate.is_some() || up.is_some() || down.is_some()
+}
+
+fn qwen3_moe_gpu_resident_supported(
+    router_dtype: GgmlType,
+    expert_dtype: GgmlType,
+    has_shared_expert: bool,
+) -> bool {
+    matches!(
+        router_dtype,
+        GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0
+    ) && matches!(expert_dtype, GgmlType::Q4K)
+        && !has_shared_expert
+}
+
 /// Softmax over all experts, then select top-k.
 /// Matches llama.cpp: softmax(all logits) → argsort_top_k → extract weights.
 pub(crate) fn top_k_softmax(logits: &[f32], k: usize) -> (Vec<usize>, Vec<f32>) {
@@ -445,6 +465,62 @@ impl ForwardPass for Qwen3MoeForward {
 
 #[cfg(target_os = "macos")]
 impl Qwen3MoeForward {
+    #[allow(clippy::too_many_arguments)]
+    fn run_moe_ffn_gpu_resident(
+        metal_ops: &MetalOps,
+        weights: &WeightStore,
+        cfg: &ModelConfig,
+        prefix: &str,
+        hidden_gpu: &ax_engine_metal::MetalBuffer,
+        n_tokens: usize,
+        dim: usize,
+        expert_inter_dim: usize,
+        eps: f32,
+    ) -> anyhow::Result<()> {
+        let ffn_norm_w = weights.f32_slice(&format!("{prefix}.ffn_norm.weight"))?;
+        let (router_raw, router_dtype) =
+            weights.raw_with_dtype(&format!("{prefix}.ffn_gate_inp.weight"))?;
+        let (gate_raw, gate_dtype) =
+            weights.raw_with_dtype(&format!("{prefix}.ffn_gate_exps.weight"))?;
+        let (up_raw, up_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_up_exps.weight"))?;
+        let (down_raw, down_dtype) =
+            weights.raw_with_dtype(&format!("{prefix}.ffn_down_exps.weight"))?;
+        let expert_dtype = ensure_matching_moe_dtypes(gate_dtype, up_dtype, down_dtype, "expert")?;
+        let has_shared_expert = weights.has(&format!("{prefix}.ffn_gate_shexp.weight"))
+            || weights.has(&format!("{prefix}.ffn_up_shexp.weight"))
+            || weights.has(&format!("{prefix}.ffn_down_shexp.weight"));
+        anyhow::ensure!(
+            qwen3_moe_gpu_resident_supported(router_dtype, expert_dtype, has_shared_expert),
+            "qwen3 resident MoE fast path requires a supported router dtype, Q4_K experts, and no shared expert tensors",
+        );
+
+        let n_expert = cfg.n_expert.unwrap() as usize;
+        let n_expert_used = cfg.n_expert_used.unwrap() as usize;
+        let gate_stride = expert_byte_stride(expert_dtype, expert_inter_dim * dim);
+        let up_stride = expert_byte_stride(expert_dtype, expert_inter_dim * dim);
+        let down_stride = expert_byte_stride(expert_dtype, dim * expert_inter_dim);
+
+        metal_ops.moe_ffn_gpu_resident(
+            hidden_gpu,
+            ffn_norm_w,
+            router_raw,
+            router_dtype,
+            gate_raw,
+            up_raw,
+            down_raw,
+            expert_dtype,
+            n_tokens,
+            n_expert,
+            n_expert_used,
+            dim,
+            expert_inter_dim,
+            gate_stride,
+            up_stride,
+            down_stride,
+            eps,
+        )
+    }
+
     /// Build and cache expert weight MetalBuffers (first call only).
     fn build_cached_model_keys_moe(
         metal_ops: &MetalOps,
@@ -647,10 +723,11 @@ impl Qwen3MoeForward {
         Ok(())
     }
 
-    /// GPU decode: two command buffers per token.
-    /// CB1: attention + FFN norm + router → commit + wait
-    /// CPU: read router_logits, top-k selection
-    /// CB2: per-expert FFN (fused) + shared expert + residual + output head
+    /// GPU decode path.
+    ///
+    /// Supported Q4_K expert layouts without shared experts use the resident
+    /// MoE fast path after attention. Other layouts fall back to the older
+    /// router-readback path.
     #[allow(clippy::too_many_arguments)]
     fn forward_single_gpu(
         &self,
@@ -678,6 +755,7 @@ impl Qwen3MoeForward {
         let eps = cfg.rms_norm_eps;
 
         metal_ops.init_scratches(cfg);
+        metal_ops.init_batch_scratches(cfg, 1);
         let scratch_guard = metal_ops.scratches();
         let s = scratch_guard.as_ref().unwrap();
 
@@ -718,6 +796,16 @@ impl Qwen3MoeForward {
 
         for layer in 0..n_layers {
             let lw = &cached.layers[layer];
+            let prefix = format!("blk.{layer}");
+            let use_gpu_resident_moe = qwen3_moe_gpu_resident_supported(
+                lw.moe_router_dtype.unwrap(),
+                lw.moe_expert_dtype.unwrap(),
+                qwen3_moe_has_shared_expert(
+                    lw.moe_shared_gate,
+                    lw.moe_shared_up,
+                    lw.moe_shared_down,
+                ),
+            );
 
             // ═══════════════════════════════════════════════════════════════
             // CB1: Attention + FFN norm + router matvec
@@ -911,33 +999,50 @@ impl Qwen3MoeForward {
                     dim as u32,
                 );
                 decode_barrier(encoder);
-                let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
-                metal_ops.elementwise.encode_rms_norm_out(
-                    encoder,
-                    &s.hidden,
-                    ffn_nw,
-                    &s.norm_buf,
-                    dim as u32,
-                    eps,
-                );
-                decode_barrier(encoder);
+                if !use_gpu_resident_moe {
+                    let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
+                    metal_ops.elementwise.encode_rms_norm_out(
+                        encoder,
+                        &s.hidden,
+                        ffn_nw,
+                        &s.norm_buf,
+                        dim as u32,
+                        eps,
+                    );
+                    decode_barrier(encoder);
 
-                // Router matvec
-                let router_w = weight_cache.get(&lw.moe_router.unwrap()).unwrap();
-                encode_dequant_matvec_with_config(
-                    metal_ops,
-                    encoder,
-                    router_w,
-                    &s.norm_buf,
-                    &s.down_buf,
-                    n_expert as u32,
-                    dim as u32,
-                    lw.moe_router_dtype.unwrap(),
-                    exec_plan.dequant_dispatch,
-                );
+                    // Router matvec
+                    let router_w = weight_cache.get(&lw.moe_router.unwrap()).unwrap();
+                    encode_dequant_matvec_with_config(
+                        metal_ops,
+                        encoder,
+                        router_w,
+                        &s.norm_buf,
+                        &s.down_buf,
+                        n_expert as u32,
+                        dim as u32,
+                        lw.moe_router_dtype.unwrap(),
+                        exec_plan.dequant_dispatch,
+                    );
+                }
 
                 Ok(())
             })?;
+
+            if use_gpu_resident_moe {
+                Self::run_moe_ffn_gpu_resident(
+                    metal_ops,
+                    weights,
+                    cfg,
+                    &prefix,
+                    &s.hidden,
+                    1,
+                    dim,
+                    expert_inter_dim,
+                    eps,
+                )?;
+                continue;
+            }
 
             // ═══════════════════════════════════════════════════════════════
             // CPU: Read router logits, top-k selection
@@ -1171,36 +1276,37 @@ impl Qwen3MoeForward {
                     dim as u32,
                 );
 
-                // Output head on last layer
-                if layer + 1 == n_layers {
-                    decode_barrier(encoder);
-                    let out_norm = weight_cache.get(&cached.output_norm).unwrap();
-                    metal_ops.elementwise.encode_rms_norm_out(
-                        encoder,
-                        &s.hidden,
-                        out_norm,
-                        &s.norm_buf,
-                        dim as u32,
-                        eps,
-                    );
-                    decode_barrier(encoder);
-                    let lm_head = weight_cache.get(&cached.lm_head).unwrap();
-                    encode_dequant_matvec_with_config(
-                        metal_ops,
-                        encoder,
-                        lm_head,
-                        &s.norm_buf,
-                        &s.logits_buf,
-                        vocab_size as u32,
-                        dim as u32,
-                        cached.lm_head_dtype,
-                        exec_plan.dequant_dispatch,
-                    );
-                }
-
                 Ok(())
             })?;
         }
+
+        metal_ops.device.execute_sync(|encoder| {
+            let out_norm = weight_cache.get(&cached.output_norm).unwrap();
+            metal_ops.elementwise.encode_rms_norm_out(
+                encoder,
+                &s.hidden,
+                out_norm,
+                &s.norm_buf,
+                dim as u32,
+                eps,
+            );
+            if exec_plan.barriers == crate::model::execution_plan::DecodeBarrierPlan::Explicit {
+                ax_engine_metal::barrier_buffers(encoder);
+            }
+            let lm_head = weight_cache.get(&cached.lm_head).unwrap();
+            encode_dequant_matvec_with_config(
+                metal_ops,
+                encoder,
+                lm_head,
+                &s.norm_buf,
+                &s.logits_buf,
+                vocab_size as u32,
+                dim as u32,
+                cached.lm_head_dtype,
+                exec_plan.dequant_dispatch,
+            );
+            Ok(())
+        })?;
 
         gpu_kv.finalize_token();
 
@@ -1323,11 +1429,21 @@ impl Qwen3MoeForward {
 
         for layer in 0..n_layers {
             let lw = &cached.layers[layer];
+            let prefix = format!("blk.{layer}");
+            let use_gpu_resident_moe = qwen3_moe_gpu_resident_supported(
+                lw.moe_router_dtype.unwrap(),
+                lw.moe_expert_dtype.unwrap(),
+                qwen3_moe_has_shared_expert(
+                    lw.moe_shared_gate,
+                    lw.moe_shared_up,
+                    lw.moe_shared_down,
+                ),
+            );
             let (rope_start, rope_step) = cfg.rope_scaling.scaled_start_step(base_seq_len);
             let cache_offset = (base_seq_len * kv_dim) as u32;
 
             // ══════════════════════════════════════════════════════════
-            // CB1: Batched attention + FFN norm + router matmul
+            // CB1: Batched attention + residual, with router prep only on fallback
             // ══════════════════════════════════════════════════════════
             metal_ops.device.execute_sync(|encoder| {
                 let nt = n_tokens as u32;
@@ -1546,43 +1662,87 @@ impl Qwen3MoeForward {
                 );
                 ax_engine_metal::barrier_buffers(encoder);
 
-                // Residual + FFN norm: hidden += proj_buf; norm_buf = RMSNorm(hidden)
-                let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
-                metal_ops
-                    .elementwise
-                    .encode_residual_add_rms_norm_out_batch(
+                if use_gpu_resident_moe {
+                    metal_ops.elementwise.encode_elementwise_add_batch(
                         encoder,
                         &bs.hidden,
                         &bs.proj_buf,
-                        ffn_nw,
-                        &bs.norm_buf,
                         dim as u32,
                         nt,
-                        eps,
                     );
-                ax_engine_metal::barrier_buffers(encoder);
+                } else {
+                    // Residual + FFN norm: hidden += proj_buf; norm_buf = RMSNorm(hidden)
+                    let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
+                    metal_ops
+                        .elementwise
+                        .encode_residual_add_rms_norm_out_batch(
+                            encoder,
+                            &bs.hidden,
+                            &bs.proj_buf,
+                            ffn_nw,
+                            &bs.norm_buf,
+                            dim as u32,
+                            nt,
+                            eps,
+                        );
+                    ax_engine_metal::barrier_buffers(encoder);
 
-                // Router matmul: [n_tokens × n_expert] → reuse bs.proj_buf
-                let router_w = weight_cache.get(&lw.moe_router.unwrap()).unwrap();
-                encode_dequant_batch(
-                    &metal_ops.dequant,
-                    &metal_ops.elementwise,
-                    encoder,
-                    router_w,
-                    &bs.norm_buf,
-                    &bs.proj_buf,
-                    &bs.matmul_in_f16,
-                    n_expert as u32,
-                    nt,
-                    dim as u32,
-                    lw.moe_router_dtype.unwrap(),
-                    false,
-                    prefill_plan.use_batch_simd,
-                    false,
-                );
+                    // Router matmul: [n_tokens × n_expert] → reuse bs.proj_buf
+                    let router_w = weight_cache.get(&lw.moe_router.unwrap()).unwrap();
+                    encode_dequant_batch(
+                        &metal_ops.dequant,
+                        &metal_ops.elementwise,
+                        encoder,
+                        router_w,
+                        &bs.norm_buf,
+                        &bs.proj_buf,
+                        &bs.matmul_in_f16,
+                        n_expert as u32,
+                        nt,
+                        dim as u32,
+                        lw.moe_router_dtype.unwrap(),
+                        false,
+                        prefill_plan.use_batch_simd,
+                        false,
+                    );
+                }
 
                 Ok(())
             })?;
+
+            if use_gpu_resident_moe {
+                Self::run_moe_ffn_gpu_resident(
+                    metal_ops,
+                    weights,
+                    cfg,
+                    &prefix,
+                    &bs.hidden,
+                    n_tokens,
+                    dim,
+                    expert_inter_dim,
+                    eps,
+                )?;
+
+                if layer + 1 < n_layers {
+                    let next_norm_w = weight_cache
+                        .get(&cached.layers[layer + 1].attn_norm)
+                        .unwrap();
+                    metal_ops.device.execute_sync(|encoder| {
+                        metal_ops.elementwise.encode_rms_norm_out_batch(
+                            encoder,
+                            &bs.hidden,
+                            next_norm_w,
+                            &bs.norm_buf,
+                            dim as u32,
+                            n_tokens as u32,
+                            eps,
+                        );
+                        Ok(())
+                    })?;
+                }
+
+                continue;
+            }
 
             // ─── CPU: Read router logits + per-token top-k ───
             {
@@ -1604,7 +1764,7 @@ impl Qwen3MoeForward {
                 .collect();
 
             // ══════════════════════════════════════════════════════════
-            // CB2: Per-token expert FFN + shared expert + residual
+            // CB2: Fallback per-token expert FFN + shared expert + residual
             // ══════════════════════════════════════════════════════════
             metal_ops.device.execute_sync(|encoder| {
                 let expert_gate_keys = lw.moe_expert_gate.as_ref().unwrap();
@@ -1940,6 +2100,30 @@ mod tests {
             .expect_err("mixed MoE dtypes should be rejected");
         assert!(err.to_string().contains("gate=Q4K"));
         assert!(err.to_string().contains("up=Q5K"));
+    }
+
+    #[test]
+    fn test_qwen3_moe_gpu_resident_supported_requires_q4k_experts_and_no_shared_expert() {
+        assert!(qwen3_moe_gpu_resident_supported(
+            GgmlType::Q4K,
+            GgmlType::Q4K,
+            false,
+        ));
+        assert!(qwen3_moe_gpu_resident_supported(
+            GgmlType::Q8_0,
+            GgmlType::Q4K,
+            false,
+        ));
+        assert!(!qwen3_moe_gpu_resident_supported(
+            GgmlType::Q4K,
+            GgmlType::Q5K,
+            false,
+        ));
+        assert!(!qwen3_moe_gpu_resident_supported(
+            GgmlType::Q4K,
+            GgmlType::Q4K,
+            true,
+        ));
     }
 
     #[test]
