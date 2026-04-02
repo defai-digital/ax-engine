@@ -378,13 +378,14 @@ AX values are median of 5 iterations (2 warmup). llama.cpp values are
 | Gemma 3 12B | Q4_K_M | 432 tok/s | 44.6 tok/s | 495 tok/s | 40.2 tok/s | 87% | **111%** |
 | Qwen3.5 27B | Q4_K_M | 191 tok/s | 17.4 tok/s | 209 tok/s | 17.6 tok/s | 91% | 99% |
 | Qwen3 32B | Q4_K_M | 156 tok/s | 17.6 tok/s | 160 tok/s | 16.2 tok/s | 97% | **109%** |
-| Qwen3.5 35B-A3B | Q4_K_M | 195 tok/s | 7.3 tok/s | 1,194 tok/s | 55.3 tok/s | 16% | 13% |
+| Qwen3.5 35B-A3B | Q4_K_M | 340 tok/s | 7.3 tok/s | 1,194 tok/s | 55.3 tok/s | 28% | 13% |
 
 Qwen3.5 35B-A3B uses `mul_mat_id` with 64×32 blocked half-precision tiles
-for unified MoE expert dispatch. Prefill improved 38× from the initial
-baseline (5.1 → 195 tok/s) via batched-by-expert routing, single-CB
-encoding, compact expert grid, and half-precision simdgroup compute.
-Decode remains CPU-bound (MoE guard prevents GPU unified decode path).
+and GPU-resident hidden buffer (pre-allocated MoE scratch buffers). Prefill
+improved 67× from the initial baseline (5.1 → 340 tok/s) via unified
+expert dispatch, single-CB encoding, and elimination of per-layer
+upload/download. Decode remains CPU-bound (MoE guard prevents GPU unified
+decode path).
 
 AX decode exceeds llama.cpp on models where the fused decode path (concurrent
 Metal dispatch, fused QKV+RoPE+KV-append, fused residual+RMSNorm) provides
