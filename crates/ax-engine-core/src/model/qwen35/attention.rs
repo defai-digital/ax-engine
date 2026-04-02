@@ -894,13 +894,8 @@ impl Qwen35Forward {
         expert_inter_dim: usize,
     ) -> anyhow::Result<bool> {
         let n_expert = expert_map.len();
-        let n_expert_used = expert_map
-            .iter()
-            .filter(|a| !a.is_empty())
-            .map(|_| 1usize)
-            .sum::<usize>()
-            .min(1)
-            .max(1); // Will be overridden below.
+        // n_expert_used is computed dynamically below from max_experts_per_token.
+        let _n_expert_used: usize = 1;
 
         // Rebuild flat expert_ids and expert_weights from expert_map.
         // expert_ids[token * neu + slot] = expert_id (i32)
@@ -929,12 +924,10 @@ impl Qwen35Forward {
             let mut slot = 0;
             for (eid, assignments) in expert_map.iter().enumerate() {
                 for &(t, w) in assignments {
-                    if t == token_idx {
-                        if slot < neu {
-                            expert_ids[token_idx * neu + slot] = eid as i32;
-                            expert_weights_flat[token_idx * neu + slot] = w;
-                            slot += 1;
-                        }
+                    if t == token_idx && slot < neu {
+                        expert_ids[token_idx * neu + slot] = eid as i32;
+                        expert_weights_flat[token_idx * neu + slot] = w;
+                        slot += 1;
                     }
                 }
             }

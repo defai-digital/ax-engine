@@ -3662,7 +3662,9 @@ impl MetalOps {
 
     fn supports_q8_kv(fingerprint: &ModelFingerprint) -> bool {
         let kv_stride = fingerprint.n_kv_heads.saturating_mul(fingerprint.head_dim);
-        kv_stride > 0 && kv_stride % 32 == 0 && matches!(fingerprint.head_dim, 64 | 128 | 256)
+        kv_stride > 0
+            && kv_stride.is_multiple_of(32)
+            && matches!(fingerprint.head_dim, 64 | 128 | 256)
     }
 
     fn estimated_attention_kv_layers(fingerprint: &ModelFingerprint) -> u64 {
@@ -3720,6 +3722,11 @@ impl MetalOps {
                         threadgroup_size: 64,
                         rows_per_simdgroup: 2,
                         variant: Some(MatvecProfileVariant::Nr2),
+                    },
+                    MatvecParams {
+                        threadgroup_size: 64,
+                        rows_per_simdgroup: 1,
+                        variant: Some(MatvecProfileVariant::Ilp4),
                     },
                     MatvecParams {
                         threadgroup_size: 256,
@@ -3967,6 +3974,7 @@ impl MetalOps {
             GgmlType::Q4K => {
                 config.q4_k_threadgroup_size = config_params.threadgroup_size as usize;
                 config.q4_k_rows_per_simdgroup = config_params.rows_per_simdgroup;
+                config.q4_k_variant = config_params.variant;
             }
             GgmlType::Q5K => {
                 config.q5_k_rows_per_simdgroup = config_params.rows_per_simdgroup;
@@ -4701,14 +4709,14 @@ impl MetalOps {
         gate_exps_raw: &[u8],
         up_exps_raw: &[u8],
         down_exps_raw: &[u8],
-        gate_dtype: GgmlType,
+        _gate_dtype: GgmlType,
         n_tokens: usize,
         n_expert: usize,
         n_expert_used: usize,
         dim: usize,
         expert_inter_dim: usize,
         gate_stride: usize,
-        up_stride: usize,
+        _up_stride: usize,
         down_stride: usize,
         shared_expert: Option<&SharedExpertWeights<'_>>,
     ) -> anyhow::Result<()> {
@@ -4750,8 +4758,10 @@ impl MetalOps {
         unsafe {
             input_gpu.as_mut_slice::<f32>()[..n_tokens * dim].copy_from_slice(norm_buf);
             accum_gpu.as_mut_slice::<f32>()[..n_tokens * dim].fill(0.0);
-            let ids_u8: &[u8] =
-                std::slice::from_raw_parts(expert_ids.as_ptr() as *const u8, expert_ids.len() * i4);
+            let ids_u8: &[u8] = std::slice::from_raw_parts(
+                expert_ids.as_ptr() as *const u8,
+                std::mem::size_of_val(expert_ids),
+            );
             std::ptr::copy_nonoverlapping(
                 ids_u8.as_ptr(),
                 ids_gpu.as_mut_slice::<u8>().as_mut_ptr(),
@@ -4765,8 +4775,8 @@ impl MetalOps {
         let mut tok_idx_buf = MetalBuffer::new(dev, n_tokens * n_expert_used * u4)?;
         unsafe {
             let s = tok_idx_buf.as_mut_slice::<u32>();
-            for i in 0..(n_tokens * n_expert_used) {
-                s[i] = (i / n_expert_used) as u32;
+            for (i, slot) in s.iter_mut().take(n_tokens * n_expert_used).enumerate() {
+                *slot = (i / n_expert_used) as u32;
             }
         }
 
@@ -4849,7 +4859,7 @@ impl MetalOps {
                 &gate_out_gpu,
                 &up_out_gpu,
                 m_inter,
-                (nt * neu) as u32,
+                nt * neu,
             );
 
             // Stage 4: Down matmul — down_out = down_weights × gate_out (routed).
@@ -4899,60 +4909,33 @@ impl MetalOps {
                 &weights_gpu,
                 &accum_gpu,
                 m_dim,
-                (nt * neu) as u32,
+                nt * neu,
             );
 
-            // Helper for shared expert fused batch dequant.
-            let se_encode = |enc: &ax_engine_metal::MetalEncoder,
-                             w: &MetalBuffer,
-                             b: &MetalBuffer,
-                             c: &MetalBuffer,
-                             m: u32,
-                             n: u32,
-                             k: u32,
-                             dt: GgmlType| {
-                match dt {
-                    GgmlType::Q4K => self.dequant.encode_fused_batch_q4_k(enc, w, b, c, m, n, k),
-                    GgmlType::Q5K => self.dequant.encode_fused_batch_q5_k(enc, w, b, c, m, n, k),
-                    GgmlType::Q6K => self.dequant.encode_fused_batch_q6_k(enc, w, b, c, m, n, k),
-                    GgmlType::Q8_0 => self.dequant.encode_fused_batch_q8_0(enc, w, b, c, m, n, k),
-                    _ => {}
-                }
-            };
-
-            // Stage 6: Shared expert (fused into same CB).
+            // Stage 6: Shared expert (fused into same CB when provided).
             if let Some(se) = shared_expert {
                 let se_inter = se.inter_dim as u32;
-                let se_gate_key = se.gate_raw.as_ptr() as usize;
-                let se_up_key = se.up_raw.as_ptr() as usize;
-                let se_down_key = se.down_raw.as_ptr() as usize;
+                let se_gw = cache.get(&(se.gate_raw.as_ptr() as usize)).unwrap();
+                let se_uw = cache.get(&(se.up_raw.as_ptr() as usize)).unwrap();
+                let se_dw = cache.get(&(se.down_raw.as_ptr() as usize)).unwrap();
 
-                let se_gate_w = cache.get(&se_gate_key).unwrap();
-                let se_up_w = cache.get(&se_up_key).unwrap();
-                let se_down_w = cache.get(&se_down_key).unwrap();
-
-                // Shared expert uses the same input (norm_buf via input_gpu).
-                // Reuse gate_out_gpu/up_out_gpu for shared expert intermediates
-                // (same or smaller dims since shared_inter_dim ≤ expert_inter_dim typically).
-                encode_dequant_matmul(
+                self.dequant.encode_fused_batch_q4_k(
                     encoder,
-                    se_gate_w,
+                    se_gw,
                     &input_gpu,
                     &gate_out_gpu,
                     se_inter,
                     nt,
                     m_dim,
-                    se.dtype,
                 );
-                encode_dequant_matmul(
+                self.dequant.encode_fused_batch_q4_k(
                     encoder,
-                    se_up_w,
+                    se_uw,
                     &input_gpu,
                     &up_out_gpu,
                     se_inter,
                     nt,
                     m_dim,
-                    se.dtype,
                 );
                 self.elementwise.encode_silu_elementwise_mul_batch(
                     encoder,
@@ -4961,40 +4944,16 @@ impl MetalOps {
                     se_inter,
                     nt,
                 );
-                encode_dequant_matmul(
+                self.dequant.encode_fused_batch_q4_k(
                     encoder,
-                    se_down_w,
+                    se_dw,
                     &gate_out_gpu,
                     &down_out_gpu,
                     m_dim,
                     nt,
                     se_inter,
-                    se.dtype,
                 );
-
-                // Optional: sigmoid gate.
-                if let Some(gate_inp_raw) = se.gate_inp_raw {
-                    let gi_key = gate_inp_raw.as_ptr() as usize;
-                    let gi_w = cache.get(&gi_key).unwrap();
-                    // gate_logits: [n_tokens, gate_rows] — reuse up_out_gpu.
-                    let gate_rows = se.gate_inp_rows as u32;
-                    encode_dequant_matmul(
-                        encoder,
-                        gi_w,
-                        &input_gpu,
-                        &up_out_gpu,
-                        gate_rows,
-                        nt,
-                        m_dim,
-                        se.dtype,
-                    );
-                    // Sigmoid + elementwise mul on down_out_gpu.
-                    // sigmoid(up_out_gpu[t]) → multiply into down_out_gpu[t*dim..]
-                    // For simplicity, use per-token sigmoid + scale on CPU after download.
-                    // TODO: add GPU sigmoid_gate kernel for full fusion.
-                }
-
-                // Add shared expert output to accum.
+                // TODO: sigmoid gate (se.gate_inp_raw) — handled on CPU for now.
                 self.elementwise.encode_elementwise_add_batch(
                     encoder,
                     &accum_gpu,
@@ -5035,7 +4994,7 @@ impl MetalOps {
     ///
     /// `expert_assignments[eid]` = `(indices: &[u32], weights: &[f32])` for each
     /// active expert. `norm_buf_gpu` is the input, `accum_gpu` is output.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub fn moe_expert_batch_single_cb(
         &self,
         norm_buf: &[f32],
