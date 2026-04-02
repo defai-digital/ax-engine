@@ -384,16 +384,6 @@ pub(super) fn build_qwen35_full_attention_prefill_schedule(
     let ffn_norm = weight_cache
         .get(&cached_layer.ffn_norm)
         .context("missing qwen35 FFN norm buffer")?;
-    let wg = weight_cache
-        .get(&cached_layer.wg)
-        .context("missing qwen35 WG buffer")?;
-    let wu = weight_cache
-        .get(&cached_layer.wu)
-        .context("missing qwen35 WU buffer")?;
-    let wd = weight_cache
-        .get(&cached_layer.wd)
-        .context("missing qwen35 WD buffer")?;
-
     let qkv_uses_f16 = qwen35_prefill_projection_needs_f16_input(cached_layer.wq_dtype)
         || qwen35_prefill_projection_needs_f16_input(cached_layer.wk_dtype)
         || qwen35_prefill_projection_needs_f16_input(cached_layer.wv_dtype);
@@ -573,6 +563,16 @@ pub(super) fn build_qwen35_full_attention_prefill_schedule(
         q_dim as u32,
         cached_layer.wo_dtype,
     );
+
+    let wg = weight_cache
+        .get(&cached_layer.wg)
+        .context("missing qwen35 WG buffer")?;
+    let wu = weight_cache
+        .get(&cached_layer.wu)
+        .context("missing qwen35 WU buffer")?;
+    let wd = weight_cache
+        .get(&cached_layer.wd)
+        .context("missing qwen35 WD buffer")?;
 
     ops.push(PrefillOp::ResidualAddRmsNormOutBatch {
         hidden: br(&bs.hidden),

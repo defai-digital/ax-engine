@@ -2929,36 +2929,25 @@ fn apply_microbench_recommendations(profile: &mut KernelProfile, suite: &Microbe
 
 fn apply_decode_matvec_recommendations(profile: &mut KernelProfile, suite: &MicrobenchSuiteResult) {
     if let Some(q4_variant) = recommended_matvec_variant(suite, "q4_k") {
-        let params = profile.decode_matvec.entry("q4_k".to_string()).or_default();
-        match q4_variant.as_str() {
-            "nr2" => {
-                params.threadgroup_size = 64;
-                params.rows_per_simdgroup = 2;
-            }
-            "tg256" => {
-                params.threadgroup_size = 256;
-                params.rows_per_simdgroup = 1;
-            }
-            _ => {
-                params.threadgroup_size = 128;
-                params.rows_per_simdgroup = 1;
-            }
-        }
+        apply_decode_matvec_recommendation(profile, "q4_k", &q4_variant);
     }
-
     if let Some(q6_variant) = recommended_matvec_variant(suite, "q6_k") {
-        let params = profile.decode_matvec.entry("q6_k".to_string()).or_default();
-        match q6_variant.as_str() {
-            "nr2" => {
-                params.threadgroup_size = 64;
-                params.rows_per_simdgroup = 2;
-            }
-            _ => {
-                params.threadgroup_size = 128;
-                params.rows_per_simdgroup = 1;
-            }
-        }
+        apply_decode_matvec_recommendation(profile, "q6_k", &q6_variant);
     }
+}
+
+fn apply_decode_matvec_recommendation(profile: &mut KernelProfile, quant: &str, variant: &str) {
+    let params = profile.decode_matvec.entry(quant.to_string()).or_default();
+    let (threadgroup_size, rows_per_simdgroup) = match (quant, variant) {
+        ("q4_k", "nr2") => (64, 2),
+        ("q4_k", "tg256") => (256, 1),
+        ("q4_k", _) => (128, 1),
+        ("q6_k", "nr2") => (64, 2),
+        ("q6_k", _) => (128, 1),
+        _ => return,
+    };
+    params.threadgroup_size = threadgroup_size;
+    params.rows_per_simdgroup = rows_per_simdgroup;
 }
 
 fn apply_decode_attention_recommendations(

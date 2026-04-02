@@ -7,19 +7,20 @@ fn env_lock() -> MutexGuard<'static, ()> {
 }
 
 struct EnvVarRestore {
-    key: String,
-    previous: Option<OsString>,
+    values: Vec<(String, Option<OsString>)>,
 }
 
 impl Drop for EnvVarRestore {
     fn drop(&mut self) {
-        match &self.previous {
-            Some(prev) => unsafe {
-                std::env::set_var(&self.key, prev);
-            },
-            None => unsafe {
-                std::env::remove_var(&self.key);
-            },
+        for (key, previous) in self.values.iter().rev() {
+            match previous {
+                Some(prev) => unsafe {
+                    std::env::set_var(key, prev);
+                },
+                None => unsafe {
+                    std::env::remove_var(key);
+                },
+            }
         }
     }
 }
@@ -27,11 +28,31 @@ impl Drop for EnvVarRestore {
 fn with_env_var<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
     let _guard = env_lock();
     let _restore = EnvVarRestore {
-        key: key.to_string(),
-        previous: std::env::var_os(key),
+        values: vec![(key.to_string(), std::env::var_os(key))],
     };
     unsafe {
         std::env::set_var(key, value);
+    }
+    f()
+}
+
+fn with_env_vars<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
+    let _guard = env_lock();
+    let _restore = EnvVarRestore {
+        values: vars
+            .iter()
+            .map(|(key, _)| ((*key).to_string(), std::env::var_os(key)))
+            .collect(),
+    };
+    for (key, value) in vars {
+        match value {
+            Some(value) => unsafe {
+                std::env::set_var(key, value);
+            },
+            None => unsafe {
+                std::env::remove_var(key);
+            },
+        }
     }
     f()
 }
@@ -45,36 +66,107 @@ fn test_q5k_is_supported_gpu_prefill_quant() {
 
 #[test]
 fn test_q5k_prefill_variant_override_parses_known_values() {
-    assert_eq!(
-        q5k_prefill_variant_override(),
-        Q5KPrefillVariantOverride::Auto
+    with_env_vars(
+        &[
+            ("AX_METAL_Q5K_PREFILL_VARIANT", Some("auto")),
+            ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", None),
+        ],
+        || {
+            assert_eq!(
+                q5k_prefill_variant_override(),
+                Q5KPrefillVariantOverride::Auto
+            );
+        },
     );
-    with_env_var("AX_METAL_Q5K_PREFILL_VARIANT", "base", || {
-        assert_eq!(
-            q5k_prefill_variant_override(),
-            Q5KPrefillVariantOverride::Base
-        );
-    });
-    with_env_var("AX_METAL_Q5K_PREFILL_VARIANT", "small", || {
-        assert_eq!(
-            q5k_prefill_variant_override(),
-            Q5KPrefillVariantOverride::Small
-        );
-    });
-    with_env_var("AX_METAL_Q5K_PREFILL_VARIANT", "auto", || {
-        assert_eq!(
-            q5k_prefill_variant_override(),
-            Q5KPrefillVariantOverride::Auto
-        );
-    });
+    with_env_vars(
+        &[
+            ("AX_METAL_Q5K_PREFILL_VARIANT", Some("base")),
+            ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", None),
+        ],
+        || {
+            assert_eq!(
+                q5k_prefill_variant_override(),
+                Q5KPrefillVariantOverride::Base
+            );
+        },
+    );
+    with_env_vars(
+        &[
+            ("AX_METAL_Q5K_PREFILL_VARIANT", Some("small")),
+            ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", None),
+        ],
+        || {
+            assert_eq!(
+                q5k_prefill_variant_override(),
+                Q5KPrefillVariantOverride::Small
+            );
+        },
+    );
+    with_env_vars(
+        &[
+            ("AX_METAL_Q5K_PREFILL_VARIANT", Some("auto")),
+            ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", Some("small")),
+        ],
+        || {
+            // Primary variant override takes precedence when present.
+            assert_eq!(
+                q5k_prefill_variant_override(),
+                Q5KPrefillVariantOverride::Auto
+            );
+        },
+    );
+    with_env_vars(
+        &[
+            ("AX_METAL_Q5K_PREFILL_VARIANT", None),
+            ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", None),
+        ],
+        || {
+            assert_eq!(
+                q5k_prefill_variant_override(),
+                Q5KPrefillVariantOverride::Auto
+            );
+        },
+    );
 }
 
 #[test]
 fn test_q5k_prefill_variant_override_accepts_legacy_env_alias() {
-    with_env_var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", "small", || {
+    with_env_vars(
+        &[
+            ("AX_METAL_Q5K_PREFILL_VARIANT", None),
+            ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", Some("small")),
+        ],
+        || {
+            assert_eq!(
+                q5k_prefill_variant_override(),
+                Q5KPrefillVariantOverride::Small
+            );
+        },
+    );
+}
+
+#[test]
+fn test_q5k_prefill_variant_override_ignores_legacy_alias_when_primary_is_set() {
+    with_env_vars(
+        &[
+            ("AX_METAL_Q5K_PREFILL_VARIANT", Some("base")),
+            ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", Some("small")),
+        ],
+        || {
+            assert_eq!(
+                q5k_prefill_variant_override(),
+                Q5KPrefillVariantOverride::Base
+            );
+        },
+    );
+}
+
+#[test]
+fn test_q5k_prefill_variant_override_rejects_unknown_values() {
+    with_env_var("AX_METAL_Q5K_PREFILL_VARIANT", "invalid", || {
         assert_eq!(
             q5k_prefill_variant_override(),
-            Q5KPrefillVariantOverride::Small
+            Q5KPrefillVariantOverride::Auto
         );
     });
 }

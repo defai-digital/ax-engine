@@ -1124,7 +1124,6 @@ impl Qwen35Forward {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// GPU-accelerated batch Q/K preparation: Q extraction + QK norm + RoPE.
     ///
     /// Replaces `prepare_full_attention_qk_batch` per-token CPU loops with

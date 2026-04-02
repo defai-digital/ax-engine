@@ -113,6 +113,53 @@ enum Qwen35GpuLayerKeys {
     Recurrent(Qwen35RecurrentLayerKeys),
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Qwen35SharedExpertResidentKeys {
+    pub(crate) gate: usize,
+    pub(crate) up: usize,
+    pub(crate) down: usize,
+    pub(crate) gate_inp: Option<usize>,
+    pub(crate) gate_inp_dtype: Option<crate::gguf::tensor::GgmlType>,
+    pub(crate) dtype: crate::gguf::tensor::GgmlType,
+    pub(crate) inter_dim: usize,
+    pub(crate) gate_inp_rows: usize,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Qwen35MoeResidentLayerKeys {
+    pub(crate) router: usize,
+    pub(crate) router_dtype: crate::gguf::tensor::GgmlType,
+    pub(crate) gate: usize,
+    pub(crate) gate_dtype: crate::gguf::tensor::GgmlType,
+    pub(crate) up: usize,
+    pub(crate) up_dtype: crate::gguf::tensor::GgmlType,
+    pub(crate) down: usize,
+    pub(crate) down_dtype: crate::gguf::tensor::GgmlType,
+    pub(crate) n_expert: usize,
+    pub(crate) n_expert_used: usize,
+    pub(crate) expert_inter_dim: usize,
+    pub(crate) gate_stride: usize,
+    pub(crate) up_stride: usize,
+    pub(crate) down_stride: usize,
+    pub(crate) shared_expert: Option<Qwen35SharedExpertResidentKeys>,
+}
+
+type Qwen35GpuLayerKeysCache = Mutex<HashMap<usize, Arc<[Qwen35GpuLayerKeys]>>>;
+type Qwen35MoeLayerKeysCache = Mutex<HashMap<usize, Arc<[Option<Qwen35MoeResidentLayerKeys>]>>>;
+type Qwen35DecodePlanCache =
+    Mutex<HashMap<Qwen35DecodePlanCacheKey, crate::model::execution_plan::GpuDecodeExecutionPlan>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Qwen35DecodePlanCacheKey {
+    metal_ops: usize,
+    attend_len: usize,
+    embedding_dim: u32,
+    head_dim: u32,
+    kv_f16: bool,
+    kv_q8: bool,
+    pipelined: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Qwen35LayerType {
     FullAttention,
@@ -378,8 +425,18 @@ impl Qwen35Forward {
             .clone()
     }
 
-    fn gpu_layer_keys_cache() -> &'static Mutex<HashMap<usize, Arc<[Qwen35GpuLayerKeys]>>> {
-        static CACHE: OnceLock<Mutex<HashMap<usize, Arc<[Qwen35GpuLayerKeys]>>>> = OnceLock::new();
+    fn gpu_layer_keys_cache() -> &'static Qwen35GpuLayerKeysCache {
+        static CACHE: OnceLock<Qwen35GpuLayerKeysCache> = OnceLock::new();
+        CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn moe_layer_keys_cache() -> &'static Qwen35MoeLayerKeysCache {
+        static CACHE: OnceLock<Qwen35MoeLayerKeysCache> = OnceLock::new();
+        CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn decode_plan_cache() -> &'static Qwen35DecodePlanCache {
+        static CACHE: OnceLock<Qwen35DecodePlanCache> = OnceLock::new();
         CACHE.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
@@ -391,12 +448,83 @@ impl Qwen35Forward {
         cache.insert(model_key, Arc::<[Qwen35GpuLayerKeys]>::from(layer_keys));
     }
 
+    fn store_moe_layer_keys(model_key: usize, layer_keys: Vec<Option<Qwen35MoeResidentLayerKeys>>) {
+        let cache = Self::moe_layer_keys_cache();
+        let mut cache = cache
+            .lock()
+            .expect("qwen35 moe layer keys cache should not be poisoned");
+        cache.insert(
+            model_key,
+            Arc::<[Option<Qwen35MoeResidentLayerKeys>]>::from(layer_keys),
+        );
+    }
+
     fn cached_gpu_layer_keys(model_key: usize) -> Option<Arc<[Qwen35GpuLayerKeys]>> {
         let cache = Self::gpu_layer_keys_cache();
         let cache = cache
             .lock()
             .expect("qwen35 gpu layer keys cache should not be poisoned");
         cache.get(&model_key).cloned()
+    }
+
+    fn cached_moe_layer_keys(
+        model_key: usize,
+    ) -> Option<Arc<[Option<Qwen35MoeResidentLayerKeys>]>> {
+        let cache = Self::moe_layer_keys_cache();
+        let cache = cache
+            .lock()
+            .expect("qwen35 moe layer keys cache should not be poisoned");
+        cache.get(&model_key).cloned()
+    }
+
+    fn qwen35_decode_plan(
+        metal_ops: &crate::backend::metal::MetalOps,
+        gpu_kv: &crate::kv::GpuKv,
+        embedding_dim: u32,
+        head_dim: u32,
+        attend_len: usize,
+        pipelined: bool,
+    ) -> crate::model::execution_plan::GpuDecodeExecutionPlan {
+        let key = Qwen35DecodePlanCacheKey {
+            metal_ops: metal_ops as *const crate::backend::metal::MetalOps as usize,
+            attend_len,
+            embedding_dim,
+            head_dim,
+            kv_f16: gpu_kv.is_f16(),
+            kv_q8: gpu_kv.is_q8(),
+            pipelined,
+        };
+        let cache = Self::decode_plan_cache();
+        if let Some(plan) = cache
+            .lock()
+            .expect("qwen35 decode plan cache should not be poisoned")
+            .get(&key)
+            .copied()
+        {
+            return plan;
+        }
+        let plan = if pipelined {
+            crate::model::execution_plan::DecodeExecutionPlan::qwen35_pipelined(
+                metal_ops,
+                gpu_kv,
+                embedding_dim,
+                head_dim,
+                attend_len,
+            )
+        } else {
+            crate::model::execution_plan::DecodeExecutionPlan::qwen35_single_cb(
+                metal_ops,
+                gpu_kv,
+                embedding_dim,
+                head_dim,
+                attend_len,
+            )
+        };
+        cache
+            .lock()
+            .expect("qwen35 decode plan cache should not be poisoned")
+            .insert(key, plan);
+        plan
     }
 
     fn assert_finite_if_enabled(
@@ -663,9 +791,18 @@ impl Qwen35Forward {
     ) -> anyhow::Result<()> {
         use crate::backend::metal::{CachedLayerKeys, CachedModelKeys};
 
+        let dim = cfg.embedding_dim as usize;
+        let n_heads = cfg.n_heads as usize;
+        let n_kv_heads = cfg.n_kv_heads as usize;
+        let head_dim = cfg.head_dim as usize;
+        let inter_dim = cfg.intermediate_dim as usize;
+        let q_dim = n_heads * head_dim;
+        let kv_dim = n_kv_heads * head_dim;
+        let recurrent_dims = Self::recurrent_dims(cfg)?;
         let n_layers = cfg.n_layers as usize;
         let mut layers = Vec::with_capacity(n_layers);
         let mut layer_types = Vec::with_capacity(n_layers);
+        let mut moe_layer_keys = Vec::with_capacity(n_layers);
 
         for layer in 0..n_layers {
             let prefix = format!("blk.{layer}");
@@ -681,6 +818,13 @@ impl Qwen35Forward {
             // MoE layers lack dense FFN tensors — use sentinel key 0 and handle
             // the MoE FFN on CPU during the forward pass.
             let layer_is_moe = Self::qwen35_layer_uses_moe(weights, &prefix);
+            let moe_layer_key = Self::qwen35_moe_resident_layer_keys(
+                metal_ops,
+                cfg,
+                weights,
+                &prefix,
+                cfg.embedding_dim as usize,
+            )?;
             let (wg_key, wg_dtype, wu_key, wu_dtype, wd_key, wd_dtype) = if layer_is_moe {
                 // MoE layer: no dense FFN weights to cache.
                 // Use sentinel key 0 (never looked up — the per-layer encoding
@@ -700,11 +844,33 @@ impl Qwen35Forward {
                     weights.raw_with_dtype(&format!("{prefix}.ffn_up.weight"))?;
                 let (wd_raw, wd_dtype) =
                     weights.raw_with_dtype(&format!("{prefix}.ffn_down.weight"))?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wg_raw,
+                    wg_dtype,
+                    inter_dim as u32,
+                    dim as u32,
+                )?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wu_raw,
+                    wu_dtype,
+                    inter_dim as u32,
+                    dim as u32,
+                )?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wd_raw,
+                    wd_dtype,
+                    dim as u32,
+                    inter_dim as u32,
+                )?;
                 let wg_key = metal_ops.ensure_quant_cached(wg_raw);
                 let wu_key = metal_ops.ensure_quant_cached(wu_raw);
                 let wd_key = metal_ops.ensure_quant_cached(wd_raw);
                 (wg_key, wg_dtype, wu_key, wu_dtype, wd_key, wd_dtype)
             };
+            moe_layer_keys.push(moe_layer_key);
 
             if is_recurrent {
                 // Recurrent layer: attn_qkv, attn_gate, ssm_* weights.
@@ -718,6 +884,41 @@ impl Qwen35Forward {
                     weights.raw_with_dtype(&format!("{prefix}.ssm_alpha.weight"))?;
                 let (wssm_out_raw, wssm_out_dtype) =
                     weights.raw_with_dtype(&format!("{prefix}.ssm_out.weight"))?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wqkv_raw,
+                    wqkv_dtype,
+                    recurrent_dims.conv_dim() as u32,
+                    dim as u32,
+                )?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wgate_raw,
+                    wgate_dtype,
+                    recurrent_dims.inner_size as u32,
+                    dim as u32,
+                )?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wbeta_raw,
+                    wbeta_dtype,
+                    recurrent_dims.time_step_rank as u32,
+                    dim as u32,
+                )?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    walpha_raw,
+                    walpha_dtype,
+                    recurrent_dims.time_step_rank as u32,
+                    dim as u32,
+                )?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wssm_out_raw,
+                    wssm_out_dtype,
+                    dim as u32,
+                    recurrent_dims.inner_size as u32,
+                )?;
                 let wqkv_key = metal_ops.ensure_quant_cached(wqkv_raw);
                 let wgate_key = metal_ops.ensure_quant_cached(wgate_raw);
                 let wbeta_key = metal_ops.ensure_quant_cached(wbeta_raw);
@@ -798,6 +999,34 @@ impl Qwen35Forward {
                     weights.raw_with_dtype(&format!("{prefix}.attn_v.weight"))?;
                 let (wo_raw, wo_dtype) =
                     weights.raw_with_dtype(&format!("{prefix}.attn_output.weight"))?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wq_raw,
+                    wq_dtype,
+                    (q_dim * 2) as u32,
+                    dim as u32,
+                )?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wk_raw,
+                    wk_dtype,
+                    kv_dim as u32,
+                    dim as u32,
+                )?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wv_raw,
+                    wv_dtype,
+                    kv_dim as u32,
+                    dim as u32,
+                )?;
+                Self::prepare_qwen35_batch_projection_weight(
+                    metal_ops,
+                    wo_raw,
+                    wo_dtype,
+                    dim as u32,
+                    q_dim as u32,
+                )?;
                 let wq_key = metal_ops.ensure_quant_cached(wq_raw);
                 let wk_key = metal_ops.ensure_quant_cached(wk_raw);
                 let wv_key = metal_ops.ensure_quant_cached(wv_raw);
@@ -857,6 +1086,7 @@ impl Qwen35Forward {
             lm_head_dtype: lm_dtype,
         });
         Self::store_gpu_layer_keys(lm_key, layer_types);
+        Self::store_moe_layer_keys(lm_key, moe_layer_keys);
 
         Ok(())
     }

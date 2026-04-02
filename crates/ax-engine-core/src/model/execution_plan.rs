@@ -256,6 +256,16 @@ pub struct DecodeExecutionPlan {
     pub gpu: Option<GpuDecodeExecutionPlan>,
 }
 
+fn kv_precision_label(kv_f16: bool, kv_q8: bool) -> &'static str {
+    if kv_q8 {
+        "q8_0"
+    } else if kv_f16 {
+        "f16"
+    } else {
+        "f32"
+    }
+}
+
 impl DecodeExecutionPlan {
     pub fn for_model(
         model: &LlamaModel,
@@ -823,7 +833,7 @@ impl DecodeExecutionPlan {
         if let Some(gpu) = &self.gpu {
             parts.push(format!("barriers={}", gpu.barriers.label()));
             parts.push(format!("qkv={}", gpu.qkv.label()));
-            parts.push(format!("kv={}", if gpu.kv_f16 { "f16" } else { "f32" }));
+            parts.push(format!("kv={}", kv_precision_label(gpu.kv_f16, gpu.kv_q8)));
             parts.push(format!(
                 "attn={}/{}",
                 gpu.attention_route, gpu.attention_tier
@@ -1062,7 +1072,7 @@ impl GpuBatchPrefillExecutionPlan {
     pub fn summary_label(self, mode: &str, attention_route: &str) -> String {
         let mut summary = format!(
             "mode={mode} kv={} f16_io={} pair={} qkv={} batch_simd={} split_rope={} attn={} window={} wo_in={} attn_route={}",
-            if self.kv_f16 { "f16" } else { "f32" },
+            kv_precision_label(self.kv_f16, self.kv_q8),
             if self.use_f16_batch_io { "on" } else { "off" },
             if self.use_f16_pair { "on" } else { "off" },
             if self.use_fused_qkv { "fused" } else { "split" },
@@ -1179,13 +1189,8 @@ fn single_cb_gpu_decode_plan(
     head_dim: u32,
     attend_len: usize,
 ) -> GpuDecodeExecutionPlan {
-    let decode_profile = metal_ops
-        .runtime_policy()
-        .kernel_profile()
-        .effective_decode_profile(attend_len as u32);
-    let attention_dispatch =
-        ax_engine_metal::AttentionDispatchConfig::from_profile(&decode_profile);
-    let dequant_dispatch = ax_engine_metal::DequantDispatchConfig::from_profile(&decode_profile);
+    let (dequant_dispatch, attention_dispatch) =
+        metal_ops.decode_dispatch_configs_for_attend_len(attend_len as u32);
     let q4_k_selection = metal_ops
         .dequant
         .q4_k_matvec_candidate_with_config(embedding_dim, dequant_dispatch);
@@ -1463,7 +1468,7 @@ mod tests {
     }
 
     impl EnvVarRestore {
-        fn many(vars: &[(&str, &str)]) -> Self {
+        fn many(vars: &[(&str, Option<&str>)]) -> Self {
             Self {
                 values: vars
                     .iter()
@@ -1488,12 +1493,17 @@ mod tests {
         }
     }
 
-    fn with_env_vars<T>(vars: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+    fn with_env_vars<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
         let _guard = env_lock();
         let _restore = EnvVarRestore::many(vars);
         for (key, value) in vars {
-            unsafe {
-                std::env::set_var(key, value);
+            match value {
+                Some(value) => unsafe {
+                    std::env::set_var(key, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(key);
+                },
             }
         }
         f()
@@ -1667,6 +1677,41 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_execution_plan_summary_label_reports_q8_kv() {
+        let plan = DecodeExecutionPlan {
+            selection: DecodeSelection {
+                intent: DecodeIntent::Latency,
+                mode: DecodeMode::SingleCb,
+                fallback_reason: None,
+            },
+            sync: DecodeSyncPlan::SingleCommandBuffer,
+            scratch: DecodeScratchPlan::SharedGpuScratch,
+            gpu: Some(GpuDecodeExecutionPlan {
+                encoder: DecodeEncoderPlan::Serial,
+                barriers: DecodeBarrierPlan::Implicit,
+                qkv: DecodeQkvPlan::Fused,
+                kv_f16: false,
+                kv_q8: true,
+                use_pair_matvec: false,
+                use_fused_silu_down: false,
+                attention_route: "splitk_hd256",
+                attention_tier: "profile_preferred",
+                q4_k_candidate: "q4_k.nr2",
+                q4_k_tier: "profile_preferred",
+                q5_k_candidate: "q5_k.base",
+                q5_k_tier: "stable",
+                q6_k_candidate: "q6_k.base",
+                q6_k_tier: "stable",
+                dequant_dispatch: ax_engine_metal::DequantDispatchConfig::default(),
+                attention_dispatch: ax_engine_metal::AttentionDispatchConfig::default(),
+            }),
+        };
+
+        let summary = plan.summary_label();
+        assert!(summary.contains("kv=q8_0"));
+    }
+
+    #[test]
     fn test_decode_qkv_plan_for_qwen3_uses_decode_fused_toggle() {
         let plan = decode_qkv_plan_for_arch("qwen3", false, true);
         assert_eq!(plan, DecodeQkvPlan::Fused);
@@ -1781,7 +1826,7 @@ mod tests {
     #[test]
     fn test_decode_barrier_plan_for_qwen35_defaults_implicit() {
         let _guard = env_lock();
-        let _restore = EnvVarRestore::many(&[("AX_METAL_DECODE_BARRIERS", "")]);
+        let _restore = EnvVarRestore::many(&[("AX_METAL_DECODE_BARRIERS", Some(""))]);
         unsafe {
             std::env::remove_var("AX_METAL_DECODE_BARRIERS");
         }
@@ -1791,7 +1836,7 @@ mod tests {
 
     #[test]
     fn test_decode_barrier_plan_for_qwen35_respects_env_override() {
-        let plan = with_env_vars(&[("AX_METAL_DECODE_BARRIERS", "on")], || {
+        let plan = with_env_vars(&[("AX_METAL_DECODE_BARRIERS", Some("on"))], || {
             decode_barrier_plan_for_arch("qwen35")
         });
         assert_eq!(plan, DecodeBarrierPlan::Explicit);
@@ -1871,8 +1916,13 @@ mod tests {
             return;
         };
 
-        let plan =
-            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 8, 128, 4096, true, true);
+        let plan = with_env_vars(
+            &[
+                ("AX_METAL_Q5K_PREFILL_VARIANT", None),
+                ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", None),
+            ],
+            || DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 8, 128, 4096, true, true),
+        );
         assert!(!plan.use_f16_batch_io);
         assert!(!plan.use_f16_pair);
         assert!(!plan.use_batch_simd);
@@ -1898,8 +1948,13 @@ mod tests {
             return;
         };
 
-        let plan =
-            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 16, 128, 4096, true, true);
+        let plan = with_env_vars(
+            &[
+                ("AX_METAL_Q5K_PREFILL_VARIANT", None),
+                ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", None),
+            ],
+            || DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 16, 128, 4096, true, true),
+        );
         assert!(plan.q5k_prefill);
         assert!(!plan.q5k_prefill_small_n);
         // PRD-PREFILL-DISPATCH-CONSOLIDATION: blocked kernel for all quant types.
@@ -1924,8 +1979,13 @@ mod tests {
             return;
         };
 
-        let plan =
-            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 2, 128, 4096, true, true);
+        let plan = with_env_vars(
+            &[
+                ("AX_METAL_Q5K_PREFILL_VARIANT", None),
+                ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", None),
+            ],
+            || DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 2, 128, 4096, true, true),
+        );
         assert!(plan.q5k_prefill);
         assert!(!plan.q5k_prefill_small_n);
         // PRD-PREFILL-DISPATCH-CONSOLIDATION: blocked kernel for all quant types.
@@ -1950,8 +2010,13 @@ mod tests {
             return;
         };
 
-        let plan =
-            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 16, 128, 4096, true, false);
+        let plan = with_env_vars(
+            &[
+                ("AX_METAL_Q5K_PREFILL_VARIANT", None),
+                ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", None),
+            ],
+            || DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 16, 128, 4096, true, false),
+        );
         assert!(plan.q5k_prefill);
         assert!(!plan.q5k_prefill_small_n);
         // PRD-PREFILL-DISPATCH-CONSOLIDATION: blocked kernel for all quant types.
@@ -1976,9 +2041,13 @@ mod tests {
             return;
         };
 
-        let plan = with_env_vars(&[("AX_METAL_Q5K_PREFILL_VARIANT", "base")], || {
-            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 8, 128, 4096, true, true)
-        });
+        let plan = with_env_vars(
+            &[
+                ("AX_METAL_Q5K_PREFILL_VARIANT", Some("base")),
+                ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", None),
+            ],
+            || DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 8, 128, 4096, true, true),
+        );
         assert!(plan.q5k_prefill);
         assert!(!plan.q5k_prefill_small_n);
         assert!(plan.q5k_prefill_forced_variant);
@@ -2004,9 +2073,17 @@ mod tests {
             return;
         };
 
-        let plan = with_env_vars(&[("AX_METAL_Q5K_PREFILL_VARIANT", "small")], || {
-            DecodeExecutionPlan::qwen3_prefill(metal_ops, gpu_kv, 0, 128, 128, 4096, true, false)
-        });
+        let plan = with_env_vars(
+            &[
+                ("AX_METAL_Q5K_PREFILL_VARIANT", Some("small")),
+                ("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT", None),
+            ],
+            || {
+                DecodeExecutionPlan::qwen3_prefill(
+                    metal_ops, gpu_kv, 0, 128, 128, 4096, true, false,
+                )
+            },
+        );
         assert!(plan.q5k_prefill);
         assert!(plan.q5k_prefill_small_n);
         assert!(plan.q5k_prefill_forced_variant);
@@ -2072,6 +2149,28 @@ mod tests {
         assert!(summary.contains("window=512"));
         assert!(summary.contains("wo_in=attn_f32"));
         assert!(summary.contains("attn_route=cache/stable"));
+    }
+
+    #[test]
+    fn test_gpu_batch_prefill_summary_label_reports_q8_kv() {
+        let plan = GpuBatchPrefillExecutionPlan {
+            kv_f16: false,
+            kv_q8: true,
+            use_f16_batch_io: false,
+            use_f16_pair: false,
+            use_fused_qkv: false,
+            use_batch_simd: false,
+            q5k_prefill: false,
+            q5k_prefill_small_n: false,
+            q5k_prefill_forced_variant: false,
+            split_rope_append: false,
+            attention: PrefillAttentionPlan::Cached,
+            attention_sliding_window: 0,
+            wo_input: PrefillWoInputPlan::AttentionOutF32,
+            attention_dispatch: ax_engine_metal::AttentionDispatchConfig::default(),
+        };
+        let summary = plan.summary_label("gpu_batch", "cache/stable");
+        assert!(summary.contains("kv=q8_0"));
     }
 
     #[test]

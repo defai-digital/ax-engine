@@ -499,7 +499,26 @@ impl KernelProfile {
                 return None;
             }
         };
-        let profile: KernelProfile = match serde_json::from_value(raw_json.clone()) {
+        let missing_splitk_threshold =
+            !json_has_path(&raw_json, "attention_decode.splitk_threshold");
+        let missing_prefer_f16_io = !json_has_path(&raw_json, "batch_prefill.prefer_f16_io");
+        let missing_decode_regime_short_max_attend_len =
+            !json_has_path(&raw_json, "decode_regimes.short_max_attend_len");
+        let missing_decode_regime_long_splitk_threshold = !json_has_path(
+            &raw_json,
+            "decode_regimes.long.attention_decode.splitk_threshold",
+        );
+        let missing_fa2_mode = !json_has_path(&raw_json, "attention_prefill.fa2_mode");
+        let missing_fa2_hd128_mode = !json_has_path(&raw_json, "attention_prefill.fa2_hd128_mode");
+        let missing_ax_bc64_mode = !json_has_path(&raw_json, "attention_prefill.ax_bc64_mode");
+        let missing_hd128_n2_default =
+            !json_has_path(&raw_json, "attention_decode.hd128_n2_default");
+        let missing_fa2_hd128_auto_min_tokens =
+            !json_has_path(&raw_json, "attention_prefill.fa2_hd128_auto_min_tokens");
+        let missing_ax_bc64_min_tokens =
+            !json_has_path(&raw_json, "attention_prefill.ax_bc64_min_tokens");
+
+        let profile: KernelProfile = match serde_json::from_value(raw_json) {
             Ok(profile) => profile,
             Err(e) => {
                 tracing::warn!(
@@ -517,19 +536,16 @@ impl KernelProfile {
         };
         let with_heuristics = profile.apply_missing_model_heuristics(
             &effective_model_name,
-            !json_has_path(&raw_json, "attention_decode.splitk_threshold"),
-            !json_has_path(&raw_json, "batch_prefill.prefer_f16_io"),
-            !json_has_path(&raw_json, "decode_regimes.short_max_attend_len"),
-            !json_has_path(
-                &raw_json,
-                "decode_regimes.long.attention_decode.splitk_threshold",
-            ),
-            !json_has_path(&raw_json, "attention_prefill.fa2_mode"),
-            !json_has_path(&raw_json, "attention_prefill.fa2_hd128_mode"),
-            !json_has_path(&raw_json, "attention_prefill.ax_bc64_mode"),
-            !json_has_path(&raw_json, "attention_decode.hd128_n2_default"),
-            !json_has_path(&raw_json, "attention_prefill.fa2_hd128_auto_min_tokens"),
-            !json_has_path(&raw_json, "attention_prefill.ax_bc64_min_tokens"),
+            missing_splitk_threshold,
+            missing_prefer_f16_io,
+            missing_decode_regime_short_max_attend_len,
+            missing_decode_regime_long_splitk_threshold,
+            missing_fa2_mode,
+            missing_fa2_hd128_mode,
+            missing_ax_bc64_mode,
+            missing_hd128_n2_default,
+            missing_fa2_hd128_auto_min_tokens,
+            missing_ax_bc64_min_tokens,
         );
         tracing::info!(
             path = %path.display(),

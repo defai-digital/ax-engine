@@ -2103,6 +2103,7 @@ pub struct DequantKernels {
     pub moe_map0: ComputePipeline,
     pub moe_mul_mat_id_q4_k: ComputePipeline,
     pub moe_mul_mat_id_q4_k_blocked: ComputePipeline,
+    pub moe_mul_mat_id_q5_k_blocked: ComputePipeline,
 }
 
 impl DequantKernels {
@@ -2935,6 +2936,12 @@ impl DequantKernels {
                 "moe_mul_mat_id_q4_k_blocked",
             )
             .context("Failed to compile moe_mul_mat_id_q4_k_blocked kernel")?,
+            moe_mul_mat_id_q5_k_blocked: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_id_q5_k_blocked",
+            )
+            .context("Failed to compile moe_mul_mat_id_q5_k_blocked kernel")?,
         })
     }
 
@@ -6094,6 +6101,56 @@ impl DequantKernels {
             },
         );
     }
+
+    /// Encode MoE mul_mat_id for Q5_K using the blocked 64x32 kernel.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_moe_mul_mat_id_q5_k(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        weights: &MetalBuffer,
+        input: &MetalBuffer,
+        tpe: &MetalBuffer,
+        hids: &MetalBuffer,
+        output: &MetalBuffer,
+        m: u32,
+        k: u32,
+        n_tokens: u32,
+        n_expert_used: u32,
+        _n_expert: u32,
+        weight_stride: u32,
+        active_experts: &MetalBuffer,
+        n_active_experts: u32,
+    ) {
+        encoder.setComputePipelineState(self.moe_mul_mat_id_q5_k_blocked.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(tpe.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(hids.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 4);
+        }
+        bind_u32(encoder, 5, m);
+        bind_u32(encoder, 6, k);
+        bind_u32(encoder, 7, n_tokens);
+        bind_u32(encoder, 8, n_expert_used);
+        bind_u32(encoder, 9, weight_stride);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(active_experts.mtl_buffer()), 0, 10);
+            encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n_tokens as usize).div_ceil(32),
+                height: (m as usize).div_ceil(64),
+                depth: n_active_experts as usize,
+            },
+            MTLSize {
+                width: 128,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
 }
 
 /// Threadgroup size for attention prefill kernel (must match shader constant).
@@ -7965,6 +8022,7 @@ impl GdnKernels {
     }
 
     /// Dispatch causal conv in its own command buffer (legacy wrapper).
+    #[deprecated(note = "Use encode_causal_conv_sequence with a caller-managed command buffer.")]
     #[allow(clippy::too_many_arguments)]
     pub fn causal_conv_sequence(
         &self,
@@ -7994,6 +8052,31 @@ impl GdnKernels {
             );
             Ok(())
         })
+    }
+
+    /// Encode dst[token, i] = src[token, i] * scale[token].
+    pub fn encode_broadcast_mul(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src: &MetalBuffer,
+        scale: &MetalBuffer,
+        dst: &MetalBuffer,
+        dim: u32,
+        total: u32,
+    ) {
+        let dims = DispatchDims::d1(total as usize, 256);
+        encoder.setComputePipelineState(self.broadcast_mul_f32.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(scale.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, dim);
+        bind_u32(encoder, 4, total);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -8177,6 +8260,8 @@ impl GdnKernels {
         true
     }
 
+    /// Dispatch multi-token QKV preparation in its own command buffer (legacy wrapper).
+    #[deprecated(note = "Use encode_prepare_multi_token_qkv with a caller-managed command buffer.")]
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_multi_token_qkv(
         &self,
@@ -8442,6 +8527,7 @@ impl GdnKernels {
     }
 
     /// Dispatch gated delta net in its own command buffer (legacy wrapper).
+    #[deprecated(note = "Use encode_gated_delta_sequence with a caller-managed command buffer.")]
     #[allow(clippy::too_many_arguments)]
     pub fn gated_delta_sequence(
         &self,
@@ -11686,6 +11772,7 @@ impl ElementwiseKernels {
     /// Encode GPU softmax + top-k for MoE router.
     /// router_logits: [n_tokens, n_expert]. Output: expert_ids [n_tokens, n_expert_used] i32,
     /// expert_weights [n_tokens, n_expert_used] f32.
+    #[allow(clippy::too_many_arguments)]
     pub fn encode_moe_softmax_topk(
         &self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,

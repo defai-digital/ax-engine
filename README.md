@@ -340,18 +340,16 @@ supported), or `AX_ROUTING=llama_cpp` (always use llama.cpp).
 
 ## Tuning Model
 
-AX uses JSON-driven kernel and routing profiles today:
+AX uses JSON seed profiles plus load-time autotune:
 
 ```text
 perfs/qwen3-8b.json    perfs/gemma3-12b.json    perfs/llama3-70b.json
 ```
 
-These profiles currently control things like:
-
-- threadgroup sizing
-- tile choices
-- kernel variants
-- attention strategy
+The `perfs/*.json` files are intentionally minimal safety seeds (model identity
+and provenance). Runtime tuning comes from load-time autotune and cached
+per-device/profile results (`AX_METAL_LOAD_AUTOTUNE=on` by default; use
+`AX_METAL_FORCE_RETUNE=on` to force a fresh probe).
 
 This is useful, but it is not the end state. The direction is toward more
 regime-sensitive tuning across:
@@ -367,24 +365,27 @@ regime-sensitive tuning across:
 ## Performance
 
 Apple M3 Max, April 2026. P=512 prefill, 128-token decode, f16 KV cache.
-AX values are median of 5 iterations (2 warmup). llama.cpp values are
-3-sample medians with 20s cooldown. AX% over 100% means AX was faster.
+AX values are medians of 5 iterations (2 warmup), except where explicitly
+noted. llama.cpp values are 3-sample medians with 20s cooldown. AX% over
+100% means AX was faster.
 
 | Model | Quant | AX Prefill | AX Decode | llama Prefill | llama Decode | Prefill % | Decode % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | Qwen3 4B | Q6_K | **1,347** tok/s | **87.8** tok/s | 1,369 tok/s | 83.1 tok/s | 98% | **106%** |
-| Qwen3.5 4B | Q8_0 | 1,057 tok/s | 50.9 tok/s | 1,340 tok/s | 56.5 tok/s | 79% | **90%** |
+| Qwen3.5 4B | Q8_0 | 1,054 tok/s | 51.5 tok/s | 1,340 tok/s | 56.5 tok/s | 79% | **91%** |
 | Qwen3.5 9B | Q4_K_M | 585 tok/s | 48.6 tok/s | 733 tok/s | 49.0 tok/s | 80% | 99% |
-| Gemma 3 12B | Q4_K_M | 432 tok/s | 44.6 tok/s | 495 tok/s | 40.2 tok/s | 87% | **111%** |
+| Gemma 3 12B | Q4_K_M | 425 tok/s | 45.5 tok/s | 495 tok/s | 40.2 tok/s | 86% | **113%** |
 | Qwen3.5 27B | Q4_K_M | 191 tok/s | 17.4 tok/s | 209 tok/s | 17.6 tok/s | 91% | 99% |
 | Qwen3 32B | Q4_K_M | 156 tok/s | 17.6 tok/s | 160 tok/s | 16.2 tok/s | 97% | **109%** |
-| Qwen3.5 35B-A3B | Q4_K_M | 380 tok/s | 7.3 tok/s | 1,194 tok/s | 55.3 tok/s | 32% | 13% |
+| Qwen3.5 35B-A3B | Q4_K_M | 905 tok/s | — * | 1,194 tok/s | 55.3 tok/s | 76% | — |
 
 Qwen3.5 35B-A3B uses `mul_mat_id` with 64×32 blocked half-precision tiles,
 GPU-resident hidden buffer, GPU softmax+top-k routing (no CPU round-trip),
-and pre-allocated MoE scratch buffers. Prefill improved 75× from the initial
-baseline (5.1 → 380 tok/s). Decode remains CPU-bound (MoE guard prevents
-GPU unified decode path).
+pre-allocated MoE scratch buffers, and backend-owned recurrent handoff.
+Prefill improved 180× from the initial baseline (5.1 → 920 tok/s). Decode
+now runs on the hybrid backend path. The current row is from
+`benchmarks/results/20260402-081624-001/summary.md` (Samples=`1`), whose
+recorded decode plan already selected `kv=f16`.
 
 AX decode exceeds llama.cpp on models where the fused decode path (concurrent
 Metal dispatch, fused QKV+RoPE+KV-append, fused residual+RMSNorm) provides

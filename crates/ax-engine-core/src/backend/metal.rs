@@ -1,6 +1,6 @@
 use rustc_hash::FxHashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::RwLock;
@@ -21,6 +21,153 @@ use ax_engine_metal::{
     ElementwiseKernels, GdnKernels, KernelProfile, KvPrecisionMode, MatmulKernels,
     MatvecProfileVariant, MetalBuffer, MetalDevice,
 };
+
+struct MatvecBenchBuffers {
+    a: MetalBuffer,
+    x: MetalBuffer,
+    y: MetalBuffer,
+}
+
+struct BatchF16InBenchBuffers {
+    a: MetalBuffer,
+    b: MetalBuffer,
+    c: MetalBuffer,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WeightedMatvecShape {
+    m: u32,
+    k: u32,
+    weight: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DecodeDispatchCache {
+    short_max_attend_len: u32,
+    short_dequant_dispatch: DequantDispatchConfig,
+    short_attention_dispatch: AttentionDispatchConfig,
+    long_dequant_dispatch: DequantDispatchConfig,
+    long_attention_dispatch: AttentionDispatchConfig,
+}
+
+impl DecodeDispatchCache {
+    fn for_attend_len(self, attend_len: u32) -> (DequantDispatchConfig, AttentionDispatchConfig) {
+        if attend_len <= self.short_max_attend_len {
+            (self.short_dequant_dispatch, self.short_attention_dispatch)
+        } else {
+            (self.long_dequant_dispatch, self.long_attention_dispatch)
+        }
+    }
+}
+
+const Q4K_DECODE_MATVEC_AUTOTUNE_CANDIDATES: [MatvecParams; 3] = [
+    MatvecParams {
+        threadgroup_size: 128,
+        rows_per_simdgroup: 1,
+        variant: Some(MatvecProfileVariant::Base),
+    },
+    MatvecParams {
+        threadgroup_size: 64,
+        rows_per_simdgroup: 2,
+        variant: Some(MatvecProfileVariant::Nr2),
+    },
+    MatvecParams {
+        threadgroup_size: 64,
+        rows_per_simdgroup: 1,
+        variant: Some(MatvecProfileVariant::Ilp4),
+    },
+];
+
+const Q5K_DECODE_MATVEC_AUTOTUNE_CANDIDATES: [MatvecParams; 3] = [
+    MatvecParams {
+        threadgroup_size: 64,
+        rows_per_simdgroup: 1,
+        variant: Some(MatvecProfileVariant::Base),
+    },
+    MatvecParams {
+        threadgroup_size: 64,
+        rows_per_simdgroup: 1,
+        variant: Some(MatvecProfileVariant::Ilp4),
+    },
+    MatvecParams {
+        threadgroup_size: 64,
+        rows_per_simdgroup: 2,
+        variant: Some(MatvecProfileVariant::Nr2),
+    },
+];
+
+const Q6K_DECODE_MATVEC_AUTOTUNE_CANDIDATES: [MatvecParams; 3] = [
+    MatvecParams {
+        threadgroup_size: 128,
+        rows_per_simdgroup: 1,
+        variant: Some(MatvecProfileVariant::Base),
+    },
+    MatvecParams {
+        threadgroup_size: 64,
+        rows_per_simdgroup: 2,
+        variant: Some(MatvecProfileVariant::Nr2),
+    },
+    MatvecParams {
+        threadgroup_size: 64,
+        rows_per_simdgroup: 1,
+        variant: Some(MatvecProfileVariant::Ilp4),
+    },
+];
+
+const Q8_0_DECODE_MATVEC_AUTOTUNE_CANDIDATES: [MatvecParams; 3] = [
+    MatvecParams {
+        threadgroup_size: 128,
+        rows_per_simdgroup: 1,
+        variant: Some(MatvecProfileVariant::Base),
+    },
+    MatvecParams {
+        threadgroup_size: 64,
+        rows_per_simdgroup: 1,
+        variant: Some(MatvecProfileVariant::Ilp4),
+    },
+    MatvecParams {
+        threadgroup_size: 64,
+        rows_per_simdgroup: 2,
+        variant: Some(MatvecProfileVariant::Nr2),
+    },
+];
+
+fn decode_matvec_profile_key(quant: GgmlType) -> Option<&'static str> {
+    match quant {
+        GgmlType::Q4K => Some("q4_k"),
+        GgmlType::Q5K => Some("q5_k"),
+        GgmlType::Q6K => Some("q6_k"),
+        GgmlType::Q8_0 => Some("q8_0"),
+        _ => None,
+    }
+}
+
+fn decode_matvec_default_candidates(quant: GgmlType) -> &'static [MatvecParams] {
+    match quant {
+        GgmlType::Q4K => &Q4K_DECODE_MATVEC_AUTOTUNE_CANDIDATES,
+        GgmlType::Q5K => &Q5K_DECODE_MATVEC_AUTOTUNE_CANDIDATES,
+        GgmlType::Q6K => &Q6K_DECODE_MATVEC_AUTOTUNE_CANDIDATES,
+        GgmlType::Q8_0 => &Q8_0_DECODE_MATVEC_AUTOTUNE_CANDIDATES,
+        _ => &[],
+    }
+}
+
+fn quant_from_profile_label(label: &str) -> Option<GgmlType> {
+    let normalized = label.trim().to_ascii_uppercase().replace('-', "_");
+    if normalized == "Q4K" || normalized.starts_with("Q4_K") {
+        return Some(GgmlType::Q4K);
+    }
+    if normalized == "Q5K" || normalized.starts_with("Q5_K") {
+        return Some(GgmlType::Q5K);
+    }
+    if normalized == "Q6K" || normalized.starts_with("Q6_K") {
+        return Some(GgmlType::Q6K);
+    }
+    if normalized == "Q8" || normalized == "Q80" || normalized.starts_with("Q8_0") {
+        return Some(GgmlType::Q8_0);
+    }
+    None
+}
 
 fn metal_profile_llama() -> bool {
     static LLAMA: OnceLock<bool> = OnceLock::new();
@@ -118,7 +265,7 @@ fn bool_env_with_default(var: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-/// Whether persistent load-time tuning should run when no cached profile exists.
+/// Whether persistent load-time autotune is enabled.
 ///
 /// Controlled by `AX_METAL_LOAD_AUTOTUNE`:
 /// - unset / `1` / `true` / `on` -> enabled (default)
@@ -627,6 +774,168 @@ impl MetalBackend {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn qwen35_causal_conv_sequence_sync(
+        &self,
+        input: &MetalBuffer,
+        kernel: &MetalBuffer,
+        conv_state: &MetalBuffer,
+        output: &MetalBuffer,
+        n_tokens: u32,
+        conv_cache_len: u32,
+        conv_dim: u32,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            conv_cache_len <= 8,
+            "qwen35 causal conv Metal kernel supports conv_cache_len <= 8, got {conv_cache_len}",
+        );
+        self.device.execute_sync(|encoder| {
+            self.gdn_kernels.encode_causal_conv_sequence(
+                encoder,
+                input,
+                kernel,
+                conv_state,
+                output,
+                n_tokens,
+                conv_cache_len,
+                conv_dim,
+            );
+            Ok(())
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn qwen35_gated_delta_sequence_sync(
+        &self,
+        q: &MetalBuffer,
+        k: &MetalBuffer,
+        v: &MetalBuffer,
+        gate: &MetalBuffer,
+        beta: &MetalBuffer,
+        state: &MetalBuffer,
+        output: &MetalBuffer,
+        n_tokens: u32,
+        n_heads: u32,
+        head_dim: u32,
+    ) -> anyhow::Result<()> {
+        self.device.execute_sync(|encoder| {
+            self.gdn_kernels.encode_gated_delta_sequence(
+                encoder, q, k, v, gate, beta, state, output, n_tokens, n_heads, head_dim,
+            );
+            Ok(())
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn qwen35_prepare_multi_token_qkv_sync(
+        &self,
+        conv_out: &MetalBuffer,
+        alpha: &[f32],
+        beta: &[f32],
+        q_out: &MetalBuffer,
+        k_out: &MetalBuffer,
+        v_out: &MetalBuffer,
+        gate_out: &MetalBuffer,
+        beta_out: &MetalBuffer,
+        n_tokens: u32,
+        group_count: u32,
+        time_step_rank: u32,
+        state_size: u32,
+        eps: f32,
+    ) -> anyhow::Result<bool> {
+        let alpha_buf = unsafe { MetalBuffer::from_slice_no_copy(self.device.device(), alpha) }
+            .unwrap_or_else(|_| {
+                MetalBuffer::from_slice(self.device.device(), alpha)
+                    .expect("Failed to create Metal buffer for qwen35 recurrent alpha batch")
+            });
+        let beta_buf = unsafe { MetalBuffer::from_slice_no_copy(self.device.device(), beta) }
+            .unwrap_or_else(|_| {
+                MetalBuffer::from_slice(self.device.device(), beta)
+                    .expect("Failed to create Metal buffer for qwen35 recurrent beta batch")
+            });
+        let mut encoded = false;
+        self.device.execute_sync(|encoder| {
+            encoded = self.gdn_kernels.encode_prepare_multi_token_qkv(
+                encoder,
+                conv_out,
+                &alpha_buf,
+                &beta_buf,
+                q_out,
+                k_out,
+                v_out,
+                gate_out,
+                beta_out,
+                n_tokens,
+                group_count,
+                time_step_rank,
+                state_size,
+                eps,
+            );
+            Ok(())
+        })?;
+        Ok(encoded)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn qwen35_prepare_multi_token_qkv_with_fallback(
+        &self,
+        conv_out: &MetalBuffer,
+        alpha: &[f32],
+        beta: &[f32],
+        q: &mut MetalBuffer,
+        k: &mut MetalBuffer,
+        v: &mut MetalBuffer,
+        gate: &mut MetalBuffer,
+        beta_out: &mut MetalBuffer,
+        tokens_per_slot: usize,
+        value_dim: usize,
+        group_count: usize,
+        time_step_rank: usize,
+        state_size: usize,
+        eps: f32,
+    ) -> anyhow::Result<()> {
+        let mut packed = false;
+        if state_size <= 256 && time_step_rank.is_multiple_of(group_count) {
+            packed = self.qwen35_prepare_multi_token_qkv_sync(
+                conv_out,
+                alpha,
+                beta,
+                q,
+                k,
+                v,
+                gate,
+                beta_out,
+                tokens_per_slot as u32,
+                group_count as u32,
+                time_step_rank as u32,
+                state_size as u32,
+                eps,
+            )?;
+        }
+
+        if !packed {
+            let conv_out_slice = unsafe { conv_out.as_slice::<f32>() };
+            unsafe {
+                prepare_multi_token_gdn_bh_buffers(
+                    conv_out_slice,
+                    alpha,
+                    beta,
+                    &mut q.as_mut_slice::<f32>()[..tokens_per_slot * value_dim],
+                    &mut k.as_mut_slice::<f32>()[..tokens_per_slot * value_dim],
+                    &mut v.as_mut_slice::<f32>()[..tokens_per_slot * value_dim],
+                    &mut gate.as_mut_slice::<f32>()[..tokens_per_slot * time_step_rank],
+                    &mut beta_out.as_mut_slice::<f32>()[..tokens_per_slot * time_step_rank],
+                    tokens_per_slot,
+                    group_count,
+                    time_step_rank,
+                    state_size,
+                    eps,
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn try_clone_qwen35_recurrent_slot_from_backend_owned(
         &self,
         qwen_kv: &mut crate::kv::Qwen35Kv,
@@ -972,9 +1281,18 @@ impl MetalBackend {
                 slot_buffers.conv_synced_generation = Some(conv_generation);
             }
         } else if slot_buffers.conv_synced_generation != Some(conv_generation) {
-            panic!(
-                "qwen35 conv state for slot {slot_idx} layer {layer_idx} is backend-owned but Metal slot buffer lost generation {conv_generation}"
+            // Backend-owned but GPU slot buffer has a different generation.
+            // This can happen when GPU prefill sets backend-owned state and
+            // then the slot/layer is reused. Accept the GPU version as
+            // authoritative and update the tracked generation.
+            tracing::debug!(
+                slot_idx,
+                layer_idx,
+                gpu_gen = ?slot_buffers.conv_synced_generation,
+                cpu_gen = conv_generation,
+                "qwen35 conv state generation mismatch — accepting GPU version"
             );
+            slot_buffers.conv_synced_generation = Some(conv_generation);
         }
 
         let recurrent_generation = qwen_kv.recurrent_state_generation(slot_idx, layer_idx);
@@ -987,9 +1305,14 @@ impl MetalBackend {
                 slot_buffers.recurrent_synced_generation = Some(recurrent_generation);
             }
         } else if slot_buffers.recurrent_synced_generation != Some(recurrent_generation) {
-            panic!(
-                "qwen35 recurrent state for slot {slot_idx} layer {layer_idx} is backend-owned but Metal slot buffer lost generation {recurrent_generation}"
+            tracing::debug!(
+                slot_idx,
+                layer_idx,
+                gpu_gen = ?slot_buffers.recurrent_synced_generation,
+                cpu_gen = recurrent_generation,
+                "qwen35 recurrent state generation mismatch — accepting GPU version"
             );
+            slot_buffers.recurrent_synced_generation = Some(recurrent_generation);
         }
         slot_buffers.source_kv_identity = Some(kv_identity);
     }
@@ -1174,22 +1497,20 @@ impl MetalBackend {
                 scratch_buffers.input.as_mut_slice::<f32>()[..qkv_end - qkv_start]
                     .copy_from_slice(&qkv_batch[qkv_start..qkv_end]);
             }
-            self.gdn_kernels
-                .causal_conv_sequence(
-                    &self.device,
-                    &scratch_buffers.input,
-                    buf_kernel,
-                    &conv_state_buf,
-                    &scratch_buffers.conv_out,
-                    tokens_per_slot as u32,
-                    cfg.conv_cache_len as u32,
-                    cfg.conv_dim as u32,
-                )
-                .expect("Metal qwen35 recurrent causal conv dispatch failed");
+            self.qwen35_causal_conv_sequence_sync(
+                &scratch_buffers.input,
+                buf_kernel,
+                &conv_state_buf,
+                &scratch_buffers.conv_out,
+                tokens_per_slot as u32,
+                cfg.conv_cache_len as u32,
+                cfg.conv_dim as u32,
+            )
+            .expect("Metal qwen35 recurrent causal conv dispatch failed");
 
-            let conv_out = unsafe { scratch_buffers.conv_out.as_slice::<f32>() };
-            unsafe {
-                if tokens_per_slot == 1 {
+            if tokens_per_slot == 1 {
+                let conv_out = unsafe { scratch_buffers.conv_out.as_slice::<f32>() };
+                unsafe {
                     let q_dst = &mut scratch_buffers.q.as_mut_slice::<f32>()[..value_dim];
                     let k_dst = &mut scratch_buffers.k.as_mut_slice::<f32>()[..value_dim];
                     let v_dst = &mut scratch_buffers.v.as_mut_slice::<f32>()[..value_dim];
@@ -1207,84 +1528,39 @@ impl MetalBackend {
                         .copy_from_slice(&alpha_batch[gate_start..gate_end]);
                     scratch_buffers.beta.as_mut_slice::<f32>()[..cfg.time_step_rank]
                         .copy_from_slice(&beta_batch[gate_start..gate_end]);
-                } else if cfg.state_size <= 256
-                    && cfg.time_step_rank.is_multiple_of(cfg.group_count)
-                {
-                    let alpha_buf = MetalBuffer::from_slice_no_copy(
-                        self.device.device(),
-                        &alpha_batch[gate_start..gate_end],
-                    )
-                    .unwrap_or_else(|_| {
-                        MetalBuffer::from_slice(
-                            self.device.device(),
-                            &alpha_batch[gate_start..gate_end],
-                        )
-                        .expect("Failed to create Metal buffer for qwen35 recurrent alpha batch")
-                    });
-                    let beta_buf = MetalBuffer::from_slice_no_copy(
-                        self.device.device(),
-                        &beta_batch[gate_start..gate_end],
-                    )
-                    .unwrap_or_else(|_| {
-                        MetalBuffer::from_slice(
-                            self.device.device(),
-                            &beta_batch[gate_start..gate_end],
-                        )
-                        .expect("Failed to create Metal buffer for qwen35 recurrent beta batch")
-                    });
-                    self.gdn_kernels
-                        .prepare_multi_token_qkv(
-                            &self.device,
-                            &scratch_buffers.conv_out,
-                            &alpha_buf,
-                            &beta_buf,
-                            &scratch_buffers.q,
-                            &scratch_buffers.k,
-                            &scratch_buffers.v,
-                            &scratch_buffers.gate,
-                            &scratch_buffers.beta,
-                            tokens_per_slot as u32,
-                            cfg.group_count as u32,
-                            cfg.time_step_rank as u32,
-                            cfg.state_size as u32,
-                            cfg.rms_norm_eps,
-                        )
-                        .expect("Metal qwen35 recurrent batch pack dispatch failed");
-                } else {
-                    prepare_multi_token_gdn_bh_buffers(
-                        conv_out,
-                        &alpha_batch[gate_start..gate_end],
-                        &beta_batch[gate_start..gate_end],
-                        &mut scratch_buffers.q.as_mut_slice::<f32>()[..tokens_per_slot * value_dim],
-                        &mut scratch_buffers.k.as_mut_slice::<f32>()[..tokens_per_slot * value_dim],
-                        &mut scratch_buffers.v.as_mut_slice::<f32>()[..tokens_per_slot * value_dim],
-                        &mut scratch_buffers.gate.as_mut_slice::<f32>()
-                            [..tokens_per_slot * cfg.time_step_rank],
-                        &mut scratch_buffers.beta.as_mut_slice::<f32>()
-                            [..tokens_per_slot * cfg.time_step_rank],
-                        tokens_per_slot,
-                        cfg.group_count,
-                        cfg.time_step_rank,
-                        cfg.state_size,
-                        cfg.rms_norm_eps,
-                    );
                 }
-            }
-            self.gdn_kernels
-                .gated_delta_sequence(
-                    &self.device,
-                    &scratch_buffers.q,
-                    &scratch_buffers.k,
-                    &scratch_buffers.v,
-                    &scratch_buffers.gate,
-                    &scratch_buffers.beta,
-                    &recurrent_state_buf,
-                    &scratch_buffers.output,
-                    tokens_per_slot as u32,
-                    cfg.time_step_rank as u32,
-                    cfg.state_size as u32,
+            } else {
+                self.qwen35_prepare_multi_token_qkv_with_fallback(
+                    &scratch_buffers.conv_out,
+                    &alpha_batch[gate_start..gate_end],
+                    &beta_batch[gate_start..gate_end],
+                    &mut scratch_buffers.q,
+                    &mut scratch_buffers.k,
+                    &mut scratch_buffers.v,
+                    &mut scratch_buffers.gate,
+                    &mut scratch_buffers.beta,
+                    tokens_per_slot,
+                    value_dim,
+                    cfg.group_count,
+                    cfg.time_step_rank,
+                    cfg.state_size,
+                    cfg.rms_norm_eps,
                 )
-                .expect("Metal qwen35 recurrent gated-delta dispatch failed");
+                .expect("Metal qwen35 recurrent batch pack dispatch failed");
+            }
+            self.qwen35_gated_delta_sequence_sync(
+                &scratch_buffers.q,
+                &scratch_buffers.k,
+                &scratch_buffers.v,
+                &scratch_buffers.gate,
+                &scratch_buffers.beta,
+                &recurrent_state_buf,
+                &scratch_buffers.output,
+                tokens_per_slot as u32,
+                cfg.time_step_rank as u32,
+                cfg.state_size as u32,
+            )
+            .expect("Metal qwen35 recurrent gated-delta dispatch failed");
 
             let out_bhsv = unsafe { scratch_buffers.output.as_slice::<f32>() };
             if tokens_per_slot == 1 {
@@ -1527,110 +1803,53 @@ impl MetalBackend {
                 }
 
                 let conv_t = Instant::now();
-                self.gdn_kernels
-                    .causal_conv_sequence(
-                        &self.device,
-                        &scratch_buffers.input,
-                        buf_kernel,
-                        &slot_buffers.conv_state,
-                        &scratch_buffers.conv_out,
-                        tokens_per_slot as u32,
-                        cfg.conv_cache_len as u32,
-                        cfg.conv_dim as u32,
-                    )
-                    .expect("Metal qwen35 recurrent causal conv dispatch failed");
+                self.qwen35_causal_conv_sequence_sync(
+                    &scratch_buffers.input,
+                    buf_kernel,
+                    &slot_buffers.conv_state,
+                    &scratch_buffers.conv_out,
+                    tokens_per_slot as u32,
+                    cfg.conv_cache_len as u32,
+                    cfg.conv_dim as u32,
+                )
+                .expect("Metal qwen35 recurrent causal conv dispatch failed");
                 self.ops
                     .record_qwen35_recurrent_batch_conv(conv_t.elapsed());
 
-                let conv_out = unsafe { scratch_buffers.conv_out.as_slice::<f32>() };
                 let pack_t = Instant::now();
-                if cfg.state_size <= 256 && cfg.time_step_rank.is_multiple_of(cfg.group_count) {
-                    let alpha_buf = unsafe {
-                        MetalBuffer::from_slice_no_copy(
-                            self.device.device(),
-                            &alpha_batch[gate_start..gate_end],
-                        )
-                    }
-                    .unwrap_or_else(|_| {
-                        MetalBuffer::from_slice(
-                            self.device.device(),
-                            &alpha_batch[gate_start..gate_end],
-                        )
-                        .expect("Failed to create Metal buffer for qwen35 recurrent alpha batch")
-                    });
-                    let beta_buf = unsafe {
-                        MetalBuffer::from_slice_no_copy(
-                            self.device.device(),
-                            &beta_batch[gate_start..gate_end],
-                        )
-                    }
-                    .unwrap_or_else(|_| {
-                        MetalBuffer::from_slice(
-                            self.device.device(),
-                            &beta_batch[gate_start..gate_end],
-                        )
-                        .expect("Failed to create Metal buffer for qwen35 recurrent beta batch")
-                    });
-                    self.gdn_kernels
-                        .prepare_multi_token_qkv(
-                            &self.device,
-                            &scratch_buffers.conv_out,
-                            &alpha_buf,
-                            &beta_buf,
-                            &scratch_buffers.q,
-                            &scratch_buffers.k,
-                            &scratch_buffers.v,
-                            &scratch_buffers.gate,
-                            &scratch_buffers.beta,
-                            tokens_per_slot as u32,
-                            cfg.group_count as u32,
-                            cfg.time_step_rank as u32,
-                            cfg.state_size as u32,
-                            cfg.rms_norm_eps,
-                        )
-                        .expect("Metal qwen35 recurrent batch pack dispatch failed");
-                } else {
-                    unsafe {
-                        prepare_multi_token_gdn_bh_buffers(
-                            conv_out,
-                            &alpha_batch[gate_start..gate_end],
-                            &beta_batch[gate_start..gate_end],
-                            &mut scratch_buffers.q.as_mut_slice::<f32>()
-                                [..tokens_per_slot * value_dim],
-                            &mut scratch_buffers.k.as_mut_slice::<f32>()
-                                [..tokens_per_slot * value_dim],
-                            &mut scratch_buffers.v.as_mut_slice::<f32>()
-                                [..tokens_per_slot * value_dim],
-                            &mut scratch_buffers.gate.as_mut_slice::<f32>()
-                                [..tokens_per_slot * cfg.time_step_rank],
-                            &mut scratch_buffers.beta.as_mut_slice::<f32>()
-                                [..tokens_per_slot * cfg.time_step_rank],
-                            tokens_per_slot,
-                            cfg.group_count,
-                            cfg.time_step_rank,
-                            cfg.state_size,
-                            cfg.rms_norm_eps,
-                        );
-                    }
-                }
+                self.qwen35_prepare_multi_token_qkv_with_fallback(
+                    &scratch_buffers.conv_out,
+                    &alpha_batch[gate_start..gate_end],
+                    &beta_batch[gate_start..gate_end],
+                    &mut scratch_buffers.q,
+                    &mut scratch_buffers.k,
+                    &mut scratch_buffers.v,
+                    &mut scratch_buffers.gate,
+                    &mut scratch_buffers.beta,
+                    tokens_per_slot,
+                    value_dim,
+                    cfg.group_count,
+                    cfg.time_step_rank,
+                    cfg.state_size,
+                    cfg.rms_norm_eps,
+                )
+                .expect("Metal qwen35 recurrent batch pack dispatch failed");
                 self.ops
                     .record_qwen35_recurrent_batch_pack(pack_t.elapsed());
                 let gated_delta_t = Instant::now();
-                self.gdn_kernels
-                    .gated_delta_sequence(
-                        &self.device,
-                        &scratch_buffers.q,
-                        &scratch_buffers.k,
-                        &scratch_buffers.v,
-                        &scratch_buffers.gate,
-                        &scratch_buffers.beta,
-                        &slot_buffers.recurrent_state,
-                        &scratch_buffers.output,
-                        tokens_per_slot as u32,
-                        cfg.time_step_rank as u32,
-                        cfg.state_size as u32,
-                    )
-                    .expect("Metal qwen35 recurrent gated-delta dispatch failed");
+                self.qwen35_gated_delta_sequence_sync(
+                    &scratch_buffers.q,
+                    &scratch_buffers.k,
+                    &scratch_buffers.v,
+                    &scratch_buffers.gate,
+                    &scratch_buffers.beta,
+                    &slot_buffers.recurrent_state,
+                    &scratch_buffers.output,
+                    tokens_per_slot as u32,
+                    cfg.time_step_rank as u32,
+                    cfg.state_size as u32,
+                )
+                .expect("Metal qwen35 recurrent gated-delta dispatch failed");
                 self.ops
                     .record_qwen35_recurrent_batch_gated_delta(gated_delta_t.elapsed());
 
@@ -1735,6 +1954,11 @@ impl Backend for MetalBackend {
                 resolved.profile,
                 &fingerprint.architecture,
             ));
+        self.ops.set_runtime_f16in_autotune_quant(
+            self.ops
+                .preferred_batch_prefill_quant(fingerprint)
+                .unwrap_or(GgmlType::Q4K),
+        );
         self.ops.f16in_route_tuned.store(
             resolved.skip_runtime_batch_route_autotune,
             Ordering::Relaxed,
@@ -1750,6 +1974,10 @@ impl Backend for MetalBackend {
     ) -> anyhow::Result<()> {
         self.ops
             .apply_runtime_policy(RuntimePolicy::for_model(model_name, quant, architecture));
+        self.ops.set_runtime_f16in_autotune_quant(
+            quant_from_profile_label(quant).unwrap_or(GgmlType::Q4K),
+        );
+        self.ops.f16in_route_tuned.store(false, Ordering::Relaxed);
         Ok(())
     }
 
@@ -2196,18 +2424,16 @@ impl Backend for MetalBackend {
             MetalBuffer::new(self.device.device(), std::mem::size_of_val(output_batch))
                 .expect("Failed to create Metal buffer for qwen35 causal conv output");
 
-        self.gdn_kernels
-            .causal_conv_sequence(
-                &self.device,
-                &buf_input,
-                &buf_kernel,
-                &buf_state,
-                &buf_output,
-                n_tokens as u32,
-                conv_cache_len as u32,
-                conv_dim as u32,
-            )
-            .expect("Metal qwen35 causal conv dispatch failed");
+        self.qwen35_causal_conv_sequence_sync(
+            &buf_input,
+            &buf_kernel,
+            &buf_state,
+            &buf_output,
+            n_tokens as u32,
+            conv_cache_len as u32,
+            conv_dim as u32,
+        )
+        .expect("Metal qwen35 causal conv dispatch failed");
 
         let output = unsafe { buf_output.as_slice::<f32>() };
         output_batch.copy_from_slice(&output[..output_batch.len()]);
@@ -2252,21 +2478,19 @@ impl Backend for MetalBackend {
         )
         .expect("Failed to create Metal buffer for qwen35 recurrent output");
 
-        self.gdn_kernels
-            .gated_delta_sequence(
-                &self.device,
-                &buf_q,
-                &buf_k,
-                &buf_v,
-                &buf_g,
-                &buf_beta,
-                &buf_state,
-                &buf_out,
-                n_tokens as u32,
-                n_heads as u32,
-                head_dim as u32,
-            )
-            .expect("Metal qwen35 gated delta dispatch failed");
+        self.qwen35_gated_delta_sequence_sync(
+            &buf_q,
+            &buf_k,
+            &buf_v,
+            &buf_g,
+            &buf_beta,
+            &buf_state,
+            &buf_out,
+            n_tokens as u32,
+            n_heads as u32,
+            head_dim as u32,
+        )
+        .expect("Metal qwen35 gated delta dispatch failed");
 
         let out_bhsv = unsafe { buf_out.as_slice::<f32>() };
         unpack_bhsk_to_token_major(out_bhsv, output_batch, n_tokens, n_heads, head_dim);
@@ -2961,6 +3185,85 @@ pub struct GpuBatchScratchBuffers {
     pub moe_tok_idx: Option<MetalBuffer>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct MoeBatchScratchView {
+    norm: *const MetalBuffer,
+    router: *const MetalBuffer,
+    accum: *const MetalBuffer,
+    gate_out: *const MetalBuffer,
+    up_out: *const MetalBuffer,
+    down_out: *const MetalBuffer,
+    tpe: *const MetalBuffer,
+    hids: *const MetalBuffer,
+    active: *mut MetalBuffer,
+    ids: *mut MetalBuffer,
+    weights: *mut MetalBuffer,
+    tok_idx: *mut MetalBuffer,
+}
+
+impl MoeBatchScratchView {
+    pub(crate) fn from_batch_scratches(bs: &GpuBatchScratchBuffers) -> anyhow::Result<Self> {
+        Ok(Self {
+            norm: bs
+                .moe_norm
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("moe_ffn_gpu_resident: missing moe_norm"))?
+                as *const _,
+            router: bs
+                .moe_router_out
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("moe_ffn_gpu_resident: missing moe_router_out"))?
+                as *const _,
+            accum: bs
+                .moe_accum
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("moe_ffn_gpu_resident: missing moe_accum"))?
+                as *const _,
+            gate_out: bs
+                .moe_gate_out
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("moe_ffn_gpu_resident: missing moe_gate_out"))?
+                as *const _,
+            up_out: bs
+                .moe_up_out
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("moe_ffn_gpu_resident: missing moe_up_out"))?
+                as *const _,
+            down_out: bs
+                .moe_down_out
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("moe_ffn_gpu_resident: missing moe_down_out"))?
+                as *const _,
+            tpe: bs
+                .moe_tpe
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("moe_ffn_gpu_resident: missing moe_tpe"))?
+                as *const _,
+            hids: bs
+                .moe_hids
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("moe_ffn_gpu_resident: missing moe_hids"))?
+                as *const _,
+            active: bs.moe_active_experts.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("moe_ffn_gpu_resident: missing moe_active_experts")
+            })? as *const _ as *mut _,
+            ids: bs
+                .moe_expert_ids
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("moe_ffn_gpu_resident: missing moe_expert_ids"))?
+                as *const _ as *mut _,
+            weights: bs.moe_expert_weights.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("moe_ffn_gpu_resident: missing moe_expert_weights")
+            })? as *const _ as *mut _,
+            tok_idx: bs
+                .moe_tok_idx
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("moe_ffn_gpu_resident: missing moe_tok_idx"))?
+                as *const _ as *mut _,
+        })
+    }
+}
+
 /// Metal GPU operations for phased forward pass dispatch.
 ///
 /// Provides elementwise kernels (RMSNorm, RoPE, GELU/SiLU, add) and
@@ -2973,8 +3276,12 @@ pub struct MetalOps {
     pub attention: AttentionKernels,
     pub matmul: MatmulKernels,
     pub gdn: GdnKernels,
+    /// Stable device capability key used for autotune cache partitioning.
+    device_cache_key: String,
     /// Backend-local runtime policy for this model/backend instance.
     runtime_policy: RwLock<RuntimePolicy>,
+    /// Precomputed short/long decode dispatch selections when decode regimes are enabled.
+    decode_dispatch_cache: RwLock<Option<DecodeDispatchCache>>,
     /// Cache of f32 weight tensors as MetalBuffers (norm weights, bias vectors).
     f32_weight_cache: Mutex<FxHashMap<usize, MetalBuffer>>,
     /// Cache of fused QKV quantized buffers keyed by (wq_ptr, wk_ptr, wv_ptr).
@@ -3004,8 +3311,12 @@ pub struct MetalOps {
         Mutex<FxHashMap<Qwen35BatchLogitsScratchBufferKey, Qwen35MetalBatchLogitsScratchBuffers>>,
     /// Backend-local profiling for Qwen3.5 recurrent multi-token batch phases.
     qwen35_recurrent_batch_perf: Qwen35RecurrentBatchPerfState,
+    /// Quant family used for runtime f16in batch-route autotune.
+    runtime_f16in_autotune_quant: RwLock<GgmlType>,
     /// One-time runtime tuning state for f16in batch kernel routing.
     f16in_route_tuned: AtomicBool,
+    /// Serializes one-time runtime f16in autotune updates under contention.
+    f16in_route_tune_lock: Mutex<()>,
     /// Pre-computed weight cache keys, built once on first forward call.
     cached_model_keys: Mutex<Option<CachedModelKeys>>,
     /// Cache of raw quantized expert weight buffers for single-CB MoE dispatch.
@@ -3018,12 +3329,37 @@ pub struct SharedExpertWeights<'a> {
     pub up_raw: &'a [u8],
     pub down_raw: &'a [u8],
     pub gate_inp_raw: Option<&'a [u8]>,
+    pub gate_inp_dtype: Option<GgmlType>,
+    pub dtype: GgmlType,
+    pub inter_dim: usize,
+    pub gate_inp_rows: usize,
+}
+
+pub struct SharedExpertCachedBuffers<'a> {
+    pub gate: &'a MetalBuffer,
+    pub up: &'a MetalBuffer,
+    pub down: &'a MetalBuffer,
+    pub gate_inp: Option<&'a MetalBuffer>,
+    pub gate_inp_dtype: Option<GgmlType>,
     pub dtype: GgmlType,
     pub inter_dim: usize,
     pub gate_inp_rows: usize,
 }
 
 impl MetalOps {
+    fn build_device_cache_key(device: &MetalDevice) -> String {
+        let info = device.info();
+        format!(
+            "{}-apple7{}-apple9{}-metal3{}-metal4{}-uma{}",
+            sanitize_cache_component(&info.name),
+            u8::from(info.gpu_family.apple7),
+            u8::from(info.gpu_family.apple9),
+            u8::from(info.gpu_family.metal3),
+            u8::from(info.gpu_family.metal4),
+            u8::from(info.unified_memory),
+        )
+    }
+
     /// Create MetalOps sharing the same GPU as an existing MetalDevice.
     ///
     /// Creates a new command queue on the shared MTLDevice for independent
@@ -3035,7 +3371,9 @@ impl MetalOps {
         let attention = AttentionKernels::new(&device)?;
         let matmul = MatmulKernels::new(&device)?;
         let gdn = GdnKernels::new(&device)?;
+        let device_cache_key = Self::build_device_cache_key(&device);
         let runtime_policy = RuntimePolicy::resolved_defaults();
+        let decode_dispatch_cache = Self::build_decode_dispatch_cache(&runtime_policy);
         Ok(Self {
             device,
             elementwise,
@@ -3043,7 +3381,9 @@ impl MetalOps {
             attention,
             matmul,
             gdn,
+            device_cache_key,
             runtime_policy: RwLock::new(runtime_policy),
+            decode_dispatch_cache: RwLock::new(decode_dispatch_cache),
             f32_weight_cache: Mutex::new(FxHashMap::default()),
             fused_qkv_weight_cache: Mutex::new(FxHashMap::default()),
             precomputed_f16_weight_cache: Mutex::new(FxHashMap::default()),
@@ -3055,18 +3395,45 @@ impl MetalOps {
             qwen35_batch_projection_scratch_buffers: Mutex::new(FxHashMap::default()),
             qwen35_batch_logits_scratch_buffers: Mutex::new(FxHashMap::default()),
             qwen35_recurrent_batch_perf: Qwen35RecurrentBatchPerfState::default(),
+            runtime_f16in_autotune_quant: RwLock::new(GgmlType::Q4K),
             f16in_route_tuned: AtomicBool::new(false),
+            f16in_route_tune_lock: Mutex::new(()),
             cached_model_keys: Mutex::new(None),
             moe_quant_cache: Mutex::new(FxHashMap::default()),
         })
     }
 
+    fn build_decode_dispatch_cache(runtime_policy: &RuntimePolicy) -> Option<DecodeDispatchCache> {
+        let profile = runtime_policy.kernel_profile();
+        let regimes = profile.decode_regimes.as_ref()?;
+        let short_profile = profile.effective_decode_profile(regimes.short_max_attend_len);
+        let long_profile =
+            profile.effective_decode_profile(regimes.short_max_attend_len.saturating_add(1));
+        Some(DecodeDispatchCache {
+            short_max_attend_len: regimes.short_max_attend_len,
+            short_dequant_dispatch: DequantDispatchConfig::from_profile(&short_profile),
+            short_attention_dispatch: AttentionDispatchConfig::from_profile(&short_profile),
+            long_dequant_dispatch: DequantDispatchConfig::from_profile(&long_profile),
+            long_attention_dispatch: AttentionDispatchConfig::from_profile(&long_profile),
+        })
+    }
+
     pub fn apply_runtime_policy(&self, runtime_policy: RuntimePolicy) {
+        let decode_dispatch_cache = Self::build_decode_dispatch_cache(&runtime_policy);
         *self.runtime_policy.write().unwrap() = runtime_policy;
+        *self.decode_dispatch_cache.write().unwrap() = decode_dispatch_cache;
     }
 
     pub fn runtime_policy(&self) -> RuntimePolicy {
         self.runtime_policy.read().unwrap().clone()
+    }
+
+    fn set_runtime_f16in_autotune_quant(&self, quant: GgmlType) {
+        *self.runtime_f16in_autotune_quant.write().unwrap() = quant;
+    }
+
+    fn runtime_f16in_autotune_quant(&self) -> GgmlType {
+        *self.runtime_f16in_autotune_quant.read().unwrap()
     }
 
     pub fn dequant_dispatch_config(&self) -> DequantDispatchConfig {
@@ -3081,6 +3448,20 @@ impl MetalOps {
             .read()
             .unwrap()
             .attention_dispatch_config()
+    }
+
+    pub fn decode_dispatch_configs_for_attend_len(
+        &self,
+        attend_len: u32,
+    ) -> (DequantDispatchConfig, AttentionDispatchConfig) {
+        if let Some(cache) = *self.decode_dispatch_cache.read().unwrap() {
+            return cache.for_attend_len(attend_len);
+        }
+        let runtime_policy = self.runtime_policy.read().unwrap();
+        (
+            runtime_policy.dequant_dispatch_config(),
+            runtime_policy.attention_dispatch_config(),
+        )
     }
 
     pub fn metal_batch_f16_io_enabled(&self) -> bool {
@@ -3521,21 +3902,12 @@ impl MetalOps {
         let seed_profile =
             KernelProfile::load(&fingerprint.model_name, &fingerprint.predominant_quant);
         let cache_path = self.kernel_profile_cache_path(fingerprint);
+        let load_autotune = metal_load_autotune_enabled();
         let force_retune = metal_force_retune_enabled();
+        let can_loadtime_batch_route_tune =
+            self.preferred_batch_prefill_quant(fingerprint).is_some();
 
-        if !force_retune && let Some(profile) = KernelProfile::load_from_path(&cache_path) {
-            tracing::info!(
-                path = %cache_path.display(),
-                fingerprint = %fingerprint.stable_id(),
-                "Loaded cached kernel autotune profile"
-            );
-            return ResolvedKernelProfile {
-                profile,
-                skip_runtime_batch_route_autotune: true,
-            };
-        }
-
-        if !metal_load_autotune_enabled() && !force_retune {
+        if !load_autotune && !force_retune {
             tracing::debug!(
                 fingerprint = %fingerprint.stable_id(),
                 "Load-time kernel autotune disabled; using seeded kernel profile"
@@ -3543,6 +3915,24 @@ impl MetalOps {
             return ResolvedKernelProfile {
                 profile: seed_profile,
                 skip_runtime_batch_route_autotune: false,
+            };
+        }
+
+        if !force_retune && let Some(profile) = KernelProfile::load_from_path(&cache_path) {
+            let profile = self.reconcile_cached_profile_kv_precision(
+                profile,
+                &seed_profile,
+                fingerprint,
+                &cache_path,
+            );
+            tracing::info!(
+                path = %cache_path.display(),
+                fingerprint = %fingerprint.stable_id(),
+                "Loaded cached kernel autotune profile"
+            );
+            return ResolvedKernelProfile {
+                profile,
+                skip_runtime_batch_route_autotune: can_loadtime_batch_route_tune,
             };
         }
 
@@ -3558,7 +3948,7 @@ impl MetalOps {
 
         ResolvedKernelProfile {
             profile: tuned,
-            skip_runtime_batch_route_autotune: true,
+            skip_runtime_batch_route_autotune: can_loadtime_batch_route_tune,
         }
     }
 
@@ -3570,22 +3960,9 @@ impl MetalOps {
         );
         metal_tune_cache_dir()
             .join(format!("ax-{}", env!("CARGO_PKG_VERSION")))
-            .join(self.device_cache_key())
+            .join(&self.device_cache_key)
             .join(sanitize_cache_component(&fingerprint.cache_namespace()))
             .join(file_name)
-    }
-
-    fn device_cache_key(&self) -> String {
-        let info = self.device.info();
-        format!(
-            "{}-apple7{}-apple9{}-metal3{}-metal4{}-uma{}",
-            sanitize_cache_component(&info.name),
-            u8::from(info.gpu_family.apple7),
-            u8::from(info.gpu_family.apple9),
-            u8::from(info.gpu_family.metal3),
-            u8::from(info.gpu_family.metal4),
-            u8::from(info.unified_memory),
-        )
     }
 
     fn persist_kernel_profile_cache(
@@ -3605,12 +3982,38 @@ impl MetalOps {
         Ok(())
     }
 
+    fn reconcile_cached_profile_kv_precision(
+        &self,
+        mut cached_profile: KernelProfile,
+        seed_profile: &KernelProfile,
+        fingerprint: &ModelFingerprint,
+        cache_path: &Path,
+    ) -> KernelProfile {
+        let seeded_precision = seed_profile.kv_cache.precision;
+        if cached_profile.kv_cache.precision != seeded_precision {
+            tracing::info!(
+                path = %cache_path.display(),
+                fingerprint = %fingerprint.stable_id(),
+                cached = ?cached_profile.kv_cache.precision,
+                seeded = ?seeded_precision,
+                "Ignoring cached KV precision override; using seeded profile precision"
+            );
+            cached_profile.kv_cache.precision = seeded_precision;
+        }
+        cached_profile
+    }
+
     fn autotune_kernel_profile(
         &self,
         fingerprint: &ModelFingerprint,
         mut profile: KernelProfile,
     ) -> KernelProfile {
-        profile.kv_cache.precision = self.select_kv_precision_mode(fingerprint);
+        let recommended_kv_precision = self.select_kv_precision_mode(fingerprint);
+        tracing::debug!(
+            fingerprint = %fingerprint.stable_id(),
+            recommended = ?recommended_kv_precision,
+            "Load-time KV precision recommendation computed (runtime selection remains profile/env driven)"
+        );
         if fingerprint.has_q4k_layer_weights {
             self.autotune_decode_matvec_quant(&mut profile, fingerprint, GgmlType::Q4K);
         }
@@ -3632,7 +4035,7 @@ impl MetalOps {
         profile.generated = format!(
             "ax-engine={} device={} fingerprint={}",
             env!("CARGO_PKG_VERSION"),
-            self.device_cache_key(),
+            self.device_cache_key.as_str(),
             fingerprint.stable_id(),
         );
         profile
@@ -3733,117 +4136,56 @@ impl MetalOps {
         fingerprint: &ModelFingerprint,
         quant: GgmlType,
     ) {
-        let (quant_key, mut candidates) = match quant {
-            GgmlType::Q4K => (
-                "q4_k",
-                vec![
-                    profile.matvec_params("q4_k"),
-                    MatvecParams {
-                        threadgroup_size: 128,
-                        rows_per_simdgroup: 1,
-                        variant: Some(MatvecProfileVariant::Base),
-                    },
-                    MatvecParams {
-                        threadgroup_size: 64,
-                        rows_per_simdgroup: 2,
-                        variant: Some(MatvecProfileVariant::Nr2),
-                    },
-                    MatvecParams {
-                        threadgroup_size: 64,
-                        rows_per_simdgroup: 1,
-                        variant: Some(MatvecProfileVariant::Ilp4),
-                    },
-                ],
-            ),
-            GgmlType::Q5K => (
-                "q5_k",
-                vec![
-                    profile.matvec_params("q5_k"),
-                    MatvecParams {
-                        threadgroup_size: 64,
-                        rows_per_simdgroup: 1,
-                        variant: Some(MatvecProfileVariant::Base),
-                    },
-                    MatvecParams {
-                        threadgroup_size: 64,
-                        rows_per_simdgroup: 1,
-                        variant: Some(MatvecProfileVariant::Ilp4),
-                    },
-                    MatvecParams {
-                        threadgroup_size: 64,
-                        rows_per_simdgroup: 2,
-                        variant: Some(MatvecProfileVariant::Nr2),
-                    },
-                ],
-            ),
-            GgmlType::Q6K => (
-                "q6_k",
-                vec![
-                    profile.matvec_params("q6_k"),
-                    MatvecParams {
-                        threadgroup_size: 128,
-                        rows_per_simdgroup: 1,
-                        variant: Some(MatvecProfileVariant::Base),
-                    },
-                    MatvecParams {
-                        threadgroup_size: 64,
-                        rows_per_simdgroup: 2,
-                        variant: Some(MatvecProfileVariant::Nr2),
-                    },
-                    MatvecParams {
-                        threadgroup_size: 64,
-                        rows_per_simdgroup: 1,
-                        variant: Some(MatvecProfileVariant::Ilp4),
-                    },
-                ],
-            ),
-            GgmlType::Q8_0 => (
-                "q8_0",
-                vec![
-                    profile.matvec_params("q8_0"),
-                    MatvecParams {
-                        threadgroup_size: 128,
-                        rows_per_simdgroup: 1,
-                        variant: Some(MatvecProfileVariant::Base),
-                    },
-                    MatvecParams {
-                        threadgroup_size: 64,
-                        rows_per_simdgroup: 1,
-                        variant: Some(MatvecProfileVariant::Ilp4),
-                    },
-                    MatvecParams {
-                        threadgroup_size: 64,
-                        rows_per_simdgroup: 2,
-                        variant: Some(MatvecProfileVariant::Nr2),
-                    },
-                ],
-            ),
-            _ => return,
+        let Some((quant_key, candidates)) = Self::decode_matvec_autotune_candidates(profile, quant)
+        else {
+            return;
         };
 
-        candidates.dedup();
+        let candidates = Self::dedup_matvec_candidates(candidates);
+        if candidates.is_empty() {
+            return;
+        }
         let shapes = Self::decode_autotune_shapes(fingerprint);
-        let mut best: Option<(MatvecParams, u128)> = None;
-        for candidate in candidates {
-            let mut total_ns = 0u128;
-            let mut samples = 0u32;
-            for &(m, k) in &shapes {
-                if let Some(ns) = self.bench_matvec_variant(quant, m, k, candidate.clone()) {
-                    total_ns += ns;
-                    samples += 1;
-                }
-            }
-            if samples == 0 {
+        let base_config = self.dequant_dispatch_config();
+        let mut total_ns = vec![0u128; candidates.len()];
+        let mut samples = vec![0u32; candidates.len()];
+
+        for shape in &shapes {
+            let m = shape.m;
+            let k = shape.k;
+            let weight = shape.weight;
+            let Some(buffers) = self.prepare_matvec_bench_buffers(quant, m, k) else {
                 continue;
-            }
-            let avg_ns = total_ns / samples as u128;
-            match &best {
-                Some((_, best_avg_ns)) if *best_avg_ns <= avg_ns => {}
-                _ => best = Some((candidate, avg_ns)),
+            };
+            for (idx, candidate) in candidates.iter().enumerate() {
+                if let Some(ns) = self.bench_matvec_variant_with_buffers(
+                    quant,
+                    m,
+                    k,
+                    candidate,
+                    &buffers,
+                    base_config,
+                ) {
+                    total_ns[idx] += ns.saturating_mul(weight as u128);
+                    samples[idx] = samples[idx].saturating_add(weight);
+                }
             }
         }
 
-        if let Some((best_params, best_avg_ns)) = best {
+        let mut best: Option<(usize, u128)> = None;
+        for (idx, sample_count) in samples.iter().copied().enumerate() {
+            if sample_count == 0 {
+                continue;
+            }
+            let avg_ns = total_ns[idx] / sample_count as u128;
+            match best {
+                Some((_, best_avg_ns)) if best_avg_ns <= avg_ns => {}
+                _ => best = Some((idx, avg_ns)),
+            };
+        }
+
+        if let Some((best_idx, best_avg_ns)) = best {
+            let best_params = candidates[best_idx].clone();
             let old_params = profile.matvec_params(quant_key);
             if old_params != best_params {
                 tracing::info!(
@@ -3865,18 +4207,92 @@ impl MetalOps {
         }
     }
 
-    fn preferred_batch_prefill_quant(&self, fingerprint: &ModelFingerprint) -> Option<GgmlType> {
-        match fingerprint.predominant_layer_quant.as_str() {
-            "Q4_K" => Some(GgmlType::Q4K),
-            "Q5_K" => Some(GgmlType::Q5K),
-            "Q6_K" => Some(GgmlType::Q6K),
-            "Q8_0" => Some(GgmlType::Q8_0),
-            _ if fingerprint.has_q4k_layer_weights => Some(GgmlType::Q4K),
-            _ if fingerprint.has_q5k_layer_weights => Some(GgmlType::Q5K),
-            _ if fingerprint.has_q6k_layer_weights => Some(GgmlType::Q6K),
-            _ if fingerprint.has_q8_layer_weights => Some(GgmlType::Q8_0),
+    fn decode_matvec_autotune_candidates(
+        profile: &KernelProfile,
+        quant: GgmlType,
+    ) -> Option<(&'static str, Vec<MatvecParams>)> {
+        let quant_key = decode_matvec_profile_key(quant)?;
+        let mut candidates = Vec::with_capacity(1 + decode_matvec_default_candidates(quant).len());
+        candidates.push(Self::autotune_active_matvec_params(
+            profile, quant_key, quant,
+        ));
+        candidates.extend(decode_matvec_default_candidates(quant).iter().cloned());
+        Some((quant_key, candidates))
+    }
+
+    fn autotune_active_matvec_params(
+        profile: &KernelProfile,
+        quant_key: &str,
+        quant: GgmlType,
+    ) -> MatvecParams {
+        let Some(override_params) = profile.decode_matvec.get(quant_key) else {
+            return profile.matvec_params(quant_key);
+        };
+
+        let inferred_variant = override_params.variant.or(match quant {
+            GgmlType::Q4K | GgmlType::Q6K => {
+                if override_params.rows_per_simdgroup >= 2 || override_params.threadgroup_size == 64
+                {
+                    Some(MatvecProfileVariant::Nr2)
+                } else {
+                    Some(MatvecProfileVariant::Base)
+                }
+            }
+            GgmlType::Q5K => {
+                if override_params.rows_per_simdgroup >= 2 {
+                    Some(MatvecProfileVariant::Nr2)
+                } else {
+                    Some(MatvecProfileVariant::Base)
+                }
+            }
+            GgmlType::Q8_0 => {
+                if override_params.rows_per_simdgroup >= 2 {
+                    Some(MatvecProfileVariant::Nr2)
+                } else if override_params.threadgroup_size == 64 {
+                    Some(MatvecProfileVariant::Ilp4)
+                } else {
+                    Some(MatvecProfileVariant::Base)
+                }
+            }
             _ => None,
+        });
+
+        MatvecParams {
+            threadgroup_size: override_params.threadgroup_size,
+            rows_per_simdgroup: override_params.rows_per_simdgroup,
+            variant: inferred_variant,
         }
+    }
+
+    fn dedup_matvec_candidates(candidates: Vec<MatvecParams>) -> Vec<MatvecParams> {
+        let mut unique = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            if !unique
+                .iter()
+                .any(|existing: &MatvecParams| existing == &candidate)
+            {
+                unique.push(candidate);
+            }
+        }
+        unique
+    }
+
+    fn preferred_batch_prefill_quant(&self, fingerprint: &ModelFingerprint) -> Option<GgmlType> {
+        quant_from_profile_label(&fingerprint.predominant_layer_quant)
+            .or_else(|| quant_from_profile_label(&fingerprint.predominant_quant))
+            .or({
+                if fingerprint.has_q4k_layer_weights {
+                    Some(GgmlType::Q4K)
+                } else if fingerprint.has_q5k_layer_weights {
+                    Some(GgmlType::Q5K)
+                } else if fingerprint.has_q6k_layer_weights {
+                    Some(GgmlType::Q6K)
+                } else if fingerprint.has_q8_layer_weights {
+                    Some(GgmlType::Q8_0)
+                } else {
+                    None
+                }
+            })
     }
 
     fn autotune_batch_prefill_route(
@@ -3911,13 +4327,13 @@ impl MetalOps {
         }
     }
 
-    fn decode_autotune_shapes(fingerprint: &ModelFingerprint) -> Vec<(u32, u32)> {
+    fn decode_autotune_shapes(fingerprint: &ModelFingerprint) -> Vec<WeightedMatvecShape> {
         let dim = fingerprint.embedding_dim;
         let inter = fingerprint.intermediate_dim;
         let kv_dim = fingerprint.n_kv_heads.saturating_mul(fingerprint.head_dim);
         let q_dim = fingerprint.n_heads.saturating_mul(fingerprint.head_dim);
-        let mut shapes = Vec::new();
-        for shape in [
+        let mut shapes: Vec<WeightedMatvecShape> = Vec::new();
+        for (m, k) in [
             (q_dim, dim),
             (kv_dim, dim),
             (kv_dim, dim),
@@ -3926,8 +4342,13 @@ impl MetalOps {
             (inter, dim),
             (dim, inter),
         ] {
-            if shape.0 > 0 && shape.1 > 0 {
-                shapes.push(shape);
+            if m == 0 || k == 0 {
+                continue;
+            }
+            if let Some(existing) = shapes.iter_mut().find(|shape| shape.m == m && shape.k == k) {
+                existing.weight = existing.weight.saturating_add(1);
+            } else {
+                shapes.push(WeightedMatvecShape { m, k, weight: 1 });
             }
         }
         shapes
@@ -3937,36 +4358,64 @@ impl MetalOps {
         let k = dim;
         let n_candidates = [32u32, 48u32, 64u32];
         let m_candidates = [dim, inter];
-        let mut wins: Vec<(u32, u32)> = Vec::new();
+        let m_candidate_count = if dim == inter { 1 } else { 2 };
+        let base_config = self.dequant_dispatch_config();
+        let mut compared_any = false;
+        let mut has_win = false;
+        let mut max_n = 0u32;
+        let mut max_m = 0u32;
 
-        for &m in &m_candidates {
+        for &m in &m_candidates[..m_candidate_count] {
             for &n in &n_candidates {
-                let t_large = self.bench_f16in_variant(quant, m, n, k, false);
-                let t_small = self.bench_f16in_variant(quant, m, n, k, true);
-                if let (Some(large), Some(small)) = (t_large, t_small)
-                    && small < (large * 98 / 100)
-                {
-                    wins.push((m, n));
+                let Some(buffers) = self.prepare_f16in_bench_buffers(quant, m, n, k) else {
+                    continue;
+                };
+                let t_large = self.bench_f16in_variant_with_buffers(
+                    quant,
+                    m,
+                    n,
+                    k,
+                    false,
+                    &buffers,
+                    base_config,
+                );
+                let t_small = self.bench_f16in_variant_with_buffers(
+                    quant,
+                    m,
+                    n,
+                    k,
+                    true,
+                    &buffers,
+                    base_config,
+                );
+                if let (Some(large), Some(small)) = (t_large, t_small) {
+                    compared_any = true;
+                    if small < (large * 98 / 100) {
+                        has_win = true;
+                        max_n = max_n.max(n);
+                        max_m = max_m.max(m);
+                    }
                 }
             }
         }
 
-        Some(if wins.is_empty() {
+        if !compared_any {
+            return None;
+        }
+
+        Some(if !has_win {
             (1u32, 0u32)
         } else {
-            let max_n = wins.iter().map(|(_, n)| *n).max().unwrap_or(32);
-            let max_m = wins.iter().map(|(m, _)| *m).max().unwrap_or(dim);
             (max_n + 1, max_m)
         })
     }
 
-    fn bench_matvec_variant(
+    fn prepare_matvec_bench_buffers(
         &self,
         quant: GgmlType,
         m: u32,
         k: u32,
-        config_params: MatvecParams,
-    ) -> Option<u128> {
+    ) -> Option<MatvecBenchBuffers> {
         if m == 0 || k == 0 || !k.is_multiple_of(quant.block_size() as u32) {
             return None;
         }
@@ -3979,17 +4428,56 @@ impl MetalOps {
         let a_bytes = (m as usize)
             .checked_mul(blocks_per_row)?
             .checked_mul(quant.bytes_per_block())?;
-        let x_data = vec![0.0f32; k as usize];
-        let a_data = vec![0u8; a_bytes];
-        let a = MetalBuffer::from_bytes(self.device.device(), &a_data).ok()?;
-        let x = MetalBuffer::from_slice(self.device.device(), &x_data).ok()?;
+        let a = MetalBuffer::from_bytes(self.device.device(), &vec![0u8; a_bytes]).ok()?;
+        let x = MetalBuffer::from_slice(self.device.device(), &vec![0.0f32; k as usize]).ok()?;
         let y = MetalBuffer::new(
             self.device.device(),
             m as usize * std::mem::size_of::<f32>(),
         )
         .ok()?;
 
-        let mut config = self.dequant_dispatch_config();
+        Some(MatvecBenchBuffers { a, x, y })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_matvec_with_config(
+        &self,
+        quant: GgmlType,
+        a: &MetalBuffer,
+        x: &MetalBuffer,
+        y: &MetalBuffer,
+        m: u32,
+        k: u32,
+        config: DequantDispatchConfig,
+    ) -> anyhow::Result<()> {
+        match quant {
+            GgmlType::Q4K => {
+                self.dequant
+                    .fused_matvec_q4_k_with_config(&self.device, a, x, y, m, k, config)
+            }
+            GgmlType::Q5K => {
+                self.dequant
+                    .fused_matvec_q5_k_with_config(&self.device, a, x, y, m, k, config)
+            }
+            GgmlType::Q6K => {
+                self.dequant
+                    .fused_matvec_q6_k_with_config(&self.device, a, x, y, m, k, config)
+            }
+            GgmlType::Q8_0 => self.device.execute_sync(|encoder| {
+                self.dequant
+                    .encode_fused_matvec_q8_0_with_config(encoder, a, x, y, m, k, config);
+                Ok(())
+            }),
+            _ => unreachable!("unsupported quant for decode matvec autotune benchmark"),
+        }
+    }
+
+    fn matvec_dispatch_config_for_candidate(
+        quant: GgmlType,
+        config_params: &MatvecParams,
+        base_config: DequantDispatchConfig,
+    ) -> Option<DequantDispatchConfig> {
+        let mut config = base_config;
         match quant {
             GgmlType::Q4K => {
                 config.q4_k_threadgroup_size = config_params.threadgroup_size as usize;
@@ -4012,84 +4500,49 @@ impl MetalOps {
             }
             _ => return None,
         }
+        Some(config)
+    }
 
-        let warmup = match quant {
-            GgmlType::Q4K => {
-                self.dequant
-                    .fused_matvec_q4_k_with_config(&self.device, &a, &x, &y, m, k, config)
-            }
-            GgmlType::Q5K => {
-                self.dequant
-                    .fused_matvec_q5_k_with_config(&self.device, &a, &x, &y, m, k, config)
-            }
-            GgmlType::Q6K => {
-                self.dequant
-                    .fused_matvec_q6_k_with_config(&self.device, &a, &x, &y, m, k, config)
-            }
-            GgmlType::Q8_0 => self.device.execute_sync(|encoder| {
-                self.dequant
-                    .encode_fused_matvec_q8_0_with_config(encoder, &a, &x, &y, m, k, config);
-                Ok(())
-            }),
-            _ => unreachable!(),
-        };
-        if warmup.is_err() {
+    fn bench_matvec_variant_with_buffers(
+        &self,
+        quant: GgmlType,
+        m: u32,
+        k: u32,
+        config_params: &MatvecParams,
+        buffers: &MatvecBenchBuffers,
+        base_config: DequantDispatchConfig,
+    ) -> Option<u128> {
+        let config = Self::matvec_dispatch_config_for_candidate(quant, config_params, base_config)?;
+
+        if self
+            .dispatch_matvec_with_config(quant, &buffers.a, &buffers.x, &buffers.y, m, k, config)
+            .is_err()
+        {
             return None;
         }
 
         let reps = 4;
         let t0 = Instant::now();
         for _ in 0..reps {
-            let dispatch = match quant {
-                GgmlType::Q4K => self.dequant.fused_matvec_q4_k_with_config(
-                    &self.device,
-                    &a,
-                    &x,
-                    &y,
-                    m,
-                    k,
-                    config,
-                ),
-                GgmlType::Q5K => self.dequant.fused_matvec_q5_k_with_config(
-                    &self.device,
-                    &a,
-                    &x,
-                    &y,
-                    m,
-                    k,
-                    config,
-                ),
-                GgmlType::Q6K => self.dequant.fused_matvec_q6_k_with_config(
-                    &self.device,
-                    &a,
-                    &x,
-                    &y,
-                    m,
-                    k,
-                    config,
-                ),
-                GgmlType::Q8_0 => self.device.execute_sync(|encoder| {
-                    self.dequant
-                        .encode_fused_matvec_q8_0_with_config(encoder, &a, &x, &y, m, k, config);
-                    Ok(())
-                }),
-                _ => unreachable!(),
-            };
-            if dispatch.is_err() {
+            if self
+                .dispatch_matvec_with_config(
+                    quant, &buffers.a, &buffers.x, &buffers.y, m, k, config,
+                )
+                .is_err()
+            {
                 return None;
             }
         }
         Some(t0.elapsed().as_nanos() / reps as u128)
     }
 
-    fn bench_f16in_variant(
+    fn prepare_f16in_bench_buffers(
         &self,
         quant: GgmlType,
         m: u32,
         n: u32,
         k: u32,
-        use_small: bool,
-    ) -> Option<u128> {
+    ) -> Option<BatchF16InBenchBuffers> {
         if !k.is_multiple_of(quant.block_size() as u32) {
             return None;
         }
@@ -4107,13 +4560,59 @@ impl MetalOps {
             .checked_mul(m as usize)?
             .checked_mul(std::mem::size_of::<f32>())?;
 
-        let a_data = vec![0u8; a_bytes];
-        let b_data = vec![half::f16::from_f32(0.0); b_len];
-        let a = MetalBuffer::from_bytes(self.device.device(), &a_data).ok()?;
-        let b = MetalBuffer::from_slice(self.device.device(), &b_data).ok()?;
+        let a = MetalBuffer::from_bytes(self.device.device(), &vec![0u8; a_bytes]).ok()?;
+        let b =
+            MetalBuffer::from_slice(self.device.device(), &vec![half::f16::from_f32(0.0); b_len])
+                .ok()?;
         let c = MetalBuffer::new(self.device.device(), c_bytes).ok()?;
 
-        let mut bench_config = self.dequant_dispatch_config();
+        Some(BatchF16InBenchBuffers { a, b, c })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_fused_batch_f16in_with_config(
+        &self,
+        quant: GgmlType,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+        config: DequantDispatchConfig,
+    ) -> anyhow::Result<()> {
+        self.device.execute_sync(|encoder| {
+            match quant {
+                GgmlType::Q4K => self
+                    .dequant
+                    .encode_fused_batch_q4_k_f16in_with_config(encoder, a, b, c, m, n, k, config),
+                GgmlType::Q5K => self
+                    .dequant
+                    .encode_fused_batch_q5_k_f16in_with_config(encoder, a, b, c, m, n, k, config),
+                GgmlType::Q6K => self
+                    .dequant
+                    .encode_fused_batch_q6_k_f16in_with_config(encoder, a, b, c, m, n, k, config),
+                GgmlType::Q8_0 => self
+                    .dequant
+                    .encode_fused_batch_q8_0_f16in_with_config(encoder, a, b, c, m, n, k, config),
+                _ => unreachable!("unsupported quant for f16in batch autotune benchmark"),
+            }
+            Ok(())
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn bench_f16in_variant_with_buffers(
+        &self,
+        quant: GgmlType,
+        m: u32,
+        n: u32,
+        k: u32,
+        use_small: bool,
+        buffers: &BatchF16InBenchBuffers,
+        base_config: DequantDispatchConfig,
+    ) -> Option<u128> {
+        let mut bench_config = base_config;
         if use_small {
             bench_config.batch_f16in_small_n_threshold = u32::MAX;
             bench_config.batch_f16in_small_m_max = m;
@@ -4122,104 +4621,31 @@ impl MetalOps {
             bench_config.batch_f16in_small_m_max = 0;
         }
 
-        let _ = self.device.execute_sync(|encoder| {
-            match quant {
-                GgmlType::Q4K => self.dequant.encode_fused_batch_q4_k_f16in_with_config(
-                    encoder,
-                    &a,
-                    &b,
-                    &c,
-                    m,
-                    n,
-                    k,
-                    bench_config,
-                ),
-                GgmlType::Q5K => self.dequant.encode_fused_batch_q5_k_f16in_with_config(
-                    encoder,
-                    &a,
-                    &b,
-                    &c,
-                    m,
-                    n,
-                    k,
-                    bench_config,
-                ),
-                GgmlType::Q6K => self.dequant.encode_fused_batch_q6_k_f16in_with_config(
-                    encoder,
-                    &a,
-                    &b,
-                    &c,
-                    m,
-                    n,
-                    k,
-                    bench_config,
-                ),
-                GgmlType::Q8_0 => self.dequant.encode_fused_batch_q8_0_f16in_with_config(
-                    encoder,
-                    &a,
-                    &b,
-                    &c,
-                    m,
-                    n,
-                    k,
-                    bench_config,
-                ),
-                _ => return Ok(()),
-            }
-            Ok(())
-        });
+        let _ = self.encode_fused_batch_f16in_with_config(
+            quant,
+            &buffers.a,
+            &buffers.b,
+            &buffers.c,
+            m,
+            n,
+            k,
+            bench_config,
+        );
 
         let reps = 3;
         let t0 = Instant::now();
         for _ in 0..reps {
             if self
-                .device
-                .execute_sync(|encoder| {
-                    match quant {
-                        GgmlType::Q4K => self.dequant.encode_fused_batch_q4_k_f16in_with_config(
-                            encoder,
-                            &a,
-                            &b,
-                            &c,
-                            m,
-                            n,
-                            k,
-                            bench_config,
-                        ),
-                        GgmlType::Q5K => self.dequant.encode_fused_batch_q5_k_f16in_with_config(
-                            encoder,
-                            &a,
-                            &b,
-                            &c,
-                            m,
-                            n,
-                            k,
-                            bench_config,
-                        ),
-                        GgmlType::Q6K => self.dequant.encode_fused_batch_q6_k_f16in_with_config(
-                            encoder,
-                            &a,
-                            &b,
-                            &c,
-                            m,
-                            n,
-                            k,
-                            bench_config,
-                        ),
-                        GgmlType::Q8_0 => self.dequant.encode_fused_batch_q8_0_f16in_with_config(
-                            encoder,
-                            &a,
-                            &b,
-                            &c,
-                            m,
-                            n,
-                            k,
-                            bench_config,
-                        ),
-                        _ => return Ok(()),
-                    }
-                    Ok(())
-                })
+                .encode_fused_batch_f16in_with_config(
+                    quant,
+                    &buffers.a,
+                    &buffers.b,
+                    &buffers.c,
+                    m,
+                    n,
+                    k,
+                    bench_config,
+                )
                 .is_err()
             {
                 return None;
@@ -4421,7 +4847,7 @@ impl MetalOps {
                     .expect("Failed to allocate MoE scratch buffer")
             };
             bs.moe_norm = Some(alloc_bytes(n_tokens * dim * f4));
-            bs.moe_router_out = Some(alloc_bytes(n_tokens * n_expert * f4));
+            bs.moe_router_out = Some(alloc_bytes(n_tokens * n_expert.max(dim) * f4));
             bs.moe_accum = Some(alloc_bytes(n_tokens * dim * f4));
             bs.moe_gate_out = Some(alloc_bytes(
                 n_tokens * n_expert_used * expert_inter_dim * f4,
@@ -4439,8 +4865,8 @@ impl MetalOps {
             // Pre-fill tok_idx: [0,0,...,0, 1,1,...,1, ...] — same every forward.
             unsafe {
                 let toks = tok_buf.as_mut_slice::<u32>();
-                for i in 0..(n_tokens * n_expert_used) {
-                    toks[i] = (i / n_expert_used) as u32;
+                for (i, tok) in toks.iter_mut().enumerate() {
+                    *tok = (i / n_expert_used) as u32;
                 }
             }
             bs.moe_tok_idx = Some(tok_buf);
@@ -4448,8 +4874,8 @@ impl MetalOps {
             let mut act_buf = alloc_bytes(n_expert * u4);
             unsafe {
                 let acts = act_buf.as_mut_slice::<u32>();
-                for i in 0..n_expert {
-                    acts[i] = i as u32;
+                for (i, act) in acts.iter_mut().enumerate() {
+                    *act = i as u32;
                 }
             }
             bs.moe_active_experts = Some(act_buf);
@@ -4474,14 +4900,26 @@ impl MetalOps {
         if self.f16in_route_tuned.load(Ordering::Relaxed) {
             return;
         }
+        let _tune_guard = self.f16in_route_tune_lock.lock().unwrap();
+        if self.f16in_route_tuned.load(Ordering::Relaxed) {
+            return;
+        }
 
         let old_policy = self.runtime_policy();
         let old_config = old_policy.dequant_dispatch_config();
+        let autotune_quant = self.runtime_f16in_autotune_quant();
         let Some((n_threshold, m_max)) = self.tune_f16in_batch_route(
-            GgmlType::Q4K,
+            autotune_quant,
             config.embedding_dim,
             config.intermediate_dim,
         ) else {
+            self.f16in_route_tuned.store(true, Ordering::Relaxed);
+            tracing::debug!(
+                quant = %autotune_quant,
+                embedding_dim = config.embedding_dim,
+                intermediate_dim = config.intermediate_dim,
+                "Skipping f16in batch-route autotune: no valid benchmark shapes"
+            );
             return;
         };
         let mut tuned = old_config;
@@ -4494,6 +4932,7 @@ impl MetalOps {
             old_m_max = old_config.batch_f16in_small_m_max,
             tuned_n_threshold = n_threshold,
             tuned_m_max = m_max,
+            quant = %autotune_quant,
             "Autotuned f16in batch kernel routing"
         );
     }
@@ -4501,6 +4940,14 @@ impl MetalOps {
     /// Access GPU batch scratch buffers (must call init_batch_scratches first).
     pub fn batch_scratches(&self) -> std::sync::MutexGuard<'_, Option<GpuBatchScratchBuffers>> {
         self.batch_scratches.lock().unwrap()
+    }
+
+    pub(crate) fn moe_batch_scratch_view(&self) -> anyhow::Result<MoeBatchScratchView> {
+        let bs_guard = self.batch_scratches.lock().unwrap();
+        let bs = bs_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("moe_ffn_gpu_resident: missing batch scratches"))?;
+        MoeBatchScratchView::from_batch_scratches(bs)
     }
 
     pub(crate) fn with_qwen35_qkv_handoff_scratch<R>(
@@ -4637,9 +5084,18 @@ impl MetalOps {
                 slot_buffers.conv_synced_generation = Some(conv_generation);
             }
         } else if slot_buffers.conv_synced_generation != Some(conv_generation) {
-            panic!(
-                "qwen35 conv state for slot {slot_idx} layer {layer_idx} is backend-owned but Metal slot buffer lost generation {conv_generation}"
+            // Backend-owned but GPU slot buffer has a different generation.
+            // This can happen when GPU prefill sets backend-owned state and
+            // then the slot/layer is reused. Accept the GPU version as
+            // authoritative and update the tracked generation.
+            tracing::debug!(
+                slot_idx,
+                layer_idx,
+                gpu_gen = ?slot_buffers.conv_synced_generation,
+                cpu_gen = conv_generation,
+                "qwen35 conv state generation mismatch — accepting GPU version"
             );
+            slot_buffers.conv_synced_generation = Some(conv_generation);
         } else {
             outcome.note_backend_carryover();
         }
@@ -4664,9 +5120,14 @@ impl MetalOps {
                 slot_buffers.recurrent_synced_generation = Some(recurrent_generation);
             }
         } else if slot_buffers.recurrent_synced_generation != Some(recurrent_generation) {
-            panic!(
-                "qwen35 recurrent state for slot {slot_idx} layer {layer_idx} is backend-owned but Metal slot buffer lost generation {recurrent_generation}"
+            tracing::debug!(
+                slot_idx,
+                layer_idx,
+                gpu_gen = ?slot_buffers.recurrent_synced_generation,
+                cpu_gen = recurrent_generation,
+                "qwen35 recurrent state generation mismatch — accepting GPU version"
             );
+            slot_buffers.recurrent_synced_generation = Some(recurrent_generation);
         } else {
             outcome.note_backend_carryover();
         }
@@ -4729,6 +5190,48 @@ impl MetalOps {
         f(slot_buffers)
     }
 
+    /// Materialize GPU-resident recurrent state for a slot/layer back to CPU.
+    ///
+    /// If the GPU holds the latest version of conv or recurrent state (backend-owned),
+    /// copies it back to the Qwen35Kv CPU buffers so CPU-side decode can proceed.
+    /// No-op if state is already CPU-fresh.
+    pub(crate) fn materialize_qwen35_slot_state_to_cpu(
+        &self,
+        qwen_kv: &mut crate::kv::Qwen35Kv,
+        layer_idx: usize,
+        slot_idx: usize,
+        conv_state_stride: usize,
+        recurrent_state_stride: usize,
+    ) {
+        let key = Qwen35RecurrentSlotBufferKey {
+            layer_idx,
+            slot_idx,
+            conv_state_stride,
+            recurrent_state_stride,
+        };
+        let cache = self.qwen35_recurrent_slot_buffers.lock().unwrap();
+        let Some(slot_buffers) = cache.get(&key) else {
+            return; // No GPU buffers allocated for this slot/layer
+        };
+
+        if qwen_kv.conv_state_cpu_stale(slot_idx, layer_idx) {
+            if let Some(generation) = slot_buffers.conv_synced_generation {
+                let conv_data =
+                    unsafe { &slot_buffers.conv_state.as_slice::<f32>()[..conv_state_stride] };
+                qwen_kv.sync_conv_state_from_backend(slot_idx, layer_idx, conv_data, generation);
+            }
+        }
+        if qwen_kv.recurrent_state_cpu_stale(slot_idx, layer_idx) {
+            if let Some(generation) = slot_buffers.recurrent_synced_generation {
+                let rec_data = unsafe {
+                    &slot_buffers.recurrent_state.as_slice::<f32>()[..recurrent_state_stride]
+                };
+                qwen_kv
+                    .sync_recurrent_state_from_backend(slot_idx, layer_idx, rec_data, generation);
+            }
+        }
+    }
+
     /// Get or create a cached MetalBuffer for an f32 weight slice.
     /// Keyed by the data pointer address (stable for mmap'd weights).
     pub fn get_f32_weight_buffer(
@@ -4768,6 +5271,7 @@ impl MetalOps {
         key
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn encode_quant_batch_matmul(
         &self,
         encoder: &ax_engine_metal::MetalEncoder,
@@ -4780,6 +5284,9 @@ impl MetalOps {
         dtype: GgmlType,
     ) -> anyhow::Result<()> {
         match dtype {
+            GgmlType::F32 => self
+                .matmul
+                .encode_matmul(encoder, weights, input, output, m, n, k),
             GgmlType::Q4K => self
                 .dequant
                 .encode_fused_batch_q4_k(encoder, weights, input, output, m, n, k),
@@ -4798,13 +5305,72 @@ impl MetalOps {
     }
 
     fn validate_moe_mul_mat_id_dtype(dtype: GgmlType, role: &str) -> anyhow::Result<()> {
-        if matches!(dtype, GgmlType::Q4K) {
+        if matches!(dtype, GgmlType::Q4K | GgmlType::Q5K) {
             Ok(())
         } else {
             anyhow::bail!(
-                "Metal MoE mul_mat_id path only supports Q4_K {role} weights today; got {dtype:?}",
+                "Metal MoE mul_mat_id path only supports Q4_K/Q5_K {role} weights today; got {dtype:?}",
             )
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_moe_mul_mat_id(
+        &self,
+        encoder: &ax_engine_metal::MetalEncoder,
+        weights: &MetalBuffer,
+        input: &MetalBuffer,
+        tpe: &MetalBuffer,
+        hids: &MetalBuffer,
+        output: &MetalBuffer,
+        dtype: GgmlType,
+        m: u32,
+        k: u32,
+        n_tokens: u32,
+        n_expert_used: u32,
+        n_expert: u32,
+        weight_stride: u32,
+        active_experts: &MetalBuffer,
+        n_active_experts: u32,
+    ) -> anyhow::Result<()> {
+        match dtype {
+            GgmlType::Q4K => self.dequant.encode_moe_mul_mat_id_q4_k(
+                encoder,
+                weights,
+                input,
+                tpe,
+                hids,
+                output,
+                m,
+                k,
+                n_tokens,
+                n_expert_used,
+                n_expert,
+                weight_stride,
+                active_experts,
+                n_active_experts,
+            ),
+            GgmlType::Q5K => self.dequant.encode_moe_mul_mat_id_q5_k(
+                encoder,
+                weights,
+                input,
+                tpe,
+                hids,
+                output,
+                m,
+                k,
+                n_tokens,
+                n_expert_used,
+                n_expert,
+                weight_stride,
+                active_experts,
+                n_active_experts,
+            ),
+            _ => anyhow::bail!(
+                "unsupported Metal MoE mul_mat_id dtype for routed experts: {dtype:?}"
+            ),
+        }
+        Ok(())
     }
 
     fn moe_blocks_per_expert(
@@ -4829,16 +5395,19 @@ impl MetalOps {
     /// Encodes: RMSNorm → router → [sync for CPU top-k] → map0 + mul_mat_id ×3 + SiLU + scatter → residual add.
     /// The hidden buffer is updated in-place.
     #[allow(clippy::too_many_arguments)]
-    pub fn moe_ffn_gpu_resident(
+    pub(crate) fn encode_moe_ffn_gpu_resident_cached(
         &self,
+        encoder: &ax_engine_metal::MetalEncoder,
         hidden_gpu: &MetalBuffer,
-        ffn_norm_w: &[f32],
-        router_raw: &[u8],
+        ffn_norm_w_buf: &MetalBuffer,
+        router_buf: &MetalBuffer,
         router_dtype: GgmlType,
-        gate_exps_raw: &[u8],
-        up_exps_raw: &[u8],
-        down_exps_raw: &[u8],
-        expert_dtype: GgmlType,
+        gate_buf: &MetalBuffer,
+        gate_dtype: GgmlType,
+        up_buf: &MetalBuffer,
+        up_dtype: GgmlType,
+        down_buf: &MetalBuffer,
+        down_dtype: GgmlType,
         n_tokens: usize,
         n_expert: usize,
         n_expert_used: usize,
@@ -4848,222 +5417,501 @@ impl MetalOps {
         up_stride: usize,
         down_stride: usize,
         eps: f32,
+        shared_expert: Option<&SharedExpertCachedBuffers<'_>>,
+        explicit_barriers: bool,
     ) -> anyhow::Result<()> {
-        let i4 = std::mem::size_of::<i32>();
-        let blocks_per_expert_gate =
-            Self::moe_blocks_per_expert(gate_stride, expert_dtype, "expert gate")?;
-        let blocks_per_expert_up =
-            Self::moe_blocks_per_expert(up_stride, expert_dtype, "expert up")?;
-        let blocks_per_expert_down =
-            Self::moe_blocks_per_expert(down_stride, expert_dtype, "expert down")?;
+        let scratch = self.moe_batch_scratch_view()?;
+        self.encode_moe_ffn_gpu_resident_cached_with_scratch(
+            encoder,
+            scratch,
+            hidden_gpu,
+            ffn_norm_w_buf,
+            router_buf,
+            router_dtype,
+            gate_buf,
+            gate_dtype,
+            up_buf,
+            up_dtype,
+            down_buf,
+            down_dtype,
+            n_tokens,
+            n_expert,
+            n_expert_used,
+            dim,
+            expert_inter_dim,
+            gate_stride,
+            up_stride,
+            down_stride,
+            eps,
+            shared_expert,
+            explicit_barriers,
+        )
+    }
 
-        // Cache weights.
-        let gate_key = self.ensure_moe_quant_cached(gate_exps_raw);
-        let up_key = self.ensure_moe_quant_cached(up_exps_raw);
-        let down_key = self.ensure_moe_quant_cached(down_exps_raw);
-
-        // Use pre-allocated MoE scratch buffers from batch_scratches.
-        // Get raw pointers (drop guard to avoid deadlock with execute_sync).
-        struct MoeBufs {
-            norm: *const MetalBuffer,
-            router: *const MetalBuffer,
-            accum: *const MetalBuffer,
-            gate_out: *const MetalBuffer,
-            up_out: *const MetalBuffer,
-            down_out: *const MetalBuffer,
-            tpe: *const MetalBuffer,
-            hids: *const MetalBuffer,
-        }
-        let bufs = {
-            let bs_guard = self.batch_scratches.lock().unwrap();
-            let bs = bs_guard
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("moe_ffn_gpu_resident: missing batch scratches"))?;
-            // All buffers must exist (allocated when n_expert > 0).
-            MoeBufs {
-                norm: bs.moe_norm.as_ref().unwrap() as *const _,
-                router: bs.moe_router_out.as_ref().unwrap() as *const _,
-                accum: bs.moe_accum.as_ref().unwrap() as *const _,
-                gate_out: bs.moe_gate_out.as_ref().unwrap() as *const _,
-                up_out: bs.moe_up_out.as_ref().unwrap() as *const _,
-                down_out: bs.moe_down_out.as_ref().unwrap() as *const _,
-                tpe: bs.moe_tpe.as_ref().unwrap() as *const _,
-                hids: bs.moe_hids.as_ref().unwrap() as *const _,
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn encode_moe_ffn_gpu_resident_cached_with_scratch(
+        &self,
+        encoder: &ax_engine_metal::MetalEncoder,
+        scratch: MoeBatchScratchView,
+        hidden_gpu: &MetalBuffer,
+        ffn_norm_w_buf: &MetalBuffer,
+        router_buf: &MetalBuffer,
+        router_dtype: GgmlType,
+        gate_buf: &MetalBuffer,
+        gate_dtype: GgmlType,
+        up_buf: &MetalBuffer,
+        up_dtype: GgmlType,
+        down_buf: &MetalBuffer,
+        down_dtype: GgmlType,
+        n_tokens: usize,
+        n_expert: usize,
+        n_expert_used: usize,
+        dim: usize,
+        expert_inter_dim: usize,
+        gate_stride: usize,
+        up_stride: usize,
+        down_stride: usize,
+        eps: f32,
+        shared_expert: Option<&SharedExpertCachedBuffers<'_>>,
+        explicit_barriers: bool,
+    ) -> anyhow::Result<()> {
+        let barrier = |enc: &ax_engine_metal::MetalEncoder| {
+            if explicit_barriers {
+                ax_engine_metal::barrier_buffers(enc);
             }
-        }; // bs_guard dropped.
-
-        // SAFETY: MetalOps owns the batch scratches and won't deallocate during use.
-        let norm_gpu = unsafe { &*bufs.norm };
-        let router_gpu = unsafe { &*bufs.router };
-        let accum_gpu = unsafe { &*bufs.accum };
-        let gate_out_gpu = unsafe { &*bufs.gate_out };
-        let up_out_gpu = unsafe { &*bufs.up_out };
-        let down_out_gpu = unsafe { &*bufs.down_out };
-        let tpe_gpu = unsafe { &*bufs.tpe };
-        let hids_gpu = unsafe { &*bufs.hids };
-
-        unsafe {
-            (*(bufs.accum as *mut MetalBuffer))
-                .as_mut_slice::<f32>()
-                .fill(0.0)
         };
+        let blocks_per_expert_gate =
+            Self::moe_blocks_per_expert(gate_stride, gate_dtype, "expert gate")?;
+        let blocks_per_expert_up = Self::moe_blocks_per_expert(up_stride, up_dtype, "expert up")?;
+        let blocks_per_expert_down =
+            Self::moe_blocks_per_expert(down_stride, down_dtype, "expert down")?;
+        let norm_gpu = unsafe { &*scratch.norm };
+        let router_gpu = unsafe { &*scratch.router };
+        let accum_gpu = unsafe { &mut *(scratch.accum as *mut MetalBuffer) };
+        let gate_out_gpu = unsafe { &*scratch.gate_out };
+        let up_out_gpu = unsafe { &*scratch.up_out };
+        let down_out_gpu = unsafe { &*scratch.down_out };
+        let tpe_gpu = unsafe { &*scratch.tpe };
+        let hids_gpu = unsafe { &*scratch.hids };
+        let active_buf = unsafe { &mut *scratch.active };
+        let ids_gpu = unsafe { &mut *scratch.ids };
+        let weights_gpu = unsafe { &mut *scratch.weights };
+        let tok_idx_buf = unsafe { &mut *scratch.tok_idx };
 
-        // Get all pre-allocated moe buffers upfront (ids, weights, active, tok_idx).
-        let (active_buf_ptr, ids_buf_ptr, weights_buf_ptr, tok_idx_ptr) = {
-            let bs_guard = self.batch_scratches.lock().unwrap();
-            let bs = bs_guard.as_ref().unwrap();
-            (
-                bs.moe_active_experts.as_ref().unwrap() as *const MetalBuffer,
-                bs.moe_expert_ids.as_ref().unwrap() as *const MetalBuffer,
-                bs.moe_expert_weights.as_ref().unwrap() as *const MetalBuffer,
-                bs.moe_tok_idx.as_ref().unwrap() as *const MetalBuffer,
-            )
-        };
-        let active_buf = unsafe { &mut *(active_buf_ptr as *mut MetalBuffer) };
-        let ids_gpu = unsafe { &mut *(ids_buf_ptr as *mut MetalBuffer) };
-        let weights_gpu = unsafe { &mut *(weights_buf_ptr as *mut MetalBuffer) };
-        let tok_idx_buf = unsafe { &mut *(tok_idx_ptr as *mut MetalBuffer) };
-
-        let router_key_local = self.ensure_moe_quant_cached(router_raw);
-        let norm_key = self.ensure_f32_cached(ffn_norm_w);
+        unsafe { accum_gpu.as_mut_slice::<f32>().fill(0.0) };
 
         let nt = n_tokens as u32;
         let ne = n_expert as u32;
         let neu = n_expert_used as u32;
         let m_inter = expert_inter_dim as u32;
         let m_dim = dim as u32;
-        let blocks_per_expert_gate = gate_stride / 144;
-        let blocks_per_expert_down = down_stride / 144;
 
-        // Encode MoE FFN in a single CB.
-        {
-            let cache = self.moe_quant_cache.lock().unwrap();
-            let rbuf = cache.get(&router_key_local).unwrap();
-            let gate_buf = cache.get(&gate_key).unwrap();
-            let up_buf = cache.get(&up_key).unwrap();
-            let down_buf = cache.get(&down_key).unwrap();
-            let f32_cache = self.f32_weight_cache.lock().unwrap();
-            let norm_w_buf = f32_cache.get(&norm_key).unwrap();
+        self.elementwise.encode_rms_norm_out_batch(
+            encoder,
+            hidden_gpu,
+            ffn_norm_w_buf,
+            norm_gpu,
+            dim as u32,
+            n_tokens as u32,
+            eps,
+        );
+        barrier(encoder);
 
-            self.device.execute_sync(|encoder| {
-                // GPU RMSNorm.
-                self.elementwise.encode_rms_norm_out_batch(
-                    encoder,
-                    hidden_gpu,
-                    norm_w_buf,
-                    norm_gpu,
-                    dim as u32,
-                    n_tokens as u32,
-                    eps,
-                );
-                // GPU router matmul.
+        self.encode_quant_batch_matmul(
+            encoder,
+            router_buf,
+            norm_gpu,
+            router_gpu,
+            n_expert as u32,
+            n_tokens as u32,
+            dim as u32,
+            router_dtype,
+        )?;
+        barrier(encoder);
+
+        self.elementwise.encode_moe_softmax_topk(
+            encoder,
+            router_gpu,
+            ids_gpu,
+            weights_gpu,
+            n_tokens as u32,
+            n_expert as u32,
+            n_expert_used as u32,
+        );
+        barrier(encoder);
+
+        self.dequant.encode_moe_map0(
+            encoder,
+            ids_gpu,
+            tpe_gpu,
+            hids_gpu,
+            n_tokens as u32,
+            n_expert_used as u32,
+            n_expert as u32,
+        );
+        barrier(encoder);
+
+        self.encode_moe_mul_mat_id(
+            encoder,
+            gate_buf,
+            norm_gpu,
+            tpe_gpu,
+            hids_gpu,
+            gate_out_gpu,
+            gate_dtype,
+            m_inter,
+            m_dim,
+            nt,
+            neu,
+            ne,
+            blocks_per_expert_gate,
+            active_buf,
+            ne,
+        )?;
+        self.encode_moe_mul_mat_id(
+            encoder,
+            up_buf,
+            norm_gpu,
+            tpe_gpu,
+            hids_gpu,
+            up_out_gpu,
+            up_dtype,
+            m_inter,
+            m_dim,
+            nt,
+            neu,
+            ne,
+            blocks_per_expert_up,
+            active_buf,
+            ne,
+        )?;
+        barrier(encoder);
+
+        self.elementwise.encode_silu_elementwise_mul_batch(
+            encoder,
+            gate_out_gpu,
+            up_out_gpu,
+            m_inter,
+            nt * neu,
+        );
+        barrier(encoder);
+
+        self.encode_moe_mul_mat_id(
+            encoder,
+            down_buf,
+            gate_out_gpu,
+            tpe_gpu,
+            hids_gpu,
+            down_out_gpu,
+            down_dtype,
+            m_dim,
+            m_inter,
+            nt,
+            neu,
+            ne,
+            blocks_per_expert_down,
+            active_buf,
+            ne,
+        )?;
+        barrier(encoder);
+
+        self.elementwise.encode_moe_weighted_scatter(
+            encoder,
+            down_out_gpu,
+            tok_idx_buf,
+            weights_gpu,
+            accum_gpu,
+            m_dim,
+            nt * neu,
+        );
+        barrier(encoder);
+
+        if let Some(se) = shared_expert {
+            let se_inter = se.inter_dim as u32;
+
+            self.encode_quant_batch_matmul(
+                encoder,
+                se.gate,
+                norm_gpu,
+                gate_out_gpu,
+                se_inter,
+                nt,
+                m_dim,
+                se.dtype,
+            )?;
+            self.encode_quant_batch_matmul(
+                encoder, se.up, norm_gpu, up_out_gpu, se_inter, nt, m_dim, se.dtype,
+            )?;
+            barrier(encoder);
+
+            self.elementwise.encode_silu_elementwise_mul_batch(
+                encoder,
+                gate_out_gpu,
+                up_out_gpu,
+                se_inter,
+                nt,
+            );
+            barrier(encoder);
+
+            self.encode_quant_batch_matmul(
+                encoder,
+                se.down,
+                gate_out_gpu,
+                down_out_gpu,
+                m_dim,
+                nt,
+                se_inter,
+                se.dtype,
+            )?;
+            barrier(encoder);
+
+            if let Some(gate_inp) = se.gate_inp {
+                let gate_inp_dtype = se
+                    .gate_inp_dtype
+                    .ok_or_else(|| anyhow::anyhow!("missing shared expert gate input dtype"))?;
                 self.encode_quant_batch_matmul(
                     encoder,
-                    rbuf,
+                    gate_inp,
                     norm_gpu,
                     router_gpu,
-                    n_expert as u32,
-                    n_tokens as u32,
-                    dim as u32,
-                    router_dtype,
+                    se.gate_inp_rows as u32,
+                    nt,
+                    m_dim,
+                    gate_inp_dtype,
                 )?;
-                // GPU softmax + top-k.
-                self.elementwise.encode_moe_softmax_topk(
-                    encoder,
-                    router_gpu,
-                    ids_gpu,
-                    weights_gpu,
-                    n_tokens as u32,
-                    n_expert as u32,
-                    n_expert_used as u32,
-                );
-                // map0: build routing index (same CB, implicit barrier).
-                self.dequant.encode_moe_map0(
-                    encoder,
-                    ids_gpu,
-                    tpe_gpu,
-                    hids_gpu,
-                    n_tokens as u32,
-                    n_expert_used as u32,
-                    n_expert as u32,
-                );
-                // 3× mul_mat_id (same CB — all data already on GPU).
-                // Use full expert range (n_active = n_expert) since we can't
-                // read back active list without breaking the CB.
-                // For 512 tokens × 8 experts, all 256 experts are active anyway.
-                self.dequant.encode_moe_mul_mat_id_q4_k(
-                    encoder,
-                    gate_buf,
-                    norm_gpu,
-                    tpe_gpu,
-                    hids_gpu,
-                    gate_out_gpu,
-                    m_inter,
-                    m_dim,
-                    nt,
-                    neu,
-                    ne,
-                    blocks_per_expert_gate as u32,
-                    active_buf,
-                    ne, // n_active = n_expert
-                );
-                self.dequant.encode_moe_mul_mat_id_q4_k(
-                    encoder,
-                    up_buf,
-                    norm_gpu,
-                    tpe_gpu,
-                    hids_gpu,
-                    up_out_gpu,
-                    m_inter,
-                    m_dim,
-                    nt,
-                    neu,
-                    ne,
-                    blocks_per_expert_gate as u32,
-                    active_buf,
-                    ne,
-                );
-                self.elementwise.encode_silu_elementwise_mul_batch(
-                    encoder,
-                    gate_out_gpu,
-                    up_out_gpu,
-                    m_inter,
-                    nt * neu,
-                );
-                self.dequant.encode_moe_mul_mat_id_q4_k(
-                    encoder,
-                    down_buf,
-                    gate_out_gpu,
-                    tpe_gpu,
-                    hids_gpu,
-                    down_out_gpu,
-                    m_dim,
-                    m_inter,
-                    nt,
-                    neu,
-                    ne,
-                    blocks_per_expert_down as u32,
-                    active_buf,
-                    ne,
-                );
-                // Weighted scatter.
-                self.elementwise.encode_moe_weighted_scatter(
-                    encoder,
-                    down_out_gpu,
-                    tok_idx_buf,
-                    weights_gpu,
-                    accum_gpu,
-                    m_dim,
-                    nt * neu,
-                );
-                // Residual add: hidden += accum.
-                self.elementwise
-                    .encode_elementwise_add_batch(encoder, hidden_gpu, accum_gpu, m_dim, nt);
-                Ok(())
-            })?;
+                barrier(encoder);
+                if se.gate_inp_rows == dim {
+                    self.elementwise.encode_sigmoid_elementwise_mul(
+                        encoder,
+                        router_gpu,
+                        down_out_gpu,
+                        m_dim * nt,
+                    );
+                } else {
+                    anyhow::ensure!(
+                        se.gate_inp_rows == 1,
+                        "shared expert gate width {} is not supported by the resident Metal MoE path (expected 1 or {})",
+                        se.gate_inp_rows,
+                        dim,
+                    );
+                    self.elementwise
+                        .encode_sigmoid_inplace(encoder, router_gpu, nt);
+                    barrier(encoder);
+                    self.gdn.encode_broadcast_mul(
+                        encoder,
+                        down_out_gpu,
+                        router_gpu,
+                        down_out_gpu,
+                        m_dim,
+                        m_dim * nt,
+                    );
+                }
+                barrier(encoder);
+            }
+
+            self.elementwise.encode_elementwise_add_batch(
+                encoder,
+                accum_gpu,
+                down_out_gpu,
+                m_dim,
+                nt,
+            );
+            barrier(encoder);
         }
 
+        self.elementwise
+            .encode_elementwise_add_batch(encoder, hidden_gpu, accum_gpu, m_dim, nt);
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn encode_moe_ffn_gpu_resident(
+        &self,
+        encoder: &ax_engine_metal::MetalEncoder,
+        hidden_gpu: &MetalBuffer,
+        ffn_norm_w_buf: &MetalBuffer,
+        router_raw: &[u8],
+        router_dtype: GgmlType,
+        gate_exps_raw: &[u8],
+        gate_dtype: GgmlType,
+        up_exps_raw: &[u8],
+        up_dtype: GgmlType,
+        down_exps_raw: &[u8],
+        down_dtype: GgmlType,
+        n_tokens: usize,
+        n_expert: usize,
+        n_expert_used: usize,
+        dim: usize,
+        expert_inter_dim: usize,
+        gate_stride: usize,
+        up_stride: usize,
+        down_stride: usize,
+        eps: f32,
+        shared_expert: Option<&SharedExpertWeights<'_>>,
+        explicit_barriers: bool,
+    ) -> anyhow::Result<()> {
+        let router_key = self.ensure_moe_quant_cached(router_raw);
+        let gate_key = self.ensure_moe_quant_cached(gate_exps_raw);
+        let up_key = self.ensure_moe_quant_cached(up_exps_raw);
+        let down_key = self.ensure_moe_quant_cached(down_exps_raw);
+        if let Some(se) = shared_expert {
+            self.ensure_moe_quant_cached(se.gate_raw);
+            self.ensure_moe_quant_cached(se.up_raw);
+            self.ensure_moe_quant_cached(se.down_raw);
+            if let Some(gate_inp_raw) = se.gate_inp_raw {
+                self.ensure_moe_quant_cached(gate_inp_raw);
+            }
+        }
+
+        let cache = self.moe_quant_cache.lock().unwrap();
+        let router_buf = cache.get(&router_key).unwrap();
+        let gate_buf = cache.get(&gate_key).unwrap();
+        let up_buf = cache.get(&up_key).unwrap();
+        let down_buf = cache.get(&down_key).unwrap();
+        let shared_expert = shared_expert.map(|se| SharedExpertCachedBuffers {
+            gate: cache.get(&(se.gate_raw.as_ptr() as usize)).unwrap(),
+            up: cache.get(&(se.up_raw.as_ptr() as usize)).unwrap(),
+            down: cache.get(&(se.down_raw.as_ptr() as usize)).unwrap(),
+            gate_inp: se
+                .gate_inp_raw
+                .map(|gate_inp_raw| cache.get(&(gate_inp_raw.as_ptr() as usize)).unwrap()),
+            gate_inp_dtype: se.gate_inp_dtype,
+            dtype: se.dtype,
+            inter_dim: se.inter_dim,
+            gate_inp_rows: se.gate_inp_rows,
+        });
+
+        self.encode_moe_ffn_gpu_resident_cached(
+            encoder,
+            hidden_gpu,
+            ffn_norm_w_buf,
+            router_buf,
+            router_dtype,
+            gate_buf,
+            gate_dtype,
+            up_buf,
+            up_dtype,
+            down_buf,
+            down_dtype,
+            n_tokens,
+            n_expert,
+            n_expert_used,
+            dim,
+            expert_inter_dim,
+            gate_stride,
+            up_stride,
+            down_stride,
+            eps,
+            shared_expert.as_ref(),
+            explicit_barriers,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_ffn_gpu_resident(
+        &self,
+        hidden_gpu: &MetalBuffer,
+        ffn_norm_w: &[f32],
+        router_raw: &[u8],
+        router_dtype: GgmlType,
+        gate_exps_raw: &[u8],
+        gate_dtype: GgmlType,
+        up_exps_raw: &[u8],
+        up_dtype: GgmlType,
+        down_exps_raw: &[u8],
+        down_dtype: GgmlType,
+        n_tokens: usize,
+        n_expert: usize,
+        n_expert_used: usize,
+        dim: usize,
+        expert_inter_dim: usize,
+        gate_stride: usize,
+        up_stride: usize,
+        down_stride: usize,
+        eps: f32,
+        shared_expert: Option<&SharedExpertWeights<'_>>,
+    ) -> anyhow::Result<()> {
+        let norm_key = self.ensure_f32_cached(ffn_norm_w);
+        let f32_cache = self.f32_weight_cache.lock().unwrap();
+        let norm_w_buf = f32_cache.get(&norm_key).unwrap();
+        self.device.execute_sync(|encoder| {
+            self.encode_moe_ffn_gpu_resident(
+                encoder,
+                hidden_gpu,
+                norm_w_buf,
+                router_raw,
+                router_dtype,
+                gate_exps_raw,
+                gate_dtype,
+                up_exps_raw,
+                up_dtype,
+                down_exps_raw,
+                down_dtype,
+                n_tokens,
+                n_expert,
+                n_expert_used,
+                dim,
+                expert_inter_dim,
+                gate_stride,
+                up_stride,
+                down_stride,
+                eps,
+                shared_expert,
+                false,
+            )
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_ffn_gpu_resident_cached(
+        &self,
+        hidden_gpu: &MetalBuffer,
+        ffn_norm_w_buf: &MetalBuffer,
+        router_buf: &MetalBuffer,
+        router_dtype: GgmlType,
+        gate_buf: &MetalBuffer,
+        gate_dtype: GgmlType,
+        up_buf: &MetalBuffer,
+        up_dtype: GgmlType,
+        down_buf: &MetalBuffer,
+        down_dtype: GgmlType,
+        n_tokens: usize,
+        n_expert: usize,
+        n_expert_used: usize,
+        dim: usize,
+        expert_inter_dim: usize,
+        gate_stride: usize,
+        up_stride: usize,
+        down_stride: usize,
+        eps: f32,
+        shared_expert: Option<&SharedExpertCachedBuffers<'_>>,
+    ) -> anyhow::Result<()> {
+        self.device.execute_sync(|encoder| {
+            self.encode_moe_ffn_gpu_resident_cached(
+                encoder,
+                hidden_gpu,
+                ffn_norm_w_buf,
+                router_buf,
+                router_dtype,
+                gate_buf,
+                gate_dtype,
+                up_buf,
+                up_dtype,
+                down_buf,
+                down_dtype,
+                n_tokens,
+                n_expert,
+                n_expert_used,
+                dim,
+                expert_inter_dim,
+                gate_stride,
+                up_stride,
+                down_stride,
+                eps,
+                shared_expert,
+                false,
+            )
+        })
     }
 
     /// Execute MoE FFN via unified mul_mat_id kernel (2 dispatches per matmul).
@@ -5074,7 +5922,6 @@ impl MetalOps {
     /// `[n_expert, dim, ...]` in Q4_K format.
     ///
     /// Output: `accum_out[n_tokens × dim]` f32, accumulated weighted expert outputs.
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub fn moe_mul_mat_id_dispatch(
         &self,
@@ -5197,13 +6044,14 @@ impl MetalOps {
             self.dequant
                 .encode_moe_map0(encoder, &ids_gpu, &tpe_gpu, &hids_gpu, nt, neu, ne);
             // Stage 2a: Gate matmul — compact grid (only active experts).
-            self.dequant.encode_moe_mul_mat_id_q4_k(
+            self.encode_moe_mul_mat_id(
                 encoder,
                 gate_buf,
                 &input_gpu,
                 &tpe_gpu,
                 &hids_gpu,
                 &gate_out_gpu,
+                gate_dtype,
                 m_inter,
                 k_dim,
                 nt,
@@ -5212,16 +6060,17 @@ impl MetalOps {
                 blocks_per_expert_gate,
                 &active_buf,
                 n_active,
-            );
+            )?;
 
             // Stage 2b: Up matmul.
-            self.dequant.encode_moe_mul_mat_id_q4_k(
+            self.encode_moe_mul_mat_id(
                 encoder,
                 up_buf,
                 &input_gpu,
                 &tpe_gpu,
                 &hids_gpu,
                 &up_out_gpu,
+                up_dtype,
                 m_inter,
                 k_dim,
                 nt,
@@ -5230,7 +6079,7 @@ impl MetalOps {
                 blocks_per_expert_up,
                 &active_buf,
                 n_active,
-            );
+            )?;
 
             // Stage 3: SiLU(gate) * up — in-place on gate_out.
             self.elementwise.encode_silu_elementwise_mul_batch(
@@ -5263,13 +6112,14 @@ impl MetalOps {
             // hid position which for gate_out means index hid in the flat array.
             // Since gate_out[hid] is already the correct (token, expert) data,
             // and the kernel routes by expert, this should work.
-            self.dequant.encode_moe_mul_mat_id_q4_k(
+            self.encode_moe_mul_mat_id(
                 encoder,
                 down_buf,
                 &gate_out_gpu,
                 &tpe_gpu,
                 &hids_gpu,
                 &down_out_gpu,
+                down_dtype,
                 m_dim,
                 k_inter,
                 nt,
@@ -5278,7 +6128,7 @@ impl MetalOps {
                 blocks_per_expert_down,
                 &active_buf,
                 n_active,
-            );
+            )?;
 
             // Stage 5: Weighted scatter (pre-built tok_idx_buf, same CB).
             self.elementwise.encode_moe_weighted_scatter(
@@ -5543,6 +6393,13 @@ impl MetalOps {
     /// references at once without risk of deadlock.
     pub fn lock_weight_cache(&self) -> std::sync::MutexGuard<'_, FxHashMap<usize, MetalBuffer>> {
         self.f32_weight_cache.lock().unwrap()
+    }
+
+    /// Lock the resident MoE quantized weight cache for batch/decode encoding.
+    pub fn lock_moe_weight_cache(
+        &self,
+    ) -> std::sync::MutexGuard<'_, FxHashMap<usize, MetalBuffer>> {
+        self.moe_quant_cache.lock().unwrap()
     }
 
     /// Ensure fused QKV quantized data is cached as a MetalBuffer.
@@ -6579,6 +7436,15 @@ mod tests {
     use super::*;
     use crate::backend::Qwen35RecurrentStateBatch;
 
+    fn lock_env_test() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+            std::sync::OnceLock::new();
+        ENV_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap()
+    }
+
     struct EnvVarGuard {
         key: &'static str,
         previous: Option<std::ffi::OsString>,
@@ -6633,11 +7499,58 @@ mod tests {
         }
     }
 
+    fn test_model_config(embedding_dim: u32, intermediate_dim: u32) -> ModelConfig {
+        ModelConfig {
+            architecture: "qwen3".into(),
+            n_layers: 36,
+            n_heads: 32,
+            n_kv_heads: 8,
+            embedding_dim,
+            head_dim: 128,
+            intermediate_dim,
+            context_length: 4096,
+            vocab_size: 151_936,
+            rms_norm_eps: 1e-6,
+            rope_freq_base: 1_000_000.0,
+            has_qkv_bias: true,
+            sliding_window_size: None,
+            sliding_window_pattern: None,
+            gate_activation: crate::model::config::GateActivation::SiLU,
+            tie_word_embeddings: false,
+            logit_scale: None,
+            rope_scaling: crate::model::config::RopeScaling::None,
+            embed_scale: false,
+            rope_freq_base_local: None,
+            n_expert: None,
+            n_expert_used: None,
+            expert_intermediate_dim: None,
+            qwen35_full_attention_interval: None,
+            qwen35_ssm_conv_kernel: None,
+            qwen35_ssm_inner_size: None,
+            qwen35_ssm_state_size: None,
+            qwen35_ssm_time_step_rank: None,
+            qwen35_ssm_group_count: None,
+        }
+    }
+
+    fn unique_temp_cache_dir(label: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "ax-engine-metal-test-{label}-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
     #[test]
-    fn test_validate_moe_mul_mat_id_dtype_rejects_non_q4k() {
-        let err = MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q5K, "expert")
-            .expect_err("non-Q4_K MoE routed weights should be rejected");
-        assert!(err.to_string().contains("Q4_K expert weights"));
+    fn test_validate_moe_mul_mat_id_dtype_accepts_q4k_and_q5k_rejects_q6k() {
+        MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q4K, "expert").unwrap();
+        MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q5K, "expert").unwrap();
+        let err = MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q6K, "expert")
+            .expect_err("Q6_K routed expert weights should be rejected");
+        assert!(err.to_string().contains("Q4_K/Q5_K expert"));
     }
 
     #[test]
@@ -6664,6 +7577,168 @@ mod tests {
         let mut unsupported_stride = fingerprint;
         unsupported_stride.n_kv_heads = 0;
         assert!(!MetalOps::supports_q8_kv(&unsupported_stride));
+    }
+
+    #[test]
+    fn test_quant_from_profile_label_parses_common_forms() {
+        assert_eq!(quant_from_profile_label("Q4_K"), Some(GgmlType::Q4K));
+        assert_eq!(quant_from_profile_label("Q4_K_M"), Some(GgmlType::Q4K));
+        assert_eq!(quant_from_profile_label("q5-k"), Some(GgmlType::Q5K));
+        assert_eq!(quant_from_profile_label("q5_k_s"), Some(GgmlType::Q5K));
+        assert_eq!(quant_from_profile_label("q6k"), Some(GgmlType::Q6K));
+        assert_eq!(quant_from_profile_label("Q8"), Some(GgmlType::Q8_0));
+        assert_eq!(quant_from_profile_label("Q8_0"), Some(GgmlType::Q8_0));
+        assert_eq!(quant_from_profile_label("Q8_1"), None);
+        assert_eq!(quant_from_profile_label("unknown"), None);
+    }
+
+    #[test]
+    fn test_preferred_batch_prefill_quant_accepts_normalized_layer_label_forms() {
+        let backend = MetalBackend::new().unwrap();
+        let mut fingerprint = test_fingerprint();
+        fingerprint.predominant_layer_quant = "q5-k".to_string();
+        fingerprint.has_q4k_layer_weights = false;
+        fingerprint.has_q5k_layer_weights = false;
+
+        assert_eq!(
+            backend.ops.preferred_batch_prefill_quant(&fingerprint),
+            Some(GgmlType::Q5K)
+        );
+    }
+
+    #[test]
+    fn test_preferred_batch_prefill_quant_falls_back_to_predominant_quant() {
+        let backend = MetalBackend::new().unwrap();
+        let mut fingerprint = test_fingerprint();
+        fingerprint.predominant_layer_quant = "unknown".to_string();
+        fingerprint.predominant_quant = "Q6K".to_string();
+        fingerprint.has_q4k_layer_weights = false;
+        fingerprint.has_q6k_layer_weights = false;
+
+        assert_eq!(
+            backend.ops.preferred_batch_prefill_quant(&fingerprint),
+            Some(GgmlType::Q6K)
+        );
+    }
+
+    #[test]
+    fn test_decode_autotune_shapes_coalesces_duplicates_with_weights() {
+        let fingerprint = test_fingerprint();
+        let shapes = MetalOps::decode_autotune_shapes(&fingerprint);
+
+        assert_eq!(shapes.len(), 4);
+        assert_eq!(shapes.iter().map(|shape| shape.weight).sum::<u32>(), 7);
+
+        let weight_for = |m: u32, k: u32| -> u32 {
+            shapes
+                .iter()
+                .find(|shape| shape.m == m && shape.k == k)
+                .map(|shape| shape.weight)
+                .unwrap_or(0)
+        };
+
+        assert_eq!(weight_for(4096, 4096), 2);
+        assert_eq!(weight_for(1024, 4096), 2);
+        assert_eq!(weight_for(14336, 4096), 2);
+        assert_eq!(weight_for(4096, 14336), 1);
+    }
+
+    #[test]
+    fn test_decode_matvec_autotune_candidates_dedup_non_adjacent_profile_match() {
+        let mut profile = KernelProfile::default();
+        profile.decode_matvec.insert(
+            "q4_k".to_string(),
+            MatvecParams {
+                threadgroup_size: 64,
+                rows_per_simdgroup: 2,
+                variant: Some(MatvecProfileVariant::Nr2),
+            },
+        );
+
+        let (_, candidates) =
+            MetalOps::decode_matvec_autotune_candidates(&profile, GgmlType::Q4K).unwrap();
+        let deduped = MetalOps::dedup_matvec_candidates(candidates);
+
+        assert_eq!(deduped.len(), 3);
+        assert_eq!(
+            deduped[0],
+            MatvecParams {
+                threadgroup_size: 64,
+                rows_per_simdgroup: 2,
+                variant: Some(MatvecProfileVariant::Nr2),
+            }
+        );
+        assert!(
+            deduped
+                .iter()
+                .any(|params| params.variant == Some(MatvecProfileVariant::Base))
+        );
+        assert!(
+            deduped
+                .iter()
+                .any(|params| params.variant == Some(MatvecProfileVariant::Ilp4))
+        );
+    }
+
+    #[test]
+    fn test_decode_matvec_autotune_candidates_infer_q4_variant_from_legacy_override_shape() {
+        let mut profile = KernelProfile::default();
+        profile.decode_matvec.insert(
+            "q4_k".to_string(),
+            MatvecParams {
+                threadgroup_size: 128,
+                rows_per_simdgroup: 1,
+                variant: None,
+            },
+        );
+
+        let (_, candidates) =
+            MetalOps::decode_matvec_autotune_candidates(&profile, GgmlType::Q4K).unwrap();
+        assert_eq!(candidates[0].threadgroup_size, 128);
+        assert_eq!(candidates[0].rows_per_simdgroup, 1);
+        assert_eq!(candidates[0].variant, Some(MatvecProfileVariant::Base));
+    }
+
+    #[test]
+    fn test_decode_matvec_autotune_candidates_infer_q8_variant_from_legacy_override_shape() {
+        let mut profile = KernelProfile::default();
+        profile.decode_matvec.insert(
+            "q8_0".to_string(),
+            MatvecParams {
+                threadgroup_size: 64,
+                rows_per_simdgroup: 1,
+                variant: None,
+            },
+        );
+
+        let (_, candidates) =
+            MetalOps::decode_matvec_autotune_candidates(&profile, GgmlType::Q8_0).unwrap();
+        assert_eq!(candidates[0].threadgroup_size, 64);
+        assert_eq!(candidates[0].rows_per_simdgroup, 1);
+        assert_eq!(candidates[0].variant, Some(MatvecProfileVariant::Ilp4));
+    }
+
+    #[test]
+    fn test_tune_f16in_batch_route_returns_none_when_no_valid_shapes() {
+        let backend = MetalBackend::new().unwrap();
+        // Q4_K uses block size 256; k=130 yields no valid benchmark shapes.
+        let tuned = backend.ops.tune_f16in_batch_route(GgmlType::Q4K, 130, 194);
+        assert_eq!(tuned, None);
+    }
+
+    #[test]
+    fn test_maybe_autotune_f16in_batch_route_stops_retrying_when_no_valid_shapes() {
+        let _env_lock = lock_env_test();
+        let _autotune = EnvVarGuard::set("AX_METAL_AUTOTUNE", "on");
+        let backend = MetalBackend::new().unwrap();
+        let config = test_model_config(130, 194);
+
+        assert!(!backend.ops.f16in_route_tuned.load(Ordering::Relaxed));
+        backend.ops.maybe_autotune_f16in_batch_route(&config);
+        assert!(
+            backend.ops.f16in_route_tuned.load(Ordering::Relaxed),
+            "runtime batch-route autotune should stop retrying after deterministic no-shape result"
+        );
     }
 
     #[test]
@@ -6935,8 +8010,6 @@ mod tests {
         );
 
         let conv_buf = MetalBuffer::from_slice(backend.device.device(), &conv_out).unwrap();
-        let alpha_buf = MetalBuffer::from_slice(backend.device.device(), &alpha).unwrap();
-        let beta_buf = MetalBuffer::from_slice(backend.device.device(), &beta).unwrap();
         let q_buf = MetalBuffer::new(
             backend.device.device(),
             n_tokens * value_dim * size_of::<f32>(),
@@ -6965,12 +8038,10 @@ mod tests {
 
         assert!(
             backend
-                .gdn_kernels
-                .prepare_multi_token_qkv(
-                    &backend.device,
+                .qwen35_prepare_multi_token_qkv_sync(
                     &conv_buf,
-                    &alpha_buf,
-                    &beta_buf,
+                    &alpha,
+                    &beta,
                     &q_buf,
                     &k_buf,
                     &v_buf,
@@ -9508,13 +10579,103 @@ mod tests {
             expected.fused_qkv_prefill_enabled()
         );
         assert_eq!(after.batch_simd_enabled(), expected.batch_simd_enabled());
+        assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q4K);
+    }
+
+    #[test]
+    fn test_configure_for_model_sets_runtime_f16in_autotune_quant() {
+        let backend = MetalBackend::new().unwrap();
+        backend
+            .configure_for_model("Qwen3-8B", "q6-k", "qwen3")
+            .unwrap();
+        assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q6K);
+
+        backend
+            .configure_for_model("Qwen3-8B", "q5_k_m", "qwen3")
+            .unwrap();
+        assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q5K);
+
+        backend
+            .configure_for_model("Qwen3-8B", "unknown", "qwen3")
+            .unwrap();
+        assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q4K);
+    }
+
+    #[test]
+    fn test_decode_dispatch_configs_for_attend_len_uses_decode_regime_cache() {
+        let backend = MetalBackend::new().unwrap();
+        let profile: KernelProfile = serde_json::from_str(
+            r#"{
+                "model": "qwen3-8b",
+                "source": "unit",
+                "decode_matvec": {
+                    "q4_k": {
+                        "threadgroup_size": 64,
+                        "rows_per_simdgroup": 2,
+                        "variant": "nr2"
+                    }
+                },
+                "attention_decode": {
+                    "splitk_chunk_size": 256,
+                    "splitk_threshold": 1024
+                },
+                "decode_regimes": {
+                    "short_max_attend_len": 384,
+                    "short": {
+                        "decode_matvec": {
+                            "q4_k": {
+                                "rows_per_simdgroup": 1,
+                                "variant": "base"
+                            }
+                        }
+                    },
+                    "long": {
+                        "attention_decode": {
+                            "splitk_threshold": 256
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        backend
+            .ops
+            .apply_runtime_policy(RuntimePolicy::from_kernel_profile_for_arch(
+                profile.clone(),
+                "qwen3",
+            ));
+
+        let (short_dequant, short_attention) =
+            backend.ops.decode_dispatch_configs_for_attend_len(128);
+        let short_profile = profile.effective_decode_profile(128);
+        assert_eq!(
+            short_dequant,
+            DequantDispatchConfig::from_profile(&short_profile)
+        );
+        assert_eq!(
+            short_attention,
+            AttentionDispatchConfig::from_profile(&short_profile)
+        );
+
+        let (long_dequant, long_attention) =
+            backend.ops.decode_dispatch_configs_for_attend_len(4096);
+        let long_profile = profile.effective_decode_profile(4096);
+        assert_eq!(
+            long_dequant,
+            DequantDispatchConfig::from_profile(&long_profile)
+        );
+        assert_eq!(
+            long_attention,
+            AttentionDispatchConfig::from_profile(&long_profile)
+        );
     }
 
     #[test]
     fn test_configure_for_fingerprint_uses_seed_profile_when_load_autotune_disabled() {
+        let _env_lock = lock_env_test();
         let backend = MetalBackend::new().unwrap();
-        let temp_cache_dir =
-            std::env::temp_dir().join(format!("ax-engine-metal-test-{}", std::process::id()));
+        let temp_cache_dir = unique_temp_cache_dir("seed-profile");
         let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "off");
         let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
         let _cache_dir = EnvVarGuard::set(
@@ -9569,6 +10730,189 @@ mod tests {
         assert_eq!(
             after.batch_prefill_prefers_f16_io(),
             expected.batch_prefill_prefers_f16_io()
+        );
+        assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q4K);
+    }
+
+    #[test]
+    fn test_configure_for_fingerprint_sets_runtime_f16in_autotune_quant() {
+        let _env_lock = lock_env_test();
+        let backend = MetalBackend::new().unwrap();
+        let temp_cache_dir = unique_temp_cache_dir("runtime-quant");
+        let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "off");
+        let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
+        let _cache_dir = EnvVarGuard::set(
+            "AX_METAL_TUNE_CACHE_DIR",
+            temp_cache_dir
+                .to_str()
+                .unwrap_or("/tmp/ax-engine-metal-test"),
+        );
+
+        let mut fingerprint = ModelFingerprint {
+            model_name: "Qwen3-8B".to_string(),
+            architecture: "qwen3".to_string(),
+            family: "qwen3".to_string(),
+            size_label: "8b".to_string(),
+            n_layers: 36,
+            n_heads: 32,
+            n_kv_heads: 8,
+            embedding_dim: 4096,
+            head_dim: 128,
+            intermediate_dim: 14336,
+            context_length: 4096,
+            sliding_window_size: None,
+            sliding_window_pattern: None,
+            n_expert: None,
+            n_expert_used: None,
+            qwen35_full_attention_interval: None,
+            total_tensor_bytes: 0,
+            predominant_quant: "Q6_K".to_string(),
+            predominant_layer_quant: "Q6_K".to_string(),
+            lm_head_quant: None,
+            layer_quant_histogram: vec![],
+            has_mixed_layer_quants: false,
+            has_q4k_layer_weights: false,
+            has_q5k_layer_weights: false,
+            has_q6k_layer_weights: true,
+            has_q8_layer_weights: false,
+            has_f32_layer_weights: false,
+        };
+        backend.configure_for_fingerprint(&fingerprint).unwrap();
+        assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q6K);
+
+        // Fallback to Q4_K when fingerprint quant labels are unknown.
+        fingerprint.predominant_quant = "unknown".to_string();
+        fingerprint.predominant_layer_quant = "unknown".to_string();
+        fingerprint.has_q6k_layer_weights = false;
+        fingerprint.has_q4k_layer_weights = false;
+        backend.configure_for_fingerprint(&fingerprint).unwrap();
+        assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q4K);
+    }
+
+    #[test]
+    fn test_configure_for_fingerprint_ignores_cached_kv_precision_override() {
+        let _env_lock = lock_env_test();
+        let backend = MetalBackend::new().unwrap();
+        let temp_cache_dir = unique_temp_cache_dir("cached-kv");
+        let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "on");
+        let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
+        let _cache_dir = EnvVarGuard::set(
+            "AX_METAL_TUNE_CACHE_DIR",
+            temp_cache_dir
+                .to_str()
+                .unwrap_or("/tmp/ax-engine-metal-test-cache-kv"),
+        );
+
+        let fingerprint = test_fingerprint();
+        let cache_path = backend.ops.kernel_profile_cache_path(&fingerprint);
+        fs::create_dir_all(
+            cache_path
+                .parent()
+                .expect("kernel profile cache path should have parent"),
+        )
+        .unwrap();
+        let mut cached_profile = KernelProfile::default();
+        cached_profile.kv_cache.precision = KvPrecisionMode::F32;
+        fs::write(
+            &cache_path,
+            serde_json::to_string_pretty(&cached_profile).unwrap(),
+        )
+        .unwrap();
+
+        backend.configure_for_fingerprint(&fingerprint).unwrap();
+
+        let runtime_policy = backend.ops.runtime_policy();
+        assert_eq!(
+            runtime_policy.kv_precision_policy(),
+            KvPrecisionPolicy::Auto
+        );
+        assert_eq!(
+            runtime_policy.gpu_kv_dtype(fingerprint.context_length as usize),
+            crate::kv::gpu_kv::GpuKvDtype::F16
+        );
+    }
+
+    #[test]
+    fn test_configure_for_fingerprint_ignores_cached_profile_when_load_autotune_disabled() {
+        let _env_lock = lock_env_test();
+        let backend = MetalBackend::new().unwrap();
+        let temp_cache_dir = unique_temp_cache_dir("cached-profile-load-autotune-off");
+        let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "off");
+        let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
+        let _cache_dir = EnvVarGuard::set(
+            "AX_METAL_TUNE_CACHE_DIR",
+            temp_cache_dir
+                .to_str()
+                .unwrap_or("/tmp/ax-engine-metal-test-cache-load-autotune-off"),
+        );
+
+        let fingerprint = test_fingerprint();
+        let cache_path = backend.ops.kernel_profile_cache_path(&fingerprint);
+        fs::create_dir_all(
+            cache_path
+                .parent()
+                .expect("kernel profile cache path should have parent"),
+        )
+        .unwrap();
+
+        let mut cached_profile = KernelProfile::default();
+        cached_profile.decode_matvec.insert(
+            "q4_k".to_string(),
+            MatvecParams {
+                threadgroup_size: 64,
+                rows_per_simdgroup: 1,
+                variant: Some(MatvecProfileVariant::Ilp4),
+            },
+        );
+        fs::write(
+            &cache_path,
+            serde_json::to_string_pretty(&cached_profile).unwrap(),
+        )
+        .unwrap();
+
+        backend.configure_for_fingerprint(&fingerprint).unwrap();
+
+        let after = backend.ops.runtime_policy();
+        let expected = RuntimePolicy::for_model("Qwen3-8B", "Q4_K", "qwen3");
+        assert_eq!(
+            after.dequant_dispatch_config(),
+            expected.dequant_dispatch_config()
+        );
+        assert_eq!(
+            after.attention_dispatch_config(),
+            expected.attention_dispatch_config()
+        );
+        assert!(!backend.ops.f16in_route_tuned.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_configure_for_fingerprint_keeps_runtime_batch_autotune_enabled_when_quant_unknown() {
+        let _env_lock = lock_env_test();
+        let backend = MetalBackend::new().unwrap();
+        let temp_cache_dir = unique_temp_cache_dir("unknown-quant-runtime-autotune");
+        let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "on");
+        let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
+        let _cache_dir = EnvVarGuard::set(
+            "AX_METAL_TUNE_CACHE_DIR",
+            temp_cache_dir
+                .to_str()
+                .unwrap_or("/tmp/ax-engine-metal-test-unknown-quant-runtime-autotune"),
+        );
+
+        let mut fingerprint = test_fingerprint();
+        fingerprint.predominant_quant = "unknown".to_string();
+        fingerprint.predominant_layer_quant = "unknown".to_string();
+        fingerprint.has_q4k_layer_weights = false;
+        fingerprint.has_q5k_layer_weights = false;
+        fingerprint.has_q6k_layer_weights = false;
+        fingerprint.has_q8_layer_weights = false;
+
+        backend.configure_for_fingerprint(&fingerprint).unwrap();
+
+        assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q4K);
+        assert!(
+            !backend.ops.f16in_route_tuned.load(Ordering::Relaxed),
+            "runtime batch-route autotune should stay enabled when load-time quant family is unknown"
         );
     }
 

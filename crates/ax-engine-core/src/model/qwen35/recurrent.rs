@@ -35,7 +35,7 @@ impl Qwen35Forward {
         qkv_gpu: &MetalBuffer,
         beta_gpu: Option<&MetalBuffer>,
         alpha_gpu: Option<&MetalBuffer>,
-        runtime: Qwen35RecurrentRuntimeTensors<'_>,
+        recurrent_keys: &Qwen35RecurrentLayerKeys,
         rec_beta_batch: &mut [f32],
         rec_alpha_batch: &mut [f32],
         rec_out_batch: &mut [f32],
@@ -59,9 +59,6 @@ impl Qwen35Forward {
         let recurrent_state_stride = qwen_kv.recurrent_state_len();
         let total_heads = n_tokens * dims.time_step_rank;
         let conv_cache_len_u32 = qwen_kv.conv_cache_len() as u32;
-        let conv_kernel_key = metal_ops.ensure_f32_cached(runtime.conv_kernel);
-        let dt_bias_key = metal_ops.ensure_f32_cached(runtime.dt_bias);
-        let ssm_a_key = metal_ops.ensure_f32_cached(runtime.a);
         let mut stats = Qwen35RecurrentGpuPrefillStats::default();
 
         let mut bs_guard = metal_ops.batch_scratches();
@@ -70,8 +67,14 @@ impl Qwen35Forward {
         };
         let weight_cache = metal_ops.lock_weight_cache();
         let conv_kernel_buf = weight_cache
-            .get(&conv_kernel_key)
+            .get(&recurrent_keys.conv_kernel)
             .expect("qwen35 conv kernel buffer missing after cache");
+        let dt_bias_buf = weight_cache
+            .get(&recurrent_keys.dt_bias)
+            .expect("qwen35 dt_bias buffer missing after cache");
+        let ssm_a_buf = weight_cache
+            .get(&recurrent_keys.ssm_a)
+            .expect("qwen35 ssm_a buffer missing after cache");
         let rec_out_alias = if !keep_output_on_gpu && n_tokens > 1 {
             let active_rec_out = &mut rec_out_batch[..total_inner];
             unsafe {
@@ -125,8 +128,6 @@ impl Qwen35Forward {
                  -> anyhow::Result<Duration> {
                     let t = OpTimer::start();
                     metal_ops.device.execute_sync(|encoder| {
-                        let dt_bias_buf = weight_cache.get(&dt_bias_key).unwrap();
-                        let ssm_a_buf = weight_cache.get(&ssm_a_key).unwrap();
                         metal_ops.gdn.encode_causal_conv_sequence(
                             encoder,
                             qkv_gpu,
@@ -465,7 +466,7 @@ impl Qwen35Forward {
         temp_z: &MetalBuffer,
         temp_beta: Option<&MetalBuffer>,
         temp_alpha: Option<&MetalBuffer>,
-        recurrent_runtime: Qwen35RecurrentRuntimeTensors<'_>,
+        recurrent_keys: &Qwen35RecurrentLayerKeys,
         rec_beta_batch: &[f32],
         rec_alpha_batch: &[f32],
         n_tokens: usize,
@@ -476,6 +477,7 @@ impl Qwen35Forward {
         ssm_key: usize,
         ssm_out_dtype: crate::gguf::tensor::GgmlType,
         ffn_nw_key: usize,
+        moe_layer: Option<&Qwen35MoeResidentLayerKeys>,
         wg_key: usize,
         wg_dtype: crate::gguf::tensor::GgmlType,
         wu_key: usize,
@@ -508,10 +510,6 @@ impl Qwen35Forward {
         let nt = n_tokens as u32;
         let total_heads = n_tokens * dims.time_step_rank;
         let total_inner = n_tokens * dims.inner_size;
-        let conv_kernel_key = metal_ops.ensure_f32_cached(recurrent_runtime.conv_kernel);
-        let dt_bias_key = metal_ops.ensure_f32_cached(recurrent_runtime.dt_bias);
-        let ssm_a_key = metal_ops.ensure_f32_cached(recurrent_runtime.a);
-        let ssm_norm_key = metal_ops.ensure_f32_cached(recurrent_runtime.ssm_norm);
         let mut stats = Qwen35RecurrentGpuPrefillStats::default();
 
         let mut bs_guard = metal_ops.batch_scratches();
@@ -520,32 +518,41 @@ impl Qwen35Forward {
         };
         let weight_cache = metal_ops.lock_weight_cache();
         let conv_kernel_buf = weight_cache
-            .get(&conv_kernel_key)
+            .get(&recurrent_keys.conv_kernel)
             .expect("qwen35 conv kernel buffer missing after cache");
         let dt_bias_buf = weight_cache
-            .get(&dt_bias_key)
+            .get(&recurrent_keys.dt_bias)
             .expect("qwen35 dt_bias buffer missing after cache");
         let ssm_a_buf = weight_cache
-            .get(&ssm_a_key)
+            .get(&recurrent_keys.ssm_a)
             .expect("qwen35 ssm_a buffer missing after cache");
         let ssm_norm_buf = weight_cache
-            .get(&ssm_norm_key)
+            .get(&recurrent_keys.ssm_norm)
             .expect("qwen35 ssm_norm buffer missing after cache");
+        let dt_bias = unsafe { dt_bias_buf.as_slice::<f32>() };
+        let ssm_a = unsafe { ssm_a_buf.as_slice::<f32>() };
         let ssm_buf = weight_cache
             .get(&ssm_key)
             .expect("qwen35 ssm_out buffer missing after cache");
         let ffn_nw_buf = weight_cache
             .get(&ffn_nw_key)
             .expect("qwen35 post-attention norm buffer missing after cache");
-        let wg_buf = weight_cache
-            .get(&wg_key)
-            .expect("qwen35 ffn_gate buffer missing after cache");
-        let wu_buf = weight_cache
-            .get(&wu_key)
-            .expect("qwen35 ffn_up buffer missing after cache");
-        let wd_buf = weight_cache
-            .get(&wd_key)
-            .expect("qwen35 ffn_down buffer missing after cache");
+        let moe_weight_cache = moe_layer.map(|_| metal_ops.lock_moe_weight_cache());
+        let wg_buf = moe_layer.is_none().then(|| {
+            weight_cache
+                .get(&wg_key)
+                .expect("qwen35 ffn_gate buffer missing after cache")
+        });
+        let wu_buf = moe_layer.is_none().then(|| {
+            weight_cache
+                .get(&wu_key)
+                .expect("qwen35 ffn_up buffer missing after cache")
+        });
+        let wd_buf = moe_layer.is_none().then(|| {
+            weight_cache
+                .get(&wd_key)
+                .expect("qwen35 ffn_down buffer missing after cache")
+        });
 
         let slot_buffer_sync =
             metal_ops.sync_qwen35_slot_buffers_from_kv(qwen_kv, layer, recurrent_slot);
@@ -714,8 +721,8 @@ impl Qwen35Forward {
                                         beta_slice,
                                         &rec_alpha_batch[..total_heads],
                                         &rec_beta_batch[..total_heads],
-                                        recurrent_runtime.dt_bias,
-                                        recurrent_runtime.a,
+                                        dt_bias,
+                                        ssm_a,
                                     );
                                     metal_ops.elementwise.encode_cast_f32_to_f16(
                                         encoder,
@@ -758,8 +765,8 @@ impl Qwen35Forward {
                                         beta_slice,
                                         &rec_alpha_batch[..total_heads],
                                         &rec_beta_batch[..total_heads],
-                                        recurrent_runtime.dt_bias,
-                                        recurrent_runtime.a,
+                                        dt_bias,
+                                        ssm_a,
                                     );
                                     metal_ops.gdn.encode_prepare_multi_token_qkv(
                                         encoder,
@@ -834,86 +841,140 @@ impl Qwen35Forward {
                                 dims.inner_size as u32,
                                 ssm_out_dtype,
                             );
-                            metal_ops
-                                .elementwise
-                                .encode_residual_add_rms_norm_out_batch(
+                            if let Some(moe_layer) = moe_layer {
+                                let moe_cache = moe_weight_cache.as_ref().unwrap();
+                                let moe_scratch =
+                                    crate::backend::metal::MoeBatchScratchView::from_batch_scratches(
+                                        bs,
+                                    )?;
+                                let shared_expert = moe_layer.shared_expert.map(|shared| {
+                                    crate::backend::metal::SharedExpertCachedBuffers {
+                                        gate: moe_cache.get(&shared.gate).unwrap(),
+                                        up: moe_cache.get(&shared.up).unwrap(),
+                                        down: moe_cache.get(&shared.down).unwrap(),
+                                        gate_inp: shared
+                                            .gate_inp
+                                            .map(|gate_inp| moe_cache.get(&gate_inp).unwrap()),
+                                        gate_inp_dtype: shared.gate_inp_dtype,
+                                        dtype: shared.dtype,
+                                        inter_dim: shared.inter_dim,
+                                        gate_inp_rows: shared.gate_inp_rows,
+                                    }
+                                });
+                                metal_ops.elementwise.encode_elementwise_add_batch(
                                     encoder,
                                     &bs.hidden,
                                     &bs.attn_out,
-                                    ffn_nw_buf,
-                                    &bs.norm_buf,
                                     dim as u32,
                                     nt,
-                                    rms_norm_eps,
                                 );
-                            if Self::qwen35_batch_projection_needs_f16_input(wg_dtype)
-                                || Self::qwen35_batch_projection_needs_f16_input(wu_dtype)
-                            {
-                                metal_ops.elementwise.encode_cast_f32_to_f16(
+                                metal_ops.encode_moe_ffn_gpu_resident_cached_with_scratch(
                                     encoder,
+                                    moe_scratch,
+                                    &bs.hidden,
+                                    ffn_nw_buf,
+                                    moe_cache.get(&moe_layer.router).unwrap(),
+                                    moe_layer.router_dtype,
+                                    moe_cache.get(&moe_layer.gate).unwrap(),
+                                    moe_layer.gate_dtype,
+                                    moe_cache.get(&moe_layer.up).unwrap(),
+                                    moe_layer.up_dtype,
+                                    moe_cache.get(&moe_layer.down).unwrap(),
+                                    moe_layer.down_dtype,
+                                    n_tokens,
+                                    moe_layer.n_expert,
+                                    moe_layer.n_expert_used,
+                                    dim,
+                                    moe_layer.expert_inter_dim,
+                                    moe_layer.gate_stride,
+                                    moe_layer.up_stride,
+                                    moe_layer.down_stride,
+                                    rms_norm_eps,
+                                    shared_expert.as_ref(),
+                                    false,
+                                )?;
+                            } else {
+                                metal_ops
+                                    .elementwise
+                                    .encode_residual_add_rms_norm_out_batch(
+                                        encoder,
+                                        &bs.hidden,
+                                        &bs.attn_out,
+                                        ffn_nw_buf,
+                                        &bs.norm_buf,
+                                        dim as u32,
+                                        nt,
+                                        rms_norm_eps,
+                                    );
+                                if Self::qwen35_batch_projection_needs_f16_input(wg_dtype)
+                                    || Self::qwen35_batch_projection_needs_f16_input(wu_dtype)
+                                {
+                                    metal_ops.elementwise.encode_cast_f32_to_f16(
+                                        encoder,
+                                        &bs.norm_buf,
+                                        &bs.matmul_in_f16,
+                                        nt * dim as u32,
+                                    );
+                                }
+                                Self::encode_qwen35_batch_projection(
+                                    metal_ops,
+                                    encoder,
+                                    wg_buf.unwrap(),
                                     &bs.norm_buf,
                                     &bs.matmul_in_f16,
-                                    nt * dim as u32,
+                                    &bs.gate_buf,
+                                    inter_dim as u32,
+                                    nt,
+                                    dim as u32,
+                                    wg_dtype,
                                 );
-                            }
-                            Self::encode_qwen35_batch_projection(
-                                metal_ops,
-                                encoder,
-                                wg_buf,
-                                &bs.norm_buf,
-                                &bs.matmul_in_f16,
-                                &bs.gate_buf,
-                                inter_dim as u32,
-                                nt,
-                                dim as u32,
-                                wg_dtype,
-                            );
-                            Self::encode_qwen35_batch_projection(
-                                metal_ops,
-                                encoder,
-                                wu_buf,
-                                &bs.norm_buf,
-                                &bs.matmul_in_f16,
-                                &bs.up_buf,
-                                inter_dim as u32,
-                                nt,
-                                dim as u32,
-                                wu_dtype,
-                            );
-                            metal_ops.elementwise.encode_silu_elementwise_mul_batch(
-                                encoder,
-                                &bs.gate_buf,
-                                &bs.up_buf,
-                                inter_dim as u32,
-                                nt,
-                            );
-                            if Self::qwen35_batch_projection_needs_f16_input(wd_dtype) {
-                                metal_ops.elementwise.encode_cast_f32_to_f16(
+                                Self::encode_qwen35_batch_projection(
+                                    metal_ops,
+                                    encoder,
+                                    wu_buf.unwrap(),
+                                    &bs.norm_buf,
+                                    &bs.matmul_in_f16,
+                                    &bs.up_buf,
+                                    inter_dim as u32,
+                                    nt,
+                                    dim as u32,
+                                    wu_dtype,
+                                );
+                                metal_ops.elementwise.encode_silu_elementwise_mul_batch(
                                     encoder,
                                     &bs.gate_buf,
+                                    &bs.up_buf,
+                                    inter_dim as u32,
+                                    nt,
+                                );
+                                if Self::qwen35_batch_projection_needs_f16_input(wd_dtype) {
+                                    metal_ops.elementwise.encode_cast_f32_to_f16(
+                                        encoder,
+                                        &bs.gate_buf,
+                                        &bs.matmul_in_f16,
+                                        nt * inter_dim as u32,
+                                    );
+                                }
+                                Self::encode_qwen35_batch_projection(
+                                    metal_ops,
+                                    encoder,
+                                    wd_buf.unwrap(),
+                                    &bs.gate_buf,
                                     &bs.matmul_in_f16,
-                                    nt * inter_dim as u32,
+                                    &bs.proj_buf,
+                                    dim as u32,
+                                    nt,
+                                    inter_dim as u32,
+                                    wd_dtype,
+                                );
+                                metal_ops.elementwise.encode_elementwise_add_batch(
+                                    encoder,
+                                    &bs.hidden,
+                                    &bs.proj_buf,
+                                    dim as u32,
+                                    nt,
                                 );
                             }
-                            Self::encode_qwen35_batch_projection(
-                                metal_ops,
-                                encoder,
-                                wd_buf,
-                                &bs.gate_buf,
-                                &bs.matmul_in_f16,
-                                &bs.proj_buf,
-                                dim as u32,
-                                nt,
-                                inter_dim as u32,
-                                wd_dtype,
-                            );
-                            metal_ops.elementwise.encode_elementwise_add_batch(
-                                encoder,
-                                &bs.hidden,
-                                &bs.proj_buf,
-                                dim as u32,
-                                nt,
-                            );
                             Ok(())
                         })?;
                         Ok(t.elapsed())

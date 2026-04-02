@@ -690,6 +690,19 @@ fn test_qwen35moe_shared_expert_gate_scales_output() {
 }
 
 #[test]
+fn test_qwen35_shared_expert_gate_width_supported_accepts_scalar_and_vector() {
+    assert!(Qwen35Forward::qwen35_shared_expert_gate_width_supported(
+        1, 4096
+    ));
+    assert!(Qwen35Forward::qwen35_shared_expert_gate_width_supported(
+        4096, 4096
+    ));
+    assert!(!Qwen35Forward::qwen35_shared_expert_gate_width_supported(
+        2, 4096
+    ));
+}
+
+#[test]
 fn test_qwen35_rope_position_honors_linear_scaling() {
     let cfg = ModelConfig {
         architecture: "qwen35".into(),

@@ -310,6 +310,23 @@ fn effective_qwen35_shared_timeline_tokens(prompt_tokens: usize, slot_count: usi
     prompt_tokens.saturating_mul(slot_count.max(1))
 }
 
+fn kv_dtype_label_from_plan(plan: &ax_engine_core::backend::KvPlan) -> (&'static str, bool) {
+    match plan {
+        ax_engine_core::backend::KvPlan::Cpu(_) => ("f32", false),
+        ax_engine_core::backend::KvPlan::Gpu(plan) => match plan.dtype {
+            ax_engine_core::kv::GpuKvDtype::F32 => ("f32", false),
+            ax_engine_core::kv::GpuKvDtype::F16 => ("f16", true),
+            ax_engine_core::kv::GpuKvDtype::Q8_0 => ("q8_0", false),
+        },
+        ax_engine_core::backend::KvPlan::Qwen35(_) => ("qwen35_hybrid", false),
+    }
+}
+
+fn kv_dtype_label_from_plan_summary(plan: &str) -> Option<&str> {
+    plan.split_whitespace()
+        .find_map(|part| part.strip_prefix("kv="))
+}
+
 fn prepare_qwen35_shared_timeline_source_slot(
     model: &LlamaModel,
     kv: &mut ModelKv,
@@ -394,13 +411,14 @@ pub fn run_benchmark_with_backend(
         ..Default::default()
     };
 
-    let kv_f16 = matches!(model.kv_plan(), ax_engine_core::backend::KvPlan::Gpu(ref plan) if plan.dtype == ax_engine_core::kv::GpuKvDtype::F16);
+    let kv_plan = model.kv_plan();
+    let (kv_dtype, kv_f16) = kv_dtype_label_from_plan(&kv_plan);
 
     eprintln!(
         "Benchmarking: {} layers, {:.0}MB, KV dtype: {}",
         model_config.n_layers,
         mapped.total_tensor_bytes() as f64 / 1024.0 / 1024.0,
-        if kv_f16 { "f16" } else { "f32" },
+        kv_dtype,
     );
     eprintln!("Intent:      {}", config.intent);
 
@@ -717,7 +735,8 @@ pub fn run_speculative_benchmark_with_backend(
         temperature: 0.0,
         ..Default::default()
     };
-    let kv_f16 = matches!(model.kv_plan(), ax_engine_core::backend::KvPlan::Gpu(ref plan) if plan.dtype == ax_engine_core::kv::GpuKvDtype::F16);
+    let kv_plan = model.kv_plan();
+    let (kv_dtype, kv_f16) = kv_dtype_label_from_plan(&kv_plan);
 
     eprintln!(
         "Spec benchmark: target={} draft={} k={} layers={} {:.0}MB KV dtype={}",
@@ -726,7 +745,7 @@ pub fn run_speculative_benchmark_with_backend(
         config.speculative_k,
         model_config.n_layers,
         mapped.total_tensor_bytes() as f64 / 1024.0 / 1024.0,
-        if kv_f16 { "f16" } else { "f32" },
+        kv_dtype,
     );
 
     let prompt_tokens = build_fixed_prompt(&tokenizer, config.prompt_tokens);
@@ -1285,7 +1304,10 @@ impl BenchResult {
         } else {
             eprintln!("Latency:     n/a (throughput mode)");
         }
-        eprintln!("KV dtype:    {}", if self.kv_f16 { "f16" } else { "f32" });
+        let kv_dtype = kv_dtype_label_from_plan_summary(&self.decode_plan)
+            .or_else(|| kv_dtype_label_from_plan_summary(&self.prefill_plan))
+            .unwrap_or(if self.kv_f16 { "f16" } else { "f32" });
+        eprintln!("KV dtype:    {kv_dtype}");
         eprintln!(
             "GPU Sync:    prefill cmd_buf {:.1}, barriers {:.1} | decode cmd_buf {:.1}, barriers {:.1}",
             self.prefill_command_buffers,
@@ -1342,7 +1364,9 @@ impl SpecBenchResult {
         if let Some(mode) = &self.q5k_prefill_mode {
             eprintln!("Q5KPrefill:  {mode}");
         }
-        eprintln!("KV dtype:    {}", if self.kv_f16 { "f16" } else { "f32" });
+        let kv_dtype = kv_dtype_label_from_plan_summary(&self.prefill_plan)
+            .unwrap_or(if self.kv_f16 { "f16" } else { "f32" });
+        eprintln!("KV dtype:    {kv_dtype}");
         eprintln!(
             "Accepted:    {:.2} draft tokens/step",
             self.avg_accepted_per_step

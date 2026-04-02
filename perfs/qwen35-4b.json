@@ -1,15 +1,5 @@
 {
-  "generated": "2026-04-01",
+  "generated": "2026-04-02",
   "model": "qwen35-4b",
-  "source": "autotune-rework-2026-04-01",
-  "decode_matvec": {
-    "q8_0": {
-      "threadgroup_size": 128,
-      "rows_per_simdgroup": 2,
-      "variant": "nr2"
-    }
-  },
-  "attention_decode": {
-    "splitk_threshold": 256
-  }
+  "source": "minimal-seed-autotune-first-2026-04-02"
 }

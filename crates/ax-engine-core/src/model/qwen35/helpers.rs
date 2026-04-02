@@ -414,6 +414,146 @@ impl Qwen35Forward {
         weights.has(&format!("{prefix}.ffn_gate_inp.weight"))
     }
 
+    fn qwen35_moe_batch_dtype_supported(dtype: crate::gguf::tensor::GgmlType) -> bool {
+        matches!(
+            dtype,
+            crate::gguf::tensor::GgmlType::F32
+                | crate::gguf::tensor::GgmlType::Q4K
+                | crate::gguf::tensor::GgmlType::Q5K
+                | crate::gguf::tensor::GgmlType::Q6K
+                | crate::gguf::tensor::GgmlType::Q8_0
+        )
+    }
+
+    fn qwen35_moe_routed_expert_dtype_supported(dtype: crate::gguf::tensor::GgmlType) -> bool {
+        matches!(
+            dtype,
+            crate::gguf::tensor::GgmlType::Q4K
+                | crate::gguf::tensor::GgmlType::Q5K
+        )
+    }
+
+    fn qwen35_shared_expert_gate_width_supported(rows: usize, dim: usize) -> bool {
+        rows == 1 || rows == dim
+    }
+
+    fn qwen35_moe_resident_layer_keys(
+        metal_ops: &crate::backend::metal::MetalOps,
+        cfg: &ModelConfig,
+        weights: &WeightStore,
+        prefix: &str,
+        dim: usize,
+    ) -> anyhow::Result<Option<Qwen35MoeResidentLayerKeys>> {
+        if !Self::qwen35_layer_uses_moe(weights, prefix) {
+            return Ok(None);
+        }
+
+        let router_name = format!("{prefix}.ffn_gate_inp.weight");
+        let (router_raw, router_dtype) = weights.raw_with_dtype(&router_name)?;
+        if !Self::qwen35_moe_batch_dtype_supported(router_dtype) {
+            return Ok(None);
+        }
+        let router_key = metal_ops.ensure_moe_quant_cached(router_raw);
+
+        let n_expert =
+            cfg.n_expert.unwrap_or(Self::tensor_output_rows(weights, &router_name)? as u32) as usize;
+        let n_expert_used = cfg.n_expert_used.unwrap_or(0) as usize;
+        anyhow::ensure!(n_expert > 0, "qwen35moe requires n_expert > 0");
+        anyhow::ensure!(n_expert_used > 0, "qwen35moe requires n_expert_used > 0");
+        anyhow::ensure!(
+            n_expert_used <= n_expert,
+            "qwen35moe n_expert_used ({n_expert_used}) > n_expert ({n_expert})"
+        );
+
+        let gate_name = format!("{prefix}.ffn_gate_exps.weight");
+        let up_name = format!("{prefix}.ffn_up_exps.weight");
+        let down_name = format!("{prefix}.ffn_down_exps.weight");
+        let expert_inter_dim = Self::tensor_output_rows(weights, &gate_name)?;
+        let (gate_raw, gate_dtype) = weights.raw_with_dtype(&gate_name)?;
+        let (up_raw, up_dtype) = weights.raw_with_dtype(&up_name)?;
+        let (down_raw, down_dtype) = weights.raw_with_dtype(&down_name)?;
+        if !Self::qwen35_moe_routed_expert_dtype_supported(gate_dtype)
+            || !Self::qwen35_moe_routed_expert_dtype_supported(up_dtype)
+            || !Self::qwen35_moe_routed_expert_dtype_supported(down_dtype)
+        {
+            return Ok(None);
+        }
+        let gate_key = metal_ops.ensure_moe_quant_cached(gate_raw);
+        let up_key = metal_ops.ensure_moe_quant_cached(up_raw);
+        let down_key = metal_ops.ensure_moe_quant_cached(down_raw);
+
+        let gate_stride =
+            crate::model::qwen3_moe::expert_byte_stride(gate_dtype, expert_inter_dim * dim);
+        let up_stride = crate::model::qwen3_moe::expert_byte_stride(up_dtype, expert_inter_dim * dim);
+        let down_stride =
+            crate::model::qwen3_moe::expert_byte_stride(down_dtype, dim * expert_inter_dim);
+
+        let shared_gate_name = format!("{prefix}.ffn_gate_shexp.weight");
+        let shared_expert = if weights.has(&shared_gate_name) {
+            let shared_up_name = format!("{prefix}.ffn_up_shexp.weight");
+            let shared_down_name = format!("{prefix}.ffn_down_shexp.weight");
+            let shared_gate_inp_name = format!("{prefix}.ffn_gate_inp_shexp.weight");
+            let (shared_gate_raw, shared_gate_dtype) = weights.raw_with_dtype(&shared_gate_name)?;
+            let (shared_up_raw, shared_up_dtype) = weights.raw_with_dtype(&shared_up_name)?;
+            let (shared_down_raw, shared_down_dtype) =
+                weights.raw_with_dtype(&shared_down_name)?;
+            if !(shared_gate_dtype == shared_up_dtype
+                && shared_gate_dtype == shared_down_dtype
+                && Self::qwen35_moe_batch_dtype_supported(shared_gate_dtype))
+            {
+                return Ok(None);
+            }
+            let shared_inter_dim = Self::tensor_output_rows(weights, &shared_gate_name)?;
+            let shared_gate_key = metal_ops.ensure_moe_quant_cached(shared_gate_raw);
+            let shared_up_key = metal_ops.ensure_moe_quant_cached(shared_up_raw);
+            let shared_down_key = metal_ops.ensure_moe_quant_cached(shared_down_raw);
+            let (gate_inp_key, gate_inp_dtype, gate_inp_rows) =
+                if weights.has(&shared_gate_inp_name) {
+                    let (raw, dtype) = weights.raw_with_dtype(&shared_gate_inp_name)?;
+                    let rows = Self::tensor_output_rows(weights, &shared_gate_inp_name)?;
+                    if !Self::qwen35_shared_expert_gate_width_supported(rows, dim)
+                        || !Self::qwen35_moe_batch_dtype_supported(dtype)
+                    {
+                        return Ok(None);
+                    }
+                    (Some(metal_ops.ensure_moe_quant_cached(raw)), Some(dtype), rows)
+                } else {
+                    (None, None, 0)
+                };
+
+            Some(Qwen35SharedExpertResidentKeys {
+                gate: shared_gate_key,
+                up: shared_up_key,
+                down: shared_down_key,
+                gate_inp: gate_inp_key,
+                gate_inp_dtype,
+                dtype: shared_gate_dtype,
+                inter_dim: shared_inter_dim,
+                gate_inp_rows,
+            })
+        } else {
+            None
+        };
+
+        Ok(Some(Qwen35MoeResidentLayerKeys {
+            router: router_key,
+            router_dtype,
+            gate: gate_key,
+            gate_dtype,
+            up: up_key,
+            up_dtype,
+            down: down_key,
+            down_dtype,
+            n_expert,
+            n_expert_used,
+            expert_inter_dim,
+            gate_stride,
+            up_stride,
+            down_stride,
+            shared_expert,
+        }))
+    }
+
     fn tensor_output_rows(weights: &WeightStore, name: &str) -> anyhow::Result<usize> {
         let info = weights.info(name)?;
         match info.shape.as_slice() {

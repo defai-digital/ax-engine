@@ -75,6 +75,25 @@ fn qwen3_moe_gpu_resident_supported(
         && !has_shared_expert
 }
 
+#[cfg(target_os = "macos")]
+fn qwen3_moe_use_gpu_resident_for_layer(layer: &crate::backend::metal::CachedLayerKeys) -> bool {
+    let Some(router_dtype) = layer.moe_router_dtype else {
+        return false;
+    };
+    let Some(expert_dtype) = layer.moe_expert_dtype else {
+        return false;
+    };
+    qwen3_moe_gpu_resident_supported(
+        router_dtype,
+        expert_dtype,
+        qwen3_moe_has_shared_expert(
+            layer.moe_shared_gate,
+            layer.moe_shared_up,
+            layer.moe_shared_down,
+        ),
+    )
+}
+
 /// Softmax over all experts, then select top-k.
 /// Matches llama.cpp: softmax(all logits) → argsort_top_k → extract weights.
 pub(crate) fn top_k_softmax(logits: &[f32], k: usize) -> (Vec<usize>, Vec<f32>) {
@@ -506,7 +525,9 @@ impl Qwen3MoeForward {
             router_raw,
             router_dtype,
             gate_raw,
+            expert_dtype,
             up_raw,
+            expert_dtype,
             down_raw,
             expert_dtype,
             n_tokens,
@@ -518,6 +539,7 @@ impl Qwen3MoeForward {
             up_stride,
             down_stride,
             eps,
+            None,
         )
     }
 
@@ -797,15 +819,7 @@ impl Qwen3MoeForward {
         for layer in 0..n_layers {
             let lw = &cached.layers[layer];
             let prefix = format!("blk.{layer}");
-            let use_gpu_resident_moe = qwen3_moe_gpu_resident_supported(
-                lw.moe_router_dtype.unwrap(),
-                lw.moe_expert_dtype.unwrap(),
-                qwen3_moe_has_shared_expert(
-                    lw.moe_shared_gate,
-                    lw.moe_shared_up,
-                    lw.moe_shared_down,
-                ),
-            );
+            let use_gpu_resident_moe = qwen3_moe_use_gpu_resident_for_layer(lw);
 
             // ═══════════════════════════════════════════════════════════════
             // CB1: Attention + FFN norm + router matvec
@@ -1430,15 +1444,7 @@ impl Qwen3MoeForward {
         for layer in 0..n_layers {
             let lw = &cached.layers[layer];
             let prefix = format!("blk.{layer}");
-            let use_gpu_resident_moe = qwen3_moe_gpu_resident_supported(
-                lw.moe_router_dtype.unwrap(),
-                lw.moe_expert_dtype.unwrap(),
-                qwen3_moe_has_shared_expert(
-                    lw.moe_shared_gate,
-                    lw.moe_shared_up,
-                    lw.moe_shared_down,
-                ),
-            );
+            let use_gpu_resident_moe = qwen3_moe_use_gpu_resident_for_layer(lw);
             let (rope_start, rope_step) = cfg.rope_scaling.scaled_start_step(base_seq_len);
             let cache_offset = (base_seq_len * kv_dim) as u32;
 

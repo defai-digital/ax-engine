@@ -69,7 +69,7 @@ impl Qwen35Forward {
             .ok_or_else(|| anyhow::anyhow!("missing cached qwen35 gpu layer keys"))?;
         let weight_cache = metal_ops.lock_weight_cache();
 
-        let exec_plan = crate::model::execution_plan::DecodeExecutionPlan::qwen35_pipelined(
+        let exec_plan = Self::qwen35_decode_plan(
             metal_ops,
             qwen_kv.gpu_attention().ok_or_else(|| {
                 anyhow::anyhow!("qwen35 pending decode requires GPU attention KV")
@@ -77,6 +77,7 @@ impl Qwen35Forward {
             cfg.embedding_dim,
             cfg.head_dim,
             full_seq_len,
+            true,
         );
         let rope_position = Self::rope_position(cfg, position);
         let kv_offset = (position * kv_dim) as u32;
@@ -671,10 +672,9 @@ impl Qwen35Forward {
             return Ok(false);
         };
         let cfg = ctx.config;
-        // MoE models use the CPU fallback for now. The pipelined single-CB
-        // decode path can't handle MoE FFN mid-closure. A per-layer GPU path
-        // would help (41 CBs vs 121) but requires restructuring the closure
-        // into per-layer segments. This is a future optimization.
+        // MoE single-token GPU decode produces incorrect output (expert
+        // routing via mul_mat_id is not validated for n_tokens=1). Fall back
+        // to CPU decode which handles MoE correctly.
         if Self::qwen35_is_moe(cfg) {
             return Ok(false);
         }
@@ -707,10 +707,34 @@ impl Qwen35Forward {
         let cached = cached_guard.as_ref().unwrap();
         let gpu_layer_keys = Self::cached_gpu_layer_keys(cached.lm_head)
             .ok_or_else(|| anyhow::anyhow!("missing cached qwen35 gpu layer keys"))?;
+        let moe_layer_keys = if Self::qwen35_is_moe(cfg) {
+            let layer_keys = Self::cached_moe_layer_keys(cached.lm_head)
+                .ok_or_else(|| anyhow::anyhow!("missing cached qwen35 moe layer keys"))?;
+            if cached
+                .layers
+                .iter()
+                .zip(layer_keys.iter())
+                .any(|(layer, moe)| layer.wg == 0 && moe.is_none())
+            {
+                return Ok(false);
+            }
+            Some(layer_keys)
+        } else {
+            None
+        };
         metal_ops.init_scratches(cfg);
+        let moe_scratch = if moe_layer_keys.is_some() {
+            metal_ops.init_batch_scratches(cfg, 1);
+            Some(metal_ops.moe_batch_scratch_view()?)
+        } else {
+            None
+        };
         let mut scratch_guard = metal_ops.scratches();
         let s = scratch_guard.as_mut().unwrap();
         let weight_cache = metal_ops.lock_weight_cache();
+        let moe_weight_cache = moe_layer_keys
+            .as_ref()
+            .map(|_| metal_ops.lock_moe_weight_cache());
 
         let seq_len = qwen_kv.seq_len();
         let full_seq_len = seq_len + 1;
@@ -719,12 +743,13 @@ impl Qwen35Forward {
         }
 
         // Build execution plan.
-        let exec_plan = crate::model::execution_plan::DecodeExecutionPlan::qwen35_single_cb(
+        let exec_plan = Self::qwen35_decode_plan(
             metal_ops,
             qwen_kv.gpu_attention().unwrap(),
             cfg.embedding_dim,
             cfg.head_dim,
             full_seq_len,
+            false,
         );
         let setup_t = OpTimer::start();
 
@@ -739,9 +764,11 @@ impl Qwen35Forward {
         let rope_position = Self::rope_position(cfg, position);
         let kv_offset = (seq_len * kv_dim) as u32;
 
-        for layer in 0..n_layers {
-            if cfg.qwen35_is_recurrent_layer(layer) {
-                metal_ops.sync_qwen35_slot_buffers_from_kv(qwen_kv, layer, recurrent_slot);
+        if !qwen_kv.has_gpu_recurrent_state() {
+            for layer in 0..n_layers {
+                if cfg.qwen35_is_recurrent_layer(layer) {
+                    metal_ops.sync_qwen35_slot_buffers_from_kv(qwen_kv, layer, recurrent_slot);
+                }
             }
         }
 
@@ -782,8 +809,175 @@ impl Qwen35Forward {
                 ops_ref.gpu_encode_layer_norm += layer0_norm_t.elapsed();
             }
 
+            macro_rules! encode_post_attention_ffn {
+                ($lw:expr, $moe_keys:expr, $next_norm:expr) => {{
+                    let residual_norm_t = OpTimer::start();
+                    if let Some(moe_keys) = $moe_keys {
+                        metal_ops.elementwise.encode_elementwise_add_batch(
+                            encoder,
+                            &s.hidden,
+                            &s.proj_buf,
+                            dim as u32,
+                            1,
+                        );
+                        barrier.step(encoder);
+                        if let Some(ref mut ops_ref) = ops {
+                            ops_ref.gpu_encode_layer_residual += residual_norm_t.elapsed();
+                        }
+
+                        let moe_t = OpTimer::start();
+                        let moe_cache = moe_weight_cache.as_ref().unwrap();
+                        let shared_expert = moe_keys.shared_expert.map(|shared| {
+                            crate::backend::metal::SharedExpertCachedBuffers {
+                                gate: moe_cache.get(&shared.gate).unwrap(),
+                                up: moe_cache.get(&shared.up).unwrap(),
+                                down: moe_cache.get(&shared.down).unwrap(),
+                                gate_inp: shared
+                                    .gate_inp
+                                    .map(|gate_inp| moe_cache.get(&gate_inp).unwrap()),
+                                gate_inp_dtype: shared.gate_inp_dtype,
+                                dtype: shared.dtype,
+                                inter_dim: shared.inter_dim,
+                                gate_inp_rows: shared.gate_inp_rows,
+                            }
+                        });
+                        metal_ops.encode_moe_ffn_gpu_resident_cached_with_scratch(
+                            encoder,
+                            moe_scratch.expect("qwen35 decode MoE scratch view missing"),
+                            &s.hidden,
+                            weight_cache.get(&$lw.ffn_norm).unwrap(),
+                            moe_cache.get(&moe_keys.router).unwrap(),
+                            moe_keys.router_dtype,
+                            moe_cache.get(&moe_keys.gate).unwrap(),
+                            moe_keys.gate_dtype,
+                            moe_cache.get(&moe_keys.up).unwrap(),
+                            moe_keys.up_dtype,
+                            moe_cache.get(&moe_keys.down).unwrap(),
+                            moe_keys.down_dtype,
+                            1,
+                            moe_keys.n_expert,
+                            moe_keys.n_expert_used,
+                            dim,
+                            moe_keys.expert_inter_dim,
+                            moe_keys.gate_stride,
+                            moe_keys.up_stride,
+                            moe_keys.down_stride,
+                            eps,
+                            shared_expert.as_ref(),
+                            exec_plan.barriers
+                                == crate::model::execution_plan::DecodeBarrierPlan::Explicit,
+                        )?;
+                        if let Some(next_norm) = $next_norm {
+                            metal_ops.elementwise.encode_rms_norm_out(
+                                encoder,
+                                &s.hidden,
+                                next_norm,
+                                &s.norm_buf,
+                                dim as u32,
+                                eps,
+                            );
+                            barrier.step(encoder);
+                        }
+                        if let Some(ref mut ops_ref) = ops {
+                            ops_ref.gpu_encode_layer_ffn += moe_t.elapsed();
+                        }
+                    } else {
+                        let ffn_nw = weight_cache.get(&$lw.ffn_norm).unwrap();
+                        metal_ops
+                            .elementwise
+                            .encode_residual_add_rms_norm_out_batch(
+                                encoder,
+                                &s.hidden,
+                                &s.proj_buf,
+                                ffn_nw,
+                                &s.norm_buf,
+                                dim as u32,
+                                1,
+                                eps,
+                            );
+                        barrier.step(encoder);
+                        if let Some(ref mut ops_ref) = ops {
+                            let elapsed = residual_norm_t.elapsed();
+                            ops_ref.gpu_encode_layer_residual += elapsed / 2;
+                            ops_ref.gpu_encode_layer_norm += elapsed / 2;
+                        }
+
+                        let gate_up_t = OpTimer::start();
+                        let wg = weight_cache.get(&$lw.wg).unwrap();
+                        let wu = weight_cache.get(&$lw.wu).unwrap();
+                        if !crate::model::shared::encode_dequant_matvec_pair_with_config(
+                            metal_ops,
+                            encoder,
+                            wg,
+                            wu,
+                            &s.norm_buf,
+                            &s.gate_buf,
+                            &s.up_buf,
+                            inter_dim as u32,
+                            dim as u32,
+                            $lw.wg_dtype,
+                            $lw.wu_dtype,
+                            exec_plan.dequant_dispatch,
+                            exec_plan.use_pair_matvec,
+                        ) {
+                            encode_dequant_matvec_with_config(
+                                metal_ops,
+                                encoder,
+                                wg,
+                                &s.norm_buf,
+                                &s.gate_buf,
+                                inter_dim as u32,
+                                dim as u32,
+                                $lw.wg_dtype,
+                                exec_plan.dequant_dispatch,
+                            );
+                            encode_dequant_matvec_with_config(
+                                metal_ops,
+                                encoder,
+                                wu,
+                                &s.norm_buf,
+                                &s.up_buf,
+                                inter_dim as u32,
+                                dim as u32,
+                                $lw.wu_dtype,
+                                exec_plan.dequant_dispatch,
+                            );
+                        }
+                        barrier.step(encoder);
+                        if let Some(ref mut ops_ref) = ops {
+                            ops_ref.gpu_encode_layer_ffn += gate_up_t.elapsed();
+                        }
+
+                        let ffn_tail_t = OpTimer::start();
+                        crate::model::shared::encode_gpu_ffn_decode_tail(
+                            metal_ops,
+                            encoder,
+                            s,
+                            &s.hidden,
+                            weight_cache.get(&$lw.wd).unwrap(),
+                            $lw.wd_dtype,
+                            dim as u32,
+                            inter_dim as u32,
+                            eps,
+                            exec_plan.dequant_dispatch,
+                            exec_plan.use_fused_silu_down,
+                            crate::model::layer_ops::FfnActivation::SiLU,
+                            None,
+                            $next_norm,
+                            &barrier,
+                        );
+                        if let Some(ref mut ops_ref) = ops {
+                            ops_ref.gpu_encode_layer_ffn += ffn_tail_t.elapsed();
+                        }
+                    }
+                }};
+            }
+
             for layer in 0..n_layers {
                 let lw = &cached.layers[layer];
+                let moe_keys = moe_layer_keys
+                    .as_ref()
+                    .and_then(|layer_keys| layer_keys[layer].as_ref());
                 let next_norm = if layer + 1 < n_layers {
                     Some(
                         weight_cache
@@ -966,94 +1160,7 @@ impl Qwen35Forward {
                         ops_ref.gpu_encode_layer_out_proj += out_proj_t.elapsed();
                     }
 
-                    let residual_norm_t = OpTimer::start();
-                    let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
-                    metal_ops
-                        .elementwise
-                        .encode_residual_add_rms_norm_out_batch(
-                            encoder,
-                            &s.hidden,
-                            &s.proj_buf,
-                            ffn_nw,
-                            &s.norm_buf,
-                            dim as u32,
-                            1,
-                            eps,
-                        );
-                    barrier.step(encoder);
-                    if let Some(ref mut ops_ref) = ops {
-                        let elapsed = residual_norm_t.elapsed();
-                        ops_ref.gpu_encode_layer_residual += elapsed / 2;
-                        ops_ref.gpu_encode_layer_norm += elapsed / 2;
-                    }
-
-                    let gate_up_t = OpTimer::start();
-                    let wg = weight_cache.get(&lw.wg).unwrap();
-                    let wu = weight_cache.get(&lw.wu).unwrap();
-                    if !crate::model::shared::encode_dequant_matvec_pair_with_config(
-                        metal_ops,
-                        encoder,
-                        wg,
-                        wu,
-                        &s.norm_buf,
-                        &s.gate_buf,
-                        &s.up_buf,
-                        inter_dim as u32,
-                        dim as u32,
-                        lw.wg_dtype,
-                        lw.wu_dtype,
-                        exec_plan.dequant_dispatch,
-                        exec_plan.use_pair_matvec,
-                    ) {
-                        encode_dequant_matvec_with_config(
-                            metal_ops,
-                            encoder,
-                            wg,
-                            &s.norm_buf,
-                            &s.gate_buf,
-                            inter_dim as u32,
-                            dim as u32,
-                            lw.wg_dtype,
-                            exec_plan.dequant_dispatch,
-                        );
-                        encode_dequant_matvec_with_config(
-                            metal_ops,
-                            encoder,
-                            wu,
-                            &s.norm_buf,
-                            &s.up_buf,
-                            inter_dim as u32,
-                            dim as u32,
-                            lw.wu_dtype,
-                            exec_plan.dequant_dispatch,
-                        );
-                    }
-                    barrier.step(encoder);
-                    if let Some(ref mut ops_ref) = ops {
-                        ops_ref.gpu_encode_layer_ffn += gate_up_t.elapsed();
-                    }
-
-                    let ffn_tail_t = OpTimer::start();
-                    crate::model::shared::encode_gpu_ffn_decode_tail(
-                        metal_ops,
-                        encoder,
-                        s,
-                        &s.hidden,
-                        weight_cache.get(&lw.wd).unwrap(),
-                        lw.wd_dtype,
-                        dim as u32,
-                        inter_dim as u32,
-                        eps,
-                        exec_plan.dequant_dispatch,
-                        exec_plan.use_fused_silu_down,
-                        crate::model::layer_ops::FfnActivation::SiLU,
-                        None,
-                        next_norm,
-                        &barrier,
-                    );
-                    if let Some(ref mut ops_ref) = ops {
-                        ops_ref.gpu_encode_layer_ffn += ffn_tail_t.elapsed();
-                    }
+                    encode_post_attention_ffn!(lw, moe_keys, next_norm);
                 } else {
                     let recurrent_keys = match &gpu_layer_keys[layer] {
                         Qwen35GpuLayerKeys::Recurrent(keys) => keys,
@@ -1070,7 +1177,7 @@ impl Qwen35Forward {
                         recurrent_slot,
                         conv_state_stride,
                         recurrent_state_stride,
-                        |slot_buffers| {
+                        |slot_buffers| -> anyhow::Result<()> {
                             let recurrent_norm_t = OpTimer::start();
                             let norm_w = weight_cache.get(&lw.attn_norm).unwrap();
                             metal_ops.elementwise.encode_rms_norm_out(
@@ -1268,96 +1375,10 @@ impl Qwen35Forward {
                                 ops_ref.gpu_encode_layer_out_proj += recurrent_out_proj_t.elapsed();
                             }
 
-                            let residual_norm_t = OpTimer::start();
-                            let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
-                            metal_ops
-                                .elementwise
-                                .encode_residual_add_rms_norm_out_batch(
-                                    encoder,
-                                    &s.hidden,
-                                    &s.proj_buf,
-                                    ffn_nw,
-                                    &s.norm_buf,
-                                    dim as u32,
-                                    1,
-                                    eps,
-                                );
-                            barrier.step(encoder);
-                            if let Some(ref mut ops_ref) = ops {
-                                let elapsed = residual_norm_t.elapsed();
-                                ops_ref.gpu_encode_layer_residual += elapsed / 2;
-                                ops_ref.gpu_encode_layer_norm += elapsed / 2;
-                            }
-
-                            let gate_up_t = OpTimer::start();
-                            let wg = weight_cache.get(&lw.wg).unwrap();
-                            let wu = weight_cache.get(&lw.wu).unwrap();
-                            if !crate::model::shared::encode_dequant_matvec_pair_with_config(
-                                metal_ops,
-                                encoder,
-                                wg,
-                                wu,
-                                &s.norm_buf,
-                                &s.gate_buf,
-                                &s.up_buf,
-                                inter_dim as u32,
-                                dim as u32,
-                                lw.wg_dtype,
-                                lw.wu_dtype,
-                                exec_plan.dequant_dispatch,
-                                exec_plan.use_pair_matvec,
-                            ) {
-                                encode_dequant_matvec_with_config(
-                                    metal_ops,
-                                    encoder,
-                                    wg,
-                                    &s.norm_buf,
-                                    &s.gate_buf,
-                                    inter_dim as u32,
-                                    dim as u32,
-                                    lw.wg_dtype,
-                                    exec_plan.dequant_dispatch,
-                                );
-                                encode_dequant_matvec_with_config(
-                                    metal_ops,
-                                    encoder,
-                                    wu,
-                                    &s.norm_buf,
-                                    &s.up_buf,
-                                    inter_dim as u32,
-                                    dim as u32,
-                                    lw.wu_dtype,
-                                    exec_plan.dequant_dispatch,
-                                );
-                            }
-                            barrier.step(encoder);
-                            if let Some(ref mut ops_ref) = ops {
-                                ops_ref.gpu_encode_layer_ffn += gate_up_t.elapsed();
-                            }
-
-                            let ffn_tail_t = OpTimer::start();
-                            crate::model::shared::encode_gpu_ffn_decode_tail(
-                                metal_ops,
-                                encoder,
-                                s,
-                                &s.hidden,
-                                weight_cache.get(&lw.wd).unwrap(),
-                                lw.wd_dtype,
-                                dim as u32,
-                                inter_dim as u32,
-                                eps,
-                                exec_plan.dequant_dispatch,
-                                exec_plan.use_fused_silu_down,
-                                crate::model::layer_ops::FfnActivation::SiLU,
-                                None,
-                                next_norm,
-                                &barrier,
-                            );
-                            if let Some(ref mut ops_ref) = ops {
-                                ops_ref.gpu_encode_layer_ffn += ffn_tail_t.elapsed();
-                            }
+                            encode_post_attention_ffn!(lw, moe_keys, next_norm);
+                            Ok(())
                         },
-                    );
+                    )?;
                 }
             }
 
