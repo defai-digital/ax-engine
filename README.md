@@ -377,7 +377,7 @@ noted. llama.cpp values are 3-sample medians with 20s cooldown. AX% over
 | Gemma 3 12B | Q4_K_M | 425 tok/s | 45.5 tok/s | 495 tok/s | 40.2 tok/s | 86% | **113%** |
 | Qwen3.5 27B | Q4_K_M | 191 tok/s | 17.4 tok/s | 209 tok/s | 17.6 tok/s | 91% | 99% |
 | Qwen3 32B | Q4_K_M | 156 tok/s | 17.6 tok/s | 160 tok/s | 16.2 tok/s | 97% | **109%** |
-| Qwen3.5 35B-A3B | Q4_K_M | 905 tok/s | — * | 1,194 tok/s | 55.3 tok/s | 76% | — |
+| Qwen3.5 35B-A3B | Q4_K_M | 905 tok/s | — | 1,194 tok/s | 55.3 tok/s | 76% | — |
 
 Qwen3.5 35B-A3B uses `mul_mat_id` with 64×32 blocked half-precision tiles,
 GPU-resident hidden buffer, GPU softmax+top-k routing (no CPU round-trip),

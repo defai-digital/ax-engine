@@ -450,7 +450,10 @@ impl Qwen35Forward {
         let gate_exps_name = format!("{prefix}.ffn_gate_exps.weight");
         let up_exps_name = format!("{prefix}.ffn_up_exps.weight");
         let down_exps_name = format!("{prefix}.ffn_down_exps.weight");
-        let expert_inter_dim = Self::tensor_output_rows(weights, &gate_exps_name)?;
+        let expert_inter_dim = cfg
+            .expert_intermediate_dim
+            .map(|d| d as usize)
+            .unwrap_or_else(|| Self::tensor_output_rows(weights, &gate_exps_name).unwrap_or(shared_inter_dim_hint));
         let (gate_exps_raw, gate_exps_dtype) = weights.raw_with_dtype(&gate_exps_name)?;
         let (up_exps_raw, up_exps_dtype) = weights.raw_with_dtype(&up_exps_name)?;
         let (down_exps_raw, down_exps_dtype) = weights.raw_with_dtype(&down_exps_name)?;
@@ -603,7 +606,7 @@ impl Qwen35Forward {
         down_buf: &mut [f32],
         n_tokens: usize,
         dim: usize,
-        _shared_inter_dim_hint: usize,
+        shared_inter_dim_hint: usize,
         rms_norm_eps: f32,
     ) -> anyhow::Result<()> {
         // Batched-by-expert: group tokens by expert assignment, run one batched
@@ -638,7 +641,10 @@ impl Qwen35Forward {
         let gate_exps_name = format!("{prefix}.ffn_gate_exps.weight");
         let up_exps_name = format!("{prefix}.ffn_up_exps.weight");
         let down_exps_name = format!("{prefix}.ffn_down_exps.weight");
-        let expert_inter_dim = Self::tensor_output_rows(weights, &gate_exps_name)?;
+        let expert_inter_dim = cfg
+            .expert_intermediate_dim
+            .map(|d| d as usize)
+            .unwrap_or_else(|| Self::tensor_output_rows(weights, &gate_exps_name).unwrap_or(shared_inter_dim_hint));
         let (gate_exps_raw, gate_exps_dtype) = weights.raw_with_dtype(&gate_exps_name)?;
         let (up_exps_raw, up_exps_dtype) = weights.raw_with_dtype(&up_exps_name)?;
         let (down_exps_raw, down_exps_dtype) = weights.raw_with_dtype(&down_exps_name)?;
