@@ -4435,7 +4435,24 @@ impl MetalOps {
             bs.moe_expert_ids = Some(alloc_bytes(n_tokens * n_expert_used * i4));
             bs.moe_expert_weights = Some(alloc_bytes(n_tokens * n_expert_used * f4));
             bs.moe_active_experts = Some(alloc_bytes(n_expert * u4));
-            bs.moe_tok_idx = Some(alloc_bytes(n_tokens * n_expert_used * u4));
+            let mut tok_buf = alloc_bytes(n_tokens * n_expert_used * u4);
+            // Pre-fill tok_idx: [0,0,...,0, 1,1,...,1, ...] — same every forward.
+            unsafe {
+                let toks = tok_buf.as_mut_slice::<u32>();
+                for i in 0..(n_tokens * n_expert_used) {
+                    toks[i] = (i / n_expert_used) as u32;
+                }
+            }
+            bs.moe_tok_idx = Some(tok_buf);
+            // Pre-fill active_experts: [0, 1, 2, ..., n_expert-1] (full range).
+            let mut act_buf = alloc_bytes(n_expert * u4);
+            unsafe {
+                let acts = act_buf.as_mut_slice::<u32>();
+                for i in 0..n_expert {
+                    acts[i] = i as u32;
+                }
+            }
+            bs.moe_active_experts = Some(act_buf);
         }
         tracing::info!(
             n_tokens,
@@ -4891,87 +4908,8 @@ impl MetalOps {
                 .fill(0.0)
         };
 
-        let mut expert_ids = vec![-1i32; n_tokens * n_expert_used];
-        let mut expert_weights = vec![0.0f32; n_tokens * n_expert_used];
-
-        // CPU: RMSNorm + Router + top-k (avoids extra GPU sync).
-        // Read hidden from GPU via UMA, compute norm on CPU, upload to norm_gpu.
-        {
-            let hidden_f32 = unsafe {
-                std::slice::from_raw_parts(
-                    hidden_gpu.contents().as_ptr() as *const f32,
-                    n_tokens * dim,
-                )
-            };
-            let mut cpu_norm = vec![0.0f32; n_tokens * dim];
-            for t in 0..n_tokens {
-                crate::compute::rms_norm::rms_norm_out(
-                    &hidden_f32[t * dim..(t + 1) * dim],
-                    ffn_norm_w,
-                    &mut cpu_norm[t * dim..(t + 1) * dim],
-                    eps,
-                );
-            }
-            // Upload norm to GPU for mul_mat_id input.
-            unsafe {
-                (*(bufs.norm as *mut MetalBuffer)).as_mut_slice::<f32>()[..n_tokens * dim]
-                    .copy_from_slice(&cpu_norm);
-            }
-
-            // Router matmul on CPU (small: 256×2048, avoids extra execute_sync).
-            let mut router_logits_cpu = vec![0.0f32; n_tokens * n_expert];
-            // Router matmul via GPU (1 extra CB per layer).
-            let router_key_local = self.ensure_moe_quant_cached(router_raw);
-            {
-                let nt = n_tokens as u32;
-                let cache = self.moe_quant_cache.lock().unwrap();
-                let rbuf = cache.get(&router_key_local).unwrap();
-                self.device.execute_sync(|encoder| {
-                    self.encode_quant_batch_matmul(
-                        encoder,
-                        rbuf,
-                        norm_gpu,
-                        router_gpu,
-                        n_expert as u32,
-                        nt,
-                        dim as u32,
-                        router_dtype,
-                    )?;
-                    Ok(())
-                })?;
-            }
-            unsafe {
-                router_logits_cpu
-                    .copy_from_slice(&router_gpu.as_slice::<f32>()[..n_tokens * n_expert]);
-            }
-
-            // CPU top-k.
-            for t in 0..n_tokens {
-                let (ids, wts) = crate::model::qwen3_moe::top_k_softmax(
-                    &router_logits_cpu[t * n_expert..(t + 1) * n_expert],
-                    n_expert_used,
-                );
-                for (i, &eid) in ids.iter().enumerate() {
-                    expert_ids[t * n_expert_used + i] = eid as i32;
-                    expert_weights[t * n_expert_used + i] = wts[i];
-                }
-            }
-        }
-
-        // expert_ids and expert_weights are now filled from CPU top-k above.
-
-        // Build active expert set on CPU.
-        let mut active_set = std::collections::BTreeSet::new();
-        for &eid in &expert_ids {
-            if eid >= 0 {
-                active_set.insert(eid as u32);
-            }
-        }
-        let active_list: Vec<u32> = active_set.into_iter().collect();
-        let n_active = active_list.len() as u32;
-
-        // Use pre-allocated buffers for expert ids/weights/tok_idx.
-        let (active_buf, ids_gpu, weights_gpu, tok_idx_buf) = {
+        // Get all pre-allocated moe buffers upfront (ids, weights, active, tok_idx).
+        let (active_buf_ptr, ids_buf_ptr, weights_buf_ptr, tok_idx_ptr) = {
             let bs_guard = self.batch_scratches.lock().unwrap();
             let bs = bs_guard.as_ref().unwrap();
             (
@@ -4981,117 +4919,146 @@ impl MetalOps {
                 bs.moe_tok_idx.as_ref().unwrap() as *const MetalBuffer,
             )
         };
-        let active_buf = unsafe { &mut *(active_buf as *mut MetalBuffer) };
-        let ids_gpu = unsafe { &mut *(ids_gpu as *mut MetalBuffer) };
-        let weights_gpu = unsafe { &mut *(weights_gpu as *mut MetalBuffer) };
-        let tok_idx_buf = unsafe { &mut *(tok_idx_buf as *mut MetalBuffer) };
-        unsafe {
-            active_buf.as_mut_slice::<u32>()[..active_list.len()].copy_from_slice(&active_list);
-            let ids_bytes: &[u8] =
-                std::slice::from_raw_parts(expert_ids.as_ptr() as *const u8, expert_ids.len() * i4);
-            std::ptr::copy_nonoverlapping(
-                ids_bytes.as_ptr(),
-                ids_gpu.as_mut_slice::<u8>().as_mut_ptr(),
-                ids_bytes.len(),
-            );
-            weights_gpu.as_mut_slice::<f32>()[..expert_weights.len()]
-                .copy_from_slice(&expert_weights);
-            let toks = tok_idx_buf.as_mut_slice::<u32>();
-            for i in 0..(n_tokens * n_expert_used) {
-                toks[i] = (i / n_expert_used) as u32;
-            }
-        }
+        let active_buf = unsafe { &mut *(active_buf_ptr as *mut MetalBuffer) };
+        let ids_gpu = unsafe { &mut *(ids_buf_ptr as *mut MetalBuffer) };
+        let weights_gpu = unsafe { &mut *(weights_buf_ptr as *mut MetalBuffer) };
+        let tok_idx_buf = unsafe { &mut *(tok_idx_ptr as *mut MetalBuffer) };
+
+        let router_key_local = self.ensure_moe_quant_cached(router_raw);
+        let norm_key = self.ensure_f32_cached(ffn_norm_w);
 
         let nt = n_tokens as u32;
         let ne = n_expert as u32;
         let neu = n_expert_used as u32;
         let m_inter = expert_inter_dim as u32;
         let m_dim = dim as u32;
+        let blocks_per_expert_gate = gate_stride / 144;
+        let blocks_per_expert_down = down_stride / 144;
 
-        // CB2: map0 + mul_mat_id ×3 + SiLU + scatter + residual add.
+        // SINGLE CB: RMSNorm + router + GPU softmax+topk + map0 + mul_mat_id + scatter + residual.
         {
             let cache = self.moe_quant_cache.lock().unwrap();
+            let rbuf = cache.get(&router_key_local).unwrap();
             let gate_buf = cache.get(&gate_key).unwrap();
             let up_buf = cache.get(&up_key).unwrap();
             let down_buf = cache.get(&down_key).unwrap();
+            let f32_cache = self.f32_weight_cache.lock().unwrap();
+            let norm_w_buf = f32_cache.get(&norm_key).unwrap();
 
             self.device.execute_sync(|encoder| {
-                // map0: build routing index.
-                self.dequant
-                    .encode_moe_map0(encoder, &ids_gpu, &tpe_gpu, &hids_gpu, nt, neu, ne);
-
-                // Gate mul_mat_id.
+                // GPU RMSNorm.
+                self.elementwise.encode_rms_norm_out_batch(
+                    encoder,
+                    hidden_gpu,
+                    norm_w_buf,
+                    norm_gpu,
+                    dim as u32,
+                    n_tokens as u32,
+                    eps,
+                );
+                // GPU router matmul.
+                self.encode_quant_batch_matmul(
+                    encoder,
+                    rbuf,
+                    norm_gpu,
+                    router_gpu,
+                    n_expert as u32,
+                    n_tokens as u32,
+                    dim as u32,
+                    router_dtype,
+                )?;
+                // GPU softmax + top-k.
+                self.elementwise.encode_moe_softmax_topk(
+                    encoder,
+                    router_gpu,
+                    ids_gpu,
+                    weights_gpu,
+                    n_tokens as u32,
+                    n_expert as u32,
+                    n_expert_used as u32,
+                );
+                // map0: build routing index (same CB, implicit barrier).
+                self.dequant.encode_moe_map0(
+                    encoder,
+                    ids_gpu,
+                    tpe_gpu,
+                    hids_gpu,
+                    n_tokens as u32,
+                    n_expert_used as u32,
+                    n_expert as u32,
+                );
+                // 3× mul_mat_id (same CB — all data already on GPU).
+                // Use full expert range (n_active = n_expert) since we can't
+                // read back active list without breaking the CB.
+                // For 512 tokens × 8 experts, all 256 experts are active anyway.
                 self.dequant.encode_moe_mul_mat_id_q4_k(
                     encoder,
                     gate_buf,
-                    &norm_gpu,
-                    &tpe_gpu,
-                    &hids_gpu,
-                    &gate_out_gpu,
+                    norm_gpu,
+                    tpe_gpu,
+                    hids_gpu,
+                    gate_out_gpu,
                     m_inter,
                     m_dim,
                     nt,
                     neu,
                     ne,
-                    blocks_per_expert_gate,
-                    &active_buf,
-                    n_active,
+                    blocks_per_expert_gate as u32,
+                    active_buf,
+                    ne, // n_active = n_expert
                 );
-                // Up mul_mat_id.
                 self.dequant.encode_moe_mul_mat_id_q4_k(
                     encoder,
                     up_buf,
-                    &norm_gpu,
-                    &tpe_gpu,
-                    &hids_gpu,
-                    &up_out_gpu,
+                    norm_gpu,
+                    tpe_gpu,
+                    hids_gpu,
+                    up_out_gpu,
                     m_inter,
                     m_dim,
                     nt,
                     neu,
                     ne,
-                    blocks_per_expert_up,
-                    &active_buf,
-                    n_active,
+                    blocks_per_expert_gate as u32,
+                    active_buf,
+                    ne,
                 );
-                // SiLU.
                 self.elementwise.encode_silu_elementwise_mul_batch(
                     encoder,
-                    &gate_out_gpu,
-                    &up_out_gpu,
+                    gate_out_gpu,
+                    up_out_gpu,
                     m_inter,
                     nt * neu,
                 );
-                // Down mul_mat_id.
                 self.dequant.encode_moe_mul_mat_id_q4_k(
                     encoder,
                     down_buf,
-                    &gate_out_gpu,
-                    &tpe_gpu,
-                    &hids_gpu,
-                    &down_out_gpu,
+                    gate_out_gpu,
+                    tpe_gpu,
+                    hids_gpu,
+                    down_out_gpu,
                     m_dim,
                     m_inter,
                     nt,
                     neu,
                     ne,
-                    blocks_per_expert_down,
-                    &active_buf,
-                    n_active,
+                    blocks_per_expert_down as u32,
+                    active_buf,
+                    ne,
                 );
                 // Weighted scatter.
                 self.elementwise.encode_moe_weighted_scatter(
                     encoder,
-                    &down_out_gpu,
-                    &tok_idx_buf,
-                    &weights_gpu,
-                    &accum_gpu,
+                    down_out_gpu,
+                    tok_idx_buf,
+                    weights_gpu,
+                    accum_gpu,
                     m_dim,
                     nt * neu,
                 );
-                // Residual add: hidden_gpu += accum_gpu.
+                // Residual add: hidden += accum.
                 self.elementwise
-                    .encode_elementwise_add_batch(encoder, hidden_gpu, &accum_gpu, m_dim, nt);
+                    .encode_elementwise_add_batch(encoder, hidden_gpu, accum_gpu, m_dim, nt);
                 Ok(())
             })?;
         }

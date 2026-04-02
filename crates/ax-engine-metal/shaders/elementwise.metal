@@ -2585,3 +2585,104 @@ kernel void argmax_f32(
         *result_val = best_val;
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MoE GPU softmax + top-k — compute expert routing entirely on GPU.
+//
+// For each token: softmax over n_expert logits, select top n_expert_used,
+// re-normalize selected weights, write expert_ids and expert_weights.
+//
+// Input:  router_logits [n_tokens, n_expert] f32
+// Output: expert_ids    [n_tokens, n_expert_used] i32
+//         expert_weights[n_tokens, n_expert_used] f32
+//
+// Grid: (n_tokens, 1, 1). TG: min(n_expert, 256).
+// Each threadgroup processes one token's expert selection.
+// ═══════════════════════════════════════════════════════════════════════════
+kernel void moe_softmax_topk_f32(
+    device const float *router_logits [[buffer(0)]],
+    device int32_t *expert_ids        [[buffer(1)]],
+    device float *expert_weights      [[buffer(2)]],
+    constant uint &n_expert           [[buffer(3)]],
+    constant uint &n_expert_used      [[buffer(4)]],
+    threadgroup float *shmem          [[threadgroup(0)]],
+    uint tgpig [[threadgroup_position_in_grid]],
+    uint tid   [[thread_index_in_threadgroup]],
+    uint ntg   [[threads_per_threadgroup]])
+{
+    const uint token = tgpig;
+    device const float *logits = router_logits + token * n_expert;
+    device int32_t *out_ids = expert_ids + token * n_expert_used;
+    device float *out_wts = expert_weights + token * n_expert_used;
+
+    threadgroup float *sh_logits = shmem;                    // [n_expert]
+    threadgroup float *sh_probs  = shmem + n_expert;         // [n_expert]
+    threadgroup int   *sh_sel    = (threadgroup int *)(sh_probs + n_expert); // [n_expert_used]
+    threadgroup float *sh_wts    = (threadgroup float *)(sh_sel + n_expert_used);
+
+    // Step 1: Load logits + find max (for stable softmax).
+    float local_max = -INFINITY;
+    for (uint i = tid; i < n_expert; i += ntg) {
+        float v = logits[i];
+        sh_logits[i] = v;
+        local_max = max(local_max, v);
+    }
+    // Reduce max across threadgroup.
+    threadgroup float *sh_reduce = sh_wts + n_expert_used; // temp
+    sh_reduce[tid] = local_max;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = ntg / 2; s > 0; s >>= 1) {
+        if (tid < s) sh_reduce[tid] = max(sh_reduce[tid], sh_reduce[tid + s]);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float gmax = sh_reduce[0];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Step 2: Compute exp(logit - max) and sum.
+    float local_sum = 0.0f;
+    for (uint i = tid; i < n_expert; i += ntg) {
+        float e = exp(sh_logits[i] - gmax);
+        sh_probs[i] = e;
+        local_sum += e;
+    }
+    sh_reduce[tid] = local_sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = ntg / 2; s > 0; s >>= 1) {
+        if (tid < s) sh_reduce[tid] += sh_reduce[tid + s];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float gsum = sh_reduce[0];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Step 3: Normalize to probabilities.
+    float inv_sum = (gsum > 0.0f) ? 1.0f / gsum : 0.0f;
+    for (uint i = tid; i < n_expert; i += ntg) {
+        sh_probs[i] *= inv_sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Step 4: Top-k selection (sequential on thread 0, n_expert_used is small ≤16).
+    if (tid == 0) {
+        for (uint k = 0; k < n_expert_used; k++) {
+            float best_val = -1.0f;
+            int best_idx = 0;
+            for (uint i = 0; i < n_expert; i++) {
+                if (sh_probs[i] > best_val) {
+                    best_val = sh_probs[i];
+                    best_idx = i;
+                }
+            }
+            sh_sel[k] = best_idx;
+            sh_wts[k] = best_val;
+            sh_probs[best_idx] = -1.0f; // Mark as selected.
+        }
+        // Re-normalize selected weights.
+        float sel_sum = 0.0f;
+        for (uint k = 0; k < n_expert_used; k++) sel_sum += sh_wts[k];
+        float inv_sel = (sel_sum > 0.0f) ? 1.0f / sel_sum : 0.0f;
+        for (uint k = 0; k < n_expert_used; k++) {
+            out_ids[k] = sh_sel[k];
+            out_wts[k] = sh_wts[k] * inv_sel;
+        }
+    }
+}

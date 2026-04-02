@@ -9947,6 +9947,7 @@ pub struct ElementwiseKernels {
     // MoE expert dispatch
     pub moe_gather_rows: ComputePipeline,
     pub moe_weighted_scatter_add: ComputePipeline,
+    pub moe_softmax_topk: ComputePipeline,
     // GPU-side argmax for greedy decode
     argmax_f32: ComputePipeline,
 }
@@ -10409,6 +10410,12 @@ impl ElementwiseKernels {
                 "moe_weighted_scatter_add_f32",
             )
             .context("Failed to compile moe_weighted_scatter_add_f32")?,
+            moe_softmax_topk: ComputePipeline::from_source(
+                device.device(),
+                ELEMENTWISE_SHADER_SRC,
+                "moe_softmax_topk_f32",
+            )
+            .context("Failed to compile moe_softmax_topk_f32")?,
             argmax_f32,
         })
     }
@@ -11676,6 +11683,49 @@ impl ElementwiseKernels {
     }
 
     /// Encode batched a += b across `n_rows` rows of length `n`.
+    /// Encode GPU softmax + top-k for MoE router.
+    /// router_logits: [n_tokens, n_expert]. Output: expert_ids [n_tokens, n_expert_used] i32,
+    /// expert_weights [n_tokens, n_expert_used] f32.
+    pub fn encode_moe_softmax_topk(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        router_logits: &MetalBuffer,
+        expert_ids: &MetalBuffer,
+        expert_weights: &MetalBuffer,
+        n_tokens: u32,
+        n_expert: u32,
+        n_expert_used: u32,
+    ) {
+        encoder.setComputePipelineState(self.moe_softmax_topk.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(router_logits.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(expert_ids.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(expert_weights.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, n_expert);
+        bind_u32(encoder, 4, n_expert_used);
+        // Threadgroup memory: logits[ne] + probs[ne] + sel[neu] + wts[neu] + reduce[TG]
+        let tg = (n_expert as usize).min(256);
+        let smem = (n_expert as usize * 2 + n_expert_used as usize * 2 + tg)
+            * std::mem::size_of::<f32>()
+            + n_expert_used as usize * std::mem::size_of::<i32>();
+        unsafe {
+            encoder.setThreadgroupMemoryLength_atIndex(smem, 0);
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: n_tokens as _,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: tg,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
     pub fn encode_elementwise_add_batch(
         &self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
