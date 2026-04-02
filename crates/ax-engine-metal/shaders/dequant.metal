@@ -9866,6 +9866,7 @@ kernel void moe_mul_mat_id_q4_k_blocked(
             *(sa + 64 * ib + 8 * ly + lx) = temp_a[i / 4][i % 4];
         }
 
+        // B-tile: vectorized load (8 elements per thread via float2x4 → half2x4).
         const short sx = short(tiitg % NL1);
         const short sy = (tiitg / NL1) / 8;
         const short ly = (tiitg / NL1) % 8;
@@ -9912,22 +9913,23 @@ kernel void moe_mul_mat_id_q4_k_blocked(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    if (sgitg == 0) {
-        for (int j = tiitg; j < nr1; j += NR1) {
-            int32_t hid = expert_hids[r1 + j];
-            device float *D = output + hid * M + uint(r0);
-            device float4 *D4 = (device float4 *)D;
-            threadgroup float *Cs = temp_str + j * NR0;
-            threadgroup float4 *C4 = (threadgroup float4 *)Cs;
+    // All 4 simdgroups write output in parallel (matching llama.cpp pattern).
+    // Each simdgroup handles every 4th column, all 32 lanes write rows.
+    const ushort lane = tiitg % 32;
+    for (short j = sgitg; j < nr1; j += 4) {
+        int32_t hid = expert_hids[r1 + j];
+        device float  *D  = output + hid * M + uint(r0);
+        device float4 *D4 = (device float4 *)D;
+        threadgroup float  *Cs  = ((threadgroup float *)shmem) + j * NR0;
+        threadgroup float4 *C4 = (threadgroup float4 *)Cs;
 
-            int i = 0;
-            for (; i < nr0 / 4; i++) {
-                *(D4 + i) = *(C4 + i);
-            }
-            i *= 4;
-            for (; i < nr0; i++) {
-                *(D + i) = *(Cs + i);
-            }
+        int i = lane;
+        for (; i < nr0 / 4; i += 32) {
+            *(D4 + i) = *(C4 + i);
+        }
+        i = (4 * (nr0 / 4)) + lane;
+        for (; i < nr0; i += 32) {
+            *(D + i) = *(Cs + i);
         }
     }
 }
