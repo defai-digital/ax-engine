@@ -1927,25 +1927,77 @@ impl Qwen35Forward {
                             // Apply residual (CPU, UMA pointer).
                             silu::elementwise_add(hidden, &proj_buf);
 
-                            // MoE FFN via existing CPU+GPU dispatch path.
-                            let mut ffn_gate = vec![0.0f32; n_tokens * inter_dim];
-                            let mut ffn_up = vec![0.0f32; n_tokens * inter_dim];
-                            let mut ffn_down = vec![0.0f32; n_tokens * dim];
-                            Self::apply_post_attention_ffn_batch(
-                                cfg,
-                                backend,
-                                weights,
-                                &prefix,
-                                hidden,
-                                &mut norm_buf,
-                                &mut ffn_gate,
-                                &mut ffn_up,
-                                &mut ffn_down,
-                                n_tokens,
-                                dim,
-                                inter_dim,
-                                eps,
-                            )?;
+                            // MoE FFN: try GPU-resident path (pre-allocated buffers).
+                            let moe_gpu_ok = if Self::qwen35_is_moe(cfg)
+                                && Self::qwen35_layer_uses_moe(weights, &prefix)
+                            {
+                                // Get hidden MetalBuffer ptr (drop guard before GPU call).
+                                let hb_ptr: *const ax_engine_metal::MetalBuffer = {
+                                    let g = metal_ops.batch_scratches();
+                                    match g.as_ref() {
+                                        Some(bs) => &bs.hidden as *const _,
+                                        None => std::ptr::null(),
+                                    }
+                                };
+                                if !hb_ptr.is_null() {
+                                    let hb = unsafe { &*hb_ptr };
+                                    let nw = weights.f32_slice(
+                                        &format!("{prefix}.post_attention_norm.weight"),
+                                    )?;
+                                    let rn = format!("{prefix}.ffn_gate_inp.weight");
+                                    let (rr, _) = weights.raw_with_dtype(&rn)?;
+                                    let gn = format!("{prefix}.ffn_gate_exps.weight");
+                                    let un = format!("{prefix}.ffn_up_exps.weight");
+                                    let dn = format!("{prefix}.ffn_down_exps.weight");
+                                    let (gr, gd) = weights.raw_with_dtype(&gn)?;
+                                    let (ur, _) = weights.raw_with_dtype(&un)?;
+                                    let (dr, _) = weights.raw_with_dtype(&dn)?;
+                                    let ne = cfg.n_expert.unwrap_or(0) as usize;
+                                    let neu = cfg.n_expert_used.unwrap_or(0) as usize;
+                                    let eid = cfg
+                                        .expert_intermediate_dim
+                                        .unwrap_or(inter_dim as u32)
+                                        as usize;
+                                    let gs = crate::model::qwen3_moe::expert_byte_stride(
+                                        gd, eid * dim,
+                                    );
+                                    let ds = crate::model::qwen3_moe::expert_byte_stride(
+                                        gd, dim * eid,
+                                    );
+                                    metal_ops
+                                        .moe_ffn_gpu_resident(
+                                            hb, nw, rr, gd, gr, ur, dr, gd, n_tokens,
+                                            ne, neu, dim, eid, gs, gs, ds, eps,
+                                        )
+                                        .is_ok()
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+
+                            if !moe_gpu_ok {
+                                // Fallback: CPU+GPU dispatch path.
+                                let mut ffn_gate = vec![0.0f32; n_tokens * inter_dim];
+                                let mut ffn_up = vec![0.0f32; n_tokens * inter_dim];
+                                let mut ffn_down = vec![0.0f32; n_tokens * dim];
+                                Self::apply_post_attention_ffn_batch(
+                                    cfg,
+                                    backend,
+                                    weights,
+                                    &prefix,
+                                    hidden,
+                                    &mut norm_buf,
+                                    &mut ffn_gate,
+                                    &mut ffn_up,
+                                    &mut ffn_down,
+                                    n_tokens,
+                                    dim,
+                                    inter_dim,
+                                    eps,
+                                )?;
+                            }
                         }
                     }
                     if pipelined {
@@ -2104,28 +2156,79 @@ impl Qwen35Forward {
                                 dim,
                                 gpu_projected, // skip projections if already done on GPU
                             )?;
-                            // Apply residual + MoE FFN with properly-sized buffers.
-                            let mut rec_ffn_gate = vec![0.0f32; n_tokens * inter_dim];
-                            let mut rec_ffn_up = vec![0.0f32; n_tokens * inter_dim];
-                            let mut rec_ffn_down = vec![0.0f32; n_tokens * dim];
-                            Self::apply_layer_tail_batch(
-                                cfg,
-                                backend,
-                                weights,
-                                &prefix,
-                                hidden,
-                                &proj_buf,
-                                &mut norm_buf,
-                                &mut rec_ffn_gate,
-                                &mut rec_ffn_up,
-                                &mut rec_ffn_down,
-                                n_tokens,
-                                dim,
-                                inter_dim,
-                                eps,
-                                layer,
-                                batch_position,
-                            )?;
+                            // Apply residual.
+                            silu::elementwise_add(hidden, &proj_buf);
+
+                            // MoE FFN: try GPU-resident path.
+                            let rec_moe_gpu_ok = if Self::qwen35_is_moe(cfg)
+                                && Self::qwen35_layer_uses_moe(weights, &prefix)
+                            {
+                                let hb_ptr: *const ax_engine_metal::MetalBuffer = {
+                                    let g = metal_ops.batch_scratches();
+                                    match g.as_ref() {
+                                        Some(bs) => &bs.hidden as *const _,
+                                        None => std::ptr::null(),
+                                    }
+                                };
+                                if !hb_ptr.is_null() {
+                                    let hb = unsafe { &*hb_ptr };
+                                    let nw = weights.f32_slice(
+                                        &format!("{prefix}.post_attention_norm.weight"),
+                                    )?;
+                                    let rn = format!("{prefix}.ffn_gate_inp.weight");
+                                    let (rr, _) = weights.raw_with_dtype(&rn)?;
+                                    let gn = format!("{prefix}.ffn_gate_exps.weight");
+                                    let un = format!("{prefix}.ffn_up_exps.weight");
+                                    let dn = format!("{prefix}.ffn_down_exps.weight");
+                                    let (gr, gd) = weights.raw_with_dtype(&gn)?;
+                                    let (ur, _) = weights.raw_with_dtype(&un)?;
+                                    let (dr, _) = weights.raw_with_dtype(&dn)?;
+                                    let ne = cfg.n_expert.unwrap_or(0) as usize;
+                                    let neu = cfg.n_expert_used.unwrap_or(0) as usize;
+                                    let eid = cfg
+                                        .expert_intermediate_dim
+                                        .unwrap_or(inter_dim as u32)
+                                        as usize;
+                                    let gs = crate::model::qwen3_moe::expert_byte_stride(
+                                        gd, eid * dim,
+                                    );
+                                    let ds = crate::model::qwen3_moe::expert_byte_stride(
+                                        gd, dim * eid,
+                                    );
+                                    metal_ops
+                                        .moe_ffn_gpu_resident(
+                                            hb, nw, rr, gd, gr, ur, dr, gd, n_tokens,
+                                            ne, neu, dim, eid, gs, gs, ds, eps,
+                                        )
+                                        .is_ok()
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+
+                            if !rec_moe_gpu_ok {
+                                // Fallback.
+                                let mut ffn_gate = vec![0.0f32; n_tokens * inter_dim];
+                                let mut ffn_up = vec![0.0f32; n_tokens * inter_dim];
+                                let mut ffn_down = vec![0.0f32; n_tokens * dim];
+                                Self::apply_post_attention_ffn_batch(
+                                    cfg,
+                                    backend,
+                                    weights,
+                                    &prefix,
+                                    hidden,
+                                    &mut norm_buf,
+                                    &mut ffn_gate,
+                                    &mut ffn_up,
+                                    &mut ffn_down,
+                                    n_tokens,
+                                    dim,
+                                    inter_dim,
+                                    eps,
+                                )?;
+                            }
                         }
                     } else {
                         inflight = tail_frame;

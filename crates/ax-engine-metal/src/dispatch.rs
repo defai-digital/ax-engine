@@ -1190,7 +1190,7 @@ fn q8_0_matvec_candidate_selection(
         Some(MatvecProfileVariant::Ilp4) => {
             return MatvecCandidateSelection {
                 candidate: MatvecCandidate::Q8_0Ilp4,
-                stability: KernelStabilityTier::Stable,
+                stability: KernelStabilityTier::ProfilePreferred,
                 threadgroups: (m as usize).div_ceil(Q8_0_ILP4_ROWS),
                 threadgroup_width: DEQUANT_MATVEC_Q8_0_ILP4_TG,
             };
@@ -1198,7 +1198,7 @@ fn q8_0_matvec_candidate_selection(
         Some(MatvecProfileVariant::Base) => {
             return MatvecCandidateSelection {
                 candidate: MatvecCandidate::Q8_0Base,
-                stability: KernelStabilityTier::Stable,
+                stability: KernelStabilityTier::ProfilePreferred,
                 threadgroups: m as usize,
                 threadgroup_width: DEQUANT_MATVEC_TG,
             };
@@ -6220,6 +6220,8 @@ pub struct GdnKernels {
     extract_last_cumsum_f32: ComputePipeline,
     build_g_diff_exp_f32: ComputePipeline,
     gather_stride_f32: ComputePipeline,
+    strided_sub_f32: ComputePipeline,
+    strided_copy_f32: ComputePipeline,
 }
 
 impl AttentionKernels {
@@ -7877,6 +7879,18 @@ impl GdnKernels {
                 "gdn_gather_stride_f32",
             )
             .context("Failed to compile gdn_gather_stride_f32 kernel")?,
+            strided_sub_f32: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_strided_sub_f32",
+            )
+            .context("Failed to compile gdn_strided_sub_f32 kernel")?,
+            strided_copy_f32: ComputePipeline::from_source(
+                device.device(),
+                GDN_SHADER_SRC,
+                "gdn_strided_copy_f32",
+            )
+            .context("Failed to compile gdn_strided_copy_f32 kernel")?,
         })
     }
 
@@ -8301,6 +8315,12 @@ impl GdnKernels {
     /// Encode gated delta sequence, optionally using the graph-based chunked
     /// decomposition when `AX_METAL_GDN_CHUNKED_GRAPH=1`.
     #[allow(clippy::too_many_arguments)]
+    /// Encode GDN with auto-selection between chunked graph (parallel intra-chunk
+    /// matmuls, O(n_chunks) sequential steps) and sequential kernel (O(seq_len) steps).
+    ///
+    /// Returns scratch buffers that MUST be kept alive until the command buffer
+    /// completes execution. Dropping them early causes a Metal validation error
+    /// (`command buffer references deallocated object`).
     pub fn encode_gated_delta_sequence_auto(
         &self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
@@ -8316,9 +8336,9 @@ impl GdnKernels {
         seq_len: u32,
         n_heads: u32,
         head_dim: u32,
-    ) {
+    ) -> Vec<MetalBuffer> {
         if Self::chunked_graph_enabled() && seq_len >= 64 && head_dim >= 64 {
-            self.encode_chunked_gdn_graph(
+            return self.encode_chunked_gdn_graph(
                 encoder,
                 elementwise,
                 device,
@@ -8333,11 +8353,11 @@ impl GdnKernels {
                 n_heads,
                 head_dim,
             );
-            return;
         }
         self.encode_gated_delta_sequence(
             encoder, q, k, v, g, beta, state, output, seq_len, n_heads, head_dim,
         );
+        Vec::new()
     }
 
     /// Encode gated delta net into an existing command encoder (fused kernels).
@@ -8827,7 +8847,7 @@ impl GdnKernels {
         seq_len: u32,
         n_heads: u32,
         head_dim: u32,
-    ) {
+    ) -> Vec<MetalBuffer> {
         let cs: u32 = 64;
         let h = n_heads;
         let d = head_dim;
@@ -8840,14 +8860,17 @@ impl GdnKernels {
             self.encode_gated_delta_sequence(
                 encoder, q, k, v, g, beta, state, output, seq_len, n_heads, head_dim,
             );
-            return;
+            return Vec::new();
         }
 
         let n_chunks = t / cs;
         let hc = h * n_chunks; // independent (head, chunk) slices
 
         let f4 = std::mem::size_of::<f32>();
-        let alloc = |n: usize| -> MetalBuffer {
+        // Scratch buffers must outlive the command buffer — collected into
+        // `scratches` and returned to the caller for lifetime management.
+        let mut scratches: Vec<MetalBuffer> = Vec::with_capacity(32);
+        let mut alloc = |n: usize| -> MetalBuffer {
             let mut buf =
                 MetalBuffer::new(device.device(), (n * f4).max(f4)).expect("GDN graph alloc");
             unsafe { buf.as_mut_slice::<f32>().fill(0.0) };
@@ -9050,20 +9073,28 @@ impl GdnKernels {
                 h,
             );
 
-            // 13b. v_new[h] = vb_corr[h*nc+c] - v_prime[h] (per head with offsets)
-            for hh in 0..h {
-                let vbc_off = ((hh * n_chunks + c) * cs * d) as usize * f4;
-                let vp_off = (hh * cs * d) as usize * f4;
-                let vn_off = (hh * cs * d) as usize * f4;
-                let count = cs * d;
-                encoder.setComputePipelineState(elementwise.gen_sub.state());
+            // 13b. v_new[h] = vb_corr[h*nc+c] - v_prime[h]
+            // vb_corr is [H*nc, CS, D], ch_v_prime is [H, CS, D].
+            // For head h, chunk c: vb_corr offset = (h*nc + c) * CS*D.
+            // Use strided sub: src_a stride = nc*CS*D, src_b stride = CS*D,
+            //                  dst stride = CS*D, count = CS*D, n_batch = H.
+            {
+                let slice = cs * d;
+                let a_off = (c * slice) as usize * f4;
+                let a_stride = (n_chunks * slice) as usize * f4;
+                let b_stride = slice as usize * f4;
+                encoder.setComputePipelineState(self.strided_sub_f32.state());
                 unsafe {
-                    encoder.setBuffer_offset_atIndex(Some(vb_corr.mtl_buffer()), vbc_off, 0);
-                    encoder.setBuffer_offset_atIndex(Some(ch_v_prime.mtl_buffer()), vp_off, 1);
-                    encoder.setBuffer_offset_atIndex(Some(ch_v_new.mtl_buffer()), vn_off, 2);
+                    encoder.setBuffer_offset_atIndex(Some(vb_corr.mtl_buffer()), a_off, 0);
+                    encoder.setBuffer_offset_atIndex(Some(ch_v_prime.mtl_buffer()), 0, 1);
+                    encoder.setBuffer_offset_atIndex(Some(ch_v_new.mtl_buffer()), 0, 2);
                 }
-                bind_u32(encoder, 3, count);
-                let dims = DispatchDims::d1(count as usize, 256);
+                bind_u32(encoder, 3, slice);
+                bind_u32(encoder, 4, a_stride as u32 / 4); // stride in elements
+                bind_u32(encoder, 5, b_stride as u32 / 4);
+                bind_u32(encoder, 6, b_stride as u32 / 4); // dst stride = same as b
+                bind_u32(encoder, 7, h);
+                let dims = DispatchDims::d1((h * slice) as usize, 256);
                 encoder.dispatchThreadgroups_threadsPerThreadgroup(
                     dims.threadgroups,
                     dims.threads_per_threadgroup,
@@ -9119,38 +9150,27 @@ impl GdnKernels {
             // Instead write to ch_out, then use strided matmul as identity copy.
             elementwise.encode_gen_add(encoder, &ch_attn_inter, &ch_v_attn, &ch_out, h * cs * d);
 
-            // Copy ch_out → output[chunk c] using identity matmul trick:
-            // output[h, c*CS:, :] = I × ch_out[h, :, :] with I=[CS,CS].
-            // Or simpler: use the elementwise add with offset. Since both GPU
-            // buffers are accessible, encode a scaled add: output[offset] = 0 + ch_out.
-            // Use gen_scale(ch_out → output_at_offset) but we need offset support.
-            //
-            // Simplest correct approach: write via UMA after encoder commit.
-            // But we're inside an encoder... So use a copy kernel.
-            // Actually, we can use the gen_add dispatch with output buffer offset:
+            // Copy ch_out → output[chunk c] using strided copy.
+            // ch_out is [H, CS, D] contiguous (stride = CS*D).
+            // output is [H, T, D] (stride = T*D).
+            // For head h: src = ch_out + h*CS*D, dst = output + h*T*D + c*CS*D.
             {
-                // For each head, copy CS*D floats from ch_out to output.
-                // ch_out is [H, CS, D] contiguous. Output is [H, T, D].
-                // Head h: src = ch_out + h * CS * D, dst = output + h*T*D + c*CS*D.
-                // Since heads have different dst strides, dispatch per-head.
-                for hh in 0..h {
-                    let src_off = (hh * cs * d) as usize * f4;
-                    let dst_off = (hh * t * d + c * cs * d) as usize * f4;
-                    let count = cs * d;
-                    // Use gen_scale with scale=1.0 as a copy (src → dst).
-                    encoder.setComputePipelineState(elementwise.gen_scale.state());
-                    unsafe {
-                        encoder.setBuffer_offset_atIndex(Some(ch_out.mtl_buffer()), src_off, 0);
-                        encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), dst_off, 1);
-                    }
-                    bind_f32(encoder, 2, 1.0);
-                    bind_u32(encoder, 3, count);
-                    let dims = DispatchDims::d1(count as usize, 256);
-                    encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                        dims.threadgroups,
-                        dims.threads_per_threadgroup,
-                    );
+                let slice = cs * d;
+                let dst_off = (c * cs * d) as usize * f4;
+                encoder.setComputePipelineState(self.strided_copy_f32.state());
+                unsafe {
+                    encoder.setBuffer_offset_atIndex(Some(ch_out.mtl_buffer()), 0, 0);
+                    encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), dst_off, 1);
                 }
+                bind_u32(encoder, 2, slice); // elements per slice
+                bind_u32(encoder, 3, slice); // src stride (CS*D, contiguous)
+                bind_u32(encoder, 4, t * d); // dst stride (T*D)
+                bind_u32(encoder, 5, h); // n_batch
+                let dims = DispatchDims::d1((h * slice) as usize, 256);
+                encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                    dims.threadgroups,
+                    dims.threads_per_threadgroup,
+                );
             }
 
             // 13f. kgv = kg[c]^T × v_new: [D, CS]^T × [CS, D] → ...
@@ -9211,11 +9231,46 @@ impl GdnKernels {
 
             // state += kgv
             elementwise.encode_gen_add(encoder, state, &ch_kgv, state, h * d * d);
+
+            // Keep ch_g_scale alive until CB completes.
+            scratches.push(ch_g_scale);
         }
 
         // Output and state are now fully computed by the graph.
         // Output was written per-chunk in step 13e via strided scatter.
         // State was updated in-place in steps 13f-13g.
+
+        // Return all scratch buffers so caller keeps them alive until
+        // the command buffer completes.
+        scratches.push(q_s);
+        scratches.push(kb);
+        scratches.push(vb);
+        scratches.push(g_cs);
+        scratches.push(decay);
+        scratches.push(kk);
+        scratches.push(kq_m);
+        scratches.push(g_last);
+        scratches.push(g_last_exp);
+        scratches.push(g_diff_exp);
+        scratches.push(g_exp);
+        scratches.push(q_gexp);
+        scratches.push(kg);
+        scratches.push(vb_corr);
+        scratches.push(kbg);
+        scratches.push(k_cd);
+        scratches.push(attn_a);
+        scratches.push(lhs);
+        scratches.push(neg_a);
+        scratches.push(solved);
+        scratches.push(ident_all);
+        scratches.push(attn_corr);
+        scratches.push(ch_v_prime);
+        scratches.push(ch_v_new);
+        scratches.push(ch_v_attn);
+        scratches.push(ch_attn_inter);
+        scratches.push(ch_kgv);
+        scratches.push(ch_out);
+        scratches
     }
 }
 
@@ -12548,6 +12603,7 @@ mod tests {
         config.q8_0_variant = Some(crate::profile::MatvecProfileVariant::Base);
         let selection = q8_0_matvec_candidate_selection(1, config);
         assert_eq!(selection.candidate, MatvecCandidate::Q8_0Base);
+        assert_eq!(selection.stability, KernelStabilityTier::ProfilePreferred);
         assert_eq!(selection.threadgroup_width, DEQUANT_MATVEC_TG);
     }
 

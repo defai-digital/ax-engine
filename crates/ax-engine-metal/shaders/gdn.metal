@@ -1316,3 +1316,48 @@ void gdn_solve_tri_lower_f32<4>(
     if (gid >= count) return;
     dst[gid] = src[gid * stride + offset];
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Strided subtraction: C[batch*stride_c + idx] = A[batch*stride_a + idx]
+//                                              - B[batch*stride_b + idx]
+// for batch = 0..n_batch-1, idx = 0..slice_len-1.
+// Grid: (ceil(n_batch*slice_len / 256), 1, 1).  TG: 256.
+// ═══════════════════════════════════════════════════════════════════════════
+kernel void gdn_strided_sub_f32(
+    device const float* A [[buffer(0)]],
+    device const float* B [[buffer(1)]],
+    device float* C       [[buffer(2)]],
+    constant uint& slice_len   [[buffer(3)]],  // elements per batch slice
+    constant uint& stride_a    [[buffer(4)]],  // A stride between batches (elements)
+    constant uint& stride_b    [[buffer(5)]],  // B stride between batches (elements)
+    constant uint& stride_c    [[buffer(6)]],  // C stride between batches (elements)
+    constant uint& n_batch     [[buffer(7)]],  // number of batches
+    uint tid [[thread_position_in_grid]]
+) {
+    uint total = n_batch * slice_len;
+    if (tid >= total) return;
+    uint batch = tid / slice_len;
+    uint idx = tid % slice_len;
+    C[batch * stride_c + idx] = A[batch * stride_a + idx] - B[batch * stride_b + idx];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Strided copy: dst[batch*stride_dst + idx] = src[batch*stride_src + idx]
+// for batch = 0..n_batch-1, idx = 0..slice_len-1.
+// Grid: (ceil(n_batch*slice_len / 256), 1, 1).  TG: 256.
+// ═══════════════════════════════════════════════════════════════════════════
+kernel void gdn_strided_copy_f32(
+    device const float* src [[buffer(0)]],
+    device float* dst       [[buffer(1)]],
+    constant uint& slice_len   [[buffer(2)]],  // elements per batch slice
+    constant uint& stride_src  [[buffer(3)]],  // src stride between batches (elements)
+    constant uint& stride_dst  [[buffer(4)]],  // dst stride between batches (elements)
+    constant uint& n_batch     [[buffer(5)]],  // number of batches
+    uint tid [[thread_position_in_grid]]
+) {
+    uint total = n_batch * slice_len;
+    if (tid >= total) return;
+    uint batch = tid / slice_len;
+    uint idx = tid % slice_len;
+    dst[batch * stride_dst + idx] = src[batch * stride_src + idx];
+}

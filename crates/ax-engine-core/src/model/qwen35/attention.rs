@@ -687,13 +687,12 @@ impl Qwen35Forward {
         // Try to encode ALL expert ops into one Metal command buffer.
         // This eliminates ~24 execute_sync calls per layer (each ~30μs).
         let metal_dispatched = if let Some(metal_ops) = backend.metal_ops() {
-            let has_fused = matches!(
+            if Self::qwen35_moe_single_cb_supported(
                 gate_exps_dtype,
-                crate::gguf::tensor::GgmlType::Q4K
-                    | crate::gguf::tensor::GgmlType::Q5K
-                    | crate::gguf::tensor::GgmlType::Q6K
-            );
-            if has_fused && n_tokens > 1 {
+                up_exps_dtype,
+                down_exps_dtype,
+            ) && n_tokens > 1
+            {
                 Self::try_moe_expert_dispatch_single_cb(
                     metal_ops,
                     &expert_map,
@@ -881,10 +880,10 @@ impl Qwen35Forward {
         gate_exps_dtype: crate::gguf::tensor::GgmlType,
         gate_stride: usize,
         up_exps_raw: &[u8],
-        _up_exps_dtype: crate::gguf::tensor::GgmlType,
+        up_exps_dtype: crate::gguf::tensor::GgmlType,
         up_stride: usize,
         down_exps_raw: &[u8],
-        _down_exps_dtype: crate::gguf::tensor::GgmlType,
+        down_exps_dtype: crate::gguf::tensor::GgmlType,
         down_stride: usize,
         _gate_exps_name: &str,
         _up_exps_name: &str,
@@ -893,6 +892,13 @@ impl Qwen35Forward {
         dim: usize,
         expert_inter_dim: usize,
     ) -> anyhow::Result<bool> {
+        if !Self::qwen35_moe_single_cb_supported(
+            gate_exps_dtype,
+            up_exps_dtype,
+            down_exps_dtype,
+        ) {
+            return Ok(false);
+        }
         let n_expert = expert_map.len();
         // n_expert_used is computed dynamically below from max_experts_per_token.
         let _n_expert_used: usize = 1;
@@ -942,6 +948,8 @@ impl Qwen35Forward {
             up_exps_raw,
             down_exps_raw,
             gate_exps_dtype,
+            up_exps_dtype,
+            down_exps_dtype,
             n_tokens,
             n_expert,
             neu,
@@ -1084,6 +1092,21 @@ impl Qwen35Forward {
         drop(bs_guard);
 
         Ok(true)
+    }
+
+    fn qwen35_moe_single_cb_supported(
+        gate_dtype: crate::gguf::tensor::GgmlType,
+        up_dtype: crate::gguf::tensor::GgmlType,
+        down_dtype: crate::gguf::tensor::GgmlType,
+    ) -> bool {
+        matches!(
+            (gate_dtype, up_dtype, down_dtype),
+            (
+                crate::gguf::tensor::GgmlType::Q4K,
+                crate::gguf::tensor::GgmlType::Q4K,
+                crate::gguf::tensor::GgmlType::Q4K,
+            )
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1519,4 +1542,29 @@ impl Qwen35Forward {
         Ok(())
     }
 
+}
+
+#[cfg(test)]
+mod attention_tests {
+    use super::*;
+    use crate::gguf::tensor::GgmlType;
+
+    #[test]
+    fn test_qwen35_moe_single_cb_supported_requires_q4k_for_all_expert_weights() {
+        assert!(Qwen35Forward::qwen35_moe_single_cb_supported(
+            GgmlType::Q4K,
+            GgmlType::Q4K,
+            GgmlType::Q4K
+        ));
+        assert!(!Qwen35Forward::qwen35_moe_single_cb_supported(
+            GgmlType::Q4K,
+            GgmlType::Q5K,
+            GgmlType::Q4K
+        ));
+        assert!(!Qwen35Forward::qwen35_moe_single_cb_supported(
+            GgmlType::Q6K,
+            GgmlType::Q6K,
+            GgmlType::Q6K
+        ));
+    }
 }

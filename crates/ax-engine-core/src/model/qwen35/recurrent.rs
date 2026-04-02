@@ -115,6 +115,11 @@ impl Qwen35Forward {
                     alpha_slice.copy_from_slice(&rec_alpha_batch[..total_heads]);
                     beta_slice.copy_from_slice(&rec_beta_batch[..total_heads]);
                 }
+                // Scratch buffers from chunked GDN must outlive the command
+                // buffer. Store them here so they survive past execute_sync.
+                let gdn_scratch_hold: std::cell::RefCell<Vec<ax_engine_metal::MetalBuffer>> =
+                    std::cell::RefCell::new(Vec::new());
+
                 let run_handoff = |conv_state: &MetalBuffer,
                                    recurrent_state: &MetalBuffer|
                  -> anyhow::Result<Duration> {
@@ -269,7 +274,7 @@ impl Qwen35Forward {
                             encoded,
                             "qwen35 recurrent batch Metal pack kernel does not support this shape"
                         );
-                        metal_ops.gdn.encode_gated_delta_sequence_auto(
+                        *gdn_scratch_hold.borrow_mut() = metal_ops.gdn.encode_gated_delta_sequence_auto(
                             encoder,
                             &metal_ops.elementwise,
                             &metal_ops.device,
@@ -558,6 +563,8 @@ impl Qwen35Forward {
                     recurrent_state_stride,
                     |slot_buffers| -> anyhow::Result<Duration> {
                         let t = OpTimer::start();
+                        let gdn_scratch_hold2: std::cell::RefCell<Vec<ax_engine_metal::MetalBuffer>> =
+                            std::cell::RefCell::new(Vec::new());
                         metal_ops.device.execute_sync(|encoder| {
                             // When merged_projection is provided, encode norm +
                             // input projections into this same CB before the
@@ -776,7 +783,7 @@ impl Qwen35Forward {
                                 encoded,
                                 "qwen35 fused recurrent layer Metal pack kernel does not support this shape"
                             );
-                            metal_ops.gdn.encode_gated_delta_sequence_auto(
+                            *gdn_scratch_hold2.borrow_mut() = metal_ops.gdn.encode_gated_delta_sequence_auto(
                                 encoder,
                                 &metal_ops.elementwise,
                                 &metal_ops.device,

@@ -2934,6 +2934,31 @@ pub struct GpuBatchScratchBuffers {
     /// f16 staging output buffer (kept for compatibility with staged paths).
     pub matmul_out_f16: MetalBuffer,
     pub batch_size: usize,
+    // ── MoE scratch buffers (allocated when n_expert > 0) ──
+    /// Norm output for MoE FFN [N × dim].
+    pub moe_norm: Option<MetalBuffer>,
+    /// Router logits [N × n_expert].
+    pub moe_router_out: Option<MetalBuffer>,
+    /// Expert accumulator [N × dim].
+    pub moe_accum: Option<MetalBuffer>,
+    /// Gate matmul output [N × n_expert_used × expert_inter_dim].
+    pub moe_gate_out: Option<MetalBuffer>,
+    /// Up matmul output [N × n_expert_used × expert_inter_dim].
+    pub moe_up_out: Option<MetalBuffer>,
+    /// Down matmul output [N × n_expert_used × dim].
+    pub moe_down_out: Option<MetalBuffer>,
+    /// Tokens per expert [n_expert] u32.
+    pub moe_tpe: Option<MetalBuffer>,
+    /// Routing index [n_expert × N + (n_expert + 1)] i32/u32.
+    pub moe_hids: Option<MetalBuffer>,
+    /// Expert IDs [N × n_expert_used] i32.
+    pub moe_expert_ids: Option<MetalBuffer>,
+    /// Expert weights [N × n_expert_used] f32.
+    pub moe_expert_weights: Option<MetalBuffer>,
+    /// Active expert list [n_expert] u32.
+    pub moe_active_experts: Option<MetalBuffer>,
+    /// Token index for scatter [N × n_expert_used] u32.
+    pub moe_tok_idx: Option<MetalBuffer>,
 }
 
 /// Metal GPU operations for phased forward pass dispatch.
@@ -4356,7 +4381,7 @@ impl MetalOps {
             .max(gate_scratch_dim)
             .max(up_scratch_dim);
 
-        let bs = GpuBatchScratchBuffers {
+        let mut bs = GpuBatchScratchBuffers {
             hidden: alloc(n_tokens * dim),
             qkv_buf: alloc(n_tokens * (q_dim + 2 * kv_dim)),
             q_buf: alloc(n_tokens * q_dim),
@@ -4370,7 +4395,48 @@ impl MetalOps {
             matmul_in_f16: alloc_f16(n_tokens * max_input_dim),
             matmul_out_f16: alloc_f16(n_tokens * max_output_dim),
             batch_size: n_tokens,
+            moe_norm: None,
+            moe_router_out: None,
+            moe_accum: None,
+            moe_gate_out: None,
+            moe_up_out: None,
+            moe_down_out: None,
+            moe_tpe: None,
+            moe_hids: None,
+            moe_expert_ids: None,
+            moe_expert_weights: None,
+            moe_active_experts: None,
+            moe_tok_idx: None,
         };
+        // Allocate MoE scratch buffers if this is a MoE model.
+        let n_expert = config.n_expert.unwrap_or(0) as usize;
+        let n_expert_used = config.n_expert_used.unwrap_or(0) as usize;
+        let expert_inter_dim = config.expert_intermediate_dim.unwrap_or(0) as usize;
+        if n_expert > 0 && n_expert_used > 0 && expert_inter_dim > 0 {
+            let f4 = std::mem::size_of::<f32>();
+            let i4 = std::mem::size_of::<i32>();
+            let u4 = std::mem::size_of::<u32>();
+            let alloc_bytes = |size: usize| -> MetalBuffer {
+                MetalBuffer::new(self.device.device(), size)
+                    .expect("Failed to allocate MoE scratch buffer")
+            };
+            bs.moe_norm = Some(alloc_bytes(n_tokens * dim * f4));
+            bs.moe_router_out = Some(alloc_bytes(n_tokens * n_expert * f4));
+            bs.moe_accum = Some(alloc_bytes(n_tokens * dim * f4));
+            bs.moe_gate_out = Some(alloc_bytes(
+                n_tokens * n_expert_used * expert_inter_dim * f4,
+            ));
+            bs.moe_up_out = Some(alloc_bytes(
+                n_tokens * n_expert_used * expert_inter_dim * f4,
+            ));
+            bs.moe_down_out = Some(alloc_bytes(n_tokens * n_expert_used * dim * f4));
+            bs.moe_tpe = Some(alloc_bytes(n_expert * u4));
+            bs.moe_hids = Some(alloc_bytes(n_expert * n_tokens * i4 + (n_expert + 1) * u4));
+            bs.moe_expert_ids = Some(alloc_bytes(n_tokens * n_expert_used * i4));
+            bs.moe_expert_weights = Some(alloc_bytes(n_tokens * n_expert_used * f4));
+            bs.moe_active_experts = Some(alloc_bytes(n_expert * u4));
+            bs.moe_tok_idx = Some(alloc_bytes(n_tokens * n_expert_used * u4));
+        }
         tracing::info!(
             n_tokens,
             dim,
@@ -4685,6 +4751,61 @@ impl MetalOps {
         key
     }
 
+    fn encode_quant_batch_matmul(
+        &self,
+        encoder: &ax_engine_metal::MetalEncoder,
+        weights: &MetalBuffer,
+        input: &MetalBuffer,
+        output: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+        dtype: GgmlType,
+    ) -> anyhow::Result<()> {
+        match dtype {
+            GgmlType::Q4K => self
+                .dequant
+                .encode_fused_batch_q4_k(encoder, weights, input, output, m, n, k),
+            GgmlType::Q5K => self
+                .dequant
+                .encode_fused_batch_q5_k(encoder, weights, input, output, m, n, k),
+            GgmlType::Q6K => self
+                .dequant
+                .encode_fused_batch_q6_k(encoder, weights, input, output, m, n, k),
+            GgmlType::Q8_0 => self
+                .dequant
+                .encode_fused_batch_q8_0(encoder, weights, input, output, m, n, k),
+            _ => anyhow::bail!("unsupported Metal MoE batch matmul dtype: {dtype:?}"),
+        }
+        Ok(())
+    }
+
+    fn validate_moe_mul_mat_id_dtype(dtype: GgmlType, role: &str) -> anyhow::Result<()> {
+        if matches!(dtype, GgmlType::Q4K) {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "Metal MoE mul_mat_id path only supports Q4_K {role} weights today; got {dtype:?}",
+            )
+        }
+    }
+
+    fn moe_blocks_per_expert(
+        stride_bytes: usize,
+        dtype: GgmlType,
+        role: &str,
+    ) -> anyhow::Result<u32> {
+        Self::validate_moe_mul_mat_id_dtype(dtype, role)?;
+        let bytes_per_block = dtype.bytes_per_block();
+        if !stride_bytes.is_multiple_of(bytes_per_block) {
+            anyhow::bail!(
+                "Metal MoE {role} stride {stride_bytes} is not aligned to {:?} block size {bytes_per_block}",
+                dtype,
+            );
+        }
+        Ok((stride_bytes / bytes_per_block) as u32)
+    }
+
     /// Execute MoE FFN on GPU-resident hidden buffer (no upload/download).
     ///
     /// Operates directly on `hidden_gpu` (MetalBuffer from bs.hidden).
@@ -4707,7 +4828,7 @@ impl MetalOps {
         dim: usize,
         expert_inter_dim: usize,
         gate_stride: usize,
-        _up_stride: usize,
+        up_stride: usize,
         down_stride: usize,
         eps: f32,
     ) -> anyhow::Result<()> {
@@ -4715,6 +4836,12 @@ impl MetalOps {
         let i4 = std::mem::size_of::<i32>();
         let u4 = std::mem::size_of::<u32>();
         let dev = self.device.device();
+        let blocks_per_expert_gate =
+            Self::moe_blocks_per_expert(gate_stride, expert_dtype, "expert gate")?;
+        let blocks_per_expert_up =
+            Self::moe_blocks_per_expert(up_stride, expert_dtype, "expert up")?;
+        let blocks_per_expert_down =
+            Self::moe_blocks_per_expert(down_stride, expert_dtype, "expert down")?;
 
         // Cache weights.
         let gate_key = self.ensure_moe_quant_cached(gate_exps_raw);
@@ -4723,68 +4850,116 @@ impl MetalOps {
         let router_key = self.ensure_moe_quant_cached(router_raw);
         let norm_key = self.ensure_f32_cached(ffn_norm_w);
 
-        // Allocate GPU buffers.
-        let norm_gpu = MetalBuffer::new(dev, n_tokens * dim * f4)?;
-        let router_gpu = MetalBuffer::new(dev, n_tokens * n_expert * f4)?;
-        let mut accum_gpu = MetalBuffer::new(dev, n_tokens * dim * f4)?;
-        let gate_out_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * expert_inter_dim * f4)?;
-        let up_out_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * expert_inter_dim * f4)?;
-        let down_out_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * dim * f4)?;
-        let tpe_gpu = MetalBuffer::new(dev, n_expert * u4)?;
-        let hids_gpu = MetalBuffer::new(dev, n_expert * n_tokens * i4 + (n_expert + 1) * u4)?;
-
-        unsafe { accum_gpu.as_mut_slice::<f32>().fill(0.0) };
-
-        // CB1: RMSNorm + Router matmul.
-        {
-            let cache = self.moe_quant_cache.lock().unwrap();
-            let router_buf = cache.get(&router_key).unwrap();
-            let f32_cache = self.f32_weight_cache.lock().unwrap();
-            let norm_buf = f32_cache.get(&norm_key).unwrap();
-
-            self.device.execute_sync(|encoder| {
-                // RMSNorm: norm_gpu = rms_norm(hidden_gpu, ffn_norm_w)
-                self.elementwise.encode_rms_norm_out_batch(
-                    encoder,
-                    hidden_gpu,
-                    norm_buf,
-                    &norm_gpu,
-                    dim as u32,
-                    n_tokens as u32,
-                    eps,
-                );
-                // Router matmul: router_gpu = norm_gpu × router_weights
-                self.dequant.encode_fused_batch_q4_k(
-                    encoder,
-                    router_buf,
-                    &norm_gpu,
-                    &router_gpu,
-                    n_expert as u32,
-                    n_tokens as u32,
-                    dim as u32,
-                );
-                Ok(())
-            })?;
+        // Use pre-allocated MoE scratch buffers from batch_scratches.
+        // Get raw pointers (drop guard to avoid deadlock with execute_sync).
+        struct MoeBufs {
+            norm: *const MetalBuffer,
+            router: *const MetalBuffer,
+            accum: *const MetalBuffer,
+            gate_out: *const MetalBuffer,
+            up_out: *const MetalBuffer,
+            down_out: *const MetalBuffer,
+            tpe: *const MetalBuffer,
+            hids: *const MetalBuffer,
         }
+        let bufs = {
+            let bs_guard = self.batch_scratches.lock().unwrap();
+            let bs = bs_guard
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("moe_ffn_gpu_resident: missing batch scratches"))?;
+            // All buffers must exist (allocated when n_expert > 0).
+            MoeBufs {
+                norm: bs.moe_norm.as_ref().unwrap() as *const _,
+                router: bs.moe_router_out.as_ref().unwrap() as *const _,
+                accum: bs.moe_accum.as_ref().unwrap() as *const _,
+                gate_out: bs.moe_gate_out.as_ref().unwrap() as *const _,
+                up_out: bs.moe_up_out.as_ref().unwrap() as *const _,
+                down_out: bs.moe_down_out.as_ref().unwrap() as *const _,
+                tpe: bs.moe_tpe.as_ref().unwrap() as *const _,
+                hids: bs.moe_hids.as_ref().unwrap() as *const _,
+            }
+        }; // bs_guard dropped.
 
-        // CPU: Read router logits, compute top-k softmax.
-        let mut router_logits = vec![0.0f32; n_tokens * n_expert];
+        // SAFETY: MetalOps owns the batch scratches and won't deallocate during use.
+        let norm_gpu = unsafe { &*bufs.norm };
+        let router_gpu = unsafe { &*bufs.router };
+        let accum_gpu = unsafe { &*bufs.accum };
+        let gate_out_gpu = unsafe { &*bufs.gate_out };
+        let up_out_gpu = unsafe { &*bufs.up_out };
+        let down_out_gpu = unsafe { &*bufs.down_out };
+        let tpe_gpu = unsafe { &*bufs.tpe };
+        let hids_gpu = unsafe { &*bufs.hids };
+
         unsafe {
-            router_logits.copy_from_slice(&router_gpu.as_slice::<f32>()[..n_tokens * n_expert]);
-        }
+            (*(bufs.accum as *mut MetalBuffer))
+                .as_mut_slice::<f32>()
+                .fill(0.0)
+        };
 
         let mut expert_ids = vec![-1i32; n_tokens * n_expert_used];
         let mut expert_weights = vec![0.0f32; n_tokens * n_expert_used];
-        for t in 0..n_tokens {
-            let (ids, wts) = crate::model::qwen3_moe::top_k_softmax(
-                &router_logits[t * n_expert..(t + 1) * n_expert],
-                n_expert_used,
-            );
-            for (i, &eid) in ids.iter().enumerate() {
-                expert_ids[t * n_expert_used + i] = eid as i32;
-                expert_weights[t * n_expert_used + i] = wts[i];
+
+        // CPU: RMSNorm + Router + top-k (avoids extra GPU sync).
+        // Read hidden from GPU via UMA, compute norm on CPU, upload to norm_gpu.
+        {
+            let hidden_f32 = unsafe {
+                std::slice::from_raw_parts(
+                    hidden_gpu.contents().as_ptr() as *const f32,
+                    n_tokens * dim,
+                )
+            };
+            let mut cpu_norm = vec![0.0f32; n_tokens * dim];
+            for t in 0..n_tokens {
+                crate::compute::rms_norm::rms_norm_out(
+                    &hidden_f32[t * dim..(t + 1) * dim],
+                    ffn_norm_w,
+                    &mut cpu_norm[t * dim..(t + 1) * dim],
+                    eps,
+                );
+            }
+            // Upload norm to GPU for mul_mat_id input.
+            unsafe {
+                (*(bufs.norm as *mut MetalBuffer)).as_mut_slice::<f32>()[..n_tokens * dim]
+                    .copy_from_slice(&cpu_norm);
+            }
+
+            // Router matmul via GPU (encode in its own CB).
+            let router_key_local = self.ensure_moe_quant_cached(router_raw);
+            let mut router_logits_cpu = vec![0.0f32; n_tokens * n_expert];
+            {
+                let nt = n_tokens as u32;
+                let rk = dim as u32;
+                let rm = n_expert as u32;
+                let cache = self.moe_quant_cache.lock().unwrap();
+                let rbuf = cache.get(&router_key_local).unwrap();
+                // Upload cpu_norm to norm_gpu (already done above), use as input.
+                self.device.execute_sync(|encoder| {
+                    self.dequant.encode_fused_batch_q4_k(
+                        encoder, rbuf, norm_gpu, router_gpu, rm, nt, rk,
+                    );
+                    Ok(())
+                })?;
+            }
+            unsafe {
+                router_logits_cpu.copy_from_slice(
+                    &router_gpu.as_slice::<f32>()[..n_tokens * n_expert],
+                );
+            }
+
+            // CPU top-k.
+            for t in 0..n_tokens {
+                let (ids, wts) = crate::model::qwen3_moe::top_k_softmax(
+                    &router_logits_cpu[t * n_expert..(t + 1) * n_expert],
+                    n_expert_used,
+                );
+                for (i, &eid) in ids.iter().enumerate() {
+                    expert_ids[t * n_expert_used + i] = eid as i32;
+                    expert_weights[t * n_expert_used + i] = wts[i];
+                }
             }
         }
+
+        // expert_ids and expert_weights are now filled from CPU top-k above.
 
         // Build active expert set on CPU.
         let mut active_set = std::collections::BTreeSet::new();
@@ -4796,10 +4971,21 @@ impl MetalOps {
         let active_list: Vec<u32> = active_set.into_iter().collect();
         let n_active = active_list.len() as u32;
 
-        let mut active_buf = MetalBuffer::new(dev, (n_active as usize).max(1) * u4)?;
-        let mut ids_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * i4)?;
-        let mut weights_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * f4)?;
-        let mut tok_idx_buf = MetalBuffer::new(dev, n_tokens * n_expert_used * u4)?;
+        // Use pre-allocated buffers for expert ids/weights/tok_idx.
+        let (active_buf, ids_gpu, weights_gpu, tok_idx_buf) = {
+            let bs_guard = self.batch_scratches.lock().unwrap();
+            let bs = bs_guard.as_ref().unwrap();
+            (
+                bs.moe_active_experts.as_ref().unwrap() as *const MetalBuffer,
+                bs.moe_expert_ids.as_ref().unwrap() as *const MetalBuffer,
+                bs.moe_expert_weights.as_ref().unwrap() as *const MetalBuffer,
+                bs.moe_tok_idx.as_ref().unwrap() as *const MetalBuffer,
+            )
+        };
+        let active_buf = unsafe { &mut *(active_buf as *mut MetalBuffer) };
+        let ids_gpu = unsafe { &mut *(ids_gpu as *mut MetalBuffer) };
+        let weights_gpu = unsafe { &mut *(weights_gpu as *mut MetalBuffer) };
+        let tok_idx_buf = unsafe { &mut *(tok_idx_buf as *mut MetalBuffer) };
         unsafe {
             active_buf.as_mut_slice::<u32>()[..active_list.len()].copy_from_slice(&active_list);
             let ids_bytes: &[u8] =
@@ -4817,8 +5003,6 @@ impl MetalOps {
             }
         }
 
-        let blocks_per_expert_gate = gate_stride / 144; // Q4_K block = 144 bytes
-        let blocks_per_expert_down = down_stride / 144;
         let nt = n_tokens as u32;
         let ne = n_expert as u32;
         let neu = n_expert_used as u32;
@@ -4850,7 +5034,7 @@ impl MetalOps {
                     nt,
                     neu,
                     ne,
-                    blocks_per_expert_gate as u32,
+                    blocks_per_expert_gate,
                     &active_buf,
                     n_active,
                 );
@@ -4867,7 +5051,7 @@ impl MetalOps {
                     nt,
                     neu,
                     ne,
-                    blocks_per_expert_gate as u32,
+                    blocks_per_expert_up,
                     &active_buf,
                     n_active,
                 );
@@ -4892,7 +5076,7 @@ impl MetalOps {
                     nt,
                     neu,
                     ne,
-                    blocks_per_expert_down as u32,
+                    blocks_per_expert_down,
                     &active_buf,
                     n_active,
                 );
@@ -4935,14 +5119,16 @@ impl MetalOps {
         gate_exps_raw: &[u8],
         up_exps_raw: &[u8],
         down_exps_raw: &[u8],
-        _gate_dtype: GgmlType,
+        gate_dtype: GgmlType,
+        up_dtype: GgmlType,
+        down_dtype: GgmlType,
         n_tokens: usize,
         n_expert: usize,
         n_expert_used: usize,
         dim: usize,
         expert_inter_dim: usize,
         gate_stride: usize,
-        _up_stride: usize,
+        up_stride: usize,
         down_stride: usize,
         shared_expert: Option<&SharedExpertWeights<'_>>,
     ) -> anyhow::Result<()> {
@@ -4950,6 +5136,11 @@ impl MetalOps {
         let i4 = std::mem::size_of::<i32>();
         let u4 = std::mem::size_of::<u32>();
         let dev = self.device.device();
+        let blocks_per_expert_gate =
+            Self::moe_blocks_per_expert(gate_stride, gate_dtype, "expert gate")?;
+        let blocks_per_expert_up = Self::moe_blocks_per_expert(up_stride, up_dtype, "expert up")?;
+        let blocks_per_expert_down =
+            Self::moe_blocks_per_expert(down_stride, down_dtype, "expert down")?;
 
         // Cache full packed expert weight tensors (mmap-backed MetalBuffers).
         let gate_key = self.ensure_moe_quant_cached(gate_exps_raw);
@@ -5011,10 +5202,6 @@ impl MetalOps {
         let up_buf = cache.get(&up_key).unwrap();
         let down_buf = cache.get(&down_key).unwrap();
 
-        // Weight stride in Q4_K blocks (number of blocks per expert).
-        let blocks_per_expert_gate = gate_stride / std::mem::size_of::<[u8; 144]>();
-        let blocks_per_expert_down = down_stride / std::mem::size_of::<[u8; 144]>();
-
         let nt = n_tokens as u32;
         let ne = n_expert as u32;
         let neu = n_expert_used as u32;
@@ -5056,7 +5243,7 @@ impl MetalOps {
                 nt,
                 neu,
                 ne,
-                blocks_per_expert_gate as u32,
+                blocks_per_expert_gate,
                 &active_buf,
                 n_active,
             );
@@ -5074,7 +5261,7 @@ impl MetalOps {
                 nt,
                 neu,
                 ne,
-                blocks_per_expert_gate as u32,
+                blocks_per_expert_up,
                 &active_buf,
                 n_active,
             );
@@ -5122,7 +5309,7 @@ impl MetalOps {
                 nt,
                 neu,
                 ne,
-                blocks_per_expert_down as u32,
+                blocks_per_expert_down,
                 &active_buf,
                 n_active,
             );
@@ -5145,7 +5332,7 @@ impl MetalOps {
                 let se_uw = cache.get(&(se.up_raw.as_ptr() as usize)).unwrap();
                 let se_dw = cache.get(&(se.down_raw.as_ptr() as usize)).unwrap();
 
-                self.dequant.encode_fused_batch_q4_k(
+                self.encode_quant_batch_matmul(
                     encoder,
                     se_gw,
                     &input_gpu,
@@ -5153,8 +5340,9 @@ impl MetalOps {
                     se_inter,
                     nt,
                     m_dim,
-                );
-                self.dequant.encode_fused_batch_q4_k(
+                    se.dtype,
+                )?;
+                self.encode_quant_batch_matmul(
                     encoder,
                     se_uw,
                     &input_gpu,
@@ -5162,7 +5350,8 @@ impl MetalOps {
                     se_inter,
                     nt,
                     m_dim,
-                );
+                    se.dtype,
+                )?;
                 self.elementwise.encode_silu_elementwise_mul_batch(
                     encoder,
                     &gate_out_gpu,
@@ -5170,7 +5359,7 @@ impl MetalOps {
                     se_inter,
                     nt,
                 );
-                self.dequant.encode_fused_batch_q4_k(
+                self.encode_quant_batch_matmul(
                     encoder,
                     se_dw,
                     &gate_out_gpu,
@@ -5178,7 +5367,8 @@ impl MetalOps {
                     m_dim,
                     nt,
                     se_inter,
-                );
+                    se.dtype,
+                )?;
                 // TODO: sigmoid gate (se.gate_inp_raw) — handled on CPU for now.
                 self.elementwise.encode_elementwise_add_batch(
                     encoder,
@@ -5295,23 +5485,6 @@ impl MetalOps {
         // Lock weight cache ONCE for the entire encode.
         let cache = self.moe_quant_cache.lock().unwrap();
 
-        let encode_dequant_matmul = |enc: &ax_engine_metal::MetalEncoder,
-                                     w: &MetalBuffer,
-                                     b: &MetalBuffer,
-                                     c: &MetalBuffer,
-                                     m: u32,
-                                     n: u32,
-                                     k: u32,
-                                     dt: GgmlType| {
-            match dt {
-                GgmlType::Q4K => self.dequant.encode_fused_batch_q4_k(enc, w, b, c, m, n, k),
-                GgmlType::Q5K => self.dequant.encode_fused_batch_q5_k(enc, w, b, c, m, n, k),
-                GgmlType::Q6K => self.dequant.encode_fused_batch_q6_k(enc, w, b, c, m, n, k),
-                GgmlType::Q8_0 => self.dequant.encode_fused_batch_q8_0(enc, w, b, c, m, n, k),
-                _ => panic!("unsupported MoE expert dtype: {dt:?}"),
-            }
-        };
-
         self.device.execute_sync(|encoder| {
             for egd in &egds {
                 let n = egd.n;
@@ -5330,7 +5503,7 @@ impl MetalOps {
 
                 // Gate matmul
                 let gw = cache.get(&egd.gate_key).unwrap();
-                encode_dequant_matmul(
+                self.encode_quant_batch_matmul(
                     encoder,
                     gw,
                     &gather_gpu,
@@ -5339,11 +5512,11 @@ impl MetalOps {
                     n,
                     m_dim,
                     gate_dtype,
-                );
+                )?;
 
                 // Up matmul
                 let uw = cache.get(&egd.up_key).unwrap();
-                encode_dequant_matmul(
+                self.encode_quant_batch_matmul(
                     encoder,
                     uw,
                     &gather_gpu,
@@ -5352,7 +5525,7 @@ impl MetalOps {
                     n,
                     m_dim,
                     up_dtype,
-                );
+                )?;
 
                 // SiLU
                 self.elementwise
@@ -5360,9 +5533,9 @@ impl MetalOps {
 
                 // Down matmul
                 let dw = cache.get(&egd.down_key).unwrap();
-                encode_dequant_matmul(
+                self.encode_quant_batch_matmul(
                     encoder, dw, &gate_gpu, &down_gpu, m_dim, n, m_inter, down_dtype,
-                );
+                )?;
 
                 // Weighted scatter
                 self.elementwise.encode_moe_weighted_scatter(
@@ -6492,6 +6665,25 @@ mod tests {
             has_q8_layer_weights: false,
             has_f32_layer_weights: false,
         }
+    }
+
+    #[test]
+    fn test_validate_moe_mul_mat_id_dtype_rejects_non_q4k() {
+        let err = MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q5K, "expert")
+            .expect_err("non-Q4_K MoE routed weights should be rejected");
+        assert!(err.to_string().contains("Q4_K expert weights"));
+    }
+
+    #[test]
+    fn test_moe_blocks_per_expert_requires_aligned_q4k_stride() {
+        assert_eq!(
+            MetalOps::moe_blocks_per_expert(288, GgmlType::Q4K, "expert").unwrap(),
+            2
+        );
+
+        let err = MetalOps::moe_blocks_per_expert(145, GgmlType::Q4K, "expert")
+            .expect_err("misaligned Q4_K stride should fail");
+        assert!(err.to_string().contains("stride 145"));
     }
 
     #[test]
