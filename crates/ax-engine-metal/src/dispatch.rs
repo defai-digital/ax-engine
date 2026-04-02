@@ -8870,7 +8870,7 @@ impl GdnKernels {
         // Scratch buffers must outlive the command buffer — collected into
         // `scratches` and returned to the caller for lifetime management.
         let mut scratches: Vec<MetalBuffer> = Vec::with_capacity(32);
-        let mut alloc = |n: usize| -> MetalBuffer {
+        let alloc = |n: usize| -> MetalBuffer {
             let mut buf =
                 MetalBuffer::new(device.device(), (n * f4).max(f4)).expect("GDN graph alloc");
             unsafe { buf.as_mut_slice::<f32>().fill(0.0) };

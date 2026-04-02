@@ -4832,10 +4832,7 @@ impl MetalOps {
         down_stride: usize,
         eps: f32,
     ) -> anyhow::Result<()> {
-        let f4 = std::mem::size_of::<f32>();
         let i4 = std::mem::size_of::<i32>();
-        let u4 = std::mem::size_of::<u32>();
-        let dev = self.device.device();
         let blocks_per_expert_gate =
             Self::moe_blocks_per_expert(gate_stride, expert_dtype, "expert gate")?;
         let blocks_per_expert_up =
@@ -4847,8 +4844,6 @@ impl MetalOps {
         let gate_key = self.ensure_moe_quant_cached(gate_exps_raw);
         let up_key = self.ensure_moe_quant_cached(up_exps_raw);
         let down_key = self.ensure_moe_quant_cached(down_exps_raw);
-        let router_key = self.ensure_moe_quant_cached(router_raw);
-        let norm_key = self.ensure_f32_cached(ffn_norm_w);
 
         // Use pre-allocated MoE scratch buffers from batch_scratches.
         // Get raw pointers (drop guard to avoid deadlock with execute_sync).
@@ -4923,27 +4918,31 @@ impl MetalOps {
                     .copy_from_slice(&cpu_norm);
             }
 
-            // Router matmul via GPU (encode in its own CB).
-            let router_key_local = self.ensure_moe_quant_cached(router_raw);
+            // Router matmul on CPU (small: 256×2048, avoids extra execute_sync).
             let mut router_logits_cpu = vec![0.0f32; n_tokens * n_expert];
+            // Router matmul via GPU (1 extra CB per layer).
+            let router_key_local = self.ensure_moe_quant_cached(router_raw);
             {
                 let nt = n_tokens as u32;
-                let rk = dim as u32;
-                let rm = n_expert as u32;
                 let cache = self.moe_quant_cache.lock().unwrap();
                 let rbuf = cache.get(&router_key_local).unwrap();
-                // Upload cpu_norm to norm_gpu (already done above), use as input.
                 self.device.execute_sync(|encoder| {
-                    self.dequant.encode_fused_batch_q4_k(
-                        encoder, rbuf, norm_gpu, router_gpu, rm, nt, rk,
-                    );
+                    self.encode_quant_batch_matmul(
+                        encoder,
+                        rbuf,
+                        norm_gpu,
+                        router_gpu,
+                        n_expert as u32,
+                        nt,
+                        dim as u32,
+                        router_dtype,
+                    )?;
                     Ok(())
                 })?;
             }
             unsafe {
-                router_logits_cpu.copy_from_slice(
-                    &router_gpu.as_slice::<f32>()[..n_tokens * n_expert],
-                );
+                router_logits_cpu
+                    .copy_from_slice(&router_gpu.as_slice::<f32>()[..n_tokens * n_expert]);
             }
 
             // CPU top-k.

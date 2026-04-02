@@ -42,6 +42,19 @@ pub(crate) fn expert_byte_stride(dtype: GgmlType, n_elements: usize) -> usize {
     n_elements.div_ceil(bs) * dtype.bytes_per_block()
 }
 
+fn ensure_matching_moe_dtypes(
+    gate_dtype: GgmlType,
+    up_dtype: GgmlType,
+    down_dtype: GgmlType,
+    role: &str,
+) -> anyhow::Result<GgmlType> {
+    anyhow::ensure!(
+        gate_dtype == up_dtype && gate_dtype == down_dtype,
+        "AX Metal {role} weights must use one quant dtype; got gate={gate_dtype:?}, up={up_dtype:?}, down={down_dtype:?}",
+    );
+    Ok(gate_dtype)
+}
+
 /// Softmax over all experts, then select top-k.
 /// Matches llama.cpp: softmax(all logits) → argsort_top_k → extract weights.
 pub(crate) fn top_k_softmax(logits: &[f32], k: usize) -> (Vec<usize>, Vec<f32>) {
@@ -525,6 +538,7 @@ impl Qwen3MoeForward {
                 weights.raw_with_dtype(&format!("{prefix}.ffn_up_exps.weight"))?;
             let (de_raw, de_dt) =
                 weights.raw_with_dtype(&format!("{prefix}.ffn_down_exps.weight"))?;
+            let expert_dtype = ensure_matching_moe_dtypes(ge_dt, ue_dt, de_dt, "MoE expert")?;
 
             let ge_stride = expert_byte_stride(ge_dt, expert_inter_dim * dim);
             let ue_stride = expert_byte_stride(ue_dt, expert_inter_dim * dim);
@@ -544,22 +558,25 @@ impl Qwen3MoeForward {
             }
 
             // Shared expert
-            let (shared_gate_key, shared_up_key, shared_down_key, shared_dtype) = if weights
-                .has(&format!("{prefix}.ffn_gate_shexp.weight"))
-            {
-                let (sg, sg_dt) =
-                    weights.raw_with_dtype(&format!("{prefix}.ffn_gate_shexp.weight"))?;
-                let (su, _) = weights.raw_with_dtype(&format!("{prefix}.ffn_up_shexp.weight"))?;
-                let (sd, _) = weights.raw_with_dtype(&format!("{prefix}.ffn_down_shexp.weight"))?;
-                (
-                    Some(metal_ops.ensure_quant_cached(sg)),
-                    Some(metal_ops.ensure_quant_cached(su)),
-                    Some(metal_ops.ensure_quant_cached(sd)),
-                    Some(sg_dt),
-                )
-            } else {
-                (None, None, None, None)
-            };
+            let (shared_gate_key, shared_up_key, shared_down_key, shared_dtype) =
+                if weights.has(&format!("{prefix}.ffn_gate_shexp.weight")) {
+                    let (sg, sg_dt) =
+                        weights.raw_with_dtype(&format!("{prefix}.ffn_gate_shexp.weight"))?;
+                    let (su, su_dt) =
+                        weights.raw_with_dtype(&format!("{prefix}.ffn_up_shexp.weight"))?;
+                    let (sd, sd_dt) =
+                        weights.raw_with_dtype(&format!("{prefix}.ffn_down_shexp.weight"))?;
+                    let shared_dtype =
+                        ensure_matching_moe_dtypes(sg_dt, su_dt, sd_dt, "shared expert")?;
+                    (
+                        Some(metal_ops.ensure_quant_cached(sg)),
+                        Some(metal_ops.ensure_quant_cached(su)),
+                        Some(metal_ops.ensure_quant_cached(sd)),
+                        Some(shared_dtype),
+                    )
+                } else {
+                    (None, None, None, None)
+                };
 
             layers.push(CachedLayerKeys {
                 attn_norm: attn_norm_key,
@@ -595,7 +612,7 @@ impl Qwen3MoeForward {
                 moe_expert_gate: Some(expert_gate_keys),
                 moe_expert_up: Some(expert_up_keys),
                 moe_expert_down: Some(expert_down_keys),
-                moe_expert_dtype: Some(ge_dt),
+                moe_expert_dtype: Some(expert_dtype),
                 moe_shared_gate: shared_gate_key,
                 moe_shared_up: shared_up_key,
                 moe_shared_down: shared_down_key,
@@ -1907,6 +1924,23 @@ mod tests {
     use super::*;
 
     // ── top_k_softmax tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_ensure_matching_moe_dtypes_accepts_uniform_quant_family() {
+        assert_eq!(
+            ensure_matching_moe_dtypes(GgmlType::Q4K, GgmlType::Q4K, GgmlType::Q4K, "expert")
+                .unwrap(),
+            GgmlType::Q4K
+        );
+    }
+
+    #[test]
+    fn test_ensure_matching_moe_dtypes_rejects_mixed_quant_families() {
+        let err = ensure_matching_moe_dtypes(GgmlType::Q4K, GgmlType::Q5K, GgmlType::Q4K, "expert")
+            .expect_err("mixed MoE dtypes should be rejected");
+        assert!(err.to_string().contains("gate=Q4K"));
+        assert!(err.to_string().contains("up=Q5K"));
+    }
 
     #[test]
     fn test_top_k_selects_highest_values() {
