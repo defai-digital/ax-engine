@@ -3728,11 +3728,6 @@ impl MetalOps {
                         rows_per_simdgroup: 1,
                         variant: Some(MatvecProfileVariant::Ilp4),
                     },
-                    MatvecParams {
-                        threadgroup_size: 256,
-                        rows_per_simdgroup: 1,
-                        variant: Some(MatvecProfileVariant::Tg256),
-                    },
                 ],
             ),
             GgmlType::Q5K => (

@@ -26,10 +26,6 @@ pub enum MatvecProfileVariant {
     Base,
     Nr2,
     Ilp4,
-    Tg256,
-    Blk2,
-    X2,
-    N4,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -686,8 +682,9 @@ fn family_size_bucket(family: &str, size: f32) -> Option<&'static str> {
             }
         }
         "qwen35" => {
-            // Generative models: 6B+ only
-            if approx_size(size, 7.0) || approx_size(size, 8.0) || approx_size(size, 9.0) {
+            if approx_size(size, 4.0) {
+                Some("4b")
+            } else if approx_size(size, 7.0) || approx_size(size, 8.0) || approx_size(size, 9.0) {
                 Some("9b")
             } else if approx_size(size, 27.0) {
                 Some("27b")
@@ -756,7 +753,7 @@ fn extract_architecture(model_name: &str) -> String {
 
 fn heuristic_decode_splitk_threshold_for_arch(arch: &str) -> u32 {
     match arch {
-        "gemma3-4b" | "gemma3-12b" => 256,
+        "gemma3-4b" | "gemma3-12b" | "qwen35-4b" => 256,
         "default" | "qwen3-14b" | "qwen35-9b" => 512,
         "gemma3-27b" | "llama3-8b" | "llama3-70b" | "qwen3-8b" | "qwen3-32b" | "qwen35-27b" => 1024,
         _ => 512,
@@ -814,8 +811,9 @@ fn heuristic_attention_prefill_fa2_hd128_auto_min_tokens_for_arch(arch: &str) ->
         // Bench sweep 2026-04-01: Llama3 8B keeps BC64 at medium prompts but
         // FA2 wins again at 1024 prompt tokens.
         "llama3-8b" => 1024,
-        // Bench sweep 2026-04-01: Qwen3 4B prefers BC64 at 256, then FA2 from 384+.
-        "qwen3-4b" => 384,
+        // Bench sweep 2026-04-01: small 4B HD128 models prefer BC64 at 256,
+        // then FA2 from 384+.
+        "qwen3-4b" | "qwen35-4b" => 384,
         _ => default_attention_prefill_fa2_hd128_auto_min_tokens(),
     }
 }
@@ -827,14 +825,14 @@ fn heuristic_attention_prefill_ax_bc64_mode_for_arch(_arch: &str) -> ProfileKern
 
 fn heuristic_attention_decode_hd128_n2_default_for_arch(arch: &str) -> Option<bool> {
     match arch {
-        "qwen3-8b" | "qwen35-9b" | "qwen35-27b" => Some(true),
+        "qwen3-8b" | "qwen35-4b" | "qwen35-9b" | "qwen35-27b" => Some(true),
         _ => None,
     }
 }
 
 fn heuristic_attention_prefill_ax_bc64_min_tokens_for_arch(arch: &str) -> u32 {
     match arch {
-        "qwen3-4b" => 256,
+        "qwen3-4b" | "qwen35-4b" => 256,
         "llama3-8b" | "qwen3-8b" | "qwen3-14b" | "qwen35-9b" | "qwen35-27b" => 384,
         _ => default_attention_prefill_ax_bc64_min_tokens(),
     }
@@ -956,7 +954,8 @@ mod tests {
         assert_eq!(extract_architecture("gemma-3-12b-it"), "gemma3-12b");
         assert_eq!(extract_architecture("Meta-Llama-3-8B"), "llama3-8b");
 
-        // Qwen 3.5 — separate hybrid family, distinct from qwen3 (6B+ only)
+        // Qwen 3.5 — separate hybrid family, distinct from qwen3
+        assert_eq!(extract_architecture("Qwen3.5-4B-Instruct"), "qwen35-4b");
         assert_eq!(extract_architecture("Qwen3.5-7B-Instruct"), "qwen35-9b");
         assert_eq!(extract_architecture("Qwen3.5-8B"), "qwen35-9b");
         assert_eq!(extract_architecture("Qwen3.5-27B-Q4_K_M"), "qwen35-27b");
@@ -977,6 +976,7 @@ mod tests {
             ("qwen3-8b", 1024),
             ("qwen3-14b", 512),
             ("qwen3-32b", 1024),
+            ("qwen35-4b", 256),
             ("qwen35-9b", 512),
             ("qwen35-27b", 1024),
         ];
@@ -999,6 +999,7 @@ mod tests {
             ("qwen3-8b", false),
             ("qwen3-14b", false),
             ("qwen3-32b", false),
+            ("qwen35-4b", false),
             ("qwen35-9b", false),
             ("qwen35-27b", false),
         ];
@@ -1025,6 +1026,7 @@ mod tests {
             ("qwen3-8b", ProfileKernelMode::Auto),
             ("qwen3-14b", ProfileKernelMode::Auto),
             ("qwen3-32b", ProfileKernelMode::Auto),
+            ("qwen35-4b", ProfileKernelMode::Auto),
             ("qwen35-9b", ProfileKernelMode::Auto),
             ("qwen35-27b", ProfileKernelMode::Auto),
         ];
@@ -1049,6 +1051,7 @@ mod tests {
             ("qwen3-8b", ProfileKernelMode::Auto),
             ("qwen3-14b", ProfileKernelMode::Auto),
             ("qwen3-32b", ProfileKernelMode::Auto),
+            ("qwen35-4b", ProfileKernelMode::Auto),
             ("qwen35-9b", ProfileKernelMode::Auto),
             ("qwen35-27b", ProfileKernelMode::Auto),
         ];
@@ -1074,6 +1077,7 @@ mod tests {
             ("qwen3-8b", ProfileKernelMode::Auto),
             ("qwen3-14b", ProfileKernelMode::Auto),
             ("qwen3-32b", ProfileKernelMode::Auto),
+            ("qwen35-4b", ProfileKernelMode::Auto),
             ("qwen35-9b", ProfileKernelMode::Auto),
             ("qwen35-27b", ProfileKernelMode::Auto),
         ];
@@ -1097,6 +1101,7 @@ mod tests {
             ("qwen3-8b", Some(true)),
             ("qwen3-14b", None),
             ("qwen3-32b", None),
+            ("qwen35-4b", Some(true)),
             ("qwen35-9b", Some(true)),
             ("qwen35-27b", Some(true)),
         ];
@@ -1121,6 +1126,7 @@ mod tests {
             ("qwen3-8b", 384),
             ("qwen3-14b", 384),
             ("qwen3-32b", 384),
+            ("qwen35-4b", 256),
             ("qwen35-9b", 384),
             ("qwen35-27b", 384),
         ];
@@ -1146,6 +1152,7 @@ mod tests {
             ("qwen3-8b", 128),
             ("qwen3-14b", 128),
             ("qwen3-32b", 128),
+            ("qwen35-4b", 384),
             ("qwen35-9b", 128),
             ("qwen35-27b", 128),
         ];
@@ -1169,6 +1176,7 @@ mod tests {
             ("qwen3-8b", Some(384)),
             ("qwen3-14b", Some(384)),
             ("qwen3-32b", Some(512)),
+            ("qwen35-4b", None),
             ("qwen35-9b", Some(384)),
             ("qwen35-27b", Some(512)),
         ];
@@ -1192,6 +1200,7 @@ mod tests {
             ("qwen3-8b", Some(256)),
             ("qwen3-14b", Some(256)),
             ("qwen3-32b", Some(512)),
+            ("qwen35-4b", None),
             ("qwen35-9b", Some(256)),
             ("qwen35-27b", Some(512)),
         ];
@@ -1783,6 +1792,32 @@ mod tests {
     }
 
     #[test]
+    fn test_qwen35_4b_profile_prefers_ax_bc64_at_256_and_fa2_at_384() {
+        let profile = KernelProfile::load("Qwen3.5-4B-Q8_0", "Q8_0");
+        let config = crate::dispatch::AttentionDispatchConfig::from_profile(&profile);
+
+        let short = config.prefill_local_candidate_selection(256, 128);
+        assert_eq!(
+            short.candidate,
+            crate::dispatch::AttentionPrefillCandidate::AxBc64
+        );
+
+        let medium = config.prefill_local_candidate_selection(384, 128);
+        assert!(matches!(
+            medium.candidate,
+            crate::dispatch::AttentionPrefillCandidate::Fa2SimdHd128
+                | crate::dispatch::AttentionPrefillCandidate::Fa2Hd128
+                | crate::dispatch::AttentionPrefillCandidate::Fa2HalfHd128
+        ));
+    }
+
+    #[test]
+    fn test_qwen35_4b_profile_enables_hd128_n2_decode_default() {
+        let profile = KernelProfile::load("Qwen3.5-4B-Q8_0", "Q8_0");
+        assert_eq!(profile.attention_decode.hd128_n2_default, Some(true));
+    }
+
+    #[test]
     fn test_qwen3_8b_profile_keeps_fa2_prefill_route() {
         let profile = KernelProfile::load("Qwen3-8B-Q4_K_M", "Q4_K_M");
         let config = crate::dispatch::AttentionDispatchConfig::from_profile(&profile);
@@ -1935,6 +1970,7 @@ mod tests {
         let cases = [
             ("Qwen3-8B-Instruct", "qwen3-8b", "qwen3-8b"),
             ("Qwen3-14B-Instruct", "qwen3-14b", "qwen3-14b"),
+            ("Qwen3.5-4B-Instruct", "qwen35-4b", "qwen35-4b"),
             ("Qwen3.5-7B-Instruct", "qwen35-9b", "qwen35-9b"),
             ("Qwen3.5-27B-Instruct", "qwen35-27b", "qwen35-27b"),
             ("gemma-3-4b-it", "gemma3-4b", "gemma3-4b"),

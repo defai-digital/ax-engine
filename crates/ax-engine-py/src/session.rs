@@ -302,6 +302,7 @@ impl TextStream {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generation_options(
     max_tokens: usize,
     temperature: f32,

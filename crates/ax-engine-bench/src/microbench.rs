@@ -1177,8 +1177,6 @@ enum QuantCase {
 enum QuantVariant {
     Auto,
     Nr2,
-    Tg256,
-    Blk2,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1262,8 +1260,6 @@ fn quant_variant_supported(quant: QuantCase, variant: QuantVariant) -> bool {
         (quant, variant),
         (QuantCase::Q4K, QuantVariant::Auto)
             | (QuantCase::Q4K, QuantVariant::Nr2)
-            | (QuantCase::Q4K, QuantVariant::Tg256)
-            | (QuantCase::Q4K, QuantVariant::Blk2)
             | (QuantCase::Q5K, QuantVariant::Auto)
             | (QuantCase::Q6K, QuantVariant::Auto)
             | (QuantCase::Q6K, QuantVariant::Nr2)
@@ -1272,12 +1268,7 @@ fn quant_variant_supported(quant: QuantCase, variant: QuantVariant) -> bool {
 
 fn quant_case_variants(quant: QuantCase) -> &'static [QuantVariant] {
     match quant {
-        QuantCase::Q4K => &[
-            QuantVariant::Auto,
-            QuantVariant::Nr2,
-            QuantVariant::Tg256,
-            QuantVariant::Blk2,
-        ],
+        QuantCase::Q4K => &[QuantVariant::Auto, QuantVariant::Nr2],
         QuantCase::Q5K => &[QuantVariant::Auto],
         QuantCase::Q6K => &[QuantVariant::Auto, QuantVariant::Nr2],
     }
@@ -2667,14 +2658,12 @@ fn quant_variant_candidate(
             (selection.label(), selection.stability.label())
         }
         (QuantCase::Q4K, QuantVariant::Nr2) => ("q4_k.nr2", "profile_preferred"),
-        (QuantCase::Q4K, QuantVariant::Tg256) => ("q4_k.tg256", "profile_preferred"),
-        (QuantCase::Q4K, QuantVariant::Blk2) => ("q4_k.blk2", "experimental"),
         (QuantCase::Q5K, QuantVariant::Auto) => {
             let selection =
                 kernels.q5_k_matvec_candidate_with_config(m, DequantDispatchConfig::default());
             (selection.label(), selection.stability.label())
         }
-        (QuantCase::Q5K, QuantVariant::Nr2 | QuantVariant::Tg256 | QuantVariant::Blk2) => {
+        (QuantCase::Q5K, QuantVariant::Nr2) => {
             unreachable!("unsupported Q5_K microbench variant")
         }
         (QuantCase::Q6K, QuantVariant::Auto) => {
@@ -2683,9 +2672,6 @@ fn quant_variant_candidate(
             (selection.label(), selection.stability.label())
         }
         (QuantCase::Q6K, QuantVariant::Nr2) => ("q6_k.nr2", "profile_preferred"),
-        (QuantCase::Q6K, QuantVariant::Tg256 | QuantVariant::Blk2) => {
-            unreachable!("unsupported Q6_K microbench variant")
-        }
     }
 }
 
@@ -2802,12 +2788,6 @@ fn run_quant_variant(
         (QuantCase::Q4K, QuantVariant::Nr2) => {
             kernels.fused_matvec_q4_k_nr2(gpu, buf_a, buf_x, y, m, k)
         }
-        (QuantCase::Q4K, QuantVariant::Tg256) => {
-            kernels.fused_matvec_q4_k_tg256(gpu, buf_a, buf_x, y, m, k)
-        }
-        (QuantCase::Q4K, QuantVariant::Blk2) => {
-            kernels.fused_matvec_q4_k_blk2(gpu, buf_a, buf_x, y, m, k)
-        }
         (QuantCase::Q6K, QuantVariant::Auto) => kernels.fused_matvec_q6_k_with_config(
             gpu,
             buf_a,
@@ -2820,11 +2800,8 @@ fn run_quant_variant(
         (QuantCase::Q6K, QuantVariant::Nr2) => {
             kernels.fused_matvec_q6_k_nr2(gpu, buf_a, buf_x, y, m, k)
         }
-        (QuantCase::Q5K, QuantVariant::Nr2 | QuantVariant::Tg256 | QuantVariant::Blk2) => {
+        (QuantCase::Q5K, QuantVariant::Nr2) => {
             anyhow::bail!("unsupported Q5_K microbench variant")
-        }
-        (QuantCase::Q6K, QuantVariant::Tg256 | QuantVariant::Blk2) => {
-            anyhow::bail!("unsupported Q6_K microbench variant")
         }
     }
 }
@@ -2899,8 +2876,6 @@ fn quant_variant_name(variant: QuantVariant) -> &'static str {
     match variant {
         QuantVariant::Auto => "auto",
         QuantVariant::Nr2 => "nr2",
-        QuantVariant::Tg256 => "tg256",
-        QuantVariant::Blk2 => "blk2",
     }
 }
 
@@ -3861,12 +3836,17 @@ mod tests {
         };
 
         let profile = report.suggested_kernel_profile();
-        let q4 = profile.decode_matvec.get("q4_k").unwrap();
-        let q6 = profile.decode_matvec.get("q6_k").unwrap();
-        assert_eq!(q4.threadgroup_size, 64);
-        assert_eq!(q4.rows_per_simdgroup, 2);
-        assert_eq!(q6.threadgroup_size, 64);
-        assert_eq!(q6.rows_per_simdgroup, 2);
+        // With suite_runs=1, speedup threshold is 1.08 and required_wins is 2.
+        // q4_k has speedup 1.04 and 1.02 (both below 1.08): no promotion.
+        // q6_k has speedup 1.20 (above 1.08, but only 1 win, needs 2): no promotion.
+        assert!(
+            !profile.decode_matvec.contains_key("q4_k"),
+            "q4_k should not be promoted: speedups below threshold",
+        );
+        assert!(
+            !profile.decode_matvec.contains_key("q6_k"),
+            "q6_k should not be promoted: insufficient wins",
+        );
     }
 
     #[test]
@@ -3934,6 +3914,8 @@ mod tests {
 
     #[test]
     fn test_suggested_kernel_profile_requires_wins_to_scale_with_suite_runs() {
+        // With suite_runs=3, required_wins=3 but only 2 recommendations exist.
+        // Even though both exceed the speedup threshold, promotion should be skipped.
         let report = MicrobenchReport {
             suites: vec![MicrobenchSuiteResult {
                 suite: "gpu".to_string(),
@@ -3969,9 +3951,10 @@ mod tests {
         };
 
         let profile = report.suggested_kernel_profile();
-        let q4 = profile.decode_matvec.get("q4_k").unwrap();
-        assert_eq!(q4.threadgroup_size, 64);
-        assert_eq!(q4.rows_per_simdgroup, 2);
+        assert!(
+            !profile.decode_matvec.contains_key("q4_k"),
+            "q4_k should not be promoted: only 2 wins but required_wins=3 for suite_runs=3",
+        );
     }
 
     #[test]
@@ -5438,19 +5421,9 @@ mod tests {
     fn test_quant_variant_support_matches_current_q5k_and_q6k_contract() {
         assert!(quant_variant_supported(QuantCase::Q5K, QuantVariant::Auto));
         assert!(!quant_variant_supported(QuantCase::Q5K, QuantVariant::Nr2));
-        assert!(!quant_variant_supported(
-            QuantCase::Q5K,
-            QuantVariant::Tg256
-        ));
-        assert!(!quant_variant_supported(QuantCase::Q5K, QuantVariant::Blk2));
 
         assert!(quant_variant_supported(QuantCase::Q6K, QuantVariant::Auto));
         assert!(quant_variant_supported(QuantCase::Q6K, QuantVariant::Nr2));
-        assert!(!quant_variant_supported(
-            QuantCase::Q6K,
-            QuantVariant::Tg256
-        ));
-        assert!(!quant_variant_supported(QuantCase::Q6K, QuantVariant::Blk2));
     }
 
     #[test]

@@ -12,23 +12,9 @@ pub(super) fn encode_dequant_batch(
     k: u32,
     dtype: GgmlType,
     use_f16_io: bool,
-    use_batch_simd: bool,
+    _use_batch_simd: bool,
     use_q5k_small_n: bool,
 ) {
-    if use_batch_simd {
-        match dtype {
-            GgmlType::Q4K => {
-                dequant.encode_batch_simd_q4k(encoder, weight, input, output, m, n, k, m);
-                return;
-            }
-            GgmlType::Q6K => {
-                dequant.encode_batch_simd_q6k(encoder, weight, input, output, m, n, k, m);
-                return;
-            }
-            _ => {}
-        }
-    }
-
     if use_f16_io {
         elementwise.encode_cast_f32_to_f16(encoder, input, input_f16, n * k);
         match dtype {
