@@ -1924,8 +1924,10 @@ impl Qwen35Forward {
                                 &full_attn_params,
                                 gpu_projected,
                             )?;
-                            // Apply residual + MoE FFN.
+                            // Apply residual (CPU, UMA pointer).
                             silu::elementwise_add(hidden, &proj_buf);
+
+                            // MoE FFN via existing CPU+GPU dispatch path.
                             let mut ffn_gate = vec![0.0f32; n_tokens * inter_dim];
                             let mut ffn_up = vec![0.0f32; n_tokens * inter_dim];
                             let mut ffn_down = vec![0.0f32; n_tokens * dim];
