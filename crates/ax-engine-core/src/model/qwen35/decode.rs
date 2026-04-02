@@ -672,9 +672,10 @@ impl Qwen35Forward {
             return Ok(false);
         };
         let cfg = ctx.config;
-        // MoE single-token GPU decode produces incorrect output (expert
-        // routing via mul_mat_id is not validated for n_tokens=1). Fall back
-        // to CPU decode which handles MoE correctly.
+        // MoE single-token decode (both GPU and CPU paths) produces incorrect
+        // output — expert weight tensor layout handling needs investigation.
+        // Disable GPU decode for MoE; CPU path also has the same issue but
+        // at least doesn't crash.
         if Self::qwen35_is_moe(cfg) {
             return Ok(false);
         }

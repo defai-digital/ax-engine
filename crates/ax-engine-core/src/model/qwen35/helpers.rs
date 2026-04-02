@@ -468,7 +468,10 @@ impl Qwen35Forward {
         let gate_name = format!("{prefix}.ffn_gate_exps.weight");
         let up_name = format!("{prefix}.ffn_up_exps.weight");
         let down_name = format!("{prefix}.ffn_down_exps.weight");
-        let expert_inter_dim = Self::tensor_output_rows(weights, &gate_name)?;
+        let expert_inter_dim = cfg
+            .expert_intermediate_dim
+            .map(|d| d as usize)
+            .unwrap_or(Self::tensor_output_rows(weights, &gate_name)?);
         let (gate_raw, gate_dtype) = weights.raw_with_dtype(&gate_name)?;
         let (up_raw, up_dtype) = weights.raw_with_dtype(&up_name)?;
         let (down_raw, down_dtype) = weights.raw_with_dtype(&down_name)?;
