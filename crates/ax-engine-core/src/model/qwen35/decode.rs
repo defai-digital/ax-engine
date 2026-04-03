@@ -672,11 +672,8 @@ impl Qwen35Forward {
             return Ok(false);
         };
         let cfg = ctx.config;
-        // MoE single-token decode not yet validated — disable GPU decode
-        // for MoE to fall back to CPU path.
-        if Self::qwen35_is_moe(cfg) {
-            return Ok(false);
-        }
+        // MoE single-token GPU decode: uses mul_mat_id for expert dispatch
+        // (same as batch prefill) and GPU-resident recurrent buffers.
         let qwen_kv = kv
             .as_qwen35_mut()
             .ok_or_else(|| anyhow::anyhow!("Qwen35Forward requires ModelKv::Qwen35"))?;
