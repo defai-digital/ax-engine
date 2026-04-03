@@ -666,14 +666,21 @@ pub fn resolve_backend_config_from_env() -> BackendConfig {
         return BackendConfig::Cpu;
     }
 
-    if std::env::var("AX_HYBRID_DECODE")
+    match std::env::var("AX_HYBRID_DECODE")
         .ok()
-        .is_some_and(|v| v.trim().eq_ignore_ascii_case("cpu"))
+        .map(|v| v.trim().to_ascii_lowercase())
+        .as_deref()
     {
-        return BackendConfig::HybridCpuDecode;
+        Some("cpu") => return BackendConfig::HybridCpuDecode,
+        Some("metal") | Some("gpu") => return BackendConfig::default(),
+        _ => {}
     }
 
-    BackendConfig::default()
+    // Default: HybridCpuDecode. GPU pipelined decode has a computation
+    // error that affects all architectures (produces garbage output).
+    // GPU batch prefill works correctly. Set AX_HYBRID_DECODE=metal to
+    // force full GPU decode for benchmarking.
+    BackendConfig::HybridCpuDecode
 }
 
 /// Create a boxed backend from configuration.

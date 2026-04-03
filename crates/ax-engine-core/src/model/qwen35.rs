@@ -544,7 +544,11 @@ impl Qwen35Forward {
     }
 
     fn gpu_decode_enabled() -> bool {
-        env_flag_override("AX_QWEN35_GPU_DECODE").unwrap_or(true)
+        // GPU pipelined decode produces incorrect output for Qwen3.5 —
+        // the encode_qwen35_pending_step path has a computation error.
+        // Default to CPU decode (correct output) until the GPU path is fixed.
+        // Set AX_QWEN35_GPU_DECODE=1 to test the GPU path.
+        env_flag_override("AX_QWEN35_GPU_DECODE").unwrap_or(false)
     }
 
     fn gpu_batch_logits_enabled() -> bool {
