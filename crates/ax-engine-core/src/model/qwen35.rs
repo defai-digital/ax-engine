@@ -544,7 +544,7 @@ impl Qwen35Forward {
     }
 
     fn gpu_decode_enabled() -> bool {
-        env_flag_override("AX_QWEN35_GPU_DECODE").unwrap_or(false)
+        env_flag_override("AX_QWEN35_GPU_DECODE").unwrap_or(true)
     }
 
     fn gpu_batch_logits_enabled() -> bool {
