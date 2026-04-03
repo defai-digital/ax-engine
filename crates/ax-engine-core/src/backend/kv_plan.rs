@@ -339,11 +339,9 @@ fn build_qwen35_kv(plan: &Qwen35KvPlan, backend: &dyn Backend) -> Qwen35Kv {
         }
 
         if let Err(err) = kv.enable_gpu_recurrent_state(&metal_ops.device) {
-            tracing::warn!(
-                "Qwen3.5 GPU recurrent state allocation failed, using CPU state with lazy sync: {err}"
-            );
+            eprintln!("[KV] GPU recurrent state allocation FAILED: {err}");
         } else {
-            tracing::info!("Initialized Qwen3.5 GPU-resident recurrent state");
+            eprintln!("[KV] GPU recurrent state initialized OK");
         }
     }
 

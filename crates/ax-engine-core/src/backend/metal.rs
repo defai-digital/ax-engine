@@ -1668,6 +1668,16 @@ impl MetalBackend {
                 if let Some((conv_buf, rec_buf)) =
                     qwen_kv.gpu_recurrent_buffers(slot_idx, layer_idx)
                 {
+                    // Debug: check if recurrent state is non-zero
+                    if layer_idx == 0 && std::env::var("AX_DEBUG_MOE").is_ok() {
+                        let rec_data = unsafe { rec_buf.as_slice::<f32>() };
+                        let rec_sum: f32 = rec_data[..128.min(rec_data.len())].iter().map(|v| v.abs()).sum();
+                        let conv_data = unsafe { conv_buf.as_slice::<f32>() };
+                        let conv_sum: f32 = conv_data[..128.min(conv_data.len())].iter().map(|v| v.abs()).sum();
+                        eprintln!("[DECODE STATE] layer={layer_idx} slot={slot_idx} rec_abs_sum={rec_sum:.4} conv_abs_sum={conv_sum:.4} rec[0..4]={:?} conv[0..4]={:?}",
+                            &rec_data[..4.min(rec_data.len())],
+                            &conv_data[..4.min(conv_data.len())]);
+                    }
                     // Copy input QKV to GPU scratch buffer.
                     unsafe {
                         scratch_buffers.input.as_mut_slice::<f32>()[..cfg.conv_dim]
