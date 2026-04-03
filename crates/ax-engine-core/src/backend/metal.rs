@@ -1662,6 +1662,82 @@ impl MetalBackend {
             let out_end = token_end * value_dim;
 
             if tokens_per_slot == 1 {
+                // If GPU batch prefill left state in Qwen35Kv's GPU-resident
+                // buffers, use those directly instead of the MetalOps slot
+                // buffer cache (which is a separate, stale copy).
+                if let Some((conv_buf, rec_buf)) =
+                    qwen_kv.gpu_recurrent_buffers(slot_idx, layer_idx)
+                {
+                    // Copy input QKV to GPU scratch buffer.
+                    unsafe {
+                        scratch_buffers.input.as_mut_slice::<f32>()[..cfg.conv_dim]
+                            .copy_from_slice(&qkv_batch[qkv_start..qkv_end]);
+                    }
+                    unsafe {
+                        scratch_buffers.gate.as_mut_slice::<f32>()[..cfg.time_step_rank]
+                            .copy_from_slice(&alpha_batch[gate_start..gate_end]);
+                        scratch_buffers.beta.as_mut_slice::<f32>()[..cfg.time_step_rank]
+                            .copy_from_slice(&beta_batch[gate_start..gate_end]);
+                    }
+                    self.device
+                        .execute_sync(|encoder| {
+                            self.gdn_kernels.encode_causal_conv_sequence(
+                                encoder,
+                                &scratch_buffers.input,
+                                buf_kernel,
+                                conv_buf,
+                                &scratch_buffers.conv_out,
+                                tokens_per_slot as u32,
+                                cfg.conv_cache_len as u32,
+                                cfg.conv_dim as u32,
+                            );
+                            self.gdn_kernels.encode_prepare_single_token_qkv(
+                                encoder,
+                                &scratch_buffers.conv_out,
+                                &scratch_buffers.q,
+                                &scratch_buffers.k,
+                                &scratch_buffers.v,
+                                cfg.group_count as u32,
+                                cfg.time_step_rank as u32,
+                                cfg.state_size as u32,
+                                cfg.rms_norm_eps,
+                            );
+                            self.gdn_kernels.encode_gated_delta_sequence(
+                                encoder,
+                                &scratch_buffers.q,
+                                &scratch_buffers.k,
+                                &scratch_buffers.v,
+                                &scratch_buffers.gate,
+                                &scratch_buffers.beta,
+                                rec_buf,
+                                &scratch_buffers.output,
+                                tokens_per_slot as u32,
+                                cfg.time_step_rank as u32,
+                                cfg.state_size as u32,
+                            );
+                            Ok(())
+                        })
+                        .expect("Metal qwen35 GPU-resident recurrent decode failed");
+                    let out_bhsv = unsafe { scratch_buffers.output.as_slice::<f32>() };
+                    output_batch[out_start..out_end].copy_from_slice(&out_bhsv[..value_dim]);
+                    let conv_generation =
+                        qwen_kv.note_backend_conv_state_update(slot_idx, layer_idx);
+                    let backend_generation =
+                        qwen_kv.note_backend_recurrent_state_update(slot_idx, layer_idx);
+                    // Update MetalOps slot buffer cache to match, so subsequent
+                    // decode tokens that may use the slot buffer path stay in sync.
+                    if let Ok(mut slot_cache) = self.ops.qwen35_recurrent_slot_buffers.try_lock() {
+                        let slot_key = Self::qwen35_recurrent_slot_buffer_key(
+                            layer_idx, slot_idx, conv_state_stride, recurrent_state_stride,
+                        );
+                        if let Some(slot_buffers) = slot_cache.get_mut(&slot_key) {
+                            slot_buffers.conv_synced_generation = Some(conv_generation);
+                            slot_buffers.recurrent_synced_generation = Some(backend_generation);
+                        }
+                    }
+                    continue;
+                }
+
                 let mut slot_cache = self.ensure_qwen35_recurrent_slot_buffers(
                     layer_idx,
                     slot_idx,
