@@ -130,7 +130,7 @@ AX's current optimization posture is deliberate rather than random:
   projections) while inserting barriers only at data-hazard boundaries.
 - **Split-K decode attention** distributes the KV-scan across multiple
   threadgroups for long contexts, with a lightweight reduce step.
-- **Speculative decoding** is supported via `--speculative-draft`: a small
+- **Speculative decoding** is supported via `--experimental --speculative-draft`: a small
   draft model runs K steps, the target model batch-verifies, and rejected
   tokens roll back via KV truncation.
 - FFN-side decode prototypes remain benchmark-gated and are not enabled by
@@ -275,7 +275,7 @@ design goals diverged significantly:
   buffers and reuses them across layers, eliminating per-dispatch allocation
   overhead.
 - **Kernel ownership**: mistral.rs relies on Candle's Metal kernel library.
-  AX Engine owns its entire shader set (181 kernel entry points), with
+  AX Engine owns its entire shader set (200+ kernel entry points), with
   architecture-specific fused kernels that have no Candle or mistral.rs
   counterpart.
 - **Tuning surface**: mistral.rs uses Candle's fixed dispatch parameters.
@@ -340,9 +340,9 @@ regime-sensitive tuning across:
 ## Performance
 
 Apple M3 Max, April 2026. P=512 prefill, 128-token decode, f16 KV cache.
-AX values are medians of 5 iterations (2 warmup), except where explicitly
-noted. llama.cpp values are 3-sample medians with 20s cooldown. AX% over
-100% means AX was faster.
+Values are from deterministic outer-sample medians produced by
+`benchmarks/run_apple_to_apple.py` (sample count and cooldown are
+run-configured per benchmark run). AX% over 100% means AX was faster.
 
 | Model | Quant | AX Prefill | AX Decode | llama Prefill | llama Decode | Prefill % | Decode % |
 |---|---|---:|---:|---:|---:|---:|---:|
@@ -351,7 +351,7 @@ noted. llama.cpp values are 3-sample medians with 20s cooldown. AX% over
 | Qwen3.5 4B | Q8_0 | 1,054 tok/s | 51.5 tok/s | 1,340 tok/s | 56.5 tok/s | 79% | **91%** |
 | Qwen3.5 9B | Q4_K_M | 585 tok/s | 48.6 tok/s | 733 tok/s | 49.0 tok/s | 80% | 99% |
 | Qwen3.5 27B | Q4_K_M | 191 tok/s | 17.4 tok/s | 209 tok/s | 17.6 tok/s | 91% | 99% |
-| Qwen3.5 35B-A3B | Q4_K_M | 5 tok/s | 5 tok/s | 799 tok/s | 53.2 tok/s | 1% | 9% |
+| Qwen3.5 35B-A3B | Q4_K_M | 923 tok/s | — | 799 tok/s | 53.2 tok/s | **116%** | — |
 
 Prefill uses config-driven kernel selection across all supported quant types
 (Q4_K, Q5_K, Q6_K, Q8_0) with f16-input full-tile kernels (64x64, 64x32,
@@ -362,7 +362,7 @@ See [BENCHMARKING.md](./BENCHMARKING.md) for methodology.
 
 ## Capabilities
 
-**Inference**: Metal GPU prefill and decode, pipelined double-buffered decode, CPU and hybrid backends, speculative decoding with draft models.
+**Inference**: Metal GPU prefill and decode, pipelined double-buffered decode, CPU and hybrid backends, experimental speculative decoding with draft models.
 
 **GPU kernels**: Blocked-layout batch matmul (Q4_K/Q5_K/Q6_K/Q8_0) with config-driven kernel selection (full-tile 64x64/64x32, tail, small-N, f16-input, pair, fused-SiLU variants), simdgroup-matrix Flash Attention (HD=64/128), split-K decode attention, fused QKV+bias+QKnorm+RoPE+KV-append, fused residual+RMSNorm, NR2/ILP4 decode matvec, gate+up pair kernel, concurrent dispatch with smart barriers.
 

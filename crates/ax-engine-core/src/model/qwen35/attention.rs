@@ -470,26 +470,38 @@ impl Qwen35Forward {
         let gate_exps_name = format!("{prefix}.ffn_gate_exps.weight");
         let up_exps_name = format!("{prefix}.ffn_up_exps.weight");
         let down_exps_name = format!("{prefix}.ffn_down_exps.weight");
-        let expert_inter_dim = Self::tensor_output_rows(weights, &gate_exps_name)?;
+        // CPU dequant_matmul does NOT transpose — it reads [M, K] row-major.
+        // GGUF expert weights [ne0, ne1, n_expert] store ne0 innermost.
+        // For gate_exps [2048, 512, 256]: data is 512 rows of 2048 elements.
+        // M = expert_intermediate_dim (512), K = dim (2048).
+        // tensor_output_rows returns ne0=2048 which is K, not M.
+        let ne0 = Self::tensor_output_rows(weights, &gate_exps_name)?;
+        let expert_inter_dim = cfg
+            .expert_intermediate_dim
+            .map(|d| d as usize)
+            .unwrap_or(ne0);
+        // Stride between experts in bytes: elements per expert = ne0 * ne1.
+        // For [2048, 512, 256]: per-expert = 2048 * 512 = ne0 * expert_inter_dim.
+        let elements_per_expert = ne0 * (if ne0 == expert_inter_dim { dim } else { expert_inter_dim });
         let (gate_exps_raw, gate_exps_dtype) = weights.raw_with_dtype(&gate_exps_name)?;
         let (up_exps_raw, up_exps_dtype) = weights.raw_with_dtype(&up_exps_name)?;
         let (down_exps_raw, down_exps_dtype) = weights.raw_with_dtype(&down_exps_name)?;
         let gate_stride =
-            crate::model::moe_utils::expert_byte_stride(gate_exps_dtype, expert_inter_dim * dim);
+            crate::model::moe_utils::expert_byte_stride(gate_exps_dtype, elements_per_expert);
         let up_stride =
-            crate::model::moe_utils::expert_byte_stride(up_exps_dtype, expert_inter_dim * dim);
+            crate::model::moe_utils::expert_byte_stride(up_exps_dtype, elements_per_expert);
         let down_stride =
-            crate::model::moe_utils::expert_byte_stride(down_exps_dtype, dim * expert_inter_dim);
+            crate::model::moe_utils::expert_byte_stride(down_exps_dtype, elements_per_expert);
 
         let shared_gate_name = format!("{prefix}.ffn_gate_shexp.weight");
         let shared_up_name = format!("{prefix}.ffn_up_shexp.weight");
         let shared_down_name = format!("{prefix}.ffn_down_shexp.weight");
         let shared_gate_inp_name = format!("{prefix}.ffn_gate_inp_shexp.weight");
-        let shared_inter_dim = if weights.has(&shared_gate_name) {
-            Self::tensor_output_rows(weights, &shared_gate_name)?
-        } else {
-            shared_inter_dim_hint
-        };
+        // Shared expert: same ne0 convention as routed experts.
+        let shared_inter_dim = cfg
+            .expert_intermediate_dim
+            .map(|d| d as usize)
+            .unwrap_or(shared_inter_dim_hint);
         let max_inter_dim = expert_inter_dim.max(shared_inter_dim.max(1));
         let mut gate_buf = vec![0.0f32; max_inter_dim];
         let mut up_buf = vec![0.0f32; max_inter_dim];
