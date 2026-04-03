@@ -96,7 +96,7 @@ pub fn render_chat_messages(
     match architecture {
         "gemma3" | "gemma2" | "gemma" => render_gemma(messages, options),
         "llama" => render_llama(messages, options),
-        "qwen3" | "qwen2" => render_qwen(messages, options),
+        "qwen35" | "qwen35moe" | "qwen3" | "qwen2" => render_qwen(messages, options),
         _ => render_fallback(messages, options),
     }
 }
@@ -230,6 +230,19 @@ mod tests {
         let rendered = render_chat_messages(
             &[ChatMessage::system("Be terse"), ChatMessage::user("Hi")],
             "qwen3",
+            ChatRenderOptions::default(),
+        );
+        assert_eq!(
+            rendered,
+            "<|im_start|>system\nBe terse<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n"
+        );
+    }
+
+    #[test]
+    fn test_render_chat_messages_qwen35_matches_qwen_generation_prefix() {
+        let rendered = render_chat_messages(
+            &[ChatMessage::system("Be terse"), ChatMessage::user("Hi")],
+            "qwen35moe",
             ChatRenderOptions::default(),
         );
         assert_eq!(

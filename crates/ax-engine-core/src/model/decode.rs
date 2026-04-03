@@ -696,11 +696,11 @@ mod tests {
         let kv = model.create_model_kv();
         assert!(matches!(kv, ModelKv::Qwen35(_)));
 
+        // AX_QWEN35_GPU_DECODE defaults to false, so pipelined decode is
+        // unavailable and the selection falls back to SingleCb.
         let selection = select_decode_mode(&model, &kv, DecodeIntent::Throughput, true);
-        assert_eq!(selection.mode, DecodeMode::Pipelined);
-        assert!(selection.fallback_reason.is_none());
-        let summary = model.decode_plan_summary(&kv, DecodeIntent::Throughput, true);
-        assert!(summary.starts_with("sync=pipelined scratch=hybrid_backend"));
+        assert_eq!(selection.mode, DecodeMode::SingleCb);
+        assert!(selection.fallback_reason.is_some());
     }
 
     #[test]

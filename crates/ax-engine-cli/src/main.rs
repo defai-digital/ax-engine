@@ -21,10 +21,6 @@ use ax_engine_core::model::{
 use ax_engine_core::sampling::{LogitBias, SampledTokenInfo, Sampler, SamplingConfig};
 use ax_engine_core::speculative::{SpecStep, SpeculativeDecoder, target_verify_mode_label};
 use ax_engine_core::tokenizer::Tokenizer;
-use ax_engine_sdk::{
-    GenerationOptions as SdkGenerationOptions, InferenceBackendKind, LoadOptions as SdkLoadOptions,
-    Model as SdkModel, RoutingPreview, SessionOptions as SdkSessionOptions, preview_routing,
-};
 
 mod args;
 mod interactive;
@@ -129,19 +125,6 @@ fn main() -> anyhow::Result<()> {
     }
 
     tracing::info!("AX Engine v{}", env!("CARGO_PKG_VERSION"));
-
-    let routing = preview_routing(&args.model)?;
-    print_routing_summary(&routing);
-
-    if routing.backend == InferenceBackendKind::LlamaCpp {
-        validate_routed_cli_args(&args)?;
-        if args.interactive {
-            interactive::run_routed(&args)?;
-        } else {
-            run_single_routed(&args)?;
-        }
-        return Ok(());
-    }
 
     // Bootstrap Metal before any scheduler/model-loading side effects so
     // device availability is probed in a clean process state.
@@ -440,150 +423,6 @@ pub(crate) fn print_top_logprobs(
         .collect::<Vec<_>>();
     eprintln!("--- Top Logprobs ---");
     eprintln!("{}", serde_json::to_string_pretty(&out)?);
-    Ok(())
-}
-
-fn print_routing_summary(routing: &RoutingPreview) {
-    let mut summary = format!(
-        "Routing: {} | arch={} | source={}",
-        routing.backend.as_str(),
-        routing.architecture,
-        routing.source
-    );
-    if let Some(reason) = routing.reason.as_deref() {
-        summary.push_str(" | reason=");
-        summary.push_str(reason);
-    }
-    eprintln!("{summary}");
-}
-
-pub(crate) fn validate_routed_cli_args(args: &args::CliArgs) -> anyhow::Result<()> {
-    if args.reuse_bench || args.reuse_bench_json {
-        anyhow::bail!(
-            "--reuse-bench and --reuse-bench-json are not supported with llama.cpp routing"
-        );
-    }
-    if args.speculative_draft.is_some() {
-        anyhow::bail!("--speculative-draft is not supported with llama.cpp routing");
-    }
-    if args.top_logprobs > 0 {
-        anyhow::bail!("--top-logprobs is not supported with llama.cpp routing");
-    }
-    if !args.allow_token_id.is_empty() {
-        anyhow::bail!("--allow-token-id is not supported with llama.cpp routing");
-    }
-    if !args.ban_token_id.is_empty() {
-        anyhow::bail!("--ban-token-id is not supported with llama.cpp routing");
-    }
-    if !args.logit_bias.is_empty() {
-        anyhow::bail!("--logit-bias is not supported with llama.cpp routing");
-    }
-    if !args.stop_token_id.is_empty() {
-        anyhow::bail!("--stop-token-id is not supported with llama.cpp routing");
-    }
-    if args.min_keep != 1 {
-        anyhow::bail!("--min-keep is not supported with llama.cpp routing");
-    }
-    Ok(())
-}
-
-pub(crate) fn seed_or_none(seed: i64) -> Option<u64> {
-    if seed < 0 { None } else { Some(seed as u64) }
-}
-
-pub(crate) fn sdk_generation_options(
-    args: &args::CliArgs,
-    max_tokens: usize,
-) -> SdkGenerationOptions {
-    SdkGenerationOptions {
-        max_tokens,
-        temperature: args.temperature,
-        top_k: args.top_k,
-        top_p: args.top_p,
-        min_p: args.min_p,
-        repeat_penalty: args.repeat_penalty,
-        repeat_last_n: args.repeat_last_n,
-        frequency_penalty: args.frequency_penalty,
-        presence_penalty: args.presence_penalty,
-        stop_strings: args.stop.clone(),
-        seed: seed_or_none(args.seed),
-    }
-}
-
-fn run_single_routed(args: &args::CliArgs) -> anyhow::Result<()> {
-    let prompt = args.prompt.as_deref().unwrap_or("");
-    if prompt.is_empty() {
-        anyhow::bail!("No prompt provided. Use -p/--prompt or --interactive mode.");
-    }
-
-    let model = SdkModel::load(
-        &args.model,
-        SdkLoadOptions {
-            context_length: (args.ctx_size > 0).then_some(args.ctx_size),
-            ..SdkLoadOptions::default()
-        },
-    )?;
-    let session = model.session(SdkSessionOptions {
-        context_length: (args.ctx_size > 0).then_some(args.ctx_size as usize),
-        seed: seed_or_none(args.seed),
-    })?;
-
-    let effective_prompt = if args.chat {
-        render_user_prompt(prompt, model.architecture())
-    } else {
-        prompt.to_string()
-    };
-
-    let prompt_tokens = model.tokenize(&effective_prompt, true);
-    let remaining_decode_capacity =
-        remaining_decode_capacity_for_prompt(prompt_tokens.len(), session.context_length())?;
-    let max_tokens = resolved_max_tokens(args.n_predict, remaining_decode_capacity);
-    if max_tokens == 0 {
-        if args.chat {
-            print!("{prompt}\n\n");
-        } else {
-            print!("{effective_prompt}");
-        }
-        std::io::stdout().flush()?;
-        println!();
-        if args.n_predict == 0 {
-            eprintln!("No completion generated because --n-predict is 0.");
-        } else {
-            eprintln!(
-                "Warning: prompt ({} tokens) fills the context window ({} tokens). No room to generate.",
-                prompt_tokens.len(),
-                session.context_length(),
-            );
-        }
-        return Ok(());
-    };
-
-    if args.chat {
-        print!("{prompt}\n\n");
-    } else {
-        print!("{effective_prompt}");
-    }
-    std::io::stdout().flush()?;
-
-    let mut stream = session.stream(&effective_prompt, sdk_generation_options(args, max_tokens))?;
-    while let Some(chunk) = stream.next_chunk()? {
-        print!("{chunk}");
-        std::io::stdout().flush()?;
-    }
-    let output = stream.into_output()?;
-    println!();
-
-    if args.verbose {
-        eprintln!();
-        eprintln!("--- Routed Metrics ---");
-        eprintln!("Backend: llama.cpp");
-        eprintln!("Finish:  {:?}", output.finish_reason);
-        eprintln!(
-            "Tokens:  prompt {} | completion {} | total {}",
-            output.usage.prompt_tokens, output.usage.completion_tokens, output.usage.total_tokens,
-        );
-    }
-
     Ok(())
 }
 

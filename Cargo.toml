@@ -4,9 +4,7 @@ members = [
     "crates/ax-engine-core",
     "crates/ax-engine-metal",
     "crates/ax-engine-cli",
-    "crates/ax-engine-server",
     "crates/ax-engine-sdk",
-    "crates/ax-engine-shim",
     "crates/ax-engine-bench",
     "crates/ax-engine-py",
 ]
@@ -24,7 +22,6 @@ repository = "https://github.com/defai-digital/ax-engine"
 ax-engine-core = { path = "crates/ax-engine-core" }
 ax-engine-sdk = { path = "crates/ax-engine-sdk" }
 ax-engine-metal = { path = "crates/ax-engine-metal" }
-ax-engine-shim = { path = "crates/ax-engine-shim" }
 ax-engine-bench = { path = "crates/ax-engine-bench" }
 
 # Memory & I/O
@@ -43,9 +40,6 @@ block2 = "0.6"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
-axum = { version = "0.8", features = ["json", "macros"] }
-tokio = { version = "1", features = ["macros", "rt", "signal", "net", "sync"] }
-tokio-stream = "0.1"
 
 # Observability
 tracing = "0.1"
@@ -60,8 +54,6 @@ rstest = "0.24"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-
 # Error handling
 anyhow = "1"
 thiserror = "2"

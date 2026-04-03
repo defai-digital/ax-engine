@@ -544,11 +544,19 @@ impl Qwen35Forward {
     }
 
     fn gpu_decode_enabled() -> bool {
-        env_flag_override("AX_QWEN35_GPU_DECODE").unwrap_or(true)
+        env_flag_override("AX_QWEN35_GPU_DECODE").unwrap_or(false)
     }
 
     fn gpu_batch_logits_enabled() -> bool {
         env_flag_override("AX_QWEN35_GPU_BATCH_LOGITS").unwrap_or(true)
+    }
+
+    fn gpu_batch_prefill_enabled() -> bool {
+        env_flag_override("AX_QWEN35_GPU_BATCH_PREFILL").unwrap_or(false)
+    }
+
+    fn unified_prefill_enabled() -> bool {
+        env_flag_override("AX_QWEN35_UNIFIED_PREFILL").unwrap_or(true)
     }
 
     fn recurrent_dims(cfg: &ModelConfig) -> anyhow::Result<Qwen35RecurrentDims> {

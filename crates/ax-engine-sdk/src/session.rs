@@ -1,7 +1,5 @@
 use std::str::FromStr;
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread;
 
 use anyhow::{Context, anyhow, ensure};
 use ax_engine_core::chat::{
@@ -12,22 +10,11 @@ use ax_engine_core::kv::ModelKv;
 use ax_engine_core::model::WeightStore;
 use ax_engine_core::sampling::{Sampler, SamplingConfig};
 
-use crate::llama_cpp_process::RemoteGenerationOutput;
 use crate::model::Model;
 
-struct NativeSessionState {
+struct SessionState {
     kv: ModelKv,
     history: Vec<u32>,
-}
-
-struct LlamaCppSessionState {
-    prompt_prefix: String,
-    history: Vec<u32>,
-}
-
-enum SessionState {
-    Native(NativeSessionState),
-    LlamaCpp(LlamaCppSessionState),
 }
 
 pub struct Session {
@@ -38,14 +25,9 @@ pub struct Session {
 }
 
 pub struct TextStream {
-    state: Option<TextStreamState>,
+    state: Option<LiveTextStreamState>,
     text: String,
     output: Option<GenerationOutput>,
-}
-
-enum TextStreamState {
-    Native(Box<LiveTextStreamState>),
-    LlamaCpp(RemoteTextStreamState),
 }
 
 struct LiveTextStreamState {
@@ -62,33 +44,6 @@ struct LiveTextStreamState {
     done: bool,
     prompt_tokens: usize,
     completion_tokens: usize,
-}
-
-struct RemoteTextStreamState {
-    receiver: mpsc::Receiver<RemoteStreamEvent>,
-    done: bool,
-    finalize: RemoteFinalize,
-}
-
-enum RemoteStreamEvent {
-    Chunk(String),
-    Finished(RemoteGenerationOutput),
-    Failed(String),
-}
-
-enum RemoteFinalize {
-    Completion {
-        model: Model,
-        session_state: Arc<Mutex<SessionState>>,
-        prompt_text: String,
-        prompt_tokens: Vec<u32>,
-    },
-    Chat {
-        model: Model,
-        session_state: Arc<Mutex<SessionState>>,
-        transcript: String,
-        prompt_tokens_len: usize,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,18 +164,12 @@ impl Default for GenerationOptions {
 
 impl Session {
     pub(crate) fn new(model: Model, options: SessionOptions) -> anyhow::Result<Self> {
-        let state = if let Some(native) = model.native_loaded() {
-            let weights = WeightStore::new(&native.mapped);
-            let kv = native.model.create_model_kv_for_weights(&weights);
-            SessionState::Native(NativeSessionState {
-                kv,
-                history: Vec::new(),
-            })
-        } else {
-            SessionState::LlamaCpp(LlamaCppSessionState {
-                prompt_prefix: String::new(),
-                history: Vec::new(),
-            })
+        let native = model.native();
+        let weights = WeightStore::new(&native.mapped);
+        let kv = native.model.create_model_kv_for_weights(&weights);
+        let state = SessionState {
+            kv,
+            history: Vec::new(),
         };
 
         let max_context_tokens = options
@@ -248,24 +197,13 @@ impl Session {
     }
 
     pub fn position(&self) -> anyhow::Result<usize> {
-        Ok(match &*self.lock_state()? {
-            SessionState::Native(state) => state.history.len(),
-            SessionState::LlamaCpp(state) => state.history.len(),
-        })
+        Ok(self.lock_state()?.history.len())
     }
 
     pub fn reset(&self) -> anyhow::Result<()> {
         let mut state = self.lock_state()?;
-        match &mut *state {
-            SessionState::Native(state) => {
-                state.kv.clear();
-                state.history.clear();
-            }
-            SessionState::LlamaCpp(state) => {
-                state.prompt_prefix.clear();
-                state.history.clear();
-            }
-        }
+        state.kv.clear();
+        state.history.clear();
         Ok(())
     }
 
@@ -278,12 +216,8 @@ impl Session {
     }
 
     pub fn stream(&self, prompt: &str, options: GenerationOptions) -> anyhow::Result<TextStream> {
-        if self.model.native_loaded().is_some() {
-            let add_bos = self.position()? == 0;
-            self.start_native_stream_with_options(prompt, add_bos, options)
-        } else {
-            self.start_llama_cpp_completion_stream(prompt, options)
-        }
+        let add_bos = self.position()? == 0;
+        self.start_stream(prompt, add_bos, options)
     }
 
     pub fn chat(
@@ -299,37 +233,27 @@ impl Session {
         messages: &[ChatMessage],
         options: GenerationOptions,
     ) -> anyhow::Result<TextStream> {
-        if self.model.native_loaded().is_some() {
-            let rendered_messages = messages
-                .iter()
-                .map(|message| {
-                    CoreChatMessage::new(message.role.into_core(), message.content.as_str())
-                })
-                .collect::<Vec<_>>();
-            let rendered = render_chat_messages(
-                &rendered_messages,
-                self.model.architecture(),
-                ChatRenderOptions::default(),
-            );
-            self.reset()?;
-            self.start_native_stream_with_options(&rendered, true, options)
-        } else {
-            self.reset()?;
-            self.start_llama_cpp_chat_stream(messages, options)
-        }
+        let rendered_messages = messages
+            .iter()
+            .map(|message| CoreChatMessage::new(message.role.into_core(), message.content.as_str()))
+            .collect::<Vec<_>>();
+        let rendered = render_chat_messages(
+            &rendered_messages,
+            self.model.architecture(),
+            ChatRenderOptions::default(),
+        );
+        self.reset()?;
+        self.start_stream(&rendered, true, options)
     }
 
-    fn start_native_stream_with_options(
+    fn start_stream(
         &self,
         prompt: &str,
         add_bos: bool,
         options: GenerationOptions,
     ) -> anyhow::Result<TextStream> {
         validate_generation_options(&options)?;
-        let native = self
-            .model
-            .native_loaded()
-            .ok_or_else(|| anyhow!("native model is not loaded"))?;
+        let native = self.model.native();
 
         let weights = WeightStore::new(&native.mapped);
         let prompt_tokens = self.model.tokenize(prompt, add_bos);
@@ -339,19 +263,16 @@ impl Session {
         );
 
         let mut state_guard = self.lock_state()?;
-        let SessionState::Native(state) = &mut *state_guard else {
-            return Err(anyhow!("expected native session state"));
-        };
-        let position = state.history.len();
+        let position = state_guard.history.len();
         let remaining_decode_capacity =
             remaining_decode_capacity(prompt_tokens.len(), position, self.max_context_tokens)?;
 
         let mut logits = vec![0.0f32; self.model.config().vocab_size as usize];
         native
             .model
-            .forward_batch(&prompt_tokens, &mut state.kv, &weights, &mut logits)
+            .forward_batch(&prompt_tokens, &mut state_guard.kv, &weights, &mut logits)
             .context("prefill forward pass failed")?;
-        state.history.extend_from_slice(&prompt_tokens);
+        state_guard.history.extend_from_slice(&prompt_tokens);
 
         let decode_position = position + prompt_tokens.len();
         let max_tokens = options.max_tokens.min(remaining_decode_capacity);
@@ -375,7 +296,7 @@ impl Session {
             }
         } else {
             let mut sampler = Sampler::new(sampling);
-            let first_token = sampler.sample(&mut logits, &state.history);
+            let first_token = sampler.sample(&mut logits, &state_guard.history);
             LiveTextStreamState {
                 model: self.model.clone(),
                 session_state: self.state.clone(),
@@ -395,159 +316,7 @@ impl Session {
         drop(state_guard);
 
         Ok(TextStream {
-            state: Some(TextStreamState::Native(Box::new(live_state))),
-            text: String::new(),
-            output: None,
-        })
-    }
-
-    fn start_llama_cpp_completion_stream(
-        &self,
-        prompt: &str,
-        mut options: GenerationOptions,
-    ) -> anyhow::Result<TextStream> {
-        validate_generation_options(&options)?;
-        let remote = self
-            .model
-            .llama_cpp_loaded()
-            .ok_or_else(|| anyhow!("llama.cpp model is not loaded"))?;
-
-        let add_bos = self.position()? == 0;
-        let prompt_tokens = self.model.tokenize(prompt, add_bos);
-        ensure!(
-            !prompt_tokens.is_empty(),
-            "prompt produced no tokens; provide a non-empty prompt"
-        );
-
-        let mut state_guard = self.lock_state()?;
-        let SessionState::LlamaCpp(state) = &mut *state_guard else {
-            return Err(anyhow!("expected llama.cpp session state"));
-        };
-        let full_prompt = format!("{}{}", state.prompt_prefix, prompt);
-        let remaining_decode_capacity = remaining_decode_capacity(
-            prompt_tokens.len(),
-            state.history.len(),
-            self.max_context_tokens,
-        )?;
-        let max_tokens = options.max_tokens.min(remaining_decode_capacity);
-        drop(state_guard);
-
-        if max_tokens == 0 {
-            return Ok(completed_stream(GenerationOutput {
-                text: String::new(),
-                finish_reason: FinishReason::Length,
-                usage: Usage {
-                    prompt_tokens: prompt_tokens.len(),
-                    completion_tokens: 0,
-                    total_tokens: prompt_tokens.len(),
-                },
-            }));
-        }
-        options.max_tokens = max_tokens;
-        options.stop_strings = filtered_stop_strings(options.stop_strings);
-
-        let (tx, rx) = mpsc::channel();
-        let prompt_text = prompt.to_string();
-        let prompt_tokens_for_state = prompt_tokens.clone();
-        let process = remote.process.clone();
-
-        thread::spawn(move || {
-            let stream_result = process.stream_completion(&full_prompt, &options, |chunk| {
-                tx.send(RemoteStreamEvent::Chunk(chunk.to_string()))
-                    .map_err(|_| anyhow!("stream receiver dropped"))?;
-                Ok(())
-            });
-
-            match stream_result {
-                Ok(output) => {
-                    let _ = tx.send(RemoteStreamEvent::Finished(output));
-                }
-                Err(err) => {
-                    let _ = tx.send(RemoteStreamEvent::Failed(err.to_string()));
-                }
-            }
-        });
-
-        Ok(TextStream {
-            state: Some(TextStreamState::LlamaCpp(RemoteTextStreamState {
-                receiver: rx,
-                done: false,
-                finalize: RemoteFinalize::Completion {
-                    model: self.model.clone(),
-                    session_state: self.state.clone(),
-                    prompt_text,
-                    prompt_tokens: prompt_tokens_for_state,
-                },
-            })),
-            text: String::new(),
-            output: None,
-        })
-    }
-
-    fn start_llama_cpp_chat_stream(
-        &self,
-        messages: &[ChatMessage],
-        mut options: GenerationOptions,
-    ) -> anyhow::Result<TextStream> {
-        validate_generation_options(&options)?;
-        ensure!(!messages.is_empty(), "messages must not be empty");
-
-        let remote = self
-            .model
-            .llama_cpp_loaded()
-            .ok_or_else(|| anyhow!("llama.cpp model is not loaded"))?;
-        let transcript = flatten_chat_messages(messages);
-        let prompt_tokens = self.model.tokenize(&transcript, true);
-        let remaining = remaining_decode_capacity(prompt_tokens.len(), 0, self.max_context_tokens)?;
-        let max_tokens = options.max_tokens.min(remaining);
-        if max_tokens == 0 {
-            return Ok(completed_stream(GenerationOutput {
-                text: String::new(),
-                finish_reason: FinishReason::Length,
-                usage: Usage {
-                    prompt_tokens: prompt_tokens.len(),
-                    completion_tokens: 0,
-                    total_tokens: prompt_tokens.len(),
-                },
-            }));
-        }
-        options.max_tokens = max_tokens;
-        options.stop_strings = filtered_stop_strings(options.stop_strings);
-
-        let (tx, rx) = mpsc::channel();
-        let messages_owned = messages.to_vec();
-        let transcript_owned = transcript.clone();
-        let prompt_tokens_len = prompt_tokens.len();
-        let process = remote.process.clone();
-
-        thread::spawn(move || {
-            let stream_result = process.stream_chat(&messages_owned, &options, |chunk| {
-                tx.send(RemoteStreamEvent::Chunk(chunk.to_string()))
-                    .map_err(|_| anyhow!("stream receiver dropped"))?;
-                Ok(())
-            });
-
-            match stream_result {
-                Ok(output) => {
-                    let _ = tx.send(RemoteStreamEvent::Finished(output));
-                }
-                Err(err) => {
-                    let _ = tx.send(RemoteStreamEvent::Failed(err.to_string()));
-                }
-            }
-        });
-
-        Ok(TextStream {
-            state: Some(TextStreamState::LlamaCpp(RemoteTextStreamState {
-                receiver: rx,
-                done: false,
-                finalize: RemoteFinalize::Chat {
-                    model: self.model.clone(),
-                    session_state: self.state.clone(),
-                    transcript: transcript_owned,
-                    prompt_tokens_len,
-                },
-            })),
+            state: Some(live_state),
             text: String::new(),
             output: None,
         })
@@ -566,45 +335,18 @@ impl TextStream {
             return Ok(None);
         };
 
-        match state {
-            TextStreamState::Native(state) => {
-                let next = state.next_chunk()?;
-                if let Some(chunk) = next.as_ref() {
-                    self.text.push_str(chunk);
-                } else if let Some(TextStreamState::Native(state)) = self.state.take() {
-                    self.output = Some(state.into_output(std::mem::take(&mut self.text)));
-                }
-                Ok(next)
-            }
-            TextStreamState::LlamaCpp(state) => match state.next_event()? {
-                Some(RemoteStreamEvent::Chunk(chunk)) => {
-                    self.text.push_str(&chunk);
-                    Ok(Some(chunk))
-                }
-                Some(RemoteStreamEvent::Finished(output)) => {
-                    let output = state.finish(output)?;
-                    self.state.take();
-                    self.output = Some(output);
-                    Ok(None)
-                }
-                Some(RemoteStreamEvent::Failed(message)) => {
-                    self.state.take();
-                    Err(anyhow!(message))
-                }
-                None => {
-                    self.state.take();
-                    Ok(None)
-                }
-            },
+        let next = state.next_chunk()?;
+        if let Some(chunk) = next.as_ref() {
+            self.text.push_str(chunk);
+        } else if let Some(state) = self.state.take() {
+            self.output = Some(state.into_output(std::mem::take(&mut self.text)));
         }
+        Ok(next)
     }
 
     pub fn is_done(&self) -> bool {
         self.output.is_some()
-            || self.state.as_ref().is_none_or(|state| match state {
-                TextStreamState::Native(state) => state.done,
-                TextStreamState::LlamaCpp(state) => state.done,
-            })
+            || self.state.as_ref().is_none_or(|state| state.done)
     }
 
     pub fn output(&self) -> Option<&GenerationOutput> {
@@ -617,8 +359,6 @@ impl TextStream {
             return Ok(output);
         }
 
-        // Fallback: preserve any partial text accumulated from chunks before
-        // the stream terminated unexpectedly (e.g., remote process crash).
         Ok(GenerationOutput {
             text: std::mem::take(&mut self.text),
             finish_reason: FinishReason::Stop,
@@ -697,9 +437,6 @@ impl LiveTextStreamState {
                     .session_state
                     .lock()
                     .map_err(|_| anyhow!("session state lock poisoned"))?;
-                let SessionState::Native(state) = &mut *state else {
-                    return Err(anyhow!("expected native session state"));
-                };
                 state.history.push(token);
                 self.completion_tokens += 1;
                 self.remaining_tokens = self.remaining_tokens.saturating_sub(1);
@@ -709,10 +446,7 @@ impl LiveTextStreamState {
                     self.done = true;
                     self.next_token = None;
                 } else {
-                    let native = self
-                        .model
-                        .native_loaded()
-                        .ok_or_else(|| anyhow!("native model is not loaded"))?;
+                    let native = self.model.native();
                     let weights = WeightStore::new(&native.mapped);
                     self.logits.fill(0.0);
                     native
@@ -749,99 +483,6 @@ impl LiveTextStreamState {
             finish_reason: self.finish_reason,
             usage,
         }
-    }
-}
-
-impl RemoteTextStreamState {
-    fn next_event(&mut self) -> anyhow::Result<Option<RemoteStreamEvent>> {
-        if self.done {
-            return Ok(None);
-        }
-
-        match self.receiver.recv() {
-            Ok(event @ RemoteStreamEvent::Chunk(_)) => Ok(Some(event)),
-            Ok(event @ RemoteStreamEvent::Finished(_)) => {
-                self.done = true;
-                Ok(Some(event))
-            }
-            Ok(event @ RemoteStreamEvent::Failed(_)) => {
-                self.done = true;
-                Ok(Some(event))
-            }
-            Err(_) => {
-                self.done = true;
-                Ok(None)
-            }
-        }
-    }
-
-    fn finish(&mut self, output: RemoteGenerationOutput) -> anyhow::Result<GenerationOutput> {
-        match &self.finalize {
-            RemoteFinalize::Completion {
-                model,
-                session_state,
-                prompt_text,
-                prompt_tokens,
-            } => {
-                let completion_tokens = model.tokenize(&output.text, false);
-                let mut state = session_state
-                    .lock()
-                    .map_err(|_| anyhow!("session state lock poisoned"))?;
-                let SessionState::LlamaCpp(state) = &mut *state else {
-                    return Err(anyhow!("expected llama.cpp session state"));
-                };
-                state.prompt_prefix.push_str(prompt_text);
-                state.prompt_prefix.push_str(&output.text);
-                state.history.extend_from_slice(prompt_tokens);
-                state.history.extend_from_slice(&completion_tokens);
-
-                Ok(GenerationOutput {
-                    text: output.text,
-                    finish_reason: output.finish_reason,
-                    usage: Usage {
-                        prompt_tokens: prompt_tokens.len(),
-                        completion_tokens: completion_tokens.len(),
-                        total_tokens: prompt_tokens.len() + completion_tokens.len(),
-                    },
-                })
-            }
-            RemoteFinalize::Chat {
-                model,
-                session_state,
-                transcript,
-                prompt_tokens_len,
-            } => {
-                let history_text = format!("{transcript}{}", output.text);
-                let history_tokens = model.tokenize(&history_text, true);
-                let completion_tokens = model.tokenize(&output.text, false);
-                let mut state = session_state
-                    .lock()
-                    .map_err(|_| anyhow!("session state lock poisoned"))?;
-                let SessionState::LlamaCpp(state) = &mut *state else {
-                    return Err(anyhow!("expected llama.cpp session state"));
-                };
-                state.prompt_prefix = history_text;
-                state.history = history_tokens;
-
-                Ok(GenerationOutput {
-                    text: output.text,
-                    finish_reason: output.finish_reason,
-                    usage: Usage {
-                        prompt_tokens: *prompt_tokens_len,
-                        completion_tokens: completion_tokens.len(),
-                        total_tokens: *prompt_tokens_len + completion_tokens.len(),
-                    },
-                })
-            }
-        }
-    }
-}
-
-fn completed_stream(output: GenerationOutput) -> TextStream {
-    TextStream {
-        state: None,
-        text: output.text.clone(),
-        output: Some(output),
     }
 }
 
@@ -923,22 +564,6 @@ fn render_token_text(model: &Model, token: u32) -> String {
         .tokenizer()
         .render_token(token)
         .unwrap_or_else(|| model.tokenizer().decode(&[token]))
-}
-
-fn flatten_chat_messages(messages: &[ChatMessage]) -> String {
-    let mut rendered = String::new();
-    for message in messages {
-        let role = match message.role {
-            ChatRole::System => "system",
-            ChatRole::User => "user",
-            ChatRole::Assistant => "assistant",
-        };
-        rendered.push_str(role);
-        rendered.push_str(": ");
-        rendered.push_str(&message.content);
-        rendered.push('\n');
-    }
-    rendered
 }
 
 fn first_stop_match(output: &str, stop_strings: &[String]) -> Option<usize> {

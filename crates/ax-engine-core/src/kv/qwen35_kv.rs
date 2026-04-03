@@ -1081,11 +1081,17 @@ impl Qwen35Kv {
     }
 
     pub fn attention_append(&mut self, layer: usize, k: &[f32], v: &[f32]) {
-        self.attention.append_and_advance(layer, k, v);
-        if self.ensure_gpu_attention_capacity_for(self.seq_len + 1)
-            && let Some(gpu_attention) = self.attention_gpu.as_mut()
-        {
-            gpu_attention.append_layer(layer, k, v);
+        let gpu_ok = self.ensure_gpu_attention_capacity_for(self.seq_len + 1)
+            && self.attention_gpu.is_some();
+        // Keep shared attention KV timeline token-synchronous with finalize_token():
+        // append at current seq_len without advancing here.
+        self.attention.append_batch(layer, k, v, 1);
+        if gpu_ok {
+            if let Some(gpu_attention) = self.attention_gpu.as_mut() {
+                gpu_attention.append_layer(layer, k, v);
+            }
+        } else if self.attention_gpu.is_some() {
+            self.attention_cpu_dirty = true;
         }
     }
 

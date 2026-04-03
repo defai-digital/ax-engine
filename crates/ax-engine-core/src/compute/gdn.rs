@@ -227,13 +227,10 @@ pub fn repeat_heads_into(
         return;
     }
     assert!(n_dst_heads.is_multiple_of(n_src_heads));
-    let repeat = n_dst_heads / n_src_heads;
-    for src in 0..n_src_heads {
-        let src_slice = &input[src * head_dim..(src + 1) * head_dim];
-        for rep in 0..repeat {
-            let dst_head = src * repeat + rep;
-            dst[dst_head * head_dim..(dst_head + 1) * head_dim].copy_from_slice(src_slice);
-        }
+    for dst_head in 0..n_dst_heads {
+        let src_head = dst_head % n_src_heads;
+        let src_slice = &input[src_head * head_dim..(src_head + 1) * head_dim];
+        dst[dst_head * head_dim..(dst_head + 1) * head_dim].copy_from_slice(src_slice);
     }
 }
 
@@ -250,22 +247,27 @@ pub fn depthwise_conv1d_step(
     assert_eq!(kernel.len(), (conv_cache_len + 1) * conv_dim);
     assert_eq!(out.len(), conv_dim);
 
+    // Layout parity with ggml_ssm_conv:
+    // - state index:  t * conv_dim + channel
+    // - kernel index: t + channel * (conv_cache_len + 1)
+    let kernel_width = conv_cache_len + 1;
     for c in 0..conv_dim {
-        let mut acc = input[c] * kernel[conv_cache_len * conv_dim + c];
+        let kernel_row = c * kernel_width;
+        let mut acc = input[c] * kernel[kernel_row + conv_cache_len];
         for t in 0..conv_cache_len {
-            acc += conv_state[t * conv_dim + c] * kernel[t * conv_dim + c];
+            acc += conv_state[t * conv_dim + c] * kernel[kernel_row + t];
         }
         out[c] = acc;
     }
 
     crate::compute::silu::silu(out);
 
+    if conv_cache_len > 1 {
+        conv_state.copy_within(conv_dim..conv_cache_len * conv_dim, 0);
+    }
     if conv_cache_len > 0 {
-        if conv_cache_len > 1 {
-            conv_state.copy_within(conv_dim.., 0);
-        }
-        let start = (conv_cache_len - 1) * conv_dim;
-        conv_state[start..start + conv_dim].copy_from_slice(input);
+        let tail_start = (conv_cache_len - 1) * conv_dim;
+        conv_state[tail_start..tail_start + conv_dim].copy_from_slice(input);
     }
 }
 
@@ -536,7 +538,7 @@ mod tests {
     fn test_repeat_heads_expands_groups() {
         let input = [1.0, 2.0, 3.0, 4.0];
         let repeated = repeat_heads(&input, 2, 4, 2);
-        assert_eq!(repeated, vec![1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0]);
+        assert_eq!(repeated, vec![1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]
@@ -582,6 +584,56 @@ mod tests {
         for (i, (&act, &exp)) in actual.iter().zip(expected.iter()).enumerate() {
             assert!((act - exp).abs() < 1e-6, "buf[{i}]: {act} != {exp}");
         }
+    }
+
+    #[test]
+    fn test_depthwise_conv1d_step_uses_ggml_kernel_layout() {
+        let conv_cache_len = 3;
+        let conv_dim = 2;
+        // Time-major layout: index = t * conv_dim + channel.
+        let mut conv_state = vec![
+            1.0, 10.0, // t=0
+            2.0, 20.0, // t=1
+            3.0, 30.0, // t=2
+        ];
+        // GGML kernel layout: index = t + channel * (conv_cache_len + 1).
+        let kernel = vec![
+            0.1, 0.2, 0.3, 0.4, // channel 0
+            0.5, 0.6, 0.7, 0.8, // channel 1
+        ];
+        let input = vec![4.0, 40.0];
+        let mut out = vec![0.0f32; conv_dim];
+
+        depthwise_conv1d_step(
+            &mut conv_state,
+            &input,
+            &kernel,
+            conv_cache_len,
+            conv_dim,
+            &mut out,
+        );
+
+        let expected0 = 3.0 / (1.0 + (-3.0f32).exp());
+        let expected1 = 70.0 / (1.0 + (-70.0f32).exp());
+        assert!(
+            (out[0] - expected0).abs() < 1e-6,
+            "out[0]={} != {expected0}",
+            out[0]
+        );
+        assert!(
+            (out[1] - expected1).abs() < 1e-6,
+            "out[1]={} != {expected1}",
+            out[1]
+        );
+
+        assert_eq!(
+            conv_state,
+            vec![
+                2.0, 20.0, // t=0 after shift
+                3.0, 30.0, // t=1 after shift
+                4.0, 40.0, // new tail
+            ]
+        );
     }
 
     #[test]

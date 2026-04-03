@@ -233,143 +233,7 @@ This applies to:
 
 For apples-to-apples AX vs `llama.cpp` comparisons, repeated-run guidance, and reporting rules, see [BENCHMARKING.md](./BENCHMARKING.md).
 
-## 12. Basic Inference Server
-
-If you want other software to consume AX Engine over HTTP, start the built-in
-basic inference server:
-
-```bash
-./target/release/ax-engine-server \
-  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
-  --host 127.0.0.1 \
-  --port 3000
-```
-
-Check that it is alive:
-
-```bash
-curl http://127.0.0.1:3000/healthz
-curl http://127.0.0.1:3000/v1/models
-```
-
-Example chat request:
-
-```bash
-curl http://127.0.0.1:3000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "Meta-Llama-3.1-8B-Instruct-Q8_0",
-    "messages": [
-      { "role": "system", "content": "Answer concisely." },
-      { "role": "user", "content": "Explain what AX Engine does in two sentences." }
-    ],
-    "max_tokens": 96
-  }'
-```
-
-Example streaming request:
-
-```bash
-curl http://127.0.0.1:3000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -N \
-  -d '{
-    "model": "Meta-Llama-3.1-8B-Instruct-Q8_0",
-    "messages": [
-      { "role": "user", "content": "List three uses for local inference." }
-    ],
-    "stream": true
-  }'
-```
-
-This server is intentionally basic:
-
-- one loaded model per process
-- one request at a time
-- OpenAI-compatible completions and chat completions
-
-### Routing and llama.cpp Fallback
-
-If you want AX to stay native for supported models but fall back to
-`llama.cpp` for unsupported GGUF architectures, enable routing:
-
-```bash
-AX_ROUTING=auto \
-./target/release/ax-engine \
-  --model ./models/Mistral-7B-Instruct.Q4_K_M.gguf \
-  --prompt "Explain unified memory."
-```
-
-Useful environment variables:
-
-```bash
-export AX_ROUTING=auto
-export AX_ROUTING_ARCH="mistral=llama_cpp,deepseek=llama_cpp"
-export AX_ROUTING_MODEL="/absolute/path/to/model.gguf=llama_cpp"
-export AX_LLAMA_SERVER_PATH=/opt/homebrew/bin/llama-server
-export AX_LLAMA_SERVER_TIMEOUT=120
-```
-
-The same routing behavior is used by:
-
-- `ax-engine`
-- `ax-engine-sdk`
-- `ax-engine-server`
-- `ax-engine-py`
-
-### JavaScript / Next.js Client
-
-For Node.js and Next.js integrations, use the JavaScript SDK against the
-built-in server:
-
-```bash
-npm install ./packages/ax-engine-js
-```
-
-```js
-import { AxEngineClient } from "@defai.digital/ax-engine-js";
-
-const client = new AxEngineClient({
-  baseURL: "http://127.0.0.1:3000",
-  defaultModel: "Meta-Llama-3.1-8B-Instruct-Q8_0",
-});
-
-const response = await client.chat.completions.create({
-  messages: [{ role: "user", content: "Explain AX Engine in one sentence." }],
-});
-
-console.log(response.choices[0].message.content);
-```
-
-Streaming text:
-
-```js
-for await (const text of client.chat.completions.streamText({
-  messages: [{ role: "user", content: "List three uses for local inference." }],
-})) {
-  process.stdout.write(text);
-}
-```
-
-Responses-style API:
-
-```js
-const response = await client.responses.create({
-  instructions: "Answer concisely.",
-  input: "Explain AX Engine in one sentence.",
-});
-
-console.log(response.output_text);
-```
-
-For detailed endpoint behavior and limits, see:
-
-- [docs/ax-engine-server.md](./docs/ax-engine-server.md)
-- [docs/ax-engine-server-api.md](./docs/ax-engine-server-api.md)
-- [docs/js-sdk.md](./docs/js-sdk.md)
-- [docs/routing.md](./docs/routing.md)
-
-## 13. Troubleshooting
+## 12. Troubleshooting
 
 ### Build fails because Metal tooling is missing
 
@@ -453,7 +317,7 @@ Run:
 ./target/release/ax-engine --help
 ```
 
-## 14. Next Steps
+## 13. Next Steps
 
 After the first successful run, the usual next checks are:
 

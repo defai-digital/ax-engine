@@ -93,6 +93,10 @@ impl Vocab {
             token_to_id.insert(tok.clone(), id as u32);
         }
 
+        let model_type = header
+            .get_str("tokenizer.ggml.model")
+            .unwrap_or("llama")
+            .to_string();
         let bos_id = header.get_u32("tokenizer.ggml.bos_token_id").unwrap_or(1);
         let eos_id = header.get_u32("tokenizer.ggml.eos_token_id").unwrap_or(2);
         let unk_id = header
@@ -100,16 +104,12 @@ impl Vocab {
             .unwrap_or(0);
         let add_bos = header
             .get_bool("tokenizer.ggml.add_bos_token")
-            .unwrap_or(true);
+            .unwrap_or(model_type == "llama");
         let add_eos = header
             .get_bool("tokenizer.ggml.add_eos_token")
             .unwrap_or(false);
         // SentencePiece add_dummy_prefix: prepend space before tokenization.
         // Defaults to true for SPM ("llama") models, false otherwise.
-        let model_type = header
-            .get_str("tokenizer.ggml.model")
-            .unwrap_or("llama")
-            .to_string();
         let add_space_prefix = header
             .get_bool("tokenizer.ggml.add_space_prefix")
             .unwrap_or(model_type == "llama");
@@ -232,6 +232,8 @@ impl Vocab {
 mod tests {
     use super::*;
 
+    use crate::gguf::MetadataValue;
+
     fn make_test_vocab() -> Vocab {
         let tokens = vec![
             "<unk>".to_string(),
@@ -295,5 +297,53 @@ mod tests {
         assert_eq!(vocab.byte_value(5), Some(0x41)); // 'A'
         assert!(!vocab.is_byte_token(3));
         assert_eq!(vocab.byte_value(3), None);
+    }
+
+    fn make_minimal_header(model_type: &str, add_bos: Option<bool>) -> GgufHeader {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "tokenizer.ggml.tokens".to_string(),
+            MetadataValue::Array(vec![
+                MetadataValue::String("<unk>".to_string()),
+                MetadataValue::String("<s>".to_string()),
+                MetadataValue::String("</s>".to_string()),
+            ]),
+        );
+        metadata.insert(
+            "tokenizer.ggml.model".to_string(),
+            MetadataValue::String(model_type.to_string()),
+        );
+        if let Some(add_bos) = add_bos {
+            metadata.insert(
+                "tokenizer.ggml.add_bos_token".to_string(),
+                MetadataValue::Bool(add_bos),
+            );
+        }
+        GgufHeader {
+            version: 3,
+            tensor_count: 0,
+            metadata,
+        }
+    }
+
+    #[test]
+    fn test_from_gguf_defaults_add_bos_false_for_gpt2() {
+        let header = make_minimal_header("gpt2", None);
+        let vocab = Vocab::from_gguf(&header).expect("vocab");
+        assert!(!vocab.add_bos);
+    }
+
+    #[test]
+    fn test_from_gguf_defaults_add_bos_true_for_llama() {
+        let header = make_minimal_header("llama", None);
+        let vocab = Vocab::from_gguf(&header).expect("vocab");
+        assert!(vocab.add_bos);
+    }
+
+    #[test]
+    fn test_from_gguf_respects_explicit_add_bos_for_gpt2() {
+        let header = make_minimal_header("gpt2", Some(true));
+        let vocab = Vocab::from_gguf(&header).expect("vocab");
+        assert!(vocab.add_bos);
     }
 }

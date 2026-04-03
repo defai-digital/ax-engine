@@ -67,6 +67,7 @@ impl Tokenizer {
                 .filter_map(|(id, ty)| match ty {
                     vocab::TokenType::Control
                     | vocab::TokenType::Unknown
+                    | vocab::TokenType::UserDefined
                     | vocab::TokenType::Unused => Some(id as u32),
                     _ => None,
                 })
@@ -89,7 +90,7 @@ impl Tokenizer {
         tokens
     }
 
-    /// Encode text, recognizing control tokens as single tokens.
+    /// Encode text, recognizing control and user-defined tokens as single IDs.
     ///
     /// Splits input at special token boundaries, BPE-encodes text fragments,
     /// and inserts special token IDs directly for recognized control tokens.
@@ -103,12 +104,21 @@ impl Tokenizer {
             return bpe::bpe_encode(&self.vocab, text);
         }
 
-        // Build list of control token strings sorted longest-first for greedy matching.
-        // Filter out <unused*> placeholder tokens for performance.
+        // Build list of control/user-defined token strings sorted longest-first
+        // for greedy matching. Filter out <unused*> placeholder tokens for
+        // performance.
         let mut special_tokens: Vec<(&str, u32)> = Vec::new();
         for (id, tok_str) in self.vocab.tokens.iter().enumerate() {
             let id = id as u32;
-            if self.vocab.is_special(id) && tok_str.len() > 2 && !tok_str.starts_with("<unused") {
+            let parse_as_special = matches!(
+                self.vocab.types.get(id as usize),
+                Some(
+                    vocab::TokenType::Control
+                        | vocab::TokenType::Unknown
+                        | vocab::TokenType::UserDefined
+                )
+            );
+            if parse_as_special && tok_str.len() > 2 && !tok_str.starts_with("<unused") {
                 special_tokens.push((tok_str.as_str(), id));
             }
         }
@@ -620,6 +630,44 @@ mod tests {
         Tokenizer::from_vocab(vocab)
     }
 
+    fn make_user_defined_special_tokenizer() -> Tokenizer {
+        let token_defs: Vec<(&str, f32, TokenType)> = vec![
+            ("<unk>", 0.0, TokenType::Unknown),     // 0
+            ("<s>", 0.0, TokenType::Control),       // 1
+            ("</s>", 0.0, TokenType::Control),      // 2
+            ("<think>", 0.0, TokenType::UserDefined), // 3
+            ("<", -1.0, TokenType::Normal),         // 4
+            ("think", -1.0, TokenType::Normal),     // 5
+            (">", -1.0, TokenType::Normal),         // 6
+        ];
+
+        let tokens: Vec<String> = token_defs.iter().map(|(t, _, _)| t.to_string()).collect();
+        let scores: Vec<f32> = token_defs.iter().map(|(_, s, _)| *s).collect();
+        let types: Vec<TokenType> = token_defs.iter().map(|(_, _, ty)| *ty).collect();
+        let mut token_to_id = HashMap::new();
+        for (i, token) in tokens.iter().enumerate() {
+            token_to_id.insert(token.clone(), i as u32);
+        }
+
+        let vocab = Vocab {
+            tokens,
+            scores,
+            types,
+            token_to_id,
+            merge_ranks: None,
+            bos_id: 1,
+            eos_id: 2,
+            unk_id: 0,
+            add_bos: false,
+            add_eos: false,
+            add_space_prefix: false,
+            model_type: "llama".to_string(),
+            eot_id: None,
+        };
+
+        Tokenizer::from_vocab(vocab)
+    }
+
     #[test]
     fn test_encode_special_token_recognized() {
         let tok = make_gemma_tokenizer();
@@ -643,6 +691,23 @@ mod tests {
         assert!(!ids.is_empty());
         assert_ne!(ids[0], 21);
         assert!(!ids.contains(&21));
+    }
+
+    #[test]
+    fn test_encode_user_defined_special_token_is_single_id() {
+        let tok = make_user_defined_special_tokenizer();
+        let ids = tok.encode("<think>", false);
+        assert_eq!(ids, vec![3]);
+    }
+
+    #[test]
+    fn test_encode_without_parsing_user_defined_special_token_treats_text_literally() {
+        let tok = make_user_defined_special_tokenizer();
+        let ids = tok.encode_with_options("<think>", false, false);
+        assert!(ids.len() >= 3);
+        assert_eq!(ids.first(), Some(&4));
+        assert_eq!(ids.last(), Some(&6));
+        assert!(!ids.contains(&3));
     }
 
     #[test]

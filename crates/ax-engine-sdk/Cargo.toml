@@ -9,7 +9,4 @@ description = "AX Engine high-level Rust SDK facade"
 [dependencies]
 ax-engine-core.workspace = true
 anyhow.workspace = true
-reqwest.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 tracing.workspace = true

@@ -1,10 +1,10 @@
 use super::*;
 use crate::backend::cpu::CpuBackend;
 use crate::backend::metal::MetalBackend;
-use crate::gguf::MetadataValue;
 use crate::gguf::header::GgufHeader;
 use crate::gguf::mmap::MappedModel;
 use crate::gguf::tensor::GgmlType;
+use crate::gguf::MetadataValue;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -690,6 +690,163 @@ fn test_qwen35moe_shared_expert_gate_scales_output() {
 }
 
 #[test]
+fn test_qwen35moe_shared_expert_gate_batch_uses_post_attention_norm_input() {
+    let dim = 2usize;
+    let n_tokens = 2usize;
+    let shape_norm = [dim as u64];
+    let shape_router = [dim as u64, 2];
+    let shape_expert_in = [dim as u64, 1, 2];
+    let shape_expert_out = [1, dim as u64, 2];
+    let shape_shared_in = [dim as u64, 1];
+    let shape_shared_out = [1, dim as u64];
+    let shape_shared_gate = [dim as u64];
+    let tensors: Vec<(&str, &[u64], GgmlType, Vec<u8>)> = vec![
+        (
+            "blk.0.post_attention_norm.weight",
+            &shape_norm,
+            GgmlType::F32,
+            f32_bytes(&[1.0, 1.0]),
+        ),
+        (
+            "blk.0.ffn_gate_inp.weight",
+            &shape_router,
+            GgmlType::F32,
+            f32_bytes(&[0.0, 0.0, 0.0, 0.0]),
+        ),
+        (
+            "blk.0.ffn_gate_exps.weight",
+            &shape_expert_in,
+            GgmlType::F32,
+            f32_bytes(&[0.0, 0.0, 0.0, 0.0]),
+        ),
+        (
+            "blk.0.ffn_up_exps.weight",
+            &shape_expert_in,
+            GgmlType::F32,
+            f32_bytes(&[0.0, 0.0, 0.0, 0.0]),
+        ),
+        (
+            "blk.0.ffn_down_exps.weight",
+            &shape_expert_out,
+            GgmlType::F32,
+            f32_bytes(&[0.0, 0.0, 0.0, 0.0]),
+        ),
+        (
+            "blk.0.ffn_gate_shexp.weight",
+            &shape_shared_in,
+            GgmlType::F32,
+            f32_bytes(&[1.0, 0.0]),
+        ),
+        (
+            "blk.0.ffn_up_shexp.weight",
+            &shape_shared_in,
+            GgmlType::F32,
+            f32_bytes(&[2.0, 0.0]),
+        ),
+        (
+            "blk.0.ffn_down_shexp.weight",
+            &shape_shared_out,
+            GgmlType::F32,
+            f32_bytes(&[1.0, 1.0]),
+        ),
+        (
+            "blk.0.ffn_gate_inp_shexp.weight",
+            &shape_shared_gate,
+            GgmlType::F32,
+            f32_bytes(&[1.0, 0.0]),
+        ),
+    ];
+    let gguf = build_test_gguf_with_tensors("qwen35moe", &tensors);
+    let path = write_test_gguf_to_temp(&gguf);
+
+    let cfg = ModelConfig {
+        architecture: "qwen35moe".into(),
+        n_layers: 1,
+        n_heads: 1,
+        n_kv_heads: 1,
+        embedding_dim: dim as u32,
+        head_dim: dim as u32,
+        intermediate_dim: 1,
+        context_length: 128,
+        vocab_size: 16,
+        rms_norm_eps: 1e-6,
+        rope_freq_base: 10000.0,
+        has_qkv_bias: false,
+        sliding_window_size: None,
+        sliding_window_pattern: None,
+        gate_activation: crate::model::config::GateActivation::SiLU,
+        tie_word_embeddings: false,
+        logit_scale: None,
+        rope_scaling: crate::model::config::RopeScaling::None,
+        embed_scale: false,
+        rope_freq_base_local: None,
+        n_expert: Some(2),
+        n_expert_used: Some(1),
+        expert_intermediate_dim: Some(1),
+        qwen35_full_attention_interval: Some(4),
+        qwen35_ssm_conv_kernel: Some(4),
+        qwen35_ssm_inner_size: Some(16),
+        qwen35_ssm_state_size: Some(4),
+        qwen35_ssm_time_step_rank: Some(4),
+        qwen35_ssm_group_count: Some(1),
+    };
+
+    let mut hidden = vec![2.0f32, 0.0, 0.5, 0.0];
+    let hidden_before = hidden.clone();
+    let mut norm_buf = vec![0.0f32; n_tokens * dim];
+    let mut gate_buf = vec![0.0f32; n_tokens];
+    let mut up_buf = vec![0.0f32; n_tokens];
+    let mut down_buf = vec![0.0f32; n_tokens * dim];
+
+    {
+        let model = MappedModel::open(&path).unwrap();
+        let weights = WeightStore::new(&model);
+
+        Qwen35Forward::apply_post_attention_ffn_batch(
+            &cfg,
+            &CpuBackend,
+            &weights,
+            "blk.0",
+            &mut hidden,
+            &mut norm_buf,
+            &mut gate_buf,
+            &mut up_buf,
+            &mut down_buf,
+            n_tokens,
+            dim,
+            1,
+            cfg.rms_norm_eps,
+        )
+        .unwrap();
+    }
+
+    let mut expected = hidden_before.clone();
+    for token_idx in 0..n_tokens {
+        let h = &hidden_before[token_idx * dim..(token_idx + 1) * dim];
+        let mut norm = vec![0.0f32; dim];
+        rms_norm::rms_norm_out(h, &[1.0f32, 1.0], &mut norm, cfg.rms_norm_eps);
+
+        let mut shared_gate = vec![norm[0]];
+        let shared_up = vec![2.0 * norm[0]];
+        silu::silu_elementwise_mul(&mut shared_gate, &shared_up);
+        let shared_down = shared_gate[0];
+        let gate_scale = 1.0 / (1.0 + (-norm[0]).exp());
+
+        expected[token_idx * dim] += shared_down * gate_scale;
+        expected[token_idx * dim + 1] += shared_down * gate_scale;
+    }
+
+    for (actual, expected) in hidden.iter().zip(expected.iter()) {
+        assert!(
+            (actual - expected).abs() < 1e-5,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
 fn test_qwen35_shared_expert_gate_width_supported_accepts_scalar_and_vector() {
     assert!(Qwen35Forward::qwen35_shared_expert_gate_width_supported(
         1, 4096
@@ -831,12 +988,13 @@ fn test_qwen35_apply_rope_batch_uses_absolute_positions() {
     for token_idx in 0..n_tokens {
         let q_start = token_idx * q_dim;
         let k_start = token_idx * kv_dim;
-        rope::apply_rope_multi_head_scaled(
+        rope::apply_rope_multi_head_neox_partial_scaled(
             &mut expected_q[q_start..q_start + q_dim],
             &mut expected_k[k_start..k_start + kv_dim],
             n_heads,
             n_kv_heads,
             head_dim,
+            head_dim.min(64),
             Qwen35Forward::rope_position(&cfg, start_position + token_idx),
             cfg.rope_freq_base,
         );
@@ -908,7 +1066,7 @@ fn test_qwen35_prepare_full_attention_qk_batch_matches_staged_path() {
         k: &[0.9f32, 1.0, 1.1, 1.2],
     };
 
-    Qwen35Forward::extract_q_from_q_gate_batch(&q_gate_batch, &mut expected_q, 2, 4);
+    Qwen35Forward::extract_q_from_q_gate_batch(&q_gate_batch, &mut expected_q, 2, 4, 1, 4);
     Qwen35Forward::apply_attention_qk_norm_batch(
         &mut expected_q,
         &mut expected_k,
@@ -943,6 +1101,31 @@ fn test_qwen35_prepare_full_attention_qk_batch_matches_staged_path() {
         assert!((actual - expected).abs() < 1e-6);
     }
     for (actual, expected) in actual_k.iter().zip(expected_k.iter()) {
+        assert!((actual - expected).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn test_qwen35_full_attention_q_gate_interleaved_layout() {
+    let n_heads = 2usize;
+    let head_dim = 2usize;
+    let q_dim = n_heads * head_dim;
+
+    // Per-head interleaved layout: [q_h0, g_h0, q_h1, g_h1].
+    let q_gate = vec![1.0f32, 2.0, 0.1, 0.2, 3.0, 4.0, 0.3, 0.4];
+    let mut q = vec![0.0f32; q_dim];
+    Qwen35Forward::extract_q_from_q_gate(&q_gate, &mut q, n_heads, head_dim);
+    assert_eq!(q, vec![1.0f32, 2.0, 3.0, 4.0]);
+
+    let mut attn_out = vec![10.0f32, 20.0, 30.0, 40.0];
+    Qwen35Forward::apply_attention_gate(&q_gate, &mut attn_out, n_heads, head_dim);
+    let expected = vec![
+        10.0 / (1.0 + (-0.1f32).exp()),
+        20.0 / (1.0 + (-0.2f32).exp()),
+        30.0 / (1.0 + (-0.3f32).exp()),
+        40.0 / (1.0 + (-0.4f32).exp()),
+    ];
+    for (actual, expected) in attn_out.iter().zip(expected.iter()) {
         assert!((actual - expected).abs() < 1e-6);
     }
 }

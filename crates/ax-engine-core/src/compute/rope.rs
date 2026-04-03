@@ -74,6 +74,23 @@ fn apply_rope_pairs_scalar(buf: &mut [f32], cos_table: &[f32], sin_table: &[f32]
     }
 }
 
+#[inline]
+fn apply_rope_pairs_split_half_scalar(buf: &mut [f32], cos_table: &[f32], sin_table: &[f32]) {
+    debug_assert_eq!(cos_table.len(), sin_table.len());
+    debug_assert_eq!(buf.len(), cos_table.len() * 2);
+
+    let half = cos_table.len();
+    let (lo, hi) = buf.split_at_mut(half);
+    for i in 0..half {
+        let cos_t = cos_table[i];
+        let sin_t = sin_table[i];
+        let x0 = lo[i];
+        let x1 = hi[i];
+        lo[i] = x0 * cos_t - x1 * sin_t;
+        hi[i] = x0 * sin_t + x1 * cos_t;
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[inline]
 fn apply_rope_pairs_in_place(buf: &mut [f32], cos_table: &[f32], sin_table: &[f32]) {
@@ -211,6 +228,74 @@ pub fn apply_rope_multi_head_scaled(
 
         for k_head in k[..n_kv_heads * head_dim].chunks_exact_mut(head_dim) {
             apply_rope_pairs_in_place(k_head, cos_table, sin_table);
+        }
+    });
+}
+
+/// Apply RoPE to the first `rotary_dim` values of each head.
+///
+/// Models like Qwen3.5 expose `n_rot < head_dim` and only rotate a prefix of
+/// each head while preserving the trailing channels.
+pub fn apply_rope_multi_head_partial_scaled(
+    q: &mut [f32],
+    k: &mut [f32],
+    n_heads: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
+    rotary_dim: usize,
+    position: f32,
+    freq_base: f32,
+) {
+    assert!(q.len() >= n_heads * head_dim);
+    assert!(k.len() >= n_kv_heads * head_dim);
+    assert!(rotary_dim <= head_dim);
+    assert!(rotary_dim.is_multiple_of(2));
+
+    if rotary_dim == 0 {
+        return;
+    }
+
+    with_rope_tables(rotary_dim, position, freq_base, |cos_table, sin_table| {
+        for q_head in q[..n_heads * head_dim].chunks_exact_mut(head_dim) {
+            apply_rope_pairs_in_place(&mut q_head[..rotary_dim], cos_table, sin_table);
+        }
+
+        for k_head in k[..n_kv_heads * head_dim].chunks_exact_mut(head_dim) {
+            apply_rope_pairs_in_place(&mut k_head[..rotary_dim], cos_table, sin_table);
+        }
+    });
+}
+
+/// Apply RoPE (NeoX pair layout) to the first `rotary_dim` values of each head.
+///
+/// NeoX-style rotary uses split-half pairs `(x[i], x[i + rotary_dim/2])` instead
+/// of adjacent pairs `(x[2i], x[2i+1])`.
+pub fn apply_rope_multi_head_neox_partial_scaled(
+    q: &mut [f32],
+    k: &mut [f32],
+    n_heads: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
+    rotary_dim: usize,
+    position: f32,
+    freq_base: f32,
+) {
+    assert!(q.len() >= n_heads * head_dim);
+    assert!(k.len() >= n_kv_heads * head_dim);
+    assert!(rotary_dim <= head_dim);
+    assert!(rotary_dim.is_multiple_of(2));
+
+    if rotary_dim == 0 {
+        return;
+    }
+
+    with_rope_tables(rotary_dim, position, freq_base, |cos_table, sin_table| {
+        for q_head in q[..n_heads * head_dim].chunks_exact_mut(head_dim) {
+            apply_rope_pairs_split_half_scalar(&mut q_head[..rotary_dim], cos_table, sin_table);
+        }
+
+        for k_head in k[..n_kv_heads * head_dim].chunks_exact_mut(head_dim) {
+            apply_rope_pairs_split_half_scalar(&mut k_head[..rotary_dim], cos_table, sin_table);
         }
     });
 }
@@ -420,5 +505,93 @@ mod tests {
         for (i, (&act, &exp)) in k.iter().zip(k_ref.iter()).enumerate() {
             assert!((act - exp).abs() < 1e-5, "k[{i}]: {act} != {exp}");
         }
+    }
+
+    #[test]
+    fn test_rope_multi_head_partial_scaled_rotates_prefix_only() {
+        let head_dim = 8usize;
+        let rotary_dim = 4usize;
+        let n_heads = 1usize;
+        let n_kv_heads = 1usize;
+        let position = 3.5f32;
+
+        let mut q = [1.0f32, 2.0, 3.0, 4.0, 10.0, 11.0, 12.0, 13.0];
+        let mut k = [4.0f32, 3.0, 2.0, 1.0, 20.0, 21.0, 22.0, 23.0];
+        let q_orig = q;
+        let k_orig = k;
+
+        apply_rope_multi_head_partial_scaled(
+            &mut q,
+            &mut k,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            rotary_dim,
+            position,
+            FREQ_BASE,
+        );
+
+        let mut q_ref_prefix = q_orig[..rotary_dim].to_vec();
+        let mut k_ref_prefix = k_orig[..rotary_dim].to_vec();
+        apply_rope_multi_head_scaled(
+            &mut q_ref_prefix,
+            &mut k_ref_prefix,
+            n_heads,
+            n_kv_heads,
+            rotary_dim,
+            position,
+            FREQ_BASE,
+        );
+
+        for i in 0..rotary_dim {
+            assert!((q[i] - q_ref_prefix[i]).abs() < 1e-6, "q[{i}]");
+            assert!((k[i] - k_ref_prefix[i]).abs() < 1e-6, "k[{i}]");
+        }
+        for i in rotary_dim..head_dim {
+            assert!((q[i] - q_orig[i]).abs() < 1e-6, "q tail[{i}]");
+            assert!((k[i] - k_orig[i]).abs() < 1e-6, "k tail[{i}]");
+        }
+    }
+
+    #[test]
+    fn test_rope_multi_head_neox_partial_scaled_rotates_split_halves() {
+        let n_heads = 1usize;
+        let n_kv_heads = 1usize;
+        let head_dim = 8usize;
+        let rotary_dim = 4usize;
+        let position = 9.0f32;
+
+        let mut q = vec![1.0f32, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0];
+        let mut k = vec![5.0f32, 6.0, 7.0, 8.0, 50.0, 60.0, 70.0, 80.0];
+        let mut expected_q = q.clone();
+        let mut expected_k = k.clone();
+
+        apply_rope_multi_head_neox_partial_scaled(
+            &mut q,
+            &mut k,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            rotary_dim,
+            position,
+            FREQ_BASE,
+        );
+
+        let mut cos_table = vec![0.0f32; rotary_dim / 2];
+        let mut sin_table = vec![0.0f32; rotary_dim / 2];
+        super::fill_rope_tables(position, rotary_dim, FREQ_BASE, &mut cos_table, &mut sin_table);
+        apply_rope_pairs_split_half_scalar(&mut expected_q[..rotary_dim], &cos_table, &sin_table);
+        apply_rope_pairs_split_half_scalar(&mut expected_k[..rotary_dim], &cos_table, &sin_table);
+
+        for (actual, expected) in q.iter().zip(expected_q.iter()) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        for (actual, expected) in k.iter().zip(expected_k.iter()) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+
+        // Tail (non-rotary) channels remain unchanged.
+        assert_eq!(&q[rotary_dim..], &[10.0, 20.0, 30.0, 40.0]);
+        assert_eq!(&k[rotary_dim..], &[50.0, 60.0, 70.0, 80.0]);
     }
 }

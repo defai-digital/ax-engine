@@ -2,7 +2,7 @@
 //
 // AX keeps the Qwen3.5 causal-conv path in token-major f32 layout:
 // - input/output: [seq_len, conv_dim]
-// - kernel: [conv_cache_len + 1, conv_dim]
+// - kernel: [conv_dim, conv_cache_len + 1] (GGML layout)
 
 // fast::exp for gate decay — precision sufficient for state scaling.
 #define ax_exp(x) fast::exp(x)
@@ -38,13 +38,15 @@ constant uint QWEN35_GDN_PACK_TG = 256;
         history[i] = conv_state[i * conv_dim + ch];
     }
 
-    const uint current_weight_base = conv_cache_len * conv_dim + ch;
+    const uint kernel_width = conv_cache_len + 1;
+    const uint kernel_row = ch * kernel_width;
+    const uint current_weight_idx = kernel_row + conv_cache_len;
     for (uint t = 0; t < seq_len; ++t) {
         const uint offset = t * conv_dim + ch;
         const float x = input[offset];
-        float acc = x * weights[current_weight_base];
+        float acc = x * weights[current_weight_idx];
         for (uint i = 0; i < conv_cache_len; ++i) {
-            acc = fma(history[i], weights[i * conv_dim + ch], acc);
+            acc = fma(history[i], weights[kernel_row + i], acc);
         }
         output[offset] = acc / (1.0f + exp(-acc));
 
@@ -81,7 +83,9 @@ constant uint QWEN35_GDN_PACK_TG = 256;
 
     const uint offset = t * conv_dim + ch;
     const float x = input[offset];
-    float acc = x * weights[conv_cache_len * conv_dim + ch];
+    const uint kernel_width = conv_cache_len + 1;
+    const uint kernel_row = ch * kernel_width;
+    float acc = x * weights[kernel_row + conv_cache_len];
 
     for (uint i = 0; i < conv_cache_len; ++i) {
         // history[i] corresponds to the input at position (t - conv_cache_len + i)
@@ -93,7 +97,7 @@ constant uint QWEN35_GDN_PACK_TG = 256;
         } else {
             h = input[(uint)src_t * conv_dim + ch];
         }
-        acc = fma(h, weights[i * conv_dim + ch], acc);
+        acc = fma(h, weights[kernel_row + i], acc);
     }
     output[offset] = acc / (1.0f + exp(-acc));
 
@@ -121,10 +125,9 @@ constant uint QWEN35_GDN_PACK_TG = 256;
     const uint value_dim = time_step_rank * state_size;
     if (gid >= value_dim) return;
 
-    const uint repeats = time_step_rank / group_count;
     const uint dst_head = gid / state_size;
     const uint lane = gid % state_size;
-    const uint src_head = dst_head / repeats;
+    const uint src_head = dst_head % group_count;
     const uint src_base = src_head * state_size;
     const uint key_dim = group_count * state_size;
 
@@ -197,7 +200,7 @@ constant uint QWEN35_GDN_PACK_TG = 256;
         const float q = conv_out[conv_token_base + src_base + lane] * q_inv;
         const float k = conv_out[conv_token_base + key_dim + src_base + lane] * k_inv;
         for (uint rep = 0; rep < repeats; ++rep) {
-            const uint dst_head = src_head * repeats + rep;
+            const uint dst_head = rep * group_count + src_head;
             const uint dst =
                 dst_head * n_tokens * state_size + token_idx * state_size + lane;
             q_out[dst] = q;
@@ -321,8 +324,7 @@ template <int BK, int BV>
     const uint v_idx = v_tile * BV + tid;
     if (bh >= time_step_rank || v_idx >= BK) return;
 
-    const uint repeats = time_step_rank / group_count;
-    const uint src_head = bh / repeats;
+    const uint src_head = bh % group_count;
     const uint key_dim = group_count * BK;
     const uint src_base = src_head * BK;
     const uint value_base = 2 * key_dim + bh * BK;

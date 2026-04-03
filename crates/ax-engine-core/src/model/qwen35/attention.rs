@@ -423,8 +423,10 @@ impl Qwen35Forward {
         rms_norm::rms_norm_out(hidden, ffn_norm_w, norm_buf, rms_norm_eps);
 
         let router_name = format!("{prefix}.ffn_gate_inp.weight");
-        let n_expert =
-            cfg.n_expert.unwrap_or(Self::tensor_output_rows(weights, &router_name)? as u32) as usize;
+        let n_expert = cfg
+            .n_expert
+            .unwrap_or(Self::tensor_output_rows(weights, &router_name)? as u32)
+            as usize;
         let n_expert_used = cfg.n_expert_used.unwrap_or(0) as usize;
         anyhow::ensure!(n_expert > 0, "qwen35moe requires n_expert > 0");
         anyhow::ensure!(n_expert_used > 0, "qwen35moe requires n_expert_used > 0");
@@ -449,7 +451,8 @@ impl Qwen35Forward {
 
         if std::env::var("AX_DEBUG_MOE").is_ok() {
             let top5: Vec<(usize, f32)> = {
-                let mut indexed: Vec<(usize, f32)> = router_logits.iter().copied().enumerate().collect();
+                let mut indexed: Vec<(usize, f32)> =
+                    router_logits.iter().copied().enumerate().collect();
                 indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
                 indexed.into_iter().take(5).collect()
             };
@@ -470,20 +473,18 @@ impl Qwen35Forward {
         let expert_inter_dim = cfg
             .expert_intermediate_dim
             .map(|d| d as usize)
-            .unwrap_or_else(|| Self::tensor_output_rows(weights, &gate_exps_name).unwrap_or(shared_inter_dim_hint));
+            .unwrap_or_else(|| {
+                Self::tensor_output_rows(weights, &gate_exps_name).unwrap_or(shared_inter_dim_hint)
+            });
         let (gate_exps_raw, gate_exps_dtype) = weights.raw_with_dtype(&gate_exps_name)?;
         let (up_exps_raw, up_exps_dtype) = weights.raw_with_dtype(&up_exps_name)?;
         let (down_exps_raw, down_exps_dtype) = weights.raw_with_dtype(&down_exps_name)?;
-        let gate_stride = crate::model::qwen3_moe::expert_byte_stride(
-            gate_exps_dtype,
-            expert_inter_dim * dim,
-        );
+        let gate_stride =
+            crate::model::qwen3_moe::expert_byte_stride(gate_exps_dtype, expert_inter_dim * dim);
         let up_stride =
             crate::model::qwen3_moe::expert_byte_stride(up_exps_dtype, expert_inter_dim * dim);
-        let down_stride = crate::model::qwen3_moe::expert_byte_stride(
-            down_exps_dtype,
-            dim * expert_inter_dim,
-        );
+        let down_stride =
+            crate::model::qwen3_moe::expert_byte_stride(down_exps_dtype, dim * expert_inter_dim);
 
         let shared_gate_name = format!("{prefix}.ffn_gate_shexp.weight");
         let shared_up_name = format!("{prefix}.ffn_up_shexp.weight");
@@ -500,14 +501,9 @@ impl Qwen35Forward {
         let mut expert_accum = vec![0.0f32; dim];
 
         for (i, &eid) in expert_ids.iter().enumerate() {
-            let expert_gate = Self::expert_quant_slice(
-                gate_exps_raw,
-                gate_stride,
-                eid,
-                &gate_exps_name,
-            )?;
-            let expert_up =
-                Self::expert_quant_slice(up_exps_raw, up_stride, eid, &up_exps_name)?;
+            let expert_gate =
+                Self::expert_quant_slice(gate_exps_raw, gate_stride, eid, &gate_exps_name)?;
+            let expert_up = Self::expert_quant_slice(up_exps_raw, up_stride, eid, &up_exps_name)?;
             let expert_down =
                 Self::expert_quant_slice(down_exps_raw, down_stride, eid, &down_exps_name)?;
 
@@ -609,12 +605,12 @@ impl Qwen35Forward {
                 let (shared_gate_inp_raw, shared_gate_inp_dtype) =
                     weights.raw_with_dtype(&shared_gate_inp_name)?;
                 let mut shared_gate_buf = vec![0.0f32; gate_rows];
-                // llama.cpp computes the shared expert gate from the PRE-norm
-                // hidden state (before FFN norm), not from norm_buf.
+                // qwen35moe in llama.cpp applies the shared expert gate on the
+                // same post-attention normalized FFN input (`cur`).
                 cpu.dequant_matmul(
                     shared_gate_inp_raw,
                     shared_gate_inp_dtype,
-                    hidden,
+                    norm_buf,
                     &mut shared_gate_buf,
                     gate_rows,
                     1,
@@ -667,8 +663,10 @@ impl Qwen35Forward {
         }
 
         let router_name = format!("{prefix}.ffn_gate_inp.weight");
-        let n_expert =
-            cfg.n_expert.unwrap_or(Self::tensor_output_rows(weights, &router_name)? as u32) as usize;
+        let n_expert = cfg
+            .n_expert
+            .unwrap_or(Self::tensor_output_rows(weights, &router_name)? as u32)
+            as usize;
         let n_expert_used = cfg.n_expert_used.unwrap_or(0) as usize;
         anyhow::ensure!(n_expert > 0, "qwen35moe requires n_expert > 0");
         anyhow::ensure!(n_expert_used > 0, "qwen35moe requires n_expert_used > 0");
@@ -683,20 +681,18 @@ impl Qwen35Forward {
         let expert_inter_dim = cfg
             .expert_intermediate_dim
             .map(|d| d as usize)
-            .unwrap_or_else(|| Self::tensor_output_rows(weights, &gate_exps_name).unwrap_or(shared_inter_dim_hint));
+            .unwrap_or_else(|| {
+                Self::tensor_output_rows(weights, &gate_exps_name).unwrap_or(shared_inter_dim_hint)
+            });
         let (gate_exps_raw, gate_exps_dtype) = weights.raw_with_dtype(&gate_exps_name)?;
         let (up_exps_raw, up_exps_dtype) = weights.raw_with_dtype(&up_exps_name)?;
         let (down_exps_raw, down_exps_dtype) = weights.raw_with_dtype(&down_exps_name)?;
-        let gate_stride = crate::model::qwen3_moe::expert_byte_stride(
-            gate_exps_dtype,
-            expert_inter_dim * dim,
-        );
+        let gate_stride =
+            crate::model::qwen3_moe::expert_byte_stride(gate_exps_dtype, expert_inter_dim * dim);
         let up_stride =
             crate::model::qwen3_moe::expert_byte_stride(up_exps_dtype, expert_inter_dim * dim);
-        let down_stride = crate::model::qwen3_moe::expert_byte_stride(
-            down_exps_dtype,
-            dim * expert_inter_dim,
-        );
+        let down_stride =
+            crate::model::qwen3_moe::expert_byte_stride(down_exps_dtype, dim * expert_inter_dim);
 
         // Use GPU backend for the batched router matmul (one dispatch for all tokens).
         let (router_raw, router_dtype) = weights.raw_with_dtype(&router_name)?;
@@ -732,11 +728,8 @@ impl Qwen35Forward {
         // Try to encode ALL expert ops into one Metal command buffer.
         // This eliminates ~24 execute_sync calls per layer (each ~30μs).
         let metal_dispatched = if let Some(metal_ops) = backend.metal_ops() {
-            if Self::qwen35_moe_single_cb_supported(
-                gate_exps_dtype,
-                up_exps_dtype,
-                down_exps_dtype,
-            ) && n_tokens > 1
+            if Self::qwen35_moe_single_cb_supported(gate_exps_dtype, up_exps_dtype, down_exps_dtype)
+                && n_tokens > 1
             {
                 Self::try_moe_expert_dispatch_single_cb(
                     metal_ops,
@@ -884,6 +877,8 @@ impl Qwen35Forward {
                 let (shared_gate_inp_raw, shared_gate_inp_dtype) =
                     weights.raw_with_dtype(&shared_gate_inp_name)?;
                 let mut shared_gate_logits = vec![0.0f32; n_tokens * gate_rows];
+                // Match llama.cpp qwen35moe: shared expert gate is driven by
+                // the post-attention FFN input (already in norm_buf).
                 backend.dequant_matmul_token_major(
                     shared_gate_inp_raw,
                     shared_gate_inp_dtype,
@@ -937,11 +932,7 @@ impl Qwen35Forward {
         dim: usize,
         expert_inter_dim: usize,
     ) -> anyhow::Result<bool> {
-        if !Self::qwen35_moe_single_cb_supported(
-            gate_exps_dtype,
-            up_exps_dtype,
-            down_exps_dtype,
-        ) {
+        if !Self::qwen35_moe_single_cb_supported(gate_exps_dtype, up_exps_dtype, down_exps_dtype) {
             return Ok(false);
         }
         let n_expert = expert_map.len();
@@ -1197,11 +1188,16 @@ impl Qwen35Forward {
             return Ok(false);
         };
 
-        // CPU: extract Q from Q+gate (strided memcpy — fast, ~1ms for 512 tokens).
+        // CPU: extract Q from interleaved Q|gate blocks.
         for token_idx in 0..n_tokens {
             let src = token_idx * q_dim * 2;
             let dst = token_idx * q_dim;
-            q_batch[dst..dst + q_dim].copy_from_slice(&q_gate_batch[src..src + q_dim]);
+            Self::extract_q_from_q_gate(
+                &q_gate_batch[src..src + q_dim * 2],
+                &mut q_batch[dst..dst + q_dim],
+                n_heads,
+                head_dim,
+            );
         }
 
         // Cache QK norm weights on GPU if they exist.
@@ -1289,7 +1285,8 @@ impl Qwen35Forward {
         q_gate_batch: &[f32],
         attn_out_batch: &mut [f32],
         n_tokens: usize,
-        q_dim: usize,
+        n_heads: usize,
+        head_dim: usize,
     ) -> anyhow::Result<bool> {
         if n_tokens <= 1 {
             return Ok(false);
@@ -1298,14 +1295,21 @@ impl Qwen35Forward {
             return Ok(false);
         };
 
+        let q_dim = n_heads * head_dim;
         let total = n_tokens * q_dim;
 
-        // CPU: extract gate values to contiguous buffer (strided copy).
+        // CPU: extract gate values to contiguous `[token, head, dim]` rows from
+        // interleaved Q|gate blocks.
         let mut gate_contiguous = vec![0.0f32; total];
         for token_idx in 0..n_tokens {
-            let src = token_idx * q_dim * 2 + q_dim;
-            let dst = token_idx * q_dim;
-            gate_contiguous[dst..dst + q_dim].copy_from_slice(&q_gate_batch[src..src + q_dim]);
+            let src_token = token_idx * q_dim * 2;
+            let dst_token = token_idx * q_dim;
+            for head in 0..n_heads {
+                let src_head = src_token + head * head_dim * 2 + head_dim;
+                let dst_head = dst_token + head * head_dim;
+                gate_contiguous[dst_head..dst_head + head_dim]
+                    .copy_from_slice(&q_gate_batch[src_head..src_head + head_dim]);
+            }
         }
 
         metal_ops.init_batch_scratches(cfg, n_tokens);
@@ -1450,10 +1454,17 @@ impl Qwen35Forward {
             q_gate_batch,
             attn_out_batch,
             n_tokens,
-            q_dim,
+            n_heads,
+            head_dim,
         )?;
         if !used_gpu_gate {
-            Self::apply_attention_gate_batch(q_gate_batch, attn_out_batch, n_tokens, q_dim);
+            Self::apply_attention_gate_batch(
+                q_gate_batch,
+                attn_out_batch,
+                n_tokens,
+                n_heads,
+                head_dim,
+            );
         }
 
         if !used_gpu_prefix_kv {
@@ -1511,8 +1522,7 @@ impl Qwen35Forward {
             let mut outputs = [&mut *q_gate_buf, &mut *k_buf, &mut *v_buf];
             Self::decode_project_ops_gpu_safe(backend, &input_ops, norm_buf, dim, &mut outputs);
         });
-        Self::extract_q_from_q_gate(q_gate_buf, q_buf);
-        let gate_attn = &mut q_gate_buf[q_dim..];
+        Self::extract_q_from_q_gate(q_gate_buf, q_buf, n_heads, head_dim);
 
         if let Some(norm_weights) = timed!(
             ops,
@@ -1568,7 +1578,7 @@ impl Qwen35Forward {
             );
         }
 
-        Self::apply_attention_gate(gate_attn, attn_out);
+        Self::apply_attention_gate(q_gate_buf, attn_out, n_heads, head_dim);
 
         let (wo_raw, wo_dtype, _) = timed!(
             ops,
@@ -1585,7 +1595,6 @@ impl Qwen35Forward {
         Self::assert_finite_if_enabled("full_attention_proj", proj_buf, layer, position)?;
         Ok(())
     }
-
 }
 
 #[cfg(test)]

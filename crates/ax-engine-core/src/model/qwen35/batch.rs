@@ -2410,7 +2410,11 @@ impl Qwen35Forward {
         );
 
         let force_serial = env_flag_enabled("AX_SERIAL_PREFILL");
-        if force_serial || !ctx.backend.use_gpu_decode() || token_ids.len() <= 1 {
+        if force_serial
+            || !Self::gpu_batch_prefill_enabled()
+            || !ctx.backend.use_gpu_decode()
+            || token_ids.len() <= 1
+        {
             return self.forward_batch_serial_fallback(
                 ctx,
                 token_ids,
@@ -2422,7 +2426,7 @@ impl Qwen35Forward {
             );
         }
 
-        if let Some(logits) = logits.as_mut() {
+        if Self::unified_prefill_enabled() && let Some(logits) = logits.as_mut() {
             if Self::try_forward_batch_gpu_unified(
                 ctx,
                 token_ids,
@@ -2434,7 +2438,7 @@ impl Qwen35Forward {
             )? {
                 return Ok(());
             }
-        } else if let Some(logits_all) = logits_all.as_mut()
+        } else if Self::unified_prefill_enabled() && let Some(logits_all) = logits_all.as_mut()
             && Self::try_forward_batch_gpu_unified(
                 ctx,
                 token_ids,

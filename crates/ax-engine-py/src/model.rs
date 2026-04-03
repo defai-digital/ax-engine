@@ -85,12 +85,7 @@ impl Model {
 
     #[getter]
     pub fn backend(&self) -> PyResult<String> {
-        Ok(self.model_info()?.backend.as_str().to_string())
-    }
-
-    #[getter]
-    pub fn routing(&self) -> PyResult<Option<String>> {
-        Ok(self.model_info()?.routing)
+        Ok("native".to_string())
     }
 
     #[getter]

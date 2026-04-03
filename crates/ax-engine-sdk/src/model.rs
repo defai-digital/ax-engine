@@ -8,8 +8,6 @@ use ax_engine_core::gguf::MappedModel;
 use ax_engine_core::model::{LlamaModel, ModelConfig, ModelFingerprint};
 use ax_engine_core::tokenizer::Tokenizer;
 
-use crate::llama_cpp_process::LlamaCppProcess;
-use crate::routing::{InferenceBackendKind, RoutingPolicy};
 use crate::session::{Session, SessionOptions};
 
 pub(crate) struct NativeLoadedModel {
@@ -22,30 +20,14 @@ pub(crate) struct NativeLoadedModel {
     pub(crate) support_note: Option<String>,
 }
 
-pub(crate) struct LlamaCppLoadedModel {
-    pub(crate) model_id: String,
-    pub(crate) config: ModelConfig,
-    pub(crate) tokenizer: Tokenizer,
-    pub(crate) process: Arc<LlamaCppProcess>,
-    pub(crate) architecture: String,
-    pub(crate) model_name: Option<String>,
-    pub(crate) support_note: Option<String>,
-    pub(crate) routing_message: Option<String>,
-}
-
-pub(crate) enum LoadedModel {
-    Native(Box<NativeLoadedModel>),
-    LlamaCpp(Box<LlamaCppLoadedModel>),
-}
-
-// SAFETY: Both variants are immutable after construction. Session/KV state and
-// subprocess lifecycle coordination live behind synchronization primitives.
-unsafe impl Send for LoadedModel {}
-unsafe impl Sync for LoadedModel {}
+// SAFETY: All fields are immutable after construction. Session/KV state lives
+// behind synchronization primitives.
+unsafe impl Send for NativeLoadedModel {}
+unsafe impl Sync for NativeLoadedModel {}
 
 #[derive(Clone)]
 pub struct Model {
-    inner: Arc<LoadedModel>,
+    inner: Arc<NativeLoadedModel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -74,8 +56,6 @@ pub struct ModelInfo {
     pub eos_token_id: u32,
     pub model_name: Option<String>,
     pub support_note: Option<String>,
-    pub backend: InferenceBackendKind,
-    pub routing: Option<String>,
 }
 
 impl BackendKind {
@@ -136,33 +116,8 @@ impl Model {
             model_path.display()
         );
 
-        let routing = RoutingPolicy::from_env()?.resolve(model_path)?;
-        match routing.backend {
-            InferenceBackendKind::Native => {
-                init_runtime();
-                tracing::info!(
-                    architecture = %routing.support.architecture,
-                    predominant_quant = %routing
-                        .support
-                        .predominant_quant
-                        .map(|dtype| dtype.to_string())
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    route_source = routing.source,
-                    "model loaded natively"
-                );
-                Self::load_native(model_path, options)
-            }
-            InferenceBackendKind::LlamaCpp => {
-                let reason = routing.reason.clone();
-                if let Some(reason) = reason.as_deref() {
-                    tracing::warn!(%reason, "native support unavailable; routing to llama.cpp");
-                }
-                Self::load_llama_cpp(model_path, options, reason)
-            }
-        }
-    }
+        init_runtime();
 
-    fn load_native(model_path: &Path, options: LoadOptions) -> anyhow::Result<Self> {
         let mapped = MappedModel::open(model_path)
             .with_context(|| format!("failed to open GGUF model: {}", model_path.display()))?;
         let mut config = ModelConfig::from_gguf(&mapped.header)
@@ -189,8 +144,14 @@ impl Model {
 
         let model = LlamaModel::with_backend(config.clone(), backend)?;
 
+        tracing::info!(
+            architecture = %model.arch_name(),
+            model_id = %model_id,
+            "model loaded"
+        );
+
         Ok(Self {
-            inner: Arc::new(LoadedModel::Native(Box::new(NativeLoadedModel {
+            inner: Arc::new(NativeLoadedModel {
                 model_id,
                 mapped,
                 config,
@@ -198,140 +159,53 @@ impl Model {
                 model,
                 model_name,
                 support_note,
-            }))),
-        })
-    }
-
-    fn load_llama_cpp(
-        model_path: &Path,
-        options: LoadOptions,
-        routing_message: Option<String>,
-    ) -> anyhow::Result<Self> {
-        let mapped = MappedModel::open(model_path)
-            .with_context(|| format!("failed to open GGUF model: {}", model_path.display()))?;
-        let mut config = ModelConfig::from_gguf(&mapped.header)
-            .context("failed to read model configuration from GGUF metadata")?;
-        if let Some(context_length) = options.context_length {
-            ensure!(
-                context_length > 0,
-                "context_length must be greater than zero"
-            );
-            config.context_length = context_length;
-        }
-
-        let tokenizer = Tokenizer::from_gguf(&mapped.header)
-            .context("failed to construct tokenizer from GGUF metadata")?;
-        let model_id = infer_model_id(model_path, &mapped);
-        let architecture = mapped.header.architecture().unwrap_or("llama").to_string();
-        let model_name = mapped.header.get_str("general.name").map(str::to_owned);
-        let support_note = mapped.support_note().map(str::to_owned);
-        let process = Arc::new(LlamaCppProcess::spawn(model_path, config.context_length)?);
-
-        tracing::info!(
-            model = %model_path.display(),
-            port = process.port(),
-            "llama.cpp subprocess ready"
-        );
-
-        Ok(Self {
-            inner: Arc::new(LoadedModel::LlamaCpp(Box::new(LlamaCppLoadedModel {
-                model_id,
-                config,
-                tokenizer,
-                process,
-                architecture,
-                model_name,
-                support_note,
-                routing_message,
-            }))),
+            }),
         })
     }
 
     pub fn info(&self) -> ModelInfo {
-        match self.inner.as_ref() {
-            LoadedModel::Native(model) => ModelInfo {
-                id: model.model_id.clone(),
-                architecture: model.model.arch_name().to_string(),
-                context_length: model.config.context_length as usize,
-                vocab_size: model.tokenizer.vocab_size(),
-                bos_token_id: model.tokenizer.bos_id(),
-                eos_token_id: model.tokenizer.eos_id(),
-                model_name: model.model_name.clone(),
-                support_note: model.support_note.clone(),
-                backend: InferenceBackendKind::Native,
-                routing: None,
-            },
-            LoadedModel::LlamaCpp(model) => ModelInfo {
-                id: model.model_id.clone(),
-                architecture: model.architecture.clone(),
-                context_length: model.config.context_length as usize,
-                vocab_size: model.tokenizer.vocab_size(),
-                bos_token_id: model.tokenizer.bos_id(),
-                eos_token_id: model.tokenizer.eos_id(),
-                model_name: model.model_name.clone(),
-                support_note: model.support_note.clone(),
-                backend: InferenceBackendKind::LlamaCpp,
-                routing: model.routing_message.clone(),
-            },
+        ModelInfo {
+            id: self.inner.model_id.clone(),
+            architecture: self.inner.model.arch_name().to_string(),
+            context_length: self.inner.config.context_length as usize,
+            vocab_size: self.inner.tokenizer.vocab_size(),
+            bos_token_id: self.inner.tokenizer.bos_id(),
+            eos_token_id: self.inner.tokenizer.eos_id(),
+            model_name: self.inner.model_name.clone(),
+            support_note: self.inner.support_note.clone(),
         }
     }
 
     pub fn id(&self) -> &str {
-        match self.inner.as_ref() {
-            LoadedModel::Native(model) => &model.model_id,
-            LoadedModel::LlamaCpp(model) => &model.model_id,
-        }
+        &self.inner.model_id
     }
 
     pub fn architecture(&self) -> &str {
-        match self.inner.as_ref() {
-            LoadedModel::Native(model) => model.model.arch_name(),
-            LoadedModel::LlamaCpp(model) => &model.architecture,
-        }
+        self.inner.model.arch_name()
     }
 
     pub fn context_length(&self) -> usize {
-        self.config().context_length as usize
+        self.inner.config.context_length as usize
     }
 
     pub fn vocab_size(&self) -> usize {
-        self.tokenizer().vocab_size()
+        self.inner.tokenizer.vocab_size()
     }
 
     pub fn bos_token_id(&self) -> u32 {
-        self.tokenizer().bos_id()
+        self.inner.tokenizer.bos_id()
     }
 
     pub fn eos_token_id(&self) -> u32 {
-        self.tokenizer().eos_id()
+        self.inner.tokenizer.eos_id()
     }
 
     pub fn model_name(&self) -> Option<&str> {
-        match self.inner.as_ref() {
-            LoadedModel::Native(model) => model.model_name.as_deref(),
-            LoadedModel::LlamaCpp(model) => model.model_name.as_deref(),
-        }
+        self.inner.model_name.as_deref()
     }
 
     pub fn support_note(&self) -> Option<&str> {
-        match self.inner.as_ref() {
-            LoadedModel::Native(model) => model.support_note.as_deref(),
-            LoadedModel::LlamaCpp(model) => model.support_note.as_deref(),
-        }
-    }
-
-    pub fn inference_backend_kind(&self) -> InferenceBackendKind {
-        match self.inner.as_ref() {
-            LoadedModel::Native(_) => InferenceBackendKind::Native,
-            LoadedModel::LlamaCpp(_) => InferenceBackendKind::LlamaCpp,
-        }
-    }
-
-    pub fn routing_message(&self) -> Option<&str> {
-        match self.inner.as_ref() {
-            LoadedModel::Native(_) => None,
-            LoadedModel::LlamaCpp(model) => model.routing_message.as_deref(),
-        }
+        self.inner.support_note.as_deref()
     }
 
     pub fn tokenize(&self, text: &str, add_special: bool) -> Vec<u32> {
@@ -347,31 +221,15 @@ impl Model {
     }
 
     pub(crate) fn config(&self) -> &ModelConfig {
-        match self.inner.as_ref() {
-            LoadedModel::Native(model) => &model.config,
-            LoadedModel::LlamaCpp(model) => &model.config,
-        }
+        &self.inner.config
     }
 
     pub(crate) fn tokenizer(&self) -> &Tokenizer {
-        match self.inner.as_ref() {
-            LoadedModel::Native(model) => &model.tokenizer,
-            LoadedModel::LlamaCpp(model) => &model.tokenizer,
-        }
+        &self.inner.tokenizer
     }
 
-    pub(crate) fn native_loaded(&self) -> Option<&NativeLoadedModel> {
-        match self.inner.as_ref() {
-            LoadedModel::Native(model) => Some(model),
-            LoadedModel::LlamaCpp(_) => None,
-        }
-    }
-
-    pub(crate) fn llama_cpp_loaded(&self) -> Option<&LlamaCppLoadedModel> {
-        match self.inner.as_ref() {
-            LoadedModel::Native(_) => None,
-            LoadedModel::LlamaCpp(model) => Some(model),
-        }
+    pub(crate) fn native(&self) -> &NativeLoadedModel {
+        &self.inner
     }
 }
 

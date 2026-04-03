@@ -23,9 +23,17 @@ impl Backend for CpuBackend {
         n: usize,
         k: usize,
     ) {
+        let fused_decode_enabled = !std::env::var("AX_DISABLE_FUSED_MATVEC")
+            .ok()
+            .is_some_and(|value| {
+                !matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "" | "0" | "false" | "off" | "no"
+                )
+            });
         // For decode (n=1), use fused NEON kernels to avoid the intermediate
         // f32 allocation. For prefill (n>1), fall back to dequant + BLAS.
-        if n == 1 {
+        if n == 1 && fused_decode_enabled {
             match dtype {
                 GgmlType::Q4K => {
                     neon::fused_matvec_q4_k(a_quant, b, c, m, k);

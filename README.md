@@ -40,10 +40,8 @@ AX is therefore not trying to be:
 - a universal GGUF engine
 - a replacement for llama.cpp, vLLM, or TensorRT-LLM
 
-For supported native models, AX runs through its own Metal runtime.
-For unsupported models, AX routes to `llama.cpp` as a compatibility
-fallback — because llama.cpp is already excellent at what it does, and
-there is no reason to reimplement coverage that already exists.
+For supported models, AX runs through its own Metal runtime.
+Unsupported architectures will produce an error at load time.
 
 For a research-level implementation comparison, see
 [AX Engine vs llama.cpp](./docs/ax-engine-vs-llama-cpp.md).
@@ -96,9 +94,9 @@ Examples of the current fused path include:
 
 AX is not trying to "fuse everything" — it fuses where dispatch savings,
 occupancy, and memory traffic all make sense together. The benefit varies by
-model family: LLaMA 3 and Qwen3 benefit strongly from the current fusion
-depth, Qwen3.5 benefits from the hybrid attention + SSM pipeline, and
-Gemma 3 benefits from the per-head QK norm fusion path.
+model family: LLaMA 3.1 benefits strongly from the current fusion depth,
+Qwen3.5 benefits from the hybrid attention + SSM pipeline, and Gemma 4
+benefits from the per-head QK norm fusion path.
 
 ### 2. Memory Path
 
@@ -122,8 +120,8 @@ instead of just another frontend around someone else's runtime.
 AX's current optimization posture is deliberate rather than random:
 
 - **Dense transformer decode** benefits strongly from the current fusion depth.
-  LLaMA 3, Qwen3, and Gemma 3 all use the shared GPU decode layer encoder
-  with fused QKV + attention + residual handoff.
+  LLaMA 3.1 and Qwen3.5 use the shared GPU decode layer encoder with fused
+  QKV + attention + residual handoff.
 - **Qwen3.5 hybrid attention + SSM** is natively supported. The recurrent
   (Mamba-2) layers use GPU-resident state with pipelined batch prefill and
   fused GDN (gated delta net) kernels.
@@ -142,7 +140,7 @@ AX's current optimization posture is deliberate rather than random:
 
 Performance should be explainable by the runtime's structure, not by isolated
 one-off benchmark wins. Benchmark claims are made on AX's supported native
-set, not on llama.cpp fallback coverage.
+set.
 
 ## Fusion Architecture
 
@@ -290,60 +288,37 @@ fundamentally different. We acknowledge mistral.rs as an early reference
 point and recommend it as an excellent project for users who need broader
 model coverage or Candle ecosystem integration.
 
-## Native Coverage and llama.cpp Routing
+## Supported Models
 
-AX Engine is built by a small team. We cannot match the breadth of
-`llama.cpp`, which supports hundreds of model architectures through a large
-contributor community. Instead, AX focuses native support on a curated set
-of model families where we can deliver measurable performance advantages
-over general-purpose engines on Apple Silicon.
+All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Also supported: Q5_K, Q6_K, Q8_0. Legacy formats (Q4_0, Q5_0) are not supported — use K-quant equivalents.
 
-**Natively supported architectures** (full Metal GPU path):
-
-| Architecture | Models | Forward pass |
-|---|---|---|
-| `llama` | LLaMA 3 / 3.1 (8B, 70B) | `LlamaForward` |
-| `qwen2` / `qwen3` | Qwen 2/3 dense (8B, 14B, 32B) | `Qwen3Forward` |
-| `qwen2moe` / `qwen3moe` | Qwen 2/3 MoE | `Qwen3MoeForward` |
-| `qwen35` | Qwen 3.5 hybrid attention + SSM dense (9B, 27B) | `Qwen35Forward` |
-| `qwen35moe` | Qwen 3.5 hybrid attention + SSM MoE (35B-A3B) | `Qwen35Forward` |
-| `gemma` / `gemma2` / `gemma3` | Gemma 2/3 (4B, 12B, 27B) | `Gemma3Forward` |
+| Family | Models |
+|---|---|
+| Qwen 3.5 | Qwen3.5-4B, Qwen3.5-9B, Qwen3.5-27B, Qwen3.5-35B-A3B |
+| Gemma 4 | Gemma-4-E2B, Gemma-4-E4B, Gemma-4-26B-A4B, Gemma-4-31B |
+| LLaMA 3.1 | Llama-3.1-8B-Instruct, Llama-3.1-70B-Instruct |
+| Qwen 3 | Qwen3-Coder-Next |
 
 Each native architecture has its own hand-written forward pass, fused Metal
 kernels, and model-specific tuning profiles. Adding a new architecture
 means implementing `ForwardPass`, writing any needed fused kernels, and
 registering it in `arch_registry.rs` — not just wiring up a graph.
 
-**For everything else**, AX routes to `llama.cpp` automatically. The SDK's
-routing layer (`ax-engine-sdk/src/routing.rs`) inspects the GGUF file's
-`general.architecture` metadata and quantization types at load time:
+**Memory requirements** (Q4_K_M, 4K context):
 
-- If the architecture and quant types are natively supported, the model
-  loads through AX's own Metal runtime.
-- If not, the SDK spawns a `llama-server` subprocess and proxies requests
-  to it over HTTP, providing the same `Model` / `Session` / `TextStream`
-  API to the caller.
-
-This means the CLI, server, and Python bindings all handle unsupported
-models gracefully — the user gets `llama.cpp`-quality inference instead of
-an error, while supported models get AX's native performance path. The
-routing decision is logged at startup:
-
-```
-Routing: native | arch=qwen3 | source=global
-Routing: llama_cpp | arch=mixtral | source=global | reason=architecture 'mixtral' is not natively supported
-```
-
-The routing preference can be controlled via `AX_ROUTING=auto` (default:
-try native, fall back to llama.cpp), `AX_ROUTING=native` (fail if not
-supported), or `AX_ROUTING=llama_cpp` (always use llama.cpp).
+| Model Size | Total | Minimum Mac RAM |
+|---|---:|---|
+| 2-4B | ~3 GB | 16 GB |
+| 7-9B | ~5 GB | 16 GB |
+| 26-31B | ~20 GB | 32 GB |
+| 70B | ~44 GB | 64 GB |
 
 ## Tuning Model
 
 AX uses JSON seed profiles plus load-time autotune:
 
 ```text
-perfs/qwen3-8b.json    perfs/gemma3-12b.json    perfs/llama3-70b.json
+perfs/qwen35-9b.json    perfs/gemma4-e4b.json    perfs/llama31-70b.json
 ```
 
 The `perfs/*.json` files are intentionally minimal safety seeds (model identity
@@ -371,25 +346,10 @@ noted. llama.cpp values are 3-sample medians with 20s cooldown. AX% over
 
 | Model | Quant | AX Prefill | AX Decode | llama Prefill | llama Decode | Prefill % | Decode % |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Qwen3 4B | Q6_K | **1,347** tok/s | **87.8** tok/s | 1,369 tok/s | 83.1 tok/s | 98% | **106%** |
 | Qwen3.5 4B | Q8_0 | 1,054 tok/s | 51.5 tok/s | 1,340 tok/s | 56.5 tok/s | 79% | **91%** |
 | Qwen3.5 9B | Q4_K_M | 585 tok/s | 48.6 tok/s | 733 tok/s | 49.0 tok/s | 80% | 99% |
-| Gemma 3 12B | Q4_K_M | 425 tok/s | 45.5 tok/s | 495 tok/s | 40.2 tok/s | 86% | **113%** |
 | Qwen3.5 27B | Q4_K_M | 191 tok/s | 17.4 tok/s | 209 tok/s | 17.6 tok/s | 91% | 99% |
-| Qwen3 32B | Q4_K_M | 156 tok/s | 17.6 tok/s | 160 tok/s | 16.2 tok/s | 97% | **109%** |
 | Qwen3.5 35B-A3B | Q4_K_M | 905 tok/s | — | 1,194 tok/s | 55.3 tok/s | 76% | — |
-
-Qwen3.5 35B-A3B uses `mul_mat_id` with 64×32 blocked half-precision tiles,
-GPU-resident hidden buffer, GPU softmax+top-k routing (no CPU round-trip),
-pre-allocated MoE scratch buffers, and backend-owned recurrent handoff.
-Prefill improved 180× from the initial baseline (5.1 → 920 tok/s). Decode
-now runs on the hybrid backend path. The current row is from
-`benchmarks/results/20260402-081624-001/summary.md` (Samples=`1`), whose
-recorded decode plan already selected `kv=f16`.
-
-AX decode exceeds llama.cpp on models where the fused decode path (concurrent
-Metal dispatch, fused QKV+RoPE+KV-append, fused residual+RMSNorm) provides
-structural advantages.
 
 Prefill uses config-driven kernel selection across all supported quant types
 (Q4_K, Q5_K, Q6_K, Q8_0) with f16-input full-tile kernels (64x64, 64x32,
@@ -397,31 +357,6 @@ tail, small-N variants), blocked layout, and pair (gate+up fused) batch
 dispatch. GPU attention KV is f16 by default for all models.
 
 See [BENCHMARKING.md](./BENCHMARKING.md) for methodology.
-
-## Supported Models
-
-All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Also supported: Q5_K, Q6_K, Q8_0. Legacy formats (Q4_0, Q5_0) are not supported — use K-quant equivalents.
-
-| Architecture | Models | Sizes |
-|---|---|---|
-| LLaMA 3 | Meta-Llama-3.1-8B-Instruct, Meta-Llama-3-70B-Instruct | 8B, 70B |
-| Qwen 3 (dense) | Qwen3-4B, Qwen3-8B, Qwen3-14B, Qwen3-32B | 4B, 8B, 14B, 32B |
-| Qwen 3 MoE | Qwen3-30B-A3B (experimental) | 30B-A3B |
-| Qwen 3.5 (hybrid dense) | Qwen3.5-4B, Qwen3.5-9B, Qwen3.5-27B | 4B, 9B, 27B |
-| Qwen 3.5 MoE | Qwen3.5-35B-A3B | 35B-A3B |
-| Gemma 3 | gemma-3-12b-it, gemma-3-27b-it | 12B, 27B |
-
-Unsupported architectures automatically route to llama.cpp when
-`AX_ROUTING=auto` (see [Native Coverage](#native-coverage-and-llamacpp-routing)).
-
-**Memory requirements** (Q4_K_M, 4K context):
-
-| Model Size | Total | Minimum Mac RAM |
-|---|---:|---|
-| 7-8B | ~5 GB | 16 GB |
-| 12-14B | ~9 GB | 16 GB |
-| 22-32B | ~20 GB | 32 GB |
-| 70B | ~44 GB | 64 GB |
 
 ## Capabilities
 
@@ -431,7 +366,7 @@ Unsupported architectures automatically route to llama.cpp when
 
 **Multi-model**: Per-model Metal command queues and KV caches, graceful OOM handling, explicit GPU/CPU backend per model, thread-safe (`Arc`/`Mutex`).
 
-**Integration**: core runtime (`ax-engine-core`), high-level Rust SDK facade (`ax-engine-sdk`), llama.cpp-compatible CLI (`ax-engine`), basic OpenAI-compatible inference server built on the Rust SDK (`ax-engine-server`), drop-in `libllama` shim (`ax-engine-shim`), Python bindings built on the Rust SDK (`ax-engine-py`), Node.js / Next.js HTTP client SDK (`packages/ax-engine-js`), benchmarking tools (`ax-engine-bench`).
+**Integration**: core runtime (`ax-engine-core`), high-level Rust SDK facade (`ax-engine-sdk`), llama.cpp-compatible CLI (`ax-engine`), Python bindings built on the Rust SDK (`ax-engine-py`), benchmarking tools (`ax-engine-bench`).
 
 ## Quick Start
 
@@ -440,27 +375,22 @@ cargo build --workspace --release
 
 # Single prompt
 ./target/release/ax-engine \
-  --model ./models/Qwen3-8B-Q4_K_M.gguf \
+  --model ./models/Qwen3.5-9B-Q4_K_M.gguf \
   --chat --prompt "Explain speculative decoding."
 
 # Interactive
 ./target/release/ax-engine \
-  --model ./models/Qwen3-8B-Q4_K_M.gguf \
+  --model ./models/Qwen3.5-9B-Q4_K_M.gguf \
   --interactive --chat
 
 # Benchmark (single engine)
-./target/release/ax-engine-bench bench --model ./models/Qwen3-8B-Q4_K_M.gguf
+./target/release/ax-engine-bench bench --model ./models/Qwen3.5-9B-Q4_K_M.gguf
 
 # Benchmark (AX vs llama.cpp comparison)
-./benchmarks/run_apple_to_apple.py --model ./models/Qwen3-8B-Q4_K_M.gguf
+./benchmarks/run_apple_to_apple.py --model ./models/Qwen3.5-9B-Q4_K_M.gguf
 
 # Benchmark (AX only, fast iteration)
-./benchmarks/run_apple_to_apple.py --model ./models/Qwen3-8B-Q4_K_M.gguf --ax-only
-
-# Basic inference server
-./target/release/ax-engine-server \
-  --model ./models/Qwen3-8B-Q4_K_M.gguf \
-  --host 127.0.0.1 --port 3000
+./benchmarks/run_apple_to_apple.py --model ./models/Qwen3.5-9B-Q4_K_M.gguf --ax-only
 ```
 
 ## Script Helpers
@@ -477,58 +407,6 @@ Legacy scripts kept for reference:
 - `scripts/bench_prefill_v2_ab.sh` (legacy v2 prefill toggle matrix).
 - `scripts/bench_llama_serial_median.sh` (legacy llama-bench serial median baseline; prefer `benchmarks/run_apple_to_apple.py --ax-only`).
 
-The server exposes `GET /healthz`, `GET /v1/models`, `POST /v1/completions`, and
-`POST /v1/chat/completions`. It is intentionally basic: one loaded model, one
-request at a time, OpenAI-compatible JSON plus SSE streaming, and it now shares
-the same high-level Rust SDK path used by `ax-engine-py`. For multi-model
-routing, continuous batching, and production serving concerns, keep using
-`ax-serving`.
-
-Inference routing is also built into the repo surfaces now. Set
-`AX_ROUTING=auto` to keep native AX for supported models and fall back to
-`llama.cpp` for unsupported GGUF architectures:
-
-```bash
-AX_ROUTING=auto \
-./target/release/ax-engine \
-  --model ./models/Mistral-7B-Instruct.Q4_K_M.gguf \
-  --prompt "Explain unified memory."
-```
-
-The CLI prints a one-line routing summary, and `ax-engine-server`,
-`ax-engine-sdk`, and `ax-engine-py` use the same routing behavior.
-
-Server documentation:
-
-- [docs/AX Engine Server Overview](./docs/ax-engine-server.md)
-- [docs/AX Engine Server API](./docs/ax-engine-server-api.md)
-- [docs/Inference Routing](./docs/routing.md)
-- [docs/JavaScript SDK](./docs/js-sdk.md)
-- [docs/Rust SDK](./docs/rust-sdk.md)
-- [docs/Index](./docs/README.md)
-
-For Node.js and Next.js software, use the JavaScript SDK over the built-in
-server instead of trying to bind Metal/Rust directly into a JS runtime:
-
-```js
-import { AxEngineClient } from "@defai.digital/ax-engine-js";
-
-const client = new AxEngineClient({
-  baseURL: "http://127.0.0.1:3000",
-  defaultModel: "Qwen3-8B-Q4_K_M",
-});
-
-const response = await client.chat.completions.create({
-  messages: [{ role: "user", content: "Summarize AX Engine in one sentence." }],
-});
-
-console.log(response.choices[0].message.content);
-```
-
-The JS SDK also exposes a client-side `responses` compatibility layer for apps
-that prefer that API shape, while the transport still runs over the existing AX
-server endpoints.
-
 See [QUICKSTART.md](./QUICKSTART.md) for setup details and [BENCHMARKING.md](./BENCHMARKING.md) for benchmark methodology.
 
 ## Workspace Layout
@@ -538,10 +416,8 @@ crates/ax-engine-core    Core inference engine (backends, models, KV, sampling)
 crates/ax-engine-sdk     High-level Rust SDK facade
 crates/ax-engine-metal   Metal GPU backend (device, shaders, dispatch, profiles)
 crates/ax-engine-cli     ax-engine CLI
-crates/ax-engine-server  Basic OpenAI-compatible inference server
-crates/ax-engine-shim    llama.cpp-compatible C API shim (libllama.dylib)
 crates/ax-engine-bench   Benchmarking, profiling, and soak testing
-packages/ax-engine-js    Node.js / Next.js client SDK for ax-engine-server
+crates/ax-engine-py      Python bindings (PyO3)
 ```
 
 ## Development

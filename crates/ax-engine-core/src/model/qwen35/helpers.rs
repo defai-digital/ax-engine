@@ -468,10 +468,11 @@ impl Qwen35Forward {
         let gate_name = format!("{prefix}.ffn_gate_exps.weight");
         let up_name = format!("{prefix}.ffn_up_exps.weight");
         let down_name = format!("{prefix}.ffn_down_exps.weight");
-        let expert_inter_dim = cfg
-            .expert_intermediate_dim
-            .map(|d| d as usize)
-            .unwrap_or(Self::tensor_output_rows(weights, &gate_name)?);
+        // GPU mul_mat_id kernel uses the GGUF tensor's ne0 as the matmul
+        // output dimension (it transposes internally like ggml_mul_mat).
+        // For gate_exps [ne0=2048, ne1=512, ne2=256], output_rows=2048.
+        // This is correct for the GPU path — do NOT use cfg.expert_intermediate_dim here.
+        let expert_inter_dim = Self::tensor_output_rows(weights, &gate_name)?;
         let (gate_raw, gate_dtype) = weights.raw_with_dtype(&gate_name)?;
         let (up_raw, up_dtype) = weights.raw_with_dtype(&up_name)?;
         let (down_raw, down_dtype) = weights.raw_with_dtype(&down_name)?;
@@ -674,9 +675,20 @@ impl Qwen35Forward {
             });
     }
 
-    fn extract_q_from_q_gate(q_gate: &[f32], q: &mut [f32]) {
-        debug_assert_eq!(q_gate.len(), q.len() * 2);
-        q.copy_from_slice(&q_gate[..q.len()]);
+    /// Extract Q from Qwen3.5 full-attention `wq` output.
+    ///
+    /// Upstream layout is interleaved per head: `[q_h0, g_h0, q_h1, g_h1, ...]`.
+    /// This is not equivalent to a flat split `[all_q, all_gate]`.
+    fn extract_q_from_q_gate(q_gate: &[f32], q: &mut [f32], n_heads: usize, head_dim: usize) {
+        let q_dim = n_heads * head_dim;
+        debug_assert_eq!(q.len(), q_dim);
+        debug_assert_eq!(q_gate.len(), q_dim * 2);
+        for head in 0..n_heads {
+            let src_start = head * head_dim * 2;
+            let dst_start = head * head_dim;
+            q[dst_start..dst_start + head_dim]
+                .copy_from_slice(&q_gate[src_start..src_start + head_dim]);
+        }
     }
 
     #[cfg(test)]
@@ -685,6 +697,8 @@ impl Qwen35Forward {
         q_batch: &mut [f32],
         n_tokens: usize,
         q_dim: usize,
+        n_heads: usize,
+        head_dim: usize,
     ) {
         for token_idx in 0..n_tokens {
             let src_start = token_idx * q_dim * 2;
@@ -692,6 +706,8 @@ impl Qwen35Forward {
             Self::extract_q_from_q_gate(
                 &q_gate_batch[src_start..src_start + q_dim * 2],
                 &mut q_batch[q_start..q_start + q_dim],
+                n_heads,
+                head_dim,
             );
         }
     }
@@ -757,12 +773,14 @@ impl Qwen35Forward {
         head_dim: usize,
     ) {
         let rope_position = Self::rope_position(cfg, position);
-        rope::apply_rope_multi_head_scaled(
+        // Qwen3.5 uses NeoX-style RoPE and rotates a prefix (n_rot=64 in GGUF).
+        rope::apply_rope_multi_head_neox_partial_scaled(
             q,
             k,
             n_heads,
             n_kv_heads,
             head_dim,
+            head_dim.min(64),
             rope_position,
             cfg.rope_freq_base,
         );
@@ -820,7 +838,7 @@ impl Qwen35Forward {
             .enumerate()
             .take(n_tokens)
             .for_each(|(token_idx, ((q_gate, q), k))| {
-                Self::extract_q_from_q_gate(q_gate, q);
+                Self::extract_q_from_q_gate(q_gate, q, n_heads, head_dim);
                 if let Some(norm_weights) = norm_weights {
                     Self::apply_attention_qk_norm(
                         q,
@@ -844,24 +862,36 @@ impl Qwen35Forward {
             });
     }
 
-    fn apply_attention_gate(gate: &mut [f32], attn_out: &mut [f32]) {
-        debug_assert_eq!(gate.len(), attn_out.len());
-        gdn::sigmoid_in_place(gate);
-        silu::elementwise_mul(attn_out, gate);
+    /// Apply sigmoid(gate) to attention output, reading gate from the
+    /// interleaved Q|gate layout `[q_h0, g_h0, q_h1, g_h1, ...]`.
+    fn apply_attention_gate(q_gate: &[f32], attn_out: &mut [f32], n_heads: usize, head_dim: usize) {
+        let q_dim = n_heads * head_dim;
+        debug_assert_eq!(q_gate.len(), q_dim * 2);
+        debug_assert_eq!(attn_out.len(), q_dim);
+        for head in 0..n_heads {
+            let src_gate_start = head * head_dim * 2 + head_dim;
+            let dst_start = head * head_dim;
+            for i in 0..head_dim {
+                let gate = 1.0 / (1.0 + (-q_gate[src_gate_start + i]).exp());
+                attn_out[dst_start + i] *= gate;
+            }
+        }
     }
 
     fn apply_attention_gate_batch(
-        q_gate_batch: &mut [f32],
+        q_gate_batch: &[f32],
         attn_out_batch: &mut [f32],
         n_tokens: usize,
-        q_dim: usize,
+        n_heads: usize,
+        head_dim: usize,
     ) {
+        let q_dim = n_heads * head_dim;
         q_gate_batch
-            .par_chunks_mut(q_dim * 2)
+            .par_chunks(q_dim * 2)
             .zip(attn_out_batch.par_chunks_mut(q_dim))
             .take(n_tokens)
             .for_each(|(q_gate, attn_out)| {
-                Self::apply_attention_gate(&mut q_gate[q_dim..q_dim + q_dim], attn_out);
+                Self::apply_attention_gate(q_gate, attn_out, n_heads, head_dim);
             });
     }
 

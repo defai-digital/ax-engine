@@ -2795,7 +2795,9 @@ pub(crate) fn prepare_multi_token_gdn_bh_buffers(
             let q_inv = (q_sum_sq + rms_norm_eps).sqrt().recip();
             let k_inv = (k_sum_sq + rms_norm_eps).sqrt().recip();
             for rep in 0..repeats {
-                let dst_head = src_head * repeats + rep;
+                // Interleaved ordering: matches repeat_heads_into and
+                // the GPU shader qwen35_prepare_multi_token_gdn_qk_f32.
+                let dst_head = rep * group_count + src_head;
                 let dst_start = dst_head * n_tokens * state_size + token_idx * state_size;
                 for lane in 0..state_size {
                     q_out[dst_start + lane] = conv_token[src_start + lane] * q_inv;
@@ -2870,7 +2872,9 @@ pub(crate) fn prepare_single_token_gdn_qkv(
         let k_inv = 1.0 / (k_sum_sq + rms_norm_eps).sqrt();
 
         for rep in 0..repeats {
-            let dst_head = src_head * repeats + rep;
+            // Interleaved ordering: matches repeat_heads_into and
+            // the GPU shader qwen35_prepare_multi_token_gdn_qk_f32.
+            let dst_head = rep * group_count + src_head;
             let dst_start = dst_head * state_size;
             let dst_end = dst_start + state_size;
             let q_dst = &mut q_out[dst_start..dst_end];
@@ -3925,6 +3929,12 @@ impl MetalOps {
                 fingerprint,
                 &cache_path,
             );
+            let skip_runtime_batch_route_autotune =
+                Self::cached_profile_skips_runtime_batch_route_autotune(
+                    &profile,
+                    &seed_profile,
+                    can_loadtime_batch_route_tune,
+                );
             tracing::info!(
                 path = %cache_path.display(),
                 fingerprint = %fingerprint.stable_id(),
@@ -3932,11 +3942,12 @@ impl MetalOps {
             );
             return ResolvedKernelProfile {
                 profile,
-                skip_runtime_batch_route_autotune: can_loadtime_batch_route_tune,
+                skip_runtime_batch_route_autotune,
             };
         }
 
-        let tuned = self.autotune_kernel_profile(fingerprint, seed_profile);
+        let (tuned, skip_runtime_batch_route_autotune) =
+            self.autotune_kernel_profile(fingerprint, seed_profile);
         if let Err(error) = self.persist_kernel_profile_cache(&cache_path, &tuned) {
             tracing::warn!(
                 path = %cache_path.display(),
@@ -3948,7 +3959,7 @@ impl MetalOps {
 
         ResolvedKernelProfile {
             profile: tuned,
-            skip_runtime_batch_route_autotune: can_loadtime_batch_route_tune,
+            skip_runtime_batch_route_autotune,
         }
     }
 
@@ -4003,17 +4014,30 @@ impl MetalOps {
         cached_profile
     }
 
+    fn cached_profile_skips_runtime_batch_route_autotune(
+        cached_profile: &KernelProfile,
+        seed_profile: &KernelProfile,
+        can_loadtime_batch_route_tune: bool,
+    ) -> bool {
+        can_loadtime_batch_route_tune
+            && (cached_profile.batch_prefill.small_n_threshold
+                != seed_profile.batch_prefill.small_n_threshold
+                || cached_profile.batch_prefill.small_m_max
+                    != seed_profile.batch_prefill.small_m_max)
+    }
+
     fn autotune_kernel_profile(
         &self,
         fingerprint: &ModelFingerprint,
         mut profile: KernelProfile,
-    ) -> KernelProfile {
+    ) -> (KernelProfile, bool) {
         let recommended_kv_precision = self.select_kv_precision_mode(fingerprint);
         tracing::debug!(
             fingerprint = %fingerprint.stable_id(),
             recommended = ?recommended_kv_precision,
             "Load-time KV precision recommendation computed (runtime selection remains profile/env driven)"
         );
+        let mut skip_runtime_batch_route_autotune = false;
         if fingerprint.has_q4k_layer_weights {
             self.autotune_decode_matvec_quant(&mut profile, fingerprint, GgmlType::Q4K);
         }
@@ -4027,7 +4051,8 @@ impl MetalOps {
             self.autotune_decode_matvec_quant(&mut profile, fingerprint, GgmlType::Q8_0);
         }
         if let Some(batch_quant) = self.preferred_batch_prefill_quant(fingerprint) {
-            self.autotune_batch_prefill_route(&mut profile, fingerprint, batch_quant);
+            skip_runtime_batch_route_autotune =
+                self.autotune_batch_prefill_route(&mut profile, fingerprint, batch_quant);
         }
 
         profile.model = fingerprint.model_name.clone();
@@ -4038,7 +4063,7 @@ impl MetalOps {
             self.device_cache_key.as_str(),
             fingerprint.stable_id(),
         );
-        profile
+        (profile, skip_runtime_batch_route_autotune)
     }
 
     fn select_kv_precision_mode(&self, fingerprint: &ModelFingerprint) -> KvPrecisionMode {
@@ -4300,13 +4325,13 @@ impl MetalOps {
         profile: &mut KernelProfile,
         fingerprint: &ModelFingerprint,
         quant: GgmlType,
-    ) {
+    ) -> bool {
         let Some((n_threshold, m_max)) = self.tune_f16in_batch_route(
             quant,
             fingerprint.embedding_dim,
             fingerprint.intermediate_dim,
         ) else {
-            return;
+            return false;
         };
 
         let old_n_threshold = profile.batch_prefill.small_n_threshold;
@@ -4325,6 +4350,7 @@ impl MetalOps {
                 "Autotuned batch prefill routing profile"
             );
         }
+        true
     }
 
     fn decode_autotune_shapes(fingerprint: &ModelFingerprint) -> Vec<WeightedMatvecShape> {
@@ -5195,6 +5221,7 @@ impl MetalOps {
     /// If the GPU holds the latest version of conv or recurrent state (backend-owned),
     /// copies it back to the Qwen35Kv CPU buffers so CPU-side decode can proceed.
     /// No-op if state is already CPU-fresh.
+    #[allow(dead_code)]
     pub(crate) fn materialize_qwen35_slot_state_to_cpu(
         &self,
         qwen_kv: &mut crate::kv::Qwen35Kv,
@@ -10913,6 +10940,125 @@ mod tests {
         assert!(
             !backend.ops.f16in_route_tuned.load(Ordering::Relaxed),
             "runtime batch-route autotune should stay enabled when load-time quant family is unknown"
+        );
+    }
+
+    #[test]
+    fn test_configure_for_fingerprint_keeps_runtime_batch_autotune_enabled_when_loadtime_has_no_valid_batch_shapes()
+     {
+        let _env_lock = lock_env_test();
+        let backend = MetalBackend::new().unwrap();
+        let temp_cache_dir = unique_temp_cache_dir("no-valid-loadtime-batch-shapes");
+        let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "on");
+        let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
+        let _cache_dir = EnvVarGuard::set(
+            "AX_METAL_TUNE_CACHE_DIR",
+            temp_cache_dir
+                .to_str()
+                .unwrap_or("/tmp/ax-engine-metal-test-no-valid-loadtime-batch-shapes"),
+        );
+
+        let mut fingerprint = test_fingerprint();
+        // Q4_K block size is 256. With embedding_dim=130, load-time batch-route tuning
+        // cannot benchmark any valid shape and must leave runtime autotune enabled.
+        fingerprint.embedding_dim = 130;
+        fingerprint.intermediate_dim = 194;
+
+        backend.configure_for_fingerprint(&fingerprint).unwrap();
+
+        assert!(
+            !backend.ops.f16in_route_tuned.load(Ordering::Relaxed),
+            "runtime batch-route autotune should stay enabled when load-time tuning cannot benchmark any valid shape"
+        );
+    }
+
+    #[test]
+    fn test_configure_for_fingerprint_keeps_runtime_batch_autotune_enabled_when_cached_profile_has_no_batch_route_delta()
+     {
+        let _env_lock = lock_env_test();
+        let backend = MetalBackend::new().unwrap();
+        let temp_cache_dir = unique_temp_cache_dir("cached-profile-no-batch-delta");
+        let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "on");
+        let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
+        let _cache_dir = EnvVarGuard::set(
+            "AX_METAL_TUNE_CACHE_DIR",
+            temp_cache_dir
+                .to_str()
+                .unwrap_or("/tmp/ax-engine-metal-test-cached-profile-no-batch-delta"),
+        );
+
+        let fingerprint = test_fingerprint();
+        let cache_path = backend.ops.kernel_profile_cache_path(&fingerprint);
+        fs::create_dir_all(
+            cache_path
+                .parent()
+                .expect("kernel profile cache path should have parent"),
+        )
+        .unwrap();
+
+        let mut cached_profile = KernelProfile::default();
+        cached_profile.source = "load-autotune".to_string();
+        cached_profile.decode_matvec.insert(
+            "q4_k".to_string(),
+            MatvecParams {
+                threadgroup_size: 64,
+                rows_per_simdgroup: 1,
+                variant: Some(MatvecProfileVariant::Ilp4),
+            },
+        );
+        fs::write(
+            &cache_path,
+            serde_json::to_string_pretty(&cached_profile).unwrap(),
+        )
+        .unwrap();
+
+        backend.configure_for_fingerprint(&fingerprint).unwrap();
+
+        assert!(
+            !backend.ops.f16in_route_tuned.load(Ordering::Relaxed),
+            "runtime batch-route autotune should remain enabled when cached profile has no concrete batch-route delta"
+        );
+    }
+
+    #[test]
+    fn test_configure_for_fingerprint_skips_runtime_batch_autotune_when_cached_profile_has_batch_route_delta()
+     {
+        let _env_lock = lock_env_test();
+        let backend = MetalBackend::new().unwrap();
+        let temp_cache_dir = unique_temp_cache_dir("cached-profile-with-batch-delta");
+        let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "on");
+        let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
+        let _cache_dir = EnvVarGuard::set(
+            "AX_METAL_TUNE_CACHE_DIR",
+            temp_cache_dir
+                .to_str()
+                .unwrap_or("/tmp/ax-engine-metal-test-cached-profile-with-batch-delta"),
+        );
+
+        let fingerprint = test_fingerprint();
+        let cache_path = backend.ops.kernel_profile_cache_path(&fingerprint);
+        fs::create_dir_all(
+            cache_path
+                .parent()
+                .expect("kernel profile cache path should have parent"),
+        )
+        .unwrap();
+
+        let mut cached_profile = KernelProfile::default();
+        cached_profile.source = "load-autotune".to_string();
+        cached_profile.batch_prefill.small_n_threshold = 65;
+        cached_profile.batch_prefill.small_m_max = fingerprint.embedding_dim;
+        fs::write(
+            &cache_path,
+            serde_json::to_string_pretty(&cached_profile).unwrap(),
+        )
+        .unwrap();
+
+        backend.configure_for_fingerprint(&fingerprint).unwrap();
+
+        assert!(
+            backend.ops.f16in_route_tuned.load(Ordering::Relaxed),
+            "runtime batch-route autotune should be skipped when cached profile carries a concrete batch-route delta"
         );
     }
 
