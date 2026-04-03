@@ -351,7 +351,12 @@ run-configured per benchmark run). AX% over 100% means AX was faster.
 | Qwen3.5 4B | Q8_0 | 1,054 tok/s | 51.5 tok/s | 1,340 tok/s | 56.5 tok/s | 79% | **91%** |
 | Qwen3.5 9B | Q4_K_M | 585 tok/s | 48.6 tok/s | 733 tok/s | 49.0 tok/s | 80% | 99% |
 | Qwen3.5 27B | Q4_K_M | 191 tok/s | 17.4 tok/s | 209 tok/s | 17.6 tok/s | 91% | 99% |
-| Qwen3.5 35B-A3B | Q4_K_M | 923 tok/s | — | 799 tok/s | 53.2 tok/s | **116%** | — |
+| Qwen3.5 35B-A3B | Q4_K_M | 955 tok/s | — | 1,170 tok/s | 58.4 tok/s | 82% | — |
+
+Qwen3.5 35B-A3B decode is omitted — output correctness is under investigation
+(prefill is correct, decode produces garbage). Qwen3.5 dense models (4B/9B/27B)
+decode is also under investigation for the same hybrid attention+SSM state
+handoff issue.
 
 Prefill uses config-driven kernel selection across all supported quant types
 (Q4_K, Q5_K, Q6_K, Q8_0) with f16-input full-tile kernels (64x64, 64x32,
