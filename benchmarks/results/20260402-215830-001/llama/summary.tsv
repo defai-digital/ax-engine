@@ -1,0 +1,2 @@
+model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_s	prefill_median_tok_per_s	prefill_mean_tok_per_s	decode_median_tok_per_s	decode_mean_tok_per_s
+models/meta-llama-3-70b-instruct.Q4_K_M.gguf	512	128	512	3	30	57.052428	57.93182866666667	5.613683	5.57395

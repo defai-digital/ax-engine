@@ -1,0 +1,2 @@
+label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
+llama3-70b	models/meta-llama-3-70b-instruct.Q4_K_M.gguf	512	128	512	3	20	49.50599399623793	53.87396	91.89224997798182	8.37202716028694	4.595279	182.18757033657675

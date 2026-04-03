@@ -447,7 +447,7 @@ impl Qwen35Forward {
             dim,
         );
         let (expert_ids, expert_weights) =
-            crate::model::qwen3_moe::top_k_softmax(&router_logits, n_expert_used);
+            crate::model::moe_utils::top_k_softmax(&router_logits, n_expert_used);
 
         if std::env::var("AX_DEBUG_MOE").is_ok() {
             let top5: Vec<(usize, f32)> = {
@@ -470,30 +470,26 @@ impl Qwen35Forward {
         let gate_exps_name = format!("{prefix}.ffn_gate_exps.weight");
         let up_exps_name = format!("{prefix}.ffn_up_exps.weight");
         let down_exps_name = format!("{prefix}.ffn_down_exps.weight");
-        let expert_inter_dim = cfg
-            .expert_intermediate_dim
-            .map(|d| d as usize)
-            .unwrap_or_else(|| {
-                Self::tensor_output_rows(weights, &gate_exps_name).unwrap_or(shared_inter_dim_hint)
-            });
+        let expert_inter_dim = Self::tensor_output_rows(weights, &gate_exps_name)?;
         let (gate_exps_raw, gate_exps_dtype) = weights.raw_with_dtype(&gate_exps_name)?;
         let (up_exps_raw, up_exps_dtype) = weights.raw_with_dtype(&up_exps_name)?;
         let (down_exps_raw, down_exps_dtype) = weights.raw_with_dtype(&down_exps_name)?;
         let gate_stride =
-            crate::model::qwen3_moe::expert_byte_stride(gate_exps_dtype, expert_inter_dim * dim);
+            crate::model::moe_utils::expert_byte_stride(gate_exps_dtype, expert_inter_dim * dim);
         let up_stride =
-            crate::model::qwen3_moe::expert_byte_stride(up_exps_dtype, expert_inter_dim * dim);
+            crate::model::moe_utils::expert_byte_stride(up_exps_dtype, expert_inter_dim * dim);
         let down_stride =
-            crate::model::qwen3_moe::expert_byte_stride(down_exps_dtype, dim * expert_inter_dim);
+            crate::model::moe_utils::expert_byte_stride(down_exps_dtype, dim * expert_inter_dim);
 
         let shared_gate_name = format!("{prefix}.ffn_gate_shexp.weight");
         let shared_up_name = format!("{prefix}.ffn_up_shexp.weight");
         let shared_down_name = format!("{prefix}.ffn_down_shexp.weight");
         let shared_gate_inp_name = format!("{prefix}.ffn_gate_inp_shexp.weight");
-        // Use the hint from caller (cfg.intermediate_dim or shared_expert_intermediate_dim).
-        // Don't infer from tensor_output_rows — the GGUF tensor shape [dim, inter_dim]
-        // has dim as the first dimension, not inter_dim.
-        let shared_inter_dim = shared_inter_dim_hint;
+        let shared_inter_dim = if weights.has(&shared_gate_name) {
+            Self::tensor_output_rows(weights, &shared_gate_name)?
+        } else {
+            shared_inter_dim_hint
+        };
         let max_inter_dim = expert_inter_dim.max(shared_inter_dim.max(1));
         let mut gate_buf = vec![0.0f32; max_inter_dim];
         let mut up_buf = vec![0.0f32; max_inter_dim];
@@ -678,21 +674,16 @@ impl Qwen35Forward {
         let gate_exps_name = format!("{prefix}.ffn_gate_exps.weight");
         let up_exps_name = format!("{prefix}.ffn_up_exps.weight");
         let down_exps_name = format!("{prefix}.ffn_down_exps.weight");
-        let expert_inter_dim = cfg
-            .expert_intermediate_dim
-            .map(|d| d as usize)
-            .unwrap_or_else(|| {
-                Self::tensor_output_rows(weights, &gate_exps_name).unwrap_or(shared_inter_dim_hint)
-            });
+        let expert_inter_dim = Self::tensor_output_rows(weights, &gate_exps_name)?;
         let (gate_exps_raw, gate_exps_dtype) = weights.raw_with_dtype(&gate_exps_name)?;
         let (up_exps_raw, up_exps_dtype) = weights.raw_with_dtype(&up_exps_name)?;
         let (down_exps_raw, down_exps_dtype) = weights.raw_with_dtype(&down_exps_name)?;
         let gate_stride =
-            crate::model::qwen3_moe::expert_byte_stride(gate_exps_dtype, expert_inter_dim * dim);
+            crate::model::moe_utils::expert_byte_stride(gate_exps_dtype, expert_inter_dim * dim);
         let up_stride =
-            crate::model::qwen3_moe::expert_byte_stride(up_exps_dtype, expert_inter_dim * dim);
+            crate::model::moe_utils::expert_byte_stride(up_exps_dtype, expert_inter_dim * dim);
         let down_stride =
-            crate::model::qwen3_moe::expert_byte_stride(down_exps_dtype, dim * expert_inter_dim);
+            crate::model::moe_utils::expert_byte_stride(down_exps_dtype, dim * expert_inter_dim);
 
         // Use GPU backend for the batched router matmul (one dispatch for all tokens).
         let (router_raw, router_dtype) = weights.raw_with_dtype(&router_name)?;
@@ -711,7 +702,7 @@ impl Qwen35Forward {
         // expert_map[eid] = Vec<(token_idx, router_weight)>
         let mut expert_map: Vec<Vec<(usize, f32)>> = vec![Vec::new(); n_expert];
         for token_idx in 0..n_tokens {
-            let (expert_ids, expert_weights) = crate::model::qwen3_moe::top_k_softmax(
+            let (expert_ids, expert_weights) = crate::model::moe_utils::top_k_softmax(
                 &router_logits[token_idx * n_expert..(token_idx + 1) * n_expert],
                 n_expert_used,
             );

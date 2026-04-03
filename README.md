@@ -346,10 +346,12 @@ noted. llama.cpp values are 3-sample medians with 20s cooldown. AX% over
 
 | Model | Quant | AX Prefill | AX Decode | llama Prefill | llama Decode | Prefill % | Decode % |
 |---|---|---:|---:|---:|---:|---:|---:|
+| LLaMA 3 70B | Q4_K_M | 50 tok/s | 5.5 tok/s | 57 tok/s | 5.6 tok/s | 87% | 98% |
+| LLaMA 3.1 8B | Q5_K_M | 605 tok/s | 56.3 tok/s | 705 tok/s | 55.5 tok/s | 86% | **102%** |
 | Qwen3.5 4B | Q8_0 | 1,054 tok/s | 51.5 tok/s | 1,340 tok/s | 56.5 tok/s | 79% | **91%** |
 | Qwen3.5 9B | Q4_K_M | 585 tok/s | 48.6 tok/s | 733 tok/s | 49.0 tok/s | 80% | 99% |
 | Qwen3.5 27B | Q4_K_M | 191 tok/s | 17.4 tok/s | 209 tok/s | 17.6 tok/s | 91% | 99% |
-| Qwen3.5 35B-A3B | Q4_K_M | 905 tok/s | — | 1,194 tok/s | 55.3 tok/s | 76% | — |
+| Qwen3.5 35B-A3B | Q4_K_M | 5 tok/s | 5 tok/s | 799 tok/s | 53.2 tok/s | 1% | 9% |
 
 Prefill uses config-driven kernel selection across all supported quant types
 (Q4_K, Q5_K, Q6_K, Q8_0) with f16-input full-tile kernels (64x64, 64x32,

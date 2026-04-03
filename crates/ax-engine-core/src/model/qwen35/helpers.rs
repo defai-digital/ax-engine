@@ -451,6 +451,7 @@ impl Qwen35Forward {
         let router_name = format!("{prefix}.ffn_gate_inp.weight");
         let (router_raw, router_dtype) = weights.raw_with_dtype(&router_name)?;
         if !Self::qwen35_moe_batch_dtype_supported(router_dtype) {
+            eprintln!("[MoE KEYS] {prefix}: router dtype {router_dtype:?} NOT supported");
             return Ok(None);
         }
         let router_key = metal_ops.ensure_moe_quant_cached(router_raw);
@@ -480,6 +481,7 @@ impl Qwen35Forward {
             || !Self::qwen35_moe_routed_expert_dtype_supported(up_dtype)
             || !Self::qwen35_moe_routed_expert_dtype_supported(down_dtype)
         {
+            eprintln!("[MoE KEYS] {prefix}: expert dtypes NOT supported: gate={gate_dtype:?} up={up_dtype:?} down={down_dtype:?}");
             return Ok(None);
         }
         let gate_key = metal_ops.ensure_moe_quant_cached(gate_raw);
@@ -487,10 +489,10 @@ impl Qwen35Forward {
         let down_key = metal_ops.ensure_moe_quant_cached(down_raw);
 
         let gate_stride =
-            crate::model::qwen3_moe::expert_byte_stride(gate_dtype, expert_inter_dim * dim);
-        let up_stride = crate::model::qwen3_moe::expert_byte_stride(up_dtype, expert_inter_dim * dim);
+            crate::model::moe_utils::expert_byte_stride(gate_dtype, expert_inter_dim * dim);
+        let up_stride = crate::model::moe_utils::expert_byte_stride(up_dtype, expert_inter_dim * dim);
         let down_stride =
-            crate::model::qwen3_moe::expert_byte_stride(down_dtype, dim * expert_inter_dim);
+            crate::model::moe_utils::expert_byte_stride(down_dtype, dim * expert_inter_dim);
 
         let shared_gate_name = format!("{prefix}.ffn_gate_shexp.weight");
         let shared_expert = if weights.has(&shared_gate_name) {
@@ -539,6 +541,7 @@ impl Qwen35Forward {
             None
         };
 
+        eprintln!("[MoE KEYS] {prefix}: expert_inter_dim={expert_inter_dim} n_expert={n_expert} n_expert_used={n_expert_used} shared={}", shared_expert.is_some());
         Ok(Some(Qwen35MoeResidentLayerKeys {
             router: router_key,
             router_dtype,

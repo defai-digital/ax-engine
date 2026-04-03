@@ -1918,7 +1918,11 @@ impl Qwen35Forward {
         if qwen_kv.gpu_attention().is_some()
             && !qwen_kv.ensure_gpu_attention_capacity_for(batch_position + n_tokens)
         {
+            eprintln!("[BATCH FALLBACK] gpu_attention_capacity_unavailable: batch_position={batch_position} n_tokens={n_tokens}");
             return fallback("gpu_attention_capacity_unavailable");
+        }
+        if qwen_kv.gpu_attention().is_none() {
+            eprintln!("[BATCH FALLBACK] no GPU attention KV");
         }
         if !metal_ops.has_cached_model_keys() {
             Self::build_cached_model_keys_qwen35(metal_ops, weights, cfg)?;

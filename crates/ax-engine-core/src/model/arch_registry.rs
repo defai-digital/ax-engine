@@ -9,7 +9,6 @@ use crate::model::forward::ForwardPass;
 use crate::model::gemma3::Gemma3Forward;
 use crate::model::llama::LlamaForward;
 use crate::model::qwen3::Qwen3Forward;
-use crate::model::qwen3_moe::Qwen3MoeForward;
 use crate::model::qwen35::Qwen35Forward;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,8 +33,6 @@ pub fn is_arch_supported(arch: &str) -> bool {
         "llama"
             | "qwen2"
             | "qwen3"
-            | "qwen2moe"
-            | "qwen3moe"
             | "qwen35"
             | "qwen35moe"
             | "gemma"
@@ -102,30 +99,19 @@ pub fn forward_for_arch(arch: &str) -> anyhow::Result<Box<dyn ForwardPass>> {
             "unsupported architecture: 'phi3'. Phi-3/Phi-4 support has been removed from AX."
         ),
         "qwen2" | "qwen3" => Ok(Box::new(Qwen3Forward)),
-        "qwen2moe" | "qwen3moe" => Ok(Box::new(Qwen3MoeForward)),
         "qwen35" | "qwen35moe" => Ok(Box::new(Qwen35Forward)),
         "gemma" | "gemma2" | "gemma3" => Ok(Box::new(Gemma3Forward)),
         _ => anyhow::bail!(
-            "unsupported architecture: '{arch}'. Supported: llama, qwen2, qwen3, qwen3moe, qwen35, qwen35moe, gemma, gemma2, gemma3"
+            "unsupported architecture: '{arch}'. Supported: llama, qwen2, qwen3, qwen35, qwen35moe, gemma, gemma2, gemma3"
         ),
     }
 }
 
-/// Create a `ForwardPass` with config awareness. Detects MoE variants
-/// (e.g. Qwen3 with n_expert > 0) and routes to the appropriate implementation.
+/// Create a `ForwardPass` with config awareness.
 pub fn forward_for_arch_with_config(
     arch: &str,
-    config: &ModelConfig,
+    _config: &ModelConfig,
 ) -> anyhow::Result<Box<dyn ForwardPass>> {
-    // Detect MoE: if Qwen2/Qwen3 architecture with n_expert > 0, use MoE forward
-    if matches!(arch, "qwen2" | "qwen3") && config.n_expert.is_some_and(|n| n > 0) {
-        tracing::info!(
-            n_expert = config.n_expert.unwrap(),
-            n_expert_used = config.n_expert_used.unwrap_or(0),
-            "Detected Qwen3 MoE model, using Qwen3MoeForward"
-        );
-        return Ok(Box::new(Qwen3MoeForward));
-    }
     forward_for_arch(arch)
 }
 

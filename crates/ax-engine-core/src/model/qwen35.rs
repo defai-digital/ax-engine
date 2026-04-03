@@ -552,7 +552,7 @@ impl Qwen35Forward {
     }
 
     fn gpu_batch_prefill_enabled() -> bool {
-        env_flag_override("AX_QWEN35_GPU_BATCH_PREFILL").unwrap_or(false)
+        env_flag_override("AX_QWEN35_GPU_BATCH_PREFILL").unwrap_or(true)
     }
 
     fn unified_prefill_enabled() -> bool {
@@ -799,6 +799,7 @@ impl Qwen35Forward {
     ) -> anyhow::Result<()> {
         use crate::backend::metal::{CachedLayerKeys, CachedModelKeys};
 
+        eprintln!("[BUILD KEYS] build_cached_model_keys_qwen35 called for {} layers, is_moe={}", cfg.n_layers, Self::qwen35_is_moe(cfg));
         let dim = cfg.embedding_dim as usize;
         let n_heads = cfg.n_heads as usize;
         let n_kv_heads = cfg.n_kv_heads as usize;

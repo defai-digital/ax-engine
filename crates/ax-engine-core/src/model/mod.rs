@@ -11,7 +11,7 @@ pub mod llama;
 mod prefill_schedule;
 pub mod qwen3;
 pub mod qwen35;
-pub mod qwen3_moe;
+pub(crate) mod moe_utils;
 pub(crate) mod shared;
 pub mod weights;
 
