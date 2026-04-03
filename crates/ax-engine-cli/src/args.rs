@@ -18,8 +18,8 @@ pub struct CliArgs {
     #[arg(short = 'n', long = "n-predict", default_value_t = -1)]
     pub n_predict: i32,
 
-    /// Context size
-    #[arg(short = 'c', long = "ctx-size", default_value_t = 4096)]
+    /// Context size (0 = use model default)
+    #[arg(short = 'c', long = "ctx-size", default_value_t = 0)]
     pub ctx_size: u32,
 
     /// Number of threads to use (0 = auto)
