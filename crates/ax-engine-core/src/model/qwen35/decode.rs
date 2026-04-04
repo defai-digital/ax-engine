@@ -179,6 +179,7 @@ impl Qwen35Forward {
                         &s.up_buf,
                         1,
                         q_dim as u32,
+                        head_dim as u32,
                     );
                     barrier.post_dispatch(&[&s.gate_buf], &[&s.q_buf, &s.up_buf]);
                     barrier.step(encoder);
@@ -220,6 +221,7 @@ impl Qwen35Forward {
                         n_heads as u32,
                         n_kv_heads as u32,
                         head_dim as u32,
+                        (head_dim as u32).min(64),
                         rope_position,
                         0.0,
                         cfg.rope_freq_base,
@@ -339,7 +341,7 @@ impl Qwen35Forward {
                         lw.wg_dtype,
                         lw.wu_dtype,
                         exec_plan.dequant_dispatch,
-                        exec_plan.use_pair_matvec,
+                        false,
                     ) {
                         encode_dequant_matvec_with_config(
                             metal_ops,
@@ -489,12 +491,14 @@ impl Qwen35Forward {
                                 &[&s.up_buf, &s.proj_buf, &s.v_buf, &slot_buffers.recurrent_state],
                                 &[&s.q_buf, &slot_buffers.recurrent_state],
                             );
-                            if metal_ops.gdn.encode_single_token_gated_delta_fused(
-                                encoder, &s.up_buf, &s.proj_buf, &s.v_buf,
-                                &slot_buffers.recurrent_state, &s.q_buf,
-                                dims.group_count as u32, dims.time_step_rank as u32,
-                                dims.state_size as u32, eps,
-                            ) {
+                            if false
+                                && metal_ops.gdn.encode_single_token_gated_delta_fused(
+                                    encoder, &s.up_buf, &s.proj_buf, &s.v_buf,
+                                    &slot_buffers.recurrent_state, &s.q_buf,
+                                    dims.group_count as u32, dims.time_step_rank as u32,
+                                    dims.state_size as u32, eps,
+                                )
+                            {
                                 barrier.post_dispatch(
                                     &[&s.up_buf, &s.proj_buf, &s.v_buf, &slot_buffers.recurrent_state],
                                     &[&s.q_buf, &slot_buffers.recurrent_state],
@@ -583,7 +587,7 @@ impl Qwen35Forward {
                                 &s.norm_buf, &s.gate_buf, &s.up_buf,
                                 inter_dim as u32, dim as u32,
                                 lw.wg_dtype, lw.wu_dtype,
-                                exec_plan.dequant_dispatch, exec_plan.use_pair_matvec,
+                                exec_plan.dequant_dispatch, false,
                             ) {
                                 encode_dequant_matvec_with_config(
                                     metal_ops, encoder, wg, &s.norm_buf, &s.gate_buf,
@@ -914,7 +918,7 @@ impl Qwen35Forward {
                             $lw.wg_dtype,
                             $lw.wu_dtype,
                             exec_plan.dequant_dispatch,
-                            exec_plan.use_pair_matvec,
+                            false,
                         ) {
                             encode_dequant_matvec_with_config(
                                 metal_ops,
@@ -1033,6 +1037,7 @@ impl Qwen35Forward {
                         &s.up_buf,
                         1,
                         q_dim as u32,
+                        head_dim as u32,
                     );
                     barrier.step(encoder);
                     if let Some(ref mut ops_ref) = ops {
@@ -1076,6 +1081,7 @@ impl Qwen35Forward {
                         n_heads as u32,
                         n_kv_heads as u32,
                         head_dim as u32,
+                        (head_dim as u32).min(64),
                         rope_position,
                         0.0,
                         cfg.rope_freq_base,
@@ -1287,7 +1293,8 @@ impl Qwen35Forward {
                             );
                             barrier.step(encoder);
 
-                            if metal_ops.gdn.encode_single_token_gated_delta_fused(
+                            if false
+                                && metal_ops.gdn.encode_single_token_gated_delta_fused(
                                 encoder,
                                 &s.up_buf,
                                 &s.proj_buf,
@@ -1298,7 +1305,8 @@ impl Qwen35Forward {
                                 dims.time_step_rank as u32,
                                 dims.state_size as u32,
                                 eps,
-                            ) {
+                                )
+                            {
                                 barrier.step(encoder);
                             } else {
                                 metal_ops.gdn.encode_prepare_single_token_qkv(

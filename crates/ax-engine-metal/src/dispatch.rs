@@ -1051,12 +1051,11 @@ fn q6_k_matvec_candidate_selection(
             };
         }
         Some(MatvecProfileVariant::Ilp4) => {
-            return MatvecCandidateSelection {
-                candidate: MatvecCandidate::Q6KIlp4,
-                stability: KernelStabilityTier::ProfilePreferred,
-                threadgroups: (m as usize).div_ceil(Q6K_ILP4_ROWS),
-                threadgroup_width: DEQUANT_MATVEC_Q6K_ILP4_TG,
-            };
+            // Q6_K ILP4 has a correctness bug (only covers 16/32 positions per
+            // sub-group). Fall through to NR2 instead of using ILP4.
+            tracing::warn!(
+                "Q6_K ILP4 matvec requested by profile but disabled due to correctness bug; falling back to NR2"
+            );
         }
         Some(MatvecProfileVariant::Base) => {
             return MatvecCandidateSelection {
@@ -1077,6 +1076,9 @@ fn q6_k_matvec_candidate_selection(
         };
     }
     // Dimension-aware auto-selection when no profile preference.
+    // NOTE: Q6_K ILP4 is disabled — the kernel's thread decomposition
+    // (tid = lane/4, il = tid%4) only covers positions 0-15 per
+    // 32-element sub-group, missing positions 16-31.  Use NR2 for all M≥2.
     if m < 2 {
         MatvecCandidateSelection {
             candidate: MatvecCandidate::Q6KBase,
@@ -1084,19 +1086,12 @@ fn q6_k_matvec_candidate_selection(
             threadgroups: m as usize,
             threadgroup_width: DEQUANT_MATVEC_TG,
         }
-    } else if m <= 4096 {
+    } else {
         MatvecCandidateSelection {
             candidate: MatvecCandidate::Q6KNr2,
             stability: KernelStabilityTier::Stable,
             threadgroups: (m as usize).div_ceil(Q6K_NR2_ROWS),
             threadgroup_width: DEQUANT_MATVEC_Q6K_NR2_TG,
-        }
-    } else {
-        MatvecCandidateSelection {
-            candidate: MatvecCandidate::Q6KIlp4,
-            stability: KernelStabilityTier::Stable,
-            threadgroups: (m as usize).div_ceil(Q6K_ILP4_ROWS),
-            threadgroup_width: DEQUANT_MATVEC_Q6K_ILP4_TG,
         }
     }
 }
@@ -1239,7 +1234,7 @@ fn sdpa_parallel_decode_enabled() -> bool {
         std::env::var("AX_METAL_DECODE_SDPA_PARALLEL")
             .ok()
             .and_then(|v| parse_bool_env_flag(&v))
-            .unwrap_or(true) // default ON; validated +6-12% decode; =0 to disable
+            .unwrap_or(false) // default OFF; kernel has no correctness tests and may produce wrong output
     })
 }
 
@@ -10768,12 +10763,13 @@ impl ElementwiseKernels {
         n_q_heads: u32,
         n_kv_heads: u32,
         head_dim: u32,
+        rope_dim: u32,
         position: f32,
         freq_base: f32,
     ) {
         self.encode_rope_yarn(
-            encoder, q, k, n_q_heads, n_kv_heads, head_dim, position, freq_base, 1.0, 0.0, 1.0,
-            32.0, 1.0, 0,
+            encoder, q, k, n_q_heads, n_kv_heads, head_dim, rope_dim, position, freq_base, 1.0,
+            0.0, 1.0, 32.0, 1.0, 0,
         );
     }
 
@@ -10788,6 +10784,7 @@ impl ElementwiseKernels {
         n_q_heads: u32,
         n_kv_heads: u32,
         head_dim: u32,
+        rope_dim: u32,
         position: f32,
         freq_base: f32,
         freq_scale: f32,
@@ -10820,6 +10817,7 @@ impl ElementwiseKernels {
         bind_f32(encoder, 12, beta_fast);
         bind_f32(encoder, 13, beta_slow);
         bind_u32(encoder, 14, n_ctx_orig);
+        bind_u32(encoder, 15, rope_dim);
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             dims.threadgroups,
             dims.threads_per_threadgroup,
@@ -10837,6 +10835,7 @@ impl ElementwiseKernels {
         n_q_heads: u32,
         n_kv_heads: u32,
         head_dim: u32,
+        rope_dim: u32,
         start_pos: f32,
         pos_step: f32,
         freq_base: f32,
@@ -10864,6 +10863,7 @@ impl ElementwiseKernels {
         bind_f32(encoder, 12, 32.0); // beta_fast
         bind_f32(encoder, 13, 1.0); // beta_slow
         bind_u32(encoder, 14, 0); // n_ctx_orig
+        bind_u32(encoder, 15, rope_dim);
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             dims.threadgroups,
             dims.threads_per_threadgroup,
@@ -11955,8 +11955,8 @@ impl ElementwiseKernels {
 
     /// Encode batched split from fused Q+gate rows into separate Q and gate buffers.
     ///
-    /// Used by Qwen3.5 full-attention layers where the Q projection outputs
-    /// `[Q | gate]` interleaved per token.
+    /// Used by Qwen3.5 full-attention layers where the Q projection output is
+    /// interleaved per head: `[q_h0, g_h0, q_h1, g_h1, ...]`.
     pub fn encode_split_qgate_batch(
         &self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
@@ -11965,9 +11965,9 @@ impl ElementwiseKernels {
         gate: &MetalBuffer,
         n_rows: u32,
         q_dim: u32,
+        head_dim: u32,
     ) {
-        let fused_dim = 2 * q_dim;
-        let total = (n_rows as usize) * (fused_dim as usize);
+        let total = (n_rows as usize) * (q_dim as usize);
         let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
         encoder.setComputePipelineState(self.split_qgate_batch.state());
         unsafe {
@@ -11977,6 +11977,7 @@ impl ElementwiseKernels {
         }
         bind_u32(encoder, 3, n_rows);
         bind_u32(encoder, 4, q_dim);
+        bind_u32(encoder, 5, head_dim);
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             dims.threadgroups,
             dims.threads_per_threadgroup,
@@ -12365,7 +12366,15 @@ impl ElementwiseKernels {
     ) -> anyhow::Result<()> {
         device.execute_sync(|encoder| {
             self.encode_rope(
-                encoder, q, k, n_q_heads, n_kv_heads, head_dim, position, freq_base,
+                encoder,
+                q,
+                k,
+                n_q_heads,
+                n_kv_heads,
+                head_dim,
+                head_dim,
+                position,
+                freq_base,
             );
             Ok(())
         })
@@ -12388,7 +12397,16 @@ impl ElementwiseKernels {
     ) -> anyhow::Result<()> {
         device.execute_sync(|encoder| {
             self.encode_rope_batch(
-                encoder, q, k, n_rows, n_q_heads, n_kv_heads, head_dim, start_pos, pos_step,
+                encoder,
+                q,
+                k,
+                n_rows,
+                n_q_heads,
+                n_kv_heads,
+                head_dim,
+                head_dim,
+                start_pos,
+                pos_step,
                 freq_base,
             );
             Ok(())

@@ -777,6 +777,7 @@ impl Gemma3Forward {
                                 n_heads as u32,
                                 n_kv_heads as u32,
                                 head_dim as u32,
+                                head_dim as u32,
                                 layer_plan.rope_start,
                                 layer_plan.rope_step,
                                 layer_plan.rope_base,
@@ -1328,4 +1329,3 @@ impl Gemma3Forward {
         Ok(())
     }
 }
-

@@ -75,6 +75,7 @@ impl crate::model::shared::GpuDecodeLayerStrategy for LlamaDecodeStrategy<'_> {
                 d.n_heads,
                 d.n_kv_heads,
                 d.head_dim,
+                d.head_dim,
                 self.rope_position,
                 self.cfg.rope_freq_base,
             );

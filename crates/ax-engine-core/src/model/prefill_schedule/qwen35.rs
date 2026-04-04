@@ -445,6 +445,7 @@ pub(super) fn build_qwen35_full_attention_prefill_schedule(
         gate: br(&bs.up_buf),
         n: nt,
         q_dim: q_dim as u32,
+        head_dim,
     });
 
     if let (Some(q_key), Some(k_key)) = (cached_layer.attn_q_norm, cached_layer.attn_k_norm) {
@@ -1034,6 +1035,7 @@ pub(super) fn encode_prefill_schedule(
                     gate,
                     n,
                     q_dim,
+                    head_dim,
                 } => {
                     metal_ops.elementwise.encode_split_qgate_batch(
                         encoder,
@@ -1042,6 +1044,7 @@ pub(super) fn encode_prefill_schedule(
                         gate.get(),
                         *n,
                         *q_dim,
+                        *head_dim,
                     );
                 }
                 PrefillOp::PerHeadRmsNormBatch {
@@ -1274,6 +1277,7 @@ pub(super) fn encode_prefill_schedule(
                         *n_heads,
                         *n_kv_heads,
                         *head_dim,
+                        (*head_dim).min(64),
                         *rope_start,
                         *rope_step,
                         *rope_base,

@@ -676,10 +676,10 @@ pub fn resolve_backend_config_from_env() -> BackendConfig {
         _ => {}
     }
 
-    // Default: HybridCpuDecode. GPU pipelined decode has a computation
-    // error that affects all architectures (produces garbage output).
-    // GPU batch prefill works correctly. Set AX_HYBRID_DECODE=metal to
-    // force full GPU decode for benchmarking.
+    // Default: HybridCpuDecode (GPU prefill + CPU decode).
+    // GPU decode is correct with serial encoder (Q6_K ILP4 bug fixed, concurrent
+    // encoder disabled), but Qwen3.5 GPU batch prefill still has issues with
+    // multi-token prompts. Use AX_HYBRID_DECODE=metal to enable full GPU decode.
     BackendConfig::HybridCpuDecode
 }
 
@@ -817,7 +817,10 @@ mod tests {
             std::env::remove_var("AX_HYBRID_DECODE");
         }
 
-        assert_eq!(resolve_backend_config_from_env(), BackendConfig::Hybrid);
+        assert_eq!(
+            resolve_backend_config_from_env(),
+            BackendConfig::HybridCpuDecode
+        );
     }
 
     #[test]

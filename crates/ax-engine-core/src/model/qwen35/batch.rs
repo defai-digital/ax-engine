@@ -352,6 +352,7 @@ impl Qwen35Forward {
                     &bs.up_buf,
                     nt,
                     q_dim as u32,
+                    head_dim as u32,
                 );
                 if let (Some(q_key), Some(k_key)) = (q_norm_key, k_norm_key) {
                     let q_nw = weight_cache.get(&q_key).unwrap();
@@ -383,6 +384,7 @@ impl Qwen35Forward {
                     n_heads as u32,
                     n_kv_heads as u32,
                     head_dim as u32,
+                    (head_dim as u32).min(64),
                     rope_start,
                     rope_step,
                     cfg.rope_freq_base,

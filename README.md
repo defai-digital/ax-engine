@@ -90,7 +90,7 @@ Examples of the current fused path include:
 - residual add + RMSNorm (layer handoff without an extra memory pass)
 - fused activation + down projection matvec (SiLU/GELU + Wd in 1 kernel)
 - pipelined double-buffered decode with model-aware execution planning
-- concurrent Metal dispatch with SmartBarrier conflict detection
+- serial Metal dispatch with optional concurrent mode and SmartBarrier conflict detection
 
 AX is not trying to "fuse everything" — it fuses where dispatch savings,
 occupancy, and memory traffic all make sense together. The benefit varies by
@@ -125,9 +125,10 @@ AX's current optimization posture is deliberate rather than random:
 - **Qwen3.5 hybrid attention + SSM** is natively supported. The recurrent
   (Mamba-2) layers use GPU-resident state with pipelined batch prefill and
   fused GDN (gated delta net) kernels.
-- **Concurrent Metal dispatch** with per-dispatch SmartBarrier conflict
-  detection overlaps independent GPU work (Q/K/V matvecs, gate/up
-  projections) while inserting barriers only at data-hazard boundaries.
+- **Metal dispatch** defaults to serial encoding for deterministic
+  correctness. Optional concurrent mode (`AX_METAL_CONCURRENT_DECODE=1`)
+  with per-dispatch SmartBarrier conflict detection is available for
+  experimentation.
 - **Split-K decode attention** distributes the KV-scan across multiple
   threadgroups for long contexts, with a lightweight reduce step.
 - **Speculative decoding** is supported via `--experimental --speculative-draft`: a small
@@ -351,12 +352,11 @@ run-configured per benchmark run). AX% over 100% means AX was faster.
 | Qwen3.5 4B | Q8_0 | 1,054 tok/s | 51.5 tok/s | 1,340 tok/s | 56.5 tok/s | 79% | **91%** |
 | Qwen3.5 9B | Q4_K_M | 585 tok/s | 48.6 tok/s | 733 tok/s | 49.0 tok/s | 80% | 99% |
 | Qwen3.5 27B | Q4_K_M | 191 tok/s | 17.4 tok/s | 209 tok/s | 17.6 tok/s | 91% | 99% |
-| Qwen3.5 35B-A3B | Q4_K_M | 955 tok/s | — | 1,170 tok/s | 58.4 tok/s | 82% | — |
+| Qwen3.5 35B-A3B | Q4_K_M | 882 tok/s | 7.1 tok/s | 1,178 tok/s | 56.4 tok/s | 75% | 13% |
 
-Qwen3.5 35B-A3B decode is omitted — output correctness is under investigation
-(prefill is correct, decode produces garbage). Qwen3.5 dense models (4B/9B/27B)
-decode is also under investigation for the same hybrid attention+SSM state
-handoff issue.
+Qwen3.5 35B-A3B MoE decode is slow (7.1 tok/s vs llama's 56.4) due to
+per-layer command buffer overhead (121 CBs/token for the MoE expert dispatch).
+GPU decode correctness is verified for Q4_K, Q6_K, and Q8_0 quant types.
 
 Prefill uses config-driven kernel selection across all supported quant types
 (Q4_K, Q5_K, Q6_K, Q8_0) with f16-input full-tile kernels (64x64, 64x32,
@@ -369,7 +369,7 @@ See [BENCHMARKING.md](./BENCHMARKING.md) for methodology.
 
 **Inference**: Metal GPU prefill and decode, pipelined double-buffered decode, CPU and hybrid backends, experimental speculative decoding with draft models.
 
-**GPU kernels**: Blocked-layout batch matmul (Q4_K/Q5_K/Q6_K/Q8_0) with config-driven kernel selection (full-tile 64x64/64x32, tail, small-N, f16-input, pair, fused-SiLU variants), simdgroup-matrix Flash Attention (HD=64/128), split-K decode attention, fused QKV+bias+QKnorm+RoPE+KV-append, fused residual+RMSNorm, NR2/ILP4 decode matvec, gate+up pair kernel, concurrent dispatch with smart barriers.
+**GPU kernels**: Blocked-layout batch matmul (Q4_K/Q5_K/Q6_K/Q8_0) with config-driven kernel selection (full-tile 64x64/64x32, tail, small-N, f16-input, pair, fused-SiLU variants), simdgroup-matrix Flash Attention (HD=64/128), split-K decode attention, fused QKV+bias+QKnorm+RoPE+KV-append, fused residual+RMSNorm, NR2 decode matvec, gate+up pair kernel.
 
 **Multi-model**: Per-model Metal command queues and KV caches, graceful OOM handling, explicit GPU/CPU backend per model, thread-safe (`Arc`/`Mutex`).
 

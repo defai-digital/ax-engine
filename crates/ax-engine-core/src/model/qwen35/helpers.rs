@@ -621,6 +621,23 @@ impl Qwen35Forward {
         beta_dtype: crate::gguf::tensor::GgmlType,
         alpha_dtype: crate::gguf::tensor::GgmlType,
     ) -> bool {
+        // NOTE: temporarily force the scalar fallback path during qwen3.5 decode
+        // debugging to isolate recurrent pair-projection correctness.
+        let _ = (
+            metal_ops,
+            encoder,
+            wbeta,
+            walpha,
+            input,
+            beta_out,
+            alpha_out,
+            m,
+            k,
+            beta_dtype,
+            alpha_dtype,
+        );
+        return false;
+
         if beta_dtype != alpha_dtype {
             return false;
         }

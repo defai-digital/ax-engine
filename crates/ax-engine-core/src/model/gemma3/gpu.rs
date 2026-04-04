@@ -79,6 +79,7 @@ impl crate::model::shared::GpuDecodeLayerStrategy for Gemma3DecodeStrategy<'_> {
                 d.n_heads,
                 d.n_kv_heads,
                 d.head_dim,
+                d.head_dim,
                 self.rope_position,
                 self.rope_base,
             );
@@ -422,4 +423,3 @@ fn encode_gemma3_pending_step(
         metal_ops.device.encode_frame(encode_body)
     }
 }
-

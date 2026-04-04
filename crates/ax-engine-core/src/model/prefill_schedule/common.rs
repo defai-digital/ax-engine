@@ -151,6 +151,7 @@ pub(super) enum PrefillOp {
         gate: BufRef,
         n: u32,
         q_dim: u32,
+        head_dim: u32,
     },
     PerHeadRmsNormBatch {
         input: BufRef,

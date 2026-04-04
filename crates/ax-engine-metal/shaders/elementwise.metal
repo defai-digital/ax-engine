@@ -704,6 +704,7 @@ kernel void rope_f32_generic(
     constant float& beta_fast    [[buffer(12)]],
     constant float& beta_slow    [[buffer(13)]],
     constant uint& n_ctx_orig    [[buffer(14)]],
+    constant uint& rope_dim      [[buffer(15)]],
     uint gid                   [[thread_position_in_grid]]
 ) {
     uint half_dim = head_dim / 2;
@@ -732,9 +733,15 @@ kernel void rope_f32_generic(
         vec_base = row * (n_kv_heads * head_dim) + head * head_dim;
     }
 
+    uint rope_dim_eff = rope_dim == 0 ? head_dim : min(rope_dim, head_dim);
+    uint rope_pairs = rope_dim_eff / 2;
+    if (i >= rope_pairs) {
+        return;
+    }
+
     uint offset = vec_base + 2 * i;
     float position = start_pos + float(row) * pos_step;
-    float theta_extrap = position / pow(freq_base, 2.0f * float(i) / float(head_dim));
+    float theta_extrap = position / pow(freq_base, 2.0f * float(i) / float(rope_dim_eff));
 
     float cos_t, sin_t;
     if (ext_factor == 0.0f) {
@@ -744,8 +751,8 @@ kernel void rope_f32_generic(
         sin_t = sin(theta) * attn_factor;
     } else {
         // YaRN: per-dimension interpolation/extrapolation blend
-        float corr_low  = max(0.0f, floor(rope_yarn_corr_factor(head_dim, n_ctx_orig, freq_base, beta_fast)));
-        float corr_high = min(float(head_dim) - 1.0f, ceil(rope_yarn_corr_factor(head_dim, n_ctx_orig, freq_base, beta_slow)));
+        float corr_low  = max(0.0f, floor(rope_yarn_corr_factor(rope_dim_eff, n_ctx_orig, freq_base, beta_fast)));
+        float corr_high = min(float(rope_dim_eff) - 1.0f, ceil(rope_yarn_corr_factor(rope_dim_eff, n_ctx_orig, freq_base, beta_slow)));
         rope_yarn(theta_extrap, freq_scale, corr_low, corr_high, int(2 * i),
                   ext_factor, attn_factor, cos_t, sin_t);
     }
@@ -1378,7 +1385,7 @@ kernel void qkv_split_batch_f32(
 // ── Q+Gate split (batched) ───────────────────────────────────────────
 //
 // Split fused Q+gate projection output (Qwen3.5 full-attention layers):
-//   src:  [n_rows, 2 * q_dim]   where [Q | gate] per token
+//   src:  [n_rows, 2 * q_dim]   where [q_h0, g_h0, q_h1, g_h1, ...]
 //   q:    [n_rows, q_dim]
 //   gate: [n_rows, q_dim]
 
@@ -1388,22 +1395,20 @@ kernel void split_qgate_batch_f32(
     device float* gate           [[buffer(2)]],
     constant uint& n_rows        [[buffer(3)]],
     constant uint& q_dim         [[buffer(4)]],
+    constant uint& head_dim      [[buffer(5)]],
     uint gid                     [[thread_position_in_grid]]
 ) {
-    uint fused_dim = 2 * q_dim;
-    uint total = n_rows * fused_dim;
+    uint total = n_rows * q_dim;
     if (gid >= total) return;
 
-    uint row = gid / fused_dim;
-    uint col = gid % fused_dim;
-    uint src_idx = row * fused_dim + col;
+    uint row = gid / q_dim;
+    uint q_col = gid % q_dim;
+    uint head = q_col / head_dim;
+    uint lane = q_col % head_dim;
+    uint src_head_base = row * (2 * q_dim) + head * (2 * head_dim);
 
-    if (col < q_dim) {
-        q[row * q_dim + col] = src[src_idx];
-    } else {
-        uint gc = col - q_dim;
-        gate[row * q_dim + gc] = src[src_idx];
-    }
+    q[gid] = src[src_head_base + lane];
+    gate[gid] = src[src_head_base + head_dim + lane];
 }
 
 // ── QKV split + RoPE Batch (fused) ──────────────────────────────────

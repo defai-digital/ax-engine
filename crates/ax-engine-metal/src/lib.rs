@@ -129,15 +129,19 @@ pub(crate) fn barriers_enabled() -> bool {
 ///
 /// With a concurrent encoder (`MTLDispatchType::Concurrent`), independent
 /// kernel dispatches can execute in parallel on the GPU.  Explicit barriers
-/// are inserted between dependent dispatches.  This matches llama.cpp's
-/// default dispatch strategy.
+/// are inserted between dependent dispatches.
+///
+/// Disabled by default: the concurrent encoder produces non-deterministic
+/// results even with barriers on some models (e.g., Qwen3 Q6_K). The serial
+/// encoder achieves near-identical throughput on Apple Silicon UMA because
+/// the GPU driver already pipelines independent dispatches internally.
 ///
 /// Controlled by `AX_METAL_CONCURRENT_DECODE`:
-/// - unset / `1` / `true` / `on`  -> enabled (default)
-/// - `0` / `false` / `off`        -> disabled (serial encoder)
+/// - `1` / `true` / `on`          -> enabled (experimental)
+/// - unset / `0` / `false` / `off` -> disabled (serial encoder, default)
 pub fn concurrent_decode_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_CONCURRENT_DECODE", true))
+    *ENABLED.get_or_init(|| parse_bool_env_with_default("AX_METAL_CONCURRENT_DECODE", false))
 }
 
 /// Whether Metal residency sets are used for weight buffers.

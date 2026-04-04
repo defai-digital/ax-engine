@@ -815,6 +815,7 @@ impl Qwen3Forward {
                                     n_heads as u32,
                                     n_kv_heads as u32,
                                     head_dim as u32,
+                                    head_dim as u32,
                                     rope_start,
                                     rope_step,
                                     cfg.rope_freq_base,
@@ -1298,4 +1299,3 @@ impl Qwen3Forward {
         Ok(())
     }
 }
-
