@@ -352,11 +352,11 @@ run-configured per benchmark run). AX% over 100% means AX was faster.
 | Qwen3.5 4B | Q8_0 | 1,054 tok/s | 51.5 tok/s | 1,340 tok/s | 56.5 tok/s | 79% | **91%** |
 | Qwen3.5 9B | Q4_K_M | 585 tok/s | 48.6 tok/s | 733 tok/s | 49.0 tok/s | 80% | 99% |
 | Qwen3.5 27B | Q4_K_M | 191 tok/s | 17.4 tok/s | 209 tok/s | 17.6 tok/s | 91% | 99% |
-| Qwen3.5 35B-A3B | Q4_K_M | 882 tok/s | 7.1 tok/s | 1,178 tok/s | 56.4 tok/s | 75% | 13% |
+| Qwen3.5 35B-A3B | Q4_K_M | 899 tok/s | 15.1 tok/s | 1,127 tok/s | 57.0 tok/s | 80% | 26% |
 
-Qwen3.5 35B-A3B MoE decode is slow (7.1 tok/s vs llama's 56.4) due to
-per-layer command buffer overhead (121 CBs/token for the MoE expert dispatch).
-GPU decode correctness is verified for Q4_K, Q6_K, and Q8_0 quant types.
+Qwen3.5 35B-A3B MoE decode uses single-CB GPU dispatch with mul_mat_id
+for expert routing. Decode gap (26% of llama) is primarily from the
+recurrent (Mamba-2) layer overhead and per-layer barrier cost.
 
 Prefill uses config-driven kernel selection across all supported quant types
 (Q4_K, Q5_K, Q6_K, Q8_0) with f16-input full-tile kernels (64x64, 64x32,
