@@ -341,8 +341,9 @@ regime-sensitive tuning across:
 
 Apple M3 Max, April 2026. P=512 prefill, 128-token decode, f16 KV cache.
 Values are from deterministic outer-sample medians produced by
-`benchmarks/run_apple_to_apple.py` (sample count and cooldown are
-run-configured per benchmark run). AX% over 100% means AX was faster.
+`benchmarks/run_apple_to_apple.py` unless noted below (sample count and
+cooldown are run-configured per benchmark run). AX% over 100% means AX was
+faster.
 
 | Model | Quant | AX Prefill | AX Decode | llama Prefill | llama Decode | Prefill % | Decode % |
 |---|---|---:|---:|---:|---:|---:|---:|
@@ -351,21 +352,31 @@ run-configured per benchmark run). AX% over 100% means AX was faster.
 | Qwen3.5 4B | Q8_0 | 982 tok/s | 48.3 tok/s | 1,340 tok/s | 56.5 tok/s | 73% | 86% |
 | Qwen3.5 9B | Q4_K_M | 574 tok/s | 50.9 tok/s | 733 tok/s | 49.0 tok/s | 78% | **104%** |
 | Qwen3.5 27B | Q4_K_M | 163 tok/s | 15.2 tok/s | 209 tok/s | 17.6 tok/s | 78% | 86% |
-| Qwen3.5 35B-A3B | Q4_K_M | 609.6 tok/s | 29.9 tok/s | 1,127 tok/s | 57.0 tok/s | 54% | 52% |
-| Gemma 4 31B | Q4_K_M | 6 tok/s | 6.2 tok/s | 86 tok/s | 5.5 tok/s | 7% | **113%** |
+| Qwen3.5 35B-A3B | Q4_K_M | 667 tok/s | 44.5 tok/s | 1,127 tok/s | 57.0 tok/s | 59% | 78% |
+| Gemma 4 31B | Q4_K_M | 59 tok/s | 5.5 tok/s | 86 tok/s | 5.5 tok/s | 69% | 100% |
 
 Qwen3.5 35B-A3B was refreshed on April 5, 2026 with a targeted deterministic
-run (`samples=3`, `cooldown=20000ms`). Decode recovered after fixing the
-resident-MoE decode path plus the selected/shared expert single-token
-contracts, including the routed `Q4K` gate/up pair path used by the 35B-A3B
-Mixture-of-Experts layers, the selected weighted-down resident decode path, and
-a dedicated scalar-gate path for the shared expert F32 gate input. The latest
-weighted-down kernel pass removed an extra staging buffer from the routed
-expert `down` path and reduced its threadgroup memory footprint back to 8192B,
-which pushed the deterministic refresh to 609.6 tok/s prefill and 29.9 tok/s
-decode. Layer-local resident-MoE timing still shows the remaining gap versus
-llama.cpp is dominated by GPU execute time inside the expert kernels, with
-routed expert work still slightly hotter than the shared expert path.
+run (`samples=3`, `cooldown=20000ms`). Decode improved again after replacing
+the routed `Q4_K` gate/up blocked selected kernels with dedicated selected
+`nr2` matvec paths for both single-row and pair execution, on top of the
+earlier routed-expert `Q5_K` fused `SiLU(gate) * up -> down` decode path and
+the shared-expert scalar-gate optimization. The latest refresh measured 666.5
+tok/s prefill and 44.5 tok/s decode. Layer-local resident-MoE timing shows the
+remaining gap versus llama.cpp is still dominated by GPU execute time inside
+the expert kernels, but the hottest routed decode work has shifted away from
+the old `Q4_K` gate/up path.
+
+Gemma 4 31B was refreshed again on April 5, 2026 after landing cached-prefix
+GPU attention inside the `cpu_batch` prefill path and a GPU single-CB decode
+route. The AX side was remeasured at the published regime with a targeted
+standalone bench run (`P=512`, `D=128`, default `warmup=2`, `measure=5`),
+captured in [ax.json](/Users/akiralam/code/ax-engine/benchmarks/results/20260405-083322-001/ax.json)
+and [prefill-profile.json](/Users/akiralam/code/ax-engine/benchmarks/results/20260405-083322-001/prefill-profile.json).
+That refresh measured 59.0 tok/s prefill and 5.5 tok/s decode for AX. The
+`llama.cpp` baseline in the table is still the latest prior apple-to-apple
+artifact until it is rerun. The remaining Gemma4 gap is now concentrated in
+CPU batch orchestration/matmul around the chunk loop and the lack of pipelined
+decode, rather than the old CPU prefix-attention and sequential decode paths.
 
 Prefill uses config-driven kernel selection across all supported quant types
 (Q4_K, Q5_K, Q6_K, Q8_0) with f16-input full-tile kernels (64x64, 64x32,
