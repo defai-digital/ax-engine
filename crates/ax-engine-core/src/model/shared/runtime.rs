@@ -495,6 +495,24 @@ pub(crate) fn gpu_batch_prefill_panic(dtype: GgmlType) -> ! {
     )
 }
 
+/// Apply per-head RMSNorm in-place.
+///
+/// `buf` contains `n_heads` concatenated vectors of size `head_dim`.
+/// `weight` has length `head_dim` and is shared across all heads.
+pub(crate) fn per_head_rms_norm(
+    buf: &mut [f32],
+    n_heads: usize,
+    head_dim: usize,
+    weight: &[f32],
+    eps: f32,
+) {
+    debug_assert_eq!(buf.len(), n_heads * head_dim);
+    debug_assert_eq!(weight.len(), head_dim);
+    for head in buf.chunks_mut(head_dim) {
+        rms_norm::rms_norm(head, weight, eps);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,23 +564,5 @@ mod tests {
         assert!(!optional_missing_layer_weight(&cfg, 0, "attn_v.weight"));
         assert!(optional_missing_layer_weight(&cfg, 5, "attn_v.weight"));
         assert!(!optional_missing_layer_weight(&cfg, 5, "attn_k.weight"));
-    }
-}
-
-/// Apply per-head RMSNorm in-place.
-///
-/// `buf` contains `n_heads` concatenated vectors of size `head_dim`.
-/// `weight` has length `head_dim` and is shared across all heads.
-pub(crate) fn per_head_rms_norm(
-    buf: &mut [f32],
-    n_heads: usize,
-    head_dim: usize,
-    weight: &[f32],
-    eps: f32,
-) {
-    debug_assert_eq!(buf.len(), n_heads * head_dim);
-    debug_assert_eq!(weight.len(), head_dim);
-    for head in buf.chunks_mut(head_dim) {
-        rms_norm::rms_norm(head, weight, eps);
     }
 }

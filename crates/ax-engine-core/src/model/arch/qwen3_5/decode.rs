@@ -58,7 +58,7 @@ impl Qwen3_5Forward {
     }
 
     fn qwen35_native_decode_layer_range_strategy(
-        cfg: &ModelConfig,
+        _cfg: &ModelConfig,
     ) -> Qwen3_5NativeDecodeLayerRangeStrategy {
         if let Ok(value) = std::env::var("AX_QWEN35_GPU_DECODE_LAYER_RANGES") {
             match value.trim().to_ascii_lowercase().as_str() {
@@ -81,11 +81,7 @@ impl Qwen3_5Forward {
                 Qwen3_5NativeDecodeLayerRangeStrategy::PerLayer
             };
         }
-        if Self::qwen35_is_moe(cfg) {
-            Qwen3_5NativeDecodeLayerRangeStrategy::AllLayers
-        } else {
-            Qwen3_5NativeDecodeLayerRangeStrategy::AllLayers
-        }
+        Qwen3_5NativeDecodeLayerRangeStrategy::AllLayers
     }
 
     fn qwen35_native_decode_recurrent_run_coalescing_max_layers() -> usize {

@@ -521,7 +521,7 @@ fn build_real_qwen35_35b_a3b_layer1_resident_moe_prompt_state(
 
     RealQwen35Layer1ResidentMoePromptState {
         dim,
-        expert_inter_dim: expert_inter_dim,
+        expert_inter_dim,
         n_expert,
         n_expert_used,
         gate_stride,
@@ -545,14 +545,16 @@ fn build_real_qwen35_35b_a3b_layer1_resident_moe_prompt_state(
         shared_gate_inp_buf,
         shared_dtype,
         shared_gate_inp_dtype,
-        shared_inter_dim: weights
-            .has(&shared_gate_name)
-            .then(|| Qwen3_5Forward::tensor_output_rows(weights, &shared_gate_name).unwrap())
-            .unwrap_or(0),
-        shared_gate_inp_rows: weights
-            .has(&shared_gate_inp_name)
-            .then(|| Qwen3_5Forward::tensor_output_rows(weights, &shared_gate_inp_name).unwrap())
-            .unwrap_or(0),
+        shared_inter_dim: if weights.has(&shared_gate_name) {
+            Qwen3_5Forward::tensor_output_rows(weights, &shared_gate_name).unwrap()
+        } else {
+            0
+        },
+        shared_gate_inp_rows: if weights.has(&shared_gate_inp_name) {
+            Qwen3_5Forward::tensor_output_rows(weights, &shared_gate_inp_name).unwrap()
+        } else {
+            0
+        },
     }
 }
 

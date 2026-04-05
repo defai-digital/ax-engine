@@ -3519,6 +3519,7 @@ impl MetalOps {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn encode_moe_mul_mat_selected_single_token(
         &self,
         encoder: &ax_engine_metal::MetalEncoder,

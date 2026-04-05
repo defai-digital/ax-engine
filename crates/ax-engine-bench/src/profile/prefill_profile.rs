@@ -1338,6 +1338,13 @@ mod tests {
             qwen35_ssm_state_size: Some(2),
             qwen35_ssm_time_step_rank: Some(4),
             qwen35_ssm_group_count: Some(2),
+            gemma4_head_dim_swa: None,
+            gemma4_head_dim_global: None,
+            gemma4_n_kv_heads_swa: None,
+            gemma4_n_kv_heads_global: None,
+            gemma4_rope_dim_swa: None,
+            gemma4_rope_dim_global: None,
+            final_logit_softcapping: None,
         }
     }
 
