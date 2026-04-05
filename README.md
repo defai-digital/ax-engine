@@ -353,7 +353,7 @@ faster.
 | Qwen3.5 9B | Q4_K_M | 574 tok/s | 50.9 tok/s | 733 tok/s | 49.0 tok/s | 78% | **104%** |
 | Qwen3.5 27B | Q4_K_M | 163 tok/s | 15.2 tok/s | 209 tok/s | 17.6 tok/s | 78% | 86% |
 | Qwen3.5 35B-A3B | Q4_K_M | 693 tok/s | 45.4 tok/s | 1,122 tok/s | 53.2 tok/s | 62% | 85% |
-| Gemma 4 31B | Q4_K_M | 150 tok/s | 11.0 tok/s | 91 tok/s | 11.9 tok/s | **165%** | 92% |
+| Gemma 4 31B | Q4_K_M | 75 tok/s | 13.8 tok/s | 91 tok/s | 11.9 tok/s | 82% | **116%** |
 
 Qwen3.5 35B-A3B was refreshed on April 5, 2026 with a full apple-to-apple run
 (`samples=5`, `cooldown=20s`). Both AX and llama.cpp were benchmarked in the
@@ -370,12 +370,19 @@ after vectorizing the Q5_K batch dequant phase in all full-tile f16in kernels
 high-bit extraction. The remaining prefill gap (88% of llama.cpp) is still
 inside the Q5_K kernel family.
 
-Gemma 4 31B was refreshed on April 5, 2026 with a full apple-to-apple run
-(`samples=5`, `cooldown=20s`). Both AX and llama.cpp were benchmarked in the
-same session. AX uses `PrefillPlan: mode=gpu_batch` with split-K decode
-attention (`attn=splitk_hd256`). Prefill is 65% faster than llama.cpp; decode
-is 8% slower, with the gap likely in the mixed-quant matvec path for this
-60-layer model with variable head dimensions (hd=256 SWA, hd=512 global).
+Gemma 4 31B was refreshed again on April 5, 2026 after the latest targeted
+Gemma4 prefill investigation. Reviewing the archived `llama.cpp` and
+`mistral.rs` implementations showed the remaining AX gap was no longer in
+prefix attention, but in host-side batch epilogues. The latest AX refresh keeps
+the existing `cpu_batch` route and parallelizes the large batch norms, RoPE, KV
+row repacking, residual adds, and FFN epilogues inside that path. The latest AX
+artifacts are [ax.json](/Users/akiralam/code/ax-engine/benchmarks/results/20260405-090817-001/ax.json)
+and [prefill-profile.json](/Users/akiralam/code/ax-engine/benchmarks/results/20260405-090817-001/prefill-profile.json).
+That refresh measured 74.6 tok/s prefill and 13.8 tok/s decode for AX at
+`P=512`, with prefill wall time dropping from 7506ms to 6906ms and the norm and
+RoPE portions of the profile collapsing sharply. The `llama.cpp` columns above
+are retained from the latest prior full comparison run and should be rerun for
+a strict apple-to-apple update.
 
 Prefill uses config-driven kernel selection across all supported quant types
 (Q4_K, Q5_K, Q6_K, Q8_0) with f16-input full-tile kernels (64x64, 64x32,
