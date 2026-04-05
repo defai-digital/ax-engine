@@ -15,6 +15,7 @@
 
 use crate::backend::metal::MetalOps;
 use crate::compute::{attention, rms_norm, rope, silu};
+use crate::gguf::tensor::GgmlType;
 use crate::kv::ModelKv;
 use crate::metrics::OpBreakdown;
 use crate::metrics::counters::OpTimer;

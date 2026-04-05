@@ -39,6 +39,33 @@ impl Gemma4Forward {
             let wd_key = metal_ops.ensure_quant_cached(wd_raw);
             let ffn_norm_key = metal_ops.ensure_f32_cached(ffn_norm_w);
 
+            if use_precomputed_f16
+                && metal_ops.metal_fused_qkv_enabled()
+                && wq_dtype == wk_dtype
+                && wq_dtype == wv_dtype
+                && matches!(wq_dtype, GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0)
+            {
+                metal_ops.ensure_qkv_fused_quant_cached(wq_raw, wk_raw, wv_raw);
+                if wq_dtype == GgmlType::Q4K {
+                    metal_ops.ensure_precomputed_q4k_f16_fused_qkv(
+                        wq_raw,
+                        wk_raw,
+                        wv_raw,
+                        (spec.q_dim + 2 * spec.kv_dim) as u32,
+                        dim as u32,
+                    )?;
+                }
+                if wq_dtype == GgmlType::Q8_0 {
+                    metal_ops.ensure_precomputed_q8_0_f16_fused_qkv(
+                        wq_raw,
+                        wk_raw,
+                        wv_raw,
+                        (spec.q_dim + 2 * spec.kv_dim) as u32,
+                        dim as u32,
+                    )?;
+                }
+            }
+
             if use_precomputed_f16 {
                 crate::model::shared::ensure_precomputed_linear_f16(
                     metal_ops,
@@ -261,6 +288,7 @@ impl Gemma4Forward {
         }
 
         let weight_cache = metal_ops.lock_weight_cache();
+        let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
         let has_q5k_weights = gpu_prefill_uses_q5k(weights);
         let q5k_small_n_auto_eligible = gpu_prefill_q5k_small_n_auto_eligible(weights);
         let prefill_plan = DecodeExecutionPlan::gemma3_prefill(
@@ -300,12 +328,19 @@ impl Gemma4Forward {
                 let kv_v = gpu_kv.v_buffer(layer);
                 let q_weight = lw.attn_q_norm.and_then(|key| weight_cache.get(&key));
                 let k_weight = lw.attn_k_norm.and_then(|key| weight_cache.get(&key));
+                let fused_qkv_m = spec.q_dim + 2 * spec.kv_dim;
+                let fused_qkv_key = (lw.wq, lw.wk, lw.wv);
                 let qkv_layer_plan = DecodeExecutionPlan::gemma3_prefill_qkv_layer(
                     &prefill_plan,
                     lw.wq_dtype,
                     lw.wk_dtype,
                     lw.wv_dtype,
                 );
+                let fused_qkv_buf = if qkv_layer_plan.use_fused_projection {
+                    fused_qkv_cache.get(&fused_qkv_key)
+                } else {
+                    None
+                };
 
                 let qkv_t = OpTimer::start();
                 let q_input = &bs.norm_buf;
@@ -324,118 +359,165 @@ impl Gemma4Forward {
 
                 let wq_buf = weight_cache.get(&lw.wq).unwrap();
                 let wk_buf = weight_cache.get(&lw.wk).unwrap();
-                sb.pre_dispatch(&[q_input], &[&bs.q_buf]);
-                if use_f16_input {
-                    encode_dequant_batch_f16in(
-                        metal_ops,
-                        encoder,
-                        wq_buf,
-                        &bs.matmul_in_f16,
-                        &bs.q_buf,
-                        spec.q_dim as u32,
-                        nt,
-                        dim as u32,
-                        lw.wq_dtype,
-                    );
-                } else {
-                    encode_dequant_batch(
-                        &metal_ops.dequant,
-                        &metal_ops.elementwise,
-                        encoder,
-                        wq_buf,
-                        q_input,
-                        &bs.q_buf,
-                        &bs.matmul_in_f16,
-                        spec.q_dim as u32,
-                        nt,
-                        dim as u32,
-                        lw.wq_dtype,
-                        false,
-                        prefill_plan.use_batch_simd,
-                        prefill_plan.q5k_prefill_small_n,
-                    );
-                }
-                sb.post_dispatch(&[q_input], &[&bs.q_buf]);
-
-                sb.pre_dispatch(&[q_input], &[&bs.k_buf]);
-                if use_f16_input {
-                    encode_dequant_batch_f16in(
-                        metal_ops,
-                        encoder,
-                        wk_buf,
-                        &bs.matmul_in_f16,
-                        &bs.k_buf,
-                        spec.kv_dim as u32,
-                        nt,
-                        dim as u32,
-                        lw.wk_dtype,
-                    );
-                } else {
-                    encode_dequant_batch(
-                        &metal_ops.dequant,
-                        &metal_ops.elementwise,
-                        encoder,
-                        wk_buf,
-                        q_input,
-                        &bs.k_buf,
-                        &bs.matmul_in_f16,
-                        spec.kv_dim as u32,
-                        nt,
-                        dim as u32,
-                        lw.wk_dtype,
-                        false,
-                        prefill_plan.use_batch_simd,
-                        prefill_plan.q5k_prefill_small_n,
-                    );
-                }
-                sb.post_dispatch(&[q_input], &[&bs.k_buf]);
-
-                if spec.v_equals_k {
-                    let copy_bytes = n_tokens * spec.kv_dim * std::mem::size_of::<f32>();
-                    sb.pre_dispatch(&[&bs.k_buf], &[&bs.v_buf]);
-                    metal_ops.elementwise.encode_buffer_copy(
-                        encoder,
-                        &bs.k_buf,
-                        0,
-                        &bs.v_buf,
-                        0,
-                        (copy_bytes / std::mem::size_of::<f32>()) as u32,
-                    );
-                    sb.post_dispatch(&[&bs.k_buf], &[&bs.v_buf]);
-                } else {
-                    let wv_buf = weight_cache.get(&lw.wv).unwrap();
-                    sb.pre_dispatch(&[q_input], &[&bs.v_buf]);
+                if let Some(fused_w) = fused_qkv_buf {
+                    sb.pre_dispatch(&[q_input], &[&bs.qkv_buf]);
                     if use_f16_input {
                         encode_dequant_batch_f16in(
                             metal_ops,
                             encoder,
-                            wv_buf,
+                            fused_w,
                             &bs.matmul_in_f16,
-                            &bs.v_buf,
-                            spec.kv_dim as u32,
+                            &bs.qkv_buf,
+                            fused_qkv_m as u32,
                             nt,
                             dim as u32,
-                            lw.wv_dtype,
+                            lw.wq_dtype,
                         );
                     } else {
                         encode_dequant_batch(
                             &metal_ops.dequant,
                             &metal_ops.elementwise,
                             encoder,
-                            wv_buf,
+                            fused_w,
                             q_input,
-                            &bs.v_buf,
+                            &bs.qkv_buf,
                             &bs.matmul_in_f16,
-                            spec.kv_dim as u32,
+                            fused_qkv_m as u32,
                             nt,
                             dim as u32,
-                            lw.wv_dtype,
+                            lw.wq_dtype,
                             false,
                             prefill_plan.use_batch_simd,
                             prefill_plan.q5k_prefill_small_n,
                         );
                     }
-                    sb.post_dispatch(&[q_input], &[&bs.v_buf]);
+                    sb.post_dispatch(&[q_input], &[&bs.qkv_buf]);
+                    sb.pre_dispatch(&[&bs.qkv_buf], &[&bs.q_buf, &bs.k_buf, &bs.v_buf]);
+                    metal_ops.elementwise.encode_qkv_split_batch(
+                        encoder,
+                        &bs.qkv_buf,
+                        &bs.q_buf,
+                        &bs.k_buf,
+                        &bs.v_buf,
+                        nt,
+                        spec.q_dim as u32,
+                        spec.kv_dim as u32,
+                    );
+                    sb.post_dispatch(&[&bs.qkv_buf], &[&bs.q_buf, &bs.k_buf, &bs.v_buf]);
+                } else {
+                    sb.pre_dispatch(&[q_input], &[&bs.q_buf]);
+                    if use_f16_input {
+                        encode_dequant_batch_f16in(
+                            metal_ops,
+                            encoder,
+                            wq_buf,
+                            &bs.matmul_in_f16,
+                            &bs.q_buf,
+                            spec.q_dim as u32,
+                            nt,
+                            dim as u32,
+                            lw.wq_dtype,
+                        );
+                    } else {
+                        encode_dequant_batch(
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wq_buf,
+                            q_input,
+                            &bs.q_buf,
+                            &bs.matmul_in_f16,
+                            spec.q_dim as u32,
+                            nt,
+                            dim as u32,
+                            lw.wq_dtype,
+                            false,
+                            prefill_plan.use_batch_simd,
+                            prefill_plan.q5k_prefill_small_n,
+                        );
+                    }
+                    sb.post_dispatch(&[q_input], &[&bs.q_buf]);
+
+                    sb.pre_dispatch(&[q_input], &[&bs.k_buf]);
+                    if use_f16_input {
+                        encode_dequant_batch_f16in(
+                            metal_ops,
+                            encoder,
+                            wk_buf,
+                            &bs.matmul_in_f16,
+                            &bs.k_buf,
+                            spec.kv_dim as u32,
+                            nt,
+                            dim as u32,
+                            lw.wk_dtype,
+                        );
+                    } else {
+                        encode_dequant_batch(
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wk_buf,
+                            q_input,
+                            &bs.k_buf,
+                            &bs.matmul_in_f16,
+                            spec.kv_dim as u32,
+                            nt,
+                            dim as u32,
+                            lw.wk_dtype,
+                            false,
+                            prefill_plan.use_batch_simd,
+                            prefill_plan.q5k_prefill_small_n,
+                        );
+                    }
+                    sb.post_dispatch(&[q_input], &[&bs.k_buf]);
+
+                    if spec.v_equals_k {
+                        let copy_bytes = n_tokens * spec.kv_dim * std::mem::size_of::<f32>();
+                        sb.pre_dispatch(&[&bs.k_buf], &[&bs.v_buf]);
+                        metal_ops.elementwise.encode_buffer_copy(
+                            encoder,
+                            &bs.k_buf,
+                            0,
+                            &bs.v_buf,
+                            0,
+                            (copy_bytes / std::mem::size_of::<f32>()) as u32,
+                        );
+                        sb.post_dispatch(&[&bs.k_buf], &[&bs.v_buf]);
+                    } else {
+                        let wv_buf = weight_cache.get(&lw.wv).unwrap();
+                        sb.pre_dispatch(&[q_input], &[&bs.v_buf]);
+                        if use_f16_input {
+                            encode_dequant_batch_f16in(
+                                metal_ops,
+                                encoder,
+                                wv_buf,
+                                &bs.matmul_in_f16,
+                                &bs.v_buf,
+                                spec.kv_dim as u32,
+                                nt,
+                                dim as u32,
+                                lw.wv_dtype,
+                            );
+                        } else {
+                            encode_dequant_batch(
+                                &metal_ops.dequant,
+                                &metal_ops.elementwise,
+                                encoder,
+                                wv_buf,
+                                q_input,
+                                &bs.v_buf,
+                                &bs.matmul_in_f16,
+                                spec.kv_dim as u32,
+                                nt,
+                                dim as u32,
+                                lw.wv_dtype,
+                                false,
+                                prefill_plan.use_batch_simd,
+                                prefill_plan.q5k_prefill_small_n,
+                            );
+                        }
+                        sb.post_dispatch(&[q_input], &[&bs.v_buf]);
+                    }
                 }
                 if let Some(ref mut ops_ref) = ops {
                     ops_ref.gpu_encode_layer_qkv += qkv_t.elapsed();
