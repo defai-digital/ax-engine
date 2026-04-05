@@ -296,7 +296,7 @@ All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Als
 | Family | Models |
 |---|---|
 | Qwen 3.5 | Qwen3.5-4B, Qwen3.5-9B, Qwen3.5-27B, Qwen3.5-35B-A3B |
-| Gemma 3 / 4 | Gemma-3-12B, Gemma-3-27B, Gemma-4 (coming soon) |
+| Gemma 3 / 4 | Gemma-3-12B, Gemma-3-27B, Gemma-4-31B (CPU, GPU pending) |
 | LLaMA 3.1 | Llama-3.1-8B-Instruct, Llama-3.1-70B-Instruct |
 
 Each native architecture has its own hand-written forward pass, fused Metal
@@ -351,13 +351,21 @@ run-configured per benchmark run). AX% over 100% means AX was faster.
 | Qwen3.5 4B | Q8_0 | 982 tok/s | 48.3 tok/s | 1,340 tok/s | 56.5 tok/s | 73% | 86% |
 | Qwen3.5 9B | Q4_K_M | 574 tok/s | 50.9 tok/s | 733 tok/s | 49.0 tok/s | 78% | **104%** |
 | Qwen3.5 27B | Q4_K_M | 163 tok/s | 15.2 tok/s | 209 tok/s | 17.6 tok/s | 78% | 86% |
-| Qwen3.5 35B-A3B | Q4_K_M | 185 tok/s | 14.4 tok/s | 1,127 tok/s | 57.0 tok/s | 16% | 25% |
+| Qwen3.5 35B-A3B | Q4_K_M | 609.6 tok/s | 29.9 tok/s | 1,127 tok/s | 57.0 tok/s | 54% | 52% |
+| Gemma 4 31B | Q4_K_M | 6 tok/s | 6.2 tok/s | 86 tok/s | 5.5 tok/s | 7% | **113%** |
 
-Qwen3.5 35B-A3B MoE prefill is still regressed versus llama.cpp due to
-high per-layer command-buffer cost on the single-CB GPU path (41 CBs per
-decode token, 381 CBs per prefill). Decode recovered to 14.4 tok/s
-(prior best: 15.1 tok/s). Prefill improved from 6 to 185 tok/s but
-remains well below llama.cpp's 1,127 tok/s.
+Qwen3.5 35B-A3B was refreshed on April 5, 2026 with a targeted deterministic
+run (`samples=3`, `cooldown=20000ms`). Decode recovered after fixing the
+resident-MoE decode path plus the selected/shared expert single-token
+contracts, including the routed `Q4K` gate/up pair path used by the 35B-A3B
+Mixture-of-Experts layers, the selected weighted-down resident decode path, and
+a dedicated scalar-gate path for the shared expert F32 gate input. The latest
+weighted-down kernel pass removed an extra staging buffer from the routed
+expert `down` path and reduced its threadgroup memory footprint back to 8192B,
+which pushed the deterministic refresh to 609.6 tok/s prefill and 29.9 tok/s
+decode. Layer-local resident-MoE timing still shows the remaining gap versus
+llama.cpp is dominated by GPU execute time inside the expert kernels, with
+routed expert work still slightly hotter than the shared expert path.
 
 Prefill uses config-driven kernel selection across all supported quant types
 (Q4_K, Q5_K, Q6_K, Q8_0) with f16-input full-tile kernels (64x64, 64x32,

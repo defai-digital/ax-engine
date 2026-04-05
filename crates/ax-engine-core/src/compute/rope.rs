@@ -236,6 +236,7 @@ pub fn apply_rope_multi_head_scaled(
 ///
 /// Models like Qwen3.5 expose `n_rot < head_dim` and only rotate a prefix of
 /// each head while preserving the trailing channels.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_rope_multi_head_partial_scaled(
     q: &mut [f32],
     k: &mut [f32],
@@ -270,6 +271,7 @@ pub fn apply_rope_multi_head_partial_scaled(
 ///
 /// NeoX-style rotary uses split-half pairs `(x[i], x[i + rotary_dim/2])` instead
 /// of adjacent pairs `(x[2i], x[2i+1])`.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_rope_multi_head_neox_partial_scaled(
     q: &mut [f32],
     k: &mut [f32],
@@ -298,6 +300,52 @@ pub fn apply_rope_multi_head_neox_partial_scaled(
             apply_rope_pairs_split_half_scalar(&mut k_head[..rotary_dim], cos_table, sin_table);
         }
     });
+}
+
+/// Apply NeoX-style RoPE with explicit per-dimension frequency factors (proportional RoPE).
+///
+/// Used by Gemma4 global layers where `rope_freqs.weight` provides per-pair
+/// frequency multipliers. Dimensions with large freq_factors (~1e30) effectively
+/// lose position information. Uses split-half pairs: `(x[i], x[i + half_dim])`.
+///
+/// `freq_factors`: [head_dim/2] frequency multipliers per pair
+#[allow(clippy::too_many_arguments)]
+pub fn apply_rope_neox_with_freq_factors(
+    q: &mut [f32],
+    k: &mut [f32],
+    n_heads: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
+    position: f32,
+    freq_base: f32,
+    freq_factors: &[f32],
+) {
+    assert!(q.len() >= n_heads * head_dim);
+    assert!(k.len() >= n_kv_heads * head_dim);
+    assert!(head_dim.is_multiple_of(2));
+    let half_dim = head_dim / 2;
+    assert_eq!(freq_factors.len(), half_dim);
+
+    // Build cos/sin tables incorporating freq_factors
+    let neg_log_base = -(freq_base.ln());
+    let dim_inv = 2.0 / head_dim as f32;
+
+    let mut cos_table = vec![0.0f32; half_dim];
+    let mut sin_table = vec![0.0f32; half_dim];
+    for i in 0..half_dim {
+        let base_freq = (neg_log_base * i as f32 * dim_inv).exp();
+        let freq = base_freq * freq_factors[i];
+        let theta = position * freq;
+        (sin_table[i], cos_table[i]) = theta.sin_cos();
+    }
+
+    for q_head in q[..n_heads * head_dim].chunks_exact_mut(head_dim) {
+        apply_rope_pairs_split_half_scalar(q_head, &cos_table, &sin_table);
+    }
+
+    for k_head in k[..n_kv_heads * head_dim].chunks_exact_mut(head_dim) {
+        apply_rope_pairs_split_half_scalar(k_head, &cos_table, &sin_table);
+    }
 }
 
 #[cfg(test)]
@@ -521,14 +569,7 @@ mod tests {
         let k_orig = k;
 
         apply_rope_multi_head_partial_scaled(
-            &mut q,
-            &mut k,
-            n_heads,
-            n_kv_heads,
-            head_dim,
-            rotary_dim,
-            position,
-            FREQ_BASE,
+            &mut q, &mut k, n_heads, n_kv_heads, head_dim, rotary_dim, position, FREQ_BASE,
         );
 
         let mut q_ref_prefix = q_orig[..rotary_dim].to_vec();
@@ -567,19 +608,18 @@ mod tests {
         let mut expected_k = k.clone();
 
         apply_rope_multi_head_neox_partial_scaled(
-            &mut q,
-            &mut k,
-            n_heads,
-            n_kv_heads,
-            head_dim,
-            rotary_dim,
-            position,
-            FREQ_BASE,
+            &mut q, &mut k, n_heads, n_kv_heads, head_dim, rotary_dim, position, FREQ_BASE,
         );
 
         let mut cos_table = vec![0.0f32; rotary_dim / 2];
         let mut sin_table = vec![0.0f32; rotary_dim / 2];
-        super::fill_rope_tables(position, rotary_dim, FREQ_BASE, &mut cos_table, &mut sin_table);
+        super::fill_rope_tables(
+            position,
+            rotary_dim,
+            FREQ_BASE,
+            &mut cos_table,
+            &mut sin_table,
+        );
         apply_rope_pairs_split_half_scalar(&mut expected_q[..rotary_dim], &cos_table, &sin_table);
         apply_rope_pairs_split_half_scalar(&mut expected_k[..rotary_dim], &cos_table, &sin_table);
 

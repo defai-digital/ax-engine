@@ -201,6 +201,23 @@ pub struct ModelConfig {
     pub qwen35_ssm_time_step_rank: Option<u32>,
     /// Qwen3.5 recurrent key-head group count.
     pub qwen35_ssm_group_count: Option<u32>,
+    // ---- Gemma4 per-layer variable dimensions ----
+    /// Gemma4: SWA layer head_dim (typically 256). When set, the primary `head_dim`
+    /// field stores the *maximum* of SWA and global values for KV cache allocation,
+    /// while this field stores the SWA-specific value.
+    pub gemma4_head_dim_swa: Option<u32>,
+    /// Gemma4: global layer head_dim (typically 512).
+    pub gemma4_head_dim_global: Option<u32>,
+    /// Gemma4: SWA layer n_kv_heads (typically 16).
+    pub gemma4_n_kv_heads_swa: Option<u32>,
+    /// Gemma4: global layer n_kv_heads (from GGUF head_count_kv, typically 4).
+    pub gemma4_n_kv_heads_global: Option<u32>,
+    /// Gemma4: SWA RoPE dimension count.
+    pub gemma4_rope_dim_swa: Option<u32>,
+    /// Gemma4: global RoPE dimension count (for partial/proportional RoPE).
+    pub gemma4_rope_dim_global: Option<u32>,
+    /// Final logit softcapping value (Gemma4 uses 30.0): tanh(logits/cap)*cap.
+    pub final_logit_softcapping: Option<f32>,
 }
 
 impl ModelConfig {
@@ -357,9 +374,15 @@ impl ModelConfig {
         anyhow::ensure!(n_heads > 0, "GGUF {arch}.attention.head_count is 0");
         anyhow::ensure!(embedding_dim > 0, "GGUF {arch}.embedding_length is 0");
 
-        // n_kv_heads defaults to n_heads (MHA) if not specified (GQA/MQA set this)
+        // n_kv_heads defaults to n_heads (MHA) if not specified (GQA/MQA set this).
+        // Gemma4 stores head_count_kv as a per-layer i32 array — extract the first element.
         let n_kv_heads = header
             .get_u32(&format!("{arch}.attention.head_count_kv"))
+            .or_else(|| {
+                header
+                    .get_i32_array(&format!("{arch}.attention.head_count_kv"))
+                    .and_then(|arr| arr.first().map(|&v| v as u32))
+            })
             .unwrap_or(n_heads);
         anyhow::ensure!(n_kv_heads > 0, "GGUF {arch}.attention.head_count_kv is 0");
 
@@ -427,7 +450,7 @@ impl ModelConfig {
             .get_u32(&format!("{arch}.attention.sliding_window_pattern"))
             .or_else(|| {
                 // Gemma3 default: every 6th layer is global, rest use sliding window
-                if matches!(arch.as_str(), "gemma" | "gemma2" | "gemma3")
+                if matches!(arch.as_str(), "gemma" | "gemma2" | "gemma3" | "gemma4")
                     && sliding_window_size.is_some()
                 {
                     Some(6)
@@ -437,7 +460,8 @@ impl ModelConfig {
             });
 
         // Architecture-specific: gate activation + logit scale + tie embeddings
-        let is_gemma = matches!(arch.as_str(), "gemma" | "gemma2" | "gemma3");
+        let is_gemma4 = arch == "gemma4";
+        let is_gemma = is_gemma4 || matches!(arch.as_str(), "gemma" | "gemma2" | "gemma3");
         let gate_activation = if is_gemma {
             GateActivation::GELU
         } else {
@@ -522,9 +546,16 @@ impl ModelConfig {
 
         let embed_scale = is_gemma;
 
-        // Gemma3: local (sliding window) layers use a lower RoPE base (10000)
-        // while global layers use the main rope_freq_base (typically 1000000).
-        let rope_freq_base_local = if is_gemma && sliding_window_size.is_some() {
+        // Gemma3/4: local (sliding window) layers use a lower RoPE base
+        // while global layers use the main rope_freq_base.
+        let rope_freq_base_local = if is_gemma4 {
+            // Gemma4 has an explicit SWA rope freq base key
+            Some(
+                header
+                    .get_f32(&format!("{arch}.rope.freq_base_swa"))
+                    .unwrap_or(10000.0),
+            )
+        } else if is_gemma && sliding_window_size.is_some() {
             Some(10000.0f32)
         } else {
             None
@@ -540,6 +571,79 @@ impl ModelConfig {
         let qwen35_ssm_state_size = header.get_u32(&format!("{arch}.ssm.state_size"));
         let qwen35_ssm_time_step_rank = header.get_u32(&format!("{arch}.ssm.time_step_rank"));
         let qwen35_ssm_group_count = header.get_u32(&format!("{arch}.ssm.group_count"));
+
+        // ---- Gemma4 per-layer variable dimensions ----
+        let (
+            gemma4_head_dim_swa,
+            gemma4_head_dim_global,
+            gemma4_n_kv_heads_swa,
+            gemma4_n_kv_heads_global,
+            gemma4_rope_dim_swa,
+            gemma4_rope_dim_global,
+            final_logit_softcapping,
+        ) = if is_gemma4 {
+            let hd_global = head_dim; // GGUF key_length = global head_dim (512)
+            let hd_swa = header
+                .get_u32(&format!("{arch}.attention.key_length_swa"))
+                .unwrap_or(hd_global);
+            // Extract per-layer n_kv_heads from the i32 array if available.
+            // Array pattern: [16, 16, 16, 16, 16, 4, ...] — SWA layers use 16, global use 4.
+            let (n_kv_swa, n_kv_global) = if let Some(arr) =
+                header.get_i32_array(&format!("{arch}.attention.head_count_kv"))
+            {
+                // SWA = first element (layer 0 is always SWA), global = the distinct smaller value
+                let swa_val = arr.first().copied().unwrap_or(n_kv_heads as i32) as u32;
+                let global_val = arr
+                    .iter()
+                    .copied()
+                    .find(|&v| (v as u32) != swa_val)
+                    .map(|v| v as u32)
+                    .unwrap_or(swa_val);
+                (swa_val, global_val)
+            } else {
+                (n_kv_heads, n_kv_heads)
+            };
+            let rope_dim_swa = header
+                .get_u32(&format!("{arch}.rope.dimension_count_swa"))
+                .unwrap_or(hd_swa);
+            let rope_dim_global = header
+                .get_u32(&format!("{arch}.rope.dimension_count"))
+                .unwrap_or(hd_global);
+            let softcap = header.get_f32(&format!("{arch}.final_logit_softcapping"));
+
+            tracing::info!(
+                hd_swa,
+                hd_global,
+                n_kv_swa,
+                n_kv_global,
+                rope_dim_swa,
+                rope_dim_global,
+                ?softcap,
+                "Gemma4 per-layer variable dimensions"
+            );
+
+            (
+                Some(hd_swa),
+                Some(hd_global),
+                Some(n_kv_swa),
+                Some(n_kv_global),
+                Some(rope_dim_swa),
+                Some(rope_dim_global),
+                softcap,
+            )
+        } else {
+            (None, None, None, None, None, None, None)
+        };
+
+        // For Gemma4, override head_dim and n_kv_heads with the SWA values
+        // (max KV stride) so that KV cache allocation uses the larger stride.
+        let (head_dim, n_kv_heads) = if is_gemma4 {
+            let hd_swa = gemma4_head_dim_swa.unwrap_or(head_dim);
+            let nkv_swa = gemma4_n_kv_heads_swa.unwrap_or(n_kv_heads);
+            (hd_swa, nkv_swa)
+        } else {
+            (head_dim, n_kv_heads)
+        };
 
         tracing::info!(
             arch = %arch,
@@ -604,6 +708,13 @@ impl ModelConfig {
             qwen35_ssm_state_size,
             qwen35_ssm_time_step_rank,
             qwen35_ssm_group_count,
+            gemma4_head_dim_swa,
+            gemma4_head_dim_global,
+            gemma4_n_kv_heads_swa,
+            gemma4_n_kv_heads_global,
+            gemma4_rope_dim_swa,
+            gemma4_rope_dim_global,
+            final_logit_softcapping,
         };
         config.validate_invariants()?;
         Ok(config)

@@ -335,6 +335,13 @@ mod tests {
             qwen35_ssm_state_size: None,
             qwen35_ssm_time_step_rank: None,
             qwen35_ssm_group_count: None,
+            gemma4_head_dim_swa: None,
+            gemma4_head_dim_global: None,
+            gemma4_n_kv_heads_swa: None,
+            gemma4_n_kv_heads_global: None,
+            gemma4_rope_dim_swa: None,
+            gemma4_rope_dim_global: None,
+            final_logit_softcapping: None,
             expert_intermediate_dim: None,
         };
         let cfg = KvCacheConfig::from_model(&model);
@@ -444,6 +451,13 @@ mod tests {
             qwen35_ssm_state_size: None,
             qwen35_ssm_time_step_rank: None,
             qwen35_ssm_group_count: None,
+            gemma4_head_dim_swa: None,
+            gemma4_head_dim_global: None,
+            gemma4_n_kv_heads_swa: None,
+            gemma4_n_kv_heads_global: None,
+            gemma4_rope_dim_swa: None,
+            gemma4_rope_dim_global: None,
+            final_logit_softcapping: None,
             expert_intermediate_dim: None,
         };
         let cfg = KvCacheConfig::from_model(&model);
@@ -487,6 +501,13 @@ mod tests {
             qwen35_ssm_state_size: None,
             qwen35_ssm_time_step_rank: None,
             qwen35_ssm_group_count: None,
+            gemma4_head_dim_swa: None,
+            gemma4_head_dim_global: None,
+            gemma4_n_kv_heads_swa: None,
+            gemma4_n_kv_heads_global: None,
+            gemma4_rope_dim_swa: None,
+            gemma4_rope_dim_global: None,
+            final_logit_softcapping: None,
             expert_intermediate_dim: None,
         };
         let cfg = KvCacheConfig::from_model(&model);

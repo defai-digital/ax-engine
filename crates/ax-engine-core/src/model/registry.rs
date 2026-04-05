@@ -7,6 +7,7 @@ use crate::gguf::tensor::GgmlType;
 use crate::model::config::ModelConfig;
 use crate::model::forward::ForwardPass;
 use crate::model::gemma3::Gemma3Forward;
+use crate::model::gemma4::Gemma4Forward;
 use crate::model::llama::LlamaForward;
 use crate::model::qwen3_5::Qwen3_5Forward;
 
@@ -27,7 +28,7 @@ pub struct NativeSupportResult {
 }
 
 pub fn is_arch_supported(arch: &str) -> bool {
-    matches!(arch, "llama" | "qwen35" | "qwen35moe" | "gemma3")
+    matches!(arch, "llama" | "qwen35" | "qwen35moe" | "gemma3" | "gemma4")
 }
 
 pub fn is_quant_supported(dtype: GgmlType) -> bool {
@@ -96,8 +97,9 @@ pub fn forward_for_arch(arch: &str) -> anyhow::Result<Box<dyn ForwardPass>> {
             "unsupported architecture: '{arch}'. Gemma 1/2 support has been removed from AX. Use Gemma 3+ models instead."
         ),
         "gemma3" => Ok(Box::new(Gemma3Forward)),
+        "gemma4" => Ok(Box::new(Gemma4Forward)),
         _ => anyhow::bail!(
-            "unsupported architecture: '{arch}'. Supported: llama, qwen35, qwen35moe, gemma3"
+            "unsupported architecture: '{arch}'. Supported: llama, qwen35, qwen35moe, gemma3, gemma4"
         ),
     }
 }

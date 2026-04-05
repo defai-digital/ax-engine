@@ -15,7 +15,7 @@ pub mod registry;
 pub(crate) mod shared;
 pub mod weights;
 pub use arch::qwen3_5 as qwen35;
-pub use arch::{gemma3, llama, qwen3_5};
+pub use arch::{gemma3, gemma4, llama, qwen3_5};
 pub use registry as arch_registry;
 
 pub use config::ModelConfig;

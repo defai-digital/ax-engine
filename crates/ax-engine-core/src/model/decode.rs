@@ -6,7 +6,7 @@ use ax_engine_metal::PerfCounters;
 use crate::kv::ModelKv;
 use crate::metrics::counters::OpTimer;
 use crate::model::execution_plan::{DecodeExecutionPlan, DecodeScratchPlan, DecodeSyncPlan};
-use crate::model::{LlamaModel, WeightStore};
+use crate::model::{InferenceModel, WeightStore};
 use crate::sampling::{SampledTokenInfo, Sampler};
 use crate::tokenizer::Tokenizer;
 
@@ -109,7 +109,7 @@ struct DecodePerfObserver {
 }
 
 impl DecodePerfObserver {
-    fn from_config(model: &LlamaModel, collect_metal_perf: bool) -> Option<Self> {
+    fn from_config(model: &InferenceModel, collect_metal_perf: bool) -> Option<Self> {
         if model.metal_device().is_none() || !collect_metal_perf {
             return None;
         }
@@ -126,11 +126,16 @@ impl DecodePerfObserver {
         })
     }
 
-    fn begin_token(&self, model: &LlamaModel) {
+    fn begin_token(&self, model: &InferenceModel) {
         model.reset_metal_perf_counters();
     }
 
-    fn observe_token(&mut self, model: &LlamaModel, selection: &DecodeSelection, token_idx: usize) {
+    fn observe_token(
+        &mut self,
+        model: &InferenceModel,
+        selection: &DecodeSelection,
+        token_idx: usize,
+    ) {
         let counters = model.read_metal_perf_counters();
         self.totals.command_buffers += counters.command_buffers;
         self.totals.buffer_barriers += counters.buffer_barriers;
@@ -193,7 +198,7 @@ fn env_u64(var: &str) -> Option<u64> {
 }
 
 fn log_decode_perf_summary(
-    model: &LlamaModel,
+    model: &InferenceModel,
     selection: &DecodeSelection,
     summary: &DecodeMetalPerfSummary,
 ) {
@@ -212,7 +217,7 @@ fn log_decode_perf_summary(
 }
 
 pub fn select_decode_mode(
-    model: &LlamaModel,
+    model: &InferenceModel,
     kv: &ModelKv,
     intent: DecodeIntent,
     allow_pipelined: bool,
@@ -222,7 +227,7 @@ pub fn select_decode_mode(
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_decode<F>(
-    model: &LlamaModel,
+    model: &InferenceModel,
     weights: &WeightStore<'_>,
     tokenizer: &Tokenizer,
     kv: &mut ModelKv,
@@ -317,7 +322,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 fn run_sequential_decode<F>(
-    model: &LlamaModel,
+    model: &InferenceModel,
     weights: &WeightStore<'_>,
     tokenizer: &Tokenizer,
     kv: &mut ModelKv,
@@ -401,7 +406,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 fn run_pipelined_decode<F>(
-    model: &LlamaModel,
+    model: &InferenceModel,
     weights: &WeightStore<'_>,
     tokenizer: &Tokenizer,
     kv: &mut ModelKv,
@@ -440,7 +445,7 @@ where
     let mut hidden_b = model.alloc_metal_buf(hidden_bytes)?;
 
     model.prewarm_kv_capacity(kv, start_position + max_tokens + 2)?;
-    if let Some(active_slot) = kv.as_qwen35().map(crate::kv::Qwen35Kv::active_slot) {
+    if let Some(active_slot) = kv.as_qwen35().map(crate::kv::Qwen3_5Kv::active_slot) {
         model.prime_qwen35_recurrent_slot_buffers(kv, &[active_slot])?;
     }
 
@@ -609,12 +614,19 @@ mod tests {
             qwen35_ssm_state_size: (arch == "qwen35").then_some(2),
             qwen35_ssm_time_step_rank: (arch == "qwen35").then_some(4),
             qwen35_ssm_group_count: (arch == "qwen35").then_some(2),
+            gemma4_head_dim_swa: None,
+            gemma4_head_dim_global: None,
+            gemma4_n_kv_heads_swa: None,
+            gemma4_n_kv_heads_global: None,
+            gemma4_rope_dim_swa: None,
+            gemma4_rope_dim_global: None,
+            final_logit_softcapping: None,
         }
     }
 
     #[test]
     fn test_select_decode_mode_cpu_uses_sequential_decode() {
-        let model = LlamaModel::new(tiny_config("llama")).unwrap();
+        let model = InferenceModel::new(tiny_config("llama")).unwrap();
         let kv = model.create_model_kv();
         let selection = select_decode_mode(&model, &kv, DecodeIntent::Throughput, true);
 
@@ -630,7 +642,7 @@ mod tests {
         let Ok(backend) = HybridCpuDecodeBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
 
         assert!(!kv.is_gpu(), "HybridCpuDecode should allocate CPU KV");
@@ -644,7 +656,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         if !kv.is_gpu() {
             return;
@@ -660,7 +672,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("qwen3"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("qwen3"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         if !kv.is_gpu() {
             return;
@@ -676,7 +688,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("gemma3"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("gemma3"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         if !kv.is_gpu() {
             return;
@@ -688,19 +700,24 @@ mod tests {
     }
 
     #[test]
-    fn test_select_decode_mode_qwen35_hybrid_prefers_pipelined_when_available() {
+    fn test_select_decode_mode_qwen35_hybrid_uses_single_cb_when_pipelined_decode_is_disabled() {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("qwen35"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("qwen35"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         assert!(matches!(kv, ModelKv::Qwen35(_)));
 
-        // AX_QWEN35_GPU_DECODE defaults to false, so pipelined decode is
-        // unavailable and the selection falls back to SingleCb.
+        // Qwen3.5 dense native decode is enabled, but pipelined decode stays
+        // disabled until the native pending-frame path is validated.
         let selection = select_decode_mode(&model, &kv, DecodeIntent::Throughput, true);
         assert_eq!(selection.mode, DecodeMode::SingleCb);
-        assert!(selection.fallback_reason.is_some());
+        assert_eq!(
+            selection.fallback_reason.as_deref(),
+            Some(
+                "qwen35 hybrid decode keeps the native single-CB path because pipelined decode is unavailable"
+            )
+        );
     }
 
     #[test]
@@ -708,7 +725,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("qwen35"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("qwen35"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         assert!(matches!(kv, ModelKv::Qwen35(_)));
 
@@ -725,7 +742,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         if !kv.is_gpu() {
             return;

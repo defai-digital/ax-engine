@@ -38,7 +38,7 @@ use std::time::Duration;
 use crate::gguf::MappedModel;
 use crate::kv::{ModelKv, ModelKvSnapshot};
 use crate::metrics::counters::OpTimer;
-use crate::model::{LlamaModel, WeightStore};
+use crate::model::{InferenceModel, WeightStore};
 use crate::sampling::Sampler;
 
 fn qwen35_speculative_branch_verify_enabled() -> bool {
@@ -51,7 +51,7 @@ fn qwen35_speculative_branch_verify_enabled() -> bool {
     }
 }
 
-pub fn target_verify_mode_label(model: &LlamaModel, kv: &ModelKv) -> &'static str {
+pub fn target_verify_mode_label(model: &InferenceModel, kv: &ModelKv) -> &'static str {
     if model.arch_name() == "qwen35" && kv.as_qwen35().is_some() {
         if qwen35_speculative_branch_verify_enabled() {
             "qwen35_branch"
@@ -106,7 +106,7 @@ pub struct SpecStep {
 /// Speculative decoder: wraps a small CPU draft model for use with a large target model.
 pub struct SpeculativeDecoder {
     /// Small draft model (runs on CpuBackend).
-    draft_model: LlamaModel,
+    draft_model: InferenceModel,
     /// GGUF mapping kept alive for the draft model's weights.
     _draft_mapped: MappedModel,
     /// Persistent draft KV synchronized to the accepted history.
@@ -131,13 +131,13 @@ enum TargetVerifyState {
 impl SpeculativeDecoder {
     /// Load a draft model from a GGUF file and create a `SpeculativeDecoder`.
     ///
-    /// The draft model always uses `CpuBackend` (forced via `LlamaModel::new`).
+    /// The draft model always uses `CpuBackend` (forced via `InferenceModel::new`).
     /// `k` is the number of lookahead tokens per step; 4 is a good default.
     pub fn load(draft_path: &str, k: usize) -> anyhow::Result<Self> {
         let draft_mapped = MappedModel::open(Path::new(draft_path))?;
         let draft_config = crate::model::ModelConfig::from_gguf(&draft_mapped.header)?;
         validate_speculative_config(k, draft_config.vocab_size, draft_config.vocab_size)?;
-        let draft_model = LlamaModel::new(draft_config)?; // CPU backend
+        let draft_model = InferenceModel::new(draft_config)?; // CPU backend
         validate_speculative_model_rollback("draft", &draft_model)?;
         let draft_kv = draft_model.create_model_kv();
         Ok(Self {
@@ -160,7 +160,7 @@ impl SpeculativeDecoder {
     /// measured steps avoid first-use branch setup noise.
     pub fn prewarm_target_verify_path(
         &mut self,
-        target_model: &LlamaModel,
+        target_model: &InferenceModel,
         target_kv: &mut ModelKv,
     ) -> anyhow::Result<()> {
         let verify_state = {
@@ -206,7 +206,7 @@ impl SpeculativeDecoder {
         history_tokens: &[u32],
         last_token: u32,
         position: usize,
-        target_model: &LlamaModel,
+        target_model: &InferenceModel,
         target_kv: &mut ModelKv,
         target_weights: &WeightStore,
         sampler: &mut Sampler,
@@ -473,7 +473,7 @@ impl SpeculativeDecoder {
         })
     }
 
-    fn validate_against_target(&self, target_model: &LlamaModel) -> anyhow::Result<()> {
+    fn validate_against_target(&self, target_model: &InferenceModel) -> anyhow::Result<()> {
         validate_speculative_config(
             self.k,
             self.draft_model.config.vocab_size,
@@ -486,7 +486,7 @@ impl SpeculativeDecoder {
 
 fn prepare_target_verify_state_with_branch_slot_hint(
     target_qwen35_branch_slot: &mut Option<usize>,
-    target_model: &LlamaModel,
+    target_model: &InferenceModel,
     target_kv: &mut ModelKv,
 ) -> anyhow::Result<TargetVerifyState> {
     if target_model.arch_name() == "qwen35"
@@ -551,7 +551,7 @@ fn validate_speculative_config(
     Ok(())
 }
 
-fn validate_speculative_model_rollback(label: &str, model: &LlamaModel) -> anyhow::Result<()> {
+fn validate_speculative_model_rollback(label: &str, model: &InferenceModel) -> anyhow::Result<()> {
     if model
         .kv_plan_with_requirements(crate::backend::KvPlannerRequirements {
             require_precise_rollback: true,
@@ -574,7 +574,7 @@ fn validate_speculative_model_rollback(label: &str, model: &LlamaModel) -> anyho
 
 fn restore_target_verify_state(
     verify_state: &TargetVerifyState,
-    target_model: &LlamaModel,
+    target_model: &InferenceModel,
     target_kv: &mut ModelKv,
     target_weights: &WeightStore,
     replay_tokens: &[u32],
@@ -612,7 +612,7 @@ fn restore_target_verify_state(
 
 fn abort_target_verify_state(
     verify_state: &TargetVerifyState,
-    target_model: &LlamaModel,
+    target_model: &InferenceModel,
     target_kv: &mut ModelKv,
     target_weights: &WeightStore,
     position: usize,
@@ -630,7 +630,7 @@ fn abort_target_verify_state(
 fn commit_target_verify_state(
     verify_state: &TargetVerifyState,
     target_qwen35_branch_slot: &mut Option<usize>,
-    _target_model: &LlamaModel,
+    _target_model: &InferenceModel,
     target_kv: &mut ModelKv,
 ) -> anyhow::Result<()> {
     if let TargetVerifyState::Qwen35Branch {
@@ -646,7 +646,7 @@ fn commit_target_verify_state(
 }
 
 fn restore_or_truncate_kv(
-    model: &LlamaModel,
+    model: &InferenceModel,
     kv: &mut ModelKv,
     weights: &WeightStore,
     snapshot: Option<&ModelKvSnapshot>,
@@ -696,7 +696,7 @@ mod tests {
     use std::ffi::OsString;
     use std::sync::MutexGuard;
 
-    use crate::model::{LlamaModel, ModelConfig};
+    use crate::model::{InferenceModel, ModelConfig};
 
     fn env_lock() -> MutexGuard<'static, ()> {
         crate::test_env_lock()
@@ -762,6 +762,13 @@ mod tests {
             qwen35_ssm_state_size: None,
             qwen35_ssm_time_step_rank: None,
             qwen35_ssm_group_count: None,
+            gemma4_head_dim_swa: None,
+            gemma4_head_dim_global: None,
+            gemma4_n_kv_heads_swa: None,
+            gemma4_n_kv_heads_global: None,
+            gemma4_rope_dim_swa: None,
+            gemma4_rope_dim_global: None,
+            final_logit_softcapping: None,
             expert_intermediate_dim: None,
         }
     }
@@ -769,7 +776,7 @@ mod tests {
     #[test]
     fn test_truncate_to_resets_seq_len_gpu_variant() {
         // Test ModelKv::truncate_to via the Cpu variant (no GPU needed in tests)
-        let model = LlamaModel::new(tiny_config()).unwrap();
+        let model = InferenceModel::new(tiny_config()).unwrap();
         let mut kv = model.create_model_kv();
         assert_eq!(kv.seq_len(), 0);
 
@@ -891,18 +898,25 @@ mod tests {
             } else {
                 None
             },
+            gemma4_head_dim_swa: None,
+            gemma4_head_dim_global: None,
+            gemma4_n_kv_heads_swa: None,
+            gemma4_n_kv_heads_global: None,
+            gemma4_rope_dim_swa: None,
+            gemma4_rope_dim_global: None,
+            final_logit_softcapping: None,
         }
     }
 
     #[test]
     fn test_validate_speculative_model_rollback_accepts_qwen35_via_snapshot() {
-        let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
+        let model = InferenceModel::new(speculative_test_config("qwen35")).unwrap();
         validate_speculative_model_rollback("draft", &model).unwrap();
     }
 
     #[test]
     fn test_validate_speculative_model_rollback_accepts_llama() {
-        let model = LlamaModel::new(speculative_test_config("llama")).unwrap();
+        let model = InferenceModel::new(speculative_test_config("llama")).unwrap();
         validate_speculative_model_rollback("target", &model).unwrap();
     }
 
@@ -918,7 +932,7 @@ mod tests {
             std::env::remove_var(key);
         }
 
-        let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
+        let model = InferenceModel::new(speculative_test_config("qwen35")).unwrap();
         let kv = model.create_model_kv();
         assert_eq!(target_verify_mode_label(&model, &kv), "qwen35_branch");
     }
@@ -926,7 +940,7 @@ mod tests {
     #[test]
     fn test_target_verify_mode_label_honors_branch_disable_env() {
         with_env_var("AX_QWEN35_SPEC_VERIFY_BRANCH", "off", || {
-            let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
+            let model = InferenceModel::new(speculative_test_config("qwen35")).unwrap();
             let kv = model.create_model_kv();
             assert_eq!(target_verify_mode_label(&model, &kv), "snapshot_replay");
         });
@@ -934,7 +948,7 @@ mod tests {
 
     #[test]
     fn test_prepare_target_verify_state_qwen35_forks_branch_and_commit_restores_source() {
-        let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
+        let model = InferenceModel::new(speculative_test_config("qwen35")).unwrap();
         let mut target_qwen35_branch_slot = None;
         let mut kv = model.create_model_kv();
         let kv_width = (model.config.n_kv_heads * model.config.head_dim) as usize;
@@ -1007,7 +1021,7 @@ mod tests {
 
     #[test]
     fn test_prepare_target_verify_state_qwen35_reuses_branch_slot_across_steps() {
-        let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
+        let model = InferenceModel::new(speculative_test_config("qwen35")).unwrap();
         let mut target_qwen35_branch_slot = None;
         let mut kv = model.create_model_kv();
 
@@ -1051,7 +1065,7 @@ mod tests {
 
     #[test]
     fn test_commit_target_verify_state_qwen35_handoffs_active_slot_and_reuses_old_source() {
-        let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
+        let model = InferenceModel::new(speculative_test_config("qwen35")).unwrap();
         let mut target_qwen35_branch_slot = None;
         let mut kv = model.create_model_kv();
 
@@ -1100,7 +1114,7 @@ mod tests {
 
     #[test]
     fn test_prepare_target_verify_state_qwen35_uses_attention_truncate_from_gpu_dirty_state() {
-        let model = LlamaModel::new(speculative_test_config("qwen35")).unwrap();
+        let model = InferenceModel::new(speculative_test_config("qwen35")).unwrap();
         let mut target_qwen35_branch_slot = None;
         let mut kv = model.create_model_kv();
         let device = ax_engine_metal::MetalDevice::new().expect("metal device");

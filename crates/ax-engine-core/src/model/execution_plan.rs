@@ -973,6 +973,13 @@ impl PrefillExecutionPlan {
                 }
             }
             "qwen35" | "qwen35moe" => qwen35_prefill_plan(),
+            // Gemma4: serial prefill only (GPU batch not yet implemented due to
+            // per-layer variable head_dim / n_kv_heads).
+            "gemma4" => Self {
+                mode: PrefillMode::Serial,
+                chunk_len: None,
+                reason: Some("gemma4_serial_only".to_string()),
+            },
             _ => Self {
                 mode: PrefillMode::Serial,
                 chunk_len: None,
@@ -1193,8 +1200,7 @@ fn decode_pair_matvec_plan_for_arch(arch_name: &str) -> bool {
 }
 
 fn decode_fused_silu_down_plan_for_arch(arch_name: &str) -> bool {
-    env_flag_override("AX_METAL_DECODE_FUSED_SILU_DOWN")
-        .unwrap_or(matches!(arch_name, "gemma3"))
+    env_flag_override("AX_METAL_DECODE_FUSED_SILU_DOWN").unwrap_or(matches!(arch_name, "gemma3"))
 }
 
 fn pipelined_gpu_decode_plan(
@@ -1274,7 +1280,7 @@ fn gemma3_prefill_layer_plan(
 
 fn decode_barrier_plan_for_arch(arch_name: &str) -> DecodeBarrierPlan {
     match arch_name {
-        "llama" | "qwen35" | "gemma3" => {
+        "llama" | "qwen35" | "gemma3" | "gemma4" => {
             if super::llama::metal_decode_barriers_enabled() {
                 DecodeBarrierPlan::Explicit
             } else {
@@ -1404,6 +1410,13 @@ mod tests {
             qwen35_ssm_state_size: is_qwen35.then_some(2),
             qwen35_ssm_time_step_rank: is_qwen35.then_some(4),
             qwen35_ssm_group_count: is_qwen35.then_some(2),
+            gemma4_head_dim_swa: None,
+            gemma4_head_dim_global: None,
+            gemma4_n_kv_heads_swa: None,
+            gemma4_n_kv_heads_global: None,
+            gemma4_rope_dim_swa: None,
+            gemma4_rope_dim_global: None,
+            final_logit_softcapping: None,
         }
     }
 

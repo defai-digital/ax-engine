@@ -85,6 +85,27 @@ fn rms_norm_scalar(x: &mut [f32], weight: &[f32], eps: f32) {
     }
 }
 
+/// In-place RMS normalization without learned weight.
+///
+/// RMSNorm_no_weight(x) = x / sqrt(mean(x^2) + eps)
+///
+/// Used for Gemma4 V normalization where no learned weight is applied.
+pub fn rms_norm_no_weight(x: &mut [f32], eps: f32) {
+    let n = x.len();
+    if n == 0 {
+        return;
+    }
+
+    let mut sum_sq = 0.0f32;
+    for &v in x.iter() {
+        sum_sq += v * v;
+    }
+    let inv_rms = 1.0 / (sum_sq / n as f32 + eps).sqrt();
+    for xi in x.iter_mut() {
+        *xi *= inv_rms;
+    }
+}
+
 /// RMS normalization writing to a separate output buffer.
 ///
 /// `x`: input vector (length n, not modified)
@@ -244,5 +265,22 @@ mod tests {
         let mut out = [];
         rms_norm_out(&x, &w, &mut out, 1e-5);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_rms_norm_no_weight_normalizes() {
+        // x = [3, 4], mean(x^2) = 12.5, rms = sqrt(12.5) ≈ 3.5355
+        // result = [3/3.5355, 4/3.5355] ≈ [0.8485, 1.1314]
+        let mut x = [3.0, 4.0];
+        rms_norm_no_weight(&mut x, 0.0);
+        let rms = (12.5f32).sqrt();
+        assert!((x[0] - 3.0 / rms).abs() < 1e-4);
+        assert!((x[1] - 4.0 / rms).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_rms_norm_no_weight_empty_is_noop() {
+        let mut x: [f32; 0] = [];
+        rms_norm_no_weight(&mut x, 1e-5);
     }
 }

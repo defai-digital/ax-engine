@@ -39,6 +39,13 @@ fn qwen35_test_config() -> ModelConfig {
         qwen35_ssm_state_size: Some(2),
         qwen35_ssm_time_step_rank: Some(4),
         qwen35_ssm_group_count: Some(1),
+        gemma4_head_dim_swa: None,
+        gemma4_head_dim_global: None,
+        gemma4_n_kv_heads_swa: None,
+        gemma4_n_kv_heads_global: None,
+        gemma4_rope_dim_swa: None,
+        gemma4_rope_dim_global: None,
+        final_logit_softcapping: None,
     }
 }
 
@@ -166,10 +173,10 @@ fn test_build_qwen35_prefill_schedule_flattens_execution_steps() {
 fn test_build_qwen35_prefill_schedule_marks_backend_state_batch_for_backend_owned_layers() {
     let cfg = qwen35_test_config();
     let owners = vec![
-        crate::kv::qwen35_kv::Qwen35LayerStateOwner::BackendOwned,
-        crate::kv::qwen35_kv::Qwen35LayerStateOwner::CpuMaterialized,
-        crate::kv::qwen35_kv::Qwen35LayerStateOwner::Split,
-        crate::kv::qwen35_kv::Qwen35LayerStateOwner::CpuMaterialized,
+        crate::kv::qwen35_kv::Qwen3_5LayerStateOwner::BackendOwned,
+        crate::kv::qwen35_kv::Qwen3_5LayerStateOwner::CpuMaterialized,
+        crate::kv::qwen35_kv::Qwen3_5LayerStateOwner::Split,
+        crate::kv::qwen35_kv::Qwen3_5LayerStateOwner::CpuMaterialized,
     ];
     let schedule = build_qwen35_prefill_schedule(&cfg, 0, 8, false, Some(&owners));
     let summary = summarize_qwen35_prefill_schedule(&schedule);

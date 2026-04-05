@@ -169,6 +169,58 @@ pub fn multi_head_attention(
     }
 }
 
+/// Compute multi-head attention with an explicit scale factor.
+///
+/// Same as `multi_head_attention` but uses the provided `scale` instead of
+/// `1/sqrt(head_dim)`. Gemma4 uses scale=1.0 because QK norms handle scaling.
+#[allow(clippy::too_many_arguments)]
+pub fn multi_head_attention_scaled(
+    q: &[f32],
+    k_cache: &[f32],
+    v_cache: &[f32],
+    output: &mut [f32],
+    n_heads: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    assert_eq!(q.len(), n_heads * head_dim);
+    assert!(k_cache.len() >= seq_len * n_kv_heads * head_dim);
+    assert!(v_cache.len() >= seq_len * n_kv_heads * head_dim);
+    assert_eq!(output.len(), n_heads * head_dim);
+
+    if seq_len == 0 {
+        output.fill(0.0);
+        return;
+    }
+
+    let heads_per_kv = n_heads / n_kv_heads;
+    let kv_stride = n_kv_heads * head_dim;
+
+    let mut scores = vec![0.0f32; seq_len];
+
+    for h in 0..n_heads {
+        let kv_h = h / heads_per_kv;
+        let q_head = &q[h * head_dim..(h + 1) * head_dim];
+
+        for (t, score) in scores.iter_mut().enumerate() {
+            let k_offset = t * kv_stride + kv_h * head_dim;
+            *score = dot(q_head, &k_cache[k_offset..k_offset + head_dim]) * scale;
+        }
+
+        softmax::softmax(&mut scores);
+
+        let out_head = &mut output[h * head_dim..(h + 1) * head_dim];
+        out_head.fill(0.0);
+
+        for (t, &w) in scores.iter().enumerate() {
+            let v_offset = t * kv_stride + kv_h * head_dim;
+            accumulate(out_head, w, &v_cache[v_offset..v_offset + head_dim]);
+        }
+    }
+}
+
 /// Compute multi-head attention for multiple tokens (prefill).
 ///
 /// Processes all tokens in a sequence with causal masking

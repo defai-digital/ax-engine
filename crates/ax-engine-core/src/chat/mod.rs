@@ -94,7 +94,7 @@ pub fn render_chat_messages(
     options: ChatRenderOptions,
 ) -> String {
     match architecture {
-        "gemma3" | "gemma2" | "gemma" => render_gemma(messages, options),
+        "gemma3" | "gemma4" | "gemma2" | "gemma" => render_gemma(messages, options),
         "llama" => render_llama(messages, options),
         "qwen35" | "qwen35moe" | "qwen3" | "qwen2" => render_qwen(messages, options),
         _ => render_fallback(messages, options),
@@ -117,7 +117,7 @@ pub fn render_user_turn(prompt: &str, architecture: &str, first_turn: bool) -> S
     }
 
     match architecture {
-        "gemma3" | "gemma2" | "gemma" => render_chat_messages(
+        "gemma3" | "gemma4" | "gemma2" | "gemma" => render_chat_messages(
             &[ChatMessage::user(&format!("\n{prompt}"))],
             architecture,
             ChatRenderOptions::default(),

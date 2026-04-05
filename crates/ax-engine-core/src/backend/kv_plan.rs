@@ -1,7 +1,7 @@
 use super::{Backend, RuntimePolicy};
 use crate::kv::gpu_kv::GpuKvDtype;
 use crate::kv::page::{KvCacheConfig, KvDtype, initial_token_capacity, recommended_page_size};
-use crate::kv::{CpuKv, GpuKv, ModelKv, Qwen35Kv};
+use crate::kv::{CpuKv, GpuKv, ModelKv, Qwen3_5Kv};
 use crate::model::config::ModelConfig;
 use anyhow::ensure;
 
@@ -58,7 +58,7 @@ pub struct GpuKvPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Qwen35KvPlan {
+pub struct Qwen3_5KvPlan {
     pub n_layers: usize,
     pub n_kv_heads: usize,
     pub head_dim: usize,
@@ -72,11 +72,14 @@ pub struct Qwen35KvPlan {
     pub group_count: usize,
 }
 
+#[allow(non_camel_case_types)]
+pub type Qwen35KvPlan = Qwen3_5KvPlan;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KvPlan {
     Cpu(CpuKvPlan),
     Gpu(GpuKvPlan),
-    Qwen35(Qwen35KvPlan),
+    Qwen35(Qwen3_5KvPlan),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,7 +161,7 @@ fn validate_qwen35_plan(
     config: &ModelConfig,
     attention_page_size: usize,
     max_seq_len: usize,
-) -> anyhow::Result<Qwen35KvPlan> {
+) -> anyhow::Result<Qwen3_5KvPlan> {
     let full_attention_interval = config.qwen35_full_attention_interval.unwrap_or(0) as usize;
     let conv_kernel = config.qwen35_ssm_conv_kernel.unwrap_or(0) as usize;
     let inner_size = config.qwen35_ssm_inner_size.unwrap_or(0) as usize;
@@ -184,7 +187,7 @@ fn validate_qwen35_plan(
         "qwen35 time_step_rank ({time_step_rank}) must be a multiple of group_count ({group_count})"
     );
 
-    Ok(Qwen35KvPlan {
+    Ok(Qwen3_5KvPlan {
         n_layers: config.n_layers as usize,
         n_kv_heads: config.n_kv_heads as usize,
         head_dim: config.head_dim as usize,
@@ -307,8 +310,8 @@ fn build_cpu_kv(plan: &CpuKvPlan) -> CpuKv {
     CpuKv::with_config(&cpu_kv_cache_config(plan))
 }
 
-fn build_qwen35_kv(plan: &Qwen35KvPlan, backend: &dyn Backend) -> Qwen35Kv {
-    let mut kv = Qwen35Kv::new_with_attention_page_size(
+fn build_qwen35_kv(plan: &Qwen3_5KvPlan, backend: &dyn Backend) -> Qwen3_5Kv {
+    let mut kv = Qwen3_5Kv::new_with_attention_page_size(
         plan.n_layers,
         plan.n_kv_heads,
         plan.head_dim,
@@ -387,7 +390,7 @@ fn cpu_kv_cache_config(plan: &CpuKvPlan) -> KvCacheConfig {
     }
 }
 
-fn qwen35_memory_estimate(plan: &Qwen35KvPlan) -> KvPlanMemoryEstimate {
+fn qwen35_memory_estimate(plan: &Qwen3_5KvPlan) -> KvPlanMemoryEstimate {
     let attention_cfg = KvCacheConfig {
         n_layers: plan.n_layers,
         n_kv_heads: plan.n_kv_heads,
@@ -468,6 +471,13 @@ mod tests {
             qwen35_ssm_state_size: None,
             qwen35_ssm_time_step_rank: None,
             qwen35_ssm_group_count: None,
+            gemma4_head_dim_swa: None,
+            gemma4_head_dim_global: None,
+            gemma4_n_kv_heads_swa: None,
+            gemma4_n_kv_heads_global: None,
+            gemma4_rope_dim_swa: None,
+            gemma4_rope_dim_global: None,
+            final_logit_softcapping: None,
             expert_intermediate_dim: None,
         }
     }
