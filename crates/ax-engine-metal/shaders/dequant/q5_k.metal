@@ -55,25 +55,29 @@ kernel void dequant_batch_q5_k(
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        for (uint i = tid; i < DB_BM * (DB_BK / 2); i += DB_TG) {
-            uint r = i / (DB_BK / 2);
-            uint b = i % (DB_BK / 2);
+        const uchar shift_lo = uchar(pair * 2);
+        const uchar shift_hi = uchar(pair * 2 + 1);
+        for (uint i = tid; i < DB_BM * (DB_BK / 8); i += DB_TG) {
+            uint r  = i / (DB_BK / 8);
+            uint b4 = (i % (DB_BK / 8)) * 4;
             uint global_r = tile_m + r;
             if (global_r < M) {
                 device const Q5_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-                uchar byte = blk.qs[pair * 32 + b];
-                uchar high_bits = blk.qh[b];
-                float lo_q =
-                    float(byte & 0x0F) + (((high_bits >> (pair * 2)) & 0x01) ? 16.0f : 0.0f);
-                float hi_q = float(byte >> 4)
-                    + (((high_bits >> (pair * 2 + 1)) & 0x01) ? 16.0f : 0.0f);
-                tg_A[r * DB_BK + b] =
-                    half(float(row_dsc1[r]) * lo_q - float(row_dmin1[r]));
-                tg_A[r * DB_BK + b + 32] =
-                    half(float(row_dsc2[r]) * hi_q - float(row_dmin2[r]));
+                uchar4 qs_vec = *(device const uchar4*)(blk.qs + pair * 32 + b4);
+                uchar4 qh_vec = *(device const uchar4*)(blk.qh + b4);
+                uint4 lo = uint4(qs_vec & uchar4(0x0F));
+                uint4 hi = uint4(qs_vec >> uchar4(4));
+                lo |= uint4((qh_vec >> uchar4(shift_lo)) & uchar4(1)) << uint4(4);
+                hi |= uint4((qh_vec >> uchar4(shift_hi)) & uchar4(1)) << uint4(4);
+                float dsc1_f = float(row_dsc1[r]);
+                float dmn1_f = float(row_dmin1[r]);
+                float dsc2_f = float(row_dsc2[r]);
+                float dmn2_f = float(row_dmin2[r]);
+                *(threadgroup half4*)(tg_A + r * DB_BK + b4)      = half4(dsc1_f * float4(lo) - dmn1_f);
+                *(threadgroup half4*)(tg_A + r * DB_BK + b4 + 32) = half4(dsc2_f * float4(hi) - dmn2_f);
             } else {
-                tg_A[r * DB_BK + b] = half(0.0f);
-                tg_A[r * DB_BK + b + 32] = half(0.0f);
+                *(threadgroup half4*)(tg_A + r * DB_BK + b4)      = half4(0.0h);
+                *(threadgroup half4*)(tg_A + r * DB_BK + b4 + 32) = half4(0.0h);
             }
         }
 
@@ -189,25 +193,29 @@ kernel void dequant_batch_q5_k_f16in(
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        for (uint i = tid; i < DB_BM * (DB_BK / 2); i += DB_TG) {
-            uint r = i / (DB_BK / 2);
-            uint b = i % (DB_BK / 2);
+        const uchar shift_lo = uchar(pair * 2);
+        const uchar shift_hi = uchar(pair * 2 + 1);
+        for (uint i = tid; i < DB_BM * (DB_BK / 8); i += DB_TG) {
+            uint r  = i / (DB_BK / 8);
+            uint b4 = (i % (DB_BK / 8)) * 4;
             uint global_r = tile_m + r;
             if (global_r < M) {
                 device const Q5_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-                uchar byte = blk.qs[pair * 32 + b];
-                uchar high_bits = blk.qh[b];
-                float lo_q =
-                    float(byte & 0x0F) + (((high_bits >> (pair * 2)) & 0x01) ? 16.0f : 0.0f);
-                float hi_q = float(byte >> 4)
-                    + (((high_bits >> (pair * 2 + 1)) & 0x01) ? 16.0f : 0.0f);
-                tg_A[r * DB_BK + b] =
-                    half(float(row_dsc1[r]) * lo_q - float(row_dmin1[r]));
-                tg_A[r * DB_BK + b + 32] =
-                    half(float(row_dsc2[r]) * hi_q - float(row_dmin2[r]));
+                uchar4 qs_vec = *(device const uchar4*)(blk.qs + pair * 32 + b4);
+                uchar4 qh_vec = *(device const uchar4*)(blk.qh + b4);
+                uint4 lo = uint4(qs_vec & uchar4(0x0F));
+                uint4 hi = uint4(qs_vec >> uchar4(4));
+                lo |= uint4((qh_vec >> uchar4(shift_lo)) & uchar4(1)) << uint4(4);
+                hi |= uint4((qh_vec >> uchar4(shift_hi)) & uchar4(1)) << uint4(4);
+                float dsc1_f = float(row_dsc1[r]);
+                float dmn1_f = float(row_dmin1[r]);
+                float dsc2_f = float(row_dsc2[r]);
+                float dmn2_f = float(row_dmin2[r]);
+                *(threadgroup half4*)(tg_A + r * DB_BK + b4)      = half4(dsc1_f * float4(lo) - dmn1_f);
+                *(threadgroup half4*)(tg_A + r * DB_BK + b4 + 32) = half4(dsc2_f * float4(hi) - dmn2_f);
             } else {
-                tg_A[r * DB_BK + b] = half(0.0f);
-                tg_A[r * DB_BK + b + 32] = half(0.0f);
+                *(threadgroup half4*)(tg_A + r * DB_BK + b4)      = half4(0.0h);
+                *(threadgroup half4*)(tg_A + r * DB_BK + b4 + 32) = half4(0.0h);
             }
         }
 
@@ -747,17 +755,26 @@ kernel void dequant_batch_q5_k_f16in_full64(
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         // Phase 2: paired nibble + high-bit extraction.
-        for (uint i = tid; i < D64_BM * (D64_BK / 2); i += D64_TG) {
-            uint r = i / (D64_BK / 2);
-            uint b = i % (D64_BK / 2);
+        // Phase 2: vectorized uchar4 nibble + high-bit extraction (branchless).
+        const uchar shift_lo = uchar(pair * 2);
+        const uchar shift_hi = uchar(pair * 2 + 1);
+        for (uint i = tid; i < D64_BM * (D64_BK / 8); i += D64_TG) {
+            uint r  = i / (D64_BK / 8);
+            uint b4 = (i % (D64_BK / 8)) * 4;
             uint global_r = tile_m + r;
             device const Q5_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-            uchar byte = blk.qs[pair * 32 + b];
-            uchar high_bits = blk.qh[b];
-            float lo_q = float(byte & 0x0F) + (((high_bits >> (pair * 2)) & 0x01) ? 16.0f : 0.0f);
-            float hi_q = float(byte >> 4) + (((high_bits >> (pair * 2 + 1)) & 0x01) ? 16.0f : 0.0f);
-            tg_A[r * D64_BK + b]      = half(float(row_dsc1[r]) * lo_q - float(row_dmin1[r]));
-            tg_A[r * D64_BK + b + 32] = half(float(row_dsc2[r]) * hi_q - float(row_dmin2[r]));
+            uchar4 qs_vec = *(device const uchar4*)(blk.qs + pair * 32 + b4);
+            uchar4 qh_vec = *(device const uchar4*)(blk.qh + b4);
+            uint4 lo = uint4(qs_vec & uchar4(0x0F));
+            uint4 hi = uint4(qs_vec >> uchar4(4));
+            lo |= uint4((qh_vec >> uchar4(shift_lo)) & uchar4(1)) << uint4(4);
+            hi |= uint4((qh_vec >> uchar4(shift_hi)) & uchar4(1)) << uint4(4);
+            float dsc1_f = float(row_dsc1[r]);
+            float dmn1_f = float(row_dmin1[r]);
+            float dsc2_f = float(row_dsc2[r]);
+            float dmn2_f = float(row_dmin2[r]);
+            *(threadgroup half4*)(tg_A + r * D64_BK + b4)      = half4(dsc1_f * float4(lo) - dmn1_f);
+            *(threadgroup half4*)(tg_A + r * D64_BK + b4 + 32) = half4(dsc2_f * float4(hi) - dmn2_f);
         }
 
         for (uint i = tid; i < D64_BN * D64_BK; i += D64_TG) {
@@ -862,18 +879,26 @@ kernel void dequant_batch_q5_k_f16in_full32(
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // Phase 2: paired nibble + high-bit extraction.
-        for (uint i = tid; i < D32_BM * (D64_BK / 2); i += D32_TG) {
-            uint r = i / (D64_BK / 2);
-            uint b = i % (D64_BK / 2);
+        // Phase 2: vectorized uchar4 nibble + high-bit extraction (branchless).
+        const uchar shift_lo = uchar(pair * 2);
+        const uchar shift_hi = uchar(pair * 2 + 1);
+        for (uint i = tid; i < D32_BM * (D64_BK / 8); i += D32_TG) {
+            uint r  = i / (D64_BK / 8);
+            uint b4 = (i % (D64_BK / 8)) * 4;
             uint global_r = tile_m + r;
             device const Q5_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-            uchar byte = blk.qs[pair * 32 + b];
-            uchar high_bits = blk.qh[b];
-            float lo_q = float(byte & 0x0F) + (((high_bits >> (pair * 2)) & 0x01) ? 16.0f : 0.0f);
-            float hi_q = float(byte >> 4) + (((high_bits >> (pair * 2 + 1)) & 0x01) ? 16.0f : 0.0f);
-            tg_A[r * D64_BK + b]      = half(float(row_dsc1[r]) * lo_q - float(row_dmin1[r]));
-            tg_A[r * D64_BK + b + 32] = half(float(row_dsc2[r]) * hi_q - float(row_dmin2[r]));
+            uchar4 qs_vec = *(device const uchar4*)(blk.qs + pair * 32 + b4);
+            uchar4 qh_vec = *(device const uchar4*)(blk.qh + b4);
+            uint4 lo = uint4(qs_vec & uchar4(0x0F));
+            uint4 hi = uint4(qs_vec >> uchar4(4));
+            lo |= uint4((qh_vec >> uchar4(shift_lo)) & uchar4(1)) << uint4(4);
+            hi |= uint4((qh_vec >> uchar4(shift_hi)) & uchar4(1)) << uint4(4);
+            float dsc1_f = float(row_dsc1[r]);
+            float dmn1_f = float(row_dmin1[r]);
+            float dsc2_f = float(row_dsc2[r]);
+            float dmn2_f = float(row_dmin2[r]);
+            *(threadgroup half4*)(tg_A + r * D64_BK + b4)      = half4(dsc1_f * float4(lo) - dmn1_f);
+            *(threadgroup half4*)(tg_A + r * D64_BK + b4 + 32) = half4(dsc2_f * float4(hi) - dmn2_f);
         }
 
         for (uint i = tid; i < D32_BN * D64_BK; i += D32_TG) {
@@ -978,18 +1003,26 @@ kernel void dequant_batch_q5_k_f16in_tail32(
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // Phase 2: paired nibble + high-bit extraction.
-        for (uint i = tid; i < D32_BM * (D64_BK / 2); i += D32_TG) {
-            uint r = i / (D64_BK / 2);
-            uint b = i % (D64_BK / 2);
+        // Phase 2: vectorized uchar4 nibble + high-bit extraction (branchless).
+        const uchar shift_lo = uchar(pair * 2);
+        const uchar shift_hi = uchar(pair * 2 + 1);
+        for (uint i = tid; i < D32_BM * (D64_BK / 8); i += D32_TG) {
+            uint r  = i / (D64_BK / 8);
+            uint b4 = (i % (D64_BK / 8)) * 4;
             uint global_r = tile_m + r;
             device const Q5_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-            uchar byte = blk.qs[pair * 32 + b];
-            uchar high_bits = blk.qh[b];
-            float lo_q = float(byte & 0x0F) + (((high_bits >> (pair * 2)) & 0x01) ? 16.0f : 0.0f);
-            float hi_q = float(byte >> 4) + (((high_bits >> (pair * 2 + 1)) & 0x01) ? 16.0f : 0.0f);
-            tg_A[r * D64_BK + b]      = half(float(row_dsc1[r]) * lo_q - float(row_dmin1[r]));
-            tg_A[r * D64_BK + b + 32] = half(float(row_dsc2[r]) * hi_q - float(row_dmin2[r]));
+            uchar4 qs_vec = *(device const uchar4*)(blk.qs + pair * 32 + b4);
+            uchar4 qh_vec = *(device const uchar4*)(blk.qh + b4);
+            uint4 lo = uint4(qs_vec & uchar4(0x0F));
+            uint4 hi = uint4(qs_vec >> uchar4(4));
+            lo |= uint4((qh_vec >> uchar4(shift_lo)) & uchar4(1)) << uint4(4);
+            hi |= uint4((qh_vec >> uchar4(shift_hi)) & uchar4(1)) << uint4(4);
+            float dsc1_f = float(row_dsc1[r]);
+            float dmn1_f = float(row_dmin1[r]);
+            float dsc2_f = float(row_dsc2[r]);
+            float dmn2_f = float(row_dmin2[r]);
+            *(threadgroup half4*)(tg_A + r * D64_BK + b4)      = half4(dsc1_f * float4(lo) - dmn1_f);
+            *(threadgroup half4*)(tg_A + r * D64_BK + b4 + 32) = half4(dsc2_f * float4(hi) - dmn2_f);
         }
 
         // B tile load with N bounds check (handles n_tail < D32_BN)

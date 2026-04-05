@@ -348,44 +348,34 @@ faster.
 | Model | Quant | AX Prefill | AX Decode | llama Prefill | llama Decode | Prefill % | Decode % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | LLaMA 3 70B | Q4_K_M | 50 tok/s | 5.5 tok/s | 57 tok/s | 5.6 tok/s | 87% | 98% |
-| LLaMA 3.1 8B | Q5_K_M | 587 tok/s | 50.5 tok/s | 705 tok/s | 55.5 tok/s | 83% | 91% |
+| LLaMA 3.1 8B | Q5_K_M | 617 tok/s | 53.1 tok/s | 703 tok/s | 56.5 tok/s | 88% | 94% |
 | Qwen3.5 4B | Q8_0 | 982 tok/s | 48.3 tok/s | 1,340 tok/s | 56.5 tok/s | 73% | 86% |
 | Qwen3.5 9B | Q4_K_M | 574 tok/s | 50.9 tok/s | 733 tok/s | 49.0 tok/s | 78% | **104%** |
 | Qwen3.5 27B | Q4_K_M | 163 tok/s | 15.2 tok/s | 209 tok/s | 17.6 tok/s | 78% | 86% |
-| Qwen3.5 35B-A3B | Q4_K_M | 684 tok/s | 44.7 tok/s | 1,127 tok/s | 57.0 tok/s | 61% | 78% |
-| Gemma 4 31B | Q4_K_M | 131 tok/s | 13.2 tok/s | 86 tok/s | 5.5 tok/s | **152%** | 240% |
+| Qwen3.5 35B-A3B | Q4_K_M | 693 tok/s | 45.4 tok/s | 1,122 tok/s | 53.2 tok/s | 62% | 85% |
+| Gemma 4 31B | Q4_K_M | 150 tok/s | 11.0 tok/s | 91 tok/s | 11.9 tok/s | **165%** | 92% |
 
-Qwen3.5 35B-A3B was refreshed on April 5, 2026 with a targeted deterministic
-run (`samples=3`, `cooldown=20000ms`). Decode remains improved after replacing
-the routed `Q4_K` gate/up blocked selected kernels with dedicated selected
-`nr2` matvec paths for both single-row and pair execution, on top of the
-earlier routed-expert `Q5_K` fused `SiLU(gate) * up -> down` decode path and
-the shared-expert scalar-gate optimization. Prefill also improved after
-re-enabling the merged-projection fused recurrent path for MoE recurrent
-layers. The latest refresh measured 684.2 tok/s prefill and 44.7 tok/s decode.
-Layer-local resident-MoE timing shows the remaining gap versus llama.cpp is
-still dominated by GPU execute time inside the expert kernels, but the hottest
-routed decode work has shifted away from
-the old `Q4_K` gate/up path.
+Qwen3.5 35B-A3B was refreshed on April 5, 2026 with a full apple-to-apple run
+(`samples=5`, `cooldown=20s`). Both AX and llama.cpp were benchmarked in the
+same session. AX uses hybrid Qwen3.5 prefill (`mode=gpu_batch`,
+`recurrent=backend_owned`) and split-K decode attention. Decode improved to
+85% of llama.cpp (up from 78%) after the `nr2` matvec path work. The remaining
+prefill gap (62%) is still dominated by GPU execute time inside the expert
+kernels for this MoE architecture.
 
-LLaMA 3.1 8B was refreshed on April 5, 2026 with a deterministic run
-(`samples=3`, `cooldown=20000ms`). Prefill improved after vectorizing the
-shipping `Q5_K` blocked/base dequant helper used by the default GPU batch
-prefill path. The remaining prefill gap versus llama.cpp is still inside the
-`Q5_K` blocked kernel family rather than planner routing.
+LLaMA 3.1 8B was refreshed on April 5, 2026 with a full apple-to-apple run
+(`samples=5`, `cooldown=20s`). Prefill improved from 587 to 617 tok/s (+5%)
+after vectorizing the Q5_K batch dequant phase in all full-tile f16in kernels
+(full64, full32, tail32, base) with `uchar4` reads and branchless integer
+high-bit extraction. The remaining prefill gap (88% of llama.cpp) is still
+inside the Q5_K kernel family.
 
-Gemma 4 31B was refreshed again on April 5, 2026 after replacing the old
-host-driven `cpu_batch` prefill route with a real GPU batch path. Gemma4 now
-uses `PrefillPlan: mode=gpu_batch` with a single GPU submission for the prompt
-chunk instead of falling back to serial decode or the older mixed CPU/GPU batch
-orchestration. The latest deterministic refresh (`samples=3`,
-`cooldown=20000ms`) measured 130.9 tok/s prefill and 13.2 tok/s decode at
-`P=512`, while the current prefill profile reports `dense_gpu_batch /
-generic_gpu_batch`, 1 command buffer, and 793 barriers. The retained
-`llama.cpp` columns are still the latest prior baseline artifact and need a
-fresh rerun for a strict apple-to-apple update. The remaining Gemma4 prefill
-gap is now dominated by GPU execute time inside the generic mixed-quant batch
-projection path rather than the old CPU-batch orchestration.
+Gemma 4 31B was refreshed on April 5, 2026 with a full apple-to-apple run
+(`samples=5`, `cooldown=20s`). Both AX and llama.cpp were benchmarked in the
+same session. AX uses `PrefillPlan: mode=gpu_batch` with split-K decode
+attention (`attn=splitk_hd256`). Prefill is 65% faster than llama.cpp; decode
+is 8% slower, with the gap likely in the mixed-quant matvec path for this
+60-layer model with variable head dimensions (hd=256 SWA, hd=512 global).
 
 Prefill uses config-driven kernel selection across all supported quant types
 (Q4_K, Q5_K, Q6_K, Q8_0) with f16-input full-tile kernels (64x64, 64x32,
