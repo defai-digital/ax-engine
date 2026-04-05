@@ -50,17 +50,16 @@ pub(crate) fn prefill_multi_cb_enabled() -> bool {
 /// so that CPU encoding of step N+1 overlaps GPU execution of step N.
 ///
 /// Controlled by `AX_QWEN35_PREFILL_PIPELINED`:
-/// - unset / `1` / `true` / `on` -> enabled (default)
-/// - `0` / `false` / `off` -> disabled
+/// - unset / `0` / `false` / `off` -> disabled (default)
+/// - `1` / `true` / `on` -> enabled
 pub(crate) fn prefill_inter_step_pipelined_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_QWEN35_PREFILL_PIPELINED") {
+    match std::env::var("AX_QWEN35_PREFILL_PIPELINED") {
         Ok(v) => {
             let v = v.trim().to_ascii_lowercase();
             !(v == "0" || v == "false" || v == "off")
         }
-        Err(_) => true,
-    })
+        Err(_) => false,
+    }
 }
 
 // ---------------------------------------------------------------------------

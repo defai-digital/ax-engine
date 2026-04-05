@@ -27,7 +27,7 @@
 using namespace metal;
 
 constant uint ATTN_TG = 256;   // threads per threadgroup
-constant uint MAX_HD  = 256;   // max supported head_dim
+constant uint MAX_HD  = 512;   // max supported head_dim for generic kernels
 constant uint N_SIMD  = ATTN_TG / 32;  // SIMD groups per threadgroup
 constant uint ATTN_DEC2_TG = 128;      // alternative decode threadgroup size
 constant uint N_DEC2_SIMD  = ATTN_DEC2_TG / 32;
@@ -328,6 +328,7 @@ kernel void attention_prefill_cache_f32(
     constant uint& head_dim        [[buffer(7)]],
     constant uint& base_seq_len    [[buffer(8)]],
     constant uint& sliding_window  [[buffer(9)]], // 0 disables sliding window
+    constant uint& kv_row_stride   [[buffer(10)]],
     uint2 tg_id                    [[threadgroup_position_in_grid]],
     uint lid                       [[thread_index_in_threadgroup]],
     uint simd_lane                 [[thread_index_in_simdgroup]],
@@ -340,7 +341,7 @@ kernel void attention_prefill_cache_f32(
     uint heads_per_kv = n_heads / n_kv_heads;
     uint kv_h = h / heads_per_kv;
     uint q_stride = n_heads * head_dim;
-    uint kv_stride = n_kv_heads * head_dim;
+    uint kv_stride = kv_row_stride;
     float scale = rsqrt(float(head_dim));
 
     uint attend_end = base_seq_len + qi + 1;
@@ -465,6 +466,7 @@ kernel void attention_prefill_cache_f16kv(
     constant uint& head_dim        [[buffer(7)]],
     constant uint& base_seq_len    [[buffer(8)]],
     constant uint& sliding_window  [[buffer(9)]],
+    constant uint& kv_row_stride   [[buffer(10)]],
     uint2 tg_id                    [[threadgroup_position_in_grid]],
     uint lid                       [[thread_index_in_threadgroup]],
     uint simd_lane                 [[thread_index_in_simdgroup]],
@@ -477,7 +479,7 @@ kernel void attention_prefill_cache_f16kv(
     uint heads_per_kv = n_heads / n_kv_heads;
     uint kv_h = h / heads_per_kv;
     uint q_stride = n_heads * head_dim;
-    uint kv_stride = n_kv_heads * head_dim;
+    uint kv_stride = kv_row_stride;
     float scale = rsqrt(float(head_dim));
 
     uint attend_end = base_seq_len + qi + 1;
@@ -617,6 +619,7 @@ kernel void attention_decode_f32(
     constant uint& head_dim       [[buffer(6)]],
     constant uint& attend_start   [[buffer(7)]],   // first token to attend to
     constant uint& attend_len     [[buffer(8)]],   // number of tokens to attend
+    constant uint& kv_row_stride  [[buffer(9)]],
     uint head                     [[threadgroup_position_in_grid]],
     uint lid                      [[thread_index_in_threadgroup]],
     uint simd_lane                [[thread_index_in_simdgroup]],
@@ -626,7 +629,7 @@ kernel void attention_decode_f32(
 
     uint heads_per_kv = n_heads / n_kv_heads;
     uint kv_h = head / heads_per_kv;
-    uint kv_stride = n_kv_heads * head_dim;
+    uint kv_stride = kv_row_stride;
     float scale = rsqrt(float(head_dim));
 
     // ── Threadgroup memory ──────────────────────────────────────────
@@ -753,6 +756,7 @@ kernel void attention_decode_f16kv(
     constant uint& head_dim       [[buffer(6)]],
     constant uint& attend_start   [[buffer(7)]],
     constant uint& attend_len     [[buffer(8)]],
+    constant uint& kv_row_stride  [[buffer(9)]],
     uint head                     [[threadgroup_position_in_grid]],
     uint lid                      [[thread_index_in_threadgroup]],
     uint simd_lane                [[thread_index_in_simdgroup]],
@@ -762,7 +766,7 @@ kernel void attention_decode_f16kv(
 
     uint heads_per_kv = n_heads / n_kv_heads;
     uint kv_h = head / heads_per_kv;
-    uint kv_stride = n_kv_heads * head_dim;
+    uint kv_stride = kv_row_stride;
     float scale = rsqrt(float(head_dim));
 
     threadgroup float q_shared[MAX_HD];

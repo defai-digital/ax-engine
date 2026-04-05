@@ -307,6 +307,37 @@ pub fn multi_head_attention_prefill_with_prefix(
     n_tokens: usize,
     params: &AttentionParams,
 ) {
+    multi_head_attention_prefill_with_prefix_scaled_window(
+        prefix_k,
+        prefix_v,
+        prefix_len,
+        q,
+        k,
+        v,
+        output,
+        n_tokens,
+        params,
+        params.scale(),
+        None,
+    );
+}
+
+/// Compute multi-head attention for multiple tokens against an existing prefix,
+/// with optional sliding-window truncation and an explicit score scale.
+#[allow(clippy::too_many_arguments)]
+pub fn multi_head_attention_prefill_with_prefix_scaled_window(
+    prefix_k: &[f32],
+    prefix_v: &[f32],
+    prefix_len: usize,
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    output: &mut [f32],
+    n_tokens: usize,
+    params: &AttentionParams,
+    scale: f32,
+    sliding_window: Option<usize>,
+) {
     let AttentionParams {
         n_heads,
         n_kv_heads: _,
@@ -316,7 +347,6 @@ pub fn multi_head_attention_prefill_with_prefix(
     let q_stride = params.q_stride();
     let kv_stride = params.kv_stride();
     let heads_per_kv = params.heads_per_kv();
-    let scale = params.scale();
 
     assert_eq!(prefix_k.len(), prefix_len * kv_stride);
     assert_eq!(prefix_v.len(), prefix_len * kv_stride);
@@ -333,15 +363,23 @@ pub fn multi_head_attention_prefill_with_prefix(
         for qi in 0..n_tokens {
             let q_offset = qi * q_stride + h * head_dim;
             let q_head = &q[q_offset..q_offset + head_dim];
-            let attend_len = prefix_len + qi + 1;
+            let total_len = prefix_len + qi + 1;
+            let start = sliding_window.map_or(0, |window| total_len.saturating_sub(window));
+            let prefix_start = start.min(prefix_len);
+            let batch_start = start.saturating_sub(prefix_len);
+            let retained_prefix_len = prefix_len - prefix_start;
+            let retained_batch_len = qi + 1 - batch_start;
+            let attend_len = retained_prefix_len + retained_batch_len;
             let scores_slice = &mut scores[..attend_len];
 
-            for (t, score) in scores_slice[..prefix_len].iter_mut().enumerate() {
-                let k_offset = t * kv_stride + kv_h * head_dim;
+            for (t, score) in scores_slice[..retained_prefix_len].iter_mut().enumerate() {
+                let prefix_token = prefix_start + t;
+                let k_offset = prefix_token * kv_stride + kv_h * head_dim;
                 *score = dot(q_head, &prefix_k[k_offset..k_offset + head_dim]) * scale;
             }
-            for (t, score) in scores_slice[prefix_len..].iter_mut().enumerate() {
-                let k_offset = t * kv_stride + kv_h * head_dim;
+            for (t, score) in scores_slice[retained_prefix_len..].iter_mut().enumerate() {
+                let batch_token = batch_start + t;
+                let k_offset = batch_token * kv_stride + kv_h * head_dim;
                 *score = dot(q_head, &k[k_offset..k_offset + head_dim]) * scale;
             }
 
@@ -351,12 +389,14 @@ pub fn multi_head_attention_prefill_with_prefix(
             let out_head = &mut output[out_offset..out_offset + head_dim];
             out_head.fill(0.0);
 
-            for (t, &w) in scores_slice[..prefix_len].iter().enumerate() {
-                let v_offset = t * kv_stride + kv_h * head_dim;
+            for (t, &w) in scores_slice[..retained_prefix_len].iter().enumerate() {
+                let prefix_token = prefix_start + t;
+                let v_offset = prefix_token * kv_stride + kv_h * head_dim;
                 accumulate(out_head, w, &prefix_v[v_offset..v_offset + head_dim]);
             }
-            for (t, &w) in scores_slice[prefix_len..].iter().enumerate() {
-                let v_offset = t * kv_stride + kv_h * head_dim;
+            for (t, &w) in scores_slice[retained_prefix_len..].iter().enumerate() {
+                let batch_token = batch_start + t;
+                let v_offset = batch_token * kv_stride + kv_h * head_dim;
                 accumulate(out_head, w, &v[v_offset..v_offset + head_dim]);
             }
         }
@@ -562,5 +602,33 @@ mod tests {
         assert!((out[1] - expected0[1]).abs() < 1e-5, "out[1]={}", out[1]);
         assert!((out[2] - expected1[0]).abs() < 1e-5, "out[2]={}", out[2]);
         assert!((out[3] - expected1[1]).abs() < 1e-5, "out[3]={}", out[3]);
+    }
+
+    #[test]
+    fn test_prefill_with_prefix_scaled_window_limits_context() {
+        let p = params(1, 1, 1);
+        let prefix_k = [1.0, 1.0, 1.0];
+        let prefix_v = [10.0, 20.0, 30.0];
+        let q = [1.0, 1.0];
+        let k = [1.0, 1.0];
+        let v = [40.0, 50.0];
+        let mut out = [0.0f32; 2];
+
+        multi_head_attention_prefill_with_prefix_scaled_window(
+            &prefix_k,
+            &prefix_v,
+            3,
+            &q,
+            &k,
+            &v,
+            &mut out,
+            2,
+            &p,
+            0.0,
+            Some(3),
+        );
+
+        assert!((out[0] - 30.0).abs() < 1e-5, "out[0]={}", out[0]);
+        assert!((out[1] - 40.0).abs() < 1e-5, "out[1]={}", out[1]);
     }
 }

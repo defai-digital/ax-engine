@@ -1952,6 +1952,162 @@ fn test_qwen35_selected_weighted_down_env_override_applies_to_q4k_and_q5k() {
 }
 
 #[test]
+fn test_qwen35_selected_fused_silu_down_q5_k_defaults_on_and_can_be_disabled() {
+    let _env_lock = lock_env_test();
+    let _guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K"),
+    };
+    unsafe { std::env::remove_var("AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K") };
+    assert!(qwen35_selected_fused_silu_down_q5_k_enabled());
+
+    let _off = EnvVarGuard::set("AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K", "0");
+    assert!(!qwen35_selected_fused_silu_down_q5_k_enabled());
+}
+
+#[test]
+fn test_qwen35_selected_fused_silu_down_q5_k_slots8_defaults_on_and_can_be_disabled() {
+    let _env_lock = lock_env_test();
+    let _guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K_SLOTS8",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K_SLOTS8"),
+    };
+    unsafe { std::env::remove_var("AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K_SLOTS8") };
+    assert!(qwen35_selected_fused_silu_down_q5_k_slots8_enabled());
+
+    let _off = EnvVarGuard::set("AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K_SLOTS8", "0");
+    assert!(!qwen35_selected_fused_silu_down_q5_k_slots8_enabled());
+}
+
+#[test]
+fn test_qwen35_selected_fused_silu_down_q5_k_nr2_defaults_off_and_can_be_enabled() {
+    let _env_lock = lock_env_test();
+    let _guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K_NR2",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K_NR2"),
+    };
+    unsafe { std::env::remove_var("AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K_NR2") };
+    assert!(!qwen35_selected_fused_silu_down_q5_k_nr2_enabled());
+
+    let _on = EnvVarGuard::set("AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K_NR2", "1");
+    assert!(qwen35_selected_fused_silu_down_q5_k_nr2_enabled());
+}
+
+#[test]
+fn test_qwen35_selected_q4_k_matvec_defaults_on_and_can_be_disabled() {
+    let _env_lock = lock_env_test();
+    let _guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_Q4K_MATVEC",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_Q4K_MATVEC"),
+    };
+    unsafe { std::env::remove_var("AX_QWEN35_SELECTED_Q4K_MATVEC") };
+    assert!(qwen35_selected_q4_k_matvec_enabled());
+
+    let _off = EnvVarGuard::set("AX_QWEN35_SELECTED_Q4K_MATVEC", "0");
+    assert!(!qwen35_selected_q4_k_matvec_enabled());
+}
+
+#[test]
+fn test_qwen35_selected_pair_q4_k_matvec_defaults_on_and_can_be_disabled() {
+    let _env_lock = lock_env_test();
+    let _guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC"),
+    };
+    unsafe { std::env::remove_var("AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC") };
+    assert!(qwen35_selected_pair_q4_k_matvec_enabled());
+
+    let _off = EnvVarGuard::set("AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC", "0");
+    assert!(!qwen35_selected_pair_q4_k_matvec_enabled());
+}
+
+#[test]
+fn test_qwen35_selected_expert_pair_defaults_on_for_q4k_gate_up_when_q5k_fused_down_is_on() {
+    let _env_lock = lock_env_test();
+    let _pair_guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_EXPERT_PAIR",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_EXPERT_PAIR"),
+    };
+    let _fused_guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K"),
+    };
+    let _pair_q4_guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC"),
+    };
+    unsafe {
+        std::env::remove_var("AX_QWEN35_SELECTED_EXPERT_PAIR");
+        std::env::remove_var("AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K");
+        std::env::remove_var("AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC");
+    }
+
+    assert!(qwen35_selected_expert_pair_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q5K,
+    ));
+    assert!(qwen35_selected_expert_pair_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+    ));
+
+    let _off = EnvVarGuard::set("AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC", "0");
+    assert!(!qwen35_selected_expert_pair_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q5K,
+    ));
+}
+
+#[test]
+fn test_qwen35_selected_expert_pair_env_override_still_applies() {
+    let _env_lock = lock_env_test();
+    let _pair_guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_EXPERT_PAIR",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_EXPERT_PAIR"),
+    };
+    let _fused_guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K"),
+    };
+    unsafe {
+        std::env::remove_var("AX_QWEN35_SELECTED_EXPERT_PAIR");
+        std::env::remove_var("AX_QWEN35_SELECTED_FUSED_SILU_DOWN_Q5K");
+    }
+
+    let _on = EnvVarGuard::set("AX_QWEN35_SELECTED_EXPERT_PAIR", "1");
+    assert!(qwen35_selected_expert_pair_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q5K,
+    ));
+    drop(_on);
+
+    let _off = EnvVarGuard::set("AX_QWEN35_SELECTED_EXPERT_PAIR", "0");
+    assert!(!qwen35_selected_expert_pair_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+    ));
+}
+
+#[test]
+fn test_qwen35_shared_gate_inp_fused_defaults_on_and_can_be_disabled() {
+    let _env_lock = lock_env_test();
+    let _guard = EnvVarGuard {
+        key: "AX_QWEN35_SHARED_GATE_INP_FUSED",
+        previous: std::env::var_os("AX_QWEN35_SHARED_GATE_INP_FUSED"),
+    };
+    unsafe { std::env::remove_var("AX_QWEN35_SHARED_GATE_INP_FUSED") };
+    assert!(qwen35_shared_gate_inp_fused_enabled());
+
+    let _off = EnvVarGuard::set("AX_QWEN35_SHARED_GATE_INP_FUSED", "0");
+    assert!(!qwen35_shared_gate_inp_fused_enabled());
+}
+
+#[test]
 fn test_metal_backend_real_qwen35_35b_a3b_layer3_moe_resident_matches_cpu() {
     let _env_lock = lock_env_test();
     let path = workspace_model_path("Qwen3.5-35B-A3B-Q4_K_M.gguf");
@@ -4020,6 +4176,97 @@ fn test_metal_backend_moe_mul_mat_selected_single_token_down_uses_slot_major_inp
 }
 
 #[test]
+fn test_metal_backend_moe_mul_mat_selected_single_token_matches_cpu_q4_k() {
+    let backend = MetalBackend::new().unwrap();
+    let cpu = super::super::cpu::CpuBackend;
+
+    let n_selected = 2usize;
+    let dim = 256usize;
+    let expert_inter_dim = 256usize;
+
+    let build_q4k_expert_tensor = |expert_nibbles: &[u8], rows: usize| -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(expert_nibbles.len() * rows * 144);
+        for &nibble in expert_nibbles {
+            for _ in 0..rows {
+                bytes.extend_from_slice(&q4k_block_first128_constant(nibble));
+            }
+        }
+        bytes
+    };
+
+    let weights = build_q4k_expert_tensor(&[1, 2], dim);
+    let expert_stride =
+        crate::model::moe_utils::expert_byte_stride(GgmlType::Q4K, dim * expert_inter_dim);
+    let blocks_per_expert =
+        MetalOps::moe_blocks_per_expert(expert_stride, GgmlType::Q4K, "selected q4k").unwrap();
+
+    let mut input = vec![0.0f32; n_selected * expert_inter_dim];
+    input[..128].fill(1.0);
+    input[expert_inter_dim..expert_inter_dim + 128].fill(2.0);
+
+    let selected_experts = vec![0i32, 1i32];
+    let weights_buf = MetalBuffer::from_slice(backend.device.device(), &weights).unwrap();
+    let input_buf = MetalBuffer::from_slice(backend.device.device(), &input).unwrap();
+    let selected_buf = MetalBuffer::from_slice(backend.device.device(), &selected_experts).unwrap();
+    let output_buf = MetalBuffer::new(
+        backend.device.device(),
+        n_selected * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend.ops.encode_moe_mul_mat_selected_single_token(
+                encoder,
+                &weights_buf,
+                &input_buf,
+                &selected_buf,
+                &output_buf,
+                GgmlType::Q4K,
+                dim as u32,
+                expert_inter_dim as u32,
+                n_selected as u32,
+                blocks_per_expert,
+                true,
+            )
+        })
+        .unwrap();
+
+    let actual = unsafe { output_buf.as_slice::<f32>()[..n_selected * dim].to_vec() };
+    let mut expected = vec![0.0f32; n_selected * dim];
+    for slot in 0..n_selected {
+        let weight_slice = &weights[slot * expert_stride..(slot + 1) * expert_stride];
+        cpu.dequant_matmul(
+            weight_slice,
+            GgmlType::Q4K,
+            &input[slot * expert_inter_dim..(slot + 1) * expert_inter_dim],
+            &mut expected[slot * dim..(slot + 1) * dim],
+            dim,
+            1,
+            expert_inter_dim,
+        );
+    }
+
+    let diff = max_abs_diff(&actual, &expected);
+    let scale = expected
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        diff / scale < 1e-3,
+        "selected single-token Q4K mismatch: rel_diff={}, max_diff={diff}, actual_slot0[0..8]={:?}, expected_slot0[0..8]={:?}, actual_slot1[0..8]={:?}, expected_slot1[0..8]={:?}",
+        diff / scale,
+        &actual[..8],
+        &expected[..8],
+        &actual[dim..dim + 8],
+        &expected[dim..dim + 8],
+    );
+}
+
+#[test]
 fn test_metal_backend_moe_mul_mat_selected_single_token_weighted_matches_cpu_q5_k() {
     let backend = MetalBackend::new().unwrap();
     let cpu = super::super::cpu::CpuBackend;
@@ -4110,6 +4357,172 @@ fn test_metal_backend_moe_mul_mat_selected_single_token_weighted_matches_cpu_q5_
     assert!(
         diff / scale < 1e-3,
         "selected weighted Q5K mismatch: rel_diff={}, max_diff={diff}, actual[0..8]={:?}, expected[0..8]={:?}",
+        diff / scale,
+        &actual[..8],
+        &expected[..8],
+    );
+}
+
+#[test]
+fn test_metal_backend_moe_fused_silu_down_selected_weighted_matches_cpu_q5_k() {
+    let backend = MetalBackend::new().unwrap();
+    let cpu = super::super::cpu::CpuBackend;
+
+    let n_selected = 2usize;
+    let dim = 256usize;
+    let expert_inter_dim = 256usize;
+
+    let build_q5k_expert_tensor = |expert_scales: &[f32], rows: usize| -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(expert_scales.len() * rows * 176);
+        for &scale in expert_scales {
+            for _ in 0..rows {
+                bytes.extend_from_slice(&q5k_block_first128_scaled(scale));
+            }
+        }
+        bytes
+    };
+
+    let weights = build_q5k_expert_tensor(&[0.2, 0.35], dim);
+    let expert_stride =
+        crate::model::moe_utils::expert_byte_stride(GgmlType::Q5K, dim * expert_inter_dim);
+    let blocks_per_expert = MetalOps::moe_blocks_per_expert(
+        expert_stride,
+        GgmlType::Q5K,
+        "selected fused silu weighted",
+    )
+    .unwrap();
+
+    let mut gate = vec![0.0f32; n_selected * expert_inter_dim];
+    let mut up = vec![0.0f32; n_selected * expert_inter_dim];
+    gate[..128].fill(0.5);
+    up[..128].fill(1.25);
+    gate[expert_inter_dim..expert_inter_dim + 128].fill(-0.75);
+    up[expert_inter_dim..expert_inter_dim + 128].fill(0.8);
+
+    let selected_experts = vec![0i32, 1i32];
+    let expert_weights = vec![0.25f32, 0.75f32];
+
+    let weights_buf = MetalBuffer::from_slice(backend.device.device(), &weights).unwrap();
+    let gate_buf = MetalBuffer::from_slice(backend.device.device(), &gate).unwrap();
+    let up_buf = MetalBuffer::from_slice(backend.device.device(), &up).unwrap();
+    let selected_buf = MetalBuffer::from_slice(backend.device.device(), &selected_experts).unwrap();
+    let expert_weights_buf =
+        MetalBuffer::from_slice(backend.device.device(), &expert_weights).unwrap();
+    let output_buf =
+        MetalBuffer::new(backend.device.device(), dim * std::mem::size_of::<f32>()).unwrap();
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend
+                .ops
+                .encode_moe_fused_silu_down_selected_single_token_q5_k(
+                    encoder,
+                    &weights_buf,
+                    &gate_buf,
+                    &up_buf,
+                    &selected_buf,
+                    &expert_weights_buf,
+                    &output_buf,
+                    dim as u32,
+                    expert_inter_dim as u32,
+                    n_selected as u32,
+                    blocks_per_expert,
+                )
+        })
+        .unwrap();
+
+    let actual = unsafe { output_buf.as_slice::<f32>()[..dim].to_vec() };
+    let mut expected = vec![0.0f32; dim];
+    let mut scratch_in = vec![0.0f32; expert_inter_dim];
+    let mut scratch_out = vec![0.0f32; dim];
+    for slot in 0..n_selected {
+        let weight_slice = &weights[slot * expert_stride..(slot + 1) * expert_stride];
+        for i in 0..expert_inter_dim {
+            let gate_v = gate[slot * expert_inter_dim + i];
+            let up_v = up[slot * expert_inter_dim + i];
+            scratch_in[i] = (gate_v / (1.0 + (-gate_v).exp())) * up_v;
+        }
+        scratch_out.fill(0.0);
+        cpu.dequant_matmul(
+            weight_slice,
+            GgmlType::Q5K,
+            &scratch_in,
+            &mut scratch_out,
+            dim,
+            1,
+            expert_inter_dim,
+        );
+        for (dst, value) in expected.iter_mut().zip(&scratch_out) {
+            *dst += expert_weights[slot] * *value;
+        }
+    }
+
+    let diff = max_abs_diff(&actual, &expected);
+    let scale = expected
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        diff / scale < 1e-3,
+        "selected fused silu weighted Q5K mismatch: rel_diff={}, max_diff={diff}, actual[0..8]={:?}, expected[0..8]={:?}",
+        diff / scale,
+        &actual[..8],
+        &expected[..8],
+    );
+}
+
+#[test]
+fn test_metal_backend_dense_row_dot_sigmoid_mul_inplace_matches_cpu() {
+    let backend = MetalBackend::new().unwrap();
+
+    let k = 256usize;
+    let n = 512usize;
+    let mut row = vec![0.0f32; k];
+    let mut x = vec![0.0f32; k];
+    let mut out = vec![0.0f32; n];
+    for i in 0..k {
+        row[i] = ((i % 13) as f32 - 6.0) * 0.0625;
+        x[i] = ((i % 7) as f32 - 3.0) * 0.125;
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v = ((i % 17) as f32 - 8.0) * 0.5;
+    }
+
+    let gate: f32 = row.iter().zip(&x).map(|(a, b)| a * b).sum();
+    let scale = 1.0f32 / (1.0 + (-gate).exp());
+    let expected: Vec<f32> = out.iter().map(|v| v * scale).collect();
+
+    let row_buf = MetalBuffer::from_slice(backend.device.device(), &row).unwrap();
+    let x_buf = MetalBuffer::from_slice(backend.device.device(), &x).unwrap();
+    let out_buf = MetalBuffer::from_slice(backend.device.device(), &out).unwrap();
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend
+                .ops
+                .elementwise
+                .encode_dense_row_dot_sigmoid_mul_inplace(
+                    encoder, &row_buf, &x_buf, &out_buf, k as u32, n as u32,
+                );
+            Ok(())
+        })
+        .unwrap();
+
+    let actual = unsafe { out_buf.as_slice::<f32>()[..n].to_vec() };
+    let diff = max_abs_diff(&actual, &expected);
+    let scale = expected
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        diff / scale < 1e-5,
+        "dense_row_dot_sigmoid_mul mismatch: rel_diff={}, max_diff={diff}, actual[0..8]={:?}, expected[0..8]={:?}",
         diff / scale,
         &actual[..8],
         &expected[..8],

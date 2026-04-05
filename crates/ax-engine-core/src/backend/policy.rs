@@ -13,6 +13,11 @@ fn normalized_arch_name(arch: &str) -> &str {
     }
 }
 
+fn quant_label_is_q8_0(quant: &str) -> bool {
+    let normalized = quant.trim().to_ascii_uppercase().replace('-', "_");
+    normalized == "Q8" || normalized == "Q80" || normalized.starts_with("Q8_0")
+}
+
 fn parse_bool_toggle(v: &str) -> Option<bool> {
     let v = v.trim().to_ascii_lowercase();
     if v == "1" || v == "true" || v == "on" {
@@ -181,8 +186,15 @@ impl RuntimePolicy {
     }
 
     pub fn for_model(model_name: &str, quant: &str, architecture: &str) -> Self {
-        Self::from_kernel_profile(KernelProfile::load(model_name, quant))
-            .with_env_overrides(architecture)
+        let mut policy = Self::from_kernel_profile(KernelProfile::load(model_name, quant))
+            .with_env_overrides(architecture);
+        if env_auto_toggle_with_arch_override("AX_PRECOMPUTE_F16", architecture).is_none()
+            && normalized_arch_name(architecture) == "qwen35"
+            && quant_label_is_q8_0(quant)
+        {
+            policy.precompute_f16 = true;
+        }
+        policy
     }
 
     pub fn from_kernel_profile_for_arch(kernel_profile: KernelProfile, architecture: &str) -> Self {
@@ -317,6 +329,19 @@ impl RuntimePolicy {
 mod tests {
     use super::*;
 
+    fn with_env_var(key: &str, value: Option<&str>, f: impl FnOnce()) {
+        let original = std::env::var(key).ok();
+        match value {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        f();
+        match original {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+    }
+
     #[test]
     fn test_runtime_policy_default_matches_profile_defaults() {
         let policy = RuntimePolicy::default();
@@ -356,6 +381,26 @@ mod tests {
     fn test_runtime_policy_keeps_decode_fused_qkv_disabled_for_qwen3_by_default() {
         let policy = RuntimePolicy::for_model("qwen3-8b", "q4_k_m", "qwen3");
         assert!(!policy.decode_fused_qkv_enabled());
+    }
+
+    #[test]
+    fn test_runtime_policy_enables_precompute_f16_for_qwen35_q8_by_default() {
+        let _lock = crate::test_env_lock();
+        with_env_var("AX_PRECOMPUTE_F16", None, || {
+            with_env_var("AX_PRECOMPUTE_F16_QWEN35", None, || {
+                let policy = RuntimePolicy::for_model("qwen3.5-4b", "q8_0", "qwen35");
+                assert!(policy.precompute_f16_enabled());
+            });
+        });
+    }
+
+    #[test]
+    fn test_runtime_policy_precompute_f16_override_can_disable_qwen35_q8_default() {
+        let _lock = crate::test_env_lock();
+        with_env_var("AX_PRECOMPUTE_F16_QWEN35", Some("off"), || {
+            let policy = RuntimePolicy::for_model("qwen3.5-4b", "q8_0", "qwen35");
+            assert!(!policy.precompute_f16_enabled());
+        });
     }
 
     #[test]

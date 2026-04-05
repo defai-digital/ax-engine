@@ -345,8 +345,7 @@ impl TextStream {
     }
 
     pub fn is_done(&self) -> bool {
-        self.output.is_some()
-            || self.state.as_ref().is_none_or(|state| state.done)
+        self.output.is_some() || self.state.as_ref().is_none_or(|state| state.done)
     }
 
     pub fn output(&self) -> Option<&GenerationOutput> {

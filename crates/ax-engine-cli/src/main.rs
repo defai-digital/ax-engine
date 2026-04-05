@@ -15,7 +15,7 @@ use ax_engine_core::memory::MemoryBudget;
 use ax_engine_core::metrics::counters::OpTimer;
 use ax_engine_core::metrics::{InferenceMetrics, LatencyHistogram, current_rss_bytes};
 use ax_engine_core::model::{
-    DecodeControl, DecodeIntent, DecodeRunConfig, LlamaModel, ModelConfig, ModelFingerprint,
+    DecodeControl, DecodeIntent, DecodeRunConfig, InferenceModel, ModelConfig, ModelFingerprint,
     WeightStore, run_decode,
 };
 use ax_engine_core::sampling::{LogitBias, SampledTokenInfo, Sampler, SamplingConfig};
@@ -174,7 +174,7 @@ pub(crate) fn load_model(
     ctx_size: u32,
     verbose: bool,
     backend: Box<dyn ax_engine_core::backend::Backend>,
-) -> anyhow::Result<(MappedModel, ModelConfig, Tokenizer, LlamaModel)> {
+) -> anyhow::Result<(MappedModel, ModelConfig, Tokenizer, InferenceModel)> {
     let rss_before = current_rss_bytes();
     let timer = OpTimer::start();
     let mapped = MappedModel::open(Path::new(model_path))?;
@@ -192,7 +192,7 @@ pub(crate) fn load_model(
         ModelFingerprint::from_mapped_model(Some(Path::new(model_path)), &mapped, &config);
     backend.configure_for_fingerprint(&fingerprint)?;
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
-    let model = LlamaModel::with_backend(config.clone(), backend)?;
+    let model = InferenceModel::with_backend(config.clone(), backend)?;
     let kv_plan = model.kv_plan();
     let kv_memory = kv_plan.memory_estimate();
     let kv_capacity = kv_plan.capacity_policy();
@@ -772,7 +772,7 @@ fn run_single(
 fn run_speculative(
     args: &args::CliArgs,
     draft_path: &str,
-    model: &LlamaModel,
+    model: &InferenceModel,
     weights: &WeightStore,
     tokenizer: &Tokenizer,
     prompt_tokens: &[u32],
@@ -1019,7 +1019,7 @@ fn run_speculative(
 /// v2.0: Paged KV prefix cache is deferred to v2.1. Both passes run full prefill
 /// from scratch. This measures prefill repeatability and warm-cache GPU performance.
 fn run_reuse_bench(
-    model: &LlamaModel,
+    model: &InferenceModel,
     weights: &WeightStore,
     prompt_tokens: &[u32],
     json_output: bool,

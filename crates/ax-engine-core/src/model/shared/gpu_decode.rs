@@ -1,7 +1,10 @@
+use super::*;
+use crate::model::execution_plan;
+use crate::model::layer_ops;
 
 /// Encode a fused dequant+matvec dispatch for the appropriate quant type.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_dequant_matvec(
+pub(crate) fn encode_dequant_matvec(
     metal_ops: &MetalOps,
     encoder: &ax_engine_metal::MetalEncoder,
     weight: &ax_engine_metal::MetalBuffer,
@@ -29,7 +32,7 @@ pub(super) fn encode_dequant_matvec(
 /// Decode execution planning uses this to keep kernel routing aligned with the
 /// typed plan rather than re-reading backend state at every call site.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_dequant_matvec_with_config(
+pub(crate) fn encode_dequant_matvec_with_config(
     metal_ops: &MetalOps,
     encoder: &ax_engine_metal::MetalEncoder,
     weight: &ax_engine_metal::MetalBuffer,
@@ -116,7 +119,7 @@ pub(super) fn encode_dequant_matvec_with_config(
 /// Returns `true` if a paired kernel was encoded. Callers should fall back to
 /// separate `encode_dequant_matvec_with_config(...)` calls when this returns `false`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_dequant_matvec_pair_with_config(
+pub(crate) fn encode_dequant_matvec_pair_with_config(
     metal_ops: &MetalOps,
     encoder: &ax_engine_metal::MetalEncoder,
     w0: &ax_engine_metal::MetalBuffer,
@@ -182,7 +185,7 @@ pub(super) fn encode_dequant_matvec_pair_with_config(
 /// Returns `true` if a fused kernel was encoded. Callers should fall back to the
 /// separate elementwise + matvec path when this returns `false`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_dequant_silu_down_matvec_with_config(
+pub(crate) fn encode_dequant_silu_down_matvec_with_config(
     metal_ops: &MetalOps,
     encoder: &ax_engine_metal::MetalEncoder,
     weight: &ax_engine_metal::MetalBuffer,
@@ -237,7 +240,7 @@ pub(super) fn encode_dequant_silu_down_matvec_with_config(
 /// Returns `true` if a fused kernel was encoded. Callers should fall back to the
 /// separate elementwise + matvec path when this returns `false`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_dequant_gelu_down_matvec_with_config(
+pub(crate) fn encode_dequant_gelu_down_matvec_with_config(
     metal_ops: &MetalOps,
     encoder: &ax_engine_metal::MetalEncoder,
     weight: &ax_engine_metal::MetalBuffer,
@@ -292,18 +295,20 @@ pub(super) fn encode_dequant_gelu_down_matvec_with_config(
 /// reads/writes and only inserts barriers on actual data conflicts (matching
 /// llama.cpp's strategy).  In `Explicit` mode, every `step()` call inserts a
 /// blanket `memoryBarrierWithScope(Buffers)`.  In `Implicit` mode, no barriers.
-pub(super) struct DecodeBarrierCtx<'a> {
-    plan: super::execution_plan::DecodeBarrierPlan,
+pub(crate) struct DecodeBarrierCtx<'a> {
+    plan: execution_plan::DecodeBarrierPlan,
     sb: Option<std::cell::RefCell<ax_engine_metal::SmartBarrier<'a>>>,
 }
 
 impl<'a> DecodeBarrierCtx<'a> {
     pub fn new(
         encoder: &'a ax_engine_metal::MetalEncoder,
-        plan: super::execution_plan::DecodeBarrierPlan,
+        plan: execution_plan::DecodeBarrierPlan,
     ) -> Self {
-        let sb = if plan == super::execution_plan::DecodeBarrierPlan::Smart {
-            Some(std::cell::RefCell::new(ax_engine_metal::SmartBarrier::new(encoder)))
+        let sb = if plan == execution_plan::DecodeBarrierPlan::Smart {
+            Some(std::cell::RefCell::new(ax_engine_metal::SmartBarrier::new(
+                encoder,
+            )))
         } else {
             None
         };
@@ -344,13 +349,13 @@ impl<'a> DecodeBarrierCtx<'a> {
     #[inline]
     pub fn step(&self, encoder: &ax_engine_metal::MetalEncoder) {
         match self.plan {
-            super::execution_plan::DecodeBarrierPlan::Explicit => {
+            execution_plan::DecodeBarrierPlan::Explicit => {
                 ax_engine_metal::barrier_buffers(encoder);
             }
-            super::execution_plan::DecodeBarrierPlan::Smart => {
+            execution_plan::DecodeBarrierPlan::Smart => {
                 // Barriers handled by pre/post_dispatch — nothing to do.
             }
-            super::execution_plan::DecodeBarrierPlan::Implicit => {}
+            execution_plan::DecodeBarrierPlan::Implicit => {}
         }
     }
 
@@ -368,7 +373,7 @@ impl<'a> DecodeBarrierCtx<'a> {
 /// across all models. This trait covers the model-specific middle: QKV
 /// post-processing (bias, norm, RoPE), KV cache append, attention dispatch,
 /// and the first residual + FFN-norm handoff.
-pub(super) trait GpuDecodeLayerStrategy {
+pub(crate) trait GpuDecodeLayerStrategy {
     /// Encode the model-specific part of the GPU decode layer:
     /// QKV post-processing → KV append → attention → WO projection →
     /// post-attention residual + FFN norm.
@@ -388,14 +393,14 @@ pub(super) trait GpuDecodeLayerStrategy {
         weight_cache: &rustc_hash::FxHashMap<usize, ax_engine_metal::MetalBuffer>,
         gpu_kv: &crate::kv::GpuKv,
         layer: usize,
-        exec_plan: &super::execution_plan::GpuDecodeExecutionPlan,
+        exec_plan: &execution_plan::GpuDecodeExecutionPlan,
         barrier: &DecodeBarrierCtx<'_>,
         used_fused_qkv: bool,
     );
 }
 
 /// Dimensions needed by the shared GPU layer encoder.
-pub(super) struct GpuLayerDims {
+pub(crate) struct GpuLayerDims {
     pub dim: u32,
     pub q_dim: u32,
     pub kv_dim: u32,
@@ -414,7 +419,7 @@ pub(super) struct GpuLayerDims {
 /// The caller provides a `GpuDecodeLayerStrategy` for the model-specific
 /// QKV post-processing, attention dispatch, and first residual handoff.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_gpu_decode_layer(
+pub(crate) fn encode_gpu_decode_layer(
     encoder: &ax_engine_metal::MetalEncoder,
     metal_ops: &MetalOps,
     s: &crate::backend::metal::GpuScratchBuffers,
@@ -425,11 +430,11 @@ pub(super) fn encode_gpu_decode_layer(
     gpu_kv: &crate::kv::GpuKv,
     layer: usize,
     _n_layers: usize,
-    exec_plan: &super::execution_plan::GpuDecodeExecutionPlan,
+    exec_plan: &execution_plan::GpuDecodeExecutionPlan,
     next_attn_norm_key: Option<usize>,
     dims: &GpuLayerDims,
     strategy: &dyn GpuDecodeLayerStrategy,
-    activation: super::layer_ops::FfnActivation,
+    activation: layer_ops::FfnActivation,
     post_ffn_norm_w: Option<&ax_engine_metal::MetalBuffer>,
     barrier: &DecodeBarrierCtx<'_>,
 ) {
@@ -444,7 +449,7 @@ pub(super) fn encode_gpu_decode_layer(
 
     // --- Step 1: QKV matmul (shared) ---
     let fused_qkv_key = (lw.wq, lw.wk, lw.wv);
-    let fused_qkv_buf = if exec_plan.qkv == super::execution_plan::DecodeQkvPlan::Fused {
+    let fused_qkv_buf = if exec_plan.qkv == execution_plan::DecodeQkvPlan::Fused {
         fused_qkv_cache.get(&fused_qkv_key)
     } else {
         None
@@ -607,7 +612,7 @@ pub(super) fn encode_gpu_decode_layer(
 /// LLaMA (SiLU), Qwen3 (SiLU), and Gemma3 (GELU) except for the activation
 /// function and the optional post-FFN norm (Gemma3).
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_gpu_ffn_decode_tail(
+pub(crate) fn encode_gpu_ffn_decode_tail(
     metal_ops: &MetalOps,
     encoder: &ax_engine_metal::MetalEncoder,
     s: &crate::backend::metal::GpuScratchBuffers,
@@ -619,12 +624,12 @@ pub(super) fn encode_gpu_ffn_decode_tail(
     eps: f32,
     exec_plan_dequant: ax_engine_metal::DequantDispatchConfig,
     allow_fused_silu_down: bool,
-    activation: super::layer_ops::FfnActivation,
+    activation: layer_ops::FfnActivation,
     post_ffn_norm_w: Option<&ax_engine_metal::MetalBuffer>,
     next_norm_w: Option<&ax_engine_metal::MetalBuffer>,
     barrier: &DecodeBarrierCtx<'_>,
 ) {
-    use super::layer_ops::FfnActivation;
+    use layer_ops::FfnActivation;
 
     // 1. Fused activation+down or separate activation + down matvec.
     barrier.pre_dispatch(&[&s.gate_buf, &s.up_buf], &[&s.down_buf]);
@@ -747,12 +752,12 @@ pub(super) fn encode_gpu_ffn_decode_tail(
 ///
 /// Shared across LLaMA, Qwen3, and Gemma3 (identical logic).
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_gpu_output_head(
+pub(crate) fn encode_gpu_output_head(
     encoder: &ax_engine_metal::MetalEncoder,
     metal_ops: &MetalOps,
     s: &crate::backend::metal::GpuScratchBuffers,
     hidden_buf: &ax_engine_metal::MetalBuffer,
-    exec_plan: &super::execution_plan::GpuDecodeExecutionPlan,
+    exec_plan: &execution_plan::GpuDecodeExecutionPlan,
     cached: &crate::backend::metal::CachedModelKeys,
     weight_cache: &rustc_hash::FxHashMap<usize, ax_engine_metal::MetalBuffer>,
     barrier: &DecodeBarrierCtx<'_>,
@@ -766,6 +771,7 @@ pub(super) fn encode_gpu_output_head(
         .elementwise
         .encode_rms_norm(encoder, hidden_buf, fnw_buf, dim, eps);
     barrier.post_dispatch(&[hidden_buf], &[hidden_buf]);
+    barrier.step(encoder);
 
     let lm_buf = weight_cache.get(&cached.lm_head).unwrap();
     barrier.pre_dispatch(&[hidden_buf], &[&s.logits_buf]);
@@ -781,5 +787,5 @@ pub(super) fn encode_gpu_output_head(
         exec_plan.dequant_dispatch,
     );
     barrier.post_dispatch(&[hidden_buf], &[&s.logits_buf]);
+    barrier.step(encoder);
 }
-

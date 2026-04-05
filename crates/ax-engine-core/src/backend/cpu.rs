@@ -2,7 +2,7 @@ use super::Backend;
 use super::neon;
 use crate::compute::matmul;
 use crate::gguf::tensor::GgmlType;
-use crate::kv::Qwen35Kv;
+use crate::kv::Qwen3_5Kv;
 
 /// CPU backend using Apple Accelerate framework (cblas_sgemm) with
 /// NEON-fused dequant+matvec for decode (n=1).
@@ -23,14 +23,15 @@ impl Backend for CpuBackend {
         n: usize,
         k: usize,
     ) {
-        let fused_decode_enabled = !std::env::var("AX_DISABLE_FUSED_MATVEC")
-            .ok()
-            .is_some_and(|value| {
-                !matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "" | "0" | "false" | "off" | "no"
-                )
-            });
+        let fused_decode_enabled =
+            !std::env::var("AX_DISABLE_FUSED_MATVEC")
+                .ok()
+                .is_some_and(|value| {
+                    !matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "" | "0" | "false" | "off" | "no"
+                    )
+                });
         // For decode (n=1), use fused NEON kernels to avoid the intermediate
         // f32 allocation. For prefill (n>1), fall back to dequant + BLAS.
         if n == 1 && fused_decode_enabled {
@@ -70,7 +71,7 @@ impl Backend for CpuBackend {
         dt_bias: &[f32],
         a: &[f32],
         conv_kernel: &[f32],
-        qwen_kv: &mut Qwen35Kv,
+        qwen_kv: &mut Qwen3_5Kv,
         layer_idx: usize,
         slot_indices: &[usize],
         output_batch: &mut [f32],

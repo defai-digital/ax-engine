@@ -11,10 +11,23 @@
 //! shader compilation instead.
 
 use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const METAL_SOURCES: [&str; 5] = ["attention", "dequant", "elementwise", "gdn", "matmul"];
+const METAL_SOURCES: [&str; 4] = ["attention", "elementwise", "gdn", "matmul"];
+
+const DEQUANT_SHADER_FRAGMENTS: [&str; 7] = [
+    "shaders/dequant/common.metal",
+    "shaders/dequant/q4_0.metal",
+    "shaders/dequant/q4_k.metal",
+    "shaders/dequant/q5_k.metal",
+    "shaders/dequant/q6_k.metal",
+    "shaders/dequant/q8_0.metal",
+    "shaders/dequant/misc.metal",
+];
+
+const DEQUANT_RUNTIME_SOURCE: &str = "dequant_runtime.metal";
 
 /// Optional shader that requires Metal 4+ SDK (tensor API).
 /// Compiled separately — if it fails, the tensor kernel is unavailable at runtime.
@@ -25,6 +38,9 @@ fn main() {
     for src in METAL_SOURCES {
         println!("cargo:rerun-if-changed=shaders/{src}.metal");
     }
+    for fragment in DEQUANT_SHADER_FRAGMENTS {
+        println!("cargo:rerun-if-changed={fragment}");
+    }
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=AX_METAL_SKIP_PRECOMPILE");
 
@@ -32,6 +48,8 @@ fn main() {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
     let shader_dir = PathBuf::from("shaders");
+    let dequant_runtime_source =
+        write_dequant_runtime_shader(&out_dir).expect("failed to prepare dequant shader source");
 
     // Skip precompilation if requested (useful for CI without Xcode).
     let skip = env::var("AX_METAL_SKIP_PRECOMPILE")
@@ -56,27 +74,22 @@ fn main() {
         let input = shader_dir.join(format!("{src}.metal"));
         let output = out_dir.join(format!("{src}.air"));
 
-        let status = Command::new("xcrun")
-            .arg("--sdk")
-            .arg("macosx")
-            .arg("metal")
-            .arg("-std=metal3.1")
-            .arg("-O3")
-            .arg("-w") // suppress warnings (unused variables etc.)
-            .arg("-c")
-            .arg(&input)
-            .arg("-o")
-            .arg(&output)
-            .status()
-            .expect("Failed to run xcrun metal");
-
-        if !status.success() {
+        if !compile_shader_to_air(&input, &output) {
             println!(
                 "cargo:warning=Failed to compile {src}.metal to AIR, falling back to runtime compilation"
             );
             std::fs::write(out_dir.join("ax_engine_metal.metallib"), []).unwrap();
             return;
         }
+    }
+
+    let dequant_output = out_dir.join("dequant.air");
+    if !compile_shader_to_air(&dequant_runtime_source, &dequant_output) {
+        println!(
+            "cargo:warning=Failed to compile generated dequant shader to AIR, falling back to runtime compilation"
+        );
+        std::fs::write(out_dir.join("ax_engine_metal.metallib"), []).unwrap();
+        return;
     }
 
     // Step 2: Try compiling the optional tensor API shader (Metal 4+ SDK).
@@ -121,6 +134,7 @@ fn main() {
     for src in METAL_SOURCES {
         cmd.arg(out_dir.join(format!("{src}.air")));
     }
+    cmd.arg(&dequant_output);
     if tensor_available {
         cmd.arg(&tensor_output);
     }
@@ -130,4 +144,34 @@ fn main() {
         println!("cargo:warning=Failed to link metallib, falling back to runtime compilation");
         std::fs::write(out_dir.join("ax_engine_metal.metallib"), []).unwrap();
     }
+}
+
+fn write_dequant_runtime_shader(out_dir: &Path) -> std::io::Result<PathBuf> {
+    let mut combined = String::new();
+    for fragment in DEQUANT_SHADER_FRAGMENTS {
+        let content = fs::read_to_string(fragment)?;
+        combined.push_str(&content);
+        if !combined.ends_with('\n') {
+            combined.push('\n');
+        }
+    }
+    let output = out_dir.join(DEQUANT_RUNTIME_SOURCE);
+    fs::write(&output, combined)?;
+    Ok(output)
+}
+
+fn compile_shader_to_air(input: &Path, output: &Path) -> bool {
+    Command::new("xcrun")
+        .arg("--sdk")
+        .arg("macosx")
+        .arg("metal")
+        .arg("-std=metal3.1")
+        .arg("-O3")
+        .arg("-w")
+        .arg("-c")
+        .arg(input)
+        .arg("-o")
+        .arg(output)
+        .status()
+        .is_ok_and(|status| status.success())
 }

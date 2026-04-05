@@ -763,6 +763,137 @@ kernel void rope_f32_generic(
     buf[offset + 1] = v0 * sin_t + v1 * cos_t;
 }
 
+// NeoX partial RoPE rotates split-half pairs within the rotary prefix:
+//   (x[i], x[i + rope_dim/2]) for i in [0, rope_dim/2).
+// Qwen3.5 full-attention layers use this layout.
+kernel void rope_neox_partial_batch_f32(
+    device float* q            [[buffer(0)]],
+    device float* k            [[buffer(1)]],
+    constant uint& n_rows      [[buffer(2)]],
+    constant uint& n_q_heads   [[buffer(3)]],
+    constant uint& n_kv_heads  [[buffer(4)]],
+    constant uint& head_dim    [[buffer(5)]],
+    constant float& start_pos  [[buffer(6)]],
+    constant float& pos_step   [[buffer(7)]],
+    constant float& freq_base  [[buffer(8)]],
+    constant float& freq_scale [[buffer(9)]],
+    constant float& ext_factor [[buffer(10)]],
+    constant float& attn_factor[[buffer(11)]],
+    constant float& beta_fast  [[buffer(12)]],
+    constant float& beta_slow  [[buffer(13)]],
+    constant uint& n_ctx_orig  [[buffer(14)]],
+    constant uint& rope_dim    [[buffer(15)]],
+    uint gid                   [[thread_position_in_grid]]
+) {
+    uint rope_dim_eff = rope_dim == 0 ? head_dim : min(rope_dim, head_dim);
+    uint rope_pairs = rope_dim_eff / 2;
+    if (rope_pairs == 0) return;
+
+    uint pairs_per_row = (n_q_heads + n_kv_heads) * rope_pairs;
+    uint total_pairs = n_rows * pairs_per_row;
+    if (gid >= total_pairs) return;
+
+    uint row = gid / pairs_per_row;
+    uint local = gid % pairs_per_row;
+
+    uint q_pairs = n_q_heads * rope_pairs;
+    device float* buf;
+    uint vec_base;
+    uint i;
+    if (local < q_pairs) {
+        uint head = local / rope_pairs;
+        i = local % rope_pairs;
+        buf = q;
+        vec_base = row * (n_q_heads * head_dim) + head * head_dim;
+    } else {
+        uint k_local = local - q_pairs;
+        uint head = k_local / rope_pairs;
+        i = k_local % rope_pairs;
+        buf = k;
+        vec_base = row * (n_kv_heads * head_dim) + head * head_dim;
+    }
+
+    float position = start_pos + float(row) * pos_step;
+    float theta_extrap = position / pow(freq_base, 2.0f * float(i) / float(rope_dim_eff));
+
+    float cos_t, sin_t;
+    if (ext_factor == 0.0f) {
+        float theta = freq_scale * theta_extrap;
+        cos_t = cos(theta) * attn_factor;
+        sin_t = sin(theta) * attn_factor;
+    } else {
+        float corr_low  = max(0.0f, floor(rope_yarn_corr_factor(rope_dim_eff, n_ctx_orig, freq_base, beta_fast)));
+        float corr_high = min(float(rope_dim_eff) - 1.0f, ceil(rope_yarn_corr_factor(rope_dim_eff, n_ctx_orig, freq_base, beta_slow)));
+        rope_yarn(theta_extrap, freq_scale, corr_low, corr_high, int(2 * i),
+                  ext_factor, attn_factor, cos_t, sin_t);
+    }
+
+    uint offset0 = vec_base + i;
+    uint offset1 = vec_base + rope_pairs + i;
+    float v0 = buf[offset0];
+    float v1 = buf[offset1];
+    buf[offset0] = v0 * cos_t - v1 * sin_t;
+    buf[offset1] = v0 * sin_t + v1 * cos_t;
+}
+
+// Gemma4 global layers use NeoX split-half RoPE with explicit per-pair
+// frequency multipliers from rope_freqs.weight.
+kernel void rope_neox_partial_freq_factors_batch_f32(
+    device float* q                    [[buffer(0)]],
+    device float* k                    [[buffer(1)]],
+    device const float* freq_factors   [[buffer(2)]],
+    constant uint& n_rows              [[buffer(3)]],
+    constant uint& n_q_heads           [[buffer(4)]],
+    constant uint& n_kv_heads          [[buffer(5)]],
+    constant uint& head_dim            [[buffer(6)]],
+    constant float& start_pos          [[buffer(7)]],
+    constant float& pos_step           [[buffer(8)]],
+    constant float& freq_base          [[buffer(9)]],
+    constant uint& rope_dim            [[buffer(10)]],
+    uint gid                           [[thread_position_in_grid]]
+) {
+    uint rope_dim_eff = rope_dim == 0 ? head_dim : min(rope_dim, head_dim);
+    uint rope_pairs = rope_dim_eff / 2;
+    if (rope_pairs == 0) return;
+
+    uint pairs_per_row = (n_q_heads + n_kv_heads) * rope_pairs;
+    uint total_pairs = n_rows * pairs_per_row;
+    if (gid >= total_pairs) return;
+
+    uint row = gid / pairs_per_row;
+    uint local = gid % pairs_per_row;
+
+    uint q_pairs = n_q_heads * rope_pairs;
+    device float* buf;
+    uint vec_base;
+    uint i;
+    if (local < q_pairs) {
+        uint head = local / rope_pairs;
+        i = local % rope_pairs;
+        buf = q;
+        vec_base = row * (n_q_heads * head_dim) + head * head_dim;
+    } else {
+        uint k_local = local - q_pairs;
+        uint head = k_local / rope_pairs;
+        i = k_local % rope_pairs;
+        buf = k;
+        vec_base = row * (n_kv_heads * head_dim) + head * head_dim;
+    }
+
+    float position = start_pos + float(row) * pos_step;
+    float base_freq = exp(-(log(freq_base) * 2.0f * float(i) / float(rope_dim_eff)));
+    float theta = position * base_freq * freq_factors[i];
+    float cos_t = cos(theta);
+    float sin_t = sin(theta);
+
+    uint offset0 = vec_base + i;
+    uint offset1 = vec_base + rope_pairs + i;
+    float v0 = buf[offset0];
+    float v1 = buf[offset1];
+    buf[offset0] = v0 * cos_t - v1 * sin_t;
+    buf[offset1] = v0 * sin_t + v1 * cos_t;
+}
+
 // ── Per-Head RMSNorm ────────────────────────────────────────────────
 //
 // Single-row and batched per-head RMSNorm differ only in whether the grid is
@@ -819,6 +950,56 @@ kernel void per_head_rms_norm_f32_generic(
     float inv_rms = shared_inv_rms;
     for (uint i = lid; i < head_dim; i += NORM_TG_SIZE) {
         buf[base + i] = buf[base + i] * inv_rms * weight[i];
+    }
+}
+
+kernel void per_head_rms_norm_no_weight_f32_generic(
+    device float* buf          [[buffer(0)]],
+    constant uint& n_rows      [[buffer(1)]],
+    constant uint& n_heads     [[buffer(2)]],
+    constant uint& head_dim    [[buffer(3)]],
+    constant float& eps        [[buffer(4)]],
+    uint row_head              [[threadgroup_position_in_grid]],
+    uint lid                   [[thread_index_in_threadgroup]],
+    uint simd_lane             [[thread_index_in_simdgroup]],
+    uint simd_id               [[simdgroup_index_in_threadgroup]]
+) {
+    uint rows = PER_HEAD_RMS_BATCHED ? n_rows : 1;
+    uint total_heads = rows * n_heads;
+    if (row_head >= total_heads) return;
+
+    uint row = PER_HEAD_RMS_BATCHED ? (row_head / n_heads) : 0;
+    uint head = row_head % n_heads;
+    uint base = row * (n_heads * head_dim) + head * head_dim;
+
+    float sum_sq = 0.0f;
+    for (uint i = lid; i < head_dim; i += NORM_TG_SIZE) {
+        float v = buf[base + i];
+        sum_sq += v * v;
+    }
+
+    sum_sq = simd_sum(sum_sq);
+
+    constexpr uint n_groups = NORM_TG_SIZE / 32;
+    threadgroup float simd_sums[n_groups];
+    if (simd_lane == 0) {
+        simd_sums[simd_id] = sum_sq;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    threadgroup float shared_inv_rms;
+    if (simd_id == 0) {
+        sum_sq = (simd_lane < n_groups) ? simd_sums[simd_lane] : 0.0f;
+        sum_sq = simd_sum(sum_sq);
+        if (simd_lane == 0) {
+            shared_inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float inv_rms = shared_inv_rms;
+    for (uint i = lid; i < head_dim; i += NORM_TG_SIZE) {
+        buf[base + i] = buf[base + i] * inv_rms;
     }
 }
 
@@ -1179,6 +1360,73 @@ kernel void sigmoid_elementwise_mul_f32(
 
     float g = gate[gid];
     out[gid] = out[gid] / (1.0f + exp(-g));
+}
+
+// ── Sigmoid scalar mul ─────────────────────────────────────────────
+//
+// out[i] = sigmoid(gate[0]) * out[i]
+//
+// Used by Qwen3.5 shared-expert scalar gate path to avoid a separate
+// sigmoid pass over the 1-element gate buffer and a broadcast-mul kernel.
+
+kernel void sigmoid_scalar_mul_inplace_f32(
+    device const float* gate [[buffer(0)]],
+    device float* out        [[buffer(1)]],
+    constant uint& n         [[buffer(2)]],
+    uint gid                 [[thread_position_in_grid]]
+) {
+    if (gid >= n) return;
+
+    const float g = gate[0];
+    out[gid] = out[gid] / (1.0f + exp(-g));
+}
+
+// ── Dense row dot + sigmoid scalar mul ────────────────────────────
+//
+// gate = dot(row[:k], x[:k])
+// out[i] = sigmoid(gate) * out[i]
+//
+// Used by Qwen3.5 shared-expert scalar gate path to avoid a standalone
+// matvec into a 1-element gate buffer followed by sigmoid_scalar_mul_inplace.
+
+kernel void dense_row_dot_sigmoid_mul_inplace_f32(
+    device const float* row [[buffer(0)]],
+    device const float* x   [[buffer(1)]],
+    device float* out       [[buffer(2)]],
+    constant uint& k        [[buffer(3)]],
+    constant uint& n        [[buffer(4)]],
+    uint lid                [[thread_index_in_threadgroup]],
+    uint simd_lane          [[thread_index_in_simdgroup]],
+    uint simd_id            [[simdgroup_index_in_threadgroup]]
+) {
+    float dot_sum = 0.0f;
+    for (uint i = lid; i < k; i += NORM_TG_SIZE) {
+        dot_sum += row[i] * x[i];
+    }
+
+    dot_sum = simd_sum(dot_sum);
+
+    constexpr uint n_groups = NORM_TG_SIZE / 32;
+    threadgroup float simd_sums[n_groups];
+    if (simd_lane == 0) {
+        simd_sums[simd_id] = dot_sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    threadgroup float shared_gate;
+    if (simd_id == 0) {
+        dot_sum = (simd_lane < n_groups) ? simd_sums[simd_lane] : 0.0f;
+        dot_sum = simd_sum(dot_sum);
+        if (simd_lane == 0) {
+            shared_gate = dot_sum;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const float gate = shared_gate;
+    for (uint i = lid; i < n; i += NORM_TG_SIZE) {
+        out[i] = out[i] / (1.0f + exp(-gate));
+    }
 }
 
 // ── SiLU elementwise mul (batch) ────────────────────────────────────
@@ -2523,6 +2771,73 @@ kernel void moe_weighted_scatter_add_f32(
     const uint slot = gid / dim;
     const uint d = gid % dim;
     dst[indices[slot] * dim + d] += weights[slot] * src[gid];
+}
+
+/// Weighted per-token slot reduction:
+/// dst[token, d] += sum_k weights[token, k] * src[token, k, d].
+///
+/// This is the safe MoE reduction path for routed experts because each token
+/// intentionally contributes multiple expert slots. Reducing inside one thread
+/// avoids the write races that would otherwise occur with scatter-add.
+///
+/// src layout:     [n_tokens * n_expert_used, dim]
+/// weights layout: [n_tokens * n_expert_used]
+/// dst layout:     [n_tokens, dim]
+kernel void moe_weighted_reduce_slots_add_f32(
+    const device float *src            [[buffer(0)]],
+    const device float *weights        [[buffer(1)]],
+    device float *dst                  [[buffer(2)]],
+    constant uint &dim                 [[buffer(3)]],
+    constant uint &n_tokens            [[buffer(4)]],
+    constant uint &n_expert_used       [[buffer(5)]],
+    uint gid [[thread_position_in_grid]])
+{
+    const uint total = n_tokens * dim;
+    if (gid >= total) return;
+
+    const uint token = gid / dim;
+    const uint d = gid % dim;
+    const uint slot_base = token * n_expert_used;
+
+    float acc = 0.0f;
+    for (uint k = 0; k < n_expert_used; ++k) {
+        const uint slot = slot_base + k;
+        acc += weights[slot] * src[slot * dim + d];
+    }
+
+    dst[gid] += acc;
+}
+
+// Specialized routed-expert reduction for n_expert_used == 8.
+// Processes 4 output dimensions per thread to reduce loop/control overhead
+// on the Qwen3.5-35B-A3B single-token decode path.
+kernel void moe_weighted_reduce_slots8_add_f32_vec4(
+    const device float4 *src4          [[buffer(0)]],
+    const device float *weights        [[buffer(1)]],
+    device float4 *dst4                [[buffer(2)]],
+    constant uint &dim                 [[buffer(3)]],
+    constant uint &n_tokens            [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    const uint dim4 = dim / 4;
+    const uint total4 = n_tokens * dim4;
+    if (gid >= total4) return;
+
+    const uint token = gid / dim4;
+    const uint d4 = gid % dim4;
+    const uint slot_base = token * 8;
+
+    float4 acc = float4(0.0f);
+    acc += weights[slot_base + 0] * src4[(slot_base + 0) * dim4 + d4];
+    acc += weights[slot_base + 1] * src4[(slot_base + 1) * dim4 + d4];
+    acc += weights[slot_base + 2] * src4[(slot_base + 2) * dim4 + d4];
+    acc += weights[slot_base + 3] * src4[(slot_base + 3) * dim4 + d4];
+    acc += weights[slot_base + 4] * src4[(slot_base + 4) * dim4 + d4];
+    acc += weights[slot_base + 5] * src4[(slot_base + 5) * dim4 + d4];
+    acc += weights[slot_base + 6] * src4[(slot_base + 6) * dim4 + d4];
+    acc += weights[slot_base + 7] * src4[(slot_base + 7) * dim4 + d4];
+
+    dst4[token * dim4 + d4] += acc;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,31 @@
 use super::*;
+use crate::backend::cpu::CpuBackend;
+use crate::backend::metal::MetalBackend;
+use crate::gguf::MappedModel;
+use std::path::PathBuf;
+
+fn workspace_model_path(file_name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../models")
+        .join(file_name)
+}
+
+fn max_abs_diff(lhs: &[f32], rhs: &[f32]) -> f32 {
+    lhs.iter()
+        .zip(rhs.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max)
+}
+
+fn argmax_index(values: &[f32]) -> usize {
+    values
+        .iter()
+        .copied()
+        .enumerate()
+        .max_by(|(_, lhs), (_, rhs)| lhs.partial_cmp(rhs).unwrap())
+        .unwrap()
+        .0
+}
 
 #[test]
 fn test_use_sliding_window_pattern_6() {
@@ -46,6 +73,122 @@ fn test_layer_dims_swa_vs_global() {
     assert_eq!(nkv, 4);
     assert_eq!(q_dim, 32 * 512);
     assert_eq!(kv_dim, 4 * 512);
+}
+
+#[test]
+fn test_cpu_batch_chunk_len_respects_sliding_window() {
+    let cfg = test_gemma4_config();
+    let chunk_len = Gemma4Forward::cpu_batch_chunk_len(
+        &cfg,
+        4096,
+        Gemma4Forward::CPU_BATCH_SCRATCH_TARGET_BYTES,
+    );
+    assert!(chunk_len > 0);
+    assert!(chunk_len <= cfg.sliding_window_size.unwrap() as usize);
+}
+
+#[test]
+fn test_gpu_kv_batch_chunk_len_covers_512_prompt() {
+    let cfg = test_gemma4_config();
+    let chunk_len = Gemma4Forward::cpu_batch_chunk_len(
+        &cfg,
+        512,
+        Gemma4Forward::GPU_KV_BATCH_SCRATCH_TARGET_BYTES,
+    );
+    assert_eq!(chunk_len, 512);
+}
+
+#[test]
+fn test_gpu_prefill_chunk_len_caps_to_sliding_window() {
+    let cfg = test_gemma4_config();
+    assert_eq!(Gemma4Forward::gpu_prefill_chunk_len(&cfg, 512), None);
+    assert_eq!(
+        Gemma4Forward::gpu_prefill_chunk_len(&cfg, 2048),
+        Some(cfg.sliding_window_size.unwrap() as usize)
+    );
+}
+
+#[test]
+fn test_global_layer_uses_backend_prefill_when_hd512_has_large_enough_batch() {
+    let spec = Gemma4LayerSpec {
+        layer: 5,
+        prefix: "blk.5".to_string(),
+        kind: Gemma4LayerKind::Global,
+        head_dim: 512,
+        n_kv_heads: 4,
+        q_dim: 32 * 512,
+        kv_dim: 4 * 512,
+        v_equals_k: true,
+        rope_base: 1_000_000.0,
+        local_window: None,
+    };
+
+    assert!(!spec.use_backend_prefill(0, 32));
+    assert!(spec.use_backend_prefill(0, 128));
+    assert!(!spec.use_backend_prefill(1, 32));
+}
+
+#[test]
+fn test_real_gemma4_31b_forward_batch_last_logits_match_cpu() {
+    let _env_lock = crate::test_env_lock();
+    let path = workspace_model_path("gemma-4-31B-it-Q4_K_M.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let model = MappedModel::open(&path).unwrap();
+    let cfg = ModelConfig::from_gguf(&model.header).unwrap();
+    let weights = WeightStore::new(&model);
+    let tokenizer = crate::tokenizer::Tokenizer::from_gguf(&model.header).unwrap();
+    let prompt_token_ids = tokenizer.encode("The capital of France is", true);
+    let vocab_size = cfg.vocab_size as usize;
+
+    let cpu_model =
+        crate::model::InferenceModel::with_backend(cfg.clone(), Box::new(CpuBackend)).unwrap();
+    let metal_model = crate::model::InferenceModel::with_backend(
+        cfg.clone(),
+        Box::new(MetalBackend::new().unwrap()),
+    )
+    .unwrap();
+    let mut cpu_kv = cpu_model.create_model_kv_for_weights(&weights);
+    let mut metal_kv = metal_model.create_model_kv_for_weights(&weights);
+    let mut cpu_logits = vec![0.0f32; vocab_size];
+    let mut metal_logits = vec![0.0f32; vocab_size];
+
+    cpu_model
+        .forward_batch(&prompt_token_ids, &mut cpu_kv, &weights, &mut cpu_logits)
+        .unwrap();
+    metal_model
+        .forward_batch(
+            &prompt_token_ids,
+            &mut metal_kv,
+            &weights,
+            &mut metal_logits,
+        )
+        .unwrap();
+
+    let expected_argmax = argmax_index(&cpu_logits);
+    let actual_argmax = argmax_index(&metal_logits);
+    let max_diff = max_abs_diff(&cpu_logits, &metal_logits);
+    let scale = cpu_logits
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    let rel_diff = max_diff / scale;
+
+    assert_eq!(
+        actual_argmax, expected_argmax,
+        "Gemma4 GPU batch prefill argmax mismatch: expected {} actual {}",
+        expected_argmax, actual_argmax
+    );
+    assert!(
+        rel_diff <= 5e-2,
+        "Gemma4 GPU batch prefill logits drift too large: rel_diff={} max_diff={}",
+        rel_diff,
+        max_diff
+    );
 }
 
 fn test_gemma4_config() -> ModelConfig {

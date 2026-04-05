@@ -13,14 +13,21 @@
 //!   8. Proportional RoPE on global layers: only ~25% of dims rotated
 //!   9. Norm weight shift = 0.0 (Gemma3 adds +1.0 in GGUF)
 
+use crate::backend::metal::MetalOps;
 use crate::compute::{attention, rms_norm, rope, silu};
 use crate::kv::ModelKv;
 use crate::metrics::OpBreakdown;
 use crate::metrics::counters::OpTimer;
 use crate::model::config::ModelConfig;
+use crate::model::execution_plan::{
+    DecodeExecutionPlan, PrefillFfnActivationPlan, PrefillLogitsPlan, PrefillProjectionInputPlan,
+};
 use crate::model::forward::{ForwardContext, ForwardPass};
 use crate::model::shared::{
     apply_attention_norm_single, apply_optional_attention_qk_norm_single, apply_output_norm_single,
+    encode_batch_logits, encode_dequant_batch, encode_dequant_batch_f16in,
+    encode_dequant_batch_pair_f16in, encode_dequant_matvec, gpu_decode_quant_supported,
+    gpu_prefill_q5k_small_n_auto_eligible, gpu_prefill_uses_q5k,
     write_normalized_single_logits_with_breakdown,
 };
 use crate::model::weights::WeightStore;
@@ -81,8 +88,16 @@ impl Gemma4Forward {
         !Self::use_sliding_window(layer, config)
             && !weights.has(&format!("blk.{layer}.attn_v.weight"))
     }
+
+    pub(crate) fn gpu_prefill_chunk_len(config: &ModelConfig, n_tokens: usize) -> Option<usize> {
+        match config.sliding_window_size {
+            Some(window) if n_tokens > window as usize => Some(window as usize),
+            _ => None,
+        }
+    }
 }
 
+include!("core.rs");
 include!("forward.rs");
 
 #[cfg(test)]

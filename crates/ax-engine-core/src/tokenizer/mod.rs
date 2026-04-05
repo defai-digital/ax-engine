@@ -632,13 +632,13 @@ mod tests {
 
     fn make_user_defined_special_tokenizer() -> Tokenizer {
         let token_defs: Vec<(&str, f32, TokenType)> = vec![
-            ("<unk>", 0.0, TokenType::Unknown),     // 0
-            ("<s>", 0.0, TokenType::Control),       // 1
-            ("</s>", 0.0, TokenType::Control),      // 2
+            ("<unk>", 0.0, TokenType::Unknown),       // 0
+            ("<s>", 0.0, TokenType::Control),         // 1
+            ("</s>", 0.0, TokenType::Control),        // 2
             ("<think>", 0.0, TokenType::UserDefined), // 3
-            ("<", -1.0, TokenType::Normal),         // 4
-            ("think", -1.0, TokenType::Normal),     // 5
-            (">", -1.0, TokenType::Normal),         // 6
+            ("<", -1.0, TokenType::Normal),           // 4
+            ("think", -1.0, TokenType::Normal),       // 5
+            (">", -1.0, TokenType::Normal),           // 6
         ];
 
         let tokens: Vec<String> = token_defs.iter().map(|(t, _, _)| t.to_string()).collect();

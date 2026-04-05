@@ -33,7 +33,7 @@ pub struct ForwardContext<'a> {
 
 /// Object-safe trait for architecture-specific forward passes.
 ///
-/// Implementors are `Send + Sync` so they can be stored in `LlamaModel`
+/// Implementors are `Send + Sync` so they can be stored in `InferenceModel`
 /// which may be shared across threads.
 pub trait ForwardPass: Send + Sync + std::fmt::Debug {
     /// Run a single decode step: one token in, logits out.

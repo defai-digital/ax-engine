@@ -3,6 +3,7 @@ use super::config::ModelConfig;
 use super::decode::{DecodeIntent, DecodeMode, DecodeSelection};
 use super::forward::ForwardContext;
 use super::gemma3::Gemma3Forward;
+use super::gemma4::Gemma4Forward;
 use super::shared::{
     Q5KPrefillVariantOverride, env_flag_enabled, env_flag_override, gpu_batch_logits_supported,
     gpu_prefill_quant_blocker, q5k_prefill_enabled, q5k_prefill_variant_override,
@@ -46,9 +47,9 @@ fn q5k_prefill_route(
         enabled,
         small_n,
         forced_variant: enabled && !matches!(override_variant, Q5KPrefillVariantOverride::Auto),
-        // PRD-PREFILL-DISPATCH-CONSOLIDATION: blocked Q5K kernel (default ON)
-        // does inline float→half cast like Q4K blocked. The separate f16io
-        // path added extra cast dispatches and used a suboptimal kernel.
+        // Keep Q5_K on the normal blocked/base projection route. The pair
+        // experiment is FFN-local and should not flip QKV/attention over to
+        // the f16-input path.
         use_f16_batch_io: false,
     }
 }
@@ -104,6 +105,7 @@ pub enum DecodeScratchPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrefillMode {
     Serial,
+    CpuBatch,
     GpuBatch,
     GpuChunked,
 }
@@ -916,7 +918,7 @@ impl PrefillExecutionPlan {
 
         let plan = match ctx.config.architecture.as_str() {
             "llama" => {
-                if let Some(blocker) = gpu_prefill_quant_blocker(weights) {
+                if let Some(blocker) = gpu_prefill_quant_blocker(ctx.config, weights) {
                     Self {
                         mode: PrefillMode::Serial,
                         chunk_len: None,
@@ -937,7 +939,7 @@ impl PrefillExecutionPlan {
                 }
             }
             "gemma3" => {
-                if let Some(blocker) = gpu_prefill_quant_blocker(weights) {
+                if let Some(blocker) = gpu_prefill_quant_blocker(ctx.config, weights) {
                     Self {
                         mode: PrefillMode::Serial,
                         chunk_len: None,
@@ -973,13 +975,42 @@ impl PrefillExecutionPlan {
                 }
             }
             "qwen35" | "qwen35moe" => qwen35_prefill_plan(),
-            // Gemma4: serial prefill only (GPU batch not yet implemented due to
-            // per-layer variable head_dim / n_kv_heads).
-            "gemma4" => Self {
-                mode: PrefillMode::Serial,
-                chunk_len: None,
-                reason: Some("gemma4_serial_only".to_string()),
-            },
+            "gemma4" => {
+                if let Some(blocker) = gpu_prefill_quant_blocker(ctx.config, weights) {
+                    Self {
+                        mode: PrefillMode::Serial,
+                        chunk_len: None,
+                        reason: Some(format!("unsupported_quant:{blocker}")),
+                    }
+                } else {
+                    let chunk_len = Gemma4Forward::gpu_prefill_chunk_len(ctx.config, n_tokens);
+                    if emit_all_logits && !lm_head_dtype_supported {
+                        Self {
+                            mode: PrefillMode::Serial,
+                            chunk_len: None,
+                            reason: Some("unsupported_lm_head".to_string()),
+                        }
+                    } else if emit_all_logits && chunk_len.is_some() {
+                        Self {
+                            mode: PrefillMode::Serial,
+                            chunk_len: None,
+                            reason: Some("chunked_all_logits_unsupported".to_string()),
+                        }
+                    } else if let Some(chunk_len) = chunk_len {
+                        Self {
+                            mode: PrefillMode::GpuChunked,
+                            chunk_len: Some(chunk_len),
+                            reason: None,
+                        }
+                    } else {
+                        Self {
+                            mode: PrefillMode::GpuBatch,
+                            chunk_len: None,
+                            reason: None,
+                        }
+                    }
+                }
+            }
             _ => Self {
                 mode: PrefillMode::Serial,
                 chunk_len: None,
@@ -996,6 +1027,7 @@ impl PrefillExecutionPlan {
                 let reason = self.reason.unwrap_or_else(|| "fallback".to_string());
                 format!("mode=serial reason={reason}")
             }
+            PrefillMode::CpuBatch => "mode=cpu_batch".to_string(),
             PrefillMode::GpuBatch => "mode=gpu_batch".to_string(),
             PrefillMode::GpuChunked => {
                 format!("mode=gpu_chunked chunk={}", self.chunk_len.unwrap_or(0))
@@ -1514,6 +1546,17 @@ mod tests {
         assert_eq!(plan.mode, PrefillMode::GpuBatch);
         assert_eq!(plan.chunk_len, None);
         assert_eq!(plan.reason, None);
+    }
+
+    #[test]
+    fn test_prefill_execution_plan_summary_label_for_cpu_batch_mode() {
+        let summary = PrefillExecutionPlan {
+            mode: PrefillMode::CpuBatch,
+            chunk_len: None,
+            reason: None,
+        }
+        .summary_label();
+        assert_eq!(summary, "mode=cpu_batch");
     }
 
     #[test]

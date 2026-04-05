@@ -5,7 +5,7 @@ use std::sync::{Arc, Once};
 use anyhow::{Context, anyhow, ensure};
 use ax_engine_core::backend::{BackendConfig, create_backend};
 use ax_engine_core::gguf::MappedModel;
-use ax_engine_core::model::{LlamaModel, ModelConfig, ModelFingerprint};
+use ax_engine_core::model::{InferenceModel, ModelConfig, ModelFingerprint};
 use ax_engine_core::tokenizer::Tokenizer;
 
 use crate::session::{Session, SessionOptions};
@@ -15,7 +15,7 @@ pub(crate) struct NativeLoadedModel {
     pub(crate) mapped: MappedModel,
     pub(crate) config: ModelConfig,
     pub(crate) tokenizer: Tokenizer,
-    pub(crate) model: LlamaModel,
+    pub(crate) model: InferenceModel,
     pub(crate) model_name: Option<String>,
     pub(crate) support_note: Option<String>,
 }
@@ -142,7 +142,7 @@ impl Model {
         let fingerprint = ModelFingerprint::from_mapped_model(Some(model_path), &mapped, &config);
         backend.configure_for_fingerprint(&fingerprint)?;
 
-        let model = LlamaModel::with_backend(config.clone(), backend)?;
+        let model = InferenceModel::with_backend(config.clone(), backend)?;
 
         tracing::info!(
             architecture = %model.arch_name(),

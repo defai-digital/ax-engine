@@ -1,3 +1,10 @@
+//! Standalone Criterion microbenchmarks.
+//!
+//! These stay independent from the `ax-engine-bench` library on purpose: they
+//! target tiny synthetic CPU kernels and should remain runnable even when the
+//! full benchmark harness evolves around model-loading, JSON reporting, or
+//! Metal-specific profiling concerns.
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 

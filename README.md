@@ -352,31 +352,34 @@ faster.
 | Qwen3.5 4B | Q8_0 | 982 tok/s | 48.3 tok/s | 1,340 tok/s | 56.5 tok/s | 73% | 86% |
 | Qwen3.5 9B | Q4_K_M | 574 tok/s | 50.9 tok/s | 733 tok/s | 49.0 tok/s | 78% | **104%** |
 | Qwen3.5 27B | Q4_K_M | 163 tok/s | 15.2 tok/s | 209 tok/s | 17.6 tok/s | 78% | 86% |
-| Qwen3.5 35B-A3B | Q4_K_M | 667 tok/s | 44.5 tok/s | 1,127 tok/s | 57.0 tok/s | 59% | 78% |
-| Gemma 4 31B | Q4_K_M | 59 tok/s | 5.5 tok/s | 86 tok/s | 5.5 tok/s | 69% | 100% |
+| Qwen3.5 35B-A3B | Q4_K_M | 684 tok/s | 44.7 tok/s | 1,127 tok/s | 57.0 tok/s | 61% | 78% |
+| Gemma 4 31B | Q4_K_M | 131 tok/s | 13.2 tok/s | 86 tok/s | 5.5 tok/s | **152%** | 240% |
 
 Qwen3.5 35B-A3B was refreshed on April 5, 2026 with a targeted deterministic
-run (`samples=3`, `cooldown=20000ms`). Decode improved again after replacing
+run (`samples=3`, `cooldown=20000ms`). Decode remains improved after replacing
 the routed `Q4_K` gate/up blocked selected kernels with dedicated selected
 `nr2` matvec paths for both single-row and pair execution, on top of the
 earlier routed-expert `Q5_K` fused `SiLU(gate) * up -> down` decode path and
-the shared-expert scalar-gate optimization. The latest refresh measured 666.5
-tok/s prefill and 44.5 tok/s decode. Layer-local resident-MoE timing shows the
-remaining gap versus llama.cpp is still dominated by GPU execute time inside
-the expert kernels, but the hottest routed decode work has shifted away from
+the shared-expert scalar-gate optimization. Prefill also improved after
+re-enabling the merged-projection fused recurrent path for MoE recurrent
+layers. The latest refresh measured 684.2 tok/s prefill and 44.7 tok/s decode.
+Layer-local resident-MoE timing shows the remaining gap versus llama.cpp is
+still dominated by GPU execute time inside the expert kernels, but the hottest
+routed decode work has shifted away from
 the old `Q4_K` gate/up path.
 
-Gemma 4 31B was refreshed again on April 5, 2026 after landing cached-prefix
-GPU attention inside the `cpu_batch` prefill path and a GPU single-CB decode
-route. The AX side was remeasured at the published regime with a targeted
-standalone bench run (`P=512`, `D=128`, default `warmup=2`, `measure=5`),
-captured in [ax.json](/Users/akiralam/code/ax-engine/benchmarks/results/20260405-083322-001/ax.json)
-and [prefill-profile.json](/Users/akiralam/code/ax-engine/benchmarks/results/20260405-083322-001/prefill-profile.json).
-That refresh measured 59.0 tok/s prefill and 5.5 tok/s decode for AX. The
-`llama.cpp` baseline in the table is still the latest prior apple-to-apple
-artifact until it is rerun. The remaining Gemma4 gap is now concentrated in
-CPU batch orchestration/matmul around the chunk loop and the lack of pipelined
-decode, rather than the old CPU prefix-attention and sequential decode paths.
+Gemma 4 31B was refreshed again on April 5, 2026 after replacing the old
+host-driven `cpu_batch` prefill route with a real GPU batch path. Gemma4 now
+uses `PrefillPlan: mode=gpu_batch` with a single GPU submission for the prompt
+chunk instead of falling back to serial decode or the older mixed CPU/GPU batch
+orchestration. The latest deterministic refresh (`samples=3`,
+`cooldown=20000ms`) measured 130.9 tok/s prefill and 13.2 tok/s decode at
+`P=512`, while the current prefill profile reports `dense_gpu_batch /
+generic_gpu_batch`, 1 command buffer, and 793 barriers. The retained
+`llama.cpp` columns are still the latest prior baseline artifact and need a
+fresh rerun for a strict apple-to-apple update. The remaining Gemma4 prefill
+gap is now dominated by GPU execute time inside the generic mixed-quant batch
+projection path rather than the old CPU-batch orchestration.
 
 Prefill uses config-driven kernel selection across all supported quant types
 (Q4_K, Q5_K, Q6_K, Q8_0) with f16-input full-tile kernels (64x64, 64x32,

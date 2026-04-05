@@ -1,5 +1,7 @@
+use super::*;
+
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_dequant_batch(
+pub(crate) fn encode_dequant_batch(
     dequant: &ax_engine_metal::DequantKernels,
     elementwise: &ax_engine_metal::ElementwiseKernels,
     encoder: &ax_engine_metal::MetalEncoder,
@@ -79,7 +81,7 @@ pub(super) fn encode_dequant_batch(
 ///
 /// Caller is responsible for casting input to f16 in `input_f16` before calling.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_dequant_batch_f16in(
+pub(crate) fn encode_dequant_batch_f16in(
     metal_ops: &MetalOps,
     encoder: &ax_engine_metal::MetalEncoder,
     weight: &ax_engine_metal::MetalBuffer,
@@ -166,7 +168,7 @@ pub(super) fn encode_dequant_batch_f16in(
 /// Encode a batched LM-head projection from `[n × k]` hidden states to
 /// `[n × vocab]` logits.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_batch_logits(
+pub(crate) fn encode_batch_logits(
     metal_ops: &MetalOps,
     encoder: &ax_engine_metal::MetalEncoder,
     weight: &ax_engine_metal::MetalBuffer,
@@ -231,7 +233,7 @@ pub(super) fn encode_batch_logits(
 ///
 /// Dispatches gate and up projections in a single paired kernel.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_dequant_batch_pair_f16in(
+pub(crate) fn encode_dequant_batch_pair_f16in(
     dequant: &ax_engine_metal::DequantKernels,
     encoder: &ax_engine_metal::MetalEncoder,
     w0: &ax_engine_metal::MetalBuffer,
@@ -247,11 +249,12 @@ pub(super) fn encode_dequant_batch_pair_f16in(
     match dtype {
         GgmlType::Q4K => dequant
             .encode_fused_batch_pair_q4_k_f16in(encoder, w0, w1, input_f16, out0, out1, m, n, k),
+        GgmlType::Q5K => dequant
+            .encode_fused_batch_pair_q5_k_f16in(encoder, w0, w1, input_f16, out0, out1, m, n, k),
         GgmlType::Q6K => dequant
             .encode_fused_batch_pair_q6_k_f16in(encoder, w0, w1, input_f16, out0, out1, m, n, k),
         GgmlType::Q8_0 => dequant
             .encode_fused_batch_pair_q8_0_f16in(encoder, w0, w1, input_f16, out0, out1, m, n, k),
-        _ => panic!(
-        ),
+        _ => panic!(),
     }
 }

@@ -1,18 +1,22 @@
+//! Reusable benchmark, profiling, and validation helpers for AX Engine.
+
 use std::path::Path;
 
 use ax_engine_core::gguf::MappedModel;
 use ax_engine_core::memory::MemoryBudget;
-use ax_engine_core::model::{LlamaModel, ModelConfig, ModelFingerprint};
+use ax_engine_core::model::{InferenceModel, ModelConfig, ModelFingerprint};
 
-pub mod baseline;
-pub mod microbench;
-pub mod parity;
-pub mod perf;
-pub mod prefill_gap;
-pub mod prefill_profile;
-pub mod profile;
-pub mod report;
-pub mod soak;
+#[path = "bench/mod.rs"]
+mod bench_group;
+#[path = "profile/mod.rs"]
+mod profile_group;
+#[path = "validation/mod.rs"]
+mod validation_group;
+
+pub use bench_group::arch_config;
+pub use bench_group::{baseline, microbench, perf, prefill_gap, report};
+pub use profile_group::{prefill_profile, profile};
+pub use validation_group::{parity, soak};
 
 pub(crate) fn configure_backend_for_model(
     backend: &dyn ax_engine_core::backend::Backend,
@@ -27,7 +31,7 @@ pub(crate) fn configure_backend_for_model(
 
 pub(crate) fn report_planned_kv_budget(
     mapped: &MappedModel,
-    model: &LlamaModel,
+    model: &InferenceModel,
 ) -> anyhow::Result<()> {
     let kv_plan = model.kv_plan();
     let kv_memory = kv_plan.memory_estimate();

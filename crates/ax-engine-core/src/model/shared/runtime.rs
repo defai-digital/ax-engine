@@ -1,16 +1,20 @@
-pub(super) fn q5k_prefill_enabled() -> bool {
+use super::*;
+
+use crate::model::ModelConfig;
+
+pub(crate) fn q5k_prefill_enabled() -> bool {
     // Q5_K GPU prefill is a normal supported path now. The remaining env
     // surface only selects the routing variant for validation.
     true
 }
 
-pub(super) fn env_flag_enabled(var: &str) -> bool {
+pub(crate) fn env_flag_enabled(var: &str) -> bool {
     std::env::var(var)
         .ok()
         .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on"))
 }
 
-pub(super) fn env_flag_override(var: &str) -> Option<bool> {
+pub(crate) fn env_flag_override(var: &str) -> Option<bool> {
     match std::env::var(var) {
         Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
             "1" | "true" | "on" => Some(true),
@@ -21,7 +25,7 @@ pub(super) fn env_flag_override(var: &str) -> Option<bool> {
     }
 }
 
-pub(super) fn decode_fused_gelu_down_enabled() -> bool {
+pub(crate) fn decode_fused_gelu_down_enabled() -> bool {
     match std::env::var("AX_METAL_DECODE_FUSED_GELU_DOWN") {
         Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on"),
         Err(_) => true,
@@ -29,13 +33,13 @@ pub(super) fn decode_fused_gelu_down_enabled() -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Q5KPrefillVariantOverride {
+pub(crate) enum Q5KPrefillVariantOverride {
     Auto,
     Base,
     Small,
 }
 
-pub(super) fn q5k_prefill_variant_override() -> Q5KPrefillVariantOverride {
+pub(crate) fn q5k_prefill_variant_override() -> Q5KPrefillVariantOverride {
     let raw = std::env::var("AX_METAL_Q5K_PREFILL_VARIANT")
         .or_else(|_| std::env::var("AX_METAL_EXPERIMENTAL_Q5K_PREFILL_VARIANT"));
     match raw {
@@ -48,25 +52,21 @@ pub(super) fn q5k_prefill_variant_override() -> Q5KPrefillVariantOverride {
     }
 }
 
-fn gpu_decode_quant_dtype_supported(dtype: GgmlType) -> bool {
+pub(crate) fn gpu_decode_quant_dtype_supported(dtype: GgmlType) -> bool {
     matches!(
         dtype,
-        GgmlType::Q4K
-            | GgmlType::Q5K
-            | GgmlType::Q6K
-            | GgmlType::Q8_0
-            | GgmlType::F32
+        GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0 | GgmlType::F32
     )
 }
 
-fn gpu_prefill_quant_dtype_supported(dtype: GgmlType) -> bool {
+pub(crate) fn gpu_prefill_quant_dtype_supported(dtype: GgmlType) -> bool {
     matches!(
         dtype,
         GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0 | GgmlType::F32
     ) || (dtype == GgmlType::Q5K && q5k_prefill_enabled())
 }
 
-fn gpu_batch_logits_dtype_supported(dtype: GgmlType) -> bool {
+pub(crate) fn gpu_batch_logits_dtype_supported(dtype: GgmlType) -> bool {
     matches!(
         dtype,
         GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0
@@ -77,27 +77,40 @@ fn gpu_batch_logits_dtype_supported(dtype: GgmlType) -> bool {
 ///
 /// Decode can use additional fused matvec kernels (such as Q8_0) that are not yet available for
 /// batch-prefill kernels.
-pub(super) fn gpu_decode_quant_supported(weights: &WeightStore) -> bool {
-    all_layers_match(weights, LAYER_SUFFIXES, gpu_decode_quant_dtype_supported)
+pub(crate) fn gpu_decode_quant_supported(config: &ModelConfig, weights: &WeightStore) -> bool {
+    all_layers_match(
+        config,
+        weights,
+        LAYER_SUFFIXES,
+        gpu_decode_quant_dtype_supported,
+    )
 }
 
-pub(super) fn gpu_prefill_quant_blocker(weights: &WeightStore) -> Option<String> {
-    first_layer_mismatch(weights, LAYER_SUFFIXES, gpu_prefill_quant_dtype_supported)
+pub(crate) fn gpu_prefill_quant_blocker(
+    config: &ModelConfig,
+    weights: &WeightStore,
+) -> Option<String> {
+    first_layer_mismatch(
+        config,
+        weights,
+        LAYER_SUFFIXES,
+        gpu_prefill_quant_dtype_supported,
+    )
 }
 
-pub(super) fn gpu_prefill_uses_q5k(weights: &WeightStore) -> bool {
+pub(crate) fn gpu_prefill_uses_q5k(weights: &WeightStore) -> bool {
     q5k_prefill_enabled()
         && any_layers_match(weights, LAYER_SUFFIXES, |dtype| dtype == GgmlType::Q5K)
 }
 
-pub(super) fn gpu_prefill_q5k_small_n_auto_eligible(weights: &WeightStore) -> bool {
+pub(crate) fn gpu_prefill_q5k_small_n_auto_eligible(weights: &WeightStore) -> bool {
     q5k_prefill_small_n_auto_eligible_for_model(
         weights.predominant_quant(),
         any_layers_match(weights, LAYER_SUFFIXES, |dtype| dtype == GgmlType::Q5K),
     )
 }
 
-fn q5k_prefill_small_n_auto_eligible_for_model(
+pub(crate) fn q5k_prefill_small_n_auto_eligible_for_model(
     predominant_quant: Option<GgmlType>,
     has_q5k_layer_weights: bool,
 ) -> bool {
@@ -105,17 +118,17 @@ fn q5k_prefill_small_n_auto_eligible_for_model(
 }
 
 /// Return true when a quantized LM head can use the existing batched GPU matmul path.
-pub(super) fn gpu_batch_logits_supported(dtype: GgmlType) -> bool {
+pub(crate) fn gpu_batch_logits_supported(dtype: GgmlType) -> bool {
     gpu_batch_logits_dtype_supported(dtype)
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct AttentionQkNormWeights<'a> {
+pub(crate) struct AttentionQkNormWeights<'a> {
     pub q: &'a [f32],
     pub k: &'a [f32],
 }
 
-pub(super) fn lm_head_weight_name(weights: &WeightStore) -> &'static str {
+pub(crate) fn lm_head_weight_name(weights: &WeightStore) -> &'static str {
     if weights.has("output.weight") {
         "output.weight"
     } else {
@@ -123,13 +136,13 @@ pub(super) fn lm_head_weight_name(weights: &WeightStore) -> &'static str {
     }
 }
 
-pub(super) fn lm_head_raw_with_dtype<'a>(
+pub(crate) fn lm_head_raw_with_dtype<'a>(
     weights: &'a WeightStore,
 ) -> anyhow::Result<(&'a [u8], GgmlType)> {
     weights.raw_with_dtype(lm_head_weight_name(weights))
 }
 
-pub(super) fn cache_output_head_keys<'a>(
+pub(crate) fn cache_output_head_keys<'a>(
     metal_ops: &MetalOps,
     weights: &'a WeightStore,
 ) -> anyhow::Result<(usize, &'a [u8], GgmlType, usize)> {
@@ -140,7 +153,7 @@ pub(super) fn cache_output_head_keys<'a>(
     Ok((output_norm_key, lm_raw, lm_dtype, lm_head_key))
 }
 
-pub(super) fn cache_attention_qk_norm_keys(
+pub(crate) fn cache_attention_qk_norm_keys(
     metal_ops: &MetalOps,
     weights: &WeightStore,
     prefix: &str,
@@ -154,7 +167,7 @@ pub(super) fn cache_attention_qk_norm_keys(
     ))
 }
 
-pub(super) fn cache_optional_f32_key(
+pub(crate) fn cache_optional_f32_key(
     metal_ops: &MetalOps,
     weights: &WeightStore,
     name: &str,
@@ -166,7 +179,7 @@ pub(super) fn cache_optional_f32_key(
     Ok(Some(metal_ops.ensure_f32_cached(w)))
 }
 
-pub(super) fn cache_optional_prefixed_f32_key(
+pub(crate) fn cache_optional_prefixed_f32_key(
     metal_ops: &MetalOps,
     weights: &WeightStore,
     prefix: &str,
@@ -175,7 +188,7 @@ pub(super) fn cache_optional_prefixed_f32_key(
     cache_optional_f32_key(metal_ops, weights, &format!("{prefix}.{suffix}"))
 }
 
-pub(super) fn ensure_precomputed_lm_head_f16(
+pub(crate) fn ensure_precomputed_lm_head_f16(
     metal_ops: &MetalOps,
     raw: &[u8],
     dtype: GgmlType,
@@ -197,7 +210,7 @@ pub(super) fn ensure_precomputed_lm_head_f16(
     Ok(())
 }
 
-pub(super) fn ensure_precomputed_linear_f16(
+pub(crate) fn ensure_precomputed_linear_f16(
     metal_ops: &MetalOps,
     raw: &[u8],
     dtype: GgmlType,
@@ -213,7 +226,7 @@ pub(super) fn ensure_precomputed_linear_f16(
     Ok(())
 }
 
-pub(super) fn ensure_precomputed_linear_f16_many(
+pub(crate) fn ensure_precomputed_linear_f16_many(
     metal_ops: &MetalOps,
     ops: &[(&[u8], GgmlType, u32, u32)],
 ) -> anyhow::Result<()> {
@@ -223,7 +236,7 @@ pub(super) fn ensure_precomputed_linear_f16_many(
     Ok(())
 }
 
-pub(super) fn write_normalized_single_logits(
+pub(crate) fn write_normalized_single_logits(
     backend: &dyn Backend,
     hidden: &[f32],
     dim: usize,
@@ -237,7 +250,7 @@ pub(super) fn write_normalized_single_logits(
     Ok(())
 }
 
-pub(super) fn write_normalized_single_logits_with_breakdown(
+pub(crate) fn write_normalized_single_logits_with_breakdown(
     backend: &dyn Backend,
     hidden: &[f32],
     dim: usize,
@@ -256,7 +269,7 @@ pub(super) fn write_normalized_single_logits_with_breakdown(
     Ok(())
 }
 
-pub(super) fn apply_attention_norm_single(
+pub(crate) fn apply_attention_norm_single(
     weights: &WeightStore,
     prefix: &str,
     hidden: &[f32],
@@ -283,7 +296,7 @@ pub(super) fn apply_attention_norm_single(
     Ok(())
 }
 
-pub(super) fn maybe_attention_qk_norm_weights<'a>(
+pub(crate) fn maybe_attention_qk_norm_weights<'a>(
     weights: &'a WeightStore,
     prefix: &str,
 ) -> anyhow::Result<Option<AttentionQkNormWeights<'a>>> {
@@ -296,7 +309,7 @@ pub(super) fn maybe_attention_qk_norm_weights<'a>(
     }))
 }
 
-pub(super) fn apply_attention_qk_norm(
+pub(crate) fn apply_attention_qk_norm(
     q: &mut [f32],
     k: &mut [f32],
     n_heads: usize,
@@ -310,7 +323,7 @@ pub(super) fn apply_attention_qk_norm(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn apply_optional_attention_qk_norm_single(
+pub(crate) fn apply_optional_attention_qk_norm_single(
     weights: &WeightStore,
     prefix: &str,
     q: &mut [f32],
@@ -359,7 +372,7 @@ pub(super) fn apply_optional_attention_qk_norm_single(
     Ok(())
 }
 
-pub(super) fn apply_output_norm_single(
+pub(crate) fn apply_output_norm_single(
     weights: &WeightStore,
     hidden: &mut [f32],
     rms_norm_eps: f32,
@@ -384,12 +397,19 @@ pub(super) fn apply_output_norm_single(
     Ok(())
 }
 
+fn optional_missing_layer_weight(config: &ModelConfig, layer: usize, suffix: &str) -> bool {
+    config.architecture == "gemma4"
+        && suffix == "attn_v.weight"
+        && !crate::model::gemma4::Gemma4Forward::use_sliding_window(layer, config)
+}
+
 fn all_layers_match(
+    config: &ModelConfig,
     weights: &WeightStore,
     layer_suffixes: &[&str],
     is_supported: impl Fn(GgmlType) -> bool,
 ) -> bool {
-    first_layer_mismatch(weights, layer_suffixes, is_supported).is_none()
+    first_layer_mismatch(config, weights, layer_suffixes, is_supported).is_none()
 }
 
 fn any_layers_match(
@@ -416,6 +436,7 @@ fn any_layers_match(
 }
 
 fn first_layer_mismatch(
+    config: &ModelConfig,
     weights: &WeightStore,
     layer_suffixes: &[&str],
     is_supported: impl Fn(GgmlType) -> bool,
@@ -437,6 +458,9 @@ fn first_layer_mismatch(
                     return Some(format!("{name}:{dtype:?}"));
                 }
                 Err(e) => {
+                    if optional_missing_layer_weight(config, layer, suffix) {
+                        continue;
+                    }
                     warn_gpu_path_issue_once(format!("missing:{name}:{e}"), || {
                         tracing::warn!(
                             %name,
@@ -452,7 +476,7 @@ fn first_layer_mismatch(
     None
 }
 
-fn warn_gpu_path_issue_once(key: String, warn: impl FnOnce()) {
+pub(crate) fn warn_gpu_path_issue_once(key: String, warn: impl FnOnce()) {
     static WARNED_GPU_PATH_ISSUES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
     let warned = WARNED_GPU_PATH_ISSUES.get_or_init(|| Mutex::new(HashSet::new()));
@@ -464,18 +488,72 @@ fn warn_gpu_path_issue_once(key: String, warn: impl FnOnce()) {
     }
 }
 
-fn gpu_batch_prefill_panic(dtype: GgmlType) -> ! {
+pub(crate) fn gpu_batch_prefill_panic(dtype: GgmlType) -> ! {
     panic!(
         "GPU batch matmul only supports Q4_K, Q5_K, Q6_K, and Q8_0, got {:?}",
         dtype
     )
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_gemma4_config() -> ModelConfig {
+        ModelConfig {
+            architecture: "gemma4".to_string(),
+            n_layers: 60,
+            n_heads: 32,
+            n_kv_heads: 16,
+            embedding_dim: 5376,
+            head_dim: 256,
+            intermediate_dim: 21504,
+            context_length: 4096,
+            vocab_size: 262144,
+            rms_norm_eps: 1e-6,
+            rope_freq_base: 1_000_000.0,
+            has_qkv_bias: false,
+            sliding_window_size: Some(1024),
+            sliding_window_pattern: Some(6),
+            gate_activation: crate::model::config::GateActivation::GELU,
+            tie_word_embeddings: false,
+            logit_scale: None,
+            rope_scaling: crate::model::config::RopeScaling::None,
+            embed_scale: true,
+            rope_freq_base_local: Some(10_000.0),
+            n_expert: None,
+            n_expert_used: None,
+            expert_intermediate_dim: None,
+            qwen35_full_attention_interval: None,
+            qwen35_ssm_conv_kernel: None,
+            qwen35_ssm_inner_size: None,
+            qwen35_ssm_state_size: None,
+            qwen35_ssm_time_step_rank: None,
+            qwen35_ssm_group_count: None,
+            gemma4_head_dim_swa: Some(256),
+            gemma4_head_dim_global: Some(512),
+            gemma4_n_kv_heads_swa: Some(16),
+            gemma4_n_kv_heads_global: Some(4),
+            gemma4_rope_dim_swa: Some(256),
+            gemma4_rope_dim_global: Some(512),
+            final_logit_softcapping: Some(30.0),
+        }
+    }
+
+    #[test]
+    fn test_optional_missing_layer_weight_allows_gemma4_global_v_tensor() {
+        let cfg = test_gemma4_config();
+        assert!(!optional_missing_layer_weight(&cfg, 0, "attn_v.weight"));
+        assert!(optional_missing_layer_weight(&cfg, 5, "attn_v.weight"));
+        assert!(!optional_missing_layer_weight(&cfg, 5, "attn_k.weight"));
+    }
+}
+
 /// Apply per-head RMSNorm in-place.
 ///
 /// `buf` contains `n_heads` concatenated vectors of size `head_dim`.
 /// `weight` has length `head_dim` and is shared across all heads.
-pub(super) fn per_head_rms_norm(
+pub(crate) fn per_head_rms_norm(
     buf: &mut [f32],
     n_heads: usize,
     head_dim: usize,

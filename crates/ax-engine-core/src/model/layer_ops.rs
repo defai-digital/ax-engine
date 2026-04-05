@@ -8,6 +8,10 @@
 use crate::backend::Backend;
 use crate::compute::{gelu, rms_norm, silu};
 use crate::model::weights::WeightStore;
+use rayon::prelude::*;
+
+const PARALLEL_BATCH_MIN_TOKENS: usize = 64;
+const PARALLEL_FLOAT_CHUNK: usize = 16 * 1024;
 
 /// FFN activation function selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,14 +104,23 @@ pub fn apply_ffn_batch(
     activation: FfnActivation,
 ) {
     // 1. FFN norm: per-token RMSNorm
-    for t in 0..n_tokens {
-        let start = t * dim;
-        rms_norm::rms_norm_out(
-            &hidden[start..start + dim],
-            ffn_norm_w,
-            &mut norm_buf[start..start + dim],
-            rms_norm_eps,
-        );
+    if n_tokens >= PARALLEL_BATCH_MIN_TOKENS {
+        hidden[..n_tokens * dim]
+            .par_chunks(dim)
+            .zip(norm_buf[..n_tokens * dim].par_chunks_mut(dim))
+            .for_each(|(hidden_token, norm_token)| {
+                rms_norm::rms_norm_out(hidden_token, ffn_norm_w, norm_token, rms_norm_eps);
+            });
+    } else {
+        for t in 0..n_tokens {
+            let start = t * dim;
+            rms_norm::rms_norm_out(
+                &hidden[start..start + dim],
+                ffn_norm_w,
+                &mut norm_buf[start..start + dim],
+                rms_norm_eps,
+            );
+        }
     }
 
     // 2. Gate + Up projections (token-major batch matmul)
@@ -124,9 +137,19 @@ pub fn apply_ffn_batch(
         .dequant_matmul_token_major(wu_raw, wu_dtype, norm_buf, up_buf, n_tokens, inter_dim, dim);
 
     // 3. Activation
-    match activation {
-        FfnActivation::SiLU => silu::silu_elementwise_mul(gate_buf, up_buf),
-        FfnActivation::GELU => gelu::gelu_elementwise_mul(gate_buf, up_buf),
+    if n_tokens >= PARALLEL_BATCH_MIN_TOKENS {
+        gate_buf
+            .par_chunks_mut(PARALLEL_FLOAT_CHUNK)
+            .zip(up_buf.par_chunks(PARALLEL_FLOAT_CHUNK))
+            .for_each(|(gate_chunk, up_chunk)| match activation {
+                FfnActivation::SiLU => silu::silu_elementwise_mul(gate_chunk, up_chunk),
+                FfnActivation::GELU => gelu::gelu_elementwise_mul(gate_chunk, up_chunk),
+            });
+    } else {
+        match activation {
+            FfnActivation::SiLU => silu::silu_elementwise_mul(gate_buf, up_buf),
+            FfnActivation::GELU => gelu::gelu_elementwise_mul(gate_buf, up_buf),
+        }
     }
 
     // 4. Down projection
@@ -139,16 +162,33 @@ pub fn apply_ffn_batch(
 
     // 5. Optional post-FFN norm (Gemma3: `post_ffw_norm.weight`)
     if let Ok(post_ffw_norm_w) = weights.f32_slice(&format!("{prefix}.post_ffw_norm.weight")) {
-        for t in 0..n_tokens {
-            let start = t * dim;
-            rms_norm::rms_norm(
-                &mut down_buf[start..start + dim],
-                post_ffw_norm_w,
-                rms_norm_eps,
-            );
+        if n_tokens >= PARALLEL_BATCH_MIN_TOKENS {
+            down_buf[..n_tokens * dim]
+                .par_chunks_mut(dim)
+                .for_each(|down_token| {
+                    rms_norm::rms_norm(down_token, post_ffw_norm_w, rms_norm_eps);
+                });
+        } else {
+            for t in 0..n_tokens {
+                let start = t * dim;
+                rms_norm::rms_norm(
+                    &mut down_buf[start..start + dim],
+                    post_ffw_norm_w,
+                    rms_norm_eps,
+                );
+            }
         }
     }
 
     // 6. Residual add
-    silu::elementwise_add(hidden, down_buf);
+    if n_tokens >= PARALLEL_BATCH_MIN_TOKENS {
+        hidden
+            .par_chunks_mut(PARALLEL_FLOAT_CHUNK)
+            .zip(down_buf.par_chunks(PARALLEL_FLOAT_CHUNK))
+            .for_each(|(hidden_chunk, down_chunk)| {
+                silu::elementwise_add(hidden_chunk, down_chunk);
+            });
+    } else {
+        silu::elementwise_add(hidden, down_buf);
+    }
 }

@@ -1252,6 +1252,19 @@ fn test_qwen35_merged_projection_fused_recurrent_layer_is_dense_only() {
 }
 
 #[test]
+fn test_qwen35_moe_merged_projection_fused_recurrent_layer_defaults_on_with_disable_override() {
+    with_env_var("AX_QWEN35_MOE_MERGED_FUSED_RECURRENT", None, || {
+        assert!(Qwen3_5Forward::qwen35_should_try_merged_projection_fused_recurrent_layer(true));
+    });
+    with_env_var("AX_QWEN35_MOE_MERGED_FUSED_RECURRENT", Some("0"), || {
+        assert!(!Qwen3_5Forward::qwen35_should_try_merged_projection_fused_recurrent_layer(true));
+    });
+    with_env_var("AX_QWEN35_MOE_MERGED_FUSED_RECURRENT", Some("1"), || {
+        assert!(Qwen3_5Forward::qwen35_should_try_merged_projection_fused_recurrent_layer(true));
+    });
+}
+
+#[test]
 fn test_qwen35_projected_moe_gpu_tail_defaults_on_for_batch() {
     with_env_var("AX_QWEN35_PROJECTED_MOE_GPU_TAIL", None, || {
         assert!(!Qwen3_5Forward::qwen35_should_try_projected_moe_gpu_tail(1));
@@ -1299,6 +1312,31 @@ fn test_qwen35_resident_moe_gpu_tail_env_override_can_disable() {
             true, true
         ));
     });
+}
+
+#[test]
+fn test_qwen35_unified_recurrent_moe_gpu_tail_defaults_off() {
+    with_env_var("AX_QWEN35_UNIFIED_RECURRENT_MOE_GPU_TAIL", None, || {
+        assert!(!Qwen3_5Forward::qwen35_should_use_unified_recurrent_moe_gpu_tail());
+    });
+}
+
+#[test]
+fn test_qwen35_unified_recurrent_moe_gpu_tail_env_override_can_enable() {
+    with_env_var(
+        "AX_QWEN35_UNIFIED_RECURRENT_MOE_GPU_TAIL",
+        Some("0"),
+        || {
+            assert!(!Qwen3_5Forward::qwen35_should_use_unified_recurrent_moe_gpu_tail());
+        },
+    );
+    with_env_var(
+        "AX_QWEN35_UNIFIED_RECURRENT_MOE_GPU_TAIL",
+        Some("1"),
+        || {
+            assert!(Qwen3_5Forward::qwen35_should_use_unified_recurrent_moe_gpu_tail());
+        },
+    );
 }
 
 #[test]
