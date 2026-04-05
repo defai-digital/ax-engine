@@ -1,19 +1,22 @@
-pub mod arch_registry;
+//! Model runtime facade, architecture registry, and shared inference helpers.
+
+pub mod arch;
 pub mod config;
 pub mod decode;
 pub(crate) mod execution_plan;
 pub mod fingerprint;
 pub mod forward;
-pub mod gemma3;
+mod inference_model;
 pub(crate) mod layer_ops;
-pub mod llama;
+pub(crate) mod moe_utils;
 #[cfg(target_os = "macos")]
 mod prefill_schedule;
-pub mod qwen3;
-pub mod qwen35;
-pub(crate) mod moe_utils;
+pub mod registry;
 pub(crate) mod shared;
 pub mod weights;
+pub use arch::qwen3_5 as qwen35;
+pub use arch::{gemma3, llama, qwen3_5};
+pub use registry as arch_registry;
 
 pub use config::ModelConfig;
 pub use decode::{
@@ -22,5 +25,7 @@ pub use decode::{
 };
 pub use fingerprint::ModelFingerprint;
 pub use forward::ForwardPass;
-pub use llama::LlamaModel;
+pub use inference_model::InferenceModel;
+#[allow(deprecated)]
+pub use inference_model::LlamaModel;
 pub use weights::WeightStore;

@@ -296,9 +296,8 @@ All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Als
 | Family | Models |
 |---|---|
 | Qwen 3.5 | Qwen3.5-4B, Qwen3.5-9B, Qwen3.5-27B, Qwen3.5-35B-A3B |
-| Gemma 4 | Gemma-4-E2B, Gemma-4-E4B, Gemma-4-26B-A4B, Gemma-4-31B |
+| Gemma 3 / 4 | Gemma-3-12B, Gemma-3-27B, Gemma-4 (coming soon) |
 | LLaMA 3.1 | Llama-3.1-8B-Instruct, Llama-3.1-70B-Instruct |
-| Qwen 3 | Qwen3-Coder-Next |
 
 Each native architecture has its own hand-written forward pass, fused Metal
 kernels, and model-specific tuning profiles. Adding a new architecture
@@ -348,15 +347,17 @@ run-configured per benchmark run). AX% over 100% means AX was faster.
 | Model | Quant | AX Prefill | AX Decode | llama Prefill | llama Decode | Prefill % | Decode % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | LLaMA 3 70B | Q4_K_M | 50 tok/s | 5.5 tok/s | 57 tok/s | 5.6 tok/s | 87% | 98% |
-| LLaMA 3.1 8B | Q5_K_M | 605 tok/s | 56.3 tok/s | 705 tok/s | 55.5 tok/s | 86% | **102%** |
-| Qwen3.5 4B | Q8_0 | 1,054 tok/s | 51.5 tok/s | 1,340 tok/s | 56.5 tok/s | 79% | **91%** |
-| Qwen3.5 9B | Q4_K_M | 585 tok/s | 48.6 tok/s | 733 tok/s | 49.0 tok/s | 80% | 99% |
-| Qwen3.5 27B | Q4_K_M | 191 tok/s | 17.4 tok/s | 209 tok/s | 17.6 tok/s | 91% | 99% |
-| Qwen3.5 35B-A3B | Q4_K_M | 899 tok/s | 15.1 tok/s | 1,127 tok/s | 57.0 tok/s | 80% | 26% |
+| LLaMA 3.1 8B | Q5_K_M | 465 tok/s | 38.9 tok/s | 705 tok/s | 55.5 tok/s | 66% | 70% |
+| Qwen3.5 4B | Q8_0 | 982 tok/s | 48.3 tok/s | 1,340 tok/s | 56.5 tok/s | 73% | 86% |
+| Qwen3.5 9B | Q4_K_M | 574 tok/s | 50.9 tok/s | 733 tok/s | 49.0 tok/s | 78% | **104%** |
+| Qwen3.5 27B | Q4_K_M | 163 tok/s | 15.2 tok/s | 209 tok/s | 17.6 tok/s | 78% | 86% |
+| Qwen3.5 35B-A3B | Q4_K_M | 185 tok/s | 14.4 tok/s | 1,127 tok/s | 57.0 tok/s | 16% | 25% |
 
-Qwen3.5 35B-A3B MoE decode uses single-CB GPU dispatch with mul_mat_id
-for expert routing. Decode gap (26% of llama) is primarily from the
-recurrent (Mamba-2) layer overhead and per-layer barrier cost.
+Qwen3.5 35B-A3B MoE prefill is still regressed versus llama.cpp due to
+high per-layer command-buffer cost on the single-CB GPU path (41 CBs per
+decode token, 381 CBs per prefill). Decode recovered to 14.4 tok/s
+(prior best: 15.1 tok/s). Prefill improved from 6 to 185 tok/s but
+remains well below llama.cpp's 1,127 tok/s.
 
 Prefill uses config-driven kernel selection across all supported quant types
 (Q4_K, Q5_K, Q6_K, Q8_0) with f16-input full-tile kernels (64x64, 64x32,

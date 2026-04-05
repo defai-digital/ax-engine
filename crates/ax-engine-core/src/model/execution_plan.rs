@@ -1,9 +1,8 @@
-use super::LlamaModel;
+use super::InferenceModel;
 use super::config::ModelConfig;
 use super::decode::{DecodeIntent, DecodeMode, DecodeSelection};
 use super::forward::ForwardContext;
 use super::gemma3::Gemma3Forward;
-use super::qwen3::ensure_supported_qwen3_layout;
 use super::shared::{
     Q5KPrefillVariantOverride, env_flag_enabled, env_flag_override, gpu_batch_logits_supported,
     gpu_prefill_quant_blocker, q5k_prefill_enabled, q5k_prefill_variant_override,
@@ -151,6 +150,7 @@ pub struct LlamaDecodeLayerPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub struct Qwen3DecodeLayerPlan {
     pub qkv: DecodeQkvPlan,
     pub qwen3_post: Qwen3PrefillQkvPost,
@@ -217,6 +217,7 @@ pub struct PrefillFfnLayerPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum Qwen3PrefillQkvPost {
     Separate,
     SeparateBias,
@@ -268,7 +269,7 @@ fn kv_precision_label(kv_f16: bool, kv_q8: bool) -> &'static str {
 
 impl DecodeExecutionPlan {
     pub fn for_model(
-        model: &LlamaModel,
+        model: &InferenceModel,
         kv: &ModelKv,
         intent: DecodeIntent,
         allow_pipelined: bool,
@@ -412,23 +413,6 @@ impl DecodeExecutionPlan {
         )
     }
 
-    pub(crate) fn qwen3_single_cb(
-        metal_ops: &MetalOps,
-        gpu_kv: &GpuKv,
-        embedding_dim: u32,
-        head_dim: u32,
-        attend_len: usize,
-    ) -> GpuDecodeExecutionPlan {
-        single_cb_gpu_decode_plan(
-            "qwen3",
-            metal_ops,
-            gpu_kv,
-            embedding_dim,
-            head_dim,
-            attend_len,
-        )
-    }
-
     pub(crate) fn qwen35_single_cb(
         metal_ops: &MetalOps,
         gpu_kv: &GpuKv,
@@ -438,23 +422,6 @@ impl DecodeExecutionPlan {
     ) -> GpuDecodeExecutionPlan {
         single_cb_gpu_decode_plan(
             "qwen35",
-            metal_ops,
-            gpu_kv,
-            embedding_dim,
-            head_dim,
-            attend_len,
-        )
-    }
-
-    pub(crate) fn qwen3_pipelined(
-        metal_ops: &MetalOps,
-        gpu_kv: &GpuKv,
-        embedding_dim: u32,
-        head_dim: u32,
-        attend_len: usize,
-    ) -> GpuDecodeExecutionPlan {
-        pipelined_gpu_decode_plan(
-            "qwen3",
             metal_ops,
             gpu_kv,
             embedding_dim,
@@ -661,6 +628,7 @@ impl DecodeExecutionPlan {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn qwen3_prefill_ffn_layer(
         prefill_plan: &GpuBatchPrefillExecutionPlan,
         wg_dtype: GgmlType,
@@ -711,6 +679,7 @@ impl DecodeExecutionPlan {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn qwen3_prefill_residual_handoff(
         is_last_layer: bool,
     ) -> PrefillResidualHandoffPlan {
@@ -767,6 +736,7 @@ impl DecodeExecutionPlan {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn qwen3_prefill_qkv_layer(
         prefill_plan: &GpuBatchPrefillExecutionPlan,
         wq_dtype: GgmlType,
@@ -946,28 +916,6 @@ impl PrefillExecutionPlan {
 
         let plan = match ctx.config.architecture.as_str() {
             "llama" => {
-                if let Some(blocker) = gpu_prefill_quant_blocker(weights) {
-                    Self {
-                        mode: PrefillMode::Serial,
-                        chunk_len: None,
-                        reason: Some(format!("unsupported_quant:{blocker}")),
-                    }
-                } else if emit_all_logits && !lm_head_dtype_supported {
-                    Self {
-                        mode: PrefillMode::Serial,
-                        chunk_len: None,
-                        reason: Some("unsupported_lm_head".to_string()),
-                    }
-                } else {
-                    Self {
-                        mode: PrefillMode::GpuBatch,
-                        chunk_len: None,
-                        reason: None,
-                    }
-                }
-            }
-            "qwen3" => {
-                ensure_supported_qwen3_layout(weights, ctx.config)?;
                 if let Some(blocker) = gpu_prefill_quant_blocker(weights) {
                     Self {
                         mode: PrefillMode::Serial,
@@ -1241,12 +1189,12 @@ fn single_cb_gpu_decode_plan(
 
 fn decode_pair_matvec_plan_for_arch(arch_name: &str) -> bool {
     env_flag_override("AX_METAL_DECODE_PAIR_MATVEC")
-        .unwrap_or(matches!(arch_name, "qwen3" | "qwen35" | "gemma3"))
+        .unwrap_or(matches!(arch_name, "qwen35" | "gemma3"))
 }
 
 fn decode_fused_silu_down_plan_for_arch(arch_name: &str) -> bool {
     env_flag_override("AX_METAL_DECODE_FUSED_SILU_DOWN")
-        .unwrap_or(matches!(arch_name, "qwen3" | "qwen35" | "gemma3"))
+        .unwrap_or(matches!(arch_name, "gemma3"))
 }
 
 fn pipelined_gpu_decode_plan(
@@ -1326,7 +1274,7 @@ fn gemma3_prefill_layer_plan(
 
 fn decode_barrier_plan_for_arch(arch_name: &str) -> DecodeBarrierPlan {
     match arch_name {
-        "llama" | "qwen3" | "qwen35" | "gemma3" => {
+        "llama" | "qwen35" | "gemma3" => {
             if super::llama::metal_decode_barriers_enabled() {
                 DecodeBarrierPlan::Explicit
             } else {
@@ -1344,7 +1292,6 @@ fn decode_qkv_plan_for_arch(
 ) -> DecodeQkvPlan {
     let use_fused_qkv = match arch_name {
         "llama" => fused_qkv_enabled,
-        "qwen3" => decode_fused_qkv_enabled,
         "gemma3" => decode_fused_qkv_enabled,
         _ => false,
     };
@@ -1378,6 +1325,7 @@ pub(crate) fn llama_layer_plan_for_gpu(
     LlamaDecodeLayerPlan { qkv }
 }
 
+#[cfg(test)]
 pub(crate) fn qwen3_layer_plan_for_gpu(
     exec_plan: &GpuDecodeExecutionPlan,
     wq_dtype: GgmlType,
@@ -1415,7 +1363,7 @@ mod tests {
     use super::*;
     use crate::backend::Backend;
     use crate::backend::metal::MetalBackend;
-    use crate::model::LlamaModel;
+    use crate::model::InferenceModel;
     use crate::model::config::{GateActivation, RopeScaling};
     use std::sync::MutexGuard;
 
@@ -1434,7 +1382,7 @@ mod tests {
             vocab_size: 8,
             rms_norm_eps: 1e-5,
             rope_freq_base: 10000.0,
-            has_qkv_bias: arch == "qwen3",
+            has_qkv_bias: false,
             sliding_window_size: if is_gemma3 { Some(1024) } else { None },
             sliding_window_pattern: if is_gemma3 { Some(6) } else { None },
             gate_activation: if is_gemma3 {
@@ -1533,7 +1481,7 @@ mod tests {
     #[test]
     fn test_supports_backend_prefill_kv_accepts_qwen35_hybrid_kv() {
         let cfg = tiny_config("qwen35");
-        let kv = ModelKv::Qwen35(Box::new(crate::kv::Qwen35Kv::new(
+        let kv = ModelKv::Qwen35(Box::new(crate::kv::Qwen3_5Kv::new(
             4, 2, 4, 32, 4, 4, 8, 2, 4, 2,
         )));
         assert!(supports_backend_prefill_kv(&cfg, &kv));
@@ -1712,12 +1660,6 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_qkv_plan_for_qwen3_uses_decode_fused_toggle() {
-        let plan = decode_qkv_plan_for_arch("qwen3", false, true);
-        assert_eq!(plan, DecodeQkvPlan::Fused);
-    }
-
-    #[test]
     fn test_decode_qkv_plan_for_gemma3_uses_decode_fused_toggle() {
         let plan = decode_qkv_plan_for_arch("gemma3", false, true);
         assert_eq!(plan, DecodeQkvPlan::Fused);
@@ -1725,12 +1667,16 @@ mod tests {
 
     #[test]
     fn test_decode_pair_matvec_plan_defaults_on_for_qwen35() {
+        let _guard = env_lock();
+        unsafe { std::env::remove_var("AX_METAL_DECODE_PAIR_MATVEC") };
         assert!(decode_pair_matvec_plan_for_arch("qwen35"));
     }
 
     #[test]
-    fn test_decode_fused_silu_down_plan_defaults_on_for_qwen35() {
-        assert!(decode_fused_silu_down_plan_for_arch("qwen35"));
+    fn test_decode_fused_silu_down_plan_defaults_off_for_qwen35() {
+        let _guard = env_lock();
+        unsafe { std::env::remove_var("AX_METAL_DECODE_FUSED_SILU_DOWN") };
+        assert!(!decode_fused_silu_down_plan_for_arch("qwen35"));
     }
 
     #[test]
@@ -1865,7 +1811,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -1886,7 +1832,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("qwen3"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -1907,7 +1853,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("qwen3"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -1939,7 +1885,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("qwen3"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -1970,7 +1916,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("qwen3"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -2001,7 +1947,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("qwen3"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -2032,7 +1978,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("qwen3"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -2064,7 +2010,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("qwen3"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -2568,7 +2514,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("qwen3"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         if !kv.is_gpu() {
             return;
@@ -2584,9 +2530,9 @@ mod tests {
             return;
         };
         backend
-            .configure_for_model("Qwen3-8B", "Q4_K", "qwen3")
+            .configure_for_model("Llama-3-8B", "Q4_K", "llama")
             .unwrap();
-        let model = LlamaModel::with_backend(tiny_config("qwen3"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         if !kv.is_gpu() {
             return;
@@ -2601,7 +2547,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = LlamaModel::with_backend(tiny_config("gemma3"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("gemma3"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         if !kv.is_gpu() {
             return;
@@ -2620,7 +2566,7 @@ mod tests {
         backend
             .configure_for_model("gemma-3-12b-it", "Q4_K", "gemma3")
             .unwrap();
-        let model = LlamaModel::with_backend(tiny_config("gemma3"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("gemma3"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         if !kv.is_gpu() {
             return;
