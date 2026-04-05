@@ -333,12 +333,24 @@ inline void dequantize_q5k_blocked(
     const float dl = d * float(sc[0]);
     const float ml = mn * float(sc[1]);
 
-    const ushort mask = il < 2 ? 0x0Fu : 0xF0u;
-    const float qh_val = il < 2 ? 16.0f : 256.0f;
-    for (int i = 0; i < 16; ++i) {
-        reg[i / 4][i % 4] = half(
-            dl * (float(q[i] & mask) + ((qh[i] & ul) ? qh_val : 0.0f)) - ml
-        );
+    if (il < 2) {
+        for (int row = 0; row < 4; ++row) {
+            uchar4 qv = *(device const uchar4*)(q + row * 4);
+            uchar4 qhv = *(device const uchar4*)(qh + row * 4);
+            uint4 lo = uint4(qv & uchar4(0x0Fu));
+            uint4 hi = select(uint4(0u), uint4(16u), (qhv & uchar4(ul)) != uchar4(0u));
+            float4 vals = float4(lo + hi);
+            reg[row] = half4(dl * vals - ml);
+        }
+    } else {
+        for (int row = 0; row < 4; ++row) {
+            uchar4 qv = *(device const uchar4*)(q + row * 4);
+            uchar4 qhv = *(device const uchar4*)(qh + row * 4);
+            uint4 lo = uint4(qv & uchar4(0xF0u));
+            uint4 hi = select(uint4(0u), uint4(256u), (qhv & uchar4(ul)) != uchar4(0u));
+            float4 vals = float4(lo + hi);
+            reg[row] = half4(dl * vals - ml);
+        }
     }
 }
 
@@ -1240,4 +1252,3 @@ constant ushort EXT_R1PTG [[function_constant(2)]];
 
 // Optimized MoE mul_mat_id for Q5_K — 64×32 blocked tiles with half compute.
 // Same routing/layout as moe_mul_mat_id_q4_k_blocked, but uses Q5_K dequant.
-

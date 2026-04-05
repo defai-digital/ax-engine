@@ -348,7 +348,7 @@ faster.
 | Model | Quant | AX Prefill | AX Decode | llama Prefill | llama Decode | Prefill % | Decode % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | LLaMA 3 70B | Q4_K_M | 50 tok/s | 5.5 tok/s | 57 tok/s | 5.6 tok/s | 87% | 98% |
-| LLaMA 3.1 8B | Q5_K_M | 465 tok/s | 38.9 tok/s | 705 tok/s | 55.5 tok/s | 66% | 70% |
+| LLaMA 3.1 8B | Q5_K_M | 587 tok/s | 50.5 tok/s | 705 tok/s | 55.5 tok/s | 83% | 91% |
 | Qwen3.5 4B | Q8_0 | 982 tok/s | 48.3 tok/s | 1,340 tok/s | 56.5 tok/s | 73% | 86% |
 | Qwen3.5 9B | Q4_K_M | 574 tok/s | 50.9 tok/s | 733 tok/s | 49.0 tok/s | 78% | **104%** |
 | Qwen3.5 27B | Q4_K_M | 163 tok/s | 15.2 tok/s | 209 tok/s | 17.6 tok/s | 78% | 86% |
@@ -367,6 +367,12 @@ Layer-local resident-MoE timing shows the remaining gap versus llama.cpp is
 still dominated by GPU execute time inside the expert kernels, but the hottest
 routed decode work has shifted away from
 the old `Q4_K` gate/up path.
+
+LLaMA 3.1 8B was refreshed on April 5, 2026 with a deterministic run
+(`samples=3`, `cooldown=20000ms`). Prefill improved after vectorizing the
+shipping `Q5_K` blocked/base dequant helper used by the default GPU batch
+prefill path. The remaining prefill gap versus llama.cpp is still inside the
+`Q5_K` blocked kernel family rather than planner routing.
 
 Gemma 4 31B was refreshed again on April 5, 2026 after replacing the old
 host-driven `cpu_batch` prefill route with a real GPU batch path. Gemma4 now
