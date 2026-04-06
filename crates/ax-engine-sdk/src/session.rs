@@ -100,6 +100,16 @@ pub struct GenerationOutput {
     pub usage: Usage,
 }
 
+impl std::fmt::Display for ChatRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::System => f.write_str("system"),
+            Self::User => f.write_str("user"),
+            Self::Assistant => f.write_str("assistant"),
+        }
+    }
+}
+
 impl ChatRole {
     fn into_core(self) -> CoreChatRole {
         match self {
@@ -159,6 +169,64 @@ impl Default for GenerationOptions {
             stop_strings: Vec::new(),
             seed: None,
         }
+    }
+}
+
+impl GenerationOptions {
+    pub fn max_tokens(mut self, n: usize) -> Self {
+        self.max_tokens = n;
+        self
+    }
+
+    pub fn temperature(mut self, t: f32) -> Self {
+        self.temperature = t;
+        self
+    }
+
+    pub fn top_k(mut self, k: i32) -> Self {
+        self.top_k = k;
+        self
+    }
+
+    pub fn top_p(mut self, p: f32) -> Self {
+        self.top_p = p;
+        self
+    }
+
+    pub fn min_p(mut self, p: f32) -> Self {
+        self.min_p = p;
+        self
+    }
+
+    pub fn repeat_penalty(mut self, penalty: f32) -> Self {
+        self.repeat_penalty = penalty;
+        self
+    }
+
+    pub fn repeat_last_n(mut self, n: i32) -> Self {
+        self.repeat_last_n = n;
+        self
+    }
+
+    pub fn frequency_penalty(mut self, penalty: f32) -> Self {
+        self.frequency_penalty = penalty;
+        self
+    }
+
+    pub fn presence_penalty(mut self, penalty: f32) -> Self {
+        self.presence_penalty = penalty;
+        self
+    }
+
+    /// Append a stop string. May be called multiple times to add multiple stop sequences.
+    pub fn stop(mut self, s: impl Into<String>) -> Self {
+        self.stop_strings.push(s.into());
+        self
+    }
+
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
     }
 }
 
@@ -233,6 +301,7 @@ impl Session {
         messages: &[ChatMessage],
         options: GenerationOptions,
     ) -> anyhow::Result<TextStream> {
+        ensure!(!messages.is_empty(), "chat messages must not be empty");
         let rendered_messages = messages
             .iter()
             .map(|message| CoreChatMessage::new(message.role.into_core(), message.content.as_str()))
@@ -354,19 +423,23 @@ impl TextStream {
 
     pub fn into_output(mut self) -> anyhow::Result<GenerationOutput> {
         while self.next_chunk()?.is_some() {}
-        if let Some(output) = self.output.take() {
-            return Ok(output);
-        }
-
-        Ok(GenerationOutput {
-            text: std::mem::take(&mut self.text),
-            finish_reason: FinishReason::Stop,
-            usage: Usage {
-                prompt_tokens: 0,
-                completion_tokens: 0,
-                total_tokens: 0,
-            },
+        // next_chunk sets self.output when it returns None (via the state.take() branch),
+        // so this is always Some after the loop above.
+        self.output.take().ok_or_else(|| {
+            anyhow::anyhow!("TextStream::into_output: output not set after drain; this is a bug")
         })
+    }
+}
+
+impl Iterator for TextStream {
+    type Item = anyhow::Result<String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.next_chunk() {
+            Ok(Some(chunk)) => Some(Ok(chunk)),
+            Ok(None) => None,
+            Err(e) => Some(Err(e)),
+        }
     }
 }
 
@@ -525,6 +598,10 @@ fn validate_generation_options(options: &GenerationOptions) -> anyhow::Result<()
         "temperature must be finite and non-negative"
     );
     ensure!(
+        options.top_k >= -1,
+        "top_k must be -1 (disabled) or greater"
+    );
+    ensure!(
         options.top_p.is_finite() && (0.0..=1.0).contains(&options.top_p),
         "top_p must be finite and between 0.0 and 1.0"
     );
@@ -598,6 +675,32 @@ mod tests {
     }
 
     #[test]
+    fn test_chat_role_display() {
+        assert_eq!(ChatRole::System.to_string(), "system");
+        assert_eq!(ChatRole::User.to_string(), "user");
+        assert_eq!(ChatRole::Assistant.to_string(), "assistant");
+    }
+
+    #[test]
+    fn test_generation_options_builder_overrides_defaults() {
+        let opts = GenerationOptions::default()
+            .max_tokens(512)
+            .temperature(0.2)
+            .top_k(-1)
+            .stop("</s>")
+            .stop("<end>")
+            .seed(42);
+
+        assert_eq!(opts.max_tokens, 512);
+        assert!((opts.temperature - 0.2).abs() < 1e-6);
+        assert_eq!(opts.top_k, -1);
+        assert_eq!(opts.stop_strings, vec!["</s>", "<end>"]);
+        assert_eq!(opts.seed, Some(42));
+        // Fields not set keep their defaults
+        assert!((opts.top_p - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
     fn test_longest_partial_stop_suffix_finds_prefix_overlap() {
         assert_eq!(
             longest_partial_stop_suffix("hello s", &[String::from("stop")]),
@@ -620,6 +723,18 @@ mod tests {
         };
         let err = validate_generation_options(&options).unwrap_err();
         assert!(err.to_string().contains("frequency_penalty"));
+    }
+
+    #[test]
+    fn test_validate_generation_options_rejects_invalid_top_k() {
+        let options = GenerationOptions {
+            top_k: -2,
+            ..GenerationOptions::default()
+        };
+        let err = validate_generation_options(&options)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("top_k"));
     }
 
     #[test]
