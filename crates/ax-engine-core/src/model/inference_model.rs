@@ -2,7 +2,6 @@ use crate::backend::Backend;
 use crate::backend::cpu::CpuBackend;
 use crate::backend::metal::MetalOps;
 use crate::compute::attention::AttentionParams;
-use crate::gguf::tensor::GgmlType;
 use crate::kv::ModelKv;
 use crate::metrics::OpBreakdown;
 use crate::model::config::ModelConfig;
@@ -12,10 +11,6 @@ use crate::model::execution_plan::{
     PrefillMode,
 };
 use crate::model::forward::{ForwardContext, ForwardPass};
-use crate::model::llama::{
-    metal_prefill_attn_f16out_enabled, metal_prefill_split_rope_append_enabled,
-    metal_prefill_use_cached0_enabled,
-};
 use crate::model::shared::{
     gpu_decode_quant_supported, gpu_prefill_q5k_small_n_auto_eligible, gpu_prefill_uses_q5k,
 };
@@ -23,9 +18,8 @@ use crate::model::weights::WeightStore;
 
 /// Architecture-agnostic model state for inference.
 ///
-/// Internally delegates to an architecture-specific `ForwardPass` implementation.
-/// For "llama" architecture, this uses `LlamaForward`. Other architectures
-/// (Qwen3, Gemma3) use their own implementations selected via the arch registry.
+/// Internally delegates to an architecture-specific `ForwardPass` implementation
+/// selected via the arch registry.
 pub struct InferenceModel {
     pub config: ModelConfig,
     pub(crate) attn_params: AttentionParams,
@@ -68,34 +62,6 @@ impl InferenceModel {
             backend,
             forward,
         })
-    }
-
-    fn prefill_plan_has_q8_weights(&self, weights: &WeightStore) -> anyhow::Result<bool> {
-        for layer in 0..self.config.n_layers as usize {
-            for suffix in [
-                "attn_q.weight",
-                "attn_k.weight",
-                "attn_v.weight",
-                "attn_output.weight",
-                "ffn_gate.weight",
-                "ffn_up.weight",
-                "ffn_down.weight",
-            ] {
-                let name = format!("blk.{layer}.{suffix}");
-                let (_, dtype) = weights.raw_with_dtype(&name)?;
-                if dtype == GgmlType::Q8_0 {
-                    return Ok(true);
-                }
-            }
-        }
-
-        let lm_weight_name = if weights.has("output.weight") {
-            "output.weight"
-        } else {
-            "token_embd.weight"
-        };
-        let (_, lm_head_dtype) = weights.raw_with_dtype(lm_weight_name)?;
-        Ok(lm_head_dtype == GgmlType::Q8_0)
     }
 
     fn prefill_attention_route(
@@ -166,6 +132,18 @@ impl InferenceModel {
     }
 
     fn gpu_decode_supported_for_weights(&self, weights: &WeightStore) -> bool {
+        // Pure MoE architectures lack dense FFN weights (ffn_gate/up/down).
+        // The standard check fails on those missing tensors, so use an
+        // attention-only check for known pure-MoE architectures.
+        if self.config.architecture == "qwen3moe" {
+            return crate::model::qwen3_moe::Qwen3MoeForward::moe_gpu_decode_supported(
+                &self.config,
+                weights,
+            )
+                && crate::model::qwen3_moe::Qwen3MoeForward::moe_gpu_expert_dispatch_supported(
+                    weights,
+                );
+        }
         gpu_decode_quant_supported(&self.config, weights)
     }
 
@@ -293,32 +271,6 @@ impl InferenceModel {
 
         let base_seq_len = gpu_kv.seq_len();
         let summary = match self.arch_name() {
-            "llama" => {
-                let plan = DecodeExecutionPlan::llama_prefill(
-                    metal_ops,
-                    gpu_kv,
-                    base_seq_len,
-                    n_tokens as u32,
-                    self.config.head_dim,
-                    self.prefill_plan_has_q8_weights(weights)?,
-                    gpu_prefill_uses_q5k(weights),
-                    gpu_prefill_q5k_small_n_auto_eligible(weights),
-                    metal_prefill_attn_f16out_enabled(),
-                    metal_prefill_use_cached0_enabled(),
-                    metal_prefill_split_rope_append_enabled(),
-                );
-                let route = self.prefill_attention_route(
-                    plan,
-                    base_seq_len,
-                    n_tokens,
-                    self.config.head_dim,
-                    0,
-                );
-                plan.summary_label(
-                    mode_plan.summary_label().trim_start_matches("mode="),
-                    &route,
-                )
-            }
             "qwen3" => {
                 let sliding_window = self.config.sliding_window_size.unwrap_or(0);
                 let plan = DecodeExecutionPlan::qwen3_prefill(
@@ -939,6 +891,3 @@ impl InferenceModel {
         Ok(idx)
     }
 }
-
-#[deprecated(note = "renamed to InferenceModel")]
-pub type LlamaModel = InferenceModel;

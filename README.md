@@ -94,9 +94,8 @@ Examples of the current fused path include:
 
 AX is not trying to "fuse everything" — it fuses where dispatch savings,
 occupancy, and memory traffic all make sense together. The benefit varies by
-model family: LLaMA 3.1 benefits strongly from the current fusion depth,
-Qwen3.5 benefits from the hybrid attention + SSM pipeline, and Gemma 4
-benefits from the per-head QK norm fusion path.
+model family: Qwen3.5 benefits from the hybrid attention + SSM pipeline,
+and Gemma 4 benefits from the per-head QK norm fusion path.
 
 ### 2. Memory Path
 
@@ -120,8 +119,8 @@ instead of just another frontend around someone else's runtime.
 AX's current optimization posture is deliberate rather than random:
 
 - **Dense transformer decode** benefits strongly from the current fusion depth.
-  LLaMA 3.1 and Qwen3.5 use the shared GPU decode layer encoder with fused
-  QKV + attention + residual handoff.
+  Qwen3.5 uses the shared GPU decode layer encoder with fused QKV + attention
+  + residual handoff.
 - **Qwen3.5 hybrid attention + SSM** is natively supported. The recurrent
   (Mamba-2) layers use GPU-resident state with pipelined batch prefill and
   fused GDN (gated delta net) kernels.
@@ -136,8 +135,8 @@ AX's current optimization posture is deliberate rather than random:
   tokens roll back via KV truncation.
 - FFN-side decode prototypes remain benchmark-gated and are not enabled by
   default if they regress common workloads.
-- Profile-driven tuning with per-model heuristics and decode regime routing
-  exists today and is expected to become more regime-sensitive over time.
+- Shape-driven kernel dispatch with hardcoded per-quant defaults and
+  attend-length-aware routing profiles.
 
 Performance should be explainable by the runtime's structure, not by isolated
 one-off benchmark wins. Benchmark claims are made on AX's supported native
@@ -280,8 +279,8 @@ design goals diverged significantly:
   architecture-specific fused kernels that have no Candle or mistral.rs
   counterpart.
 - **Tuning surface**: mistral.rs uses Candle's fixed dispatch parameters.
-  AX Engine uses JSON-driven kernel profiles with per-model heuristics,
-  regime-aware decode routing, and runtime A/B testing infrastructure.
+  AX Engine uses hardcoded shape-based kernel dispatch with runtime
+  attend-length-aware routing profiles.
 
 AX Engine has since fully decoupled from mistral.rs's design. No code is
 shared between the two projects, and the runtime architectures are
@@ -291,13 +290,13 @@ model coverage or Candle ecosystem integration.
 
 ## Supported Models
 
-All models must be in **GGUF format**. Recommended quantization: **Q4_K_M**. Also supported: Q5_K, Q6_K, Q8_0. Legacy formats (Q4_0, Q5_0) are not supported — use K-quant equivalents.
+All models must be in **GGUF format**. Supported quantizations: **Q4_K**, **Q5_K**, **Q6_K**, **Q8_0**.
 
 | Family | Models |
 |---|---|
-| Qwen 3.5 | Qwen3.5-4B, Qwen3.5-9B, Qwen3.5-27B, Qwen3.5-35B-A3B |
-| Gemma 3 / 4 | Gemma-3-12B, Gemma-3-27B, Gemma-4-31B (CPU, GPU pending) |
-| LLaMA 3.1 | Llama-3.1-8B-Instruct, Llama-3.1-70B-Instruct |
+| Gemma 4 | Gemma-4-26B-A4B, Gemma-4-31B |
+| Qwen 3 Coder | Qwen3-Coder-30B-A3B |
+| Qwen 3.5 | Qwen3.5-9B, Qwen3.5-27B, Qwen3.5-35B-A3B, Qwen3.5-122B-A3B |
 
 Each native architecture has its own hand-written forward pass, fused Metal
 kernels, and model-specific tuning profiles. Adding a new architecture
@@ -308,38 +307,24 @@ registering it in `arch_registry.rs` — not just wiring up a graph.
 
 | Model Size | Total | Minimum Mac RAM |
 |---|---:|---|
-| 2-4B | ~3 GB | 16 GB |
-| 7-9B | ~5 GB | 16 GB |
-| 26-31B | ~20 GB | 32 GB |
-| 70B | ~44 GB | 64 GB |
+| 8-9B | ~5 GB | 16 GB |
+| 26-35B | ~16-22 GB | 32 GB |
+| 122B-A3B | ~70 GB | 128 GB |
 
 ## Tuning Model
 
-AX uses JSON seed profiles plus load-time autotune:
+AX uses hardcoded per-architecture heuristics for kernel dispatch — no
+runtime benchmarking, no config files, no startup cost.
 
-```text
-perfs/qwen35-9b.json    perfs/gemma4-e4b.json    perfs/llama31-70b.json
-```
+Dispatch decisions are driven by:
 
-The `perfs/*.json` files are intentionally minimal safety seeds (model identity
-and provenance). Runtime tuning comes from load-time autotune and cached
-per-device/profile results (`AX_METAL_LOAD_AUTOTUNE=on` by default; use
-`AX_METAL_FORCE_RETUNE=on` to force a fresh probe).
-
-This is useful, but it is not the end state. The direction is toward more
-regime-sensitive tuning across:
-
-- architecture
-- hidden size
-- head dimension
-- quant family
-- short vs long prefill
-- short vs long decode
-- memory-pressure mode
+- head dimension (128 vs 256)
+- quant family (Q4_K, Q5_K, Q6_K, Q8_0)
+- batch size and sequence length
 
 ## Performance
 
-Apple M3 Max, April 2026. P=512 prefill, 128-token decode, f16 KV cache.
+Apple M3 Max. P=512 prefill, 128-token decode, f16 KV cache.
 Values are from deterministic outer-sample medians produced by
 `benchmarks/run_apple_to_apple.py` unless noted below (sample count and
 cooldown are run-configured per benchmark run). AX% over 100% means AX was
@@ -347,42 +332,34 @@ faster.
 
 | Model | Quant | AX Prefill | AX Decode | llama Prefill | llama Decode | Prefill % | Decode % |
 |---|---|---:|---:|---:|---:|---:|---:|
-| LLaMA 3 70B | Q4_K_M | 50 tok/s | 5.5 tok/s | 57 tok/s | 5.6 tok/s | 87% | 98% |
-| LLaMA 3.1 8B | Q5_K_M | 617 tok/s | 53.1 tok/s | 703 tok/s | 56.5 tok/s | 88% | 94% |
-| Qwen3.5 4B | Q8_0 | 982 tok/s | 48.3 tok/s | 1,340 tok/s | 56.5 tok/s | 73% | 86% |
-| Qwen3.5 9B | Q4_K_M | 574 tok/s | 50.9 tok/s | 733 tok/s | 49.0 tok/s | 78% | **104%** |
-| Qwen3.5 27B | Q4_K_M | 163 tok/s | 15.2 tok/s | 209 tok/s | 17.6 tok/s | 78% | 86% |
-| Qwen3.5 35B-A3B | Q4_K_M | 693 tok/s | 45.4 tok/s | 1,122 tok/s | 53.2 tok/s | 62% | 85% |
-| Gemma 4 31B | Q4_K_M | 75 tok/s | 13.8 tok/s | 91 tok/s | 11.9 tok/s | 82% | **116%** |
+| Gemma 4 26B-A4B | Q4_K_M | 1,947 tok/s | 76.8 tok/s | 1,215 tok/s | 68.4 tok/s | **160%** | **112%** |
+| Gemma 4 26B-A4B | Q5_K_M | 18.2 tok/s | 11.9 tok/s | 642 tok/s | 35.5 tok/s | 3% | 34% |
+| Gemma 4 26B-A4B | Q6_K | 883 tok/s | 49.3 tok/s | 764 tok/s | 44.2 tok/s | **116%** | **111%** |
+| Gemma 4 26B-A4B | Q8_0 | 1,043 tok/s | 54.3 tok/s | 980 tok/s | 51.7 tok/s | **106%** | **105%** |
+| Gemma 4 31B | Q4_K_M | 115 tok/s | 8.6 tok/s | 86 tok/s | 6.8 tok/s | **133%** | **126%** |
+| Qwen 3.5 9B | Q4_K_M | 592 tok/s | 44.4 tok/s | 718 tok/s | 47.5 tok/s | 82% | 94% |
+| Qwen 3.5 27B | Q4_K_M | 184 tok/s | 13.5 tok/s | 170 tok/s | 12.0 tok/s | **108%** | **113%** |
+| Qwen 3.5 35B-A3B | Q4_K_M | 757 tok/s | 41.4 tok/s | 961 tok/s | 54.4 tok/s | 79% | 76% |
+| Qwen 3 Coder 30B-A3B | Q4_K_M | 6.4 tok/s | 4.7 tok/s | 903 tok/s | 87.0 tok/s | 1% | 5% |
+| Qwen 3 Coder 30B-A3B | Q5_K_M | 6.3 tok/s | 4.4 tok/s | 1,151 tok/s | 79.6 tok/s | 1% | 6% |
+| Qwen 3 Coder 30B-A3B | Q6_K | 6.7 tok/s | 4.9 tok/s | 1,205 tok/s | 79.5 tok/s | 1% | 6% |
+| Qwen 3 Coder 30B-A3B | Q8_0 | 8.1 tok/s | 5.4 tok/s | 1,284 tok/s | 70.3 tok/s | 1% | 8% |
 
-Qwen3.5 35B-A3B was refreshed on April 5, 2026 with a full apple-to-apple run
-(`samples=5`, `cooldown=20s`). Both AX and llama.cpp were benchmarked in the
-same session. AX uses hybrid Qwen3.5 prefill (`mode=gpu_batch`,
-`recurrent=backend_owned`) and split-K decode attention. Decode improved to
-85% of llama.cpp (up from 78%) after the `nr2` matvec path work. The remaining
-prefill gap (62%) is still dominated by GPU execute time inside the expert
-kernels for this MoE architecture.
+All benchmarks: P=512, 128-token decode, f16 KV, flash attention, Apple M3 Max, llama.cpp build 15f786e65 (b8680), 20-30s cooldown between runs, alternating AX/llama per model (2026-04-09).
 
-LLaMA 3.1 8B was refreshed on April 5, 2026 with a full apple-to-apple run
-(`samples=5`, `cooldown=20s`). Prefill improved from 587 to 617 tok/s (+5%)
-after vectorizing the Q5_K batch dequant phase in all full-tile f16in kernels
-(full64, full32, tail32, base) with `uchar4` reads and branchless integer
-high-bit extraction. The remaining prefill gap (88% of llama.cpp) is still
-inside the Q5_K kernel family.
+**Gemma 4 26B-A4B** (MoE) full quant sweep: Q4_K_M **160%/112%**, Q6_K **116%/111%**, Q8_0 **106%/105%** — AX beats llama.cpp across all working quant types. Q5_K_M is broken (3% prefill, 31% decode) — GPU batch prefill falls back to serial for Q5_K on Gemma4 MoE, under investigation. Full GPU batch prefill with per-layer KV strides (SWA=2048, global=1024), FA2 attention on all 30 layers.
 
-Gemma 4 31B was refreshed again on April 5, 2026 after the latest targeted
-Gemma4 prefill investigation. Reviewing the archived `llama.cpp` and
-`mistral.rs` implementations showed the remaining AX gap was no longer in
-prefix attention, but in host-side batch epilogues. The latest AX refresh keeps
-the existing `cpu_batch` route and parallelizes the large batch norms, RoPE, KV
-row repacking, residual adds, and FFN epilogues inside that path. The latest AX
-artifacts are [ax.json](/Users/akiralam/code/ax-engine/benchmarks/results/20260405-090817-001/ax.json)
-and [prefill-profile.json](/Users/akiralam/code/ax-engine/benchmarks/results/20260405-090817-001/prefill-profile.json).
-That refresh measured 74.6 tok/s prefill and 13.8 tok/s decode for AX at
-`P=512`, with prefill wall time dropping from 7506ms to 6906ms and the norm and
-RoPE portions of the profile collapsing sharply. The `llama.cpp` columns above
-are retained from the latest prior full comparison run and should be rerun for
-a strict apple-to-apple update.
+**Gemma 4 31B** (dense): AX **133% prefill, 126% decode** vs llama.cpp. Per-layer KV strides (SWA=4096, global=2048), FA2 attention on all 60 layers.
+
+**Qwen 3.5 27B**: AX **108% prefill, 113% decode** vs llama.cpp. Hybrid attention+SSM with GPU-resident recurrent state.
+
+**Qwen 3.5 9B**: AX at 82% prefill, 94% decode. The 9B model has fewer layers to amortize dispatch overhead over.
+
+**Qwen 3.5 35B-A3B** (MoE): AX at 79% prefill, 76% decode. Gap driven by expert kernel overhead — MoE dispatch uses CPU batch path.
+
+**Qwen 3 Coder 30B-A3B** (MoE, new): CPU-only path — all quants fall back to CPU decode because the Metal MoE mul_mat_id kernel only supports Q4_K/Q5_K expert weights, and GGUF quant schemes use Q6_K (Q4_K_M/Q5_K_M down weights) or Q8_0 for expert tensors. GPU MoE support for Q6_K/Q8_0 expert weights is the next optimization target.
+
+All prefill uses FA2 simd cached kernel with direct device K/V loads and half×half MMA. Decode uses split-K attention (chunk_size=128, threshold=32).
 
 Prefill uses config-driven kernel selection across all supported quant types
 (Q4_K, Q5_K, Q6_K, Q8_0) with f16-input full-tile kernels (64x64, 64x32,
@@ -390,6 +367,10 @@ tail, small-N variants), blocked layout, and pair (gate+up fused) batch
 dispatch. GPU attention KV is f16 by default for all models.
 
 See [BENCHMARKING.md](./BENCHMARKING.md) for methodology.
+
+For environment variables, advanced flags, and troubleshooting see [docs/ENV_VARS.md](./docs/ENV_VARS.md).
+
+See [docs/BEST-PRACTICES.md](./docs/BEST-PRACTICES.md) for use cases and recommended patterns.
 
 ## Capabilities
 
@@ -430,9 +411,8 @@ cargo build --workspace --release
 
 Frequently used benchmark helpers live under `./scripts`:
 
-- `scripts/autotune.sh` and `scripts/autotune_quick.sh` for model-specific tuning.
 - `scripts/qwen35_prefill_*_ab.sh` for Qwen3.5 prefill state-path sweeps.
-- `scripts/bench_*` for quick cross-script comparisons (`_decode_barriers_ab.sh`, `_speculative_pairs.sh`, `cross_validate_defaults.sh`).
+- `scripts/bench_*` for quick cross-script comparisons (`_decode_barriers_ab.sh`, `_speculative_pairs.sh`).
 - Benchmark outputs are generated via `benchmarks/run_apple_to_apple.py`.
 
 Legacy scripts kept for reference:
@@ -445,27 +425,28 @@ See [QUICKSTART.md](./QUICKSTART.md) for setup details and [BENCHMARKING.md](./B
 ## Workspace Layout
 
 ```
-crates/ax-engine-core    Core inference engine (backends, models, KV, sampling)
-crates/ax-engine-sdk     High-level Rust SDK facade
-crates/ax-engine-metal   Metal GPU backend (device, shaders, dispatch, profiles)
-crates/ax-engine-cli     ax-engine CLI
-crates/ax-engine-bench   Benchmarking, profiling, and soak testing
+crates/ax-engine-core    Core inference (GGUF, models, KV, backends, sampling)
+crates/ax-engine-metal   Metal GPU backend + shaders
+crates/ax-engine-cli     `ax-engine` CLI (llama.cpp compatible)
+crates/ax-engine-sdk     High-level Rust SDK
+crates/ax-engine-bench   Benchmarking & profiling
 crates/ax-engine-py      Python bindings (PyO3)
 ```
 
 ## Development
 
 ```bash
-cargo check --workspace                        # compile check
-cargo test --workspace                         # all tests
-cargo clippy --workspace --tests -- -D warnings  # lint
-cargo fmt --all -- --check                     # format check
+cargo check --workspace                                          # compile check
+cargo build --workspace --release                                # release build
+cargo test --workspace                                           # all tests
+cargo clippy --workspace --tests -- -D warnings                 # lint
+cargo fmt --all -- --check                                       # format check
 ```
 
 ## License
 
 **v3.0 onwards**: [Mozilla Public License 2.0 (MPL-2.0)](./LICENSE).
-Copyright (c) 2026 [DEFAI Private Limited](https://defai.digital).
+Copyright (c) 2025 [DEFAI Private Limited](https://defai.digital).
 
 Starting with AX Engine v3.0, this project is licensed under the
 MPL-2.0. This means you are free to use, modify, and distribute AX

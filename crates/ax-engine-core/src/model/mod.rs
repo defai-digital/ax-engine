@@ -15,7 +15,7 @@ pub mod registry;
 pub(crate) mod shared;
 pub mod weights;
 pub use arch::qwen3_5 as qwen35;
-pub use arch::{gemma3, gemma4, llama, qwen3_5};
+pub use arch::{gemma3, gemma4, qwen3_5, qwen3_moe};
 pub use registry as arch_registry;
 
 pub use config::ModelConfig;
@@ -26,6 +26,4 @@ pub use decode::{
 pub use fingerprint::ModelFingerprint;
 pub use forward::ForwardPass;
 pub use inference_model::InferenceModel;
-#[allow(deprecated)]
-pub use inference_model::LlamaModel;
 pub use weights::WeightStore;

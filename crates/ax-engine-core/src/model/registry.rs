@@ -8,8 +8,8 @@ use crate::model::config::ModelConfig;
 use crate::model::forward::ForwardPass;
 use crate::model::gemma3::Gemma3Forward;
 use crate::model::gemma4::Gemma4Forward;
-use crate::model::llama::LlamaForward;
 use crate::model::qwen3_5::Qwen3_5Forward;
+use crate::model::qwen3_moe::Qwen3MoeForward;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeSupportLevel {
@@ -28,7 +28,10 @@ pub struct NativeSupportResult {
 }
 
 pub fn is_arch_supported(arch: &str) -> bool {
-    matches!(arch, "llama" | "qwen35" | "qwen35moe" | "gemma3" | "gemma4")
+    matches!(
+        arch,
+        "qwen35" | "qwen35moe" | "qwen3moe" | "gemma3" | "gemma4"
+    )
 }
 
 pub fn is_quant_supported(dtype: GgmlType) -> bool {
@@ -36,6 +39,7 @@ pub fn is_quant_supported(dtype: GgmlType) -> bool {
         dtype,
         GgmlType::F32
             | GgmlType::F16
+            | GgmlType::Q5_0
             | GgmlType::Q8_0
             | GgmlType::Q4K
             | GgmlType::Q5K
@@ -49,7 +53,11 @@ pub fn is_quant_supported(dtype: GgmlType) -> bool {
 /// and are not materialized or uploaded.
 pub fn check_native_support(path: &Path) -> anyhow::Result<NativeSupportResult> {
     let mapped = MappedModel::open(path)?;
-    let architecture = mapped.header.architecture().unwrap_or("llama").to_string();
+    let architecture = mapped
+        .header
+        .architecture()
+        .unwrap_or("unknown")
+        .to_string();
     let predominant_quant = mapped.predominant_quant();
     let mut unsupported_types = mapped
         .tensors
@@ -84,10 +92,13 @@ pub fn check_native_support(path: &Path) -> anyhow::Result<NativeSupportResult> 
 /// Architecture names come from the GGUF `general.architecture` metadata key.
 pub fn forward_for_arch(arch: &str) -> anyhow::Result<Box<dyn ForwardPass>> {
     match arch {
-        "llama" => Ok(Box::new(LlamaForward)),
+        "llama" => anyhow::bail!(
+            "unsupported architecture: 'llama'. LLaMA support has been removed from AX. Use Qwen 3.5 or Gemma models instead."
+        ),
         "phi3" => anyhow::bail!(
             "unsupported architecture: 'phi3'. Phi-3/Phi-4 support has been removed from AX."
         ),
+        "qwen3moe" => Ok(Box::new(Qwen3MoeForward)),
         "qwen2" | "qwen3" => anyhow::bail!(
             "unsupported architecture: '{arch}'. Qwen 2/3 dense support has been removed from AX. Use Qwen 3.5 models instead."
         ),
@@ -99,7 +110,7 @@ pub fn forward_for_arch(arch: &str) -> anyhow::Result<Box<dyn ForwardPass>> {
         "gemma3" => Ok(Box::new(Gemma3Forward)),
         "gemma4" => Ok(Box::new(Gemma4Forward)),
         _ => anyhow::bail!(
-            "unsupported architecture: '{arch}'. Supported: llama, qwen35, qwen35moe, gemma3, gemma4"
+            "unsupported architecture: '{arch}'. Supported: qwen35, qwen35moe, gemma3, gemma4"
         ),
     }
 }
@@ -118,11 +129,13 @@ mod tests {
 
     #[test]
     fn test_is_arch_supported_matches_native_matrix() {
-        assert!(is_arch_supported("llama"));
-        assert!(is_arch_supported("qwen3"));
+        assert!(!is_arch_supported("llama"));
         assert!(is_arch_supported("qwen35"));
         assert!(is_arch_supported("qwen35moe"));
+        assert!(is_arch_supported("qwen3moe"));
         assert!(is_arch_supported("gemma3"));
+        assert!(is_arch_supported("gemma4"));
+        assert!(!is_arch_supported("qwen3"));
         assert!(!is_arch_supported("mistral"));
     }
 
@@ -132,16 +145,19 @@ mod tests {
         assert!(is_quant_supported(GgmlType::Q4K));
         assert!(is_quant_supported(GgmlType::Q6K));
         assert!(!is_quant_supported(GgmlType::Q4_0));
-        assert!(!is_quant_supported(GgmlType::Q5_0));
+        assert!(is_quant_supported(GgmlType::Q5_0));
         assert!(!is_quant_supported(GgmlType::Q2K));
         assert!(!is_quant_supported(GgmlType::Q3K));
         assert!(!is_quant_supported(GgmlType::Q8K));
     }
 
     #[test]
-    fn test_llama_variants() {
-        let fwd = forward_for_arch("llama").unwrap();
-        assert_eq!(fwd.arch_name(), "llama");
+    fn test_llama_removed() {
+        let err = forward_for_arch("llama").unwrap_err();
+        assert!(
+            err.to_string().contains("LLaMA support has been removed"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -157,9 +173,19 @@ mod tests {
     #[test]
     fn test_qwen_variants() {
         for arch in &["qwen2", "qwen3"] {
-            let fwd = forward_for_arch(arch).unwrap();
-            assert_eq!(fwd.arch_name(), "qwen3");
+            let err = forward_for_arch(arch).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("Qwen 2/3 dense support has been removed"),
+                "got: {err}"
+            );
         }
+    }
+
+    #[test]
+    fn test_qwen3moe_variant() {
+        let fwd = forward_for_arch("qwen3moe").unwrap();
+        assert_eq!(fwd.arch_name(), "qwen3moe");
     }
 
     #[test]
@@ -176,10 +202,16 @@ mod tests {
 
     #[test]
     fn test_gemma_variants() {
-        for arch in &["gemma", "gemma2", "gemma3"] {
-            let fwd = forward_for_arch(arch).unwrap();
-            assert_eq!(fwd.arch_name(), "gemma3");
+        for arch in &["gemma", "gemma2"] {
+            let err = forward_for_arch(arch).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("Gemma 1/2 support has been removed"),
+                "got: {err}"
+            );
         }
+        assert_eq!(forward_for_arch("gemma3").unwrap().arch_name(), "gemma3");
+        assert_eq!(forward_for_arch("gemma4").unwrap().arch_name(), "gemma4");
     }
 
     #[test]

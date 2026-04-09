@@ -95,8 +95,7 @@ pub fn render_chat_messages(
 ) -> String {
     match architecture {
         "gemma3" | "gemma4" | "gemma2" | "gemma" => render_gemma(messages, options),
-        "llama" => render_llama(messages, options),
-        "qwen35" | "qwen35moe" | "qwen3" | "qwen2" => render_qwen(messages, options),
+        "qwen35" | "qwen35moe" | "qwen3moe" | "qwen3" | "qwen2" => render_qwen(messages, options),
         _ => render_fallback(messages, options),
     }
 }
@@ -137,21 +136,6 @@ fn render_gemma(messages: &[ChatMessage<'_>], options: ChatRenderOptions) -> Str
     }
     if options.add_generation_prompt {
         rendered.push_str("<start_of_turn>model\n");
-    }
-    rendered
-}
-
-fn render_llama(messages: &[ChatMessage<'_>], options: ChatRenderOptions) -> String {
-    let mut rendered = String::new();
-    for message in messages {
-        rendered.push_str("<|start_header_id|>");
-        rendered.push_str(message.role.header_name());
-        rendered.push_str("<|end_header_id|>\n\n");
-        rendered.push_str(message.content);
-        rendered.push_str("<|eot_id|>");
-    }
-    if options.add_generation_prompt {
-        rendered.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
     }
     rendered
 }
@@ -214,15 +198,6 @@ mod tests {
         };
 
         assert_eq!(gguf_chat_template(&header), Some("{{- test -}}"));
-    }
-
-    #[test]
-    fn test_render_user_prompt_llama() {
-        let rendered = render_user_prompt("Hi", "llama");
-        assert_eq!(
-            rendered,
-            "<|start_header_id|>user<|end_header_id|>\n\nHi<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-        );
     }
 
     #[test]
