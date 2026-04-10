@@ -6,12 +6,22 @@ pub use vocab::Vocab;
 use crate::chat::gguf_chat_template;
 use crate::gguf::GgufHeader;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenPiece {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
 /// Tokenizer backed by GGUF-embedded vocabulary.
 ///
 /// Supports SentencePiece BPE (LLaMA-family) tokenization.
 /// Extracts vocab, scores, and special tokens from GGUF metadata.
 pub struct Tokenizer {
     vocab: Vocab,
+    /// Pre-filtered token_to_id map excluding special tokens (built once).
+    plain_token_to_id: std::collections::HashMap<String, u32>,
+    /// Pre-computed sorted special tokens for greedy matching (longest-first).
+    special_tokens_sorted: Vec<(String, u32)>,
     chat_template: Option<String>,
 }
 
@@ -19,18 +29,71 @@ impl Tokenizer {
     /// Create a tokenizer from GGUF header metadata.
     pub fn from_gguf(header: &GgufHeader) -> anyhow::Result<Self> {
         let vocab = Vocab::from_gguf(header)?;
+        let (plain_token_to_id, special_tokens_sorted) = Self::build_caches(&vocab);
         Ok(Self {
             vocab,
+            plain_token_to_id,
+            special_tokens_sorted,
             chat_template: gguf_chat_template(header).map(str::to_string),
         })
     }
 
     /// Create a tokenizer from a pre-built vocabulary.
     pub fn from_vocab(vocab: Vocab) -> Self {
+        let (plain_token_to_id, special_tokens_sorted) = Self::build_caches(&vocab);
         Self {
             vocab,
+            plain_token_to_id,
+            special_tokens_sorted,
             chat_template: None,
         }
+    }
+
+    /// Build cached lookups: plain token map (no specials) and sorted special token list.
+    fn build_caches(vocab: &Vocab) -> (std::collections::HashMap<String, u32>, Vec<(String, u32)>) {
+        use std::collections::HashSet;
+
+        // Build set of special token IDs.
+        let special_ids: HashSet<u32> = vocab
+            .types
+            .iter()
+            .enumerate()
+            .filter_map(|(id, ty)| match ty {
+                vocab::TokenType::Control
+                | vocab::TokenType::Unknown
+                | vocab::TokenType::UserDefined
+                | vocab::TokenType::Unused => Some(id as u32),
+                _ => None,
+            })
+            .collect();
+
+        // Plain token_to_id excluding specials.
+        let plain_token_to_id: std::collections::HashMap<String, u32> = vocab
+            .token_to_id
+            .iter()
+            .filter(|(_, id)| !special_ids.contains(id))
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+
+        // Special tokens sorted longest-first for greedy matching.
+        let mut special_tokens_sorted: Vec<(String, u32)> = Vec::new();
+        for (id, tok_str) in vocab.tokens.iter().enumerate() {
+            let id = id as u32;
+            let parse_as_special = matches!(
+                vocab.types.get(id as usize),
+                Some(
+                    vocab::TokenType::Control
+                        | vocab::TokenType::Unknown
+                        | vocab::TokenType::UserDefined
+                )
+            );
+            if parse_as_special && tok_str.len() > 2 && !tok_str.starts_with("<unused") {
+                special_tokens_sorted.push((tok_str.clone(), id));
+            }
+        }
+        special_tokens_sorted.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+        (plain_token_to_id, special_tokens_sorted)
     }
 
     /// Encode text to token IDs.
@@ -59,23 +122,9 @@ impl Tokenizer {
         let mut tokens = if parse_special {
             self.encode_with_special_tokens(text)
         } else {
-            let mut vocab = self.vocab.clone();
-            let special_ids: Vec<u32> = vocab
-                .types
-                .iter()
-                .enumerate()
-                .filter_map(|(id, ty)| match ty {
-                    vocab::TokenType::Control
-                    | vocab::TokenType::Unknown
-                    | vocab::TokenType::UserDefined
-                    | vocab::TokenType::Unused => Some(id as u32),
-                    _ => None,
-                })
-                .collect();
-            vocab
-                .token_to_id
-                .retain(|_, &mut id| !special_ids.contains(&id));
-            bpe::bpe_encode(&vocab, text)
+            let mut plain_vocab = self.vocab.clone();
+            plain_vocab.token_to_id = self.plain_token_to_id.clone();
+            bpe::bpe_encode(&plain_vocab, text)
         };
 
         if add_special {
@@ -104,30 +153,15 @@ impl Tokenizer {
             return bpe::bpe_encode(&self.vocab, text);
         }
 
-        // Build list of control/user-defined token strings sorted longest-first
-        // for greedy matching. Filter out <unused*> placeholder tokens for
-        // performance.
-        let mut special_tokens: Vec<(&str, u32)> = Vec::new();
-        for (id, tok_str) in self.vocab.tokens.iter().enumerate() {
-            let id = id as u32;
-            let parse_as_special = matches!(
-                self.vocab.types.get(id as usize),
-                Some(
-                    vocab::TokenType::Control
-                        | vocab::TokenType::Unknown
-                        | vocab::TokenType::UserDefined
-                )
-            );
-            if parse_as_special && tok_str.len() > 2 && !tok_str.starts_with("<unused") {
-                special_tokens.push((tok_str.as_str(), id));
-            }
-        }
-
-        if special_tokens.is_empty() {
+        if self.special_tokens_sorted.is_empty() {
             return bpe::bpe_encode(&self.vocab, text);
         }
 
-        special_tokens.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        let special_tokens: Vec<(&str, u32)> = self
+            .special_tokens_sorted
+            .iter()
+            .map(|(s, id)| (s.as_str(), *id))
+            .collect();
 
         let mut result = Vec::new();
         let mut remaining = text;
@@ -238,6 +272,30 @@ impl Tokenizer {
                 s.replace('▁', " ")
             }
         })
+    }
+
+    /// Return a token piece in the format expected by llama-server `/tokenize`.
+    ///
+    /// Valid Unicode pieces are returned as text. Byte tokens that do not form
+    /// valid standalone UTF-8 are returned as raw bytes.
+    pub fn token_piece(&self, id: u32) -> Option<TokenPiece> {
+        if let Some(byte_val) = self.vocab.byte_value(id) {
+            let bytes = [byte_val];
+            return match std::str::from_utf8(&bytes) {
+                Ok(text) => Some(TokenPiece::Text(text.to_string())),
+                Err(_) => Some(TokenPiece::Bytes(vec![byte_val])),
+            };
+        }
+
+        if self.vocab.model_type == "gpt2" {
+            return self.decode_token(id).map(|piece| {
+                let decoded = gpt2_decode(piece);
+                TokenPiece::Text(decoded)
+            });
+        }
+
+        self.decode_token(id)
+            .map(|piece| TokenPiece::Text(piece.replace('▁', " ")))
     }
 
     /// Get the vocabulary size.

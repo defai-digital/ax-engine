@@ -7,11 +7,13 @@
 #[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
 compile_error!("ax-engine only supports aarch64-apple-darwin (Apple Silicon M3+)");
 
+pub use ax_engine_core::tokenizer::TokenPiece;
+
 mod model;
 mod session;
 
 pub use model::{BackendKind, LoadOptions, Model, ModelInfo};
 pub use session::{
-    ChatMessage, ChatRole, FinishReason, GenerationOptions, GenerationOutput, Session,
-    SessionOptions, TextStream, Usage,
+    ChatMessage, ChatRole, FinishReason, GenerationOptions, GenerationOutput, PromptCacheStats,
+    Session, SessionOptions, SessionSnapshot, TextStream, Usage,
 };

@@ -4,6 +4,7 @@ members = [
     "crates/ax-engine-core",
     "crates/ax-engine-metal",
     "crates/ax-engine-cli",
+    "crates/ax-engine-server",
     "crates/ax-engine-sdk",
     "crates/ax-engine-bench",
     "crates/ax-engine-py",
@@ -13,7 +14,7 @@ members = [
 version = "3.1.2"
 edition = "2024"
 rust-version = "1.88"
-license = "MPL-2.0"
+license = "Apache-2.0"
 authors = ["DEFAI Private Limited <enquiry@defai.digital>"]
 repository = "https://github.com/defai-digital/ax-engine"
 
@@ -40,6 +41,12 @@ block2 = "0.6"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+
+# Server
+axum = { version = "0.8", features = ["json", "tokio", "http1"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
+tokio-stream = "0.1"
+uuid = { version = "1", features = ["v4"] }
 
 # Observability
 tracing = "0.1"

@@ -887,6 +887,75 @@ fn test_qwen35_kv_full_snapshot_restores_into_fresh_kv() {
 }
 
 #[test]
+fn test_qwen35_kv_restore_snapshot_syncs_gpu_recurrent_state() {
+    let device = ax_engine_metal::MetalDevice::new().expect("metal device");
+
+    let mut source = Qwen3_5Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+    let slot1 = source.allocate_recurrent_slot();
+    source.set_active_slot(slot1);
+    source.conv_state_for_slot_mut(slot1, 0).fill(1.5);
+    source.recurrent_state_for_slot_mut(slot1, 0).fill(2.5);
+    source.attention_append(3, &[10.0, 11.0], &[12.0, 13.0]);
+    source.finalize_token();
+    let snapshot = source.snapshot_active_slot();
+
+    let mut restored = Qwen3_5Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+    restored
+        .enable_gpu_recurrent_state(&device)
+        .expect("enable gpu recurrent state");
+    restored.restore_snapshot(&snapshot);
+
+    let (conv_buf, rec_buf) = restored
+        .gpu_recurrent_buffers(slot1, 0)
+        .expect("gpu recurrent buffers should exist after restore");
+    let conv_len = restored.conv_state_for_slot(slot1, 0).len();
+    let recurrent_len = restored.recurrent_state_for_slot(slot1, 0).len();
+    unsafe {
+        assert!(
+            conv_buf.as_slice::<f32>()[..conv_len]
+                .iter()
+                .all(|&value| value == 1.5)
+        );
+        assert!(
+            rec_buf.as_slice::<f32>()[..recurrent_len]
+                .iter()
+                .all(|&value| value == 2.5)
+        );
+    }
+}
+
+#[test]
+fn test_qwen35_kv_snapshot_active_slot_syncs_gpu_attention_before_capture() {
+    let device = ax_engine_metal::MetalDevice::new().expect("metal device");
+    let mut kv = Qwen3_5Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+    let slot1 = kv.allocate_recurrent_slot();
+    kv.set_active_slot(slot1);
+    kv.enable_gpu_attention(&device, GpuKvDtype::F32)
+        .expect("enable gpu attention");
+
+    let k = [10.0f32, 11.0];
+    let v = [12.0f32, 13.0];
+    let gpu_attention = kv
+        .attention_gpu
+        .as_mut()
+        .expect("gpu attention should exist");
+    gpu_attention.append_layer(3, &k, &v);
+    gpu_attention.finalize_token();
+
+    kv.mark_attention_cpu_dirty();
+    kv.finalize_token();
+
+    let snapshot = kv.snapshot_active_slot();
+
+    let mut restored = Qwen3_5Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
+    restored.restore_snapshot(&snapshot);
+
+    assert_eq!(restored.seq_len(), 1);
+    assert_eq!(restored.attention_k_slice_including_current(3, 1), &k);
+    assert_eq!(restored.attention_v_slice_including_current(3, 1), &v);
+}
+
+#[test]
 fn test_qwen35_kv_restore_snapshot_clears_unrelated_allocated_slots() {
     let mut source = Qwen3_5Kv::new(4, 1, 2, 16, 4, 4, 8, 2, 4, 2);
     let slot1 = source.allocate_recurrent_slot();

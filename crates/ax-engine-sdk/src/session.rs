@@ -6,7 +6,7 @@ use ax_engine_core::chat::{
     ChatMessage as CoreChatMessage, ChatRenderOptions, ChatRole as CoreChatRole,
     render_chat_messages,
 };
-use ax_engine_core::kv::ModelKv;
+use ax_engine_core::kv::{ModelKv, ModelKvSnapshot};
 use ax_engine_core::model::WeightStore;
 use ax_engine_core::sampling::{Sampler, SamplingConfig};
 
@@ -15,6 +15,7 @@ use crate::model::Model;
 struct SessionState {
     kv: ModelKv,
     history: Vec<u32>,
+    checkpoints: Vec<SessionCheckpoint>,
 }
 
 pub struct Session {
@@ -22,6 +23,26 @@ pub struct Session {
     state: Arc<Mutex<SessionState>>,
     max_context_tokens: usize,
     default_seed: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PromptCacheStats {
+    pub cached_tokens: usize,
+    pub prompt_tokens: usize,
+    pub prompt_tokens_evaluated: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionSnapshot {
+    history: Vec<u32>,
+    kv: Option<ModelKvSnapshot>,
+    checkpoints: Vec<SessionCheckpoint>,
+}
+
+#[derive(Debug, Clone)]
+struct SessionCheckpoint {
+    position: usize,
+    kv: ModelKvSnapshot,
 }
 
 pub struct TextStream {
@@ -45,6 +66,17 @@ struct LiveTextStreamState {
     prompt_tokens: usize,
     completion_tokens: usize,
 }
+
+struct PreparedPromptState {
+    logits: Vec<f32>,
+    decode_position: usize,
+    prompt_tokens: usize,
+    remaining_decode_capacity: usize,
+    cache_stats: PromptCacheStats,
+}
+
+const QWEN35_CHECKPOINT_INTERVAL: usize = 64;
+const QWEN35_TAIL_CHECKPOINT_TOKENS: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatRole {
@@ -238,6 +270,7 @@ impl Session {
         let state = SessionState {
             kv,
             history: Vec::new(),
+            checkpoints: Vec::new(),
         };
 
         let max_context_tokens = options
@@ -272,7 +305,21 @@ impl Session {
         let mut state = self.lock_state()?;
         state.kv.clear();
         state.history.clear();
+        state.checkpoints.clear();
         Ok(())
+    }
+
+    pub fn history_tokens(&self) -> anyhow::Result<Vec<u32>> {
+        Ok(self.lock_state()?.history.clone())
+    }
+
+    pub fn snapshot(&self) -> anyhow::Result<SessionSnapshot> {
+        let mut state = self.lock_state()?;
+        Ok(SessionSnapshot {
+            history: state.history.clone(),
+            kv: state.kv.snapshot(),
+            checkpoints: state.checkpoints.clone(),
+        })
     }
 
     pub fn generate(
@@ -285,7 +332,45 @@ impl Session {
 
     pub fn stream(&self, prompt: &str, options: GenerationOptions) -> anyhow::Result<TextStream> {
         let add_bos = self.position()? == 0;
-        self.start_stream(prompt, add_bos, options)
+        let prompt_tokens = self.model.tokenize(prompt, add_bos);
+        self.start_stream_tokens(prompt_tokens, options)
+    }
+
+    pub fn generate_tokens(
+        &self,
+        prompt_tokens: &[u32],
+        options: GenerationOptions,
+    ) -> anyhow::Result<GenerationOutput> {
+        self.stream_tokens(prompt_tokens, options)?.into_output()
+    }
+
+    pub fn generate_with_prefix_reuse(
+        &self,
+        prompt_tokens: &[u32],
+        options: GenerationOptions,
+    ) -> anyhow::Result<(GenerationOutput, PromptCacheStats)> {
+        let (stream, cache_stats) = self.stream_with_prefix_reuse(prompt_tokens, options)?;
+        Ok((stream.into_output()?, cache_stats))
+    }
+
+    pub fn stream_tokens(
+        &self,
+        prompt_tokens: &[u32],
+        options: GenerationOptions,
+    ) -> anyhow::Result<TextStream> {
+        self.start_stream_tokens(prompt_tokens.to_vec(), options)
+    }
+
+    pub fn stream_with_prefix_reuse(
+        &self,
+        prompt_tokens: &[u32],
+        options: GenerationOptions,
+    ) -> anyhow::Result<(TextStream, PromptCacheStats)> {
+        validate_generation_options(&options)?;
+        let prepared = self.prepare_prompt_context(prompt_tokens, true)?;
+        let cache_stats = prepared.cache_stats;
+        let stream = self.build_text_stream_from_prepared(prepared, options)?;
+        Ok((stream, cache_stats))
     }
 
     pub fn chat(
@@ -312,38 +397,151 @@ impl Session {
             ChatRenderOptions::default(),
         );
         self.reset()?;
-        self.start_stream(&rendered, true, options)
+        let prompt_tokens = self.model.tokenize(&rendered, true);
+        self.start_stream_tokens(prompt_tokens, options)
     }
 
-    fn start_stream(
+    pub fn load_prompt_tokens(&self, prompt_tokens: &[u32]) -> anyhow::Result<PromptCacheStats> {
+        if prompt_tokens.is_empty() {
+            self.reset()?;
+            return Ok(PromptCacheStats::default());
+        }
+
+        Ok(self
+            .prepare_prompt_context(prompt_tokens, false)?
+            .cache_stats)
+    }
+
+    pub fn restore_snapshot(&self, snapshot: &SessionSnapshot) -> anyhow::Result<PromptCacheStats> {
+        if snapshot.history.is_empty() {
+            self.reset()?;
+            return Ok(PromptCacheStats::default());
+        }
+
+        if let Some(kv_snapshot) = snapshot.kv.as_ref() {
+            let mut state = self.lock_state()?;
+            state.kv.restore_snapshot(kv_snapshot)?;
+            state.history = snapshot.history.clone();
+            state.checkpoints = snapshot.checkpoints.clone();
+            return Ok(PromptCacheStats {
+                cached_tokens: snapshot.history.len(),
+                prompt_tokens: snapshot.history.len(),
+                prompt_tokens_evaluated: 0,
+            });
+        }
+
+        self.load_prompt_tokens(&snapshot.history)
+    }
+
+    fn start_stream_tokens(
         &self,
-        prompt: &str,
-        add_bos: bool,
+        prompt_tokens: Vec<u32>,
         options: GenerationOptions,
     ) -> anyhow::Result<TextStream> {
         validate_generation_options(&options)?;
-        let native = self.model.native();
+        let prepared = self.prepare_append_prompt(&prompt_tokens)?;
+        self.build_text_stream_from_prepared(prepared, options)
+    }
 
-        let weights = WeightStore::new(&native.mapped);
-        let prompt_tokens = self.model.tokenize(prompt, add_bos);
+    fn lock_state(&self) -> anyhow::Result<MutexGuard<'_, SessionState>> {
+        self.state
+            .lock()
+            .map_err(|_| anyhow!("session state lock poisoned"))
+    }
+
+    fn prepare_append_prompt(&self, prompt_tokens: &[u32]) -> anyhow::Result<PreparedPromptState> {
+        self.prepare_prompt(prompt_tokens, None)
+    }
+
+    fn prepare_prompt_context(
+        &self,
+        prompt_tokens: &[u32],
+        recompute_last_token: bool,
+    ) -> anyhow::Result<PreparedPromptState> {
+        let cached_tokens = reusable_prefix_len_from_history(
+            &self.lock_state()?.history,
+            prompt_tokens,
+            recompute_last_token,
+        );
+        self.prepare_prompt(prompt_tokens, Some(cached_tokens))
+    }
+
+    fn prepare_prompt(
+        &self,
+        prompt_tokens: &[u32],
+        cached_tokens: Option<usize>,
+    ) -> anyhow::Result<PreparedPromptState> {
         ensure!(
             !prompt_tokens.is_empty(),
             "prompt produced no tokens; provide a non-empty prompt"
         );
 
         let mut state_guard = self.lock_state()?;
-        let position = state_guard.history.len();
-        let remaining_decode_capacity =
-            remaining_decode_capacity(prompt_tokens.len(), position, self.max_context_tokens)?;
+        let mut reused_tokens = state_guard.history.len();
+        let tokens_to_evaluate = if let Some(cached_tokens) = cached_tokens {
+            ensure!(
+                cached_tokens <= prompt_tokens.len(),
+                "cached prompt prefix exceeds prompt length"
+            );
+            if state_guard.history.len() > cached_tokens {
+                if supports_checkpointed_rewind(&state_guard.kv) {
+                    let original_history = state_guard.history.clone();
+                    reused_tokens =
+                        restore_prefix_from_checkpoint(&mut state_guard, cached_tokens)?;
+                    let mut replay = Vec::with_capacity(prompt_tokens.len() - reused_tokens);
+                    replay.extend_from_slice(&original_history[reused_tokens..cached_tokens]);
+                    replay.extend_from_slice(&prompt_tokens[cached_tokens..]);
+                    replay
+                } else {
+                    state_guard.kv.truncate_to(cached_tokens);
+                    state_guard.history.truncate(cached_tokens);
+                    truncate_checkpoints_to(&mut state_guard, cached_tokens);
+                    reused_tokens = cached_tokens;
+                    prompt_tokens[cached_tokens..].to_vec()
+                }
+            } else {
+                reused_tokens = cached_tokens;
+                prompt_tokens[cached_tokens..].to_vec()
+            }
+        } else {
+            prompt_tokens[reused_tokens..].to_vec()
+        };
 
-        let mut logits = vec![0.0f32; self.model.config().vocab_size as usize];
-        native
-            .model
-            .forward_batch(&prompt_tokens, &mut state_guard.kv, &weights, &mut logits)
-            .context("prefill forward pass failed")?;
-        state_guard.history.extend_from_slice(&prompt_tokens);
+        let remaining_decode_capacity = remaining_decode_capacity(
+            tokens_to_evaluate.len(),
+            reused_tokens,
+            self.max_context_tokens,
+        )?;
 
-        let decode_position = position + prompt_tokens.len();
+        let logits =
+            prefill_tokens_with_checkpoints(&self.model, &mut state_guard, &tokens_to_evaluate)
+                .context("prefill forward pass failed")?;
+
+        Ok(PreparedPromptState {
+            logits,
+            decode_position: reused_tokens + tokens_to_evaluate.len(),
+            prompt_tokens: prompt_tokens.len(),
+            remaining_decode_capacity,
+            cache_stats: PromptCacheStats {
+                cached_tokens: reused_tokens,
+                prompt_tokens: prompt_tokens.len(),
+                prompt_tokens_evaluated: tokens_to_evaluate.len(),
+            },
+        })
+    }
+
+    fn build_text_stream_from_prepared(
+        &self,
+        prepared: PreparedPromptState,
+        options: GenerationOptions,
+    ) -> anyhow::Result<TextStream> {
+        let PreparedPromptState {
+            mut logits,
+            decode_position,
+            prompt_tokens,
+            remaining_decode_capacity,
+            ..
+        } = prepared;
         let max_tokens = options.max_tokens.min(remaining_decode_capacity);
         let sampling = build_sampling_config(&options, self.default_seed);
 
@@ -360,12 +558,12 @@ impl Session {
                 stop_strings: filtered_stop_strings(options.stop_strings),
                 finish_reason: FinishReason::Length,
                 done: true,
-                prompt_tokens: prompt_tokens.len(),
+                prompt_tokens,
                 completion_tokens: 0,
             }
         } else {
             let mut sampler = Sampler::new(sampling);
-            let first_token = sampler.sample(&mut logits, &state_guard.history);
+            let first_token = sampler.sample(&mut logits, &self.lock_state()?.history);
             LiveTextStreamState {
                 model: self.model.clone(),
                 session_state: self.state.clone(),
@@ -378,11 +576,10 @@ impl Session {
                 stop_strings: filtered_stop_strings(options.stop_strings),
                 finish_reason: FinishReason::Stop,
                 done: false,
-                prompt_tokens: prompt_tokens.len(),
+                prompt_tokens,
                 completion_tokens: 0,
             }
         };
-        drop(state_guard);
 
         Ok(TextStream {
             state: Some(live_state),
@@ -390,11 +587,144 @@ impl Session {
             output: None,
         })
     }
+}
 
-    fn lock_state(&self) -> anyhow::Result<MutexGuard<'_, SessionState>> {
-        self.state
-            .lock()
-            .map_err(|_| anyhow!("session state lock poisoned"))
+fn supports_checkpointed_rewind(kv: &ModelKv) -> bool {
+    matches!(kv, ModelKv::Qwen35(_))
+}
+
+fn truncate_checkpoints_to(state: &mut SessionState, position: usize) {
+    state
+        .checkpoints
+        .retain(|checkpoint| checkpoint.position <= position);
+}
+
+fn restore_prefix_from_checkpoint(
+    state: &mut SessionState,
+    target_prefix_len: usize,
+) -> anyhow::Result<usize> {
+    ensure!(
+        target_prefix_len <= state.history.len(),
+        "target prefix length exceeds history length"
+    );
+
+    let restore_position = state
+        .checkpoints
+        .iter()
+        .rev()
+        .find(|checkpoint| checkpoint.position <= target_prefix_len)
+        .map(|checkpoint| checkpoint.position)
+        .unwrap_or(0);
+
+    if restore_position == 0 {
+        state.kv.clear();
+        state.history.clear();
+        state.checkpoints.clear();
+        return Ok(0);
+    }
+
+    let checkpoint = state
+        .checkpoints
+        .iter()
+        .rev()
+        .find(|checkpoint| checkpoint.position == restore_position)
+        .cloned()
+        .ok_or_else(|| anyhow!("missing checkpoint at position {restore_position}"))?;
+    state.kv.restore_snapshot(&checkpoint.kv)?;
+    state.history.truncate(restore_position);
+    truncate_checkpoints_to(state, restore_position);
+    Ok(restore_position)
+}
+
+fn prefill_tokens_with_checkpoints(
+    model: &Model,
+    state: &mut SessionState,
+    tokens: &[u32],
+) -> anyhow::Result<Vec<f32>> {
+    let native = model.native();
+    let weights = WeightStore::new(&native.mapped);
+    let mut logits = vec![0.0f32; model.config().vocab_size as usize];
+
+    if tokens.is_empty() {
+        return Ok(logits);
+    }
+
+    if supports_checkpointed_rewind(&state.kv) {
+        let tail_start = tokens.len().saturating_sub(QWEN35_TAIL_CHECKPOINT_TOKENS);
+        for chunk in tokens[..tail_start].chunks(QWEN35_CHECKPOINT_INTERVAL) {
+            if chunk.is_empty() {
+                continue;
+            }
+            native
+                .model
+                .forward_batch(chunk, &mut state.kv, &weights, &mut logits)?;
+            state.history.extend_from_slice(chunk);
+            maybe_record_checkpoint(state, true)?;
+        }
+
+        for &token in &tokens[tail_start..] {
+            native.model.forward_batch(
+                std::slice::from_ref(&token),
+                &mut state.kv,
+                &weights,
+                &mut logits,
+            )?;
+            state.history.push(token);
+            maybe_record_checkpoint(state, true)?;
+        }
+        return Ok(logits);
+    }
+
+    native
+        .model
+        .forward_batch(tokens, &mut state.kv, &weights, &mut logits)?;
+    state.history.extend_from_slice(tokens);
+    Ok(logits)
+}
+
+fn maybe_record_checkpoint(state: &mut SessionState, force: bool) -> anyhow::Result<()> {
+    if !state.kv.supports_snapshot() || state.history.is_empty() {
+        return Ok(());
+    }
+
+    let position = state.history.len();
+    if !force && !should_keep_checkpoint_position(position, position) {
+        return Ok(());
+    }
+
+    let Some(snapshot) = state.kv.snapshot() else {
+        return Ok(());
+    };
+    if let Some(last) = state.checkpoints.last_mut()
+        && last.position == position
+    {
+        last.kv = snapshot;
+    } else {
+        state.checkpoints.push(SessionCheckpoint {
+            position,
+            kv: snapshot,
+        });
+    }
+    prune_checkpoints(state);
+    Ok(())
+}
+
+fn prune_checkpoints(state: &mut SessionState) {
+    let current_len = state.history.len();
+    state
+        .checkpoints
+        .retain(|checkpoint| should_keep_checkpoint_position(checkpoint.position, current_len));
+}
+
+fn should_keep_checkpoint_position(position: usize, current_len: usize) -> bool {
+    position == current_len
+        || position % QWEN35_CHECKPOINT_INTERVAL == 0
+        || position >= current_len.saturating_sub(QWEN35_TAIL_CHECKPOINT_TOKENS)
+}
+
+impl SessionSnapshot {
+    pub fn history_tokens(&self) -> &[u32] {
+        &self.history
     }
 }
 
@@ -512,14 +842,16 @@ impl LiveTextStreamState {
                 state.history.push(token);
                 self.completion_tokens += 1;
                 self.remaining_tokens = self.remaining_tokens.saturating_sub(1);
+                let native = self.model.native();
+                let weights = WeightStore::new(&native.mapped);
+                let should_materialize_final_token =
+                    self.remaining_tokens == 0 && supports_checkpointed_rewind(&state.kv);
 
-                if self.remaining_tokens == 0 {
+                if self.remaining_tokens == 0 && !should_materialize_final_token {
                     self.finish_reason = FinishReason::Length;
                     self.done = true;
                     self.next_token = None;
                 } else {
-                    let native = self.model.native();
-                    let weights = WeightStore::new(&native.mapped);
                     self.logits.fill(0.0);
                     native
                         .model
@@ -532,7 +864,16 @@ impl LiveTextStreamState {
                         )
                         .context("decode step failed")?;
                     self.position += 1;
-                    self.next_token = Some(self.sampler.sample(&mut self.logits, &state.history));
+                    maybe_record_checkpoint(&mut state, true)?;
+
+                    if self.remaining_tokens == 0 {
+                        self.finish_reason = FinishReason::Length;
+                        self.done = true;
+                        self.next_token = None;
+                    } else {
+                        self.next_token =
+                            Some(self.sampler.sample(&mut self.logits, &state.history));
+                    }
                 }
             }
 
@@ -589,10 +930,6 @@ fn remaining_decode_capacity(
 }
 
 fn validate_generation_options(options: &GenerationOptions) -> anyhow::Result<()> {
-    ensure!(
-        options.max_tokens > 0,
-        "max_tokens must be greater than zero"
-    );
     ensure!(
         options.temperature.is_finite() && options.temperature >= 0.0,
         "temperature must be finite and non-negative"
@@ -661,6 +998,25 @@ fn longest_partial_stop_suffix(output: &str, stop_strings: &[String]) -> usize {
     }
 
     longest
+}
+
+fn shared_prefix_len(left: &[u32], right: &[u32]) -> usize {
+    left.iter()
+        .zip(right.iter())
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
+fn reusable_prefix_len_from_history(
+    history: &[u32],
+    prompt_tokens: &[u32],
+    recompute_last_token: bool,
+) -> usize {
+    let mut prefix_len = shared_prefix_len(history, prompt_tokens);
+    if recompute_last_token && prefix_len == prompt_tokens.len() && prefix_len > 0 {
+        prefix_len -= 1;
+    }
+    prefix_len
 }
 
 #[cfg(test)]
@@ -758,6 +1114,109 @@ mod tests {
         assert_eq!(
             remaining_decode_capacity(16, 0, 16).expect("exact-fit prompt should succeed"),
             0
+        );
+    }
+
+    #[test]
+    fn test_shared_prefix_len_counts_common_tokens() {
+        assert_eq!(shared_prefix_len(&[1, 2, 3], &[1, 2, 9]), 2);
+        assert_eq!(shared_prefix_len(&[1, 2, 3], &[4, 5, 6]), 0);
+    }
+
+    #[test]
+    fn test_reusable_prefix_len_forces_last_token_recompute_for_identical_prompt() {
+        assert_eq!(
+            reusable_prefix_len_from_history(&[1, 2, 3], &[1, 2, 3], true),
+            2
+        );
+        assert_eq!(
+            reusable_prefix_len_from_history(&[1, 2, 3], &[1, 2, 3], false),
+            3
+        );
+    }
+
+    #[test]
+    fn test_should_keep_checkpoint_position_keeps_interval_and_tail() {
+        let current_len = 160;
+        assert!(should_keep_checkpoint_position(64, current_len));
+        assert!(should_keep_checkpoint_position(128, current_len));
+        assert!(should_keep_checkpoint_position(159, current_len));
+        assert!(!should_keep_checkpoint_position(95, current_len));
+    }
+
+    #[test]
+    fn test_should_keep_checkpoint_position_always_keeps_current_position() {
+        assert!(should_keep_checkpoint_position(17, 17));
+    }
+
+    #[test]
+    #[ignore = "requires local GGUF model and Metal GPU"]
+    fn test_snapshot_restore_reuses_qwen35_prompt_cache() {
+        let model_path =
+            std::env::var("AX_ENGINE_TEST_MODEL").expect("AX_ENGINE_TEST_MODEL must be set");
+        let model =
+            Model::load(model_path, crate::LoadOptions::default()).expect("test model should load");
+        assert_eq!(model.architecture(), "qwen35");
+
+        let messages = [
+            ChatMessage::system("Answer in six words max."),
+            ChatMessage::user("Say hello to AX."),
+        ];
+        let rendered_messages = messages
+            .iter()
+            .map(|message| CoreChatMessage::new(message.role.into_core(), message.content.as_str()))
+            .collect::<Vec<_>>();
+        let rendered = render_chat_messages(
+            &rendered_messages,
+            model.architecture(),
+            ChatRenderOptions::default(),
+        );
+        let prompt_tokens = model.tokenize_with_options(&rendered, true, true);
+        let options = GenerationOptions::default()
+            .max_tokens(8)
+            .temperature(0.0)
+            .top_k(1)
+            .top_p(0.95)
+            .min_p(0.05)
+            .repeat_penalty(1.1)
+            .seed(7);
+
+        let session = model
+            .session(SessionOptions::default())
+            .expect("session should be created");
+        let (first_output, first_stats) = session
+            .generate_with_prefix_reuse(&prompt_tokens, options.clone())
+            .expect("first generation should succeed");
+        assert_eq!(first_stats.cached_tokens, 0);
+
+        let snapshot = session.snapshot().expect("snapshot should succeed");
+        assert_eq!(snapshot.history[..prompt_tokens.len()], prompt_tokens);
+        assert!(
+            snapshot
+                .checkpoints
+                .iter()
+                .any(|checkpoint| checkpoint.position == prompt_tokens.len() - 1),
+            "snapshot checkpoints should retain the reusable prompt tail"
+        );
+
+        let restored = model
+            .session(SessionOptions::default())
+            .expect("restored session should be created");
+        restored
+            .restore_snapshot(&snapshot)
+            .expect("snapshot restore should succeed");
+
+        let (second_output, second_stats) = restored
+            .generate_with_prefix_reuse(&prompt_tokens, options)
+            .expect("second generation should succeed");
+        assert!(
+            second_stats.cached_tokens > 0,
+            "expected cached prefix reuse after snapshot restore, got {:?}",
+            second_stats
+        );
+        assert_eq!(
+            second_output.text, first_output.text,
+            "snapshot restore must preserve generation semantics"
         );
     }
 }

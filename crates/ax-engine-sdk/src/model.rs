@@ -6,7 +6,7 @@ use anyhow::{Context, anyhow, ensure};
 use ax_engine_core::backend::{BackendConfig, create_backend};
 use ax_engine_core::gguf::MappedModel;
 use ax_engine_core::model::{InferenceModel, ModelConfig, ModelFingerprint};
-use ax_engine_core::tokenizer::Tokenizer;
+use ax_engine_core::tokenizer::{TokenPiece, Tokenizer};
 
 use crate::session::{Session, SessionOptions};
 
@@ -20,8 +20,18 @@ pub(crate) struct NativeLoadedModel {
     pub(crate) support_note: Option<String>,
 }
 
-// SAFETY: All fields are immutable after construction. Session/KV state lives
-// behind synchronization primitives.
+// SAFETY: All fields are immutable after construction and the following
+// thread-safety invariants hold for each field:
+//   - model_id, model_name, support_note: String / Option<String> — Send + Sync
+//   - mapped: MappedModel — read-only mmap-backed data; no interior mutation
+//   - config: ModelConfig — plain data, no interior mutation
+//   - tokenizer: Tokenizer — read-only vocab data; no interior mutation
+//   - model: InferenceModel — wraps Metal GPU resources (command queue, buffers)
+//     which are safe to share across threads per Apple's Metal thread-safety
+//     guarantees; per-request KV state lives in caller-owned allocations, not here
+//
+// MAINTENANCE: If any field type changes (especially InferenceModel internals),
+// re-evaluate these impls. The compiler cannot verify them automatically.
 unsafe impl Send for NativeLoadedModel {}
 unsafe impl Sync for NativeLoadedModel {}
 
@@ -127,7 +137,16 @@ impl Model {
                 context_length > 0,
                 "context_length must be greater than zero"
             );
-            if context_length != config.context_length {
+            let model_max = config.context_length;
+            if context_length > model_max {
+                tracing::warn!(
+                    context_length,
+                    model_max,
+                    "context_length exceeds model's trained maximum; \
+                     positional encodings outside the trained window may produce degraded output"
+                );
+            }
+            if context_length != model_max {
                 config.context_length = context_length;
             }
         }
@@ -212,8 +231,26 @@ impl Model {
         self.tokenizer().encode(text, add_special)
     }
 
+    pub fn tokenize_with_options(
+        &self,
+        text: &str,
+        add_special: bool,
+        parse_special: bool,
+    ) -> Vec<u32> {
+        self.tokenizer()
+            .encode_with_options(text, add_special, parse_special)
+    }
+
     pub fn decode(&self, token_ids: &[u32]) -> String {
         self.tokenizer().decode(token_ids)
+    }
+
+    pub fn token_piece(&self, token_id: u32) -> Option<TokenPiece> {
+        self.tokenizer().token_piece(token_id)
+    }
+
+    pub fn chat_template(&self) -> Option<&str> {
+        self.tokenizer().chat_template()
     }
 
     pub fn session(&self, options: SessionOptions) -> anyhow::Result<Session> {
