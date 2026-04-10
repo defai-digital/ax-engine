@@ -102,10 +102,18 @@ impl<W: Write> StreamPrinter<W> {
         if len == 0 {
             return Ok(());
         }
+        let total_bytes = self.pending.len();
         self.writer.write_all(&self.pending.as_bytes()[..len])?;
         self.writer.flush()?;
         self.pending.drain(..len);
-        self.pending_tokens = 0;
+        // Proportionally reduce token count instead of zeroing, so the
+        // flush threshold tracks held-back partial stop-string bytes.
+        if total_bytes > 0 {
+            let kept_ratio = self.pending.len() as f32 / total_bytes as f32;
+            self.pending_tokens = (self.pending_tokens as f32 * kept_ratio).ceil() as usize;
+        } else {
+            self.pending_tokens = 0;
+        }
         Ok(())
     }
 

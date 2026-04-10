@@ -89,13 +89,6 @@ pub enum DecodeQkvPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum LlamaLayerQkvPlan {
-    Split,
-    Fused,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeScratchPlan {
     CpuScratch,
     SharedGpuScratch,
@@ -118,6 +111,7 @@ pub enum PrefillAttentionPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum PrefillWoInputPlan {
     AttentionOutF32,
     MatmulScratchF16,
@@ -143,12 +137,6 @@ pub struct GpuDecodeExecutionPlan {
     pub q6_k_tier: &'static str,
     pub dequant_dispatch: ax_engine_metal::DequantDispatchConfig,
     pub attention_dispatch: ax_engine_metal::AttentionDispatchConfig,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub struct LlamaDecodeLayerPlan {
-    pub qkv: LlamaLayerQkvPlan,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +174,7 @@ pub struct Gemma3PrefillLayerPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum PrefillFfnActivationPlan {
     SiluMulGateF32,
     SiluMulScratchF16,
@@ -193,6 +182,7 @@ pub enum PrefillFfnActivationPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum PrefillResidualHandoffPlan {
     ResidualOnly,
     ResidualAddRmsNormF32,
@@ -230,17 +220,9 @@ pub enum Qwen3PrefillQkvPost {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LlamaPrefillQkvPostPlan {
-    Separate,
-    FusedSplitRope,
-    FusedSplitRopeAppendKv,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrefillQkvLayerPlan {
     pub input: PrefillProjectionInputPlan,
     pub use_fused_projection: bool,
-    pub llama_post: LlamaPrefillQkvPostPlan,
     pub qwen3_post: Qwen3PrefillQkvPost,
 }
 
@@ -381,40 +363,6 @@ impl DecodeExecutionPlan {
         }
     }
 
-    pub(crate) fn llama_single_cb(
-        metal_ops: &MetalOps,
-        gpu_kv: &GpuKv,
-        embedding_dim: u32,
-        head_dim: u32,
-        attend_len: usize,
-    ) -> GpuDecodeExecutionPlan {
-        single_cb_gpu_decode_plan(
-            "llama",
-            metal_ops,
-            gpu_kv,
-            embedding_dim,
-            head_dim,
-            attend_len,
-        )
-    }
-
-    pub(crate) fn llama_pipelined(
-        metal_ops: &MetalOps,
-        gpu_kv: &GpuKv,
-        embedding_dim: u32,
-        head_dim: u32,
-        attend_len: usize,
-    ) -> GpuDecodeExecutionPlan {
-        pipelined_gpu_decode_plan(
-            "llama",
-            metal_ops,
-            gpu_kv,
-            embedding_dim,
-            head_dim,
-            attend_len,
-        )
-    }
-
     pub(crate) fn qwen35_single_cb(
         metal_ops: &MetalOps,
         gpu_kv: &GpuKv,
@@ -466,6 +414,23 @@ impl DecodeExecutionPlan {
         )
     }
 
+    pub(crate) fn gemma4_single_cb(
+        metal_ops: &MetalOps,
+        gpu_kv: &GpuKv,
+        embedding_dim: u32,
+        head_dim: u32,
+        attend_len: usize,
+    ) -> GpuDecodeExecutionPlan {
+        single_cb_gpu_decode_plan(
+            "gemma4",
+            metal_ops,
+            gpu_kv,
+            embedding_dim,
+            head_dim,
+            attend_len,
+        )
+    }
+
     pub(crate) fn gemma3_pipelined(
         metal_ops: &MetalOps,
         gpu_kv: &GpuKv,
@@ -481,55 +446,6 @@ impl DecodeExecutionPlan {
             head_dim,
             attend_len,
         )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn llama_prefill(
-        metal_ops: &MetalOps,
-        gpu_kv: &GpuKv,
-        base_seq_len: usize,
-        n_tokens: u32,
-        head_dim: u32,
-        has_q8_weights: bool,
-        has_q5k_weights: bool,
-        q5k_small_n_auto_eligible: bool,
-        prefill_attn_f16out_enabled: bool,
-        prefill_use_cached0_enabled: bool,
-        prefill_split_rope_append_enabled: bool,
-    ) -> GpuBatchPrefillExecutionPlan {
-        let q5k_route = q5k_prefill_route(has_q5k_weights, q5k_small_n_auto_eligible, n_tokens);
-        let use_f16_batch_io = q5k_route.use_f16_batch_io
-            || (!q5k_route.enabled && (metal_ops.metal_batch_f16_io_enabled() || has_q8_weights));
-        let attention = prefill_attention_plan(
-            base_seq_len,
-            0,
-            use_f16_batch_io,
-            head_dim,
-            prefill_attn_f16out_enabled,
-            prefill_use_cached0_enabled,
-        );
-        GpuBatchPrefillExecutionPlan {
-            kv_f16: gpu_kv.is_f16(),
-            kv_q8: gpu_kv.is_q8(),
-            use_f16_batch_io,
-            use_f16_pair: !q5k_route.enabled && metal_ops.metal_batch_f16_pair_enabled(),
-            use_fused_qkv: metal_ops.metal_fused_qkv_enabled(),
-            use_batch_simd: !q5k_route.enabled && metal_ops.metal_batch_simd_enabled(),
-            q5k_prefill: q5k_route.enabled,
-            q5k_prefill_small_n: q5k_route.small_n,
-            q5k_prefill_forced_variant: q5k_route.forced_variant,
-            split_rope_append: prefill_split_rope_append_enabled,
-            attention,
-            attention_sliding_window: 0,
-            wo_input: if use_f16_batch_io
-                && attention == PrefillAttentionPlan::BatchLocalF16OutHd128
-            {
-                PrefillWoInputPlan::MatmulScratchF16
-            } else {
-                PrefillWoInputPlan::AttentionOutF32
-            },
-            attention_dispatch: metal_ops.attention_dispatch_config(),
-        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -608,28 +524,6 @@ impl DecodeExecutionPlan {
         gemma3_prefill_layer_plan(config, layer, base_seq_len, use_f16_batch_io)
     }
 
-    pub(crate) fn llama_prefill_ffn_layer(
-        prefill_plan: &GpuBatchPrefillExecutionPlan,
-        wg_dtype: GgmlType,
-        wu_dtype: GgmlType,
-    ) -> PrefillFfnLayerPlan {
-        PrefillFfnLayerPlan {
-            input: if prefill_plan.use_f16_batch_io {
-                PrefillProjectionInputPlan::MatmulScratchF16
-            } else {
-                PrefillProjectionInputPlan::NormBufF32
-            },
-            use_pair_kernel: prefill_plan.use_f16_batch_io
-                && (prefill_plan.use_f16_pair || wg_dtype == GgmlType::Q8_0)
-                && wg_dtype == wu_dtype,
-            activation: if prefill_plan.use_f16_batch_io {
-                PrefillFfnActivationPlan::SiluMulScratchF16
-            } else {
-                PrefillFfnActivationPlan::SiluMulGateF32
-            },
-        }
-    }
-
     #[cfg(test)]
     pub(crate) fn qwen3_prefill_ffn_layer(
         prefill_plan: &GpuBatchPrefillExecutionPlan,
@@ -668,19 +562,6 @@ impl DecodeExecutionPlan {
         }
     }
 
-    pub(crate) fn llama_prefill_residual_handoff(
-        prefill_plan: &GpuBatchPrefillExecutionPlan,
-        is_last_layer: bool,
-    ) -> PrefillResidualHandoffPlan {
-        if is_last_layer {
-            PrefillResidualHandoffPlan::ResidualOnly
-        } else if prefill_plan.use_f16_batch_io {
-            PrefillResidualHandoffPlan::ResidualAddRmsNormF16
-        } else {
-            PrefillResidualHandoffPlan::ResidualAddRmsNormF32
-        }
-    }
-
     #[cfg(test)]
     pub(crate) fn qwen3_prefill_residual_handoff(
         is_last_layer: bool,
@@ -707,34 +588,6 @@ impl DecodeExecutionPlan {
             PrefillLogitsPlan::BatchAllLogits
         } else {
             PrefillLogitsPlan::LastTokenMatvec
-        }
-    }
-
-    pub(crate) fn llama_prefill_qkv_layer(
-        prefill_plan: &GpuBatchPrefillExecutionPlan,
-        wq_dtype: GgmlType,
-        wk_dtype: GgmlType,
-        wv_dtype: GgmlType,
-    ) -> PrefillQkvLayerPlan {
-        let use_fused_projection = prefill_plan.use_fused_qkv
-            && wq_dtype == wk_dtype
-            && wq_dtype == wv_dtype
-            && matches!(wq_dtype, GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0);
-        PrefillQkvLayerPlan {
-            input: if prefill_plan.use_f16_batch_io {
-                PrefillProjectionInputPlan::MatmulScratchF16
-            } else {
-                PrefillProjectionInputPlan::NormBufF32
-            },
-            use_fused_projection,
-            llama_post: if use_fused_projection && prefill_plan.split_rope_append {
-                LlamaPrefillQkvPostPlan::FusedSplitRopeAppendKv
-            } else if use_fused_projection {
-                LlamaPrefillQkvPostPlan::FusedSplitRope
-            } else {
-                LlamaPrefillQkvPostPlan::Separate
-            },
-            qwen3_post: Qwen3PrefillQkvPost::Separate,
         }
     }
 
@@ -771,7 +624,6 @@ impl DecodeExecutionPlan {
                 PrefillProjectionInputPlan::NormBufF32
             },
             use_fused_projection,
-            llama_post: LlamaPrefillQkvPostPlan::Separate,
             qwen3_post,
         }
     }
@@ -792,7 +644,6 @@ impl DecodeExecutionPlan {
                 && wq_dtype == wk_dtype
                 && wq_dtype == wv_dtype
                 && matches!(wq_dtype, GgmlType::Q4K | GgmlType::Q6K),
-            llama_post: LlamaPrefillQkvPostPlan::Separate,
             qwen3_post: Qwen3PrefillQkvPost::Separate,
         }
     }
@@ -824,7 +675,7 @@ fn supports_backend_prefill_kv(config: &ModelConfig, kv: &ModelKv) -> bool {
             && matches!(kv, ModelKv::Qwen35(_)))
 }
 
-fn qwen35_prefill_plan() -> PrefillExecutionPlan {
+fn qwen_gpu_prefill_plan() -> PrefillExecutionPlan {
     PrefillExecutionPlan {
         mode: PrefillMode::GpuBatch,
         chunk_len: None,
@@ -917,27 +768,6 @@ impl PrefillExecutionPlan {
         );
 
         let plan = match ctx.config.architecture.as_str() {
-            "llama" => {
-                if let Some(blocker) = gpu_prefill_quant_blocker(ctx.config, weights) {
-                    Self {
-                        mode: PrefillMode::Serial,
-                        chunk_len: None,
-                        reason: Some(format!("unsupported_quant:{blocker}")),
-                    }
-                } else if emit_all_logits && !lm_head_dtype_supported {
-                    Self {
-                        mode: PrefillMode::Serial,
-                        chunk_len: None,
-                        reason: Some("unsupported_lm_head".to_string()),
-                    }
-                } else {
-                    Self {
-                        mode: PrefillMode::GpuBatch,
-                        chunk_len: None,
-                        reason: None,
-                    }
-                }
-            }
             "gemma3" => {
                 if let Some(blocker) = gpu_prefill_quant_blocker(ctx.config, weights) {
                     Self {
@@ -974,7 +804,17 @@ impl PrefillExecutionPlan {
                     }
                 }
             }
-            "qwen35" | "qwen35moe" => qwen35_prefill_plan(),
+            "qwen35" | "qwen35moe" | "qwen3moe" => {
+                if let Some(blocker) = gpu_prefill_quant_blocker(ctx.config, weights) {
+                    Self {
+                        mode: PrefillMode::Serial,
+                        chunk_len: None,
+                        reason: Some(format!("unsupported_quant:{blocker}")),
+                    }
+                } else {
+                    qwen_gpu_prefill_plan()
+                }
+            }
             "gemma4" => {
                 if let Some(blocker) = gpu_prefill_quant_blocker(ctx.config, weights) {
                     Self {
@@ -1228,10 +1068,11 @@ fn single_cb_gpu_decode_plan(
 
 fn decode_pair_matvec_plan_for_arch(arch_name: &str) -> bool {
     env_flag_override("AX_METAL_DECODE_PAIR_MATVEC")
-        .unwrap_or(matches!(arch_name, "qwen35" | "gemma3"))
+        .unwrap_or(matches!(arch_name, "qwen35" | "gemma3" | "gemma4"))
 }
 
 fn decode_fused_silu_down_plan_for_arch(arch_name: &str) -> bool {
+    // Gemma4 uses GELU, not SiLU — do not include it here.
     env_flag_override("AX_METAL_DECODE_FUSED_SILU_DOWN").unwrap_or(matches!(arch_name, "gemma3"))
 }
 
@@ -1312,8 +1153,8 @@ fn gemma3_prefill_layer_plan(
 
 fn decode_barrier_plan_for_arch(arch_name: &str) -> DecodeBarrierPlan {
     match arch_name {
-        "llama" | "qwen35" | "gemma3" | "gemma4" => {
-            if super::llama::metal_decode_barriers_enabled() {
+        "qwen35" | "gemma3" | "gemma4" => {
+            if super::shared::metal_decode_barriers_enabled() {
                 DecodeBarrierPlan::Explicit
             } else {
                 DecodeBarrierPlan::Implicit
@@ -1325,12 +1166,11 @@ fn decode_barrier_plan_for_arch(arch_name: &str) -> DecodeBarrierPlan {
 
 fn decode_qkv_plan_for_arch(
     arch_name: &str,
-    fused_qkv_enabled: bool,
+    _fused_qkv_enabled: bool,
     decode_fused_qkv_enabled: bool,
 ) -> DecodeQkvPlan {
     let use_fused_qkv = match arch_name {
-        "llama" => fused_qkv_enabled,
-        "gemma3" => decode_fused_qkv_enabled,
+        "gemma3" | "gemma4" => decode_fused_qkv_enabled,
         _ => false,
     };
     if use_fused_qkv {
@@ -1340,6 +1180,7 @@ fn decode_qkv_plan_for_arch(
     }
 }
 
+#[cfg(test)]
 fn qkv_fusion_supported(wq_dtype: GgmlType, wk_dtype: GgmlType, wv_dtype: GgmlType) -> bool {
     wq_dtype == wk_dtype
         && wq_dtype == wv_dtype
@@ -1347,22 +1188,6 @@ fn qkv_fusion_supported(wq_dtype: GgmlType, wk_dtype: GgmlType, wv_dtype: GgmlTy
 }
 
 #[allow(dead_code)]
-pub(crate) fn llama_layer_plan_for_gpu(
-    exec_plan: &GpuDecodeExecutionPlan,
-    wq_dtype: GgmlType,
-    wk_dtype: GgmlType,
-    wv_dtype: GgmlType,
-) -> LlamaDecodeLayerPlan {
-    let qkv = if exec_plan.qkv == DecodeQkvPlan::Fused
-        && qkv_fusion_supported(wq_dtype, wk_dtype, wv_dtype)
-    {
-        LlamaLayerQkvPlan::Fused
-    } else {
-        LlamaLayerQkvPlan::Split
-    };
-    LlamaDecodeLayerPlan { qkv }
-}
-
 #[cfg(test)]
 pub(crate) fn qwen3_layer_plan_for_gpu(
     exec_plan: &GpuDecodeExecutionPlan,
@@ -1541,8 +1366,8 @@ mod tests {
     }
 
     #[test]
-    fn test_qwen35_prefill_plan_uses_gpu_batch() {
-        let plan = qwen35_prefill_plan();
+    fn test_qwen_gpu_prefill_plan_uses_gpu_batch() {
+        let plan = qwen_gpu_prefill_plan();
         assert_eq!(plan.mode, PrefillMode::GpuBatch);
         assert_eq!(plan.chunk_len, None);
         assert_eq!(plan.reason, None);
@@ -1557,88 +1382,6 @@ mod tests {
         }
         .summary_label();
         assert_eq!(summary, "mode=cpu_batch");
-    }
-
-    #[test]
-    fn test_llama_layer_plan_uses_fused_qkv_when_supported() {
-        let plan = DecodeExecutionPlan {
-            selection: DecodeSelection {
-                intent: DecodeIntent::Latency,
-                mode: DecodeMode::SingleCb,
-                fallback_reason: None,
-            },
-            sync: DecodeSyncPlan::SingleCommandBuffer,
-            scratch: DecodeScratchPlan::SharedGpuScratch,
-            gpu: Some(GpuDecodeExecutionPlan {
-                encoder: DecodeEncoderPlan::Serial,
-                barriers: DecodeBarrierPlan::Implicit,
-                qkv: DecodeQkvPlan::Fused,
-                kv_f16: true,
-                kv_q8: false,
-
-                use_pair_matvec: false,
-                use_fused_silu_down: false,
-                attention_route: "f16kv_hd128",
-                attention_tier: "stable",
-                q4_k_candidate: "q4_k.nr2",
-                q4_k_tier: "profile_preferred",
-                q5_k_candidate: "q5_k.base",
-                q5_k_tier: "stable",
-                q6_k_candidate: "q6_k.nr2",
-                q6_k_tier: "profile_preferred",
-                dequant_dispatch: ax_engine_metal::DequantDispatchConfig::default(),
-                attention_dispatch: ax_engine_metal::AttentionDispatchConfig::default(),
-            }),
-        };
-
-        let layer = llama_layer_plan_for_gpu(
-            plan.gpu.as_ref().unwrap(),
-            GgmlType::Q4K,
-            GgmlType::Q4K,
-            GgmlType::Q4K,
-        );
-        assert_eq!(layer.qkv, LlamaLayerQkvPlan::Fused);
-    }
-
-    #[test]
-    fn test_llama_layer_plan_falls_back_to_split_for_mismatched_dtypes() {
-        let plan = DecodeExecutionPlan {
-            selection: DecodeSelection {
-                intent: DecodeIntent::Latency,
-                mode: DecodeMode::SingleCb,
-                fallback_reason: None,
-            },
-            sync: DecodeSyncPlan::SingleCommandBuffer,
-            scratch: DecodeScratchPlan::SharedGpuScratch,
-            gpu: Some(GpuDecodeExecutionPlan {
-                encoder: DecodeEncoderPlan::Serial,
-                barriers: DecodeBarrierPlan::Implicit,
-                qkv: DecodeQkvPlan::Fused,
-                kv_f16: true,
-                kv_q8: false,
-
-                use_pair_matvec: false,
-                use_fused_silu_down: false,
-                attention_route: "f16kv_hd128",
-                attention_tier: "stable",
-                q4_k_candidate: "q4_k.nr2",
-                q4_k_tier: "profile_preferred",
-                q5_k_candidate: "q5_k.base",
-                q5_k_tier: "stable",
-                q6_k_candidate: "q6_k.nr2",
-                q6_k_tier: "profile_preferred",
-                dequant_dispatch: ax_engine_metal::DequantDispatchConfig::default(),
-                attention_dispatch: ax_engine_metal::AttentionDispatchConfig::default(),
-            }),
-        };
-
-        let layer = llama_layer_plan_for_gpu(
-            plan.gpu.as_ref().unwrap(),
-            GgmlType::Q4K,
-            GgmlType::Q6K,
-            GgmlType::Q4K,
-        );
-        assert_eq!(layer.qkv, LlamaLayerQkvPlan::Split);
     }
 
     #[test]
@@ -1845,50 +1588,11 @@ mod tests {
     }
 
     #[test]
-    fn test_llama_prefill_attention_plan_prefers_local_f16out_for_hd128() {
-        let plan = prefill_attention_plan(0, 0, true, 128, true, false);
-        assert_eq!(plan, PrefillAttentionPlan::BatchLocalF16OutHd128);
-    }
-
-    #[test]
-    fn test_llama_prefill_attention_plan_uses_cached_when_prefix_present() {
-        let plan = prefill_attention_plan(16, 0, true, 128, true, false);
-        assert_eq!(plan, PrefillAttentionPlan::Cached);
-    }
-
-    #[test]
-    fn test_llama_prefill_attention_plan_uses_local_when_cached0_forced_off() {
-        let plan = prefill_attention_plan(0, 0, false, 128, true, false);
-        assert_eq!(plan, PrefillAttentionPlan::BatchLocal);
-    }
-
-    #[test]
-    fn test_llama_prefill_uses_direct_f16_wo_input_for_hd128_fast_path() {
-        let Ok(backend) = MetalBackend::new() else {
-            return;
-        };
-        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
-        let kv = model.create_model_kv();
-        let Some(gpu_kv) = kv.as_gpu() else {
-            return;
-        };
-        let Some(metal_ops) = model.metal_ops() else {
-            return;
-        };
-
-        let plan = DecodeExecutionPlan::llama_prefill(
-            metal_ops, gpu_kv, 0, 128, 128, true, false, false, true, false, false,
-        );
-        assert_eq!(plan.attention, PrefillAttentionPlan::BatchLocalF16OutHd128);
-        assert_eq!(plan.wo_input, PrefillWoInputPlan::MatmulScratchF16);
-    }
-
-    #[test]
     fn test_qwen3_prefill_records_cached_attention_window() {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("gemma3"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -1909,7 +1613,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("gemma3"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -1941,7 +1645,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("gemma3"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -1972,7 +1676,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("gemma3"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -2003,7 +1707,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("gemma3"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -2034,7 +1738,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("gemma3"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -2066,7 +1770,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("gemma3"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         let Some(gpu_kv) = kv.as_gpu() else {
             return;
@@ -2201,37 +1905,6 @@ mod tests {
     }
 
     #[test]
-    fn test_llama_prefill_ffn_layer_uses_pair_for_q8_f16in() {
-        let prefill_plan = GpuBatchPrefillExecutionPlan {
-            kv_f16: true,
-            kv_q8: false,
-            use_f16_batch_io: true,
-            use_f16_pair: false,
-            use_fused_qkv: false,
-            use_batch_simd: false,
-            q5k_prefill: false,
-            q5k_prefill_small_n: false,
-            q5k_prefill_forced_variant: false,
-            split_rope_append: false,
-            attention: PrefillAttentionPlan::Cached,
-            attention_sliding_window: 0,
-            wo_input: PrefillWoInputPlan::AttentionOutF32,
-            attention_dispatch: ax_engine_metal::AttentionDispatchConfig::default(),
-        };
-        let layer = DecodeExecutionPlan::llama_prefill_ffn_layer(
-            &prefill_plan,
-            GgmlType::Q8_0,
-            GgmlType::Q8_0,
-        );
-        assert_eq!(layer.input, PrefillProjectionInputPlan::MatmulScratchF16);
-        assert!(layer.use_pair_kernel);
-        assert_eq!(
-            layer.activation,
-            PrefillFfnActivationPlan::SiluMulScratchF16
-        );
-    }
-
-    #[test]
     fn test_qwen3_prefill_ffn_layer_limits_q8_pair_to_small_batches() {
         let prefill_plan = GpuBatchPrefillExecutionPlan {
             kv_f16: true,
@@ -2295,61 +1968,6 @@ mod tests {
         assert_eq!(layer.input, PrefillProjectionInputPlan::MatmulScratchF16);
         assert!(!layer.use_pair_kernel);
         assert_eq!(layer.activation, PrefillFfnActivationPlan::GeluMulGateF32);
-    }
-
-    #[test]
-    fn test_llama_prefill_ffn_layer_uses_norm_buf_input_without_f16_batch_io() {
-        let prefill_plan = GpuBatchPrefillExecutionPlan {
-            kv_f16: true,
-            kv_q8: false,
-            use_f16_batch_io: false,
-            use_f16_pair: false,
-            use_fused_qkv: false,
-            use_batch_simd: false,
-            q5k_prefill: false,
-            q5k_prefill_small_n: false,
-            q5k_prefill_forced_variant: false,
-            split_rope_append: false,
-            attention: PrefillAttentionPlan::Cached,
-            attention_sliding_window: 0,
-            wo_input: PrefillWoInputPlan::AttentionOutF32,
-            attention_dispatch: ax_engine_metal::AttentionDispatchConfig::default(),
-        };
-        let layer = DecodeExecutionPlan::llama_prefill_ffn_layer(
-            &prefill_plan,
-            GgmlType::Q4K,
-            GgmlType::Q4K,
-        );
-        assert_eq!(layer.input, PrefillProjectionInputPlan::NormBufF32);
-        assert_eq!(layer.activation, PrefillFfnActivationPlan::SiluMulGateF32);
-    }
-
-    #[test]
-    fn test_llama_prefill_residual_handoff_uses_f16_norm_path_when_enabled() {
-        let prefill_plan = GpuBatchPrefillExecutionPlan {
-            kv_f16: true,
-            kv_q8: false,
-            use_f16_batch_io: true,
-            use_f16_pair: false,
-            use_fused_qkv: false,
-            use_batch_simd: false,
-            q5k_prefill: false,
-            q5k_prefill_small_n: false,
-            q5k_prefill_forced_variant: false,
-            split_rope_append: false,
-            attention: PrefillAttentionPlan::Cached,
-            attention_sliding_window: 0,
-            wo_input: PrefillWoInputPlan::AttentionOutF32,
-            attention_dispatch: ax_engine_metal::AttentionDispatchConfig::default(),
-        };
-        assert_eq!(
-            DecodeExecutionPlan::llama_prefill_residual_handoff(&prefill_plan, false),
-            PrefillResidualHandoffPlan::ResidualAddRmsNormF16
-        );
-        assert_eq!(
-            DecodeExecutionPlan::llama_prefill_residual_handoff(&prefill_plan, true),
-            PrefillResidualHandoffPlan::ResidualOnly
-        );
     }
 
     #[test]
@@ -2486,65 +2104,6 @@ mod tests {
     }
 
     #[test]
-    fn test_llama_prefill_qkv_layer_reports_split_rope_append_variant() {
-        let prefill_plan = GpuBatchPrefillExecutionPlan {
-            kv_f16: true,
-            kv_q8: false,
-            use_f16_batch_io: false,
-            use_f16_pair: false,
-            use_fused_qkv: true,
-            use_batch_simd: false,
-            q5k_prefill: false,
-            q5k_prefill_small_n: false,
-            q5k_prefill_forced_variant: false,
-            split_rope_append: true,
-            attention: PrefillAttentionPlan::Cached,
-            attention_sliding_window: 0,
-            wo_input: PrefillWoInputPlan::AttentionOutF32,
-            attention_dispatch: ax_engine_metal::AttentionDispatchConfig::default(),
-        };
-        let layer = DecodeExecutionPlan::llama_prefill_qkv_layer(
-            &prefill_plan,
-            GgmlType::Q4K,
-            GgmlType::Q4K,
-            GgmlType::Q4K,
-        );
-        assert_eq!(layer.input, PrefillProjectionInputPlan::NormBufF32);
-        assert!(layer.use_fused_projection);
-        assert_eq!(
-            layer.llama_post,
-            LlamaPrefillQkvPostPlan::FusedSplitRopeAppendKv
-        );
-    }
-
-    #[test]
-    fn test_llama_prefill_qkv_layer_uses_f16_input_mode_when_enabled() {
-        let prefill_plan = GpuBatchPrefillExecutionPlan {
-            kv_f16: true,
-            kv_q8: false,
-            use_f16_batch_io: true,
-            use_f16_pair: false,
-            use_fused_qkv: true,
-            use_batch_simd: false,
-            q5k_prefill: false,
-            q5k_prefill_small_n: false,
-            q5k_prefill_forced_variant: false,
-            split_rope_append: false,
-            attention: PrefillAttentionPlan::Cached,
-            attention_sliding_window: 0,
-            wo_input: PrefillWoInputPlan::AttentionOutF32,
-            attention_dispatch: ax_engine_metal::AttentionDispatchConfig::default(),
-        };
-        let layer = DecodeExecutionPlan::llama_prefill_qkv_layer(
-            &prefill_plan,
-            GgmlType::Q4K,
-            GgmlType::Q4K,
-            GgmlType::Q4K,
-        );
-        assert_eq!(layer.input, PrefillProjectionInputPlan::MatmulScratchF16);
-    }
-
-    #[test]
     fn test_gemma3_prefill_layer_plan_uses_yarn_fallback_only_on_global_layers() {
         let mut config = tiny_config("gemma3");
         config.rope_scaling = RopeScaling::Yarn {
@@ -2563,39 +2122,6 @@ mod tests {
         let global = gemma3_prefill_layer_plan(&config, 5, 128, false);
         assert!((global.rope_start - 32.0).abs() < 1e-6);
         assert!((global.rope_step - 0.25).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_for_model_qwen3_reports_split_qkv_plan() {
-        let Ok(backend) = MetalBackend::new() else {
-            return;
-        };
-        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
-        let kv = model.create_model_kv();
-        if !kv.is_gpu() {
-            return;
-        }
-
-        let plan = DecodeExecutionPlan::for_model(&model, &kv, DecodeIntent::Latency, false);
-        assert_eq!(plan.gpu.unwrap().qkv, DecodeQkvPlan::Split);
-    }
-
-    #[test]
-    fn test_for_model_qwen3_reports_split_qkv_plan_after_backend_configuration() {
-        let Ok(backend) = MetalBackend::new() else {
-            return;
-        };
-        backend
-            .configure_for_model("Llama-3-8B", "Q4_K", "llama")
-            .unwrap();
-        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
-        let kv = model.create_model_kv();
-        if !kv.is_gpu() {
-            return;
-        }
-
-        let plan = DecodeExecutionPlan::for_model(&model, &kv, DecodeIntent::Latency, false);
-        assert_eq!(plan.gpu.unwrap().qkv, DecodeQkvPlan::Split);
     }
 
     #[test]

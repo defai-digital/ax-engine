@@ -29,13 +29,14 @@ pub enum GgmlType {
     Q5K = 13,
     Q6K = 14,
     Q8K = 15,
+    BF16 = 30,
 }
 
 impl GgmlType {
     /// Block size for this quantization type.
     pub fn block_size(self) -> usize {
         match self {
-            Self::F32 | Self::F16 => 1,
+            Self::F32 | Self::F16 | Self::BF16 => 1,
             Self::Q4_0 | Self::Q4_1 | Self::Q5_0 | Self::Q5_1 | Self::Q8_0 | Self::Q8_1 => 32,
             Self::Q2K | Self::Q3K | Self::Q4K | Self::Q5K | Self::Q6K | Self::Q8K => 256,
         }
@@ -45,7 +46,7 @@ impl GgmlType {
     pub fn bytes_per_block(self) -> usize {
         match self {
             Self::F32 => 4,
-            Self::F16 => 2,
+            Self::F16 | Self::BF16 => 2,
             Self::Q4_0 => 18,
             Self::Q4_1 => 20,
             Self::Q5_0 => 22,
@@ -66,6 +67,7 @@ impl GgmlType {
         match self {
             Self::F32 => "F32",
             Self::F16 => "F16",
+            Self::BF16 => "BF16",
             Self::Q4_0 => "Q4_0",
             Self::Q4_1 => "Q4_1",
             Self::Q5_0 => "Q5_0",
@@ -98,6 +100,7 @@ impl GgmlType {
             13 => Some(Self::Q5K),
             14 => Some(Self::Q6K),
             15 => Some(Self::Q8K),
+            30 => Some(Self::BF16),
             _ => None,
         }
     }
@@ -111,16 +114,24 @@ impl std::fmt::Display for GgmlType {
 
 impl TensorInfo {
     /// Total number of elements in this tensor.
+    ///
+    /// Uses checked multiplication to prevent wrapping on adversarial shapes.
     pub fn n_elements(&self) -> u64 {
-        self.shape.iter().product()
+        self.shape
+            .iter()
+            .try_fold(1u64, |acc, &dim| acc.checked_mul(dim))
+            .expect("tensor shape element count overflow")
     }
 
     /// Total bytes occupied by this tensor's data.
+    ///
+    /// Uses checked arithmetic to prevent wrapping on adversarial sizes.
     pub fn data_size(&self) -> u64 {
         let n = self.n_elements() as usize;
         let bs = self.dtype.block_size();
         let bpb = self.dtype.bytes_per_block();
-        (n.div_ceil(bs) * bpb) as u64
+        let blocks = n.div_ceil(bs);
+        blocks.checked_mul(bpb).expect("tensor data_size overflow") as u64
     }
 
     /// Parse all tensor info entries from a byte slice starting at the given position.
@@ -167,7 +178,7 @@ mod tests {
 
     #[test]
     fn test_ggml_type_roundtrip() {
-        for type_id in [0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] {
+        for type_id in [0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 30] {
             let t = GgmlType::from_u32(type_id).unwrap();
             assert_eq!(t as u32, type_id);
         }
@@ -178,6 +189,13 @@ mod tests {
         assert!(GgmlType::from_u32(4).is_none()); // gap in enum
         assert!(GgmlType::from_u32(5).is_none());
         assert!(GgmlType::from_u32(99).is_none());
+    }
+
+    #[test]
+    fn test_bf16_type_size() {
+        assert_eq!(GgmlType::BF16.block_size(), 1);
+        assert_eq!(GgmlType::BF16.bytes_per_block(), 2);
+        assert_eq!(GgmlType::BF16.name(), "BF16");
     }
 
     #[test]

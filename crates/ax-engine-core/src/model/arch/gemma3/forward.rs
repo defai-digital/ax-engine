@@ -294,6 +294,7 @@ impl ForwardPass for Gemma3Forward {
             let gpu_kv = kv.as_gpu_mut().unwrap();
             if prefill_plan.mode == PrefillMode::GpuChunked {
                 let chunk_len = prefill_plan.chunk_len.unwrap();
+                let initial_seq_len = gpu_kv.seq_len();
                 for chunk in token_ids.chunks(chunk_len) {
                     match self.forward_batch_gpu_unified(
                         ctx,
@@ -307,11 +308,15 @@ impl ForwardPass for Gemma3Forward {
                     ) {
                         Ok(()) => {}
                         Err(e) => {
+                            let already_processed = kv.seq_len() - initial_seq_len;
                             tracing::warn!(
+                                already_processed,
+                                total = token_ids.len(),
                                 "Gemma3 chunked GPU batch prefill failed, falling back to serial: {e}"
                             );
+                            let remaining = &token_ids[already_processed..];
                             let start_pos = kv.seq_len();
-                            for (i, &tid) in token_ids.iter().enumerate() {
+                            for (i, &tid) in remaining.iter().enumerate() {
                                 logits.fill(0.0);
                                 self.forward_single(
                                     ctx,

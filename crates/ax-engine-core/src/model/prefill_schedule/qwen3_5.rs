@@ -487,7 +487,13 @@ pub(super) fn build_qwen35_full_attention_prefill_schedule(
     });
 
     if let Some(gpu_kv) = gpu_kv {
-        let cache_offset = (batch_position * kv_dim) as u32;
+        // For Q8_0 KV, the shader interprets cache_offset as block offset
+        // (1 block = 32 values), not element offset.
+        let cache_offset = if gpu_kv.is_q8() {
+            (batch_position * (kv_dim / crate::kv::gpu_kv::Q8_0_BLOCK_VALUES)) as u32
+        } else {
+            (batch_position * kv_dim) as u32
+        };
         ops.push(PrefillOp::KvAppendBatch {
             src: br(&bs.k_buf),
             dst: br(gpu_kv.k_buffer(layer)),

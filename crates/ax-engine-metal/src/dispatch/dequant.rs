@@ -172,6 +172,8 @@ pub struct DequantKernels {
     fused_silu_down_matvec_q8_0: ComputePipeline,
     /// Fused GELU(gate)*up + down projection for Q8_0 decode.
     fused_gelu_down_matvec_q8_0: ComputePipeline,
+    fused_matvec_q5_0: ComputePipeline,
+    fused_matvec_q5_1: ComputePipeline,
     fused_matvec_q4_k: ComputePipeline,
     /// Q4_K decode matvec with 2 rows per simdgroup and TG=64.
     fused_matvec_q4_k_nr2: ComputePipeline,
@@ -275,6 +277,10 @@ pub struct DequantKernels {
     fused_batch_q8_0_f16in_full32x32: ComputePipeline,
     /// Small-N B-transposed batch dequant+matmul for Q8_0 with f16 input/f32 output.
     fused_batch_q8_0_f16in_small: ComputePipeline,
+    /// Blocked Q5_0 batch with f16 input (BM=64, BN=32, BK=32).
+    fused_batch_q5_0_blocked_f16in: ComputePipeline,
+    /// Blocked Q5_1 batch with f16 input (BM=64, BN=32, BK=32).
+    fused_batch_q5_1_blocked_f16in: ComputePipeline,
     /// 64x64 full-tile fast path for Q4_K with f16 input and f32 output.
     fused_batch_q4_k_f16in_full64: ComputePipeline,
     /// 64x64 full-tile BK=32 fast path for Q4_K with f16 input and f32 output.
@@ -328,6 +334,10 @@ pub struct DequantKernels {
     pub moe_mul_mat_id_q4_k: ComputePipeline,
     pub moe_mul_mat_id_q4_k_blocked: ComputePipeline,
     pub moe_mul_mat_id_q5_k_blocked: ComputePipeline,
+    pub moe_mul_mat_id_q6_k_blocked: ComputePipeline,
+    pub moe_mul_mat_id_q6_k: ComputePipeline,
+    pub moe_mul_mat_id_q8_0_blocked: ComputePipeline,
+    pub moe_mul_mat_id_q8_0: ComputePipeline,
     pub moe_mul_mat_selected_q4_k_blocked: ComputePipeline,
     pub moe_mul_mat_selected_q4_k_matvec: ComputePipeline,
     pub moe_mul_mat_selected_pair_q4_k_blocked: ComputePipeline,
@@ -553,6 +563,18 @@ impl DequantKernels {
             "dequant_matvec_gelu_down_q8_0",
         )
         .context("Failed to compile dequant_matvec_gelu_down_q8_0 kernel")?;
+        let fused_matvec_q5_0 = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_matvec_q5_0",
+        )
+        .context("Failed to compile dequant_matvec_q5_0 kernel")?;
+        let fused_matvec_q5_1 = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_matvec_q5_1",
+        )
+        .context("Failed to compile dequant_matvec_q5_1 kernel")?;
         let fused_matvec_q4_k = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -934,6 +956,18 @@ impl DequantKernels {
             "dequant_batch_q8_0_f16in_small",
         )
         .context("Failed to compile dequant_batch_q8_0_f16in_small kernel")?;
+        let fused_batch_q5_0_blocked_f16in = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q5_0_blocked_f16in",
+        )
+        .context("Failed to compile dequant_batch_q5_0_blocked_f16in kernel")?;
+        let fused_batch_q5_1_blocked_f16in = ComputePipeline::from_source(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q5_1_blocked_f16in",
+        )
+        .context("Failed to compile dequant_batch_q5_1_blocked_f16in kernel")?;
         let fused_batch_q4_k_f16in_full64 = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -1080,6 +1114,8 @@ impl DequantKernels {
             fused_matvec_pair_q8_0,
             fused_silu_down_matvec_q8_0,
             fused_gelu_down_matvec_q8_0,
+            fused_matvec_q5_0,
+            fused_matvec_q5_1,
             fused_matvec_q4_k,
             fused_matvec_q4_k_nr2,
             fused_matvec_pair_q4_k,
@@ -1133,6 +1169,8 @@ impl DequantKernels {
             fused_batch_q8_0_f16in_tail32,
             fused_batch_q8_0_f16in_full32x32,
             fused_batch_q8_0_f16in_small,
+            fused_batch_q5_0_blocked_f16in,
+            fused_batch_q5_1_blocked_f16in,
             fused_batch_q4_k_f16in_full64,
             fused_batch_q4_k_f16in_full64_bk32,
             fused_batch_q6_k_f16in_full64,
@@ -1178,6 +1216,30 @@ impl DequantKernels {
                 "moe_mul_mat_id_q5_k_blocked",
             )
             .context("Failed to compile moe_mul_mat_id_q5_k_blocked kernel")?,
+            moe_mul_mat_id_q6_k_blocked: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_id_q6_k_blocked",
+            )
+            .context("Failed to compile moe_mul_mat_id_q6_k_blocked kernel")?,
+            moe_mul_mat_id_q6_k: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_id_q6_k",
+            )
+            .context("Failed to compile moe_mul_mat_id_q6_k kernel")?,
+            moe_mul_mat_id_q8_0_blocked: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_id_q8_0_blocked",
+            )
+            .context("Failed to compile moe_mul_mat_id_q8_0_blocked kernel")?,
+            moe_mul_mat_id_q8_0: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_id_q8_0",
+            )
+            .context("Failed to compile moe_mul_mat_id_q8_0 kernel")?,
             moe_mul_mat_selected_q4_k_blocked: ComputePipeline::from_source(
                 device.device(),
                 DEQUANT_SHADER_SRC,
@@ -1300,7 +1362,10 @@ impl DequantKernels {
             let n_tail = (n as usize).saturating_sub(n_full);
             if n_full > 0 {
                 let groups_x = (m as usize).div_ceil(DB64_TILE_M);
-                encoder.setComputePipelineState(self.batch_matmul_btrans_f16_f32_full64.state());
+                crate::set_pipeline_cached(
+                    encoder,
+                    self.batch_matmul_btrans_f16_f32_full64.state(),
+                );
                 unsafe {
                     encoder.setBuffer_offset_atIndex(Some(a_mk_f16.mtl_buffer()), 0, 0);
                     encoder.setBuffer_offset_atIndex(Some(b_nk_f16.mtl_buffer()), 0, 1);
@@ -1336,7 +1401,7 @@ impl DequantKernels {
                 .expect("C offset overflow");
             let groups_x = (m as usize).div_ceil(DB_TILE_M);
             let groups_y = n_tail.div_ceil(DB_TILE_N);
-            encoder.setComputePipelineState(self.batch_matmul_btrans_f16_f32.state());
+            crate::set_pipeline_cached(encoder, self.batch_matmul_btrans_f16_f32.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(a_mk_f16.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(b_nk_f16.mtl_buffer()), b_off, 1);
@@ -1362,7 +1427,7 @@ impl DequantKernels {
 
         let groups_x = (m as usize).div_ceil(DB_TILE_M);
         let groups_y = (n as usize).div_ceil(DB_TILE_N);
-        encoder.setComputePipelineState(self.batch_matmul_btrans_f16_f32.state());
+        crate::set_pipeline_cached(encoder, self.batch_matmul_btrans_f16_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a_mk_f16.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(b_nk_f16.mtl_buffer()), 0, 1);
@@ -1400,7 +1465,7 @@ impl DequantKernels {
         let dims = DispatchDims::d1(n_blocks as usize, DEQUANT_TG_SIZE);
 
         device.execute_sync(|encoder| {
-            encoder.setComputePipelineState(self.dequant_q4_k.state());
+            crate::set_pipeline_cached(encoder, self.dequant_q4_k.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -1445,7 +1510,7 @@ impl DequantKernels {
         let dims = DispatchDims::d1(groups, 1);
 
         device.execute_sync(|encoder| {
-            encoder.setComputePipelineState(pipeline);
+            crate::set_pipeline_cached(encoder, pipeline);
             bind_buffers(encoder, a, x, y);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, k);
@@ -1474,7 +1539,7 @@ impl DequantKernels {
         let dims = DispatchDims::d1((m as usize).div_ceil(Q5K_NR2_ROWS), 1);
 
         device.execute_sync(|encoder| {
-            encoder.setComputePipelineState(self.fused_matvec_q5_k_nr2.state());
+            crate::set_pipeline_cached(encoder, self.fused_matvec_q5_k_nr2.state());
             bind_buffers(encoder, a, x, y);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, k);
@@ -1512,7 +1577,7 @@ impl DequantKernels {
         let dims = DispatchDims::d1(groups, 1);
 
         device.execute_sync(|encoder| {
-            encoder.setComputePipelineState(pipeline);
+            crate::set_pipeline_cached(encoder, pipeline);
             bind_buffers(encoder, a, x, y);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, k);
@@ -1541,7 +1606,7 @@ impl DequantKernels {
         let dims = DispatchDims::d1((m as usize).div_ceil(Q4K_NR2_ROWS), 1);
 
         device.execute_sync(|encoder| {
-            encoder.setComputePipelineState(self.fused_matvec_q4_k_nr2.state());
+            crate::set_pipeline_cached(encoder, self.fused_matvec_q4_k_nr2.state());
             bind_buffers(encoder, a, x, y);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, k);
@@ -1591,7 +1656,7 @@ impl DequantKernels {
     ) {
         let (groups, tg_width, pipeline) = self.q5_k_matvec_dispatch_with_config(m, config);
         let dims = DispatchDims::d1(groups, 1);
-        encoder.setComputePipelineState(pipeline);
+        crate::set_pipeline_cached(encoder, pipeline);
         bind_buffers(encoder, a, x, y);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, k);
@@ -1621,7 +1686,7 @@ impl DequantKernels {
         k: u32,
     ) {
         let dims = DispatchDims::d1((m as usize).div_ceil(2), 1);
-        encoder.setComputePipelineState(self.fused_matvec_pair_q5_k.state());
+        crate::set_pipeline_cached(encoder, self.fused_matvec_pair_q5_k.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a0.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(a1.mtl_buffer()), 0, 1);
@@ -1655,7 +1720,7 @@ impl DequantKernels {
     ) {
         // Q5_K fused shader: 2 rows/TG (tg_id * 2 + simd_id), TG=64 (2 SGs).
         let dims = DispatchDims::d1((m as usize).div_ceil(2), 1);
-        encoder.setComputePipelineState(self.fused_silu_down_matvec_q5_k.state());
+        crate::set_pipeline_cached(encoder, self.fused_silu_down_matvec_q5_k.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);
@@ -1688,7 +1753,7 @@ impl DequantKernels {
     ) {
         // Q5_K fused shader: 2 rows/TG (tg_id * 2 + simd_id), TG=64 (2 SGs).
         let dims = DispatchDims::d1((m as usize).div_ceil(2), 1);
-        encoder.setComputePipelineState(self.fused_gelu_down_matvec_q5_k.state());
+        crate::set_pipeline_cached(encoder, self.fused_gelu_down_matvec_q5_k.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);
@@ -1721,7 +1786,57 @@ impl DequantKernels {
         k: u32,
     ) {
         let dims = DispatchDims::d1(m as usize, 1);
-        encoder.setComputePipelineState(self.fused_matvec_q8_0.state());
+        crate::set_pipeline_cached(encoder, self.fused_matvec_q8_0.state());
+        bind_buffers(encoder, a, x, y);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, k);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            MTLSize {
+                width: DEQUANT_MATVEC_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode a fused Q5_0 matvec dispatch into an existing encoder.
+    pub fn encode_fused_matvec_q5_0(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        x: &MetalBuffer,
+        y: &MetalBuffer,
+        m: u32,
+        k: u32,
+    ) {
+        let dims = DispatchDims::d1(m as usize, 1);
+        crate::set_pipeline_cached(encoder, self.fused_matvec_q5_0.state());
+        bind_buffers(encoder, a, x, y);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, k);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            MTLSize {
+                width: DEQUANT_MATVEC_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode a fused Q5_1 matvec dispatch into an existing encoder.
+    pub fn encode_fused_matvec_q5_1(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        x: &MetalBuffer,
+        y: &MetalBuffer,
+        m: u32,
+        k: u32,
+    ) {
+        let dims = DispatchDims::d1(m as usize, 1);
+        crate::set_pipeline_cached(encoder, self.fused_matvec_q5_1.state());
         bind_buffers(encoder, a, x, y);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, k);
@@ -1758,7 +1873,7 @@ impl DequantKernels {
         let groups = selection.threadgroups;
         let tg_width = selection.threadgroup_width;
         let dims = DispatchDims::d1(groups, 1);
-        encoder.setComputePipelineState(pipeline);
+        crate::set_pipeline_cached(encoder, pipeline);
         bind_buffers(encoder, a, x, y);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, k);
@@ -1785,7 +1900,7 @@ impl DequantKernels {
         k: u32,
     ) {
         let dims = DispatchDims::d1((m as usize).div_ceil(Q8_0_NR2_ROWS), 1);
-        encoder.setComputePipelineState(self.fused_matvec_q8_0_nr2.state());
+        crate::set_pipeline_cached(encoder, self.fused_matvec_q8_0_nr2.state());
         bind_buffers(encoder, a, x, y);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, k);
@@ -1812,7 +1927,7 @@ impl DequantKernels {
         k: u32,
     ) {
         let dims = DispatchDims::d1((m as usize).div_ceil(Q8_0_ILP4_ROWS), 1);
-        encoder.setComputePipelineState(self.fused_matvec_q8_0_ilp4.state());
+        crate::set_pipeline_cached(encoder, self.fused_matvec_q8_0_ilp4.state());
         bind_buffers(encoder, a, x, y);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, k);
@@ -1842,7 +1957,7 @@ impl DequantKernels {
         k: u32,
     ) {
         let dims = DispatchDims::d1(m as usize, 1);
-        encoder.setComputePipelineState(self.fused_matvec_pair_q8_0.state());
+        crate::set_pipeline_cached(encoder, self.fused_matvec_pair_q8_0.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a0.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(a1.mtl_buffer()), 0, 1);
@@ -1875,7 +1990,7 @@ impl DequantKernels {
         k: u32,
     ) {
         // Q8_0 fused shader: 1 row per threadgroup, TG=128 (4 simdgroups).
-        encoder.setComputePipelineState(self.fused_silu_down_matvec_q8_0.state());
+        crate::set_pipeline_cached(encoder, self.fused_silu_down_matvec_q8_0.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);
@@ -1911,7 +2026,7 @@ impl DequantKernels {
         k: u32,
     ) {
         // Q8_0 fused shader: 1 row per threadgroup, TG=128 (4 simdgroups).
-        encoder.setComputePipelineState(self.fused_gelu_down_matvec_q8_0.state());
+        crate::set_pipeline_cached(encoder, self.fused_gelu_down_matvec_q8_0.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);
@@ -1951,7 +2066,7 @@ impl DequantKernels {
     ) {
         let (groups, tg_width, pipeline) = self.q4_k_matvec_dispatch_with_config(m, config);
         let dims = DispatchDims::d1(groups, 1);
-        encoder.setComputePipelineState(pipeline);
+        crate::set_pipeline_cached(encoder, pipeline);
         bind_buffers(encoder, a, x, y);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, k);
@@ -1978,7 +2093,7 @@ impl DequantKernels {
         k: u32,
     ) {
         let dims = DispatchDims::d1((m as usize).div_ceil(Q4K_ILP4_ROWS), 1);
-        encoder.setComputePipelineState(self.fused_matvec_q4_k_ilp4.state());
+        crate::set_pipeline_cached(encoder, self.fused_matvec_q4_k_ilp4.state());
         bind_buffers(encoder, a, x, y);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, k);
@@ -2008,7 +2123,7 @@ impl DequantKernels {
         k: u32,
     ) {
         let dims = DispatchDims::d1((m as usize).div_ceil(Q4K_NR2_ROWS), 1);
-        encoder.setComputePipelineState(self.fused_matvec_pair_q4_k.state());
+        crate::set_pipeline_cached(encoder, self.fused_matvec_pair_q4_k.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a0.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(a1.mtl_buffer()), 0, 1);
@@ -2041,7 +2156,7 @@ impl DequantKernels {
         k: u32,
     ) {
         // G14: nr2 geometry — TG=64, 4 rows/TG (2/SG).
-        encoder.setComputePipelineState(self.fused_silu_down_matvec_q4_k.state());
+        crate::set_pipeline_cached(encoder, self.fused_silu_down_matvec_q4_k.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);
@@ -2076,7 +2191,7 @@ impl DequantKernels {
         m: u32,
         k: u32,
     ) {
-        encoder.setComputePipelineState(self.fused_gelu_down_matvec_q4_k.state());
+        crate::set_pipeline_cached(encoder, self.fused_gelu_down_matvec_q4_k.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);
@@ -2112,7 +2227,7 @@ impl DequantKernels {
         k: u32,
     ) {
         let dims = DispatchDims::d1(m as usize, 1);
-        encoder.setComputePipelineState(self.fused_matvec_dense_f16.state());
+        crate::set_pipeline_cached(encoder, self.fused_matvec_dense_f16.state());
         bind_buffers(encoder, a, x, y);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, k);
@@ -2145,7 +2260,7 @@ impl DequantKernels {
         let dims = DispatchDims::d1(m as usize, 1);
 
         device.execute_sync(|encoder| {
-            encoder.setComputePipelineState(self.fused_matvec_q8_0.state());
+            crate::set_pipeline_cached(encoder, self.fused_matvec_q8_0.state());
             bind_buffers(encoder, a, x, y);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, k);
@@ -2176,7 +2291,7 @@ impl DequantKernels {
         let dims = DispatchDims::d1(n_blocks as usize, DEQUANT_TG_SIZE);
 
         device.execute_sync(|encoder| {
-            encoder.setComputePipelineState(self.dequant_q6_k.state());
+            crate::set_pipeline_cached(encoder, self.dequant_q6_k.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -2212,7 +2327,7 @@ impl DequantKernels {
         let dims = DispatchDims::d1(groups, 1);
 
         device.execute_sync(|encoder| {
-            encoder.setComputePipelineState(pipeline);
+            crate::set_pipeline_cached(encoder, pipeline);
             bind_buffers(encoder, a, x, y);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, k);
@@ -2241,7 +2356,7 @@ impl DequantKernels {
         let dims = DispatchDims::d1((m as usize).div_ceil(Q6K_NR2_ROWS), 1);
 
         device.execute_sync(|encoder| {
-            encoder.setComputePipelineState(self.fused_matvec_q6_k_nr2.state());
+            crate::set_pipeline_cached(encoder, self.fused_matvec_q6_k_nr2.state());
             bind_buffers(encoder, a, x, y);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, k);
@@ -2270,7 +2385,7 @@ impl DequantKernels {
         k: u32,
     ) {
         let dims = DispatchDims::d1((m as usize).div_ceil(Q6K_ILP4_ROWS), 1);
-        encoder.setComputePipelineState(self.fused_matvec_q6_k_ilp4.state());
+        crate::set_pipeline_cached(encoder, self.fused_matvec_q6_k_ilp4.state());
         bind_buffers(encoder, a, x, y);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, k);
@@ -2301,7 +2416,7 @@ impl DequantKernels {
     ) {
         let (groups, tg_width, pipeline) = self.q6_k_matvec_dispatch_with_config(m, config);
         let dims = DispatchDims::d1(groups, 1);
-        encoder.setComputePipelineState(pipeline);
+        crate::set_pipeline_cached(encoder, pipeline);
         bind_buffers(encoder, a, x, y);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, k);
@@ -2331,7 +2446,7 @@ impl DequantKernels {
         k: u32,
     ) {
         let dims = DispatchDims::d1(m as usize, 1);
-        encoder.setComputePipelineState(self.fused_matvec_pair_q6_k.state());
+        crate::set_pipeline_cached(encoder, self.fused_matvec_pair_q6_k.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a0.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(a1.mtl_buffer()), 0, 1);
@@ -2364,7 +2479,7 @@ impl DequantKernels {
         k: u32,
     ) {
         // Q6_K fused SiLU shader: 1 row per threadgroup, TG=128 (4 simdgroups).
-        encoder.setComputePipelineState(self.fused_silu_down_matvec_q6_k.state());
+        crate::set_pipeline_cached(encoder, self.fused_silu_down_matvec_q6_k.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);
@@ -2399,7 +2514,7 @@ impl DequantKernels {
         m: u32,
         k: u32,
     ) {
-        encoder.setComputePipelineState(self.fused_gelu_down_matvec_q6_k.state());
+        crate::set_pipeline_cached(encoder, self.fused_gelu_down_matvec_q6_k.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);
@@ -2445,7 +2560,7 @@ impl DequantKernels {
         let groups_x = (n as usize).div_ceil(DQ_TILE);
         let groups_y = (m as usize).div_ceil(DQ_TILE);
 
-        encoder.setComputePipelineState(self.fused_matmul_q4_k.state());
+        crate::set_pipeline_cached(encoder, self.fused_matmul_q4_k.state());
         bind_buffers(encoder, a, b, c);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, n);
@@ -2487,7 +2602,7 @@ impl DequantKernels {
         let groups_x = (n as usize).div_ceil(DQ_TILE);
         let groups_y = (m as usize).div_ceil(DQ_TILE);
 
-        encoder.setComputePipelineState(self.fused_matmul_q6_k.state());
+        crate::set_pipeline_cached(encoder, self.fused_matmul_q6_k.state());
         bind_buffers(encoder, a, b, c);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, n);
@@ -2562,7 +2677,7 @@ impl DequantKernels {
                     if full_tile { 6144usize } else { 8192usize },
                 )
             };
-            encoder.setComputePipelineState(pipeline.state());
+            crate::set_pipeline_cached(encoder, pipeline.state());
             bind_buffers(encoder, a, b, c);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
@@ -2590,7 +2705,7 @@ impl DequantKernels {
         if n < DB_TILE_N as u32 {
             let groups_x = (m as usize).div_ceil(DB_TILE_M);
             let groups_y = (n as usize).div_ceil(SB_TILE_N);
-            encoder.setComputePipelineState(self.fused_batch_q4_k_bn32.state());
+            crate::set_pipeline_cached(encoder, self.fused_batch_q4_k_bn32.state());
             bind_buffers(encoder, a, b, c);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
@@ -2618,11 +2733,14 @@ impl DequantKernels {
             (n as usize).div_ceil(DB_TILE_N)
         };
 
-        encoder.setComputePipelineState(if use_small {
-            self.fused_batch_q4_k_small.state()
-        } else {
-            self.fused_batch_q4_k.state()
-        });
+        crate::set_pipeline_cached(
+            encoder,
+            if use_small {
+                self.fused_batch_q4_k_small.state()
+            } else {
+                self.fused_batch_q4_k.state()
+            },
+        );
         bind_buffers(encoder, a, b, c);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, n);
@@ -2661,11 +2779,14 @@ impl DequantKernels {
         if batch_q5k_blocked_enabled() && k.is_multiple_of(Q5_K_BLOCK_VALUES as u32) {
             const BLOCKED_TG: usize = 128;
             let full_tile = (m as usize).is_multiple_of(64) && (n as usize).is_multiple_of(32);
-            encoder.setComputePipelineState(if full_tile {
-                self.fused_batch_q5_k_blocked_fulltile.state()
-            } else {
-                self.fused_batch_q5_k_blocked.state()
-            });
+            crate::set_pipeline_cached(
+                encoder,
+                if full_tile {
+                    self.fused_batch_q5_k_blocked_fulltile.state()
+                } else {
+                    self.fused_batch_q5_k_blocked.state()
+                },
+            );
             bind_buffers(encoder, a, b, c);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
@@ -2692,7 +2813,7 @@ impl DequantKernels {
         let groups_x = (m as usize).div_ceil(DB_TILE_M);
         let groups_y = (n as usize).div_ceil(DB_TILE_N);
 
-        encoder.setComputePipelineState(self.fused_batch_q5_k.state());
+        crate::set_pipeline_cached(encoder, self.fused_batch_q5_k.state());
         bind_buffers(encoder, a, b, c);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, n);
@@ -2728,11 +2849,14 @@ impl DequantKernels {
         if batch_q5k_blocked_enabled() && k.is_multiple_of(Q5_K_BLOCK_VALUES as u32) {
             const BLOCKED_TG: usize = 128;
             let full_tile = (m as usize).is_multiple_of(64) && (n as usize).is_multiple_of(32);
-            encoder.setComputePipelineState(if full_tile {
-                self.fused_batch_q5_k_blocked_f16in_fulltile.state()
-            } else {
-                self.fused_batch_q5_k_blocked_f16in.state()
-            });
+            crate::set_pipeline_cached(
+                encoder,
+                if full_tile {
+                    self.fused_batch_q5_k_blocked_f16in_fulltile.state()
+                } else {
+                    self.fused_batch_q5_k_blocked_f16in.state()
+                },
+            );
             bind_buffers(encoder, a, b, c);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
@@ -2760,7 +2884,7 @@ impl DequantKernels {
         let groups_x = (m as usize).div_ceil(DB_TILE_M);
         let groups_y = (n as usize).div_ceil(DB_TILE_N);
 
-        encoder.setComputePipelineState(self.fused_batch_q5_k_f16in.state());
+        crate::set_pipeline_cached(encoder, self.fused_batch_q5_k_f16in.state());
         bind_buffers(encoder, a, b, c);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, n);
@@ -2798,7 +2922,7 @@ impl DequantKernels {
         let groups_x = (m as usize).div_ceil(DB_TILE_M);
         let groups_y = (n as usize).div_ceil(SB_TILE_N);
 
-        encoder.setComputePipelineState(self.fused_batch_q5_k_small.state());
+        crate::set_pipeline_cached(encoder, self.fused_batch_q5_k_small.state());
         bind_buffers(encoder, a, b, c);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, n);
@@ -2861,7 +2985,7 @@ impl DequantKernels {
             if use_full_tiles && m_full > 0 && n_full > 0 {
                 let groups_x = m_full.div_ceil(DB64_TILE_M);
                 if use_bn32 {
-                    encoder.setComputePipelineState(self.fused_batch_q5_k_f16in_full32.state());
+                    crate::set_pipeline_cached(encoder, self.fused_batch_q5_k_f16in_full32.state());
                     bind_buffers(encoder, a, b, c);
                     bind_u32(encoder, 3, m_full as u32);
                     bind_u32(encoder, 4, n_full as u32);
@@ -2880,7 +3004,7 @@ impl DequantKernels {
                         },
                     );
                 } else {
-                    encoder.setComputePipelineState(self.fused_batch_q5_k_f16in_full64.state());
+                    crate::set_pipeline_cached(encoder, self.fused_batch_q5_k_f16in_full64.state());
                     bind_buffers(encoder, a, b, c);
                     bind_u32(encoder, 3, m_full as u32);
                     bind_u32(encoder, 4, n_full as u32);
@@ -2906,7 +3030,7 @@ impl DequantKernels {
                             return;
                         }
                         let groups_x = out_cols.div_ceil(DB_TILE_M);
-                        encoder.setComputePipelineState(self.fused_batch_q5_k_f16in.state());
+                        crate::set_pipeline_cached(encoder, self.fused_batch_q5_k_f16in.state());
                         unsafe {
                             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), a_off, 0);
                             encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
@@ -2940,7 +3064,10 @@ impl DequantKernels {
                         .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
                         .expect("C offset overflow");
                     if use_bn32 {
-                        encoder.setComputePipelineState(self.fused_batch_q5_k_f16in_tail32.state());
+                        crate::set_pipeline_cached(
+                            encoder,
+                            self.fused_batch_q5_k_f16in_tail32.state(),
+                        );
                         unsafe {
                             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
                             encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
@@ -2998,11 +3125,14 @@ impl DequantKernels {
         } else {
             (n as usize).div_ceil(DB_TILE_N)
         };
-        encoder.setComputePipelineState(if use_small {
-            self.fused_batch_q5_k_f16in_small.state()
-        } else {
-            self.fused_batch_q5_k_f16in.state()
-        });
+        crate::set_pipeline_cached(
+            encoder,
+            if use_small {
+                self.fused_batch_q5_k_f16in_small.state()
+            } else {
+                self.fused_batch_q5_k_f16in.state()
+            },
+        );
         bind_buffers(encoder, a, b, c);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, n);
@@ -3075,7 +3205,7 @@ impl DequantKernels {
                     if full_tile { 6144usize } else { 8192usize },
                 )
             };
-            encoder.setComputePipelineState(pipeline.state());
+            crate::set_pipeline_cached(encoder, pipeline.state());
             bind_buffers(encoder, a, b, c);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
@@ -3107,11 +3237,14 @@ impl DequantKernels {
             (n as usize).div_ceil(DB_TILE_N)
         };
 
-        encoder.setComputePipelineState(if use_small {
-            self.fused_batch_q6_k_small.state()
-        } else {
-            self.fused_batch_q6_k.state()
-        });
+        crate::set_pipeline_cached(
+            encoder,
+            if use_small {
+                self.fused_batch_q6_k_small.state()
+            } else {
+                self.fused_batch_q6_k.state()
+            },
+        );
         bind_buffers(encoder, a, b, c);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, n);
@@ -3164,7 +3297,7 @@ impl DequantKernels {
         } else {
             (&self.fused_batch_q4_k_blocked_silu, 8192usize)
         };
-        encoder.setComputePipelineState(pipeline.state());
+        crate::set_pipeline_cached(encoder, pipeline.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);
@@ -3222,7 +3355,7 @@ impl DequantKernels {
         } else {
             (&self.fused_batch_q6_k_blocked_silu, 4096usize)
         };
-        encoder.setComputePipelineState(pipeline.state());
+        crate::set_pipeline_cached(encoder, pipeline.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);
@@ -3297,7 +3430,7 @@ impl DequantKernels {
                 // then tail kernels for boundary tiles, then returns.
                 let groups_x = m_full.div_ceil(DB64_TILE_M);
                 if use_bn32 {
-                    encoder.setComputePipelineState(self.fused_batch_q4_k_f16in_full32.state());
+                    crate::set_pipeline_cached(encoder, self.fused_batch_q4_k_f16in_full32.state());
                     bind_buffers(encoder, a, b, c);
                     bind_u32(encoder, 3, m_full as u32);
                     bind_u32(encoder, 4, n_full as u32);
@@ -3317,11 +3450,14 @@ impl DequantKernels {
                     );
                 } else {
                     let use_bk32 = config.batch_f16in_use_bk32;
-                    encoder.setComputePipelineState(if use_bk32 {
-                        self.fused_batch_q4_k_f16in_full64_bk32.state()
-                    } else {
-                        self.fused_batch_q4_k_f16in_full64.state()
-                    });
+                    crate::set_pipeline_cached(
+                        encoder,
+                        if use_bk32 {
+                            self.fused_batch_q4_k_f16in_full64_bk32.state()
+                        } else {
+                            self.fused_batch_q4_k_f16in_full64.state()
+                        },
+                    );
                     bind_buffers(encoder, a, b, c);
                     bind_u32(encoder, 3, m_full as u32);
                     bind_u32(encoder, 4, n_full as u32);
@@ -3347,7 +3483,7 @@ impl DequantKernels {
                             return;
                         }
                         let groups_x = out_cols.div_ceil(DB_TILE_M);
-                        encoder.setComputePipelineState(self.fused_batch_q4_k_f16in.state());
+                        crate::set_pipeline_cached(encoder, self.fused_batch_q4_k_f16in.state());
                         unsafe {
                             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), a_off, 0);
                             encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
@@ -3381,7 +3517,10 @@ impl DequantKernels {
                         .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
                         .expect("C offset overflow");
                     if use_bn32 {
-                        encoder.setComputePipelineState(self.fused_batch_q4_k_f16in_tail32.state());
+                        crate::set_pipeline_cached(
+                            encoder,
+                            self.fused_batch_q4_k_f16in_tail32.state(),
+                        );
                         unsafe {
                             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
                             encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
@@ -3441,7 +3580,7 @@ impl DequantKernels {
         {
             let groups_x = (m as usize) / DB_TILE_M;
             let groups_y = (n as usize) / DB_TILE_N;
-            encoder.setComputePipelineState(self.fused_batch_q4_k_f16in_full.state());
+            crate::set_pipeline_cached(encoder, self.fused_batch_q4_k_f16in_full.state());
             bind_buffers(encoder, a, b, c);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
@@ -3468,11 +3607,14 @@ impl DequantKernels {
         } else {
             (n as usize).div_ceil(DB_TILE_N)
         };
-        encoder.setComputePipelineState(if use_small {
-            self.fused_batch_q4_k_f16in_small.state()
-        } else {
-            self.fused_batch_q4_k_f16in.state()
-        });
+        crate::set_pipeline_cached(
+            encoder,
+            if use_small {
+                self.fused_batch_q4_k_f16in_small.state()
+            } else {
+                self.fused_batch_q4_k_f16in.state()
+            },
+        );
         bind_buffers(encoder, a, b, c);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, n);
@@ -3533,7 +3675,7 @@ impl DequantKernels {
             if use_full_tiles && m_full > 0 && n_full > 0 {
                 let groups_x = m_full.div_ceil(DB64_TILE_M);
                 if use_bn32 {
-                    encoder.setComputePipelineState(self.fused_batch_q6_k_f16in_full32.state());
+                    crate::set_pipeline_cached(encoder, self.fused_batch_q6_k_f16in_full32.state());
                     bind_buffers(encoder, a, b, c);
                     bind_u32(encoder, 3, m_full as u32);
                     bind_u32(encoder, 4, n_full as u32);
@@ -3552,7 +3694,7 @@ impl DequantKernels {
                         },
                     );
                 } else {
-                    encoder.setComputePipelineState(self.fused_batch_q6_k_f16in_full64.state());
+                    crate::set_pipeline_cached(encoder, self.fused_batch_q6_k_f16in_full64.state());
                     bind_buffers(encoder, a, b, c);
                     bind_u32(encoder, 3, m_full as u32);
                     bind_u32(encoder, 4, n_full as u32);
@@ -3578,7 +3720,7 @@ impl DequantKernels {
                             return;
                         }
                         let groups_x = out_cols.div_ceil(DB_TILE_M);
-                        encoder.setComputePipelineState(self.fused_batch_q6_k_f16in.state());
+                        crate::set_pipeline_cached(encoder, self.fused_batch_q6_k_f16in.state());
                         unsafe {
                             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), a_off, 0);
                             encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
@@ -3612,7 +3754,10 @@ impl DequantKernels {
                         .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
                         .expect("C offset overflow");
                     if use_bn32 {
-                        encoder.setComputePipelineState(self.fused_batch_q6_k_f16in_tail32.state());
+                        crate::set_pipeline_cached(
+                            encoder,
+                            self.fused_batch_q6_k_f16in_tail32.state(),
+                        );
                         unsafe {
                             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
                             encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
@@ -3670,11 +3815,14 @@ impl DequantKernels {
         } else {
             (n as usize).div_ceil(DB_TILE_N)
         };
-        encoder.setComputePipelineState(if use_small {
-            self.fused_batch_q6_k_f16in_small.state()
-        } else {
-            self.fused_batch_q6_k_f16in.state()
-        });
+        crate::set_pipeline_cached(
+            encoder,
+            if use_small {
+                self.fused_batch_q6_k_f16in_small.state()
+            } else {
+                self.fused_batch_q6_k_f16in.state()
+            },
+        );
         bind_buffers(encoder, a, b, c);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, n);
@@ -3707,7 +3855,7 @@ impl DequantKernels {
         k: u32,
     ) {
         // DB_BM=32, DB_BN=64, DB_TG=256
-        encoder.setComputePipelineState(self.fused_batch_q8_0.state());
+        crate::set_pipeline_cached(encoder, self.fused_batch_q8_0.state());
         bind_buffers(encoder, a, b, c);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, n);
@@ -3721,6 +3869,76 @@ impl DequantKernels {
             },
             MTLSize {
                 width: 256, // DB_TG
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode a B-transposed blocked Q5_0 batch dequant + matmul with f16 input.
+    /// C[N×M] = B[N×K] × dequant(A[M×K])^T.  BM=64, BN=32, TG=128.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fused_batch_q5_0_blocked_f16in(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) {
+        const BLOCKED_TG: usize = 128;
+        crate::set_pipeline_cached(encoder, self.fused_batch_q5_0_blocked_f16in.state());
+        bind_buffers(encoder, a, b, c);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, n);
+        bind_u32(encoder, 5, k);
+        bind_u32(encoder, 6, m); // C_STRIDE = M
+        unsafe { encoder.setThreadgroupMemoryLength_atIndex(8192, 0) }; // sa=4KB + sb=2KB + output staging
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n as usize).div_ceil(32),
+                height: (m as usize).div_ceil(64),
+                depth: 1,
+            },
+            MTLSize {
+                width: BLOCKED_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode a B-transposed blocked Q5_1 batch dequant + matmul with f16 input.
+    /// C[N×M] = B[N×K] × dequant(A[M×K])^T.  BM=64, BN=32, TG=128.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fused_batch_q5_1_blocked_f16in(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        b: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) {
+        const BLOCKED_TG: usize = 128;
+        crate::set_pipeline_cached(encoder, self.fused_batch_q5_1_blocked_f16in.state());
+        bind_buffers(encoder, a, b, c);
+        bind_u32(encoder, 3, m);
+        bind_u32(encoder, 4, n);
+        bind_u32(encoder, 5, k);
+        bind_u32(encoder, 6, m); // C_STRIDE = M
+        unsafe { encoder.setThreadgroupMemoryLength_atIndex(8192, 0) };
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n as usize).div_ceil(32),
+                height: (m as usize).div_ceil(64),
+                depth: 1,
+            },
+            MTLSize {
+                width: BLOCKED_TG,
                 height: 1,
                 depth: 1,
             },
@@ -3746,7 +3964,7 @@ impl DequantKernels {
         if small_n_threshold > 1 && n < small_n_threshold && small_m_max > 0 && m <= small_m_max {
             let groups_x = (m as usize).div_ceil(DB_TILE_M);
             let groups_y = (n as usize).div_ceil(SB_TILE_N);
-            encoder.setComputePipelineState(self.fused_batch_q8_0_f16in_small.state());
+            crate::set_pipeline_cached(encoder, self.fused_batch_q8_0_f16in_small.state());
             bind_buffers(encoder, a, b, c);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
@@ -3770,11 +3988,14 @@ impl DequantKernels {
         if batch_q8_blocked_enabled() && k.is_multiple_of(Q8_0_BLOCK_VALUES as u32) {
             const BLOCKED_TG: usize = 128;
             let full_tile = (m as usize).is_multiple_of(64) && (n as usize).is_multiple_of(32);
-            encoder.setComputePipelineState(if full_tile {
-                self.fused_batch_q8_0_blocked_f16in_fulltile.state()
-            } else {
-                self.fused_batch_q8_0_blocked_f16in.state()
-            });
+            crate::set_pipeline_cached(
+                encoder,
+                if full_tile {
+                    self.fused_batch_q8_0_blocked_f16in_fulltile.state()
+                } else {
+                    self.fused_batch_q8_0_blocked_f16in.state()
+                },
+            );
             bind_buffers(encoder, a, b, c);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
@@ -3834,11 +4055,14 @@ impl DequantKernels {
                     n_full / DB64_TILE_N
                 };
                 if use_small32x32 {
-                    encoder.setComputePipelineState(self.fused_batch_q8_0_f16in_full32x32.state());
+                    crate::set_pipeline_cached(
+                        encoder,
+                        self.fused_batch_q8_0_f16in_full32x32.state(),
+                    );
                 } else if use_bn32 {
-                    encoder.setComputePipelineState(self.fused_batch_q8_0_f16in_full32.state());
+                    crate::set_pipeline_cached(encoder, self.fused_batch_q8_0_f16in_full32.state());
                 } else {
-                    encoder.setComputePipelineState(self.fused_batch_q8_0_f16in_full64.state());
+                    crate::set_pipeline_cached(encoder, self.fused_batch_q8_0_f16in_full64.state());
                 }
                 bind_buffers(encoder, a, b, c);
                 bind_u32(encoder, 3, m);
@@ -3876,7 +4100,7 @@ impl DequantKernels {
                 .and_then(|x| x.checked_mul(std::mem::size_of::<f32>()))
                 .expect("C offset overflow");
             if use_bn32 {
-                encoder.setComputePipelineState(self.fused_batch_q8_0_f16in_tail32.state());
+                crate::set_pipeline_cached(encoder, self.fused_batch_q8_0_f16in_tail32.state());
                 unsafe {
                     encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
                     encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
@@ -3901,7 +4125,7 @@ impl DequantKernels {
             } else {
                 let groups_x = (m as usize).div_ceil(DB_TILE_M);
                 let groups_y = n_tail.div_ceil(DB_TILE_N);
-                encoder.setComputePipelineState(self.fused_batch_q8_0_f16in.state());
+                crate::set_pipeline_cached(encoder, self.fused_batch_q8_0_f16in.state());
                 unsafe {
                     encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
                     encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
@@ -3933,7 +4157,7 @@ impl DequantKernels {
             if n_full > 0 {
                 let groups_x = (m as usize) / DB_TILE_M;
                 let groups_y = n_full / DB_TILE_N;
-                encoder.setComputePipelineState(self.fused_batch_q8_0_f16in_full.state());
+                crate::set_pipeline_cached(encoder, self.fused_batch_q8_0_f16in_full.state());
                 bind_buffers(encoder, a, b, c);
                 bind_u32(encoder, 3, m);
                 bind_u32(encoder, 4, n_full as u32);
@@ -3965,7 +4189,7 @@ impl DequantKernels {
                 .expect("C offset overflow");
             let groups_x = (m as usize).div_ceil(DB_TILE_M);
             let groups_y = n_tail.div_ceil(DB_TILE_N);
-            encoder.setComputePipelineState(self.fused_batch_q8_0_f16in.state());
+            crate::set_pipeline_cached(encoder, self.fused_batch_q8_0_f16in.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
@@ -3992,7 +4216,7 @@ impl DequantKernels {
 
         let groups_x = (m as usize).div_ceil(DB_TILE_M);
         let groups_y = (n as usize).div_ceil(DB_TILE_N);
-        encoder.setComputePipelineState(self.fused_batch_q8_0_f16in.state());
+        crate::set_pipeline_cached(encoder, self.fused_batch_q8_0_f16in.state());
         bind_buffers(encoder, a, b, c);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, n);
@@ -4030,7 +4254,7 @@ impl DequantKernels {
     ) {
         let groups_x = (m as usize).div_ceil(DB_TILE_M);
         let groups_y = (n as usize).div_ceil(PB_TILE_N);
-        encoder.setComputePipelineState(self.fused_batch_pair_q4_k.state());
+        crate::set_pipeline_cached(encoder, self.fused_batch_pair_q4_k.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a0.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(a1.mtl_buffer()), 0, 1);
@@ -4073,7 +4297,7 @@ impl DequantKernels {
     ) {
         let groups_x = (m as usize).div_ceil(DB_TILE_M);
         let groups_y = (n as usize).div_ceil(PB_TILE_N);
-        encoder.setComputePipelineState(self.fused_batch_pair_q6_k.state());
+        crate::set_pipeline_cached(encoder, self.fused_batch_pair_q6_k.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a0.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(a1.mtl_buffer()), 0, 1);
@@ -4114,7 +4338,7 @@ impl DequantKernels {
     ) {
         let groups_x = (m as usize).div_ceil(DB_TILE_M);
         let groups_y = (n as usize).div_ceil(P16_TILE_N);
-        encoder.setComputePipelineState(self.fused_batch_pair_q4_k_f16in.state());
+        crate::set_pipeline_cached(encoder, self.fused_batch_pair_q4_k_f16in.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a0.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(a1.mtl_buffer()), 0, 1);
@@ -4155,7 +4379,7 @@ impl DequantKernels {
     ) {
         let groups_x = (m as usize).div_ceil(DB_TILE_M);
         let groups_y = (n as usize).div_ceil(P16_TILE_N);
-        encoder.setComputePipelineState(self.fused_batch_pair_q6_k_f16in.state());
+        crate::set_pipeline_cached(encoder, self.fused_batch_pair_q6_k_f16in.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a0.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(a1.mtl_buffer()), 0, 1);
@@ -4196,7 +4420,7 @@ impl DequantKernels {
     ) {
         let groups_x = (m as usize).div_ceil(DB_TILE_M);
         let groups_y = (n as usize).div_ceil(P16_TILE_N);
-        encoder.setComputePipelineState(self.fused_batch_pair_q5_k_f16in.state());
+        crate::set_pipeline_cached(encoder, self.fused_batch_pair_q5_k_f16in.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a0.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(a1.mtl_buffer()), 0, 1);
@@ -4243,7 +4467,7 @@ impl DequantKernels {
             if n_full > 0 {
                 let groups_x = (m as usize) / DB_TILE_M;
                 let groups_y = n_full / P16_TILE_N;
-                encoder.setComputePipelineState(self.fused_batch_pair_q8_0_f16in_full.state());
+                crate::set_pipeline_cached(encoder, self.fused_batch_pair_q8_0_f16in_full.state());
                 unsafe {
                     encoder.setBuffer_offset_atIndex(Some(a0.mtl_buffer()), 0, 0);
                     encoder.setBuffer_offset_atIndex(Some(a1.mtl_buffer()), 0, 1);
@@ -4280,7 +4504,7 @@ impl DequantKernels {
                 .expect("C offset overflow");
             let groups_x = (m as usize).div_ceil(DB_TILE_M);
             let groups_y = n_tail.div_ceil(P16_TILE_N);
-            encoder.setComputePipelineState(self.fused_batch_pair_q8_0_f16in.state());
+            crate::set_pipeline_cached(encoder, self.fused_batch_pair_q8_0_f16in.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(a0.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(a1.mtl_buffer()), 0, 1);
@@ -4308,7 +4532,7 @@ impl DequantKernels {
 
         let groups_x = (m as usize).div_ceil(DB_TILE_M);
         let groups_y = (n as usize).div_ceil(P16_TILE_N);
-        encoder.setComputePipelineState(self.fused_batch_pair_q8_0_f16in.state());
+        crate::set_pipeline_cached(encoder, self.fused_batch_pair_q8_0_f16in.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a0.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(a1.mtl_buffer()), 0, 1);
@@ -4348,7 +4572,7 @@ impl DequantKernels {
         n_expert_used: u32,
         n_expert: u32,
     ) {
-        encoder.setComputePipelineState(self.moe_map0.state());
+        crate::set_pipeline_cached(encoder, self.moe_map0.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(expert_ids.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(tpe.mtl_buffer()), 0, 1);
@@ -4397,9 +4621,9 @@ impl DequantKernels {
         // Use blocked 64×32 kernel when M >= 64, else fallback to 32×32.
         let use_blocked = m >= 64;
         if use_blocked {
-            encoder.setComputePipelineState(self.moe_mul_mat_id_q4_k_blocked.state());
+            crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q4_k_blocked.state());
         } else {
-            encoder.setComputePipelineState(self.moe_mul_mat_id_q4_k.state());
+            crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q4_k.state());
         }
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
@@ -4460,7 +4684,113 @@ impl DequantKernels {
         n_active_experts: u32,
         input_is_hid: bool,
     ) {
-        encoder.setComputePipelineState(self.moe_mul_mat_id_q5_k_blocked.state());
+        crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q5_k_blocked.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(tpe.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(hids.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 4);
+        }
+        bind_u32(encoder, 5, m);
+        bind_u32(encoder, 6, k);
+        bind_u32(encoder, 7, n_tokens);
+        bind_u32(encoder, 8, n_expert_used);
+        bind_u32(encoder, 9, weight_stride);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(active_experts.mtl_buffer()), 0, 10);
+            encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+        }
+        bind_u32(encoder, 11, u32::from(input_is_hid));
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n_tokens as usize).div_ceil(32),
+                height: (m as usize).div_ceil(64),
+                depth: n_active_experts as usize,
+            },
+            MTLSize {
+                width: 128,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode MoE mul_mat_id for Q6_K using the blocked 64x32 kernel.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_moe_mul_mat_id_q6_k(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        weights: &MetalBuffer,
+        input: &MetalBuffer,
+        tpe: &MetalBuffer,
+        hids: &MetalBuffer,
+        output: &MetalBuffer,
+        m: u32,
+        k: u32,
+        n_tokens: u32,
+        n_expert_used: u32,
+        _n_expert: u32,
+        weight_stride: u32,
+        active_experts: &MetalBuffer,
+        n_active_experts: u32,
+        input_is_hid: bool,
+    ) {
+        crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q6_k_blocked.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(tpe.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(hids.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 4);
+        }
+        bind_u32(encoder, 5, m);
+        bind_u32(encoder, 6, k);
+        bind_u32(encoder, 7, n_tokens);
+        bind_u32(encoder, 8, n_expert_used);
+        bind_u32(encoder, 9, weight_stride);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(active_experts.mtl_buffer()), 0, 10);
+        }
+        bind_u32(encoder, 11, u32::from(input_is_hid));
+        unsafe {
+            encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n_tokens as usize).div_ceil(32),
+                height: (m as usize).div_ceil(64),
+                depth: n_active_experts as usize,
+            },
+            MTLSize {
+                width: 128,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode MoE mul_mat_id for Q8_0.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_moe_mul_mat_id_q8_0(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        weights: &MetalBuffer,
+        input: &MetalBuffer,
+        tpe: &MetalBuffer,
+        hids: &MetalBuffer,
+        output: &MetalBuffer,
+        m: u32,
+        k: u32,
+        n_tokens: u32,
+        n_expert_used: u32,
+        _n_expert: u32,
+        weight_stride: u32,
+        active_experts: &MetalBuffer,
+        n_active_experts: u32,
+        input_is_hid: bool,
+    ) {
+        crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q8_0_blocked.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
@@ -4508,9 +4838,9 @@ impl DequantKernels {
         use_matvec_kernel: bool,
     ) {
         if use_matvec_kernel {
-            encoder.setComputePipelineState(self.moe_mul_mat_selected_q4_k_matvec.state());
+            crate::set_pipeline_cached(encoder, self.moe_mul_mat_selected_q4_k_matvec.state());
         } else {
-            encoder.setComputePipelineState(self.moe_mul_mat_selected_q4_k_blocked.state());
+            crate::set_pipeline_cached(encoder, self.moe_mul_mat_selected_q4_k_blocked.state());
         }
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
@@ -4575,9 +4905,12 @@ impl DequantKernels {
         use_matvec_kernel: bool,
     ) {
         if use_matvec_kernel {
-            encoder.setComputePipelineState(self.moe_mul_mat_selected_pair_q4_k_matvec.state());
+            crate::set_pipeline_cached(encoder, self.moe_mul_mat_selected_pair_q4_k_matvec.state());
         } else {
-            encoder.setComputePipelineState(self.moe_mul_mat_selected_pair_q4_k_blocked.state());
+            crate::set_pipeline_cached(
+                encoder,
+                self.moe_mul_mat_selected_pair_q4_k_blocked.state(),
+            );
         }
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights0.mtl_buffer()), 0, 0);
@@ -4640,7 +4973,10 @@ impl DequantKernels {
         n_selected: u32,
         weight_stride: u32,
     ) {
-        encoder.setComputePipelineState(self.moe_mul_mat_selected_weighted_q4_k_blocked.state());
+        crate::set_pipeline_cached(
+            encoder,
+            self.moe_mul_mat_selected_weighted_q4_k_blocked.state(),
+        );
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
@@ -4683,7 +5019,7 @@ impl DequantKernels {
         weight_stride: u32,
         input_is_slot_major: bool,
     ) {
-        encoder.setComputePipelineState(self.moe_mul_mat_selected_q5_k_blocked.state());
+        crate::set_pipeline_cached(encoder, self.moe_mul_mat_selected_q5_k_blocked.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
@@ -4729,7 +5065,7 @@ impl DequantKernels {
         weight_stride1: u32,
         input_is_slot_major: bool,
     ) {
-        encoder.setComputePipelineState(self.moe_mul_mat_selected_pair_q5_k_blocked.state());
+        crate::set_pipeline_cached(encoder, self.moe_mul_mat_selected_pair_q5_k_blocked.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights0.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(weights1.mtl_buffer()), 0, 1);
@@ -4775,7 +5111,10 @@ impl DequantKernels {
         n_selected: u32,
         weight_stride: u32,
     ) {
-        encoder.setComputePipelineState(self.moe_mul_mat_selected_weighted_q5_k_blocked.state());
+        crate::set_pipeline_cached(
+            encoder,
+            self.moe_mul_mat_selected_weighted_q5_k_blocked.state(),
+        );
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
@@ -4826,23 +5165,26 @@ impl DequantKernels {
             1,
         );
         let use_slots8 = use_slots8_kernel && n_selected == 8;
-        encoder.setComputePipelineState(if use_nr2_kernel {
-            if use_slots8 {
-                self.moe_fused_silu_down_selected_weighted_q5_k_matvec_slots8_nr2
-                    .state()
+        crate::set_pipeline_cached(
+            encoder,
+            if use_nr2_kernel {
+                if use_slots8 {
+                    self.moe_fused_silu_down_selected_weighted_q5_k_matvec_slots8_nr2
+                        .state()
+                } else {
+                    self.moe_fused_silu_down_selected_weighted_q5_k_matvec_nr2
+                        .state()
+                }
             } else {
-                self.moe_fused_silu_down_selected_weighted_q5_k_matvec_nr2
-                    .state()
-            }
-        } else {
-            if use_slots8 {
-                self.moe_fused_silu_down_selected_weighted_q5_k_matvec_slots8
-                    .state()
-            } else {
-                self.moe_fused_silu_down_selected_weighted_q5_k_matvec
-                    .state()
-            }
-        });
+                if use_slots8 {
+                    self.moe_fused_silu_down_selected_weighted_q5_k_matvec_slots8
+                        .state()
+                } else {
+                    self.moe_fused_silu_down_selected_weighted_q5_k_matvec
+                        .state()
+                }
+            },
+        );
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);

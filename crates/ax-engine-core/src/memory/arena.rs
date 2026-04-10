@@ -22,13 +22,12 @@ impl Arena {
     /// The returned slice is zero-initialized.
     pub fn alloc_f32(&mut self, n: usize) -> &mut [f32] {
         let start = self.cursor;
-        let end = start.saturating_add(n);
+        let end = start.checked_add(n).expect("arena allocation overflow");
 
         if end > self.buf.len() {
             self.buf.resize(end, 0.0);
-        } else {
-            self.buf[start..end].fill(0.0);
         }
+        self.buf[start..end].fill(0.0);
 
         self.cursor = end;
         &mut self.buf[start..end]
@@ -74,5 +73,17 @@ mod tests {
         let mut arena = Arena::with_capacity(1);
         let s = arena.alloc_f32(16);
         assert_eq!(s.len(), 16);
+    }
+
+    #[test]
+    fn grow_after_reset_is_zeroed() {
+        let mut arena = Arena::with_capacity(1);
+        let s1 = arena.alloc_f32(100);
+        s1[50] = 42.0;
+        arena.reset();
+        let _s2 = arena.alloc_f32(50);
+        let s3 = arena.alloc_f32(100);
+        // s3 overlaps stale region buf[50..100] from s1 — must be zeroed
+        assert!(s3.iter().all(|&v| v == 0.0));
     }
 }

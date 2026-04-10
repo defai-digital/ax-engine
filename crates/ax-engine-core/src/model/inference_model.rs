@@ -136,13 +136,22 @@ impl InferenceModel {
         // The standard check fails on those missing tensors, so use an
         // attention-only check for known pure-MoE architectures.
         if self.config.architecture == "qwen3moe" {
-            return crate::model::qwen3_moe::Qwen3MoeForward::moe_gpu_decode_supported(
+            let attn_ok = crate::model::qwen3_moe::Qwen3MoeForward::moe_gpu_decode_supported(
                 &self.config,
                 weights,
-            )
-                && crate::model::qwen3_moe::Qwen3MoeForward::moe_gpu_expert_dispatch_supported(
+            );
+            let expert_ok =
+                crate::model::qwen3_moe::Qwen3MoeForward::moe_gpu_expert_dispatch_supported(
                     weights,
                 );
+            let result = attn_ok && expert_ok;
+            tracing::info!(
+                attn_ok,
+                expert_ok,
+                result,
+                "qwen3moe gpu_decode_supported_for_weights"
+            );
+            return result;
         }
         gpu_decode_quant_supported(&self.config, weights)
     }

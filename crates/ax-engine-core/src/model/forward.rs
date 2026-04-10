@@ -53,6 +53,14 @@ pub trait ForwardPass: Send + Sync + std::fmt::Debug {
 
     /// Run batched prefill: process all tokens, return only last token's logits.
     ///
+    /// # Error contract
+    ///
+    /// If `forward_single` fails on token `i` (where `i > 0`), tokens
+    /// `0..i` are already committed to the KV cache. The caller **must not**
+    /// assume KV is unchanged on error — `kv.seq_len()` reflects the partial
+    /// advancement. Callers that propagate the error should treat the session
+    /// as unrecoverable (no KV rollback is performed).
+    ///
     /// # v2 default: gate on `use_gpu_decode()`
     ///
     /// The default implementation (used when an architecture does not override)
@@ -80,7 +88,16 @@ pub trait ForwardPass: Send + Sync + std::fmt::Debug {
         let start_pos = kv.seq_len();
         for (i, &tid) in token_ids.iter().enumerate() {
             logits.fill(0.0);
-            self.forward_single(ctx, tid, start_pos + i, kv, weights, logits, None)?;
+            if let Err(e) = self.forward_single(ctx, tid, start_pos + i, kv, weights, logits, None)
+            {
+                tracing::warn!(
+                    processed = i,
+                    total = token_ids.len(),
+                    "forward_batch failed after {i}/{} tokens; KV cache partially advanced",
+                    token_ids.len()
+                );
+                return Err(e);
+            }
         }
         Ok(())
     }
@@ -203,6 +220,6 @@ pub trait ForwardPass: Send + Sync + std::fmt::Debug {
     /// Validate that the model config is compatible with this architecture.
     fn validate_config(&self, config: &ModelConfig) -> anyhow::Result<()>;
 
-    /// Return the architecture name (e.g. "llama", "qwen3", "gemma3").
+    /// Return the architecture name (e.g. "qwen35", "gemma3", "gemma4").
     fn arch_name(&self) -> &str;
 }

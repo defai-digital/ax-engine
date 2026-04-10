@@ -11,7 +11,7 @@ impl ForwardPass for Qwen3MoeForward {
     ) -> anyhow::Result<()> {
         // GPU decode path — requires both attention and MoE expert weights
         // to be GPU-compatible. Attention weights must be Q4K/Q5K/Q6K/Q8_0,
-        // and expert weights must be Q4K/Q5K for the Metal mul_mat_id path.
+        // and routed expert weights may mix Q4K/Q5K/Q6K/Q8_0 across gate/up/down.
         if ctx.backend.use_gpu_decode()
             && let Some(metal_ops) = ctx.backend.metal_ops()
             && let Some(gpu_kv) = kv.as_gpu_mut()
@@ -270,6 +270,34 @@ impl ForwardPass for Qwen3MoeForward {
             }
             return Ok(());
         }
+
+        // Mirror the non-profiled forward_batch GPU dispatch logic.
+        let prefill_plan = crate::model::execution_plan::PrefillExecutionPlan::for_forward_batch(
+            ctx,
+            kv,
+            weights,
+            n_tokens,
+            false,
+        )?;
+        if matches!(
+            prefill_plan.mode,
+            crate::model::execution_plan::PrefillMode::GpuBatch
+                | crate::model::execution_plan::PrefillMode::GpuChunked
+        ) {
+            let metal_ops = ctx.backend.metal_ops().unwrap();
+            let gpu_kv = kv.as_gpu_mut().unwrap();
+            return self.forward_batch_gpu_unified(
+                ctx,
+                metal_ops,
+                token_ids,
+                gpu_kv,
+                weights,
+                Some(logits),
+                None,
+                Some(ops),
+            );
+        }
+
         self.forward_batch_token_major(ctx, token_ids, kv, weights, logits, Some(ops))
     }
 
@@ -316,12 +344,24 @@ impl Qwen3MoeForward {
         true
     }
 
-    /// Check if MoE expert weights support the GPU mul_mat_id path (Q4K/Q5K only).
+    pub(crate) fn moe_gpu_expert_dtype_supported(dtype: crate::gguf::tensor::GgmlType) -> bool {
+        // Q6K/Q8_0 MoE mul_mat_id blocked kernels store input (B-tile) as half
+        // in threadgroup memory. For the MoE down projection, the input is
+        // SiLU(gate)*up which can exceed half max (65504), causing -inf/NaN.
+        // New f32-tile kernels (moe_mul_mat_id_q6_k / moe_mul_mat_id_q8_0)
+        // exist in the shaders but need integration testing at full model
+        // dimensions before enabling.
+        matches!(
+            dtype,
+            crate::gguf::tensor::GgmlType::Q4K | crate::gguf::tensor::GgmlType::Q5K
+        )
+    }
+
+    /// Check if MoE expert weights support the GPU mul_mat_id path.
     pub fn moe_gpu_expert_dispatch_supported(weights: &WeightStore) -> bool {
-        use crate::gguf::tensor::GgmlType;
         let check = |name: &str| -> bool {
             if let Ok((_, dtype)) = weights.raw_with_dtype(name) {
-                matches!(dtype, GgmlType::Q4K | GgmlType::Q5K)
+                Self::moe_gpu_expert_dtype_supported(dtype)
             } else {
                 false
             }

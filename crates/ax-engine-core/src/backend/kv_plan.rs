@@ -55,6 +55,9 @@ pub struct GpuKvPlan {
     pub page_size: usize,
     pub dtype: GpuKvDtype,
     pub fallback: CpuKvPlan,
+    /// Per-layer KV strides for models with variable KV geometry (e.g. Gemma4).
+    /// When `Some`, each layer gets its own stride instead of uniform n_kv_heads*head_dim.
+    pub per_layer_strides: Option<Vec<usize>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,10 +121,25 @@ impl KvPlanner {
         let plan = if matches!(config.architecture.as_str(), "qwen35" | "qwen35moe") {
             KvPlan::Qwen35(validate_qwen35_plan(config, page_size, max_seq_len)?)
         } else {
+            // For models with per-layer variable head dimensions (e.g. Gemma 4 with
+            // SWA head_dim=256/n_kv=16 and global head_dim=512/n_kv=4), the KV cache
+            // stride must be the maximum *product* n_kv_heads * head_dim across all
+            // layer types. Taking max(n_kv) * max(head_dim) overcounts: for Gemma4 31B
+            // that gives 16 * 512 = 8192 instead of max(16*256, 4*512) = 4096.
+            let swa_n_kv = config.gemma4_n_kv_heads_swa.unwrap_or(config.n_kv_heads) as usize;
+            let swa_hd = config.gemma4_head_dim_swa.unwrap_or(config.head_dim) as usize;
+            let global_n_kv = config.gemma4_n_kv_heads_global.unwrap_or(config.n_kv_heads) as usize;
+            let global_hd = config.gemma4_head_dim_global.unwrap_or(config.head_dim) as usize;
+            let (max_n_kv_heads, max_kv_head_dim) = if swa_n_kv * swa_hd >= global_n_kv * global_hd
+            {
+                (swa_n_kv, swa_hd)
+            } else {
+                (global_n_kv, global_hd)
+            };
             let cpu_fallback = CpuKvPlan {
                 n_layers: config.n_layers as usize,
-                n_kv_heads: config.n_kv_heads as usize,
-                head_dim: config.head_dim as usize,
+                n_kv_heads: max_n_kv_heads,
+                head_dim: max_kv_head_dim,
                 max_seq_len,
                 page_size,
             };
@@ -130,14 +148,38 @@ impl KvPlanner {
                 let runtime_policy = backend
                     .runtime_policy()
                     .unwrap_or_else(RuntimePolicy::resolved_defaults);
+                // Build per-layer strides for Gemma4 when SWA/global differ.
+                let per_layer_strides = if config.gemma4_head_dim_swa.is_some()
+                    || config.gemma4_n_kv_heads_swa.is_some()
+                {
+                    let n_layers = config.n_layers as usize;
+                    let strides: Vec<usize> = (0..n_layers)
+                        .map(|layer| {
+                            let (_hd, _nkv, _q_dim, kv_dim) =
+                                crate::model::arch::gemma4::Gemma4Forward::layer_dims(
+                                    layer, config,
+                                );
+                            kv_dim
+                        })
+                        .collect();
+                    // Only use per-layer if strides actually differ.
+                    if strides.windows(2).any(|w| w[0] != w[1]) {
+                        Some(strides)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 KvPlan::Gpu(GpuKvPlan {
                     n_layers: config.n_layers as usize,
-                    n_kv_heads: config.n_kv_heads as usize,
-                    head_dim: config.head_dim as usize,
+                    n_kv_heads: max_n_kv_heads,
+                    head_dim: max_kv_head_dim,
                     max_seq_len,
                     page_size,
                     dtype: runtime_policy.gpu_kv_dtype(max_seq_len),
                     fallback: cpu_fallback,
+                    per_layer_strides,
                 })
             } else {
                 KvPlan::Cpu(cpu_fallback)
@@ -359,15 +401,27 @@ fn build_gpu_kv(plan: &GpuKvPlan, backend: &dyn Backend) -> ModelKv {
         return ModelKv::Cpu(build_cpu_kv(&plan.fallback));
     };
 
-    match GpuKv::new_with_dtype(
-        &metal_ops.device,
-        plan.n_layers,
-        plan.n_kv_heads,
-        plan.head_dim,
-        plan.max_seq_len,
-        plan.page_size,
-        plan.dtype,
-    ) {
+    let result = if let Some(ref strides) = plan.per_layer_strides {
+        GpuKv::new_with_per_layer_strides(
+            &metal_ops.device,
+            plan.n_layers,
+            strides.clone(),
+            plan.max_seq_len,
+            plan.page_size,
+            plan.dtype,
+        )
+    } else {
+        GpuKv::new_with_dtype(
+            &metal_ops.device,
+            plan.n_layers,
+            plan.n_kv_heads,
+            plan.head_dim,
+            plan.max_seq_len,
+            plan.page_size,
+            plan.dtype,
+        )
+    };
+    match result {
         Ok(gpu_kv) => {
             tracing::info!(kv_dtype = ?plan.dtype, "Initialized GPU KV cache");
             ModelKv::Gpu(gpu_kv)
@@ -443,7 +497,7 @@ mod tests {
 
     fn base_config() -> ModelConfig {
         ModelConfig {
-            architecture: "llama".into(),
+            architecture: "gemma3".into(),
             n_layers: 32,
             n_heads: 32,
             n_kv_heads: 8,
@@ -755,6 +809,39 @@ mod tests {
 
         assert_eq!(estimate.initial_bytes, 7_450_624);
         assert_eq!(estimate.max_bytes, 70_365_184);
+    }
+
+    #[test]
+    fn test_gemma4_kv_stride_uses_max_product_not_max_dims() {
+        // Gemma4 31B: SWA has n_kv=16, hd=256 (stride=4096)
+        //             Global has n_kv=4, hd=512 (stride=2048)
+        // Correct max stride = max(4096, 2048) = 4096.
+        // The bug would give max(16,4) * max(512,256) = 16*512 = 8192.
+        let backend = TestBackend {
+            use_gpu_decode: false,
+            runtime_policy: None,
+        };
+        let mut config = base_config();
+        config.architecture = "gemma4".into();
+        config.n_kv_heads = 16;
+        config.head_dim = 256;
+        config.gemma4_n_kv_heads_swa = Some(16);
+        config.gemma4_head_dim_swa = Some(256);
+        config.gemma4_n_kv_heads_global = Some(4);
+        config.gemma4_head_dim_global = Some(512);
+        config.context_length = 1024;
+
+        let plan = KvPlanner::plan(&backend, &config);
+        match plan {
+            KvPlan::Cpu(p) => {
+                assert_eq!(
+                    p.n_kv_heads * p.head_dim,
+                    4096,
+                    "Gemma4 KV stride should be max(16*256, 4*512)=4096, not max(16)*max(512)=8192"
+                );
+            }
+            other => panic!("expected CPU plan, got {other:?}"),
+        }
     }
 
     #[test]

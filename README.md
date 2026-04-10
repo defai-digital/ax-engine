@@ -333,19 +333,19 @@ faster.
 | Model | Quant | AX Prefill | AX Decode | llama Prefill | llama Decode | Prefill % | Decode % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | Gemma 4 26B-A4B | Q4_K_M | 1,947 tok/s | 76.8 tok/s | 1,215 tok/s | 68.4 tok/s | **160%** | **112%** |
-| Gemma 4 26B-A4B | Q5_K_M | 18.2 tok/s | 11.9 tok/s | 642 tok/s | 35.5 tok/s | 3% | 34% |
+| Gemma 4 26B-A4B | Q5_K_M | 18.9 tok/s | 12.0 tok/s | 642 tok/s | 35.5 tok/s | 3% | 34% |
 | Gemma 4 26B-A4B | Q6_K | 883 tok/s | 49.3 tok/s | 764 tok/s | 44.2 tok/s | **116%** | **111%** |
 | Gemma 4 26B-A4B | Q8_0 | 1,043 tok/s | 54.3 tok/s | 980 tok/s | 51.7 tok/s | **106%** | **105%** |
 | Gemma 4 31B | Q4_K_M | 115 tok/s | 8.6 tok/s | 86 tok/s | 6.8 tok/s | **133%** | **126%** |
 | Qwen 3.5 9B | Q4_K_M | 592 tok/s | 44.4 tok/s | 718 tok/s | 47.5 tok/s | 82% | 94% |
 | Qwen 3.5 27B | Q4_K_M | 184 tok/s | 13.5 tok/s | 170 tok/s | 12.0 tok/s | **108%** | **113%** |
 | Qwen 3.5 35B-A3B | Q4_K_M | 757 tok/s | 41.4 tok/s | 961 tok/s | 54.4 tok/s | 79% | 76% |
-| Qwen 3 Coder 30B-A3B | Q4_K_M | 6.4 tok/s | 4.7 tok/s | 903 tok/s | 87.0 tok/s | 1% | 5% |
-| Qwen 3 Coder 30B-A3B | Q5_K_M | 6.3 tok/s | 4.4 tok/s | 1,151 tok/s | 79.6 tok/s | 1% | 6% |
-| Qwen 3 Coder 30B-A3B | Q6_K | 6.7 tok/s | 4.9 tok/s | 1,205 tok/s | 79.5 tok/s | 1% | 6% |
-| Qwen 3 Coder 30B-A3B | Q8_0 | 8.1 tok/s | 5.4 tok/s | 1,284 tok/s | 70.3 tok/s | 1% | 8% |
+| Qwen 3 Coder 30B-A3B | Q4_K_M | 50.5 tok/s | 50.2 tok/s | 903 tok/s | 87.0 tok/s | 5.6% | 57.7% |
+| Qwen 3 Coder 30B-A3B | Q5_K_M | 44.4 tok/s | 44.2 tok/s | 1,151 tok/s | 79.6 tok/s | 3.9% | 55.5% |
+| Qwen 3 Coder 30B-A3B | Q6_K | 27.3 tok/s | 27.4 tok/s | 1,205 tok/s | 79.5 tok/s | 2.3% | 34.4% |
+| Qwen 3 Coder 30B-A3B | Q8_0 | 19.2 tok/s | 18.9 tok/s | 1,284 tok/s | 70.3 tok/s | 1.5% | 26.9% |
 
-All benchmarks: P=512, 128-token decode, f16 KV, flash attention, Apple M3 Max, llama.cpp build 15f786e65 (b8680), 20-30s cooldown between runs, alternating AX/llama per model (2026-04-09).
+Benchmark notes: P=512, 128-token decode, f16 KV, flash attention, Apple M3 Max, llama.cpp build 15f786e65 (b8680). Rows not otherwise noted come from full apple-to-apple 5-sample runs with 20-30s cooldown on April 9, 2026. Qwen 3 Coder rows were refreshed AX-only on April 9, 2026 against the same-day 5-sample/20s-cooldown llama.cpp baselines from the earlier full runs.
 
 **Gemma 4 26B-A4B** (MoE) full quant sweep: Q4_K_M **160%/112%**, Q6_K **116%/111%**, Q8_0 **106%/105%** — AX beats llama.cpp across all working quant types. Q5_K_M is broken (3% prefill, 31% decode) — GPU batch prefill falls back to serial for Q5_K on Gemma4 MoE, under investigation. Full GPU batch prefill with per-layer KV strides (SWA=2048, global=1024), FA2 attention on all 30 layers.
 
@@ -355,9 +355,9 @@ All benchmarks: P=512, 128-token decode, f16 KV, flash attention, Apple M3 Max, 
 
 **Qwen 3.5 9B**: AX at 82% prefill, 94% decode. The 9B model has fewer layers to amortize dispatch overhead over.
 
-**Qwen 3.5 35B-A3B** (MoE): AX at 79% prefill, 76% decode. Gap driven by expert kernel overhead — MoE dispatch uses CPU batch path.
+**Qwen 3.5 35B-A3B** (MoE): AX at 79% prefill, 76% decode. Gap driven by expert kernel overhead — MoE dispatch uses CPU batch path. This row is unchanged from the earlier April 9, 2026 run; it was not refreshed in the Qwen 3 Coder update because a quick current-branch sanity rerun hit a Metal GPU hang.
 
-**Qwen 3 Coder 30B-A3B** (MoE, new): CPU-only path — all quants fall back to CPU decode because the Metal MoE mul_mat_id kernel only supports Q4_K/Q5_K expert weights, and GGUF quant schemes use Q6_K (Q4_K_M/Q5_K_M down weights) or Q8_0 for expert tensors. GPU MoE support for Q6_K/Q8_0 expert weights is the next optimization target.
+**Qwen 3 Coder 30B-A3B** (MoE, refreshed): AX now runs all four shipped quants on GPU KV + single-CB decode. Routed expert coverage now matches the GGUF expert mixes used by these files (`Q4_K_M`: gate/up `Q4_K`, down `Q6_K`; `Q5_K_M`: gate/up `Q5_K`, down `Q6_K`; `Q6_K`; `Q8_0`), which lifts decode from the old 5-8% range to 26.9-57.7% of llama.cpp. Prefill no longer falls back to CPU, but it remains the main bottleneck, especially for `Q6_K` and `Q8_0`.
 
 All prefill uses FA2 simd cached kernel with direct device K/V loads and half×half MMA. Decode uses split-K attention (chunk_size=128, threshold=32).
 
@@ -380,7 +380,31 @@ See [docs/BEST-PRACTICES.md](./docs/BEST-PRACTICES.md) for use cases and recomme
 
 **Multi-model**: Per-model Metal command queues and KV caches, graceful OOM handling, explicit GPU/CPU backend per model, thread-safe (`Arc`/`Mutex`).
 
-**Integration**: core runtime (`ax-engine-core`), high-level Rust SDK facade (`ax-engine-sdk`), llama.cpp-compatible CLI (`ax-engine`), Python bindings built on the Rust SDK (`ax-engine-py`), benchmarking tools (`ax-engine-bench`).
+**Integration**: core runtime (`ax-engine-core`), high-level Rust SDK facade (`ax-engine-sdk`), llama.cpp-compatible CLI (`ax-engine`), Python bindings built on the Rust SDK (`ax-engine-py`), JavaScript client for AX-compatible HTTP endpoints (`packages/ax-engine-js`), benchmarking tools (`ax-engine-bench`).
+
+## Product Boundary
+
+AX Engine is the **runtime layer** of the AutomatosX stack. It owns:
+
+- native Apple-Silicon inference
+- model loading, execution planning, and kernel dispatch
+- local CLI, SDK, binding, and single-node HTTP surfaces
+- benchmark and profiling tooling
+
+AX Engine does **not** own:
+
+- multi-node routing
+- tenancy, auth, quotas, or policy enforcement
+- fleet orchestration
+- sovereign deployment control planes
+
+`ax-engine-server` now provides a lightweight single-node HTTP surface for
+local and edge integrations, including llama-server-style `/completion`,
+`/tokenize`, `/detokenize`, `/slots`, and OpenAI-compatible `/v1/completions` /
+`/v1/chat/completions` / `/v1/responses` endpoints. It is intentionally scoped
+as a thin API layer above the same runtime. Production serving and orchestration
+remain the responsibility of AX Serving. See [Product Boundary](./docs/PRODUCT-BOUNDARY.md).
+The compatibility roadmap lives in [docs/LLAMA_SERVER_COMPATIBILITY.md](./docs/LLAMA_SERVER_COMPATIBILITY.md).
 
 ## Quick Start
 
@@ -399,6 +423,11 @@ cargo build --workspace --release
 
 # Benchmark (single engine)
 ./target/release/ax-engine-bench bench --model ./models/Qwen3.5-9B-Q4_K_M.gguf
+
+# Single-node HTTP server
+./target/release/ax-engine-server \
+  --model ./models/Qwen3.5-9B-Q4_K_M.gguf \
+  --host 127.0.0.1 --port 8080
 
 # Benchmark (AX vs llama.cpp comparison)
 ./benchmarks/run_apple_to_apple.py --model ./models/Qwen3.5-9B-Q4_K_M.gguf
@@ -428,6 +457,7 @@ See [QUICKSTART.md](./QUICKSTART.md) for setup details and [BENCHMARKING.md](./B
 crates/ax-engine-core    Core inference (GGUF, models, KV, backends, sampling)
 crates/ax-engine-metal   Metal GPU backend + shaders
 crates/ax-engine-cli     `ax-engine` CLI (llama.cpp compatible)
+crates/ax-engine-server  `ax-engine-server` HTTP surface (llama-server compatible)
 crates/ax-engine-sdk     High-level Rust SDK
 crates/ax-engine-bench   Benchmarking & profiling
 crates/ax-engine-py      Python bindings (PyO3)
@@ -445,14 +475,12 @@ cargo fmt --all -- --check                                       # format check
 
 ## License
 
-**v3.0 onwards**: [Mozilla Public License 2.0 (MPL-2.0)](./LICENSE).
-Copyright (c) 2025 [DEFAI Private Limited](https://defai.digital).
+This repository is licensed under the [Apache License 2.0](./LICENSE).
 
-Starting with AX Engine v3.0, this project is licensed under the
-MPL-2.0. This means you are free to use, modify, and distribute AX
-Engine — including in proprietary products — but any modifications to
-MPL-licensed source files must be shared under the same license. We
-chose MPL-2.0 to keep AX Engine open and accessible while encouraging
-improvements to flow back to the community.
+Apache-2.0 keeps AX Engine easy to adopt as a local runtime, SDK dependency,
+or embedded inference layer while preserving an explicit patent grant.
+Commercial differentiation is intended to sit above the runtime in products
+such as AX Serving, AX Fabric, and AX Trust.
 
-Prior releases (v2.x and earlier) were licensed under MIT
+If you need to evaluate historical tags, use the license file shipped in the
+relevant tag.

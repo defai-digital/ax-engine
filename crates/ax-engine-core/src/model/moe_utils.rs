@@ -12,6 +12,27 @@ pub(crate) fn expert_byte_stride(dtype: GgmlType, n_elements: usize) -> usize {
     n_elements.div_ceil(bs) * dtype.bytes_per_block()
 }
 
+/// Extract the raw byte slice for a single expert from a concatenated weight tensor.
+pub(crate) fn expert_quant_slice<'a>(
+    full: &'a [u8],
+    stride: usize,
+    eid: usize,
+    name: &str,
+) -> anyhow::Result<&'a [u8]> {
+    let start = eid
+        .checked_mul(stride)
+        .ok_or_else(|| anyhow::anyhow!("expert slice overflow for {name}"))?;
+    let end = start
+        .checked_add(stride)
+        .ok_or_else(|| anyhow::anyhow!("expert slice overflow for {name}"))?;
+    anyhow::ensure!(
+        end <= full.len(),
+        "expert slice out of bounds for {name}: expert={eid}, end={end}, len={}",
+        full.len()
+    );
+    Ok(&full[start..end])
+}
+
 /// Softmax over all experts, then select top-k.
 /// Matches llama.cpp: softmax(all logits) → argsort_top_k → extract weights.
 pub(crate) fn top_k_softmax(logits: &[f32], k: usize) -> (Vec<usize>, Vec<f32>) {

@@ -16,8 +16,10 @@ impl Gemma4Forward {
             let attn_norm_w = weights.f32_slice(&format!("{}.attn_norm.weight", spec.prefix))?;
             let attn_norm_key = metal_ops.ensure_f32_cached(attn_norm_w);
 
-            let (wq_raw, wq_dtype) = weights.raw_with_dtype(&format!("{}.attn_q.weight", spec.prefix))?;
-            let (wk_raw, wk_dtype) = weights.raw_with_dtype(&format!("{}.attn_k.weight", spec.prefix))?;
+            let (wq_raw, wq_dtype) =
+                weights.raw_with_dtype(&format!("{}.attn_q.weight", spec.prefix))?;
+            let (wk_raw, wk_dtype) =
+                weights.raw_with_dtype(&format!("{}.attn_k.weight", spec.prefix))?;
             let (wv_raw, wv_dtype) = if spec.v_equals_k {
                 (wk_raw, wk_dtype)
             } else {
@@ -25,9 +27,12 @@ impl Gemma4Forward {
             };
             let (wo_raw, wo_dtype) =
                 weights.raw_with_dtype(&format!("{}.attn_output.weight", spec.prefix))?;
-            let (wg_raw, wg_dtype) = weights.raw_with_dtype(&format!("{}.ffn_gate.weight", spec.prefix))?;
-            let (wu_raw, wu_dtype) = weights.raw_with_dtype(&format!("{}.ffn_up.weight", spec.prefix))?;
-            let (wd_raw, wd_dtype) = weights.raw_with_dtype(&format!("{}.ffn_down.weight", spec.prefix))?;
+            let (wg_raw, wg_dtype) =
+                weights.raw_with_dtype(&format!("{}.ffn_gate.weight", spec.prefix))?;
+            let (wu_raw, wu_dtype) =
+                weights.raw_with_dtype(&format!("{}.ffn_up.weight", spec.prefix))?;
+            let (wd_raw, wd_dtype) =
+                weights.raw_with_dtype(&format!("{}.ffn_down.weight", spec.prefix))?;
             let ffn_norm_w = weights.f32_slice(&format!("{}.ffn_norm.weight", spec.prefix))?;
 
             let wq_key = metal_ops.ensure_quant_cached(wq_raw);
@@ -121,7 +126,11 @@ impl Gemma4Forward {
             }
 
             let (attn_q_norm_key, attn_k_norm_key) =
-                crate::model::shared::cache_attention_qk_norm_keys(metal_ops, weights, &spec.prefix)?;
+                crate::model::shared::cache_attention_qk_norm_keys(
+                    metal_ops,
+                    weights,
+                    &spec.prefix,
+                )?;
             let post_attn_norm = crate::model::shared::cache_optional_prefixed_f32_key(
                 metal_ops,
                 weights,
@@ -134,6 +143,43 @@ impl Gemma4Forward {
                 &spec.prefix,
                 "layer_output_scale.weight",
             )?;
+            let post_ffn_norm_key = crate::model::shared::cache_optional_prefixed_f32_key(
+                metal_ops,
+                weights,
+                &spec.prefix,
+                "post_ffw_norm.weight",
+            )?;
+
+            // MoE weights (only present on layers with experts)
+            let has_moe = weights.has(&format!("{}.ffn_gate_inp.weight", spec.prefix));
+            let (
+                moe_router_key,
+                moe_router_dtype_val,
+                moe_gate_up_key,
+                _moe_gate_up_dtype,
+                moe_down_key,
+                moe_down_dtype,
+            ) = if has_moe {
+                let (router_raw, router_dtype) =
+                    weights.raw_with_dtype(&format!("{}.ffn_gate_inp.weight", spec.prefix))?;
+                let (gate_up_raw, gate_up_dtype) =
+                    weights.raw_with_dtype(&format!("{}.ffn_gate_up_exps.weight", spec.prefix))?;
+                let (down_raw, down_dtype) =
+                    weights.raw_with_dtype(&format!("{}.ffn_down_exps.weight", spec.prefix))?;
+                let rk = metal_ops.ensure_moe_quant_cached(router_raw);
+                let guk = metal_ops.ensure_moe_quant_cached(gate_up_raw);
+                let dk = metal_ops.ensure_moe_quant_cached(down_raw);
+                (
+                    Some(rk),
+                    Some(router_dtype),
+                    Some(guk),
+                    Some(gate_up_dtype),
+                    Some(dk),
+                    Some(down_dtype),
+                )
+            } else {
+                (None, None, None, None, None, None)
+            };
 
             layers.push(CachedLayerKeys {
                 attn_norm: attn_norm_key,
@@ -155,7 +201,7 @@ impl Gemma4Forward {
                 attn_q_norm: attn_q_norm_key,
                 attn_k_norm: attn_k_norm_key,
                 post_attn_norm,
-                post_ffn_norm: None,
+                post_ffn_norm: post_ffn_norm_key,
                 v_equals_k: spec.v_equals_k,
                 layer_output_scale,
                 q_bias: None,
@@ -165,12 +211,13 @@ impl Gemma4Forward {
                 gate_bias: None,
                 up_bias: None,
                 down_bias: None,
-                moe_router: None,
-                moe_router_dtype: None,
-                moe_expert_gate: None,
+                moe_router: moe_router_key,
+                moe_router_dtype: moe_router_dtype_val,
+                // Gemma4 uses fused gate_up_exps — store as "gate" key, leave "up" None.
+                moe_expert_gate: moe_gate_up_key.map(|k| vec![k]),
                 moe_expert_up: None,
-                moe_expert_down: None,
-                moe_expert_dtype: None,
+                moe_expert_down: moe_down_key.map(|k| vec![k]),
+                moe_expert_dtype: moe_down_dtype,
                 moe_shared_gate: None,
                 moe_shared_up: None,
                 moe_shared_down: None,
@@ -190,11 +237,8 @@ impl Gemma4Forward {
             )?;
         }
 
-        let rope_freqs = crate::model::shared::cache_optional_f32_key(
-            metal_ops,
-            weights,
-            "rope_freqs.weight",
-        )?;
+        let rope_freqs =
+            crate::model::shared::cache_optional_f32_key(metal_ops, weights, "rope_freqs.weight")?;
 
         metal_ops.set_cached_model_keys(CachedModelKeys {
             layers,
@@ -322,8 +366,15 @@ impl Gemma4Forward {
             for (layer, spec) in layer_specs.iter().enumerate() {
                 let lw = &cached.layers[layer];
                 let n_q_heads = (spec.q_dim / spec.head_dim) as u32;
-                let kv_offset = (base_seq_len * gpu_kv.kv_stride()) as u32;
-                let kv_stride = gpu_kv.kv_stride() as u32;
+                let layer_kv_stride = gpu_kv.kv_stride_for_layer(layer);
+                let kv_offset = u32::try_from(base_seq_len * layer_kv_stride).map_err(|_| {
+                    anyhow::anyhow!(
+                        "KV offset overflow: base_seq_len={}, kv_stride={}",
+                        base_seq_len,
+                        layer_kv_stride
+                    )
+                })?;
+                let kv_stride = layer_kv_stride as u32;
                 let kv_k = gpu_kv.k_buffer(layer);
                 let kv_v = gpu_kv.v_buffer(layer);
                 let q_weight = lw.attn_q_norm.and_then(|key| weight_cache.get(&key));
@@ -344,23 +395,36 @@ impl Gemma4Forward {
 
                 let qkv_t = OpTimer::start();
                 let q_input = &bs.norm_buf;
-                let use_f16_input =
-                    matches!(qkv_layer_plan.input, PrefillProjectionInputPlan::MatmulScratchF16);
+                let use_f16_input = matches!(
+                    qkv_layer_plan.input,
+                    PrefillProjectionInputPlan::MatmulScratchF16
+                );
                 if use_f16_input {
                     sb.pre_dispatch(&[q_input], &[&bs.matmul_in_f16]);
+                    let cast_count = u32::try_from(nt as usize * dim).map_err(|_| {
+                        anyhow::anyhow!("Gemma4 Q cast element count overflow: nt={nt}, dim={dim}")
+                    })?;
                     metal_ops.elementwise.encode_cast_f32_to_f16(
                         encoder,
                         q_input,
                         &bs.matmul_in_f16,
-                        nt * dim as u32,
+                        cast_count,
                     );
                     sb.post_dispatch(&[q_input], &[&bs.matmul_in_f16]);
                 }
+                // When f16 input is used, the actual matmul input is matmul_in_f16 (written by the
+                // cast above). Pass it as the read in pre_dispatch so SmartBarrier sees the RAW
+                // hazard and inserts a barrier before each Q/K/V matmul.
+                let actual_qkv_input: &ax_engine_metal::MetalBuffer = if use_f16_input {
+                    &bs.matmul_in_f16
+                } else {
+                    q_input
+                };
 
                 let wq_buf = weight_cache.get(&lw.wq).unwrap();
                 let wk_buf = weight_cache.get(&lw.wk).unwrap();
                 if let Some(fused_w) = fused_qkv_buf {
-                    sb.pre_dispatch(&[q_input], &[&bs.qkv_buf]);
+                    sb.pre_dispatch(&[actual_qkv_input], &[&bs.qkv_buf]);
                     if use_f16_input {
                         encode_dequant_batch_f16in(
                             metal_ops,
@@ -391,7 +455,7 @@ impl Gemma4Forward {
                             prefill_plan.q5k_prefill_small_n,
                         );
                     }
-                    sb.post_dispatch(&[q_input], &[&bs.qkv_buf]);
+                    sb.post_dispatch(&[actual_qkv_input], &[&bs.qkv_buf]);
                     sb.pre_dispatch(&[&bs.qkv_buf], &[&bs.q_buf, &bs.k_buf, &bs.v_buf]);
                     metal_ops.elementwise.encode_qkv_split_batch(
                         encoder,
@@ -405,7 +469,7 @@ impl Gemma4Forward {
                     );
                     sb.post_dispatch(&[&bs.qkv_buf], &[&bs.q_buf, &bs.k_buf, &bs.v_buf]);
                 } else {
-                    sb.pre_dispatch(&[q_input], &[&bs.q_buf]);
+                    sb.pre_dispatch(&[actual_qkv_input], &[&bs.q_buf]);
                     if use_f16_input {
                         encode_dequant_batch_f16in(
                             metal_ops,
@@ -436,9 +500,9 @@ impl Gemma4Forward {
                             prefill_plan.q5k_prefill_small_n,
                         );
                     }
-                    sb.post_dispatch(&[q_input], &[&bs.q_buf]);
+                    sb.post_dispatch(&[actual_qkv_input], &[&bs.q_buf]);
 
-                    sb.pre_dispatch(&[q_input], &[&bs.k_buf]);
+                    sb.pre_dispatch(&[actual_qkv_input], &[&bs.k_buf]);
                     if use_f16_input {
                         encode_dequant_batch_f16in(
                             metal_ops,
@@ -469,7 +533,7 @@ impl Gemma4Forward {
                             prefill_plan.q5k_prefill_small_n,
                         );
                     }
-                    sb.post_dispatch(&[q_input], &[&bs.k_buf]);
+                    sb.post_dispatch(&[actual_qkv_input], &[&bs.k_buf]);
 
                     if spec.v_equals_k {
                         let copy_bytes = n_tokens * spec.kv_dim * std::mem::size_of::<f32>();
@@ -485,7 +549,7 @@ impl Gemma4Forward {
                         sb.post_dispatch(&[&bs.k_buf], &[&bs.v_buf]);
                     } else {
                         let wv_buf = weight_cache.get(&lw.wv).unwrap();
-                        sb.pre_dispatch(&[q_input], &[&bs.v_buf]);
+                        sb.pre_dispatch(&[actual_qkv_input], &[&bs.v_buf]);
                         if use_f16_input {
                             encode_dequant_batch_f16in(
                                 metal_ops,
@@ -516,7 +580,7 @@ impl Gemma4Forward {
                                 prefill_plan.q5k_prefill_small_n,
                             );
                         }
-                        sb.post_dispatch(&[q_input], &[&bs.v_buf]);
+                        sb.post_dispatch(&[actual_qkv_input], &[&bs.v_buf]);
                     }
                 }
                 if let Some(ref mut ops_ref) = ops {
@@ -551,18 +615,43 @@ impl Gemma4Forward {
                     sb.post_dispatch(&[&bs.k_buf], &[&bs.k_buf]);
                 }
                 sb.pre_dispatch(&[&bs.v_buf], &[&bs.v_buf]);
-                metal_ops.elementwise.encode_per_head_rms_norm_no_weight_batch(
-                    encoder,
-                    &bs.v_buf,
-                    nt,
-                    spec.n_kv_heads as u32,
-                    spec.head_dim as u32,
-                    eps,
-                );
+                metal_ops
+                    .elementwise
+                    .encode_per_head_rms_norm_no_weight_batch(
+                        encoder,
+                        &bs.v_buf,
+                        nt,
+                        spec.n_kv_heads as u32,
+                        spec.head_dim as u32,
+                        eps,
+                    );
                 sb.post_dispatch(&[&bs.v_buf], &[&bs.v_buf]);
+
+                // Gemma4 attention uses scale=1.0, but all Metal attention kernels apply
+                // rsqrt(head_dim). Pre-scale Q by sqrt(head_dim) so the effective
+                // attention scale is sqrt(head_dim) * rsqrt(head_dim) = 1.0.
+                let q_attn_compensation = (spec.head_dim as f32).sqrt();
+                sb.pre_dispatch(&[&bs.q_buf], &[&bs.q_buf]);
+                let scale_count = u32::try_from(nt as usize * spec.q_dim).map_err(|_| {
+                    anyhow::anyhow!(
+                        "Gemma4 Q scale element count overflow: nt={nt}, q_dim={}",
+                        spec.q_dim
+                    )
+                })?;
+                metal_ops.elementwise.encode_gen_scale(
+                    encoder,
+                    &bs.q_buf,
+                    &bs.q_buf,
+                    q_attn_compensation,
+                    scale_count,
+                );
+                sb.post_dispatch(&[&bs.q_buf], &[&bs.q_buf]);
 
                 sb.pre_dispatch(&[&bs.q_buf, &bs.k_buf], &[&bs.q_buf, &bs.k_buf]);
                 if !spec.is_sliding() {
+                    // Global layers: apply RoPE scaling (Linear/Yarn) to positions.
+                    let (rope_start, rope_step) =
+                        cfg.rope_scaling.scaled_start_step(base_seq_len);
                     if let Some(freq_factors) = rope_freqs {
                         metal_ops
                             .elementwise
@@ -576,8 +665,8 @@ impl Gemma4Forward {
                                 spec.n_kv_heads as u32,
                                 spec.head_dim as u32,
                                 spec.head_dim as u32,
-                                base_seq_len as f32,
-                                1.0,
+                                rope_start,
+                                rope_step,
                                 spec.rope_base,
                             );
                     } else {
@@ -590,8 +679,8 @@ impl Gemma4Forward {
                             spec.n_kv_heads as u32,
                             spec.head_dim as u32,
                             spec.head_dim as u32,
-                            base_seq_len as f32,
-                            1.0,
+                            rope_start,
+                            rope_step,
                             spec.rope_base,
                         );
                     }
@@ -634,7 +723,7 @@ impl Gemma4Forward {
 
                 let attn_t = OpTimer::start();
                 sb.pre_dispatch(&[&bs.q_buf, kv_k, kv_v], &[&bs.attn_out]);
-                if spec.kv_dim == gpu_kv.kv_stride() {
+                if spec.kv_dim == layer_kv_stride {
                     metal_ops
                         .attention
                         .encode_attention_prefill_cached_with_config(
@@ -722,16 +811,18 @@ impl Gemma4Forward {
                     sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
                 } else {
                     sb.pre_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
-                    metal_ops.elementwise.encode_residual_add_rms_norm_out_batch(
-                        encoder,
-                        &bs.hidden,
-                        &bs.proj_buf,
-                        ffn_norm_buf,
-                        &bs.norm_buf,
-                        dim as u32,
-                        nt,
-                        eps,
-                    );
+                    metal_ops
+                        .elementwise
+                        .encode_residual_add_rms_norm_out_batch(
+                            encoder,
+                            &bs.hidden,
+                            &bs.proj_buf,
+                            ffn_norm_buf,
+                            &bs.norm_buf,
+                            dim as u32,
+                            nt,
+                            eps,
+                        );
                     sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
                 }
                 if let Some(ref mut ops_ref) = ops {
@@ -751,11 +842,17 @@ impl Gemma4Forward {
                 sb.pre_dispatch(&[&bs.norm_buf], &[&bs.gate_buf, &bs.up_buf]);
                 match ffn_layer_plan.input {
                     PrefillProjectionInputPlan::MatmulScratchF16 => {
+                        let ffn_cast_count =
+                            u32::try_from(nt as usize * dim).map_err(|_| {
+                                anyhow::anyhow!(
+                                    "Gemma4 FFN cast element count overflow: nt={nt}, dim={dim}"
+                                )
+                            })?;
                         metal_ops.elementwise.encode_cast_f32_to_f16(
                             encoder,
                             &bs.norm_buf,
                             &bs.matmul_in_f16,
-                            nt * dim as u32,
+                            ffn_cast_count,
                         );
                         if ffn_layer_plan.use_pair_kernel {
                             encode_dequant_batch_pair_f16in(
@@ -880,6 +977,25 @@ impl Gemma4Forward {
                     ops_ref.gpu_encode_layer_ffn += down_t.elapsed();
                 }
 
+                // ── Post-FFN RMSNorm (Gemma4: post_ffw_norm.weight) ──
+                let post_ffn_norm_t = OpTimer::start();
+                if let Some(post_ffn_key) = lw.post_ffn_norm {
+                    let nw = weight_cache.get(&post_ffn_key).unwrap();
+                    sb.pre_dispatch(&[&bs.proj_buf], &[&bs.proj_buf]);
+                    metal_ops.elementwise.encode_rms_norm_batch(
+                        encoder,
+                        &bs.proj_buf,
+                        nw,
+                        dim as u32,
+                        nt,
+                        eps,
+                    );
+                    sb.post_dispatch(&[&bs.proj_buf], &[&bs.proj_buf]);
+                }
+                if let Some(ref mut ops_ref) = ops {
+                    ops_ref.gpu_encode_layer_norm += post_ffn_norm_t.elapsed();
+                }
+
                 let residual_t = OpTimer::start();
                 if layer + 1 == n_layers {
                     sb.pre_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden]);
@@ -892,20 +1008,30 @@ impl Gemma4Forward {
                     );
                     sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden]);
                     if let Some(scale_key) = lw.layer_output_scale {
-                        let scale = unsafe { weight_cache.get(&scale_key).unwrap().as_slice::<f32>()[0] };
+                        let scale =
+                            unsafe { weight_cache.get(&scale_key).unwrap().as_slice::<f32>()[0] };
                         sb.pre_dispatch(&[&bs.hidden], &[&bs.hidden]);
                         metal_ops.elementwise.encode_gen_scale(
                             encoder,
                             &bs.hidden,
                             &bs.hidden,
                             scale,
-                            (n_tokens * dim) as u32,
+                            u32::try_from(n_tokens * dim).map_err(|_| {
+                                anyhow::anyhow!(
+                                    "Element count overflow: n_tokens={}, dim={}",
+                                    n_tokens,
+                                    dim
+                                )
+                            })?,
                         );
                         sb.post_dispatch(&[&bs.hidden], &[&bs.hidden]);
                     }
                 } else if let Some(scale_key) = lw.layer_output_scale {
-                    let scale = unsafe { weight_cache.get(&scale_key).unwrap().as_slice::<f32>()[0] };
-                    let next_attn_norm = weight_cache.get(&cached.layers[layer + 1].attn_norm).unwrap();
+                    let scale =
+                        unsafe { weight_cache.get(&scale_key).unwrap().as_slice::<f32>()[0] };
+                    let next_attn_norm = weight_cache
+                        .get(&cached.layers[layer + 1].attn_norm)
+                        .unwrap();
                     sb.pre_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden]);
                     metal_ops.elementwise.encode_elementwise_add_batch(
                         encoder,
@@ -921,7 +1047,13 @@ impl Gemma4Forward {
                         &bs.hidden,
                         &bs.hidden,
                         scale,
-                        (n_tokens * dim) as u32,
+                        u32::try_from(n_tokens * dim).map_err(|_| {
+                            anyhow::anyhow!(
+                                "Element count overflow: n_tokens={}, dim={}",
+                                n_tokens,
+                                dim
+                            )
+                        })?,
                     );
                     sb.post_dispatch(&[&bs.hidden], &[&bs.hidden]);
                     sb.pre_dispatch(&[&bs.hidden], &[&bs.norm_buf]);
@@ -936,18 +1068,22 @@ impl Gemma4Forward {
                     );
                     sb.post_dispatch(&[&bs.hidden], &[&bs.norm_buf]);
                 } else {
-                    let next_attn_norm = weight_cache.get(&cached.layers[layer + 1].attn_norm).unwrap();
+                    let next_attn_norm = weight_cache
+                        .get(&cached.layers[layer + 1].attn_norm)
+                        .unwrap();
                     sb.pre_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
-                    metal_ops.elementwise.encode_residual_add_rms_norm_out_batch(
-                        encoder,
-                        &bs.hidden,
-                        &bs.proj_buf,
-                        next_attn_norm,
-                        &bs.norm_buf,
-                        dim as u32,
-                        nt,
-                        eps,
-                    );
+                    metal_ops
+                        .elementwise
+                        .encode_residual_add_rms_norm_out_batch(
+                            encoder,
+                            &bs.hidden,
+                            &bs.proj_buf,
+                            next_attn_norm,
+                            &bs.norm_buf,
+                            dim as u32,
+                            nt,
+                            eps,
+                        );
                     sb.post_dispatch(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden, &bs.norm_buf]);
                 }
                 if let Some(ref mut ops_ref) = ops {
@@ -994,12 +1130,7 @@ impl Gemma4Forward {
                     let last_off = (n_tokens - 1) * dim * std::mem::size_of::<f32>();
                     sb.pre_dispatch(&[&bs.hidden], &[&s.hidden]);
                     metal_ops.elementwise.encode_buffer_copy(
-                        encoder,
-                        &bs.hidden,
-                        last_off,
-                        &s.hidden,
-                        0,
-                        dim as u32,
+                        encoder, &bs.hidden, last_off, &s.hidden, 0, dim as u32,
                     );
                     sb.post_dispatch(&[&bs.hidden], &[&s.hidden]);
                     sb.pre_dispatch(&[&s.hidden], &[&s.hidden]);
@@ -1033,8 +1164,6 @@ impl Gemma4Forward {
             ops_ref.gpu_execute += exec_t.elapsed();
         }
 
-        gpu_kv.finalize_batch(n_tokens);
-
         let rb_t = OpTimer::start();
         if let Some(logits_all) = logits_all {
             let logits_gpu = unsafe {
@@ -1049,6 +1178,10 @@ impl Gemma4Forward {
             };
             logits_all.resize(n_tokens * vocab_size, 0.0);
             logits_all.copy_from_slice(logits_gpu);
+            anyhow::ensure!(
+                logits_all.iter().all(|value| value.is_finite()),
+                "gemma4 gpu batch prefill produced non-finite logits"
+            );
         } else if let Some(logits) = last_logits {
             let logits_gpu = unsafe {
                 std::slice::from_raw_parts(
@@ -1062,10 +1195,16 @@ impl Gemma4Forward {
                     *l = (*l / cap).tanh() * cap;
                 }
             }
+            anyhow::ensure!(
+                logits[..vocab_size].iter().all(|value| value.is_finite()),
+                "gemma4 gpu batch prefill produced non-finite logits"
+            );
         }
         if let Some(ref mut ops_ref) = ops {
             ops_ref.gpu_readback += rb_t.elapsed();
         }
+
+        gpu_kv.finalize_batch(n_tokens);
 
         Ok(())
     }
@@ -1115,13 +1254,13 @@ impl Gemma4Forward {
         let cached = cached_guard.as_ref().unwrap();
         let cur_seq_len = gpu_kv.seq_len();
         let full_seq_len = cur_seq_len + 1;
-        let kv_offset = (cur_seq_len * gpu_kv.kv_stride()) as u32;
-        let kv_row_stride = gpu_kv.kv_stride() as u32;
+        // Per-layer KV offset and stride are computed inside the layer loop
+        // since strides may differ between SWA and global layers.
         let max_head_dim = cfg
             .gemma4_head_dim_global
             .unwrap_or(cfg.head_dim)
             .max(cfg.gemma4_head_dim_swa.unwrap_or(cfg.head_dim));
-        let base_plan = crate::model::execution_plan::DecodeExecutionPlan::gemma3_single_cb(
+        let base_plan = crate::model::execution_plan::DecodeExecutionPlan::gemma4_single_cb(
             metal_ops,
             gpu_kv,
             cfg.embedding_dim,
@@ -1136,22 +1275,23 @@ impl Gemma4Forward {
         }
 
         let weight_cache = metal_ops.lock_weight_cache();
+
         let exec_t = OpTimer::start();
         let encode_body = |encoder: &ax_engine_metal::MetalEncoder| -> anyhow::Result<()> {
-            let barrier =
-                crate::model::shared::DecodeBarrierCtx::new(encoder, base_plan.barriers);
+            let barrier = crate::model::shared::DecodeBarrierCtx::new(encoder, base_plan.barriers);
             let rope_freqs = cached.rope_freqs.and_then(|key| weight_cache.get(&key));
 
             for (layer, spec) in layer_specs.iter().enumerate() {
                 let lw = &cached.layers[layer];
                 let n_heads = (spec.q_dim / spec.head_dim) as u32;
-                let layer_plan = crate::model::execution_plan::DecodeExecutionPlan::gemma3_single_cb(
-                    metal_ops,
-                    gpu_kv,
-                    cfg.embedding_dim,
-                    spec.head_dim as u32,
-                    full_seq_len,
-                );
+                let layer_plan =
+                    crate::model::execution_plan::DecodeExecutionPlan::gemma4_single_cb(
+                        metal_ops,
+                        gpu_kv,
+                        cfg.embedding_dim,
+                        spec.head_dim as u32,
+                        full_seq_len,
+                    );
                 let attn_norm_w = weight_cache.get(&lw.attn_norm).unwrap();
                 let wq_buf = weight_cache.get(&lw.wq).unwrap();
                 let wk_buf = weight_cache.get(&lw.wk).unwrap();
@@ -1163,6 +1303,16 @@ impl Gemma4Forward {
                 let wd_buf = weight_cache.get(&lw.wd).unwrap();
                 let kv_k = gpu_kv.k_buffer(layer);
                 let kv_v = gpu_kv.v_buffer(layer);
+                let layer_kv_stride_decode = gpu_kv.kv_stride_for_layer(layer);
+                let kv_offset_decode =
+                    u32::try_from(cur_seq_len * layer_kv_stride_decode).map_err(|_| {
+                        anyhow::anyhow!(
+                            "KV offset overflow: cur_seq_len={}, kv_stride={}",
+                            cur_seq_len,
+                            layer_kv_stride_decode
+                        )
+                    })?;
+                let kv_row_stride = layer_kv_stride_decode as u32;
 
                 barrier.pre_dispatch(&[&s.hidden], &[&s.norm_buf]);
                 metal_ops.elementwise.encode_rms_norm_out(
@@ -1175,6 +1325,7 @@ impl Gemma4Forward {
                 );
                 barrier.post_dispatch(&[&s.hidden], &[&s.norm_buf]);
                 barrier.step(encoder);
+
 
                 barrier.pre_dispatch(&[&s.norm_buf], &[&s.q_buf]);
                 crate::model::shared::encode_dequant_matvec_with_config(
@@ -1250,6 +1401,20 @@ impl Gemma4Forward {
                     cfg.rms_norm_eps,
                 );
                 barrier.post_dispatch(&[&s.v_buf], &[&s.v_buf]);
+
+                // Gemma4 attention uses scale=1.0, but all Metal attention kernels apply
+                // rsqrt(head_dim). Pre-scale Q by sqrt(head_dim) so the effective
+                // attention scale is sqrt(head_dim) * rsqrt(head_dim) = 1.0.
+                let q_attn_compensation = (spec.head_dim as f32).sqrt();
+                barrier.pre_dispatch(&[&s.q_buf], &[&s.q_buf]);
+                metal_ops.elementwise.encode_gen_scale(
+                    encoder,
+                    &s.q_buf,
+                    &s.q_buf,
+                    q_attn_compensation,
+                    spec.q_dim as u32,
+                );
+                barrier.post_dispatch(&[&s.q_buf], &[&s.q_buf]);
                 barrier.step(encoder);
 
                 let rope_position = if spec.is_sliding() {
@@ -1315,7 +1480,7 @@ impl Gemma4Forward {
                     &s.k_buf,
                     kv_k,
                     layer_plan.kv_f16,
-                    kv_offset,
+                    kv_offset_decode,
                     spec.kv_dim as u32,
                 );
                 barrier.post_dispatch(&[&s.k_buf], &[kv_k]);
@@ -1325,7 +1490,7 @@ impl Gemma4Forward {
                     &s.v_buf,
                     kv_v,
                     layer_plan.kv_f16,
-                    kv_offset,
+                    kv_offset_decode,
                     spec.kv_dim as u32,
                 );
                 barrier.post_dispatch(&[&s.v_buf], &[kv_v]);
@@ -1338,7 +1503,7 @@ impl Gemma4Forward {
                     (0u32, full_seq_len as u32)
                 };
                 barrier.pre_dispatch(&[&s.q_buf, kv_k, kv_v], &[&s.attn_out]);
-                if spec.kv_dim == gpu_kv.kv_stride() {
+                if spec.kv_dim == layer_kv_stride_decode {
                     metal_ops
                         .attention
                         .encode_attention_decode_with_scratch_and_config(
@@ -1409,11 +1574,15 @@ impl Gemma4Forward {
                 }
 
                 barrier.pre_dispatch(&[&s.hidden, &s.proj_buf], &[&s.hidden]);
-                metal_ops
-                    .elementwise
-                    .encode_elementwise_add(encoder, &s.hidden, &s.proj_buf, dim as u32);
+                metal_ops.elementwise.encode_elementwise_add(
+                    encoder,
+                    &s.hidden,
+                    &s.proj_buf,
+                    dim as u32,
+                );
                 barrier.post_dispatch(&[&s.hidden, &s.proj_buf], &[&s.hidden]);
                 barrier.step(encoder);
+
 
                 barrier.pre_dispatch(&[&s.hidden], &[&s.norm_buf]);
                 metal_ops.elementwise.encode_rms_norm_out(
@@ -1469,47 +1638,54 @@ impl Gemma4Forward {
                 barrier.post_dispatch(&[&s.norm_buf], &[&s.gate_buf, &s.up_buf]);
                 barrier.step(encoder);
 
-                barrier.pre_dispatch(&[&s.gate_buf, &s.up_buf], &[&s.down_buf]);
-                if !crate::model::shared::encode_dequant_gelu_down_matvec_with_config(
+                // Separate GELU + down matmul (fused path disabled — produces
+                // NaN for Gemma4 31B dimensions with Q4_K).
+                barrier.pre_dispatch(&[&s.gate_buf, &s.up_buf], &[&s.gate_buf]);
+                metal_ops.elementwise.encode_gelu_elementwise_mul(
+                    encoder,
+                    &s.gate_buf,
+                    &s.up_buf,
+                    inter_dim as u32,
+                );
+                barrier.post_dispatch(&[&s.gate_buf, &s.up_buf], &[&s.gate_buf]);
+                barrier.step(encoder);
+                barrier.pre_dispatch(&[&s.gate_buf], &[&s.down_buf]);
+                crate::model::shared::encode_dequant_matvec_with_config(
                     metal_ops,
                     encoder,
                     wd_buf,
                     &s.gate_buf,
-                    &s.up_buf,
                     &s.down_buf,
                     dim as u32,
                     inter_dim as u32,
                     lw.wd_dtype,
                     layer_plan.dequant_dispatch,
-                ) {
-                    metal_ops.elementwise.encode_gelu_elementwise_mul(
-                        encoder,
-                        &s.gate_buf,
-                        &s.up_buf,
-                        inter_dim as u32,
-                    );
-                    barrier.post_dispatch(&[&s.gate_buf, &s.up_buf], &[&s.gate_buf]);
-                    barrier.step(encoder);
-                    barrier.pre_dispatch(&[&s.gate_buf], &[&s.down_buf]);
-                    crate::model::shared::encode_dequant_matvec_with_config(
-                        metal_ops,
-                        encoder,
-                        wd_buf,
-                        &s.gate_buf,
-                        &s.down_buf,
-                        dim as u32,
-                        inter_dim as u32,
-                        lw.wd_dtype,
-                        layer_plan.dequant_dispatch,
-                    );
-                }
+                );
                 barrier.post_dispatch(&[&s.gate_buf, &s.up_buf], &[&s.down_buf]);
                 barrier.step(encoder);
 
+                // Post-FFN RMSNorm (Gemma4: post_ffw_norm.weight)
+                if let Some(pfn_key) = lw.post_ffn_norm {
+                    let pfn_w = weight_cache.get(&pfn_key).unwrap();
+                    barrier.pre_dispatch(&[&s.down_buf], &[&s.down_buf]);
+                    metal_ops.elementwise.encode_rms_norm(
+                        encoder,
+                        &s.down_buf,
+                        pfn_w,
+                        dim as u32,
+                        cfg.rms_norm_eps,
+                    );
+                    barrier.post_dispatch(&[&s.down_buf], &[&s.down_buf]);
+                    barrier.step(encoder);
+                }
+
                 barrier.pre_dispatch(&[&s.hidden, &s.down_buf], &[&s.hidden]);
-                metal_ops
-                    .elementwise
-                    .encode_elementwise_add(encoder, &s.hidden, &s.down_buf, dim as u32);
+                metal_ops.elementwise.encode_elementwise_add(
+                    encoder,
+                    &s.hidden,
+                    &s.down_buf,
+                    dim as u32,
+                );
                 barrier.post_dispatch(&[&s.hidden, &s.down_buf], &[&s.hidden]);
                 barrier.step(encoder);
 
@@ -1523,6 +1699,8 @@ impl Gemma4Forward {
                     barrier.post_dispatch(&[&s.hidden], &[&s.hidden]);
                     barrier.step(encoder);
                 }
+
+                // no debug marker
             }
 
             crate::model::shared::encode_gpu_output_head(
@@ -1551,7 +1729,7 @@ impl Gemma4Forward {
             ops_ref.gpu_execute += exec_t.elapsed();
         }
 
-        gpu_kv.finalize_token();
+        drop(weight_cache);
 
         let rb_t = OpTimer::start();
         let logits_gpu = unsafe {

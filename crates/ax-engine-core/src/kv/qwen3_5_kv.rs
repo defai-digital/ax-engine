@@ -161,6 +161,10 @@ impl Qwen35RecurrentSlot {
         }
         self.seqlen_offset = snapshot.seqlen_offset;
         self.touch_all_state();
+        // Restored data came from a live snapshot — conservatively mark as
+        // non-pristine so GPU sync does not skip buffer uploads.
+        self.conv_state_pristine_zero.fill(false);
+        self.recurrent_state_pristine_zero.fill(false);
     }
 
     fn clone_preserving_ownership_from(&mut self, src_slot: &Qwen35RecurrentSlot) {
@@ -1084,7 +1088,7 @@ impl Qwen3_5Kv {
         layer: usize,
     ) -> Option<(&ax_engine_metal::MetalBuffer, &ax_engine_metal::MetalBuffer)> {
         let gpu = self.gpu_recurrent.as_ref()?;
-        let slot = &gpu.slots[slot_idx];
+        let slot = gpu.slots.get(slot_idx)?;
         let conv = slot.conv_states[layer].as_ref()?;
         let rec = slot.recurrent_states[layer].as_ref()?;
         Some((conv, rec))
@@ -1101,7 +1105,7 @@ impl Qwen3_5Kv {
         &mut ax_engine_metal::MetalBuffer,
     )> {
         let gpu = self.gpu_recurrent.as_mut()?;
-        let slot = &mut gpu.slots[slot_idx];
+        let slot = gpu.slots.get_mut(slot_idx)?;
         let conv = slot.conv_states[layer].as_mut()?;
         let rec = slot.recurrent_states[layer].as_mut()?;
         Some((conv, rec))
@@ -1359,20 +1363,13 @@ impl Qwen3_5Kv {
             self.conv_dim,
             self.recurrent_state_len,
         );
-        if let Some(gpu) = self.gpu_recurrent.as_mut() {
-            if slot_idx < gpu.slots.len() {
+        if self.gpu_recurrent.is_some() {
+            self.ensure_gpu_recurrent_slot_allocated(slot_idx);
+            if let Some(gpu) = self.gpu_recurrent.as_mut()
+                && slot_idx < gpu.slots.len()
+            {
                 // Reused slot: zero GPU buffers to match cleared CPU state.
                 gpu.clear_slot(slot_idx);
-            }
-            while gpu.slots.len() <= slot_idx {
-                let new_slot = Qwen35GpuRecurrentState::allocate_slot(
-                    &gpu.device,
-                    &self.recurrent_layers,
-                    gpu.conv_state_stride,
-                    gpu.recurrent_state_stride,
-                )
-                .expect("Failed to allocate GPU recurrent slot buffers");
-                gpu.slots.push(new_slot);
             }
         }
         slot_idx
@@ -1477,20 +1474,10 @@ impl Qwen3_5Kv {
 
     /// Copy GPU recurrent buffers from one slot to another.
     fn copy_gpu_recurrent_slot(&mut self, src_slot_idx: usize, dst_slot_idx: usize) {
+        self.ensure_gpu_recurrent_slot_allocated(dst_slot_idx);
         let Some(gpu) = self.gpu_recurrent.as_mut() else {
             return;
         };
-        // Ensure destination slot has GPU buffers allocated.
-        while gpu.slots.len() <= dst_slot_idx {
-            let new_slot = Qwen35GpuRecurrentState::allocate_slot(
-                &gpu.device,
-                &self.recurrent_layers,
-                gpu.conv_state_stride,
-                gpu.recurrent_state_stride,
-            )
-            .expect("Failed to allocate GPU recurrent slot buffers for clone");
-            gpu.slots.push(new_slot);
-        }
         if src_slot_idx >= gpu.slots.len() {
             return;
         }
@@ -1556,12 +1543,10 @@ impl Qwen3_5Kv {
     /// Copy CPU recurrent state to GPU buffers for the given slot.
     /// Called after CPU state is modified (restore, clone) to keep GPU in sync.
     fn sync_gpu_recurrent_from_cpu(&mut self, slot_idx: usize) {
+        self.ensure_gpu_recurrent_slot_allocated(slot_idx);
         let Some(gpu) = self.gpu_recurrent.as_mut() else {
             return;
         };
-        if slot_idx >= gpu.slots.len() {
-            return;
-        }
         let slot_cpu = &self.recurrent_pool.slots[slot_idx];
         let gpu_slot = &mut gpu.slots[slot_idx];
         for (layer_idx, &is_recurrent) in self.recurrent_layers.iter().enumerate() {
@@ -1598,6 +1583,7 @@ impl Qwen3_5Kv {
 
     pub fn snapshot_slot(&mut self, slot_idx: usize) -> Qwen3_5KvSnapshot {
         self.materialize_gpu_recurrent_to_cpu(slot_idx);
+        self.sync_attention_cpu_from_gpu_if_needed();
         self.assert_slot_recurrent_state_materialized_on_cpu(slot_idx);
         assert!(
             slot_idx == self.active_slot,
@@ -1640,6 +1626,7 @@ impl Qwen3_5Kv {
         self.attention_cpu_dirty = false;
         self.attention_cpu_valid_prefix_len = self.seq_len;
         self.clear_batch_slot_indices();
+        self.sync_gpu_recurrent_from_cpu(snapshot.active_slot);
         self.sync_gpu_attention_from_cpu();
     }
 
@@ -1663,10 +1650,31 @@ impl Qwen3_5Kv {
             gpu_attention.truncate_to(pos);
         }
         self.seq_len = pos;
+        // Keep the active recurrent slot's seqlen_offset in sync with the
+        // truncated seq_len to maintain the invariant
+        // `slot.seqlen_offset == self.seq_len` expected by finalize_batch
+        // and set_active_slot.
+        self.recurrent_pool.set_seqlen_offset(self.active_slot, pos);
         self.clear_batch_slot_indices();
         let valid_prefix = self.attention_cpu_valid_prefix_len.min(pos);
         self.attention_cpu_valid_prefix_len = valid_prefix;
         self.attention_cpu_dirty = self.attention_gpu.is_some() && valid_prefix < pos;
+    }
+
+    fn ensure_gpu_recurrent_slot_allocated(&mut self, slot_idx: usize) {
+        let Some(gpu) = self.gpu_recurrent.as_mut() else {
+            return;
+        };
+        while gpu.slots.len() <= slot_idx {
+            let new_slot = Qwen35GpuRecurrentState::allocate_slot(
+                &gpu.device,
+                &self.recurrent_layers,
+                gpu.conv_state_stride,
+                gpu.recurrent_state_stride,
+            )
+            .expect("Failed to allocate GPU recurrent slot buffers");
+            gpu.slots.push(new_slot);
+        }
     }
 
     pub fn recurrent_seqlen_offset(&self, slot_idx: usize) -> usize {
@@ -2072,7 +2080,13 @@ impl Qwen3_5Kv {
 
     fn sync_gpu_attention_from_cpu(&mut self) {
         if self.attention_gpu.is_none() {
-            self.attention_cpu_dirty = false;
+            if self.attention_cpu_dirty {
+                tracing::error!(
+                    "GPU attention disabled while CPU dirty — CPU data may be stale for seq_len={}",
+                    self.seq_len
+                );
+                return;
+            }
             self.attention_cpu_valid_prefix_len = self.seq_len;
             return;
         }

@@ -276,7 +276,13 @@ impl Gemma3Forward {
 
         // Current sequence position (before appending this token)
         let cur_seq_len = gpu_kv.seq_len();
-        let kv_offset = (cur_seq_len * kv_dim) as u32;
+        let kv_offset = u32::try_from(cur_seq_len * kv_dim).map_err(|_| {
+            anyhow::anyhow!(
+                "KV offset overflow: cur_seq_len={}, kv_dim={}",
+                cur_seq_len,
+                kv_dim
+            )
+        })?;
         let exec_plan = DecodeExecutionPlan::gemma3_single_cb(
             metal_ops,
             gpu_kv,
@@ -293,41 +299,38 @@ impl Gemma3Forward {
             let weight_cache = metal_ops.lock_weight_cache();
             let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
             let exec_t = OpTimer::start();
-            let encode_body =
-                |encoder: &ax_engine_metal::MetalEncoder| -> anyhow::Result<()> {
-                    let barrier = crate::model::shared::DecodeBarrierCtx::new(
-                        encoder,
-                        exec_plan.barriers,
-                    );
-                    encode_gemma3_gpu_layers_only(
-                        encoder,
-                        metal_ops,
-                        s,
-                        &s.hidden,
-                        cfg,
-                        position,
-                        kv_offset,
-                        cur_seq_len + 1,
-                        &exec_plan,
-                        gpu_kv,
-                        cached,
-                        &weight_cache,
-                        &fused_qkv_cache,
-                    )?;
-                    encode_gemma3_gpu_output_head(
-                        encoder,
-                        metal_ops,
-                        s,
-                        &s.hidden,
-                        cfg,
-                        &exec_plan,
-                        cached,
-                        &weight_cache,
-                        &barrier,
-                    );
-                    barrier.flush();
-                    Ok(())
-                };
+            let encode_body = |encoder: &ax_engine_metal::MetalEncoder| -> anyhow::Result<()> {
+                let barrier =
+                    crate::model::shared::DecodeBarrierCtx::new(encoder, exec_plan.barriers);
+                encode_gemma3_gpu_layers_only(
+                    encoder,
+                    metal_ops,
+                    s,
+                    &s.hidden,
+                    cfg,
+                    position,
+                    kv_offset,
+                    cur_seq_len + 1,
+                    &exec_plan,
+                    gpu_kv,
+                    cached,
+                    &weight_cache,
+                    &fused_qkv_cache,
+                )?;
+                encode_gemma3_gpu_output_head(
+                    encoder,
+                    metal_ops,
+                    s,
+                    &s.hidden,
+                    cfg,
+                    &exec_plan,
+                    cached,
+                    &weight_cache,
+                    &barrier,
+                );
+                barrier.flush();
+                Ok(())
+            };
             if exec_plan.encoder == DecodeEncoderPlan::Concurrent {
                 metal_ops.device.execute_sync_concurrent(encode_body)?;
             } else {
@@ -542,7 +545,7 @@ impl Gemma3Forward {
                                     encoder,
                                     &bs.norm_buf,
                                     &bs.matmul_in_f16,
-                                    nt * dim as u32,
+                                    (nt as usize * dim) as u32,
                                 );
                                 encode_dequant_batch_f16in(
                                     metal_ops,
@@ -597,7 +600,7 @@ impl Gemma3Forward {
                                     encoder,
                                     &bs.norm_buf,
                                     &bs.matmul_in_f16,
-                                    nt * dim as u32,
+                                    (nt as usize * dim) as u32,
                                 );
                                 sb.post_dispatch(&[&bs.norm_buf], &[&bs.matmul_in_f16]);
                                 sb.pre_dispatch(&[&bs.matmul_in_f16], &[&bs.q_buf]);
@@ -705,12 +708,35 @@ impl Gemma3Forward {
                         ops_ref.gpu_encode_layer_qkv += qkv_t.elapsed();
                     }
 
-                    let cache_offset = (base_seq_len * kv_dim) as u32;
+                    // For Q8_0 KV, the shader interprets cache_offset as block
+                    // offset (1 block = 32 values), not element offset.
+                    let cache_offset = if prefill_plan.kv_q8 {
+                        u32::try_from(
+                            base_seq_len
+                                * (kv_dim / crate::kv::gpu_kv::Q8_0_BLOCK_VALUES),
+                        )
+                        .map_err(|_| {
+                            anyhow::anyhow!(
+                                "KV Q8 block offset overflow: base_seq_len={}, kv_dim={}",
+                                base_seq_len,
+                                kv_dim
+                            )
+                        })?
+                    } else {
+                        u32::try_from(base_seq_len * kv_dim).map_err(|_| {
+                            anyhow::anyhow!(
+                                "KV cache offset overflow: base_seq_len={}, kv_dim={}",
+                                base_seq_len,
+                                kv_dim
+                            )
+                        })?
+                    };
                     let kv_k = gpu_kv.k_buffer(layer);
                     let kv_v = gpu_kv.v_buffer(layer);
                     let fused_qkv_post = fused_qkv_buf.is_some()
                         && lw.attn_q_norm.is_some()
-                        && lw.attn_k_norm.is_some();
+                        && lw.attn_k_norm.is_some()
+                        && !prefill_plan.kv_q8;
 
                     // ── Phase 1c+1d: Fused split + QK norm + RoPE + KV append when eligible ──
                     let rope_kv_t = OpTimer::start();
@@ -867,21 +893,19 @@ impl Gemma3Forward {
                         let attn_kv_v = gpu_kv.v_buffer(layer);
                         sb.pre_dispatch(&[&bs.q_buf, attn_kv_k, attn_kv_v], &[&bs.attn_out]);
                         if prefill_plan.kv_q8 {
-                            metal_ops
-                                .attention
-                                .encode_attention_prefill_cached_q8kv(
-                                    encoder,
-                                    &bs.q_buf,
-                                    attn_kv_k,
-                                    attn_kv_v,
-                                    &bs.attn_out,
-                                    nt,
-                                    n_heads as u32,
-                                    n_kv_heads as u32,
-                                    head_dim as u32,
-                                    base_seq_len as u32,
-                                    layer_plan.sliding_window,
-                                );
+                            metal_ops.attention.encode_attention_prefill_cached_q8kv(
+                                encoder,
+                                &bs.q_buf,
+                                attn_kv_k,
+                                attn_kv_v,
+                                &bs.attn_out,
+                                nt,
+                                n_heads as u32,
+                                n_kv_heads as u32,
+                                head_dim as u32,
+                                base_seq_len as u32,
+                                layer_plan.sliding_window,
+                            );
                         } else {
                             metal_ops
                                 .attention
@@ -990,7 +1014,7 @@ impl Gemma3Forward {
                                 encoder,
                                 &bs.norm_buf,
                                 &bs.matmul_in_f16,
-                                nt * dim as u32,
+                                (nt as usize * dim) as u32,
                             );
                             if ffn_layer_plan.use_pair_kernel {
                                 encode_dequant_batch_pair_f16in(

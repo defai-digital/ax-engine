@@ -251,10 +251,11 @@ impl GgufHeader {
         let kv_count = cursor.read_u64()?;
 
         // Parse metadata KV pairs
-        // Cap capacity hint to avoid OOM from malicious kv_count in untrusted GGUF files.
-        // The actual count is still enforced by the loop + cursor bounds.
-        let mut metadata = HashMap::with_capacity((kv_count as usize).min(4096));
-        for _ in 0..kv_count {
+        // Cap both capacity and loop count to defend against malicious kv_count
+        // in untrusted GGUF files. Legitimate models have <200 metadata keys.
+        let max_kv = (kv_count as usize).min(4096);
+        let mut metadata = HashMap::with_capacity(max_kv);
+        for _ in 0..max_kv {
             let key = cursor.read_string()?;
             let value = read_metadata_value(&mut cursor)?;
             metadata.insert(key, value);
@@ -358,6 +359,23 @@ impl GgufHeader {
                 for v in arr {
                     match v {
                         MetadataValue::Int32(i) => result.push(*i),
+                        _ => return None,
+                    }
+                }
+                Some(result)
+            }
+            _ => None,
+        }
+    }
+
+    /// Get a bool array metadata value by key.
+    pub fn get_bool_array(&self, key: &str) -> Option<Vec<bool>> {
+        match self.metadata.get(key) {
+            Some(MetadataValue::Array(arr)) => {
+                let mut result = Vec::with_capacity(arr.len());
+                for v in arr {
+                    match v {
+                        MetadataValue::Bool(b) => result.push(*b),
                         _ => return None,
                     }
                 }

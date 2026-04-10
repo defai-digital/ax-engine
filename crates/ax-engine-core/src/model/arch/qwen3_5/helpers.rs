@@ -428,7 +428,10 @@ impl Qwen3_5Forward {
     fn qwen35_moe_routed_expert_dtype_supported(dtype: crate::gguf::tensor::GgmlType) -> bool {
         matches!(
             dtype,
-            crate::gguf::tensor::GgmlType::Q4K | crate::gguf::tensor::GgmlType::Q5K
+            crate::gguf::tensor::GgmlType::Q4K
+                | crate::gguf::tensor::GgmlType::Q5K
+                | crate::gguf::tensor::GgmlType::Q6K
+                | crate::gguf::tensor::GgmlType::Q8_0
         )
     }
 
@@ -577,18 +580,7 @@ impl Qwen3_5Forward {
         eid: usize,
         name: &str,
     ) -> anyhow::Result<&'a [u8]> {
-        let start = eid
-            .checked_mul(stride)
-            .ok_or_else(|| anyhow::anyhow!("expert slice overflow for {name}"))?;
-        let end = start
-            .checked_add(stride)
-            .ok_or_else(|| anyhow::anyhow!("expert slice overflow for {name}"))?;
-        anyhow::ensure!(
-            end <= full.len(),
-            "expert slice out of bounds for {name}: expert={eid}, end={end}, len={}",
-            full.len()
-        );
-        Ok(&full[start..end])
+        crate::model::moe_utils::expert_quant_slice(full, stride, eid, name)
     }
 
     fn finalize_recurrent_output(
@@ -967,5 +959,30 @@ impl Qwen3_5Forward {
             .for_each(|(rec_out, rec_z)| {
                 Self::finalize_recurrent_output(rec_out, rec_z, dims, ssm_norm_w, rms_norm_eps);
             });
+    }
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+    use crate::gguf::tensor::GgmlType;
+
+    #[test]
+    fn test_qwen35_moe_routed_expert_dtype_supported_accepts_q4k_through_q8_0() {
+        assert!(Qwen3_5Forward::qwen35_moe_routed_expert_dtype_supported(
+            GgmlType::Q4K
+        ));
+        assert!(Qwen3_5Forward::qwen35_moe_routed_expert_dtype_supported(
+            GgmlType::Q5K
+        ));
+        assert!(Qwen3_5Forward::qwen35_moe_routed_expert_dtype_supported(
+            GgmlType::Q6K
+        ));
+        assert!(Qwen3_5Forward::qwen35_moe_routed_expert_dtype_supported(
+            GgmlType::Q8_0
+        ));
+        assert!(!Qwen3_5Forward::qwen35_moe_routed_expert_dtype_supported(
+            GgmlType::F32
+        ));
     }
 }

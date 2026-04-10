@@ -25,6 +25,7 @@ struct Gemma4LayerSpec {
     v_equals_k: bool,
     rope_base: f32,
     local_window: Option<usize>,
+    has_moe: bool,
 }
 
 impl Gemma4LayerSpec {
@@ -56,6 +57,7 @@ impl Gemma4LayerSpec {
             } else {
                 None
             },
+            has_moe: weights.has(&format!("blk.{layer}.ffn_gate_inp.weight")),
         }
     }
 
@@ -72,16 +74,18 @@ impl Gemma4LayerSpec {
         (prefix_read_len, prefix_start)
     }
 
-    fn use_backend_prefill(&self, prefix_read_len: usize, n_tokens: usize) -> bool {
-        prefix_read_len == 0
-            && self.head_dim <= Gemma4Forward::MAX_BACKEND_PREFILL_HEAD_DIM
-            && (self.head_dim <= 256
-                || n_tokens >= Gemma4Forward::MIN_LARGE_HEAD_BACKEND_PREFILL_TOKENS)
-            && self
-                .local_window
-                .map(|window| n_tokens <= window)
-                .unwrap_or(true)
+    fn use_backend_prefill(&self, _prefix_read_len: usize, _n_tokens: usize) -> bool {
+        // Gemma4 requires attention scale=1.0 (QK norms handle scaling).
+        // backend.attention_prefill() hardcodes 1/sqrt(head_dim), so we must
+        // always use the manual path which passes scale=1.0 explicitly.
+        false
     }
+}
+
+struct MoeScratch {
+    logits: Vec<f32>,
+    fused: Vec<f32>,
+    down: Vec<f32>,
 }
 
 struct Gemma4BatchScratch {
@@ -101,6 +105,9 @@ struct Gemma4BatchScratch {
     prefix_v_scratch: Vec<f32>,
     padded_prefix_k_scratch: Vec<f32>,
     padded_prefix_v_scratch: Vec<f32>,
+    moe_norm_buf: Vec<f32>,
+    moe_accum_buf: Vec<f32>,
+    moe_scratch: MoeScratch,
 }
 
 impl Gemma4BatchScratch {
@@ -113,14 +120,13 @@ impl Gemma4BatchScratch {
             .max(config.gemma4_head_dim_swa.unwrap_or(config.head_dim))
             as usize;
         let max_q_dim = n_heads * max_hd;
-        let max_kv_dim = config
-            .gemma4_n_kv_heads_swa
-            .unwrap_or(config.n_kv_heads)
-            .max(config.gemma4_n_kv_heads_global.unwrap_or(config.n_kv_heads))
-            as usize
-            * max_hd;
+        let swa_kv_dim = config.gemma4_n_kv_heads_swa.unwrap_or(config.n_kv_heads) as usize
+            * config.gemma4_head_dim_swa.unwrap_or(config.head_dim) as usize;
+        let global_kv_dim = config.gemma4_n_kv_heads_global.unwrap_or(config.n_kv_heads) as usize
+            * config.gemma4_head_dim_global.unwrap_or(config.head_dim) as usize;
+        let max_kv_dim = swa_kv_dim.max(global_kv_dim);
         let inter_dim = config.intermediate_dim as usize;
-        let kv_stride = config.n_kv_heads as usize * config.head_dim as usize;
+        let kv_stride = max_kv_dim;
         let hidden_len = chunk_len * dim;
 
         Self {
@@ -140,6 +146,13 @@ impl Gemma4BatchScratch {
             prefix_v_scratch: Vec::new(),
             padded_prefix_k_scratch: Vec::new(),
             padded_prefix_v_scratch: Vec::new(),
+            moe_norm_buf: if config.n_expert.is_some() { vec![0.0; hidden_len] } else { Vec::new() },
+            moe_accum_buf: if config.n_expert.is_some() { vec![0.0; hidden_len] } else { Vec::new() },
+            moe_scratch: MoeScratch {
+                logits: vec![0.0; config.n_expert.unwrap_or(0) as usize],
+                fused: vec![0.0; 2 * config.expert_intermediate_dim.unwrap_or(0) as usize],
+                down: vec![0.0; dim],
+            },
         }
     }
 }
@@ -149,12 +162,6 @@ impl Gemma4Forward {
     const GPU_KV_BATCH_SCRATCH_TARGET_BYTES: usize = 256 * 1024 * 1024;
     const PARALLEL_BATCH_MIN_TOKENS: usize = 64;
     const PARALLEL_FLOAT_CHUNK: usize = 16 * 1024;
-    const MAX_BACKEND_PREFILL_HEAD_DIM: usize = 512;
-    // The generic Metal HD512 prefill path only amortizes its launch/copy cost
-    // once the prompt chunk is moderately large. Keep small global batches on
-    // the CPU helper.
-    const MIN_LARGE_HEAD_BACKEND_PREFILL_TOKENS: usize = 128;
-
     fn cpu_batch_chunk_len(
         config: &ModelConfig,
         n_tokens: usize,
@@ -566,8 +573,8 @@ impl Gemma4Forward {
         kv_stride: usize,
         prefix_k_scratch: &mut Vec<f32>,
         prefix_v_scratch: &mut Vec<f32>,
-        padded_k_scratch: &mut Vec<f32>,
-        padded_v_scratch: &mut Vec<f32>,
+        _padded_k_scratch: &mut Vec<f32>,
+        _padded_v_scratch: &mut Vec<f32>,
         f: impl FnOnce(&[f32], &[f32], usize) -> R,
     ) -> R {
         let (prefix_read_len, prefix_start) = spec.prefix_read_plan(base_seq_len);
@@ -606,45 +613,15 @@ impl Gemma4Forward {
                 }
             }
             ModelKv::Gpu(gpu_kv) => {
-                if spec.kv_dim == kv_stride {
-                    prefix_k_scratch.resize(prefix_read_len * spec.kv_dim, 0.0);
-                    prefix_v_scratch.resize(prefix_read_len * spec.kv_dim, 0.0);
-                    gpu_kv.read_layer_range_into(
-                        spec.layer,
-                        prefix_start,
-                        prefix_read_len,
-                        prefix_k_scratch,
-                        prefix_v_scratch,
-                    );
-                } else {
-                    padded_k_scratch.resize(prefix_read_len * kv_stride, 0.0);
-                    padded_v_scratch.resize(prefix_read_len * kv_stride, 0.0);
-                    gpu_kv.read_layer_range_into(
-                        spec.layer,
-                        prefix_start,
-                        prefix_read_len,
-                        padded_k_scratch,
-                        padded_v_scratch,
-                    );
-                    prefix_k_scratch.resize(prefix_read_len * spec.kv_dim, 0.0);
-                    prefix_v_scratch.resize(prefix_read_len * spec.kv_dim, 0.0);
-                    Self::copy_rows(
-                        padded_k_scratch,
-                        kv_stride,
-                        prefix_k_scratch,
-                        spec.kv_dim,
-                        spec.kv_dim,
-                        prefix_read_len,
-                    );
-                    Self::copy_rows(
-                        padded_v_scratch,
-                        kv_stride,
-                        prefix_v_scratch,
-                        spec.kv_dim,
-                        spec.kv_dim,
-                        prefix_read_len,
-                    );
-                }
+                prefix_k_scratch.resize(prefix_read_len * spec.kv_dim, 0.0);
+                prefix_v_scratch.resize(prefix_read_len * spec.kv_dim, 0.0);
+                gpu_kv.read_layer_range_into(
+                    spec.layer,
+                    prefix_start,
+                    prefix_read_len,
+                    prefix_k_scratch,
+                    prefix_v_scratch,
+                );
                 f(prefix_k_scratch, prefix_v_scratch, prefix_read_len)
             }
             ModelKv::Qwen35(_) => unreachable!("gemma4 does not support qwen35 kv"),
@@ -711,9 +688,9 @@ impl Gemma4Forward {
         v_batch: &[f32],
         attn_out_batch: &mut [f32],
         n_tokens: usize,
-        kv_stride: usize,
-        k_padded_batch: &mut [f32],
-        v_padded_batch: &mut [f32],
+        _kv_stride: usize,
+        _k_padded_batch: &mut [f32],
+        _v_padded_batch: &mut [f32],
         mut ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<bool> {
         if base_seq_len == 0 {
@@ -745,79 +722,30 @@ impl Gemma4Forward {
             bs.q_buf.as_mut_slice::<f32>()[..n_tokens * spec.q_dim].copy_from_slice(q_batch);
         }
 
-        if spec.kv_dim < kv_stride {
-            let padded_len = n_tokens * kv_stride;
-            k_padded_batch[..padded_len].fill(0.0);
-            v_padded_batch[..padded_len].fill(0.0);
-            Self::copy_rows(
-                k_batch,
-                spec.kv_dim,
-                &mut k_padded_batch[..padded_len],
-                kv_stride,
-                spec.kv_dim,
-                n_tokens,
-            );
-            Self::copy_rows(
-                v_batch,
-                spec.kv_dim,
-                &mut v_padded_batch[..padded_len],
-                kv_stride,
-                spec.kv_dim,
-                n_tokens,
-            );
-            gpu_kv.append_layer_batch(
-                spec.layer,
-                &k_padded_batch[..padded_len],
-                &v_padded_batch[..padded_len],
-                n_tokens,
-            );
-        } else {
-            gpu_kv.append_layer_batch(spec.layer, k_batch, v_batch, n_tokens);
-        }
+        gpu_kv.append_layer_batch(spec.layer, k_batch, v_batch, n_tokens);
 
         let attention_t = OpTimer::start();
         metal_ops.device.execute_sync(|encoder| {
             let n_heads = (spec.q_dim / spec.head_dim) as u32;
             let n_tokens_u32 = n_tokens as u32;
             let sliding_window = spec.local_window.unwrap_or(0) as u32;
-            if spec.kv_dim == gpu_kv.kv_stride() {
-                metal_ops
-                    .attention
-                    .encode_attention_prefill_cached_with_config(
-                        encoder,
-                        &bs.q_buf,
-                        gpu_kv.k_buffer(spec.layer),
-                        gpu_kv.v_buffer(spec.layer),
-                        &bs.attn_out,
-                        gpu_kv.is_f16(),
-                        n_tokens_u32,
-                        n_heads,
-                        spec.n_kv_heads as u32,
-                        spec.head_dim as u32,
-                        base_seq_len as u32,
-                        sliding_window,
-                        metal_ops.attention_dispatch_config(),
-                    );
-            } else {
-                metal_ops
-                    .attention
-                    .encode_attention_prefill_cached_with_stride_and_config(
-                        encoder,
-                        &bs.q_buf,
-                        gpu_kv.k_buffer(spec.layer),
-                        gpu_kv.v_buffer(spec.layer),
-                        &bs.attn_out,
-                        gpu_kv.is_f16(),
-                        n_tokens_u32,
-                        n_heads,
-                        spec.n_kv_heads as u32,
-                        spec.head_dim as u32,
-                        gpu_kv.kv_stride() as u32,
-                        base_seq_len as u32,
-                        sliding_window,
-                        metal_ops.attention_dispatch_config(),
-                    );
-            }
+            metal_ops
+                .attention
+                .encode_attention_prefill_cached_with_config(
+                    encoder,
+                    &bs.q_buf,
+                    gpu_kv.k_buffer(spec.layer),
+                    gpu_kv.v_buffer(spec.layer),
+                    &bs.attn_out,
+                    gpu_kv.is_f16(),
+                    n_tokens_u32,
+                    n_heads,
+                    spec.n_kv_heads as u32,
+                    spec.head_dim as u32,
+                    base_seq_len as u32,
+                    sliding_window,
+                    metal_ops.attention_dispatch_config(),
+                );
             Ok(())
         })?;
 
@@ -843,14 +771,14 @@ impl Gemma4Forward {
         n_tokens: usize,
         kv_stride: usize,
     ) {
-        if spec.kv_dim < kv_stride {
+        if matches!(kv, ModelKv::Gpu(_)) || spec.kv_dim == kv_stride {
+            Self::append_layer_batch(kv, spec.layer, k_batch, v_batch, n_tokens);
+        } else {
             k_padded_batch.fill(0.0);
             v_padded_batch.fill(0.0);
             Self::copy_rows(k_batch, spec.kv_dim, k_padded_batch, kv_stride, spec.kv_dim, n_tokens);
             Self::copy_rows(v_batch, spec.kv_dim, v_padded_batch, kv_stride, spec.kv_dim, n_tokens);
             Self::append_layer_batch(kv, spec.layer, k_padded_batch, v_padded_batch, n_tokens);
-        } else {
-            Self::append_layer_batch(kv, spec.layer, k_batch, v_batch, n_tokens);
         }
     }
 
@@ -939,6 +867,220 @@ impl Gemma4Forward {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn apply_post_attention_and_moe_ffn_batch(
+        spec: &Gemma4LayerSpec,
+        ctx: &ForwardContext,
+        weights: &WeightStore,
+        layer_hidden: &mut [f32],
+        layer_norm: &mut [f32],
+        attn_out_batch: &[f32],
+        proj_batch: &mut [f32],
+        gate_batch: &mut [f32],
+        up_batch: &mut [f32],
+        down_batch: &mut [f32],
+        moe_norm_buf: &mut [f32],
+        moe_accum_buf: &mut [f32],
+        moe_scratch: &mut MoeScratch,
+        n_tokens: usize,
+        dim: usize,
+        inter_dim: usize,
+        rms_norm_eps: f32,
+        config: &ModelConfig,
+        mut ops: Option<&mut OpBreakdown>,
+    ) -> anyhow::Result<()> {
+        // ── 1. Output projection ──
+        let (wo_raw, wo_dtype) =
+            weights.raw_with_dtype(&format!("{}.attn_output.weight", spec.prefix))?;
+        timed!(ops, matmul, ctx.backend.dequant_matmul_token_major(
+            wo_raw,
+            wo_dtype,
+            attn_out_batch,
+            proj_batch,
+            n_tokens,
+            dim,
+            spec.q_dim,
+        ));
+
+        // ── 2. Post-attention RMSNorm ──
+        if weights.has(&format!("{}.post_attention_norm.weight", spec.prefix)) {
+            let post_attn_norm_w = timed!(
+                ops,
+                dequant,
+                weights.f32_slice(&format!("{}.post_attention_norm.weight", spec.prefix))?
+            );
+            timed!(ops, norm, {
+                for t in 0..n_tokens {
+                    let start = t * dim;
+                    rms_norm::rms_norm(
+                        &mut proj_batch[start..start + dim],
+                        post_attn_norm_w,
+                        rms_norm_eps,
+                    );
+                }
+            });
+        }
+
+        // ── 3. Residual add (attention) ──
+        Self::parallel_elementwise_add(layer_hidden, proj_batch);
+
+        let hidden_len = n_tokens * dim;
+
+        // ── 4. Save pre-shared-FFN state for MoE routing ──
+        // Per llama.cpp gemma4-iswa: both shared FFN and MoE branch from the
+        // same `attn_out` state. Save it before the shared FFN mutates hidden.
+        let n_expert = config.n_expert.unwrap_or(0) as usize;
+        let n_expert_used = config.n_expert_used.unwrap_or(0) as usize;
+        let expert_inter_dim = config.expert_intermediate_dim.unwrap_or(0) as usize;
+        let has_moe = n_expert > 0 && n_expert_used > 0 && expert_inter_dim > 0;
+
+        if has_moe {
+            // Save attn_out (pre-shared-FFN) into moe_norm_buf for MoE routing
+            moe_norm_buf[..hidden_len].copy_from_slice(&layer_hidden[..hidden_len]);
+        }
+
+        // ── 5. Shared FFN: norm → gate/up → GELU*mul → down → post_ffw_norm ──
+        let ffn_norm_w = weights.f32_slice(&format!("{}.ffn_norm.weight", spec.prefix))?;
+        crate::model::layer_ops::apply_ffn_batch(
+            ctx.backend,
+            weights,
+            &spec.prefix,
+            layer_hidden,
+            layer_norm,
+            gate_batch,
+            up_batch,
+            down_batch,
+            n_tokens,
+            dim,
+            inter_dim,
+            ffn_norm_w,
+            rms_norm_eps,
+            crate::model::layer_ops::FfnActivation::GELU,
+        );
+
+        // ── 6. MoE FFN ──
+        if has_moe {
+            // Norm the saved pre-shared-FFN state (attn_out) in-place for MoE
+            // routing and expert inputs. Both branches see the same starting
+            // point, matching llama.cpp gemma4-iswa where router operates on
+            // attn_out. After this, moe_norm_buf holds the normed attn_out.
+            let moe_norm_slice = &mut moe_norm_buf[..hidden_len];
+            timed!(ops, norm, {
+                for t in 0..n_tokens {
+                    let start = t * dim;
+                    rms_norm::rms_norm(
+                        &mut moe_norm_slice[start..start + dim],
+                        ffn_norm_w,
+                        rms_norm_eps,
+                    );
+                }
+            });
+
+            let (router_raw, router_dtype) =
+                weights.raw_with_dtype(&format!("{}.ffn_gate_inp.weight", spec.prefix))?;
+
+            // Get raw expert weight tensors and compute per-expert byte strides
+            let gate_up_name = format!("{}.ffn_gate_up_exps.weight", spec.prefix);
+            let down_name = format!("{}.ffn_down_exps.weight", spec.prefix);
+            let (gate_up_raw, gate_up_dtype) = weights.raw_with_dtype(&gate_up_name)?;
+            let (down_raw, down_dtype) = weights.raw_with_dtype(&down_name)?;
+
+            let fused_dim = 2 * expert_inter_dim;
+            let gate_up_stride =
+                crate::model::moe_utils::expert_byte_stride(gate_up_dtype, fused_dim * dim);
+            let down_stride =
+                crate::model::moe_utils::expert_byte_stride(down_dtype, dim * expert_inter_dim);
+
+            let cpu = crate::backend::cpu::CpuBackend;
+
+            let moe_accum_slice = &mut moe_accum_buf[..hidden_len];
+            moe_accum_slice.fill(0.0);
+
+            // Process each token independently through the MoE
+            for t in 0..n_tokens {
+                let token_hidden = &moe_norm_slice[t * dim..(t + 1) * dim];
+                let token_accum = &mut moe_accum_slice[t * dim..(t + 1) * dim];
+
+                // Router: hidden → logits (dim → n_expert)
+                let router_logits = &mut moe_scratch.logits[..n_expert];
+                timed!(ops, matmul, ctx.backend.dequant_matmul(
+                    router_raw,
+                    router_dtype,
+                    token_hidden,
+                    router_logits,
+                    n_expert,
+                    1,
+                    dim,
+                ));
+
+                // Top-k softmax selection with re-normalization
+                let (top_indices, top_weights) =
+                    crate::model::moe_utils::top_k_softmax(router_logits, n_expert_used);
+
+                // Per-expert computation using batched dequant_matmul
+                for (i, &expert_idx) in top_indices.iter().enumerate() {
+                    let weight = top_weights[i];
+
+                    // Fused gate+up: token_hidden → fused (dim → 2*expert_inter_dim)
+                    let fused_buf = &mut moe_scratch.fused[..fused_dim];
+                    let expert_gate_up = crate::model::moe_utils::expert_quant_slice(
+                        gate_up_raw,
+                        gate_up_stride,
+                        expert_idx,
+                        &gate_up_name,
+                    )?;
+                    timed!(ops, matmul, cpu.dequant_matmul(
+                        expert_gate_up,
+                        gate_up_dtype,
+                        token_hidden,
+                        fused_buf,
+                        fused_dim,
+                        1,
+                        dim,
+                    ));
+
+                    // Split fused into gate and up, apply GELU*mul
+                    let (gate_half, up_half) = fused_buf.split_at_mut(expert_inter_dim);
+                    crate::compute::gelu::gelu_elementwise_mul(gate_half, up_half);
+
+                    // Down projection: activated → expert_down (expert_inter_dim → dim)
+                    let expert_down = &mut moe_scratch.down[..dim];
+                    let expert_down_slice = crate::model::moe_utils::expert_quant_slice(
+                        down_raw,
+                        down_stride,
+                        expert_idx,
+                        &down_name,
+                    )?;
+                    timed!(ops, matmul, cpu.dequant_matmul(
+                        expert_down_slice,
+                        down_dtype,
+                        gate_half,
+                        expert_down,
+                        dim,
+                        1,
+                        expert_inter_dim,
+                    ));
+
+                    // Weighted accumulate
+                    for (acc, &val) in token_accum.iter_mut().zip(expert_down.iter()) {
+                        *acc += weight * val;
+                    }
+                }
+            }
+
+            // Add MoE output to hidden
+            Self::parallel_elementwise_add(layer_hidden, moe_accum_slice);
+        }
+
+        // ── 6. Layer output scale ──
+        if weights.has(&format!("{}.layer_output_scale.weight", spec.prefix)) {
+            let scale = weights.f32_slice(&format!("{}.layer_output_scale.weight", spec.prefix))?[0];
+            Self::parallel_scale(layer_hidden, scale);
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn write_batch_last_logits(
         ctx: &ForwardContext,
         weights: &WeightStore,
@@ -951,6 +1093,7 @@ impl Gemma4Forward {
         mut ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<()> {
         assert!(logits.len() >= vocab_size);
+        debug_assert!(n_tokens > 0, "n_tokens must be > 0 for last-token logit extraction");
         logits.fill(0.0);
         let last_hidden = &mut hidden[(n_tokens - 1) * dim..n_tokens * dim];
         apply_output_norm_single(weights, last_hidden, config.rms_norm_eps, ops.as_deref_mut())?;
@@ -1052,7 +1195,11 @@ impl Gemma4Forward {
         let n_tokens = token_ids.len();
         let hidden_len = n_tokens * dim;
         let inter_dim = cfg.intermediate_dim as usize;
-        let kv_stride = cfg.n_kv_heads as usize * cfg.head_dim as usize;
+        let swa_kv_dim = cfg.gemma4_n_kv_heads_swa.unwrap_or(cfg.n_kv_heads) as usize
+            * cfg.gemma4_head_dim_swa.unwrap_or(cfg.head_dim) as usize;
+        let global_kv_dim = cfg.gemma4_n_kv_heads_global.unwrap_or(cfg.n_kv_heads) as usize
+            * cfg.gemma4_head_dim_global.unwrap_or(cfg.head_dim) as usize;
+        let kv_stride = swa_kv_dim.max(global_kv_dim);
         let base_seq_len = kv.seq_len();
 
         let hidden = &mut scratch.hidden[..hidden_len];
@@ -1165,23 +1312,47 @@ impl Gemma4Forward {
                     kv_stride,
                 );
             }
-            Self::apply_post_attention_and_ffn_batch(
-                spec,
-                ctx,
-                weights,
-                hidden,
-                norm_buf,
-                attn_out_batch,
-                proj_buf,
-                gate_buf,
-                up_buf,
-                down_buf,
-                n_tokens,
-                dim,
-                inter_dim,
-                cfg.rms_norm_eps,
-                ops.as_deref_mut(),
-            )?;
+            if spec.has_moe {
+                Self::apply_post_attention_and_moe_ffn_batch(
+                    spec,
+                    ctx,
+                    weights,
+                    hidden,
+                    norm_buf,
+                    attn_out_batch,
+                    proj_buf,
+                    gate_buf,
+                    up_buf,
+                    down_buf,
+                    &mut scratch.moe_norm_buf,
+                    &mut scratch.moe_accum_buf,
+                    &mut scratch.moe_scratch,
+                    n_tokens,
+                    dim,
+                    inter_dim,
+                    cfg.rms_norm_eps,
+                    cfg,
+                    ops.as_deref_mut(),
+                )?;
+            } else {
+                Self::apply_post_attention_and_ffn_batch(
+                    spec,
+                    ctx,
+                    weights,
+                    hidden,
+                    norm_buf,
+                    attn_out_batch,
+                    proj_buf,
+                    gate_buf,
+                    up_buf,
+                    down_buf,
+                    n_tokens,
+                    dim,
+                    inter_dim,
+                    cfg.rms_norm_eps,
+                    ops.as_deref_mut(),
+                )?;
+            }
         }
 
         Self::finalize_batch(kv, n_tokens);
@@ -1294,8 +1465,17 @@ impl ForwardPass for Gemma4Forward {
         let mut up_buf = vec![0.0f32; inter_dim];
         let mut down_buf = vec![0.0f32; dim];
 
-        // KV cache stride (primary config = SWA = max stride)
-        let kv_stride = cfg.n_kv_heads as usize * cfg.head_dim as usize;
+        // KV cache stride: max product across SWA and global layer types
+        let swa_kv_dim = cfg.gemma4_n_kv_heads_swa.unwrap_or(cfg.n_kv_heads) as usize
+            * cfg.gemma4_head_dim_swa.unwrap_or(cfg.head_dim) as usize;
+        let global_kv_dim = cfg.gemma4_n_kv_heads_global.unwrap_or(cfg.n_kv_heads) as usize
+            * cfg.gemma4_head_dim_global.unwrap_or(cfg.head_dim) as usize;
+        let kv_stride = swa_kv_dim.max(global_kv_dim);
+
+        // Pre-allocate KV padding scratch for global layers (avoids per-token
+        // heap allocation inside the layer loop — BUG-046).
+        let mut k_padded = vec![0.0f32; kv_stride];
+        let mut v_padded = vec![0.0f32; kv_stride];
 
         // Load rope_freqs for proportional RoPE on global layers
         let rope_freq_factors: Option<Vec<f32>> = if weights.has("rope_freqs.weight") {
@@ -1425,11 +1605,11 @@ impl ForwardPass for Gemma4Forward {
 
             // 2e. Update KV cache (pad to full stride for global layers)
             if kv_dim < kv_stride {
-                let mut k_padded = vec![0.0f32; kv_stride];
-                let mut v_padded = vec![0.0f32; kv_stride];
                 k_padded[..kv_dim].copy_from_slice(&k_buf[..kv_dim]);
+                k_padded[kv_dim..kv_stride].fill(0.0);
                 v_padded[..kv_dim].copy_from_slice(&v_buf[..kv_dim]);
-                cpu_kv.append_and_advance(layer, &k_padded, &v_padded);
+                v_padded[kv_dim..kv_stride].fill(0.0);
+                cpu_kv.append_and_advance(layer, &k_padded[..kv_stride], &v_padded[..kv_stride]);
             } else {
                 cpu_kv.append_and_advance(layer, &k_buf[..kv_dim], &v_buf[..kv_dim]);
             }
@@ -1602,6 +1782,7 @@ impl ForwardPass for Gemma4Forward {
             let gpu_kv = kv.as_gpu_mut().unwrap();
             if prefill_plan.mode == crate::model::execution_plan::PrefillMode::GpuChunked {
                 let chunk_len = prefill_plan.chunk_len.unwrap();
+                let initial_seq_len = gpu_kv.seq_len();
                 for chunk in token_ids.chunks(chunk_len) {
                     match self.forward_batch_gpu_unified(
                         ctx,
@@ -1618,8 +1799,10 @@ impl ForwardPass for Gemma4Forward {
                             tracing::warn!(
                                 "Gemma4 chunked GPU batch prefill failed, falling back to serial: {e}"
                             );
+                            let already_processed = kv.seq_len() - initial_seq_len;
+                            let remaining = &token_ids[already_processed..];
                             let start_pos = kv.seq_len();
-                            for (i, &tid) in token_ids.iter().enumerate() {
+                            for (i, &tid) in remaining.iter().enumerate() {
                                 logits.fill(0.0);
                                 self.forward_single(
                                     ctx,

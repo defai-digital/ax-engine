@@ -449,6 +449,11 @@ fn sample_filtered_logits_with_scratch(
         return sample_categorical(logits, rng);
     }
 
+    // Sort by descending logit to match sample_filtered_logits_info_with_scratch.
+    // Categorical sampling traverses probabilities sequentially, so iteration
+    // order affects which token is selected for the same RNG seed.
+    scratch_indices.sort_unstable_by(|&a, &b| logits[b].total_cmp(&logits[a]));
+
     scratch_probs.clear();
     if scratch_probs.capacity() < scratch_indices.len() {
         scratch_probs.reserve(scratch_indices.len() - scratch_probs.capacity());

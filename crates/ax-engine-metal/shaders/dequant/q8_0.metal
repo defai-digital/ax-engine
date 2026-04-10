@@ -1405,3 +1405,271 @@ kernel void dequant_matvec_q8_0_ilp4(
     }
 }
 
+// ── Q8_0 MoE expert mul_mat_id (blocked, f32 input) ──
+//
+// Dispatches per-expert batched matmul via routing tables.
+// Grid: (ceil(n_assigned/32), ceil(M/64), n_active_experts)
+// TG: 128 threads (4 simdgroups)
+// Shared memory: 8192 bytes
+kernel void moe_mul_mat_id_q8_0_blocked(
+    device const Q8_0_Block *weights   [[buffer(0)]],
+    device const float *input          [[buffer(1)]],
+    device const uint32_t *tpe         [[buffer(2)]],
+    device const int32_t *hids         [[buffer(3)]],
+    device float *output               [[buffer(4)]],
+    constant uint &M                   [[buffer(5)]],
+    constant uint &K                   [[buffer(6)]],
+    constant uint &n_tokens            [[buffer(7)]],
+    constant uint &n_expert_used       [[buffer(8)]],
+    constant uint &weight_stride       [[buffer(9)]],
+    device const uint32_t *active_experts [[buffer(10)]],
+    constant uint &input_is_hid        [[buffer(11)]],
+    threadgroup char *shmem            [[threadgroup(0)]],
+    uint3 tgpig  [[threadgroup_position_in_grid]],
+    ushort tiitg [[thread_index_in_threadgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const uint expert = active_experts[tgpig.z];
+    const uint n_assigned = tpe[expert];
+
+    constexpr short NR0 = 64;
+    constexpr short NR1 = 32;
+    constexpr short NK  = 32;
+    constexpr short NL0 = NK / 16;
+    constexpr short NL1 = NK / 8;
+
+    const int r0 = tgpig.y * NR0;
+    const int r1 = tgpig.x * NR1;
+
+    if (n_assigned == 0 || (uint)r1 >= n_assigned) return;
+
+    const short nr0 = short(min(uint(NR0), M - uint(r0)));
+    const short nr1 = short(min(uint(NR1), n_assigned - uint(r1)));
+    const short lr0 = short(min(short(tiitg / NL0), short(nr0 - 1)));
+    const short lr1 = short(min(short(tiitg / NL1), short(nr1 - 1)));
+
+    const short il0 = short(tiitg % NL0);
+    short il = il0;
+
+    threadgroup half *sa = (threadgroup half *)(shmem);
+    threadgroup half *sb = (threadgroup half *)(shmem + 4096);
+
+    // Weight pointer for this expert.
+    uint blocks_per_row = K / Q8_0_BLOCK_VALUES;
+    device const Q8_0_Block *W = weights + expert * weight_stride;
+    device const Q8_0_Block *x = W + uint(r0 + lr0) * blocks_per_row;
+
+    // Input pointer via routing.
+    device const int32_t *expert_hids = hids + expert * n_tokens;
+    int32_t hid_for_lr1 = (r1 + lr1 < (int)n_assigned) ? expert_hids[r1 + lr1] : 0;
+    uint input_row = input_is_hid != 0 ? uint(hid_for_lr1) : uint(hid_for_lr1) / n_expert_used;
+    const short iy = short(8 * (tiitg % NL1));
+    device const float *y = input + input_row * K + iy;
+
+    simdgroup_half8x8 ma[4];
+    simdgroup_half8x8 mb[2];
+    simdgroup_float8x8 mc[8];
+    for (short i = 0; i < 8; i++) {
+        mc[i] = make_filled_simdgroup_matrix<float, 8>(0.0f);
+    }
+
+    for (uint loop_k = 0; loop_k < K; loop_k += NK) {
+        half4x4 temp_a;
+        dequantize_q8_0_blocked(x, il, temp_a);
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        FOR_UNROLL (short i = 0; i < 16; i++) {
+            const short sx = 2 * il0 + i / 8;
+            const short sy = (tiitg / NL0) / 8;
+            const short lx = (tiitg / NL0) % 8;
+            const short ly = i % 8;
+            const short ib = 8 * sx + sy;
+            *(sa + 64 * ib + 8 * ly + lx) = temp_a[i / 4][i % 4];
+        }
+
+        // B-tile: vectorized load.
+        const short sx = short(tiitg % NL1);
+        const short sy = (tiitg / NL1) / 8;
+        const short ly = (tiitg / NL1) % 8;
+        const short ib = 4 * sx + sy;
+        *(threadgroup half2x4 *)(sb + 64 * ib + 8 * ly) =
+            (half2x4)(*(device float2x4 *)y);
+
+        // Q8_0: one block covers 32 values = NK, advance by 1 block.
+        il = 1 - il;
+        x = (il == 0) ? x + 1 : x;
+        y += NK;
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        threadgroup const half *lsma = sa + 4 * 64 * (sgitg % 2);
+        threadgroup const half *lsmb = sb + 2 * 64 * (sgitg / 2);
+
+        FOR_UNROLL (short ik = 0; ik < NK / 8; ik++) {
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 4; i++) {
+                simdgroup_load(ma[i], lsma + 64 * i, 8, ulong2(0, 0), false);
+            }
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 2; i++) {
+                simdgroup_load(mb[i], lsmb + 64 * i, 8, ulong2(0, 0), false);
+            }
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 8; i++) {
+                simdgroup_multiply_accumulate(mc[i], mb[i / 4], ma[i % 4], mc[i]);
+            }
+            lsma += 8 * 64;
+            lsmb += 4 * 64;
+        }
+    }
+
+    // Output via routing index.
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup float *temp_str = ((threadgroup float *)shmem)
+        + 32 * (sgitg & 1) + 16 * (sgitg >> 1) * NR0;
+
+    for (short i = 0; i < 8; i++) {
+        simdgroup_store(mc[i], temp_str + 8 * (i % 4) + 8 * NR0 * (i / 4),
+                        NR0, ulong2(0, 0), false);
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const ushort lane = tiitg % 32;
+    for (short j = sgitg; j < nr1; j += 4) {
+        int32_t hid = expert_hids[r1 + j];
+        device float  *D  = output + hid * M + uint(r0);
+        device float4 *D4 = (device float4 *)D;
+        threadgroup float  *Cs  = ((threadgroup float *)shmem) + j * NR0;
+        threadgroup float4 *C4 = (threadgroup float4 *)Cs;
+
+        int i = lane;
+        for (; i < nr0 / 4; i += 32) {
+            *(D4 + i) = *(C4 + i);
+        }
+        i = (4 * (nr0 / 4)) + lane;
+        for (; i < nr0; i += 32) {
+            *(D + i) = *(Cs + i);
+        }
+    }
+}
+
+// ── Q8_0 MoE mul_mat_id (f32 tiles) ─────────────────────────────
+//
+// Uses the Q4_K f32-tile approach to avoid half-precision overflow
+// when MoE SiLU*up input has large magnitude.
+kernel void moe_mul_mat_id_q8_0(
+    device const Q8_0_Block *weights   [[buffer(0)]],
+    device const float *input          [[buffer(1)]],
+    device const uint32_t *tpe         [[buffer(2)]],
+    device const int32_t *hids         [[buffer(3)]],
+    device float *output               [[buffer(4)]],
+    constant uint &M                   [[buffer(5)]],
+    constant uint &K                   [[buffer(6)]],
+    constant uint &n_tokens            [[buffer(7)]],
+    constant uint &n_expert_used       [[buffer(8)]],
+    constant uint &weight_stride       [[buffer(9)]],
+    device const uint32_t *active_experts [[buffer(10)]],
+    constant uint &input_is_hid        [[buffer(11)]],
+    uint3 group_id  [[threadgroup_position_in_grid]],
+    uint  tid       [[thread_index_in_threadgroup]],
+    uint  simd_id   [[simdgroup_index_in_threadgroup]],
+    uint  simd_lane [[thread_index_in_simdgroup]])
+{
+    const uint expert = active_experts[group_id.z];
+    const uint n_assigned = tpe[expert];
+    const uint tile_row = group_id.y * DQ_BM;
+    const uint tile_col = group_id.x * DQ_BN;
+
+    if (n_assigned == 0 || tile_col >= n_assigned) return;
+
+    const uint blocks_per_row = K / Q8_0_BLOCK_VALUES;
+    device const Q8_0_Block *W = weights + expert * weight_stride;
+    device const int32_t *expert_hids = hids + expert * n_tokens;
+
+    // Q8_0 has 32 values per block. DQ_BK=64 spans 2 blocks.
+    threadgroup float tg_A[DQ_BM * DQ_BK];
+    threadgroup float tg_B[DQ_BK * DQ_BN];
+
+    simdgroup_float8x8 acc0, acc1, acc2, acc3;
+    acc0 = simdgroup_float8x8(0);
+    acc1 = simdgroup_float8x8(0);
+    acc2 = simdgroup_float8x8(0);
+    acc3 = simdgroup_float8x8(0);
+
+    for (uint kt = 0; kt < K; kt += DQ_BK) {
+        // Load A tile: dequant Q8_0 weight rows into f32
+        for (uint i = tid; i < DQ_BM * DQ_BK; i += DQ_TG) {
+            uint r = i / DQ_BK;
+            uint c = i % DQ_BK;
+            uint global_r = tile_row + r;
+            uint global_k = kt + c;
+
+            if (global_r < M && global_k < K) {
+                uint blk_idx = global_k / Q8_0_BLOCK_VALUES;
+                uint in_blk = global_k % Q8_0_BLOCK_VALUES;
+                device const Q8_0_Block& blk = W[global_r * blocks_per_row + blk_idx];
+                tg_A[r * DQ_BK + c] = float(blk.d) * float(blk.qs[in_blk]);
+            } else {
+                tg_A[r * DQ_BK + c] = 0.0f;
+            }
+        }
+
+        // Load B tile
+        for (uint i = tid; i < DQ_BK * DQ_BN; i += DQ_TG) {
+            uint r = i / DQ_BN;
+            uint c = i % DQ_BN;
+            uint slot = tile_col + c;
+            uint global_k = kt + r;
+
+            if (slot < n_assigned && global_k < K) {
+                int32_t hid = expert_hids[slot];
+                uint input_row = input_is_hid != 0 ? uint(hid) : uint(hid) / n_expert_used;
+                tg_B[r * DQ_BN + c] = input[input_row * K + global_k];
+            } else {
+                tg_B[r * DQ_BN + c] = 0.0f;
+            }
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint kk = 0; kk < DQ_BK / 8; kk++) {
+            simdgroup_float8x8 a_frag;
+            simdgroup_load(a_frag, &tg_A[simd_id * 8 * DQ_BK + kk * 8], DQ_BK);
+
+            simdgroup_float8x8 b0, b1, b2, b3;
+            simdgroup_load(b0, &tg_B[kk * 8 * DQ_BN + 0],  DQ_BN);
+            simdgroup_load(b1, &tg_B[kk * 8 * DQ_BN + 8],  DQ_BN);
+            simdgroup_load(b2, &tg_B[kk * 8 * DQ_BN + 16], DQ_BN);
+            simdgroup_load(b3, &tg_B[kk * 8 * DQ_BN + 24], DQ_BN);
+
+            simdgroup_multiply_accumulate(acc0, a_frag, b0, acc0);
+            simdgroup_multiply_accumulate(acc1, a_frag, b1, acc1);
+            simdgroup_multiply_accumulate(acc2, a_frag, b2, acc2);
+            simdgroup_multiply_accumulate(acc3, a_frag, b3, acc3);
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    threadgroup float out_tile[DQ_BM * DQ_BN];
+    simdgroup_store(acc0, &out_tile[simd_id * 8 * DQ_BN + 0],  DQ_BN);
+    simdgroup_store(acc1, &out_tile[simd_id * 8 * DQ_BN + 8],  DQ_BN);
+    simdgroup_store(acc2, &out_tile[simd_id * 8 * DQ_BN + 16], DQ_BN);
+    simdgroup_store(acc3, &out_tile[simd_id * 8 * DQ_BN + 24], DQ_BN);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = tid; i < DQ_BM * DQ_BN; i += DQ_TG) {
+        uint r = i / DQ_BN;
+        uint c = i % DQ_BN;
+        uint gr = tile_row + r;
+        uint slot = tile_col + c;
+
+        if (gr < M && slot < n_assigned) {
+            int32_t hid = expert_hids[slot];
+            output[hid * M + gr] = out_tile[r * DQ_BN + c];
+        }
+    }
+}
+

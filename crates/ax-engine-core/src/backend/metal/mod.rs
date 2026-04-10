@@ -1,15 +1,14 @@
 use rustc_hash::FxHashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
-use super::{Backend, KvPrecisionPolicy, RuntimePolicy};
+#[cfg(test)]
+use super::KvPrecisionPolicy;
+use super::{Backend, RuntimePolicy};
 use crate::gguf::tensor::GgmlType;
 use anyhow::Context;
 
@@ -19,11 +18,9 @@ use crate::model::shared::{
     env_flag_override,
 };
 use crate::model::{ModelFingerprint, config::ModelConfig};
-use ax_engine_metal::profile::MatvecParams;
 use ax_engine_metal::{
     AttentionDispatchConfig, AttentionKernels, DequantDispatchConfig, DequantKernels,
-    ElementwiseKernels, GdnKernels, KernelProfile, KvPrecisionMode, MatmulKernels,
-    MatvecProfileVariant, MetalBuffer, MetalDevice,
+    ElementwiseKernels, GdnKernels, KernelProfile, MatmulKernels, MetalBuffer, MetalDevice,
 };
 
 mod qwen35;
@@ -41,44 +38,6 @@ use qwen35::{
     Qwen35RecurrentBatchPerfState, Qwen35RecurrentScratchBufferKey, Qwen35RecurrentSlotBufferKey,
     qwen35_gate_up_scratch_dims, qwen35_recurrent_sequence_with_backend,
 };
-
-struct MatvecBenchBuffers {
-    a: MetalBuffer,
-    x: MetalBuffer,
-    y: MetalBuffer,
-}
-
-struct BatchF16InBenchBuffers {
-    a: MetalBuffer,
-    b: MetalBuffer,
-    c: MetalBuffer,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct WeightedMatvecShape {
-    m: u32,
-    k: u32,
-    weight: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct DecodeDispatchCache {
-    short_max_attend_len: u32,
-    short_dequant_dispatch: DequantDispatchConfig,
-    short_attention_dispatch: AttentionDispatchConfig,
-    long_dequant_dispatch: DequantDispatchConfig,
-    long_attention_dispatch: AttentionDispatchConfig,
-}
-
-impl DecodeDispatchCache {
-    fn for_attend_len(self, attend_len: u32) -> (DequantDispatchConfig, AttentionDispatchConfig) {
-        if attend_len <= self.short_max_attend_len {
-            (self.short_dequant_dispatch, self.short_attention_dispatch)
-        } else {
-            (self.long_dequant_dispatch, self.long_attention_dispatch)
-        }
-    }
-}
 
 fn qwen35_selected_weighted_down_enabled(down_dtype: GgmlType) -> bool {
     match down_dtype {
@@ -158,98 +117,7 @@ fn qwen35_selected_expert_pair_enabled(
     }
 }
 
-const Q4K_DECODE_MATVEC_AUTOTUNE_CANDIDATES: [MatvecParams; 3] = [
-    MatvecParams {
-        threadgroup_size: 128,
-        rows_per_simdgroup: 1,
-        variant: Some(MatvecProfileVariant::Base),
-    },
-    MatvecParams {
-        threadgroup_size: 64,
-        rows_per_simdgroup: 2,
-        variant: Some(MatvecProfileVariant::Nr2),
-    },
-    MatvecParams {
-        threadgroup_size: 64,
-        rows_per_simdgroup: 1,
-        variant: Some(MatvecProfileVariant::Ilp4),
-    },
-];
-
-const Q5K_DECODE_MATVEC_AUTOTUNE_CANDIDATES: [MatvecParams; 3] = [
-    MatvecParams {
-        threadgroup_size: 64,
-        rows_per_simdgroup: 1,
-        variant: Some(MatvecProfileVariant::Base),
-    },
-    MatvecParams {
-        threadgroup_size: 64,
-        rows_per_simdgroup: 1,
-        variant: Some(MatvecProfileVariant::Ilp4),
-    },
-    MatvecParams {
-        threadgroup_size: 64,
-        rows_per_simdgroup: 2,
-        variant: Some(MatvecProfileVariant::Nr2),
-    },
-];
-
-const Q6K_DECODE_MATVEC_AUTOTUNE_CANDIDATES: [MatvecParams; 3] = [
-    MatvecParams {
-        threadgroup_size: 128,
-        rows_per_simdgroup: 1,
-        variant: Some(MatvecProfileVariant::Base),
-    },
-    MatvecParams {
-        threadgroup_size: 64,
-        rows_per_simdgroup: 2,
-        variant: Some(MatvecProfileVariant::Nr2),
-    },
-    MatvecParams {
-        threadgroup_size: 64,
-        rows_per_simdgroup: 1,
-        variant: Some(MatvecProfileVariant::Ilp4),
-    },
-];
-
-const Q8_0_DECODE_MATVEC_AUTOTUNE_CANDIDATES: [MatvecParams; 3] = [
-    MatvecParams {
-        threadgroup_size: 128,
-        rows_per_simdgroup: 1,
-        variant: Some(MatvecProfileVariant::Base),
-    },
-    MatvecParams {
-        threadgroup_size: 64,
-        rows_per_simdgroup: 1,
-        variant: Some(MatvecProfileVariant::Ilp4),
-    },
-    MatvecParams {
-        threadgroup_size: 64,
-        rows_per_simdgroup: 2,
-        variant: Some(MatvecProfileVariant::Nr2),
-    },
-];
-
-fn decode_matvec_profile_key(quant: GgmlType) -> Option<&'static str> {
-    match quant {
-        GgmlType::Q4K => Some("q4_k"),
-        GgmlType::Q5K => Some("q5_k"),
-        GgmlType::Q6K => Some("q6_k"),
-        GgmlType::Q8_0 => Some("q8_0"),
-        _ => None,
-    }
-}
-
-fn decode_matvec_default_candidates(quant: GgmlType) -> &'static [MatvecParams] {
-    match quant {
-        GgmlType::Q4K => &Q4K_DECODE_MATVEC_AUTOTUNE_CANDIDATES,
-        GgmlType::Q5K => &Q5K_DECODE_MATVEC_AUTOTUNE_CANDIDATES,
-        GgmlType::Q6K => &Q6K_DECODE_MATVEC_AUTOTUNE_CANDIDATES,
-        GgmlType::Q8_0 => &Q8_0_DECODE_MATVEC_AUTOTUNE_CANDIDATES,
-        _ => &[],
-    }
-}
-
+#[cfg(test)]
 fn quant_from_profile_label(label: &str) -> Option<GgmlType> {
     let normalized = label.trim().to_ascii_uppercase().replace('-', "_");
     if normalized == "Q4K" || normalized.starts_with("Q4_K") {
@@ -265,14 +133,6 @@ fn quant_from_profile_label(label: &str) -> Option<GgmlType> {
         return Some(GgmlType::Q8_0);
     }
     None
-}
-
-fn metal_profile_llama() -> bool {
-    static LLAMA: OnceLock<bool> = OnceLock::new();
-    *LLAMA.get_or_init(|| match std::env::var("AX_METAL_LLAMA_MODE") {
-        Ok(v) => v.trim().eq_ignore_ascii_case("llama"),
-        Err(_) => false,
-    })
 }
 
 /// Whether native Q8_0 batch dequant matmul kernel is enabled.
@@ -331,87 +191,6 @@ pub fn metal_decode_fused_qkv_enabled_for_arch(arch: &str) -> bool {
 
 /// Per-architecture override for simd-sum batch kernels.
 ///
-/// Precedence:
-/// 1) `AX_METAL_BATCH_SIMD_<ARCH>`
-/// 2) `AX_METAL_BATCH_SIMD` (via `ax_engine_metal::batch_simd_enabled()`)
-pub fn metal_batch_simd_enabled_for_arch(arch: &str) -> bool {
-    RuntimePolicy::for_model("default", "default", arch).batch_simd_enabled()
-}
-
-/// Whether runtime kernel autotuning is enabled.
-///
-/// Controlled by `AX_METAL_AUTOTUNE`:
-/// - `1` / `true` / `on` -> enabled
-/// - unset -> disabled (default)
-/// - `0` / `false` / `off` -> disabled
-pub fn metal_autotune_enabled() -> bool {
-    RuntimePolicy::resolved_defaults().autotune_f16in_batch_route_enabled()
-}
-
-fn parse_bool_env_flag(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "on" => Some(true),
-        "0" | "false" | "off" => Some(false),
-        _ => None,
-    }
-}
-
-fn bool_env_with_default(var: &str, default: bool) -> bool {
-    std::env::var(var)
-        .ok()
-        .and_then(|value| parse_bool_env_flag(&value))
-        .unwrap_or(default)
-}
-
-/// Whether persistent load-time autotune is enabled.
-///
-/// Controlled by `AX_METAL_LOAD_AUTOTUNE`:
-/// - unset / `1` / `true` / `on` -> enabled (default)
-/// - `0` / `false` / `off` -> disabled
-fn metal_load_autotune_enabled() -> bool {
-    bool_env_with_default("AX_METAL_LOAD_AUTOTUNE", true)
-}
-
-/// Whether load-time tuning should ignore the cached profile and re-run probes.
-///
-/// Controlled by `AX_METAL_FORCE_RETUNE` or `AX_METAL_LOAD_AUTOTUNE_FORCE`.
-fn metal_force_retune_enabled() -> bool {
-    bool_env_with_default("AX_METAL_FORCE_RETUNE", false)
-        || bool_env_with_default("AX_METAL_LOAD_AUTOTUNE_FORCE", false)
-}
-
-fn metal_tune_cache_dir() -> PathBuf {
-    if let Ok(path) = std::env::var("AX_METAL_TUNE_CACHE_DIR")
-        && !path.trim().is_empty()
-    {
-        return PathBuf::from(path);
-    }
-
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home)
-            .join("Library")
-            .join("Caches")
-            .join("ax-engine")
-            .join("kernel-profiles");
-    }
-
-    PathBuf::from(".ax-engine-kernel-profiles")
-}
-
-fn sanitize_cache_component(value: &str) -> String {
-    let sanitized: String = value
-        .to_ascii_lowercase()
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect();
-    let sanitized = sanitized.trim_matches('-');
-    if sanitized.is_empty() {
-        "unknown".to_string()
-    } else {
-        sanitized.to_string()
-    }
-}
-
 /// Resolve whether GPU KV cache should use f16 storage for this model.
 ///
 /// Controlled by `AX_METAL_F16_KV_CACHE`:
@@ -419,7 +198,6 @@ fn sanitize_cache_component(value: &str) -> String {
 /// - `0` / `false` / `off` -> force disable
 /// - `auto` or unset       -> enable when context length >= 256
 pub fn metal_f16_kv_cache_enabled(context_len: usize) -> bool {
-    let _ = metal_profile_llama();
     RuntimePolicy::resolved_defaults().uses_f16_gpu_kv(context_len)
 }
 
@@ -461,22 +239,6 @@ fn create_mmap_weight_buffer_from_f32(device: &MetalDevice, data: &[f32]) -> Met
         MetalBuffer::from_slice(device.device(), data)
             .expect("Failed to create Metal buffer for f32 weight")
     })
-}
-
-#[derive(Debug)]
-struct ResolvedKernelProfile {
-    profile: KernelProfile,
-    skip_runtime_batch_route_autotune: bool,
-}
-
-fn profile_source_with_autotune(seed_source: &str) -> String {
-    if seed_source.is_empty() {
-        "load-autotune".to_string()
-    } else if seed_source.contains("load-autotune") {
-        seed_source.to_string()
-    } else {
-        format!("{seed_source}+load-autotune")
-    }
 }
 
 /// Metal compute backend — offloads matmul to GPU.
@@ -568,21 +330,12 @@ impl Backend for MetalBackend {
     }
 
     fn configure_for_fingerprint(&self, fingerprint: &ModelFingerprint) -> anyhow::Result<()> {
-        let resolved = self.ops.resolve_kernel_profile_for_fingerprint(fingerprint);
+        let profile = KernelProfile::load(&fingerprint.model_name, &fingerprint.predominant_quant);
         self.ops
             .apply_runtime_policy(RuntimePolicy::from_kernel_profile_for_arch(
-                resolved.profile,
+                profile,
                 &fingerprint.architecture,
             ));
-        self.ops.set_runtime_f16in_autotune_quant(
-            self.ops
-                .preferred_batch_prefill_quant(fingerprint)
-                .unwrap_or(GgmlType::Q4K),
-        );
-        self.ops.f16in_route_tuned.store(
-            resolved.skip_runtime_batch_route_autotune,
-            Ordering::Relaxed,
-        );
         Ok(())
     }
 
@@ -594,10 +347,6 @@ impl Backend for MetalBackend {
     ) -> anyhow::Result<()> {
         self.ops
             .apply_runtime_policy(RuntimePolicy::for_model(model_name, quant, architecture));
-        self.ops.set_runtime_f16in_autotune_quant(
-            quant_from_profile_label(quant).unwrap_or(GgmlType::Q4K),
-        );
-        self.ops.f16in_route_tuned.store(false, Ordering::Relaxed);
         Ok(())
     }
 
@@ -1956,12 +1705,8 @@ pub struct MetalOps {
     pub attention: AttentionKernels,
     pub matmul: MatmulKernels,
     pub gdn: GdnKernels,
-    /// Stable device capability key used for autotune cache partitioning.
-    device_cache_key: String,
     /// Backend-local runtime policy for this model/backend instance.
     runtime_policy: RwLock<RuntimePolicy>,
-    /// Precomputed short/long decode dispatch selections when decode regimes are enabled.
-    decode_dispatch_cache: RwLock<Option<DecodeDispatchCache>>,
     /// Cache of f32 weight tensors as MetalBuffers (norm weights, bias vectors).
     f32_weight_cache: Mutex<FxHashMap<usize, MetalBuffer>>,
     /// Cache of fused QKV quantized buffers keyed by (wq_ptr, wk_ptr, wv_ptr).
@@ -1994,12 +1739,6 @@ pub struct MetalOps {
         Mutex<FxHashMap<Qwen35BatchLogitsScratchBufferKey, Qwen35MetalBatchLogitsScratchBuffers>>,
     /// Backend-local profiling for Qwen3.5 recurrent multi-token batch phases.
     qwen35_recurrent_batch_perf: Qwen35RecurrentBatchPerfState,
-    /// Quant family used for runtime f16in batch-route autotune.
-    runtime_f16in_autotune_quant: RwLock<GgmlType>,
-    /// One-time runtime tuning state for f16in batch kernel routing.
-    f16in_route_tuned: AtomicBool,
-    /// Serializes one-time runtime f16in autotune updates under contention.
-    f16in_route_tune_lock: Mutex<()>,
     /// Pre-computed weight cache keys, built once on first forward call.
     cached_model_keys: Mutex<Option<CachedModelKeys>>,
     /// Cache of raw quantized expert weight buffers for single-CB MoE dispatch.
@@ -2048,19 +1787,6 @@ impl MetalOps {
         (dim, n_heads, max_head_dim, q_dim, kv_dim)
     }
 
-    fn build_device_cache_key(device: &MetalDevice) -> String {
-        let info = device.info();
-        format!(
-            "{}-apple7{}-apple9{}-metal3{}-metal4{}-uma{}",
-            sanitize_cache_component(&info.name),
-            u8::from(info.gpu_family.apple7),
-            u8::from(info.gpu_family.apple9),
-            u8::from(info.gpu_family.metal3),
-            u8::from(info.gpu_family.metal4),
-            u8::from(info.unified_memory),
-        )
-    }
-
     #[inline]
     fn quant_view_cache_key(raw_key: usize) -> usize {
         const QUANT_VIEW_TAG: usize = 1usize << (usize::BITS - 1);
@@ -2083,9 +1809,7 @@ impl MetalOps {
         let attention = AttentionKernels::new(&device)?;
         let matmul = MatmulKernels::new(&device)?;
         let gdn = GdnKernels::new(&device)?;
-        let device_cache_key = Self::build_device_cache_key(&device);
         let runtime_policy = RuntimePolicy::resolved_defaults();
-        let decode_dispatch_cache = Self::build_decode_dispatch_cache(&runtime_policy);
         Ok(Self {
             device,
             elementwise,
@@ -2093,9 +1817,7 @@ impl MetalOps {
             attention,
             matmul,
             gdn,
-            device_cache_key,
             runtime_policy: RwLock::new(runtime_policy),
-            decode_dispatch_cache: RwLock::new(decode_dispatch_cache),
             f32_weight_cache: Mutex::new(FxHashMap::default()),
             fused_qkv_weight_cache: Mutex::new(FxHashMap::default()),
             precomputed_f16_weight_cache: Mutex::new(FxHashMap::default()),
@@ -2108,45 +1830,17 @@ impl MetalOps {
             qwen35_batch_projection_scratch_buffers: Mutex::new(FxHashMap::default()),
             qwen35_batch_logits_scratch_buffers: Mutex::new(FxHashMap::default()),
             qwen35_recurrent_batch_perf: Qwen35RecurrentBatchPerfState::default(),
-            runtime_f16in_autotune_quant: RwLock::new(GgmlType::Q4K),
-            f16in_route_tuned: AtomicBool::new(false),
-            f16in_route_tune_lock: Mutex::new(()),
             cached_model_keys: Mutex::new(None),
             moe_quant_cache: Mutex::new(FxHashMap::default()),
         })
     }
 
-    fn build_decode_dispatch_cache(runtime_policy: &RuntimePolicy) -> Option<DecodeDispatchCache> {
-        let profile = runtime_policy.kernel_profile();
-        let regimes = profile.decode_regimes.as_ref()?;
-        let short_profile = profile.effective_decode_profile(regimes.short_max_attend_len);
-        let long_profile =
-            profile.effective_decode_profile(regimes.short_max_attend_len.saturating_add(1));
-        Some(DecodeDispatchCache {
-            short_max_attend_len: regimes.short_max_attend_len,
-            short_dequant_dispatch: DequantDispatchConfig::from_profile(&short_profile),
-            short_attention_dispatch: AttentionDispatchConfig::from_profile(&short_profile),
-            long_dequant_dispatch: DequantDispatchConfig::from_profile(&long_profile),
-            long_attention_dispatch: AttentionDispatchConfig::from_profile(&long_profile),
-        })
-    }
-
     pub fn apply_runtime_policy(&self, runtime_policy: RuntimePolicy) {
-        let decode_dispatch_cache = Self::build_decode_dispatch_cache(&runtime_policy);
         *self.runtime_policy.write().unwrap() = runtime_policy;
-        *self.decode_dispatch_cache.write().unwrap() = decode_dispatch_cache;
     }
 
     pub fn runtime_policy(&self) -> RuntimePolicy {
         self.runtime_policy.read().unwrap().clone()
-    }
-
-    fn set_runtime_f16in_autotune_quant(&self, quant: GgmlType) {
-        *self.runtime_f16in_autotune_quant.write().unwrap() = quant;
-    }
-
-    fn runtime_f16in_autotune_quant(&self) -> GgmlType {
-        *self.runtime_f16in_autotune_quant.read().unwrap()
     }
 
     pub fn dequant_dispatch_config(&self) -> DequantDispatchConfig {
@@ -2165,15 +1859,12 @@ impl MetalOps {
 
     pub fn decode_dispatch_configs_for_attend_len(
         &self,
-        attend_len: u32,
+        _attend_len: u32,
     ) -> (DequantDispatchConfig, AttentionDispatchConfig) {
-        if let Some(cache) = *self.decode_dispatch_cache.read().unwrap() {
-            return cache.for_attend_len(attend_len);
-        }
-        let runtime_policy = self.runtime_policy.read().unwrap();
+        let policy = self.runtime_policy.read().unwrap();
         (
-            runtime_policy.dequant_dispatch_config(),
-            runtime_policy.attention_dispatch_config(),
+            policy.dequant_dispatch_config(),
+            policy.attention_dispatch_config(),
         )
     }
 
@@ -2213,13 +1904,6 @@ impl MetalOps {
         self.runtime_policy.read().unwrap().precompute_f16_enabled()
     }
 
-    pub fn metal_autotune_enabled(&self) -> bool {
-        self.runtime_policy
-            .read()
-            .unwrap()
-            .autotune_f16in_batch_route_enabled()
-    }
-
     pub fn metal_q8_batch_native_shape_enabled(&self, m: u32, n: u32, k: u32) -> bool {
         self.runtime_policy
             .read()
@@ -2227,789 +1911,6 @@ impl MetalOps {
             .q8_batch_native_shape_enabled(m, n, k)
     }
 
-    fn resolve_kernel_profile_for_fingerprint(
-        &self,
-        fingerprint: &ModelFingerprint,
-    ) -> ResolvedKernelProfile {
-        let seed_profile =
-            KernelProfile::load(&fingerprint.model_name, &fingerprint.predominant_quant);
-        let cache_path = self.kernel_profile_cache_path(fingerprint);
-        let load_autotune = metal_load_autotune_enabled();
-        let force_retune = metal_force_retune_enabled();
-        let can_loadtime_batch_route_tune =
-            self.preferred_batch_prefill_quant(fingerprint).is_some();
-
-        if !load_autotune && !force_retune {
-            tracing::debug!(
-                fingerprint = %fingerprint.stable_id(),
-                "Load-time kernel autotune disabled; using seeded kernel profile"
-            );
-            return ResolvedKernelProfile {
-                profile: seed_profile,
-                skip_runtime_batch_route_autotune: false,
-            };
-        }
-
-        if !force_retune && let Some(profile) = KernelProfile::load_from_path(&cache_path) {
-            let profile = self.reconcile_cached_profile_kv_precision(
-                profile,
-                &seed_profile,
-                fingerprint,
-                &cache_path,
-            );
-            let skip_runtime_batch_route_autotune =
-                Self::cached_profile_skips_runtime_batch_route_autotune(
-                    &profile,
-                    &seed_profile,
-                    can_loadtime_batch_route_tune,
-                );
-            tracing::info!(
-                path = %cache_path.display(),
-                fingerprint = %fingerprint.stable_id(),
-                "Loaded cached kernel autotune profile"
-            );
-            return ResolvedKernelProfile {
-                profile,
-                skip_runtime_batch_route_autotune,
-            };
-        }
-
-        let (tuned, skip_runtime_batch_route_autotune) =
-            self.autotune_kernel_profile(fingerprint, seed_profile);
-        if let Err(error) = self.persist_kernel_profile_cache(&cache_path, &tuned) {
-            tracing::warn!(
-                path = %cache_path.display(),
-                fingerprint = %fingerprint.stable_id(),
-                error = %error,
-                "Failed to persist autotuned kernel profile cache"
-            );
-        }
-
-        ResolvedKernelProfile {
-            profile: tuned,
-            skip_runtime_batch_route_autotune,
-        }
-    }
-
-    fn kernel_profile_cache_path(&self, fingerprint: &ModelFingerprint) -> PathBuf {
-        let file_name = format!(
-            "{}-{}.json",
-            sanitize_cache_component(&fingerprint.model_name),
-            fingerprint.stable_id(),
-        );
-        metal_tune_cache_dir()
-            .join(format!("ax-{}", env!("CARGO_PKG_VERSION")))
-            .join(&self.device_cache_key)
-            .join(sanitize_cache_component(&fingerprint.cache_namespace()))
-            .join(file_name)
-    }
-
-    fn persist_kernel_profile_cache(
-        &self,
-        cache_path: &PathBuf,
-        profile: &KernelProfile,
-    ) -> anyhow::Result<()> {
-        let Some(parent) = cache_path.parent() else {
-            return Ok(());
-        };
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-        let json = serde_json::to_string_pretty(profile)
-            .context("failed to encode autotuned kernel profile")?;
-        fs::write(cache_path, json)
-            .with_context(|| format!("failed to write {}", cache_path.display()))?;
-        Ok(())
-    }
-
-    fn reconcile_cached_profile_kv_precision(
-        &self,
-        mut cached_profile: KernelProfile,
-        seed_profile: &KernelProfile,
-        fingerprint: &ModelFingerprint,
-        cache_path: &Path,
-    ) -> KernelProfile {
-        let seeded_precision = seed_profile.kv_cache.precision;
-        if cached_profile.kv_cache.precision != seeded_precision {
-            tracing::info!(
-                path = %cache_path.display(),
-                fingerprint = %fingerprint.stable_id(),
-                cached = ?cached_profile.kv_cache.precision,
-                seeded = ?seeded_precision,
-                "Ignoring cached KV precision override; using seeded profile precision"
-            );
-            cached_profile.kv_cache.precision = seeded_precision;
-        }
-        cached_profile
-    }
-
-    fn cached_profile_skips_runtime_batch_route_autotune(
-        cached_profile: &KernelProfile,
-        seed_profile: &KernelProfile,
-        can_loadtime_batch_route_tune: bool,
-    ) -> bool {
-        can_loadtime_batch_route_tune
-            && (cached_profile.batch_prefill.small_n_threshold
-                != seed_profile.batch_prefill.small_n_threshold
-                || cached_profile.batch_prefill.small_m_max
-                    != seed_profile.batch_prefill.small_m_max)
-    }
-
-    fn autotune_kernel_profile(
-        &self,
-        fingerprint: &ModelFingerprint,
-        mut profile: KernelProfile,
-    ) -> (KernelProfile, bool) {
-        let recommended_kv_precision = self.select_kv_precision_mode(fingerprint);
-        tracing::debug!(
-            fingerprint = %fingerprint.stable_id(),
-            recommended = ?recommended_kv_precision,
-            "Load-time KV precision recommendation computed (runtime selection remains profile/env driven)"
-        );
-        let mut skip_runtime_batch_route_autotune = false;
-        if fingerprint.has_q4k_layer_weights {
-            self.autotune_decode_matvec_quant(&mut profile, fingerprint, GgmlType::Q4K);
-        }
-        if fingerprint.has_q5k_layer_weights {
-            self.autotune_decode_matvec_quant(&mut profile, fingerprint, GgmlType::Q5K);
-        }
-        if fingerprint.has_q6k_layer_weights {
-            self.autotune_decode_matvec_quant(&mut profile, fingerprint, GgmlType::Q6K);
-        }
-        if fingerprint.has_q8_layer_weights {
-            self.autotune_decode_matvec_quant(&mut profile, fingerprint, GgmlType::Q8_0);
-        }
-        if let Some(batch_quant) = self.preferred_batch_prefill_quant(fingerprint) {
-            skip_runtime_batch_route_autotune =
-                self.autotune_batch_prefill_route(&mut profile, fingerprint, batch_quant);
-        }
-
-        profile.model = fingerprint.model_name.clone();
-        profile.source = profile_source_with_autotune(&profile.source);
-        profile.generated = format!(
-            "ax-engine={} device={} fingerprint={}",
-            env!("CARGO_PKG_VERSION"),
-            self.device_cache_key.as_str(),
-            fingerprint.stable_id(),
-        );
-        (profile, skip_runtime_batch_route_autotune)
-    }
-
-    fn select_kv_precision_mode(&self, fingerprint: &ModelFingerprint) -> KvPrecisionMode {
-        let info = self.device.info();
-        let kv_f32_bytes =
-            Self::estimated_attention_kv_bytes(fingerprint, KvPrecisionPolicy::ForceF32)
-                .unwrap_or(0);
-        let kv_f16_bytes =
-            Self::estimated_attention_kv_bytes(fingerprint, KvPrecisionPolicy::ForceF16)
-                .unwrap_or(kv_f32_bytes / 2);
-        let kv_q8_bytes =
-            Self::estimated_attention_kv_bytes(fingerprint, KvPrecisionPolicy::ForceQ8_0)
-                .unwrap_or(u64::MAX);
-        let working_set = info.max_working_set_bytes.max(1);
-        let total_f16 = fingerprint.total_tensor_bytes.saturating_add(kv_f16_bytes);
-
-        let selected = if !Self::supports_q8_kv(fingerprint) {
-            if fingerprint.context_length < 256 && kv_f16_bytes < (128 << 20) {
-                KvPrecisionMode::F32
-            } else {
-                KvPrecisionMode::F16
-            }
-        } else if total_f16 > working_set.saturating_mul(85) / 100
-            || kv_f16_bytes >= (1 << 30)
-            || fingerprint.context_length >= 16_384
-        {
-            KvPrecisionMode::Q8_0
-        } else if fingerprint.context_length < 256 && kv_f16_bytes < (128 << 20) {
-            KvPrecisionMode::F32
-        } else {
-            KvPrecisionMode::F16
-        };
-
-        tracing::info!(
-            fingerprint = %fingerprint.stable_id(),
-            kv_f32_mb = kv_f32_bytes / 1024 / 1024,
-            kv_f16_mb = kv_f16_bytes / 1024 / 1024,
-            kv_q8_mb = if kv_q8_bytes == u64::MAX {
-                0
-            } else {
-                kv_q8_bytes / 1024 / 1024
-            },
-            working_set_mb = working_set / 1024 / 1024,
-            selected = ?selected,
-            "Selected load-time KV precision policy"
-        );
-        selected
-    }
-
-    fn supports_q8_kv(fingerprint: &ModelFingerprint) -> bool {
-        let kv_stride = fingerprint.n_kv_heads.saturating_mul(fingerprint.head_dim);
-        kv_stride > 0
-            && kv_stride.is_multiple_of(32)
-            && matches!(fingerprint.head_dim, 64 | 128 | 256)
-    }
-
-    fn estimated_attention_kv_layers(fingerprint: &ModelFingerprint) -> u64 {
-        if matches!(fingerprint.architecture.as_str(), "qwen35" | "qwen35moe")
-            && let Some(interval) = fingerprint.qwen35_full_attention_interval
-            && interval > 0
-        {
-            return (fingerprint.n_layers as u64).div_ceil(interval as u64);
-        }
-        fingerprint.n_layers as u64
-    }
-
-    fn estimated_attention_kv_bytes(
-        fingerprint: &ModelFingerprint,
-        policy: KvPrecisionPolicy,
-    ) -> Option<u64> {
-        let kv_stride = fingerprint.n_kv_heads as usize * fingerprint.head_dim as usize;
-        let context = fingerprint.context_length as usize;
-        let layers = Self::estimated_attention_kv_layers(fingerprint);
-        let row_bytes = match policy {
-            KvPrecisionPolicy::ForceF32 => (kv_stride * std::mem::size_of::<f32>()) as u64,
-            KvPrecisionPolicy::ForceF16 => (kv_stride * std::mem::size_of::<half::f16>()) as u64,
-            KvPrecisionPolicy::ForceQ8_0 => {
-                if kv_stride == 0 || !kv_stride.is_multiple_of(32) {
-                    return None;
-                }
-                ((kv_stride / 32) * 34) as u64
-            }
-            KvPrecisionPolicy::Auto => return None,
-        };
-
-        (layers)
-            .checked_mul(context as u64)?
-            .checked_mul(row_bytes)?
-            .checked_mul(2)
-    }
-
-    fn autotune_decode_matvec_quant(
-        &self,
-        profile: &mut KernelProfile,
-        fingerprint: &ModelFingerprint,
-        quant: GgmlType,
-    ) {
-        let Some((quant_key, candidates)) = Self::decode_matvec_autotune_candidates(profile, quant)
-        else {
-            return;
-        };
-
-        let candidates = Self::dedup_matvec_candidates(candidates);
-        if candidates.is_empty() {
-            return;
-        }
-        let shapes = Self::decode_autotune_shapes(fingerprint);
-        let base_config = self.dequant_dispatch_config();
-        let mut total_ns = vec![0u128; candidates.len()];
-        let mut samples = vec![0u32; candidates.len()];
-
-        for shape in &shapes {
-            let m = shape.m;
-            let k = shape.k;
-            let weight = shape.weight;
-            let Some(buffers) = self.prepare_matvec_bench_buffers(quant, m, k) else {
-                continue;
-            };
-            for (idx, candidate) in candidates.iter().enumerate() {
-                if let Some(ns) = self.bench_matvec_variant_with_buffers(
-                    quant,
-                    m,
-                    k,
-                    candidate,
-                    &buffers,
-                    base_config,
-                ) {
-                    total_ns[idx] += ns.saturating_mul(weight as u128);
-                    samples[idx] = samples[idx].saturating_add(weight);
-                }
-            }
-        }
-
-        let mut best: Option<(usize, u128)> = None;
-        for (idx, sample_count) in samples.iter().copied().enumerate() {
-            if sample_count == 0 {
-                continue;
-            }
-            let avg_ns = total_ns[idx] / sample_count as u128;
-            match best {
-                Some((_, best_avg_ns)) if best_avg_ns <= avg_ns => {}
-                _ => best = Some((idx, avg_ns)),
-            };
-        }
-
-        if let Some((best_idx, best_avg_ns)) = best {
-            let best_params = candidates[best_idx].clone();
-            let old_params = profile.matvec_params(quant_key);
-            if old_params != best_params {
-                tracing::info!(
-                    quant = quant_key,
-                    fingerprint = %fingerprint.stable_id(),
-                    old_threadgroup_size = old_params.threadgroup_size,
-                    old_rows_per_simdgroup = old_params.rows_per_simdgroup,
-                    old_variant = ?old_params.variant,
-                    tuned_threadgroup_size = best_params.threadgroup_size,
-                    tuned_rows_per_simdgroup = best_params.rows_per_simdgroup,
-                    tuned_variant = ?best_params.variant,
-                    avg_ns = best_avg_ns,
-                    "Autotuned decode matvec profile"
-                );
-            }
-            profile
-                .decode_matvec
-                .insert(quant_key.to_string(), best_params);
-        }
-    }
-
-    fn decode_matvec_autotune_candidates(
-        profile: &KernelProfile,
-        quant: GgmlType,
-    ) -> Option<(&'static str, Vec<MatvecParams>)> {
-        let quant_key = decode_matvec_profile_key(quant)?;
-        let mut candidates = Vec::with_capacity(1 + decode_matvec_default_candidates(quant).len());
-        candidates.push(Self::autotune_active_matvec_params(
-            profile, quant_key, quant,
-        ));
-        candidates.extend(decode_matvec_default_candidates(quant).iter().cloned());
-        Some((quant_key, candidates))
-    }
-
-    fn autotune_active_matvec_params(
-        profile: &KernelProfile,
-        quant_key: &str,
-        quant: GgmlType,
-    ) -> MatvecParams {
-        let Some(override_params) = profile.decode_matvec.get(quant_key) else {
-            return profile.matvec_params(quant_key);
-        };
-
-        let inferred_variant = override_params.variant.or(match quant {
-            GgmlType::Q4K | GgmlType::Q6K => {
-                if override_params.rows_per_simdgroup >= 2 || override_params.threadgroup_size == 64
-                {
-                    Some(MatvecProfileVariant::Nr2)
-                } else {
-                    Some(MatvecProfileVariant::Base)
-                }
-            }
-            GgmlType::Q5K => {
-                if override_params.rows_per_simdgroup >= 2 {
-                    Some(MatvecProfileVariant::Nr2)
-                } else {
-                    Some(MatvecProfileVariant::Base)
-                }
-            }
-            GgmlType::Q8_0 => {
-                if override_params.rows_per_simdgroup >= 2 {
-                    Some(MatvecProfileVariant::Nr2)
-                } else if override_params.threadgroup_size == 64 {
-                    Some(MatvecProfileVariant::Ilp4)
-                } else {
-                    Some(MatvecProfileVariant::Base)
-                }
-            }
-            _ => None,
-        });
-
-        MatvecParams {
-            threadgroup_size: override_params.threadgroup_size,
-            rows_per_simdgroup: override_params.rows_per_simdgroup,
-            variant: inferred_variant,
-        }
-    }
-
-    fn dedup_matvec_candidates(candidates: Vec<MatvecParams>) -> Vec<MatvecParams> {
-        let mut unique = Vec::with_capacity(candidates.len());
-        for candidate in candidates {
-            if !unique
-                .iter()
-                .any(|existing: &MatvecParams| existing == &candidate)
-            {
-                unique.push(candidate);
-            }
-        }
-        unique
-    }
-
-    fn preferred_batch_prefill_quant(&self, fingerprint: &ModelFingerprint) -> Option<GgmlType> {
-        quant_from_profile_label(&fingerprint.predominant_layer_quant)
-            .or_else(|| quant_from_profile_label(&fingerprint.predominant_quant))
-            .or({
-                if fingerprint.has_q4k_layer_weights {
-                    Some(GgmlType::Q4K)
-                } else if fingerprint.has_q5k_layer_weights {
-                    Some(GgmlType::Q5K)
-                } else if fingerprint.has_q6k_layer_weights {
-                    Some(GgmlType::Q6K)
-                } else if fingerprint.has_q8_layer_weights {
-                    Some(GgmlType::Q8_0)
-                } else {
-                    None
-                }
-            })
-    }
-
-    fn autotune_batch_prefill_route(
-        &self,
-        profile: &mut KernelProfile,
-        fingerprint: &ModelFingerprint,
-        quant: GgmlType,
-    ) -> bool {
-        let Some((n_threshold, m_max)) = self.tune_f16in_batch_route(
-            quant,
-            fingerprint.embedding_dim,
-            fingerprint.intermediate_dim,
-        ) else {
-            return false;
-        };
-
-        let old_n_threshold = profile.batch_prefill.small_n_threshold;
-        let old_m_max = profile.batch_prefill.small_m_max;
-        profile.batch_prefill.small_n_threshold = n_threshold;
-        profile.batch_prefill.small_m_max = m_max;
-
-        if old_n_threshold != n_threshold || old_m_max != m_max {
-            tracing::info!(
-                quant = %quant,
-                fingerprint = %fingerprint.stable_id(),
-                old_n_threshold,
-                old_m_max,
-                tuned_n_threshold = n_threshold,
-                tuned_m_max = m_max,
-                "Autotuned batch prefill routing profile"
-            );
-        }
-        true
-    }
-
-    fn decode_autotune_shapes(fingerprint: &ModelFingerprint) -> Vec<WeightedMatvecShape> {
-        let dim = fingerprint.embedding_dim;
-        let inter = fingerprint.intermediate_dim;
-        let kv_dim = fingerprint.n_kv_heads.saturating_mul(fingerprint.head_dim);
-        let q_dim = fingerprint.n_heads.saturating_mul(fingerprint.head_dim);
-        let mut shapes: Vec<WeightedMatvecShape> = Vec::new();
-        for (m, k) in [
-            (q_dim, dim),
-            (kv_dim, dim),
-            (kv_dim, dim),
-            (dim, dim),
-            (inter, dim),
-            (inter, dim),
-            (dim, inter),
-        ] {
-            if m == 0 || k == 0 {
-                continue;
-            }
-            if let Some(existing) = shapes.iter_mut().find(|shape| shape.m == m && shape.k == k) {
-                existing.weight = existing.weight.saturating_add(1);
-            } else {
-                shapes.push(WeightedMatvecShape { m, k, weight: 1 });
-            }
-        }
-        shapes
-    }
-
-    fn tune_f16in_batch_route(&self, quant: GgmlType, dim: u32, inter: u32) -> Option<(u32, u32)> {
-        let k = dim;
-        let n_candidates = [32u32, 48u32, 64u32];
-        let m_candidates = [dim, inter];
-        let m_candidate_count = if dim == inter { 1 } else { 2 };
-        let base_config = self.dequant_dispatch_config();
-        let mut compared_any = false;
-        let mut has_win = false;
-        let mut max_n = 0u32;
-        let mut max_m = 0u32;
-
-        for &m in &m_candidates[..m_candidate_count] {
-            for &n in &n_candidates {
-                let Some(buffers) = self.prepare_f16in_bench_buffers(quant, m, n, k) else {
-                    continue;
-                };
-                let t_large = self.bench_f16in_variant_with_buffers(
-                    quant,
-                    m,
-                    n,
-                    k,
-                    false,
-                    &buffers,
-                    base_config,
-                );
-                let t_small = self.bench_f16in_variant_with_buffers(
-                    quant,
-                    m,
-                    n,
-                    k,
-                    true,
-                    &buffers,
-                    base_config,
-                );
-                if let (Some(large), Some(small)) = (t_large, t_small) {
-                    compared_any = true;
-                    if small < (large * 98 / 100) {
-                        has_win = true;
-                        max_n = max_n.max(n);
-                        max_m = max_m.max(m);
-                    }
-                }
-            }
-        }
-
-        if !compared_any {
-            return None;
-        }
-
-        Some(if !has_win {
-            (1u32, 0u32)
-        } else {
-            (max_n + 1, max_m)
-        })
-    }
-
-    fn prepare_matvec_bench_buffers(
-        &self,
-        quant: GgmlType,
-        m: u32,
-        k: u32,
-    ) -> Option<MatvecBenchBuffers> {
-        if m == 0 || k == 0 || !k.is_multiple_of(quant.block_size() as u32) {
-            return None;
-        }
-
-        let blocks_per_row = k as usize / quant.block_size();
-        if blocks_per_row == 0 {
-            return None;
-        }
-
-        let a_bytes = (m as usize)
-            .checked_mul(blocks_per_row)?
-            .checked_mul(quant.bytes_per_block())?;
-        let a = MetalBuffer::from_bytes(self.device.device(), &vec![0u8; a_bytes]).ok()?;
-        let x = MetalBuffer::from_slice(self.device.device(), &vec![0.0f32; k as usize]).ok()?;
-        let y = MetalBuffer::new(
-            self.device.device(),
-            m as usize * std::mem::size_of::<f32>(),
-        )
-        .ok()?;
-
-        Some(MatvecBenchBuffers { a, x, y })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn dispatch_matvec_with_config(
-        &self,
-        quant: GgmlType,
-        a: &MetalBuffer,
-        x: &MetalBuffer,
-        y: &MetalBuffer,
-        m: u32,
-        k: u32,
-        config: DequantDispatchConfig,
-    ) -> anyhow::Result<()> {
-        match quant {
-            GgmlType::Q4K => {
-                self.dequant
-                    .fused_matvec_q4_k_with_config(&self.device, a, x, y, m, k, config)
-            }
-            GgmlType::Q5K => {
-                self.dequant
-                    .fused_matvec_q5_k_with_config(&self.device, a, x, y, m, k, config)
-            }
-            GgmlType::Q6K => {
-                self.dequant
-                    .fused_matvec_q6_k_with_config(&self.device, a, x, y, m, k, config)
-            }
-            GgmlType::Q8_0 => self.device.execute_sync(|encoder| {
-                self.dequant
-                    .encode_fused_matvec_q8_0_with_config(encoder, a, x, y, m, k, config);
-                Ok(())
-            }),
-            _ => unreachable!("unsupported quant for decode matvec autotune benchmark"),
-        }
-    }
-
-    fn matvec_dispatch_config_for_candidate(
-        quant: GgmlType,
-        config_params: &MatvecParams,
-        base_config: DequantDispatchConfig,
-    ) -> Option<DequantDispatchConfig> {
-        let mut config = base_config;
-        match quant {
-            GgmlType::Q4K => {
-                config.q4_k_threadgroup_size = config_params.threadgroup_size as usize;
-                config.q4_k_rows_per_simdgroup = config_params.rows_per_simdgroup;
-                config.q4_k_variant = config_params.variant;
-            }
-            GgmlType::Q5K => {
-                config.q5_k_rows_per_simdgroup = config_params.rows_per_simdgroup;
-                config.q5_k_ilp4 =
-                    matches!(config_params.variant, Some(MatvecProfileVariant::Ilp4));
-                config.q5_k_variant = config_params.variant;
-            }
-            GgmlType::Q6K => {
-                config.q6_k_threadgroup_size = config_params.threadgroup_size as usize;
-                config.q6_k_rows_per_simdgroup = config_params.rows_per_simdgroup;
-                config.q6_k_variant = config_params.variant;
-            }
-            GgmlType::Q8_0 => {
-                config.q8_0_variant = config_params.variant;
-            }
-            _ => return None,
-        }
-        Some(config)
-    }
-
-    fn bench_matvec_variant_with_buffers(
-        &self,
-        quant: GgmlType,
-        m: u32,
-        k: u32,
-        config_params: &MatvecParams,
-        buffers: &MatvecBenchBuffers,
-        base_config: DequantDispatchConfig,
-    ) -> Option<u128> {
-        let config = Self::matvec_dispatch_config_for_candidate(quant, config_params, base_config)?;
-
-        if self
-            .dispatch_matvec_with_config(quant, &buffers.a, &buffers.x, &buffers.y, m, k, config)
-            .is_err()
-        {
-            return None;
-        }
-
-        let reps = 4;
-        let t0 = Instant::now();
-        for _ in 0..reps {
-            if self
-                .dispatch_matvec_with_config(
-                    quant, &buffers.a, &buffers.x, &buffers.y, m, k, config,
-                )
-                .is_err()
-            {
-                return None;
-            }
-        }
-        Some(t0.elapsed().as_nanos() / reps as u128)
-    }
-
-    fn prepare_f16in_bench_buffers(
-        &self,
-        quant: GgmlType,
-        m: u32,
-        n: u32,
-        k: u32,
-    ) -> Option<BatchF16InBenchBuffers> {
-        if !k.is_multiple_of(quant.block_size() as u32) {
-            return None;
-        }
-
-        let blocks_per_row = k as usize / quant.block_size();
-        if blocks_per_row == 0 {
-            return None;
-        }
-
-        let a_bytes = (m as usize)
-            .checked_mul(blocks_per_row)?
-            .checked_mul(quant.bytes_per_block())?;
-        let b_len = (n as usize).checked_mul(k as usize)?;
-        let c_bytes = (n as usize)
-            .checked_mul(m as usize)?
-            .checked_mul(std::mem::size_of::<f32>())?;
-
-        let a = MetalBuffer::from_bytes(self.device.device(), &vec![0u8; a_bytes]).ok()?;
-        let b =
-            MetalBuffer::from_slice(self.device.device(), &vec![half::f16::from_f32(0.0); b_len])
-                .ok()?;
-        let c = MetalBuffer::new(self.device.device(), c_bytes).ok()?;
-
-        Some(BatchF16InBenchBuffers { a, b, c })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn encode_fused_batch_f16in_with_config(
-        &self,
-        quant: GgmlType,
-        a: &MetalBuffer,
-        b: &MetalBuffer,
-        c: &MetalBuffer,
-        m: u32,
-        n: u32,
-        k: u32,
-        config: DequantDispatchConfig,
-    ) -> anyhow::Result<()> {
-        self.device.execute_sync(|encoder| {
-            match quant {
-                GgmlType::Q4K => self
-                    .dequant
-                    .encode_fused_batch_q4_k_f16in_with_config(encoder, a, b, c, m, n, k, config),
-                GgmlType::Q5K => self
-                    .dequant
-                    .encode_fused_batch_q5_k_f16in_with_config(encoder, a, b, c, m, n, k, config),
-                GgmlType::Q6K => self
-                    .dequant
-                    .encode_fused_batch_q6_k_f16in_with_config(encoder, a, b, c, m, n, k, config),
-                GgmlType::Q8_0 => self
-                    .dequant
-                    .encode_fused_batch_q8_0_f16in_with_config(encoder, a, b, c, m, n, k, config),
-                _ => unreachable!("unsupported quant for f16in batch autotune benchmark"),
-            }
-            Ok(())
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn bench_f16in_variant_with_buffers(
-        &self,
-        quant: GgmlType,
-        m: u32,
-        n: u32,
-        k: u32,
-        use_small: bool,
-        buffers: &BatchF16InBenchBuffers,
-        base_config: DequantDispatchConfig,
-    ) -> Option<u128> {
-        let mut bench_config = base_config;
-        if use_small {
-            bench_config.batch_f16in_small_n_threshold = u32::MAX;
-            bench_config.batch_f16in_small_m_max = m;
-        } else {
-            bench_config.batch_f16in_small_n_threshold = 1;
-            bench_config.batch_f16in_small_m_max = 0;
-        }
-
-        let _ = self.encode_fused_batch_f16in_with_config(
-            quant,
-            &buffers.a,
-            &buffers.b,
-            &buffers.c,
-            m,
-            n,
-            k,
-            bench_config,
-        );
-
-        let reps = 3;
-        let t0 = Instant::now();
-        for _ in 0..reps {
-            if self
-                .encode_fused_batch_f16in_with_config(
-                    quant,
-                    &buffers.a,
-                    &buffers.b,
-                    &buffers.c,
-                    m,
-                    n,
-                    k,
-                    bench_config,
-                )
-                .is_err()
-            {
-                return None;
-            }
-        }
-        Some(t0.elapsed().as_nanos() / reps as u128)
-    }
-
-    /// Initialize scratch buffers sized to the model config.
-    /// Called lazily on first forward pass.
     pub fn init_scratches(&self, config: &ModelConfig) {
         let mut guard = self.scratches.lock().unwrap();
         if guard.is_some() {
@@ -3119,7 +2020,6 @@ impl MetalOps {
     /// Initialize batch scratch buffers for prefill of `n_tokens` tokens.
     /// Re-allocates if the existing batch is smaller than needed.
     pub fn init_batch_scratches(&self, config: &ModelConfig, n_tokens: usize) {
-        self.maybe_autotune_f16in_batch_route(config);
         let mut guard = self.batch_scratches.lock().unwrap();
         if let Some(ref existing) = *guard
             && existing.batch_size >= n_tokens
@@ -3227,50 +2127,6 @@ impl MetalOps {
         *guard = Some(bs);
     }
 
-    fn maybe_autotune_f16in_batch_route(&self, config: &ModelConfig) {
-        if !self.metal_autotune_enabled() {
-            return;
-        }
-        if self.f16in_route_tuned.load(Ordering::Relaxed) {
-            return;
-        }
-        let _tune_guard = self.f16in_route_tune_lock.lock().unwrap();
-        if self.f16in_route_tuned.load(Ordering::Relaxed) {
-            return;
-        }
-
-        let old_policy = self.runtime_policy();
-        let old_config = old_policy.dequant_dispatch_config();
-        let autotune_quant = self.runtime_f16in_autotune_quant();
-        let Some((n_threshold, m_max)) = self.tune_f16in_batch_route(
-            autotune_quant,
-            config.embedding_dim,
-            config.intermediate_dim,
-        ) else {
-            self.f16in_route_tuned.store(true, Ordering::Relaxed);
-            tracing::debug!(
-                quant = %autotune_quant,
-                embedding_dim = config.embedding_dim,
-                intermediate_dim = config.intermediate_dim,
-                "Skipping f16in batch-route autotune: no valid benchmark shapes"
-            );
-            return;
-        };
-        let mut tuned = old_config;
-        tuned.batch_f16in_small_n_threshold = n_threshold;
-        tuned.batch_f16in_small_m_max = m_max;
-        self.apply_runtime_policy(old_policy.with_dequant_dispatch(tuned));
-        self.f16in_route_tuned.store(true, Ordering::Relaxed);
-        tracing::info!(
-            old_n_threshold = old_config.batch_f16in_small_n_threshold,
-            old_m_max = old_config.batch_f16in_small_m_max,
-            tuned_n_threshold = n_threshold,
-            tuned_m_max = m_max,
-            quant = %autotune_quant,
-            "Autotuned f16in batch kernel routing"
-        );
-    }
-
     /// Access GPU batch scratch buffers (must call init_batch_scratches first).
     pub fn batch_scratches(&self) -> std::sync::MutexGuard<'_, Option<GpuBatchScratchBuffers>> {
         self.batch_scratches.lock().unwrap()
@@ -3356,8 +2212,13 @@ impl MetalOps {
         Ok(())
     }
 
-    fn ensure_precomputed_f32_f16(
+    /// Ensure a precomputed dense f16 copy of an F32 weight buffer exists.
+    ///
+    /// The f32→f16 cast is encoded on the provided encoder, so this is safe
+    /// to call from inside an `execute_sync` closure without nesting.
+    fn ensure_precomputed_f32_f16_on_encoder(
         &self,
+        encoder: &ax_engine_metal::MetalEncoder,
         weight_buf: &MetalBuffer,
         m: u32,
         k: u32,
@@ -3376,16 +2237,19 @@ impl MetalOps {
             self.device.device(),
             (m as usize) * (k as usize) * std::mem::size_of::<half::f16>(),
         )?;
-        self.device.execute_sync(|encoder| {
-            self.elementwise
-                .encode_cast_f32_to_f16(encoder, weight_buf, &dense_f16, m * k);
-            Ok(())
-        })?;
+        self.elementwise
+            .encode_cast_f32_to_f16(encoder, weight_buf, &dense_f16, m * k);
+        ax_engine_metal::barrier_buffers(encoder);
         self.precomputed_f16_weight_cache
             .lock()
             .unwrap()
             .insert(key, dense_f16);
-        tracing::info!(key, m, k, "Cached precomputed dense f16 weight (F32)");
+        tracing::info!(
+            key,
+            m,
+            k,
+            "Cached precomputed dense f16 weight (F32, on-encoder)"
+        );
         Ok(())
     }
 
@@ -3401,7 +2265,9 @@ impl MetalOps {
         n: u32,
         k: u32,
     ) -> anyhow::Result<()> {
-        self.ensure_precomputed_f32_f16(weight_buf, m, k)?;
+        // Use on-encoder precompute to avoid nested execute_sync when called
+        // from inside another execute_sync closure (e.g. MoE FFN dispatch).
+        self.ensure_precomputed_f32_f16_on_encoder(encoder, weight_buf, m, k)?;
         self.elementwise
             .encode_cast_f32_to_f16(encoder, input_f32, input_f16, n * k);
         ax_engine_metal::barrier_buffers(encoder);
@@ -3448,11 +2314,24 @@ impl MetalOps {
     }
 
     fn validate_moe_mul_mat_id_dtype(dtype: GgmlType, role: &str) -> anyhow::Result<()> {
+        if matches!(
+            dtype,
+            GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0
+        ) {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "Metal MoE mul_mat_id path only supports Q4_K/Q5_K/Q6_K/Q8_0 {role} weights today; got {dtype:?}",
+            )
+        }
+    }
+
+    fn validate_moe_selected_dtype(dtype: GgmlType, role: &str) -> anyhow::Result<()> {
         if matches!(dtype, GgmlType::Q4K | GgmlType::Q5K) {
             Ok(())
         } else {
             anyhow::bail!(
-                "Metal MoE mul_mat_id path only supports Q4_K/Q5_K {role} weights today; got {dtype:?}",
+                "Metal MoE selected path only supports Q4_K/Q5_K {role} weights today; got {dtype:?}",
             )
         }
     }
@@ -3512,6 +2391,40 @@ impl MetalOps {
                 n_active_experts,
                 input_is_hid,
             ),
+            GgmlType::Q6K => self.dequant.encode_moe_mul_mat_id_q6_k(
+                encoder,
+                weights,
+                input,
+                tpe,
+                hids,
+                output,
+                m,
+                k,
+                n_tokens,
+                n_expert_used,
+                n_expert,
+                weight_stride,
+                active_experts,
+                n_active_experts,
+                input_is_hid,
+            ),
+            GgmlType::Q8_0 => self.dequant.encode_moe_mul_mat_id_q8_0(
+                encoder,
+                weights,
+                input,
+                tpe,
+                hids,
+                output,
+                m,
+                k,
+                n_tokens,
+                n_expert_used,
+                n_expert,
+                weight_stride,
+                active_experts,
+                n_active_experts,
+                input_is_hid,
+            ),
             _ => anyhow::bail!(
                 "unsupported Metal MoE mul_mat_id dtype for routed experts: {dtype:?}"
             ),
@@ -3534,7 +2447,7 @@ impl MetalOps {
         weight_stride: u32,
         input_is_slot_major: bool,
     ) -> anyhow::Result<()> {
-        Self::validate_moe_mul_mat_id_dtype(dtype, "selected expert")?;
+        Self::validate_moe_selected_dtype(dtype, "selected expert")?;
         match dtype {
             GgmlType::Q4K => self.dequant.encode_moe_mul_mat_selected_q4_k(
                 encoder,
@@ -3584,7 +2497,7 @@ impl MetalOps {
         weight_stride1: u32,
         input_is_slot_major: bool,
     ) -> anyhow::Result<()> {
-        Self::validate_moe_mul_mat_id_dtype(dtype, "selected expert pair")?;
+        Self::validate_moe_selected_dtype(dtype, "selected expert pair")?;
         match dtype {
             GgmlType::Q4K => self.dequant.encode_moe_mul_mat_selected_pair_q4_k(
                 encoder,
@@ -3637,7 +2550,7 @@ impl MetalOps {
         n_selected: u32,
         weight_stride: u32,
     ) -> anyhow::Result<()> {
-        Self::validate_moe_mul_mat_id_dtype(dtype, "selected weighted expert")?;
+        Self::validate_moe_selected_dtype(dtype, "selected weighted expert")?;
         match dtype {
             GgmlType::Q4K => self.dequant.encode_moe_mul_mat_selected_weighted_q4_k(
                 encoder,
@@ -6184,5 +5097,68 @@ impl Backend for HybridCpuDecodeBackend {
     /// Always false: signals forward_batch to use serial CPU prefill.
     fn use_gpu_decode(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+impl MetalOps {
+    fn supports_q8_kv(fingerprint: &ModelFingerprint) -> bool {
+        let kv_stride = fingerprint.n_kv_heads.saturating_mul(fingerprint.head_dim);
+        kv_stride > 0
+            && kv_stride.is_multiple_of(32)
+            && matches!(fingerprint.head_dim, 64 | 128 | 256)
+    }
+
+    fn estimated_attention_kv_layers(fingerprint: &ModelFingerprint) -> u64 {
+        if matches!(fingerprint.architecture.as_str(), "qwen35" | "qwen35moe")
+            && let Some(interval) = fingerprint.qwen35_full_attention_interval
+            && interval > 0
+        {
+            return (fingerprint.n_layers as u64).div_ceil(interval as u64);
+        }
+        fingerprint.n_layers as u64
+    }
+
+    fn estimated_attention_kv_bytes(
+        fingerprint: &ModelFingerprint,
+        policy: KvPrecisionPolicy,
+    ) -> Option<u64> {
+        let kv_stride = fingerprint.n_kv_heads as usize * fingerprint.head_dim as usize;
+        let context = fingerprint.context_length as usize;
+        let layers = Self::estimated_attention_kv_layers(fingerprint);
+        let row_bytes = match policy {
+            KvPrecisionPolicy::ForceF32 => (kv_stride * std::mem::size_of::<f32>()) as u64,
+            KvPrecisionPolicy::ForceF16 => (kv_stride * std::mem::size_of::<half::f16>()) as u64,
+            KvPrecisionPolicy::ForceQ8_0 => {
+                if kv_stride == 0 || !kv_stride.is_multiple_of(32) {
+                    return None;
+                }
+                ((kv_stride / 32) * 34) as u64
+            }
+            KvPrecisionPolicy::Auto => return None,
+        };
+
+        (layers)
+            .checked_mul(context as u64)?
+            .checked_mul(row_bytes)?
+            .checked_mul(2)
+    }
+
+    fn preferred_batch_prefill_quant(&self, fingerprint: &ModelFingerprint) -> Option<GgmlType> {
+        quant_from_profile_label(&fingerprint.predominant_layer_quant)
+            .or_else(|| quant_from_profile_label(&fingerprint.predominant_quant))
+            .or({
+                if fingerprint.has_q4k_layer_weights {
+                    Some(GgmlType::Q4K)
+                } else if fingerprint.has_q5k_layer_weights {
+                    Some(GgmlType::Q5K)
+                } else if fingerprint.has_q6k_layer_weights {
+                    Some(GgmlType::Q6K)
+                } else if fingerprint.has_q8_layer_weights {
+                    Some(GgmlType::Q8_0)
+                } else {
+                    None
+                }
+            })
     }
 }

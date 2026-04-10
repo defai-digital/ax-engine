@@ -82,10 +82,25 @@ impl Vocab {
                 vec![0.0; n_vocab]
             });
 
-        let types: Vec<TokenType> = header
-            .get_i32_array("tokenizer.ggml.token_type")
-            .map(|arr| arr.into_iter().map(TokenType::from_i32).collect())
-            .unwrap_or_else(|| vec![TokenType::Normal; n_vocab]);
+        if scores.len() != n_vocab {
+            anyhow::bail!(
+                "tokenizer.ggml.scores length ({}) != tokens length ({n_vocab})",
+                scores.len()
+            );
+        }
+
+        let types: Vec<TokenType> = match header.get_i32_array("tokenizer.ggml.token_type") {
+            Some(arr) => {
+                if arr.len() != n_vocab {
+                    anyhow::bail!(
+                        "tokenizer.ggml.token_type length ({}) != tokens length ({n_vocab})",
+                        arr.len()
+                    );
+                }
+                arr.into_iter().map(TokenType::from_i32).collect()
+            }
+            None => vec![TokenType::Normal; n_vocab],
+        };
 
         // Build reverse lookup
         let mut token_to_id = HashMap::with_capacity(n_vocab);
@@ -112,7 +127,7 @@ impl Vocab {
         // Defaults to true for SPM ("llama") models, false otherwise.
         let add_space_prefix = header
             .get_bool("tokenizer.ggml.add_space_prefix")
-            .unwrap_or(model_type == "llama");
+            .unwrap_or(true);
 
         // Load ordered merge list for GPT-2 BPE (if present).
         // Each entry is "token_a token_b" separated by a space.
@@ -138,13 +153,6 @@ impl Vocab {
         let eot_id = header
             .get_u32("tokenizer.ggml.eot_token_id")
             .or_else(|| token_to_id.get("<end_of_turn>").copied());
-
-        if scores.len() != n_vocab {
-            anyhow::bail!(
-                "tokenizer.ggml.scores length ({}) != tokens length ({n_vocab})",
-                scores.len()
-            );
-        }
 
         tracing::info!(
             n_vocab = n_vocab,

@@ -53,12 +53,15 @@ fn byte_to_gpt2_char(b: u8) -> char {
 }
 
 /// Build the byte-to-GPT2-char lookup table (cached on first call).
-fn gpt2_byte_table() -> [char; 256] {
-    let mut table = ['\0'; 256];
-    for b in 0u8..=255 {
-        table[b as usize] = byte_to_gpt2_char(b);
-    }
-    table
+fn gpt2_byte_table() -> &'static [char; 256] {
+    static TABLE: std::sync::OnceLock<[char; 256]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = ['\0'; 256];
+        for b in 0u8..=255 {
+            table[b as usize] = byte_to_gpt2_char(b);
+        }
+        table
+    })
 }
 
 /// Encode text using GPT-2 merge-based BPE.
@@ -96,14 +99,17 @@ fn gpt2_bpe_encode(vocab: &Vocab, text: &str) -> Vec<u32> {
 }
 
 /// Split GPT-2 encoded text into words for BPE.
-/// Spaces (encoded as Ġ) attach to the following word.
+/// Whitespace characters (space, newline, tab in GPT-2 encoding) attach to
+/// the following word, matching the GPT-2 tokenizer's word boundary logic.
 fn split_gpt2_words(text: &str) -> Vec<String> {
     let space_char = byte_to_gpt2_char(b' '); // Ġ (U+0120)
+    let newline_char = byte_to_gpt2_char(b'\n'); // Ċ (U+010A)
+    let tab_char = byte_to_gpt2_char(b'\t'); // ĉ (U+0109)
     let mut words = Vec::new();
     let mut current = String::new();
 
     for ch in text.chars() {
-        if ch == space_char && !current.is_empty() {
+        if (ch == space_char || ch == newline_char || ch == tab_char) && !current.is_empty() {
             words.push(current);
             current = String::new();
         }
@@ -190,7 +196,9 @@ fn spm_bpe_encode_ex(vocab: &Vocab, text: &str, add_space_prefix: bool) -> Vec<u
     // must be replaced with ▁ so that BPE merges produce tokens like "▁the",
     // "▁world" that match the model's vocabulary. Without this, spaces stay as
     // token 270 (" ") and words never merge with their ▁ prefix.
-    let text = if vocab.model_type == "llama" {
+    let has_spiece_marker =
+        vocab.model_type == "llama" || vocab.token_to_id.contains_key("\u{2581}");
+    let text = if has_spiece_marker {
         let mut s = if add_space_prefix {
             format!(" {text}")
         } else {

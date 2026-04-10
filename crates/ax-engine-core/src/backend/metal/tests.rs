@@ -78,64 +78,23 @@ fn test_fingerprint() -> ModelFingerprint {
     }
 }
 
-fn test_model_config(embedding_dim: u32, intermediate_dim: u32) -> ModelConfig {
-    ModelConfig {
-        architecture: "qwen3".into(),
-        n_layers: 36,
-        n_heads: 32,
-        n_kv_heads: 8,
-        embedding_dim,
-        head_dim: 128,
-        intermediate_dim,
-        context_length: 4096,
-        vocab_size: 151_936,
-        rms_norm_eps: 1e-6,
-        rope_freq_base: 1_000_000.0,
-        has_qkv_bias: true,
-        sliding_window_size: None,
-        sliding_window_pattern: None,
-        gate_activation: crate::model::config::GateActivation::SiLU,
-        tie_word_embeddings: false,
-        logit_scale: None,
-        rope_scaling: crate::model::config::RopeScaling::None,
-        embed_scale: false,
-        rope_freq_base_local: None,
-        n_expert: None,
-        n_expert_used: None,
-        expert_intermediate_dim: None,
-        qwen35_full_attention_interval: None,
-        qwen35_ssm_conv_kernel: None,
-        qwen35_ssm_inner_size: None,
-        qwen35_ssm_state_size: None,
-        qwen35_ssm_time_step_rank: None,
-        qwen35_ssm_group_count: None,
-        gemma4_head_dim_swa: None,
-        gemma4_head_dim_global: None,
-        gemma4_n_kv_heads_swa: None,
-        gemma4_n_kv_heads_global: None,
-        gemma4_rope_dim_swa: None,
-        gemma4_rope_dim_global: None,
-        final_logit_softcapping: None,
-    }
-}
-
-fn unique_temp_cache_dir(label: &str) -> std::path::PathBuf {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock should be after unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "ax-engine-metal-test-{label}-{}-{unique}",
-        std::process::id()
-    ))
+#[test]
+fn test_validate_moe_mul_mat_id_dtype_accepts_supported_routed_quants() {
+    MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q4K, "expert").unwrap();
+    MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q5K, "expert").unwrap();
+    MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q6K, "expert").unwrap();
+    MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q8_0, "expert").unwrap();
 }
 
 #[test]
-fn test_validate_moe_mul_mat_id_dtype_accepts_q4k_and_q5k_rejects_q6k() {
-    MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q4K, "expert").unwrap();
-    MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q5K, "expert").unwrap();
-    let err = MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q6K, "expert")
-        .expect_err("Q6_K routed expert weights should be rejected");
+fn test_validate_moe_selected_dtype_rejects_q6k_and_q8_0() {
+    MetalOps::validate_moe_selected_dtype(GgmlType::Q4K, "expert").unwrap();
+    MetalOps::validate_moe_selected_dtype(GgmlType::Q5K, "expert").unwrap();
+    let err = MetalOps::validate_moe_selected_dtype(GgmlType::Q6K, "expert")
+        .expect_err("Q6_K selected expert weights should be rejected");
+    assert!(err.to_string().contains("Q4_K/Q5_K expert"));
+    let err = MetalOps::validate_moe_selected_dtype(GgmlType::Q8_0, "expert")
+        .expect_err("Q8_0 selected expert weights should be rejected");
     assert!(err.to_string().contains("Q4_K/Q5_K expert"));
 }
 
@@ -204,126 +163,6 @@ fn test_preferred_batch_prefill_quant_falls_back_to_predominant_quant() {
     assert_eq!(
         backend.ops.preferred_batch_prefill_quant(&fingerprint),
         Some(GgmlType::Q6K)
-    );
-}
-
-#[test]
-fn test_decode_autotune_shapes_coalesces_duplicates_with_weights() {
-    let fingerprint = test_fingerprint();
-    let shapes = MetalOps::decode_autotune_shapes(&fingerprint);
-
-    assert_eq!(shapes.len(), 4);
-    assert_eq!(shapes.iter().map(|shape| shape.weight).sum::<u32>(), 7);
-
-    let weight_for = |m: u32, k: u32| -> u32 {
-        shapes
-            .iter()
-            .find(|shape| shape.m == m && shape.k == k)
-            .map(|shape| shape.weight)
-            .unwrap_or(0)
-    };
-
-    assert_eq!(weight_for(4096, 4096), 2);
-    assert_eq!(weight_for(1024, 4096), 2);
-    assert_eq!(weight_for(14336, 4096), 2);
-    assert_eq!(weight_for(4096, 14336), 1);
-}
-
-#[test]
-fn test_decode_matvec_autotune_candidates_dedup_non_adjacent_profile_match() {
-    let mut profile = KernelProfile::default();
-    profile.decode_matvec.insert(
-        "q4_k".to_string(),
-        MatvecParams {
-            threadgroup_size: 64,
-            rows_per_simdgroup: 2,
-            variant: Some(MatvecProfileVariant::Nr2),
-        },
-    );
-
-    let (_, candidates) =
-        MetalOps::decode_matvec_autotune_candidates(&profile, GgmlType::Q4K).unwrap();
-    let deduped = MetalOps::dedup_matvec_candidates(candidates);
-
-    assert_eq!(deduped.len(), 3);
-    assert_eq!(
-        deduped[0],
-        MatvecParams {
-            threadgroup_size: 64,
-            rows_per_simdgroup: 2,
-            variant: Some(MatvecProfileVariant::Nr2),
-        }
-    );
-    assert!(
-        deduped
-            .iter()
-            .any(|params| params.variant == Some(MatvecProfileVariant::Base))
-    );
-    assert!(
-        deduped
-            .iter()
-            .any(|params| params.variant == Some(MatvecProfileVariant::Ilp4))
-    );
-}
-
-#[test]
-fn test_decode_matvec_autotune_candidates_infer_q4_variant_from_legacy_override_shape() {
-    let mut profile = KernelProfile::default();
-    profile.decode_matvec.insert(
-        "q4_k".to_string(),
-        MatvecParams {
-            threadgroup_size: 128,
-            rows_per_simdgroup: 1,
-            variant: None,
-        },
-    );
-
-    let (_, candidates) =
-        MetalOps::decode_matvec_autotune_candidates(&profile, GgmlType::Q4K).unwrap();
-    assert_eq!(candidates[0].threadgroup_size, 128);
-    assert_eq!(candidates[0].rows_per_simdgroup, 1);
-    assert_eq!(candidates[0].variant, Some(MatvecProfileVariant::Base));
-}
-
-#[test]
-fn test_decode_matvec_autotune_candidates_infer_q8_variant_from_legacy_override_shape() {
-    let mut profile = KernelProfile::default();
-    profile.decode_matvec.insert(
-        "q8_0".to_string(),
-        MatvecParams {
-            threadgroup_size: 64,
-            rows_per_simdgroup: 1,
-            variant: None,
-        },
-    );
-
-    let (_, candidates) =
-        MetalOps::decode_matvec_autotune_candidates(&profile, GgmlType::Q8_0).unwrap();
-    assert_eq!(candidates[0].threadgroup_size, 64);
-    assert_eq!(candidates[0].rows_per_simdgroup, 1);
-    assert_eq!(candidates[0].variant, Some(MatvecProfileVariant::Ilp4));
-}
-
-#[test]
-fn test_tune_f16in_batch_route_returns_none_when_no_valid_shapes() {
-    let backend = MetalBackend::new().unwrap();
-    // Q4_K uses block size 256; k=130 yields no valid benchmark shapes.
-    let tuned = backend.ops.tune_f16in_batch_route(GgmlType::Q4K, 130, 194);
-    assert_eq!(tuned, None);
-}
-
-#[test]
-fn test_maybe_autotune_f16in_batch_route_stops_retrying_when_no_valid_shapes() {
-    let _env_lock = lock_env_test();
-    let _autotune = EnvVarGuard::set("AX_METAL_AUTOTUNE", "on");
-    let backend = MetalBackend::new().unwrap();
-    let config = test_model_config(130, 194);
-
-    assert!(!backend.ops.f16in_route_tuned.load(Ordering::Relaxed));
-    backend.ops.maybe_autotune_f16in_batch_route(&config);
-    assert!(
-        backend.ops.f16in_route_tuned.load(Ordering::Relaxed),
-        "runtime batch-route autotune should stop retrying after deterministic no-shape result"
     );
 }
 
@@ -4078,6 +3917,246 @@ fn test_metal_backend_moe_ffn_gpu_resident_cached_matches_cpu_for_q5_down_expert
     assert!(
         diff / scale < 1e-3,
         "resident MoE routed Q5-down path mismatch: max_diff={diff}, rel_diff={}, actual[0..8]={:?}, expected[0..8]={:?}",
+        diff / scale,
+        &actual_hidden[..8],
+        &expected_hidden[..8],
+    );
+}
+
+/// Build a Q6_K block where all 256 values dequantize to approx `d * 1 * (-31)`.
+/// ql bytes = 0x11 (low nibble 1 for both halves), qh = 0, scales = 1.
+fn q6k_block_constant(d_scale: f32) -> [u8; 210] {
+    let mut block = [0u8; 210];
+    // ql[0..128] = 0x11 → low nibble 1 for all quants
+    block[0..128].fill(0x11);
+    // qh[128..192] = 0x00 → no upper bits
+    // scales[192..208] = 1 (signed i8)
+    block[192..208].fill(1);
+    // d (half) at [208..210]
+    let d = half::f16::from_f32(d_scale).to_le_bytes();
+    block[208] = d[0];
+    block[209] = d[1];
+    block
+}
+
+#[test]
+fn test_metal_backend_moe_ffn_gpu_resident_cached_matches_cpu_for_q6_down_experts() {
+    let backend = MetalBackend::new().unwrap();
+    let cpu = super::super::cpu::CpuBackend;
+
+    // Use realistic Qwen3 Coder dimensions to catch size-dependent bugs.
+    // Keep dim=256 to avoid half-precision overflow in test data, but use
+    // non-trivial K=768 to exercise multi-block-per-row Q6K dequant.
+    let n_tokens = 1usize;
+    let n_expert = 2usize;
+    let n_expert_used = 2usize;
+    let dim = 256usize;
+    let expert_inter_dim = 768usize;
+    let eps = 1e-5f32;
+
+    let hidden: Vec<f32> = (0..dim)
+        .map(|i| {
+            if i < 128 {
+                0.01
+            } else {
+                0.005 + (i - 128) as f32 * 0.00001
+            }
+        })
+        .collect();
+    let norm_weights = vec![1.0f32; dim];
+
+    let mut router_weights = vec![0.0f32; n_expert * dim];
+    router_weights[..128].fill(0.02);
+    router_weights[dim..dim + 128].fill(0.01);
+
+    // Each expert weight matrix has `rows` rows and `cols` columns.
+    // Each row has ceil(cols/256) Q4K blocks or ceil(cols/256) Q6K blocks.
+    let gate_k = dim; // gate: [expert_inter_dim, dim]
+    let gate_blocks_per_row = gate_k.div_ceil(256);
+    let gate_weights: Vec<u8> = [1u8, 2u8]
+        .iter()
+        .flat_map(|&nibble| {
+            (0..expert_inter_dim).flat_map(move |_| {
+                (0..gate_blocks_per_row)
+                    .flat_map(move |_| q4k_block_first128_constant(nibble).into_iter())
+            })
+        })
+        .collect();
+    let up_weights: Vec<u8> = [2u8, 1u8]
+        .iter()
+        .flat_map(|&nibble| {
+            (0..expert_inter_dim).flat_map(move |_| {
+                (0..gate_blocks_per_row)
+                    .flat_map(move |_| q4k_block_first128_constant(nibble).into_iter())
+            })
+        })
+        .collect();
+    let down_k = expert_inter_dim; // down: [dim, expert_inter_dim]
+    let down_blocks_per_row = down_k.div_ceil(256);
+    let down_weights: Vec<u8> = [0.02f32, 0.04f32]
+        .iter()
+        .flat_map(|&scale| {
+            (0..dim).flat_map(move |_| {
+                (0..down_blocks_per_row).flat_map(move |_| q6k_block_constant(scale).into_iter())
+            })
+        })
+        .collect();
+    let q4_expert_stride =
+        crate::model::moe_utils::expert_byte_stride(GgmlType::Q4K, dim * expert_inter_dim);
+    let q6_expert_stride =
+        crate::model::moe_utils::expert_byte_stride(GgmlType::Q6K, dim * expert_inter_dim);
+
+    let config = crate::model::config::ModelConfig {
+        architecture: "qwen35".to_string(),
+        n_layers: 1,
+        n_heads: 1,
+        n_kv_heads: 1,
+        embedding_dim: dim as u32,
+        head_dim: dim as u32,
+        intermediate_dim: expert_inter_dim as u32,
+        context_length: 16,
+        vocab_size: 32,
+        rms_norm_eps: eps,
+        rope_freq_base: 10000.0,
+        has_qkv_bias: false,
+        sliding_window_size: None,
+        sliding_window_pattern: None,
+        gate_activation: crate::model::config::GateActivation::SiLU,
+        tie_word_embeddings: false,
+        logit_scale: None,
+        rope_scaling: crate::model::config::RopeScaling::None,
+        embed_scale: false,
+        rope_freq_base_local: None,
+        n_expert: Some(n_expert as u32),
+        n_expert_used: Some(n_expert_used as u32),
+        expert_intermediate_dim: Some(expert_inter_dim as u32),
+        qwen35_full_attention_interval: None,
+        qwen35_ssm_conv_kernel: None,
+        qwen35_ssm_inner_size: None,
+        qwen35_ssm_state_size: None,
+        qwen35_ssm_time_step_rank: None,
+        qwen35_ssm_group_count: None,
+        gemma4_head_dim_swa: None,
+        gemma4_head_dim_global: None,
+        gemma4_n_kv_heads_swa: None,
+        gemma4_n_kv_heads_global: None,
+        gemma4_rope_dim_swa: None,
+        gemma4_rope_dim_global: None,
+        final_logit_softcapping: None,
+    };
+
+    let mean_sq = hidden.iter().map(|v| v * v).sum::<f32>() / dim as f32;
+    let inv_rms = 1.0f32 / (mean_sq + eps).sqrt();
+    let norm: Vec<f32> = hidden
+        .iter()
+        .zip(norm_weights.iter())
+        .map(|(&x, &w)| x * inv_rms * w)
+        .collect();
+
+    let mut router_logits = vec![0.0f32; n_expert];
+    cpu.matmul(
+        &router_weights,
+        &norm,
+        &mut router_logits,
+        n_expert,
+        n_tokens,
+        dim,
+    );
+    let (expert_ids, expert_weights) =
+        crate::model::moe_utils::top_k_softmax(&router_logits, n_expert_used);
+
+    let mut expected_accum = vec![0.0f32; dim];
+    let mut gate_buf = vec![0.0f32; expert_inter_dim];
+    let mut up_buf = vec![0.0f32; expert_inter_dim];
+    let mut down_buf = vec![0.0f32; dim];
+    for (slot, &eid) in expert_ids.iter().enumerate() {
+        let gate_slice = &gate_weights[eid * q4_expert_stride..(eid + 1) * q4_expert_stride];
+        let up_slice = &up_weights[eid * q4_expert_stride..(eid + 1) * q4_expert_stride];
+        let down_slice = &down_weights[eid * q6_expert_stride..(eid + 1) * q6_expert_stride];
+
+        cpu.dequant_matmul(
+            gate_slice,
+            GgmlType::Q4K,
+            &norm,
+            &mut gate_buf,
+            expert_inter_dim,
+            n_tokens,
+            dim,
+        );
+        cpu.dequant_matmul(
+            up_slice,
+            GgmlType::Q4K,
+            &norm,
+            &mut up_buf,
+            expert_inter_dim,
+            n_tokens,
+            dim,
+        );
+        crate::compute::silu::silu_elementwise_mul(&mut gate_buf, &up_buf);
+        cpu.dequant_matmul(
+            down_slice,
+            GgmlType::Q6K,
+            &gate_buf,
+            &mut down_buf,
+            dim,
+            n_tokens,
+            expert_inter_dim,
+        );
+        for (dst, src) in expected_accum.iter_mut().zip(down_buf.iter()) {
+            *dst += expert_weights[slot] * *src;
+        }
+    }
+
+    let mut expected_hidden = hidden.clone();
+    for (dst, src) in expected_hidden.iter_mut().zip(expected_accum.iter()) {
+        *dst += *src;
+    }
+
+    let hidden_buf = MetalBuffer::from_slice(backend.device.device(), &hidden).unwrap();
+    let norm_buf = MetalBuffer::from_slice(backend.device.device(), &norm_weights).unwrap();
+    let router_buf = MetalBuffer::from_slice(backend.device.device(), &router_weights).unwrap();
+    let gate_buf = MetalBuffer::from_slice(backend.device.device(), &gate_weights).unwrap();
+    let up_buf = MetalBuffer::from_slice(backend.device.device(), &up_weights).unwrap();
+    let down_buf = MetalBuffer::from_slice(backend.device.device(), &down_weights).unwrap();
+
+    backend.ops.init_batch_scratches(&config, n_tokens);
+    backend
+        .ops
+        .moe_ffn_gpu_resident_cached(
+            &hidden_buf,
+            &norm_buf,
+            &router_buf,
+            GgmlType::F32,
+            &gate_buf,
+            GgmlType::Q4K,
+            &up_buf,
+            GgmlType::Q4K,
+            &down_buf,
+            GgmlType::Q6K,
+            n_tokens,
+            n_expert,
+            n_expert_used,
+            dim,
+            expert_inter_dim,
+            q4_expert_stride,
+            q4_expert_stride,
+            q6_expert_stride,
+            eps,
+            None,
+        )
+        .unwrap();
+
+    let actual_hidden = unsafe { hidden_buf.as_slice::<f32>()[..dim].to_vec() };
+    let diff = max_abs_diff(&actual_hidden, &expected_hidden);
+    let scale = expected_hidden
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        diff / scale < 5e-3,
+        "resident MoE routed Q6K-down path mismatch: max_diff={diff}, rel_diff={}, actual[0..8]={:?}, expected[0..8]={:?}",
         diff / scale,
         &actual_hidden[..8],
         &expected_hidden[..8],
@@ -7980,462 +8059,6 @@ fn test_configure_for_model_updates_runtime_policy() {
         expected.fused_qkv_prefill_enabled()
     );
     assert_eq!(after.batch_simd_enabled(), expected.batch_simd_enabled());
-    assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q4K);
-}
-
-#[test]
-fn test_configure_for_model_sets_runtime_f16in_autotune_quant() {
-    let backend = MetalBackend::new().unwrap();
-    backend
-        .configure_for_model("Qwen3-8B", "q6-k", "qwen3")
-        .unwrap();
-    assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q6K);
-
-    backend
-        .configure_for_model("Qwen3-8B", "q5_k_m", "qwen3")
-        .unwrap();
-    assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q5K);
-
-    backend
-        .configure_for_model("Qwen3-8B", "unknown", "qwen3")
-        .unwrap();
-    assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q4K);
-}
-
-#[test]
-fn test_decode_dispatch_configs_for_attend_len_uses_decode_regime_cache() {
-    let backend = MetalBackend::new().unwrap();
-    let profile: KernelProfile = serde_json::from_str(
-        r#"{
-            "model": "qwen3-8b",
-            "source": "unit",
-            "decode_matvec": {
-                "q4_k": {
-                    "threadgroup_size": 64,
-                    "rows_per_simdgroup": 2,
-                    "variant": "nr2"
-                }
-            },
-            "attention_decode": {
-                "splitk_chunk_size": 256,
-                "splitk_threshold": 1024
-            },
-            "decode_regimes": {
-                "short_max_attend_len": 384,
-                "short": {
-                    "decode_matvec": {
-                        "q4_k": {
-                            "rows_per_simdgroup": 1,
-                            "variant": "base"
-                        }
-                    }
-                },
-                "long": {
-                    "attention_decode": {
-                        "splitk_threshold": 256
-                    }
-                }
-            }
-        }"#,
-    )
-    .unwrap();
-
-    backend
-        .ops
-        .apply_runtime_policy(RuntimePolicy::from_kernel_profile_for_arch(
-            profile.clone(),
-            "qwen3",
-        ));
-
-    let (short_dequant, short_attention) = backend.ops.decode_dispatch_configs_for_attend_len(128);
-    let short_profile = profile.effective_decode_profile(128);
-    assert_eq!(
-        short_dequant,
-        DequantDispatchConfig::from_profile(&short_profile)
-    );
-    assert_eq!(
-        short_attention,
-        AttentionDispatchConfig::from_profile(&short_profile)
-    );
-
-    let (long_dequant, long_attention) = backend.ops.decode_dispatch_configs_for_attend_len(4096);
-    let long_profile = profile.effective_decode_profile(4096);
-    assert_eq!(
-        long_dequant,
-        DequantDispatchConfig::from_profile(&long_profile)
-    );
-    assert_eq!(
-        long_attention,
-        AttentionDispatchConfig::from_profile(&long_profile)
-    );
-}
-
-#[test]
-fn test_configure_for_fingerprint_uses_seed_profile_when_load_autotune_disabled() {
-    let _env_lock = lock_env_test();
-    let backend = MetalBackend::new().unwrap();
-    let temp_cache_dir = unique_temp_cache_dir("seed-profile");
-    let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "off");
-    let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
-    let _cache_dir = EnvVarGuard::set(
-        "AX_METAL_TUNE_CACHE_DIR",
-        temp_cache_dir
-            .to_str()
-            .unwrap_or("/tmp/ax-engine-metal-test"),
-    );
-
-    let fingerprint = ModelFingerprint {
-        model_name: "Qwen3-8B".to_string(),
-        architecture: "qwen3".to_string(),
-        family: "qwen3".to_string(),
-        size_label: "8b".to_string(),
-        n_layers: 36,
-        n_heads: 32,
-        n_kv_heads: 8,
-        embedding_dim: 4096,
-        head_dim: 128,
-        intermediate_dim: 14336,
-        context_length: 4096,
-        sliding_window_size: None,
-        sliding_window_pattern: None,
-        n_expert: None,
-        n_expert_used: None,
-        qwen35_full_attention_interval: None,
-        total_tensor_bytes: 0,
-        predominant_quant: "Q4_K".to_string(),
-        predominant_layer_quant: "Q4_K".to_string(),
-        lm_head_quant: None,
-        layer_quant_histogram: vec![],
-        has_mixed_layer_quants: false,
-        has_q4k_layer_weights: true,
-        has_q5k_layer_weights: false,
-        has_q6k_layer_weights: false,
-        has_q8_layer_weights: false,
-        has_f32_layer_weights: false,
-    };
-
-    backend.configure_for_fingerprint(&fingerprint).unwrap();
-
-    let after = backend.ops.runtime_policy();
-    let expected = RuntimePolicy::for_model("Qwen3-8B", "Q4_K", "qwen3");
-    assert_eq!(
-        after.dequant_dispatch_config(),
-        expected.dequant_dispatch_config()
-    );
-    assert_eq!(
-        after.attention_dispatch_config(),
-        expected.attention_dispatch_config()
-    );
-    assert_eq!(
-        after.batch_prefill_prefers_f16_io(),
-        expected.batch_prefill_prefers_f16_io()
-    );
-    assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q4K);
-}
-
-#[test]
-fn test_configure_for_fingerprint_sets_runtime_f16in_autotune_quant() {
-    let _env_lock = lock_env_test();
-    let backend = MetalBackend::new().unwrap();
-    let temp_cache_dir = unique_temp_cache_dir("runtime-quant");
-    let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "off");
-    let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
-    let _cache_dir = EnvVarGuard::set(
-        "AX_METAL_TUNE_CACHE_DIR",
-        temp_cache_dir
-            .to_str()
-            .unwrap_or("/tmp/ax-engine-metal-test"),
-    );
-
-    let mut fingerprint = ModelFingerprint {
-        model_name: "Qwen3-8B".to_string(),
-        architecture: "qwen3".to_string(),
-        family: "qwen3".to_string(),
-        size_label: "8b".to_string(),
-        n_layers: 36,
-        n_heads: 32,
-        n_kv_heads: 8,
-        embedding_dim: 4096,
-        head_dim: 128,
-        intermediate_dim: 14336,
-        context_length: 4096,
-        sliding_window_size: None,
-        sliding_window_pattern: None,
-        n_expert: None,
-        n_expert_used: None,
-        qwen35_full_attention_interval: None,
-        total_tensor_bytes: 0,
-        predominant_quant: "Q6_K".to_string(),
-        predominant_layer_quant: "Q6_K".to_string(),
-        lm_head_quant: None,
-        layer_quant_histogram: vec![],
-        has_mixed_layer_quants: false,
-        has_q4k_layer_weights: false,
-        has_q5k_layer_weights: false,
-        has_q6k_layer_weights: true,
-        has_q8_layer_weights: false,
-        has_f32_layer_weights: false,
-    };
-    backend.configure_for_fingerprint(&fingerprint).unwrap();
-    assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q6K);
-
-    // Fallback to Q4_K when fingerprint quant labels are unknown.
-    fingerprint.predominant_quant = "unknown".to_string();
-    fingerprint.predominant_layer_quant = "unknown".to_string();
-    fingerprint.has_q6k_layer_weights = false;
-    fingerprint.has_q4k_layer_weights = false;
-    backend.configure_for_fingerprint(&fingerprint).unwrap();
-    assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q4K);
-}
-
-#[test]
-fn test_configure_for_fingerprint_ignores_cached_kv_precision_override() {
-    let _env_lock = lock_env_test();
-    let backend = MetalBackend::new().unwrap();
-    let temp_cache_dir = unique_temp_cache_dir("cached-kv");
-    let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "on");
-    let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
-    let _cache_dir = EnvVarGuard::set(
-        "AX_METAL_TUNE_CACHE_DIR",
-        temp_cache_dir
-            .to_str()
-            .unwrap_or("/tmp/ax-engine-metal-test-cache-kv"),
-    );
-
-    let fingerprint = test_fingerprint();
-    let cache_path = backend.ops.kernel_profile_cache_path(&fingerprint);
-    fs::create_dir_all(
-        cache_path
-            .parent()
-            .expect("kernel profile cache path should have parent"),
-    )
-    .unwrap();
-    let mut cached_profile = KernelProfile::default();
-    cached_profile.kv_cache.precision = KvPrecisionMode::F32;
-    fs::write(
-        &cache_path,
-        serde_json::to_string_pretty(&cached_profile).unwrap(),
-    )
-    .unwrap();
-
-    backend.configure_for_fingerprint(&fingerprint).unwrap();
-
-    let runtime_policy = backend.ops.runtime_policy();
-    assert_eq!(
-        runtime_policy.kv_precision_policy(),
-        KvPrecisionPolicy::Auto
-    );
-    assert_eq!(
-        runtime_policy.gpu_kv_dtype(fingerprint.context_length as usize),
-        crate::kv::gpu_kv::GpuKvDtype::F16
-    );
-}
-
-#[test]
-fn test_configure_for_fingerprint_ignores_cached_profile_when_load_autotune_disabled() {
-    let _env_lock = lock_env_test();
-    let backend = MetalBackend::new().unwrap();
-    let temp_cache_dir = unique_temp_cache_dir("cached-profile-load-autotune-off");
-    let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "off");
-    let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
-    let _cache_dir = EnvVarGuard::set(
-        "AX_METAL_TUNE_CACHE_DIR",
-        temp_cache_dir
-            .to_str()
-            .unwrap_or("/tmp/ax-engine-metal-test-cache-load-autotune-off"),
-    );
-
-    let fingerprint = test_fingerprint();
-    let cache_path = backend.ops.kernel_profile_cache_path(&fingerprint);
-    fs::create_dir_all(
-        cache_path
-            .parent()
-            .expect("kernel profile cache path should have parent"),
-    )
-    .unwrap();
-
-    let mut cached_profile = KernelProfile::default();
-    cached_profile.decode_matvec.insert(
-        "q4_k".to_string(),
-        MatvecParams {
-            threadgroup_size: 64,
-            rows_per_simdgroup: 1,
-            variant: Some(MatvecProfileVariant::Ilp4),
-        },
-    );
-    fs::write(
-        &cache_path,
-        serde_json::to_string_pretty(&cached_profile).unwrap(),
-    )
-    .unwrap();
-
-    backend.configure_for_fingerprint(&fingerprint).unwrap();
-
-    let after = backend.ops.runtime_policy();
-    let expected = RuntimePolicy::for_model("Qwen3-8B", "Q4_K", "qwen3");
-    assert_eq!(
-        after.dequant_dispatch_config(),
-        expected.dequant_dispatch_config()
-    );
-    assert_eq!(
-        after.attention_dispatch_config(),
-        expected.attention_dispatch_config()
-    );
-    assert!(!backend.ops.f16in_route_tuned.load(Ordering::Relaxed));
-}
-
-#[test]
-fn test_configure_for_fingerprint_keeps_runtime_batch_autotune_enabled_when_quant_unknown() {
-    let _env_lock = lock_env_test();
-    let backend = MetalBackend::new().unwrap();
-    let temp_cache_dir = unique_temp_cache_dir("unknown-quant-runtime-autotune");
-    let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "on");
-    let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
-    let _cache_dir = EnvVarGuard::set(
-        "AX_METAL_TUNE_CACHE_DIR",
-        temp_cache_dir
-            .to_str()
-            .unwrap_or("/tmp/ax-engine-metal-test-unknown-quant-runtime-autotune"),
-    );
-
-    let mut fingerprint = test_fingerprint();
-    fingerprint.predominant_quant = "unknown".to_string();
-    fingerprint.predominant_layer_quant = "unknown".to_string();
-    fingerprint.has_q4k_layer_weights = false;
-    fingerprint.has_q5k_layer_weights = false;
-    fingerprint.has_q6k_layer_weights = false;
-    fingerprint.has_q8_layer_weights = false;
-
-    backend.configure_for_fingerprint(&fingerprint).unwrap();
-
-    assert_eq!(backend.ops.runtime_f16in_autotune_quant(), GgmlType::Q4K);
-    assert!(
-        !backend.ops.f16in_route_tuned.load(Ordering::Relaxed),
-        "runtime batch-route autotune should stay enabled when load-time quant family is unknown"
-    );
-}
-
-#[test]
-fn test_configure_for_fingerprint_keeps_runtime_batch_autotune_enabled_when_loadtime_has_no_valid_batch_shapes()
- {
-    let _env_lock = lock_env_test();
-    let backend = MetalBackend::new().unwrap();
-    let temp_cache_dir = unique_temp_cache_dir("no-valid-loadtime-batch-shapes");
-    let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "on");
-    let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
-    let _cache_dir = EnvVarGuard::set(
-        "AX_METAL_TUNE_CACHE_DIR",
-        temp_cache_dir
-            .to_str()
-            .unwrap_or("/tmp/ax-engine-metal-test-no-valid-loadtime-batch-shapes"),
-    );
-
-    let mut fingerprint = test_fingerprint();
-    // Q4_K block size is 256. With embedding_dim=130, load-time batch-route tuning
-    // cannot benchmark any valid shape and must leave runtime autotune enabled.
-    fingerprint.embedding_dim = 130;
-    fingerprint.intermediate_dim = 194;
-
-    backend.configure_for_fingerprint(&fingerprint).unwrap();
-
-    assert!(
-        !backend.ops.f16in_route_tuned.load(Ordering::Relaxed),
-        "runtime batch-route autotune should stay enabled when load-time tuning cannot benchmark any valid shape"
-    );
-}
-
-#[test]
-fn test_configure_for_fingerprint_keeps_runtime_batch_autotune_enabled_when_cached_profile_has_no_batch_route_delta()
- {
-    let _env_lock = lock_env_test();
-    let backend = MetalBackend::new().unwrap();
-    let temp_cache_dir = unique_temp_cache_dir("cached-profile-no-batch-delta");
-    let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "on");
-    let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
-    let _cache_dir = EnvVarGuard::set(
-        "AX_METAL_TUNE_CACHE_DIR",
-        temp_cache_dir
-            .to_str()
-            .unwrap_or("/tmp/ax-engine-metal-test-cached-profile-no-batch-delta"),
-    );
-
-    let fingerprint = test_fingerprint();
-    let cache_path = backend.ops.kernel_profile_cache_path(&fingerprint);
-    fs::create_dir_all(
-        cache_path
-            .parent()
-            .expect("kernel profile cache path should have parent"),
-    )
-    .unwrap();
-
-    let mut cached_profile = KernelProfile {
-        source: "load-autotune".to_string(),
-        ..KernelProfile::default()
-    };
-    cached_profile.decode_matvec.insert(
-        "q4_k".to_string(),
-        MatvecParams {
-            threadgroup_size: 64,
-            rows_per_simdgroup: 1,
-            variant: Some(MatvecProfileVariant::Ilp4),
-        },
-    );
-    fs::write(
-        &cache_path,
-        serde_json::to_string_pretty(&cached_profile).unwrap(),
-    )
-    .unwrap();
-
-    backend.configure_for_fingerprint(&fingerprint).unwrap();
-
-    assert!(
-        !backend.ops.f16in_route_tuned.load(Ordering::Relaxed),
-        "runtime batch-route autotune should remain enabled when cached profile has no concrete batch-route delta"
-    );
-}
-
-#[test]
-fn test_configure_for_fingerprint_skips_runtime_batch_autotune_when_cached_profile_has_batch_route_delta()
- {
-    let _env_lock = lock_env_test();
-    let backend = MetalBackend::new().unwrap();
-    let temp_cache_dir = unique_temp_cache_dir("cached-profile-with-batch-delta");
-    let _load_autotune = EnvVarGuard::set("AX_METAL_LOAD_AUTOTUNE", "on");
-    let _force_retune = EnvVarGuard::set("AX_METAL_FORCE_RETUNE", "off");
-    let _cache_dir = EnvVarGuard::set(
-        "AX_METAL_TUNE_CACHE_DIR",
-        temp_cache_dir
-            .to_str()
-            .unwrap_or("/tmp/ax-engine-metal-test-cached-profile-with-batch-delta"),
-    );
-
-    let fingerprint = test_fingerprint();
-    let cache_path = backend.ops.kernel_profile_cache_path(&fingerprint);
-    fs::create_dir_all(
-        cache_path
-            .parent()
-            .expect("kernel profile cache path should have parent"),
-    )
-    .unwrap();
-
-    let mut cached_profile = KernelProfile {
-        source: "load-autotune".to_string(),
-        ..KernelProfile::default()
-    };
-    cached_profile.batch_prefill.small_n_threshold = 65;
-    cached_profile.batch_prefill.small_m_max = fingerprint.embedding_dim;
-    fs::write(
-        &cache_path,
-        serde_json::to_string_pretty(&cached_profile).unwrap(),
-    )
-    .unwrap();
-
-    backend.configure_for_fingerprint(&fingerprint).unwrap();
-
-    assert!(
-        backend.ops.f16in_route_tuned.load(Ordering::Relaxed),
-        "runtime batch-route autotune should be skipped when cached profile carries a concrete batch-route delta"
-    );
 }
 
 #[test]

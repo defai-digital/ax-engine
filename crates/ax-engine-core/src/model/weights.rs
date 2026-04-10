@@ -261,7 +261,11 @@ pub fn apply_bias_to_batch(buf: &mut [f32], bias: &[f32], n_tokens: usize) {
         return;
     }
     let dim = bias.len();
-    debug_assert_eq!(buf.len(), n_tokens * dim);
+    assert_eq!(
+        buf.len(),
+        n_tokens * dim,
+        "apply_bias_to_batch: buffer size mismatch"
+    );
     for row in buf.chunks_mut(dim) {
         for (x, b) in row.iter_mut().zip(bias.iter()) {
             *x += b;

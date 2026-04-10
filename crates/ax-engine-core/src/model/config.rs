@@ -8,7 +8,7 @@ use crate::gguf::GgufHeader;
 /// Gate activation function used in the FFN.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum GateActivation {
-    /// SiLU / SwiGLU — used by LLaMA, Mistral, Qwen.
+    /// SiLU / SwiGLU — used by LLaMA, Qwen.
     #[default]
     SiLU,
     /// GELU / GeGLU — used by Gemma3.
@@ -259,6 +259,11 @@ impl ModelConfig {
                 size > 0,
                 "model attention.sliding_window must be > 0 when present"
             );
+            anyhow::ensure!(
+                size <= self.context_length,
+                "model attention.sliding_window ({size}) must not exceed context_length ({})",
+                self.context_length
+            );
         }
         if let Some(pattern) = self.sliding_window_pattern {
             anyhow::ensure!(
@@ -353,7 +358,7 @@ impl ModelConfig {
     /// Reads architecture-prefixed keys (e.g. `llama.embedding_length`)
     /// with sensible defaults for optional fields.
     pub fn from_gguf(header: &GgufHeader) -> anyhow::Result<Self> {
-        let arch = header.architecture().unwrap_or("llama").to_string();
+        let arch = header.architecture().unwrap_or("unknown").to_string();
 
         let get_u32 = |key: &str| -> anyhow::Result<u32> {
             header
@@ -381,7 +386,7 @@ impl ModelConfig {
             .or_else(|| {
                 header
                     .get_i32_array(&format!("{arch}.attention.head_count_kv"))
-                    .and_then(|arr| arr.first().map(|&v| v as u32))
+                    .and_then(|arr| arr.first().and_then(|&v| u32::try_from(v).ok()))
             })
             .unwrap_or(n_heads);
         anyhow::ensure!(n_kv_heads > 0, "GGUF {arch}.attention.head_count_kv is 0");
@@ -448,6 +453,16 @@ impl ModelConfig {
         let sliding_window_size = header.get_u32(&format!("{arch}.attention.sliding_window"));
         let sliding_window_pattern = header
             .get_u32(&format!("{arch}.attention.sliding_window_pattern"))
+            .or_else(|| {
+                // Some Gemma4 models store the per-layer SWA pattern as a
+                // boolean array [true, true, true, true, true, false, ...] instead of a
+                // scalar period integer. Derive the period as the position of the first
+                // false (global) layer + 1.
+                let arr =
+                    header.get_bool_array(&format!("{arch}.attention.sliding_window_pattern"))?;
+                let period = arr.iter().position(|&swa| !swa)? + 1;
+                Some(period as u32)
+            })
             .or_else(|| {
                 // Gemma3 default: every 6th layer is global, rest use sliding window
                 if matches!(arch.as_str(), "gemma" | "gemma2" | "gemma3" | "gemma4")
@@ -1136,6 +1151,37 @@ mod tests {
         assert_eq!(config.sliding_window_size, Some(1024));
         assert_eq!(config.sliding_window_pattern, Some(6));
         assert_eq!(config.rope_freq_base_local, Some(10000.0));
+    }
+
+    #[test]
+    fn test_config_gemma4_bool_array_sliding_window_pattern() {
+        // Some Gemma4 models store sliding_window_pattern as a boolean array
+        // [true, true, true, true, true, false, ...] — period 6
+        let pattern_bools: Vec<MetadataValue> =
+            (0..42).map(|i| MetadataValue::Bool(i % 6 != 5)).collect();
+        let header = make_header(vec![
+            (
+                "general.architecture",
+                MetadataValue::String("gemma4".into()),
+            ),
+            ("gemma4.block_count", MetadataValue::Uint32(42)),
+            ("gemma4.attention.head_count", MetadataValue::Uint32(8)),
+            ("gemma4.embedding_length", MetadataValue::Uint32(2560)),
+            ("gemma4.feed_forward_length", MetadataValue::Uint32(10240)),
+            (
+                "gemma4.attention.sliding_window",
+                MetadataValue::Uint32(512),
+            ),
+            (
+                "gemma4.attention.sliding_window_pattern",
+                MetadataValue::Array(pattern_bools),
+            ),
+        ]);
+
+        let config = ModelConfig::from_gguf(&header).unwrap();
+        assert_eq!(config.sliding_window_size, Some(512));
+        // Period derived from boolean array: first False at index 5 → period = 6
+        assert_eq!(config.sliding_window_pattern, Some(6));
     }
 
     #[test]

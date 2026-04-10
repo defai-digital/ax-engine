@@ -2,6 +2,26 @@ use super::*;
 
 use crate::model::ModelConfig;
 
+/// Whether explicit Metal barriers are enabled for single-token decode path.
+///
+/// Controlled by `AX_METAL_DECODE_BARRIERS`:
+/// - `1` / `true` / `on`            -> enabled
+/// - unset / `0` / `false` / `off`  -> disabled (default)
+///
+/// Default OFF: llama.cpp uses zero barriers in decode. The sequential
+/// Metal encoder on Apple Silicon UMA provides ordering guarantees —
+/// each dispatch completes before the next starts, and writes are
+/// immediately visible via cache coherency. Barriers are redundant.
+pub(crate) fn metal_decode_barriers_enabled() -> bool {
+    match std::env::var("AX_METAL_DECODE_BARRIERS") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "on"
+        }
+        Err(_) => false, // llama.cpp uses 0 barriers; safe on Apple Silicon UMA
+    }
+}
+
 pub(crate) fn q5k_prefill_enabled() -> bool {
     // Q5_K GPU prefill is a normal supported path now. The remaining env
     // surface only selects the routing variant for validation.
@@ -55,14 +75,24 @@ pub(crate) fn q5k_prefill_variant_override() -> Q5KPrefillVariantOverride {
 pub(crate) fn gpu_decode_quant_dtype_supported(dtype: GgmlType) -> bool {
     matches!(
         dtype,
-        GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0 | GgmlType::F32
+        GgmlType::Q4K
+            | GgmlType::Q5K
+            | GgmlType::Q6K
+            | GgmlType::Q5_0
+            | GgmlType::Q8_0
+            | GgmlType::F32
     )
 }
 
 pub(crate) fn gpu_prefill_quant_dtype_supported(dtype: GgmlType) -> bool {
     matches!(
         dtype,
-        GgmlType::Q4K | GgmlType::Q6K | GgmlType::Q8_0 | GgmlType::F32
+        GgmlType::Q4K
+            | GgmlType::Q5_0
+            | GgmlType::Q5_1
+            | GgmlType::Q6K
+            | GgmlType::Q8_0
+            | GgmlType::F32
     ) || (dtype == GgmlType::Q5K && q5k_prefill_enabled())
 }
 
@@ -247,6 +277,10 @@ pub(crate) fn write_normalized_single_logits(
     let (lm_raw, lm_dtype) = lm_head_raw_with_dtype(weights)?;
     anyhow::ensure!(logits.len() >= vocab_size, "logits buffer too small");
     backend.dequant_matmul(lm_raw, lm_dtype, hidden, logits, vocab_size, 1, dim);
+    if logits[..vocab_size].iter().any(|value| !value.is_finite()) {
+        crate::backend::cpu::CpuBackend
+            .dequant_matmul(lm_raw, lm_dtype, hidden, logits, vocab_size, 1, dim);
+    }
     Ok(())
 }
 
