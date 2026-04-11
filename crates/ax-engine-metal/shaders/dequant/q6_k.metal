@@ -737,13 +737,16 @@ kernel void moe_mul_mat_id_q6_k_blocked(
     constant uint &n_tokens            [[buffer(7)]],
     constant uint &n_expert_used       [[buffer(8)]],
     constant uint &weight_stride       [[buffer(9)]],
-    device const uint32_t *active_experts [[buffer(10)]],
+    device const uint32_t *active_meta [[buffer(10)]],
     constant uint &input_is_hid        [[buffer(11)]],
     threadgroup char *shmem            [[threadgroup(0)]],
     uint3 tgpig  [[threadgroup_position_in_grid]],
     ushort tiitg [[thread_index_in_threadgroup]],
     ushort sgitg [[simdgroup_index_in_threadgroup]])
 {
+    const uint active_count = active_meta[0];
+    if (tgpig.z >= active_count) return;
+    device const uint32_t *active_experts = active_meta + 1;
     const uint expert = active_experts[tgpig.z];
     const uint n_assigned = tpe[expert];
 
@@ -2313,6 +2316,169 @@ kernel void dequant_matvec_gelu_down_q6_k(
     }
 }
 
+kernel void moe_mul_mat_selected_q6_k_matvec(
+    device const Q6_K_Block* weights   [[buffer(0)]],
+    device const float* input          [[buffer(1)]],
+    device const int32_t* selected     [[buffer(2)]],
+    device float* output               [[buffer(3)]],
+    constant uint& M                   [[buffer(4)]],
+    constant uint& K                   [[buffer(5)]],
+    constant uint& n_selected          [[buffer(6)]],
+    constant uint& weight_stride       [[buffer(7)]],
+    constant uint& input_is_slot_major [[buffer(8)]],
+    uint3 tgpig                        [[threadgroup_position_in_grid]],
+    uint simd_lane                     [[thread_index_in_simdgroup]],
+    uint simd_id                       [[simdgroup_index_in_threadgroup]]
+) {
+    if (tgpig.z >= n_selected || tgpig.x >= M) return;
+
+    const uint slot = tgpig.z;
+    const uint expert = uint(selected[slot]);
+    const uint row = tgpig.x;
+    const uint input_row = input_is_slot_major != 0 ? slot : 0;
+    const uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
+    constexpr uint num_simd_groups = DEQUANT_MATVEC_TG / 32;
+    threadgroup float simd_sums[num_simd_groups];
+
+    device const Q6_K_Block* a_row =
+        weights + expert * weight_stride + row * blocks_per_row;
+    device const float* x = input + input_row * K;
+
+    float sum = 0.0f;
+    for (uint b = simd_id; b < blocks_per_row; b += num_simd_groups) {
+        sum += q6_k_block_dot(a_row, b, x, simd_lane);
+    }
+
+    sum = simd_sum(sum);
+    if (simd_lane == 0) {
+        simd_sums[simd_id] = sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd_id == 0) {
+        float row_sum = (simd_lane < num_simd_groups) ? simd_sums[simd_lane] : 0.0f;
+        row_sum = simd_sum(row_sum);
+        if (simd_lane == 0) {
+            output[slot * M + row] = row_sum;
+        }
+    }
+}
+
+kernel void moe_mul_mat_selected_pair_q6_k_matvec(
+    device const Q6_K_Block* weights0  [[buffer(0)]],
+    device const Q6_K_Block* weights1  [[buffer(1)]],
+    device const float* input          [[buffer(2)]],
+    device const int32_t* selected     [[buffer(3)]],
+    device float* output0              [[buffer(4)]],
+    device float* output1              [[buffer(5)]],
+    constant uint& M                   [[buffer(6)]],
+    constant uint& K                   [[buffer(7)]],
+    constant uint& n_selected          [[buffer(8)]],
+    constant uint& weight_stride0      [[buffer(9)]],
+    constant uint& weight_stride1      [[buffer(10)]],
+    constant uint& input_is_slot_major [[buffer(11)]],
+    uint3 tgpig                        [[threadgroup_position_in_grid]],
+    uint simd_lane                     [[thread_index_in_simdgroup]],
+    uint simd_id                       [[simdgroup_index_in_threadgroup]]
+) {
+    if (tgpig.z >= n_selected || tgpig.x >= M) return;
+
+    const uint slot = tgpig.z;
+    const uint expert = uint(selected[slot]);
+    const uint row = tgpig.x;
+    const uint input_row = input_is_slot_major != 0 ? slot : 0;
+    const uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
+    constexpr uint num_simd_groups = DEQUANT_MATVEC_TG / 32;
+    threadgroup float simd_sums0[num_simd_groups];
+    threadgroup float simd_sums1[num_simd_groups];
+
+    device const Q6_K_Block* a_row0 =
+        weights0 + expert * weight_stride0 + row * blocks_per_row;
+    device const Q6_K_Block* a_row1 =
+        weights1 + expert * weight_stride1 + row * blocks_per_row;
+    device const float* x = input + input_row * K;
+
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+    for (uint b = simd_id; b < blocks_per_row; b += num_simd_groups) {
+        sum0 += q6_k_block_dot(a_row0, b, x, simd_lane);
+        sum1 += q6_k_block_dot(a_row1, b, x, simd_lane);
+    }
+
+    sum0 = simd_sum(sum0);
+    sum1 = simd_sum(sum1);
+    if (simd_lane == 0) {
+        simd_sums0[simd_id] = sum0;
+        simd_sums1[simd_id] = sum1;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd_id == 0) {
+        float row_sum0 = (simd_lane < num_simd_groups) ? simd_sums0[simd_lane] : 0.0f;
+        float row_sum1 = (simd_lane < num_simd_groups) ? simd_sums1[simd_lane] : 0.0f;
+        row_sum0 = simd_sum(row_sum0);
+        row_sum1 = simd_sum(row_sum1);
+        if (simd_lane == 0) {
+            output0[slot * M + row] = row_sum0;
+            output1[slot * M + row] = row_sum1;
+        }
+    }
+}
+
+kernel void moe_mul_mat_selected_weighted_q6_k_matvec(
+    device const Q6_K_Block* weights   [[buffer(0)]],
+    device const float* input          [[buffer(1)]],
+    device const int32_t* selected     [[buffer(2)]],
+    device const float* expert_weights [[buffer(3)]],
+    device float* output               [[buffer(4)]],
+    constant uint& M                   [[buffer(5)]],
+    constant uint& K                   [[buffer(6)]],
+    constant uint& n_selected          [[buffer(7)]],
+    constant uint& weight_stride       [[buffer(8)]],
+    uint row                           [[threadgroup_position_in_grid]],
+    uint simd_lane                     [[thread_index_in_simdgroup]],
+    uint simd_id                       [[simdgroup_index_in_threadgroup]]
+) {
+    if (row >= M) return;
+
+    uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
+    constexpr uint num_simd_groups = DEQUANT_MATVEC_TG / 32;
+    threadgroup float simd_sums[num_simd_groups];
+    float acc = 0.0f;
+
+    for (uint slot = 0; slot < n_selected; ++slot) {
+        const uint expert = uint(selected[slot]);
+        const float route_weight = expert_weights[slot];
+        device const Q6_K_Block* a_row =
+            weights + expert * weight_stride + row * blocks_per_row;
+        device const float* x = input + slot * K;
+
+        float sum = 0.0f;
+        for (uint b = simd_id; b < blocks_per_row; b += num_simd_groups) {
+            sum += q6_k_block_dot(a_row, b, x, simd_lane);
+        }
+
+        sum = simd_sum(sum);
+        if (simd_lane == 0) {
+            simd_sums[simd_id] = sum;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (simd_id == 0) {
+            float slot_sum = (simd_lane < num_simd_groups) ? simd_sums[simd_lane] : 0.0f;
+            slot_sum = simd_sum(slot_sum);
+            if (simd_lane == 0) {
+                acc += route_weight * slot_sum;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (simd_id == 0 && simd_lane == 0) {
+        output[row] = acc;
+    }
+}
+
 kernel void dequant_matvec_q6_k_nr2(
     device const Q6_K_Block* A [[buffer(0)]],
     device const float* x      [[buffer(1)]],
@@ -2485,13 +2651,16 @@ kernel void moe_mul_mat_id_q6_k(
     constant uint &n_tokens            [[buffer(7)]],
     constant uint &n_expert_used       [[buffer(8)]],
     constant uint &weight_stride       [[buffer(9)]],
-    device const uint32_t *active_experts [[buffer(10)]],
+    device const uint32_t *active_meta [[buffer(10)]],
     constant uint &input_is_hid        [[buffer(11)]],
     uint3 group_id  [[threadgroup_position_in_grid]],
     uint  tid       [[thread_index_in_threadgroup]],
     uint  simd_id   [[simdgroup_index_in_threadgroup]],
     uint  simd_lane [[thread_index_in_simdgroup]])
 {
+    const uint active_count = active_meta[0];
+    if (group_id.z >= active_count) return;
+    device const uint32_t *active_experts = active_meta + 1;
     const uint expert = active_experts[group_id.z];
     const uint n_assigned = tpe[expert];
     const uint tile_row = group_id.y * DQ_BM;

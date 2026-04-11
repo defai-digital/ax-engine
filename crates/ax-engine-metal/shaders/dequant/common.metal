@@ -1319,19 +1319,18 @@ constant ushort EXT_R1PTG [[function_constant(2)]];
 /// tpe (tokens per expert): [n_expert] uint32 — count of tokens per expert.
 /// hids: [n_expert, n_tokens] int32 — for expert e, hids[e*n_tokens + i] =
 ///   token_idx * n_expert_used + position_in_assignment for the i-th assigned token.
-/// active_experts: [n_expert] uint32 identity map. The host currently
-///   dispatches stage-2 with depth = n_expert, so inactive experts must still
-///   resolve to a valid expert index and early-exit via tpe[expert] == 0.
+/// active_experts: [1 + n_expert] uint32 metadata where slot 0 stores the
+///   active-expert count and slots 1..count store the compact expert list.
 ///
 /// Grid: (1, 1, 1). TG: (n_expert, 1, 1). One thread per expert.
 
 
 /// Stage 2: Tiled Q4_K GEMM with expert routing (compact grid).
 ///
-/// Grid.z = n_expert. Uses active_experts[grid.z] as a stable expert index;
-/// inactive experts early-exit immediately because tpe[expert] == 0.
+/// Grid.z = min(n_expert, n_tokens * n_expert_used). Kernels early-exit when
+/// group.z >= active_count and otherwise use active_experts[1 + group.z].
 ///
-/// Grid: (ceil(n_tokens/32), ceil(M/32), n_expert). TG: (128, 1, 1).
+/// Grid: (ceil(n_tokens/32), ceil(M/32), n_active_upper_bound). TG: (128, 1, 1).
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1341,7 +1340,7 @@ constant ushort EXT_R1PTG [[function_constant(2)]];
 // MoE expert routing (active_experts, hids, tpe). Uses simdgroup_half8x8
 // for 2× throughput vs the 32×32 float variant.
 //
-// Grid: (ceil(n_tokens/32), ceil(M/64), n_expert). TG: 128.
+// Grid: (ceil(n_tokens/32), ceil(M/64), n_active_upper_bound). TG: 128.
 // ═══════════════════════════════════════════════════════════════════════════
 
 

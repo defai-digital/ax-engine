@@ -2009,13 +2009,16 @@ kernel void moe_mul_mat_id_q5_k_blocked(
     constant uint &n_tokens          [[buffer(7)]],
     constant uint &n_expert_used     [[buffer(8)]],
     constant uint &weight_stride     [[buffer(9)]],
-    device const uint32_t *active_experts [[buffer(10)]],
+    device const uint32_t *active_meta [[buffer(10)]],
     constant uint &input_is_hid      [[buffer(11)]],
     threadgroup char *shmem          [[threadgroup(0)]],
     uint3 tgpig  [[threadgroup_position_in_grid]],
     ushort tiitg [[thread_index_in_threadgroup]],
     ushort sgitg [[simdgroup_index_in_threadgroup]])
 {
+    const uint active_count = active_meta[0];
+    if (tgpig.z >= active_count) return;
+    device const uint32_t *active_experts = active_meta + 1;
     const uint expert = active_experts[tgpig.z];
     const uint n_assigned = tpe[expert];
 
@@ -2135,6 +2138,93 @@ kernel void moe_mul_mat_id_q5_k_blocked(
         i = (4 * (nr0 / 4)) + lane;
         for (; i < nr0; i += 32) {
             *(D + i) = *(Cs + i);
+        }
+    }
+}
+
+kernel void moe_mul_mat_selected_q5_k_matvec(
+    device const Q5_K_Block *weights       [[buffer(0)]],
+    device const float *input              [[buffer(1)]],
+    device const int32_t *selected_experts [[buffer(2)]],
+    device float *output                   [[buffer(3)]],
+    constant uint &M                       [[buffer(4)]],
+    constant uint &K                       [[buffer(5)]],
+    constant uint &n_selected              [[buffer(6)]],
+    constant uint &weight_stride           [[buffer(7)]],
+    constant uint &input_is_slot_major     [[buffer(8)]],
+    uint3 tgpig                            [[threadgroup_position_in_grid]],
+    uint simd_lane                         [[thread_index_in_simdgroup]],
+    uint simd_id                           [[simdgroup_index_in_threadgroup]]
+) {
+    if (tgpig.z >= n_selected) return;
+
+    const uint slot = tgpig.z;
+    const uint expert = uint(selected_experts[slot]);
+    const uint blocks_per_row = K / Q5_K_BLOCK_VALUES;
+    const uint first_row = (tgpig.x * Q5K_NR2_SG_PER_TG + simd_id) * Q5K_NR2_ROWS_PER_SG;
+    if (first_row >= M) return;
+
+    const bool valid1 = (first_row + 1) < M;
+    device const Q5_K_Block *base = weights + expert * weight_stride;
+    device const Q5_K_Block *row0 = base + first_row * blocks_per_row;
+    device const Q5_K_Block *row1 = valid1 ? row0 + blocks_per_row : row0;
+    const uint input_row = input_is_slot_major != 0 ? slot : 0;
+    device const float *x = input + input_row * K;
+
+    float sumf[Q5K_NR2_ROWS_PER_SG] = {0.0f, 0.0f};
+
+    for (uint b = 0; b < blocks_per_row; ++b) {
+        uint base_k = b * Q5_K_BLOCK_VALUES;
+
+        half rx0 = half(x[base_k +   0 + simd_lane]);
+        half rx1 = half(x[base_k +  32 + simd_lane]);
+        half rx2 = half(x[base_k +  64 + simd_lane]);
+        half rx3 = half(x[base_k +  96 + simd_lane]);
+        half rx4 = half(x[base_k + 128 + simd_lane]);
+        half rx5 = half(x[base_k + 160 + simd_lane]);
+        half rx6 = half(x[base_k + 192 + simd_lane]);
+        half rx7 = half(x[base_k + 224 + simd_lane]);
+
+        for (ushort row = 0; row < Q5K_NR2_ROWS_PER_SG; ++row) {
+            device const Q5_K_Block *row_ptr = (row == 0) ? row0 : row1;
+            device const Q5_K_Block &blk = row_ptr[b];
+            float d = (simd_lane == 0) ? float(blk.d) : 0.0f;
+            float dmin = (simd_lane == 0) ? float(blk.dmin) : 0.0f;
+            d = simd_broadcast(d, 0);
+            dmin = simd_broadcast(dmin, 0);
+
+            device const uchar *scales = blk.scales;
+            device const uchar *qh = blk.qh;
+            device const uchar *qs = blk.qs;
+
+            uchar high_bits = qh[simd_lane];
+            FOR_UNROLL (uint pair = 0; pair < 4; ++pair) {
+                float2 sm1 = get_scale_min_q4k(pair * 2, scales);
+                float2 sm2 = get_scale_min_q4k(pair * 2 + 1, scales);
+                float d1 = d * sm1.x, m1 = dmin * sm1.y;
+                float d2 = d * sm2.x, m2 = dmin * sm2.y;
+
+                uchar byte = qs[pair * 32 + simd_lane];
+                float lo_q = float(byte & 0x0F)
+                    + (((high_bits >> (pair * 2)) & 0x01) ? 16.0f : 0.0f);
+                float hi_q = float(byte >> 4)
+                    + (((high_bits >> (pair * 2 + 1)) & 0x01) ? 16.0f : 0.0f);
+
+                half lo = (pair == 0) ? rx0 : (pair == 1) ? rx2 : (pair == 2) ? rx4 : rx6;
+                half hi = (pair == 0) ? rx1 : (pair == 1) ? rx3 : (pair == 2) ? rx5 : rx7;
+                sumf[row] += (d1 * lo_q - m1) * float(lo);
+                sumf[row] += (d2 * hi_q - m2) * float(hi);
+            }
+        }
+    }
+
+    float sum0 = simd_sum(sumf[0]);
+    float sum1 = simd_sum(sumf[1]);
+    if (simd_lane == 0) {
+        device float *y_slot = output + slot * M;
+        y_slot[first_row] = sum0;
+        if (valid1) {
+            y_slot[first_row + 1] = sum1;
         }
     }
 }

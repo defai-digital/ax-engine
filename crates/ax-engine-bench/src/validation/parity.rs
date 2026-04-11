@@ -217,6 +217,7 @@ pub fn run_parity(config: &ParityConfig) -> anyhow::Result<ParityResult> {
         &model_config,
     )?;
     let reference_model = InferenceModel::with_backend(model_config.clone(), reference_backend)?;
+    reference_model.prepare_runtime_for_weights(&weights)?;
 
     let compare_backend = ax_engine_core::backend::create_backend(config.compare_backend)?;
     crate::configure_backend_for_model(
@@ -226,6 +227,7 @@ pub fn run_parity(config: &ParityConfig) -> anyhow::Result<ParityResult> {
         &model_config,
     )?;
     let compare_model = InferenceModel::with_backend(model_config.clone(), compare_backend)?;
+    compare_model.prepare_runtime_for_weights(&weights)?;
 
     match config.mode {
         ParityMode::Decode => run_decode_parity(

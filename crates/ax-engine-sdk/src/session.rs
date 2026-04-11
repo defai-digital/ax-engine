@@ -266,6 +266,7 @@ impl Session {
     pub(crate) fn new(model: Model, options: SessionOptions) -> anyhow::Result<Self> {
         let native = model.native();
         let weights = WeightStore::new(&native.mapped);
+        native.model.prepare_runtime_for_weights(&weights)?;
         let kv = native.model.create_model_kv_for_weights(&weights);
         let state = SessionState {
             kv,

@@ -344,8 +344,14 @@ pub struct DequantKernels {
     pub moe_mul_mat_selected_pair_q4_k_matvec: ComputePipeline,
     pub moe_mul_mat_selected_weighted_q4_k_blocked: ComputePipeline,
     pub moe_mul_mat_selected_q5_k_blocked: ComputePipeline,
+    pub moe_mul_mat_selected_q5_k_matvec: ComputePipeline,
     pub moe_mul_mat_selected_pair_q5_k_blocked: ComputePipeline,
     pub moe_mul_mat_selected_weighted_q5_k_blocked: ComputePipeline,
+    pub moe_mul_mat_selected_pair_q6_k_matvec: ComputePipeline,
+    pub moe_mul_mat_selected_q6_k_matvec: ComputePipeline,
+    pub moe_mul_mat_selected_weighted_q6_k_matvec: ComputePipeline,
+    pub moe_mul_mat_selected_q8_0_matvec: ComputePipeline,
+    pub moe_mul_mat_selected_weighted_q8_0_matvec: ComputePipeline,
     pub moe_fused_silu_down_selected_weighted_q5_k_matvec: ComputePipeline,
     pub moe_fused_silu_down_selected_weighted_q5_k_matvec_slots8: ComputePipeline,
     pub moe_fused_silu_down_selected_weighted_q5_k_matvec_nr2: ComputePipeline,
@@ -1276,6 +1282,12 @@ impl DequantKernels {
                 "moe_mul_mat_selected_q5_k_blocked",
             )
             .context("Failed to compile moe_mul_mat_selected_q5_k_blocked kernel")?,
+            moe_mul_mat_selected_q5_k_matvec: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_q5_k_matvec",
+            )
+            .context("Failed to compile moe_mul_mat_selected_q5_k_matvec kernel")?,
             moe_mul_mat_selected_pair_q5_k_blocked: ComputePipeline::from_source(
                 device.device(),
                 DEQUANT_SHADER_SRC,
@@ -1288,6 +1300,36 @@ impl DequantKernels {
                 "moe_mul_mat_selected_weighted_q5_k_blocked",
             )
             .context("Failed to compile moe_mul_mat_selected_weighted_q5_k_blocked kernel")?,
+            moe_mul_mat_selected_pair_q6_k_matvec: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_pair_q6_k_matvec",
+            )
+            .context("Failed to compile moe_mul_mat_selected_pair_q6_k_matvec kernel")?,
+            moe_mul_mat_selected_q6_k_matvec: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_q6_k_matvec",
+            )
+            .context("Failed to compile moe_mul_mat_selected_q6_k_matvec kernel")?,
+            moe_mul_mat_selected_weighted_q6_k_matvec: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_weighted_q6_k_matvec",
+            )
+            .context("Failed to compile moe_mul_mat_selected_weighted_q6_k_matvec kernel")?,
+            moe_mul_mat_selected_q8_0_matvec: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_q8_0_matvec",
+            )
+            .context("Failed to compile moe_mul_mat_selected_q8_0_matvec kernel")?,
+            moe_mul_mat_selected_weighted_q8_0_matvec: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_weighted_q8_0_matvec",
+            )
+            .context("Failed to compile moe_mul_mat_selected_weighted_q8_0_matvec kernel")?,
             moe_fused_silu_down_selected_weighted_q5_k_matvec: ComputePipeline::from_source(
                 device.device(),
                 DEQUANT_SHADER_SRC,
@@ -4568,6 +4610,7 @@ impl DequantKernels {
         expert_ids: &MetalBuffer,
         tpe: &MetalBuffer,
         hids: &MetalBuffer,
+        active_experts: &MetalBuffer,
         n_tokens: u32,
         n_expert_used: u32,
         n_expert: u32,
@@ -4577,10 +4620,11 @@ impl DequantKernels {
             encoder.setBuffer_offset_atIndex(Some(expert_ids.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(tpe.mtl_buffer()), 0, 1);
             encoder.setBuffer_offset_atIndex(Some(hids.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(active_experts.mtl_buffer()), 0, 3);
         }
-        bind_u32(encoder, 3, n_tokens);
-        bind_u32(encoder, 4, n_expert_used);
-        bind_u32(encoder, 5, n_expert);
+        bind_u32(encoder, 4, n_tokens);
+        bind_u32(encoder, 5, n_expert_used);
+        bind_u32(encoder, 6, n_expert);
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
                 width: 1,
@@ -4736,9 +4780,15 @@ impl DequantKernels {
         n_active_experts: u32,
         input_is_hid: bool,
     ) {
-        // Use f32-tile kernel — the blocked (half) kernel overflows when the MoE
-        // down projection input (SiLU*up) exceeds half max (65504).
-        crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q6_k.state());
+        // Gate/up read RMS-normalized hidden state and can safely use the
+        // blocked half-tile kernel. Keep routed down on the f32 kernel because
+        // SiLU*up can exceed half range and overflow in the blocked path.
+        let use_blocked = !input_is_hid;
+        if use_blocked {
+            crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q6_k_blocked.state());
+        } else {
+            crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q6_k.state());
+        }
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
@@ -4753,17 +4803,19 @@ impl DequantKernels {
         bind_u32(encoder, 9, weight_stride);
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(active_experts.mtl_buffer()), 0, 10);
+            if use_blocked {
+                encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+            }
         }
         bind_u32(encoder, 11, u32::from(input_is_hid));
-        // f32 kernel: DQ_BM=32, DQ_BN=32, DQ_TG=256 (matches Q4_K f32 approach)
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
                 width: (n_tokens as usize).div_ceil(32),
-                height: (m as usize).div_ceil(32),
+                height: (m as usize).div_ceil(if use_blocked { 64 } else { 32 }),
                 depth: n_active_experts as usize,
             },
             MTLSize {
-                width: 256,
+                width: if use_blocked { 128 } else { 256 },
                 height: 1,
                 depth: 1,
             },
@@ -4790,8 +4842,15 @@ impl DequantKernels {
         n_active_experts: u32,
         input_is_hid: bool,
     ) {
-        // Use f32-tile kernel (same reason as Q6_K — half B-tile overflow).
-        crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q8_0.state());
+        // Gate/up read RMS-normalized hidden state and can safely use the
+        // blocked half-tile kernel. Keep routed down on the f32 kernel because
+        // SiLU*up can exceed half range and overflow in the blocked path.
+        let use_blocked = !input_is_hid;
+        if use_blocked {
+            crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q8_0_blocked.state());
+        } else {
+            crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q8_0.state());
+        }
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
@@ -4806,17 +4865,19 @@ impl DequantKernels {
         bind_u32(encoder, 9, weight_stride);
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(active_experts.mtl_buffer()), 0, 10);
+            if use_blocked {
+                encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+            }
         }
         bind_u32(encoder, 11, u32::from(input_is_hid));
-        // f32 kernel: DQ_BM=32, DQ_BN=32, DQ_TG=256
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
                 width: (n_tokens as usize).div_ceil(32),
-                height: (m as usize).div_ceil(32),
+                height: (m as usize).div_ceil(if use_blocked { 64 } else { 32 }),
                 depth: n_active_experts as usize,
             },
             MTLSize {
-                width: 256,
+                width: if use_blocked { 128 } else { 256 },
                 height: 1,
                 depth: 1,
             },
@@ -5019,8 +5080,16 @@ impl DequantKernels {
         n_selected: u32,
         weight_stride: u32,
         input_is_slot_major: bool,
+        use_matvec_kernel: bool,
     ) {
-        crate::set_pipeline_cached(encoder, self.moe_mul_mat_selected_q5_k_blocked.state());
+        crate::set_pipeline_cached(
+            encoder,
+            if use_matvec_kernel {
+                self.moe_mul_mat_selected_q5_k_matvec.state()
+            } else {
+                self.moe_mul_mat_selected_q5_k_blocked.state()
+            },
+        );
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
@@ -5032,19 +5101,35 @@ impl DequantKernels {
         bind_u32(encoder, 6, n_selected);
         bind_u32(encoder, 7, weight_stride);
         bind_u32(encoder, 8, u32::from(input_is_slot_major));
-        unsafe {
-            encoder.setThreadgroupMemoryLength_atIndex(8192usize, 0);
-        }
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            MTLSize {
-                width: 1,
-                height: (m as usize).div_ceil(64),
-                depth: n_selected as usize,
+            if use_matvec_kernel {
+                MTLSize {
+                    width: (m as usize).div_ceil(Q5K_NR2_ROWS),
+                    height: 1,
+                    depth: n_selected as usize,
+                }
+            } else {
+                MTLSize {
+                    width: 1,
+                    height: (m as usize).div_ceil(64),
+                    depth: n_selected as usize,
+                }
             },
-            MTLSize {
-                width: 128,
-                height: 1,
-                depth: 1,
+            if use_matvec_kernel {
+                MTLSize {
+                    width: DEQUANT_MATVEC_Q5K_TG,
+                    height: 1,
+                    depth: 1,
+                }
+            } else {
+                unsafe {
+                    encoder.setThreadgroupMemoryLength_atIndex(8192usize, 0);
+                }
+                MTLSize {
+                    width: 128,
+                    height: 1,
+                    depth: 1,
+                }
             },
         );
     }
@@ -5099,6 +5184,52 @@ impl DequantKernels {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub fn encode_moe_mul_mat_selected_pair_q6_k(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        weights0: &MetalBuffer,
+        weights1: &MetalBuffer,
+        input: &MetalBuffer,
+        selected_experts: &MetalBuffer,
+        output0: &MetalBuffer,
+        output1: &MetalBuffer,
+        m: u32,
+        k: u32,
+        n_selected: u32,
+        weight_stride0: u32,
+        weight_stride1: u32,
+        input_is_slot_major: bool,
+    ) {
+        crate::set_pipeline_cached(encoder, self.moe_mul_mat_selected_pair_q6_k_matvec.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(weights0.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(weights1.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(selected_experts.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(output0.mtl_buffer()), 0, 4);
+            encoder.setBuffer_offset_atIndex(Some(output1.mtl_buffer()), 0, 5);
+        }
+        bind_u32(encoder, 6, m);
+        bind_u32(encoder, 7, k);
+        bind_u32(encoder, 8, n_selected);
+        bind_u32(encoder, 9, weight_stride0);
+        bind_u32(encoder, 10, weight_stride1);
+        bind_u32(encoder, 11, u32::from(input_is_slot_major));
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: m as usize,
+                height: 1,
+                depth: n_selected as usize,
+            },
+            MTLSize {
+                width: DEQUANT_MATVEC_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn encode_moe_mul_mat_selected_weighted_q5_k(
         &self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
@@ -5138,6 +5269,166 @@ impl DequantKernels {
             },
             MTLSize {
                 width: 128,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_moe_mul_mat_selected_q6_k(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        weights: &MetalBuffer,
+        input: &MetalBuffer,
+        selected_experts: &MetalBuffer,
+        output: &MetalBuffer,
+        m: u32,
+        k: u32,
+        n_selected: u32,
+        weight_stride: u32,
+        input_is_slot_major: bool,
+    ) {
+        crate::set_pipeline_cached(encoder, self.moe_mul_mat_selected_q6_k_matvec.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(selected_experts.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, m);
+        bind_u32(encoder, 5, k);
+        bind_u32(encoder, 6, n_selected);
+        bind_u32(encoder, 7, weight_stride);
+        bind_u32(encoder, 8, u32::from(input_is_slot_major));
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: m as usize,
+                height: 1,
+                depth: n_selected as usize,
+            },
+            MTLSize {
+                width: DEQUANT_MATVEC_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_moe_mul_mat_selected_weighted_q6_k(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        weights: &MetalBuffer,
+        input: &MetalBuffer,
+        selected_experts: &MetalBuffer,
+        expert_weights: &MetalBuffer,
+        output: &MetalBuffer,
+        m: u32,
+        k: u32,
+        n_selected: u32,
+        weight_stride: u32,
+    ) {
+        let dims = DispatchDims::d1(m as usize, 1);
+        crate::set_pipeline_cached(
+            encoder,
+            self.moe_mul_mat_selected_weighted_q6_k_matvec.state(),
+        );
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(selected_experts.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(expert_weights.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 4);
+        }
+        bind_u32(encoder, 5, m);
+        bind_u32(encoder, 6, k);
+        bind_u32(encoder, 7, n_selected);
+        bind_u32(encoder, 8, weight_stride);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            MTLSize {
+                width: DEQUANT_MATVEC_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_moe_mul_mat_selected_q8_0(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        weights: &MetalBuffer,
+        input: &MetalBuffer,
+        selected_experts: &MetalBuffer,
+        output: &MetalBuffer,
+        m: u32,
+        k: u32,
+        n_selected: u32,
+        weight_stride: u32,
+        input_is_slot_major: bool,
+    ) {
+        crate::set_pipeline_cached(encoder, self.moe_mul_mat_selected_q8_0_matvec.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(selected_experts.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, m);
+        bind_u32(encoder, 5, k);
+        bind_u32(encoder, 6, n_selected);
+        bind_u32(encoder, 7, weight_stride);
+        bind_u32(encoder, 8, u32::from(input_is_slot_major));
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: m as usize,
+                height: 1,
+                depth: n_selected as usize,
+            },
+            MTLSize {
+                width: DEQUANT_MATVEC_TG,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_moe_mul_mat_selected_weighted_q8_0(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        weights: &MetalBuffer,
+        input: &MetalBuffer,
+        selected_experts: &MetalBuffer,
+        expert_weights: &MetalBuffer,
+        output: &MetalBuffer,
+        m: u32,
+        k: u32,
+        n_selected: u32,
+        weight_stride: u32,
+    ) {
+        let dims = DispatchDims::d1(m as usize, 1);
+        crate::set_pipeline_cached(
+            encoder,
+            self.moe_mul_mat_selected_weighted_q8_0_matvec.state(),
+        );
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(selected_experts.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(expert_weights.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 4);
+        }
+        bind_u32(encoder, 5, m);
+        bind_u32(encoder, 6, k);
+        bind_u32(encoder, 7, n_selected);
+        bind_u32(encoder, 8, weight_stride);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            MTLSize {
+                width: DEQUANT_MATVEC_TG,
                 height: 1,
                 depth: 1,
             },

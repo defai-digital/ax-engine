@@ -309,6 +309,7 @@ pub fn run_profile_with_backend(
     let support_note =
         merged_support_note(crate::support_note(&mapped), profile_support_note(&model));
     let weights = WeightStore::new(&mapped);
+    model.prepare_runtime_for_weights(&weights)?;
 
     let vocab_size = model_config.vocab_size as usize;
     let sampling_cfg = SamplingConfig::default();

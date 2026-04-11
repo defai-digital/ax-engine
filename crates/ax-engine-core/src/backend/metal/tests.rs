@@ -101,15 +101,11 @@ fn test_validate_moe_mul_mat_id_dtype_accepts_supported_routed_quants() {
 }
 
 #[test]
-fn test_validate_moe_selected_dtype_rejects_q6k_and_q8_0() {
+fn test_validate_moe_selected_dtype_accepts_supported_quantized_experts() {
     MetalOps::validate_moe_selected_dtype(GgmlType::Q4K, "expert").unwrap();
     MetalOps::validate_moe_selected_dtype(GgmlType::Q5K, "expert").unwrap();
-    let err = MetalOps::validate_moe_selected_dtype(GgmlType::Q6K, "expert")
-        .expect_err("Q6_K selected expert weights should be rejected");
-    assert!(err.to_string().contains("Q4_K/Q5_K expert"));
-    let err = MetalOps::validate_moe_selected_dtype(GgmlType::Q8_0, "expert")
-        .expect_err("Q8_0 selected expert weights should be rejected");
-    assert!(err.to_string().contains("Q4_K/Q5_K expert"));
+    MetalOps::validate_moe_selected_dtype(GgmlType::Q6K, "expert").unwrap();
+    MetalOps::validate_moe_selected_dtype(GgmlType::Q8_0, "expert").unwrap();
 }
 
 #[test]
@@ -1778,7 +1774,7 @@ fn test_metal_backend_moe_weighted_reduce_slots8_add_matches_cpu() {
 }
 
 #[test]
-fn test_qwen35_selected_weighted_down_defaults_q4k_on_q5k_off() {
+fn test_qwen35_selected_weighted_down_defaults_follow_layout() {
     let _env_lock = lock_env_test();
     let _guard = EnvVarGuard {
         key: "AX_QWEN35_SELECTED_WEIGHTED_DOWN",
@@ -1786,8 +1782,31 @@ fn test_qwen35_selected_weighted_down_defaults_q4k_on_q5k_off() {
     };
     unsafe { std::env::remove_var("AX_QWEN35_SELECTED_WEIGHTED_DOWN") };
 
-    assert!(qwen35_selected_weighted_down_enabled(GgmlType::Q4K));
-    assert!(!qwen35_selected_weighted_down_enabled(GgmlType::Q5K));
+    assert!(qwen35_selected_weighted_down_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+    ));
+    assert!(!qwen35_selected_weighted_down_enabled(
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+    ));
+    assert!(qwen35_selected_weighted_down_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q6K,
+    ));
+    assert!(!qwen35_selected_weighted_down_enabled(
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+        GgmlType::Q6K,
+    ));
+    assert!(qwen35_selected_weighted_down_enabled(
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+    ));
 }
 
 #[test]
@@ -1795,13 +1814,29 @@ fn test_qwen35_selected_weighted_down_env_override_applies_to_q4k_and_q5k() {
     let _env_lock = lock_env_test();
 
     let _on = EnvVarGuard::set("AX_QWEN35_SELECTED_WEIGHTED_DOWN", "1");
-    assert!(qwen35_selected_weighted_down_enabled(GgmlType::Q4K));
-    assert!(qwen35_selected_weighted_down_enabled(GgmlType::Q5K));
+    assert!(qwen35_selected_weighted_down_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+    ));
+    assert!(qwen35_selected_weighted_down_enabled(
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+    ));
     drop(_on);
 
     let _off = EnvVarGuard::set("AX_QWEN35_SELECTED_WEIGHTED_DOWN", "0");
-    assert!(!qwen35_selected_weighted_down_enabled(GgmlType::Q4K));
-    assert!(!qwen35_selected_weighted_down_enabled(GgmlType::Q5K));
+    assert!(!qwen35_selected_weighted_down_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+    ));
+    assert!(!qwen35_selected_weighted_down_enabled(
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+    ));
 }
 
 #[test]
@@ -1861,6 +1896,20 @@ fn test_qwen35_selected_q4_k_matvec_defaults_on_and_can_be_disabled() {
 }
 
 #[test]
+fn test_qwen35_selected_q5_k_matvec_defaults_off_and_can_be_enabled() {
+    let _env_lock = lock_env_test();
+    let _guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_Q5K_MATVEC",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_Q5K_MATVEC"),
+    };
+    unsafe { std::env::remove_var("AX_QWEN35_SELECTED_Q5K_MATVEC") };
+    assert!(!qwen35_selected_q5_k_matvec_enabled());
+
+    let _on = EnvVarGuard::set("AX_QWEN35_SELECTED_Q5K_MATVEC", "1");
+    assert!(qwen35_selected_q5_k_matvec_enabled());
+}
+
+#[test]
 fn test_qwen35_selected_pair_q4_k_matvec_defaults_on_and_can_be_disabled() {
     let _env_lock = lock_env_test();
     let _guard = EnvVarGuard {
@@ -1891,16 +1940,25 @@ fn test_qwen35_selected_single_token_gate_up_path_supports_mixed_qwen3_coder_lay
         GgmlType::Q5K,
         GgmlType::Q6K,
     ));
-
-    assert!(!qwen35_selected_single_token_gate_up_path_supported(
+    assert!(qwen35_selected_single_token_gate_up_path_supported(
         GgmlType::Q6K,
         GgmlType::Q5K,
         GgmlType::Q6K,
     ));
-    assert!(!qwen35_selected_single_token_gate_up_path_supported(
+    assert!(qwen35_selected_single_token_gate_up_path_supported(
         GgmlType::Q4K,
         GgmlType::Q6K,
         GgmlType::Q6K,
+    ));
+    assert!(qwen35_selected_single_token_gate_up_path_supported(
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+    ));
+    assert!(qwen35_selected_single_token_gate_up_path_supported(
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
     ));
     assert!(!qwen35_selected_single_token_gate_up_path_supported(
         GgmlType::Q4K,
@@ -1931,7 +1989,7 @@ fn test_qwen35_selected_single_token_down_support_distinguishes_selected_vs_fall
 }
 
 #[test]
-fn test_qwen35_selected_single_token_default_enables_q4k_mixed_down_but_not_q5k_mixed_down() {
+fn test_qwen35_selected_single_token_default_enables_mixed_down_with_weighted_path() {
     let _env_lock = lock_env_test();
     let _pair_q4_guard = EnvVarGuard {
         key: "AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC",
@@ -1954,7 +2012,16 @@ fn test_qwen35_selected_single_token_default_enables_q4k_mixed_down_but_not_q5k_
         GgmlType::Q5K,
         GgmlType::Q5K,
     ));
-
+    assert!(qwen35_selected_single_token_default_enabled(
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+    ));
+    assert!(qwen35_selected_single_token_default_enabled(
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
+    ));
     assert!(!qwen35_selected_single_token_default_enabled(
         GgmlType::Q5K,
         GgmlType::Q5K,
@@ -1968,10 +2035,41 @@ fn test_qwen35_selected_single_token_default_enables_q4k_mixed_down_but_not_q5k_
 }
 
 #[test]
-fn test_qwen35_selected_single_token_default_respects_q4_pair_env_toggle() {
+fn test_qwen35_selected_weighted_down_enabled_defaults_include_q6k_and_q8_0() {
+    let _env_lock = lock_env_test();
+    let _guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_WEIGHTED_DOWN",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_WEIGHTED_DOWN"),
+    };
+    unsafe { std::env::remove_var("AX_QWEN35_SELECTED_WEIGHTED_DOWN") };
+
+    assert!(qwen35_selected_weighted_down_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+    ));
+    assert!(!qwen35_selected_weighted_down_enabled(
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+    ));
+    assert!(qwen35_selected_weighted_down_enabled(
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+    ));
+    assert!(qwen35_selected_weighted_down_enabled(
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
+    ));
+}
+
+#[test]
+fn test_qwen35_selected_single_token_default_stays_on_when_q4_pair_env_is_off() {
     let _env_lock = lock_env_test();
     let _off = EnvVarGuard::set("AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC", "0");
-    assert!(!qwen35_selected_single_token_default_enabled(
+    assert!(qwen35_selected_single_token_default_enabled(
         GgmlType::Q4K,
         GgmlType::Q4K,
         GgmlType::Q6K,
@@ -2047,6 +2145,20 @@ fn test_qwen35_selected_expert_pair_env_override_still_applies() {
         GgmlType::Q4K,
         GgmlType::Q4K,
         GgmlType::Q4K,
+    ));
+}
+
+#[test]
+fn test_qwen35_selected_expert_pair_defaults_on_for_matching_q6k_gate_up() {
+    assert!(qwen35_selected_expert_pair_enabled(
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+    ));
+    assert!(!qwen35_selected_expert_pair_enabled(
+        GgmlType::Q6K,
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
     ));
 }
 
@@ -4144,6 +4256,15 @@ fn q6k_block_constant(d_scale: f32) -> [u8; 210] {
     block
 }
 
+fn q8_0_block_constant(d_scale: f32) -> [u8; 34] {
+    let mut block = [0u8; 34];
+    let d = half::f16::from_f32(d_scale).to_le_bytes();
+    block[0] = d[0];
+    block[1] = d[1];
+    block[2..].fill(1);
+    block
+}
+
 #[test]
 fn test_metal_backend_moe_ffn_gpu_resident_cached_matches_cpu_for_q6_down_experts() {
     let backend = MetalBackend::new().unwrap();
@@ -4370,6 +4491,8 @@ fn test_metal_backend_moe_ffn_gpu_resident_cached_matches_cpu_for_q6_down_expert
 
 #[test]
 fn test_metal_backend_moe_mul_mat_selected_single_token_down_uses_slot_major_input_rows() {
+    let _env_lock = lock_env_test();
+    let _on = EnvVarGuard::set("AX_QWEN35_SELECTED_Q5K_MATVEC", "1");
     let backend = MetalBackend::new().unwrap();
     let cpu = super::super::cpu::CpuBackend;
 
@@ -4551,6 +4674,284 @@ fn test_metal_backend_moe_mul_mat_selected_single_token_matches_cpu_q4_k() {
 }
 
 #[test]
+fn test_metal_backend_moe_mul_mat_selected_single_token_matches_cpu_q5_k() {
+    let _env_lock = lock_env_test();
+    let _on = EnvVarGuard::set("AX_QWEN35_SELECTED_Q5K_MATVEC", "1");
+    let backend = MetalBackend::new().unwrap();
+    let cpu = super::super::cpu::CpuBackend;
+
+    let n_selected = 2usize;
+    let dim = 256usize;
+    let expert_inter_dim = 256usize;
+
+    let build_q5k_expert_tensor = |expert_scales: &[f32], rows: usize| -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(expert_scales.len() * rows * 176);
+        for &scale in expert_scales {
+            for _ in 0..rows {
+                bytes.extend_from_slice(&q5k_block_first128_scaled(scale));
+            }
+        }
+        bytes
+    };
+
+    let weights = build_q5k_expert_tensor(&[0.2, 0.35], dim);
+    let expert_stride =
+        crate::model::moe_utils::expert_byte_stride(GgmlType::Q5K, dim * expert_inter_dim);
+    let blocks_per_expert =
+        MetalOps::moe_blocks_per_expert(expert_stride, GgmlType::Q5K, "selected q5k").unwrap();
+
+    let mut input = vec![0.0f32; expert_inter_dim];
+    input[..128].fill(1.0);
+
+    let selected_experts = vec![0i32, 1i32];
+    let weights_buf = MetalBuffer::from_slice(backend.device.device(), &weights).unwrap();
+    let input_buf = MetalBuffer::from_slice(backend.device.device(), &input).unwrap();
+    let selected_buf = MetalBuffer::from_slice(backend.device.device(), &selected_experts).unwrap();
+    let output_buf = MetalBuffer::new(
+        backend.device.device(),
+        n_selected * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend.ops.encode_moe_mul_mat_selected_single_token(
+                encoder,
+                &weights_buf,
+                &input_buf,
+                &selected_buf,
+                &output_buf,
+                GgmlType::Q5K,
+                dim as u32,
+                expert_inter_dim as u32,
+                n_selected as u32,
+                blocks_per_expert,
+                false,
+            )
+        })
+        .unwrap();
+
+    let actual = unsafe { output_buf.as_slice::<f32>()[..n_selected * dim].to_vec() };
+    let mut expected = vec![0.0f32; n_selected * dim];
+    for slot in 0..n_selected {
+        let eid = selected_experts[slot] as usize;
+        let weight_slice = &weights[eid * expert_stride..(eid + 1) * expert_stride];
+        cpu.dequant_matmul(
+            weight_slice,
+            GgmlType::Q5K,
+            &input,
+            &mut expected[slot * dim..(slot + 1) * dim],
+            dim,
+            1,
+            expert_inter_dim,
+        );
+    }
+
+    let diff = max_abs_diff(&actual, &expected);
+    let scale = expected
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        diff / scale < 1e-3,
+        "selected single-token Q5K mismatch: rel_diff={}, max_diff={diff}, actual_slot0[0..8]={:?}, expected_slot0[0..8]={:?}, actual_slot1[0..8]={:?}, expected_slot1[0..8]={:?}",
+        diff / scale,
+        &actual[..8],
+        &expected[..8],
+        &actual[dim..dim + 8],
+        &expected[dim..dim + 8],
+    );
+}
+
+#[test]
+fn test_metal_backend_moe_mul_mat_selected_single_token_matches_cpu_q6_k() {
+    let backend = MetalBackend::new().unwrap();
+    let cpu = super::super::cpu::CpuBackend;
+
+    let n_selected = 2usize;
+    let dim = 256usize;
+    let expert_inter_dim = 256usize;
+
+    let build_q6k_expert_tensor = |expert_scales: &[f32], rows: usize| -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(expert_scales.len() * rows * 210);
+        for &scale in expert_scales {
+            for _ in 0..rows {
+                bytes.extend_from_slice(&q6k_block_constant(scale));
+            }
+        }
+        bytes
+    };
+
+    let weights = build_q6k_expert_tensor(&[0.02, 0.04], dim);
+    let expert_stride =
+        crate::model::moe_utils::expert_byte_stride(GgmlType::Q6K, dim * expert_inter_dim);
+    let blocks_per_expert =
+        MetalOps::moe_blocks_per_expert(expert_stride, GgmlType::Q6K, "selected q6k").unwrap();
+
+    let mut input = vec![0.0f32; expert_inter_dim];
+    input[..128].fill(0.01);
+
+    let selected_experts = vec![0i32, 1i32];
+    let weights_buf = MetalBuffer::from_slice(backend.device.device(), &weights).unwrap();
+    let input_buf = MetalBuffer::from_slice(backend.device.device(), &input).unwrap();
+    let selected_buf = MetalBuffer::from_slice(backend.device.device(), &selected_experts).unwrap();
+    let output_buf = MetalBuffer::new(
+        backend.device.device(),
+        n_selected * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend.ops.encode_moe_mul_mat_selected_single_token(
+                encoder,
+                &weights_buf,
+                &input_buf,
+                &selected_buf,
+                &output_buf,
+                GgmlType::Q6K,
+                dim as u32,
+                expert_inter_dim as u32,
+                n_selected as u32,
+                blocks_per_expert,
+                false,
+            )
+        })
+        .unwrap();
+
+    let actual = unsafe { output_buf.as_slice::<f32>()[..n_selected * dim].to_vec() };
+    let mut expected = vec![0.0f32; n_selected * dim];
+    for slot in 0..n_selected {
+        let eid = selected_experts[slot] as usize;
+        let weight_slice = &weights[eid * expert_stride..(eid + 1) * expert_stride];
+        cpu.dequant_matmul(
+            weight_slice,
+            GgmlType::Q6K,
+            &input,
+            &mut expected[slot * dim..(slot + 1) * dim],
+            dim,
+            1,
+            expert_inter_dim,
+        );
+    }
+
+    let diff = max_abs_diff(&actual, &expected);
+    let scale = expected
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        diff / scale < 1e-3,
+        "selected single-token Q6K mismatch: rel_diff={}, max_diff={diff}, actual_slot0[0..8]={:?}, expected_slot0[0..8]={:?}, actual_slot1[0..8]={:?}, expected_slot1[0..8]={:?}",
+        diff / scale,
+        &actual[..8],
+        &expected[..8],
+        &actual[dim..dim + 8],
+        &expected[dim..dim + 8],
+    );
+}
+
+#[test]
+fn test_metal_backend_moe_mul_mat_selected_single_token_matches_cpu_q8_0() {
+    let backend = MetalBackend::new().unwrap();
+    let cpu = super::super::cpu::CpuBackend;
+
+    let n_selected = 2usize;
+    let dim = 256usize;
+    let expert_inter_dim = 256usize;
+    let q8_blocks_per_row = expert_inter_dim.div_ceil(32);
+
+    let build_q8_0_expert_tensor = |expert_scales: &[f32], rows: usize| -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(expert_scales.len() * rows * q8_blocks_per_row * 34);
+        for &scale in expert_scales {
+            for _ in 0..rows {
+                for _ in 0..q8_blocks_per_row {
+                    bytes.extend_from_slice(&q8_0_block_constant(scale));
+                }
+            }
+        }
+        bytes
+    };
+
+    let weights = build_q8_0_expert_tensor(&[0.02, 0.05], dim);
+    let expert_stride =
+        crate::model::moe_utils::expert_byte_stride(GgmlType::Q8_0, dim * expert_inter_dim);
+    let blocks_per_expert =
+        MetalOps::moe_blocks_per_expert(expert_stride, GgmlType::Q8_0, "selected q8_0").unwrap();
+
+    let mut input = vec![0.0f32; expert_inter_dim];
+    input[..128].fill(0.5);
+
+    let selected_experts = vec![0i32, 1i32];
+    let weights_buf = MetalBuffer::from_slice(backend.device.device(), &weights).unwrap();
+    let input_buf = MetalBuffer::from_slice(backend.device.device(), &input).unwrap();
+    let selected_buf = MetalBuffer::from_slice(backend.device.device(), &selected_experts).unwrap();
+    let output_buf = MetalBuffer::new(
+        backend.device.device(),
+        n_selected * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend.ops.encode_moe_mul_mat_selected_single_token(
+                encoder,
+                &weights_buf,
+                &input_buf,
+                &selected_buf,
+                &output_buf,
+                GgmlType::Q8_0,
+                dim as u32,
+                expert_inter_dim as u32,
+                n_selected as u32,
+                blocks_per_expert,
+                false,
+            )
+        })
+        .unwrap();
+
+    let actual = unsafe { output_buf.as_slice::<f32>()[..n_selected * dim].to_vec() };
+    let mut expected = vec![0.0f32; n_selected * dim];
+    for slot in 0..n_selected {
+        let eid = selected_experts[slot] as usize;
+        let weight_slice = &weights[eid * expert_stride..(eid + 1) * expert_stride];
+        cpu.dequant_matmul(
+            weight_slice,
+            GgmlType::Q8_0,
+            &input,
+            &mut expected[slot * dim..(slot + 1) * dim],
+            dim,
+            1,
+            expert_inter_dim,
+        );
+    }
+
+    let diff = max_abs_diff(&actual, &expected);
+    let scale = expected
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        diff / scale < 1e-3,
+        "selected single-token Q8_0 mismatch: rel_diff={}, max_diff={diff}, actual_slot0[0..8]={:?}, expected_slot0[0..8]={:?}, actual_slot1[0..8]={:?}, expected_slot1[0..8]={:?}",
+        diff / scale,
+        &actual[..8],
+        &expected[..8],
+        &actual[dim..dim + 8],
+        &expected[dim..dim + 8],
+    );
+}
+
+#[test]
 fn test_metal_backend_moe_mul_mat_selected_single_token_weighted_matches_cpu_q5_k() {
     let backend = MetalBackend::new().unwrap();
     let cpu = super::super::cpu::CpuBackend;
@@ -4641,6 +5042,204 @@ fn test_metal_backend_moe_mul_mat_selected_single_token_weighted_matches_cpu_q5_
     assert!(
         diff / scale < 1e-3,
         "selected weighted Q5K mismatch: rel_diff={}, max_diff={diff}, actual[0..8]={:?}, expected[0..8]={:?}",
+        diff / scale,
+        &actual[..8],
+        &expected[..8],
+    );
+}
+
+#[test]
+fn test_metal_backend_moe_mul_mat_selected_single_token_weighted_matches_cpu_q6_k() {
+    let backend = MetalBackend::new().unwrap();
+    let cpu = super::super::cpu::CpuBackend;
+
+    let n_selected = 2usize;
+    let dim = 256usize;
+    let expert_inter_dim = 256usize;
+
+    let build_q6k_expert_tensor = |expert_scales: &[f32], rows: usize| -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(expert_scales.len() * rows * 210);
+        for &scale in expert_scales {
+            for _ in 0..rows {
+                bytes.extend_from_slice(&q6k_block_constant(scale));
+            }
+        }
+        bytes
+    };
+
+    let weights = build_q6k_expert_tensor(&[0.02, 0.04], dim);
+    let expert_stride =
+        crate::model::moe_utils::expert_byte_stride(GgmlType::Q6K, dim * expert_inter_dim);
+    let blocks_per_expert =
+        MetalOps::moe_blocks_per_expert(expert_stride, GgmlType::Q6K, "selected weighted").unwrap();
+
+    let mut input = vec![0.0f32; n_selected * expert_inter_dim];
+    input[..128].fill(0.01);
+    input[expert_inter_dim..expert_inter_dim + 128].fill(0.02);
+
+    let selected_experts = vec![0i32, 1i32];
+    let expert_weights = vec![0.25f32, 0.75f32];
+
+    let weights_buf = MetalBuffer::from_slice(backend.device.device(), &weights).unwrap();
+    let input_buf = MetalBuffer::from_slice(backend.device.device(), &input).unwrap();
+    let selected_buf = MetalBuffer::from_slice(backend.device.device(), &selected_experts).unwrap();
+    let expert_weights_buf =
+        MetalBuffer::from_slice(backend.device.device(), &expert_weights).unwrap();
+    let output_buf =
+        MetalBuffer::new(backend.device.device(), dim * std::mem::size_of::<f32>()).unwrap();
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend
+                .ops
+                .encode_moe_mul_mat_selected_single_token_weighted(
+                    encoder,
+                    &weights_buf,
+                    &input_buf,
+                    &selected_buf,
+                    &expert_weights_buf,
+                    &output_buf,
+                    GgmlType::Q6K,
+                    dim as u32,
+                    expert_inter_dim as u32,
+                    n_selected as u32,
+                    blocks_per_expert,
+                )
+        })
+        .unwrap();
+
+    let actual = unsafe { output_buf.as_slice::<f32>()[..dim].to_vec() };
+    let mut expected = vec![0.0f32; dim];
+    let mut scratch = vec![0.0f32; dim];
+    for slot in 0..n_selected {
+        let weight_slice = &weights[slot * expert_stride..(slot + 1) * expert_stride];
+        scratch.fill(0.0);
+        cpu.dequant_matmul(
+            weight_slice,
+            GgmlType::Q6K,
+            &input[slot * expert_inter_dim..(slot + 1) * expert_inter_dim],
+            &mut scratch,
+            dim,
+            1,
+            expert_inter_dim,
+        );
+        for (dst, value) in expected.iter_mut().zip(&scratch) {
+            *dst += expert_weights[slot] * *value;
+        }
+    }
+
+    let diff = max_abs_diff(&actual, &expected);
+    let scale = expected
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        diff / scale < 1e-3,
+        "selected weighted Q6K mismatch: rel_diff={}, max_diff={diff}, actual[0..8]={:?}, expected[0..8]={:?}",
+        diff / scale,
+        &actual[..8],
+        &expected[..8],
+    );
+}
+
+#[test]
+fn test_metal_backend_moe_mul_mat_selected_single_token_weighted_matches_cpu_q8_0() {
+    let backend = MetalBackend::new().unwrap();
+    let cpu = super::super::cpu::CpuBackend;
+
+    let n_selected = 2usize;
+    let dim = 256usize;
+    let expert_inter_dim = 256usize;
+    let q8_blocks_per_row = expert_inter_dim.div_ceil(32);
+
+    let build_q8_0_expert_tensor = |expert_scales: &[f32], rows: usize| -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(expert_scales.len() * rows * q8_blocks_per_row * 34);
+        for &scale in expert_scales {
+            for _ in 0..rows {
+                for _ in 0..q8_blocks_per_row {
+                    bytes.extend_from_slice(&q8_0_block_constant(scale));
+                }
+            }
+        }
+        bytes
+    };
+
+    let weights = build_q8_0_expert_tensor(&[0.02, 0.05], dim);
+    let expert_stride =
+        crate::model::moe_utils::expert_byte_stride(GgmlType::Q8_0, dim * expert_inter_dim);
+    let blocks_per_expert =
+        MetalOps::moe_blocks_per_expert(expert_stride, GgmlType::Q8_0, "selected weighted")
+            .unwrap();
+
+    let mut input = vec![0.0f32; n_selected * expert_inter_dim];
+    input[..128].fill(0.5);
+    input[expert_inter_dim..expert_inter_dim + 128].fill(1.0);
+
+    let selected_experts = vec![0i32, 1i32];
+    let expert_weights = vec![0.4f32, 0.6f32];
+
+    let weights_buf = MetalBuffer::from_slice(backend.device.device(), &weights).unwrap();
+    let input_buf = MetalBuffer::from_slice(backend.device.device(), &input).unwrap();
+    let selected_buf = MetalBuffer::from_slice(backend.device.device(), &selected_experts).unwrap();
+    let expert_weights_buf =
+        MetalBuffer::from_slice(backend.device.device(), &expert_weights).unwrap();
+    let output_buf =
+        MetalBuffer::new(backend.device.device(), dim * std::mem::size_of::<f32>()).unwrap();
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend
+                .ops
+                .encode_moe_mul_mat_selected_single_token_weighted(
+                    encoder,
+                    &weights_buf,
+                    &input_buf,
+                    &selected_buf,
+                    &expert_weights_buf,
+                    &output_buf,
+                    GgmlType::Q8_0,
+                    dim as u32,
+                    expert_inter_dim as u32,
+                    n_selected as u32,
+                    blocks_per_expert,
+                )
+        })
+        .unwrap();
+
+    let actual = unsafe { output_buf.as_slice::<f32>()[..dim].to_vec() };
+    let mut expected = vec![0.0f32; dim];
+    let mut scratch = vec![0.0f32; dim];
+    for slot in 0..n_selected {
+        let weight_slice = &weights[slot * expert_stride..(slot + 1) * expert_stride];
+        scratch.fill(0.0);
+        cpu.dequant_matmul(
+            weight_slice,
+            GgmlType::Q8_0,
+            &input[slot * expert_inter_dim..(slot + 1) * expert_inter_dim],
+            &mut scratch,
+            dim,
+            1,
+            expert_inter_dim,
+        );
+        for (dst, value) in expected.iter_mut().zip(&scratch) {
+            *dst += expert_weights[slot] * *value;
+        }
+    }
+
+    let diff = max_abs_diff(&actual, &expected);
+    let scale = expected
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        diff / scale < 1e-3,
+        "selected weighted Q8_0 mismatch: rel_diff={}, max_diff={diff}, actual[0..8]={:?}, expected[0..8]={:?}",
         diff / scale,
         &actual[..8],
         &expected[..8],
@@ -5094,6 +5693,143 @@ fn test_metal_backend_moe_mul_mat_selected_single_token_pair_matches_separate_q4
         &sep0[..8],
         &pair1[..8],
         &sep1[..8],
+    );
+}
+
+#[test]
+fn test_metal_backend_moe_mul_mat_selected_single_token_pair_matches_separate_q6_k() {
+    let backend = MetalBackend::new().unwrap();
+
+    let n_selected = 2usize;
+    let dim = 256usize;
+    let expert_inter_dim = 256usize;
+
+    let build_q6k_expert_tensor = |expert_scales: &[f32], rows: usize| -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(expert_scales.len() * rows * 210);
+        for &scale in expert_scales {
+            for _ in 0..rows {
+                bytes.extend_from_slice(&q6k_block_constant(scale));
+            }
+        }
+        bytes
+    };
+
+    let weights0 = build_q6k_expert_tensor(&[0.04, 0.07], dim);
+    let weights1 = build_q6k_expert_tensor(&[0.09, 0.12], dim);
+    let expert_stride =
+        crate::model::moe_utils::expert_byte_stride(GgmlType::Q6K, dim * expert_inter_dim);
+    let blocks_per_expert =
+        MetalOps::moe_blocks_per_expert(expert_stride, GgmlType::Q6K, "selected pair").unwrap();
+
+    let mut input = vec![0.0f32; expert_inter_dim];
+    input[..128].fill(1.0);
+
+    let selected_experts = vec![0i32, 1i32];
+    let weights0_buf = MetalBuffer::from_slice(backend.device.device(), &weights0).unwrap();
+    let weights1_buf = MetalBuffer::from_slice(backend.device.device(), &weights1).unwrap();
+    let input_buf = MetalBuffer::from_slice(backend.device.device(), &input).unwrap();
+    let selected_buf = MetalBuffer::from_slice(backend.device.device(), &selected_experts).unwrap();
+    let pair_out0 = MetalBuffer::new(
+        backend.device.device(),
+        n_selected * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let pair_out1 = MetalBuffer::new(
+        backend.device.device(),
+        n_selected * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let sep_out0 = MetalBuffer::new(
+        backend.device.device(),
+        n_selected * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let sep_out1 = MetalBuffer::new(
+        backend.device.device(),
+        n_selected * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend.ops.encode_moe_mul_mat_selected_single_token_pair(
+                encoder,
+                &weights0_buf,
+                &weights1_buf,
+                &input_buf,
+                &selected_buf,
+                &pair_out0,
+                &pair_out1,
+                GgmlType::Q6K,
+                dim as u32,
+                expert_inter_dim as u32,
+                n_selected as u32,
+                blocks_per_expert,
+                blocks_per_expert,
+                false,
+            )
+        })
+        .unwrap();
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend.ops.encode_moe_mul_mat_selected_single_token(
+                encoder,
+                &weights0_buf,
+                &input_buf,
+                &selected_buf,
+                &sep_out0,
+                GgmlType::Q6K,
+                dim as u32,
+                expert_inter_dim as u32,
+                n_selected as u32,
+                blocks_per_expert,
+                false,
+            )?;
+            backend.ops.encode_moe_mul_mat_selected_single_token(
+                encoder,
+                &weights1_buf,
+                &input_buf,
+                &selected_buf,
+                &sep_out1,
+                GgmlType::Q6K,
+                dim as u32,
+                expert_inter_dim as u32,
+                n_selected as u32,
+                blocks_per_expert,
+                false,
+            )
+        })
+        .unwrap();
+
+    let pair0 = unsafe { pair_out0.as_slice::<f32>()[..n_selected * dim].to_vec() };
+    let pair1 = unsafe { pair_out1.as_slice::<f32>()[..n_selected * dim].to_vec() };
+    let sep0 = unsafe { sep_out0.as_slice::<f32>()[..n_selected * dim].to_vec() };
+    let sep1 = unsafe { sep_out1.as_slice::<f32>()[..n_selected * dim].to_vec() };
+
+    let (idx0, diff0) = max_abs_diff_with_index(&pair0, &sep0);
+    let (idx1, diff1) = max_abs_diff_with_index(&pair1, &sep1);
+    let scale0 = sep0
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    let scale1 = sep1
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        diff0 / scale0 < 1e-3 && diff1 / scale1 < 1e-3,
+        "selected pair Q6_K path mismatch: idx0={idx0} slot0={} row0={} diff0={diff0}, idx1={idx1} slot1={} row1={} diff1={diff1}",
+        idx0 / dim,
+        idx0 % dim,
+        idx1 / dim,
+        idx1 % dim,
     );
 }
 

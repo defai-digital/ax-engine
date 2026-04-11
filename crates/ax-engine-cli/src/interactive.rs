@@ -27,6 +27,7 @@ pub fn run(
         crate::load_model(&args.model, args.ctx_size, args.verbose, backend)?;
     crate::validate_sampling_token_ids(args, config.vocab_size as usize)?;
     let weights = WeightStore::new(&mapped);
+    model.prepare_runtime_for_weights(&weights)?;
 
     let sampling_config = SamplingConfig {
         logit_bias: args
@@ -126,6 +127,7 @@ pub fn run(
         }
 
         // Prefill user tokens
+        model.prepare_prefill_for_weights(&weights, &mut kv, input_tokens.len())?;
         let prefill_plan = model.prefill_plan_summary(&weights, &kv, input_tokens.len())?;
         let prefill_timer = OpTimer::start();
         model.forward_batch(&input_tokens, &mut kv, &weights, &mut logits)?;

@@ -444,6 +444,7 @@ fn run_single(
         load_model(&args.model, args.ctx_size, args.verbose, backend)?;
     validate_sampling_token_ids(args, model.config.vocab_size as usize)?;
     let weights = WeightStore::new(&mapped);
+    model.prepare_runtime_for_weights(&weights)?;
     let mut kv = model.create_model_kv_for_weights(&weights);
     let mut sampler = Sampler::new(sampling_config(args));
     let mut metrics = InferenceMetrics::new();
@@ -535,6 +536,7 @@ fn run_single(
     }
 
     // --- Prefill: process prompt tokens, keep last logits for sampling ---
+    model.prepare_prefill_for_weights(&weights, &mut kv, prompt_tokens.len())?;
     let prefill_plan = model.prefill_plan_summary(&weights, &kv, prompt_tokens.len())?;
     let prefill_timer = OpTimer::start();
     let mut logits = vec![0.0f32; model.config.vocab_size as usize];
@@ -781,6 +783,8 @@ fn run_speculative(
     tokenizer: &Tokenizer,
     prompt_tokens: &[u32],
 ) -> anyhow::Result<()> {
+    model.prepare_runtime_for_weights(weights)?;
+
     let prompt = args.prompt.as_deref().unwrap_or("");
     let n_prompt = prompt_tokens.len();
     let remaining_decode_capacity =
@@ -831,6 +835,7 @@ fn run_speculative(
     std::io::stdout().flush()?;
 
     // Prefill
+    model.prepare_prefill_for_weights(weights, &mut kv, prompt_tokens.len())?;
     let prefill_timer = OpTimer::start();
     let mut logits = vec![0.0f32; model.config.vocab_size as usize];
     model.forward_batch(prompt_tokens, &mut kv, weights, &mut logits)?;
@@ -1028,6 +1033,8 @@ fn run_reuse_bench(
     prompt_tokens: &[u32],
     json_output: bool,
 ) -> anyhow::Result<()> {
+    model.prepare_runtime_for_weights(weights)?;
+
     if prompt_tokens.is_empty() {
         anyhow::bail!("prompt must tokenize to at least one token");
     }
@@ -1045,6 +1052,7 @@ fn run_reuse_bench(
         let mut kv = model.create_model_kv_for_weights(weights);
         let mut logits = vec![0.0f32; vocab_size];
 
+        model.prepare_prefill_for_weights(weights, &mut kv, prompt_tokens.len())?;
         let timer = OpTimer::start();
         model.forward_batch(prompt_tokens, &mut kv, weights, &mut logits)?;
         let elapsed = timer.elapsed().as_secs_f64();

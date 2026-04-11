@@ -694,6 +694,7 @@ pub fn run_prefill_profile_with_backend(
         prefill_profile_support_note(&model),
     );
     let weights = WeightStore::new(&mapped);
+    model.prepare_runtime_for_weights(&weights)?;
 
     let vocab_size = model_config.vocab_size as usize;
     let prompt_tokens = build_fixed_prompt(&tokenizer, config.prompt_tokens);
@@ -759,6 +760,7 @@ pub fn run_prefill_profile_with_backend(
             qwen35_effective_source_slot(&kv, config.qwen35_shared_timeline_source_slot)?;
         model.prime_qwen35_recurrent_slot_buffers(&mut kv, &[slot_idx])?;
     }
+    model.prepare_prefill_for_weights(&weights, &mut kv, prompt_tokens.len())?;
     let mut logits = vec![0.0f32; vocab_size];
 
     let mut ops = OpBreakdown::new();

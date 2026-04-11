@@ -36,6 +36,15 @@ pub struct ForwardContext<'a> {
 /// Implementors are `Send + Sync` so they can be stored in `InferenceModel`
 /// which may be shared across threads.
 pub trait ForwardPass: Send + Sync + std::fmt::Debug {
+    /// Eagerly prepare any architecture/backend runtime state derived from the
+    /// loaded weights so the first live prompt does not pay lazy setup costs.
+    ///
+    /// Default: no-op. Architectures with Metal cached-weight/key builds can
+    /// override this to move one-time setup out of the hot prefill path.
+    fn prepare_runtime(&self, _ctx: &ForwardContext, _weights: &WeightStore) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Run a single decode step: one token in, logits out.
     ///
     /// When `ops` is `Some`, per-operation timing is recorded.

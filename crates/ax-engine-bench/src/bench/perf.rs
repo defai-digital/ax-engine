@@ -390,6 +390,7 @@ pub fn run_benchmark_with_backend(
     crate::report_planned_kv_budget(&mapped, &model)?;
     let support_note = crate::support_note(&mapped);
     let weights = WeightStore::new(&mapped);
+    model.prepare_runtime_for_weights(&weights)?;
 
     let vocab_size = model_config.vocab_size as usize;
     let sampling = SamplingConfig {
@@ -715,6 +716,7 @@ pub fn run_speculative_benchmark_with_backend(
     crate::report_planned_kv_budget(&mapped, &model)?;
     let support_note = crate::support_note(&mapped);
     let weights = WeightStore::new(&mapped);
+    model.prepare_runtime_for_weights(&weights)?;
 
     let sampling = SamplingConfig {
         temperature: 0.0,
@@ -963,6 +965,7 @@ fn run_single_bench(
     let mut sampler = Sampler::new(bench_sampling_config(sampling_config, tokenizer));
 
     // Prefill
+    model.prepare_prefill_for_weights(weights, &mut kv, prompt_tokens.len())?;
     let prefill_plan = model.prefill_plan_summary(weights, &kv, prompt_tokens.len())?;
     model.reset_metal_perf_counters();
     let prefill_timer = OpTimer::start();

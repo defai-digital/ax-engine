@@ -154,6 +154,7 @@ pub fn run_soak_test_with_backend(
     let model = InferenceModel::with_backend(model_config.clone(), backend)?;
     crate::report_planned_kv_budget(&mapped, &model)?;
     let weights = WeightStore::new(&mapped);
+    model.prepare_runtime_for_weights(&weights)?;
     let support_note = crate::support_note(&mapped);
     let prefill_plan = model.prefill_plan_summary(
         &weights,

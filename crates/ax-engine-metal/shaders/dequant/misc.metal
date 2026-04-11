@@ -440,11 +440,18 @@ kernel void moe_mul_mat_id_map0(
     device const int32_t *expert_ids [[buffer(0)]],
     device uint32_t *tpe             [[buffer(1)]],
     device int32_t *hids             [[buffer(2)]],
-    constant uint &n_tokens          [[buffer(3)]],
-    constant uint &n_expert_used     [[buffer(4)]],
-    constant uint &n_expert          [[buffer(5)]],
+    device uint32_t *active_meta     [[buffer(3)]],
+    constant uint &n_tokens          [[buffer(4)]],
+    constant uint &n_expert_used     [[buffer(5)]],
+    constant uint &n_expert          [[buffer(6)]],
     uint tid [[thread_index_in_threadgroup]])
 {
+    device atomic_uint *active_count = (device atomic_uint *)active_meta;
+    if (tid == 0) {
+        atomic_store_explicit(active_count, 0u, memory_order_relaxed);
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+
     const uint ide = tid;  // This thread handles expert `ide`.
     if (ide >= n_expert) return;
 
@@ -463,10 +470,10 @@ kernel void moe_mul_mat_id_map0(
         }
     }
     tpe[ide] = count;
-
-    device uint32_t *active_experts = (device uint32_t *)(hids) +
-        n_expert * n_tokens;  // Placed after hids data
-    active_experts[ide] = ide;
+    if (count > 0) {
+        uint slot = atomic_fetch_add_explicit(active_count, 1u, memory_order_relaxed);
+        active_meta[1 + slot] = ide;
+    }
 }
 
 // ── Q5_0 blocked batch matmul (f16 input) ─────────────────────────────

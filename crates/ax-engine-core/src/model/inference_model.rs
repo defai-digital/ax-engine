@@ -103,6 +103,46 @@ impl InferenceModel {
         self.kv_plan().build(self.backend.as_ref())
     }
 
+    /// Eagerly prepare any runtime/backend state derived from the loaded
+    /// weights so the first real prompt does not pay lazy setup costs.
+    pub fn prepare_runtime_for_weights(&self, weights: &WeightStore) -> anyhow::Result<()> {
+        let ctx = self.forward_context();
+        self.forward.prepare_runtime(&ctx, weights)
+    }
+
+    /// Eagerly prepare GPU prefill state for a known batch shape.
+    ///
+    /// This pre-sizes shared batch scratch buffers and GPU KV capacity before
+    /// the timed prefill begins so the first prompt does not pay one-time
+    /// growth/allocation costs inside the hot path.
+    pub fn prepare_prefill_for_weights(
+        &self,
+        weights: &WeightStore,
+        kv: &mut ModelKv,
+        n_tokens: usize,
+    ) -> anyhow::Result<()> {
+        self.prepare_runtime_for_weights(weights)?;
+        if n_tokens <= 1 {
+            return Ok(());
+        }
+
+        let ctx = self.forward_context();
+        let plan = PrefillExecutionPlan::for_forward_batch(&ctx, kv, weights, n_tokens, false)?;
+        if !matches!(plan.mode, PrefillMode::GpuBatch | PrefillMode::GpuChunked) {
+            return Ok(());
+        }
+
+        let Some(metal_ops) = self.backend.metal_ops() else {
+            return Ok(());
+        };
+        metal_ops.init_scratches(&self.config);
+        metal_ops.init_batch_scratches(&self.config, n_tokens);
+        if let Some(gpu_kv) = kv.as_gpu_mut() {
+            gpu_kv.ensure_capacity(&metal_ops.device, gpu_kv.seq_len().saturating_add(n_tokens))?;
+        }
+        Ok(())
+    }
+
     /// Create a KV cache matched to the active decode support of the loaded weights.
     ///
     /// Mixed-quant models can resolve to CPU decode even when the backend default is
@@ -154,6 +194,11 @@ impl InferenceModel {
             return result;
         }
         gpu_decode_quant_supported(&self.config, weights)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn metal_ops_for_tests(&self) -> Option<&MetalOps> {
+        self.backend.metal_ops()
     }
 
     /// Resolve the backend-side KV allocation plan for this model.

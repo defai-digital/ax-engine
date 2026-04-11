@@ -1,19 +1,55 @@
 impl Qwen3MoeForward {
     fn qwen3moe_decode_layers_per_command_buffer(
+        layer_count: usize,
+        gate_dtype: crate::gguf::tensor::GgmlType,
+        up_dtype: crate::gguf::tensor::GgmlType,
         down_dtype: crate::gguf::tensor::GgmlType,
     ) -> usize {
         if let Ok(value) = std::env::var("AX_QWEN3MOE_GPU_DECODE_LAYERS_PER_CB")
             && let Ok(parsed) = value.trim().parse::<usize>()
             && parsed > 0
         {
-            return parsed;
+            return parsed.min(layer_count.max(1));
         }
 
-        match down_dtype {
-            crate::gguf::tensor::GgmlType::Q4K | crate::gguf::tensor::GgmlType::Q5K => 4,
-            crate::gguf::tensor::GgmlType::Q6K | crate::gguf::tensor::GgmlType::Q8_0 => 2,
-            _ => 1,
+        // Qwen3-MoE now has selected routed-expert decode kernels across the
+        // shipped quant families, and short-run plus 2k-context checks show
+        // that coalescing the full routed stack is the best default. Keep the
+        // env override above for quick A/B and fallback control.
+        if Self::moe_gpu_expert_dtype_supported(gate_dtype)
+            && Self::moe_gpu_expert_dtype_supported(up_dtype)
+            && Self::moe_gpu_expert_dtype_supported(down_dtype)
+        {
+            return layer_count.max(1);
         }
+
+        1
+    }
+
+    fn qwen3moe_prefill_split_layer(
+        layer_count: usize,
+        gate_dtype: crate::gguf::tensor::GgmlType,
+        up_dtype: crate::gguf::tensor::GgmlType,
+        down_dtype: crate::gguf::tensor::GgmlType,
+        multi_cb_enabled: bool,
+    ) -> usize {
+        if !multi_cb_enabled {
+            return layer_count;
+        }
+
+        // Reuse the Qwen3.5-style two-command-buffer overlap only where it
+        // actually wins. Repeated Qwen3-Coder A/B runs improved Q4/Q5/Q6
+        // prefill, but regressed the fully-Q8 routed-expert stack, so keep Q8
+        // on the single-command-buffer path until it has a graph-IR schedule
+        // that earns the split.
+        let fully_q8 = gate_dtype == crate::gguf::tensor::GgmlType::Q8_0
+            && up_dtype == crate::gguf::tensor::GgmlType::Q8_0
+            && down_dtype == crate::gguf::tensor::GgmlType::Q8_0;
+        if fully_q8 {
+            return layer_count;
+        }
+
+        layer_count / 2
     }
 
     fn build_cached_model_keys(
@@ -175,13 +211,18 @@ impl Qwen3MoeForward {
         let down_stride =
             crate::model::moe_utils::expert_byte_stride(down_dtype, dim * expert_inter_dim);
         let layers_per_command_buffer =
-            Self::qwen3moe_decode_layers_per_command_buffer(down_dtype);
+            Self::qwen3moe_decode_layers_per_command_buffer(
+                cfg.n_layers as usize,
+                gate_dtype,
+                up_dtype,
+                down_dtype,
+            );
         let kv_f16 = gpu_kv.is_f16();
 
-        // Running all 48 routed-MoE layers in one command buffer is heavy
-        // enough to risk a watchdog timeout. Coalesce a small range of layers
-        // per CB so decode pays less submission overhead without going back to
-        // one giant frame.
+        // Keep routed-MoE decode coalesced to minimize submission overhead.
+        // The policy above uses the full layer stack for supported quantized
+        // layouts, while the env override can still split ranges for A/B runs
+        // or fallback if a model/device combination needs it.
         for layer_start in (0..cfg.n_layers as usize).step_by(layers_per_command_buffer) {
             let layer_end =
                 (layer_start + layers_per_command_buffer).min(cfg.n_layers as usize);
@@ -516,8 +557,19 @@ impl Qwen3MoeForward {
         );
 
         let nt = n_tokens as u32;
+        let split_layer = Self::qwen3moe_prefill_split_layer(
+            n_layers,
+            gate_dtype,
+            up_dtype,
+            down_dtype,
+            crate::model::prefill_schedule::prefill_multi_cb_enabled(),
+        );
 
-        metal_ops.device.execute_sync(|encoder| {
+        let encode_layer_range = |
+            encoder: &ax_engine_metal::MetalEncoder,
+            layer_range: std::ops::Range<usize>,
+            include_output_head: bool,
+        | -> anyhow::Result<()> {
             let barrier_on = true;
             let barrier = |enc: &ax_engine_metal::MetalEncoder| {
                 if barrier_on {
@@ -525,7 +577,7 @@ impl Qwen3MoeForward {
                 }
             };
 
-            for layer in 0..n_layers {
+            for layer in layer_range {
                 let lw = &cached.layers[layer];
                 let attn_norm_w = weight_cache.get(&lw.attn_norm).unwrap();
                 let wq_buf = weight_cache.get(&lw.wq).unwrap();
@@ -668,27 +720,42 @@ impl Qwen3MoeForward {
                 }
             }
 
-            // ── Output head (last token) ──
-            let last_off = (n_tokens - 1) * dim * std::mem::size_of::<f32>();
-            metal_ops.elementwise.encode_buffer_copy(
-                encoder, &bs.hidden, last_off, &s.hidden, 0, dim as u32,
-            );
-            barrier(encoder);
+            if include_output_head {
+                // ── Output head (last token) ──
+                let last_off = (n_tokens - 1) * dim * std::mem::size_of::<f32>();
+                metal_ops.elementwise.encode_buffer_copy(
+                    encoder, &bs.hidden, last_off, &s.hidden, 0, dim as u32,
+                );
+                barrier(encoder);
 
-            let output_norm_w = weight_cache.get(&cached.output_norm).unwrap();
-            metal_ops.elementwise.encode_rms_norm(
-                encoder, &s.hidden, output_norm_w, dim as u32, eps,
-            );
-            barrier(encoder);
+                let output_norm_w = weight_cache.get(&cached.output_norm).unwrap();
+                metal_ops.elementwise.encode_rms_norm(
+                    encoder, &s.hidden, output_norm_w, dim as u32, eps,
+                );
+                barrier(encoder);
 
-            let lm_head_buf = weight_cache.get(&cached.lm_head).unwrap();
-            crate::model::shared::encode_dequant_matvec(
-                metal_ops, encoder, lm_head_buf, &s.hidden, &s.logits_buf,
-                vocab_size as u32, dim as u32, cached.lm_head_dtype,
-            );
-            barrier(encoder);
+                let lm_head_buf = weight_cache.get(&cached.lm_head).unwrap();
+                crate::model::shared::encode_dequant_matvec(
+                    metal_ops, encoder, lm_head_buf, &s.hidden, &s.logits_buf,
+                    vocab_size as u32, dim as u32, cached.lm_head_dtype,
+                );
+                barrier(encoder);
+            }
             Ok(())
-        })?;
+        };
+
+        if split_layer > 0 && split_layer < n_layers {
+            let _cb1 = metal_ops.device.execute_async(|encoder| {
+                encode_layer_range(encoder, 0..split_layer, false)
+            })?;
+            metal_ops.device.execute_sync(|encoder| {
+                encode_layer_range(encoder, split_layer..n_layers, true)
+            })?;
+        } else {
+            metal_ops
+                .device
+                .execute_sync(|encoder| encode_layer_range(encoder, 0..n_layers, true))?;
+        }
 
         // Read back logits
         if let Some(logits) = last_logits {

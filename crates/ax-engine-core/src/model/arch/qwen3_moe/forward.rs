@@ -1,4 +1,20 @@
 impl ForwardPass for Qwen3MoeForward {
+    fn prepare_runtime(
+        &self,
+        ctx: &ForwardContext,
+        weights: &WeightStore,
+    ) -> anyhow::Result<()> {
+        if let Some(metal_ops) = ctx.backend.metal_ops()
+            && Self::moe_gpu_decode_supported(ctx.config, weights)
+            && Self::moe_gpu_expert_dispatch_supported(weights)
+            && !metal_ops.has_cached_model_keys()
+        {
+            Self::build_cached_model_keys(metal_ops, weights, ctx.config)?;
+        }
+
+        Ok(())
+    }
+
     fn forward_single(
         &self,
         ctx: &ForwardContext,

@@ -3019,13 +3019,16 @@ kernel void moe_mul_mat_id_q4_k(
     constant uint &n_tokens          [[buffer(7)]],
     constant uint &n_expert_used     [[buffer(8)]],
     constant uint &weight_stride     [[buffer(9)]],
-    device const uint32_t *active_experts [[buffer(10)]],
+    device const uint32_t *active_meta [[buffer(10)]],
     constant uint &input_is_hid      [[buffer(11)]],
     uint3 group_id  [[threadgroup_position_in_grid]],
     uint  tid       [[thread_index_in_threadgroup]],
     uint  simd_id   [[simdgroup_index_in_threadgroup]],
     uint  simd_lane [[thread_index_in_simdgroup]])
 {
+    const uint active_count = active_meta[0];
+    if (group_id.z >= active_count) return;
+    device const uint32_t *active_experts = active_meta + 1;
     const uint expert = active_experts[group_id.z];
     const uint n_assigned = tpe[expert];
 
@@ -3153,13 +3156,16 @@ kernel void moe_mul_mat_id_q4_k_blocked(
     constant uint &n_tokens          [[buffer(7)]],
     constant uint &n_expert_used     [[buffer(8)]],
     constant uint &weight_stride     [[buffer(9)]],
-    device const uint32_t *active_experts [[buffer(10)]],
+    device const uint32_t *active_meta [[buffer(10)]],
     constant uint &input_is_hid      [[buffer(11)]],
     threadgroup char *shmem          [[threadgroup(0)]],
     uint3 tgpig  [[threadgroup_position_in_grid]],
     ushort tiitg [[thread_index_in_threadgroup]],
     ushort sgitg [[simdgroup_index_in_threadgroup]])
 {
+    const uint active_count = active_meta[0];
+    if (tgpig.z >= active_count) return;
+    device const uint32_t *active_experts = active_meta + 1;
     const uint expert = active_experts[tgpig.z];
     const uint n_assigned = tpe[expert];
 

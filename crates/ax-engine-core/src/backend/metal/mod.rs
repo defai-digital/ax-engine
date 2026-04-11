@@ -39,19 +39,30 @@ use qwen35::{
     qwen35_gate_up_scratch_dims, qwen35_recurrent_sequence_with_backend,
 };
 
-fn qwen35_selected_weighted_down_enabled(down_dtype: GgmlType) -> bool {
+fn qwen35_selected_weighted_down_enabled(
+    gate_dtype: GgmlType,
+    up_dtype: GgmlType,
+    down_dtype: GgmlType,
+) -> bool {
+    if let Some(enabled) = env_flag_override("AX_QWEN35_SELECTED_WEIGHTED_DOWN") {
+        return enabled
+            && matches!(
+                down_dtype,
+                GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0
+            );
+    }
+
     match down_dtype {
         // Q4_K routed down still benefits from the weighted resident path.
-        GgmlType::Q4K => !matches!(
-            env_flag_override("AX_QWEN35_SELECTED_WEIGHTED_DOWN"),
-            Some(false)
-        ),
+        GgmlType::Q4K => true,
         // Q5_K routed down is currently faster with the classic selected-down
         // plus weighted-reduce path. Keep the weighted resident kernel opt-in.
-        GgmlType::Q5K => matches!(
-            env_flag_override("AX_QWEN35_SELECTED_WEIGHTED_DOWN"),
-            Some(true)
-        ),
+        GgmlType::Q5K => false,
+        // Q6_K/Q8_0 are wins for fully-quantized expert stacks and Q4 mixed
+        // layouts, but Q5 gate+up mixed with Q6/Q8 down still regresses a bit.
+        GgmlType::Q6K | GgmlType::Q8_0 => {
+            !(gate_dtype == GgmlType::Q5K && up_dtype == GgmlType::Q5K)
+        }
         _ => false,
     }
 }
@@ -84,10 +95,24 @@ fn qwen35_selected_q4_k_matvec_enabled() -> bool {
     )
 }
 
+fn qwen35_selected_q5_k_matvec_enabled() -> bool {
+    matches!(
+        env_flag_override("AX_QWEN35_SELECTED_Q5K_MATVEC"),
+        Some(true)
+    )
+}
+
 fn qwen35_selected_pair_q4_k_matvec_enabled() -> bool {
     !matches!(
         env_flag_override("AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC"),
         Some(false)
+    )
+}
+
+fn qwen35_selected_single_token_gate_up_dtype_supported(dtype: GgmlType) -> bool {
+    matches!(
+        dtype,
+        GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0
     )
 }
 
@@ -96,8 +121,8 @@ fn qwen35_selected_single_token_gate_up_path_supported(
     up_dtype: GgmlType,
     down_dtype: GgmlType,
 ) -> bool {
-    matches!(gate_dtype, GgmlType::Q4K | GgmlType::Q5K)
-        && matches!(up_dtype, GgmlType::Q4K | GgmlType::Q5K)
+    qwen35_selected_single_token_gate_up_dtype_supported(gate_dtype)
+        && qwen35_selected_single_token_gate_up_dtype_supported(up_dtype)
         && matches!(
             down_dtype,
             GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0
@@ -123,6 +148,9 @@ fn qwen35_selected_single_token_default_enabled(
     if qwen35_selected_single_token_down_supported(down_dtype) {
         return true;
     }
+    if qwen35_selected_weighted_down_enabled(gate_dtype, up_dtype, down_dtype) {
+        return true;
+    }
     gate_dtype == GgmlType::Q4K
         && up_dtype == GgmlType::Q4K
         && qwen35_selected_pair_q4_k_matvec_enabled()
@@ -143,7 +171,9 @@ fn qwen35_selected_expert_pair_enabled(
     match env_flag_override("AX_QWEN35_SELECTED_EXPERT_PAIR") {
         Some(value) => value,
         None => {
-            if gate_dtype != up_dtype || !matches!(gate_dtype, GgmlType::Q4K | GgmlType::Q5K) {
+            if gate_dtype != up_dtype
+                || !matches!(gate_dtype, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K)
+            {
                 return false;
             }
             if down_dtype == GgmlType::Q5K && qwen35_selected_fused_silu_down_q5_k_enabled() {
@@ -1721,13 +1751,13 @@ pub struct GpuBatchScratchBuffers {
     pub moe_down_out: Option<MetalBuffer>,
     /// Tokens per expert [n_expert] u32.
     pub moe_tpe: Option<MetalBuffer>,
-    /// Routing index [n_expert × N + (n_expert + 1)] i32/u32.
+    /// Routing index [n_expert × N] i32.
     pub moe_hids: Option<MetalBuffer>,
     /// Expert IDs [N × n_expert_used] i32.
     pub moe_expert_ids: Option<MetalBuffer>,
     /// Expert weights [N × n_expert_used] f32.
     pub moe_expert_weights: Option<MetalBuffer>,
-    /// Active expert list [n_expert] u32.
+    /// Active expert metadata: count + compact expert list [(n_expert + 1)] u32.
     pub moe_active_experts: Option<MetalBuffer>,
 }
 
@@ -2115,6 +2145,9 @@ impl MetalOps {
         for buf in self.f32_weight_cache.lock().unwrap().values() {
             self.device.register_resident_buffer(buf);
         }
+        for buf in self.moe_quant_cache.lock().unwrap().values() {
+            self.device.register_resident_buffer(buf);
+        }
         for buf in self.fused_qkv_weight_cache.lock().unwrap().values() {
             self.device.register_resident_buffer(buf);
         }
@@ -2213,19 +2246,10 @@ impl MetalOps {
             ));
             bs.moe_down_out = Some(alloc_bytes(n_tokens * n_expert_used * dim * f4));
             bs.moe_tpe = Some(alloc_bytes(n_expert * u4));
-            bs.moe_hids = Some(alloc_bytes(n_expert * n_tokens * i4 + (n_expert + 1) * u4));
+            bs.moe_hids = Some(alloc_bytes(n_expert * n_tokens * i4));
             bs.moe_expert_ids = Some(alloc_bytes(n_tokens * n_expert_used * i4));
             bs.moe_expert_weights = Some(alloc_bytes(n_tokens * n_expert_used * f4));
-            bs.moe_active_experts = Some(alloc_bytes(n_expert * u4));
-            // Pre-fill active_experts: [0, 1, 2, ..., n_expert-1] (full range).
-            let mut act_buf = alloc_bytes(n_expert * u4);
-            unsafe {
-                let acts = act_buf.as_mut_slice::<u32>();
-                for (i, act) in acts.iter_mut().enumerate() {
-                    *act = i as u32;
-                }
-            }
-            bs.moe_active_experts = Some(act_buf);
+            bs.moe_active_experts = Some(alloc_bytes((n_expert + 1) * u4));
         }
         tracing::info!(
             n_tokens,
@@ -2366,6 +2390,27 @@ impl MetalOps {
         Ok(())
     }
 
+    /// Ensure a precomputed dense f16 copy exists for an F32 weight buffer.
+    ///
+    /// Unlike `ensure_precomputed_f32_f16_on_encoder`, this variant performs
+    /// the cast eagerly on its own command buffer so first-use hot paths do
+    /// not pay the conversion cost inside the measured encode.
+    pub fn ensure_precomputed_f32_f16(
+        &self,
+        weight_buf: &MetalBuffer,
+        m: u32,
+        k: u32,
+    ) -> anyhow::Result<()> {
+        if self.has_precomputed_weight(weight_buf) {
+            return Ok(());
+        }
+
+        self.device.execute_sync(|encoder| {
+            self.ensure_precomputed_f32_f16_on_encoder(encoder, weight_buf, m, k)
+        })?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn encode_token_major_batch_matmul_f32(
         &self,
@@ -2440,11 +2485,27 @@ impl MetalOps {
     }
 
     fn validate_moe_selected_dtype(dtype: GgmlType, role: &str) -> anyhow::Result<()> {
-        if matches!(dtype, GgmlType::Q4K | GgmlType::Q5K) {
+        if matches!(
+            dtype,
+            GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0
+        ) {
             Ok(())
         } else {
             anyhow::bail!(
-                "Metal MoE selected path only supports Q4_K/Q5_K {role} weights today; got {dtype:?}",
+                "Metal MoE selected path only supports Q4_K/Q5_K/Q6_K/Q8_0 {role} weights today; got {dtype:?}",
+            )
+        }
+    }
+
+    fn validate_moe_selected_weighted_dtype(dtype: GgmlType, role: &str) -> anyhow::Result<()> {
+        if matches!(
+            dtype,
+            GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0
+        ) {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "Metal MoE selected weighted path only supports Q4_K/Q5_K/Q6_K/Q8_0 {role} weights today; got {dtype:?}",
             )
         }
     }
@@ -2586,6 +2647,31 @@ impl MetalOps {
                 n_selected,
                 weight_stride,
                 input_is_slot_major,
+                qwen35_selected_q5_k_matvec_enabled(),
+            ),
+            GgmlType::Q6K => self.dequant.encode_moe_mul_mat_selected_q6_k(
+                encoder,
+                weights,
+                input,
+                selected_experts,
+                output,
+                m,
+                k,
+                n_selected,
+                weight_stride,
+                input_is_slot_major,
+            ),
+            GgmlType::Q8_0 => self.dequant.encode_moe_mul_mat_selected_q8_0(
+                encoder,
+                weights,
+                input,
+                selected_experts,
+                output,
+                m,
+                k,
+                n_selected,
+                weight_stride,
+                input_is_slot_major,
             ),
             _ => unreachable!("validated selected expert dtype"),
         }
@@ -2643,6 +2729,21 @@ impl MetalOps {
                 weight_stride1,
                 input_is_slot_major,
             ),
+            GgmlType::Q6K => self.dequant.encode_moe_mul_mat_selected_pair_q6_k(
+                encoder,
+                weights0,
+                weights1,
+                input,
+                selected_experts,
+                output0,
+                output1,
+                m,
+                k,
+                n_selected,
+                weight_stride0,
+                weight_stride1,
+                input_is_slot_major,
+            ),
             _ => unreachable!("validated selected expert pair dtype"),
         }
         Ok(())
@@ -2663,7 +2764,7 @@ impl MetalOps {
         n_selected: u32,
         weight_stride: u32,
     ) -> anyhow::Result<()> {
-        Self::validate_moe_selected_dtype(dtype, "selected weighted expert")?;
+        Self::validate_moe_selected_weighted_dtype(dtype, "selected weighted expert")?;
         match dtype {
             GgmlType::Q4K => self.dequant.encode_moe_mul_mat_selected_weighted_q4_k(
                 encoder,
@@ -2678,6 +2779,30 @@ impl MetalOps {
                 weight_stride,
             ),
             GgmlType::Q5K => self.dequant.encode_moe_mul_mat_selected_weighted_q5_k(
+                encoder,
+                weights,
+                input,
+                selected_experts,
+                expert_weights,
+                output,
+                m,
+                k,
+                n_selected,
+                weight_stride,
+            ),
+            GgmlType::Q6K => self.dequant.encode_moe_mul_mat_selected_weighted_q6_k(
+                encoder,
+                weights,
+                input,
+                selected_experts,
+                expert_weights,
+                output,
+                m,
+                k,
+                n_selected,
+                weight_stride,
+            ),
+            GgmlType::Q8_0 => self.dequant.encode_moe_mul_mat_selected_weighted_q8_0(
                 encoder,
                 weights,
                 input,
@@ -3011,7 +3136,8 @@ impl MetalOps {
                 qwen35_selected_single_token_down_supported(down_dtype);
             let selected_down_falls_back_to_mul_mat_id =
                 qwen35_selected_single_token_down_falls_back_to_mul_mat_id(down_dtype);
-            let use_selected_weighted_down = qwen35_selected_weighted_down_enabled(down_dtype);
+            let use_selected_weighted_down =
+                qwen35_selected_weighted_down_enabled(gate_dtype, up_dtype, down_dtype);
             let use_selected_fused_silu_down_q5_k =
                 down_dtype == GgmlType::Q5K && qwen35_selected_fused_silu_down_q5_k_enabled();
             if profile_skip_selected_down {
@@ -3113,11 +3239,13 @@ impl MetalOps {
                     ids_gpu,
                     tpe_gpu,
                     hids_gpu,
+                    active_buf,
                     n_tokens as u32,
                     n_expert_used as u32,
                     n_expert as u32,
                 );
                 barrier(encoder);
+                let max_active_experts = ne.min(nt.saturating_mul(neu));
                 self.encode_moe_mul_mat_id(
                     encoder,
                     down_buf,
@@ -3133,7 +3261,7 @@ impl MetalOps {
                     ne,
                     blocks_per_expert_down,
                     active_buf,
-                    ne,
+                    max_active_experts,
                     true,
                 )?;
                 barrier(encoder);
@@ -3154,11 +3282,15 @@ impl MetalOps {
                 );
             }
         } else if !profile_skip_routed_expert {
+            let use_selected_weighted_down = n_tokens == 1
+                && qwen35_selected_weighted_down_enabled(gate_dtype, up_dtype, down_dtype);
+            let max_active_experts = ne.min(nt.saturating_mul(neu));
             self.dequant.encode_moe_map0(
                 encoder,
                 ids_gpu,
                 tpe_gpu,
                 hids_gpu,
+                active_buf,
                 n_tokens as u32,
                 n_expert_used as u32,
                 n_expert as u32,
@@ -3180,7 +3312,7 @@ impl MetalOps {
                 ne,
                 blocks_per_expert_gate,
                 active_buf,
-                ne,
+                max_active_experts,
                 false,
             )?;
             self.encode_moe_mul_mat_id(
@@ -3198,7 +3330,7 @@ impl MetalOps {
                 ne,
                 blocks_per_expert_up,
                 active_buf,
-                ne,
+                max_active_experts,
                 false,
             )?;
             barrier(encoder);
@@ -3212,36 +3344,53 @@ impl MetalOps {
             );
             barrier(encoder);
 
-            self.encode_moe_mul_mat_id(
-                encoder,
-                down_buf,
-                gate_out_gpu,
-                tpe_gpu,
-                hids_gpu,
-                down_out_gpu,
-                down_dtype,
-                m_dim,
-                m_inter,
-                nt,
-                neu,
-                ne,
-                blocks_per_expert_down,
-                active_buf,
-                ne,
-                true,
-            )?;
-            barrier(encoder);
+            if use_selected_weighted_down {
+                self.encode_moe_mul_mat_selected_single_token_weighted(
+                    encoder,
+                    down_buf,
+                    gate_out_gpu,
+                    ids_gpu,
+                    weights_gpu,
+                    accum_gpu,
+                    down_dtype,
+                    m_dim,
+                    m_inter,
+                    neu,
+                    blocks_per_expert_down,
+                )?;
+                barrier(encoder);
+            } else {
+                self.encode_moe_mul_mat_id(
+                    encoder,
+                    down_buf,
+                    gate_out_gpu,
+                    tpe_gpu,
+                    hids_gpu,
+                    down_out_gpu,
+                    down_dtype,
+                    m_dim,
+                    m_inter,
+                    nt,
+                    neu,
+                    ne,
+                    blocks_per_expert_down,
+                    active_buf,
+                    max_active_experts,
+                    true,
+                )?;
+                barrier(encoder);
 
-            self.elementwise.encode_moe_weighted_reduce_slots(
-                encoder,
-                down_out_gpu,
-                weights_gpu,
-                accum_gpu,
-                m_dim,
-                nt,
-                neu,
-            );
-            barrier(encoder);
+                self.elementwise.encode_moe_weighted_reduce_slots(
+                    encoder,
+                    down_out_gpu,
+                    weights_gpu,
+                    accum_gpu,
+                    m_dim,
+                    nt,
+                    neu,
+                );
+                barrier(encoder);
+            }
         }
 
         let profile_skip_shared_expert = matches!(
@@ -3835,8 +3984,7 @@ impl MetalOps {
         let mut ids_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * i4)?;
         let mut weights_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * f4)?;
         let tpe_gpu = MetalBuffer::new(dev, n_expert * u4)?;
-        // Extra space for active_experts list + atomic count (appended by map0 kernel).
-        let hids_gpu = MetalBuffer::new(dev, n_expert * n_tokens * i4 + (n_expert + 1) * u4)?;
+        let hids_gpu = MetalBuffer::new(dev, n_expert * n_tokens * i4)?;
         // Intermediate: gate_up output [n_tokens * n_expert_used, expert_inter_dim]
         let gate_out_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * expert_inter_dim * f4)?;
         let up_out_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * expert_inter_dim * f4)?;
@@ -3884,16 +4032,26 @@ impl MetalOps {
         let active_list: Vec<u32> = active_set.into_iter().collect();
         let n_active = active_list.len() as u32;
 
-        let mut active_buf = MetalBuffer::new(dev, (n_active as usize).max(1) * u4)?;
+        let mut active_buf = MetalBuffer::new(dev, (n_active as usize + 1).max(1) * u4)?;
         unsafe {
-            active_buf.as_mut_slice::<u32>()[..active_list.len()].copy_from_slice(&active_list);
+            let active_meta = active_buf.as_mut_slice::<u32>();
+            active_meta[0] = n_active;
+            active_meta[1..1 + active_list.len()].copy_from_slice(&active_list);
         }
 
         // Single CB: map0 + 3× mul_mat_id + SiLU + scatter.
         self.device.execute_sync(|encoder| {
             // Build routing index on GPU.
-            self.dequant
-                .encode_moe_map0(encoder, &ids_gpu, &tpe_gpu, &hids_gpu, nt, neu, ne);
+            self.dequant.encode_moe_map0(
+                encoder,
+                &ids_gpu,
+                &tpe_gpu,
+                &hids_gpu,
+                &active_buf,
+                nt,
+                neu,
+                ne,
+            );
             // Stage 2a: Gate matmul — compact grid (only active experts).
             self.encode_moe_mul_mat_id(
                 encoder,
