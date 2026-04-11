@@ -277,7 +277,7 @@ impl GdnKernels {
             // few tokens). Requires seq_len >= conv_cache_len for state writeback.
             let tg_x = 256.min(conv_dim as usize);
             let groups_x = (conv_dim as usize).div_ceil(tg_x);
-            encoder.setComputePipelineState(self.causal_conv_sequence_parallel_f32.state());
+            crate::set_pipeline_cached(encoder, self.causal_conv_sequence_parallel_f32.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(kernel.mtl_buffer()), 0, 1);
@@ -302,7 +302,7 @@ impl GdnKernels {
         } else {
             // Sequential kernel for decode (seq_len=1): one thread per channel.
             let groups_x = (conv_dim as usize).div_ceil(256);
-            encoder.setComputePipelineState(self.causal_conv_sequence_f32.state());
+            crate::set_pipeline_cached(encoder, self.causal_conv_sequence_f32.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(kernel.mtl_buffer()), 0, 1);
@@ -371,7 +371,7 @@ impl GdnKernels {
         total: u32,
     ) {
         let dims = DispatchDims::d1(total as usize, 256);
-        encoder.setComputePipelineState(self.broadcast_mul_f32.state());
+        crate::set_pipeline_cached(encoder, self.broadcast_mul_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(scale.mtl_buffer()), 0, 1);
@@ -399,7 +399,7 @@ impl GdnKernels {
         eps: f32,
     ) {
         let dims = DispatchDims::d1((time_step_rank * state_size) as usize, 64);
-        encoder.setComputePipelineState(self.prepare_single_token_qkv_f32.state());
+        crate::set_pipeline_cached(encoder, self.prepare_single_token_qkv_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(conv_out.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(q_out.mtl_buffer()), 0, 1);
@@ -441,7 +441,7 @@ impl GdnKernels {
             return false;
         }
 
-        encoder.setComputePipelineState(self.prepare_multi_token_qk_f32.state());
+        crate::set_pipeline_cached(encoder, self.prepare_multi_token_qk_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(conv_out.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(q_out.mtl_buffer()), 0, 1);
@@ -471,7 +471,7 @@ impl GdnKernels {
             128,
             1,
         );
-        encoder.setComputePipelineState(self.prepare_multi_token_vgb_f32.state());
+        crate::set_pipeline_cached(encoder, self.prepare_multi_token_vgb_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(conv_out.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(alpha_in.mtl_buffer()), 0, 1);
@@ -516,7 +516,7 @@ impl GdnKernels {
             return false;
         }
 
-        encoder.setComputePipelineState(self.prepare_multi_token_qk_f32.state());
+        crate::set_pipeline_cached(encoder, self.prepare_multi_token_qk_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(conv_out.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(q_out.mtl_buffer()), 0, 1);
@@ -546,7 +546,7 @@ impl GdnKernels {
             128,
             1,
         );
-        encoder.setComputePipelineState(self.prepare_multi_token_vgb_ab_f16.state());
+        crate::set_pipeline_cached(encoder, self.prepare_multi_token_vgb_ab_f16.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(conv_out.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(alpha_in.mtl_buffer()), 0, 1);
@@ -619,7 +619,7 @@ impl GdnKernels {
         head_dim: u32,
     ) {
         let dims = DispatchDims::d2(head_dim as usize, (n_tokens * n_heads) as usize, 128, 1);
-        encoder.setComputePipelineState(self.unpack_bhsk_to_token_major_f32.state());
+        crate::set_pipeline_cached(encoder, self.unpack_bhsk_to_token_major_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 1);
@@ -671,7 +671,7 @@ impl GdnKernels {
         };
         let bv = 64usize;
         let grid_x = (head_dim as usize).div_ceil(bv);
-        encoder.setComputePipelineState(pipeline.state());
+        crate::set_pipeline_cached(encoder, pipeline.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(conv_out.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 1);
@@ -776,7 +776,7 @@ impl GdnKernels {
             // TG: (32, NSG, 1) = (32, 4, 1) = 128 threads.
             const NSG: usize = 4;
             let grid_x = (v_dim as usize).div_ceil(NSG);
-            encoder.setComputePipelineState(self.simd_gated_delta_4.state());
+            crate::set_pipeline_cached(encoder, self.simd_gated_delta_4.state());
             bind_buffers7(encoder, q, k, v, g, beta, state, output);
             bind_u32(encoder, 7, seq_len);
             bind_u32(encoder, 8, v_dim);
@@ -805,7 +805,7 @@ impl GdnKernels {
         };
         let grid_x = (v_dim as usize).div_ceil(bv as usize);
 
-        encoder.setComputePipelineState(pipeline.state());
+        crate::set_pipeline_cached(encoder, pipeline.state());
         bind_buffers7(encoder, q, k, v, g, beta, state, output);
         bind_u32(encoder, 7, seq_len);
         if use_fallback {
@@ -872,7 +872,7 @@ impl GdnKernels {
         ne2: u32,
     ) {
         let nth = (ne0 as usize).next_power_of_two().min(1024);
-        encoder.setComputePipelineState(self.cumsum_f32.state());
+        crate::set_pipeline_cached(encoder, self.cumsum_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -917,7 +917,7 @@ impl GdnKernels {
         } else {
             &self.solve_tri_lower_f32_1
         };
-        encoder.setComputePipelineState(pipeline.state());
+        crate::set_pipeline_cached(encoder, pipeline.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(l_buf.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(b_buf.mtl_buffer()), 0, 1);
@@ -951,7 +951,7 @@ impl GdnKernels {
         n: u32,
         n_slices: u32,
     ) {
-        encoder.setComputePipelineState(self.tri_lower_diag_f32.state());
+        crate::set_pipeline_cached(encoder, self.tri_lower_diag_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -983,7 +983,7 @@ impl GdnKernels {
         n: u32,
         n_slices: u32,
     ) {
-        encoder.setComputePipelineState(self.tri_lower_strict_f32.state());
+        crate::set_pipeline_cached(encoder, self.tri_lower_strict_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -1014,7 +1014,7 @@ impl GdnKernels {
         n: u32,
         n_slices: u32,
     ) {
-        encoder.setComputePipelineState(self.diag_identity_f32.state());
+        crate::set_pipeline_cached(encoder, self.diag_identity_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 0);
         }
@@ -1051,7 +1051,7 @@ impl GdnKernels {
         k: u32,
         n_batch: u32,
     ) {
-        encoder.setComputePipelineState(self.batched_matmul_f32.state());
+        crate::set_pipeline_cached(encoder, self.batched_matmul_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
@@ -1091,7 +1091,7 @@ impl GdnKernels {
         k: u32,
         n_batch: u32,
     ) {
-        encoder.setComputePipelineState(self.batched_matmul_atrans_f32.state());
+        crate::set_pipeline_cached(encoder, self.batched_matmul_atrans_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
@@ -1132,7 +1132,7 @@ impl GdnKernels {
         k: u32,
         n_batch: u32,
     ) {
-        encoder.setComputePipelineState(self.batched_matmul_btrans_f32.state());
+        crate::set_pipeline_cached(encoder, self.batched_matmul_btrans_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
@@ -1179,7 +1179,7 @@ impl GdnKernels {
         stride_c: u32,
         n_batch: u32,
     ) {
-        encoder.setComputePipelineState(pipeline.state());
+        crate::set_pipeline_cached(encoder, pipeline.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), a_off, 0);
             encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), b_off, 1);
@@ -1290,7 +1290,7 @@ impl GdnKernels {
                             src: &MetalBuffer,
                             sc: &MetalBuffer,
                             dst: &MetalBuffer| {
-            enc.setComputePipelineState(self.broadcast_mul_f32.state());
+            crate::set_pipeline_cached(enc, self.broadcast_mul_f32.state());
             unsafe {
                 enc.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
                 enc.setBuffer_offset_atIndex(Some(sc.mtl_buffer()), 0, 1);
@@ -1313,7 +1313,7 @@ impl GdnKernels {
         // ── 4. Build decay mask: decay[s,i,j] = exp(g_cs[j]-g_cs[i]) for j<=i ──
         {
             let cs2 = (cs * cs) as usize;
-            encoder.setComputePipelineState(self.build_decay_mask_f32.state());
+            crate::set_pipeline_cached(encoder, self.build_decay_mask_f32.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(g_cs.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(decay.mtl_buffer()), 0, 1);
@@ -1372,7 +1372,7 @@ impl GdnKernels {
         // g_last[s] = g_cs[s * CS + CS - 1]
         {
             let dims = DispatchDims::d1(hc as usize, 256);
-            encoder.setComputePipelineState(self.extract_last_cumsum_f32.state());
+            crate::set_pipeline_cached(encoder, self.extract_last_cumsum_f32.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(g_cs.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(g_last.mtl_buffer()), 0, 1);
@@ -1389,7 +1389,7 @@ impl GdnKernels {
         {
             let total = hc * cs;
             let dims = DispatchDims::d1(total as usize, 256);
-            encoder.setComputePipelineState(self.build_g_diff_exp_f32.state());
+            crate::set_pipeline_cached(encoder, self.build_g_diff_exp_f32.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(g_cs.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(g_last.mtl_buffer()), 0, 1);
@@ -1475,7 +1475,7 @@ impl GdnKernels {
                 let a_off = (c * slice) as usize * f4;
                 let a_stride = (n_chunks * slice) as usize * f4;
                 let b_stride = slice as usize * f4;
-                encoder.setComputePipelineState(self.strided_sub_f32.state());
+                crate::set_pipeline_cached(encoder, self.strided_sub_f32.state());
                 unsafe {
                     encoder.setBuffer_offset_atIndex(Some(vb_corr.mtl_buffer()), a_off, 0);
                     encoder.setBuffer_offset_atIndex(Some(ch_v_prime.mtl_buffer()), 0, 1);
@@ -1549,7 +1549,7 @@ impl GdnKernels {
             {
                 let slice = cs * d;
                 let dst_off = (c * cs * d) as usize * f4;
-                encoder.setComputePipelineState(self.strided_copy_f32.state());
+                crate::set_pipeline_cached(encoder, self.strided_copy_f32.state());
                 unsafe {
                     encoder.setBuffer_offset_atIndex(Some(ch_out.mtl_buffer()), 0, 0);
                     encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), dst_off, 1);
@@ -1593,7 +1593,7 @@ impl GdnKernels {
             let ch_g_scale = alloc(h as usize);
             {
                 let dims = DispatchDims::d1(h as usize, 256);
-                encoder.setComputePipelineState(self.gather_stride_f32.state());
+                crate::set_pipeline_cached(encoder, self.gather_stride_f32.state());
                 unsafe {
                     encoder.setBuffer_offset_atIndex(Some(g_last_exp.mtl_buffer()), 0, 0);
                     encoder.setBuffer_offset_atIndex(Some(ch_g_scale.mtl_buffer()), 0, 1);
@@ -1607,7 +1607,7 @@ impl GdnKernels {
                 );
             }
             // state *= g_scale (broadcast scalar per head across D*D)
-            encoder.setComputePipelineState(self.broadcast_mul_f32.state());
+            crate::set_pipeline_cached(encoder, self.broadcast_mul_f32.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(state.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(ch_g_scale.mtl_buffer()), 0, 1);

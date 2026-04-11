@@ -570,7 +570,7 @@ impl AttentionKernels {
             );
         }
         device.execute_sync(|encoder| {
-            encoder.setComputePipelineState(pipeline.state());
+            crate::set_pipeline_cached(encoder, pipeline.state());
             // Bind buffers: Q=0, K=1, V=2, O=3
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
@@ -713,7 +713,7 @@ impl AttentionKernels {
                 "attention_decode kernel routing"
             );
         }
-        encoder.setComputePipelineState(pipeline.state());
+        crate::set_pipeline_cached(encoder, pipeline.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
@@ -793,7 +793,7 @@ impl AttentionKernels {
             )
         };
 
-        encoder.setComputePipelineState(partial_pipeline.state());
+        crate::set_pipeline_cached(encoder, partial_pipeline.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
@@ -823,7 +823,7 @@ impl AttentionKernels {
 
         barrier_buffers(encoder);
 
-        encoder.setComputePipelineState(reduce_pipeline.state());
+        crate::set_pipeline_cached(encoder, reduce_pipeline.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(partial_out.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(partial_lse.mtl_buffer()), 0, 1);
@@ -958,7 +958,7 @@ impl AttentionKernels {
             (false, 256) => &self.decode_sdpa_parallel_hd256,
             (false, _) => &self.decode_sdpa_parallel_hd128,
         };
-        encoder.setComputePipelineState(pipeline.state());
+        crate::set_pipeline_cached(encoder, pipeline.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k.mtl_buffer()), 0, 1);
@@ -1012,7 +1012,7 @@ impl AttentionKernels {
         } else {
             &self.decode_sdpa_gqa_f16kv_hd128
         };
-        encoder.setComputePipelineState(pipeline.state());
+        crate::set_pipeline_cached(encoder, pipeline.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k.mtl_buffer()), 0, 1);
@@ -1153,7 +1153,7 @@ impl AttentionKernels {
             head_dim,
             MAX_HEAD_DIM
         );
-        encoder.setComputePipelineState(pipeline.state());
+        crate::set_pipeline_cached(encoder, pipeline.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k.mtl_buffer()), 0, 1);
@@ -1196,7 +1196,7 @@ impl AttentionKernels {
     ) {
         debug_assert_eq!(head_dim, 128);
         let pipeline = &self.prefill_ax_f16out_hd128;
-        encoder.setComputePipelineState(pipeline.state());
+        crate::set_pipeline_cached(encoder, pipeline.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k.mtl_buffer()), 0, 1);
@@ -1333,7 +1333,7 @@ impl AttentionKernels {
         if let Some((pipeline, tg_size)) = fa2_cached_pipeline {
             const FA2_Q: usize = 8;
             let n_tile_q = (n_tokens as usize).div_ceil(FA2_Q);
-            encoder.setComputePipelineState(pipeline.state());
+            crate::set_pipeline_cached(encoder, pipeline.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
@@ -1365,7 +1365,7 @@ impl AttentionKernels {
         } else {
             &self.prefill_cache
         };
-        encoder.setComputePipelineState(pipeline.state());
+        crate::set_pipeline_cached(encoder, pipeline.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
@@ -1412,7 +1412,7 @@ impl AttentionKernels {
         base_seq_len: u32,
         sliding_window: u32,
     ) {
-        encoder.setComputePipelineState(self.prefill_cache_q8kv.state());
+        crate::set_pipeline_cached(encoder, self.prefill_cache_q8kv.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
@@ -1454,7 +1454,7 @@ impl AttentionKernels {
         attend_start: u32,
         attend_len: u32,
     ) {
-        encoder.setComputePipelineState(self.decode_q8kv_hd128.state());
+        crate::set_pipeline_cached(encoder, self.decode_q8kv_hd128.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);
@@ -1496,7 +1496,7 @@ impl AttentionKernels {
         attend_start: u32,
         attend_len: u32,
     ) {
-        encoder.setComputePipelineState(self.decode_q8kv_hd256.state());
+        crate::set_pipeline_cached(encoder, self.decode_q8kv_hd256.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k_cache.mtl_buffer()), 0, 1);

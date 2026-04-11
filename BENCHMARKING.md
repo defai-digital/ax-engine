@@ -68,6 +68,7 @@ cargo build -p ax-engine-bench --release
 - cooldown between samples
 - AX deterministic mode (`--deterministic`)
 - AX warmup and measurement pinned to `--warmup-iters 0 --measure-iters 1`
+- AX llama parity preset (`--llama-parity-preset`)
 - `llama.cpp` run with full offload and explicit cache/attention settings
 
 Current `llama.cpp` defaults used by the harness:
@@ -114,6 +115,7 @@ Useful fields to keep for reviews:
 - AX scheduling counters: `prefill_command_buffers`, `decode_command_buffers`, `decode_buffer_barriers`
 - Comparison medians and ratios in `comparison.json`
 - Exact binary/command provenance in `manifest.json`
+- AX tuning environment snapshot in `manifest.json` (`engines.ax.environment`)
 
 ## Manual Commands (When Needed)
 

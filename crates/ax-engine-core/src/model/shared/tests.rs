@@ -1,5 +1,8 @@
 use super::*;
+use crate::gguf::MappedModel;
+use crate::model::ModelConfig;
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::sync::MutexGuard;
 
 fn env_lock() -> MutexGuard<'static, ()> {
@@ -62,6 +65,47 @@ fn test_q5k_is_supported_gpu_prefill_quant() {
     assert!(gpu_decode_quant_dtype_supported(GgmlType::Q5K));
     assert!(gpu_prefill_quant_dtype_supported(GgmlType::Q5K));
     assert!(gpu_batch_logits_dtype_supported(GgmlType::Q5K));
+}
+
+fn workspace_model_path(file_name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../models")
+        .join(file_name)
+}
+
+#[test]
+fn test_q5_1_is_supported_gpu_decode_and_prefill_quant() {
+    assert!(gpu_decode_quant_dtype_supported(GgmlType::Q5_1));
+    assert!(gpu_prefill_quant_dtype_supported(GgmlType::Q5_1));
+    assert!(!gpu_batch_logits_dtype_supported(GgmlType::Q5_1));
+}
+
+#[test]
+fn test_real_gemma4_q5km_is_gpu_decode_supported_with_mixed_q5_1_layer_weights() {
+    let path = workspace_model_path("gemma-4-26B-A4B-it-Q5_K_M.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let model = MappedModel::open(&path).unwrap();
+    let cfg = ModelConfig::from_gguf(&model.header).unwrap();
+    let weights = WeightStore::new(&model);
+    let has_q5_1_layer_weight = model.tensors.iter().any(|tensor| {
+        tensor.dtype == GgmlType::Q5_1
+            && tensor.name.starts_with("blk.")
+            && LAYER_SUFFIXES
+                .iter()
+                .any(|suffix| tensor.name.ends_with(suffix))
+    });
+
+    assert!(
+        has_q5_1_layer_weight,
+        "expected Gemma4 Q5_K_M fixture to include at least one Q5_1 layer weight",
+    );
+    assert!(
+        gpu_decode_quant_supported(&cfg, &weights),
+        "Gemma4 Q5_K_M mixed-quant model should stay on GPU decode",
+    );
 }
 
 #[test]

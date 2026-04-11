@@ -13,6 +13,7 @@
 //!   8. Proportional RoPE on global layers: only ~25% of dims rotated
 //!   9. Norm weight shift = 0.0 (Gemma3 adds +1.0 in GGUF)
 
+use crate::backend::Backend;
 use crate::backend::metal::MetalOps;
 use crate::compute::{attention, rms_norm, rope, silu};
 use crate::gguf::tensor::GgmlType;

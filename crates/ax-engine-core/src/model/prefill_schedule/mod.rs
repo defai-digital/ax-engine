@@ -12,11 +12,6 @@ use std::sync::OnceLock;
 
 use crate::backend::metal::MetalOps;
 use crate::gguf::tensor::GgmlType;
-use crate::model::execution_plan::{
-    DecodeExecutionPlan, GpuBatchPrefillExecutionPlan, LlamaPrefillQkvPostPlan,
-    PrefillAttentionPlan, PrefillFfnActivationPlan, PrefillLogitsPlan, PrefillProjectionInputPlan,
-    PrefillResidualHandoffPlan, PrefillWoInputPlan,
-};
 use crate::model::shared::{
     encode_batch_logits, encode_dequant_batch, encode_dequant_batch_f16in,
     encode_dequant_batch_pair_f16in, encode_dequant_matvec,

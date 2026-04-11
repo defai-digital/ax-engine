@@ -107,8 +107,18 @@ pub(crate) fn encode_dequant_matvec_with_config(
                 .matmul
                 .encode_matvec(encoder, weight, input, output, m, k);
         }
+        GgmlType::Q5_0 => {
+            metal_ops
+                .dequant
+                .encode_fused_matvec_q5_0(encoder, weight, input, output, m, k);
+        }
+        GgmlType::Q5_1 => {
+            metal_ops
+                .dequant
+                .encode_fused_matvec_q5_1(encoder, weight, input, output, m, k);
+        }
         _ => panic!(
-            "GPU phased dispatch only supports F32, Q8_0, Q4_K, Q5_K, and Q6_K, got {:?}",
+            "GPU phased dispatch only supports F32, Q5_0, Q5_1, Q8_0, Q4_K, Q5_K, and Q6_K, got {:?}",
             dtype
         ),
     }

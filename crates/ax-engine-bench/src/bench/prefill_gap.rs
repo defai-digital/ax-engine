@@ -358,7 +358,6 @@ mod tests {
             prefill_split_rope_append: None,
             q5k_prefill_mode: None,
             support_note: None,
-            kernel_profile_path: None,
             qwen35_shared_timeline_slots: 1,
             qwen35_shared_timeline_source_slot: None,
             qwen35_recurrent_state_mode: crate::prefill_profile::Qwen35RecurrentStateMode::Auto,

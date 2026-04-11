@@ -70,10 +70,6 @@ pub struct MicrobenchReport {
     pub suggested_kernel_profile: Option<KernelProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggested_kernel_profile_evidence: Option<Vec<MicrobenchProfileEvidence>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub suggested_kernel_profile_export_decision: Option<MicrobenchProfileExportDecision>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub suggested_kernel_profile_export_status: Option<MicrobenchProfileExportStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,136 +95,6 @@ pub struct MicrobenchProfileEvidence {
     pub avg_speedup: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MicrobenchProfileExportBlockerKind {
-    BelowThreshold,
-    MissingEvidence,
-    Forced,
-}
-
-impl MicrobenchProfileExportBlockerKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::BelowThreshold => "below_threshold",
-            Self::MissingEvidence => "missing_evidence",
-            Self::Forced => "forced",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MicrobenchProfileExportBlocker {
-    pub kind: MicrobenchProfileExportBlockerKind,
-    pub reason: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rule: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub avg_speedup: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required_speedup: Option<f64>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub forced: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MicrobenchProfileExportDecision {
-    pub allowed: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocker_details: Vec<MicrobenchProfileExportBlocker>,
-    pub blockers: Vec<String>,
-}
-
-fn blocker_reasons(blockers: &[MicrobenchProfileExportBlocker]) -> Vec<String> {
-    blockers
-        .iter()
-        .map(|blocker| blocker.reason.clone())
-        .collect()
-}
-
-pub fn format_export_blocker(blocker: &MicrobenchProfileExportBlocker) -> String {
-    if let (Some(rule), Some(avg_speedup), Some(required_speedup)) =
-        (&blocker.rule, blocker.avg_speedup, blocker.required_speedup)
-    {
-        format!(
-            "{} kind={} rule={} avg={:.3}x required={:.3}x",
-            blocker.reason,
-            blocker.kind.label(),
-            rule,
-            avg_speedup,
-            required_speedup
-        )
-    } else {
-        format!("{} kind={}", blocker.reason, blocker.kind.label())
-    }
-}
-
-pub fn format_export_status_blockers(status: &MicrobenchProfileExportStatus) -> Vec<String> {
-    if !status.blocker_details.is_empty() {
-        status
-            .blocker_details
-            .iter()
-            .map(format_export_blocker)
-            .collect()
-    } else {
-        status.blockers.clone()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MicrobenchProfileExportAction {
-    NotRequested,
-    Blocked,
-    Write { override_used: bool },
-}
-
-impl MicrobenchProfileExportAction {
-    pub fn override_used(self) -> bool {
-        matches!(
-            self,
-            Self::Write {
-                override_used: true
-            }
-        )
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MicrobenchProfileExportStatus {
-    pub state: MicrobenchProfileExportState,
-    pub exit_code: i32,
-    pub requested: bool,
-    pub gate_allowed: bool,
-    pub override_used: bool,
-    pub wrote_profile: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocker_details: Vec<MicrobenchProfileExportBlocker>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blockers: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_path: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum MicrobenchProfileExportState {
-    NotRequested,
-    Blocked,
-    OverriddenAndWritten,
-    Written,
-}
-
-impl MicrobenchProfileExportState {
-    fn label(self) -> &'static str {
-        match self {
-            Self::NotRequested => "not_requested",
-            Self::Blocked => "blocked",
-            Self::OverriddenAndWritten => "overridden_and_written",
-            Self::Written => "written",
-        }
-    }
 }
 
 fn default_suite_runs() -> usize {
@@ -261,54 +127,6 @@ impl MicrobenchReport {
             .find(|suite| suite.suite == "gpu")
             .map(suggested_profile_evidence_for_suite)
             .unwrap_or_default()
-    }
-
-    pub fn suggested_kernel_profile_export_decision(&self) -> MicrobenchProfileExportDecision {
-        export_decision_from_evidence(&self.suggested_kernel_profile_evidence())
-    }
-
-    pub fn export_status(&self) -> Option<&MicrobenchProfileExportStatus> {
-        self.suggested_kernel_profile_export_status.as_ref()
-    }
-
-    pub fn with_export_outcome(
-        &self,
-        output_path: Option<String>,
-        action: MicrobenchProfileExportAction,
-        wrote_profile: bool,
-    ) -> Self {
-        let mut report = self.clone();
-        let decision = self.suggested_kernel_profile_export_decision();
-        let requested = output_path.is_some();
-        let override_used = action.override_used();
-        let state = match action {
-            MicrobenchProfileExportAction::NotRequested => {
-                MicrobenchProfileExportState::NotRequested
-            }
-            MicrobenchProfileExportAction::Blocked => MicrobenchProfileExportState::Blocked,
-            MicrobenchProfileExportAction::Write {
-                override_used: true,
-            } => MicrobenchProfileExportState::OverriddenAndWritten,
-            MicrobenchProfileExportAction::Write {
-                override_used: false,
-            } => MicrobenchProfileExportState::Written,
-        };
-        report.suggested_kernel_profile_export_status = Some(MicrobenchProfileExportStatus {
-            state,
-            exit_code: if matches!(state, MicrobenchProfileExportState::Blocked) {
-                1
-            } else {
-                0
-            },
-            requested,
-            gate_allowed: decision.allowed,
-            override_used,
-            wrote_profile,
-            blocker_details: decision.blocker_details,
-            blockers: decision.blockers,
-            output_path,
-        });
-        report
     }
 
     pub fn suggested_kernel_profile_json(&self) -> anyhow::Result<String> {
@@ -420,63 +238,6 @@ impl MicrobenchReport {
                 );
             }
         }
-        if let Some(decision) = &self.suggested_kernel_profile_export_decision {
-            eprintln!();
-            eprintln!(
-                "suggested_profile_export: {}",
-                if decision.allowed {
-                    "allowed"
-                } else {
-                    "blocked"
-                }
-            );
-            if !decision.blocker_details.is_empty() {
-                for blocker in &decision.blocker_details {
-                    eprintln!("  {}", format_export_blocker(blocker));
-                }
-            } else {
-                for blocker in &decision.blockers {
-                    eprintln!("  {}", blocker);
-                }
-            }
-        }
-        if let Some(status) = &self.suggested_kernel_profile_export_status {
-            eprintln!(
-                "suggested_profile_export_status: state={} exit_code={} requested={} gate_allowed={} override_used={} wrote_profile={}",
-                status.state.label(),
-                status.exit_code,
-                status.requested,
-                status.gate_allowed,
-                status.override_used,
-                status.wrote_profile,
-            );
-            for blocker in format_export_status_blockers(status) {
-                eprintln!("  blocker={blocker}");
-            }
-            if let Some(path) = &status.output_path {
-                eprintln!("  output_path={path}");
-            }
-        }
-    }
-}
-
-pub fn determine_profile_export_action(
-    requested: bool,
-    allow_low_confidence_export: bool,
-    decision: &MicrobenchProfileExportDecision,
-) -> MicrobenchProfileExportAction {
-    if !requested {
-        MicrobenchProfileExportAction::NotRequested
-    } else if decision.allowed {
-        MicrobenchProfileExportAction::Write {
-            override_used: false,
-        }
-    } else if allow_low_confidence_export {
-        MicrobenchProfileExportAction::Write {
-            override_used: true,
-        }
-    } else {
-        MicrobenchProfileExportAction::Blocked
     }
 }
 
@@ -514,8 +275,6 @@ pub fn run_microbench(config: &MicrobenchConfig) -> anyhow::Result<MicrobenchRep
             suites: suites.clone(),
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
         report.suggested_kernel_profile()
     });
@@ -525,20 +284,13 @@ pub fn run_microbench(config: &MicrobenchConfig) -> anyhow::Result<MicrobenchRep
                 suites: suites.clone(),
                 suggested_kernel_profile: None,
                 suggested_kernel_profile_evidence: None,
-                suggested_kernel_profile_export_decision: None,
-                suggested_kernel_profile_export_status: None,
             };
             report.suggested_kernel_profile_evidence()
         });
-    let suggested_kernel_profile_export_decision = suggested_kernel_profile_evidence
-        .as_ref()
-        .map(|evidence| export_decision_from_evidence(evidence));
     Ok(MicrobenchReport {
         suites,
         suggested_kernel_profile,
         suggested_kernel_profile_evidence,
-        suggested_kernel_profile_export_decision,
-        suggested_kernel_profile_export_status: None,
     })
 }
 
@@ -705,42 +457,42 @@ fn run_gpu_suite(iterations: usize) -> anyhow::Result<MicrobenchSuiteResult> {
 
     let q5k_prefill_shapes = [
         Q5KPrefillBatchShape {
-            model: "llama3_8b_q5k",
+            model: "8b_q5k",
             label: "attn_qkv",
             m: 4096,
             n: 512,
             k: 4096,
         },
         Q5KPrefillBatchShape {
-            model: "llama3_8b_q5k",
+            model: "8b_q5k",
             label: "ffn_up",
             m: 14336,
             n: 512,
             k: 4096,
         },
         Q5KPrefillBatchShape {
-            model: "llama3_8b_q5k",
+            model: "8b_q5k",
             label: "attn_qkv_small_window",
             m: 4096,
             n: 8,
             k: 4096,
         },
         Q5KPrefillBatchShape {
-            model: "llama3_70b_mixed_q5k",
+            model: "70b_mixed_q5k",
             label: "attn_qkv",
             m: 8192,
             n: 512,
             k: 8192,
         },
         Q5KPrefillBatchShape {
-            model: "llama3_70b_mixed_q5k",
+            model: "70b_mixed_q5k",
             label: "ffn_up",
             m: 28672,
             n: 512,
             k: 8192,
         },
         Q5KPrefillBatchShape {
-            model: "llama3_70b_mixed_q5k",
+            model: "70b_mixed_q5k",
             label: "attn_qkv_small_window",
             m: 8192,
             n: 8,
@@ -760,14 +512,14 @@ fn run_gpu_suite(iterations: usize) -> anyhow::Result<MicrobenchSuiteResult> {
 
     let exact_prefill_batch_shapes = [
         QuantPrefillBatchShape {
-            model: "llama3_8b",
+            model: "8b_q4k",
             label: "attn_qkv",
             m: 4096,
             n: 512,
             k: 4096,
         },
         QuantPrefillBatchShape {
-            model: "llama3_8b",
+            model: "8b_q4k",
             label: "ffn_down",
             m: 4096,
             n: 512,
@@ -843,7 +595,7 @@ fn run_gpu_suite(iterations: usize) -> anyhow::Result<MicrobenchSuiteResult> {
 
     let exact_prefill_pair_shapes = [
         QuantPrefillPairShape {
-            model: "llama3_8b",
+            model: "8b_q4k",
             label: "ffn_gate_up",
             m: 14336,
             n: 512,
@@ -3083,107 +2835,6 @@ fn recommendation_required_wins(suite: &MicrobenchSuiteResult) -> usize {
     suite.suite_runs.max(2)
 }
 
-fn export_speedup_threshold(evidence: &MicrobenchProfileEvidence) -> f64 {
-    evidence.min_speedup + if evidence.suite_runs <= 1 { 0.02 } else { 0.01 }
-}
-
-fn forced_export_blocker_value(value: Option<&str>) -> Option<String> {
-    match value {
-        Some("1") => {
-            Some("forced export block via AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK=1".to_string())
-        }
-        _ => None,
-    }
-}
-
-fn forced_export_blocker() -> Option<String> {
-    let value = std::env::var("AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK").ok();
-    forced_export_blocker_value(value.as_deref())
-}
-
-fn apply_export_decision_overrides(
-    mut decision: MicrobenchProfileExportDecision,
-    forced_blocker: Option<String>,
-) -> MicrobenchProfileExportDecision {
-    if let Some(forced_blocker) = forced_blocker {
-        decision.allowed = false;
-        if !decision
-            .blocker_details
-            .iter()
-            .any(|blocker| blocker.reason == forced_blocker && blocker.forced)
-        {
-            decision
-                .blocker_details
-                .push(MicrobenchProfileExportBlocker {
-                    kind: MicrobenchProfileExportBlockerKind::Forced,
-                    reason: forced_blocker,
-                    rule: None,
-                    avg_speedup: None,
-                    required_speedup: None,
-                    forced: true,
-                });
-        }
-    }
-    decision.blockers = blocker_reasons(&decision.blocker_details);
-    decision
-}
-
-fn export_decision_from_evidence(
-    evidence: &[MicrobenchProfileEvidence],
-) -> MicrobenchProfileExportDecision {
-    export_decision_from_evidence_with_forced_blocker(evidence, forced_export_blocker())
-}
-
-fn export_decision_from_evidence_with_forced_blocker(
-    evidence: &[MicrobenchProfileEvidence],
-    forced_blocker: Option<String>,
-) -> MicrobenchProfileExportDecision {
-    let mut blocker_details = Vec::new();
-    for item in evidence.iter().filter(|item| item.promoted) {
-        let required_speedup = export_speedup_threshold(item);
-        match item.avg_speedup {
-            Some(avg_speedup) if avg_speedup >= required_speedup => {}
-            Some(avg_speedup) => {
-                let reason = format!(
-                    "{} avg speedup {:.3}x below export threshold {:.3}x",
-                    item.rule, avg_speedup, required_speedup
-                );
-                blocker_details.push(MicrobenchProfileExportBlocker {
-                    kind: MicrobenchProfileExportBlockerKind::BelowThreshold,
-                    reason,
-                    rule: Some(item.rule.clone()),
-                    avg_speedup: Some(avg_speedup),
-                    required_speedup: Some(required_speedup),
-                    forced: false,
-                });
-            }
-            None => {
-                let reason = format!(
-                    "{} missing average speedup evidence for promoted rule",
-                    item.rule
-                );
-                blocker_details.push(MicrobenchProfileExportBlocker {
-                    kind: MicrobenchProfileExportBlockerKind::MissingEvidence,
-                    reason,
-                    rule: Some(item.rule.clone()),
-                    avg_speedup: None,
-                    required_speedup: Some(required_speedup),
-                    forced: false,
-                });
-            }
-        }
-    }
-
-    apply_export_decision_overrides(
-        MicrobenchProfileExportDecision {
-            allowed: blocker_details.is_empty(),
-            blocker_details,
-            blockers: Vec::new(),
-        },
-        forced_blocker,
-    )
-}
-
 fn suggested_profile_evidence_for_suite(
     suite: &MicrobenchSuiteResult,
 ) -> Vec<MicrobenchProfileEvidence> {
@@ -3535,8 +3186,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -3600,8 +3249,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -3658,8 +3305,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -3716,8 +3361,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -3756,8 +3399,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -3806,8 +3447,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -3874,8 +3513,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -3921,8 +3558,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -3982,8 +3617,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -4011,8 +3644,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -4051,8 +3682,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -4118,8 +3747,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -4133,170 +3760,6 @@ mod tests {
         assert!(splitk.promoted);
         assert_eq!(splitk.observed_wins, 2);
         assert_eq!(splitk.variant.as_deref(), Some("splitk@256"));
-    }
-
-    #[test]
-    fn test_suggested_kernel_profile_export_decision_blocks_low_confidence_splitk_256_promotion() {
-        let report = MicrobenchReport {
-            suites: vec![MicrobenchSuiteResult {
-                suite: "gpu".to_string(),
-                iterations: 1,
-                suite_runs: 2,
-                device: None,
-                recommendations: Some(vec![
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "splitk".to_string(),
-                        m: 256,
-                        k: 256,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.05,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "splitk".to_string(),
-                        m: 256,
-                        k: 256,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.06,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "splitk".to_string(),
-                        m: 256,
-                        k: 1024,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.05,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "splitk".to_string(),
-                        m: 256,
-                        k: 1024,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.06,
-                    },
-                ]),
-                measurements: Vec::new(),
-            }],
-            suggested_kernel_profile: None,
-            suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
-        };
-
-        let decision = report.suggested_kernel_profile_export_decision();
-        assert!(!decision.allowed);
-        assert!(
-            decision
-                .blockers
-                .iter()
-                .any(|blocker| blocker.contains("decode_attention.hd256.splitk_threshold"))
-        );
-    }
-
-    #[test]
-    fn test_suggested_kernel_profile_export_decision_allows_high_confidence_splitk_1024() {
-        let report = MicrobenchReport {
-            suites: vec![MicrobenchSuiteResult {
-                suite: "gpu".to_string(),
-                iterations: 1,
-                suite_runs: 2,
-                device: None,
-                recommendations: Some(vec![
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "splitk".to_string(),
-                        m: 256,
-                        k: 1024,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "splitk".to_string(),
-                        m: 256,
-                        k: 1024,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                ]),
-                measurements: Vec::new(),
-            }],
-            suggested_kernel_profile: None,
-            suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
-        };
-
-        let decision = report.suggested_kernel_profile_export_decision();
-        assert!(decision.allowed);
-        assert!(decision.blockers.is_empty());
-    }
-
-    #[test]
-    fn test_suggested_kernel_profile_export_decision_allows_high_confidence_splitk_256() {
-        let report = MicrobenchReport {
-            suites: vec![MicrobenchSuiteResult {
-                suite: "gpu".to_string(),
-                iterations: 1,
-                suite_runs: 2,
-                device: None,
-                recommendations: Some(vec![
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "splitk".to_string(),
-                        m: 256,
-                        k: 256,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "splitk".to_string(),
-                        m: 256,
-                        k: 256,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "splitk".to_string(),
-                        m: 256,
-                        k: 1024,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "splitk".to_string(),
-                        m: 256,
-                        k: 1024,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                ]),
-                measurements: Vec::new(),
-            }],
-            suggested_kernel_profile: None,
-            suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
-        };
-
-        let decision = report.suggested_kernel_profile_export_decision();
-        assert!(decision.allowed);
-        assert!(decision.blockers.is_empty());
     }
 
     #[test]
@@ -4426,8 +3889,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let evidence = report.suggested_kernel_profile_evidence();
@@ -4448,198 +3909,6 @@ mod tests {
         assert!(sdpa.promoted);
         assert_eq!(sdpa.observed_wins, 2);
         assert_eq!(sdpa.variant.as_deref(), Some("sdpa"));
-    }
-
-    #[test]
-    fn test_suggested_kernel_profile_export_decision_blocks_low_confidence_promotion() {
-        let report = MicrobenchReport {
-            suites: vec![MicrobenchSuiteResult {
-                suite: "gpu".to_string(),
-                iterations: 1,
-                suite_runs: 1,
-                device: None,
-                recommendations: Some(vec![
-                    MicrobenchRecommendation {
-                        domain: "decode_matvec".to_string(),
-                        quant: "q4_k".to_string(),
-                        variant: "nr2".to_string(),
-                        m: 4096,
-                        k: 4096,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_matvec".to_string(),
-                        quant: "q4_k".to_string(),
-                        variant: "nr2".to_string(),
-                        m: 8192,
-                        k: 4096,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                ]),
-                measurements: Vec::new(),
-            }],
-            suggested_kernel_profile: None,
-            suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
-        };
-
-        let decision = report.suggested_kernel_profile_export_decision();
-        assert!(!decision.allowed);
-        assert!(!decision.blockers.is_empty());
-        assert_eq!(decision.blocker_details.len(), 1);
-        let blocker = &decision.blocker_details[0];
-        assert!(matches!(
-            blocker.kind,
-            MicrobenchProfileExportBlockerKind::BelowThreshold
-        ));
-        assert_eq!(blocker.rule.as_deref(), Some("decode_matvec.q4_k"));
-        assert_eq!(blocker.avg_speedup, Some(1.08));
-        assert_eq!(blocker.required_speedup, Some(1.10));
-        assert!(!blocker.forced);
-    }
-
-    #[test]
-    fn test_suggested_kernel_profile_export_decision_allows_high_confidence_promotion() {
-        let report = MicrobenchReport {
-            suites: vec![MicrobenchSuiteResult {
-                suite: "gpu".to_string(),
-                iterations: 1,
-                suite_runs: 2,
-                device: None,
-                recommendations: Some(vec![
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "sdpa".to_string(),
-                        m: 256,
-                        k: 256,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "sdpa".to_string(),
-                        m: 256,
-                        k: 256,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "sdpa".to_string(),
-                        m: 256,
-                        k: 1024,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "sdpa".to_string(),
-                        m: 256,
-                        k: 1024,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.10,
-                    },
-                ]),
-                measurements: Vec::new(),
-            }],
-            suggested_kernel_profile: None,
-            suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
-        };
-
-        let decision = report.suggested_kernel_profile_export_decision();
-        assert!(decision.allowed);
-        assert!(decision.blockers.is_empty());
-    }
-
-    #[test]
-    fn test_suggested_kernel_profile_export_decision_allows_high_confidence_matvec_q4() {
-        let report = MicrobenchReport {
-            suites: vec![MicrobenchSuiteResult {
-                suite: "gpu".to_string(),
-                iterations: 1,
-                suite_runs: 2,
-                device: None,
-                recommendations: Some(vec![
-                    MicrobenchRecommendation {
-                        domain: "decode_matvec".to_string(),
-                        quant: "q4_k".to_string(),
-                        variant: "nr2".to_string(),
-                        m: 4096,
-                        k: 4096,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_matvec".to_string(),
-                        quant: "q4_k".to_string(),
-                        variant: "nr2".to_string(),
-                        m: 8192,
-                        k: 4096,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                ]),
-                measurements: Vec::new(),
-            }],
-            suggested_kernel_profile: None,
-            suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
-        };
-
-        let decision = report.suggested_kernel_profile_export_decision();
-        assert!(decision.allowed);
-        assert!(decision.blockers.is_empty());
-    }
-
-    #[test]
-    fn test_suggested_kernel_profile_export_decision_allows_high_confidence_matvec_q6() {
-        let report = MicrobenchReport {
-            suites: vec![MicrobenchSuiteResult {
-                suite: "gpu".to_string(),
-                iterations: 1,
-                suite_runs: 2,
-                device: None,
-                recommendations: Some(vec![
-                    MicrobenchRecommendation {
-                        domain: "decode_matvec".to_string(),
-                        quant: "q6_k".to_string(),
-                        variant: "nr2".to_string(),
-                        m: 1024,
-                        k: 4096,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_matvec".to_string(),
-                        quant: "q6_k".to_string(),
-                        variant: "nr2".to_string(),
-                        m: 4096,
-                        k: 4096,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                ]),
-                measurements: Vec::new(),
-            }],
-            suggested_kernel_profile: None,
-            suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
-        };
-
-        let decision = report.suggested_kernel_profile_export_decision();
-        assert!(decision.allowed);
-        assert!(decision.blockers.is_empty());
     }
 
     #[test]
@@ -4692,8 +3961,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -4744,8 +4011,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -4796,8 +4061,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -4806,548 +4069,6 @@ mod tests {
             profile.attention_prefill.fa2_hd128_mode,
             ProfileKernelMode::Off
         );
-    }
-
-    #[test]
-    fn test_suggested_kernel_profile_export_decision_blocks_low_confidence_prefill_promotion() {
-        let report = MicrobenchReport {
-            suites: vec![MicrobenchSuiteResult {
-                suite: "gpu".to_string(),
-                iterations: 1,
-                suite_runs: 2,
-                device: None,
-                recommendations: Some(vec![
-                    MicrobenchRecommendation {
-                        domain: "prefill_attention".to_string(),
-                        quant: "prefill_local_hd128".to_string(),
-                        variant: "fa2_hd128".to_string(),
-                        m: 128,
-                        k: 512,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.05,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "prefill_attention".to_string(),
-                        quant: "prefill_local_hd128".to_string(),
-                        variant: "fa2_hd128".to_string(),
-                        m: 128,
-                        k: 512,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.06,
-                    },
-                ]),
-                measurements: Vec::new(),
-            }],
-            suggested_kernel_profile: None,
-            suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
-        };
-
-        let evidence = report.suggested_kernel_profile_evidence();
-        assert!(evidence.iter().any(|item| {
-            item.rule == "prefill_attention.local_hd128.fa2_hd128_mode" && item.promoted
-        }));
-
-        let decision = report.suggested_kernel_profile_export_decision();
-        assert!(!decision.allowed);
-        assert!(
-            decision.blockers.iter().any(|blocker| {
-                blocker.contains("prefill_attention.local_hd128.fa2_hd128_mode")
-            })
-        );
-    }
-
-    #[test]
-    fn test_suggested_kernel_profile_export_decision_allows_high_confidence_prefill_local_hd128() {
-        let report = MicrobenchReport {
-            suites: vec![MicrobenchSuiteResult {
-                suite: "gpu".to_string(),
-                iterations: 1,
-                suite_runs: 2,
-                device: None,
-                recommendations: Some(vec![
-                    MicrobenchRecommendation {
-                        domain: "prefill_attention".to_string(),
-                        quant: "prefill_local_hd128".to_string(),
-                        variant: "fa2_hd128".to_string(),
-                        m: 128,
-                        k: 512,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "prefill_attention".to_string(),
-                        quant: "prefill_local_hd128".to_string(),
-                        variant: "fa2_hd128".to_string(),
-                        m: 128,
-                        k: 512,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                ]),
-                measurements: Vec::new(),
-            }],
-            suggested_kernel_profile: None,
-            suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
-        };
-
-        let decision = report.suggested_kernel_profile_export_decision();
-        assert!(decision.allowed);
-        assert!(decision.blockers.is_empty());
-    }
-
-    #[test]
-    fn test_suggested_kernel_profile_export_decision_allows_high_confidence_prefill_cached_hd256() {
-        let report = MicrobenchReport {
-            suites: vec![MicrobenchSuiteResult {
-                suite: "gpu".to_string(),
-                iterations: 1,
-                suite_runs: 2,
-                device: None,
-                recommendations: Some(vec![
-                    MicrobenchRecommendation {
-                        domain: "prefill_attention".to_string(),
-                        quant: "prefill_cached_hd256_f16kv".to_string(),
-                        variant: "fa2".to_string(),
-                        m: 256,
-                        k: 512,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "prefill_attention".to_string(),
-                        quant: "prefill_cached_hd256_f16kv".to_string(),
-                        variant: "fa2".to_string(),
-                        m: 256,
-                        k: 512,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                ]),
-                measurements: Vec::new(),
-            }],
-            suggested_kernel_profile: None,
-            suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
-        };
-
-        let decision = report.suggested_kernel_profile_export_decision();
-        assert!(decision.allowed);
-        assert!(decision.blockers.is_empty());
-    }
-
-    #[test]
-    fn test_suggested_kernel_profile_export_decision_allows_high_confidence_mixed_profile() {
-        let report = MicrobenchReport {
-            suites: vec![MicrobenchSuiteResult {
-                suite: "gpu".to_string(),
-                iterations: 1,
-                suite_runs: 2,
-                device: None,
-                recommendations: Some(vec![
-                    MicrobenchRecommendation {
-                        domain: "decode_matvec".to_string(),
-                        quant: "q4_k".to_string(),
-                        variant: "nr2".to_string(),
-                        m: 4096,
-                        k: 4096,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_matvec".to_string(),
-                        quant: "q4_k".to_string(),
-                        variant: "nr2".to_string(),
-                        m: 8192,
-                        k: 4096,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_matvec".to_string(),
-                        quant: "q6_k".to_string(),
-                        variant: "nr2".to_string(),
-                        m: 1024,
-                        k: 4096,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_matvec".to_string(),
-                        quant: "q6_k".to_string(),
-                        variant: "nr2".to_string(),
-                        m: 4096,
-                        k: 4096,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "sdpa".to_string(),
-                        m: 256,
-                        k: 256,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "sdpa".to_string(),
-                        m: 256,
-                        k: 256,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "sdpa".to_string(),
-                        m: 256,
-                        k: 1024,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "sdpa".to_string(),
-                        m: 256,
-                        k: 1024,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.10,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "prefill_attention".to_string(),
-                        quant: "prefill_local_hd128".to_string(),
-                        variant: "fa2_hd128".to_string(),
-                        m: 128,
-                        k: 512,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "prefill_attention".to_string(),
-                        quant: "prefill_local_hd128".to_string(),
-                        variant: "fa2_hd128".to_string(),
-                        m: 128,
-                        k: 512,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "prefill_attention".to_string(),
-                        quant: "prefill_cached_hd256_f16kv".to_string(),
-                        variant: "fa2".to_string(),
-                        m: 256,
-                        k: 512,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "prefill_attention".to_string(),
-                        quant: "prefill_cached_hd256_f16kv".to_string(),
-                        variant: "fa2".to_string(),
-                        m: 256,
-                        k: 512,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                ]),
-                measurements: Vec::new(),
-            }],
-            suggested_kernel_profile: None,
-            suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
-        };
-
-        let decision = report.suggested_kernel_profile_export_decision();
-        assert!(decision.allowed);
-        assert!(decision.blockers.is_empty());
-
-        let profile = report.suggested_kernel_profile();
-        assert_eq!(
-            profile
-                .decode_matvec
-                .get("q4_k")
-                .unwrap()
-                .rows_per_simdgroup,
-            2
-        );
-        assert_eq!(
-            profile
-                .decode_matvec
-                .get("q6_k")
-                .unwrap()
-                .rows_per_simdgroup,
-            2
-        );
-        assert_eq!(profile.attention_decode.sdpa_default, Some(true));
-        assert_eq!(
-            profile.attention_prefill.fa2_hd128_mode,
-            ProfileKernelMode::On
-        );
-        assert_eq!(profile.attention_prefill.fa2_mode, ProfileKernelMode::On);
-    }
-
-    #[test]
-    fn test_suggested_kernel_profile_export_decision_blocks_mixed_profile_on_weak_rule() {
-        let report = MicrobenchReport {
-            suites: vec![MicrobenchSuiteResult {
-                suite: "gpu".to_string(),
-                iterations: 1,
-                suite_runs: 2,
-                device: None,
-                recommendations: Some(vec![
-                    MicrobenchRecommendation {
-                        domain: "decode_matvec".to_string(),
-                        quant: "q4_k".to_string(),
-                        variant: "nr2".to_string(),
-                        m: 4096,
-                        k: 4096,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_matvec".to_string(),
-                        quant: "q4_k".to_string(),
-                        variant: "nr2".to_string(),
-                        m: 8192,
-                        k: 4096,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "sdpa".to_string(),
-                        m: 256,
-                        k: 256,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "sdpa".to_string(),
-                        m: 256,
-                        k: 256,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "sdpa".to_string(),
-                        m: 256,
-                        k: 1024,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.09,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_attention".to_string(),
-                        quant: "attn_hd256_f16kv".to_string(),
-                        variant: "sdpa".to_string(),
-                        m: 256,
-                        k: 1024,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.10,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "prefill_attention".to_string(),
-                        quant: "prefill_local_hd128".to_string(),
-                        variant: "fa2_hd128".to_string(),
-                        m: 128,
-                        k: 512,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.05,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "prefill_attention".to_string(),
-                        quant: "prefill_local_hd128".to_string(),
-                        variant: "fa2_hd128".to_string(),
-                        m: 128,
-                        k: 512,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.06,
-                    },
-                ]),
-                measurements: Vec::new(),
-            }],
-            suggested_kernel_profile: None,
-            suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
-        };
-
-        let decision = report.suggested_kernel_profile_export_decision();
-        assert!(!decision.allowed);
-        assert!(
-            decision.blockers.iter().any(|blocker| {
-                blocker.contains("prefill_attention.local_hd128.fa2_hd128_mode")
-            })
-        );
-    }
-
-    #[test]
-    fn test_apply_export_decision_overrides_forces_block() {
-        let decision = apply_export_decision_overrides(
-            MicrobenchProfileExportDecision {
-                allowed: true,
-                blocker_details: Vec::new(),
-                blockers: Vec::new(),
-            },
-            Some("forced block".to_string()),
-        );
-        assert!(!decision.allowed);
-        assert_eq!(decision.blockers, vec!["forced block".to_string()]);
-        assert_eq!(decision.blocker_details.len(), 1);
-        assert!(decision.blocker_details[0].forced);
-    }
-
-    #[test]
-    fn test_apply_export_decision_overrides_deduplicates_forced_blocker() {
-        let decision = apply_export_decision_overrides(
-            MicrobenchProfileExportDecision {
-                allowed: false,
-                blocker_details: vec![MicrobenchProfileExportBlocker {
-                    kind: MicrobenchProfileExportBlockerKind::Forced,
-                    reason: "forced block".to_string(),
-                    rule: None,
-                    avg_speedup: None,
-                    required_speedup: None,
-                    forced: true,
-                }],
-                blockers: vec!["forced block".to_string()],
-            },
-            Some("forced block".to_string()),
-        );
-        assert!(!decision.allowed);
-        assert_eq!(decision.blockers, vec!["forced block".to_string()]);
-        assert_eq!(decision.blocker_details.len(), 1);
-        assert!(matches!(
-            decision.blocker_details[0].kind,
-            MicrobenchProfileExportBlockerKind::Forced
-        ));
-    }
-
-    #[test]
-    fn test_export_decision_from_evidence_honors_forced_block_env() {
-        let decision = export_decision_from_evidence_with_forced_blocker(
-            &[],
-            forced_export_blocker_value(Some("1")),
-        );
-        assert!(!decision.allowed);
-        assert!(decision.blockers.iter().any(|blocker| {
-            blocker == "forced export block via AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK=1"
-        }));
-        assert!(decision.blocker_details.iter().any(|blocker| {
-            matches!(blocker.kind, MicrobenchProfileExportBlockerKind::Forced)
-                && blocker.forced
-                && blocker.reason
-                    == "forced export block via AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK=1"
-        }));
-    }
-
-    #[test]
-    fn test_forced_export_blocker_value_ignores_disabled_values() {
-        assert_eq!(forced_export_blocker_value(None), None);
-        assert_eq!(forced_export_blocker_value(Some("0")), None);
-        assert_eq!(forced_export_blocker_value(Some("off")), None);
-    }
-
-    #[test]
-    fn test_with_export_status_records_actual_export_outcome() {
-        let report = MicrobenchReport {
-            suites: vec![MicrobenchSuiteResult {
-                suite: "gpu".to_string(),
-                iterations: 1,
-                suite_runs: 1,
-                device: None,
-                recommendations: Some(vec![
-                    MicrobenchRecommendation {
-                        domain: "decode_matvec".to_string(),
-                        quant: "q4_k".to_string(),
-                        variant: "nr2".to_string(),
-                        m: 4096,
-                        k: 4096,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                    MicrobenchRecommendation {
-                        domain: "decode_matvec".to_string(),
-                        quant: "q4_k".to_string(),
-                        variant: "nr2".to_string(),
-                        m: 8192,
-                        k: 4096,
-                        best_ms: 1.0,
-                        speedup_vs_auto: 1.08,
-                    },
-                ]),
-                measurements: Vec::new(),
-            }],
-            suggested_kernel_profile: None,
-            suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
-        }
-        .with_export_outcome(
-            Some("/tmp/profile.json".to_string()),
-            MicrobenchProfileExportAction::Write {
-                override_used: true,
-            },
-            true,
-        );
-
-        let status = report.suggested_kernel_profile_export_status.unwrap();
-        assert_eq!(
-            status.state,
-            MicrobenchProfileExportState::OverriddenAndWritten
-        );
-        assert_eq!(status.exit_code, 0);
-        assert!(status.requested);
-        assert!(!status.gate_allowed);
-        assert!(status.override_used);
-        assert!(status.wrote_profile);
-        assert!(!status.blockers.is_empty());
-        assert_eq!(status.blocker_details.len(), 1);
-        assert_eq!(
-            status.blocker_details[0].rule.as_deref(),
-            Some("decode_matvec.q4_k")
-        );
-        assert_eq!(status.output_path.as_deref(), Some("/tmp/profile.json"));
-    }
-
-    #[test]
-    fn test_with_export_status_can_record_blocked_export() {
-        let report = MicrobenchReport {
-            suites: vec![],
-            suggested_kernel_profile: None,
-            suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
-        }
-        .with_export_outcome(
-            Some("/tmp/profile.json".to_string()),
-            MicrobenchProfileExportAction::Blocked,
-            false,
-        );
-
-        let status = report.suggested_kernel_profile_export_status.unwrap();
-        assert_eq!(status.state, MicrobenchProfileExportState::Blocked);
-        assert_eq!(status.exit_code, 1);
-        assert!(status.requested);
-        assert!(status.gate_allowed);
-        assert!(!status.override_used);
-        assert!(!status.wrote_profile);
-        assert!(status.blockers.is_empty());
-        assert!(status.blocker_details.is_empty());
-        assert_eq!(status.output_path.as_deref(), Some("/tmp/profile.json"));
     }
 
     #[test]
@@ -5542,8 +4263,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -5593,7 +4312,7 @@ mod tests {
                 ]),
                 measurements: vec![
                     MicrobenchMeasurement {
-                        name: "gpu.prefill_matmul.q5_k.base.llama3_8b_q5k.attn_qkv.tokens512.4096x4096".to_string(),
+                        name: "gpu.prefill_matmul.q5_k.base.8b_q5k.attn_qkv.tokens512.4096x4096".to_string(),
                         unit: "ms".to_string(),
                         value: 1.0,
                         note: Some(q5k_prefill_batch_measurement_note(
@@ -5601,7 +4320,7 @@ mod tests {
                         )),
                     },
                     MicrobenchMeasurement {
-                        name: "gpu.prefill_matmul.q5_k.base.llama3_8b_q5k.ffn_up.tokens512.14336x4096"
+                        name: "gpu.prefill_matmul.q5_k.base.8b_q5k.ffn_up.tokens512.14336x4096"
                             .to_string(),
                         unit: "ms".to_string(),
                         value: 2.0,
@@ -5610,7 +4329,7 @@ mod tests {
                         )),
                     },
                     MicrobenchMeasurement {
-                        name: "gpu.prefill_matmul.q5_k.small.llama3_8b_q5k.attn_qkv_small_window.tokens8.4096x4096"
+                        name: "gpu.prefill_matmul.q5_k.small.8b_q5k.attn_qkv_small_window.tokens8.4096x4096"
                             .to_string(),
                         unit: "ms".to_string(),
                         value: 0.8,
@@ -5622,8 +4341,6 @@ mod tests {
             }],
             suggested_kernel_profile: None,
             suggested_kernel_profile_evidence: None,
-            suggested_kernel_profile_export_decision: None,
-            suggested_kernel_profile_export_status: None,
         };
 
         let profile = report.suggested_kernel_profile();
@@ -5646,14 +4363,14 @@ mod tests {
     #[test]
     fn test_q5k_prefill_batch_variants_add_small_route_only_for_small_n() {
         let small = Q5KPrefillBatchShape {
-            model: "llama3_8b_q5k",
+            model: "8b_q5k",
             label: "attn_qkv_small_window",
             m: 4096,
             n: 8,
             k: 4096,
         };
         let large = Q5KPrefillBatchShape {
-            model: "llama3_8b_q5k",
+            model: "8b_q5k",
             label: "attn_qkv",
             m: 4096,
             n: 512,

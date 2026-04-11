@@ -202,6 +202,31 @@ pub fn init_global_threadpool() -> usize {
     n
 }
 
+/// Configure rayon's global thread pool with an explicit thread count.
+///
+/// Like [`init_global_threadpool`] but uses a caller-specified thread count
+/// instead of auto-detecting P-cores. Useful when the user supplies `-t N` on
+/// the CLI. Threads are still pinned to P-cores via QoS class.
+///
+/// Returns the number of threads configured.
+pub fn init_global_threadpool_with_count(n: usize) -> usize {
+    let n = n.max(1);
+    let result = rayon::ThreadPoolBuilder::new()
+        .num_threads(n)
+        .start_handler(|_| {
+            pin_current_thread_to_pcore();
+        })
+        .build_global();
+    if let Err(e) = result {
+        tracing::warn!("Failed to configure rayon global pool: {e}");
+    }
+    tracing::info!(
+        threads = n,
+        "Rayon global thread pool initialized (explicit count, P-core pinned)"
+    );
+    n
+}
+
 /// Detect the number of performance cores on Apple Silicon.
 ///
 /// Uses `sysctlbyname("hw.perflevel0.logicalcpu")` which returns the

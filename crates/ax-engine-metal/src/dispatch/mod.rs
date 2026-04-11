@@ -2,8 +2,7 @@
 //!
 //! Provides dispatch dimension calculations and matmul kernel dispatch.
 
-use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use anyhow::Context;
 use objc2::runtime::ProtocolObject;
@@ -34,7 +33,7 @@ use common::{bind_buffers, bind_buffers7, bind_f32, bind_u32};
 #[cfg(test)]
 use dequant::{DB_TILE_M, SB_TG, SB_TILE_N};
 use dequant::{
-    DB_TILE_N, DEQUANT_MATVEC_Q4K_ILP4_TG, DEQUANT_MATVEC_Q4K_NR2_TG, DEQUANT_MATVEC_Q5K_TG,
+    DEQUANT_MATVEC_Q4K_ILP4_TG, DEQUANT_MATVEC_Q4K_NR2_TG, DEQUANT_MATVEC_Q5K_TG,
     DEQUANT_MATVEC_Q6K_NR2_TG, DEQUANT_MATVEC_Q8_0_ILP4_TG, DEQUANT_MATVEC_Q8_0_NR2_TG,
     DEQUANT_MATVEC_TG, Q4K_ILP4_ROWS, Q4K_NR2_ROWS, Q5K_NR2_ROWS, Q6K_NR2_ROWS, Q8_0_ILP4_ROWS,
     Q8_0_NR2_ROWS,
@@ -99,33 +98,33 @@ struct AttentionRoutingProfile {
 
 const ATTN_PROFILE_DEFAULT: AttentionRoutingProfile = AttentionRoutingProfile {
     name: "default",
-    prefill_fa2_auto_min_tokens: 512,
-    prefill_fa2_auto_min_base_seq: 256,
-    prefill_fa2_hd128_auto_min_tokens: 512,
-    decode_splitk_auto_min_tokens: 512,
-    decode_splitk_chunk_size: 256,
+    prefill_fa2_auto_min_tokens: 16,
+    prefill_fa2_auto_min_base_seq: 16,
+    prefill_fa2_hd128_auto_min_tokens: 16,
+    decode_splitk_auto_min_tokens: 32,
+    decode_splitk_chunk_size: 128,
     decode_sdpa_default: false,
     decode_hd128_n2_default: false,
 };
 
 const ATTN_PROFILE_DECODE_BALANCED: AttentionRoutingProfile = AttentionRoutingProfile {
     name: "decode-balanced",
-    prefill_fa2_auto_min_tokens: 640,
-    prefill_fa2_auto_min_base_seq: 320,
-    prefill_fa2_hd128_auto_min_tokens: 640,
-    decode_splitk_auto_min_tokens: 384,
-    decode_splitk_chunk_size: 256,
+    prefill_fa2_auto_min_tokens: 16,
+    prefill_fa2_auto_min_base_seq: 16,
+    prefill_fa2_hd128_auto_min_tokens: 16,
+    decode_splitk_auto_min_tokens: 32,
+    decode_splitk_chunk_size: 128,
     decode_sdpa_default: false,
     decode_hd128_n2_default: true,
 };
 
 const ATTN_PROFILE_DECODE_LONG_CONTEXT: AttentionRoutingProfile = AttentionRoutingProfile {
     name: "decode-long-context",
-    prefill_fa2_auto_min_tokens: 768,
-    prefill_fa2_auto_min_base_seq: 512,
-    prefill_fa2_hd128_auto_min_tokens: 768,
-    decode_splitk_auto_min_tokens: 256,
-    decode_splitk_chunk_size: 256,
+    prefill_fa2_auto_min_tokens: 16,
+    prefill_fa2_auto_min_base_seq: 16,
+    prefill_fa2_hd128_auto_min_tokens: 16,
+    decode_splitk_auto_min_tokens: 32,
+    decode_splitk_chunk_size: 128,
     decode_sdpa_default: true,
     decode_hd128_n2_default: true,
 };
@@ -163,39 +162,6 @@ pub struct AttentionDispatchConfig {
 impl Default for AttentionDispatchConfig {
     fn default() -> Self {
         Self::from_profile(&KernelProfile::default())
-    }
-}
-
-fn legacy_kernel_override(var: &'static str) -> Option<String> {
-    let value = std::env::var(var).ok()?;
-    static WARNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    let warned = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
-    if warned
-        .lock()
-        .expect("legacy override warning lock")
-        .insert(var)
-    {
-        tracing::warn!(
-            env = var,
-            "Legacy low-level kernel override is deprecated; prefer AX_KERNEL_PROFILE_PATH, kernel profiles, or microbench-generated recommendations",
-        );
-    }
-    Some(value)
-}
-
-fn warn_ignored_profile_override(key: &'static str, reason: &'static str) {
-    static WARNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    let warned = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
-    if warned
-        .lock()
-        .expect("ignored profile warning lock")
-        .insert(key)
-    {
-        tracing::warn!(
-            profile_key = key,
-            reason,
-            "Kernel profile entry is currently ignored"
-        );
     }
 }
 
@@ -241,7 +207,8 @@ impl AttentionDispatchConfig {
                 profile_kernel_mode(profile.attention_prefill.ax_bc64_mode.clone());
             let mode = parse_kernel_mode("AX_METAL_PREFILL_BC64_MODE", profile_default);
             match mode {
-                KernelMode::Off => match legacy_kernel_override("AX_METAL_PREFILL_BC64")
+                KernelMode::Off => match std::env::var("AX_METAL_PREFILL_BC64")
+                    .ok()
                     .and_then(|v| parse_bool_env_flag(&v))
                 {
                     Some(true) => KernelMode::On,
@@ -314,7 +281,7 @@ impl AttentionDispatchConfig {
         let decode_sdpa_default_pinned = std::env::var_os("AX_METAL_DECODE_SDPA").is_some()
             || profile.attention_decode.sdpa_default
                 != default_profile.attention_decode.sdpa_default;
-        let decode_sdpa_default = match legacy_kernel_override("AX_METAL_DECODE_SDPA") {
+        let decode_sdpa_default = match std::env::var("AX_METAL_DECODE_SDPA").ok() {
             Some(v) => parse_bool_env_flag(&v).unwrap_or(false),
             None => profile
                 .attention_decode
@@ -324,7 +291,7 @@ impl AttentionDispatchConfig {
         let decode_hd128_n2_default_pinned = std::env::var_os("AX_METAL_DECODE_HD128_N2").is_some()
             || profile.attention_decode.hd128_n2_default
                 != default_profile.attention_decode.hd128_n2_default;
-        let decode_hd128_n2_default = match legacy_kernel_override("AX_METAL_DECODE_HD128_N2") {
+        let decode_hd128_n2_default = match std::env::var("AX_METAL_DECODE_HD128_N2").ok() {
             Some(v) => parse_bool_env_flag(&v).unwrap_or(false),
             None => profile
                 .attention_decode
@@ -696,14 +663,6 @@ impl Default for DequantDispatchConfig {
 
 impl DequantDispatchConfig {
     pub fn from_profile(profile: &KernelProfile) -> Self {
-        if let Some(q5_params) = profile.decode_matvec.get("q5_k")
-            && q5_params.threadgroup_size != DEQUANT_MATVEC_Q5K_TG as u32
-        {
-            warn_ignored_profile_override(
-                "decode_matvec.q5_k.threadgroup_size",
-                "Q5_K decode currently supports TG=64 only; threadgroup_size is ignored",
-            );
-        }
         let q4_params = profile.matvec_params("q4_k");
         let q5_params = profile.matvec_params("q5_k");
         let q6_params = profile.matvec_params("q6_k");
@@ -712,25 +671,9 @@ impl DequantDispatchConfig {
         let q6_profile_override = profile.decode_matvec.get("q6_k");
         let q8_profile_override = profile.decode_matvec.get("q8_0");
 
-        let q4_k_tg_override = legacy_kernel_override("AX_METAL_MATVEC_Q4K_TG");
-        let q4_k_threadgroup_size = match q4_k_tg_override.as_deref() {
-            Some(v) => match v.trim() {
-                "64" => DEQUANT_MATVEC_Q4K_NR2_TG,
-                "128" => DEQUANT_MATVEC_TG,
-                other => {
-                    tracing::warn!(
-                        value = other,
-                        "Invalid AX_METAL_MATVEC_Q4K_TG value; falling back to profile",
-                    );
-                    q4_params.threadgroup_size as usize
-                }
-            },
-            None => q4_params.threadgroup_size as usize,
-        };
-        let q4_k_nr_override = legacy_kernel_override("AX_METAL_MATVEC_Q4K_NR")
-            .and_then(|v| v.trim().parse::<u32>().ok());
-        let q4_k_rows_per_simdgroup = q4_k_nr_override.unwrap_or(q4_params.rows_per_simdgroup);
-        let q4_profile_variant = q4_profile_override.map(|params| {
+        let q4_k_threadgroup_size = q4_params.threadgroup_size as usize;
+        let q4_k_rows_per_simdgroup = q4_params.rows_per_simdgroup;
+        let q4_k_variant = q4_profile_override.map(|params| {
             params.variant.unwrap_or(
                 if params.rows_per_simdgroup >= 2
                     || params.threadgroup_size == DEQUANT_MATVEC_Q4K_NR2_TG as u32
@@ -741,68 +684,20 @@ impl DequantDispatchConfig {
                 },
             )
         });
-        let q4_k_variant = if let Some(rows_per_sg) = q4_k_nr_override {
-            if rows_per_sg >= 2 {
-                Some(MatvecProfileVariant::Nr2)
-            } else {
-                Some(MatvecProfileVariant::Base)
-            }
-        } else if let Some(tg_override) = q4_k_tg_override.as_deref() {
-            match tg_override.trim() {
-                "64" => Some(MatvecProfileVariant::Nr2),
-                "128" => Some(MatvecProfileVariant::Base),
-                _ => None,
-            }
-        } else {
-            q4_profile_variant
-        };
-        let q5_profile_variant = q5_profile_override.map(|params| {
+
+        let q5_k_rows_per_simdgroup = q5_params.rows_per_simdgroup;
+        let q5_k_variant = q5_profile_override.map(|params| {
             params.variant.unwrap_or(if params.rows_per_simdgroup >= 2 {
                 MatvecProfileVariant::Nr2
             } else {
                 MatvecProfileVariant::Base
             })
         });
-        let q5_k_nr_override = legacy_kernel_override("AX_METAL_MATVEC_Q5K_NR")
-            .and_then(|v| v.trim().parse::<u32>().ok());
-        let q5_k_rows_per_simdgroup = q5_k_nr_override.unwrap_or(q5_params.rows_per_simdgroup);
-        let q5_k_ilp4_override = legacy_kernel_override("AX_METAL_MATVEC_Q5K_ILP4");
-        let q5_k_variant = if q5_k_nr_override.is_some() {
-            if q5_k_rows_per_simdgroup >= 2 {
-                Some(MatvecProfileVariant::Nr2)
-            } else {
-                Some(MatvecProfileVariant::Base)
-            }
-        } else if let Some(ilp4_override) = q5_k_ilp4_override.as_deref() {
-            if parse_bool_env_flag(ilp4_override).unwrap_or(false) {
-                Some(MatvecProfileVariant::Ilp4)
-            } else {
-                Some(MatvecProfileVariant::Base)
-            }
-        } else {
-            q5_profile_variant
-        };
         let q5_k_ilp4 = matches!(q5_k_variant, Some(MatvecProfileVariant::Ilp4));
 
-        let q6_k_tg_override = legacy_kernel_override("AX_METAL_MATVEC_Q6K_TG");
-        let q6_k_threadgroup_size = match q6_k_tg_override.as_deref() {
-            Some(v) => match v.trim() {
-                "64" => DEQUANT_MATVEC_Q6K_NR2_TG,
-                "128" => DEQUANT_MATVEC_TG,
-                other => {
-                    tracing::warn!(
-                        value = other,
-                        "Invalid AX_METAL_MATVEC_Q6K_TG value; falling back to profile",
-                    );
-                    q6_params.threadgroup_size as usize
-                }
-            },
-            None => q6_params.threadgroup_size as usize,
-        };
-        let q6_k_nr_override = legacy_kernel_override("AX_METAL_MATVEC_Q6K_NR")
-            .and_then(|v| v.trim().parse::<u32>().ok());
-        let q6_k_rows_per_simdgroup = q6_k_nr_override.unwrap_or(q6_params.rows_per_simdgroup);
-        let q6_profile_variant = q6_profile_override.map(|params| {
+        let q6_k_threadgroup_size = q6_params.threadgroup_size as usize;
+        let q6_k_rows_per_simdgroup = q6_params.rows_per_simdgroup;
+        let q6_k_variant = q6_profile_override.map(|params| {
             params.variant.unwrap_or(
                 if params.rows_per_simdgroup >= 2
                     || params.threadgroup_size == DEQUANT_MATVEC_Q6K_NR2_TG as u32
@@ -813,21 +708,7 @@ impl DequantDispatchConfig {
                 },
             )
         });
-        let q6_k_variant = if let Some(rows_per_sg) = q6_k_nr_override {
-            if rows_per_sg >= 2 {
-                Some(MatvecProfileVariant::Nr2)
-            } else {
-                Some(MatvecProfileVariant::Base)
-            }
-        } else if let Some(tg_override) = q6_k_tg_override.as_deref() {
-            match tg_override.trim() {
-                "64" => Some(MatvecProfileVariant::Nr2),
-                "128" => Some(MatvecProfileVariant::Base),
-                _ => None,
-            }
-        } else {
-            q6_profile_variant
-        };
+
         let q8_0_variant = q8_profile_override.map(|params| {
             params.variant.unwrap_or(if params.rows_per_simdgroup >= 2 {
                 MatvecProfileVariant::Nr2
@@ -837,33 +718,6 @@ impl DequantDispatchConfig {
                 MatvecProfileVariant::Base
             })
         });
-
-        let batch_f16in_small_n_threshold = legacy_kernel_override("AX_METAL_F16IN_SMALL_N")
-            .and_then(|v| v.trim().parse::<u32>().ok())
-            .unwrap_or(profile.batch_prefill.small_n_threshold);
-        let batch_f16in_small_m_max = legacy_kernel_override("AX_METAL_F16IN_SMALL_M_MAX")
-            .and_then(|v| v.trim().parse::<u32>().ok())
-            .unwrap_or(profile.batch_prefill.small_m_max);
-        let batch_f16in_use_bn32 = match legacy_kernel_override("AX_METAL_F16IN_BN32") {
-            Some(v) => parse_bool_env_flag(&v).unwrap_or(profile.batch_prefill.use_bn32),
-            None => profile.batch_prefill.use_bn32,
-        };
-        let batch_f16in_use_bk32 = match legacy_kernel_override("AX_METAL_F16IN_BK32") {
-            Some(v) => {
-                let v = v.trim().to_ascii_lowercase();
-                v == "1" || v == "true" || v == "on"
-            }
-            None => profile.batch_prefill.use_bk32,
-        };
-        let q8_f16in_full_min_n = match legacy_kernel_override("AX_METAL_Q8_F16IN_FULL_MIN_N") {
-            Some(v) => v
-                .trim()
-                .parse::<usize>()
-                .ok()
-                .filter(|&x| x > 0)
-                .unwrap_or(DB_TILE_N),
-            None => profile.batch_prefill.q8_f16in_full_min_n.max(1) as usize,
-        };
 
         Self {
             q4_k_threadgroup_size,
@@ -876,11 +730,11 @@ impl DequantDispatchConfig {
             q6_k_rows_per_simdgroup,
             q6_k_variant,
             q8_0_variant,
-            batch_f16in_small_n_threshold,
-            batch_f16in_small_m_max,
-            batch_f16in_use_bn32,
-            batch_f16in_use_bk32,
-            q8_f16in_full_min_n,
+            batch_f16in_small_n_threshold: profile.batch_prefill.small_n_threshold,
+            batch_f16in_small_m_max: profile.batch_prefill.small_m_max,
+            batch_f16in_use_bn32: profile.batch_prefill.use_bn32,
+            batch_f16in_use_bk32: profile.batch_prefill.use_bk32,
+            q8_f16in_full_min_n: profile.batch_prefill.q8_f16in_full_min_n.max(1) as usize,
         }
     }
 
@@ -1522,7 +1376,8 @@ fn resolve_attention_routing_profile(name: &str) -> Option<AttentionRoutingProfi
 }
 
 fn active_attention_routing_profile_override() -> Option<AttentionRoutingProfile> {
-    legacy_kernel_override("AX_METAL_ATTN_PROFILE")
+    std::env::var("AX_METAL_ATTN_PROFILE")
+        .ok()
         .as_deref()
         .and_then(resolve_attention_routing_profile)
 }
@@ -1557,30 +1412,26 @@ fn attention_prefill_ax_smem_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     // Experimental: default OFF until sustained win is confirmed.
     // Set AX_METAL_PREFILL_AX_SMEM=1 to enable.
-    *ENABLED.get_or_init(
-        || match legacy_kernel_override("AX_METAL_PREFILL_AX_SMEM") {
-            Some(v) => {
-                let v = v.trim().to_ascii_lowercase();
-                v == "1" || v == "true" || v == "on"
-            }
-            None => false,
-        },
-    )
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_PREFILL_AX_SMEM") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "on"
+        }
+        Err(_) => false,
+    })
 }
 
 fn attention_prefill_ax_smem_f16_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     // Experimental f16 shared-memory variant.
     // Set AX_METAL_PREFILL_AX_SMEM_F16=1 to enable.
-    *ENABLED.get_or_init(
-        || match legacy_kernel_override("AX_METAL_PREFILL_AX_SMEM_F16") {
-            Some(v) => {
-                let v = v.trim().to_ascii_lowercase();
-                v == "1" || v == "true" || v == "on"
-            }
-            None => false,
-        },
-    )
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_PREFILL_AX_SMEM_F16") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "on"
+        }
+        Err(_) => false,
+    })
 }
 
 fn attention_prefill_fa2_enabled() -> bool {
@@ -1594,26 +1445,26 @@ fn attention_prefill_fa2_hd128_enabled() -> bool {
 }
 
 fn parse_kernel_mode(var: &'static str, default_mode: KernelMode) -> KernelMode {
-    match legacy_kernel_override(var) {
-        Some(v) => match v.trim().to_ascii_lowercase().as_str() {
+    match std::env::var(var) {
+        Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
             "off" | "0" | "false" => KernelMode::Off,
             "on" | "1" | "true" => KernelMode::On,
             "auto" => KernelMode::Auto,
             _ => default_mode,
         },
-        None => default_mode,
+        Err(_) => default_mode,
     }
 }
 
 fn parse_positive_u32_env(var: &'static str, default_value: u32) -> u32 {
-    match legacy_kernel_override(var) {
-        Some(v) => v
+    match std::env::var(var) {
+        Ok(v) => v
             .trim()
             .parse::<u32>()
             .ok()
             .filter(|&x| x > 0)
             .unwrap_or(default_value),
-        None => default_value,
+        Err(_) => default_value,
     }
 }
 
@@ -1626,7 +1477,8 @@ fn parse_bool_env_flag(value: &str) -> Option<bool> {
 }
 
 fn parse_bool_env_with_default(var: &'static str, default_value: bool) -> bool {
-    legacy_kernel_override(var)
+    std::env::var(var)
+        .ok()
         .and_then(|value| parse_bool_env_flag(&value))
         .unwrap_or(default_value)
 }
@@ -1765,15 +1617,13 @@ fn attention_prefill_fa2_hd64_or_hd128_should_use_with_config(
 
 fn attention_prefill_fa2_simd_hd128_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(
-        || match legacy_kernel_override("AX_METAL_PREFILL_FA2_SIMD") {
-            Some(v) => {
-                let v = v.trim().to_ascii_lowercase();
-                v == "1" || v == "true" || v == "on"
-            }
-            None => true, // default ON — this is the fast path
-        },
-    )
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_PREFILL_FA2_SIMD") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "on"
+        }
+        Err(_) => true, // default ON -- this is the fast path
+    })
 }
 
 fn attention_prefill_fa2_half_hd128_enabled() -> bool {
@@ -1823,8 +1673,8 @@ fn attention_kernel_routing_log_enabled() -> bool {
 
 fn attention_decode_v2_enabled(attend_len: u32) -> bool {
     static OVERRIDE: OnceLock<Option<bool>> = OnceLock::new();
-    match *OVERRIDE.get_or_init(|| match legacy_kernel_override("AX_METAL_DECODE_ATTN_V2") {
-        Some(v) => {
+    match *OVERRIDE.get_or_init(|| match std::env::var("AX_METAL_DECODE_ATTN_V2") {
+        Ok(v) => {
             let v = v.trim().to_ascii_lowercase();
             if v == "1" || v == "true" || v == "on" {
                 Some(true)
@@ -1834,7 +1684,7 @@ fn attention_decode_v2_enabled(attend_len: u32) -> bool {
                 None
             }
         }
-        None => None,
+        Err(_) => None,
     }) {
         Some(enabled) => enabled,
         // Default OFF: TG=128 path regresses for current models/workloads.
@@ -1847,23 +1697,23 @@ fn attention_decode_v2_enabled(attend_len: u32) -> bool {
 
 fn matvec_q4k_nr2_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match legacy_kernel_override("AX_METAL_MATVEC_Q4K_NR2") {
-        Some(v) => {
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_MATVEC_Q4K_NR2") {
+        Ok(v) => {
             let v = v.trim().to_ascii_lowercase();
             v == "1" || v == "true" || v == "on"
         }
-        None => false,
+        Err(_) => false,
     })
 }
 
 fn matvec_q6k_nr2_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match legacy_kernel_override("AX_METAL_MATVEC_Q6K_NR2") {
-        Some(v) => {
+    *ENABLED.get_or_init(|| match std::env::var("AX_METAL_MATVEC_Q6K_NR2") {
+        Ok(v) => {
             let v = v.trim().to_ascii_lowercase();
             v == "1" || v == "true" || v == "on"
         }
-        None => false,
+        Err(_) => false,
     })
 }
 

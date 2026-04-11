@@ -50,6 +50,43 @@ static_assert(sizeof(Q8_0_Block) == 34, "Q8_0_Block must be exactly 34 bytes");
 
 constant uint Q8_0_BLOCK_VALUES = 32;
 
+// ── Q5_0 Block ─────────────────────────────────────────────────────────
+//
+// 22 bytes → 32 f32 values.
+//   - 2 bytes:  f16 scale (d)
+//   - 4 bytes:  high bits (qh), one bit per value packed as u32
+//   - 16 bytes: 32 × 4-bit nibbles packed into 16 bytes (qs)
+//
+// Dequant: output = d * ((nibble | (qh_bit << 4)) - 16)
+struct Q5_0_Block {
+    half d;
+    uint8_t qh[4];
+    uint8_t qs[16];
+};
+
+static_assert(sizeof(Q5_0_Block) == 22, "Q5_0_Block must be exactly 22 bytes");
+constant uint Q5_0_BLOCK_VALUES = 32;
+
+// ── Q5_1 Block ─────────────────────────────────────────────────────────
+//
+// 24 bytes → 32 f32 values.
+//   - 2 bytes:  f16 scale (d)
+//   - 2 bytes:  f16 minimum (m)
+//   - 4 bytes:  high bits (qh), one bit per value packed as u32
+//   - 16 bytes: 32 × 4-bit nibbles packed into 16 bytes (qs)
+//
+// Dequant: output = d * (nibble | (qh_bit << 4)) + m
+// (Unlike Q5_0 which uses -16*d offset, Q5_1 stores explicit min)
+struct Q5_1_Block {
+    half d;
+    half m;
+    uint8_t qh[4];
+    uint8_t qs[16];
+};
+
+static_assert(sizeof(Q5_1_Block) == 24, "Q5_1_Block must be exactly 24 bytes");
+constant uint Q5_1_BLOCK_VALUES = 32;
+
 // ── Q4_K Block ─────────────────────────────────────────────────────────
 //
 // 144 bytes → 256 f32 values.
@@ -465,6 +502,64 @@ inline void dequantize_q6k_blocked(
 
 
 
+
+// Q5_0 batch dequant for blocked matmul.
+//
+// Each call produces 16 values (half a block of 32).
+// il=0: low nibbles + high bits for positions 0-15
+// il=1: high nibbles + high bits for positions 16-31
+//
+// Matches llama.cpp's dequantize_q5_0 template with half4x4 output.
+inline void dequantize_q5_0_blocked(
+    device const Q5_0_Block* xb,
+    short il,
+    thread half4x4& reg
+) {
+    device const uint16_t* qs = (device const uint16_t*)(xb->qs);
+    const float d = float(xb->d);
+    const float md = -16.0f * d;
+    const ushort mask = il ? 0x00F0 : 0x000F;
+    const uint32_t qh = *(device const uint32_t*)(xb->qh);
+    const int x_mv = il ? 4 : 0;
+    const int gh_mv = il ? 12 : 0;
+    const int gh_bk = il ? 0 : 4;
+
+    for (int i = 0; i < 8; i++) {
+        const uint8_t xh_0 = ((qh >> (gh_mv + 2 * i)) << gh_bk) & 0x10;
+        const uint8_t xh_1 = ((qh >> (gh_mv + 2 * i + 1)) << gh_bk) & 0x10;
+        const int32_t x0 = (((qs[i]) & mask) >> x_mv) | xh_0;
+        const int32_t x1 = (((qs[i] >> 8) & mask) >> x_mv) | xh_1;
+        reg[i / 2][2 * (i % 2) + 0] = half(d * float(x0) + md);
+        reg[i / 2][2 * (i % 2) + 1] = half(d * float(x1) + md);
+    }
+}
+
+// Q5_1 blocked dequant: same structure as Q5_0 but uses explicit per-block
+// minimum `m` instead of Q5_0's fixed offset (-16 * d).
+// Dequant: output = d * (nibble | (qh_bit << 4)) + m
+inline void dequantize_q5_1_blocked(
+    device const Q5_1_Block* xb,
+    short il,
+    thread half4x4& reg
+) {
+    device const uint16_t* qs = (device const uint16_t*)(xb->qs);
+    const float d = float(xb->d);
+    const float m = float(xb->m);
+    const ushort mask = il ? 0x00F0 : 0x000F;
+    const uint32_t qh = *(device const uint32_t*)(xb->qh);
+    const int x_mv = il ? 4 : 0;
+    const int gh_mv = il ? 12 : 0;
+    const int gh_bk = il ? 0 : 4;
+
+    for (int i = 0; i < 8; i++) {
+        const uint8_t xh_0 = ((qh >> (gh_mv + 2 * i)) << gh_bk) & 0x10;
+        const uint8_t xh_1 = ((qh >> (gh_mv + 2 * i + 1)) << gh_bk) & 0x10;
+        const int32_t x0 = (((qs[i]) & mask) >> x_mv) | xh_0;
+        const int32_t x1 = (((qs[i] >> 8) & mask) >> x_mv) | xh_1;
+        reg[i / 2][2 * (i % 2) + 0] = half(d * float(x0) + m);
+        reg[i / 2][2 * (i % 2) + 1] = half(d * float(x1) + m);
+    }
+}
 
 // Q8_0 batch dequant + matmul with f16 input, f32 output.
 //

@@ -3,16 +3,6 @@ use ax_engine_metal::{
     AttentionDispatchConfig, DequantDispatchConfig, KernelProfile, KvPrecisionMode,
 };
 
-fn normalized_arch_name(arch: &str) -> &str {
-    match arch {
-        "llama" => "llama",
-        "qwen2" | "qwen3" => "qwen3",
-        "qwen35" | "qwen35moe" => "qwen35",
-        "gemma" | "gemma2" | "gemma3" => "gemma3",
-        _ => arch,
-    }
-}
-
 fn quant_label_is_q8_0(quant: &str) -> bool {
     let normalized = quant.trim().to_ascii_uppercase().replace('-', "_");
     normalized == "Q8" || normalized == "Q80" || normalized.starts_with("Q8_0")
@@ -29,11 +19,7 @@ fn parse_bool_toggle(v: &str) -> Option<bool> {
     }
 }
 
-fn env_bool_with_arch_override(base: &str, arch: &str) -> Option<bool> {
-    let arch_key = format!("{base}_{}", normalized_arch_name(arch).to_ascii_uppercase());
-    if let Ok(v) = std::env::var(&arch_key) {
-        return parse_bool_toggle(&v);
-    }
+fn env_bool(base: &str) -> Option<bool> {
     std::env::var(base).ok().and_then(|v| parse_bool_toggle(&v))
 }
 
@@ -61,11 +47,7 @@ fn parse_auto_toggle(v: &str) -> Option<AutoToggle> {
     }
 }
 
-fn env_auto_toggle_with_arch_override(base: &str, arch: &str) -> Option<AutoToggle> {
-    let arch_key = format!("{base}_{}", normalized_arch_name(arch).to_ascii_uppercase());
-    if let Ok(v) = std::env::var(&arch_key) {
-        return parse_auto_toggle(&v);
-    }
+fn env_auto_toggle(base: &str) -> Option<AutoToggle> {
     std::env::var(base).ok().and_then(|v| parse_auto_toggle(&v))
 }
 
@@ -140,7 +122,6 @@ pub struct RuntimePolicy {
     decode_fused_qkv: bool,
     batch_simd: bool,
     precompute_f16: bool,
-    autotune_f16in_batch_route: bool,
     q8_batch_native: bool,
     q8_native_m_min: u32,
     q8_native_m_max: u32,
@@ -172,7 +153,6 @@ impl RuntimePolicy {
             decode_fused_qkv: false,
             batch_simd: ax_engine_metal::batch_simd_enabled(),
             precompute_f16: false,
-            autotune_f16in_batch_route: false,
             q8_batch_native: true,
             q8_native_m_min: 0,
             q8_native_m_max: u32::MAX,
@@ -186,10 +166,10 @@ impl RuntimePolicy {
     }
 
     pub fn for_model(model_name: &str, quant: &str, architecture: &str) -> Self {
-        let mut policy = Self::from_kernel_profile(KernelProfile::load(model_name, quant))
+        let mut policy = Self::from_kernel_profile(KernelProfile::for_model_arch(model_name))
             .with_env_overrides(architecture);
-        if env_auto_toggle_with_arch_override("AX_PRECOMPUTE_F16", architecture).is_none()
-            && normalized_arch_name(architecture) == "qwen35"
+        if env_auto_toggle("AX_PRECOMPUTE_F16").is_none()
+            && matches!(architecture, "qwen35" | "qwen35moe")
             && quant_label_is_q8_0(quant)
         {
             policy.precompute_f16 = true;
@@ -237,10 +217,6 @@ impl RuntimePolicy {
         self.precompute_f16
     }
 
-    pub fn autotune_f16in_batch_route_enabled(&self) -> bool {
-        self.autotune_f16in_batch_route
-    }
-
     pub fn q8_batch_native_enabled(&self) -> bool {
         self.q8_batch_native
     }
@@ -276,51 +252,39 @@ impl RuntimePolicy {
     }
 
     fn with_env_overrides(mut self, architecture: &str) -> Self {
-        if architecture == "gemma3" {
+        // Keep the gemma3/gemma4 decode_fused_qkv default (feature toggle, not dispatch tuning)
+        if architecture == "gemma3" || architecture == "gemma4" {
             self.decode_fused_qkv = true;
         }
         if let Some(kv_precision) = KvPrecisionPolicy::from_env_override() {
             self.kv_precision = kv_precision;
         }
-        if let Some(batch_prefill_f16_io) =
-            env_bool_with_arch_override("AX_METAL_BATCH_F16_IO", architecture)
-        {
-            self.batch_prefill_f16_io = batch_prefill_f16_io;
+        if let Some(v) = env_bool("AX_METAL_BATCH_F16_IO") {
+            self.batch_prefill_f16_io = v;
         }
-        if let Some(batch_prefill_pair_kernel) =
-            env_bool_with_arch_override("AX_METAL_BATCH_F16_PAIR", architecture)
-        {
-            self.batch_prefill_pair_kernel = batch_prefill_pair_kernel;
+        if let Some(v) = env_bool("AX_METAL_BATCH_F16_PAIR") {
+            self.batch_prefill_pair_kernel = v;
         }
-        if let Some(fused_qkv_prefill) =
-            env_bool_with_arch_override("AX_METAL_FUSED_QKV", architecture)
-        {
-            self.fused_qkv_prefill = fused_qkv_prefill;
+        if let Some(v) = env_bool("AX_METAL_FUSED_QKV") {
+            self.fused_qkv_prefill = v;
         }
-        if let Some(decode_fused_qkv) =
-            env_bool_with_arch_override("AX_METAL_DECODE_FUSED_QKV", architecture)
-        {
-            self.decode_fused_qkv = decode_fused_qkv;
+        if let Some(v) = env_bool("AX_METAL_DECODE_FUSED_QKV") {
+            self.decode_fused_qkv = v;
         }
-        if let Some(batch_simd) = env_bool_with_arch_override("AX_METAL_BATCH_SIMD", architecture) {
-            self.batch_simd = batch_simd;
+        if let Some(v) = env_bool("AX_METAL_BATCH_SIMD") {
+            self.batch_simd = v;
         }
-        self.autotune_f16in_batch_route =
-            env_bool_with_arch_override("AX_METAL_AUTOTUNE", architecture).unwrap_or(false);
-        self.q8_batch_native =
-            env_bool_with_arch_override("AX_METAL_Q8_BATCH_NATIVE", architecture).unwrap_or(true);
+        self.q8_batch_native = env_bool("AX_METAL_Q8_BATCH_NATIVE").unwrap_or(true);
         self.q8_native_m_min = env_u32("AX_METAL_Q8_NATIVE_M_MIN", 0);
         self.q8_native_m_max = env_u32("AX_METAL_Q8_NATIVE_M_MAX", u32::MAX);
         self.q8_native_k_min = env_u32("AX_METAL_Q8_NATIVE_K_MIN", 0);
         self.q8_native_k_max = env_u32("AX_METAL_Q8_NATIVE_K_MAX", u32::MAX);
-        self.precompute_f16 =
-            match env_auto_toggle_with_arch_override("AX_PRECOMPUTE_F16", architecture)
-                .unwrap_or(AutoToggle::Auto)
-            {
-                AutoToggle::Off => false,
-                AutoToggle::On => true,
-                AutoToggle::Auto => false,
-            };
+        self.precompute_f16 = match env_auto_toggle("AX_PRECOMPUTE_F16").unwrap_or(AutoToggle::Auto)
+        {
+            AutoToggle::Off => false,
+            AutoToggle::On => true,
+            AutoToggle::Auto => false,
+        };
         self
     }
 }
@@ -370,7 +334,6 @@ mod tests {
             ax_engine_metal::batch_simd_enabled()
         );
         assert!(!policy.precompute_f16_enabled());
-        assert!(!policy.autotune_f16in_batch_route_enabled());
         assert!(policy.q8_batch_native_shape_enabled(128, 32, 4096));
         assert_eq!(policy.kv_precision_policy(), KvPrecisionPolicy::Auto);
         assert_eq!(policy.gpu_kv_dtype(128), GpuKvDtype::F32);
@@ -387,17 +350,15 @@ mod tests {
     fn test_runtime_policy_enables_precompute_f16_for_qwen35_q8_by_default() {
         let _lock = crate::test_env_lock();
         with_env_var("AX_PRECOMPUTE_F16", None, || {
-            with_env_var("AX_PRECOMPUTE_F16_QWEN35", None, || {
-                let policy = RuntimePolicy::for_model("qwen3.5-4b", "q8_0", "qwen35");
-                assert!(policy.precompute_f16_enabled());
-            });
+            let policy = RuntimePolicy::for_model("qwen3.5-4b", "q8_0", "qwen35");
+            assert!(policy.precompute_f16_enabled());
         });
     }
 
     #[test]
     fn test_runtime_policy_precompute_f16_override_can_disable_qwen35_q8_default() {
         let _lock = crate::test_env_lock();
-        with_env_var("AX_PRECOMPUTE_F16_QWEN35", Some("off"), || {
+        with_env_var("AX_PRECOMPUTE_F16", Some("off"), || {
             let policy = RuntimePolicy::for_model("qwen3.5-4b", "q8_0", "qwen35");
             assert!(!policy.precompute_f16_enabled());
         });

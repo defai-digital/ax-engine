@@ -2856,16 +2856,25 @@ fn test_qwen35_native_decode_dispatch_plan_dense_keeps_base_encoder() {
         attention_dispatch: ax_engine_metal::AttentionDispatchConfig::default(),
     };
 
-    let dispatch_plan = Qwen3_5Forward::qwen35_native_decode_dispatch_plan(&cfg, &base_plan, 8);
-    assert_eq!(
-        dispatch_plan.encoder,
-        crate::model::execution_plan::DecodeEncoderPlan::Concurrent
+    with_env_vars(
+        &[
+            ("AX_QWEN35_GPU_DECODE_LAYER_RANGES", None),
+            ("AX_QWEN35_GPU_DECODE_COALESCE_RECURRENT", None),
+        ],
+        || {
+            let dispatch_plan =
+                Qwen3_5Forward::qwen35_native_decode_dispatch_plan(&cfg, &base_plan, 8);
+            assert_eq!(
+                dispatch_plan.encoder,
+                crate::model::execution_plan::DecodeEncoderPlan::Concurrent
+            );
+            assert_eq!(
+                dispatch_plan.barriers,
+                crate::model::execution_plan::DecodeBarrierPlan::Smart
+            );
+            assert_eq!(dispatch_plan.layer_ranges.len(), 1);
+        },
     );
-    assert_eq!(
-        dispatch_plan.barriers,
-        crate::model::execution_plan::DecodeBarrierPlan::Smart
-    );
-    assert_eq!(dispatch_plan.layer_ranges.len(), 1);
 }
 
 #[test]
@@ -3128,7 +3137,7 @@ fn test_qwen35_gpu_pipelined_decode_enabled_env_override() {
             assert!(Qwen3_5Forward::gpu_pipelined_decode_enabled_for_config(
                 &dense_cfg
             ));
-            assert!(!Qwen3_5Forward::gpu_pipelined_decode_enabled_for_config(
+            assert!(Qwen3_5Forward::gpu_pipelined_decode_enabled_for_config(
                 &moe_cfg
             ));
         },

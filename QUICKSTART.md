@@ -1,6 +1,8 @@
 # Quickstart
 
-This guide gets AX Engine from a clean checkout to a working local prompt on Apple Silicon.
+This guide gets you from zero to running AX Engine on Apple Silicon.
+
+See [ENV_VARS.md](./docs/ENV_VARS.md) for advanced config, [BEST-PRACTICES.md](./docs/BEST-PRACTICES.md) for use cases and recommendations, and [README.md](../README.md) for project background.
 
 ## 1. Prerequisites
 
@@ -42,19 +44,12 @@ The main CLI binary will be:
 
 ## 3. Get a GGUF Model
 
-Place at least one GGUF model in `./models/`.
+Place GGUF models (Q4_K_M recommended) in `./models/`.
 
-Example layout:
-
-```text
-models/
-  Meta-Llama-3.1-8B-Instruct-Q8_0.gguf
-```
-
-AX Engine expects a direct path to the GGUF file:
+AX Engine expects a direct path:
 
 ```bash
-./target/release/ax-engine --model ./models/<model>.gguf --prompt "Hello"
+./target/release/ax-engine --model ./models/Qwen3.5-9B-Q4_K_M.gguf --prompt "Hello"
 ```
 
 ## 4. First Successful Run
@@ -63,7 +58,7 @@ For an instruction-tuned model, start with `--chat`:
 
 ```bash
 ./target/release/ax-engine \
-  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --model ./models/Qwen3.5-9B-Q4_K_M.gguf \
   --chat \
   --prompt "Explain what AX Engine does in two sentences."
 ```
@@ -76,7 +71,7 @@ Run the REPL:
 
 ```bash
 ./target/release/ax-engine \
-  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --model ./models/Qwen3.5-9B-Q4_K_M.gguf \
   --interactive \
   --chat
 ```
@@ -94,7 +89,7 @@ Example with explicit sampling settings:
 
 ```bash
 ./target/release/ax-engine \
-  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --model ./models/Qwen3.5-9B-Q4_K_M.gguf \
   --chat \
   --prompt "Write a short paragraph about on-device inference." \
   --temp 0.8 \
@@ -125,7 +120,7 @@ AX Engine can stop on specific output strings or token IDs without leaking the s
 
 ```bash
 ./target/release/ax-engine \
-  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --model ./models/Qwen3.5-9B-Q4_K_M.gguf \
   --chat \
   --prompt "Write one line and then END." \
   --stop "END"
@@ -144,7 +139,7 @@ AX Engine can print top candidate logprobs for each emitted token:
 
 ```bash
 ./target/release/ax-engine \
-  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --model ./models/Qwen3.5-9B-Q4_K_M.gguf \
   --chat \
   --prompt "Write one sentence about Rust." \
   --top-logprobs 5
@@ -158,7 +153,7 @@ Use `--verbose` for metrics and decode mode details:
 
 ```bash
 ./target/release/ax-engine \
-  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --model ./models/Qwen3.5-9B-Q4_K_M.gguf \
   --prompt "Hello" \
   --verbose
 ```
@@ -177,7 +172,7 @@ Speculative decoding is available behind `--experimental` and requires a draft m
 
 ```bash
 ./target/release/ax-engine \
-  --model ./models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf \
+  --model ./models/Qwen3.5-9B-Q4_K_M.gguf \
   --speculative-draft ./models/small-draft.gguf \
   --speculative-k 4 \
   --experimental \

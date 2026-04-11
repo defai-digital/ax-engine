@@ -125,7 +125,7 @@ impl MatmulKernels {
         let groups_y = (m as usize).div_ceil(SG_TILE);
 
         device.execute_sync(|encoder| {
-            encoder.setComputePipelineState(self.simdgroup_matmul.state());
+            crate::set_pipeline_cached(encoder, self.simdgroup_matmul.state());
             bind_buffers(encoder, a, b, c);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
@@ -169,7 +169,7 @@ impl MatmulKernels {
         // Prefer tensor API (Metal 4+/M5+) > bf16 (Metal 3+) > half.
         if let Some(tensor_pipeline) = &self.simdgroup_matmul_tensor {
             // Tensor API: NR0=64, NR1=32 tiles with dynamic TG memory.
-            encoder.setComputePipelineState(tensor_pipeline.state());
+            crate::set_pipeline_cached(encoder, tensor_pipeline.state());
             bind_buffers(encoder, a, b, c);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
@@ -202,7 +202,7 @@ impl MatmulKernels {
                 .simdgroup_matmul_bf16
                 .as_ref()
                 .unwrap_or(&self.simdgroup_matmul_half);
-            encoder.setComputePipelineState(pipeline.state());
+            crate::set_pipeline_cached(encoder, pipeline.state());
             bind_buffers(encoder, a, b, c);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, n);
@@ -235,7 +235,7 @@ impl MatmulKernels {
         k: u32,
     ) {
         let dims = DispatchDims::d1(m as usize, 1);
-        encoder.setComputePipelineState(self.matvec.state());
+        crate::set_pipeline_cached(encoder, self.matvec.state());
         bind_buffers(encoder, a, x, y);
         bind_u32(encoder, 3, m);
         bind_u32(encoder, 4, k);
@@ -261,7 +261,7 @@ impl MatmulKernels {
         let dims = DispatchDims::d1(m as usize, 1);
 
         device.execute_sync(|encoder| {
-            encoder.setComputePipelineState(self.matvec.state());
+            crate::set_pipeline_cached(encoder, self.matvec.state());
             bind_buffers(encoder, a, x, y);
             bind_u32(encoder, 3, m);
             bind_u32(encoder, 4, k);

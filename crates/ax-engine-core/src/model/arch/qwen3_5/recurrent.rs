@@ -937,7 +937,7 @@ impl Qwen3_5Forward {
                                         encoder,
                                         &bs.norm_buf,
                                         &bs.matmul_in_f16,
-                                        nt * dim as u32,
+                                        (nt as usize * dim) as u32,
                                     );
                                 }
                                 Self::encode_qwen35_batch_projection(

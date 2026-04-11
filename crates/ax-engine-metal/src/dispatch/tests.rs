@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::MutexGuard;
+use std::sync::{Mutex, MutexGuard};
 
 fn default_dequant_config() -> DequantDispatchConfig {
     DequantDispatchConfig::default()
@@ -825,6 +825,8 @@ fn test_matmul_prefill_sized() {
 
 const Q8_0_BYTES_PER_BLOCK: usize = 34;
 const Q8_0_BLOCK_SIZE: usize = 32;
+const Q5_1_BYTES_PER_BLOCK: usize = 24;
+const Q5_1_BLOCK_SIZE: usize = 32;
 const Q4_K_BYTES_PER_BLOCK: usize = 144;
 const Q4_K_BLOCK_SIZE: usize = 256;
 const Q6_K_BYTES_PER_BLOCK: usize = 210;
@@ -919,6 +921,28 @@ fn cpu_dequant_q8_0(blocks: &[u8], dst: &mut [f32]) {
         let out = &mut dst[b * Q8_0_BLOCK_SIZE..][..Q8_0_BLOCK_SIZE];
         for i in 0..Q8_0_BLOCK_SIZE {
             out[i] = d * f32::from(i8::from_le_bytes([qs[i]]));
+        }
+    }
+}
+
+fn cpu_dequant_q5_1(blocks: &[u8], dst: &mut [f32]) {
+    let n_blocks = blocks.len() / Q5_1_BYTES_PER_BLOCK;
+    for b in 0..n_blocks {
+        let block = &blocks[b * Q5_1_BYTES_PER_BLOCK..][..Q5_1_BYTES_PER_BLOCK];
+        let d = half::f16::from_le_bytes([block[0], block[1]]).to_f32();
+        let m = half::f16::from_le_bytes([block[2], block[3]]).to_f32();
+        let qh = u32::from_le_bytes([block[4], block[5], block[6], block[7]]);
+        let qs = &block[8..24];
+        let out = &mut dst[b * Q5_1_BLOCK_SIZE..][..Q5_1_BLOCK_SIZE];
+
+        for j in 0..Q5_1_BLOCK_SIZE / 2 {
+            let xh_0 = ((qh >> j) << 4) & 0x10;
+            let xh_1 = (qh >> (j + 12)) & 0x10;
+            let x0 = (qs[j] as u32 & 0x0F) | xh_0;
+            let x1 = (qs[j] as u32 >> 4) | xh_1;
+
+            out[j] = x0 as f32 * d + m;
+            out[j + Q5_1_BLOCK_SIZE / 2] = x1 as f32 * d + m;
         }
     }
 }
@@ -1184,6 +1208,65 @@ fn test_fused_matvec_q5_k() {
     assert!(
         diff < 0.05,
         "Fused Q5_K matvec mismatch: max_diff={}, got {:?}, expected {:?}",
+        diff,
+        result,
+        expected
+    );
+}
+
+#[test]
+fn test_fused_matvec_q5_1_matches_cpu_reference() {
+    let gpu = MetalDevice::new().unwrap();
+    let kernels = DequantKernels::new(&gpu).unwrap();
+
+    let m = 7usize;
+    let k = 256usize;
+    let blocks_per_row = k / Q5_1_BLOCK_SIZE;
+
+    let mut quant_data = Vec::new();
+    for row in 0..m {
+        for blk in 0..blocks_per_row {
+            let mut block = vec![0u8; Q5_1_BYTES_PER_BLOCK];
+            let d = ((row + blk) % 9) as f32 * 0.07 + 0.03;
+            let m_val = ((row * 2 + blk) % 11) as f32 * 0.11 - 0.55;
+            let d_bytes = half::f16::from_f32(d).to_le_bytes();
+            let m_bytes = half::f16::from_f32(m_val).to_le_bytes();
+            block[0] = d_bytes[0];
+            block[1] = d_bytes[1];
+            block[2] = m_bytes[0];
+            block[3] = m_bytes[1];
+
+            let qh = 0xD2B4_6935u32.rotate_left(((row * 5 + blk * 3) % 32) as u32);
+            block[4..8].copy_from_slice(&qh.to_le_bytes());
+            for (i, byte) in block[8..24].iter_mut().enumerate() {
+                *byte = (((row * 13 + blk * 7 + i) % 16) as u8)
+                    | ((((row * 3 + blk * 11 + i * 5) % 16) as u8) << 4);
+            }
+            quant_data.extend(block);
+        }
+    }
+
+    let mut weights_f32 = vec![0.0f32; m * k];
+    cpu_dequant_q5_1(&quant_data, &mut weights_f32);
+    let x_data: Vec<f32> = (0..k).map(|i| ((i % 19) as f32 - 9.0) * 0.021).collect();
+    let mut expected = vec![0.0f32; m];
+    cpu_matvec(&weights_f32, &x_data, &mut expected, m, k);
+
+    let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+    let buf_x = MetalBuffer::from_slice(gpu.device(), &x_data).unwrap();
+    let buf_y = MetalBuffer::new(gpu.device(), m * std::mem::size_of::<f32>()).unwrap();
+
+    gpu.execute_sync(|encoder| {
+        kernels.encode_fused_matvec_q5_1(encoder, &buf_a, &buf_x, &buf_y, m as u32, k as u32);
+        Ok(())
+    })
+    .unwrap();
+
+    let result = unsafe { buf_y.as_slice::<f32>() };
+    let diff = max_abs_diff(result, &expected);
+    assert!(
+        diff < 5e-2,
+        "Fused Q5_1 matvec mismatch: max_diff={}, got {:?}, expected {:?}",
         diff,
         result,
         expected

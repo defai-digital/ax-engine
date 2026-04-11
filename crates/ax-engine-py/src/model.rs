@@ -145,9 +145,11 @@ impl Model {
     }
 
     pub fn close(&self) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.take();
-        }
+        let mut inner = self.inner.lock().unwrap_or_else(|e| {
+            tracing::warn!("Model mutex poisoned during close, attempting recovery");
+            e.into_inner()
+        });
+        inner.take();
     }
 }
 
@@ -167,9 +169,11 @@ impl Model {
 
 impl Drop for Model {
     fn drop(&mut self) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.take();
-        }
+        let mut inner = self.inner.lock().unwrap_or_else(|e| {
+            tracing::warn!("Model mutex poisoned during drop, attempting recovery");
+            e.into_inner()
+        });
+        inner.take();
     }
 }
 

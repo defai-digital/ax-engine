@@ -376,7 +376,8 @@ fn encode_gemma3_pending_step(
     let weight_cache = metal_ops.lock_weight_cache();
     let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
 
-    let kv_offset = (position * kv_dim) as u32;
+    let kv_offset = u32::try_from(position * kv_dim)
+        .map_err(|_| anyhow::anyhow!("KV offset overflow: position={}, kv_dim={}", position, kv_dim))?;
     let full_seq_len = position + 1;
     let exec_plan = DecodeExecutionPlan::gemma3_pipelined(
         metal_ops,

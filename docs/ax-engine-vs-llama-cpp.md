@@ -10,8 +10,9 @@ exists and how it differs from `llama.cpp`.
 The short answer is:
 
 - AX Engine is **not** a wrapper around `llama.cpp` on supported native paths.
-- AX Engine **does** use `llama.cpp` as a compatibility fallback for
-  unsupported models.
+- AX Engine **may** be paired with broader engines such as `llama.cpp` in a
+  surrounding product, but that compatibility layer is not part of this
+  workspace today.
 - The two projects are built around different implementation philosophies.
 
 `llama.cpp` is a broad, portable GGUF inference platform built around a
@@ -22,7 +23,7 @@ AX Engine is a narrower Apple-Silicon-native runtime built around:
 - architecture-specific forward implementations
 - transformer-specific fused execution paths
 - Apple-UMA-first memory handling
-- explicit support tiers and truthful fallback
+- explicit support tiers and truthful product boundaries
 
 That means AX should not be evaluated as "llama.cpp, but wrapped in Rust."
 It should be evaluated as:
@@ -45,8 +46,8 @@ It should be evaluated as:
 | GPU core/thread control model | indirect: AX does not assign work to GPU cores manually; Metal schedules threadgroups on Apple GPU hardware | indirect: `llama.cpp` does not assign work to GPU cores manually; Metal schedules threadgroups on Apple GPU hardware |
 | Memory and loading | GGUF mmap + no-copy Metal aliasing + pointer-keyed weight buffer cache | GGUF mmap/mlock + backend buffer mapping + layer/device placement |
 | KV and session model | single-owner `ModelKv`, cleaner invariants, narrower session semantics | richer KV/session/state surface with seq ops, state I/O, unified KV modes |
-| Server and integration | basic built-in server + SDK surfaces + `llama-server` fallback subprocess | mature `llama-server` with broader API and serving features |
-| Routing philosophy | native-first, compatibility-backed | no fallback concept; it is itself the broad coverage engine |
+| Server and integration | CLI + Rust/Python/JS SDK surfaces, plus `ax-engine-server` for single-node compatibility; production serving belongs in `ax-serving` | mature `llama-server` with broader API and serving features |
+| Routing philosophy | native-first, explicit boundaries | no fallback concept; it is itself the broad coverage engine |
 
 This table is the clearest short version of the comparison.
 The rest of this document expands each row and explains why the differences
@@ -312,12 +313,10 @@ In practice that means:
 - AX checks support before full native loading
 - unsupported architectures are not treated as native
 - unsupported quant families are surfaced clearly
-- fallback can route to `llama.cpp`, but that route stays visible
 
 See:
 
 - [`arch_registry.rs`](../crates/ax-engine-core/src/model/arch_registry.rs)
-- [`routing.rs`](../crates/ax-engine-sdk/src/routing.rs)
 
 This is a narrower, more opinionated policy.
 
@@ -490,18 +489,11 @@ AX now has several integration surfaces:
 - Rust SDK
 - Python binding
 - JS SDK
-- basic HTTP inference server
+- CLI
+- `ax-engine-server`
 
-The built-in server is intentionally small:
-
-- [`ax-engine-server/src/api.rs`](../crates/ax-engine-server/src/api.rs)
-
-Unsupported model coverage is provided by spawning `llama-server` as a
-subprocess:
-
-- [`llama_cpp_process.rs`](../crates/ax-engine-sdk/src/llama_cpp_process.rs)
-
-This is a compatibility strategy, not AX's native runtime identity.
+This workspace now ships a thin `ax-engine-server` layer for local and edge
+deployments. Production routing and orchestration still belong in AX Serving.
 
 ### 10.2 llama.cpp
 
@@ -602,13 +594,14 @@ Use `llama.cpp` when:
 - you need broader hardware/backend portability
 - you need richer session/KV/state operations today
 
-Use AX with fallback when:
+Use AX alongside another engine when:
 
 - you want AX's native path where available
-- but you do not want unsupported models to fail hard
+- but you still need broader unsupported-model coverage in the surrounding
+  product
 
-That hybrid mode is a product convenience. It should not be confused with AX's
-native identity.
+That hybrid deployment pattern is a product convenience. It should not be
+confused with AX's native identity.
 
 ---
 
@@ -650,8 +643,8 @@ That is the real reason AX can exist without being dismissed as a mere wrapper.
 - [`Prefill graph-IR schedule`](../crates/ax-engine-core/src/model/prefill_schedule.rs)
 - [`Metal backend and no-copy weight aliasing`](../crates/ax-engine-core/src/backend/metal.rs)
 - [`Kernel profile system`](../crates/ax-engine-metal/src/profile.rs)
-- [`Basic HTTP server`](../crates/ax-engine-server/src/api.rs)
-- [`llama.cpp fallback subprocess integration`](../crates/ax-engine-sdk/src/llama_cpp_process.rs)
+- [`JavaScript SDK`](../docs/js-sdk.md)
+- [`Product boundary`](../docs/PRODUCT-BOUNDARY.md)
 
 ### llama.cpp Official References
 

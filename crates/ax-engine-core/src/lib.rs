@@ -27,5 +27,5 @@ pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
-        .expect("ax-engine-core test env lock")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }

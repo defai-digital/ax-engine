@@ -5043,11 +5043,10 @@ kernel void attention_prefill_fa2_simd_cached_f16kv_hd128(
     uint kv_stride    = n_kv_heads * FA2SC_HD;
     constexpr float inv_sqrt_hd = 0.08838834764831843f; // 1/sqrt(128)
 
-    // ── Threadgroup memory ───────────────────────────────────────────
-    threadgroup float sq[FA2SC_Q * FA2SC_HD];               // 4 KB: Q tile (float)
+    // ── Threadgroup memory (no K/V staging — direct device loads) ────
+    threadgroup half  sq[FA2SC_Q * FA2SC_HD];               // 2 KB: Q tile (half)
     threadgroup float so[FA2SC_Q * FA2SC_HD];               // 4 KB: O accumulator (float)
     threadgroup float ss[FA2SC_Q * FA2SC_C];                // 2 KB: scores (float)
-    threadgroup half  sk[FA2SC_NSG * 8 * FA2SC_HD];         // 4 KB: K/V staging (half)
 
     // Per-query online softmax state (register, per simdgroup)
     float S[FA2SC_NQ] = {};
@@ -5074,14 +5073,14 @@ kernel void attention_prefill_fa2_simd_cached_f16kv_hd128(
     // Round min_attend_start down to tile boundary for aligned iteration
     uint tile_start = (min_attend_start / FA2SC_C) * FA2SC_C;
 
-    // ── Load Q into threadgroup as float ─────────────────────────────
+    // ── Load Q into threadgroup as HALF (cast from float) ────────────
     for (uint i = lid; i < FA2SC_Q * FA2SC_HD; i += FA2SC_TG) {
         uint qi = i / FA2SC_HD;
         uint d  = i % FA2SC_HD;
         uint gqi = tile_q + qi;
         sq[i] = (gqi < n_tokens)
-            ? Q_buf[gqi * q_stride + h * FA2SC_HD + d]
-            : 0.0f;
+            ? half(Q_buf[gqi * q_stride + h * FA2SC_HD + d])
+            : half(0.0h);
     }
 
     // Zero O accumulator
@@ -5095,37 +5094,29 @@ kernel void attention_prefill_fa2_simd_cached_f16kv_hd128(
     for (uint tile_kv = tile_start; tile_kv < max_attend_end; tile_kv += FA2SC_C) {
         uint kv_tile_len = min(uint(FA2SC_C), max_attend_end - tile_kv);
 
-        // ── Phase 1: QK^T via simdgroup_half8x8 ─────────────────────
-        // Stage K from f16 cache into threadgroup half scratch, then matmul.
+        // ── Phase 1: QK^T via half×half → float MMA ─────────────────
+        // K loaded DIRECTLY from device f16 — no TG staging.
+        // Each simdgroup handles NC=2 blocks of 8 KV tokens.
         for (uint cc = 0; cc < FA2SC_NC; cc++) {
             uint block_idx = cc * FA2SC_NSG + simd_id;
             uint gkv_base  = tile_kv + block_idx * 8;
 
-            // Stage 8 K rows from f16 cache into per-SG scratch
-            threadgroup half* my_sk = sk + simd_id * (8 * FA2SC_HD);
-            for (uint i = simd_lane; i < 8 * FA2SC_HD; i += FA2SC_NW) {
-                uint ki = i / FA2SC_HD;
-                uint d  = i % FA2SC_HD;
-                uint gkv = gkv_base + ki;
-                my_sk[i] = (gkv < max_attend_end)
-                    ? K_cache[gkv * kv_stride + kv_h * FA2SC_HD + d]
-                    : half(0.0h);
-            }
-            simdgroup_barrier(mem_flags::mem_threadgroup);
-
-            // Q (float TG) × K^T (half scratch) → scores (float)
-            // Use simdgroup_float8x8 for Q, load K as half→float promotion
             simdgroup_float8x8 mqk = make_filled_simdgroup_matrix<float, 8>(0.0f);
 
+            // K base pointer for this 8-token block (device f16)
+            device const half* k_block = K_cache + gkv_base * kv_stride
+                                                 + kv_h * FA2SC_HD;
+
             for (uint dk = 0; dk < FA2SC_HD; dk += 16) {
-                simdgroup_float8x8 mq0, mq1;
-                simdgroup_half8x8 mk0, mk1;
-                // Q from threadgroup (float)
+                simdgroup_half8x8 mq0, mq1, mk0, mk1;
+                // Q from threadgroup (half)
                 simdgroup_load(mq0, sq + dk,     FA2SC_HD);
                 simdgroup_load(mq1, sq + dk + 8, FA2SC_HD);
-                // K from half scratch, transposed
-                simdgroup_load(mk0, my_sk + dk,     FA2SC_HD, ulong2(0, 0), true);
-                simdgroup_load(mk1, my_sk + dk + 8, FA2SC_HD, ulong2(0, 0), true);
+                // K directly from device (half), transposed
+                // OOB rows (gkv_base+7 >= max_attend_end) read garbage,
+                // but those scores get masked to -INF in softmax. Safe.
+                simdgroup_load(mk0, k_block + dk,     kv_stride, ulong2(0, 0), true);
+                simdgroup_load(mk1, k_block + dk + 8, kv_stride, ulong2(0, 0), true);
                 simdgroup_multiply_accumulate(mqk, mq0, mk0, mqk);
                 simdgroup_multiply_accumulate(mqk, mq1, mk1, mqk);
             }
@@ -5204,20 +5195,10 @@ kernel void attention_prefill_fa2_simd_cached_f16kv_hd128(
                 uint dv_block  = oo * FA2SC_NSG + simd_id;
                 uint dv_offset = kv_h * FA2SC_HD + dv_block * 8;
 
-                // Stage V from f16 cache into per-SG scratch
-                threadgroup half* my_sv = sk + simd_id * 64;
-                for (uint i = simd_lane; i < 64; i += FA2SC_NW) {
-                    uint vi = i / 8, d = i % 8;
-                    uint gkv = gkv_base + vi;
-                    my_sv[i] = (gkv < max_attend_end)
-                        ? V_cache[gkv * kv_stride + dv_offset + d]
-                        : half(0.0h);
-                }
-                simdgroup_barrier(mem_flags::mem_threadgroup);
-
-                // V from half scratch → float matmul
+                // V directly from device (half), no staging
                 simdgroup_half8x8 mv;
-                simdgroup_load(mv, my_sv, 8);
+                simdgroup_load(mv, V_cache + gkv_base * kv_stride + dv_offset,
+                               kv_stride);
                 simdgroup_multiply_accumulate(lo[oo], ms_mat, mv, lo[oo]);
             }
         }

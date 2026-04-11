@@ -209,7 +209,6 @@ fn lm_head_quant(mapped: &MappedModel) -> Option<GgmlType> {
 
 fn normalized_family_for_arch(arch: &str) -> String {
     match arch {
-        "llama" => "llama3".to_string(),
         "qwen2" | "qwen3" => "qwen3".to_string(),
         "qwen35" | "qwen35moe" => "qwen35".to_string(),
         "gemma" | "gemma2" | "gemma3" => "gemma3".to_string(),
@@ -337,7 +336,6 @@ mod tests {
 
     #[test]
     fn test_normalized_family_for_arch() {
-        assert_eq!(normalized_family_for_arch("llama"), "llama3");
         assert_eq!(normalized_family_for_arch("qwen35moe"), "qwen35");
         assert_eq!(normalized_family_for_arch("gemma2"), "gemma3");
     }

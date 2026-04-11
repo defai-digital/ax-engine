@@ -1,11 +1,6 @@
 use super::*;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use ax_engine_bench::microbench::{
-    MicrobenchProfileExportBlocker, MicrobenchProfileExportBlockerKind,
-    MicrobenchProfileExportState,
-};
-
 fn env_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -69,109 +64,6 @@ fn test_parse_duration_bare_number() {
 fn test_parse_duration_invalid() {
     assert!(parse_duration("abc").is_err());
     assert!(parse_duration("1x").is_err());
-}
-
-#[test]
-fn test_determine_profile_export_action_blocks_by_default() {
-    let decision = microbench::MicrobenchProfileExportDecision {
-        allowed: false,
-        blocker_details: vec![],
-        blockers: vec!["blocked".to_string()],
-    };
-    assert_eq!(
-        microbench::determine_profile_export_action(true, false, &decision),
-        MicrobenchProfileExportAction::Blocked
-    );
-}
-
-#[test]
-fn test_determine_profile_export_action_allows_override() {
-    let decision = microbench::MicrobenchProfileExportDecision {
-        allowed: false,
-        blocker_details: vec![],
-        blockers: vec!["blocked".to_string()],
-    };
-    assert_eq!(
-        microbench::determine_profile_export_action(true, true, &decision),
-        MicrobenchProfileExportAction::Write {
-            override_used: true
-        }
-    );
-}
-
-#[test]
-fn test_determine_profile_export_action_skips_when_not_requested() {
-    let decision = microbench::MicrobenchProfileExportDecision {
-        allowed: true,
-        blocker_details: vec![],
-        blockers: vec![],
-    };
-    assert_eq!(
-        microbench::determine_profile_export_action(false, false, &decision),
-        MicrobenchProfileExportAction::NotRequested
-    );
-}
-
-#[test]
-fn test_format_export_status_blockers_uses_structured_threshold_details() {
-    let status = MicrobenchProfileExportStatus {
-        state: MicrobenchProfileExportState::Blocked,
-        exit_code: 1,
-        requested: true,
-        gate_allowed: false,
-        override_used: false,
-        wrote_profile: false,
-        blocker_details: vec![MicrobenchProfileExportBlocker {
-            kind: MicrobenchProfileExportBlockerKind::BelowThreshold,
-            reason: "decode_matvec.q4_k avg speedup 1.080x below export threshold 1.100x"
-                .to_string(),
-            rule: Some("decode_matvec.q4_k".to_string()),
-            avg_speedup: Some(1.08),
-            required_speedup: Some(1.10),
-            forced: false,
-        }],
-        blockers: vec!["legacy blocker".to_string()],
-        output_path: Some("/tmp/profile.json".to_string()),
-    };
-
-    let lines = format_export_status_blockers(&status);
-    assert_eq!(lines.len(), 1);
-    assert!(lines[0].contains("kind=below_threshold"));
-    assert!(lines[0].contains("rule=decode_matvec.q4_k"));
-    assert!(lines[0].contains("avg=1.080x"));
-    assert!(lines[0].contains("required=1.100x"));
-    assert!(!lines[0].contains("legacy blocker"));
-}
-
-#[test]
-fn test_format_export_status_blockers_uses_structured_forced_details() {
-    let status = MicrobenchProfileExportStatus {
-        state: MicrobenchProfileExportState::Blocked,
-        exit_code: 1,
-        requested: true,
-        gate_allowed: false,
-        override_used: false,
-        wrote_profile: false,
-        blocker_details: vec![MicrobenchProfileExportBlocker {
-            kind: MicrobenchProfileExportBlockerKind::Forced,
-            reason: "forced export block via AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK=1".to_string(),
-            rule: None,
-            avg_speedup: None,
-            required_speedup: None,
-            forced: true,
-        }],
-        blockers: vec!["legacy forced blocker".to_string()],
-        output_path: None,
-    };
-
-    let lines = format_export_status_blockers(&status);
-    assert_eq!(
-        lines,
-        vec![
-            "forced export block via AX_BENCH_MICROBENCH_FORCE_EXPORT_BLOCK=1 kind=forced"
-                .to_string()
-        ]
-    );
 }
 
 #[test]
@@ -387,7 +279,7 @@ fn test_cli_parse_prefill_route_compare_accepts_multiple_routes() {
         "ax-engine-bench",
         "prefill-route-compare",
         "--model",
-        "./models/Llama-3-8B-Instruct-GGUF-Q4_K_M.gguf",
+        "./models/Qwen3.5-9B-Q4_K_M.gguf",
         "--samples",
         "5",
         "--route",

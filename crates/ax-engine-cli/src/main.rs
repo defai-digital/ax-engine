@@ -131,7 +131,11 @@ fn main() -> anyhow::Result<()> {
     let backend = ax_engine_core::backend::create_backend(
         ax_engine_core::backend::resolve_backend_config_from_env(),
     )?;
-    ax_engine_core::scheduler::init_global_threadpool();
+    if args.threads > 0 {
+        ax_engine_core::scheduler::init_global_threadpool_with_count(args.threads as usize);
+    } else {
+        ax_engine_core::scheduler::init_global_threadpool();
+    }
 
     if args.interactive {
         interactive::run(&args, backend)?;

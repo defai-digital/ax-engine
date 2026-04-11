@@ -26,8 +26,6 @@ pub struct ProfileConfig {
     pub warmup_tokens: usize,
     /// Number of tokens to profile.
     pub profile_tokens: usize,
-    /// Optional kernel profile override path used for this run.
-    pub kernel_profile_path: Option<String>,
 }
 
 impl Default for ProfileConfig {
@@ -36,7 +34,6 @@ impl Default for ProfileConfig {
             model_path: String::new(),
             warmup_tokens: 16,
             profile_tokens: 64,
-            kernel_profile_path: None,
         }
     }
 }
@@ -118,10 +115,6 @@ pub struct ProfileResult {
     /// Optional explanation when a faster mode was not used.
     #[serde(default)]
     pub decode_fallback_reason: Option<String>,
-    /// Optional kernel profile override path used for this run.
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kernel_profile_path: Option<String>,
     /// Total Metal command buffers used during the profiled decode loop.
     #[serde(default)]
     pub decode_command_buffers: f64,
@@ -444,7 +437,6 @@ pub fn run_profile_with_backend(
         decode_plan: plan_summary,
         support_note,
         decode_fallback_reason: selection.fallback_reason,
-        kernel_profile_path: config.kernel_profile_path.clone(),
         decode_command_buffers,
         decode_buffer_barriers,
         decode_command_buffers_per_tok: if tokens_generated > 0 {
@@ -689,9 +681,6 @@ impl ProfileResult {
         if let Some(reason) = &self.decode_fallback_reason {
             eprintln!("Fallback:    {reason}");
         }
-        if let Some(path) = &self.kernel_profile_path {
-            eprintln!("KernelProf:  {path}");
-        }
         eprintln!(
             "Wall time:   {:.1}ms ({:.2}ms/tok)",
             self.total_ms, self.avg_tok_ms,
@@ -871,7 +860,6 @@ mod tests {
         let c = ProfileConfig::default();
         assert_eq!(c.warmup_tokens, 16);
         assert_eq!(c.profile_tokens, 64);
-        assert_eq!(c.kernel_profile_path, None);
     }
 
     #[test]
@@ -894,7 +882,6 @@ mod tests {
             decode_plan: "sync=single_cb scratch=gpu_shared".into(),
             support_note: Some(q5k_support_note()),
             decode_fallback_reason: None,
-            kernel_profile_path: None,
             decode_command_buffers: 64.0,
             decode_buffer_barriers: 128.0,
             decode_command_buffers_per_tok: 1.0,
@@ -975,7 +962,6 @@ mod tests {
             decode_plan: "sync=single_cb scratch=gpu_shared".into(),
             support_note: Some(q5k_support_note()),
             decode_fallback_reason: None,
-            kernel_profile_path: None,
             decode_command_buffers: 32.0,
             decode_buffer_barriers: 64.0,
             decode_command_buffers_per_tok: 1.0,
@@ -1060,7 +1046,6 @@ mod tests {
             decode_plan: "sync=sequential scratch=cpu".into(),
             support_note: None,
             decode_fallback_reason: None,
-            kernel_profile_path: None,
             decode_command_buffers: 0.0,
             decode_buffer_barriers: 0.0,
             decode_command_buffers_per_tok: 0.0,
@@ -1141,7 +1126,6 @@ mod tests {
             decode_plan: "sync=single_cb scratch=gpu_shared".into(),
             support_note: None,
             decode_fallback_reason: None,
-            kernel_profile_path: None,
             decode_command_buffers: 64.0,
             decode_buffer_barriers: 0.0,
             decode_command_buffers_per_tok: 1.0,
@@ -1216,7 +1200,6 @@ mod tests {
             decode_plan: "sync=single_cb scratch=gpu_shared".into(),
             support_note: None,
             decode_fallback_reason: None,
-            kernel_profile_path: None,
             decode_command_buffers: 64.0,
             decode_buffer_barriers: 0.0,
             decode_command_buffers_per_tok: 1.0,

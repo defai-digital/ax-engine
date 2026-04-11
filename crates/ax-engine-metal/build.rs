@@ -5,7 +5,7 @@
 //! `xcrun metallib`. The resulting `.metallib` is emitted into `OUT_DIR` and
 //! loaded by `pipeline.rs` at runtime.
 //!
-//! Reference: mistral.rs build.rs:145-318, llama.cpp embeds ggml.metallib.
+//! Reference: llama.cpp embeds ggml.metallib.
 //!
 //! Set AX_METAL_SKIP_PRECOMPILE=1 to skip precompilation and use runtime
 //! shader compilation instead.

@@ -40,6 +40,10 @@ pub(crate) fn encode_dequant_batch(
                 k,
                 ax_engine_metal::DequantDispatchConfig::default(),
             ),
+            GgmlType::Q5_0 => dequant
+                .encode_fused_batch_q5_0_blocked_f16in(encoder, weight, input_f16, output, m, n, k),
+            GgmlType::Q5_1 => dequant
+                .encode_fused_batch_q5_1_blocked_f16in(encoder, weight, input_f16, output, m, n, k),
             GgmlType::Q6K => dequant.encode_fused_batch_q6_k_f16in_with_config(
                 encoder,
                 weight,
@@ -66,6 +70,20 @@ pub(crate) fn encode_dequant_batch(
             }
             GgmlType::Q6K => {
                 dequant.encode_fused_batch_q6_k(encoder, weight, input, output, m, n, k)
+            }
+            GgmlType::Q5_0 => {
+                // Q5_0 batch path always uses blocked f16in kernel with f32→f16 cast.
+                elementwise.encode_cast_f32_to_f16(encoder, input, input_f16, n * k);
+                dequant.encode_fused_batch_q5_0_blocked_f16in(
+                    encoder, weight, input_f16, output, m, n, k,
+                )
+            }
+            GgmlType::Q5_1 => {
+                // Q5_1 batch path uses blocked f16in kernel with f32→f16 cast.
+                elementwise.encode_cast_f32_to_f16(encoder, input, input_f16, n * k);
+                dequant.encode_fused_batch_q5_1_blocked_f16in(
+                    encoder, weight, input_f16, output, m, n, k,
+                )
             }
             GgmlType::Q8_0 => {
                 dequant.encode_fused_batch_q8_0(encoder, weight, input, output, m, n, k)
@@ -255,6 +273,9 @@ pub(crate) fn encode_dequant_batch_pair_f16in(
             .encode_fused_batch_pair_q6_k_f16in(encoder, w0, w1, input_f16, out0, out1, m, n, k),
         GgmlType::Q8_0 => dequant
             .encode_fused_batch_pair_q8_0_f16in(encoder, w0, w1, input_f16, out0, out1, m, n, k),
-        _ => panic!(),
+        _ => panic!(
+            "GPU batch pair f16in dispatch does not support dtype {:?}",
+            dtype
+        ),
     }
 }

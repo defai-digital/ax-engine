@@ -35,6 +35,46 @@ pub use profile::{KernelProfile, KvCacheParams, KvPrecisionMode, MatvecProfileVa
 /// without depending on objc2/objc2_metal directly.
 pub type MetalEncoder = objc2::runtime::ProtocolObject<dyn objc2_metal::MTLComputeCommandEncoder>;
 
+// ── Pipeline state cache ─────────────────────────────────────────────────
+//
+// Eliminates redundant `setComputePipelineState` calls when consecutive
+// dispatches use the same kernel.  A typical LLaMA 8B decode token has
+// ~256 dispatches but only ~5-7 unique pipeline states, so ~217 calls
+// are redundant.  Each call costs ~1-5 μs on Apple Silicon; skipping
+// them saves ~0.5-1 ms per token (2-5 % at 50 tok/s).
+//
+// Thread-local storage is used because Metal encoders are always
+// single-threaded within a command buffer encode block.
+
+thread_local! {
+    static PIPELINE_CACHE: std::cell::Cell<*const std::ffi::c_void> =
+        const { std::cell::Cell::new(std::ptr::null()) };
+}
+
+/// Set the compute pipeline state on `encoder`, skipping the Metal API
+/// call if the pipeline is identical to the last one set on this thread.
+#[inline]
+pub fn set_pipeline_cached(
+    encoder: &MetalEncoder,
+    state: &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
+) {
+    use objc2_metal::MTLComputeCommandEncoder;
+    let ptr = state as *const _ as *const std::ffi::c_void;
+    PIPELINE_CACHE.with(|cell| {
+        if cell.get() != ptr {
+            encoder.setComputePipelineState(state);
+            cell.set(ptr);
+        }
+    });
+}
+
+/// Reset the pipeline cache.  Call at the start of each command buffer
+/// encode block (new token) to avoid stale state across command buffers.
+#[inline]
+pub fn reset_pipeline_cache() {
+    PIPELINE_CACHE.with(|cell| cell.set(std::ptr::null()));
+}
+
 /// Lightweight Metal hot-path counters used for performance analysis.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PerfCounters {

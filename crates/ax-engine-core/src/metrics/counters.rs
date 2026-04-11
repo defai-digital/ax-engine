@@ -195,6 +195,11 @@ impl LatencyHistogram {
     pub fn clear(&mut self) {
         self.samples.clear();
     }
+
+    /// Append all samples from another histogram into this one.
+    pub fn extend(&mut self, other: &LatencyHistogram) {
+        self.samples.extend_from_slice(&other.samples);
+    }
 }
 
 impl Default for LatencyHistogram {

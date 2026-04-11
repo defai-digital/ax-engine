@@ -1193,8 +1193,6 @@ impl Qwen3_5Forward {
         weights: &WeightStore,
         fuse_argmax: bool,
     ) -> anyhow::Result<ax_engine_metal::PendingFrame> {
-        use crate::model::shared::encode_dequant_matvec_with_config;
-
         let dims = Self::recurrent_dims(cfg)?;
         let n_layers = cfg.n_layers as usize;
         let dim = cfg.embedding_dim as usize;
@@ -1226,7 +1224,31 @@ impl Qwen3_5Forward {
         let cached = cached_guard.as_ref().unwrap();
         let gpu_layer_keys = Self::cached_gpu_layer_keys(cached.lm_head)
             .ok_or_else(|| anyhow::anyhow!("missing cached qwen35 gpu layer keys"))?;
+        let moe_layer_keys = if Self::qwen35_is_moe(cfg) {
+            let layer_keys = Self::cached_moe_layer_keys(cached.lm_head)
+                .ok_or_else(|| anyhow::anyhow!("missing cached qwen35 moe layer keys"))?;
+            if cached
+                .layers
+                .iter()
+                .zip(layer_keys.iter())
+                .any(|(layer, moe)| layer.wg == 0 && moe.is_none())
+            {
+                anyhow::bail!("missing cached qwen35 moe layer keys");
+            }
+            Some(layer_keys)
+        } else {
+            None
+        };
         let weight_cache = metal_ops.lock_weight_cache();
+        let moe_weight_cache = moe_layer_keys
+            .as_ref()
+            .map(|_| metal_ops.lock_moe_weight_cache());
+        let moe_scratch = if moe_layer_keys.is_some() {
+            metal_ops.init_batch_scratches(cfg, 1);
+            Some(metal_ops.moe_batch_scratch_view()?)
+        } else {
+            None
+        };
 
         let exec_plan = Self::qwen35_decode_plan(
             metal_ops,
@@ -1238,9 +1260,10 @@ impl Qwen3_5Forward {
             full_seq_len,
             true,
         );
+        let dispatch_plan = Self::qwen35_native_decode_dispatch_plan(cfg, &exec_plan, n_layers);
         let rope_position = Self::rope_position(cfg, position);
         let use_concurrent =
-            exec_plan.encoder == crate::model::execution_plan::DecodeEncoderPlan::Concurrent;
+            dispatch_plan.encoder == crate::model::execution_plan::DecodeEncoderPlan::Concurrent;
         // Macro to avoid duplicating the entire closure for serial vs concurrent.
         macro_rules! with_encoder {
             ($device:expr, $body:expr) => {
@@ -1252,457 +1275,53 @@ impl Qwen3_5Forward {
             };
         }
         with_encoder!(metal_ops.device, |encoder| {
-            let barrier = crate::model::shared::DecodeBarrierCtx::new(encoder, exec_plan.barriers);
+            let barrier =
+                crate::model::shared::DecodeBarrierCtx::new(encoder, dispatch_plan.barriers);
+            barrier.pre_dispatch(&[hidden_buf], &[&s.hidden]);
+            metal_ops
+                .elementwise
+                .encode_buffer_copy(encoder, hidden_buf, 0, &s.hidden, 0, dim as u32);
+            barrier.post_dispatch(&[hidden_buf], &[&s.hidden]);
+            barrier.step(encoder);
 
-            for layer in 0..n_layers {
-                let lw = &cached.layers[layer];
-                let norm_w = weight_cache.get(&lw.attn_norm).unwrap();
-                barrier.pre_dispatch(&[hidden_buf], &[&s.norm_buf]);
-                metal_ops.elementwise.encode_rms_norm_out(
+            let mut no_ops = None;
+            for (range_idx, layer_range) in dispatch_plan.layer_ranges.iter().copied().enumerate() {
+                Self::encode_qwen35_native_decode_layers(
+                    metal_ops,
                     encoder,
-                    hidden_buf,
-                    norm_w,
-                    &s.norm_buf,
-                    dim as u32,
+                    &barrier,
+                    cfg,
+                    qwen_kv,
+                    cached,
+                    &gpu_layer_keys,
+                    moe_layer_keys.as_deref(),
+                    &weight_cache,
+                    moe_weight_cache.as_deref(),
+                    s,
+                    moe_scratch,
+                    &exec_plan,
+                    dispatch_plan.barriers
+                        == crate::model::execution_plan::DecodeBarrierPlan::Explicit,
+                    layer_range.start,
+                    layer_range.end_exclusive,
+                    position,
+                    full_seq_len,
+                    rope_position,
+                    recurrent_slot,
+                    dims,
+                    dim,
+                    inter_dim,
+                    q_dim,
+                    kv_dim,
+                    n_heads,
+                    n_kv_heads,
+                    head_dim,
+                    conv_cache_len,
                     eps,
-                );
-                barrier.post_dispatch(&[hidden_buf], &[&s.norm_buf]);
-                barrier.step(encoder);
-
-                if !cfg.qwen35_is_recurrent_layer(layer) {
-                    let gpu_attn = qwen_kv.gpu_attention().ok_or_else(|| {
-                        anyhow::anyhow!("qwen35 pending decode requires GPU attention KV")
-                    })?;
-                    // Q/K/V matvecs all read norm_buf, write different outputs
-                    // → SmartBarrier skips barriers between them.
-                    let wq = weight_cache.get(&lw.wq).unwrap();
-                    let wk = weight_cache.get(&lw.wk).unwrap();
-                    let wv = weight_cache.get(&lw.wv).unwrap();
-                    barrier.pre_dispatch(&[&s.norm_buf], &[&s.gate_buf]);
-                    encode_dequant_matvec_with_config(
-                        metal_ops,
-                        encoder,
-                        wq,
-                        &s.norm_buf,
-                        &s.gate_buf,
-                        (q_dim * 2) as u32,
-                        dim as u32,
-                        lw.wq_dtype,
-                        exec_plan.dequant_dispatch,
-                    );
-                    barrier.post_dispatch(&[&s.norm_buf], &[&s.gate_buf]);
-                    barrier.pre_dispatch(&[&s.norm_buf], &[&s.k_buf]);
-                    encode_dequant_matvec_with_config(
-                        metal_ops,
-                        encoder,
-                        wk,
-                        &s.norm_buf,
-                        &s.k_buf,
-                        kv_dim as u32,
-                        dim as u32,
-                        lw.wk_dtype,
-                        exec_plan.dequant_dispatch,
-                    );
-                    barrier.post_dispatch(&[&s.norm_buf], &[&s.k_buf]);
-                    barrier.pre_dispatch(&[&s.norm_buf], &[&s.v_buf]);
-                    encode_dequant_matvec_with_config(
-                        metal_ops,
-                        encoder,
-                        wv,
-                        &s.norm_buf,
-                        &s.v_buf,
-                        kv_dim as u32,
-                        dim as u32,
-                        lw.wv_dtype,
-                        exec_plan.dequant_dispatch,
-                    );
-                    barrier.post_dispatch(&[&s.norm_buf], &[&s.v_buf]);
-                    barrier.pre_dispatch(&[&s.gate_buf], &[&s.q_buf, &s.up_buf]);
-                    metal_ops.elementwise.encode_split_qgate_batch(
-                        encoder,
-                        &s.gate_buf,
-                        &s.q_buf,
-                        &s.up_buf,
-                        1,
-                        q_dim as u32,
-                        head_dim as u32,
-                    );
-                    barrier.post_dispatch(&[&s.gate_buf], &[&s.q_buf, &s.up_buf]);
-                    barrier.step(encoder);
-
-                    if let (Some(q_key), Some(k_key)) = (lw.attn_q_norm, lw.attn_k_norm) {
-                        let q_nw = weight_cache.get(&q_key).unwrap();
-                        let k_nw = weight_cache.get(&k_key).unwrap();
-                        barrier.pre_dispatch(&[&s.q_buf], &[&s.q_buf]);
-                        metal_ops.elementwise.encode_per_head_rms_norm_batch(
-                            encoder,
-                            &s.q_buf,
-                            q_nw,
-                            1,
-                            n_heads as u32,
-                            head_dim as u32,
-                            eps,
-                        );
-                        barrier.post_dispatch(&[&s.q_buf], &[&s.q_buf]);
-                        barrier.pre_dispatch(&[&s.k_buf], &[&s.k_buf]);
-                        metal_ops.elementwise.encode_per_head_rms_norm_batch(
-                            encoder,
-                            &s.k_buf,
-                            k_nw,
-                            1,
-                            n_kv_heads as u32,
-                            head_dim as u32,
-                            eps,
-                        );
-                        barrier.post_dispatch(&[&s.k_buf], &[&s.k_buf]);
-                        barrier.step(encoder);
-                    }
-
-                    barrier.pre_dispatch(&[&s.q_buf, &s.k_buf], &[&s.q_buf, &s.k_buf]);
-                    metal_ops.elementwise.encode_rope_batch_neox_partial(
-                        encoder,
-                        &s.q_buf,
-                        &s.k_buf,
-                        1,
-                        n_heads as u32,
-                        n_kv_heads as u32,
-                        head_dim as u32,
-                        (head_dim as u32).min(64),
-                        rope_position,
-                        0.0,
-                        cfg.rope_freq_base,
-                    );
-                    barrier.post_dispatch(&[&s.q_buf, &s.k_buf], &[&s.q_buf, &s.k_buf]);
-                    barrier.step(encoder);
-
-                    let kv_k = gpu_attn.k_buffer(layer);
-                    let kv_v = gpu_attn.v_buffer(layer);
-                    Self::encode_qwen35_single_token_kv_append(
-                        metal_ops, encoder, &barrier, gpu_attn, layer, position, kv_dim, &s.k_buf,
-                        &s.v_buf,
-                    )?;
-
-                    barrier.pre_dispatch(&[&s.q_buf, kv_k, kv_v], &[&s.attn_out]);
-                    if gpu_attn.is_q8() {
-                        if head_dim == 128 {
-                            metal_ops.attention.encode_attention_decode_q8kv(
-                                encoder,
-                                &s.q_buf,
-                                kv_k,
-                                kv_v,
-                                &s.attn_out,
-                                n_heads as u32,
-                                n_kv_heads as u32,
-                                head_dim as u32,
-                                0,
-                                full_seq_len as u32,
-                            );
-                        } else if head_dim == 256 {
-                            metal_ops.attention.encode_attention_decode_q8kv_hd256(
-                                encoder,
-                                &s.q_buf,
-                                kv_k,
-                                kv_v,
-                                &s.attn_out,
-                                n_heads as u32,
-                                n_kv_heads as u32,
-                                head_dim as u32,
-                                0,
-                                full_seq_len as u32,
-                            );
-                        } else {
-                            anyhow::bail!(
-                                "qwen35 pending decode q8 attention requires head_dim 128 or 256, got {head_dim}"
-                            );
-                        }
-                    } else {
-                        metal_ops
-                            .attention
-                            .encode_attention_decode_with_scratch_and_config(
-                                encoder,
-                                &s.q_buf,
-                                kv_k,
-                                kv_v,
-                                &s.attn_out,
-                                &s.splitk_partial_out,
-                                &s.splitk_partial_lse,
-                                gpu_attn.is_f16(),
-                                n_heads as u32,
-                                n_kv_heads as u32,
-                                head_dim as u32,
-                                0,
-                                full_seq_len as u32,
-                                exec_plan.attention_dispatch,
-                            );
-                    }
-                    barrier.post_dispatch(&[&s.q_buf, kv_k, kv_v], &[&s.attn_out]);
-                    barrier.step(encoder);
-
-                    barrier.pre_dispatch(&[&s.up_buf, &s.attn_out], &[&s.attn_out]);
-                    metal_ops.elementwise.encode_sigmoid_elementwise_mul(
-                        encoder,
-                        &s.up_buf,
-                        &s.attn_out,
-                        q_dim as u32,
-                    );
-                    barrier.post_dispatch(&[&s.up_buf, &s.attn_out], &[&s.attn_out]);
-                    barrier.step(encoder);
-
-                    barrier.pre_dispatch(&[&s.attn_out], &[&s.proj_buf]);
-                    encode_dequant_matvec_with_config(
-                        metal_ops,
-                        encoder,
-                        weight_cache.get(&lw.wo).unwrap(),
-                        &s.attn_out,
-                        &s.proj_buf,
-                        dim as u32,
-                        q_dim as u32,
-                        lw.wo_dtype,
-                        exec_plan.dequant_dispatch,
-                    );
-                    barrier.post_dispatch(&[&s.attn_out], &[&s.proj_buf]);
-                    barrier.step(encoder);
-
-                    let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
-                    barrier.pre_dispatch(&[hidden_buf, &s.proj_buf], &[hidden_buf, &s.norm_buf]);
-                    metal_ops
-                        .elementwise
-                        .encode_residual_add_rms_norm_out_batch(
-                            encoder,
-                            hidden_buf,
-                            &s.proj_buf,
-                            ffn_nw,
-                            &s.norm_buf,
-                            dim as u32,
-                            1,
-                            eps,
-                        );
-                    barrier.post_dispatch(&[hidden_buf, &s.proj_buf], &[hidden_buf, &s.norm_buf]);
-                    barrier.step(encoder);
-
-                    // Gate/Up: both read norm_buf, write different outputs → can overlap.
-                    let wg = weight_cache.get(&lw.wg).unwrap();
-                    let wu = weight_cache.get(&lw.wu).unwrap();
-                    barrier.pre_dispatch(&[&s.norm_buf], &[&s.gate_buf, &s.up_buf]);
-                    if !crate::model::shared::encode_dequant_matvec_pair_with_config(
-                        metal_ops,
-                        encoder,
-                        wg,
-                        wu,
-                        &s.norm_buf,
-                        &s.gate_buf,
-                        &s.up_buf,
-                        inter_dim as u32,
-                        dim as u32,
-                        lw.wg_dtype,
-                        lw.wu_dtype,
-                        exec_plan.dequant_dispatch,
-                        false,
-                    ) {
-                        encode_dequant_matvec_with_config(
-                            metal_ops,
-                            encoder,
-                            wg,
-                            &s.norm_buf,
-                            &s.gate_buf,
-                            inter_dim as u32,
-                            dim as u32,
-                            lw.wg_dtype,
-                            exec_plan.dequant_dispatch,
-                        );
-                        encode_dequant_matvec_with_config(
-                            metal_ops,
-                            encoder,
-                            wu,
-                            &s.norm_buf,
-                            &s.up_buf,
-                            inter_dim as u32,
-                            dim as u32,
-                            lw.wu_dtype,
-                            exec_plan.dequant_dispatch,
-                        );
-                    }
-                    barrier.post_dispatch(&[&s.norm_buf], &[&s.gate_buf, &s.up_buf]);
-                    barrier.step(encoder);
-
-                    crate::model::shared::encode_gpu_ffn_decode_tail(
-                        metal_ops,
-                        encoder,
-                        s,
-                        hidden_buf,
-                        weight_cache.get(&lw.wd).unwrap(),
-                        lw.wd_dtype,
-                        dim as u32,
-                        inter_dim as u32,
-                        eps,
-                        exec_plan.dequant_dispatch,
-                        exec_plan.use_fused_silu_down,
-                        crate::model::layer_ops::FfnActivation::SiLU,
-                        None,
-                        None,
-                        &barrier,
-                    );
-                } else {
-                    let recurrent_keys = match &gpu_layer_keys[layer] {
-                        Qwen3_5GpuLayerKeys::Recurrent(keys) => keys,
-                        Qwen3_5GpuLayerKeys::FullAttention => {
-                            anyhow::bail!("expected recurrent qwen35 GPU keys for layer {layer}")
-                        }
-                    };
-                    debug_assert!(kv_dim >= dims.time_step_rank);
-                    let conv_state_stride = qwen_kv.conv_cache_len() * qwen_kv.conv_dim();
-                    let recurrent_state_stride = qwen_kv.recurrent_state_len();
-                    metal_ops.with_qwen35_recurrent_slot_buffer_for_kv(
-                        qwen_kv,
-                        layer,
-                        recurrent_slot,
-                        conv_state_stride,
-                        recurrent_state_stride,
-                        |slot_buffers| -> anyhow::Result<()> {
-                            let recurrent_weights = Qwen3_5NativeRecurrentCachedWeights {
-                                wqkv: weight_cache.get(&recurrent_keys.wqkv).unwrap(),
-                                wgate: weight_cache.get(&recurrent_keys.wgate).unwrap(),
-                                wbeta: weight_cache.get(&recurrent_keys.wbeta).unwrap(),
-                                walpha: weight_cache.get(&recurrent_keys.walpha).unwrap(),
-                                conv_kernel: weight_cache.get(&recurrent_keys.conv_kernel).unwrap(),
-                                ssm_norm: weight_cache.get(&recurrent_keys.ssm_norm).unwrap(),
-                                dt_bias: weight_cache.get(&recurrent_keys.dt_bias).unwrap(),
-                                ssm_a: weight_cache.get(&recurrent_keys.ssm_a).unwrap(),
-                                wssm_out: weight_cache.get(&recurrent_keys.wssm_out).unwrap(),
-                            };
-                            let recurrent_dtypes = Qwen3_5NativeRecurrentDtypes {
-                                wqkv: recurrent_keys.wqkv_dtype,
-                                wgate: recurrent_keys.wgate_dtype,
-                                wbeta: recurrent_keys.wbeta_dtype,
-                                walpha: recurrent_keys.walpha_dtype,
-                                wssm_out: recurrent_keys.wssm_out_dtype,
-                            };
-                            metal_ops.with_qwen35_recurrent_projection_scratch(
-                                1,
-                                dims.conv_dim(),
-                                dims.inner_size,
-                                dims.time_step_rank,
-                                |temp_scratch| -> anyhow::Result<()> {
-                                    let recurrent_scratch =
-                                        Qwen3_5NativeRecurrentProjectionScratch {
-                                            qkv: &temp_scratch.qkv,
-                                            z: &temp_scratch.z,
-                                            beta: &temp_scratch.beta,
-                                            alpha: &temp_scratch.alpha,
-                                        };
-
-                                    // Recurrent tensors use dedicated scratch because
-                                    // conv_dim/inner_size can exceed the attention decode
-                                    // scratch dimensions on Qwen3.5 MoE models.
-                                    Self::encode_qwen35_native_recurrent_layer(
-                                        metal_ops,
-                                        encoder,
-                                        &barrier,
-                                        recurrent_weights,
-                                        recurrent_scratch,
-                                        slot_buffers,
-                                        &s.norm_buf,
-                                        &s.up_buf,
-                                        &s.proj_buf,
-                                        conv_cache_len,
-                                        dims,
-                                        dim,
-                                        eps,
-                                        recurrent_dtypes,
-                                        exec_plan.dequant_dispatch,
-                                    )?;
-                                    Ok(())
-                                },
-                            )?;
-
-                            let ffn_nw = weight_cache.get(&lw.ffn_norm).unwrap();
-                            barrier.pre_dispatch(
-                                &[hidden_buf, &s.proj_buf],
-                                &[hidden_buf, &s.norm_buf],
-                            );
-                            metal_ops
-                                .elementwise
-                                .encode_residual_add_rms_norm_out_batch(
-                                    encoder,
-                                    hidden_buf,
-                                    &s.proj_buf,
-                                    ffn_nw,
-                                    &s.norm_buf,
-                                    dim as u32,
-                                    1,
-                                    eps,
-                                );
-                            barrier.post_dispatch(
-                                &[hidden_buf, &s.proj_buf],
-                                &[hidden_buf, &s.norm_buf],
-                            );
-                            barrier.step(encoder);
-
-                            // Gate/Up: both read norm_buf, write different → can overlap.
-                            let wg = weight_cache.get(&lw.wg).unwrap();
-                            let wu = weight_cache.get(&lw.wu).unwrap();
-                            barrier.pre_dispatch(&[&s.norm_buf], &[&s.gate_buf, &s.up_buf]);
-                            if !crate::model::shared::encode_dequant_matvec_pair_with_config(
-                                metal_ops,
-                                encoder,
-                                wg,
-                                wu,
-                                &s.norm_buf,
-                                &s.gate_buf,
-                                &s.up_buf,
-                                inter_dim as u32,
-                                dim as u32,
-                                lw.wg_dtype,
-                                lw.wu_dtype,
-                                exec_plan.dequant_dispatch,
-                                false,
-                            ) {
-                                encode_dequant_matvec_with_config(
-                                    metal_ops,
-                                    encoder,
-                                    wg,
-                                    &s.norm_buf,
-                                    &s.gate_buf,
-                                    inter_dim as u32,
-                                    dim as u32,
-                                    lw.wg_dtype,
-                                    exec_plan.dequant_dispatch,
-                                );
-                                encode_dequant_matvec_with_config(
-                                    metal_ops,
-                                    encoder,
-                                    wu,
-                                    &s.norm_buf,
-                                    &s.up_buf,
-                                    inter_dim as u32,
-                                    dim as u32,
-                                    lw.wu_dtype,
-                                    exec_plan.dequant_dispatch,
-                                );
-                            }
-                            barrier.post_dispatch(&[&s.norm_buf], &[&s.gate_buf, &s.up_buf]);
-                            barrier.step(encoder);
-
-                            crate::model::shared::encode_gpu_ffn_decode_tail(
-                                metal_ops,
-                                encoder,
-                                s,
-                                hidden_buf,
-                                weight_cache.get(&lw.wd).unwrap(),
-                                lw.wd_dtype,
-                                dim as u32,
-                                inter_dim as u32,
-                                eps,
-                                exec_plan.dequant_dispatch,
-                                exec_plan.use_fused_silu_down,
-                                crate::model::layer_ops::FfnActivation::SiLU,
-                                None,
-                                None,
-                                &barrier,
-                            );
-                            Ok(())
-                        },
-                    )?;
+                    &mut no_ops,
+                )?;
+                if range_idx + 1 < dispatch_plan.layer_ranges.len() {
+                    barrier.flush();
                 }
             }
 
@@ -1710,7 +1329,7 @@ impl Qwen3_5Forward {
                 encoder,
                 metal_ops,
                 s,
-                hidden_buf,
+                &s.hidden,
                 &exec_plan,
                 cached,
                 &weight_cache,
@@ -1915,11 +1534,25 @@ impl Qwen3_5Forward {
                     eps,
                     &mut ops,
                 )?;
+                crate::model::shared::encode_gpu_output_head(
+                    encoder,
+                    metal_ops,
+                    s,
+                    &s.hidden,
+                    &exec_plan,
+                    cached,
+                    &weight_cache,
+                    &barrier,
+                    dim as u32,
+                    vocab_size as u32,
+                    eps,
+                );
                 barrier.flush();
                 Ok(())
             })?;
         } else {
-            for layer_range in dispatch_plan.layer_ranges.iter().copied() {
+            let last_range_idx = dispatch_plan.layer_ranges.len().saturating_sub(1);
+            for (range_idx, layer_range) in dispatch_plan.layer_ranges.iter().copied().enumerate() {
                 exec_sync!(metal_ops.device, |encoder| {
                     let barrier = crate::model::shared::DecodeBarrierCtx::new(
                         encoder,
@@ -1959,29 +1592,26 @@ impl Qwen3_5Forward {
                         eps,
                         &mut ops,
                     )?;
+                    if range_idx == last_range_idx {
+                        crate::model::shared::encode_gpu_output_head(
+                            encoder,
+                            metal_ops,
+                            s,
+                            &s.hidden,
+                            &exec_plan,
+                            cached,
+                            &weight_cache,
+                            &barrier,
+                            dim as u32,
+                            vocab_size as u32,
+                            eps,
+                        );
+                    }
                     barrier.flush();
                     Ok(())
                 })?;
             }
         }
-        exec_sync!(metal_ops.device, |encoder| {
-            let barrier = crate::model::shared::DecodeBarrierCtx::new(encoder, exec_plan.barriers);
-            crate::model::shared::encode_gpu_output_head(
-                encoder,
-                metal_ops,
-                s,
-                &s.hidden,
-                &exec_plan,
-                cached,
-                &weight_cache,
-                &barrier,
-                dim as u32,
-                vocab_size as u32,
-                eps,
-            );
-            barrier.flush();
-            Ok(())
-        })?;
         if std::env::var("AX_DEBUG_MOE_NATIVE").is_ok()
             && let Some(scratch) = moe_scratch
         {

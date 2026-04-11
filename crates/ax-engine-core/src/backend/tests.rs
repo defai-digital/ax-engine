@@ -23,7 +23,7 @@ fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 
 fn test_model_config() -> ModelConfig {
     ModelConfig {
-        architecture: "llama".into(),
+        architecture: "gemma3".into(),
         n_layers: 32,
         n_heads: 32,
         n_kv_heads: 8,

@@ -209,7 +209,10 @@ pub fn run_soak_test_with_backend(
     let mut total_tokens = warmup_tokens + baseline_tokens;
     let mut iterations = 2u64; // warmup + baseline
     let mut last_check = Instant::now();
-    let mut current_latency = LatencyHistogram::new();
+    // interval_latency is cleared after each periodic check — used for per-interval drift.
+    // cumulative_latency accumulates all samples — used for the final P95 report.
+    let mut interval_latency = LatencyHistogram::new();
+    let mut cumulative_latency = LatencyHistogram::new();
     let mut failures = Vec::new();
 
     while start.elapsed() < config.duration {
@@ -220,8 +223,9 @@ pub fn run_soak_test_with_backend(
             &mut sampler,
             vocab_size,
             config.tokens_per_iter,
-            &mut current_latency,
+            &mut interval_latency,
         )?;
+        cumulative_latency.extend(&interval_latency);
 
         total_tokens += iter_tokens;
         iterations += 1;
@@ -235,7 +239,7 @@ pub fn run_soak_test_with_backend(
                 0.0
             };
 
-            let now_p95 = current_latency.p95().unwrap_or(Duration::ZERO);
+            let now_p95 = interval_latency.p95().unwrap_or(Duration::ZERO);
             let p95_drift = if baseline_p95 > Duration::ZERO {
                 (now_p95.as_secs_f64() / baseline_p95.as_secs_f64()) - 1.0
             } else {
@@ -264,8 +268,8 @@ pub fn run_soak_test_with_backend(
                 ));
             }
 
-            // Reset latency window for next interval
-            current_latency.clear();
+            // Reset interval window for next check
+            interval_latency.clear();
             last_check = Instant::now();
         }
     }
@@ -276,7 +280,9 @@ pub fn run_soak_test_with_backend(
     } else {
         0.0
     };
-    let final_p95 = current_latency
+    // Use cumulative_latency so the final P95 covers the entire run, not just
+    // the last incomplete interval (which may have been cleared mid-run).
+    let final_p95 = cumulative_latency
         .p95()
         .or(baseline_latency.p95())
         .unwrap_or(Duration::ZERO);

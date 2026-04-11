@@ -10,7 +10,7 @@
 //!   ax-engine-bench speculative --model <target> --draft-model <draft> [--json] [--json-output <path>]
 //!   ax-engine-bench parity --model <path> [--prompt "Hello"] [--decode-tokens 8]
 //!   ax-engine-bench parity --model <path> [--prompt "Hello"] --speculative-verify-k 2
-//!   ax-engine-bench microbench [--suite gpu] [--json] [--profile-output <path>]
+//!   ax-engine-bench microbench [--suite gpu] [--json]
 
 use std::process::{self, Command as ProcessCommand};
 use std::time::Duration;
@@ -25,10 +25,7 @@ use ax_engine_bench::arch_config::{
     qwen35_prefill_force_backend_state_batch_env, qwen35_prefill_recurrent_state_mode_env,
     qwen35_spec_verify_branch_env,
 };
-use ax_engine_bench::microbench::{
-    self, MicrobenchConfig, MicrobenchProfileExportAction, MicrobenchProfileExportStatus,
-    MicrobenchSuite,
-};
+use ax_engine_bench::microbench::{self, MicrobenchConfig, MicrobenchSuite};
 use ax_engine_bench::parity::{self, ParityConfig, ParityMode};
 use ax_engine_bench::perf::{self, BenchConfig, SpecBenchConfig};
 use ax_engine_bench::prefill_gap::{self, PrefillGapConfig};
@@ -136,16 +133,6 @@ impl LocalPrefillHd128RouteArg {
     }
 }
 
-fn format_export_status_blockers(status: &MicrobenchProfileExportStatus) -> Vec<String> {
-    microbench::format_export_status_blockers(status)
-}
-
-fn print_export_status_blockers(status: &MicrobenchProfileExportStatus) {
-    for line in format_export_status_blockers(status) {
-        eprintln!("  {line}");
-    }
-}
-
 fn parse_non_zero_usize(value: &str) -> Result<usize, String> {
     let parsed = value
         .parse::<usize>()
@@ -234,10 +221,6 @@ enum Command {
         /// Apply llama.cpp-aligned AX runtime preset (if vars are unset).
         #[arg(long)]
         llama_parity_preset: bool,
-
-        /// Override kernel profile path for this run.
-        #[arg(long)]
-        kernel_profile_path: Option<String>,
     },
 
     /// Profile the batched-prefill path (coarse timing breakdown).
@@ -298,10 +281,6 @@ enum Command {
         /// Apply llama.cpp-aligned AX runtime preset (if vars are unset).
         #[arg(long)]
         llama_parity_preset: bool,
-
-        /// Override kernel profile path for this run.
-        #[arg(long)]
-        kernel_profile_path: Option<String>,
     },
 
     /// Compare local HD128 prefill attention routes via fresh subprocess runs.
@@ -366,10 +345,6 @@ enum Command {
         /// Apply llama.cpp-aligned AX runtime preset (if vars are unset).
         #[arg(long)]
         llama_parity_preset: bool,
-
-        /// Override kernel profile path for this run.
-        #[arg(long)]
-        kernel_profile_path: Option<String>,
     },
 
     /// Attribute AX prefill gap versus a baseline artifact or inline baseline.
@@ -438,10 +413,6 @@ enum Command {
         /// Apply llama.cpp-aligned AX runtime preset (if vars are unset).
         #[arg(long)]
         llama_parity_preset: bool,
-
-        /// Override kernel profile path for this run.
-        #[arg(long)]
-        kernel_profile_path: Option<String>,
     },
 
     /// Run a performance benchmark.
@@ -495,10 +466,6 @@ enum Command {
         /// Optional source recurrent slot for Qwen3.5 shared-timeline prefill.
         #[arg(long)]
         qwen35_shared_timeline_source_slot: Option<usize>,
-
-        /// Override kernel profile path for this run.
-        #[arg(long)]
-        kernel_profile_path: Option<String>,
 
         /// Output results as JSON.
         #[arg(long)]
@@ -563,10 +530,6 @@ enum Command {
         #[arg(long)]
         llama_parity_preset: bool,
 
-        /// Override kernel profile path for this run.
-        #[arg(long)]
-        kernel_profile_path: Option<String>,
-
         /// Output results as JSON.
         #[arg(long)]
         json: bool,
@@ -593,14 +556,6 @@ enum Command {
         /// Output results as JSON.
         #[arg(long)]
         json: bool,
-
-        /// Write a suggested kernel profile JSON derived from microbench winners.
-        #[arg(long)]
-        profile_output: Option<String>,
-
-        /// Allow writing a suggested profile even when the confidence gate blocks export.
-        #[arg(long)]
-        allow_low_confidence_export: bool,
     },
 
     /// Compare CPU reference logits against another backend on the same token path.
@@ -638,10 +593,6 @@ enum Command {
         #[arg(long)]
         llama_parity_preset: bool,
 
-        /// Override kernel profile path for this run.
-        #[arg(long)]
-        kernel_profile_path: Option<String>,
-
         /// Output results as JSON.
         #[arg(long)]
         json: bool,
@@ -657,14 +608,6 @@ fn set_env_default(key: &str, value: &str) {
         // SAFETY: Process-global environment mutation is intentional here for this
         // one-shot CLI process before model/runner initialization.
         unsafe { std::env::set_var(key, value) };
-    }
-}
-
-fn apply_kernel_profile_override(path: Option<&str>) {
-    if let Some(path) = path {
-        // SAFETY: Process-global environment mutation is intentional here for this
-        // one-shot CLI process before backend/model initialization.
-        unsafe { std::env::set_var("AX_KERNEL_PROFILE_PATH", path) };
     }
 }
 
@@ -838,7 +781,6 @@ struct PrefillRouteCompareReport {
     prompt_tokens: usize,
     warmup_iters: usize,
     samples_per_route: usize,
-    kernel_profile_path: Option<String>,
     qwen35_shared_timeline_slots: usize,
     qwen35_shared_timeline_source_slot: Option<usize>,
     qwen35_recurrent_state_mode: Qwen35PrefillRecurrentStateModeArg,
@@ -857,9 +799,6 @@ impl PrefillRouteCompareReport {
         eprintln!("Model:       {}", self.model);
         eprintln!("Prompt:      {} tokens", self.prompt_tokens);
         eprintln!("Samples:     {} per route", self.samples_per_route);
-        if let Some(path) = &self.kernel_profile_path {
-            eprintln!("KernelProf:  {path}");
-        }
         eprintln!();
         eprintln!(
             "{:<18} {:>12} {:>12} {:>10} {:>7}  Observed",
@@ -936,7 +875,6 @@ fn run_prefill_profile_subprocess(
     qwen35_prewarm_prefill_same_kv: bool,
     qwen35_force_backend_state_batch: bool,
     llama_parity_preset: bool,
-    kernel_profile_path: Option<&str>,
 ) -> anyhow::Result<PrefillProfileResult> {
     let current_exe = std::env::current_exe().context("resolve current bench executable")?;
     let mut cmd = ProcessCommand::new(current_exe);
@@ -972,9 +910,6 @@ fn run_prefill_profile_subprocess(
     }
     if llama_parity_preset {
         cmd.arg("--llama-parity-preset");
-    }
-    if let Some(path) = kernel_profile_path {
-        cmd.arg("--kernel-profile-path").arg(path);
     }
 
     let output = cmd.output().context("run prefill-profile subprocess")?;
@@ -1263,19 +1198,16 @@ fn main() {
             baseline_json,
             top_regressions,
             llama_parity_preset,
-            kernel_profile_path,
         } => {
             if llama_parity_preset {
                 apply_llama_parity_preset();
             }
-            apply_kernel_profile_override(kernel_profile_path.as_deref());
             let backend = create_runtime_backend("Profile");
             ax_engine_core::scheduler::init_global_threadpool();
             let config = ProfileConfig {
                 model_path: model,
                 warmup_tokens,
                 profile_tokens,
-                kernel_profile_path,
             };
 
             match profile::run_profile_with_backend(&config, backend) {
@@ -1352,19 +1284,16 @@ fn main() {
             json,
             json_output,
             llama_parity_preset,
-            kernel_profile_path,
         } => {
             if llama_parity_preset {
                 apply_llama_parity_preset();
             }
-            apply_kernel_profile_override(kernel_profile_path.as_deref());
             let config = PrefillProfileConfig {
                 model_path: model,
                 prompt_tokens,
                 warmup_iters,
                 qwen35_shared_timeline_slots,
                 qwen35_shared_timeline_source_slot,
-                kernel_profile_path,
                 qwen35_recurrent_state_mode: qwen35_recurrent_state_mode.into(),
                 qwen35_alpha_beta_storage_mode: qwen35_alpha_beta_storage_mode.into(),
                 qwen35_prime_slot_buffers,
@@ -1437,7 +1366,6 @@ fn main() {
             json,
             json_output,
             llama_parity_preset,
-            kernel_profile_path,
         } => {
             let routes = if route.is_empty() {
                 default_prefill_route_compare_routes()
@@ -1470,7 +1398,6 @@ fn main() {
                                 qwen35_prewarm_prefill_same_kv,
                                 qwen35_force_backend_state_batch,
                                 llama_parity_preset,
-                                kernel_profile_path.as_deref(),
                             )
                         })
                         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -1495,7 +1422,6 @@ fn main() {
                         prompt_tokens,
                         warmup_iters,
                         samples_per_route: samples,
-                        kernel_profile_path,
                         qwen35_shared_timeline_slots,
                         qwen35_shared_timeline_source_slot,
                         qwen35_recurrent_state_mode,
@@ -1560,12 +1486,10 @@ fn main() {
             json,
             json_output,
             llama_parity_preset,
-            kernel_profile_path,
         } => {
             if llama_parity_preset {
                 apply_llama_parity_preset();
             }
-            apply_kernel_profile_override(kernel_profile_path.as_deref());
             let backend = create_runtime_backend("Prefill gap");
             ax_engine_core::scheduler::init_global_threadpool();
             let config = PrefillGapConfig {
@@ -1575,7 +1499,6 @@ fn main() {
                     warmup_iters,
                     qwen35_shared_timeline_slots,
                     qwen35_shared_timeline_source_slot,
-                    kernel_profile_path: kernel_profile_path.clone(),
                     qwen35_recurrent_state_mode: qwen35_recurrent_state_mode.into(),
                     qwen35_alpha_beta_storage_mode: qwen35_alpha_beta_storage_mode.into(),
                     qwen35_prime_slot_buffers,
@@ -1657,14 +1580,12 @@ fn main() {
             intent,
             qwen35_shared_timeline_slots,
             qwen35_shared_timeline_source_slot,
-            kernel_profile_path,
             json,
             json_output,
         } => {
             if llama_parity_preset {
                 apply_llama_parity_preset();
             }
-            apply_kernel_profile_override(kernel_profile_path.as_deref());
             let backend = create_runtime_backend("Benchmark");
             ax_engine_core::scheduler::init_global_threadpool();
             let config = BenchConfig {
@@ -1679,7 +1600,6 @@ fn main() {
                 intent: intent.into(),
                 qwen35_shared_timeline_slots,
                 qwen35_shared_timeline_source_slot,
-                kernel_profile_path,
             };
 
             match perf::run_benchmark_with_backend(&config, backend) {
@@ -1734,14 +1654,12 @@ fn main() {
             qwen35_spec_verify_branch,
             qwen35_spec_verify_compare,
             llama_parity_preset,
-            kernel_profile_path,
             json,
             json_output,
         } => {
             if llama_parity_preset {
                 apply_llama_parity_preset();
             }
-            apply_kernel_profile_override(kernel_profile_path.as_deref());
             let backend = create_runtime_backend("Speculative benchmark");
             ax_engine_core::scheduler::init_global_threadpool();
             let config = SpecBenchConfig {
@@ -1755,7 +1673,6 @@ fn main() {
                 samples,
                 cooldown_ms,
                 speculative_k,
-                kernel_profile_path,
             };
 
             if qwen35_spec_verify_compare {
@@ -1867,8 +1784,6 @@ fn main() {
             iterations,
             suite_runs,
             json,
-            profile_output,
-            allow_low_confidence_export,
         } => {
             let config = MicrobenchConfig {
                 suite: suite.into(),
@@ -1878,51 +1793,8 @@ fn main() {
 
             match microbench::run_microbench(&config) {
                 Ok(result) => {
-                    let output_path = profile_output.clone();
-                    let export_decision = result.suggested_kernel_profile_export_decision();
-                    let requested_profile_output = output_path.is_some();
-                    let export_action = microbench::determine_profile_export_action(
-                        requested_profile_output,
-                        allow_low_confidence_export,
-                        &export_decision,
-                    );
-                    let mut wrote_profile = false;
-
-                    if let Some(path) = output_path.clone()
-                        && matches!(export_action, MicrobenchProfileExportAction::Write { .. })
-                    {
-                        match result.suggested_kernel_profile_json() {
-                            Ok(j) => {
-                                if let Err(e) = std::fs::write(&path, j) {
-                                    eprintln!(
-                                        "Failed to write suggested kernel profile to {path}: {e}"
-                                    );
-                                    process::exit(2);
-                                } else {
-                                    wrote_profile = true;
-                                    eprintln!("Suggested kernel profile written to {path}");
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Kernel profile serialization error: {e}");
-                                process::exit(2);
-                            }
-                        }
-                    }
-
-                    let report =
-                        result.with_export_outcome(output_path, export_action, wrote_profile);
-                    let export_status = report
-                        .export_status()
-                        .expect("microbench export status should be present after outcome");
-                    if export_status.override_used {
-                        eprintln!(
-                            "Bypassing suggested kernel profile confidence gate due to --allow-low-confidence-export"
-                        );
-                        print_export_status_blockers(export_status);
-                    }
                     if json {
-                        match report.to_json() {
+                        match result.to_json() {
                             Ok(j) => println!("{j}"),
                             Err(e) => {
                                 eprintln!("JSON serialization error: {e}");
@@ -1930,13 +1802,7 @@ fn main() {
                             }
                         }
                     } else {
-                        report.print_summary();
-                    }
-
-                    if export_status.exit_code != 0 {
-                        eprintln!("Suggested kernel profile export blocked by confidence gate:");
-                        print_export_status_blockers(export_status);
-                        process::exit(export_status.exit_code);
+                        result.print_summary();
                     }
                 }
                 Err(e) => {
@@ -1955,14 +1821,12 @@ fn main() {
             top_tokens,
             max_abs_tolerance,
             llama_parity_preset,
-            kernel_profile_path,
             json,
             json_output,
         } => {
             if llama_parity_preset {
                 apply_llama_parity_preset();
             }
-            apply_kernel_profile_override(kernel_profile_path.as_deref());
             let config = ParityConfig {
                 model_path: model,
                 prompt,

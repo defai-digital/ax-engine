@@ -4,7 +4,7 @@
 //! `xcrun metal` + `xcrun metallib`). Falls back to runtime compilation
 //! if the metallib is empty or unavailable.
 //!
-//! Reference: llama.cpp embeds ggml.metallib, mistral.rs uses build.rs.
+//! Reference: llama.cpp embeds ggml.metallib.
 
 use std::ffi::c_void;
 use std::ptr::NonNull;

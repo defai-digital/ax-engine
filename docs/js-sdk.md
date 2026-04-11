@@ -1,6 +1,7 @@
 # JavaScript SDK
 
-`packages/ax-engine-js` is the JavaScript client SDK for `ax-engine-server`.
+`packages/ax-engine-js` is the JavaScript client SDK for AX-compatible HTTP
+endpoints.
 
 It is designed for:
 
@@ -11,21 +12,25 @@ It is designed for:
 It is intentionally an HTTP client, not a native binding.
 
 It also provides a client-side `responses` compatibility layer on top of
-`/v1/chat/completions`, so Node.js and Next.js code can use a more modern
-response shape without waiting for a server-side `/v1/responses` transport.
+`/v1/chat/completions`, so Node.js and Next.js code can use the same higher-level
+shape whether they talk to native `/v1/responses` or to chat completions.
 
 ## Why This Shape
 
-For Node.js and Next.js users, the operationally correct integration point is
-the built-in AX HTTP surface:
+For Node.js and Next.js users, the intended integration point is a lightweight
+AX-compatible HTTP surface:
 
 - `GET /healthz`
 - `GET /v1/models`
 - `POST /v1/completions`
 - `POST /v1/chat/completions`
+- `POST /v1/responses`
 
 That keeps AX's Rust and Metal runtime inside the server process while giving
 JavaScript software a stable, lightweight client API.
+
+This workspace now ships `ax-engine-server` for local and single-node use.
+Production orchestration still belongs in AX Serving.
 
 ## Package
 

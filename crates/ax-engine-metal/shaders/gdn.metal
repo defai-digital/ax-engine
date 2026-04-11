@@ -1,4 +1,4 @@
-// GDN (Gated Delta Net) Metal kernels adapted from mistral.rs.
+// GDN (Gated Delta Net) Metal kernels for Qwen3.5 recurrent layers.
 //
 // AX keeps the Qwen3.5 causal-conv path in token-major f32 layout:
 // - input/output: [seq_len, conv_dim]

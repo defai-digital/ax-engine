@@ -4,12 +4,32 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import statistics
 import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+AX_ENV_VARS = [
+    "AX_PRECOMPUTE_F16",
+    "AX_METAL_F16_KV_CACHE",
+    "AX_METAL_ATTN_PROFILE",
+    "AX_METAL_FUSED_QKV",
+    "AX_METAL_DECODE_FUSED_QKV",
+    "AX_METAL_PREFILL_FA2_MODE",
+    "AX_METAL_PREFILL_FA2_HD128_MODE",
+    "AX_METAL_PREFILL_FA2_SIMD",
+    "AX_METAL_PREFILL_BC64_MODE",
+    "AX_METAL_DECODE_SPLITK_MODE",
+    "AX_METAL_DECODE_SPLITK_AUTO_MIN_TOKENS",
+    "AX_METAL_DECODE_SPLITK_CHUNK_SIZE",
+    "AX_METAL_DECODE_SDPA",
+    "AX_METAL_DECODE_HD128_N2",
+    "AX_METAL_CONCURRENT_DECODE",
+    "AX_METAL_BARRIERS",
+]
 
 
 @dataclass
@@ -93,7 +113,7 @@ def parse_args() -> RunConfig:
         default=None,
         help="AX bench binary path (default: <repo-dir>/target/release/ax-engine-bench)",
     )
-    parser.add_argument("--llama-bench", default="/opt/homebrew/bin/llama-bench")
+    parser.add_argument("--llama-bench", default=None, help="llama-bench binary (default: find via PATH or /opt/homebrew/bin/llama-bench)")
     parser.add_argument(
         "--timestamp",
         help="override datetime prefix for result folder naming (YYYYMMDD-HHMMSS)",
@@ -108,6 +128,10 @@ def parse_args() -> RunConfig:
     repo_dir = Path(args.repo_dir)
     out_dir = Path(args.out_dir) if args.out_dir is not None else repo_dir / "benchmarks" / "results"
     ax_bench = Path(args.ax_bench) if args.ax_bench is not None else repo_dir / "target" / "release" / "ax-engine-bench"
+
+    if args.llama_bench is None:
+        llama_path = shutil.which("llama-bench")
+        args.llama_bench = llama_path or "/opt/homebrew/bin/llama-bench"
 
     model = Path(args.model)
     decode_depth = args.decode_depth if args.decode_depth is not None else args.prompt_tokens
@@ -362,11 +386,16 @@ def run_ax(config: RunConfig, run_dir: Path) -> tuple[Path, list[str]]:
         "0",
         "--measure-iters",
         "1",
+        "--llama-parity-preset",
         "--json-output",
         str(ax_json),
     ]
     subprocess.run(cmd, check=True, text=True)
     return ax_json, cmd
+
+
+def snapshot_env(keys: list[str]) -> dict[str, str | None]:
+    return {key: os.environ.get(key) for key in keys}
 
 
 def write_manifest(
@@ -388,6 +417,7 @@ def write_manifest(
                 "name": "ax-engine",
                 "binary": str(config.ax_bench),
                 "command": ax_command,
+                "environment": snapshot_env(AX_ENV_VARS),
                 "artifact": str(ax_json),
             },
             "llama": {

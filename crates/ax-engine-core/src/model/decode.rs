@@ -454,6 +454,7 @@ where
     let mut next_token = first_token;
     let mut next_token_info = first_token_info;
     let mut generated_tokens = 0u64;
+    let mut latencies = Vec::new();
     let decode_timer = OpTimer::start();
     let mut perf_observer = DecodePerfObserver::from_config(model, collect_metal_perf);
 
@@ -494,6 +495,7 @@ where
             None
         };
 
+        let tok_timer = OpTimer::start();
         if let Some(frame) = inflight.take() {
             metal_dev.wait_frame(frame)?;
         }
@@ -527,6 +529,9 @@ where
                 .unwrap_or_else(|| sampler.sample(&mut logits, history));
             (token, info)
         };
+        if selection.intent == DecodeIntent::Latency {
+            latencies.push(tok_timer.elapsed());
+        }
 
         if matches!(
             on_token(next_token, next_token_info.as_ref())?,
@@ -568,7 +573,7 @@ where
         plan_summary,
         generated_tokens,
         decode_duration: decode_timer.elapsed(),
-        latencies: Vec::new(),
+        latencies,
         metal_perf,
     })
 }
@@ -626,7 +631,7 @@ mod tests {
 
     #[test]
     fn test_select_decode_mode_cpu_uses_sequential_decode() {
-        let model = InferenceModel::new(tiny_config("llama")).unwrap();
+        let model = InferenceModel::new(tiny_config("qwen35")).unwrap();
         let kv = model.create_model_kv();
         let selection = select_decode_mode(&model, &kv, DecodeIntent::Throughput, true);
 
@@ -642,7 +647,7 @@ mod tests {
         let Ok(backend) = HybridCpuDecodeBackend::new() else {
             return;
         };
-        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("qwen35"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
 
         assert!(!kv.is_gpu(), "HybridCpuDecode should allocate CPU KV");
@@ -652,11 +657,11 @@ mod tests {
     }
 
     #[test]
-    fn test_select_decode_mode_llama_metal_prefers_pipelined() {
+    fn test_select_decode_mode_metal_prefers_pipelined() {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("qwen35"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         if !kv.is_gpu() {
             return;
@@ -668,19 +673,19 @@ mod tests {
     }
 
     #[test]
-    fn test_select_decode_mode_qwen3_metal_prefers_pipelined() {
+    fn test_select_decode_mode_qwen3_metal_is_unsupported() {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = InferenceModel::with_backend(tiny_config("qwen3"), Box::new(backend)).unwrap();
-        let kv = model.create_model_kv();
-        if !kv.is_gpu() {
-            return;
-        }
-
-        let selection = select_decode_mode(&model, &kv, DecodeIntent::Throughput, true);
-        assert_eq!(selection.mode, DecodeMode::Pipelined);
-        assert!(selection.fallback_reason.is_none());
+        let err = match InferenceModel::with_backend(tiny_config("qwen3"), Box::new(backend)) {
+            Ok(_) => panic!("qwen3 models should be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("Qwen 2/3 dense support has been removed"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -742,7 +747,7 @@ mod tests {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
-        let model = InferenceModel::with_backend(tiny_config("llama"), Box::new(backend)).unwrap();
+        let model = InferenceModel::with_backend(tiny_config("qwen35"), Box::new(backend)).unwrap();
         let kv = model.create_model_kv();
         if !kv.is_gpu() {
             return;

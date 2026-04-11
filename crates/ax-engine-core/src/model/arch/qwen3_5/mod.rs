@@ -2,7 +2,7 @@
 //!
 //! The architecture alternates recurrent GDN layers with periodic full
 //! attention layers. This implementation follows the upstream structure from
-//! `llama.cpp` and `mistral.rs`:
+//! `llama.cpp`:
 //! - every layer uses `attn_norm`
 //! - recurrent layers use fused `attn_qkv` + `attn_gate` + `ssm_*`
 //! - full-attention layers use doubled Q projection (`q + gate`)
@@ -583,9 +583,10 @@ impl Qwen3_5Forward {
 
     fn gpu_pipelined_decode_enabled_for_config(cfg: &ModelConfig) -> bool {
         // Keep the pending-frame decode path explicitly opt-in until the
-        // pipelined scheduler matches dense-model outputs across real prompts.
-        !Self::qwen35_is_moe(cfg)
-            && Self::gpu_decode_enabled_for_config(cfg)
+        // pipelined scheduler is covered by broader parity validation. The
+        // MoE path now reuses the native resident decode encoder here too, so
+        // the env flag can enable pipelined decode for both dense and MoE.
+        Self::gpu_decode_enabled_for_config(cfg)
             && env_flag_override("AX_QWEN35_GPU_PIPELINED_DECODE").unwrap_or(false)
     }
 

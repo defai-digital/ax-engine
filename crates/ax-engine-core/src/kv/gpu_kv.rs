@@ -62,7 +62,7 @@ impl GpuKvDtype {
 ///
 /// Each layer has a pair of MetalBuffers (K and V) that grow on demand.
 /// Layout per buffer: `[capacity * kv_stride]` values, where
-/// `kv_stride = n_kv_heads * head_dim`.
+/// `kv_stride = n_kv_heads * head_dim` (may differ per layer for Gemma4).
 pub struct GpuKv {
     /// Per-layer key cache MetalBuffers.
     k_bufs: Vec<MetalBuffer>,
@@ -72,8 +72,12 @@ pub struct GpuKv {
     seq_len: usize,
     /// Current allocated capacity in tokens.
     capacity: usize,
-    /// Stride per token: n_kv_heads * head_dim.
+    /// Maximum stride across all layers (used for batch scratch sizing).
     kv_stride: usize,
+    /// Per-layer strides (n_kv_heads * head_dim per layer).
+    /// For uniform models all values are identical; for Gemma4 SWA/global
+    /// layers differ.
+    kv_strides: Vec<usize>,
     /// Growth increment in tokens.
     page_size: usize,
     /// Maximum sequence length (hard limit).
@@ -84,12 +88,16 @@ pub struct GpuKv {
 
 impl std::fmt::Debug for GpuKv {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GpuKv")
-            .field("n_layers", &self.k_bufs.len())
+        let per_layer = self.kv_strides.windows(2).any(|w| w[0] != w[1]);
+        let mut s = f.debug_struct("GpuKv");
+        s.field("n_layers", &self.k_bufs.len())
             .field("seq_len", &self.seq_len)
             .field("capacity", &self.capacity)
-            .field("kv_stride", &self.kv_stride)
-            .field("page_size", &self.page_size)
+            .field("kv_stride", &self.kv_stride);
+        if per_layer {
+            s.field("kv_strides", &self.kv_strides);
+        }
+        s.field("page_size", &self.page_size)
             .field("max_seq_len", &self.max_seq_len)
             .field("dtype", &self.dtype)
             .finish()
@@ -127,31 +135,65 @@ impl GpuKv {
         page_size: usize,
         dtype: GpuKvDtype,
     ) -> anyhow::Result<Self> {
-        let page_size = page_size.max(1);
-        let initial_cap = initial_token_capacity(page_size, max_seq_len);
         let kv_stride = n_kv_heads
             .checked_mul(head_dim)
             .expect("GPU KV stride overflow");
-        let row_bytes = dtype.row_bytes(kv_stride);
-        let buf_bytes = initial_cap
-            .checked_mul(row_bytes)
-            .expect("GPU KV allocation overflow");
+        let strides = vec![kv_stride; n_layers];
+        Self::new_with_per_layer_strides(device, n_layers, strides, max_seq_len, page_size, dtype)
+    }
+
+    /// Create a new GPU KV cache with per-layer strides.
+    ///
+    /// For models like Gemma4 where SWA and global attention layers have
+    /// different n_kv_heads × head_dim products, each layer gets a buffer
+    /// sized to its own stride instead of the global maximum.
+    pub fn new_with_per_layer_strides(
+        device: &MetalDevice,
+        n_layers: usize,
+        kv_strides: Vec<usize>,
+        max_seq_len: usize,
+        page_size: usize,
+        dtype: GpuKvDtype,
+    ) -> anyhow::Result<Self> {
+        assert_eq!(kv_strides.len(), n_layers);
+        let page_size = page_size.max(1);
+        let initial_cap = initial_token_capacity(page_size, max_seq_len);
+        let kv_stride = kv_strides.iter().copied().max().unwrap_or(0);
 
         let mut k_bufs = Vec::with_capacity(n_layers);
         let mut v_bufs = Vec::with_capacity(n_layers);
-        for _ in 0..n_layers {
+        let mut total_bytes = 0usize;
+        for &stride in &kv_strides {
+            let row_bytes = dtype.row_bytes(stride);
+            let buf_bytes = initial_cap
+                .checked_mul(row_bytes)
+                .expect("GPU KV allocation overflow");
             k_bufs.push(MetalBuffer::new(device.device(), buf_bytes)?);
             v_bufs.push(MetalBuffer::new(device.device(), buf_bytes)?);
+            total_bytes += 2 * buf_bytes;
         }
 
-        tracing::info!(
-            n_layers,
-            kv_stride,
-            initial_cap,
-            kv_dtype = ?dtype,
-            buf_mb = (2 * n_layers * buf_bytes) / (1024 * 1024),
-            "GPU KV cache allocated"
-        );
+        let per_layer = kv_strides.windows(2).any(|w| w[0] != w[1]);
+        if per_layer {
+            tracing::info!(
+                n_layers,
+                kv_stride_max = kv_stride,
+                ?kv_strides,
+                initial_cap,
+                kv_dtype = ?dtype,
+                buf_mb = total_bytes / (1024 * 1024),
+                "GPU KV cache allocated (per-layer strides)"
+            );
+        } else {
+            tracing::info!(
+                n_layers,
+                kv_stride,
+                initial_cap,
+                kv_dtype = ?dtype,
+                buf_mb = total_bytes / (1024 * 1024),
+                "GPU KV cache allocated"
+            );
+        }
 
         Ok(Self {
             k_bufs,
@@ -159,6 +201,7 @@ impl GpuKv {
             seq_len: 0,
             capacity: initial_cap,
             kv_stride,
+            kv_strides,
             page_size,
             max_seq_len,
             dtype,
@@ -177,9 +220,16 @@ impl GpuKv {
         self.capacity
     }
 
-    /// Stride per token (n_kv_heads * head_dim).
+    /// Maximum stride across all layers (n_kv_heads * head_dim).
+    /// Use `kv_stride_for_layer()` when the per-layer stride matters.
     pub fn kv_stride(&self) -> usize {
         self.kv_stride
+    }
+
+    /// Stride for a specific layer. For uniform models this equals `kv_stride()`.
+    /// For Gemma4, SWA and global layers have different strides.
+    pub fn kv_stride_for_layer(&self, layer: usize) -> usize {
+        self.kv_strides[layer]
     }
 
     /// Number of layers.
@@ -224,8 +274,9 @@ impl GpuKv {
         k_out: &mut [f32],
         v_out: &mut [f32],
     ) {
-        assert_eq!(k_out.len(), self.kv_stride);
-        assert_eq!(v_out.len(), self.kv_stride);
+        let stride = self.kv_strides[layer];
+        assert_eq!(k_out.len(), stride);
+        assert_eq!(v_out.len(), stride);
         assert!(
             token_idx <= self.seq_len,
             "GPU KV read token out of bounds (idx={token_idx}, seq_len={})",
@@ -237,29 +288,33 @@ impl GpuKv {
             self.capacity
         );
 
-        let row_bytes = self.dtype.row_bytes(self.kv_stride);
+        let row_bytes = self.dtype.row_bytes(stride);
         let offset_bytes = token_idx * row_bytes;
         match self.dtype {
             GpuKvDtype::F32 => unsafe {
-                let offset_elems = token_idx * self.kv_stride;
-                let k_src = &self.k_bufs[layer].as_slice::<f32>()
-                    [offset_elems..offset_elems + self.kv_stride];
-                let v_src = &self.v_bufs[layer].as_slice::<f32>()
-                    [offset_elems..offset_elems + self.kv_stride];
+                let offset_elems = token_idx * stride;
+                let k_src =
+                    &self.k_bufs[layer].as_slice::<f32>()[offset_elems..offset_elems + stride];
+                let v_src =
+                    &self.v_bufs[layer].as_slice::<f32>()[offset_elems..offset_elems + stride];
                 k_out.copy_from_slice(k_src);
                 v_out.copy_from_slice(v_src);
             },
             GpuKvDtype::F16 => unsafe {
-                let offset_elems = token_idx * self.kv_stride;
+                let offset_elems = token_idx * stride;
+                let capacity_elems = self
+                    .capacity
+                    .checked_mul(stride)
+                    .expect("GPU KV F16 capacity element count overflow");
                 let k_src = std::slice::from_raw_parts(
                     self.k_bufs[layer].contents().as_ptr().cast::<half::f16>(),
-                    self.capacity * self.kv_stride,
+                    capacity_elems,
                 );
                 let v_src = std::slice::from_raw_parts(
                     self.v_bufs[layer].contents().as_ptr().cast::<half::f16>(),
-                    self.capacity * self.kv_stride,
+                    capacity_elems,
                 );
-                for i in 0..self.kv_stride {
+                for i in 0..stride {
                     k_out[i] = k_src[offset_elems + i].to_f32();
                     v_out[i] = v_src[offset_elems + i].to_f32();
                 }
@@ -271,8 +326,8 @@ impl GpuKv {
                 let v_src = unsafe {
                     (self.v_bufs[layer].contents().as_ptr() as *const u8).add(offset_bytes)
                 };
-                dequantize_row_q8_0(k_src, k_out, self.kv_stride / Q8_0_BLOCK_VALUES);
-                dequantize_row_q8_0(v_src, v_out, self.kv_stride / Q8_0_BLOCK_VALUES);
+                dequantize_row_q8_0(k_src, k_out, stride / Q8_0_BLOCK_VALUES);
+                dequantize_row_q8_0(v_src, v_out, stride / Q8_0_BLOCK_VALUES);
             }
         }
     }
@@ -297,18 +352,19 @@ impl GpuKv {
         k_out: &mut [f32],
         v_out: &mut [f32],
     ) {
+        let stride = self.kv_strides[layer];
         assert!(
             start_token + n_tokens <= self.seq_len,
             "GPU KV read range out of bounds (start={start_token}, n_tokens={n_tokens}, seq_len={})",
             self.seq_len
         );
         let prefix_elems = n_tokens
-            .checked_mul(self.kv_stride)
+            .checked_mul(stride)
             .expect("GPU KV range element count overflow");
         assert_eq!(k_out.len(), prefix_elems);
         assert_eq!(v_out.len(), prefix_elems);
         let start_elems = start_token
-            .checked_mul(self.kv_stride)
+            .checked_mul(stride)
             .expect("GPU KV range start overflow");
         let end_elems = start_elems
             .checked_add(prefix_elems)
@@ -324,11 +380,11 @@ impl GpuKv {
             GpuKvDtype::F16 => unsafe {
                 let k_src = std::slice::from_raw_parts(
                     self.k_bufs[layer].contents().as_ptr().cast::<half::f16>(),
-                    self.capacity * self.kv_stride,
+                    self.capacity * stride,
                 );
                 let v_src = std::slice::from_raw_parts(
                     self.v_bufs[layer].contents().as_ptr().cast::<half::f16>(),
-                    self.capacity * self.kv_stride,
+                    self.capacity * stride,
                 );
                 for i in 0..prefix_elems {
                     k_out[i] = k_src[start_elems + i].to_f32();
@@ -336,21 +392,21 @@ impl GpuKv {
                 }
             },
             GpuKvDtype::Q8_0 => {
-                let row_bytes = self.dtype.row_bytes(self.kv_stride);
-                let n_blocks_per_row = self.kv_stride / Q8_0_BLOCK_VALUES;
+                let row_bytes = self.dtype.row_bytes(stride);
+                let n_blocks_per_row = stride / Q8_0_BLOCK_VALUES;
                 let k_base = self.k_bufs[layer].contents().as_ptr() as *const u8;
                 let v_base = self.v_bufs[layer].contents().as_ptr() as *const u8;
                 for t in 0..n_tokens {
                     let src_byte_off = (start_token + t) * row_bytes;
-                    let dst_elem_off = t * self.kv_stride;
+                    let dst_elem_off = t * stride;
                     dequantize_row_q8_0(
                         unsafe { k_base.add(src_byte_off) },
-                        &mut k_out[dst_elem_off..dst_elem_off + self.kv_stride],
+                        &mut k_out[dst_elem_off..dst_elem_off + stride],
                         n_blocks_per_row,
                     );
                     dequantize_row_q8_0(
                         unsafe { v_base.add(src_byte_off) },
-                        &mut v_out[dst_elem_off..dst_elem_off + self.kv_stride],
+                        &mut v_out[dst_elem_off..dst_elem_off + stride],
                         n_blocks_per_row,
                     );
                 }
@@ -367,8 +423,9 @@ impl GpuKv {
     ///
     /// Must call `finalize_token()` after appending to all layers.
     pub fn append_layer(&mut self, layer: usize, k_new: &[f32], v_new: &[f32]) {
-        debug_assert_eq!(k_new.len(), self.kv_stride);
-        debug_assert_eq!(v_new.len(), self.kv_stride);
+        let stride = self.kv_strides[layer];
+        debug_assert_eq!(k_new.len(), stride);
+        debug_assert_eq!(v_new.len(), stride);
         assert!(
             self.seq_len < self.max_seq_len,
             "GPU KV append_layer: seq_len={} >= max_seq_len={}",
@@ -382,7 +439,7 @@ impl GpuKv {
             self.capacity,
         );
 
-        let row_bytes = self.dtype.row_bytes(self.kv_stride);
+        let row_bytes = self.dtype.row_bytes(stride);
         let offset_bytes = self
             .seq_len
             .checked_mul(row_bytes)
@@ -406,18 +463,18 @@ impl GpuKv {
                 std::ptr::copy_nonoverlapping(v_new.as_ptr() as *const u8, v_dst, row_bytes);
             },
             GpuKvDtype::F16 => {
-                let offset_elems = self.seq_len * self.kv_stride;
+                let offset_elems = self.seq_len * stride;
                 let k_ptr = self.k_bufs[layer].contents().as_ptr() as *mut half::f16;
                 let v_ptr = self.v_bufs[layer].contents().as_ptr() as *mut half::f16;
                 unsafe {
-                    for i in 0..self.kv_stride {
+                    for i in 0..stride {
                         *k_ptr.add(offset_elems + i) = half::f16::from_f32(k_new[i]);
                         *v_ptr.add(offset_elems + i) = half::f16::from_f32(v_new[i]);
                     }
                 }
             }
             GpuKvDtype::Q8_0 => {
-                let n_blocks = self.kv_stride / Q8_0_BLOCK_VALUES;
+                let n_blocks = stride / Q8_0_BLOCK_VALUES;
                 let k_dst = unsafe {
                     (self.k_bufs[layer].contents().as_ptr() as *mut u8).add(offset_bytes)
                 };
@@ -446,8 +503,9 @@ impl GpuKv {
         v_batch: &[f32],
         n_tokens: usize,
     ) {
-        debug_assert_eq!(k_batch.len(), n_tokens * self.kv_stride);
-        debug_assert_eq!(v_batch.len(), n_tokens * self.kv_stride);
+        let stride = self.kv_strides[layer];
+        debug_assert_eq!(k_batch.len(), n_tokens * stride);
+        debug_assert_eq!(v_batch.len(), n_tokens * stride);
         assert!(
             self.seq_len + n_tokens <= self.capacity,
             "GPU KV append_layer_batch: seq_len({}) + n_tokens({n_tokens}) > capacity({})",
@@ -455,7 +513,7 @@ impl GpuKv {
             self.capacity,
         );
 
-        let row_bytes = self.dtype.row_bytes(self.kv_stride);
+        let row_bytes = self.dtype.row_bytes(stride);
         let offset_bytes = self
             .seq_len
             .checked_mul(row_bytes)
@@ -482,8 +540,13 @@ impl GpuKv {
                 std::ptr::copy_nonoverlapping(v_batch.as_ptr() as *const u8, v_dst, total_bytes);
             },
             GpuKvDtype::F16 => {
-                let offset_elems = self.seq_len * self.kv_stride;
-                let total_elems = n_tokens * self.kv_stride;
+                let offset_elems = self
+                    .seq_len
+                    .checked_mul(stride)
+                    .expect("GPU KV F16 batch append offset overflow");
+                let total_elems = n_tokens
+                    .checked_mul(stride)
+                    .expect("GPU KV F16 batch append count overflow");
                 let k_ptr = self.k_bufs[layer].contents().as_ptr() as *mut half::f16;
                 let v_ptr = self.v_bufs[layer].contents().as_ptr() as *mut half::f16;
                 unsafe {
@@ -494,7 +557,7 @@ impl GpuKv {
                 }
             }
             GpuKvDtype::Q8_0 => {
-                let n_blocks = self.kv_stride / Q8_0_BLOCK_VALUES;
+                let n_blocks = stride / Q8_0_BLOCK_VALUES;
                 let k_dst = unsafe {
                     (self.k_bufs[layer].contents().as_ptr() as *mut u8).add(offset_bytes)
                 };
@@ -502,15 +565,15 @@ impl GpuKv {
                     (self.v_bufs[layer].contents().as_ptr() as *mut u8).add(offset_bytes)
                 };
                 for t in 0..n_tokens {
-                    let src_off = t * self.kv_stride;
+                    let src_off = t * stride;
                     let dst_off = t * row_bytes;
                     quantize_row_q8_0(
-                        &k_batch[src_off..src_off + self.kv_stride],
+                        &k_batch[src_off..src_off + stride],
                         unsafe { k_dst.add(dst_off) },
                         n_blocks,
                     );
                     quantize_row_q8_0(
-                        &v_batch[src_off..src_off + self.kv_stride],
+                        &v_batch[src_off..src_off + stride],
                         unsafe { v_dst.add(dst_off) },
                         n_blocks,
                     );
@@ -577,21 +640,21 @@ impl GpuKv {
                     )
                 })?;
 
-        let row_bytes = self.dtype.row_bytes(self.kv_stride);
-        let new_bytes = new_cap
-            .checked_mul(row_bytes)
-            .expect("GPU KV growth overflow");
-        let old_bytes = self
-            .seq_len
-            .checked_mul(row_bytes)
-            .expect("GPU KV existing size overflow");
-
         // Allocate ALL new buffers into temp vecs first so that a mid-loop
         // allocation failure does not leave self with mixed old/new buffers.
         let n_layers = self.k_bufs.len();
         let mut new_k_bufs = Vec::with_capacity(n_layers);
         let mut new_v_bufs = Vec::with_capacity(n_layers);
         for i in 0..n_layers {
+            let stride = self.kv_strides[i];
+            let row_bytes = self.dtype.row_bytes(stride);
+            let new_bytes = new_cap
+                .checked_mul(row_bytes)
+                .expect("GPU KV growth overflow");
+            let old_bytes = self
+                .seq_len
+                .checked_mul(row_bytes)
+                .expect("GPU KV existing size overflow");
             let new_k = MetalBuffer::new(device.device(), new_bytes)?;
             let new_v = MetalBuffer::new(device.device(), new_bytes)?;
             if old_bytes > 0 {

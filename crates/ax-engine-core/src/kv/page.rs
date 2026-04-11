@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn test_kv_cache_config_from_model() {
         let model = ModelConfig {
-            architecture: "llama".into(),
+            architecture: "qwen35".into(),
             n_layers: 32,
             n_heads: 32,
             n_kv_heads: 8,
@@ -423,7 +423,7 @@ mod tests {
         // Llama 7B: 32 layers, 8 kv_heads, 128 dim, 4096 ctx
         // F32 KV = 2 * 32 * 4096 * 8 * 128 * 4 = 1,073,741,824 = 1.07GB > 1GB → Q8
         let model = ModelConfig {
-            architecture: "llama".into(),
+            architecture: "qwen35".into(),
             n_layers: 32,
             n_heads: 32,
             n_kv_heads: 8,
@@ -473,7 +473,7 @@ mod tests {
         // Small model: 4 layers, 4 kv_heads, 64 dim, 512 ctx
         // F32 KV = 2 * 4 * 512 * 4 * 64 * 4 = 4,194,304 = 4MB < 1GB → F32
         let model = ModelConfig {
-            architecture: "llama".into(),
+            architecture: "qwen35".into(),
             n_layers: 4,
             n_heads: 8,
             n_kv_heads: 4,

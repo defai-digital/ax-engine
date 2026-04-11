@@ -3,9 +3,11 @@
 This folder contains focused documentation for integration surfaces that sit
 above the core AX Engine runtime.
 
-## Architecture
+## User Guides
 
-- [Apple Silicon UMA Strategy](./apple-silicon-uma-strategy.md) — unified memory, zero-copy, CPU vs GPU decisions
+- [Environment Variables & Advanced Usage](./ENV_VARS.md)
+- [Quickstart & Troubleshooting](./../QUICKSTART.md)
+- [Product Boundary](./PRODUCT-BOUNDARY.md)
 
 ## Research
 

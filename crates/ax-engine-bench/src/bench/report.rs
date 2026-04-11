@@ -83,7 +83,6 @@ mod tests {
             decode_plan: "sync=single_cb scratch=gpu_shared".into(),
             support_note: None,
             decode_fallback_reason: None,
-            kernel_profile_path: None,
             qwen35_shared_timeline_slots: 1,
             qwen35_shared_timeline_source_slot: None,
             kv_f16: true,

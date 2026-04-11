@@ -1,6 +1,6 @@
 # ax-engine-js
 
-`ax-engine-js` is the JavaScript client SDK for `ax-engine-server`.
+`ax-engine-js` is the JavaScript client SDK for AX-compatible HTTP endpoints.
 
 It is intended for:
 
@@ -12,18 +12,22 @@ It is intentionally an HTTP client, not a native Node addon.
 
 ## Scope
 
-This SDK targets the built-in AX Engine server endpoints:
+This SDK targets the shipped AX-compatible HTTP surface:
 
 - `GET /healthz`
 - `GET /v1/models`
 - `POST /v1/completions`
 - `POST /v1/chat/completions`
+- `POST /v1/responses`
 
 It supports both JSON responses and SSE streaming.
 
 It also exposes a client-side `responses` compatibility surface for JavaScript
-apps that prefer that shape, even though `ax-engine-server` itself does not yet
-ship a native `/v1/responses` endpoint.
+apps that prefer that shape, even when they are targeting chat-completions-only
+providers.
+
+This workspace now ships `ax-engine-server` for local and single-node use;
+production orchestration still belongs in AX Serving.
 
 ## Status
 

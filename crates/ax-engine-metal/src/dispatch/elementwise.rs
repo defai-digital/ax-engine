@@ -641,7 +641,7 @@ impl ElementwiseKernels {
         n: u32,
         eps: f32,
     ) {
-        encoder.setComputePipelineState(self.rms_norm.state());
+        crate::set_pipeline_cached(encoder, self.rms_norm.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(weight.mtl_buffer()), 0, 1);
@@ -672,7 +672,7 @@ impl ElementwiseKernels {
         n_rows: u32,
         eps: f32,
     ) {
-        encoder.setComputePipelineState(self.rms_norm_batch.state());
+        crate::set_pipeline_cached(encoder, self.rms_norm_batch.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(weight.mtl_buffer()), 0, 1);
@@ -704,7 +704,7 @@ impl ElementwiseKernels {
         n: u32,
         eps: f32,
     ) {
-        encoder.setComputePipelineState(self.rms_norm_out.state());
+        crate::set_pipeline_cached(encoder, self.rms_norm_out.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(weight.mtl_buffer()), 0, 1);
@@ -741,11 +741,14 @@ impl ElementwiseKernels {
         // Use float4-vectorized kernel when dim is divisible by 4 (always true for LLM dims).
         // Reference: llama.cpp kernel_rms_norm_fuse_impl<float4, F>.
         let use_vec4 = n.is_multiple_of(4);
-        encoder.setComputePipelineState(if use_vec4 {
-            self.rms_norm_out_batch_vec4.state()
-        } else {
-            self.rms_norm_out_batch.state()
-        });
+        crate::set_pipeline_cached(
+            encoder,
+            if use_vec4 {
+                self.rms_norm_out_batch_vec4.state()
+            } else {
+                self.rms_norm_out_batch.state()
+            },
+        );
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(weight.mtl_buffer()), 0, 1);
@@ -781,7 +784,7 @@ impl ElementwiseKernels {
         n_rows: u32,
         eps: f32,
     ) {
-        encoder.setComputePipelineState(self.rms_norm_out_batch_f16.state());
+        crate::set_pipeline_cached(encoder, self.rms_norm_out_batch_f16.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(weight.mtl_buffer()), 0, 1);
@@ -821,7 +824,7 @@ impl ElementwiseKernels {
         n_rows: u32,
         eps: f32,
     ) {
-        encoder.setComputePipelineState(self.residual_add_rms_norm_out_batch.state());
+        crate::set_pipeline_cached(encoder, self.residual_add_rms_norm_out_batch.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(hidden.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(addend.mtl_buffer()), 0, 1);
@@ -858,7 +861,7 @@ impl ElementwiseKernels {
         n_rows: u32,
         eps: f32,
     ) {
-        encoder.setComputePipelineState(self.residual_add_rms_norm_out_batch_f16.state());
+        crate::set_pipeline_cached(encoder, self.residual_add_rms_norm_out_batch_f16.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(hidden.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(addend.mtl_buffer()), 0, 1);
@@ -927,7 +930,7 @@ impl ElementwiseKernels {
         let total_pairs = (n_q_heads + n_kv_heads) * half_dim;
         let dims = DispatchDims::d1(total_pairs as usize, ELEMENTWISE_TG_SIZE);
 
-        encoder.setComputePipelineState(self.rope.state());
+        crate::set_pipeline_cached(encoder, self.rope.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k.mtl_buffer()), 0, 1);
@@ -973,7 +976,7 @@ impl ElementwiseKernels {
         let total_pairs = n_rows * (n_q_heads + n_kv_heads) * half_dim;
         let dims = DispatchDims::d1(total_pairs as usize, ELEMENTWISE_TG_SIZE);
 
-        encoder.setComputePipelineState(self.rope_batch.state());
+        crate::set_pipeline_cached(encoder, self.rope_batch.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k.mtl_buffer()), 0, 1);
@@ -1027,7 +1030,7 @@ impl ElementwiseKernels {
         let total_pairs = n_rows * (n_q_heads + n_kv_heads) * rope_pairs;
         let dims = DispatchDims::d1(total_pairs as usize, ELEMENTWISE_TG_SIZE);
 
-        encoder.setComputePipelineState(self.rope_neox_partial_batch.state());
+        crate::set_pipeline_cached(encoder, self.rope_neox_partial_batch.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k.mtl_buffer()), 0, 1);
@@ -1078,7 +1081,7 @@ impl ElementwiseKernels {
         let total_pairs = n_rows * (n_q_heads + n_kv_heads) * rope_pairs;
         let dims = DispatchDims::d1(total_pairs as usize, ELEMENTWISE_TG_SIZE);
 
-        encoder.setComputePipelineState(self.rope_neox_partial_freq_factors_batch.state());
+        crate::set_pipeline_cached(encoder, self.rope_neox_partial_freq_factors_batch.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k.mtl_buffer()), 0, 1);
@@ -1108,7 +1111,7 @@ impl ElementwiseKernels {
         head_dim: u32,
         eps: f32,
     ) {
-        encoder.setComputePipelineState(self.per_head_rms_norm.state());
+        crate::set_pipeline_cached(encoder, self.per_head_rms_norm.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(buf.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(weight.mtl_buffer()), 0, 1);
@@ -1143,7 +1146,7 @@ impl ElementwiseKernels {
         head_dim: u32,
         eps: f32,
     ) {
-        encoder.setComputePipelineState(self.per_head_rms_norm_batch.state());
+        crate::set_pipeline_cached(encoder, self.per_head_rms_norm_batch.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(buf.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(weight.mtl_buffer()), 0, 1);
@@ -1175,7 +1178,7 @@ impl ElementwiseKernels {
         head_dim: u32,
         eps: f32,
     ) {
-        encoder.setComputePipelineState(self.per_head_rms_norm_no_weight.state());
+        crate::set_pipeline_cached(encoder, self.per_head_rms_norm_no_weight.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(buf.mtl_buffer()), 0, 0);
         }
@@ -1208,7 +1211,7 @@ impl ElementwiseKernels {
         head_dim: u32,
         eps: f32,
     ) {
-        encoder.setComputePipelineState(self.per_head_rms_norm_no_weight_batch.state());
+        crate::set_pipeline_cached(encoder, self.per_head_rms_norm_no_weight_batch.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(buf.mtl_buffer()), 0, 0);
         }
@@ -1294,7 +1297,10 @@ impl ElementwiseKernels {
         n_rows: u32,
         eps: f32,
     ) {
-        encoder.setComputePipelineState(self.post_ffn_norm_residual_add_rms_norm_out_batch.state());
+        crate::set_pipeline_cached(
+            encoder,
+            self.post_ffn_norm_residual_add_rms_norm_out_batch.state(),
+        );
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(hidden.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(addend.mtl_buffer()), 0, 1);
@@ -1337,7 +1343,7 @@ impl ElementwiseKernels {
         pos_step: f32,
         freq_base: f32,
     ) {
-        encoder.setComputePipelineState(self.qk_norm_rope_batch.state());
+        crate::set_pipeline_cached(encoder, self.qk_norm_rope_batch.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(k.mtl_buffer()), 0, 1);
@@ -1398,11 +1404,14 @@ impl ElementwiseKernels {
         let items_per_row = q_pairs + k_pairs + kv_dim;
         let total = (n_rows as usize) * (items_per_row as usize);
         let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(if cache_f16 {
-            self.qkv_split_qk_norm_rope_append_kv_batch_f16.state()
-        } else {
-            self.qkv_split_qk_norm_rope_append_kv_batch_f32.state()
-        });
+        crate::set_pipeline_cached(
+            encoder,
+            if cache_f16 {
+                self.qkv_split_qk_norm_rope_append_kv_batch_f16.state()
+            } else {
+                self.qkv_split_qk_norm_rope_append_kv_batch_f32.state()
+            },
+        );
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 1);
@@ -1467,11 +1476,14 @@ impl ElementwiseKernels {
         let items_per_row = q_pairs + k_pairs + kv_dim;
         let total = (n_rows as usize) * (items_per_row as usize);
         let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(if cache_f16 {
-            self.qkv_split_bias_qknorm_rope_append_kv_batch_f16.state()
-        } else {
-            self.qkv_split_bias_qknorm_rope_append_kv_batch_f32.state()
-        });
+        crate::set_pipeline_cached(
+            encoder,
+            if cache_f16 {
+                self.qkv_split_bias_qknorm_rope_append_kv_batch_f16.state()
+            } else {
+                self.qkv_split_bias_qknorm_rope_append_kv_batch_f32.state()
+            },
+        );
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 1);
@@ -1510,7 +1522,7 @@ impl ElementwiseKernels {
         n: u32,
     ) {
         let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.gelu_elementwise_mul.state());
+        crate::set_pipeline_cached(encoder, self.gelu_elementwise_mul.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 1);
@@ -1534,7 +1546,7 @@ impl ElementwiseKernels {
         let total = (n as usize) * (n_rows as usize);
         if n.is_multiple_of(4) {
             let dims = DispatchDims::d1(total / 4, ELEMENTWISE_TG_SIZE);
-            encoder.setComputePipelineState(self.gelu_elementwise_mul_batch_vec4.state());
+            crate::set_pipeline_cached(encoder, self.gelu_elementwise_mul_batch_vec4.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 1);
@@ -1547,7 +1559,7 @@ impl ElementwiseKernels {
             );
         } else {
             let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-            encoder.setComputePipelineState(self.gelu_elementwise_mul_batch.state());
+            crate::set_pipeline_cached(encoder, self.gelu_elementwise_mul_batch.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 1);
@@ -1569,7 +1581,7 @@ impl ElementwiseKernels {
         n: u32,
     ) {
         let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.gelu_inplace.state());
+        crate::set_pipeline_cached(encoder, self.gelu_inplace.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
         }
@@ -1590,7 +1602,7 @@ impl ElementwiseKernels {
     ) {
         let total = (n as usize) * (n_rows as usize);
         let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.gelu_inplace_batch.state());
+        crate::set_pipeline_cached(encoder, self.gelu_inplace_batch.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
         }
@@ -1611,7 +1623,7 @@ impl ElementwiseKernels {
         n: u32,
     ) {
         let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.silu_elementwise_mul.state());
+        crate::set_pipeline_cached(encoder, self.silu_elementwise_mul.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 1);
@@ -1632,7 +1644,7 @@ impl ElementwiseKernels {
     ) {
         if n.is_multiple_of(4) {
             let dims = DispatchDims::d1((n as usize) / 4, ELEMENTWISE_TG_SIZE);
-            encoder.setComputePipelineState(self.sigmoid_inplace_vec4.state());
+            crate::set_pipeline_cached(encoder, self.sigmoid_inplace_vec4.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
             }
@@ -1643,7 +1655,7 @@ impl ElementwiseKernels {
             );
         } else {
             let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-            encoder.setComputePipelineState(self.sigmoid_inplace.state());
+            crate::set_pipeline_cached(encoder, self.sigmoid_inplace.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
             }
@@ -1665,7 +1677,7 @@ impl ElementwiseKernels {
         n: u32,
     ) {
         let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.softplus_bias_mul.state());
+        crate::set_pipeline_cached(encoder, self.softplus_bias_mul.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(alpha.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(bias.mtl_buffer()), 0, 1);
@@ -1689,7 +1701,7 @@ impl ElementwiseKernels {
         head_dim: u32,
     ) {
         let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.softplus_bias_mul_batch.state());
+        crate::set_pipeline_cached(encoder, self.softplus_bias_mul_batch.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(alpha.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(bias.mtl_buffer()), 0, 1);
@@ -1712,7 +1724,7 @@ impl ElementwiseKernels {
         head_dim: u32,
         eps: f32,
     ) {
-        encoder.setComputePipelineState(self.l2_norm_per_head.state());
+        crate::set_pipeline_cached(encoder, self.l2_norm_per_head.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 0);
         }
@@ -1745,7 +1757,7 @@ impl ElementwiseKernels {
         n: u32,
     ) {
         let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.sigmoid_elementwise_mul.state());
+        crate::set_pipeline_cached(encoder, self.sigmoid_elementwise_mul.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(out.mtl_buffer()), 0, 1);
@@ -1766,7 +1778,7 @@ impl ElementwiseKernels {
         n: u32,
     ) {
         let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.sigmoid_scalar_mul_inplace.state());
+        crate::set_pipeline_cached(encoder, self.sigmoid_scalar_mul_inplace.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(out.mtl_buffer()), 0, 1);
@@ -1788,7 +1800,7 @@ impl ElementwiseKernels {
         k: u32,
         n: u32,
     ) {
-        encoder.setComputePipelineState(self.dense_row_dot_sigmoid_mul_inplace.state());
+        crate::set_pipeline_cached(encoder, self.dense_row_dot_sigmoid_mul_inplace.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(row.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(x.mtl_buffer()), 0, 1);
@@ -1822,7 +1834,7 @@ impl ElementwiseKernels {
         let total = (n as usize) * (n_rows as usize);
         if n.is_multiple_of(4) {
             let dims = DispatchDims::d1(total / 4, ELEMENTWISE_TG_SIZE);
-            encoder.setComputePipelineState(self.silu_elementwise_mul_batch_vec4.state());
+            crate::set_pipeline_cached(encoder, self.silu_elementwise_mul_batch_vec4.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 1);
@@ -1835,7 +1847,7 @@ impl ElementwiseKernels {
             );
         } else {
             let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-            encoder.setComputePipelineState(self.silu_elementwise_mul_batch.state());
+            crate::set_pipeline_cached(encoder, self.silu_elementwise_mul_batch.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 1);
@@ -1862,7 +1874,7 @@ impl ElementwiseKernels {
     ) {
         let total = (n as usize) * (n_rows as usize);
         let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.silu_elementwise_mul_batch_f16.state());
+        crate::set_pipeline_cached(encoder, self.silu_elementwise_mul_batch_f16.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(up.mtl_buffer()), 0, 1);
@@ -1885,7 +1897,7 @@ impl ElementwiseKernels {
         n: u32,
     ) {
         let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.elementwise_add.state());
+        crate::set_pipeline_cached(encoder, self.elementwise_add.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
@@ -1908,7 +1920,7 @@ impl ElementwiseKernels {
         n: u32,
     ) {
         let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.elementwise_weighted_add.state());
+        crate::set_pipeline_cached(encoder, self.elementwise_weighted_add.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 1);
@@ -1932,7 +1944,7 @@ impl ElementwiseKernels {
         count: u32,
     ) {
         let dims = DispatchDims::d1(count as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.gen_exp.state());
+        crate::set_pipeline_cached(encoder, self.gen_exp.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -1954,7 +1966,7 @@ impl ElementwiseKernels {
         count: u32,
     ) {
         let dims = DispatchDims::d1(count as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.gen_mul.state());
+        crate::set_pipeline_cached(encoder, self.gen_mul.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
@@ -1977,7 +1989,7 @@ impl ElementwiseKernels {
         count: u32,
     ) {
         let dims = DispatchDims::d1(count as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.gen_add.state());
+        crate::set_pipeline_cached(encoder, self.gen_add.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
@@ -2000,7 +2012,7 @@ impl ElementwiseKernels {
         count: u32,
     ) {
         let dims = DispatchDims::d1(count as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.gen_sub.state());
+        crate::set_pipeline_cached(encoder, self.gen_sub.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
@@ -2022,7 +2034,7 @@ impl ElementwiseKernels {
         count: u32,
     ) {
         let dims = DispatchDims::d1(count as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.gen_neg.state());
+        crate::set_pipeline_cached(encoder, self.gen_neg.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -2044,7 +2056,7 @@ impl ElementwiseKernels {
         count: u32,
     ) {
         let dims = DispatchDims::d1(count as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.gen_scale.state());
+        crate::set_pipeline_cached(encoder, self.gen_scale.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -2069,7 +2081,7 @@ impl ElementwiseKernels {
     ) {
         let total = n_slots * dim;
         let dims = DispatchDims::d1(total as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.moe_gather_rows.state());
+        crate::set_pipeline_cached(encoder, self.moe_gather_rows.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(indices.mtl_buffer()), 0, 1);
@@ -2098,7 +2110,7 @@ impl ElementwiseKernels {
     ) {
         let total = n_slots * dim;
         let dims = DispatchDims::d1(total as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.moe_weighted_scatter_add.state());
+        crate::set_pipeline_cached(encoder, self.moe_weighted_scatter_add.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(indices.mtl_buffer()), 0, 1);
@@ -2130,7 +2142,7 @@ impl ElementwiseKernels {
         {
             let total4 = n_tokens * (dim / 4);
             let dims = DispatchDims::d1(total4 as usize, ELEMENTWISE_TG_SIZE);
-            encoder.setComputePipelineState(self.moe_weighted_reduce_slots8_add_vec4.state());
+            crate::set_pipeline_cached(encoder, self.moe_weighted_reduce_slots8_add_vec4.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 1);
@@ -2145,7 +2157,7 @@ impl ElementwiseKernels {
         } else {
             let total = n_tokens * dim;
             let dims = DispatchDims::d1(total as usize, ELEMENTWISE_TG_SIZE);
-            encoder.setComputePipelineState(self.moe_weighted_reduce_slots_add.state());
+            crate::set_pipeline_cached(encoder, self.moe_weighted_reduce_slots_add.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 1);
@@ -2176,7 +2188,7 @@ impl ElementwiseKernels {
         n_expert: u32,
         n_expert_used: u32,
     ) {
-        encoder.setComputePipelineState(self.moe_softmax_topk.state());
+        crate::set_pipeline_cached(encoder, self.moe_softmax_topk.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(router_logits.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(expert_ids.mtl_buffer()), 0, 1);
@@ -2217,7 +2229,7 @@ impl ElementwiseKernels {
         let total = (n as usize) * (n_rows as usize);
         if n.is_multiple_of(4) {
             let dims = DispatchDims::d1(total / 4, ELEMENTWISE_TG_SIZE);
-            encoder.setComputePipelineState(self.elementwise_add_batch_vec4.state());
+            crate::set_pipeline_cached(encoder, self.elementwise_add_batch_vec4.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
@@ -2230,7 +2242,7 @@ impl ElementwiseKernels {
             );
         } else {
             let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-            encoder.setComputePipelineState(self.elementwise_add_batch.state());
+            crate::set_pipeline_cached(encoder, self.elementwise_add_batch.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(b.mtl_buffer()), 0, 1);
@@ -2254,7 +2266,7 @@ impl ElementwiseKernels {
     ) {
         if n.is_multiple_of(4) {
             let dims = DispatchDims::d1((n as usize) / 4, ELEMENTWISE_TG_SIZE);
-            encoder.setComputePipelineState(self.cast_f32_to_f16_vec4.state());
+            crate::set_pipeline_cached(encoder, self.cast_f32_to_f16_vec4.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -2266,7 +2278,7 @@ impl ElementwiseKernels {
             );
         } else {
             let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-            encoder.setComputePipelineState(self.cast_f32_to_f16.state());
+            crate::set_pipeline_cached(encoder, self.cast_f32_to_f16.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -2289,7 +2301,7 @@ impl ElementwiseKernels {
     ) {
         if n.is_multiple_of(4) {
             let dims = DispatchDims::d1((n as usize) / 4, ELEMENTWISE_TG_SIZE);
-            encoder.setComputePipelineState(self.cast_f16_to_f32_vec4.state());
+            crate::set_pipeline_cached(encoder, self.cast_f16_to_f32_vec4.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -2301,7 +2313,7 @@ impl ElementwiseKernels {
             );
         } else {
             let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
-            encoder.setComputePipelineState(self.cast_f16_to_f32.state());
+            crate::set_pipeline_cached(encoder, self.cast_f16_to_f32.state());
             unsafe {
                 encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
                 encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -2330,7 +2342,7 @@ impl ElementwiseKernels {
         let fused_dim = q_dim + 2 * kv_dim;
         let total = (n_rows as usize) * (fused_dim as usize);
         let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.qkv_split_batch.state());
+        crate::set_pipeline_cached(encoder, self.qkv_split_batch.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 1);
@@ -2363,7 +2375,7 @@ impl ElementwiseKernels {
     ) {
         let total = (n_rows as usize) * (q_dim as usize);
         let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.split_qgate_batch.state());
+        crate::set_pipeline_cached(encoder, self.split_qgate_batch.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 1);
@@ -2402,7 +2414,7 @@ impl ElementwiseKernels {
         let items_per_row = q_pairs + k_pairs + kv_dim;
         let total = (n_rows as usize) * (items_per_row as usize);
         let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.qkv_split_rope_batch.state());
+        crate::set_pipeline_cached(encoder, self.qkv_split_rope_batch.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 1);
@@ -2451,11 +2463,14 @@ impl ElementwiseKernels {
         let items_per_row = q_pairs + k_pairs + kv_dim;
         let total = (n_rows as usize) * (items_per_row as usize);
         let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(if cache_f16 {
-            self.qkv_split_rope_append_kv_batch_f16.state()
-        } else {
-            self.qkv_split_rope_append_kv_batch_f32.state()
-        });
+        crate::set_pipeline_cached(
+            encoder,
+            if cache_f16 {
+                self.qkv_split_rope_append_kv_batch_f16.state()
+            } else {
+                self.qkv_split_rope_append_kv_batch_f32.state()
+            },
+        );
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(q.mtl_buffer()), 0, 1);
@@ -2495,7 +2510,7 @@ impl ElementwiseKernels {
         } else {
             self.kv_append_f32.state()
         };
-        encoder.setComputePipelineState(pipeline);
+        crate::set_pipeline_cached(encoder, pipeline);
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -2528,7 +2543,7 @@ impl ElementwiseKernels {
         } else {
             self.kv_append_batch_f32.state()
         };
-        encoder.setComputePipelineState(pipeline);
+        crate::set_pipeline_cached(encoder, pipeline);
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -2560,11 +2575,14 @@ impl ElementwiseKernels {
     ) {
         let total = (count as usize) * (n_rows as usize);
         let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(if dst_f16 {
-            self.kv_append_batch2_f16.state()
-        } else {
-            self.kv_append_batch2_f32.state()
-        });
+        crate::set_pipeline_cached(
+            encoder,
+            if dst_f16 {
+                self.kv_append_batch2_f16.state()
+            } else {
+                self.kv_append_batch2_f32.state()
+            },
+        );
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src_k.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(src_v.mtl_buffer()), 0, 1);
@@ -2601,7 +2619,7 @@ impl ElementwiseKernels {
     ) {
         let total_blocks = (blocks_per_row as usize) * (n_rows as usize);
         let dims = DispatchDims::d1(total_blocks, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.kv_append_batch_q8_0.state());
+        crate::set_pipeline_cached(encoder, self.kv_append_batch_q8_0.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -2632,7 +2650,7 @@ impl ElementwiseKernels {
     ) {
         let total_blocks = (blocks_per_row as usize) * (n_rows as usize);
         let dims = DispatchDims::d1(total_blocks, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.kv_append_batch2_q8_0.state());
+        crate::set_pipeline_cached(encoder, self.kv_append_batch2_q8_0.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src_k.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(src_v.mtl_buffer()), 0, 1);
@@ -2664,7 +2682,7 @@ impl ElementwiseKernels {
         count: u32,
     ) {
         let dims = DispatchDims::d1(count as usize, ELEMENTWISE_TG_SIZE);
-        encoder.setComputePipelineState(self.kv_append_f32.state());
+        crate::set_pipeline_cached(encoder, self.kv_append_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), src_byte_offset, 0);
             encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
@@ -2690,7 +2708,7 @@ impl ElementwiseKernels {
         result_val: &MetalBuffer,
         n: u32,
     ) {
-        encoder.setComputePipelineState(self.argmax_f32.state());
+        crate::set_pipeline_cached(encoder, self.argmax_f32.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(data.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(result_idx.mtl_buffer()), 0, 1);

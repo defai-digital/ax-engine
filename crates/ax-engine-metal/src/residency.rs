@@ -102,7 +102,10 @@ impl ResidencyManager {
 
 impl Drop for ResidencyManager {
     fn drop(&mut self) {
-        let inner = self.inner.get_mut().unwrap();
+        let inner = match self.inner.get_mut() {
+            Ok(guard) => guard,
+            Err(e) => e.into_inner(),
+        };
         if inner.committed {
             inner.set.endResidency();
         }

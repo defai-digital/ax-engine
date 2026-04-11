@@ -232,6 +232,7 @@ impl Qwen3_5Forward {
         weights: &WeightStore,
         logits: &mut [f32],
     ) -> anyhow::Result<()> {
+        debug_assert!(n_tokens > 0, "n_tokens must be > 0 for last-token logit extraction");
         let last_hidden = &mut hidden[(n_tokens - 1) * dim..n_tokens * dim];
         Self::write_single_logits(
             backend,
@@ -1107,7 +1108,13 @@ impl Qwen3_5Forward {
                         encoder,
                         &bs.norm_buf,
                         &bs.matmul_in_f16,
-                        (n_tokens * dim) as u32,
+                        u32::try_from(n_tokens * dim).map_err(|_| {
+                            anyhow::anyhow!(
+                                "Element count overflow: n_tokens={}, dim={}",
+                                n_tokens,
+                                dim
+                            )
+                        })?,
                     );
                 }
                 // 2. All input projections from norm_buf.
@@ -1179,7 +1186,10 @@ impl Qwen3_5Forward {
         let supported = |dtype| {
             matches!(
                 dtype,
-                crate::gguf::tensor::GgmlType::Q4K | crate::gguf::tensor::GgmlType::Q5K
+                crate::gguf::tensor::GgmlType::Q4K
+                    | crate::gguf::tensor::GgmlType::Q5K
+                    | crate::gguf::tensor::GgmlType::Q6K
+                    | crate::gguf::tensor::GgmlType::Q8_0
             )
         };
         supported(gate_dtype) && supported(up_dtype) && supported(down_dtype)
@@ -1644,7 +1654,7 @@ mod attention_tests {
     use crate::gguf::tensor::GgmlType;
 
     #[test]
-    fn test_qwen35_moe_single_cb_supported_accepts_q4k_and_q5k_expert_weights() {
+    fn test_qwen35_moe_single_cb_supported_accepts_supported_quantized_expert_weights() {
         assert!(Qwen3_5Forward::qwen35_moe_single_cb_supported(
             GgmlType::Q4K,
             GgmlType::Q4K,
@@ -1659,11 +1669,21 @@ mod attention_tests {
             GgmlType::Q5K,
             GgmlType::Q5K,
             GgmlType::Q4K
+        ));
+        assert!(Qwen3_5Forward::qwen35_moe_single_cb_supported(
+            GgmlType::Q4K,
+            GgmlType::Q5K,
+            GgmlType::Q6K
+        ));
+        assert!(Qwen3_5Forward::qwen35_moe_single_cb_supported(
+            GgmlType::Q8_0,
+            GgmlType::Q8_0,
+            GgmlType::Q6K,
         ));
         assert!(!Qwen3_5Forward::qwen35_moe_single_cb_supported(
+            GgmlType::F32,
             GgmlType::Q6K,
-            GgmlType::Q6K,
-            GgmlType::Q6K
+            GgmlType::Q8_0
         ));
     }
 

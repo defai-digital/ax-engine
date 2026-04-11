@@ -36,8 +36,6 @@ pub struct PrefillProfileConfig {
     pub qwen35_shared_timeline_slots: usize,
     /// Optional source recurrent slot for Qwen3.5 shared-timeline prefill.
     pub qwen35_shared_timeline_source_slot: Option<usize>,
-    /// Optional kernel profile override path used for this run.
-    pub kernel_profile_path: Option<String>,
     /// Experimental Qwen3.5 recurrent state mode for GPU prefill handoff.
     pub qwen35_recurrent_state_mode: Qwen35RecurrentStateMode,
     /// Experimental Qwen3.5 alpha/beta scratch storage mode for recurrent handoff.
@@ -60,7 +58,6 @@ impl Default for PrefillProfileConfig {
             warmup_iters: 1,
             qwen35_shared_timeline_slots: 1,
             qwen35_shared_timeline_source_slot: None,
-            kernel_profile_path: None,
             qwen35_recurrent_state_mode: Qwen35RecurrentStateMode::Auto,
             qwen35_alpha_beta_storage_mode: Qwen35AlphaBetaStorageMode::Auto,
             qwen35_prime_slot_buffers: false,
@@ -433,9 +430,6 @@ pub struct PrefillProfileResult {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub support_note: Option<String>,
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kernel_profile_path: Option<String>,
     #[serde(default = "default_qwen35_shared_timeline_slots")]
     pub qwen35_shared_timeline_slots: usize,
     #[serde(default)]
@@ -845,7 +839,6 @@ pub fn run_prefill_profile_with_backend(
         q5k_prefill_mode,
         prefill_plan,
         support_note,
-        kernel_profile_path: config.kernel_profile_path.clone(),
         qwen35_shared_timeline_slots: config.qwen35_shared_timeline_slots,
         qwen35_shared_timeline_source_slot: config.qwen35_shared_timeline_source_slot,
         qwen35_recurrent_state_mode: config.qwen35_recurrent_state_mode,
@@ -1039,9 +1032,6 @@ impl PrefillProfileResult {
         }
         if let Some(note) = &self.support_note {
             eprintln!("Support:     {note}");
-        }
-        if let Some(path) = &self.kernel_profile_path {
-            eprintln!("KernelProf:  {path}");
         }
         if self.local_hd128_route != LocalPrefillHd128Route::Auto {
             eprintln!("RouteForce:  {}", self.local_hd128_route.label());
@@ -1354,7 +1344,6 @@ mod tests {
         assert_eq!(c.prompt_tokens, 512);
         assert_eq!(c.warmup_iters, 1);
         assert_eq!(c.qwen35_shared_timeline_slots, 1);
-        assert_eq!(c.kernel_profile_path, None);
         assert_eq!(
             c.qwen35_recurrent_state_mode,
             Qwen35RecurrentStateMode::Auto
@@ -1401,7 +1390,6 @@ mod tests {
             prefill_split_rope_append: None,
             q5k_prefill_mode: None,
             support_note: None,
-            kernel_profile_path: None,
             qwen35_shared_timeline_slots: 1,
             qwen35_shared_timeline_source_slot: None,
             qwen35_recurrent_state_mode: Qwen35RecurrentStateMode::Auto,

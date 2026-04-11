@@ -1,7 +1,7 @@
 {
   "name": "@defai.digital/ax-engine-js",
   "version": "2.2.0",
-  "description": "Node.js and Next.js client SDK for ax-engine-server",
+  "description": "Node.js and Next.js client SDK for AX-compatible OpenAI-style endpoints",
   "type": "module",
   "main": "./index.cjs",
   "module": "./index.js",
@@ -36,5 +36,5 @@
     "sse",
     "openai-compatible"
   ],
-  "license": "MIT"
+  "license": "Apache-2.0"
 }

@@ -250,6 +250,7 @@ impl MetalDevice {
             let encoder = cmd_buf
                 .computeCommandEncoder()
                 .context("Failed to create compute command encoder")?;
+            crate::reset_pipeline_cache();
 
             f(&encoder)?;
 
@@ -285,6 +286,7 @@ impl MetalDevice {
             let encoder = cmd_buf
                 .computeCommandEncoderWithDispatchType(MTLDispatchType::Concurrent)
                 .context("Failed to create concurrent compute command encoder")?;
+            crate::reset_pipeline_cache();
 
             f(&encoder)?;
 
@@ -316,6 +318,7 @@ impl MetalDevice {
             let encoder = cmd_buf
                 .computeCommandEncoder()
                 .context("Failed to create compute command encoder")?;
+            crate::reset_pipeline_cache();
 
             f(&encoder)?;
 
@@ -341,6 +344,7 @@ impl MetalDevice {
             let encoder = cmd_buf
                 .computeCommandEncoderWithDispatchType(MTLDispatchType::Concurrent)
                 .context("Failed to create concurrent compute command encoder")?;
+            crate::reset_pipeline_cache();
 
             f(&encoder)?;
 
@@ -368,6 +372,7 @@ impl MetalDevice {
             let encoder = cmd_buf
                 .computeCommandEncoder()
                 .context("Failed to create compute command encoder")?;
+            crate::reset_pipeline_cache();
 
             f(&encoder)?;
 
@@ -391,6 +396,7 @@ impl MetalDevice {
             let encoder = cmd_buf
                 .computeCommandEncoderWithDispatchType(MTLDispatchType::Concurrent)
                 .context("Failed to create concurrent compute command encoder")?;
+            crate::reset_pipeline_cache();
 
             f(&encoder)?;
 

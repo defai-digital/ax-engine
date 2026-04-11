@@ -271,9 +271,10 @@ impl SpeculativeDecoder {
                 &mut draft_logits,
             )?;
 
-            // Draft token probability distribution
-            let draft_probs = softmax(&draft_logits[..vocab]);
+            // Draft token: sample first, then capture post-pipeline probabilities
+            // so draft_probs reflects the actual distribution the token was drawn from.
             let draft_tok = sampler.sample(&mut draft_logits, &draft_recent_tokens);
+            let draft_probs = softmax(&draft_logits[..vocab]);
             draft_probs_all.push(draft_probs);
             draft_tokens.push(draft_tok);
             draft_recent_tokens.push(draft_tok);
@@ -734,7 +735,7 @@ mod tests {
 
     fn tiny_config() -> ModelConfig {
         ModelConfig {
-            architecture: "llama".into(),
+            architecture: "gemma3".into(),
             n_layers: 1,
             n_heads: 2,
             n_kv_heads: 2,
@@ -746,13 +747,13 @@ mod tests {
             rms_norm_eps: 1e-5,
             rope_freq_base: 10000.0,
             has_qkv_bias: false,
-            sliding_window_size: None,
-            sliding_window_pattern: None,
-            gate_activation: crate::model::config::GateActivation::SiLU,
+            sliding_window_size: Some(1024),
+            sliding_window_pattern: Some(6),
+            gate_activation: crate::model::config::GateActivation::GELU,
             tie_word_embeddings: false,
             logit_scale: None,
             rope_scaling: crate::model::config::RopeScaling::None,
-            embed_scale: false,
+            embed_scale: true,
             rope_freq_base_local: None,
             n_expert: None,
             n_expert_used: None,
@@ -844,6 +845,7 @@ mod tests {
     }
 
     fn speculative_test_config(architecture: &str) -> crate::model::ModelConfig {
+        let is_gemma3 = architecture == "gemma3";
         crate::model::ModelConfig {
             architecture: architecture.into(),
             n_layers: 4,
@@ -857,14 +859,18 @@ mod tests {
             rms_norm_eps: 1e-5,
             rope_freq_base: 10000.0,
             has_qkv_bias: false,
-            sliding_window_size: None,
-            sliding_window_pattern: None,
-            gate_activation: crate::model::config::GateActivation::SiLU,
+            sliding_window_size: if is_gemma3 { Some(1024) } else { None },
+            sliding_window_pattern: if is_gemma3 { Some(6) } else { None },
+            gate_activation: if is_gemma3 {
+                crate::model::config::GateActivation::GELU
+            } else {
+                crate::model::config::GateActivation::SiLU
+            },
             tie_word_embeddings: false,
             logit_scale: None,
             rope_scaling: crate::model::config::RopeScaling::None,
-            embed_scale: false,
-            rope_freq_base_local: None,
+            embed_scale: is_gemma3,
+            rope_freq_base_local: if is_gemma3 { Some(10000.0) } else { None },
             n_expert: None,
             n_expert_used: None,
             expert_intermediate_dim: None,
@@ -915,8 +921,8 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_speculative_model_rollback_accepts_llama() {
-        let model = InferenceModel::new(speculative_test_config("llama")).unwrap();
+    fn test_validate_speculative_model_rollback_accepts_gemma3() {
+        let model = InferenceModel::new(speculative_test_config("gemma3")).unwrap();
         validate_speculative_model_rollback("target", &model).unwrap();
     }
 
@@ -948,6 +954,7 @@ mod tests {
 
     #[test]
     fn test_prepare_target_verify_state_qwen35_forks_branch_and_commit_restores_source() {
+        let _guard = env_lock();
         let model = InferenceModel::new(speculative_test_config("qwen35")).unwrap();
         let mut target_qwen35_branch_slot = None;
         let mut kv = model.create_model_kv();
@@ -1021,6 +1028,7 @@ mod tests {
 
     #[test]
     fn test_prepare_target_verify_state_qwen35_reuses_branch_slot_across_steps() {
+        let _guard = env_lock();
         let model = InferenceModel::new(speculative_test_config("qwen35")).unwrap();
         let mut target_qwen35_branch_slot = None;
         let mut kv = model.create_model_kv();
@@ -1065,6 +1073,7 @@ mod tests {
 
     #[test]
     fn test_commit_target_verify_state_qwen35_handoffs_active_slot_and_reuses_old_source() {
+        let _guard = env_lock();
         let model = InferenceModel::new(speculative_test_config("qwen35")).unwrap();
         let mut target_qwen35_branch_slot = None;
         let mut kv = model.create_model_kv();
@@ -1114,6 +1123,7 @@ mod tests {
 
     #[test]
     fn test_prepare_target_verify_state_qwen35_uses_attention_truncate_from_gpu_dirty_state() {
+        let _guard = env_lock();
         let model = InferenceModel::new(speculative_test_config("qwen35")).unwrap();
         let mut target_qwen35_branch_slot = None;
         let mut kv = model.create_model_kv();

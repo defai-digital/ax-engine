@@ -46,8 +46,6 @@ pub struct BenchConfig {
     pub qwen35_shared_timeline_slots: usize,
     /// Optional source recurrent slot for Qwen3.5 shared-timeline prefill.
     pub qwen35_shared_timeline_source_slot: Option<usize>,
-    /// Optional kernel profile override path used for this run.
-    pub kernel_profile_path: Option<String>,
 }
 
 /// Benchmark configuration for speculative decoding.
@@ -72,8 +70,6 @@ pub struct SpecBenchConfig {
     pub cooldown_ms: u64,
     /// Speculative lookahead length.
     pub speculative_k: usize,
-    /// Optional kernel profile override path used for this run.
-    pub kernel_profile_path: Option<String>,
 }
 
 impl Default for BenchConfig {
@@ -90,7 +86,6 @@ impl Default for BenchConfig {
             intent: DecodeIntent::Throughput,
             qwen35_shared_timeline_slots: 1,
             qwen35_shared_timeline_source_slot: None,
-            kernel_profile_path: None,
         }
     }
 }
@@ -108,7 +103,6 @@ impl Default for SpecBenchConfig {
             samples: 1,
             cooldown_ms: 0,
             speculative_k: 4,
-            kernel_profile_path: None,
         }
     }
 }
@@ -209,10 +203,6 @@ pub struct BenchResult {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decode_fallback_reason: Option<String>,
-    /// Optional kernel profile override path used for this run.
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kernel_profile_path: Option<String>,
     #[serde(default = "default_qwen35_shared_timeline_slots")]
     pub qwen35_shared_timeline_slots: usize,
     #[serde(default)]
@@ -286,10 +276,6 @@ pub struct SpecBenchResult {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub support_note: Option<String>,
-    /// Optional kernel profile override path used for this run.
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kernel_profile_path: Option<String>,
     /// Whether f16 KV cache was active.
     pub kv_f16: bool,
     /// True when deterministic mode was enabled.
@@ -708,7 +694,6 @@ pub fn run_benchmark_with_backend(
         decode_plan: decode_plan.unwrap_or_else(|| "sync=sequential scratch=cpu".to_string()),
         support_note,
         decode_fallback_reason: decode_selection.and_then(|s| s.fallback_reason),
-        kernel_profile_path: config.kernel_profile_path.clone(),
         qwen35_shared_timeline_slots: config.qwen35_shared_timeline_slots,
         qwen35_shared_timeline_source_slot: config.qwen35_shared_timeline_source_slot,
         kv_f16,
@@ -934,7 +919,6 @@ pub fn run_speculative_benchmark_with_backend(
         verify_ms_per_position: avg_metric(&verify_ms_per_position_values),
         draft_ms_per_drafted_token: avg_metric(&draft_ms_per_drafted_token_values),
         support_note,
-        kernel_profile_path: config.kernel_profile_path.clone(),
         kv_f16,
         deterministic: config.deterministic,
         samples: sample_count,
@@ -1123,7 +1107,8 @@ fn run_single_spec_bench(
         let step = if step_k < spec.k() {
             logits.fill(0.0);
             model.forward_single(last_token, position, &mut kv, weights, &mut logits)?;
-            let tok = sampler.sample(&mut logits, &[]);
+            history.push(last_token);
+            let tok = sampler.sample(&mut logits, &history);
             ax_engine_core::speculative::SpecStep {
                 tokens: vec![tok],
                 n_accepted: 0,
@@ -1165,7 +1150,6 @@ fn run_single_spec_bench(
         if let Some(&tok) = step.tokens.last() {
             last_token = tok;
             position += step.tokens.len();
-            generated_tokens = generated_tokens.saturating_add(1);
         } else {
             break;
         }
@@ -1289,9 +1273,6 @@ impl BenchResult {
         if let Some(reason) = &self.decode_fallback_reason {
             eprintln!("Fallback:    {reason}");
         }
-        if let Some(path) = &self.kernel_profile_path {
-            eprintln!("KernelProf:  {path}");
-        }
         if self.decode_intent == "latency" {
             eprintln!(
                 "Latency:     P50 {:.2}ms, P95 {:.2}ms, P99 {:.2}ms",
@@ -1387,9 +1368,6 @@ impl SpecBenchResult {
         if let Some(note) = &self.support_note {
             eprintln!("Support:     {note}");
         }
-        if let Some(path) = &self.kernel_profile_path {
-            eprintln!("KernelProf:  {path}");
-        }
     }
 }
 
@@ -1447,7 +1425,6 @@ mod tests {
         assert_eq!(c.cooldown_ms, 0);
         assert_eq!(c.qwen35_shared_timeline_slots, 1);
         assert_eq!(c.qwen35_shared_timeline_source_slot, None);
-        assert_eq!(c.kernel_profile_path, None);
     }
 
     #[test]
@@ -1470,7 +1447,6 @@ mod tests {
         assert_eq!(c.samples, 1);
         assert_eq!(c.cooldown_ms, 0);
         assert_eq!(c.speculative_k, 4);
-        assert_eq!(c.kernel_profile_path, None);
     }
 
     #[test]
@@ -1502,7 +1478,6 @@ mod tests {
                     .unwrap()
                     .to_string(),
             ),
-            kernel_profile_path: None,
             kv_f16: true,
             deterministic: false,
             samples: 1,
@@ -1553,7 +1528,6 @@ mod tests {
                     .to_string(),
             ),
             decode_fallback_reason: None,
-            kernel_profile_path: None,
             qwen35_shared_timeline_slots: 1,
             qwen35_shared_timeline_source_slot: None,
             kv_f16: true,
@@ -1638,7 +1612,6 @@ mod tests {
                     .unwrap()
                     .to_string(),
             ),
-            kernel_profile_path: None,
             kv_f16: true,
             deterministic: false,
             samples: 1,

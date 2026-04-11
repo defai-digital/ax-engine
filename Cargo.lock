@@ -87,7 +87,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "ax-engine-bench"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "anyhow",
  "ax-engine-core",
@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "ax-engine-cli"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "anyhow",
  "ax-engine-core",
@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "ax-engine-core"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "anyhow",
  "ax-engine-metal",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "ax-engine-metal"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "anyhow",
  "block2",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "ax-engine-py"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "anyhow",
  "ax-engine-sdk",
@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "ax-engine-sdk"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "anyhow",
  "ax-engine-core",
@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "ax-engine-server"
-version = "3.1.2"
+version = "3.1.3"
 dependencies = [
  "anyhow",
  "ax-engine-core",
