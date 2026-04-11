@@ -350,7 +350,8 @@ pub fn run_profile_with_backend(
     eprintln!("Warmup done at position {position}, starting profile...");
 
     let selection = select_decode_mode(&model, &kv, DecodeIntent::Latency, false);
-    let plan_summary = model.decode_plan_summary(&kv, DecodeIntent::Latency, false);
+    let plan_summary =
+        model.decode_plan_summary_for_weights(&weights, &kv, DecodeIntent::Latency, false)?;
 
     // Profiled decode
     let mut ops = OpBreakdown::new();

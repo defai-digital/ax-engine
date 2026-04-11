@@ -507,6 +507,45 @@ fn test_real_qwen3_coder_decode_plan_summary_reports_runtime_barrier_policy() {
 }
 
 #[test]
+fn test_real_qwen3_coder_q5_profiled_single_decode_records_gpu_work() {
+    let path = workspace_model_path("Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let mapped = MappedModel::open(&path).unwrap();
+    let cfg = ModelConfig::from_gguf(&mapped.header).unwrap();
+    let weights = WeightStore::new(&mapped);
+    let tokenizer = crate::tokenizer::Tokenizer::from_gguf(&mapped.header).unwrap();
+    let prompt_token_ids = tokenizer.encode("Hello", true);
+    let Some(&token_id) = prompt_token_ids.first() else {
+        return;
+    };
+
+    let metal_model =
+        InferenceModel::with_backend(cfg.clone(), Box::new(MetalBackend::new().unwrap())).unwrap();
+    let mut metal_kv = metal_model.create_model_kv_for_weights(&weights);
+    let mut logits = vec![0.0f32; cfg.vocab_size as usize];
+
+    logits.fill(0.0);
+    let mut ops = crate::metrics::OpBreakdown::new();
+    metal_model
+        .forward_single_profiled(token_id, 0, &mut metal_kv, &weights, &mut logits, &mut ops)
+        .unwrap();
+
+    assert!(
+        ops.gpu > std::time::Duration::ZERO,
+        "Qwen3-Coder Q5_K_M single decode did not record any GPU work: {}",
+        ops.summary(),
+    );
+    assert!(
+        ops.gpu_encode_layer_ffn > std::time::Duration::ZERO,
+        "Qwen3-Coder Q5_K_M single decode did not record any FFN encode work: {}",
+        ops.summary(),
+    );
+}
+
+#[test]
 fn test_prepare_runtime_for_real_qwen3_coder_primes_cached_model_keys() {
     let _lock = crate::test_env_lock();
 

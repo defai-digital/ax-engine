@@ -1924,6 +1924,20 @@ fn test_qwen35_selected_pair_q4_k_matvec_defaults_on_and_can_be_disabled() {
 }
 
 #[test]
+fn test_qwen35_selected_pair_q5_k_matvec_defaults_off_and_can_be_enabled() {
+    let _env_lock = lock_env_test();
+    let _guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_PAIR_Q5K_MATVEC",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_PAIR_Q5K_MATVEC"),
+    };
+    unsafe { std::env::remove_var("AX_QWEN35_SELECTED_PAIR_Q5K_MATVEC") };
+    assert!(!qwen35_selected_pair_q5_k_matvec_enabled());
+
+    let _on = EnvVarGuard::set("AX_QWEN35_SELECTED_PAIR_Q5K_MATVEC", "1");
+    assert!(qwen35_selected_pair_q5_k_matvec_enabled());
+}
+
+#[test]
 fn test_qwen35_selected_single_token_gate_up_path_supports_mixed_qwen3_coder_layouts() {
     assert!(qwen35_selected_single_token_gate_up_path_supported(
         GgmlType::Q4K,
@@ -2149,11 +2163,16 @@ fn test_qwen35_selected_expert_pair_env_override_still_applies() {
 }
 
 #[test]
-fn test_qwen35_selected_expert_pair_defaults_on_for_matching_q6k_gate_up() {
+fn test_qwen35_selected_expert_pair_defaults_on_for_matching_full_quant_gate_up() {
     assert!(qwen35_selected_expert_pair_enabled(
         GgmlType::Q6K,
         GgmlType::Q6K,
         GgmlType::Q6K,
+    ));
+    assert!(qwen35_selected_expert_pair_enabled(
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
     ));
     assert!(!qwen35_selected_expert_pair_enabled(
         GgmlType::Q6K,
@@ -5414,8 +5433,14 @@ fn test_metal_backend_dense_row_dot_sigmoid_mul_inplace_matches_cpu() {
 }
 
 #[test]
-#[ignore = "Q5_K selected pair kernel is still experimental and not used by the default decode path"]
 fn test_metal_backend_moe_mul_mat_selected_single_token_pair_matches_separate_q5_k() {
+    let _env_lock = lock_env_test();
+    let _guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_PAIR_Q5K_MATVEC",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_PAIR_Q5K_MATVEC"),
+    };
+    unsafe { std::env::set_var("AX_QWEN35_SELECTED_PAIR_Q5K_MATVEC", "1") };
+
     let backend = MetalBackend::new().unwrap();
 
     let n_selected = 2usize;
@@ -5827,6 +5852,146 @@ fn test_metal_backend_moe_mul_mat_selected_single_token_pair_matches_separate_q6
     assert!(
         diff0 / scale0 < 1e-3 && diff1 / scale1 < 1e-3,
         "selected pair Q6_K path mismatch: idx0={idx0} slot0={} row0={} diff0={diff0}, idx1={idx1} slot1={} row1={} diff1={diff1}",
+        idx0 / dim,
+        idx0 % dim,
+        idx1 / dim,
+        idx1 % dim,
+    );
+}
+
+#[test]
+fn test_metal_backend_moe_mul_mat_selected_single_token_pair_matches_separate_q8_0() {
+    let backend = MetalBackend::new().unwrap();
+
+    let n_selected = 2usize;
+    let dim = 256usize;
+    let expert_inter_dim = 256usize;
+    let q8_blocks_per_row = expert_inter_dim.div_ceil(32);
+
+    let build_q8_0_expert_tensor = |expert_scales: &[f32], rows: usize| -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(expert_scales.len() * rows * q8_blocks_per_row * 34);
+        for &scale in expert_scales {
+            for _ in 0..rows {
+                for _ in 0..q8_blocks_per_row {
+                    bytes.extend_from_slice(&q8_0_block_constant(scale));
+                }
+            }
+        }
+        bytes
+    };
+
+    let weights0 = build_q8_0_expert_tensor(&[0.04, 0.07], dim);
+    let weights1 = build_q8_0_expert_tensor(&[0.09, 0.12], dim);
+    let expert_stride =
+        crate::model::moe_utils::expert_byte_stride(GgmlType::Q8_0, dim * expert_inter_dim);
+    let blocks_per_expert =
+        MetalOps::moe_blocks_per_expert(expert_stride, GgmlType::Q8_0, "selected pair").unwrap();
+
+    let mut input = vec![0.0f32; expert_inter_dim];
+    input[..128].fill(1.0);
+
+    let selected_experts = vec![0i32, 1i32];
+    let weights0_buf = MetalBuffer::from_slice(backend.device.device(), &weights0).unwrap();
+    let weights1_buf = MetalBuffer::from_slice(backend.device.device(), &weights1).unwrap();
+    let input_buf = MetalBuffer::from_slice(backend.device.device(), &input).unwrap();
+    let selected_buf = MetalBuffer::from_slice(backend.device.device(), &selected_experts).unwrap();
+    let pair_out0 = MetalBuffer::new(
+        backend.device.device(),
+        n_selected * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let pair_out1 = MetalBuffer::new(
+        backend.device.device(),
+        n_selected * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let sep_out0 = MetalBuffer::new(
+        backend.device.device(),
+        n_selected * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let sep_out1 = MetalBuffer::new(
+        backend.device.device(),
+        n_selected * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend.ops.encode_moe_mul_mat_selected_single_token_pair(
+                encoder,
+                &weights0_buf,
+                &weights1_buf,
+                &input_buf,
+                &selected_buf,
+                &pair_out0,
+                &pair_out1,
+                GgmlType::Q8_0,
+                dim as u32,
+                expert_inter_dim as u32,
+                n_selected as u32,
+                blocks_per_expert,
+                blocks_per_expert,
+                false,
+            )
+        })
+        .unwrap();
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend.ops.encode_moe_mul_mat_selected_single_token(
+                encoder,
+                &weights0_buf,
+                &input_buf,
+                &selected_buf,
+                &sep_out0,
+                GgmlType::Q8_0,
+                dim as u32,
+                expert_inter_dim as u32,
+                n_selected as u32,
+                blocks_per_expert,
+                false,
+            )?;
+            backend.ops.encode_moe_mul_mat_selected_single_token(
+                encoder,
+                &weights1_buf,
+                &input_buf,
+                &selected_buf,
+                &sep_out1,
+                GgmlType::Q8_0,
+                dim as u32,
+                expert_inter_dim as u32,
+                n_selected as u32,
+                blocks_per_expert,
+                false,
+            )
+        })
+        .unwrap();
+
+    let pair0 = unsafe { pair_out0.as_slice::<f32>()[..n_selected * dim].to_vec() };
+    let pair1 = unsafe { pair_out1.as_slice::<f32>()[..n_selected * dim].to_vec() };
+    let sep0 = unsafe { sep_out0.as_slice::<f32>()[..n_selected * dim].to_vec() };
+    let sep1 = unsafe { sep_out1.as_slice::<f32>()[..n_selected * dim].to_vec() };
+
+    let (idx0, diff0) = max_abs_diff_with_index(&pair0, &sep0);
+    let (idx1, diff1) = max_abs_diff_with_index(&pair1, &sep1);
+    let scale0 = sep0
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    let scale1 = sep1
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        diff0 / scale0 < 1e-3 && diff1 / scale1 < 1e-3,
+        "selected pair Q8_0 path mismatch: idx0={idx0} slot0={} row0={} diff0={diff0}, idx1={idx1} slot1={} row1={} diff1={diff1}",
         idx0 / dim,
         idx0 % dim,
         idx1 / dim,

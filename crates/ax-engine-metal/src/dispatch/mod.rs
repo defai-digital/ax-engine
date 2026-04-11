@@ -1025,15 +1025,11 @@ fn q5_k_matvec_candidate_selection(
             threadgroup_width: DEQUANT_MATVEC_Q5K_TG,
         };
     }
-    // Dimension-aware auto-selection when no profile preference.
-    if (2..=4096).contains(&m) {
-        MatvecCandidateSelection {
-            candidate: MatvecCandidate::Q5KNr2,
-            stability: KernelStabilityTier::Stable,
-            threadgroups: (m as usize).div_ceil(Q5K_NR2_ROWS),
-            threadgroup_width: DEQUANT_MATVEC_Q5K_TG,
-        }
-    } else if m > 4096 {
+    // Keep Q5_K on the 4-stream ILP4-style path by default. This matches the
+    // general q5_K Metal matvec decomposition used in llama.cpp
+    // (tid = lane / 4, ix = lane % 4) and benchmarks consistently beat AX's
+    // NR2 auto path on shipped Q5 workloads.
+    if m >= 2 {
         MatvecCandidateSelection {
             candidate: MatvecCandidate::Q5KIlp4,
             stability: KernelStabilityTier::Stable,

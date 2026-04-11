@@ -109,6 +109,13 @@ fn qwen35_selected_pair_q4_k_matvec_enabled() -> bool {
     )
 }
 
+fn qwen35_selected_pair_q5_k_matvec_enabled() -> bool {
+    matches!(
+        env_flag_override("AX_QWEN35_SELECTED_PAIR_Q5K_MATVEC"),
+        Some(true)
+    )
+}
+
 fn qwen35_selected_single_token_gate_up_dtype_supported(dtype: GgmlType) -> bool {
     matches!(
         dtype,
@@ -172,7 +179,10 @@ fn qwen35_selected_expert_pair_enabled(
         Some(value) => value,
         None => {
             if gate_dtype != up_dtype
-                || !matches!(gate_dtype, GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K)
+                || !matches!(
+                    gate_dtype,
+                    GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0
+                )
             {
                 return false;
             }
@@ -2663,6 +2673,7 @@ impl MetalOps {
                 n_selected,
                 weight_stride,
                 input_is_slot_major,
+                self.dequant_dispatch_config(),
             ),
             GgmlType::Q8_0 => self.dequant.encode_moe_mul_mat_selected_q8_0(
                 encoder,
@@ -2675,6 +2686,7 @@ impl MetalOps {
                 n_selected,
                 weight_stride,
                 input_is_slot_major,
+                self.dequant_dispatch_config(),
             ),
             _ => unreachable!("validated selected expert dtype"),
         }
@@ -2731,6 +2743,7 @@ impl MetalOps {
                 weight_stride0,
                 weight_stride1,
                 input_is_slot_major,
+                qwen35_selected_pair_q5_k_matvec_enabled(),
             ),
             GgmlType::Q6K => self.dequant.encode_moe_mul_mat_selected_pair_q6_k(
                 encoder,
@@ -2746,6 +2759,23 @@ impl MetalOps {
                 weight_stride0,
                 weight_stride1,
                 input_is_slot_major,
+                self.dequant_dispatch_config(),
+            ),
+            GgmlType::Q8_0 => self.dequant.encode_moe_mul_mat_selected_pair_q8_0(
+                encoder,
+                weights0,
+                weights1,
+                input,
+                selected_experts,
+                output0,
+                output1,
+                m,
+                k,
+                n_selected,
+                weight_stride0,
+                weight_stride1,
+                input_is_slot_major,
+                self.dequant_dispatch_config(),
             ),
             _ => unreachable!("validated selected expert pair dtype"),
         }
@@ -2804,6 +2834,7 @@ impl MetalOps {
                 k,
                 n_selected,
                 weight_stride,
+                self.dequant_dispatch_config(),
             ),
             GgmlType::Q8_0 => self.dequant.encode_moe_mul_mat_selected_weighted_q8_0(
                 encoder,
@@ -2816,6 +2847,7 @@ impl MetalOps {
                 k,
                 n_selected,
                 weight_stride,
+                self.dequant_dispatch_config(),
             ),
             _ => unreachable!("validated selected weighted expert dtype"),
         }

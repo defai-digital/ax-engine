@@ -283,6 +283,7 @@ impl Qwen3MoeForward {
         gate_stride: usize,
         up_stride: usize,
         down_stride: usize,
+        ops: &mut Option<&mut OpBreakdown>,
     ) -> anyhow::Result<()> {
         let dim = cfg.embedding_dim as usize;
         let n_heads = cfg.n_heads as usize;
@@ -317,6 +318,7 @@ impl Qwen3MoeForward {
                 )
             })?;
 
+            let layer_norm_t = OpTimer::start();
             barrier.pre_dispatch(&[hidden_buf], &[&s.norm_buf]);
             metal_ops.elementwise.encode_rms_norm_out(
                 encoder,
@@ -328,7 +330,11 @@ impl Qwen3MoeForward {
             );
             barrier.post_dispatch(&[hidden_buf], &[&s.norm_buf]);
             barrier.step(encoder);
+            if let Some(ops_ref) = ops.as_deref_mut() {
+                ops_ref.gpu_encode_layer_norm += layer_norm_t.elapsed();
+            }
 
+            let qkv_t = OpTimer::start();
             barrier.pre_dispatch(&[&s.norm_buf], &[&s.q_buf]);
             encode_dequant_matvec_with_config(
                 metal_ops,
@@ -369,8 +375,12 @@ impl Qwen3MoeForward {
             );
             barrier.post_dispatch(&[&s.norm_buf], &[&s.v_buf]);
             barrier.step(encoder);
+            if let Some(ops_ref) = ops.as_deref_mut() {
+                ops_ref.gpu_encode_layer_qkv += qkv_t.elapsed();
+            }
 
             if let (Some(qn_key), Some(kn_key)) = (lw.attn_q_norm, lw.attn_k_norm) {
+                let qk_norm_t = OpTimer::start();
                 let qn = weight_cache.get(&qn_key).unwrap();
                 let kn = weight_cache.get(&kn_key).unwrap();
                 barrier.pre_dispatch(&[&s.q_buf], &[&s.q_buf]);
@@ -393,8 +403,12 @@ impl Qwen3MoeForward {
                     eps,
                 );
                 barrier.post_dispatch(&[&s.k_buf], &[&s.k_buf]);
+                if let Some(ops_ref) = ops.as_deref_mut() {
+                    ops_ref.gpu_encode_layer_norm += qk_norm_t.elapsed();
+                }
             }
 
+            let rope_t = OpTimer::start();
             barrier.pre_dispatch(&[&s.q_buf, &s.k_buf], &[&s.q_buf, &s.k_buf]);
             metal_ops.elementwise.encode_rope_batch_neox_partial(
                 encoder,
@@ -411,7 +425,11 @@ impl Qwen3MoeForward {
             );
             barrier.post_dispatch(&[&s.q_buf, &s.k_buf], &[&s.q_buf, &s.k_buf]);
             barrier.step(encoder);
+            if let Some(ops_ref) = ops.as_deref_mut() {
+                ops_ref.gpu_encode_layer_rope += rope_t.elapsed();
+            }
 
+            let kv_append_t = OpTimer::start();
             barrier.pre_dispatch(&[&s.k_buf], &[kv_k]);
             metal_ops.elementwise.encode_kv_append(
                 encoder,
@@ -433,7 +451,11 @@ impl Qwen3MoeForward {
             );
             barrier.post_dispatch(&[&s.v_buf], &[kv_v]);
             barrier.step(encoder);
+            if let Some(ops_ref) = ops.as_deref_mut() {
+                ops_ref.gpu_encode_layer_kv_append += kv_append_t.elapsed();
+            }
 
+            let attn_t = OpTimer::start();
             barrier.pre_dispatch(&[&s.q_buf, kv_k, kv_v], &[&s.attn_out]);
             metal_ops
                 .attention
@@ -452,10 +474,14 @@ impl Qwen3MoeForward {
                     0,
                     full_seq_len,
                     exec_plan.attention_dispatch,
-                );
+            );
             barrier.post_dispatch(&[&s.q_buf, kv_k, kv_v], &[&s.attn_out]);
             barrier.step(encoder);
+            if let Some(ops_ref) = ops.as_deref_mut() {
+                ops_ref.gpu_encode_layer_attention += attn_t.elapsed();
+            }
 
+            let out_proj_t = OpTimer::start();
             barrier.pre_dispatch(&[&s.attn_out], &[&s.proj_buf]);
             encode_dequant_matvec_with_config(
                 metal_ops,
@@ -470,13 +496,20 @@ impl Qwen3MoeForward {
             );
             barrier.post_dispatch(&[&s.attn_out], &[&s.proj_buf]);
             barrier.step(encoder);
+            if let Some(ops_ref) = ops.as_deref_mut() {
+                ops_ref.gpu_encode_layer_out_proj += out_proj_t.elapsed();
+            }
 
+            let residual_t = OpTimer::start();
             barrier.pre_dispatch(&[hidden_buf, &s.proj_buf], &[hidden_buf]);
             metal_ops
                 .elementwise
                 .encode_elementwise_add(encoder, hidden_buf, &s.proj_buf, dim as u32);
             barrier.post_dispatch(&[hidden_buf, &s.proj_buf], &[hidden_buf]);
             barrier.step(encoder);
+            if let Some(ops_ref) = ops.as_deref_mut() {
+                ops_ref.gpu_encode_layer_residual += residual_t.elapsed();
+            }
 
             let router_buf = moe_weight_cache.get(&lw.moe_router.unwrap()).unwrap();
             let moe_gate_buf = moe_weight_cache
@@ -488,6 +521,7 @@ impl Qwen3MoeForward {
             let moe_down_buf = moe_weight_cache
                 .get(&lw.moe_expert_down.as_ref().unwrap()[0])
                 .unwrap();
+            let moe_t = OpTimer::start();
             metal_ops.encode_moe_ffn_gpu_resident_cached_with_policy(
                 encoder,
                 hidden_buf,
@@ -514,6 +548,9 @@ impl Qwen3MoeForward {
                     != crate::model::execution_plan::DecodeBarrierPlan::Implicit,
                 Self::qwen3moe_blocked_q6q8_down_enabled(),
             )?;
+            if let Some(ops_ref) = ops.as_deref_mut() {
+                ops_ref.gpu_encode_layer_ffn += moe_t.elapsed();
+            }
         }
 
         Ok(())
@@ -603,6 +640,7 @@ impl Qwen3MoeForward {
                 gate_stride,
                 up_stride,
                 down_stride,
+                &mut None,
             )?;
             crate::model::shared::encode_gpu_output_head(
                 encoder,
@@ -641,8 +679,9 @@ impl Qwen3MoeForward {
     fn forward_single_gpu_unified(
         &self, ctx: &ForwardContext, metal_ops: &MetalOps, token_id: u32, position: usize,
         gpu_kv: &mut crate::kv::GpuKv, weights: &WeightStore, logits: &mut [f32],
-        _ops: Option<&mut OpBreakdown>,
+        mut ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<()> {
+        let total_t = OpTimer::start();
         let cfg = ctx.config;
         let dim = cfg.embedding_dim as usize;
         let vocab_size = cfg.vocab_size as usize;
@@ -650,6 +689,7 @@ impl Qwen3MoeForward {
         let eps = cfg.rms_norm_eps;
         anyhow::ensure!(logits.len() >= vocab_size, "logits buffer too small");
 
+        let setup_t = OpTimer::start();
         metal_ops.init_scratches(cfg);
         metal_ops.init_batch_scratches(cfg, 1); // MoE FFN needs batch scratch even for n=1
         let scratch_guard = metal_ops.scratches();
@@ -696,6 +736,9 @@ impl Qwen3MoeForward {
                 up_dtype,
                 down_dtype,
             );
+        if let Some(ops_ref) = ops.as_deref_mut() {
+            ops_ref.gpu_encode += setup_t.elapsed();
+        }
 
         // Keep routed-MoE decode coalesced to minimize submission overhead.
         // The policy above uses the full layer stack for supported quantized
@@ -714,6 +757,7 @@ impl Qwen3MoeForward {
         for layer_start in (0..cfg.n_layers as usize).step_by(layers_per_command_buffer) {
             let layer_end =
                 (layer_start + layers_per_command_buffer).min(cfg.n_layers as usize);
+            let exec_t = OpTimer::start();
             exec_sync!(|encoder| {
                 let barrier =
                     crate::model::shared::DecodeBarrierCtx::new(encoder, exec_plan.barriers);
@@ -738,14 +782,21 @@ impl Qwen3MoeForward {
                     gate_stride,
                     up_stride,
                     down_stride,
+                    &mut ops,
                 )?;
                 barrier.flush();
                 Ok(())
             })?;
+            if let Some(ops_ref) = ops.as_deref_mut() {
+                let elapsed = exec_t.elapsed();
+                ops_ref.gpu_execute += elapsed;
+                ops_ref.gpu_execute_layers += elapsed;
+            }
         }
 
         // (debug removed)
         // Output head in its own CB
+        let output_exec_t = OpTimer::start();
         exec_sync!(|encoder| {
             let barrier = crate::model::shared::DecodeBarrierCtx::new(encoder, exec_plan.barriers);
             crate::model::shared::encode_gpu_output_head(
@@ -764,10 +815,20 @@ impl Qwen3MoeForward {
             barrier.flush();
             Ok(())
         })?;
+        if let Some(ops_ref) = ops.as_deref_mut() {
+            let elapsed = output_exec_t.elapsed();
+            ops_ref.gpu_execute += elapsed;
+            ops_ref.gpu_execute_output += elapsed;
+        }
 
+        let readback_t = OpTimer::start();
         let logits_gpu = unsafe { std::slice::from_raw_parts(s.logits_buf.contents().as_ptr() as *const f32, vocab_size) };
         logits[..vocab_size].copy_from_slice(logits_gpu);
         gpu_kv.finalize_batch(1);
+        if let Some(ops_ref) = ops.as_deref_mut() {
+            ops_ref.gpu_readback += readback_t.elapsed();
+            ops_ref.gpu += total_t.elapsed();
+        }
         Ok(())
     }
 

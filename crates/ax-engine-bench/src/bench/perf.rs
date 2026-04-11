@@ -986,6 +986,7 @@ fn run_single_bench(
     model.reset_metal_perf_counters();
     let mut history = prompt_tokens.to_vec();
     let first_token = sampler.sample(&mut logits, &history);
+    let decode_plan = model.decode_plan_summary_for_weights(weights, &kv, intent, true)?;
     let decode = run_decode(
         model,
         weights,
@@ -1020,7 +1021,7 @@ fn run_single_bench(
         decode.metal_perf,
         decode.selection,
         prefill_plan,
-        decode.plan_summary,
+        decode_plan,
     ))
 }
 

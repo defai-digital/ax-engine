@@ -2363,6 +2363,128 @@ kernel void moe_mul_mat_selected_q5_k_blocked(
     }
 }
 
+kernel void moe_mul_mat_selected_pair_q5_k_matvec(
+    device const Q5_K_Block *weights0      [[buffer(0)]],
+    device const Q5_K_Block *weights1      [[buffer(1)]],
+    device const float *input              [[buffer(2)]],
+    device const int32_t *selected_experts [[buffer(3)]],
+    device float *output0                  [[buffer(4)]],
+    device float *output1                  [[buffer(5)]],
+    constant uint &M                       [[buffer(6)]],
+    constant uint &K                       [[buffer(7)]],
+    constant uint &n_selected              [[buffer(8)]],
+    constant uint &weight_stride0          [[buffer(9)]],
+    constant uint &weight_stride1          [[buffer(10)]],
+    constant uint &input_is_slot_major     [[buffer(11)]],
+    uint3 tgpig                            [[threadgroup_position_in_grid]],
+    uint simd_lane                         [[thread_index_in_simdgroup]],
+    uint simd_id                           [[simdgroup_index_in_threadgroup]]
+) {
+    if (tgpig.z >= n_selected) return;
+
+    const uint slot = tgpig.z;
+    const uint expert = uint(selected_experts[slot]);
+    const uint blocks_per_row = K / Q5_K_BLOCK_VALUES;
+    const uint first_row =
+        (tgpig.x * Q5K_NR2_SG_PER_TG + simd_id) * Q5K_NR2_ROWS_PER_SG;
+    if (first_row >= M) return;
+
+    const bool valid1 = (first_row + 1) < M;
+    device const Q5_K_Block *base0 = weights0 + expert * weight_stride0;
+    device const Q5_K_Block *row00 = base0 + first_row * blocks_per_row;
+    device const Q5_K_Block *row01 = valid1 ? row00 + blocks_per_row : row00;
+    device const Q5_K_Block *base1 = weights1 + expert * weight_stride1;
+    device const Q5_K_Block *row10 = base1 + first_row * blocks_per_row;
+    device const Q5_K_Block *row11 = valid1 ? row10 + blocks_per_row : row10;
+    const uint input_row = input_is_slot_major != 0 ? slot : 0;
+    device const float *x = input + input_row * K;
+
+    float sumf0[Q5K_NR2_ROWS_PER_SG] = {0.0f, 0.0f};
+    float sumf1[Q5K_NR2_ROWS_PER_SG] = {0.0f, 0.0f};
+
+    for (uint b = 0; b < blocks_per_row; ++b) {
+        uint base_k = b * Q5_K_BLOCK_VALUES;
+
+        half rx0 = half(x[base_k +   0 + simd_lane]);
+        half rx1 = half(x[base_k +  32 + simd_lane]);
+        half rx2 = half(x[base_k +  64 + simd_lane]);
+        half rx3 = half(x[base_k +  96 + simd_lane]);
+        half rx4 = half(x[base_k + 128 + simd_lane]);
+        half rx5 = half(x[base_k + 160 + simd_lane]);
+        half rx6 = half(x[base_k + 192 + simd_lane]);
+        half rx7 = half(x[base_k + 224 + simd_lane]);
+
+        for (ushort row = 0; row < Q5K_NR2_ROWS_PER_SG; ++row) {
+            device const Q5_K_Block &blk0 = (row == 0 ? row00 : row01)[b];
+            device const Q5_K_Block &blk1 = (row == 0 ? row10 : row11)[b];
+
+            float d0 = (simd_lane == 0) ? float(blk0.d) : 0.0f;
+            float dmin0 = (simd_lane == 0) ? float(blk0.dmin) : 0.0f;
+            float d1 = (simd_lane == 0) ? float(blk1.d) : 0.0f;
+            float dmin1 = (simd_lane == 0) ? float(blk1.dmin) : 0.0f;
+            d0 = simd_broadcast(d0, 0);
+            dmin0 = simd_broadcast(dmin0, 0);
+            d1 = simd_broadcast(d1, 0);
+            dmin1 = simd_broadcast(dmin1, 0);
+
+            device const uchar *scales0 = blk0.scales;
+            device const uchar *qh0 = blk0.qh;
+            device const uchar *qs0 = blk0.qs;
+            device const uchar *scales1 = blk1.scales;
+            device const uchar *qh1 = blk1.qh;
+            device const uchar *qs1 = blk1.qs;
+
+            uchar high_bits0 = qh0[simd_lane];
+            uchar high_bits1 = qh1[simd_lane];
+            FOR_UNROLL (uint pair = 0; pair < 4; ++pair) {
+                float2 sm10 = get_scale_min_q4k(pair * 2, scales0);
+                float2 sm20 = get_scale_min_q4k(pair * 2 + 1, scales0);
+                float d10 = d0 * sm10.x, m10 = dmin0 * sm10.y;
+                float d20 = d0 * sm20.x, m20 = dmin0 * sm20.y;
+
+                float2 sm11 = get_scale_min_q4k(pair * 2, scales1);
+                float2 sm21 = get_scale_min_q4k(pair * 2 + 1, scales1);
+                float d11 = d1 * sm11.x, m11 = dmin1 * sm11.y;
+                float d21 = d1 * sm21.x, m21 = dmin1 * sm21.y;
+
+                uchar byte0 = qs0[pair * 32 + simd_lane];
+                float lo_q0 = float(byte0 & 0x0F)
+                    + (((high_bits0 >> (pair * 2)) & 0x01) ? 16.0f : 0.0f);
+                float hi_q0 = float(byte0 >> 4)
+                    + (((high_bits0 >> (pair * 2 + 1)) & 0x01) ? 16.0f : 0.0f);
+
+                uchar byte1 = qs1[pair * 32 + simd_lane];
+                float lo_q1 = float(byte1 & 0x0F)
+                    + (((high_bits1 >> (pair * 2)) & 0x01) ? 16.0f : 0.0f);
+                float hi_q1 = float(byte1 >> 4)
+                    + (((high_bits1 >> (pair * 2 + 1)) & 0x01) ? 16.0f : 0.0f);
+
+                half lo = (pair == 0) ? rx0 : (pair == 1) ? rx2 : (pair == 2) ? rx4 : rx6;
+                half hi = (pair == 0) ? rx1 : (pair == 1) ? rx3 : (pair == 2) ? rx5 : rx7;
+                sumf0[row] += (d10 * lo_q0 - m10) * float(lo);
+                sumf0[row] += (d20 * hi_q0 - m20) * float(hi);
+                sumf1[row] += (d11 * lo_q1 - m11) * float(lo);
+                sumf1[row] += (d21 * hi_q1 - m21) * float(hi);
+            }
+        }
+    }
+
+    float sum00 = simd_sum(sumf0[0]);
+    float sum01 = simd_sum(sumf0[1]);
+    float sum10 = simd_sum(sumf1[0]);
+    float sum11 = simd_sum(sumf1[1]);
+    if (simd_lane == 0) {
+        device float *y0_slot = output0 + slot * M;
+        device float *y1_slot = output1 + slot * M;
+        y0_slot[first_row] = sum00;
+        y1_slot[first_row] = sum10;
+        if (valid1) {
+            y0_slot[first_row + 1] = sum01;
+            y1_slot[first_row + 1] = sum11;
+        }
+    }
+}
+
 kernel void moe_mul_mat_selected_weighted_q5_k_blocked(
     device const Q5_K_Block *weights       [[buffer(0)]],
     device const float *input              [[buffer(1)]],

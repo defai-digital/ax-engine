@@ -299,14 +299,20 @@ fn test_q5_k_candidate_selection_uses_ilp4_when_enabled() {
 }
 
 #[test]
-fn test_q5_k_candidate_selection_can_disable_ilp4() {
-    let mut config = default_dequant_config();
-    config.q5_k_ilp4 = false;
-    let selection = q5_k_matvec_candidate_selection(17, config);
-    // With dimension-aware auto-selection, M=17 picks nr2 (M ≤ 4096).
-    // The key invariant: ilp4 is NOT selected when explicitly disabled.
-    assert_ne!(selection.candidate, MatvecCandidate::Q5KIlp4);
-    assert_eq!(selection.candidate, MatvecCandidate::Q5KNr2);
+fn test_q5_k_candidate_selection_defaults_to_ilp4_for_mid_sized_m() {
+    let selection = q5_k_matvec_candidate_selection(17, default_dequant_config());
+    assert_eq!(selection.candidate, MatvecCandidate::Q5KIlp4);
+    assert_eq!(selection.stability, KernelStabilityTier::Stable);
+    assert_eq!(selection.threadgroups, 9);
+    assert_eq!(selection.threadgroup_width, DEQUANT_MATVEC_Q5K_TG);
+}
+
+#[test]
+fn test_q5_k_candidate_selection_defaults_to_ilp4_for_large_m() {
+    let selection = q5_k_matvec_candidate_selection(4096, default_dequant_config());
+    assert_eq!(selection.candidate, MatvecCandidate::Q5KIlp4);
+    assert_eq!(selection.stability, KernelStabilityTier::Stable);
+    assert_eq!(selection.threadgroups, 2048);
     assert_eq!(selection.threadgroup_width, DEQUANT_MATVEC_Q5K_TG);
 }
 
@@ -324,10 +330,10 @@ fn test_q5_k_candidate_selection_uses_nr2_when_profile_prefers_multi_row() {
     let mut config = default_dequant_config();
     config.q5_k_rows_per_simdgroup = 2;
     config.q5_k_variant = Some(crate::profile::MatvecProfileVariant::Nr2);
-    let selection = q5_k_matvec_candidate_selection(4096, config);
+    let selection = q5_k_matvec_candidate_selection(17, config);
     assert_eq!(selection.candidate, MatvecCandidate::Q5KNr2);
     assert_eq!(selection.stability, KernelStabilityTier::ProfilePreferred);
-    assert_eq!(selection.threadgroups, 1024);
+    assert_eq!(selection.threadgroups, 5);
     assert_eq!(selection.threadgroup_width, DEQUANT_MATVEC_Q5K_TG);
 }
 

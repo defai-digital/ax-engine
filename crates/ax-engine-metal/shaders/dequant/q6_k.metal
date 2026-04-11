@@ -2364,6 +2364,100 @@ kernel void moe_mul_mat_selected_q6_k_matvec(
     }
 }
 
+kernel void moe_mul_mat_selected_q6_k_matvec_nr2(
+    device const Q6_K_Block* weights   [[buffer(0)]],
+    device const float* input          [[buffer(1)]],
+    device const int32_t* selected     [[buffer(2)]],
+    device float* output               [[buffer(3)]],
+    constant uint& M                   [[buffer(4)]],
+    constant uint& K                   [[buffer(5)]],
+    constant uint& n_selected          [[buffer(6)]],
+    constant uint& weight_stride       [[buffer(7)]],
+    constant uint& input_is_slot_major [[buffer(8)]],
+    uint3 tgpig                        [[threadgroup_position_in_grid]],
+    uint simd_lane                     [[thread_index_in_simdgroup]],
+    uint simd_id                       [[simdgroup_index_in_threadgroup]]
+) {
+    if (tgpig.z >= n_selected) return;
+
+    constexpr uchar kmask1 = 0x03;
+    constexpr uchar kmask2 = 0x0C;
+    constexpr uchar kmask3 = 0x30;
+    constexpr uchar kmask4 = 0xC0;
+
+    const uint slot = tgpig.z;
+    const uint expert = uint(selected[slot]);
+    const uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
+    const uint first_row = (tgpig.x * Q6K_NR2_SG_PER_TG + simd_id) * Q6K_NR2_ROWS_PER_SG;
+    if (first_row >= M) return;
+
+    const bool valid1 = (first_row + 1) < M;
+    device const Q6_K_Block* base = weights + expert * weight_stride;
+    device const Q6_K_Block* row0 = base + first_row * blocks_per_row;
+    device const Q6_K_Block* row1 = valid1 ? row0 + blocks_per_row : row0;
+    const uint input_row = input_is_slot_major != 0 ? slot : 0;
+    device const float* x = input + input_row * K;
+
+    float sumf[Q6K_NR2_ROWS_PER_SG] = {0.0f, 0.0f};
+    float yl[16];
+
+    ushort tid = simd_lane / 2;
+    ushort ix = simd_lane % 2;
+    ushort ip = tid / 8;
+    ushort il = tid % 8;
+    ushort l0 = 4 * il;
+    ushort is = 8 * ip + l0 / 16;
+
+    ushort y_offset = 128 * ip + l0;
+    ushort q_offset_l = 64 * ip + l0;
+    ushort q_offset_h = 32 * ip + l0;
+
+    for (uint ib = ix; ib < blocks_per_row; ib += 2) {
+        device const float* xv = x + ib * Q6_K_BLOCK_VALUES + y_offset;
+
+        FOR_UNROLL (ushort l = 0; l < 4; ++l) {
+            yl[4 * l + 0] = xv[l + 0];
+            yl[4 * l + 1] = xv[l + 32];
+            yl[4 * l + 2] = xv[l + 64];
+            yl[4 * l + 3] = xv[l + 96];
+        }
+
+        for (ushort row = 0; row < Q6K_NR2_ROWS_PER_SG; ++row) {
+            device const Q6_K_Block* row_ptr = (row == 0) ? row0 : row1;
+            device const Q6_K_Block& blk = row_ptr[ib];
+            device const uchar* q1 = blk.ql + q_offset_l;
+            device const uchar* q2 = q1 + 32;
+            device const uchar* qh = blk.qh + q_offset_h;
+            device const char* sc = blk.scales + is;
+
+            float4 sums = {0.0f, 0.0f, 0.0f, 0.0f};
+            FOR_UNROLL (ushort l = 0; l < 4; ++l) {
+                sums[0] += yl[4 * l + 0] * ((int8_t)((q1[l] & 0xF) | ((qh[l] & kmask1) << 4)) - 32);
+                sums[1] += yl[4 * l + 1] * ((int8_t)((q2[l] & 0xF) | ((qh[l] & kmask2) << 2)) - 32);
+                sums[2] += yl[4 * l + 2] * ((int8_t)((q1[l]  >> 4) | ((qh[l] & kmask3) << 0)) - 32);
+                sums[3] += yl[4 * l + 3] * ((int8_t)((q2[l]  >> 4) | ((qh[l] & kmask4) >> 2)) - 32);
+            }
+
+            sumf[row] += float(blk.d) * (
+                sums[0] * float(sc[0]) +
+                sums[1] * float(sc[2]) +
+                sums[2] * float(sc[4]) +
+                sums[3] * float(sc[6])
+            );
+        }
+    }
+
+    float sum0 = simd_sum(sumf[0]);
+    float sum1 = simd_sum(sumf[1]);
+    if (simd_lane == 0) {
+        device float* y_slot = output + slot * M;
+        y_slot[first_row] = sum0;
+        if (valid1) {
+            y_slot[first_row + 1] = sum1;
+        }
+    }
+}
+
 kernel void moe_mul_mat_selected_pair_q6_k_matvec(
     device const Q6_K_Block* weights0  [[buffer(0)]],
     device const Q6_K_Block* weights1  [[buffer(1)]],
@@ -2425,6 +2519,130 @@ kernel void moe_mul_mat_selected_pair_q6_k_matvec(
     }
 }
 
+kernel void moe_mul_mat_selected_pair_q6_k_matvec_nr2(
+    device const Q6_K_Block* weights0  [[buffer(0)]],
+    device const Q6_K_Block* weights1  [[buffer(1)]],
+    device const float* input          [[buffer(2)]],
+    device const int32_t* selected     [[buffer(3)]],
+    device float* output0              [[buffer(4)]],
+    device float* output1              [[buffer(5)]],
+    constant uint& M                   [[buffer(6)]],
+    constant uint& K                   [[buffer(7)]],
+    constant uint& n_selected          [[buffer(8)]],
+    constant uint& weight_stride0      [[buffer(9)]],
+    constant uint& weight_stride1      [[buffer(10)]],
+    constant uint& input_is_slot_major [[buffer(11)]],
+    uint3 tgpig                        [[threadgroup_position_in_grid]],
+    uint simd_lane                     [[thread_index_in_simdgroup]],
+    uint simd_id                       [[simdgroup_index_in_threadgroup]]
+) {
+    if (tgpig.z >= n_selected) return;
+
+    constexpr uchar kmask1 = 0x03;
+    constexpr uchar kmask2 = 0x0C;
+    constexpr uchar kmask3 = 0x30;
+    constexpr uchar kmask4 = 0xC0;
+
+    const uint slot = tgpig.z;
+    const uint expert = uint(selected[slot]);
+    const uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
+    const uint first_row = (tgpig.x * Q6K_NR2_SG_PER_TG + simd_id) * Q6K_NR2_ROWS_PER_SG;
+    if (first_row >= M) return;
+
+    const bool valid1 = (first_row + 1) < M;
+    device const Q6_K_Block* base0 = weights0 + expert * weight_stride0;
+    device const Q6_K_Block* row00 = base0 + first_row * blocks_per_row;
+    device const Q6_K_Block* row01 = valid1 ? row00 + blocks_per_row : row00;
+    device const Q6_K_Block* base1 = weights1 + expert * weight_stride1;
+    device const Q6_K_Block* row10 = base1 + first_row * blocks_per_row;
+    device const Q6_K_Block* row11 = valid1 ? row10 + blocks_per_row : row10;
+    const uint input_row = input_is_slot_major != 0 ? slot : 0;
+    device const float* x = input + input_row * K;
+
+    float sumf0[Q6K_NR2_ROWS_PER_SG] = {0.0f, 0.0f};
+    float sumf1[Q6K_NR2_ROWS_PER_SG] = {0.0f, 0.0f};
+    float yl[16];
+
+    ushort tid = simd_lane / 2;
+    ushort ix = simd_lane % 2;
+    ushort ip = tid / 8;
+    ushort il = tid % 8;
+    ushort l0 = 4 * il;
+    ushort is = 8 * ip + l0 / 16;
+
+    ushort y_offset = 128 * ip + l0;
+    ushort q_offset_l = 64 * ip + l0;
+    ushort q_offset_h = 32 * ip + l0;
+
+    for (uint ib = ix; ib < blocks_per_row; ib += 2) {
+        device const float* xv = x + ib * Q6_K_BLOCK_VALUES + y_offset;
+
+        FOR_UNROLL (ushort l = 0; l < 4; ++l) {
+            yl[4 * l + 0] = xv[l + 0];
+            yl[4 * l + 1] = xv[l + 32];
+            yl[4 * l + 2] = xv[l + 64];
+            yl[4 * l + 3] = xv[l + 96];
+        }
+
+        for (ushort row = 0; row < Q6K_NR2_ROWS_PER_SG; ++row) {
+            device const Q6_K_Block& blk0 = ((row == 0) ? row00 : row01)[ib];
+            device const Q6_K_Block& blk1 = ((row == 0) ? row10 : row11)[ib];
+
+            device const uchar* q01 = blk0.ql + q_offset_l;
+            device const uchar* q02 = q01 + 32;
+            device const uchar* q0h = blk0.qh + q_offset_h;
+            device const char* sc0 = blk0.scales + is;
+
+            device const uchar* q11 = blk1.ql + q_offset_l;
+            device const uchar* q12 = q11 + 32;
+            device const uchar* q1h = blk1.qh + q_offset_h;
+            device const char* sc1 = blk1.scales + is;
+
+            float4 sums0 = {0.0f, 0.0f, 0.0f, 0.0f};
+            float4 sums1 = {0.0f, 0.0f, 0.0f, 0.0f};
+            FOR_UNROLL (ushort l = 0; l < 4; ++l) {
+                sums0[0] += yl[4 * l + 0] * ((int8_t)((q01[l] & 0xF) | ((q0h[l] & kmask1) << 4)) - 32);
+                sums0[1] += yl[4 * l + 1] * ((int8_t)((q02[l] & 0xF) | ((q0h[l] & kmask2) << 2)) - 32);
+                sums0[2] += yl[4 * l + 2] * ((int8_t)((q01[l]  >> 4) | ((q0h[l] & kmask3) << 0)) - 32);
+                sums0[3] += yl[4 * l + 3] * ((int8_t)((q02[l]  >> 4) | ((q0h[l] & kmask4) >> 2)) - 32);
+
+                sums1[0] += yl[4 * l + 0] * ((int8_t)((q11[l] & 0xF) | ((q1h[l] & kmask1) << 4)) - 32);
+                sums1[1] += yl[4 * l + 1] * ((int8_t)((q12[l] & 0xF) | ((q1h[l] & kmask2) << 2)) - 32);
+                sums1[2] += yl[4 * l + 2] * ((int8_t)((q11[l]  >> 4) | ((q1h[l] & kmask3) << 0)) - 32);
+                sums1[3] += yl[4 * l + 3] * ((int8_t)((q12[l]  >> 4) | ((q1h[l] & kmask4) >> 2)) - 32);
+            }
+
+            sumf0[row] += float(blk0.d) * (
+                sums0[0] * float(sc0[0]) +
+                sums0[1] * float(sc0[2]) +
+                sums0[2] * float(sc0[4]) +
+                sums0[3] * float(sc0[6])
+            );
+            sumf1[row] += float(blk1.d) * (
+                sums1[0] * float(sc1[0]) +
+                sums1[1] * float(sc1[2]) +
+                sums1[2] * float(sc1[4]) +
+                sums1[3] * float(sc1[6])
+            );
+        }
+    }
+
+    float sum00 = simd_sum(sumf0[0]);
+    float sum01 = simd_sum(sumf0[1]);
+    float sum10 = simd_sum(sumf1[0]);
+    float sum11 = simd_sum(sumf1[1]);
+    if (simd_lane == 0) {
+        device float* y_slot0 = output0 + slot * M;
+        device float* y_slot1 = output1 + slot * M;
+        y_slot0[first_row] = sum00;
+        y_slot1[first_row] = sum10;
+        if (valid1) {
+            y_slot0[first_row + 1] = sum01;
+            y_slot1[first_row + 1] = sum11;
+        }
+    }
+}
+
 kernel void moe_mul_mat_selected_weighted_q6_k_matvec(
     device const Q6_K_Block* weights   [[buffer(0)]],
     device const float* input          [[buffer(1)]],
@@ -2476,6 +2694,107 @@ kernel void moe_mul_mat_selected_weighted_q6_k_matvec(
 
     if (simd_id == 0 && simd_lane == 0) {
         output[row] = acc;
+    }
+}
+
+kernel void moe_mul_mat_selected_weighted_q6_k_matvec_nr2(
+    device const Q6_K_Block* weights   [[buffer(0)]],
+    device const float* input          [[buffer(1)]],
+    device const int32_t* selected     [[buffer(2)]],
+    device const float* expert_weights [[buffer(3)]],
+    device float* output               [[buffer(4)]],
+    constant uint& M                   [[buffer(5)]],
+    constant uint& K                   [[buffer(6)]],
+    constant uint& n_selected          [[buffer(7)]],
+    constant uint& weight_stride       [[buffer(8)]],
+    uint tg_id                         [[threadgroup_position_in_grid]],
+    uint simd_lane                     [[thread_index_in_simdgroup]],
+    uint simd_id                       [[simdgroup_index_in_threadgroup]]
+) {
+    constexpr uchar kmask1 = 0x03;
+    constexpr uchar kmask2 = 0x0C;
+    constexpr uchar kmask3 = 0x30;
+    constexpr uchar kmask4 = 0xC0;
+
+    const uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
+    const uint first_row = (tg_id * Q6K_NR2_SG_PER_TG + simd_id) * Q6K_NR2_ROWS_PER_SG;
+    if (first_row >= M) return;
+
+    const bool valid1 = (first_row + 1) < M;
+    float acc[Q6K_NR2_ROWS_PER_SG] = {0.0f, 0.0f};
+    float yl[16];
+
+    ushort tid = simd_lane / 2;
+    ushort ix = simd_lane % 2;
+    ushort ip = tid / 8;
+    ushort il = tid % 8;
+    ushort l0 = 4 * il;
+    ushort is = 8 * ip + l0 / 16;
+
+    ushort y_offset = 128 * ip + l0;
+    ushort q_offset_l = 64 * ip + l0;
+    ushort q_offset_h = 32 * ip + l0;
+
+    for (uint slot = 0; slot < n_selected; ++slot) {
+        const uint expert = uint(selected[slot]);
+        const float route_weight = expert_weights[slot];
+        device const Q6_K_Block* base = weights + expert * weight_stride;
+        device const Q6_K_Block* row0 = base + first_row * blocks_per_row;
+        device const Q6_K_Block* row1 = valid1 ? row0 + blocks_per_row : row0;
+        device const float* x = input + slot * K;
+
+        float sumf[Q6K_NR2_ROWS_PER_SG] = {0.0f, 0.0f};
+
+        for (uint ib = ix; ib < blocks_per_row; ib += 2) {
+            device const float* xv = x + ib * Q6_K_BLOCK_VALUES + y_offset;
+
+            FOR_UNROLL (ushort l = 0; l < 4; ++l) {
+                yl[4 * l + 0] = xv[l + 0];
+                yl[4 * l + 1] = xv[l + 32];
+                yl[4 * l + 2] = xv[l + 64];
+                yl[4 * l + 3] = xv[l + 96];
+            }
+
+            for (ushort row = 0; row < Q6K_NR2_ROWS_PER_SG; ++row) {
+                device const Q6_K_Block* row_ptr = (row == 0) ? row0 : row1;
+                device const Q6_K_Block& blk = row_ptr[ib];
+                device const uchar* q1 = blk.ql + q_offset_l;
+                device const uchar* q2 = q1 + 32;
+                device const uchar* qh = blk.qh + q_offset_h;
+                device const char* sc = blk.scales + is;
+
+                float4 sums = {0.0f, 0.0f, 0.0f, 0.0f};
+                FOR_UNROLL (ushort l = 0; l < 4; ++l) {
+                    sums[0] += yl[4 * l + 0] * ((int8_t)((q1[l] & 0xF) | ((qh[l] & kmask1) << 4)) - 32);
+                    sums[1] += yl[4 * l + 1] * ((int8_t)((q2[l] & 0xF) | ((qh[l] & kmask2) << 2)) - 32);
+                    sums[2] += yl[4 * l + 2] * ((int8_t)((q1[l]  >> 4) | ((qh[l] & kmask3) << 0)) - 32);
+                    sums[3] += yl[4 * l + 3] * ((int8_t)((q2[l]  >> 4) | ((qh[l] & kmask4) >> 2)) - 32);
+                }
+
+                sumf[row] += float(blk.d) * (
+                    sums[0] * float(sc[0]) +
+                    sums[1] * float(sc[2]) +
+                    sums[2] * float(sc[4]) +
+                    sums[3] * float(sc[6])
+                );
+            }
+        }
+
+        float sum0 = simd_sum(sumf[0]);
+        float sum1 = simd_sum(sumf[1]);
+        if (simd_lane == 0) {
+            acc[0] += route_weight * sum0;
+            if (valid1) {
+                acc[1] += route_weight * sum1;
+            }
+        }
+    }
+
+    if (simd_lane == 0) {
+        output[first_row] = acc[0];
+        if (valid1) {
+            output[first_row + 1] = acc[1];
+        }
     }
 }
 

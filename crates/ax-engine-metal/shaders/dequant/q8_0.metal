@@ -1372,6 +1372,194 @@ kernel void moe_mul_mat_selected_q8_0_matvec(
     }
 }
 
+kernel void moe_mul_mat_selected_q8_0_matvec_nr2(
+    device const Q8_0_Block* weights   [[buffer(0)]],
+    device const float* input          [[buffer(1)]],
+    device const int32_t* selected     [[buffer(2)]],
+    device float* output               [[buffer(3)]],
+    constant uint& M                   [[buffer(4)]],
+    constant uint& K                   [[buffer(5)]],
+    constant uint& n_selected          [[buffer(6)]],
+    constant uint& weight_stride       [[buffer(7)]],
+    constant uint& input_is_slot_major [[buffer(8)]],
+    uint3 tgpig                        [[threadgroup_position_in_grid]],
+    uint simd_lane                     [[thread_index_in_simdgroup]],
+    uint simd_id                       [[simdgroup_index_in_threadgroup]]
+) {
+    if (tgpig.z >= n_selected) return;
+
+    const uint slot = tgpig.z;
+    const uint expert = uint(selected[slot]);
+    const uint first_row = (tgpig.x * Q8_0_NR2_SG_PER_TG + simd_id) * Q8_0_NR2_ROWS_PER_SG;
+    if (first_row >= M) return;
+
+    const uint blocks_per_row = K / Q8_0_BLOCK_VALUES;
+    const bool valid1 = (first_row + 1) < M;
+    device const Q8_0_Block* base = weights + expert * weight_stride;
+    device const Q8_0_Block* row0 = base + first_row * blocks_per_row;
+    device const Q8_0_Block* row1 = valid1 ? row0 + blocks_per_row : row0;
+    const uint input_row = input_is_slot_major != 0 ? slot : 0;
+    device const float* x = input + input_row * K;
+
+    float sumf0 = 0.0f;
+    float sumf1 = 0.0f;
+
+    for (uint ib = 0; ib < blocks_per_row; ib++) {
+        float xv = x[ib * Q8_0_BLOCK_VALUES + simd_lane];
+
+        float d0 = float(row0[ib].d);
+        int q0 = int(row0[ib].qs[simd_lane]);
+        sumf0 += d0 * float(q0) * xv;
+
+        float d1 = float(row1[ib].d);
+        int q1 = int(row1[ib].qs[simd_lane]);
+        sumf1 += d1 * float(q1) * xv;
+    }
+
+    float sum0 = simd_sum(sumf0);
+    float sum1 = simd_sum(sumf1);
+    if (simd_lane == 0) {
+        device float* y_slot = output + slot * M;
+        y_slot[first_row] = sum0;
+        if (valid1) {
+            y_slot[first_row + 1] = sum1;
+        }
+    }
+}
+
+kernel void moe_mul_mat_selected_pair_q8_0_matvec(
+    device const Q8_0_Block* weights0  [[buffer(0)]],
+    device const Q8_0_Block* weights1  [[buffer(1)]],
+    device const float* input          [[buffer(2)]],
+    device const int32_t* selected     [[buffer(3)]],
+    device float* output0              [[buffer(4)]],
+    device float* output1              [[buffer(5)]],
+    constant uint& M                   [[buffer(6)]],
+    constant uint& K                   [[buffer(7)]],
+    constant uint& n_selected          [[buffer(8)]],
+    constant uint& weight_stride0      [[buffer(9)]],
+    constant uint& weight_stride1      [[buffer(10)]],
+    constant uint& input_is_slot_major [[buffer(11)]],
+    uint3 tgpig                        [[threadgroup_position_in_grid]],
+    uint simd_lane                     [[thread_index_in_simdgroup]],
+    uint simd_id                       [[simdgroup_index_in_threadgroup]]
+) {
+    if (tgpig.z >= n_selected || tgpig.x >= M) return;
+
+    const uint slot = tgpig.z;
+    const uint expert = uint(selected[slot]);
+    const uint row = tgpig.x;
+    const uint input_row = input_is_slot_major != 0 ? slot : 0;
+    const uint blocks_per_row = K / Q8_0_BLOCK_VALUES;
+    constexpr uint num_simd_groups = DEQUANT_MATVEC_TG / 32;
+    threadgroup float simd_sums0[num_simd_groups];
+    threadgroup float simd_sums1[num_simd_groups];
+
+    device const Q8_0_Block* a_row0 =
+        weights0 + expert * weight_stride0 + row * blocks_per_row;
+    device const Q8_0_Block* a_row1 =
+        weights1 + expert * weight_stride1 + row * blocks_per_row;
+    device const float* x = input + input_row * K;
+
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+    for (uint b = simd_id; b < blocks_per_row; b += num_simd_groups) {
+        float d0 = (simd_lane == 0) ? float(a_row0[b].d) : 0.0f;
+        float d1 = (simd_lane == 0) ? float(a_row1[b].d) : 0.0f;
+        d0 = simd_broadcast(d0, 0);
+        d1 = simd_broadcast(d1, 0);
+
+        uint base = b * Q8_0_BLOCK_VALUES;
+        float xv = x[base + simd_lane];
+        sum0 += d0 * float(int(a_row0[b].qs[simd_lane])) * xv;
+        sum1 += d1 * float(int(a_row1[b].qs[simd_lane])) * xv;
+    }
+
+    sum0 = simd_sum(sum0);
+    sum1 = simd_sum(sum1);
+    if (simd_lane == 0) {
+        simd_sums0[simd_id] = sum0;
+        simd_sums1[simd_id] = sum1;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd_id == 0) {
+        float row_sum0 = (simd_lane < num_simd_groups) ? simd_sums0[simd_lane] : 0.0f;
+        float row_sum1 = (simd_lane < num_simd_groups) ? simd_sums1[simd_lane] : 0.0f;
+        row_sum0 = simd_sum(row_sum0);
+        row_sum1 = simd_sum(row_sum1);
+        if (simd_lane == 0) {
+            output0[slot * M + row] = row_sum0;
+            output1[slot * M + row] = row_sum1;
+        }
+    }
+}
+
+kernel void moe_mul_mat_selected_pair_q8_0_matvec_nr2(
+    device const Q8_0_Block* weights0  [[buffer(0)]],
+    device const Q8_0_Block* weights1  [[buffer(1)]],
+    device const float* input          [[buffer(2)]],
+    device const int32_t* selected     [[buffer(3)]],
+    device float* output0              [[buffer(4)]],
+    device float* output1              [[buffer(5)]],
+    constant uint& M                   [[buffer(6)]],
+    constant uint& K                   [[buffer(7)]],
+    constant uint& n_selected          [[buffer(8)]],
+    constant uint& weight_stride0      [[buffer(9)]],
+    constant uint& weight_stride1      [[buffer(10)]],
+    constant uint& input_is_slot_major [[buffer(11)]],
+    uint3 tgpig                        [[threadgroup_position_in_grid]],
+    uint simd_lane                     [[thread_index_in_simdgroup]],
+    uint simd_id                       [[simdgroup_index_in_threadgroup]]
+) {
+    if (tgpig.z >= n_selected) return;
+
+    const uint slot = tgpig.z;
+    const uint expert = uint(selected[slot]);
+    const uint first_row = (tgpig.x * Q8_0_NR2_SG_PER_TG + simd_id) * Q8_0_NR2_ROWS_PER_SG;
+    if (first_row >= M) return;
+
+    const uint blocks_per_row = K / Q8_0_BLOCK_VALUES;
+    const bool valid1 = (first_row + 1) < M;
+    device const Q8_0_Block* base0 = weights0 + expert * weight_stride0;
+    device const Q8_0_Block* row00 = base0 + first_row * blocks_per_row;
+    device const Q8_0_Block* row01 = valid1 ? row00 + blocks_per_row : row00;
+    device const Q8_0_Block* base1 = weights1 + expert * weight_stride1;
+    device const Q8_0_Block* row10 = base1 + first_row * blocks_per_row;
+    device const Q8_0_Block* row11 = valid1 ? row10 + blocks_per_row : row10;
+    const uint input_row = input_is_slot_major != 0 ? slot : 0;
+    device const float* x = input + input_row * K;
+
+    float sum00 = 0.0f;
+    float sum01 = 0.0f;
+    float sum10 = 0.0f;
+    float sum11 = 0.0f;
+
+    for (uint ib = 0; ib < blocks_per_row; ib++) {
+        float xv = x[ib * Q8_0_BLOCK_VALUES + simd_lane];
+
+        sum00 += float(row00[ib].d) * float(int(row00[ib].qs[simd_lane])) * xv;
+        sum01 += float(row01[ib].d) * float(int(row01[ib].qs[simd_lane])) * xv;
+        sum10 += float(row10[ib].d) * float(int(row10[ib].qs[simd_lane])) * xv;
+        sum11 += float(row11[ib].d) * float(int(row11[ib].qs[simd_lane])) * xv;
+    }
+
+    float row00_sum = simd_sum(sum00);
+    float row01_sum = simd_sum(sum01);
+    float row10_sum = simd_sum(sum10);
+    float row11_sum = simd_sum(sum11);
+    if (simd_lane == 0) {
+        device float* y_slot0 = output0 + slot * M;
+        device float* y_slot1 = output1 + slot * M;
+        y_slot0[first_row] = row00_sum;
+        y_slot1[first_row] = row10_sum;
+        if (valid1) {
+            y_slot0[first_row + 1] = row01_sum;
+            y_slot1[first_row + 1] = row11_sum;
+        }
+    }
+}
+
 kernel void moe_mul_mat_selected_weighted_q8_0_matvec(
     device const Q8_0_Block* weights   [[buffer(0)]],
     device const float* input          [[buffer(1)]],
@@ -1428,6 +1616,62 @@ kernel void moe_mul_mat_selected_weighted_q8_0_matvec(
 
     if (simd_id == 0 && simd_lane == 0) {
         output[row] = acc;
+    }
+}
+
+kernel void moe_mul_mat_selected_weighted_q8_0_matvec_nr2(
+    device const Q8_0_Block* weights   [[buffer(0)]],
+    device const float* input          [[buffer(1)]],
+    device const int32_t* selected     [[buffer(2)]],
+    device const float* expert_weights [[buffer(3)]],
+    device float* output               [[buffer(4)]],
+    constant uint& M                   [[buffer(5)]],
+    constant uint& K                   [[buffer(6)]],
+    constant uint& n_selected          [[buffer(7)]],
+    constant uint& weight_stride       [[buffer(8)]],
+    uint tg_id                         [[threadgroup_position_in_grid]],
+    uint simd_lane                     [[thread_index_in_simdgroup]],
+    uint simd_id                       [[simdgroup_index_in_threadgroup]]
+) {
+    const uint first_row = (tg_id * Q8_0_NR2_SG_PER_TG + simd_id) * Q8_0_NR2_ROWS_PER_SG;
+    if (first_row >= M) return;
+
+    const uint blocks_per_row = K / Q8_0_BLOCK_VALUES;
+    const bool valid1 = (first_row + 1) < M;
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+
+    for (uint slot = 0; slot < n_selected; ++slot) {
+        const uint expert = uint(selected[slot]);
+        const float route_weight = expert_weights[slot];
+        device const Q8_0_Block* base = weights + expert * weight_stride;
+        device const Q8_0_Block* row0 = base + first_row * blocks_per_row;
+        device const Q8_0_Block* row1 = valid1 ? row0 + blocks_per_row : row0;
+        device const float* x = input + slot * K;
+
+        float sumf0 = 0.0f;
+        float sumf1 = 0.0f;
+        for (uint ib = 0; ib < blocks_per_row; ib++) {
+            float xv = x[ib * Q8_0_BLOCK_VALUES + simd_lane];
+            sumf0 += float(row0[ib].d) * float(int(row0[ib].qs[simd_lane])) * xv;
+            sumf1 += float(row1[ib].d) * float(int(row1[ib].qs[simd_lane])) * xv;
+        }
+
+        float slot_sum0 = simd_sum(sumf0);
+        float slot_sum1 = simd_sum(sumf1);
+        if (simd_lane == 0) {
+            acc0 += route_weight * slot_sum0;
+            if (valid1) {
+                acc1 += route_weight * slot_sum1;
+            }
+        }
+    }
+
+    if (simd_lane == 0) {
+        output[first_row] = acc0;
+        if (valid1) {
+            output[first_row + 1] = acc1;
+        }
     }
 }
 

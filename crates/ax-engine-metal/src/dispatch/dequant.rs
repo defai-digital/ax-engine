@@ -346,12 +346,20 @@ pub struct DequantKernels {
     pub moe_mul_mat_selected_q5_k_blocked: ComputePipeline,
     pub moe_mul_mat_selected_q5_k_matvec: ComputePipeline,
     pub moe_mul_mat_selected_pair_q5_k_blocked: ComputePipeline,
+    pub moe_mul_mat_selected_pair_q5_k_matvec: ComputePipeline,
     pub moe_mul_mat_selected_weighted_q5_k_blocked: ComputePipeline,
     pub moe_mul_mat_selected_pair_q6_k_matvec: ComputePipeline,
+    pub moe_mul_mat_selected_pair_q6_k_matvec_nr2: ComputePipeline,
     pub moe_mul_mat_selected_q6_k_matvec: ComputePipeline,
+    pub moe_mul_mat_selected_q6_k_matvec_nr2: ComputePipeline,
     pub moe_mul_mat_selected_weighted_q6_k_matvec: ComputePipeline,
+    pub moe_mul_mat_selected_weighted_q6_k_matvec_nr2: ComputePipeline,
+    pub moe_mul_mat_selected_pair_q8_0_matvec: ComputePipeline,
+    pub moe_mul_mat_selected_pair_q8_0_matvec_nr2: ComputePipeline,
     pub moe_mul_mat_selected_q8_0_matvec: ComputePipeline,
+    pub moe_mul_mat_selected_q8_0_matvec_nr2: ComputePipeline,
     pub moe_mul_mat_selected_weighted_q8_0_matvec: ComputePipeline,
+    pub moe_mul_mat_selected_weighted_q8_0_matvec_nr2: ComputePipeline,
     pub moe_fused_silu_down_selected_weighted_q5_k_matvec: ComputePipeline,
     pub moe_fused_silu_down_selected_weighted_q5_k_matvec_slots8: ComputePipeline,
     pub moe_fused_silu_down_selected_weighted_q5_k_matvec_nr2: ComputePipeline,
@@ -476,6 +484,230 @@ impl DequantKernels {
             selection.threadgroup_width,
             pipeline,
         )
+    }
+
+    fn q6_k_selected_matvec_dispatch_with_config(
+        &self,
+        m: u32,
+        config: DequantDispatchConfig,
+    ) -> (
+        usize,
+        usize,
+        &ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
+    ) {
+        let selection = q6_k_matvec_candidate_selection(m, config);
+        match selection.candidate {
+            MatvecCandidate::Q6KBase => (
+                selection.threadgroups,
+                selection.threadgroup_width,
+                self.moe_mul_mat_selected_q6_k_matvec.state(),
+            ),
+            MatvecCandidate::Q6KNr2 => (
+                selection.threadgroups,
+                selection.threadgroup_width,
+                self.moe_mul_mat_selected_q6_k_matvec_nr2.state(),
+            ),
+            MatvecCandidate::Q6KIlp4 => {
+                unreachable!("q6_k ilp4 is disabled in candidate selection")
+            }
+            MatvecCandidate::Q4KBase
+            | MatvecCandidate::Q4KNr2
+            | MatvecCandidate::Q4KIlp4
+            | MatvecCandidate::Q5KBase
+            | MatvecCandidate::Q5KIlp4
+            | MatvecCandidate::Q5KNr2
+            | MatvecCandidate::Q8_0Base
+            | MatvecCandidate::Q8_0Nr2
+            | MatvecCandidate::Q8_0Ilp4 => unreachable!(),
+        }
+    }
+
+    fn q6_k_selected_pair_matvec_dispatch_with_config(
+        &self,
+        m: u32,
+        config: DequantDispatchConfig,
+    ) -> (
+        usize,
+        usize,
+        &ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
+    ) {
+        let selection = q6_k_matvec_candidate_selection(m, config);
+        match selection.candidate {
+            MatvecCandidate::Q6KBase => (
+                selection.threadgroups,
+                selection.threadgroup_width,
+                self.moe_mul_mat_selected_pair_q6_k_matvec.state(),
+            ),
+            MatvecCandidate::Q6KNr2 => (
+                selection.threadgroups,
+                selection.threadgroup_width,
+                self.moe_mul_mat_selected_pair_q6_k_matvec_nr2.state(),
+            ),
+            MatvecCandidate::Q6KIlp4 => {
+                unreachable!("q6_k ilp4 is disabled in candidate selection")
+            }
+            MatvecCandidate::Q4KBase
+            | MatvecCandidate::Q4KNr2
+            | MatvecCandidate::Q4KIlp4
+            | MatvecCandidate::Q5KBase
+            | MatvecCandidate::Q5KIlp4
+            | MatvecCandidate::Q5KNr2
+            | MatvecCandidate::Q8_0Base
+            | MatvecCandidate::Q8_0Nr2
+            | MatvecCandidate::Q8_0Ilp4 => unreachable!(),
+        }
+    }
+
+    fn q6_k_selected_weighted_matvec_dispatch_with_config(
+        &self,
+        m: u32,
+        config: DequantDispatchConfig,
+    ) -> (
+        usize,
+        usize,
+        &ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
+    ) {
+        let selection = q6_k_matvec_candidate_selection(m, config);
+        match selection.candidate {
+            MatvecCandidate::Q6KBase => (
+                selection.threadgroups,
+                selection.threadgroup_width,
+                self.moe_mul_mat_selected_weighted_q6_k_matvec.state(),
+            ),
+            MatvecCandidate::Q6KNr2 => (
+                selection.threadgroups,
+                selection.threadgroup_width,
+                self.moe_mul_mat_selected_weighted_q6_k_matvec_nr2.state(),
+            ),
+            MatvecCandidate::Q6KIlp4 => {
+                unreachable!("q6_k ilp4 is disabled in candidate selection")
+            }
+            MatvecCandidate::Q4KBase
+            | MatvecCandidate::Q4KNr2
+            | MatvecCandidate::Q4KIlp4
+            | MatvecCandidate::Q5KBase
+            | MatvecCandidate::Q5KIlp4
+            | MatvecCandidate::Q5KNr2
+            | MatvecCandidate::Q8_0Base
+            | MatvecCandidate::Q8_0Nr2
+            | MatvecCandidate::Q8_0Ilp4 => unreachable!(),
+        }
+    }
+
+    fn q8_0_selected_matvec_dispatch_with_config(
+        &self,
+        m: u32,
+        config: DequantDispatchConfig,
+    ) -> (
+        usize,
+        usize,
+        &ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
+    ) {
+        let selection = q8_0_matvec_candidate_selection(m, config);
+        match selection.candidate {
+            MatvecCandidate::Q8_0Base => (
+                selection.threadgroups,
+                selection.threadgroup_width,
+                self.moe_mul_mat_selected_q8_0_matvec.state(),
+            ),
+            MatvecCandidate::Q8_0Nr2 => (
+                selection.threadgroups,
+                selection.threadgroup_width,
+                self.moe_mul_mat_selected_q8_0_matvec_nr2.state(),
+            ),
+            // Keep the selected path on the stable implementations until a
+            // selected-ilp4 routed kernel exists.
+            MatvecCandidate::Q8_0Ilp4 => (
+                m as usize,
+                DEQUANT_MATVEC_TG,
+                self.moe_mul_mat_selected_q8_0_matvec.state(),
+            ),
+            MatvecCandidate::Q4KBase
+            | MatvecCandidate::Q4KNr2
+            | MatvecCandidate::Q4KIlp4
+            | MatvecCandidate::Q5KBase
+            | MatvecCandidate::Q5KIlp4
+            | MatvecCandidate::Q5KNr2
+            | MatvecCandidate::Q6KBase
+            | MatvecCandidate::Q6KNr2
+            | MatvecCandidate::Q6KIlp4 => unreachable!(),
+        }
+    }
+
+    fn q8_0_selected_pair_matvec_dispatch_with_config(
+        &self,
+        m: u32,
+        config: DequantDispatchConfig,
+    ) -> (
+        usize,
+        usize,
+        &ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
+    ) {
+        let selection = q8_0_matvec_candidate_selection(m, config);
+        match selection.candidate {
+            MatvecCandidate::Q8_0Base => (
+                selection.threadgroups,
+                selection.threadgroup_width,
+                self.moe_mul_mat_selected_pair_q8_0_matvec.state(),
+            ),
+            MatvecCandidate::Q8_0Nr2 => (
+                selection.threadgroups,
+                selection.threadgroup_width,
+                self.moe_mul_mat_selected_pair_q8_0_matvec_nr2.state(),
+            ),
+            MatvecCandidate::Q8_0Ilp4 => (
+                m as usize,
+                DEQUANT_MATVEC_TG,
+                self.moe_mul_mat_selected_pair_q8_0_matvec.state(),
+            ),
+            MatvecCandidate::Q4KBase
+            | MatvecCandidate::Q4KNr2
+            | MatvecCandidate::Q4KIlp4
+            | MatvecCandidate::Q5KBase
+            | MatvecCandidate::Q5KIlp4
+            | MatvecCandidate::Q5KNr2
+            | MatvecCandidate::Q6KBase
+            | MatvecCandidate::Q6KNr2
+            | MatvecCandidate::Q6KIlp4 => unreachable!(),
+        }
+    }
+
+    fn q8_0_selected_weighted_matvec_dispatch_with_config(
+        &self,
+        m: u32,
+        config: DequantDispatchConfig,
+    ) -> (
+        usize,
+        usize,
+        &ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
+    ) {
+        let selection = q8_0_matvec_candidate_selection(m, config);
+        match selection.candidate {
+            MatvecCandidate::Q8_0Base => (
+                selection.threadgroups,
+                selection.threadgroup_width,
+                self.moe_mul_mat_selected_weighted_q8_0_matvec.state(),
+            ),
+            MatvecCandidate::Q8_0Nr2 => (
+                selection.threadgroups,
+                selection.threadgroup_width,
+                self.moe_mul_mat_selected_weighted_q8_0_matvec_nr2.state(),
+            ),
+            MatvecCandidate::Q8_0Ilp4 => (
+                m as usize,
+                DEQUANT_MATVEC_TG,
+                self.moe_mul_mat_selected_weighted_q8_0_matvec.state(),
+            ),
+            MatvecCandidate::Q4KBase
+            | MatvecCandidate::Q4KNr2
+            | MatvecCandidate::Q4KIlp4
+            | MatvecCandidate::Q5KBase
+            | MatvecCandidate::Q5KIlp4
+            | MatvecCandidate::Q5KNr2
+            | MatvecCandidate::Q6KBase
+            | MatvecCandidate::Q6KNr2
+            | MatvecCandidate::Q6KIlp4 => unreachable!(),
+        }
     }
 
     /// Compile dequant kernels from embedded Metal source.
@@ -1294,6 +1526,12 @@ impl DequantKernels {
                 "moe_mul_mat_selected_pair_q5_k_blocked",
             )
             .context("Failed to compile moe_mul_mat_selected_pair_q5_k_blocked kernel")?,
+            moe_mul_mat_selected_pair_q5_k_matvec: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_pair_q5_k_matvec",
+            )
+            .context("Failed to compile moe_mul_mat_selected_pair_q5_k_matvec kernel")?,
             moe_mul_mat_selected_weighted_q5_k_blocked: ComputePipeline::from_source(
                 device.device(),
                 DEQUANT_SHADER_SRC,
@@ -1306,30 +1544,72 @@ impl DequantKernels {
                 "moe_mul_mat_selected_pair_q6_k_matvec",
             )
             .context("Failed to compile moe_mul_mat_selected_pair_q6_k_matvec kernel")?,
+            moe_mul_mat_selected_pair_q6_k_matvec_nr2: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_pair_q6_k_matvec_nr2",
+            )
+            .context("Failed to compile moe_mul_mat_selected_pair_q6_k_matvec_nr2 kernel")?,
             moe_mul_mat_selected_q6_k_matvec: ComputePipeline::from_source(
                 device.device(),
                 DEQUANT_SHADER_SRC,
                 "moe_mul_mat_selected_q6_k_matvec",
             )
             .context("Failed to compile moe_mul_mat_selected_q6_k_matvec kernel")?,
+            moe_mul_mat_selected_q6_k_matvec_nr2: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_q6_k_matvec_nr2",
+            )
+            .context("Failed to compile moe_mul_mat_selected_q6_k_matvec_nr2 kernel")?,
             moe_mul_mat_selected_weighted_q6_k_matvec: ComputePipeline::from_source(
                 device.device(),
                 DEQUANT_SHADER_SRC,
                 "moe_mul_mat_selected_weighted_q6_k_matvec",
             )
             .context("Failed to compile moe_mul_mat_selected_weighted_q6_k_matvec kernel")?,
+            moe_mul_mat_selected_weighted_q6_k_matvec_nr2: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_weighted_q6_k_matvec_nr2",
+            )
+            .context("Failed to compile moe_mul_mat_selected_weighted_q6_k_matvec_nr2 kernel")?,
+            moe_mul_mat_selected_pair_q8_0_matvec: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_pair_q8_0_matvec",
+            )
+            .context("Failed to compile moe_mul_mat_selected_pair_q8_0_matvec kernel")?,
+            moe_mul_mat_selected_pair_q8_0_matvec_nr2: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_pair_q8_0_matvec_nr2",
+            )
+            .context("Failed to compile moe_mul_mat_selected_pair_q8_0_matvec_nr2 kernel")?,
             moe_mul_mat_selected_q8_0_matvec: ComputePipeline::from_source(
                 device.device(),
                 DEQUANT_SHADER_SRC,
                 "moe_mul_mat_selected_q8_0_matvec",
             )
             .context("Failed to compile moe_mul_mat_selected_q8_0_matvec kernel")?,
+            moe_mul_mat_selected_q8_0_matvec_nr2: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_q8_0_matvec_nr2",
+            )
+            .context("Failed to compile moe_mul_mat_selected_q8_0_matvec_nr2 kernel")?,
             moe_mul_mat_selected_weighted_q8_0_matvec: ComputePipeline::from_source(
                 device.device(),
                 DEQUANT_SHADER_SRC,
                 "moe_mul_mat_selected_weighted_q8_0_matvec",
             )
             .context("Failed to compile moe_mul_mat_selected_weighted_q8_0_matvec kernel")?,
+            moe_mul_mat_selected_weighted_q8_0_matvec_nr2: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_weighted_q8_0_matvec_nr2",
+            )
+            .context("Failed to compile moe_mul_mat_selected_weighted_q8_0_matvec_nr2 kernel")?,
             moe_fused_silu_down_selected_weighted_q5_k_matvec: ComputePipeline::from_source(
                 device.device(),
                 DEQUANT_SHADER_SRC,
@@ -5151,8 +5431,16 @@ impl DequantKernels {
         weight_stride0: u32,
         weight_stride1: u32,
         input_is_slot_major: bool,
+        use_matvec_kernel: bool,
     ) {
-        crate::set_pipeline_cached(encoder, self.moe_mul_mat_selected_pair_q5_k_blocked.state());
+        crate::set_pipeline_cached(
+            encoder,
+            if use_matvec_kernel {
+                self.moe_mul_mat_selected_pair_q5_k_matvec.state()
+            } else {
+                self.moe_mul_mat_selected_pair_q5_k_blocked.state()
+            },
+        );
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights0.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(weights1.mtl_buffer()), 0, 1);
@@ -5167,19 +5455,35 @@ impl DequantKernels {
         bind_u32(encoder, 9, weight_stride0);
         bind_u32(encoder, 10, weight_stride1);
         bind_u32(encoder, 11, u32::from(input_is_slot_major));
-        unsafe {
-            encoder.setThreadgroupMemoryLength_atIndex(8192usize, 0);
-        }
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            MTLSize {
-                width: 1,
-                height: (m as usize).div_ceil(64),
-                depth: n_selected as usize,
+            if use_matvec_kernel {
+                MTLSize {
+                    width: (m as usize).div_ceil(Q5K_NR2_ROWS),
+                    height: 1,
+                    depth: n_selected as usize,
+                }
+            } else {
+                MTLSize {
+                    width: 1,
+                    height: (m as usize).div_ceil(64),
+                    depth: n_selected as usize,
+                }
             },
-            MTLSize {
-                width: 128,
-                height: 1,
-                depth: 1,
+            if use_matvec_kernel {
+                MTLSize {
+                    width: DEQUANT_MATVEC_Q5K_TG,
+                    height: 1,
+                    depth: 1,
+                }
+            } else {
+                unsafe {
+                    encoder.setThreadgroupMemoryLength_atIndex(8192usize, 0);
+                }
+                MTLSize {
+                    width: 128,
+                    height: 1,
+                    depth: 1,
+                }
             },
         );
     }
@@ -5200,8 +5504,11 @@ impl DequantKernels {
         weight_stride0: u32,
         weight_stride1: u32,
         input_is_slot_major: bool,
+        config: DequantDispatchConfig,
     ) {
-        crate::set_pipeline_cached(encoder, self.moe_mul_mat_selected_pair_q6_k_matvec.state());
+        let (threadgroups, threadgroup_width, pipeline) =
+            self.q6_k_selected_pair_matvec_dispatch_with_config(m, config);
+        crate::set_pipeline_cached(encoder, pipeline);
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights0.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(weights1.mtl_buffer()), 0, 1);
@@ -5218,12 +5525,12 @@ impl DequantKernels {
         bind_u32(encoder, 11, u32::from(input_is_slot_major));
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
-                width: m as usize,
+                width: threadgroups,
                 height: 1,
                 depth: n_selected as usize,
             },
             MTLSize {
-                width: DEQUANT_MATVEC_TG,
+                width: threadgroup_width,
                 height: 1,
                 depth: 1,
             },
@@ -5289,8 +5596,11 @@ impl DequantKernels {
         n_selected: u32,
         weight_stride: u32,
         input_is_slot_major: bool,
+        config: DequantDispatchConfig,
     ) {
-        crate::set_pipeline_cached(encoder, self.moe_mul_mat_selected_q6_k_matvec.state());
+        let (threadgroups, threadgroup_width, pipeline) =
+            self.q6_k_selected_matvec_dispatch_with_config(m, config);
+        crate::set_pipeline_cached(encoder, pipeline);
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
@@ -5304,12 +5614,12 @@ impl DequantKernels {
         bind_u32(encoder, 8, u32::from(input_is_slot_major));
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
-                width: m as usize,
+                width: threadgroups,
                 height: 1,
                 depth: n_selected as usize,
             },
             MTLSize {
-                width: DEQUANT_MATVEC_TG,
+                width: threadgroup_width,
                 height: 1,
                 depth: 1,
             },
@@ -5329,12 +5639,11 @@ impl DequantKernels {
         k: u32,
         n_selected: u32,
         weight_stride: u32,
+        config: DequantDispatchConfig,
     ) {
-        let dims = DispatchDims::d1(m as usize, 1);
-        crate::set_pipeline_cached(
-            encoder,
-            self.moe_mul_mat_selected_weighted_q6_k_matvec.state(),
-        );
+        let (threadgroups, threadgroup_width, pipeline) =
+            self.q6_k_selected_weighted_matvec_dispatch_with_config(m, config);
+        crate::set_pipeline_cached(encoder, pipeline);
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
@@ -5347,9 +5656,62 @@ impl DequantKernels {
         bind_u32(encoder, 7, n_selected);
         bind_u32(encoder, 8, weight_stride);
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            dims.threadgroups,
             MTLSize {
-                width: DEQUANT_MATVEC_TG,
+                width: threadgroups,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: threadgroup_width,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_moe_mul_mat_selected_pair_q8_0(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        weights0: &MetalBuffer,
+        weights1: &MetalBuffer,
+        input: &MetalBuffer,
+        selected_experts: &MetalBuffer,
+        output0: &MetalBuffer,
+        output1: &MetalBuffer,
+        m: u32,
+        k: u32,
+        n_selected: u32,
+        weight_stride0: u32,
+        weight_stride1: u32,
+        input_is_slot_major: bool,
+        config: DequantDispatchConfig,
+    ) {
+        let (threadgroups, threadgroup_width, pipeline) =
+            self.q8_0_selected_pair_matvec_dispatch_with_config(m, config);
+        crate::set_pipeline_cached(encoder, pipeline);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(weights0.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(weights1.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(selected_experts.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(output0.mtl_buffer()), 0, 4);
+            encoder.setBuffer_offset_atIndex(Some(output1.mtl_buffer()), 0, 5);
+        }
+        bind_u32(encoder, 6, m);
+        bind_u32(encoder, 7, k);
+        bind_u32(encoder, 8, n_selected);
+        bind_u32(encoder, 9, weight_stride0);
+        bind_u32(encoder, 10, weight_stride1);
+        bind_u32(encoder, 11, u32::from(input_is_slot_major));
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: threadgroups,
+                height: 1,
+                depth: n_selected as usize,
+            },
+            MTLSize {
+                width: threadgroup_width,
                 height: 1,
                 depth: 1,
             },
@@ -5369,8 +5731,11 @@ impl DequantKernels {
         n_selected: u32,
         weight_stride: u32,
         input_is_slot_major: bool,
+        config: DequantDispatchConfig,
     ) {
-        crate::set_pipeline_cached(encoder, self.moe_mul_mat_selected_q8_0_matvec.state());
+        let (threadgroups, threadgroup_width, pipeline) =
+            self.q8_0_selected_matvec_dispatch_with_config(m, config);
+        crate::set_pipeline_cached(encoder, pipeline);
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
@@ -5384,12 +5749,12 @@ impl DequantKernels {
         bind_u32(encoder, 8, u32::from(input_is_slot_major));
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
-                width: m as usize,
+                width: threadgroups,
                 height: 1,
                 depth: n_selected as usize,
             },
             MTLSize {
-                width: DEQUANT_MATVEC_TG,
+                width: threadgroup_width,
                 height: 1,
                 depth: 1,
             },
@@ -5409,12 +5774,11 @@ impl DequantKernels {
         k: u32,
         n_selected: u32,
         weight_stride: u32,
+        config: DequantDispatchConfig,
     ) {
-        let dims = DispatchDims::d1(m as usize, 1);
-        crate::set_pipeline_cached(
-            encoder,
-            self.moe_mul_mat_selected_weighted_q8_0_matvec.state(),
-        );
+        let (threadgroups, threadgroup_width, pipeline) =
+            self.q8_0_selected_weighted_matvec_dispatch_with_config(m, config);
+        crate::set_pipeline_cached(encoder, pipeline);
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
@@ -5427,9 +5791,13 @@ impl DequantKernels {
         bind_u32(encoder, 7, n_selected);
         bind_u32(encoder, 8, weight_stride);
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            dims.threadgroups,
             MTLSize {
-                width: DEQUANT_MATVEC_TG,
+                width: threadgroups,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: threadgroup_width,
                 height: 1,
                 depth: 1,
             },
