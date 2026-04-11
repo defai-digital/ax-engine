@@ -4736,7 +4736,9 @@ impl DequantKernels {
         n_active_experts: u32,
         input_is_hid: bool,
     ) {
-        crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q6_k_blocked.state());
+        // Use f32-tile kernel — the blocked (half) kernel overflows when the MoE
+        // down projection input (SiLU*up) exceeds half max (65504).
+        crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q6_k.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
@@ -4753,17 +4755,15 @@ impl DequantKernels {
             encoder.setBuffer_offset_atIndex(Some(active_experts.mtl_buffer()), 0, 10);
         }
         bind_u32(encoder, 11, u32::from(input_is_hid));
-        unsafe {
-            encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
-        }
+        // f32 kernel: DQ_BM=32, DQ_BN=32, DQ_TG=256 (matches Q4_K f32 approach)
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
                 width: (n_tokens as usize).div_ceil(32),
-                height: (m as usize).div_ceil(64),
+                height: (m as usize).div_ceil(32),
                 depth: n_active_experts as usize,
             },
             MTLSize {
-                width: 128,
+                width: 256,
                 height: 1,
                 depth: 1,
             },
@@ -4790,7 +4790,8 @@ impl DequantKernels {
         n_active_experts: u32,
         input_is_hid: bool,
     ) {
-        crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q8_0_blocked.state());
+        // Use f32-tile kernel (same reason as Q6_K — half B-tile overflow).
+        crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q8_0.state());
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
@@ -4805,17 +4806,17 @@ impl DequantKernels {
         bind_u32(encoder, 9, weight_stride);
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(active_experts.mtl_buffer()), 0, 10);
-            encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
         }
         bind_u32(encoder, 11, u32::from(input_is_hid));
+        // f32 kernel: DQ_BM=32, DQ_BN=32, DQ_TG=256
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
                 width: (n_tokens as usize).div_ceil(32),
-                height: (m as usize).div_ceil(64),
+                height: (m as usize).div_ceil(32),
                 depth: n_active_experts as usize,
             },
             MTLSize {
-                width: 128,
+                width: 256,
                 height: 1,
                 depth: 1,
             },

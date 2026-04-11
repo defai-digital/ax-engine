@@ -333,14 +333,14 @@ faster.
 | Model | Quant | AX Prefill | AX Decode | llama Prefill | llama Decode | Prefill % | Decode % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | Gemma 4 26B-A4B | Q4_K_M | 1,947 tok/s | 76.8 tok/s | 1,215 tok/s | 68.4 tok/s | **160%** | **112%** |
-| Gemma 4 26B-A4B | Q5_K_M | 18.9 tok/s | 12.0 tok/s | 642 tok/s | 35.5 tok/s | 3% | 34% |
+| Gemma 4 26B-A4B | Q5_K_M | 1,563 tok/s | 67.2 tok/s | 642 tok/s | 35.5 tok/s | **243%** | **189%** |
 | Gemma 4 26B-A4B | Q6_K | 883 tok/s | 49.3 tok/s | 764 tok/s | 44.2 tok/s | **116%** | **111%** |
 | Gemma 4 26B-A4B | Q8_0 | 1,043 tok/s | 54.3 tok/s | 980 tok/s | 51.7 tok/s | **106%** | **105%** |
 | Gemma 4 31B | Q4_K_M | 115 tok/s | 8.6 tok/s | 86 tok/s | 6.8 tok/s | **133%** | **126%** |
 | Qwen 3.5 9B | Q4_K_M | 592 tok/s | 44.4 tok/s | 718 tok/s | 47.5 tok/s | 82% | 94% |
 | Qwen 3.5 27B | Q4_K_M | 184 tok/s | 13.5 tok/s | 170 tok/s | 12.0 tok/s | **108%** | **113%** |
 | Qwen 3.5 35B-A3B | Q4_K_M | 757 tok/s | 41.4 tok/s | 961 tok/s | 54.4 tok/s | 79% | 76% |
-| Qwen 3 Coder 30B-A3B | Q4_K_M | 50.5 tok/s | 50.2 tok/s | 903 tok/s | 87.0 tok/s | 5.6% | 57.7% |
+| Qwen 3 Coder 30B-A3B | Q4_K_M | 7.5 tok/s | 5.3 tok/s | 903 tok/s | 87.0 tok/s | 1% | 6% |
 | Qwen 3 Coder 30B-A3B | Q5_K_M | 44.4 tok/s | 44.2 tok/s | 1,151 tok/s | 79.6 tok/s | 3.9% | 55.5% |
 | Qwen 3 Coder 30B-A3B | Q6_K | 27.3 tok/s | 27.4 tok/s | 1,205 tok/s | 79.5 tok/s | 2.3% | 34.4% |
 | Qwen 3 Coder 30B-A3B | Q8_0 | 19.2 tok/s | 18.9 tok/s | 1,284 tok/s | 70.3 tok/s | 1.5% | 26.9% |

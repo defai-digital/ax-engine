@@ -133,11 +133,14 @@ impl Qwen3MoeForward {
         let gate_stride = crate::model::moe_utils::expert_byte_stride(gate_dtype, expert_inter_dim * dim);
         let up_stride = crate::model::moe_utils::expert_byte_stride(up_dtype, expert_inter_dim * dim);
         let down_stride = crate::model::moe_utils::expert_byte_stride(down_dtype, dim * expert_inter_dim);
-        metal_ops.device.execute_sync(|encoder| {
-            let barrier = crate::model::shared::DecodeBarrierCtx::new(encoder, base_plan.barriers);
-            let kv_f16 = gpu_kv.is_f16();
+        let kv_f16 = gpu_kv.is_f16();
 
-            for layer in 0..cfg.n_layers as usize {
+        // Run each layer in its own command buffer to avoid Metal watchdog
+        // timeout — 48 MoE layers with 128 experts generate too many dispatches
+        // for a single CB. UMA buffers persist across CBs.
+        for layer in 0..cfg.n_layers as usize {
+            metal_ops.device.execute_sync(|encoder| {
+                let barrier = crate::model::shared::DecodeBarrierCtx::new(encoder, base_plan.barriers);
                 let lw = &cached.layers[layer];
                 let attn_norm_w = weight_cache.get(&lw.attn_norm).unwrap();
                 let wq_buf = weight_cache.get(&lw.wq).unwrap();
@@ -186,7 +189,7 @@ impl Qwen3MoeForward {
                 barrier.post_dispatch(&[&s.q_buf, &s.k_buf], &[&s.q_buf, &s.k_buf]);
                 barrier.step(encoder);
 
-                // KV append (separate K and V)
+                // KV append
                 barrier.pre_dispatch(&[&s.k_buf], &[kv_k]);
                 metal_ops.elementwise.encode_kv_append(encoder, &s.k_buf, kv_k, kv_f16, kv_offset, kv_dim as u32);
                 barrier.post_dispatch(&[&s.k_buf], &[kv_k]);
@@ -216,7 +219,7 @@ impl Qwen3MoeForward {
                 barrier.post_dispatch(&[&s.hidden, &s.proj_buf], &[&s.hidden]);
                 barrier.step(encoder);
 
-                // MoE FFN — all-GPU path for routed expert quants supported by Metal.
+                // MoE FFN
                 let router_buf = moe_weight_cache.get(&lw.moe_router.unwrap()).unwrap();
                 let moe_gate_buf = moe_weight_cache.get(&lw.moe_expert_gate.as_ref().unwrap()[0]).unwrap();
                 let moe_up_buf = moe_weight_cache.get(&lw.moe_expert_up.as_ref().unwrap()[0]).unwrap();
@@ -229,13 +232,25 @@ impl Qwen3MoeForward {
                     gate_stride, up_stride, down_stride, eps, None,
                     base_plan.barriers != crate::model::execution_plan::DecodeBarrierPlan::Implicit,
                 )?;
-            }
 
-            // Output head
+                barrier.flush();
+                Ok(())
+            })?;
+        }
+
+        // (debug removed)
+        // Output head in its own CB
+        metal_ops.device.execute_sync(|encoder| {
+            let barrier = crate::model::shared::DecodeBarrierCtx::new(encoder, base_plan.barriers);
             crate::model::shared::encode_gpu_output_head(encoder, metal_ops, s, &s.hidden, &base_plan, cached, &weight_cache, &barrier, dim as u32, vocab_size as u32, eps);
             barrier.flush();
             Ok(())
         })?;
+
+        // Debug: inspect GPU output state
+        let h = unsafe { std::slice::from_raw_parts(s.hidden.contents().as_ptr() as *const f32, 4) };
+        let n = unsafe { std::slice::from_raw_parts(s.norm_buf.contents().as_ptr() as *const f32, 4) };
+        let l = unsafe { std::slice::from_raw_parts(s.logits_buf.contents().as_ptr() as *const f32, 4) };
 
         let logits_gpu = unsafe { std::slice::from_raw_parts(s.logits_buf.contents().as_ptr() as *const f32, vocab_size) };
         logits[..vocab_size].copy_from_slice(logits_gpu);

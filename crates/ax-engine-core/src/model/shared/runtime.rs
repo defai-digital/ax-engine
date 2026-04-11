@@ -77,8 +77,9 @@ pub(crate) fn gpu_decode_quant_dtype_supported(dtype: GgmlType) -> bool {
         dtype,
         GgmlType::Q4K
             | GgmlType::Q5K
-            | GgmlType::Q6K
             | GgmlType::Q5_0
+            | GgmlType::Q5_1
+            | GgmlType::Q6K
             | GgmlType::Q8_0
             | GgmlType::F32
     )
@@ -432,9 +433,25 @@ pub(crate) fn apply_output_norm_single(
 }
 
 fn optional_missing_layer_weight(config: &ModelConfig, layer: usize, suffix: &str) -> bool {
-    config.architecture == "gemma4"
+    // Gemma4 global layers have V=K (no attn_v.weight).
+    if config.architecture == "gemma4"
         && suffix == "attn_v.weight"
         && !crate::model::gemma4::Gemma4Forward::use_sliding_window(layer, config)
+    {
+        return true;
+    }
+    // MoE architectures may lack dense FFN weights on expert layers
+    // (they use ffn_gate_exps/up_exps/down_exps instead).
+    if matches!(
+        config.architecture.as_str(),
+        "qwen35moe" | "qwen3moe" | "gemma4"
+    ) && matches!(
+        suffix,
+        "ffn_gate.weight" | "ffn_up.weight" | "ffn_down.weight"
+    ) {
+        return true;
+    }
+    false
 }
 
 fn all_layers_match(

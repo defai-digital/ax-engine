@@ -394,6 +394,14 @@ impl Backend for MetalBackend {
                     self.fused_matvec_q8_0(a_quant, b, c, m, k);
                     return;
                 }
+                GgmlType::Q5_0 => {
+                    self.fused_matvec_q5_0(a_quant, b, c, m, k);
+                    return;
+                }
+                GgmlType::Q5_1 => {
+                    self.fused_matvec_q5_1(a_quant, b, c, m, k);
+                    return;
+                }
                 GgmlType::Q4K => {
                     self.fused_matvec_q4_k(a_quant, b, c, m, k);
                     return;
@@ -1391,6 +1399,74 @@ impl MetalBackend {
         drop(cache);
 
         // Read back output via raw pointer
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                output_guard.0.as_ref().unwrap().contents().as_ptr() as *const f32,
+                y.as_mut_ptr(),
+                m,
+            );
+        }
+    }
+
+    fn fused_matvec_q5_0(&self, a_quant: &[u8], x: &[f32], y: &mut [f32], m: usize, k: usize) {
+        let y_bytes = m * std::mem::size_of::<f32>();
+        let input_guard = self.prepare_input(x);
+        let output_guard = self.prepare_output(y_bytes);
+
+        let key = a_quant.as_ptr() as usize;
+        let cache = self.get_quant_weight_buffer(a_quant);
+        let buf_a = cache.get(&key).unwrap();
+
+        self.device
+            .execute_sync(|encoder| {
+                self.dequant_kernels.encode_fused_matvec_q5_0(
+                    encoder,
+                    buf_a,
+                    input_guard.0.as_ref().unwrap(),
+                    output_guard.0.as_ref().unwrap(),
+                    m as u32,
+                    k as u32,
+                );
+                Ok(())
+            })
+            .expect("Metal fused Q5_0 matvec failed");
+
+        drop(cache);
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                output_guard.0.as_ref().unwrap().contents().as_ptr() as *const f32,
+                y.as_mut_ptr(),
+                m,
+            );
+        }
+    }
+
+    fn fused_matvec_q5_1(&self, a_quant: &[u8], x: &[f32], y: &mut [f32], m: usize, k: usize) {
+        let y_bytes = m * std::mem::size_of::<f32>();
+        let input_guard = self.prepare_input(x);
+        let output_guard = self.prepare_output(y_bytes);
+
+        let key = a_quant.as_ptr() as usize;
+        let cache = self.get_quant_weight_buffer(a_quant);
+        let buf_a = cache.get(&key).unwrap();
+
+        self.device
+            .execute_sync(|encoder| {
+                self.dequant_kernels.encode_fused_matvec_q5_1(
+                    encoder,
+                    buf_a,
+                    input_guard.0.as_ref().unwrap(),
+                    output_guard.0.as_ref().unwrap(),
+                    m as u32,
+                    k as u32,
+                );
+                Ok(())
+            })
+            .expect("Metal fused Q5_1 matvec failed");
+
+        drop(cache);
+
         unsafe {
             std::ptr::copy_nonoverlapping(
                 output_guard.0.as_ref().unwrap().contents().as_ptr() as *const f32,

@@ -24,6 +24,20 @@ fn workspace_model_path(file_name: &str) -> PathBuf {
         .join(file_name)
 }
 
+fn is_active_layer_weight_name(name: &str) -> bool {
+    const LAYER_SUFFIXES: &[&str] = &[
+        "attn_q.weight",
+        "attn_k.weight",
+        "attn_v.weight",
+        "attn_output.weight",
+        "ffn_gate.weight",
+        "ffn_up.weight",
+        "ffn_down.weight",
+    ];
+
+    name.starts_with("blk.") && LAYER_SUFFIXES.iter().any(|suffix| name.ends_with(suffix))
+}
+
 struct EnvVarGuard {
     key: &'static str,
     previous: Option<std::ffi::OsString>,
@@ -2831,6 +2845,93 @@ fn test_metal_backend_fused_q5_k_matvec() {
     assert!(
         diff < 0.5,
         "Fused Q5_K matvec mismatch: max_diff={diff}, result={result:?}, expected={expected:?}"
+    );
+}
+
+#[test]
+fn test_metal_backend_fused_q5_1_matvec() {
+    let backend = MetalBackend::new().unwrap();
+
+    let m = 6usize;
+    let k = 256usize;
+    let blocks_per_row = k / 32;
+
+    let mut quant_data = Vec::new();
+    for row in 0..m {
+        for blk in 0..blocks_per_row {
+            let mut block = vec![0u8; 24];
+            let d_val = 0.03 * (row as f32 + 1.0) + 0.01 * blk as f32;
+            let m_val = -0.25 * row as f32 + 0.05 * blk as f32;
+            let d_bytes = half::f16::from_f32(d_val).to_le_bytes();
+            let m_bytes = half::f16::from_f32(m_val).to_le_bytes();
+            block[0] = d_bytes[0];
+            block[1] = d_bytes[1];
+            block[2] = m_bytes[0];
+            block[3] = m_bytes[1];
+
+            let qh = 0xA5A5_5A5Au32.rotate_left(((row * 3 + blk) % 32) as u32);
+            block[4..8].copy_from_slice(&qh.to_le_bytes());
+            for (i, byte) in block[8..24].iter_mut().enumerate() {
+                *byte = (((row * 17 + blk * 11 + i) % 16) as u8)
+                    | ((((row * 7 + blk * 5 + i * 3) % 16) as u8) << 4);
+            }
+            quant_data.extend(block);
+        }
+    }
+
+    let x: Vec<f32> = (0..k).map(|i| ((i % 23) as f32 - 11.0) * 0.019).collect();
+
+    let mut weights = vec![0.0f32; m * k];
+    crate::quant::q5_1::dequantize(&quant_data, &mut weights);
+    let mut expected = vec![0.0f32; m];
+    crate::compute::matmul::matmul_f32(&weights, &x, &mut expected, m, 1, k);
+
+    let mut result = vec![0.0f32; m];
+    backend.dequant_matmul(&quant_data, GgmlType::Q5_1, &x, &mut result, m, 1, k);
+
+    let diff = max_abs_diff(&result, &expected);
+    assert!(
+        diff < 1e-3,
+        "Fused Q5_1 matvec mismatch: max_diff={diff}, result={result:?}, expected={expected:?}"
+    );
+}
+
+#[test]
+fn test_real_gemma4_q5km_q5_1_tensor_matches_cpu_matvec() {
+    let _env_lock = lock_env_test();
+    let path = workspace_model_path("gemma-4-26B-A4B-it-Q5_K_M.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let model = MappedModel::open(&path).unwrap();
+    let backend = MetalBackend::new().unwrap();
+    let info = model
+        .tensors
+        .iter()
+        .filter(|tensor| {
+            tensor.dtype == GgmlType::Q5_1 && is_active_layer_weight_name(&tensor.name)
+        })
+        .min_by_key(|tensor| tensor.n_elements())
+        .expect("expected at least one active Q5_1 layer tensor in Gemma4 Q5_K_M model");
+    let raw = model.tensor_data(info).unwrap();
+    let k = info.shape[0] as usize;
+    let m = info.n_elements() as usize / k;
+
+    let x: Vec<f32> = (0..k).map(|i| ((i % 29) as f32 - 14.0) * 0.021).collect();
+    let mut weights = vec![0.0f32; m * k];
+    crate::quant::dequantize(info.dtype, raw, &mut weights);
+    let mut expected = vec![0.0f32; m];
+    crate::compute::matmul::matmul_f32(&weights, &x, &mut expected, m, 1, k);
+
+    let mut actual = vec![0.0f32; m];
+    backend.dequant_matmul(raw, info.dtype, &x, &mut actual, m, 1, k);
+
+    let diff = max_abs_diff(&actual, &expected);
+    assert!(
+        diff < 5e-2,
+        "Gemma4 Q5_1 tensor '{}' mismatched CPU reference: max_diff={diff}",
+        info.name,
     );
 }
 

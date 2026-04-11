@@ -345,12 +345,10 @@ impl Qwen3MoeForward {
     }
 
     pub(crate) fn moe_gpu_expert_dtype_supported(dtype: crate::gguf::tensor::GgmlType) -> bool {
-        // Q6K/Q8_0 MoE mul_mat_id blocked kernels store input (B-tile) as half
-        // in threadgroup memory. For the MoE down projection, the input is
-        // SiLU(gate)*up which can exceed half max (65504), causing -inf/NaN.
-        // New f32-tile kernels (moe_mul_mat_id_q6_k / moe_mul_mat_id_q8_0)
-        // exist in the shaders but need integration testing at full model
-        // dimensions before enabling.
+        // Q6K/Q8_0 f32-tile MoE mul_mat_id kernels exist and produce correct
+        // per-layer results, but numerical divergence from CPU compounds across
+        // 48 MoE layers causing NaN by layer ~7. Restrict to Q4K/Q5K until the
+        // f32 kernels are validated at full model depth.
         matches!(
             dtype,
             crate::gguf::tensor::GgmlType::Q4K | crate::gguf::tensor::GgmlType::Q5K
