@@ -337,6 +337,100 @@ impl ForwardPass for Qwen3MoeForward {
     fn arch_name(&self) -> &str {
         "qwen3moe"
     }
+
+    fn supports_pipelined_decode(&self, ctx: &ForwardContext) -> bool {
+        Self::qwen3moe_gpu_pipelined_decode_enabled()
+            && ctx.backend.use_gpu_decode()
+            && ctx.backend.metal_ops().is_some()
+    }
+
+    fn embed_pipelined_token(
+        &self,
+        ctx: &ForwardContext,
+        token_id: u32,
+        hidden_buf: &ax_engine_metal::MetalBuffer,
+        weights: &WeightStore,
+    ) -> anyhow::Result<()> {
+        let dim = ctx.config.embedding_dim as usize;
+        let hidden = unsafe {
+            std::slice::from_raw_parts_mut(hidden_buf.contents().as_ptr() as *mut f32, dim)
+        };
+        weights
+            .dequantize_row("token_embd.weight", token_id as usize, hidden)
+            .map(|_| ())
+    }
+
+    fn encode_pending_decode_step(
+        &self,
+        ctx: &ForwardContext,
+        hidden_buf: &ax_engine_metal::MetalBuffer,
+        position: usize,
+        kv: &mut ModelKv,
+        weights: &WeightStore,
+    ) -> anyhow::Result<Option<ax_engine_metal::PendingFrame>> {
+        if !Self::qwen3moe_gpu_pipelined_decode_enabled() {
+            return Ok(None);
+        }
+        let Some(metal_ops) = ctx.backend.metal_ops() else {
+            return Ok(None);
+        };
+        let Some(gpu_kv) = kv.as_gpu_mut() else {
+            return Ok(None);
+        };
+        if !Self::moe_gpu_decode_supported(ctx.config, weights)
+            || !Self::moe_gpu_expert_dispatch_supported(weights)
+        {
+            return Ok(None);
+        }
+        let frame = Self::encode_qwen3moe_pending_gpu_unified_step(
+            metal_ops,
+            ctx.config,
+            hidden_buf,
+            position,
+            gpu_kv,
+            weights,
+            false,
+        )?;
+        Ok(Some(frame))
+    }
+
+    fn supports_fused_argmax(&self) -> bool {
+        true
+    }
+
+    fn encode_pending_decode_step_with_argmax(
+        &self,
+        ctx: &ForwardContext,
+        hidden_buf: &ax_engine_metal::MetalBuffer,
+        position: usize,
+        kv: &mut ModelKv,
+        weights: &WeightStore,
+    ) -> anyhow::Result<Option<ax_engine_metal::PendingFrame>> {
+        if !Self::qwen3moe_gpu_pipelined_decode_enabled() {
+            return Ok(None);
+        }
+        let Some(metal_ops) = ctx.backend.metal_ops() else {
+            return Ok(None);
+        };
+        let Some(gpu_kv) = kv.as_gpu_mut() else {
+            return Ok(None);
+        };
+        if !Self::moe_gpu_decode_supported(ctx.config, weights)
+            || !Self::moe_gpu_expert_dispatch_supported(weights)
+        {
+            return Ok(None);
+        }
+        let frame = Self::encode_qwen3moe_pending_gpu_unified_step(
+            metal_ops,
+            ctx.config,
+            hidden_buf,
+            position,
+            gpu_kv,
+            weights,
+            true,
+        )?;
+        Ok(Some(frame))
+    }
 }
 
 impl Qwen3MoeForward {

@@ -2528,6 +2528,7 @@ impl MetalOps {
         weight_stride: u32,
         active_experts: &MetalBuffer,
         n_active_experts: u32,
+        allow_blocked_input_is_hid: bool,
         input_is_hid: bool,
     ) -> anyhow::Result<()> {
         match dtype {
@@ -2580,6 +2581,7 @@ impl MetalOps {
                 weight_stride,
                 active_experts,
                 n_active_experts,
+                allow_blocked_input_is_hid,
                 input_is_hid,
             ),
             GgmlType::Q8_0 => self.dequant.encode_moe_mul_mat_id_q8_0(
@@ -2597,6 +2599,7 @@ impl MetalOps {
                 weight_stride,
                 active_experts,
                 n_active_experts,
+                allow_blocked_input_is_hid,
                 input_is_hid,
             ),
             _ => anyhow::bail!(
@@ -2903,8 +2906,62 @@ impl MetalOps {
         shared_expert: Option<&SharedExpertCachedBuffers<'_>>,
         explicit_barriers: bool,
     ) -> anyhow::Result<()> {
+        self.encode_moe_ffn_gpu_resident_cached_with_policy(
+            encoder,
+            hidden_gpu,
+            ffn_norm_w_buf,
+            router_buf,
+            router_dtype,
+            gate_buf,
+            gate_dtype,
+            up_buf,
+            up_dtype,
+            down_buf,
+            down_dtype,
+            n_tokens,
+            n_expert,
+            n_expert_used,
+            dim,
+            expert_inter_dim,
+            gate_stride,
+            up_stride,
+            down_stride,
+            eps,
+            shared_expert,
+            explicit_barriers,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn encode_moe_ffn_gpu_resident_cached_with_policy(
+        &self,
+        encoder: &ax_engine_metal::MetalEncoder,
+        hidden_gpu: &MetalBuffer,
+        ffn_norm_w_buf: &MetalBuffer,
+        router_buf: &MetalBuffer,
+        router_dtype: GgmlType,
+        gate_buf: &MetalBuffer,
+        gate_dtype: GgmlType,
+        up_buf: &MetalBuffer,
+        up_dtype: GgmlType,
+        down_buf: &MetalBuffer,
+        down_dtype: GgmlType,
+        n_tokens: usize,
+        n_expert: usize,
+        n_expert_used: usize,
+        dim: usize,
+        expert_inter_dim: usize,
+        gate_stride: usize,
+        up_stride: usize,
+        down_stride: usize,
+        eps: f32,
+        shared_expert: Option<&SharedExpertCachedBuffers<'_>>,
+        explicit_barriers: bool,
+        allow_blocked_q6q8_down: bool,
+    ) -> anyhow::Result<()> {
         let scratch = self.moe_batch_scratch_view()?;
-        self.encode_moe_ffn_gpu_resident_cached_with_scratch(
+        self.encode_moe_ffn_gpu_resident_cached_with_scratch_with_policy(
             encoder,
             scratch,
             hidden_gpu,
@@ -2928,6 +2985,7 @@ impl MetalOps {
             eps,
             shared_expert,
             explicit_barriers,
+            allow_blocked_q6q8_down,
         )
     }
 
@@ -2957,6 +3015,62 @@ impl MetalOps {
         eps: f32,
         shared_expert: Option<&SharedExpertCachedBuffers<'_>>,
         explicit_barriers: bool,
+    ) -> anyhow::Result<()> {
+        self.encode_moe_ffn_gpu_resident_cached_with_scratch_with_policy(
+            encoder,
+            scratch,
+            hidden_gpu,
+            ffn_norm_w_buf,
+            router_buf,
+            router_dtype,
+            gate_buf,
+            gate_dtype,
+            up_buf,
+            up_dtype,
+            down_buf,
+            down_dtype,
+            n_tokens,
+            n_expert,
+            n_expert_used,
+            dim,
+            expert_inter_dim,
+            gate_stride,
+            up_stride,
+            down_stride,
+            eps,
+            shared_expert,
+            explicit_barriers,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn encode_moe_ffn_gpu_resident_cached_with_scratch_with_policy(
+        &self,
+        encoder: &ax_engine_metal::MetalEncoder,
+        scratch: MoeBatchScratchView,
+        hidden_gpu: &MetalBuffer,
+        ffn_norm_w_buf: &MetalBuffer,
+        router_buf: &MetalBuffer,
+        router_dtype: GgmlType,
+        gate_buf: &MetalBuffer,
+        gate_dtype: GgmlType,
+        up_buf: &MetalBuffer,
+        up_dtype: GgmlType,
+        down_buf: &MetalBuffer,
+        down_dtype: GgmlType,
+        n_tokens: usize,
+        n_expert: usize,
+        n_expert_used: usize,
+        dim: usize,
+        expert_inter_dim: usize,
+        gate_stride: usize,
+        up_stride: usize,
+        down_stride: usize,
+        eps: f32,
+        shared_expert: Option<&SharedExpertCachedBuffers<'_>>,
+        explicit_barriers: bool,
+        allow_blocked_q6q8_down: bool,
     ) -> anyhow::Result<()> {
         let barrier = |enc: &ax_engine_metal::MetalEncoder| {
             if explicit_barriers {
@@ -3262,6 +3376,7 @@ impl MetalOps {
                     blocks_per_expert_down,
                     active_buf,
                     max_active_experts,
+                    allow_blocked_q6q8_down,
                     true,
                 )?;
                 barrier(encoder);
@@ -3296,7 +3411,6 @@ impl MetalOps {
                 n_expert as u32,
             );
             barrier(encoder);
-
             self.encode_moe_mul_mat_id(
                 encoder,
                 gate_buf,
@@ -3313,6 +3427,7 @@ impl MetalOps {
                 blocks_per_expert_gate,
                 active_buf,
                 max_active_experts,
+                false,
                 false,
             )?;
             self.encode_moe_mul_mat_id(
@@ -3331,6 +3446,7 @@ impl MetalOps {
                 blocks_per_expert_up,
                 active_buf,
                 max_active_experts,
+                false,
                 false,
             )?;
             barrier(encoder);
@@ -3376,6 +3492,7 @@ impl MetalOps {
                     blocks_per_expert_down,
                     active_buf,
                     max_active_experts,
+                    allow_blocked_q6q8_down,
                     true,
                 )?;
                 barrier(encoder);
@@ -4070,6 +4187,7 @@ impl MetalOps {
                 &active_buf,
                 n_active,
                 false,
+                false,
             )?;
 
             // Stage 2b: Up matmul.
@@ -4089,6 +4207,7 @@ impl MetalOps {
                 blocks_per_expert_up,
                 &active_buf,
                 n_active,
+                false,
                 false,
             )?;
 
@@ -4126,6 +4245,7 @@ impl MetalOps {
                 blocks_per_expert_down,
                 &active_buf,
                 n_active,
+                false,
                 true,
             )?;
 

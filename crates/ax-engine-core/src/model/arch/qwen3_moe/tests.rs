@@ -220,6 +220,171 @@ fn test_qwen3moe_prefill_split_layer_keeps_q8_single_cb() {
 }
 
 #[test]
+fn test_qwen3moe_prefill_concurrent_enabled_defaults_by_quant() {
+    let _lock = crate::test_env_lock();
+    let _guard = EnvVarGuard {
+        key: "AX_QWEN3MOE_PREFILL_CONCURRENT",
+        previous: std::env::var_os("AX_QWEN3MOE_PREFILL_CONCURRENT"),
+    };
+    unsafe { std::env::remove_var("AX_QWEN3MOE_PREFILL_CONCURRENT") };
+
+    assert!(!Qwen3MoeForward::qwen3moe_prefill_concurrent_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+    ));
+    assert!(Qwen3MoeForward::qwen3moe_prefill_concurrent_enabled(
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+    ));
+    assert!(Qwen3MoeForward::qwen3moe_prefill_concurrent_enabled(
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+    ));
+    assert!(Qwen3MoeForward::qwen3moe_prefill_concurrent_enabled(
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
+    ));
+}
+
+#[test]
+fn test_qwen3moe_prefill_concurrent_enabled_env_override_applies() {
+    let _lock = crate::test_env_lock();
+
+    let _on = EnvVarGuard::set("AX_QWEN3MOE_PREFILL_CONCURRENT", "1");
+    assert!(Qwen3MoeForward::qwen3moe_prefill_concurrent_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+    ));
+    drop(_on);
+
+    let _off = EnvVarGuard::set("AX_QWEN3MOE_PREFILL_CONCURRENT", "0");
+    assert!(!Qwen3MoeForward::qwen3moe_prefill_concurrent_enabled(
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
+    ));
+}
+
+#[test]
+fn test_qwen3moe_blocked_q6q8_down_defaults_on() {
+    let _lock = crate::test_env_lock();
+    let _guard = EnvVarGuard {
+        key: "AX_QWEN3MOE_BLOCKED_Q6Q8_DOWN",
+        previous: std::env::var_os("AX_QWEN3MOE_BLOCKED_Q6Q8_DOWN"),
+    };
+    unsafe { std::env::remove_var("AX_QWEN3MOE_BLOCKED_Q6Q8_DOWN") };
+
+    assert!(Qwen3MoeForward::qwen3moe_blocked_q6q8_down_enabled());
+}
+
+#[test]
+fn test_qwen3moe_blocked_q6q8_down_env_override_applies() {
+    let _lock = crate::test_env_lock();
+
+    let _off = EnvVarGuard::set("AX_QWEN3MOE_BLOCKED_Q6Q8_DOWN", "0");
+    assert!(!Qwen3MoeForward::qwen3moe_blocked_q6q8_down_enabled());
+    drop(_off);
+
+    let _on = EnvVarGuard::set("AX_QWEN3MOE_BLOCKED_Q6Q8_DOWN", "1");
+    assert!(Qwen3MoeForward::qwen3moe_blocked_q6q8_down_enabled());
+}
+
+#[test]
+fn test_qwen3moe_gpu_pipelined_decode_defaults_on() {
+    let _lock = crate::test_env_lock();
+    let _guard = EnvVarGuard {
+        key: "AX_QWEN3MOE_GPU_PIPELINED_DECODE",
+        previous: std::env::var_os("AX_QWEN3MOE_GPU_PIPELINED_DECODE"),
+    };
+    unsafe { std::env::remove_var("AX_QWEN3MOE_GPU_PIPELINED_DECODE") };
+
+    assert!(Qwen3MoeForward::qwen3moe_gpu_pipelined_decode_enabled());
+}
+
+#[test]
+fn test_qwen3moe_gpu_pipelined_decode_env_override_applies() {
+    let _lock = crate::test_env_lock();
+
+    let _on = EnvVarGuard::set("AX_QWEN3MOE_GPU_PIPELINED_DECODE", "1");
+    assert!(Qwen3MoeForward::qwen3moe_gpu_pipelined_decode_enabled());
+    drop(_on);
+
+    let _off = EnvVarGuard::set("AX_QWEN3MOE_GPU_PIPELINED_DECODE", "0");
+    assert!(!Qwen3MoeForward::qwen3moe_gpu_pipelined_decode_enabled());
+}
+
+#[test]
+fn test_qwen3moe_concurrent_decode_defaults_by_quant() {
+    let _lock = crate::test_env_lock();
+    let _guard = EnvVarGuard {
+        key: "AX_QWEN3MOE_CONCURRENT_DECODE",
+        previous: std::env::var_os("AX_QWEN3MOE_CONCURRENT_DECODE"),
+    };
+    unsafe { std::env::remove_var("AX_QWEN3MOE_CONCURRENT_DECODE") };
+
+    assert!(Qwen3MoeForward::qwen3moe_concurrent_decode_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+    ));
+    assert!(Qwen3MoeForward::qwen3moe_concurrent_decode_enabled(
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+    ));
+    assert!(Qwen3MoeForward::qwen3moe_concurrent_decode_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q6K,
+    ));
+    assert!(Qwen3MoeForward::qwen3moe_concurrent_decode_enabled(
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+        GgmlType::Q8_0,
+    ));
+    assert!(!Qwen3MoeForward::qwen3moe_concurrent_decode_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q5K,
+        GgmlType::Q6K,
+    ));
+    assert!(!Qwen3MoeForward::qwen3moe_concurrent_decode_enabled(
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+    ));
+    assert!(!Qwen3MoeForward::qwen3moe_concurrent_decode_enabled(
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
+    ));
+}
+
+#[test]
+fn test_qwen3moe_concurrent_decode_env_override_applies() {
+    let _lock = crate::test_env_lock();
+
+    let _on = EnvVarGuard::set("AX_QWEN3MOE_CONCURRENT_DECODE", "1");
+    assert!(Qwen3MoeForward::qwen3moe_concurrent_decode_enabled(
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
+        GgmlType::Q8_0,
+    ));
+    drop(_on);
+
+    let _off = EnvVarGuard::set("AX_QWEN3MOE_CONCURRENT_DECODE", "0");
+    assert!(!Qwen3MoeForward::qwen3moe_concurrent_decode_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+    ));
+}
+
+#[test]
 fn test_real_qwen3_coder_30b_a3b_gpu_dispatch_supported_for_all_shipped_quants() {
     for model_file in [
         "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
@@ -252,6 +417,91 @@ fn test_real_qwen3_coder_30b_a3b_gpu_dispatch_supported_for_all_shipped_quants()
         assert!(
             kv.is_gpu(),
             "{model_file} should allocate GPU KV when GPU expert dispatch is available",
+        );
+    }
+}
+
+#[test]
+fn test_real_qwen3_coder_30b_a3b_expert_dtypes_match_expected_layouts() {
+    for (model_file, gate_expected, up_expected, down_expected) in [
+        (
+            "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+            GgmlType::Q4K,
+            GgmlType::Q4K,
+            GgmlType::Q6K,
+        ),
+        (
+            "Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf",
+            GgmlType::Q5K,
+            GgmlType::Q5K,
+            GgmlType::Q6K,
+        ),
+        (
+            "Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf",
+            GgmlType::Q6K,
+            GgmlType::Q6K,
+            GgmlType::Q6K,
+        ),
+        (
+            "Qwen3-Coder-30B-A3B-Instruct-Q8_0.gguf",
+            GgmlType::Q8_0,
+            GgmlType::Q8_0,
+            GgmlType::Q8_0,
+        ),
+    ] {
+        let path = workspace_model_path(model_file);
+        if !path.exists() {
+            continue;
+        }
+
+        let mapped = MappedModel::open(&path).unwrap();
+        let weights = WeightStore::new(&mapped);
+        let (gate_dtype, up_dtype, down_dtype) =
+            crate::model::shared::routed_moe_expert_dtypes(&weights, "blk.0").unwrap();
+
+        assert_eq!(gate_dtype, gate_expected, "{model_file} gate dtype");
+        assert_eq!(up_dtype, up_expected, "{model_file} up dtype");
+        assert_eq!(down_dtype, down_expected, "{model_file} down dtype");
+    }
+}
+
+#[test]
+fn test_real_qwen3_coder_decode_plan_summary_reports_runtime_barrier_policy() {
+    for (model_file, barrier_fragment) in [
+        ("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf", "barriers=smart"),
+        ("Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf", "barriers=smart"),
+        (
+            "Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf",
+            "barriers=explicit",
+        ),
+        (
+            "Qwen3-Coder-30B-A3B-Instruct-Q8_0.gguf",
+            "barriers=explicit",
+        ),
+    ] {
+        let path = workspace_model_path(model_file);
+        if !path.exists() {
+            continue;
+        }
+
+        let mapped = MappedModel::open(&path).unwrap();
+        let cfg = ModelConfig::from_gguf(&mapped.header).unwrap();
+        let weights = WeightStore::new(&mapped);
+        let model =
+            InferenceModel::with_backend(cfg, Box::new(MetalBackend::new().unwrap())).unwrap();
+        let kv = model.create_model_kv_for_weights(&weights);
+        let summary = model
+            .decode_plan_summary_for_weights(
+                &weights,
+                &kv,
+                crate::model::DecodeIntent::Throughput,
+                true,
+            )
+            .unwrap();
+
+        assert!(
+            summary.contains(barrier_fragment),
+            "{model_file} summary `{summary}` missing `{barrier_fragment}`",
         );
     }
 }
@@ -309,4 +559,58 @@ fn test_prepare_runtime_for_real_qwen3_coder_primes_router_f16_cache() {
     model.prepare_runtime_for_weights(&weights).unwrap();
 
     assert!(metal_ops.has_precomputed_weight(&router_buf));
+}
+
+#[test]
+fn test_prepare_runtime_for_real_qwen3_coder_primes_fused_qkv_cache() {
+    let _lock = crate::test_env_lock();
+
+    let path = workspace_model_path("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let mapped = MappedModel::open(&path).unwrap();
+    let cfg = ModelConfig::from_gguf(&mapped.header).unwrap();
+    let weights = WeightStore::new(&mapped);
+    let model = InferenceModel::with_backend(cfg, Box::new(MetalBackend::new().unwrap())).unwrap();
+
+    let metal_ops = model.metal_ops_for_tests().unwrap();
+    let mut fused_key = None;
+    for layer in 0..model.config.n_layers as usize {
+        let prefix = format!("blk.{layer}");
+        let (wq_raw, wq_dtype) = weights
+            .raw_with_dtype(&format!("{prefix}.attn_q.weight"))
+            .unwrap();
+        let (wk_raw, wk_dtype) = weights
+            .raw_with_dtype(&format!("{prefix}.attn_k.weight"))
+            .unwrap();
+        let (wv_raw, wv_dtype) = weights
+            .raw_with_dtype(&format!("{prefix}.attn_v.weight"))
+            .unwrap();
+        if wq_dtype == wk_dtype
+            && wq_dtype == wv_dtype
+            && matches!(wq_dtype, GgmlType::Q4K | GgmlType::Q6K)
+        {
+            fused_key = Some((
+                wq_raw.as_ptr() as usize,
+                wk_raw.as_ptr() as usize,
+                wv_raw.as_ptr() as usize,
+            ));
+            break;
+        }
+    }
+    let Some(fused_key) = fused_key else {
+        return;
+    };
+
+    {
+        let cache = metal_ops.lock_fused_qkv_weight_cache();
+        assert!(!cache.contains_key(&fused_key));
+    }
+
+    model.prepare_runtime_for_weights(&weights).unwrap();
+
+    let cache = metal_ops.lock_fused_qkv_weight_cache();
+    assert!(cache.contains_key(&fused_key));
 }

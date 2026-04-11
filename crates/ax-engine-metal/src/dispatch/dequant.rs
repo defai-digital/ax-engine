@@ -4638,7 +4638,6 @@ impl DequantKernels {
             },
         );
     }
-
     /// Encode MoE mul_mat_id for Q4_K: unified expert matmul.
     /// weights: [n_expert, M, K/256] Q4_K blocks
     /// input: [n_tokens, K] f32
@@ -4778,12 +4777,13 @@ impl DequantKernels {
         weight_stride: u32,
         active_experts: &MetalBuffer,
         n_active_experts: u32,
+        allow_blocked_input_is_hid: bool,
         input_is_hid: bool,
     ) {
-        // Gate/up read RMS-normalized hidden state and can safely use the
-        // blocked half-tile kernel. Keep routed down on the f32 kernel because
-        // SiLU*up can exceed half range and overflow in the blocked path.
-        let use_blocked = !input_is_hid;
+        // Gate/up always use the blocked half-tile kernel. For routed down,
+        // stay on the f32 kernel unless the caller explicitly opts into the
+        // faster blocked path for a model/quant family that has been validated.
+        let use_blocked = !input_is_hid || allow_blocked_input_is_hid;
         if use_blocked {
             crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q6_k_blocked.state());
         } else {
@@ -4840,12 +4840,13 @@ impl DequantKernels {
         weight_stride: u32,
         active_experts: &MetalBuffer,
         n_active_experts: u32,
+        allow_blocked_input_is_hid: bool,
         input_is_hid: bool,
     ) {
-        // Gate/up read RMS-normalized hidden state and can safely use the
-        // blocked half-tile kernel. Keep routed down on the f32 kernel because
-        // SiLU*up can exceed half range and overflow in the blocked path.
-        let use_blocked = !input_is_hid;
+        // Gate/up always use the blocked half-tile kernel. For routed down,
+        // stay on the f32 kernel unless the caller explicitly opts into the
+        // faster blocked path for a model/quant family that has been validated.
+        let use_blocked = !input_is_hid || allow_blocked_input_is_hid;
         if use_blocked {
             crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q8_0_blocked.state());
         } else {

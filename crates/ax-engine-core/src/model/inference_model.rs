@@ -288,6 +288,32 @@ impl InferenceModel {
         DecodeExecutionPlan::for_model(self, kv, intent, allow_pipelined).summary_label()
     }
 
+    pub fn decode_plan_summary_for_weights(
+        &self,
+        weights: &WeightStore,
+        kv: &ModelKv,
+        intent: DecodeIntent,
+        allow_pipelined: bool,
+    ) -> anyhow::Result<String> {
+        let mut summary = self.decode_plan_summary(kv, intent, allow_pipelined);
+        if self.arch_name() != "qwen3moe"
+            || summary.contains("barriers=smart")
+            || !summary.contains("barriers=explicit")
+        {
+            return Ok(summary);
+        }
+
+        let (gate_dtype, up_dtype, down_dtype) =
+            crate::model::shared::routed_moe_expert_dtypes(weights, "blk.0")?;
+        if crate::model::shared::qwen3moe_concurrent_decode_enabled_for_layout(
+            gate_dtype, up_dtype, down_dtype,
+        ) {
+            summary = summary.replacen("barriers=explicit", "barriers=smart", 1);
+        }
+
+        Ok(summary)
+    }
+
     pub fn prefill_plan_summary(
         &self,
         weights: &WeightStore,

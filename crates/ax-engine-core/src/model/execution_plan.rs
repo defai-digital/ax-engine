@@ -397,6 +397,40 @@ impl DecodeExecutionPlan {
         )
     }
 
+    pub(crate) fn qwen3moe_single_cb(
+        metal_ops: &MetalOps,
+        gpu_kv: &GpuKv,
+        embedding_dim: u32,
+        head_dim: u32,
+        attend_len: usize,
+    ) -> GpuDecodeExecutionPlan {
+        single_cb_gpu_decode_plan(
+            "qwen3moe",
+            metal_ops,
+            gpu_kv,
+            embedding_dim,
+            head_dim,
+            attend_len,
+        )
+    }
+
+    pub(crate) fn qwen3moe_pipelined(
+        metal_ops: &MetalOps,
+        gpu_kv: &GpuKv,
+        embedding_dim: u32,
+        head_dim: u32,
+        attend_len: usize,
+    ) -> GpuDecodeExecutionPlan {
+        pipelined_gpu_decode_plan(
+            "qwen3moe",
+            metal_ops,
+            gpu_kv,
+            embedding_dim,
+            head_dim,
+            attend_len,
+        )
+    }
+
     pub(crate) fn gemma3_single_cb(
         metal_ops: &MetalOps,
         gpu_kv: &GpuKv,

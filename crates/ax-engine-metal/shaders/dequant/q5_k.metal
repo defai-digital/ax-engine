@@ -2509,8 +2509,6 @@ kernel void moe_mul_mat_selected_weighted_q5_k_blocked(
     }
 }
 
-
-
 kernel void moe_mul_mat_selected_pair_q5_k_blocked(
     device const Q5_K_Block *weights0      [[buffer(0)]],
     device const Q5_K_Block *weights1      [[buffer(1)]],

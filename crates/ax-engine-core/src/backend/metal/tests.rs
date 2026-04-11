@@ -3176,7 +3176,7 @@ fn test_metal_backend_moe_down_projection_reads_input_by_hid_for_blocked_q4k() {
 
     let tpe = [1u32, 1u32];
     let hids = [0i32, 1i32];
-    let active = [0u32, 1u32];
+    let active = [2u32, 0u32, 1u32];
 
     let weights_buf = MetalBuffer::from_slice(backend.device.device(), &weights).unwrap();
     let input_buf = MetalBuffer::from_slice(backend.device.device(), &input).unwrap();
@@ -3208,7 +3208,8 @@ fn test_metal_backend_moe_down_projection_reads_input_by_hid_for_blocked_q4k() {
                 n_expert as u32,
                 blocks_per_expert as u32,
                 &active_buf,
-                active.len() as u32,
+                active[0],
+                false,
                 true,
             )
         })

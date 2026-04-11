@@ -340,12 +340,12 @@ faster.
 | Qwen 3.5 9B | Q4_K_M | 592 tok/s | 44.4 tok/s | 718 tok/s | 47.5 tok/s | 82% | 94% |
 | Qwen 3.5 27B | Q4_K_M | 184 tok/s | 13.5 tok/s | 170 tok/s | 12.0 tok/s | **108%** | **113%** |
 | Qwen 3.5 35B-A3B | Q4_K_M | 757 tok/s | 41.4 tok/s | 961 tok/s | 54.4 tok/s | 79% | 76% |
-| Qwen 3 Coder 30B-A3B | Q4_K_M | 1,104 tok/s | 69.8 tok/s | 903 tok/s | 87.0 tok/s | **122%** | 80% |
-| Qwen 3 Coder 30B-A3B | Q5_K_M | 924 tok/s | 36.1 tok/s | 1,151 tok/s | 79.6 tok/s | 80% | 45% |
-| Qwen 3 Coder 30B-A3B | Q6_K | 429 tok/s | 57.6 tok/s | 1,205 tok/s | 79.5 tok/s | 36% | 72% |
-| Qwen 3 Coder 30B-A3B | Q8_0 | 377 tok/s | 38.6 tok/s | 1,284 tok/s | 70.3 tok/s | 29% | 55% |
+| Qwen 3 Coder 30B-A3B | Q4_K_M | 1,954 tok/s | 66.9 tok/s | 903 tok/s | 87.0 tok/s | **216%** | 77% |
+| Qwen 3 Coder 30B-A3B | Q5_K_M | 1,918 tok/s | 42.3 tok/s | 1,151 tok/s | 79.6 tok/s | **167%** | 53% |
+| Qwen 3 Coder 30B-A3B | Q6_K | 1,228 tok/s | 55.3 tok/s | 1,205 tok/s | 79.5 tok/s | **102%** | 70% |
+| Qwen 3 Coder 30B-A3B | Q8_0 | 924 tok/s | 36.7 tok/s | 1,284 tok/s | 70.3 tok/s | 72% | 52% |
 
-Benchmark notes: P=512, 128-token decode, f16 KV, flash attention, Apple M3 Max, llama.cpp build 15f786e65 (b8680). Rows not otherwise noted come from full apple-to-apple 5-sample runs with 20-30s cooldown on April 9, 2026. Qwen 3 Coder rows were refreshed AX-only on April 11, 2026 on the current branch (deterministic 5-sample median, 20s cooldown) against the earlier recorded llama.cpp baselines.
+Benchmark notes: P=512, 128-token decode, f16 KV, flash attention, Apple M3 Max, llama.cpp build 15f786e65 (b8680). Rows not otherwise noted come from full apple-to-apple 5-sample runs with 20-30s cooldown on April 9, 2026. Qwen 3 Coder rows were refreshed AX-only on April 11, 2026 on the current branch (deterministic single-sample spot reruns, 0ms cooldown) against the earlier recorded llama.cpp baselines.
 
 **Gemma 4 26B-A4B** (MoE) full quant sweep: Q4_K_M **160%/112%**, Q5_K_M **243%/189%**, Q6_K **116%/111%**, Q8_0 **106%/105%** — AX now beats llama.cpp across all shipped quant types on this model, including the former Q5_K_M fallback case. Full GPU batch prefill with per-layer KV strides (SWA=2048, global=1024), FA2 attention on all 30 layers.
 
@@ -357,7 +357,7 @@ Benchmark notes: P=512, 128-token decode, f16 KV, flash attention, Apple M3 Max,
 
 **Qwen 3.5 35B-A3B** (MoE): the table row still reflects the April 9, 2026 full-run baseline. Current April 11, 2026 sanity reruns on this branch are around 640-665 tok/s prefill and 44-46 tok/s decode, with pipelined throughput decode now enabled by default. The model stays on the GPU for both batch prefill and decode; the remaining gap vs llama.cpp is GPU-side recurrent + resident-MoE kernel time, not CPU fallback.
 
-**Qwen 3 Coder 30B-A3B** (MoE, refreshed April 11, 2026): current deterministic reruns put AX at **122%/80%** on Q4_K_M, **80%/45%** on Q5_K_M, **36%/72%** on Q6_K, and **29%/55%** on Q8_0 vs the recorded llama.cpp baselines. The current branch now reuses the Qwen 3.5-style two-command-buffer prefill overlap only where the same-method A/B earned it: Q4_K_M, Q5_K_M, and Q6_K stay split across two command buffers, while Q8_0 stays on a single command buffer because the split regressed prefill. Q6_K/Q8_0 resident-MoE gate/up prefill still use AX's blocked kernels instead of the slower f32-tile fallback; the remaining gap is still GPU-side routed-expert time rather than CPU fallback.
+**Qwen 3 Coder 30B-A3B** (MoE, refreshed April 11, 2026): current default-path deterministic reruns put AX at **216%/77%** on Q4_K_M, **167%/53%** on Q5_K_M, **102%/70%** on Q6_K, and **72%/52%** on Q8_0 vs the recorded llama.cpp baselines. The current branch still reuses the Qwen 3.5-style two-command-buffer prefill overlap only where the same-method A/B earned it: Q4_K_M, Q5_K_M, and Q6_K stay split across two command buffers, while Q8_0 stays on a single command buffer because the split regressed prefill. Decode now uses the same pending-frame GPU pipeline shape as Qwen 3.5 and ships with pipelined decode enabled by default (`AX_QWEN3MOE_GPU_PIPELINED_DECODE=0` is the rollback). The remaining decode gap, especially on Q5_K_M, is still GPU-side routed-expert gate/up time rather than CPU fallback or host submission overhead.
 
 All prefill uses FA2 simd cached kernel with direct device K/V loads and half×half MMA. Decode uses split-K attention (chunk_size=128, threshold=32).
 
