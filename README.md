@@ -357,32 +357,7 @@ Benchmark notes: P=512, 128-token decode, f16 KV, flash attention, Apple M3 Max,
 
 **Qwen 3.5 35B-A3B** (MoE): the table row still reflects the April 9, 2026 full-run baseline. Current April 11, 2026 sanity reruns on this branch are around 640-665 tok/s prefill and 44-46 tok/s decode, with pipelined throughput decode now enabled by default. The model stays on the GPU for both batch prefill and decode; the remaining gap vs llama.cpp is GPU-side recurrent + resident-MoE kernel time, not CPU fallback.
 
-**Qwen 3 Coder 30B-A3B** (MoE, refreshed April 11 v3.1.3): AX now **beats llama.cpp on prefill** for Q4_K_M (**199%**) and Q5_K_M (**151%**) after MoE decode path improvements. Full quant sweep (P=509, 5-sample median, 20s cooldown): Q4_K_M 1,794/34.1, Q5_K_M 1,735/27.5, Q6_K 241/6.7, Q8_0 282/6.9 tok/s prefill/decode. Q6_K and Q8_0 remain memory-bandwidth-limited (23-30GB model weight) — decode bottleneck is routed-expert kernel time at full model size.
-
-### Qwen 3 Coder 30B-A3B — Full Quant Sweep (AX Engine only)
-
-Apple M3 Max, f16 KV, 5-sample median, 20s cooldown between runs (April 11, 2026, v3.1.3).
-
-| Quant | Prompt | Prefill (tok/s) | Decode (tok/s) |
-|---|---:|---:|---:|
-| Q4_K_M | 39 | 597 | 35.4 |
-| Q4_K_M | 209 | 1,371 | 34.4 |
-| Q4_K_M | 509 | 1,794 | 34.1 |
-| Q4_K_M | 1024 | 1,953 | 33.7 |
-| Q5_K_M | 39 | 577 | 25.5 |
-| Q5_K_M | 209 | 1,349 | 27.6 |
-| Q5_K_M | 509 | 1,735 | 27.5 |
-| Q5_K_M | 1024 | 1,885 | 26.9 |
-| Q6_K | 39 | 71 | 6.7 |
-| Q6_K | 209 | 137 | 6.7 |
-| Q6_K | 509 | 241 | 6.7 |
-| Q6_K | 1024 | 343 | 6.7 |
-| Q8_0 | 39 | 63 | 6.9 |
-| Q8_0 | 209 | 185 | 6.9 |
-| Q8_0 | 509 | 282 | 6.9 |
-| Q8_0 | 1024 | 341 | 6.9 |
-
-Q4_K_M and Q5_K_M use routed expert dispatch with fast Q4_K/Q5_K batch dequant kernels. Q6_K and Q8_0 are memory-bandwidth-limited at 23-30GB model size — decode is gated by routed-expert weight reads across 128 experts per layer.
+**Qwen 3 Coder 30B-A3B** (MoE, refreshed April 11 v3.1.3): AX now **beats llama.cpp on prefill** for Q4_K_M (**199%**) and Q5_K_M (**151%**) after MoE decode path improvements. Q6_K and Q8_0 remain memory-bandwidth-limited at 23-30GB model weight — decode bottleneck is routed-expert kernel time across 128 experts per layer.
 
 All prefill uses FA2 simd cached kernel with direct device K/V loads and half×half MMA. Decode uses split-K attention (chunk_size=128, threshold=32).
 
