@@ -340,14 +340,14 @@ faster.
 | Qwen 3.5 9B | Q4_K_M | 592 tok/s | 44.4 tok/s | 718 tok/s | 47.5 tok/s | 82% | 94% |
 | Qwen 3.5 27B | Q4_K_M | 184 tok/s | 13.5 tok/s | 170 tok/s | 12.0 tok/s | **108%** | **113%** |
 | Qwen 3.5 35B-A3B | Q4_K_M | 757 tok/s | 41.4 tok/s | 961 tok/s | 54.4 tok/s | 79% | 76% |
-| Qwen 3 Coder 30B-A3B | Q4_K_M | 7.5 tok/s | 5.3 tok/s | 903 tok/s | 87.0 tok/s | 1% | 6% |
-| Qwen 3 Coder 30B-A3B | Q5_K_M | 44.4 tok/s | 44.2 tok/s | 1,151 tok/s | 79.6 tok/s | 3.9% | 55.5% |
-| Qwen 3 Coder 30B-A3B | Q6_K | 27.3 tok/s | 27.4 tok/s | 1,205 tok/s | 79.5 tok/s | 2.3% | 34.4% |
-| Qwen 3 Coder 30B-A3B | Q8_0 | 19.2 tok/s | 18.9 tok/s | 1,284 tok/s | 70.3 tok/s | 1.5% | 26.9% |
+| Qwen 3 Coder 30B-A3B | Q4_K_M | 1,794 tok/s | 34.1 tok/s | 903 tok/s | 87.0 tok/s | **199%** | 39% |
+| Qwen 3 Coder 30B-A3B | Q5_K_M | 1,735 tok/s | 27.5 tok/s | 1,151 tok/s | 79.6 tok/s | **151%** | 35% |
+| Qwen 3 Coder 30B-A3B | Q6_K | 241 tok/s | 6.7 tok/s | 1,205 tok/s | 79.5 tok/s | 20% | 8% |
+| Qwen 3 Coder 30B-A3B | Q8_0 | 282 tok/s | 6.9 tok/s | 1,284 tok/s | 70.3 tok/s | 22% | 10% |
 
-Benchmark notes: P=512, 128-token decode, f16 KV, flash attention, Apple M3 Max, llama.cpp build 15f786e65 (b8680). Rows not otherwise noted come from full apple-to-apple 5-sample runs with 20-30s cooldown on April 9, 2026. Qwen 3 Coder rows were refreshed AX-only on April 9, 2026 against the same-day 5-sample/20s-cooldown llama.cpp baselines from the earlier full runs.
+Benchmark notes: P=512, 128-token decode, f16 KV, flash attention, Apple M3 Max, llama.cpp build 15f786e65 (b8680). Rows not otherwise noted come from full apple-to-apple 5-sample runs with 20-30s cooldown on April 9, 2026. Qwen 3 Coder rows were refreshed AX-only on April 11, 2026 (v3.1.3, 5-sample median, 20s cooldown between runs) against the same-day llama.cpp baselines from the earlier full runs.
 
-**Gemma 4 26B-A4B** (MoE) full quant sweep: Q4_K_M **160%/112%**, Q6_K **116%/111%**, Q8_0 **106%/105%** — AX beats llama.cpp across all working quant types. Q5_K_M is broken (3% prefill, 31% decode) — GPU batch prefill falls back to serial for Q5_K on Gemma4 MoE, under investigation. Full GPU batch prefill with per-layer KV strides (SWA=2048, global=1024), FA2 attention on all 30 layers.
+**Gemma 4 26B-A4B** (MoE) full quant sweep: Q4_K_M **160%/112%**, Q5_K_M **243%/189%**, Q6_K **116%/111%**, Q8_0 **106%/105%** — AX now beats llama.cpp across all shipped quant types on this model, including the former Q5_K_M fallback case. Full GPU batch prefill with per-layer KV strides (SWA=2048, global=1024), FA2 attention on all 30 layers.
 
 **Gemma 4 31B** (dense): AX **133% prefill, 126% decode** vs llama.cpp. Per-layer KV strides (SWA=4096, global=2048), FA2 attention on all 60 layers.
 
@@ -355,9 +355,34 @@ Benchmark notes: P=512, 128-token decode, f16 KV, flash attention, Apple M3 Max,
 
 **Qwen 3.5 9B**: AX at 82% prefill, 94% decode. The 9B model has fewer layers to amortize dispatch overhead over.
 
-**Qwen 3.5 35B-A3B** (MoE): AX at 79% prefill, 76% decode. Gap driven by expert kernel overhead — MoE dispatch uses CPU batch path. This row is unchanged from the earlier April 9, 2026 run; it was not refreshed in the Qwen 3 Coder update because a quick current-branch sanity rerun hit a Metal GPU hang.
+**Qwen 3.5 35B-A3B** (MoE): the table row still reflects the April 9, 2026 full-run baseline. Current April 11, 2026 sanity reruns on this branch are around 640-665 tok/s prefill and 44-46 tok/s decode, with pipelined throughput decode now enabled by default. The model stays on the GPU for both batch prefill and decode; the remaining gap vs llama.cpp is GPU-side recurrent + resident-MoE kernel time, not CPU fallback.
 
-**Qwen 3 Coder 30B-A3B** (MoE, refreshed): AX now runs all four shipped quants on GPU KV + single-CB decode. Routed expert coverage now matches the GGUF expert mixes used by these files (`Q4_K_M`: gate/up `Q4_K`, down `Q6_K`; `Q5_K_M`: gate/up `Q5_K`, down `Q6_K`; `Q6_K`; `Q8_0`), which lifts decode from the old 5-8% range to 26.9-57.7% of llama.cpp. Prefill no longer falls back to CPU, but it remains the main bottleneck, especially for `Q6_K` and `Q8_0`.
+**Qwen 3 Coder 30B-A3B** (MoE, refreshed April 11 v3.1.3): AX now **beats llama.cpp on prefill** for Q4_K_M (**199%**) and Q5_K_M (**151%**) after MoE decode path improvements. Full quant sweep (P=509, 5-sample median, 20s cooldown): Q4_K_M 1,794/34.1, Q5_K_M 1,735/27.5, Q6_K 241/6.7, Q8_0 282/6.9 tok/s prefill/decode. Q6_K and Q8_0 remain memory-bandwidth-limited (23-30GB model weight) — decode bottleneck is routed-expert kernel time at full model size.
+
+### Qwen 3 Coder 30B-A3B — Full Quant Sweep (AX Engine only)
+
+Apple M3 Max, f16 KV, 5-sample median, 20s cooldown between runs (April 11, 2026, v3.1.3).
+
+| Quant | Prompt | Prefill (tok/s) | Decode (tok/s) |
+|---|---:|---:|---:|
+| Q4_K_M | 39 | 597 | 35.4 |
+| Q4_K_M | 209 | 1,371 | 34.4 |
+| Q4_K_M | 509 | 1,794 | 34.1 |
+| Q4_K_M | 1024 | 1,953 | 33.7 |
+| Q5_K_M | 39 | 577 | 25.5 |
+| Q5_K_M | 209 | 1,349 | 27.6 |
+| Q5_K_M | 509 | 1,735 | 27.5 |
+| Q5_K_M | 1024 | 1,885 | 26.9 |
+| Q6_K | 39 | 71 | 6.7 |
+| Q6_K | 209 | 137 | 6.7 |
+| Q6_K | 509 | 241 | 6.7 |
+| Q6_K | 1024 | 343 | 6.7 |
+| Q8_0 | 39 | 63 | 6.9 |
+| Q8_0 | 209 | 185 | 6.9 |
+| Q8_0 | 509 | 282 | 6.9 |
+| Q8_0 | 1024 | 341 | 6.9 |
+
+Q4_K_M and Q5_K_M use routed expert dispatch with fast Q4_K/Q5_K batch dequant kernels. Q6_K and Q8_0 are memory-bandwidth-limited at 23-30GB model size — decode is gated by routed-expert weight reads across 128 experts per layer.
 
 All prefill uses FA2 simd cached kernel with direct device K/V loads and half×half MMA. Decode uses split-K attention (chunk_size=128, threshold=32).
 
