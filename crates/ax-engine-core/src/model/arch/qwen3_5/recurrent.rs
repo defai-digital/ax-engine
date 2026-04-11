@@ -151,19 +151,17 @@ impl Qwen3_5Forward {
                         );
                         let encoded =
                             if let (Some(beta_gpu), Some(alpha_gpu)) = (beta_gpu, alpha_gpu) {
-                                metal_ops.elementwise.encode_softplus_bias_mul_batch(
-                                    encoder,
-                                    alpha_gpu,
-                                    dt_bias_buf,
-                                    ssm_a_buf,
-                                    total_heads as u32,
-                                    dims.time_step_rank as u32,
-                                );
-                                metal_ops.elementwise.encode_sigmoid_inplace(
-                                    encoder,
-                                    beta_gpu,
-                                    total_heads as u32,
-                                );
+                                metal_ops
+                                    .elementwise
+                                    .encode_softplus_bias_mul_sigmoid_pair_batch(
+                                        encoder,
+                                        alpha_gpu,
+                                        beta_gpu,
+                                        dt_bias_buf,
+                                        ssm_a_buf,
+                                        total_heads as u32,
+                                        dims.time_step_rank as u32,
+                                    );
                                 match alpha_beta_storage_mode {
                                     Qwen35PrefillAlphaBetaStorageMode::F16 => {
                                         metal_ops.elementwise.encode_cast_f32_to_f16(
@@ -217,19 +215,17 @@ impl Qwen3_5Forward {
                                 // softplus/sigmoid/f16-cast on GPU instead of
                                 // CPU — same kernels as the GPU-primary path.
                                 if needs_gpu_alpha_beta_prep {
-                                    metal_ops.elementwise.encode_softplus_bias_mul_batch(
-                                        encoder,
-                                        &scratch.alpha,
-                                        dt_bias_buf,
-                                        ssm_a_buf,
-                                        total_heads as u32,
-                                        dims.time_step_rank as u32,
-                                    );
-                                    metal_ops.elementwise.encode_sigmoid_inplace(
-                                        encoder,
-                                        &scratch.beta,
-                                        total_heads as u32,
-                                    );
+                                    metal_ops
+                                        .elementwise
+                                        .encode_softplus_bias_mul_sigmoid_pair_batch(
+                                            encoder,
+                                            &scratch.alpha,
+                                            &scratch.beta,
+                                            dt_bias_buf,
+                                            ssm_a_buf,
+                                            total_heads as u32,
+                                            dims.time_step_rank as u32,
+                                        );
                                 }
                                 match alpha_beta_storage_mode {
                                     Qwen35PrefillAlphaBetaStorageMode::F16 => {
@@ -648,18 +644,16 @@ impl Qwen3_5Forward {
 
                             let encoded = match (temp_alpha, temp_beta, alpha_beta_storage_mode) {
                                 (Some(temp_alpha), Some(temp_beta), Qwen35PrefillAlphaBetaStorageMode::F16) => {
-                                    metal_ops.elementwise.encode_softplus_bias_mul_batch(
+                                    metal_ops
+                                        .elementwise
+                                        .encode_softplus_bias_mul_sigmoid_pair_batch(
                                         encoder,
                                         temp_alpha,
+                                        temp_beta,
                                         dt_bias_buf,
                                         ssm_a_buf,
                                         total_heads as u32,
                                         dims.time_step_rank as u32,
-                                    );
-                                    metal_ops.elementwise.encode_sigmoid_inplace(
-                                        encoder,
-                                        temp_beta,
-                                        total_heads as u32,
                                     );
                                     metal_ops.elementwise.encode_cast_f32_to_f16(
                                         encoder,
@@ -691,18 +685,16 @@ impl Qwen3_5Forward {
                                     )
                                 }
                                 (Some(temp_alpha), Some(temp_beta), _) => {
-                                    metal_ops.elementwise.encode_softplus_bias_mul_batch(
+                                    metal_ops
+                                        .elementwise
+                                        .encode_softplus_bias_mul_sigmoid_pair_batch(
                                         encoder,
                                         temp_alpha,
+                                        temp_beta,
                                         dt_bias_buf,
                                         ssm_a_buf,
                                         total_heads as u32,
                                         dims.time_step_rank as u32,
-                                    );
-                                    metal_ops.elementwise.encode_sigmoid_inplace(
-                                        encoder,
-                                        temp_beta,
-                                        total_heads as u32,
                                     );
                                     metal_ops.gdn.encode_prepare_multi_token_qkv(
                                         encoder,
@@ -829,21 +821,17 @@ impl Qwen3_5Forward {
                                 dims.time_step_rank as u32,
                                 dims.state_size as u32,
                             );
-                            metal_ops.elementwise.encode_per_head_rms_norm_batch(
+                            metal_ops
+                                .elementwise
+                                .encode_per_head_rms_norm_silu_mul_batch(
                                 encoder,
+                                temp_z,
                                 &bs.proj_buf,
                                 ssm_norm_buf,
                                 nt,
                                 dims.time_step_rank as u32,
                                 dims.state_size as u32,
                                 rms_norm_eps,
-                            );
-                            metal_ops.elementwise.encode_silu_elementwise_mul_batch(
-                                encoder,
-                                temp_z,
-                                &bs.proj_buf,
-                                dims.inner_size as u32,
-                                nt,
                             );
                             if Self::qwen35_batch_projection_needs_f16_input(ssm_out_dtype) {
                                 metal_ops.elementwise.encode_cast_f32_to_f16(

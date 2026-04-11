@@ -273,7 +273,11 @@ impl Qwen3_5Forward {
                 sb.post_dispatch(&[&bs.norm_buf], &[&bs.matmul_in_f16]);
             }
             // Ops 3-5: Q/K/V projections (read norm_buf or matmul_in_f16, write different bufs)
-            let proj_input = if qkv_uses_f16 { &bs.matmul_in_f16 } else { &bs.norm_buf };
+            let proj_input = if qkv_uses_f16 {
+                &bs.matmul_in_f16
+            } else {
+                &bs.norm_buf
+            };
             sb.pre_dispatch(&[proj_input], &[&bs.gate_buf]);
             Self::encode_qwen35_batch_projection(
                 metal_ops,
@@ -378,8 +382,14 @@ impl Qwen3_5Forward {
                 sb.pre_dispatch(&[&bs.k_buf, &bs.v_buf], &[kv_k, kv_v]);
                 if gpu_attn.is_q8() {
                     let blocks_per_row = kv_dim / crate::kv::gpu_kv::Q8_0_BLOCK_VALUES;
-                    let row_offset = u32::try_from(batch_position * blocks_per_row)
-                        .map_err(|_| anyhow::anyhow!("KV row offset overflow: batch_position={}, blocks_per_row={}", batch_position, blocks_per_row))?;
+                    let row_offset =
+                        u32::try_from(batch_position * blocks_per_row).map_err(|_| {
+                            anyhow::anyhow!(
+                                "KV row offset overflow: batch_position={}, blocks_per_row={}",
+                                batch_position,
+                                blocks_per_row
+                            )
+                        })?;
                     metal_ops.elementwise.encode_kv_append_batch_pair_q8(
                         encoder,
                         &bs.k_buf,
@@ -392,8 +402,13 @@ impl Qwen3_5Forward {
                         nt,
                     );
                 } else {
-                    let cache_offset = u32::try_from(batch_position * kv_dim)
-                        .map_err(|_| anyhow::anyhow!("KV cache offset overflow: batch_position={}, kv_dim={}", batch_position, kv_dim))?;
+                    let cache_offset = u32::try_from(batch_position * kv_dim).map_err(|_| {
+                        anyhow::anyhow!(
+                            "KV cache offset overflow: batch_position={}, kv_dim={}",
+                            batch_position,
+                            kv_dim
+                        )
+                    })?;
                     metal_ops.elementwise.encode_kv_append_batch_pair(
                         encoder,
                         &bs.k_buf,
@@ -454,7 +469,13 @@ impl Qwen3_5Forward {
                 encoder,
                 &bs.up_buf,
                 &bs.attn_out,
-                u32::try_from(n_tokens * q_dim).map_err(|_| anyhow::anyhow!("Element count overflow: n_tokens={}, q_dim={}", n_tokens, q_dim))?,
+                u32::try_from(n_tokens * q_dim).map_err(|_| {
+                    anyhow::anyhow!(
+                        "Element count overflow: n_tokens={}, q_dim={}",
+                        n_tokens,
+                        q_dim
+                    )
+                })?,
             );
             sb.post_dispatch(&[&bs.up_buf, &bs.attn_out], &[&bs.attn_out]);
             // Op 13: Cast f32→f16 for Wo (if needed)
@@ -792,8 +813,14 @@ impl Qwen3_5Forward {
                 if let Some(gpu_attn) = qwen_kv.gpu_attention() {
                     if gpu_attn.is_q8() {
                         let blocks_per_row = kv_dim / crate::kv::gpu_kv::Q8_0_BLOCK_VALUES;
-                        let row_offset = u32::try_from(batch_position * blocks_per_row)
-                            .map_err(|_| anyhow::anyhow!("KV row offset overflow: batch_position={}, blocks_per_row={}", batch_position, blocks_per_row))?;
+                        let row_offset =
+                            u32::try_from(batch_position * blocks_per_row).map_err(|_| {
+                                anyhow::anyhow!(
+                                    "KV row offset overflow: batch_position={}, blocks_per_row={}",
+                                    batch_position,
+                                    blocks_per_row
+                                )
+                            })?;
                         metal_ops.elementwise.encode_kv_append_batch_pair_q8(
                             encoder,
                             &bs.k_buf,
@@ -806,8 +833,14 @@ impl Qwen3_5Forward {
                             nt,
                         );
                     } else {
-                        let cache_offset = u32::try_from(batch_position * kv_dim)
-                            .map_err(|_| anyhow::anyhow!("KV cache offset overflow: batch_position={}, kv_dim={}", batch_position, kv_dim))?;
+                        let cache_offset =
+                            u32::try_from(batch_position * kv_dim).map_err(|_| {
+                                anyhow::anyhow!(
+                                    "KV cache offset overflow: batch_position={}, kv_dim={}",
+                                    batch_position,
+                                    kv_dim
+                                )
+                            })?;
                         metal_ops.elementwise.encode_kv_append_batch_pair(
                             encoder,
                             &bs.k_buf,
@@ -860,7 +893,13 @@ impl Qwen3_5Forward {
                     encoder,
                     &bs.up_buf,
                     &bs.attn_out,
-                    u32::try_from(n_tokens * q_dim).map_err(|_| anyhow::anyhow!("Element count overflow: n_tokens={}, q_dim={}", n_tokens, q_dim))?,
+                    u32::try_from(n_tokens * q_dim).map_err(|_| {
+                        anyhow::anyhow!(
+                            "Element count overflow: n_tokens={}, q_dim={}",
+                            n_tokens,
+                            q_dim
+                        )
+                    })?,
                 );
                 ax_engine_metal::barrier_buffers(encoder);
                 if Self::qwen35_batch_projection_needs_f16_input(wo_dtype) {
@@ -1070,7 +1109,10 @@ impl Qwen3_5Forward {
                 let mut scratch = Self::lock_cpu_batch_fallback_scratch();
                 let Qwen3_5CpuBatchFallbackScratch { hidden, .. } = &mut *scratch;
                 hidden.resize(dim, 0.0);
-                debug_assert!(n_tokens > 0, "n_tokens must be > 0 for last-token logit extraction");
+                debug_assert!(
+                    n_tokens > 0,
+                    "n_tokens must be > 0 for last-token logit extraction"
+                );
                 hidden.copy_from_slice(unsafe {
                     &bs.hidden.as_slice::<f32>()[((n_tokens - 1) * dim)..n_tokens * dim]
                 });
@@ -1275,22 +1317,18 @@ impl Qwen3_5Forward {
                         );
                     }
                     let ssm_norm_buf = weight_cache.get(&ssm_norm_key.unwrap()).unwrap();
-                    metal_ops.elementwise.encode_per_head_rms_norm_batch(
-                        encoder,
-                        rec_out_buf,
-                        ssm_norm_buf,
-                        nt,
-                        dims.time_step_rank as u32,
-                        dims.state_size as u32,
-                        eps,
-                    );
-                    metal_ops.elementwise.encode_silu_elementwise_mul_batch(
-                        encoder,
-                        rec_z_buf,
-                        rec_out_buf,
-                        dims.inner_size as u32,
-                        nt,
-                    );
+                    metal_ops
+                        .elementwise
+                        .encode_per_head_rms_norm_silu_mul_batch(
+                            encoder,
+                            rec_z_buf,
+                            rec_out_buf,
+                            ssm_norm_buf,
+                            nt,
+                            dims.time_step_rank as u32,
+                            dims.state_size as u32,
+                            eps,
+                        );
                     if Self::qwen35_batch_projection_needs_f16_input(ssm_out_dtype) {
                         metal_ops.elementwise.encode_cast_f32_to_f16(
                             encoder,
@@ -1852,7 +1890,9 @@ impl Qwen3_5Forward {
                 0,
                 &bs.norm_buf,
                 0,
-                u32::try_from(n_tokens * dim).map_err(|_| anyhow::anyhow!("Element count overflow: n_tokens={}, dim={}", n_tokens, dim))?,
+                u32::try_from(n_tokens * dim).map_err(|_| {
+                    anyhow::anyhow!("Element count overflow: n_tokens={}, dim={}", n_tokens, dim)
+                })?,
             );
             ax_engine_metal::barrier_buffers(encoder);
             metal_ops.elementwise.encode_elementwise_add_batch(
@@ -1933,7 +1973,9 @@ impl Qwen3_5Forward {
                 0,
                 &bs.hidden,
                 0,
-                u32::try_from(n_tokens * dim).map_err(|_| anyhow::anyhow!("Element count overflow: n_tokens={}, dim={}", n_tokens, dim))?,
+                u32::try_from(n_tokens * dim).map_err(|_| {
+                    anyhow::anyhow!("Element count overflow: n_tokens={}, dim={}", n_tokens, dim)
+                })?,
             );
             Ok(())
         })?;
@@ -2016,28 +2058,30 @@ impl Qwen3_5Forward {
                 dims.time_step_rank as u32,
                 dims.state_size as u32,
             );
-            metal_ops.elementwise.encode_per_head_rms_norm_batch(
-                encoder,
-                &bs.gate_buf,
-                ssm_norm_buf,
-                nt,
-                dims.time_step_rank as u32,
-                dims.state_size as u32,
-                eps,
-            );
-            metal_ops.elementwise.encode_silu_elementwise_mul_batch(
-                encoder,
-                temp_z,
-                &bs.gate_buf,
-                dims.inner_size as u32,
-                nt,
-            );
+            metal_ops
+                .elementwise
+                .encode_per_head_rms_norm_silu_mul_batch(
+                    encoder,
+                    temp_z,
+                    &bs.gate_buf,
+                    ssm_norm_buf,
+                    nt,
+                    dims.time_step_rank as u32,
+                    dims.state_size as u32,
+                    eps,
+                );
             if Self::qwen35_batch_projection_needs_f16_input(ssm_out_dtype) {
                 metal_ops.elementwise.encode_cast_f32_to_f16(
                     encoder,
                     temp_z,
                     &bs.matmul_in_f16,
-                    u32::try_from(n_tokens * dims.inner_size).map_err(|_| anyhow::anyhow!("Element count overflow: n_tokens={}, inner_size={}", n_tokens, dims.inner_size))?,
+                    u32::try_from(n_tokens * dims.inner_size).map_err(|_| {
+                        anyhow::anyhow!(
+                            "Element count overflow: n_tokens={}, inner_size={}",
+                            n_tokens,
+                            dims.inner_size
+                        )
+                    })?,
                 );
             }
             Self::encode_qwen35_batch_projection(
@@ -2355,8 +2399,8 @@ impl Qwen3_5Forward {
         keep_rec_z_on_gpu: bool,
         ssm_gpu: bool,
     ) -> bool {
-        let qkv_stays_gpu_resident = qkv_gpu_fast_path_enabled
-            || cpu_proj_indices.iter().all(|&i| i == 2 || i == 3);
+        let qkv_stays_gpu_resident =
+            qkv_gpu_fast_path_enabled || cpu_proj_indices.iter().all(|&i| i == 2 || i == 3);
         recurrent_slot_count == 1
             && qkv_stays_gpu_resident
             && cpu_proj_indices.iter().all(|&i| i == 2 || i == 3)
@@ -2588,10 +2632,9 @@ impl Qwen3_5Forward {
                 layer_is_moe,
                 ssm_gpu,
             ) || Self::qwen35_should_try_resident_moe_gpu_tail(layer_is_moe, ssm_gpu);
-        gpu_plan.fused_gpu_recurrent_layer_candidate =
-            gpu_plan.fused_gpu_recurrent_layer_candidate
-                && (!layer_is_moe
-                    || Self::qwen35_should_try_merged_projection_fused_recurrent_layer(true));
+        gpu_plan.fused_gpu_recurrent_layer_candidate = gpu_plan.fused_gpu_recurrent_layer_candidate
+            && (!layer_is_moe
+                || Self::qwen35_should_try_merged_projection_fused_recurrent_layer(true));
         if !gpu_plan.fused_gpu_recurrent_layer_candidate {
             tracing::debug!(
                 layer,

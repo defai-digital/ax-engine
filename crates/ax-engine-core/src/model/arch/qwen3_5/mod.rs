@@ -582,12 +582,12 @@ impl Qwen3_5Forward {
     }
 
     fn gpu_pipelined_decode_enabled_for_config(cfg: &ModelConfig) -> bool {
-        // Keep the pending-frame decode path explicitly opt-in until the
-        // pipelined scheduler is covered by broader parity validation. The
-        // MoE path now reuses the native resident decode encoder here too, so
-        // the env flag can enable pipelined decode for both dense and MoE.
+        // Qwen3.5 hybrid decode benefits from keeping the next token resident
+        // on GPU instead of synchronizing every step. The native pending-frame
+        // path covers both dense and MoE decode now, so default to pipelined
+        // decode and retain the env flag as an explicit escape hatch.
         Self::gpu_decode_enabled_for_config(cfg)
-            && env_flag_override("AX_QWEN35_GPU_PIPELINED_DECODE").unwrap_or(false)
+            && env_flag_override("AX_QWEN35_GPU_PIPELINED_DECODE").unwrap_or(true)
     }
 
     fn debug_max_layer_inclusive() -> Option<usize> {

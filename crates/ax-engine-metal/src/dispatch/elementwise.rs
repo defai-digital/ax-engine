@@ -36,6 +36,7 @@ pub struct ElementwiseKernels {
     rope_neox_partial_freq_factors_batch: ComputePipeline,
     per_head_rms_norm: ComputePipeline,
     per_head_rms_norm_batch: ComputePipeline,
+    per_head_rms_norm_silu_mul_batch: ComputePipeline,
     per_head_rms_norm_no_weight: ComputePipeline,
     per_head_rms_norm_no_weight_batch: ComputePipeline,
     qk_norm_rope_batch: ComputePipeline,
@@ -60,7 +61,9 @@ pub struct ElementwiseKernels {
     sigmoid_inplace: ComputePipeline,
     sigmoid_inplace_vec4: ComputePipeline,
     softplus_bias_mul: ComputePipeline,
+    softplus_bias_mul_sigmoid_pair: ComputePipeline,
     softplus_bias_mul_batch: ComputePipeline,
+    softplus_bias_mul_sigmoid_pair_batch: ComputePipeline,
     l2_norm_per_head: ComputePipeline,
     elementwise_add: ComputePipeline,
     elementwise_add_batch: ComputePipeline,
@@ -215,6 +218,12 @@ impl ElementwiseKernels {
             }],
         )
         .context("Failed to compile per_head_rms_norm_f32 generic batched kernel")?;
+        let per_head_rms_norm_silu_mul_batch = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "per_head_rms_norm_silu_mul_batch_f32",
+        )
+        .context("Failed to compile per_head_rms_norm_silu_mul_batch_f32 kernel")?;
         let per_head_rms_norm_no_weight = ComputePipeline::from_source_with_constants(
             device.device(),
             ELEMENTWISE_SHADER_SRC,
@@ -357,12 +366,24 @@ impl ElementwiseKernels {
             "softplus_bias_mul_f32",
         )
         .context("Failed to compile softplus_bias_mul_f32 kernel")?;
+        let softplus_bias_mul_sigmoid_pair = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "softplus_bias_mul_sigmoid_pair_f32",
+        )
+        .context("Failed to compile softplus_bias_mul_sigmoid_pair_f32 kernel")?;
         let softplus_bias_mul_batch = ComputePipeline::from_source(
             device.device(),
             ELEMENTWISE_SHADER_SRC,
             "softplus_bias_mul_batch_f32",
         )
         .context("Failed to compile softplus_bias_mul_batch_f32 kernel")?;
+        let softplus_bias_mul_sigmoid_pair_batch = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "softplus_bias_mul_sigmoid_pair_batch_f32",
+        )
+        .context("Failed to compile softplus_bias_mul_sigmoid_pair_batch_f32 kernel")?;
         let l2_norm_per_head = ComputePipeline::from_source(
             device.device(),
             ELEMENTWISE_SHADER_SRC,
@@ -515,6 +536,7 @@ impl ElementwiseKernels {
             rope_neox_partial_freq_factors_batch,
             per_head_rms_norm,
             per_head_rms_norm_batch,
+            per_head_rms_norm_silu_mul_batch,
             per_head_rms_norm_no_weight,
             per_head_rms_norm_no_weight_batch,
             qk_norm_rope_batch,
@@ -537,7 +559,9 @@ impl ElementwiseKernels {
             sigmoid_inplace,
             sigmoid_inplace_vec4,
             softplus_bias_mul,
+            softplus_bias_mul_sigmoid_pair,
             softplus_bias_mul_batch,
+            softplus_bias_mul_sigmoid_pair_batch,
             l2_norm_per_head,
             elementwise_add,
             elementwise_add_batch,
@@ -1169,6 +1193,44 @@ impl ElementwiseKernels {
         );
     }
 
+    /// Encode batched `gate = SiLU(gate) * RMSNorm(src)` across `n_rows`,
+    /// where RMSNorm is applied independently to each head.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_per_head_rms_norm_silu_mul_batch(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        gate: &MetalBuffer,
+        src: &MetalBuffer,
+        weight: &MetalBuffer,
+        n_rows: u32,
+        n_heads: u32,
+        head_dim: u32,
+        eps: f32,
+    ) {
+        crate::set_pipeline_cached(encoder, self.per_head_rms_norm_silu_mul_batch.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(gate.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(weight.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, n_rows);
+        bind_u32(encoder, 4, n_heads);
+        bind_u32(encoder, 5, head_dim);
+        bind_f32(encoder, 6, eps);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n_rows * n_heads) as usize,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: ELEMENTWISE_TG_SIZE,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
     /// Encode per-head RMSNorm without a learned weight.
     pub fn encode_per_head_rms_norm_no_weight(
         &self,
@@ -1690,6 +1752,31 @@ impl ElementwiseKernels {
         );
     }
 
+    /// Encode fused softplus(alpha + bias) * a and sigmoid(beta) in-place.
+    pub fn encode_softplus_bias_mul_sigmoid_pair(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        alpha: &MetalBuffer,
+        beta: &MetalBuffer,
+        bias: &MetalBuffer,
+        a: &MetalBuffer,
+        n: u32,
+    ) {
+        let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
+        crate::set_pipeline_cached(encoder, self.softplus_bias_mul_sigmoid_pair.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(alpha.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(beta.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(bias.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, n);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
     /// Encode batched softplus(alpha + bias[head]) * a[head] in-place.
     pub fn encode_softplus_bias_mul_batch(
         &self,
@@ -1709,6 +1796,34 @@ impl ElementwiseKernels {
         }
         bind_u32(encoder, 3, n);
         bind_u32(encoder, 4, head_dim);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
+    /// Encode batched fused softplus(alpha + bias[head]) * a[head] and
+    /// sigmoid(beta) in-place.
+    pub fn encode_softplus_bias_mul_sigmoid_pair_batch(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        alpha: &MetalBuffer,
+        beta: &MetalBuffer,
+        bias: &MetalBuffer,
+        a: &MetalBuffer,
+        n: u32,
+        head_dim: u32,
+    ) {
+        let dims = DispatchDims::d1(n as usize, ELEMENTWISE_TG_SIZE);
+        crate::set_pipeline_cached(encoder, self.softplus_bias_mul_sigmoid_pair_batch.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(alpha.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(beta.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(bias.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(a.mtl_buffer()), 0, 3);
+        }
+        bind_u32(encoder, 4, n);
+        bind_u32(encoder, 5, head_dim);
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             dims.threadgroups,
             dims.threads_per_threadgroup,

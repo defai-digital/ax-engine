@@ -1875,6 +1875,110 @@ fn test_qwen35_selected_pair_q4_k_matvec_defaults_on_and_can_be_disabled() {
 }
 
 #[test]
+fn test_qwen35_selected_single_token_gate_up_path_supports_mixed_qwen3_coder_layouts() {
+    assert!(qwen35_selected_single_token_gate_up_path_supported(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q6K,
+    ));
+    assert!(qwen35_selected_single_token_gate_up_path_supported(
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+        GgmlType::Q8_0,
+    ));
+    assert!(qwen35_selected_single_token_gate_up_path_supported(
+        GgmlType::Q4K,
+        GgmlType::Q5K,
+        GgmlType::Q6K,
+    ));
+
+    assert!(!qwen35_selected_single_token_gate_up_path_supported(
+        GgmlType::Q6K,
+        GgmlType::Q5K,
+        GgmlType::Q6K,
+    ));
+    assert!(!qwen35_selected_single_token_gate_up_path_supported(
+        GgmlType::Q4K,
+        GgmlType::Q6K,
+        GgmlType::Q6K,
+    ));
+    assert!(!qwen35_selected_single_token_gate_up_path_supported(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::F32,
+    ));
+}
+
+#[test]
+fn test_qwen35_selected_single_token_down_support_distinguishes_selected_vs_fallback() {
+    assert!(qwen35_selected_single_token_down_supported(GgmlType::Q4K));
+    assert!(qwen35_selected_single_token_down_supported(GgmlType::Q5K));
+    assert!(!qwen35_selected_single_token_down_supported(GgmlType::Q6K));
+    assert!(!qwen35_selected_single_token_down_supported(GgmlType::Q8_0));
+
+    assert!(!qwen35_selected_single_token_down_falls_back_to_mul_mat_id(
+        GgmlType::Q4K,
+    ));
+    assert!(!qwen35_selected_single_token_down_falls_back_to_mul_mat_id(
+        GgmlType::Q5K,
+    ));
+    assert!(qwen35_selected_single_token_down_falls_back_to_mul_mat_id(
+        GgmlType::Q6K,
+    ));
+    assert!(qwen35_selected_single_token_down_falls_back_to_mul_mat_id(
+        GgmlType::Q8_0,
+    ));
+}
+
+#[test]
+fn test_qwen35_selected_single_token_default_enables_q4k_mixed_down_but_not_q5k_mixed_down() {
+    let _env_lock = lock_env_test();
+    let _pair_q4_guard = EnvVarGuard {
+        key: "AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC",
+        previous: std::env::var_os("AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC"),
+    };
+    unsafe { std::env::remove_var("AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC") };
+
+    assert!(qwen35_selected_single_token_default_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q6K,
+    ));
+    assert!(qwen35_selected_single_token_default_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q8_0,
+    ));
+    assert!(qwen35_selected_single_token_default_enabled(
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+    ));
+
+    assert!(!qwen35_selected_single_token_default_enabled(
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+        GgmlType::Q6K,
+    ));
+    assert!(!qwen35_selected_single_token_default_enabled(
+        GgmlType::Q5K,
+        GgmlType::Q5K,
+        GgmlType::Q8_0,
+    ));
+}
+
+#[test]
+fn test_qwen35_selected_single_token_default_respects_q4_pair_env_toggle() {
+    let _env_lock = lock_env_test();
+    let _off = EnvVarGuard::set("AX_QWEN35_SELECTED_PAIR_Q4K_MATVEC", "0");
+    assert!(!qwen35_selected_single_token_default_enabled(
+        GgmlType::Q4K,
+        GgmlType::Q4K,
+        GgmlType::Q6K,
+    ));
+}
+
+#[test]
 fn test_qwen35_selected_expert_pair_defaults_on_for_q4k_gate_up_when_q5k_fused_down_is_on() {
     let _env_lock = lock_env_test();
     let _pair_guard = EnvVarGuard {

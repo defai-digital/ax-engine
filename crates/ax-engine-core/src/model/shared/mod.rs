@@ -23,10 +23,12 @@ const LAYER_SUFFIXES: &[&str] = &[
 
 mod gpu_batch;
 mod gpu_decode;
+mod moe;
 mod runtime;
 #[cfg(test)]
 mod tests;
 
 pub(crate) use gpu_batch::*;
 pub(crate) use gpu_decode::*;
+pub(crate) use moe::*;
 pub(crate) use runtime::*;

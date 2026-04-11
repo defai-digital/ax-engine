@@ -345,14 +345,7 @@ impl Qwen3MoeForward {
     }
 
     pub(crate) fn moe_gpu_expert_dtype_supported(dtype: crate::gguf::tensor::GgmlType) -> bool {
-        // Q6K/Q8_0 f32-tile MoE mul_mat_id kernels exist and produce correct
-        // per-layer results, but numerical divergence from CPU compounds across
-        // 48 MoE layers causing NaN by layer ~7. Restrict to Q4K/Q5K until the
-        // f32 kernels are validated at full model depth.
-        matches!(
-            dtype,
-            crate::gguf::tensor::GgmlType::Q4K | crate::gguf::tensor::GgmlType::Q5K
-        )
+        crate::model::shared::moe_routed_expert_dtype_supported(dtype)
     }
 
     /// Check if MoE expert weights support the GPU mul_mat_id path.

@@ -953,6 +953,68 @@ kernel void per_head_rms_norm_f32_generic(
     }
 }
 
+// ── Per-head RMSNorm + SiLU(gate) * src (batch) ────────────────────
+//
+// gate[row, head, i] = SiLU(gate[row, head, i]) *
+//                      src[row, head, i] * inv_rms(row, head) * weight[i]
+//
+// Used by the Qwen3.5 recurrent tail to fuse the post-SSM head-wise norm
+// with the final SiLU gating pass into a single dispatch.
+
+kernel void per_head_rms_norm_silu_mul_batch_f32(
+    device float* gate         [[buffer(0)]],
+    device const float* src    [[buffer(1)]],
+    device const float* weight [[buffer(2)]],
+    constant uint& n_rows      [[buffer(3)]],
+    constant uint& n_heads     [[buffer(4)]],
+    constant uint& head_dim    [[buffer(5)]],
+    constant float& eps        [[buffer(6)]],
+    uint row_head              [[threadgroup_position_in_grid]],
+    uint lid                   [[thread_index_in_threadgroup]],
+    uint simd_lane             [[thread_index_in_simdgroup]],
+    uint simd_id               [[simdgroup_index_in_threadgroup]]
+) {
+    uint total_heads = n_rows * n_heads;
+    if (row_head >= total_heads) return;
+
+    uint row = row_head / n_heads;
+    uint head = row_head % n_heads;
+    uint base = row * (n_heads * head_dim) + head * head_dim;
+
+    float sum_sq = 0.0f;
+    for (uint i = lid; i < head_dim; i += NORM_TG_SIZE) {
+        float v = src[base + i];
+        sum_sq += v * v;
+    }
+
+    sum_sq = simd_sum(sum_sq);
+
+    constexpr uint n_groups = NORM_TG_SIZE / 32;
+    threadgroup float simd_sums[n_groups];
+    if (simd_lane == 0) {
+        simd_sums[simd_id] = sum_sq;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    threadgroup float shared_inv_rms;
+    if (simd_id == 0) {
+        sum_sq = (simd_lane < n_groups) ? simd_sums[simd_lane] : 0.0f;
+        sum_sq = simd_sum(sum_sq);
+        if (simd_lane == 0) {
+            shared_inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float inv_rms = shared_inv_rms;
+    for (uint i = lid; i < head_dim; i += NORM_TG_SIZE) {
+        uint idx = base + i;
+        float x = gate[idx];
+        float s = x / (1.0f + exp(-x));
+        gate[idx] = s * (src[idx] * inv_rms * weight[i]);
+    }
+}
+
 kernel void per_head_rms_norm_no_weight_f32_generic(
     device float* buf          [[buffer(0)]],
     constant uint& n_rows      [[buffer(1)]],
@@ -1269,6 +1331,29 @@ kernel void softplus_bias_mul_f32(
     alpha[gid] = sp * a[gid];
 }
 
+// ── Fused softplus(alpha + bias) * a + sigmoid(beta) ────────────────
+//
+// alpha[i] = ln(1 + exp(alpha[i] + bias[i])) * a[i]
+// beta[i]  = sigmoid(beta[i])
+//
+// Used by Qwen3.5 recurrent decode to avoid a second elementwise dispatch
+// for beta preparation.
+
+kernel void softplus_bias_mul_sigmoid_pair_f32(
+    device float* alpha       [[buffer(0)]],
+    device float* beta        [[buffer(1)]],
+    device const float* bias  [[buffer(2)]],
+    device const float* a     [[buffer(3)]],
+    constant uint& n          [[buffer(4)]],
+    uint gid                  [[thread_position_in_grid]]
+) {
+    if (gid >= n) return;
+    float x = alpha[gid] + bias[gid];
+    float sp = (x > 20.0f) ? x : log(1.0f + exp(x));
+    alpha[gid] = sp * a[gid];
+    beta[gid] = 1.0f / (1.0f + exp(-beta[gid]));
+}
+
 // ── Batched softplus + bias + mul ───────────────────────────────────
 //
 // alpha[t, h] = ln(1 + exp(alpha[t, h] + bias[h])) * a[h]
@@ -1289,6 +1374,28 @@ kernel void softplus_bias_mul_batch_f32(
     float x = alpha[gid] + bias[head];
     float sp = (x > 20.0f) ? x : log(1.0f + exp(x));
     alpha[gid] = sp * a[head];
+}
+
+// ── Batched fused softplus(alpha + bias) * a + sigmoid(beta) ────────
+//
+// alpha[t, h] = ln(1 + exp(alpha[t, h] + bias[h])) * a[h]
+// beta[t, h]  = sigmoid(beta[t, h])
+
+kernel void softplus_bias_mul_sigmoid_pair_batch_f32(
+    device float* alpha       [[buffer(0)]],
+    device float* beta        [[buffer(1)]],
+    device const float* bias  [[buffer(2)]],
+    device const float* a     [[buffer(3)]],
+    constant uint& n          [[buffer(4)]],
+    constant uint& head_dim   [[buffer(5)]],
+    uint gid                  [[thread_position_in_grid]]
+) {
+    if (gid >= n) return;
+    uint head = gid % head_dim;
+    float x = alpha[gid] + bias[head];
+    float sp = (x > 20.0f) ? x : log(1.0f + exp(x));
+    alpha[gid] = sp * a[head];
+    beta[gid] = 1.0f / (1.0f + exp(-beta[gid]));
 }
 
 // ── L2 norm per head ────────────────────────────────────────────────

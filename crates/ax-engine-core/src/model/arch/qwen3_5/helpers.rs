@@ -415,24 +415,12 @@ impl Qwen3_5Forward {
     }
 
     fn qwen35_moe_batch_dtype_supported(dtype: crate::gguf::tensor::GgmlType) -> bool {
-        matches!(
-            dtype,
-            crate::gguf::tensor::GgmlType::F32
-                | crate::gguf::tensor::GgmlType::Q4K
-                | crate::gguf::tensor::GgmlType::Q5K
-                | crate::gguf::tensor::GgmlType::Q6K
-                | crate::gguf::tensor::GgmlType::Q8_0
-        )
+        crate::model::shared::moe_router_dtype_supported(dtype)
     }
 
+    #[cfg(test)]
     fn qwen35_moe_routed_expert_dtype_supported(dtype: crate::gguf::tensor::GgmlType) -> bool {
-        matches!(
-            dtype,
-            crate::gguf::tensor::GgmlType::Q4K
-                | crate::gguf::tensor::GgmlType::Q5K
-                | crate::gguf::tensor::GgmlType::Q6K
-                | crate::gguf::tensor::GgmlType::Q8_0
-        )
+        crate::model::shared::moe_routed_expert_dtype_supported(dtype)
     }
 
     fn qwen35_shared_expert_gate_width_supported(rows: usize, dim: usize) -> bool {
@@ -446,56 +434,12 @@ impl Qwen3_5Forward {
         prefix: &str,
         dim: usize,
     ) -> anyhow::Result<Option<Qwen3_5MoeResidentLayerKeys>> {
-        if !Self::qwen35_layer_uses_moe(weights, prefix) {
+        let Some(layer) = crate::model::shared::build_routed_moe_resident_layer_keys(
+            metal_ops, cfg, weights, prefix, dim,
+        )?
+        else {
             return Ok(None);
-        }
-
-        let router_name = format!("{prefix}.ffn_gate_inp.weight");
-        let (router_raw, router_dtype) = weights.raw_with_dtype(&router_name)?;
-        if !Self::qwen35_moe_batch_dtype_supported(router_dtype) {
-            return Ok(None);
-        }
-        let router_key = metal_ops.ensure_moe_quant_cached(router_raw);
-
-        let n_expert = cfg
-            .n_expert
-            .unwrap_or(Self::tensor_output_rows(weights, &router_name)? as u32)
-            as usize;
-        let n_expert_used = cfg.n_expert_used.unwrap_or(0) as usize;
-        anyhow::ensure!(n_expert > 0, "qwen35moe requires n_expert > 0");
-        anyhow::ensure!(n_expert_used > 0, "qwen35moe requires n_expert_used > 0");
-        anyhow::ensure!(
-            n_expert_used <= n_expert,
-            "qwen35moe n_expert_used ({n_expert_used}) > n_expert ({n_expert})"
-        );
-
-        let gate_name = format!("{prefix}.ffn_gate_exps.weight");
-        let up_name = format!("{prefix}.ffn_up_exps.weight");
-        let down_name = format!("{prefix}.ffn_down_exps.weight");
-        // GPU mul_mat_id kernel uses the GGUF tensor's ne0 as the matmul
-        // output dimension (it transposes internally like ggml_mul_mat).
-        // For gate_exps [ne0=2048, ne1=512, ne2=256], output_rows=2048.
-        // This is correct for the GPU path — do NOT use cfg.expert_intermediate_dim here.
-        let expert_inter_dim = Self::tensor_output_rows(weights, &gate_name)?;
-        let (gate_raw, gate_dtype) = weights.raw_with_dtype(&gate_name)?;
-        let (up_raw, up_dtype) = weights.raw_with_dtype(&up_name)?;
-        let (down_raw, down_dtype) = weights.raw_with_dtype(&down_name)?;
-        if !Self::qwen35_moe_routed_expert_dtype_supported(gate_dtype)
-            || !Self::qwen35_moe_routed_expert_dtype_supported(up_dtype)
-            || !Self::qwen35_moe_routed_expert_dtype_supported(down_dtype)
-        {
-            return Ok(None);
-        }
-        let gate_key = metal_ops.ensure_moe_quant_cached(gate_raw);
-        let up_key = metal_ops.ensure_moe_quant_cached(up_raw);
-        let down_key = metal_ops.ensure_moe_quant_cached(down_raw);
-
-        let gate_stride =
-            crate::model::moe_utils::expert_byte_stride(gate_dtype, expert_inter_dim * dim);
-        let up_stride =
-            crate::model::moe_utils::expert_byte_stride(up_dtype, expert_inter_dim * dim);
-        let down_stride =
-            crate::model::moe_utils::expert_byte_stride(down_dtype, dim * expert_inter_dim);
+        };
 
         let shared_gate_name = format!("{prefix}.ffn_gate_shexp.weight");
         let shared_expert = if weights.has(&shared_gate_name) {
@@ -547,31 +491,26 @@ impl Qwen3_5Forward {
             None
         };
         Ok(Some(Qwen3_5MoeResidentLayerKeys {
-            router: router_key,
-            router_dtype,
-            gate: gate_key,
-            gate_dtype,
-            up: up_key,
-            up_dtype,
-            down: down_key,
-            down_dtype,
-            n_expert,
-            n_expert_used,
-            expert_inter_dim,
-            gate_stride,
-            up_stride,
-            down_stride,
+            router: layer.router,
+            router_dtype: layer.router_dtype,
+            gate: layer.gate,
+            gate_dtype: layer.gate_dtype,
+            up: layer.up,
+            up_dtype: layer.up_dtype,
+            down: layer.down,
+            down_dtype: layer.down_dtype,
+            n_expert: layer.n_expert,
+            n_expert_used: layer.n_expert_used,
+            expert_inter_dim: layer.expert_inter_dim,
+            gate_stride: layer.gate_stride,
+            up_stride: layer.up_stride,
+            down_stride: layer.down_stride,
             shared_expert,
         }))
     }
 
     fn tensor_output_rows(weights: &WeightStore, name: &str) -> anyhow::Result<usize> {
-        let info = weights.info(name)?;
-        match info.shape.as_slice() {
-            [_input_dim] => Ok(1),
-            [_input_dim, output_dim, ..] => Ok(*output_dim as usize),
-            [] => anyhow::bail!("{name} has empty shape"),
-        }
+        crate::model::shared::tensor_output_rows(weights, name)
     }
 
     fn expert_quant_slice<'a>(
@@ -911,27 +850,20 @@ impl Qwen3_5Forward {
         let nw_buf = weight_cache.get(&nw_key).unwrap();
 
         metal_ops.device.execute_sync(|encoder| {
-            // 1. Per-head RMS norm on rec_out (in gate_buf).
+            // 1. Fuse per-head RMS norm on rec_out with SiLU(rec_z) gating.
             // inner_size = time_step_rank × state_size, treat as n_heads=time_step_rank, head_dim=state_size.
-            metal_ops.elementwise.encode_per_head_rms_norm_batch(
-                encoder,
-                &bs.gate_buf,
-                nw_buf,
-                n_tokens as u32,
-                dims.time_step_rank as u32,
-                dims.state_size as u32,
-                rms_norm_eps,
-            );
-
-            // 2. SiLU(rec_z) × rec_out: up_buf = silu(up_buf) * gate_buf.
-            // After this, up_buf holds the final result.
-            metal_ops.elementwise.encode_silu_elementwise_mul_batch(
-                encoder,
-                &bs.up_buf,
-                &bs.gate_buf,
-                dims.inner_size as u32,
-                n_tokens as u32,
-            );
+            metal_ops
+                .elementwise
+                .encode_per_head_rms_norm_silu_mul_batch(
+                    encoder,
+                    &bs.up_buf,
+                    &bs.gate_buf,
+                    nw_buf,
+                    n_tokens as u32,
+                    dims.time_step_rank as u32,
+                    dims.state_size as u32,
+                    rms_norm_eps,
+                );
             Ok(())
         })?;
         drop(weight_cache);

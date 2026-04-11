@@ -4742,3 +4742,154 @@ fn test_attention_decode_splitk_f16kv_hd128_matches_cpu() {
         "Split-K f16 decode: max_diff={diff} (4 heads, 2 kv, dim=128, 512 tokens)"
     );
 }
+
+#[test]
+fn test_elementwise_softplus_bias_mul_sigmoid_pair_matches_cpu() {
+    let gpu = MetalDevice::new().unwrap();
+    let kernels = ElementwiseKernels::new(&gpu).unwrap();
+
+    let alpha = vec![-2.0f32, -0.5, 0.0, 3.0, 25.0];
+    let beta = vec![-4.0f32, -1.0, 0.0, 2.0, 5.0];
+    let bias = vec![0.5f32, -0.25, 0.75, 0.0, 1.25];
+    let scale = vec![1.0f32, 0.5, -1.0, 2.0, 0.25];
+
+    let mut expected_alpha = alpha.clone();
+    let mut expected_beta = beta.clone();
+    for i in 0..alpha.len() {
+        let x = expected_alpha[i] + bias[i];
+        let sp = if x > 20.0 { x } else { (1.0 + x.exp()).ln() };
+        expected_alpha[i] = sp * scale[i];
+        expected_beta[i] = 1.0 / (1.0 + (-expected_beta[i]).exp());
+    }
+
+    let alpha_buf = MetalBuffer::from_slice(gpu.device(), &alpha).unwrap();
+    let beta_buf = MetalBuffer::from_slice(gpu.device(), &beta).unwrap();
+    let bias_buf = MetalBuffer::from_slice(gpu.device(), &bias).unwrap();
+    let scale_buf = MetalBuffer::from_slice(gpu.device(), &scale).unwrap();
+
+    gpu.execute_sync(|encoder| {
+        kernels.encode_softplus_bias_mul_sigmoid_pair(
+            encoder,
+            &alpha_buf,
+            &beta_buf,
+            &bias_buf,
+            &scale_buf,
+            alpha.len() as u32,
+        );
+        Ok(())
+    })
+    .unwrap();
+
+    let actual_alpha = unsafe { alpha_buf.as_slice::<f32>() };
+    let actual_beta = unsafe { beta_buf.as_slice::<f32>() };
+    assert!(max_abs_diff(actual_alpha, &expected_alpha) < 1e-5);
+    assert!(max_abs_diff(actual_beta, &expected_beta) < 1e-5);
+}
+
+#[test]
+fn test_elementwise_softplus_bias_mul_sigmoid_pair_batch_matches_cpu() {
+    let gpu = MetalDevice::new().unwrap();
+    let kernels = ElementwiseKernels::new(&gpu).unwrap();
+
+    let head_dim = 4usize;
+    let alpha = vec![-2.0f32, -0.5, 0.0, 3.0, 1.0, -3.0, 0.25, 10.0];
+    let beta = vec![-4.0f32, -1.0, 0.0, 2.0, 0.5, -0.75, 1.5, 5.0];
+    let bias = vec![0.5f32, -0.25, 0.75, 1.25];
+    let scale = vec![1.0f32, 0.5, -1.0, 0.25];
+
+    let mut expected_alpha = alpha.clone();
+    let mut expected_beta = beta.clone();
+    for i in 0..alpha.len() {
+        let head = i % head_dim;
+        let x = expected_alpha[i] + bias[head];
+        let sp = if x > 20.0 { x } else { (1.0 + x.exp()).ln() };
+        expected_alpha[i] = sp * scale[head];
+        expected_beta[i] = 1.0 / (1.0 + (-expected_beta[i]).exp());
+    }
+
+    let alpha_buf = MetalBuffer::from_slice(gpu.device(), &alpha).unwrap();
+    let beta_buf = MetalBuffer::from_slice(gpu.device(), &beta).unwrap();
+    let bias_buf = MetalBuffer::from_slice(gpu.device(), &bias).unwrap();
+    let scale_buf = MetalBuffer::from_slice(gpu.device(), &scale).unwrap();
+
+    gpu.execute_sync(|encoder| {
+        kernels.encode_softplus_bias_mul_sigmoid_pair_batch(
+            encoder,
+            &alpha_buf,
+            &beta_buf,
+            &bias_buf,
+            &scale_buf,
+            alpha.len() as u32,
+            head_dim as u32,
+        );
+        Ok(())
+    })
+    .unwrap();
+
+    let actual_alpha = unsafe { alpha_buf.as_slice::<f32>() };
+    let actual_beta = unsafe { beta_buf.as_slice::<f32>() };
+    assert!(max_abs_diff(actual_alpha, &expected_alpha) < 1e-5);
+    assert!(max_abs_diff(actual_beta, &expected_beta) < 1e-5);
+}
+
+#[test]
+fn test_elementwise_per_head_rms_norm_silu_mul_batch_matches_cpu() {
+    let gpu = MetalDevice::new().unwrap();
+    let kernels = ElementwiseKernels::new(&gpu).unwrap();
+
+    let n_rows = 2usize;
+    let n_heads = 3usize;
+    let head_dim = 5usize;
+    let eps = 1e-5f32;
+
+    let src = vec![
+        0.5f32, -1.0, 2.0, -0.25, 1.5, 1.0, 0.25, -0.5, 3.0, -2.0, -1.5, 2.5, 0.75, -0.125, 1.25,
+        0.2, -0.3, 0.4, -0.5, 0.6, 2.0, -1.0, 1.5, -2.5, 0.75, -0.8, 1.1, -1.4, 0.9, -0.2,
+    ];
+    let gate = vec![
+        -2.0f32, -0.5, 0.0, 1.0, 2.0, 0.1, -0.2, 0.3, -0.4, 0.5, 3.0, -3.5, 1.25, -1.5, 0.75, -0.9,
+        0.8, -0.7, 0.6, -0.5, 1.5, -1.25, 0.75, -0.25, 0.125, -2.5, 2.0, -1.0, 0.5, -0.1,
+    ];
+    let weight = vec![1.0f32, 0.5, -1.0, 0.25, 1.5];
+
+    let mut expected = gate.clone();
+    for row in 0..n_rows {
+        for head in 0..n_heads {
+            let base = row * n_heads * head_dim + head * head_dim;
+            let mut sum_sq = 0.0f32;
+            for i in 0..head_dim {
+                let v = src[base + i];
+                sum_sq += v * v;
+            }
+            let inv_rms = 1.0f32 / ((sum_sq / head_dim as f32) + eps).sqrt();
+            for i in 0..head_dim {
+                let idx = base + i;
+                let x = expected[idx];
+                let silu = x / (1.0 + (-x).exp());
+                expected[idx] = silu * (src[idx] * inv_rms * weight[i]);
+            }
+        }
+    }
+
+    let gate_buf = MetalBuffer::from_slice(gpu.device(), &gate).unwrap();
+    let src_buf = MetalBuffer::from_slice(gpu.device(), &src).unwrap();
+    let weight_buf = MetalBuffer::from_slice(gpu.device(), &weight).unwrap();
+
+    gpu.execute_sync(|encoder| {
+        kernels.encode_per_head_rms_norm_silu_mul_batch(
+            encoder,
+            &gate_buf,
+            &src_buf,
+            &weight_buf,
+            n_rows as u32,
+            n_heads as u32,
+            head_dim as u32,
+            eps,
+        );
+        Ok(())
+    })
+    .unwrap();
+
+    let actual = unsafe { gate_buf.as_slice::<f32>() };
+    assert!(max_abs_diff(actual, &expected) < 1e-5);
+}

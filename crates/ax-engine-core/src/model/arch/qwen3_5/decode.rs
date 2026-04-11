@@ -329,16 +329,12 @@ impl Qwen3_5Forward {
         }
         barrier.step(encoder);
 
-        metal_ops.elementwise.encode_softplus_bias_mul(
+        metal_ops.elementwise.encode_softplus_bias_mul_sigmoid_pair(
             encoder,
             scratch.alpha,
+            scratch.beta,
             weights.dt_bias,
             weights.ssm_a,
-            dims.time_step_rank as u32,
-        );
-        metal_ops.elementwise.encode_sigmoid_inplace(
-            encoder,
-            scratch.beta,
             dims.time_step_rank as u32,
         );
         barrier.step(encoder);
@@ -372,24 +368,18 @@ impl Qwen3_5Forward {
             eps,
         )?;
 
-        metal_ops.elementwise.encode_per_head_rms_norm_batch(
-            encoder,
-            recurrent_out,
-            weights.ssm_norm,
-            1,
-            dims.time_step_rank as u32,
-            dims.state_size as u32,
-            eps,
-        );
-        barrier.step(encoder);
-
-        metal_ops.elementwise.encode_silu_elementwise_mul_batch(
-            encoder,
-            scratch.z,
-            recurrent_out,
-            dims.inner_size as u32,
-            1,
-        );
+        metal_ops
+            .elementwise
+            .encode_per_head_rms_norm_silu_mul_batch(
+                encoder,
+                scratch.z,
+                recurrent_out,
+                weights.ssm_norm,
+                1,
+                dims.time_step_rank as u32,
+                dims.state_size as u32,
+                eps,
+            );
         barrier.step(encoder);
         Ok(())
     }

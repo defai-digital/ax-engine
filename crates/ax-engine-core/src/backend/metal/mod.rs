@@ -91,6 +91,43 @@ fn qwen35_selected_pair_q4_k_matvec_enabled() -> bool {
     )
 }
 
+fn qwen35_selected_single_token_gate_up_path_supported(
+    gate_dtype: GgmlType,
+    up_dtype: GgmlType,
+    down_dtype: GgmlType,
+) -> bool {
+    matches!(gate_dtype, GgmlType::Q4K | GgmlType::Q5K)
+        && matches!(up_dtype, GgmlType::Q4K | GgmlType::Q5K)
+        && matches!(
+            down_dtype,
+            GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0
+        )
+}
+
+fn qwen35_selected_single_token_down_supported(down_dtype: GgmlType) -> bool {
+    matches!(down_dtype, GgmlType::Q4K | GgmlType::Q5K)
+}
+
+fn qwen35_selected_single_token_down_falls_back_to_mul_mat_id(down_dtype: GgmlType) -> bool {
+    matches!(down_dtype, GgmlType::Q6K | GgmlType::Q8_0)
+}
+
+fn qwen35_selected_single_token_default_enabled(
+    gate_dtype: GgmlType,
+    up_dtype: GgmlType,
+    down_dtype: GgmlType,
+) -> bool {
+    if !qwen35_selected_single_token_gate_up_path_supported(gate_dtype, up_dtype, down_dtype) {
+        return false;
+    }
+    if qwen35_selected_single_token_down_supported(down_dtype) {
+        return true;
+    }
+    gate_dtype == GgmlType::Q4K
+        && up_dtype == GgmlType::Q4K
+        && qwen35_selected_pair_q4_k_matvec_enabled()
+}
+
 fn qwen35_shared_gate_inp_fused_enabled() -> bool {
     !matches!(
         env_flag_override("AX_QWEN35_SHARED_GATE_INP_FUSED"),
@@ -2844,13 +2881,15 @@ impl MetalOps {
         let m_inter = expert_inter_dim as u32;
         let m_dim = dim as u32;
         let selected_expert_single_token_supported = n_tokens == 1
-            && matches!(gate_dtype, GgmlType::Q4K | GgmlType::Q5K)
-            && matches!(up_dtype, GgmlType::Q4K | GgmlType::Q5K)
-            && matches!(down_dtype, GgmlType::Q4K | GgmlType::Q5K);
+            && qwen35_selected_single_token_gate_up_path_supported(
+                gate_dtype, up_dtype, down_dtype,
+            );
+        let selected_expert_single_token_default_enabled = n_tokens == 1
+            && qwen35_selected_single_token_default_enabled(gate_dtype, up_dtype, down_dtype);
         let use_selected_expert_single_token_path =
             match env_flag_override("AX_QWEN35_SELECTED_EXPERT_SINGLE_TOKEN") {
                 Some(enabled) => enabled && selected_expert_single_token_supported,
-                None => selected_expert_single_token_supported,
+                None => selected_expert_single_token_default_enabled,
             };
 
         self.elementwise.encode_rms_norm_out_batch(
@@ -2968,6 +3007,10 @@ impl MetalOps {
                 env_flag_override("AX_QWEN35_PROFILE_SKIP_SELECTED_DOWN"),
                 Some(true)
             );
+            let selected_down_single_token_supported =
+                qwen35_selected_single_token_down_supported(down_dtype);
+            let selected_down_falls_back_to_mul_mat_id =
+                qwen35_selected_single_token_down_falls_back_to_mul_mat_id(down_dtype);
             let use_selected_weighted_down = qwen35_selected_weighted_down_enabled(down_dtype);
             let use_selected_fused_silu_down_q5_k =
                 down_dtype == GgmlType::Q5K && qwen35_selected_fused_silu_down_q5_k_enabled();
@@ -3019,7 +3062,7 @@ impl MetalOps {
                     blocks_per_expert_down,
                 )?;
                 barrier(encoder);
-            } else {
+            } else if selected_down_single_token_supported {
                 self.elementwise.encode_silu_elementwise_mul_batch(
                     encoder,
                     gate_out_gpu,
@@ -3052,6 +3095,63 @@ impl MetalOps {
                     neu,
                 );
                 barrier(encoder);
+            } else if selected_down_falls_back_to_mul_mat_id {
+                self.elementwise.encode_silu_elementwise_mul_batch(
+                    encoder,
+                    gate_out_gpu,
+                    up_out_gpu,
+                    m_inter,
+                    nt * neu,
+                );
+                barrier(encoder);
+                // Mixed routed-expert layouts such as Qwen3-Coder's Q4/Q5
+                // gate+up with Q6/Q8 down still benefit from the selected
+                // gate/up path. Reuse the generic routed down kernel for the
+                // final projection instead of disabling the whole fast path.
+                self.dequant.encode_moe_map0(
+                    encoder,
+                    ids_gpu,
+                    tpe_gpu,
+                    hids_gpu,
+                    n_tokens as u32,
+                    n_expert_used as u32,
+                    n_expert as u32,
+                );
+                barrier(encoder);
+                self.encode_moe_mul_mat_id(
+                    encoder,
+                    down_buf,
+                    gate_out_gpu,
+                    tpe_gpu,
+                    hids_gpu,
+                    down_out_gpu,
+                    down_dtype,
+                    m_dim,
+                    m_inter,
+                    nt,
+                    neu,
+                    ne,
+                    blocks_per_expert_down,
+                    active_buf,
+                    ne,
+                    true,
+                )?;
+                barrier(encoder);
+                self.elementwise.encode_moe_weighted_reduce_slots(
+                    encoder,
+                    down_out_gpu,
+                    weights_gpu,
+                    accum_gpu,
+                    m_dim,
+                    nt,
+                    neu,
+                );
+                barrier(encoder);
+            } else {
+                anyhow::bail!(
+                    "unsupported routed down dtype {:?} for selected single-token MoE path",
+                    down_dtype
+                );
             }
         } else if !profile_skip_routed_expert {
             self.dequant.encode_moe_map0(

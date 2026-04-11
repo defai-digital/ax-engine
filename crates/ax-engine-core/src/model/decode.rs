@@ -705,7 +705,7 @@ mod tests {
     }
 
     #[test]
-    fn test_select_decode_mode_qwen35_hybrid_uses_single_cb_when_pipelined_decode_is_disabled() {
+    fn test_select_decode_mode_qwen35_hybrid_prefers_pipelined_by_default() {
         let Ok(backend) = MetalBackend::new() else {
             return;
         };
@@ -713,16 +713,9 @@ mod tests {
         let kv = model.create_model_kv();
         assert!(matches!(kv, ModelKv::Qwen35(_)));
 
-        // Qwen3.5 dense native decode is enabled, but pipelined decode stays
-        // disabled until the native pending-frame path is validated.
         let selection = select_decode_mode(&model, &kv, DecodeIntent::Throughput, true);
-        assert_eq!(selection.mode, DecodeMode::SingleCb);
-        assert_eq!(
-            selection.fallback_reason.as_deref(),
-            Some(
-                "qwen35 hybrid decode keeps the native single-CB path because pipelined decode is unavailable"
-            )
-        );
+        assert_eq!(selection.mode, DecodeMode::Pipelined);
+        assert!(selection.fallback_reason.is_none());
     }
 
     #[test]
