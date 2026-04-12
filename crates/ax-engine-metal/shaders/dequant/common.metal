@@ -175,6 +175,45 @@ static_assert(sizeof(Q6_K_Block) == 210, "Q6_K_Block must be exactly 210 bytes")
 
 constant uint Q6_K_BLOCK_VALUES = 256;
 
+// Keep the 64-value tile mapping aligned with the standalone Q6_K dequant path
+// and llama.cpp's kernel_mul_mv_q6_K_f32_impl. Several Q6 batch/MoE loaders
+// reuse this helper so the ql/qh nibble mapping stays consistent everywhere.
+inline float q6_k_dequant_pair_value(
+    device const Q6_K_Block& blk,
+    uint group,
+    uint sub_pair,
+    uint c_in_pair
+) {
+    const uint sub = c_in_pair / 32;
+    const uint l = c_in_pair % 32;
+    const uint is = l / 16;
+    const uint ql_base = group * 64;
+    const uint qh_base = group * 32;
+    const uint sc_base = group * 8;
+
+    int q;
+    float sc;
+    if (sub_pair == 0) {
+        if (sub == 0) {
+            q = int((blk.ql[ql_base + l] & 0x0F) | ((blk.qh[qh_base + l] & 3) << 4)) - 32;
+            sc = float(blk.scales[sc_base + is]);
+        } else {
+            q = int((blk.ql[ql_base + 32 + l] & 0x0F) | (((blk.qh[qh_base + l] >> 2) & 3) << 4)) - 32;
+            sc = float(blk.scales[sc_base + is + 2]);
+        }
+    } else {
+        if (sub == 0) {
+            q = int((blk.ql[ql_base + l] >> 4) | (((blk.qh[qh_base + l] >> 4) & 3) << 4)) - 32;
+            sc = float(blk.scales[sc_base + is + 4]);
+        } else {
+            q = int((blk.ql[ql_base + 32 + l] >> 4) | (((blk.qh[qh_base + l] >> 6) & 3) << 4)) - 32;
+            sc = float(blk.scales[sc_base + is + 6]);
+        }
+    }
+
+    return float(blk.d) * sc * float(q);
+}
+
 // ── Standalone Q6_K Dequantization ──────────────────────────────────────
 
 
@@ -926,6 +965,68 @@ inline float q5_k_block_dot(
     return block_sum;
 }
 
+inline float q5_k_block_dot_ilp4(
+    device const Q5_K_Block& blk,
+    device const float* x_block,
+    uint simd_lane
+) {
+    uint tid = simd_lane / 4;
+    uint iq = tid / 4;
+    uint ir = tid % 4;
+
+    uint l0 = 8 * ir;
+    uint q_offset = 32 * iq + l0;
+    uint y_offset = 64 * iq + l0;
+
+    uchar hm1 = uchar(1u << (2 * iq));
+    uchar hm2 = uchar(hm1 << 1);
+    uchar hm3 = uchar(hm1 << 4);
+    uchar hm4 = uchar(hm2 << 4);
+
+    device const float* y1 = x_block + y_offset;
+    device const float* y2 = y1 + 128;
+
+    float2 sm0 = get_scale_min_q4k(iq * 2, blk.scales);
+    float2 sm1 = get_scale_min_q4k(iq * 2 + 1, blk.scales);
+    float2 sm2 = get_scale_min_q4k(iq * 2 + 4, blk.scales);
+    float2 sm3 = get_scale_min_q4k(iq * 2 + 5, blk.scales);
+
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+    float acc2 = 0.0f;
+    float acc3 = 0.0f;
+    float sumy0 = 0.0f;
+    float sumy1 = 0.0f;
+    float sumy2 = 0.0f;
+    float sumy3 = 0.0f;
+
+    FOR_UNROLL (uint l = 0; l < 8; ++l) {
+        float yl0 = y1[l];
+        float yl1 = y1[l + 32];
+        float yh0 = y2[l];
+        float yh1 = y2[l + 32];
+
+        uchar ql_lo_hi = blk.qs[q_offset + l];
+        uchar qh_lo_hi = blk.qs[q_offset + 64 + l];
+        uchar high_bits = blk.qh[l0 + l];
+
+        acc0 += yl0 * (float(ql_lo_hi & 0x0F) + ((high_bits & hm1) ? 16.0f : 0.0f));
+        acc1 += yl1 * (float(ql_lo_hi >> 4) + ((high_bits & hm2) ? 16.0f : 0.0f));
+        acc2 += yh0 * (float(qh_lo_hi & 0x0F) + ((high_bits & hm3) ? 16.0f : 0.0f));
+        acc3 += yh1 * (float(qh_lo_hi >> 4) + ((high_bits & hm4) ? 16.0f : 0.0f));
+
+        sumy0 += yl0;
+        sumy1 += yl1;
+        sumy2 += yh0;
+        sumy3 += yh1;
+    }
+
+    float d = float(blk.d);
+    float dmin = float(blk.dmin);
+    return d * (sm0.x * acc0 + sm1.x * acc1 + sm2.x * acc2 + sm3.x * acc3)
+        - dmin * (sm0.y * sumy0 + sm1.y * sumy1 + sm2.y * sumy2 + sm3.y * sumy3);
+}
+
 inline float q5_k_block_dot_silu(
     device const Q5_K_Block* a_row,
     uint b,
@@ -1163,6 +1264,58 @@ inline float q6_k_block_dot(
     }
 
     return sum;
+}
+
+// Llama.cpp-style Q6_K ILP path: two block streams per simdgroup lane layout.
+// This covers all 32 positions in a block by using tid=lane/2, ix=lane%2.
+inline float q6_k_block_dot_ilp2(
+    device const Q6_K_Block& blk,
+    device const float* x_block,
+    uint simd_lane
+) {
+    constexpr uchar kmask1 = 0x03;
+    constexpr uchar kmask2 = 0x0C;
+    constexpr uchar kmask3 = 0x30;
+    constexpr uchar kmask4 = 0xC0;
+
+    ushort tid = simd_lane / 2;
+    ushort ip = tid / 8;
+    ushort il = tid % 8;
+    ushort l0 = 4 * il;
+    ushort is = 8 * ip + l0 / 16;
+
+    ushort y_offset = 128 * ip + l0;
+    ushort q_offset_l = 64 * ip + l0;
+    ushort q_offset_h = 32 * ip + l0;
+
+    float yl[16];
+    device const float* xv = x_block + y_offset;
+    FOR_UNROLL (ushort l = 0; l < 4; ++l) {
+        yl[4 * l + 0] = xv[l + 0];
+        yl[4 * l + 1] = xv[l + 32];
+        yl[4 * l + 2] = xv[l + 64];
+        yl[4 * l + 3] = xv[l + 96];
+    }
+
+    device const uchar* q1 = blk.ql + q_offset_l;
+    device const uchar* q2 = q1 + 32;
+    device const uchar* qh = blk.qh + q_offset_h;
+    device const char* sc = blk.scales + is;
+
+    float4 sums = {0.0f, 0.0f, 0.0f, 0.0f};
+    FOR_UNROLL (ushort l = 0; l < 4; ++l) {
+        sums[0] += yl[4 * l + 0] * ((int8_t)((q1[l] & 0xF) | ((qh[l] & kmask1) << 4)) - 32);
+        sums[1] += yl[4 * l + 1] * ((int8_t)((q2[l] & 0xF) | ((qh[l] & kmask2) << 2)) - 32);
+        sums[2] += yl[4 * l + 2] * ((int8_t)((q1[l] >> 4) | ((qh[l] & kmask3) << 0)) - 32);
+        sums[3] += yl[4 * l + 3] * ((int8_t)((q2[l] >> 4) | ((qh[l] & kmask4) >> 2)) - 32);
+    }
+
+    return float(blk.d) * (
+        sums[0] * float(sc[0]) +
+        sums[1] * float(sc[2]) +
+        sums[2] * float(sc[4]) +
+        sums[3] * float(sc[6])
+    );
 }
 
 inline float q6_k_block_dot_silu(

@@ -1,0 +1,2 @@
+label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
+Qwen3-Coder-30B-A3B-Q8_0-retest	/Users/akiralam/code/ax-engine/models/Qwen3-Coder-30B-A3B-Instruct-Q8_0.gguf	512	128	512	5	20	377.16917154560156	1283.982622	29.374943638886847	38.60761242811064	70.338155	54.88857708609309

@@ -1,0 +1,71 @@
+{
+  "label": "qwen3-coder-30b-a3b-q4_k_m-rerun",
+  "model": "models/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+  "prompt_tokens": 512,
+  "decode_tokens": 128,
+  "decode_depth": 512,
+  "samples": 5,
+  "cooldown_seconds": 20,
+  "methodology": {
+    "aggregation": "outer_median",
+    "serial": true,
+    "ax": {
+      "deterministic": true,
+      "warmup_iters": 0,
+      "measure_iters": 1
+    },
+    "llama": {
+      "n_gpu_layers": 99,
+      "batch_size": 2048,
+      "ubatch_size": 512,
+      "cache_type_k": "f16",
+      "cache_type_v": "f16",
+      "flash_attn": true,
+      "threads": 12,
+      "no_warmup": true,
+      "repetitions_per_outer_sample": 1
+    }
+  },
+  "ax": {
+    "engine": "ax-engine",
+    "binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-bench",
+    "command": [
+      "/Users/akiralam/code/ax-engine/target/release/ax-engine-bench",
+      "bench",
+      "--model",
+      "models/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+      "--prompt-tokens",
+      "512",
+      "--decode-tokens",
+      "128",
+      "--deterministic",
+      "--samples",
+      "5",
+      "--cooldown-ms",
+      "20000",
+      "--warmup-iters",
+      "0",
+      "--measure-iters",
+      "1",
+      "--llama-parity-preset",
+      "--json-output",
+      "/Users/akiralam/code/ax-engine/benchmarks/results/20260409-155941-001/ax.json"
+    ],
+    "prefill_median_tok_per_s": 7.559581712582706,
+    "decode_median_tok_per_s": 5.112674483310196,
+    "prefill_plan": "mode=serial reason=cpu_kv",
+    "decode_plan": "sync=sequential scratch=cpu",
+    "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/20260409-155941-001/ax.json"
+  },
+  "llama": {
+    "engine": "llama.cpp",
+    "binary": "/opt/homebrew/bin/llama-bench",
+    "prefill_median_tok_per_s": 1201.929188,
+    "decode_median_tok_per_s": 86.788573,
+    "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/20260409-155941-001/llama/summary.json"
+  },
+  "ratios": {
+    "prefill_percent": 0.6289540006230971,
+    "decode_percent": 5.890953505261799
+  }
+}

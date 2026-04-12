@@ -34,9 +34,9 @@ use common::{bind_buffers, bind_buffers7, bind_f32, bind_u32};
 use dequant::{DB_TILE_M, SB_TG, SB_TILE_N};
 use dequant::{
     DEQUANT_MATVEC_Q4K_ILP4_TG, DEQUANT_MATVEC_Q4K_NR2_TG, DEQUANT_MATVEC_Q5K_TG,
-    DEQUANT_MATVEC_Q6K_NR2_TG, DEQUANT_MATVEC_Q8_0_ILP4_TG, DEQUANT_MATVEC_Q8_0_NR2_TG,
-    DEQUANT_MATVEC_TG, Q4K_ILP4_ROWS, Q4K_NR2_ROWS, Q5K_NR2_ROWS, Q6K_NR2_ROWS, Q8_0_ILP4_ROWS,
-    Q8_0_NR2_ROWS,
+    DEQUANT_MATVEC_Q6K_ILP4_TG, DEQUANT_MATVEC_Q6K_NR2_TG, DEQUANT_MATVEC_Q8_0_ILP4_TG,
+    DEQUANT_MATVEC_Q8_0_NR2_TG, DEQUANT_MATVEC_TG, Q4K_ILP4_ROWS, Q4K_NR2_ROWS, Q5K_NR2_ROWS,
+    Q6K_ILP4_ROWS, Q6K_NR2_ROWS, Q8_0_ILP4_ROWS, Q8_0_NR2_ROWS,
 };
 
 /// Embedded Metal shader source for matmul kernels.
@@ -67,15 +67,6 @@ const SG_TG: usize = 128;
 
 /// Threadgroup size for the matvec kernel (must match shader constant).
 const MATVEC_TG_SIZE: usize = 256;
-
-fn warn_q6k_ilp4_disabled_once() {
-    static WARN_ONCE: OnceLock<()> = OnceLock::new();
-    WARN_ONCE.get_or_init(|| {
-        tracing::warn!(
-            "Q6_K ILP4 matvec requested by profile but disabled due to correctness bug; falling back to NR2"
-        );
-    });
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KernelMode {
@@ -935,9 +926,12 @@ fn q6_k_matvec_candidate_selection(
             };
         }
         Some(MatvecProfileVariant::Ilp4) => {
-            // Q6_K ILP4 has a correctness bug (only covers 16/32 positions per
-            // sub-group). Fall through to NR2 instead of using ILP4.
-            warn_q6k_ilp4_disabled_once();
+            return MatvecCandidateSelection {
+                candidate: MatvecCandidate::Q6KIlp4,
+                stability: KernelStabilityTier::ProfilePreferred,
+                threadgroups: (m as usize).div_ceil(Q6K_ILP4_ROWS),
+                threadgroup_width: DEQUANT_MATVEC_Q6K_ILP4_TG,
+            };
         }
         Some(MatvecProfileVariant::Base) => {
             return MatvecCandidateSelection {
@@ -957,10 +951,9 @@ fn q6_k_matvec_candidate_selection(
             threadgroup_width: DEQUANT_MATVEC_Q6K_NR2_TG,
         };
     }
-    // Dimension-aware auto-selection when no profile preference.
-    // NOTE: Q6_K ILP4 is disabled — the kernel's thread decomposition
-    // (tid = lane/4, il = tid%4) only covers positions 0-15 per
-    // 32-element sub-group, missing positions 16-31.  Use NR2 for all M≥2.
+    // Keep NR2 as the shipped default. The repaired ILP4 path is available via
+    // explicit profile override, but Qwen3-Coder Q6 decode regressed when it
+    // replaced NR2 automatically.
     if m < 2 {
         MatvecCandidateSelection {
             candidate: MatvecCandidate::Q6KBase,

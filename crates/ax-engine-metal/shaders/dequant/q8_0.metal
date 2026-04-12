@@ -1560,6 +1560,72 @@ kernel void moe_mul_mat_selected_pair_q8_0_matvec_nr2(
     }
 }
 
+kernel void moe_mul_mat_selected_pair_q8_0_matvec_ilp4(
+    device const Q8_0_Block* weights0  [[buffer(0)]],
+    device const Q8_0_Block* weights1  [[buffer(1)]],
+    device const float* input          [[buffer(2)]],
+    device const int32_t* selected     [[buffer(3)]],
+    device float* output0              [[buffer(4)]],
+    device float* output1              [[buffer(5)]],
+    constant uint& M                   [[buffer(6)]],
+    constant uint& K                   [[buffer(7)]],
+    constant uint& n_selected          [[buffer(8)]],
+    constant uint& weight_stride0      [[buffer(9)]],
+    constant uint& weight_stride1      [[buffer(10)]],
+    constant uint& input_is_slot_major [[buffer(11)]],
+    uint3 tgpig                        [[threadgroup_position_in_grid]],
+    uint simd_lane                     [[thread_index_in_simdgroup]],
+    uint simd_id                       [[simdgroup_index_in_threadgroup]]
+) {
+    if (tgpig.z >= n_selected) return;
+
+    const uint slot = tgpig.z;
+    const uint expert = uint(selected[slot]);
+    const uint first_row = tgpig.x * 2 + simd_id;
+    if (first_row >= M) return;
+
+    const uint input_row = input_is_slot_major != 0 ? slot : 0;
+    const uint blocks_per_row = K / Q8_0_BLOCK_VALUES;
+    device const Q8_0_Block* row0 =
+        weights0 + expert * weight_stride0 + first_row * blocks_per_row;
+    device const Q8_0_Block* row1 =
+        weights1 + expert * weight_stride1 + first_row * blocks_per_row;
+    device const float* x = input + input_row * K;
+
+    float sum00 = 0.0f, sum01 = 0.0f, sum02 = 0.0f, sum03 = 0.0f;
+    float sum10 = 0.0f, sum11 = 0.0f, sum12 = 0.0f, sum13 = 0.0f;
+
+    uint ib = 0;
+    for (; ib + 3 < blocks_per_row; ib += 4) {
+        float xv0 = x[(ib + 0) * Q8_0_BLOCK_VALUES + simd_lane];
+        float xv1 = x[(ib + 1) * Q8_0_BLOCK_VALUES + simd_lane];
+        float xv2 = x[(ib + 2) * Q8_0_BLOCK_VALUES + simd_lane];
+        float xv3 = x[(ib + 3) * Q8_0_BLOCK_VALUES + simd_lane];
+
+        sum00 += float(row0[ib + 0].d) * float(int(row0[ib + 0].qs[simd_lane])) * xv0;
+        sum01 += float(row0[ib + 1].d) * float(int(row0[ib + 1].qs[simd_lane])) * xv1;
+        sum02 += float(row0[ib + 2].d) * float(int(row0[ib + 2].qs[simd_lane])) * xv2;
+        sum03 += float(row0[ib + 3].d) * float(int(row0[ib + 3].qs[simd_lane])) * xv3;
+
+        sum10 += float(row1[ib + 0].d) * float(int(row1[ib + 0].qs[simd_lane])) * xv0;
+        sum11 += float(row1[ib + 1].d) * float(int(row1[ib + 1].qs[simd_lane])) * xv1;
+        sum12 += float(row1[ib + 2].d) * float(int(row1[ib + 2].qs[simd_lane])) * xv2;
+        sum13 += float(row1[ib + 3].d) * float(int(row1[ib + 3].qs[simd_lane])) * xv3;
+    }
+    for (; ib < blocks_per_row; ib++) {
+        float xv = x[ib * Q8_0_BLOCK_VALUES + simd_lane];
+        sum00 += float(row0[ib].d) * float(int(row0[ib].qs[simd_lane])) * xv;
+        sum10 += float(row1[ib].d) * float(int(row1[ib].qs[simd_lane])) * xv;
+    }
+
+    float total0 = simd_sum(sum00 + sum01 + sum02 + sum03);
+    float total1 = simd_sum(sum10 + sum11 + sum12 + sum13);
+    if (simd_lane == 0) {
+        output0[slot * M + first_row] = total0;
+        output1[slot * M + first_row] = total1;
+    }
+}
+
 kernel void moe_mul_mat_selected_weighted_q8_0_matvec(
     device const Q8_0_Block* weights   [[buffer(0)]],
     device const float* input          [[buffer(1)]],
@@ -1808,7 +1874,7 @@ kernel void moe_mul_mat_id_q8_0_blocked(
     const short lr1 = short(min(short(tiitg / NL1), short(nr1 - 1)));
 
     const short il0 = short(tiitg % NL0);
-    short il = il0;
+    const short il = il0;
 
     threadgroup half *sa = (threadgroup half *)(shmem);
     threadgroup half *sb = (threadgroup half *)(shmem + 4096);
@@ -1855,9 +1921,10 @@ kernel void moe_mul_mat_id_q8_0_blocked(
         *(threadgroup half2x4 *)(sb + 64 * ib + 8 * ly) =
             (half2x4)(*(device float2x4 *)y);
 
-        // Q8_0: one block covers 32 values = NK, advance by 1 block.
-        il = 1 - il;
-        x = (il == 0) ? x + 1 : x;
+        // Q8_0: each 32-value block is fully consumed in one NK-sized loop.
+        // The two `il` lanes already select the low/high 16-value halves of
+        // the same block, so advance exactly one block per iteration.
+        x += 1;
         y += NK;
 
         threadgroup_barrier(mem_flags::mem_threadgroup);

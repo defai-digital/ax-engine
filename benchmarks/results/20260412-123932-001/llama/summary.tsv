@@ -1,0 +1,2 @@
+model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_s	prefill_median_tok_per_s	prefill_mean_tok_per_s	decode_median_tok_per_s	decode_mean_tok_per_s
+models/gemma-4-26B-A4B-it-Q4_K_M.gguf	512	128	512	5	20	1165.735458	1090.7347228	73.289249	72.427814

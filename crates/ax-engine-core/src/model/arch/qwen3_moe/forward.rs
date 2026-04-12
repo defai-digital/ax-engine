@@ -382,6 +382,15 @@ impl ForwardPass for Qwen3MoeForward {
         {
             return Ok(None);
         }
+        let (gate_dtype, up_dtype, down_dtype) =
+            crate::model::shared::routed_moe_expert_dtypes(weights, "blk.0")?;
+        if Self::qwen3moe_split_moe_decode_command_buffers(
+            gate_dtype,
+            up_dtype,
+            down_dtype,
+        ) {
+            return Ok(None);
+        }
         let frame = Self::encode_qwen3moe_pending_gpu_unified_step(
             metal_ops,
             ctx.config,
@@ -418,6 +427,15 @@ impl ForwardPass for Qwen3MoeForward {
         if !Self::moe_gpu_decode_supported(ctx.config, weights)
             || !Self::moe_gpu_expert_dispatch_supported(weights)
         {
+            return Ok(None);
+        }
+        let (gate_dtype, up_dtype, down_dtype) =
+            crate::model::shared::routed_moe_expert_dtypes(weights, "blk.0")?;
+        if Self::qwen3moe_split_moe_decode_command_buffers(
+            gate_dtype,
+            up_dtype,
+            down_dtype,
+        ) {
             return Ok(None);
         }
         let frame = Self::encode_qwen3moe_pending_gpu_unified_step(

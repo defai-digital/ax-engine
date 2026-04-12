@@ -1,0 +1,2 @@
+label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
+qwen35-35b-a3b	models/Qwen3.5-35B-A3B-Q4_K_M.gguf	512	128	512	3	30	882.0030254254168	1178.075147	74.86814637177103	7.058970807571077	56.432867	12.508616313204637

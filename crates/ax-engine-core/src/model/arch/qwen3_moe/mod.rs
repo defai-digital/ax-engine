@@ -106,6 +106,22 @@ impl Qwen3MoeForward {
     const PARALLEL_BATCH_MIN_TOKENS: usize = 64;
     const PARALLEL_FLOAT_CHUNK: usize = 16 * 1024;
 
+    fn assert_finite_if_enabled(
+        label: &str,
+        values: &[f32],
+        layer: usize,
+        position: usize,
+    ) -> anyhow::Result<()> {
+        if !crate::model::shared::env_flag_enabled("AX_QWEN3MOE_ASSERT_FINITE") {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            values.iter().all(|value| value.is_finite()),
+            "qwen3moe non-finite values at {label} (layer={layer}, position={position})"
+        );
+        Ok(())
+    }
+
     fn parallel_elementwise_add(dst: &mut [f32], src: &[f32]) {
         if dst.len() >= Self::PARALLEL_FLOAT_CHUNK {
             dst.par_chunks_mut(Self::PARALLEL_FLOAT_CHUNK)

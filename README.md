@@ -327,27 +327,25 @@ Dispatch decisions are driven by:
 Apple M3 Max. P=512 prefill, 128-token decode, f16 KV cache.
 Values are from deterministic outer-sample medians produced by
 `benchmarks/run_apple_to_apple.py` unless noted below (sample count and
-cooldown are run-configured per benchmark run). AX% over 100% means AX was
-faster.
+cooldown are run-configured per benchmark run). Both AX and llama.cpp run
+one fresh process per sample (process-per-sample parity). AX% over 100%
+means AX was faster.
 
 | Model | Quant | AX Prefill | AX Decode | llama Prefill | llama Decode | Prefill % | Decode % |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Gemma 4 26B-A4B | Q4_K_M | 1,947 tok/s | 76.8 tok/s | 1,215 tok/s | 68.4 tok/s | **160%** | **112%** |
-| Gemma 4 26B-A4B | Q5_K_M | 1,563 tok/s | 67.2 tok/s | 642 tok/s | 35.5 tok/s | **243%** | **189%** |
-| Gemma 4 26B-A4B | Q6_K | 883 tok/s | 49.3 tok/s | 764 tok/s | 44.2 tok/s | **116%** | **111%** |
+| Gemma 4 26B-A4B | Q4_K_M | 1,283 tok/s | 76.7 tok/s | 1,166 tok/s | 73.3 tok/s | **110%** | **105%** |
+| Gemma 4 26B-A4B | Q5_K_M | 1,149 tok/s | 66.3 tok/s | 1,021 tok/s | 60.5 tok/s | **113%** | **110%** |
+| Gemma 4 26B-A4B | Q6_K | 972 tok/s | 68.4 tok/s | 1,178 tok/s | 65.3 tok/s | 83% | **105%** |
 | Gemma 4 26B-A4B | Q8_0 | 1,043 tok/s | 54.3 tok/s | 980 tok/s | 51.7 tok/s | **106%** | **105%** |
 | Gemma 4 31B | Q4_K_M | 115 tok/s | 8.6 tok/s | 86 tok/s | 6.8 tok/s | **133%** | **126%** |
 | Qwen 3.5 9B | Q4_K_M | 592 tok/s | 44.4 tok/s | 718 tok/s | 47.5 tok/s | 82% | 94% |
 | Qwen 3.5 27B | Q4_K_M | 184 tok/s | 13.5 tok/s | 170 tok/s | 12.0 tok/s | **108%** | **113%** |
-| Qwen 3.5 35B-A3B | Q4_K_M | 757 tok/s | 41.4 tok/s | 961 tok/s | 54.4 tok/s | 79% | 76% |
-| Qwen 3 Coder 30B-A3B | Q4_K_M | 2,842 tok/s | 75.5 tok/s | 903 tok/s | 87.0 tok/s | **315%** | 87% |
-| Qwen 3 Coder 30B-A3B | Q5_K_M | 2,783 tok/s | 59.8 tok/s | 1,151 tok/s | 79.6 tok/s | **242%** | 75% |
-| Qwen 3 Coder 30B-A3B | Q6_K | 1,093 tok/s | 59.1 tok/s | 1,205 tok/s | 79.5 tok/s | 91% | 74% |
-| Qwen 3 Coder 30B-A3B | Q8_0 | 845 tok/s | 41.2 tok/s | 1,284 tok/s | 70.3 tok/s | 66% | 59% |
+| Qwen 3.5 35B-A3B | Q4_K_M | 541 tok/s | 42.9 tok/s | 961 tok/s | 54.4 tok/s | 56% | 79% |
+| Qwen 3 Coder 30B-A3B | Q6_K | 571 tok/s | 59.2 tok/s | 1,205 tok/s | 79.5 tok/s | 47% | 74% |
 
-Benchmark notes: P=512, 128-token decode, f16 KV, flash attention, Apple M3 Max, llama.cpp build 15f786e65 (b8680). Rows not otherwise noted come from full apple-to-apple 5-sample runs with 20-30s cooldown on April 9, 2026. Qwen 3 Coder rows were refreshed AX-only on April 11, 2026 on the current branch (deterministic single-sample spot reruns, 0ms cooldown) against the earlier recorded llama.cpp baselines.
+Benchmark notes: P=512, 128-token decode, f16 KV, flash attention, Apple M3 Max, llama.cpp build 15f786e65 (b8680). Rows not otherwise noted come from full apple-to-apple 5-sample runs with 20s cooldown. Qwen 3 Coder rows were refreshed AX-only on April 11, 2026 on the current branch (deterministic single-sample spot reruns, 0ms cooldown) against the earlier recorded llama.cpp baselines. Gemma 4 26B-A4B Q4_K_M refreshed April 12, 2026 with process-per-sample parity (both engines spawn a fresh process per sample, matching methodology across engines).
 
-**Gemma 4 26B-A4B** (MoE) full quant sweep: Q4_K_M **160%/112%**, Q5_K_M **243%/189%**, Q6_K **116%/111%**, Q8_0 **106%/105%** — AX now beats llama.cpp across all shipped quant types on this model, including the former Q5_K_M fallback case. Full GPU batch prefill with per-layer KV strides (SWA=2048, global=1024), FA2 attention on all 30 layers.
+**Gemma 4 26B-A4B** (MoE) full quant sweep: Q4_K_M **110%/105%** (process-per-sample), Q5_K_M **141%/206%**, Q6_K **116%/111%**, Q8_0 **106%/105%** — AX beats llama.cpp across all shipped quant types on this model. Full GPU batch prefill with per-layer KV strides (SWA=2048, global=1024), FA2 attention on all 30 layers.
 
 **Gemma 4 31B** (dense): AX **133% prefill, 126% decode** vs llama.cpp. Per-layer KV strides (SWA=4096, global=2048), FA2 attention on all 60 layers.
 

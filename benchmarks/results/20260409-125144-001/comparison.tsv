@@ -1,0 +1,2 @@
+label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
+Qwen3-Coder-30B-A3B-Q5_K_M	models/Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf	512	128	512	5	20	6.333845677112244	1151.376279	0.550110836277898	4.446885219459337	79.553949	5.589773072684722

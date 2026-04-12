@@ -1,0 +1,2 @@
+label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
+meta-llama-3.1-8b-instruct-q5_k_m	models/meta-llama-3.1-8b-instruct-q5_k_m.gguf	512	128	512	5	20	617.1358243291248	703.285191	87.75043641280438	53.08932887165139	56.473934	94.00678350414084

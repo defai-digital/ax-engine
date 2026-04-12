@@ -279,6 +279,16 @@ fn test_q6_k_candidate_selection_honors_explicit_base_override_for_large_m() {
 }
 
 #[test]
+fn test_q6_k_candidate_selection_honors_explicit_ilp4_override() {
+    let mut config = default_dequant_config();
+    config.q6_k_variant = Some(crate::profile::MatvecProfileVariant::Ilp4);
+    let selection = q6_k_matvec_candidate_selection(37, config);
+    assert_eq!(selection.candidate, MatvecCandidate::Q6KIlp4);
+    assert_eq!(selection.stability, KernelStabilityTier::ProfilePreferred);
+    assert_eq!(selection.threadgroup_width, DEQUANT_MATVEC_Q6K_ILP4_TG);
+}
+
+#[test]
 fn test_q5_k_candidate_selection_defaults_to_stable_base() {
     let selection = q5_k_matvec_candidate_selection(1, default_dequant_config());
     assert_eq!(selection.candidate, MatvecCandidate::Q5KBase);
@@ -1449,6 +1459,69 @@ fn test_fused_matvec_q5_k_ilp4_matches_base_and_cpu_reference() {
 }
 
 #[test]
+fn test_fused_matvec_q6_k_ilp4_matches_base_and_cpu_reference_model_like() {
+    let gpu = MetalDevice::new().unwrap();
+    let kernels = DequantKernels::new(&gpu).unwrap();
+
+    let m = 35usize;
+    let k = 512usize;
+    let (quant_data, x_data) = make_q6_k_model_like_fixture(m, k);
+
+    let mut a_f32 = vec![0.0f32; m * k];
+    cpu_dequant_q6_k(&quant_data, &mut a_f32);
+    let mut expected = vec![0.0f32; m];
+    cpu_matvec(&a_f32, &x_data, &mut expected, m, k);
+
+    let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+    let buf_x = MetalBuffer::from_slice(gpu.device(), &x_data).unwrap();
+    let buf_base = MetalBuffer::new(gpu.device(), m * std::mem::size_of::<f32>()).unwrap();
+    let buf_ilp4 = MetalBuffer::new(gpu.device(), m * std::mem::size_of::<f32>()).unwrap();
+
+    let mut base_config = default_dequant_config();
+    base_config.q6_k_variant = Some(crate::profile::MatvecProfileVariant::Base);
+    kernels
+        .fused_matvec_q6_k_with_config(
+            &gpu,
+            &buf_a,
+            &buf_x,
+            &buf_base,
+            m as u32,
+            k as u32,
+            base_config,
+        )
+        .unwrap();
+
+    let mut ilp4_config = default_dequant_config();
+    ilp4_config.q6_k_variant = Some(crate::profile::MatvecProfileVariant::Ilp4);
+    kernels
+        .fused_matvec_q6_k_with_config(
+            &gpu,
+            &buf_a,
+            &buf_x,
+            &buf_ilp4,
+            m as u32,
+            k as u32,
+            ilp4_config,
+        )
+        .unwrap();
+
+    let base = unsafe { buf_base.as_slice::<f32>() };
+    let ilp4 = unsafe { buf_ilp4.as_slice::<f32>() };
+    let base_diff = max_abs_diff(base, &expected);
+    let ilp4_diff = max_abs_diff(ilp4, &expected);
+    let base_vs_ilp4 = max_abs_diff(base, ilp4);
+
+    assert!(
+        ilp4_diff < 0.02,
+        "Q6_K ILP4 exceeded model-like CPU tolerance: base_diff={base_diff}, ilp4_diff={ilp4_diff}",
+    );
+    assert!(
+        base_vs_ilp4 < 0.02,
+        "Q6_K ILP4 diverged from base kernel: max_diff={base_vs_ilp4}",
+    );
+}
+
+#[test]
 fn test_fused_batch_q5_k() {
     let gpu = MetalDevice::new().unwrap();
     let kernels = DequantKernels::new(&gpu).unwrap();
@@ -2068,6 +2141,59 @@ fn test_fused_batch_q8_0_blocked_f16in() {
     assert!(
         diff < 0.15,
         "Blocked Q8_0 f16in batch mismatch: max_diff={diff}"
+    );
+}
+
+#[test]
+fn test_fused_batch_q8_0_f32_input_nonsquare_matches_cpu() {
+    let gpu = MetalDevice::new().unwrap();
+    let kernels = DequantKernels::new(&gpu).unwrap();
+
+    let m = 37usize;
+    let n = 11usize;
+    let k = 64usize;
+    let blocks_per_row = k / Q8_0_BLOCK_SIZE;
+
+    let mut quant_data = Vec::new();
+    for row in 0..m {
+        for blk in 0..blocks_per_row {
+            let mut block = vec![0u8; Q8_0_BYTES_PER_BLOCK];
+            let d = ((row + blk * 5) % 13) as f32 * 0.07 + 0.05;
+            let d_bytes = half::f16::from_f32(d).to_le_bytes();
+            block[0] = d_bytes[0];
+            block[1] = d_bytes[1];
+            for (i, byte) in block[2..34].iter_mut().enumerate() {
+                *byte = ((row as i32 * 9 + blk as i32 * 7 + i as i32) % 127 - 63) as i8 as u8;
+            }
+            quant_data.extend(block);
+        }
+    }
+
+    let mut weights_f32 = vec![0.0f32; m * k];
+    cpu_dequant_q8_0(&quant_data, &mut weights_f32);
+    let batch_input_f32: Vec<f32> = (0..n * k)
+        .map(|i| ((i % 29) as f32 - 14.0) * 0.0125)
+        .collect();
+    let mut expected = vec![0.0f32; n * m];
+    cpu_batch_btrans_matmul(&weights_f32, &batch_input_f32, &mut expected, m, n, k);
+
+    let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+    let buf_b = MetalBuffer::from_slice(gpu.device(), &batch_input_f32).unwrap();
+    let buf_c = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
+
+    gpu.execute_sync(|encoder| {
+        kernels.encode_fused_batch_q8_0(
+            encoder, &buf_a, &buf_b, &buf_c, m as u32, n as u32, k as u32,
+        );
+        Ok(())
+    })
+    .unwrap();
+
+    let result = unsafe { buf_c.as_slice::<f32>() };
+    let diff = max_abs_diff(result, &expected);
+    assert!(
+        diff < 1e-4,
+        "Q8_0 f32-input batch mismatch: max_diff={diff}"
     );
 }
 
@@ -2697,6 +2823,365 @@ fn test_fused_gelu_down_matvec_q6_k_matches_cpu_reference() {
     assert!(
         diff < 0.03,
         "Fused Q6_K GELU-down matvec mismatch: max_diff={diff}"
+    );
+}
+
+fn assert_fused_batch_gelu_down_q6_k_case(m: usize, n: usize, k: usize) {
+    let gpu = MetalDevice::new().unwrap();
+    let kernels = DequantKernels::new(&gpu).unwrap();
+    let (quant_data, _) = make_q6_k_model_like_fixture(m, k);
+
+    let gate: Vec<f32> = (0..n * k)
+        .map(|i| (((i * 5 + 7) % 53) as f32 - 26.0) * 0.08)
+        .collect();
+    let up: Vec<f32> = (0..n * k)
+        .map(|i| (((i * 11 + 3) % 47) as f32 - 23.0) * 0.06)
+        .collect();
+
+    let mut fused_input = gate.clone();
+    for token in 0..n {
+        let row = &mut fused_input[token * k..][..k];
+        let up_row = &up[token * k..][..k];
+        cpu_gelu_elementwise_mul(row, up_row);
+    }
+
+    let mut a_f32 = vec![0.0f32; m * k];
+    cpu_dequant_q6_k(&quant_data, &mut a_f32);
+    let mut expected = vec![0.0f32; n * m];
+    cpu_batch_btrans_matmul(&a_f32, &fused_input, &mut expected, m, n, k);
+
+    let buf_a = MetalBuffer::from_bytes(gpu.device(), &quant_data).unwrap();
+    let buf_gate = MetalBuffer::from_slice(gpu.device(), &gate).unwrap();
+    let buf_up = MetalBuffer::from_slice(gpu.device(), &up).unwrap();
+    let buf_y = MetalBuffer::new(gpu.device(), n * m * std::mem::size_of::<f32>()).unwrap();
+
+    gpu.execute_sync(|encoder| {
+        assert!(kernels.encode_fused_batch_q6_k_gelu(
+            encoder, &buf_a, &buf_gate, &buf_up, &buf_y, m as u32, n as u32, k as u32,
+        ));
+        Ok(())
+    })
+    .unwrap();
+
+    let result = unsafe { buf_y.as_slice::<f32>() };
+    let diff = max_abs_diff(result, &expected);
+    assert!(
+        diff < 0.08,
+        "Fused Q6_K batch GELU-down mismatch: m={m}, n={n}, k={k}, max_diff={diff}"
+    );
+}
+
+#[test]
+fn test_fused_batch_gelu_down_q6_k_matches_cpu_reference_boundary() {
+    assert_fused_batch_gelu_down_q6_k_case(24, 11, 512);
+}
+
+#[test]
+fn test_fused_batch_gelu_down_q6_k_matches_cpu_reference_fulltile() {
+    assert_fused_batch_gelu_down_q6_k_case(32, 32, 512);
+}
+
+#[test]
+fn test_moe_selected_pair_q6_k_ilp4_matches_cpu_reference() {
+    let gpu = MetalDevice::new().unwrap();
+    let kernels = DequantKernels::new(&gpu).unwrap();
+
+    let m = 96usize;
+    let k = 512usize;
+    let n_selected = 2usize;
+    let n_experts = 2usize;
+    let blocks_per_row = k / Q6_K_BLOCK_SIZE;
+    let weight_stride = m * blocks_per_row;
+
+    let build_weights = |seed: usize| -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(n_experts * m * Q6_K_BYTES_PER_BLOCK * blocks_per_row);
+        for expert in 0..n_experts {
+            for row in 0..m {
+                for blk in 0..blocks_per_row {
+                    let mut block = vec![0u8; Q6_K_BYTES_PER_BLOCK];
+                    for (i, byte) in block[..128].iter_mut().enumerate() {
+                        *byte = ((seed + expert * 3 + row * 3 + blk * 5 + i) % 16) as u8;
+                    }
+                    for (i, byte) in block[128..192].iter_mut().enumerate() {
+                        *byte = ((seed + expert * 5 + row * 11 + blk * 7 + i) % 4) as u8;
+                    }
+                    for (i, byte) in block[192..208].iter_mut().enumerate() {
+                        *byte = ((seed as i32
+                            + expert as i32 * 2
+                            + row as i32 * 2
+                            + blk as i32 * 3
+                            + i as i32)
+                            % 15
+                            - 7) as i8 as u8;
+                    }
+                    let d = 0.0125 + ((seed + expert + row + blk) % 9) as f32 * 0.00625;
+                    let d_bytes = half::f16::from_f32(d).to_le_bytes();
+                    block[208] = d_bytes[0];
+                    block[209] = d_bytes[1];
+                    bytes.extend(block);
+                }
+            }
+        }
+        bytes
+    };
+
+    let weights0 = build_weights(1);
+    let weights1 = build_weights(17);
+    let input: Vec<f32> = (0..n_selected * k)
+        .map(|i| (((i * 7 + 3) % 29) as f32 - 14.0) * 0.0075)
+        .collect();
+    let selected = vec![0i32, 1i32];
+
+    let mut w0_f32 = vec![0.0f32; n_experts * m * k];
+    let mut w1_f32 = vec![0.0f32; n_experts * m * k];
+    cpu_dequant_q6_k(&weights0, &mut w0_f32);
+    cpu_dequant_q6_k(&weights1, &mut w1_f32);
+    let mut expected0 = vec![0.0f32; n_selected * m];
+    let mut expected1 = vec![0.0f32; n_selected * m];
+    for slot in 0..n_selected {
+        let expert = selected[slot] as usize;
+        let x = &input[slot * k..(slot + 1) * k];
+        cpu_matvec(
+            &w0_f32[expert * m * k..(expert + 1) * m * k],
+            x,
+            &mut expected0[slot * m..(slot + 1) * m],
+            m,
+            k,
+        );
+        cpu_matvec(
+            &w1_f32[expert * m * k..(expert + 1) * m * k],
+            x,
+            &mut expected1[slot * m..(slot + 1) * m],
+            m,
+            k,
+        );
+    }
+
+    let buf_w0 = MetalBuffer::from_bytes(gpu.device(), &weights0).unwrap();
+    let buf_w1 = MetalBuffer::from_bytes(gpu.device(), &weights1).unwrap();
+    let buf_input = MetalBuffer::from_slice(gpu.device(), &input).unwrap();
+    let buf_selected = MetalBuffer::from_slice(gpu.device(), &selected).unwrap();
+    let buf_base0 =
+        MetalBuffer::new(gpu.device(), n_selected * m * std::mem::size_of::<f32>()).unwrap();
+    let buf_base1 =
+        MetalBuffer::new(gpu.device(), n_selected * m * std::mem::size_of::<f32>()).unwrap();
+    let buf_out0 =
+        MetalBuffer::new(gpu.device(), n_selected * m * std::mem::size_of::<f32>()).unwrap();
+    let buf_out1 =
+        MetalBuffer::new(gpu.device(), n_selected * m * std::mem::size_of::<f32>()).unwrap();
+
+    let mut base_config = default_dequant_config();
+    base_config.q6_k_variant = Some(crate::profile::MatvecProfileVariant::Base);
+    gpu.execute_sync(|encoder| {
+        kernels.encode_moe_mul_mat_selected_pair_q6_k(
+            encoder,
+            &buf_w0,
+            &buf_w1,
+            &buf_input,
+            &buf_selected,
+            &buf_base0,
+            &buf_base1,
+            m as u32,
+            k as u32,
+            n_selected as u32,
+            weight_stride as u32,
+            weight_stride as u32,
+            true,
+            base_config,
+        );
+        Ok(())
+    })
+    .unwrap();
+
+    let mut config = default_dequant_config();
+    config.q6_k_variant = Some(crate::profile::MatvecProfileVariant::Ilp4);
+    gpu.execute_sync(|encoder| {
+        kernels.encode_moe_mul_mat_selected_pair_q6_k(
+            encoder,
+            &buf_w0,
+            &buf_w1,
+            &buf_input,
+            &buf_selected,
+            &buf_out0,
+            &buf_out1,
+            m as u32,
+            k as u32,
+            n_selected as u32,
+            weight_stride as u32,
+            weight_stride as u32,
+            true,
+            config,
+        );
+        Ok(())
+    })
+    .unwrap();
+
+    let base0 = unsafe { buf_base0.as_slice::<f32>() };
+    let base1 = unsafe { buf_base1.as_slice::<f32>() };
+    let out0 = unsafe { buf_out0.as_slice::<f32>() };
+    let out1 = unsafe { buf_out1.as_slice::<f32>() };
+    let base_diff0 = max_abs_diff(base0, &expected0);
+    let base_diff1 = max_abs_diff(base1, &expected1);
+    let diff0 = max_abs_diff(out0, &expected0);
+    let diff1 = max_abs_diff(out1, &expected1);
+    let base_vs_ilp4_0 = max_abs_diff(base0, out0);
+    let base_vs_ilp4_1 = max_abs_diff(base1, out1);
+    assert!(
+        diff0 < 0.06 && diff1 < 0.06,
+        "selected pair Q6_K ILP4 exceeded CPU tolerance: base_diff0={base_diff0}, base_diff1={base_diff1}, diff0={diff0}, diff1={diff1}",
+    );
+    assert!(
+        base_vs_ilp4_0 < 0.02 && base_vs_ilp4_1 < 0.02,
+        "selected pair Q6_K ILP4 diverged from base kernel: diff0={base_vs_ilp4_0}, diff1={base_vs_ilp4_1}",
+    );
+}
+
+#[test]
+fn test_moe_selected_pair_q8_0_ilp4_matches_cpu_reference() {
+    let gpu = MetalDevice::new().unwrap();
+    let kernels = DequantKernels::new(&gpu).unwrap();
+
+    let m = 96usize;
+    let k = 256usize;
+    let n_selected = 2usize;
+    let n_experts = 2usize;
+    let blocks_per_row = k / Q8_0_BLOCK_SIZE;
+    let weight_stride = m * blocks_per_row;
+
+    let build_weights = |seed: usize| -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(n_experts * m * Q8_0_BYTES_PER_BLOCK * blocks_per_row);
+        for expert in 0..n_experts {
+            for row in 0..m {
+                for blk in 0..blocks_per_row {
+                    let mut block = vec![0u8; Q8_0_BYTES_PER_BLOCK];
+                    let d = ((seed + expert * 5 + row + blk * 3) % 17) as f32 * 0.05 + 0.04;
+                    let d_bytes = half::f16::from_f32(d).to_le_bytes();
+                    block[0] = d_bytes[0];
+                    block[1] = d_bytes[1];
+                    for (i, byte) in block[2..34].iter_mut().enumerate() {
+                        *byte = ((seed as i32
+                            + expert as i32 * 11
+                            + row as i32 * 5
+                            + blk as i32 * 7
+                            + i as i32)
+                            % 127
+                            - 63) as i8 as u8;
+                    }
+                    bytes.extend(block);
+                }
+            }
+        }
+        bytes
+    };
+
+    let weights0 = build_weights(3);
+    let weights1 = build_weights(23);
+    let input: Vec<f32> = (0..n_selected * k)
+        .map(|i| ((i % 31) as f32 - 15.0) * 0.0125)
+        .collect();
+    let selected = vec![0i32, 1i32];
+
+    let mut w0_f32 = vec![0.0f32; n_experts * m * k];
+    let mut w1_f32 = vec![0.0f32; n_experts * m * k];
+    cpu_dequant_q8_0(&weights0, &mut w0_f32);
+    cpu_dequant_q8_0(&weights1, &mut w1_f32);
+    let mut expected0 = vec![0.0f32; n_selected * m];
+    let mut expected1 = vec![0.0f32; n_selected * m];
+    for slot in 0..n_selected {
+        let expert = selected[slot] as usize;
+        let x = &input[slot * k..(slot + 1) * k];
+        cpu_matvec(
+            &w0_f32[expert * m * k..(expert + 1) * m * k],
+            x,
+            &mut expected0[slot * m..(slot + 1) * m],
+            m,
+            k,
+        );
+        cpu_matvec(
+            &w1_f32[expert * m * k..(expert + 1) * m * k],
+            x,
+            &mut expected1[slot * m..(slot + 1) * m],
+            m,
+            k,
+        );
+    }
+
+    let buf_w0 = MetalBuffer::from_bytes(gpu.device(), &weights0).unwrap();
+    let buf_w1 = MetalBuffer::from_bytes(gpu.device(), &weights1).unwrap();
+    let buf_input = MetalBuffer::from_slice(gpu.device(), &input).unwrap();
+    let buf_selected = MetalBuffer::from_slice(gpu.device(), &selected).unwrap();
+    let buf_base0 =
+        MetalBuffer::new(gpu.device(), n_selected * m * std::mem::size_of::<f32>()).unwrap();
+    let buf_base1 =
+        MetalBuffer::new(gpu.device(), n_selected * m * std::mem::size_of::<f32>()).unwrap();
+    let buf_out0 =
+        MetalBuffer::new(gpu.device(), n_selected * m * std::mem::size_of::<f32>()).unwrap();
+    let buf_out1 =
+        MetalBuffer::new(gpu.device(), n_selected * m * std::mem::size_of::<f32>()).unwrap();
+
+    let mut base_config = default_dequant_config();
+    base_config.q8_0_variant = Some(crate::profile::MatvecProfileVariant::Base);
+    gpu.execute_sync(|encoder| {
+        kernels.encode_moe_mul_mat_selected_pair_q8_0(
+            encoder,
+            &buf_w0,
+            &buf_w1,
+            &buf_input,
+            &buf_selected,
+            &buf_base0,
+            &buf_base1,
+            m as u32,
+            k as u32,
+            n_selected as u32,
+            weight_stride as u32,
+            weight_stride as u32,
+            true,
+            base_config,
+        );
+        Ok(())
+    })
+    .unwrap();
+
+    let mut config = default_dequant_config();
+    config.q8_0_variant = Some(crate::profile::MatvecProfileVariant::Ilp4);
+    gpu.execute_sync(|encoder| {
+        kernels.encode_moe_mul_mat_selected_pair_q8_0(
+            encoder,
+            &buf_w0,
+            &buf_w1,
+            &buf_input,
+            &buf_selected,
+            &buf_out0,
+            &buf_out1,
+            m as u32,
+            k as u32,
+            n_selected as u32,
+            weight_stride as u32,
+            weight_stride as u32,
+            true,
+            config,
+        );
+        Ok(())
+    })
+    .unwrap();
+
+    let base0 = unsafe { buf_base0.as_slice::<f32>() };
+    let base1 = unsafe { buf_base1.as_slice::<f32>() };
+    let out0 = unsafe { buf_out0.as_slice::<f32>() };
+    let out1 = unsafe { buf_out1.as_slice::<f32>() };
+    let base_diff0 = max_abs_diff(base0, &expected0);
+    let base_diff1 = max_abs_diff(base1, &expected1);
+    let diff0 = max_abs_diff(out0, &expected0);
+    let diff1 = max_abs_diff(out1, &expected1);
+    let base_vs_ilp4_0 = max_abs_diff(base0, out0);
+    let base_vs_ilp4_1 = max_abs_diff(base1, out1);
+    assert!(
+        diff0 < 0.02 && diff1 < 0.02,
+        "selected pair Q8_0 ILP4 exceeded CPU tolerance: base_diff0={base_diff0}, base_diff1={base_diff1}, diff0={diff0}, diff1={diff1}",
+    );
+    assert!(
+        base_vs_ilp4_0 < 0.02 && base_vs_ilp4_1 < 0.02,
+        "selected pair Q8_0 ILP4 diverged from base kernel: diff0={base_vs_ilp4_0}, diff1={base_vs_ilp4_1}",
     );
 }
 

@@ -1,0 +1,45 @@
+{
+  "model": "models/Qwen3.5-9B-Q4_K_M.gguf",
+  "prompt_tokens": 512,
+  "effective_prefill_tokens": 512,
+  "decode_tokens": 128,
+  "prefill_tok_per_sec": 552.4365028170906,
+  "prefill_tok_per_sec_median": 550.3633278330037,
+  "effective_prefill_tok_per_sec": 552.4365028170906,
+  "effective_prefill_tok_per_sec_median": 550.3633278330037,
+  "decode_tok_per_sec": 50.41719545190651,
+  "decode_tok_per_sec_median": 51.08419806917783,
+  "p50_latency": {
+    "secs": 0,
+    "nanos": 0
+  },
+  "p95_latency": {
+    "secs": 0,
+    "nanos": 0
+  },
+  "p99_latency": {
+    "secs": 0,
+    "nanos": 0
+  },
+  "prefill_command_buffers": 57.0,
+  "prefill_buffer_barriers": 96.0,
+  "decode_command_buffers": 2.0,
+  "decode_buffer_barriers": 8.0,
+  "decode_command_buffers_per_tok": 2.0,
+  "decode_buffer_barriers_per_tok": 8.0,
+  "decode_command_buffers_per_tok_max": 2.0,
+  "decode_buffer_barriers_per_tok_max": 8.0,
+  "decode_intent": "throughput",
+  "decode_mode": "single_cb",
+  "prefill_plan": "mode=gpu_batch kv=qwen35_hybrid recurrent=backend_owned pipelined=off",
+  "prefill_mode": "gpu_batch",
+  "prefill_route_family": "qwen35_hybrid",
+  "prefill_route_detail": "backend_owned",
+  "decode_plan": "sync=single_cb scratch=hybrid_backend barriers=implicit qkv=split kv=f16 attn=splitk_hd256/profile_preferred q4k=q4_k.nr2/profile_preferred q5k=q5_k.nr2/stable q6k=q6_k.nr2/profile_preferred",
+  "decode_fallback_reason": "qwen35 hybrid decode keeps the native single-CB path because pipelined decode is unavailable",
+  "qwen35_shared_timeline_slots": 1,
+  "kv_f16": false,
+  "deterministic": true,
+  "samples": 3,
+  "cooldown_ms": 30000
+}

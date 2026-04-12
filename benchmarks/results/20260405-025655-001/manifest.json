@@ -1,0 +1,102 @@
+{
+  "label": "gemma4-31b-prefill-bootstrap",
+  "model": "models/gemma-4-31B-it-Q4_K_M.gguf",
+  "run_dir": "/Users/akiralam/code/ax-engine/benchmarks/results/20260405-025655-001",
+  "engines": {
+    "ax": {
+      "name": "ax-engine",
+      "binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-bench",
+      "command": [
+        "/Users/akiralam/code/ax-engine/target/release/ax-engine-bench",
+        "bench",
+        "--model",
+        "models/gemma-4-31B-it-Q4_K_M.gguf",
+        "--prompt-tokens",
+        "512",
+        "--decode-tokens",
+        "128",
+        "--deterministic",
+        "--samples",
+        "1",
+        "--cooldown-ms",
+        "0",
+        "--warmup-iters",
+        "0",
+        "--measure-iters",
+        "1",
+        "--json-output",
+        "/Users/akiralam/code/ax-engine/benchmarks/results/20260405-025655-001/ax.json"
+      ],
+      "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/20260405-025655-001/ax.json"
+    },
+    "llama": {
+      "name": "llama.cpp",
+      "binary": "/opt/homebrew/bin/llama-bench",
+      "prefill_sample_commands": [
+        [
+          "/opt/homebrew/bin/llama-bench",
+          "-m",
+          "models/gemma-4-31B-it-Q4_K_M.gguf",
+          "-p",
+          "512",
+          "-n",
+          "0",
+          "-d",
+          "0",
+          "-r",
+          "1",
+          "--no-warmup",
+          "-ngl",
+          "99",
+          "-b",
+          "2048",
+          "-ub",
+          "512",
+          "-ctk",
+          "f16",
+          "-ctv",
+          "f16",
+          "-fa",
+          "1",
+          "-t",
+          "12",
+          "-o",
+          "json"
+        ]
+      ],
+      "decode_sample_commands": [
+        [
+          "/opt/homebrew/bin/llama-bench",
+          "-m",
+          "models/gemma-4-31B-it-Q4_K_M.gguf",
+          "-p",
+          "0",
+          "-n",
+          "128",
+          "-d",
+          "512",
+          "-r",
+          "1",
+          "--no-warmup",
+          "-ngl",
+          "99",
+          "-b",
+          "2048",
+          "-ub",
+          "512",
+          "-ctk",
+          "f16",
+          "-ctv",
+          "f16",
+          "-fa",
+          "1",
+          "-t",
+          "12",
+          "-o",
+          "json"
+        ]
+      ],
+      "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/20260405-025655-001/llama/summary.json"
+    }
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "model": "./models/gemma-4-31B-it-Q4_K_M.gguf",
+  "prompt_tokens": 512,
+  "effective_prefill_tokens": 512,
+  "decode_tokens": 128,
+  "prefill_tok_per_sec": 68.86198156394052,
+  "prefill_tok_per_sec_median": 68.86198156394052,
+  "effective_prefill_tok_per_sec": 68.86198156394052,
+  "effective_prefill_tok_per_sec_median": 68.86198156394052,
+  "decode_tok_per_sec": 13.204102478535114,
+  "decode_tok_per_sec_median": 13.204102478535114,
+  "p50_latency": {
+    "secs": 0,
+    "nanos": 0
+  },
+  "p95_latency": {
+    "secs": 0,
+    "nanos": 0
+  },
+  "p99_latency": {
+    "secs": 0,
+    "nanos": 0
+  },
+  "prefill_command_buffers": 471.0,
+  "prefill_buffer_barriers": 0.0,
+  "decode_command_buffers": 1.0,
+  "decode_buffer_barriers": 50.0,
+  "decode_command_buffers_per_tok": 1.0,
+  "decode_buffer_barriers_per_tok": 50.0,
+  "decode_command_buffers_per_tok_max": 1.0,
+  "decode_buffer_barriers_per_tok_max": 50.0,
+  "decode_intent": "throughput",
+  "decode_mode": "single_cb",
+  "prefill_plan": "mode=cpu_batch",
+  "prefill_mode": "cpu_batch",
+  "prefill_route_family": "",
+  "prefill_route_detail": "",
+  "decode_plan": "sync=single_cb scratch=gpu_shared barriers=implicit qkv=split kv=f16 attn=splitk_hd256/profile_preferred q4k=q4_k.ilp4/profile_preferred q5k=q5_k.ilp4/profile_preferred q6k=q6_k.nr2/stable",
+  "support_note": "Mixed-quant Q5_K layers use AX's GPU prefill route by default; AX selects the base or small-N path automatically.",
+  "decode_fallback_reason": "pipelined decode is unavailable for this model/backend combination",
+  "qwen35_shared_timeline_slots": 1,
+  "kv_f16": true,
+  "deterministic": false,
+  "samples": 1,
+  "cooldown_ms": 0
+}

@@ -1,0 +1,86 @@
+{
+  "engine": {
+    "name": "llama.cpp",
+    "binary": "/opt/homebrew/bin/llama-bench"
+  },
+  "model": "models/gemma-4-31B-it-Q4_K_M.gguf",
+  "prompt_tokens": 512,
+  "decode_tokens": 128,
+  "decode_depth": 512,
+  "samples": 1,
+  "cooldown_s": 0,
+  "prefill_median_tok_per_s": 150.402525,
+  "prefill_mean_tok_per_s": 150.402525,
+  "decode_median_tok_per_s": 15.778942,
+  "decode_mean_tok_per_s": 15.778942,
+  "prefill_samples_tok_per_s": [
+    150.402525
+  ],
+  "decode_samples_tok_per_s": [
+    15.778942
+  ],
+  "prefill_sample_commands": [
+    [
+      "/opt/homebrew/bin/llama-bench",
+      "-m",
+      "models/gemma-4-31B-it-Q4_K_M.gguf",
+      "-p",
+      "512",
+      "-n",
+      "0",
+      "-d",
+      "0",
+      "-r",
+      "1",
+      "--no-warmup",
+      "-ngl",
+      "99",
+      "-b",
+      "2048",
+      "-ub",
+      "512",
+      "-ctk",
+      "f16",
+      "-ctv",
+      "f16",
+      "-fa",
+      "1",
+      "-t",
+      "12",
+      "-o",
+      "json"
+    ]
+  ],
+  "decode_sample_commands": [
+    [
+      "/opt/homebrew/bin/llama-bench",
+      "-m",
+      "models/gemma-4-31B-it-Q4_K_M.gguf",
+      "-p",
+      "0",
+      "-n",
+      "128",
+      "-d",
+      "512",
+      "-r",
+      "1",
+      "--no-warmup",
+      "-ngl",
+      "99",
+      "-b",
+      "2048",
+      "-ub",
+      "512",
+      "-ctk",
+      "f16",
+      "-ctv",
+      "f16",
+      "-fa",
+      "1",
+      "-t",
+      "12",
+      "-o",
+      "json"
+    ]
+  ]
+}

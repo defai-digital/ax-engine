@@ -97,6 +97,75 @@ impl Qwen3MoeForward {
         )
     }
 
+    pub(crate) fn qwen3moe_split_moe_decode_command_buffers(
+        gate_dtype: crate::gguf::tensor::GgmlType,
+        up_dtype: crate::gguf::tensor::GgmlType,
+        down_dtype: crate::gguf::tensor::GgmlType,
+    ) -> bool {
+        match crate::model::shared::env_flag_override("AX_QWEN3MOE_SPLIT_MOE_DECODE") {
+            Some(enabled) => enabled,
+            None => {
+                gate_dtype == crate::gguf::tensor::GgmlType::Q5K
+                    && up_dtype == crate::gguf::tensor::GgmlType::Q5K
+                    && down_dtype == crate::gguf::tensor::GgmlType::Q6K
+            }
+        }
+    }
+
+    fn qwen3moe_single_token_moe_scratch_summary(
+        metal_ops: &MetalOps,
+        dim: usize,
+        n_expert_used: usize,
+        expert_inter_dim: usize,
+    ) -> Option<String> {
+        let first_nonfinite = |values: &[f32]| {
+            values
+                .iter()
+                .copied()
+                .enumerate()
+                .find(|(_, value)| !value.is_finite())
+        };
+        let bs_guard = metal_ops.batch_scratches();
+        let bs = bs_guard.as_ref()?;
+        let ids = unsafe {
+            bs.moe_expert_ids
+                .as_ref()?
+                .as_slice::<i32>()[..n_expert_used]
+                .to_vec()
+        };
+        let weights = unsafe {
+            bs.moe_expert_weights
+                .as_ref()?
+                .as_slice::<f32>()[..n_expert_used]
+                .to_vec()
+        };
+        let gate_out = unsafe {
+            &bs.moe_gate_out
+                .as_ref()?
+                .as_slice::<f32>()[..n_expert_used * expert_inter_dim]
+        };
+        let up_out = unsafe {
+            &bs.moe_up_out
+                .as_ref()?
+                .as_slice::<f32>()[..n_expert_used * expert_inter_dim]
+        };
+        let down_out = unsafe {
+            &bs.moe_down_out
+                .as_ref()?
+                .as_slice::<f32>()[..n_expert_used * dim]
+        };
+        let accum = unsafe { &bs.moe_accum.as_ref()?.as_slice::<f32>()[..dim] };
+        Some(format!(
+            "ids={ids:?} weights={weights:?} gate_max_abs={} up_max_abs={} gate_nonfinite={:?} up_nonfinite={:?} down_nonfinite={:?} accum_nonfinite={:?}",
+            gate_out.iter().copied().map(f32::abs).fold(0.0f32, f32::max),
+            up_out.iter().copied().map(f32::abs).fold(0.0f32, f32::max),
+            first_nonfinite(gate_out),
+            first_nonfinite(up_out),
+            first_nonfinite(down_out),
+            first_nonfinite(accum),
+        ))
+    }
+
     fn build_cached_model_keys(
         metal_ops: &MetalOps,
         weights: &WeightStore,
@@ -203,6 +272,12 @@ impl Qwen3MoeForward {
                 moe_expert_gate: Some(vec![moe_layer.gate]),
                 moe_expert_up: Some(vec![moe_layer.up]),
                 moe_expert_down: Some(vec![moe_layer.down]),
+                moe_expert_gate_dtype: Some(moe_layer.gate_dtype),
+                moe_expert_up_dtype: Some(moe_layer.up_dtype),
+                moe_expert_down_dtype: Some(moe_layer.down_dtype),
+                moe_expert_gate_stride: Some(moe_layer.gate_stride),
+                moe_expert_up_stride: Some(moe_layer.up_stride),
+                moe_expert_down_stride: Some(moe_layer.down_stride),
                 moe_expert_dtype: Some(moe_layer.down_dtype),
                 moe_shared_gate: None,
                 moe_shared_up: None,
@@ -224,7 +299,7 @@ impl Qwen3MoeForward {
 
     fn qwen3moe_decode_plan(
         metal_ops: &MetalOps,
-        gpu_kv: &crate::kv::GpuKv,
+        gpu_kv: &mut crate::kv::GpuKv,
         embedding_dim: u32,
         head_dim: u32,
         attend_len: usize,
@@ -269,7 +344,7 @@ impl Qwen3MoeForward {
         cfg: &ModelConfig,
         hidden_buf: &ax_engine_metal::MetalBuffer,
         s: &crate::backend::metal::GpuScratchBuffers,
-        gpu_kv: &crate::kv::GpuKv,
+        gpu_kv: &mut crate::kv::GpuKv,
         cached: &crate::backend::metal::CachedModelKeys,
         weight_cache: &rustc_hash::FxHashMap<usize, ax_engine_metal::MetalBuffer>,
         moe_weight_cache: &rustc_hash::FxHashMap<usize, ax_engine_metal::MetalBuffer>,
@@ -284,6 +359,57 @@ impl Qwen3MoeForward {
         up_stride: usize,
         down_stride: usize,
         ops: &mut Option<&mut OpBreakdown>,
+    ) -> anyhow::Result<()> {
+        Self::encode_qwen3moe_gpu_layer_range_internal(
+            encoder,
+            barrier,
+            metal_ops,
+            cfg,
+            hidden_buf,
+            s,
+            gpu_kv,
+            cached,
+            weight_cache,
+            moe_weight_cache,
+            exec_plan,
+            position,
+            layer_start,
+            layer_end,
+            gate_dtype,
+            up_dtype,
+            down_dtype,
+            gate_stride,
+            up_stride,
+            down_stride,
+            ops,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_qwen3moe_gpu_layer_range_internal(
+        encoder: &ax_engine_metal::MetalEncoder,
+        barrier: &crate::model::shared::DecodeBarrierCtx<'_>,
+        metal_ops: &MetalOps,
+        cfg: &ModelConfig,
+        hidden_buf: &ax_engine_metal::MetalBuffer,
+        s: &crate::backend::metal::GpuScratchBuffers,
+        gpu_kv: &mut crate::kv::GpuKv,
+        cached: &crate::backend::metal::CachedModelKeys,
+        weight_cache: &rustc_hash::FxHashMap<usize, ax_engine_metal::MetalBuffer>,
+        moe_weight_cache: &rustc_hash::FxHashMap<usize, ax_engine_metal::MetalBuffer>,
+        exec_plan: &crate::model::execution_plan::GpuDecodeExecutionPlan,
+        position: usize,
+        layer_start: usize,
+        layer_end: usize,
+        gate_dtype: crate::gguf::tensor::GgmlType,
+        up_dtype: crate::gguf::tensor::GgmlType,
+        down_dtype: crate::gguf::tensor::GgmlType,
+        gate_stride: usize,
+        up_stride: usize,
+        down_stride: usize,
+        ops: &mut Option<&mut OpBreakdown>,
+        run_moe: bool,
     ) -> anyhow::Result<()> {
         let dim = cfg.embedding_dim as usize;
         let n_heads = cfg.n_heads as usize;
@@ -511,45 +637,60 @@ impl Qwen3MoeForward {
                 ops_ref.gpu_encode_layer_residual += residual_t.elapsed();
             }
 
-            let router_buf = moe_weight_cache.get(&lw.moe_router.unwrap()).unwrap();
-            let moe_gate_buf = moe_weight_cache
-                .get(&lw.moe_expert_gate.as_ref().unwrap()[0])
-                .unwrap();
-            let moe_up_buf = moe_weight_cache
-                .get(&lw.moe_expert_up.as_ref().unwrap()[0])
-                .unwrap();
-            let moe_down_buf = moe_weight_cache
-                .get(&lw.moe_expert_down.as_ref().unwrap()[0])
-                .unwrap();
-            let moe_t = OpTimer::start();
-            metal_ops.encode_moe_ffn_gpu_resident_cached_with_policy(
-                encoder,
-                hidden_buf,
-                ffn_norm_w,
-                router_buf,
-                lw.moe_router_dtype.unwrap(),
-                moe_gate_buf,
-                gate_dtype,
-                moe_up_buf,
-                up_dtype,
-                moe_down_buf,
-                down_dtype,
-                1,
-                n_expert,
-                n_expert_used,
-                dim,
-                expert_inter_dim,
-                gate_stride,
-                up_stride,
-                down_stride,
-                eps,
-                None,
-                exec_plan.barriers
-                    != crate::model::execution_plan::DecodeBarrierPlan::Implicit,
-                Self::qwen3moe_blocked_q6q8_down_enabled(),
-            )?;
-            if let Some(ops_ref) = ops.as_deref_mut() {
-                ops_ref.gpu_encode_layer_ffn += moe_t.elapsed();
+            if run_moe {
+                let router_buf = moe_weight_cache.get(&lw.moe_router.unwrap()).unwrap();
+                let moe_gate_buf = moe_weight_cache
+                    .get(&lw.moe_expert_gate.as_ref().unwrap()[0])
+                    .unwrap();
+                let moe_up_buf = moe_weight_cache
+                    .get(&lw.moe_expert_up.as_ref().unwrap()[0])
+                    .unwrap();
+                let moe_down_buf = moe_weight_cache
+                    .get(&lw.moe_expert_down.as_ref().unwrap()[0])
+                    .unwrap();
+                let layer_gate_dtype = lw.moe_expert_gate_dtype.unwrap_or(gate_dtype);
+                let layer_up_dtype = lw.moe_expert_up_dtype.unwrap_or(up_dtype);
+                let layer_down_dtype = lw.moe_expert_down_dtype.unwrap_or(down_dtype);
+                let layer_gate_stride = lw.moe_expert_gate_stride.unwrap_or(gate_stride);
+                let layer_up_stride = lw.moe_expert_up_stride.unwrap_or(up_stride);
+                let layer_down_stride = lw.moe_expert_down_stride.unwrap_or(down_stride);
+                let moe_t = OpTimer::start();
+                // Resident MoE manages its own internal hazards, but the outer
+                // decode barrier still needs to see the overall hidden->hidden
+                // dependency so the residual write before it and the next layer
+                // after it are synchronized correctly.
+                barrier.pre_dispatch(&[hidden_buf], &[hidden_buf]);
+                metal_ops.encode_moe_ffn_gpu_resident_cached_with_policy(
+                    encoder,
+                    hidden_buf,
+                    ffn_norm_w,
+                    router_buf,
+                    lw.moe_router_dtype.unwrap(),
+                    moe_gate_buf,
+                    layer_gate_dtype,
+                    moe_up_buf,
+                    layer_up_dtype,
+                    moe_down_buf,
+                    layer_down_dtype,
+                    1,
+                    n_expert,
+                    n_expert_used,
+                    dim,
+                    expert_inter_dim,
+                    layer_gate_stride,
+                    layer_up_stride,
+                    layer_down_stride,
+                    eps,
+                    None,
+                    exec_plan.barriers
+                        != crate::model::execution_plan::DecodeBarrierPlan::Implicit,
+                    Self::qwen3moe_blocked_q6q8_down_enabled(),
+                )?;
+                barrier.post_dispatch(&[hidden_buf], &[hidden_buf]);
+                barrier.step(encoder);
+                if let Some(ops_ref) = ops.as_deref_mut() {
+                    ops_ref.gpu_encode_layer_ffn += moe_t.elapsed();
+                }
             }
         }
 
@@ -736,6 +877,12 @@ impl Qwen3MoeForward {
                 up_dtype,
                 down_dtype,
             );
+        let split_moe_command_buffers =
+            Self::qwen3moe_split_moe_decode_command_buffers(
+                gate_dtype,
+                up_dtype,
+                down_dtype,
+            );
         if let Some(ops_ref) = ops.as_deref_mut() {
             ops_ref.gpu_encode += setup_t.elapsed();
         }
@@ -754,43 +901,164 @@ impl Qwen3MoeForward {
                 }
             };
         }
-        for layer_start in (0..cfg.n_layers as usize).step_by(layers_per_command_buffer) {
-            let layer_end =
-                (layer_start + layers_per_command_buffer).min(cfg.n_layers as usize);
-            let exec_t = OpTimer::start();
-            exec_sync!(|encoder| {
-                let barrier =
-                    crate::model::shared::DecodeBarrierCtx::new(encoder, exec_plan.barriers);
-                Self::encode_qwen3moe_gpu_layer_range(
-                    encoder,
-                    &barrier,
-                    metal_ops,
-                    cfg,
-                    &s.hidden,
-                    s,
-                    gpu_kv,
-                    cached,
-                    &weight_cache,
-                    &moe_weight_cache,
-                    &exec_plan,
+        if split_moe_command_buffers {
+            for layer in 0..cfg.n_layers as usize {
+                let exec_t = OpTimer::start();
+                exec_sync!(|encoder| {
+                    let barrier =
+                        crate::model::shared::DecodeBarrierCtx::new(encoder, exec_plan.barriers);
+                    Self::encode_qwen3moe_gpu_layer_range_internal(
+                        encoder,
+                        &barrier,
+                        metal_ops,
+                        cfg,
+                        &s.hidden,
+                        s,
+                        gpu_kv,
+                        cached,
+                        &weight_cache,
+                        &moe_weight_cache,
+                        &exec_plan,
+                        position,
+                        layer,
+                        layer + 1,
+                        gate_dtype,
+                        up_dtype,
+                        down_dtype,
+                        gate_stride,
+                        up_stride,
+                        down_stride,
+                        &mut ops,
+                        false,
+                    )?;
+                    barrier.flush();
+                    Ok(())
+                })?;
+                if let Some(ops_ref) = ops.as_deref_mut() {
+                    let elapsed = exec_t.elapsed();
+                    ops_ref.gpu_execute += elapsed;
+                    ops_ref.gpu_execute_layers += elapsed;
+                }
+
+                let lw = &cached.layers[layer];
+                let ffn_norm_w = weight_cache.get(&lw.ffn_norm).unwrap();
+                let router_buf = moe_weight_cache.get(&lw.moe_router.unwrap()).unwrap();
+                let moe_gate_buf = moe_weight_cache
+                    .get(&lw.moe_expert_gate.as_ref().unwrap()[0])
+                    .unwrap();
+                let moe_up_buf = moe_weight_cache
+                    .get(&lw.moe_expert_up.as_ref().unwrap()[0])
+                    .unwrap();
+                let moe_down_buf = moe_weight_cache
+                    .get(&lw.moe_expert_down.as_ref().unwrap()[0])
+                    .unwrap();
+                let layer_gate_dtype = lw.moe_expert_gate_dtype.unwrap_or(gate_dtype);
+                let layer_up_dtype = lw.moe_expert_up_dtype.unwrap_or(up_dtype);
+                let layer_down_dtype = lw.moe_expert_down_dtype.unwrap_or(down_dtype);
+                let layer_gate_stride = lw.moe_expert_gate_stride.unwrap_or(gate_stride);
+                let layer_up_stride = lw.moe_expert_up_stride.unwrap_or(up_stride);
+                let layer_down_stride = lw.moe_expert_down_stride.unwrap_or(down_stride);
+                let moe_exec_t = OpTimer::start();
+                exec_sync!(|encoder| {
+                    metal_ops.encode_moe_ffn_gpu_resident_cached_with_policy(
+                        encoder,
+                        &s.hidden,
+                        ffn_norm_w,
+                        router_buf,
+                        lw.moe_router_dtype.unwrap(),
+                        moe_gate_buf,
+                        layer_gate_dtype,
+                        moe_up_buf,
+                        layer_up_dtype,
+                        moe_down_buf,
+                        layer_down_dtype,
+                        1,
+                        cfg.n_expert.unwrap_or(0) as usize,
+                        cfg.n_expert_used.unwrap_or(0) as usize,
+                        dim,
+                        expert_inter_dim,
+                        layer_gate_stride,
+                        layer_up_stride,
+                        layer_down_stride,
+                        eps,
+                        None,
+                        true,
+                        Self::qwen3moe_blocked_q6q8_down_enabled(),
+                    )
+                })?;
+                if let Some(ops_ref) = ops.as_deref_mut() {
+                    let elapsed = moe_exec_t.elapsed();
+                    ops_ref.gpu_execute += elapsed;
+                    ops_ref.gpu_execute_layers += elapsed;
+                    ops_ref.gpu_encode_layer_ffn += elapsed;
+                }
+                let hidden_gpu = unsafe {
+                    std::slice::from_raw_parts(s.hidden.contents().as_ptr() as *const f32, dim)
+                };
+                if std::env::var("AX_DEBUG_QWEN3_Q5_RUNTIME_MOE").is_ok()
+                    && hidden_gpu.iter().any(|value| !value.is_finite())
+                {
+                    if let Some(summary) = Self::qwen3moe_single_token_moe_scratch_summary(
+                        metal_ops,
+                        dim,
+                        cfg.n_expert_used.unwrap_or(0) as usize,
+                        expert_inter_dim,
+                    ) {
+                        eprintln!(
+                            "[QWEN3MOE-RUNTIME] layer={layer} position={position} {summary}"
+                        );
+                    }
+                }
+                Self::assert_finite_if_enabled("layer_hidden", hidden_gpu, layer, position)?;
+            }
+        } else {
+            for layer_start in (0..cfg.n_layers as usize).step_by(layers_per_command_buffer) {
+                let layer_end =
+                    (layer_start + layers_per_command_buffer).min(cfg.n_layers as usize);
+                let exec_t = OpTimer::start();
+                exec_sync!(|encoder| {
+                    let barrier =
+                        crate::model::shared::DecodeBarrierCtx::new(encoder, exec_plan.barriers);
+                    Self::encode_qwen3moe_gpu_layer_range(
+                        encoder,
+                        &barrier,
+                        metal_ops,
+                        cfg,
+                        &s.hidden,
+                        s,
+                        gpu_kv,
+                        cached,
+                        &weight_cache,
+                        &moe_weight_cache,
+                        &exec_plan,
+                        position,
+                        layer_start,
+                        layer_end,
+                        gate_dtype,
+                        up_dtype,
+                        down_dtype,
+                        gate_stride,
+                        up_stride,
+                        down_stride,
+                        &mut ops,
+                    )?;
+                    barrier.flush();
+                    Ok(())
+                })?;
+                if let Some(ops_ref) = ops.as_deref_mut() {
+                    let elapsed = exec_t.elapsed();
+                    ops_ref.gpu_execute += elapsed;
+                    ops_ref.gpu_execute_layers += elapsed;
+                }
+                let hidden_gpu = unsafe {
+                    std::slice::from_raw_parts(s.hidden.contents().as_ptr() as *const f32, dim)
+                };
+                Self::assert_finite_if_enabled(
+                    "layer_hidden",
+                    hidden_gpu,
+                    layer_end.saturating_sub(1),
                     position,
-                    layer_start,
-                    layer_end,
-                    gate_dtype,
-                    up_dtype,
-                    down_dtype,
-                    gate_stride,
-                    up_stride,
-                    down_stride,
-                    &mut ops,
                 )?;
-                barrier.flush();
-                Ok(())
-            })?;
-            if let Some(ops_ref) = ops.as_deref_mut() {
-                let elapsed = exec_t.elapsed();
-                ops_ref.gpu_execute += elapsed;
-                ops_ref.gpu_execute_layers += elapsed;
             }
         }
 
@@ -823,6 +1091,7 @@ impl Qwen3MoeForward {
 
         let readback_t = OpTimer::start();
         let logits_gpu = unsafe { std::slice::from_raw_parts(s.logits_buf.contents().as_ptr() as *const f32, vocab_size) };
+        Self::assert_finite_if_enabled("logits", logits_gpu, cfg.n_layers as usize, position)?;
         logits[..vocab_size].copy_from_slice(logits_gpu);
         gpu_kv.finalize_batch(1);
         if let Some(ops_ref) = ops.as_deref_mut() {
@@ -942,12 +1211,22 @@ impl Qwen3MoeForward {
             layer_range: std::ops::Range<usize>,
             include_output_head: bool,
         | -> anyhow::Result<()> {
-            let barrier_on = true;
-            let barrier = |enc: &ax_engine_metal::MetalEncoder| {
-                if barrier_on {
-                    ax_engine_metal::barrier_buffers(enc);
-                }
-            };
+            let mut sb = ax_engine_metal::SmartBarrier::new(encoder);
+            macro_rules! sb_pre {
+                ($reads:expr, $writes:expr) => {
+                    sb.pre_dispatch($reads, $writes);
+                };
+            }
+            macro_rules! sb_post {
+                ($reads:expr, $writes:expr) => {
+                    sb.post_dispatch($reads, $writes);
+                };
+            }
+            macro_rules! sb_flush {
+                () => {
+                    sb.flush();
+                };
+            }
 
             for layer in layer_range {
                 let lw = &cached.layers[layer];
@@ -978,70 +1257,88 @@ impl Qwen3MoeForward {
                 };
 
                 // ── Attention norm (batch) ──
+                sb_pre!(&[&bs.hidden], &[&bs.norm_buf]);
                 metal_ops.elementwise.encode_rms_norm_out_batch(
                     encoder, &bs.hidden, attn_norm_w, &bs.norm_buf,
                     dim as u32, nt, eps,
                 );
-                barrier(encoder);
+                sb_post!(&[&bs.hidden], &[&bs.norm_buf]);
 
                 // ── Q/K/V batch projections ──
                 let use_f16 = prefill_plan.use_f16_batch_io;
                 if let Some(fused_w) = fused_qkv_buf {
                     if use_f16 {
+                        sb_pre!(&[&bs.norm_buf], &[&bs.matmul_in_f16]);
                         metal_ops.elementwise.encode_cast_f32_to_f16(
                             encoder, &bs.norm_buf, &bs.matmul_in_f16, nt * dim as u32,
                         );
-                        barrier(encoder);
+                        sb_post!(&[&bs.norm_buf], &[&bs.matmul_in_f16]);
+                        sb_pre!(&[&bs.matmul_in_f16], &[&bs.qkv_buf]);
                         crate::model::shared::encode_dequant_batch_f16in(
                             metal_ops, encoder, fused_w, &bs.matmul_in_f16, &bs.qkv_buf,
                             fused_qkv_m as u32, nt, dim as u32, lw.wq_dtype,
                         );
+                        sb_post!(&[&bs.matmul_in_f16], &[&bs.qkv_buf]);
                     } else {
+                        sb_pre!(&[&bs.norm_buf], &[&bs.qkv_buf]);
                         crate::model::shared::encode_dequant_batch(
                             &metal_ops.dequant, &metal_ops.elementwise,
                             encoder, fused_w, &bs.norm_buf, &bs.qkv_buf, &bs.matmul_in_f16,
                             fused_qkv_m as u32, nt, dim as u32, lw.wq_dtype,
                             false, prefill_plan.use_batch_simd, prefill_plan.q5k_prefill_small_n,
                         );
+                        sb_post!(&[&bs.norm_buf], &[&bs.qkv_buf]);
                     }
                 } else if use_f16 {
+                    sb_pre!(&[&bs.norm_buf], &[&bs.matmul_in_f16]);
                     metal_ops.elementwise.encode_cast_f32_to_f16(
                         encoder, &bs.norm_buf, &bs.matmul_in_f16, nt * dim as u32,
                     );
-                    barrier(encoder);
+                    sb_post!(&[&bs.norm_buf], &[&bs.matmul_in_f16]);
+                    sb_pre!(&[&bs.matmul_in_f16], &[&bs.q_buf]);
                     crate::model::shared::encode_dequant_batch_f16in(
                         metal_ops, encoder, wq_buf, &bs.matmul_in_f16, &bs.q_buf,
                         q_dim as u32, nt, dim as u32, lw.wq_dtype,
                     );
+                    sb_post!(&[&bs.matmul_in_f16], &[&bs.q_buf]);
+                    sb_pre!(&[&bs.matmul_in_f16], &[&bs.k_buf]);
                     crate::model::shared::encode_dequant_batch_f16in(
                         metal_ops, encoder, wk_buf, &bs.matmul_in_f16, &bs.k_buf,
                         kv_dim as u32, nt, dim as u32, lw.wk_dtype,
                     );
+                    sb_post!(&[&bs.matmul_in_f16], &[&bs.k_buf]);
+                    sb_pre!(&[&bs.matmul_in_f16], &[&bs.v_buf]);
                     crate::model::shared::encode_dequant_batch_f16in(
                         metal_ops, encoder, wv_buf, &bs.matmul_in_f16, &bs.v_buf,
                         kv_dim as u32, nt, dim as u32, lw.wv_dtype,
                     );
+                    sb_post!(&[&bs.matmul_in_f16], &[&bs.v_buf]);
                 } else {
+                    sb_pre!(&[&bs.norm_buf], &[&bs.q_buf]);
                     crate::model::shared::encode_dequant_batch(
                         &metal_ops.dequant, &metal_ops.elementwise,
                         encoder, wq_buf, &bs.norm_buf, &bs.q_buf, &bs.matmul_in_f16,
                         q_dim as u32, nt, dim as u32, lw.wq_dtype,
                         false, prefill_plan.use_batch_simd, prefill_plan.q5k_prefill_small_n,
                     );
+                    sb_post!(&[&bs.norm_buf], &[&bs.q_buf]);
+                    sb_pre!(&[&bs.norm_buf], &[&bs.k_buf]);
                     crate::model::shared::encode_dequant_batch(
                         &metal_ops.dequant, &metal_ops.elementwise,
                         encoder, wk_buf, &bs.norm_buf, &bs.k_buf, &bs.matmul_in_f16,
                         kv_dim as u32, nt, dim as u32, lw.wk_dtype,
                         false, prefill_plan.use_batch_simd, prefill_plan.q5k_prefill_small_n,
                     );
+                    sb_post!(&[&bs.norm_buf], &[&bs.k_buf]);
+                    sb_pre!(&[&bs.norm_buf], &[&bs.v_buf]);
                     crate::model::shared::encode_dequant_batch(
                         &metal_ops.dequant, &metal_ops.elementwise,
                         encoder, wv_buf, &bs.norm_buf, &bs.v_buf, &bs.matmul_in_f16,
                         kv_dim as u32, nt, dim as u32, lw.wv_dtype,
                         false, prefill_plan.use_batch_simd, prefill_plan.q5k_prefill_small_n,
                     );
+                    sb_post!(&[&bs.norm_buf], &[&bs.v_buf]);
                 }
-                barrier(encoder);
 
                 let fused_qkv_post = fused_qkv_buf.is_some()
                     && lw.attn_q_norm.is_some()
@@ -1052,6 +1349,10 @@ impl Qwen3MoeForward {
                 if fused_qkv_post {
                     let qn = weight_cache.get(&lw.attn_q_norm.unwrap()).unwrap();
                     let kn = weight_cache.get(&lw.attn_k_norm.unwrap()).unwrap();
+                    sb_pre!(
+                        &[&bs.qkv_buf],
+                        &[&bs.q_buf, &bs.k_buf, &bs.v_buf, kv_k, kv_v]
+                    );
                     metal_ops
                         .elementwise
                         .encode_qkv_split_qk_norm_rope_append_kv_batch(
@@ -1076,9 +1377,13 @@ impl Qwen3MoeForward {
                             kv_offset,
                             kv_stride,
                         );
-                    barrier(encoder);
+                    sb_post!(
+                        &[&bs.qkv_buf],
+                        &[&bs.q_buf, &bs.k_buf, &bs.v_buf, kv_k, kv_v]
+                    );
                 } else {
                     if fused_qkv_buf.is_some() {
+                        sb_pre!(&[&bs.qkv_buf], &[&bs.q_buf, &bs.k_buf, &bs.v_buf]);
                         metal_ops.elementwise.encode_qkv_split_batch(
                             encoder,
                             &bs.qkv_buf,
@@ -1089,38 +1394,56 @@ impl Qwen3MoeForward {
                             q_dim as u32,
                             kv_dim as u32,
                         );
-                        barrier(encoder);
+                        sb_post!(&[&bs.qkv_buf], &[&bs.q_buf, &bs.k_buf, &bs.v_buf]);
                     }
 
                     if let (Some(qn_key), Some(kn_key)) = (lw.attn_q_norm, lw.attn_k_norm) {
                         let qn = weight_cache.get(&qn_key).unwrap();
                         let kn = weight_cache.get(&kn_key).unwrap();
+                        sb_pre!(&[&bs.q_buf], &[&bs.q_buf]);
                         metal_ops.elementwise.encode_per_head_rms_norm_batch(
-                            encoder, &bs.q_buf, qn, n_heads as u32, head_dim as u32, nt, eps,
+                            encoder,
+                            &bs.q_buf,
+                            qn,
+                            nt,
+                            n_heads as u32,
+                            head_dim as u32,
+                            eps,
                         );
+                        sb_post!(&[&bs.q_buf], &[&bs.q_buf]);
+                        sb_pre!(&[&bs.k_buf], &[&bs.k_buf]);
                         metal_ops.elementwise.encode_per_head_rms_norm_batch(
-                            encoder, &bs.k_buf, kn, n_kv_heads as u32, head_dim as u32, nt, eps,
+                            encoder,
+                            &bs.k_buf,
+                            kn,
+                            nt,
+                            n_kv_heads as u32,
+                            head_dim as u32,
+                            eps,
                         );
-                        barrier(encoder);
+                        sb_post!(&[&bs.k_buf], &[&bs.k_buf]);
                     }
 
+                    sb_pre!(&[&bs.q_buf, &bs.k_buf], &[&bs.q_buf, &bs.k_buf]);
                     metal_ops.elementwise.encode_rope_batch_neox_partial(
                         encoder, &bs.q_buf, &bs.k_buf,
                         nt, n_heads as u32, n_kv_heads as u32,
                         head_dim as u32, head_dim as u32,
                         base_seq_len as f32, 1.0, cfg.rope_freq_base,
                     );
-                    barrier(encoder);
+                    sb_post!(&[&bs.q_buf, &bs.k_buf], &[&bs.q_buf, &bs.k_buf]);
 
+                    sb_pre!(&[&bs.k_buf, &bs.v_buf], &[kv_k, kv_v]);
                     metal_ops.elementwise.encode_kv_append_batch_pair(
                         encoder, &bs.k_buf, &bs.v_buf, kv_k, kv_v,
                         prefill_plan.kv_f16, kv_offset, kv_stride,
                         kv_dim as u32, nt,
                     );
-                    barrier(encoder);
+                    sb_post!(&[&bs.k_buf, &bs.v_buf], &[kv_k, kv_v]);
                 }
 
                 // ── Prefill attention ──
+                sb_pre!(&[&bs.q_buf, kv_k, kv_v], &[&bs.attn_out]);
                 metal_ops.attention.encode_attention_prefill_cached_with_config(
                     encoder, &bs.q_buf, kv_k, kv_v, &bs.attn_out,
                     prefill_plan.kv_f16, nt,
@@ -1128,9 +1451,10 @@ impl Qwen3MoeForward {
                     base_seq_len as u32, 0,
                     prefill_plan.attention_dispatch,
                 );
-                barrier(encoder);
+                sb_post!(&[&bs.q_buf, kv_k, kv_v], &[&bs.attn_out]);
 
                 // ── Output projection (batch) ──
+                sb_pre!(&[&bs.attn_out], &[&bs.proj_buf]);
                 crate::model::shared::encode_dequant_batch(
                     &metal_ops.dequant, &metal_ops.elementwise,
                     encoder, wo_buf, &bs.attn_out, &bs.proj_buf, &bs.matmul_in_f16,
@@ -1138,13 +1462,14 @@ impl Qwen3MoeForward {
                     prefill_plan.use_f16_batch_io, prefill_plan.use_batch_simd,
                     prefill_plan.q5k_prefill_small_n,
                 );
-                barrier(encoder);
+                sb_post!(&[&bs.attn_out], &[&bs.proj_buf]);
 
                 // ── Residual add (batch) ──
+                sb_pre!(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden]);
                 metal_ops.elementwise.encode_elementwise_add_batch(
                     encoder, &bs.hidden, &bs.proj_buf, dim as u32, nt,
                 );
-                barrier(encoder);
+                sb_post!(&[&bs.hidden, &bs.proj_buf], &[&bs.hidden]);
 
                 // ── MoE FFN (batch, GPU resident) ──
                 let router_buf = moe_weight_cache.get(&lw.moe_router.unwrap()).unwrap();
@@ -1154,45 +1479,62 @@ impl Qwen3MoeForward {
                     .get(&lw.moe_expert_up.as_ref().unwrap()[0]).unwrap();
                 let moe_down_buf = moe_weight_cache
                     .get(&lw.moe_expert_down.as_ref().unwrap()[0]).unwrap();
+                let layer_gate_dtype = lw.moe_expert_gate_dtype.unwrap_or(gate_dtype);
+                let layer_up_dtype = lw.moe_expert_up_dtype.unwrap_or(up_dtype);
+                let layer_down_dtype = lw.moe_expert_down_dtype.unwrap_or(down_dtype);
+                let layer_gate_stride = lw.moe_expert_gate_stride.unwrap_or(gate_stride);
+                let layer_up_stride = lw.moe_expert_up_stride.unwrap_or(up_stride);
+                let layer_down_stride = lw.moe_expert_down_stride.unwrap_or(down_stride);
 
                 {
                     let moe_scratch = crate::backend::metal::MoeBatchScratchView::from_batch_scratches(bs)?;
+                    // Resident MoE uses its own SmartBarrier internally.
+                    // Record the hidden->hidden boundary in the outer tracker
+                    // so subsequent layer dispatches see the writeback.
+                    sb_pre!(&[&bs.hidden], &[&bs.hidden]);
+                    ax_engine_metal::barrier_buffers(encoder);
                     metal_ops.encode_moe_ffn_gpu_resident_cached_with_scratch_with_policy(
                         encoder, moe_scratch, &bs.hidden, ffn_norm_w,
                         router_buf, lw.moe_router_dtype.unwrap(),
-                        moe_gate_buf, gate_dtype,
-                        moe_up_buf, up_dtype,
-                        moe_down_buf, down_dtype,
+                        moe_gate_buf, layer_gate_dtype,
+                        moe_up_buf, layer_up_dtype,
+                        moe_down_buf, layer_down_dtype,
                         n_tokens, n_expert, n_expert_used,
                         dim, expert_inter_dim,
-                        gate_stride, up_stride, down_stride,
+                        layer_gate_stride, layer_up_stride, layer_down_stride,
                         eps, None, true,
                         Self::qwen3moe_blocked_q6q8_down_enabled(),
                     )?;
+                    ax_engine_metal::barrier_buffers(encoder);
+                    sb_post!(&[&bs.hidden], &[&bs.hidden]);
                 }
             }
 
             if include_output_head {
                 // ── Output head (last token) ──
                 let last_off = (n_tokens - 1) * dim * std::mem::size_of::<f32>();
+                sb_pre!(&[&bs.hidden], &[&s.hidden]);
                 metal_ops.elementwise.encode_buffer_copy(
                     encoder, &bs.hidden, last_off, &s.hidden, 0, dim as u32,
                 );
-                barrier(encoder);
+                sb_post!(&[&bs.hidden], &[&s.hidden]);
 
                 let output_norm_w = weight_cache.get(&cached.output_norm).unwrap();
+                sb_pre!(&[&s.hidden], &[&s.hidden]);
                 metal_ops.elementwise.encode_rms_norm(
                     encoder, &s.hidden, output_norm_w, dim as u32, eps,
                 );
-                barrier(encoder);
+                sb_post!(&[&s.hidden], &[&s.hidden]);
 
                 let lm_head_buf = weight_cache.get(&cached.lm_head).unwrap();
+                sb_pre!(&[&s.hidden], &[&s.logits_buf]);
                 crate::model::shared::encode_dequant_matvec(
                     metal_ops, encoder, lm_head_buf, &s.hidden, &s.logits_buf,
                     vocab_size as u32, dim as u32, cached.lm_head_dtype,
                 );
-                barrier(encoder);
+                sb_post!(&[&s.hidden], &[&s.logits_buf]);
             }
+            sb_flush!();
             Ok(())
         };
 

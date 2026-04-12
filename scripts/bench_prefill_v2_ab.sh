@@ -6,6 +6,7 @@ AX_BENCH="${AX_BENCH:-$REPO_DIR/target/release/ax-engine-bench}"
 PROMPT_TOKENS="${PROMPT_TOKENS:-256}"
 WARMUP_ITERS="${WARMUP_ITERS:-1}"
 MEASURE_ITERS="${MEASURE_ITERS:-3}"
+COOLDOWN="${COOLDOWN:-5}"
 OUT_DIR="${OUT_DIR:-$REPO_DIR/automatosx/tmp}"
 TIMESTAMP="${TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}"
 TSV_OUT="${TSV_OUT:-}"
@@ -74,7 +75,9 @@ for entry in "${MODELS[@]}"; do
   [[ -f "$path" ]] || { echo "error: missing model file: $path" >&2; exit 1; }
 
   default_prefill="$(run_bench "$path" "" "default-$name")"
+  sleep "$COOLDOWN"
   v2off_prefill="$(run_bench "$path" "AX_METAL_BATCH_Q4K_V2=0" "v2off-$name")"
+  sleep "$COOLDOWN"
   v2on_prefill="$(run_bench "$path" "AX_METAL_BATCH_Q4K_V2=1" "v2on-$name")"
 
   printf "%s\t%s\t%s\t%s\n" "$name" "default" "$PROMPT_TOKENS" "$default_prefill" >>"$TSV_OUT"

@@ -109,11 +109,17 @@ fn qwen35_selected_pair_q4_k_matvec_enabled() -> bool {
     )
 }
 
-fn qwen35_selected_pair_q5_k_matvec_enabled() -> bool {
-    matches!(
-        env_flag_override("AX_QWEN35_SELECTED_PAIR_Q5K_MATVEC"),
-        Some(true)
-    )
+fn qwen35_selected_pair_q5_k_matvec_enabled_for_layout(
+    gate_dtype: GgmlType,
+    up_dtype: GgmlType,
+    down_dtype: GgmlType,
+) -> bool {
+    match env_flag_override("AX_QWEN35_SELECTED_PAIR_Q5K_MATVEC") {
+        Some(value) => value,
+        None => {
+            gate_dtype == GgmlType::Q5K && up_dtype == GgmlType::Q5K && down_dtype == GgmlType::Q6K
+        }
+    }
 }
 
 fn qwen35_selected_single_token_gate_up_dtype_supported(dtype: GgmlType) -> bool {
@@ -137,7 +143,10 @@ fn qwen35_selected_single_token_gate_up_path_supported(
 }
 
 fn qwen35_selected_single_token_down_supported(down_dtype: GgmlType) -> bool {
-    matches!(down_dtype, GgmlType::Q4K | GgmlType::Q5K)
+    matches!(
+        down_dtype,
+        GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0
+    )
 }
 
 fn qwen35_selected_single_token_down_falls_back_to_mul_mat_id(down_dtype: GgmlType) -> bool {
@@ -152,8 +161,13 @@ fn qwen35_selected_single_token_default_enabled(
     if !qwen35_selected_single_token_gate_up_path_supported(gate_dtype, up_dtype, down_dtype) {
         return false;
     }
-    if qwen35_selected_single_token_down_supported(down_dtype) {
+    if matches!(down_dtype, GgmlType::Q4K | GgmlType::Q5K) {
         return true;
+    }
+    if gate_dtype == GgmlType::Q5K && up_dtype == GgmlType::Q5K && down_dtype == GgmlType::Q6K {
+        return qwen35_selected_pair_q5_k_matvec_enabled_for_layout(
+            gate_dtype, up_dtype, down_dtype,
+        );
     }
     if qwen35_selected_weighted_down_enabled(gate_dtype, up_dtype, down_dtype) {
         return true;
@@ -1668,6 +1682,12 @@ pub struct CachedLayerKeys {
     pub moe_expert_up: Option<Vec<usize>>,
     /// Per-expert down weights [n_expert].
     pub moe_expert_down: Option<Vec<usize>>,
+    pub moe_expert_gate_dtype: Option<GgmlType>,
+    pub moe_expert_up_dtype: Option<GgmlType>,
+    pub moe_expert_down_dtype: Option<GgmlType>,
+    pub moe_expert_gate_stride: Option<usize>,
+    pub moe_expert_up_stride: Option<usize>,
+    pub moe_expert_down_stride: Option<usize>,
     /// Quant dtype shared by all experts in this layer.
     pub moe_expert_dtype: Option<GgmlType>,
     /// Shared expert gate/up/down keys (Qwen3 MoE specific).
@@ -2710,6 +2730,7 @@ impl MetalOps {
         weight_stride0: u32,
         weight_stride1: u32,
         input_is_slot_major: bool,
+        use_q5_pair_matvec: bool,
     ) -> anyhow::Result<()> {
         Self::validate_moe_selected_dtype(dtype, "selected expert pair")?;
         match dtype {
@@ -2743,7 +2764,7 @@ impl MetalOps {
                 weight_stride0,
                 weight_stride1,
                 input_is_slot_major,
-                qwen35_selected_pair_q5_k_matvec_enabled(),
+                use_q5_pair_matvec,
             ),
             GgmlType::Q6K => self.dequant.encode_moe_mul_mat_selected_pair_q6_k(
                 encoder,
@@ -3104,11 +3125,6 @@ impl MetalOps {
         explicit_barriers: bool,
         allow_blocked_q6q8_down: bool,
     ) -> anyhow::Result<()> {
-        let barrier = |enc: &ax_engine_metal::MetalEncoder| {
-            if explicit_barriers {
-                ax_engine_metal::barrier_buffers(enc);
-            }
-        };
         let blocks_per_expert_gate =
             Self::moe_blocks_per_expert(gate_stride, gate_dtype, "expert gate")?;
         let blocks_per_expert_up = Self::moe_blocks_per_expert(up_stride, up_dtype, "expert up")?;
@@ -3131,12 +3147,35 @@ impl MetalOps {
         } else {
             None
         };
+        let mut sb = ax_engine_metal::SmartBarrier::new(encoder);
+        macro_rules! sb_pre {
+            ($reads:expr, $writes:expr) => {
+                if explicit_barriers {
+                    sb.pre_dispatch($reads, $writes);
+                }
+            };
+        }
+        macro_rules! sb_post {
+            ($reads:expr, $writes:expr) => {
+                if explicit_barriers {
+                    sb.post_dispatch($reads, $writes);
+                }
+            };
+        }
+        macro_rules! sb_flush {
+            () => {
+                if explicit_barriers {
+                    sb.flush();
+                }
+            };
+        }
 
         // This scratch buffer is reused across resident-MoE layers. When decode
         // coalesces multiple recurrent layers into one command buffer, CPU-side
         // writes here would all happen before GPU execution starts, so later
         // layers would not see an in-sequence reset. Encode the zeroing on GPU
         // so every resident tail gets its own accumulator reset in command order.
+        sb_pre!(&[accum_gpu], &[accum_gpu]);
         self.elementwise.encode_gen_scale(
             encoder,
             accum_gpu,
@@ -3144,7 +3183,7 @@ impl MetalOps {
             0.0,
             (n_tokens * dim) as u32,
         );
-        barrier(encoder);
+        sb_post!(&[accum_gpu], &[accum_gpu]);
 
         let nt = n_tokens as u32;
         let ne = n_expert as u32;
@@ -3163,6 +3202,7 @@ impl MetalOps {
                 None => selected_expert_single_token_default_enabled,
             };
 
+        sb_pre!(&[hidden_gpu], &[norm_gpu]);
         self.elementwise.encode_rms_norm_out_batch(
             encoder,
             hidden_gpu,
@@ -3172,9 +3212,10 @@ impl MetalOps {
             n_tokens as u32,
             eps,
         );
-        barrier(encoder);
+        sb_post!(&[hidden_gpu], &[norm_gpu]);
 
         if n_tokens == 1 {
+            sb_pre!(&[norm_gpu], &[router_gpu]);
             self.encode_quant_matvec(
                 encoder,
                 router_buf,
@@ -3184,7 +3225,9 @@ impl MetalOps {
                 dim as u32,
                 router_dtype,
             )?;
+            sb_post!(&[norm_gpu], &[router_gpu]);
         } else if router_dtype == GgmlType::F32 {
+            sb_pre!(&[norm_gpu], &[router_gpu]);
             self.encode_token_major_batch_matmul_f32(
                 encoder,
                 router_buf,
@@ -3195,7 +3238,9 @@ impl MetalOps {
                 nt,
                 m_dim,
             )?;
+            sb_post!(&[norm_gpu], &[router_gpu]);
         } else {
+            sb_pre!(&[norm_gpu], &[router_gpu]);
             self.encode_quant_batch_matmul(
                 encoder,
                 router_buf,
@@ -3206,8 +3251,9 @@ impl MetalOps {
                 dim as u32,
                 router_dtype,
             )?;
+            sb_post!(&[norm_gpu], &[router_gpu]);
         }
-        barrier(encoder);
+        sb_pre!(&[router_gpu], &[ids_gpu, weights_gpu]);
 
         self.elementwise.encode_moe_softmax_topk(
             encoder,
@@ -3218,7 +3264,7 @@ impl MetalOps {
             n_expert as u32,
             n_expert_used as u32,
         );
-        barrier(encoder);
+        sb_post!(&[router_gpu], &[ids_gpu, weights_gpu]);
 
         let profile_skip_routed_expert = matches!(
             env_flag_override("AX_QWEN35_PROFILE_SKIP_ROUTED_EXPERT"),
@@ -3227,7 +3273,11 @@ impl MetalOps {
         if !profile_skip_routed_expert && use_selected_expert_single_token_path {
             let use_selected_expert_pair =
                 qwen35_selected_expert_pair_enabled(gate_dtype, up_dtype, down_dtype);
+            let use_q5_pair_matvec = qwen35_selected_pair_q5_k_matvec_enabled_for_layout(
+                gate_dtype, up_dtype, down_dtype,
+            );
             if use_selected_expert_pair {
+                sb_pre!(&[norm_gpu, ids_gpu], &[gate_out_gpu, up_out_gpu]);
                 self.encode_moe_mul_mat_selected_single_token_pair(
                     encoder,
                     gate_buf,
@@ -3243,8 +3293,11 @@ impl MetalOps {
                     blocks_per_expert_gate,
                     blocks_per_expert_up,
                     false,
+                    use_q5_pair_matvec,
                 )?;
+                sb_post!(&[norm_gpu, ids_gpu], &[gate_out_gpu, up_out_gpu]);
             } else {
+                sb_pre!(&[norm_gpu, ids_gpu], &[gate_out_gpu]);
                 self.encode_moe_mul_mat_selected_single_token(
                     encoder,
                     gate_buf,
@@ -3258,6 +3311,8 @@ impl MetalOps {
                     blocks_per_expert_gate,
                     false,
                 )?;
+                sb_post!(&[norm_gpu, ids_gpu], &[gate_out_gpu]);
+                sb_pre!(&[norm_gpu, ids_gpu], &[up_out_gpu]);
                 self.encode_moe_mul_mat_selected_single_token(
                     encoder,
                     up_buf,
@@ -3271,8 +3326,8 @@ impl MetalOps {
                     blocks_per_expert_up,
                     false,
                 )?;
+                sb_post!(&[norm_gpu, ids_gpu], &[up_out_gpu]);
             }
-            barrier(encoder);
 
             let profile_skip_selected_down = matches!(
                 env_flag_override("AX_QWEN35_PROFILE_SKIP_SELECTED_DOWN"),
@@ -3287,6 +3342,7 @@ impl MetalOps {
             let use_selected_fused_silu_down_q5_k =
                 down_dtype == GgmlType::Q5K && qwen35_selected_fused_silu_down_q5_k_enabled();
             if profile_skip_selected_down {
+                sb_pre!(&[gate_out_gpu, up_out_gpu], &[gate_out_gpu]);
                 self.elementwise.encode_silu_elementwise_mul_batch(
                     encoder,
                     gate_out_gpu,
@@ -3294,9 +3350,13 @@ impl MetalOps {
                     m_inter,
                     nt * neu,
                 );
-                barrier(encoder);
+                sb_post!(&[gate_out_gpu, up_out_gpu], &[gate_out_gpu]);
                 // diagnostic only: isolates routed gate/up + SiLU cost
             } else if use_selected_fused_silu_down_q5_k {
+                sb_pre!(
+                    &[gate_out_gpu, up_out_gpu, ids_gpu, weights_gpu],
+                    &[accum_gpu]
+                );
                 self.encode_moe_fused_silu_down_selected_single_token_q5_k(
                     encoder,
                     down_buf,
@@ -3310,8 +3370,12 @@ impl MetalOps {
                     neu,
                     blocks_per_expert_down,
                 )?;
-                barrier(encoder);
+                sb_post!(
+                    &[gate_out_gpu, up_out_gpu, ids_gpu, weights_gpu],
+                    &[accum_gpu]
+                );
             } else if use_selected_weighted_down {
+                sb_pre!(&[gate_out_gpu, up_out_gpu], &[gate_out_gpu]);
                 self.elementwise.encode_silu_elementwise_mul_batch(
                     encoder,
                     gate_out_gpu,
@@ -3319,7 +3383,8 @@ impl MetalOps {
                     m_inter,
                     nt * neu,
                 );
-                barrier(encoder);
+                sb_post!(&[gate_out_gpu, up_out_gpu], &[gate_out_gpu]);
+                sb_pre!(&[gate_out_gpu, ids_gpu, weights_gpu], &[accum_gpu]);
                 self.encode_moe_mul_mat_selected_single_token_weighted(
                     encoder,
                     down_buf,
@@ -3333,41 +3398,9 @@ impl MetalOps {
                     neu,
                     blocks_per_expert_down,
                 )?;
-                barrier(encoder);
-            } else if selected_down_single_token_supported {
-                self.elementwise.encode_silu_elementwise_mul_batch(
-                    encoder,
-                    gate_out_gpu,
-                    up_out_gpu,
-                    m_inter,
-                    nt * neu,
-                );
-                barrier(encoder);
-                self.encode_moe_mul_mat_selected_single_token(
-                    encoder,
-                    down_buf,
-                    gate_out_gpu,
-                    ids_gpu,
-                    down_out_gpu,
-                    down_dtype,
-                    m_dim,
-                    m_inter,
-                    neu,
-                    blocks_per_expert_down,
-                    true,
-                )?;
-                barrier(encoder);
-                self.elementwise.encode_moe_weighted_reduce_slots(
-                    encoder,
-                    down_out_gpu,
-                    weights_gpu,
-                    accum_gpu,
-                    m_dim,
-                    nt,
-                    neu,
-                );
-                barrier(encoder);
+                sb_post!(&[gate_out_gpu, ids_gpu, weights_gpu], &[accum_gpu]);
             } else if selected_down_falls_back_to_mul_mat_id {
+                sb_pre!(&[gate_out_gpu, up_out_gpu], &[gate_out_gpu]);
                 self.elementwise.encode_silu_elementwise_mul_batch(
                     encoder,
                     gate_out_gpu,
@@ -3375,11 +3408,12 @@ impl MetalOps {
                     m_inter,
                     nt * neu,
                 );
-                barrier(encoder);
+                sb_post!(&[gate_out_gpu, up_out_gpu], &[gate_out_gpu]);
                 // Mixed routed-expert layouts such as Qwen3-Coder's Q4/Q5
                 // gate+up with Q6/Q8 down still benefit from the selected
                 // gate/up path. Reuse the generic routed down kernel for the
                 // final projection instead of disabling the whole fast path.
+                sb_pre!(&[ids_gpu], &[tpe_gpu, hids_gpu, active_buf]);
                 self.dequant.encode_moe_map0(
                     encoder,
                     ids_gpu,
@@ -3390,8 +3424,12 @@ impl MetalOps {
                     n_expert_used as u32,
                     n_expert as u32,
                 );
-                barrier(encoder);
+                sb_post!(&[ids_gpu], &[tpe_gpu, hids_gpu, active_buf]);
                 let max_active_experts = ne.min(nt.saturating_mul(neu));
+                sb_pre!(
+                    &[gate_out_gpu, tpe_gpu, hids_gpu, active_buf],
+                    &[down_out_gpu]
+                );
                 self.encode_moe_mul_mat_id(
                     encoder,
                     down_buf,
@@ -3411,7 +3449,11 @@ impl MetalOps {
                     allow_blocked_q6q8_down,
                     true,
                 )?;
-                barrier(encoder);
+                sb_post!(
+                    &[gate_out_gpu, tpe_gpu, hids_gpu, active_buf],
+                    &[down_out_gpu]
+                );
+                sb_pre!(&[down_out_gpu, weights_gpu], &[accum_gpu]);
                 self.elementwise.encode_moe_weighted_reduce_slots(
                     encoder,
                     down_out_gpu,
@@ -3421,7 +3463,43 @@ impl MetalOps {
                     nt,
                     neu,
                 );
-                barrier(encoder);
+                sb_post!(&[down_out_gpu, weights_gpu], &[accum_gpu]);
+            } else if selected_down_single_token_supported {
+                sb_pre!(&[gate_out_gpu, up_out_gpu], &[gate_out_gpu]);
+                self.elementwise.encode_silu_elementwise_mul_batch(
+                    encoder,
+                    gate_out_gpu,
+                    up_out_gpu,
+                    m_inter,
+                    nt * neu,
+                );
+                sb_post!(&[gate_out_gpu, up_out_gpu], &[gate_out_gpu]);
+                sb_pre!(&[gate_out_gpu, ids_gpu], &[down_out_gpu]);
+                self.encode_moe_mul_mat_selected_single_token(
+                    encoder,
+                    down_buf,
+                    gate_out_gpu,
+                    ids_gpu,
+                    down_out_gpu,
+                    down_dtype,
+                    m_dim,
+                    m_inter,
+                    neu,
+                    blocks_per_expert_down,
+                    true,
+                )?;
+                sb_post!(&[gate_out_gpu, ids_gpu], &[down_out_gpu]);
+                sb_pre!(&[down_out_gpu, weights_gpu], &[accum_gpu]);
+                self.elementwise.encode_moe_weighted_reduce_slots(
+                    encoder,
+                    down_out_gpu,
+                    weights_gpu,
+                    accum_gpu,
+                    m_dim,
+                    nt,
+                    neu,
+                );
+                sb_post!(&[down_out_gpu, weights_gpu], &[accum_gpu]);
             } else {
                 anyhow::bail!(
                     "unsupported routed down dtype {:?} for selected single-token MoE path",
@@ -3432,6 +3510,7 @@ impl MetalOps {
             let use_selected_weighted_down = n_tokens == 1
                 && qwen35_selected_weighted_down_enabled(gate_dtype, up_dtype, down_dtype);
             let max_active_experts = ne.min(nt.saturating_mul(neu));
+            sb_pre!(&[ids_gpu], &[tpe_gpu, hids_gpu, active_buf]);
             self.dequant.encode_moe_map0(
                 encoder,
                 ids_gpu,
@@ -3442,7 +3521,8 @@ impl MetalOps {
                 n_expert_used as u32,
                 n_expert as u32,
             );
-            barrier(encoder);
+            sb_post!(&[ids_gpu], &[tpe_gpu, hids_gpu, active_buf]);
+            sb_pre!(&[norm_gpu, tpe_gpu, hids_gpu, active_buf], &[gate_out_gpu]);
             self.encode_moe_mul_mat_id(
                 encoder,
                 gate_buf,
@@ -3462,6 +3542,8 @@ impl MetalOps {
                 false,
                 false,
             )?;
+            sb_post!(&[norm_gpu, tpe_gpu, hids_gpu, active_buf], &[gate_out_gpu]);
+            sb_pre!(&[norm_gpu, tpe_gpu, hids_gpu, active_buf], &[up_out_gpu]);
             self.encode_moe_mul_mat_id(
                 encoder,
                 up_buf,
@@ -3481,8 +3563,9 @@ impl MetalOps {
                 false,
                 false,
             )?;
-            barrier(encoder);
+            sb_post!(&[norm_gpu, tpe_gpu, hids_gpu, active_buf], &[up_out_gpu]);
 
+            sb_pre!(&[gate_out_gpu, up_out_gpu], &[gate_out_gpu]);
             self.elementwise.encode_silu_elementwise_mul_batch(
                 encoder,
                 gate_out_gpu,
@@ -3490,9 +3573,10 @@ impl MetalOps {
                 m_inter,
                 nt * neu,
             );
-            barrier(encoder);
+            sb_post!(&[gate_out_gpu, up_out_gpu], &[gate_out_gpu]);
 
             if use_selected_weighted_down {
+                sb_pre!(&[gate_out_gpu, ids_gpu, weights_gpu], &[accum_gpu]);
                 self.encode_moe_mul_mat_selected_single_token_weighted(
                     encoder,
                     down_buf,
@@ -3506,8 +3590,12 @@ impl MetalOps {
                     neu,
                     blocks_per_expert_down,
                 )?;
-                barrier(encoder);
+                sb_post!(&[gate_out_gpu, ids_gpu, weights_gpu], &[accum_gpu]);
             } else {
+                sb_pre!(
+                    &[gate_out_gpu, tpe_gpu, hids_gpu, active_buf],
+                    &[down_out_gpu]
+                );
                 self.encode_moe_mul_mat_id(
                     encoder,
                     down_buf,
@@ -3527,8 +3615,12 @@ impl MetalOps {
                     allow_blocked_q6q8_down,
                     true,
                 )?;
-                barrier(encoder);
+                sb_post!(
+                    &[gate_out_gpu, tpe_gpu, hids_gpu, active_buf],
+                    &[down_out_gpu]
+                );
 
+                sb_pre!(&[down_out_gpu, weights_gpu], &[accum_gpu]);
                 self.elementwise.encode_moe_weighted_reduce_slots(
                     encoder,
                     down_out_gpu,
@@ -3538,7 +3630,7 @@ impl MetalOps {
                     nt,
                     neu,
                 );
-                barrier(encoder);
+                sb_post!(&[down_out_gpu, weights_gpu], &[accum_gpu]);
             }
         }
 
@@ -3551,6 +3643,7 @@ impl MetalOps {
             let dequant_config = self.dequant_dispatch_config();
             let single_token = n_tokens == 1;
             let encoded_shared_pair = if single_token {
+                sb_pre!(&[norm_gpu], &[gate_out_gpu, up_out_gpu]);
                 encode_dequant_matvec_pair_with_config(
                     self,
                     encoder,
@@ -3569,10 +3662,14 @@ impl MetalOps {
             } else {
                 false
             };
+            if encoded_shared_pair {
+                sb_post!(&[norm_gpu], &[gate_out_gpu, up_out_gpu]);
+            }
 
             if encoded_shared_pair {
                 // pair kernel already wrote gate_out/up_out
             } else if single_token {
+                sb_pre!(&[norm_gpu], &[gate_out_gpu]);
                 self.encode_quant_matvec(
                     encoder,
                     se.gate,
@@ -3582,17 +3679,22 @@ impl MetalOps {
                     m_dim,
                     se.dtype,
                 )?;
+                sb_post!(&[norm_gpu], &[gate_out_gpu]);
+                sb_pre!(&[norm_gpu], &[up_out_gpu]);
                 self.encode_quant_matvec(
                     encoder, se.up, norm_gpu, up_out_gpu, se_inter, m_dim, se.dtype,
                 )?;
+                sb_post!(&[norm_gpu], &[up_out_gpu]);
             } else if se.dtype == GgmlType::Q8_0 {
+                sb_pre!(&[norm_gpu], &[matmul_in_f16]);
                 self.elementwise.encode_cast_f32_to_f16(
                     encoder,
                     norm_gpu,
                     matmul_in_f16,
                     m_dim * nt,
                 );
-                barrier(encoder);
+                sb_post!(&[norm_gpu], &[matmul_in_f16]);
+                sb_pre!(&[matmul_in_f16], &[gate_out_gpu]);
                 self.dequant.encode_fused_batch_q8_0_f16in_with_config(
                     encoder,
                     se.gate,
@@ -3603,6 +3705,8 @@ impl MetalOps {
                     m_dim,
                     dequant_config,
                 );
+                sb_post!(&[matmul_in_f16], &[gate_out_gpu]);
+                sb_pre!(&[matmul_in_f16], &[up_out_gpu]);
                 self.dequant.encode_fused_batch_q8_0_f16in_with_config(
                     encoder,
                     se.up,
@@ -3613,7 +3717,9 @@ impl MetalOps {
                     m_dim,
                     dequant_config,
                 );
+                sb_post!(&[matmul_in_f16], &[up_out_gpu]);
             } else if se.dtype == GgmlType::F32 {
+                sb_pre!(&[norm_gpu], &[gate_out_gpu]);
                 self.encode_token_major_batch_matmul_f32(
                     encoder,
                     se.gate,
@@ -3624,6 +3730,8 @@ impl MetalOps {
                     nt,
                     m_dim,
                 )?;
+                sb_post!(&[norm_gpu], &[gate_out_gpu]);
+                sb_pre!(&[norm_gpu], &[up_out_gpu]);
                 self.encode_token_major_batch_matmul_f32(
                     encoder,
                     se.up,
@@ -3634,7 +3742,9 @@ impl MetalOps {
                     nt,
                     m_dim,
                 )?;
+                sb_post!(&[norm_gpu], &[up_out_gpu]);
             } else {
+                sb_pre!(&[norm_gpu], &[gate_out_gpu]);
                 self.encode_quant_batch_matmul(
                     encoder,
                     se.gate,
@@ -3645,13 +3755,16 @@ impl MetalOps {
                     m_dim,
                     se.dtype,
                 )?;
+                sb_post!(&[norm_gpu], &[gate_out_gpu]);
+                sb_pre!(&[norm_gpu], &[up_out_gpu]);
                 self.encode_quant_batch_matmul(
                     encoder, se.up, norm_gpu, up_out_gpu, se_inter, nt, m_dim, se.dtype,
                 )?;
+                sb_post!(&[norm_gpu], &[up_out_gpu]);
             }
-            barrier(encoder);
 
             let encoded_shared_down = if single_token {
+                sb_pre!(&[gate_out_gpu, up_out_gpu], &[down_out_gpu]);
                 encode_dequant_silu_down_matvec_with_config(
                     self,
                     encoder,
@@ -3668,8 +3781,12 @@ impl MetalOps {
             } else {
                 false
             };
+            if encoded_shared_down {
+                sb_post!(&[gate_out_gpu, up_out_gpu], &[down_out_gpu]);
+            }
 
             if !encoded_shared_down {
+                sb_pre!(&[gate_out_gpu, up_out_gpu], &[gate_out_gpu]);
                 self.elementwise.encode_silu_elementwise_mul_batch(
                     encoder,
                     gate_out_gpu,
@@ -3677,12 +3794,13 @@ impl MetalOps {
                     se_inter,
                     nt,
                 );
-                barrier(encoder);
+                sb_post!(&[gate_out_gpu, up_out_gpu], &[gate_out_gpu]);
             }
 
             if encoded_shared_down {
                 // fused down kernel already wrote down_out
             } else if single_token {
+                sb_pre!(&[gate_out_gpu], &[down_out_gpu]);
                 self.encode_quant_matvec(
                     encoder,
                     se.down,
@@ -3692,14 +3810,17 @@ impl MetalOps {
                     se_inter,
                     se.dtype,
                 )?;
+                sb_post!(&[gate_out_gpu], &[down_out_gpu]);
             } else if se.dtype == GgmlType::Q8_0 {
+                sb_pre!(&[gate_out_gpu], &[matmul_in_f16]);
                 self.elementwise.encode_cast_f32_to_f16(
                     encoder,
                     gate_out_gpu,
                     matmul_in_f16,
                     se_inter * nt,
                 );
-                barrier(encoder);
+                sb_post!(&[gate_out_gpu], &[matmul_in_f16]);
+                sb_pre!(&[matmul_in_f16], &[down_out_gpu]);
                 self.dequant.encode_fused_batch_q8_0_f16in_with_config(
                     encoder,
                     se.down,
@@ -3710,7 +3831,9 @@ impl MetalOps {
                     se_inter,
                     dequant_config,
                 );
+                sb_post!(&[matmul_in_f16], &[down_out_gpu]);
             } else if se.dtype == GgmlType::F32 {
+                sb_pre!(&[gate_out_gpu], &[down_out_gpu]);
                 self.encode_token_major_batch_matmul_f32(
                     encoder,
                     se.down,
@@ -3721,7 +3844,9 @@ impl MetalOps {
                     nt,
                     se_inter,
                 )?;
+                sb_post!(&[gate_out_gpu], &[down_out_gpu]);
             } else {
+                sb_pre!(&[gate_out_gpu], &[down_out_gpu]);
                 self.encode_quant_batch_matmul(
                     encoder,
                     se.down,
@@ -3732,8 +3857,8 @@ impl MetalOps {
                     se_inter,
                     se.dtype,
                 )?;
+                sb_post!(&[gate_out_gpu], &[down_out_gpu]);
             }
-            barrier(encoder);
 
             if let Some(gate_inp) = se.gate_inp {
                 let profile_skip_shared_gate_inp = matches!(
@@ -3749,6 +3874,7 @@ impl MetalOps {
                         && gate_inp_dtype == GgmlType::F32
                         && qwen35_shared_gate_inp_fused_enabled();
                     if use_fused_shared_gate_inp {
+                        sb_pre!(&[norm_gpu, down_out_gpu], &[down_out_gpu]);
                         self.elementwise.encode_dense_row_dot_sigmoid_mul_inplace(
                             encoder,
                             gate_inp,
@@ -3757,7 +3883,9 @@ impl MetalOps {
                             m_dim,
                             m_dim,
                         );
+                        sb_post!(&[norm_gpu, down_out_gpu], &[down_out_gpu]);
                     } else if n_tokens == 1 {
+                        sb_pre!(&[norm_gpu], &[router_gpu]);
                         self.encode_quant_matvec(
                             encoder,
                             gate_inp,
@@ -3767,7 +3895,9 @@ impl MetalOps {
                             m_dim,
                             gate_inp_dtype,
                         )?;
+                        sb_post!(&[norm_gpu], &[router_gpu]);
                     } else if gate_inp_dtype == GgmlType::F32 {
+                        sb_pre!(&[norm_gpu], &[router_gpu]);
                         self.encode_token_major_batch_matmul_f32(
                             encoder,
                             gate_inp,
@@ -3778,7 +3908,9 @@ impl MetalOps {
                             nt,
                             m_dim,
                         )?;
+                        sb_post!(&[norm_gpu], &[router_gpu]);
                     } else {
+                        sb_pre!(&[norm_gpu], &[router_gpu]);
                         self.encode_quant_batch_matmul(
                             encoder,
                             gate_inp,
@@ -3789,17 +3921,19 @@ impl MetalOps {
                             m_dim,
                             gate_inp_dtype,
                         )?;
+                        sb_post!(&[norm_gpu], &[router_gpu]);
                     }
-                    barrier(encoder);
                     if use_fused_shared_gate_inp {
                         // fused kernel already applied sigmoid(gate_inp) to down_out
                     } else if se.gate_inp_rows == dim {
+                        sb_pre!(&[router_gpu, down_out_gpu], &[down_out_gpu]);
                         self.elementwise.encode_sigmoid_elementwise_mul(
                             encoder,
                             router_gpu,
                             down_out_gpu,
                             m_dim * nt,
                         );
+                        sb_post!(&[router_gpu, down_out_gpu], &[down_out_gpu]);
                     } else {
                         anyhow::ensure!(
                             se.gate_inp_rows == 1,
@@ -3808,16 +3942,20 @@ impl MetalOps {
                             dim,
                         );
                         if single_token {
+                            sb_pre!(&[router_gpu, down_out_gpu], &[down_out_gpu]);
                             self.elementwise.encode_sigmoid_scalar_mul_inplace(
                                 encoder,
                                 router_gpu,
                                 down_out_gpu,
                                 m_dim,
                             );
+                            sb_post!(&[router_gpu, down_out_gpu], &[down_out_gpu]);
                         } else {
+                            sb_pre!(&[router_gpu], &[router_gpu]);
                             self.elementwise
                                 .encode_sigmoid_inplace(encoder, router_gpu, nt);
-                            barrier(encoder);
+                            sb_post!(&[router_gpu], &[router_gpu]);
+                            sb_pre!(&[down_out_gpu, router_gpu], &[down_out_gpu]);
                             self.gdn.encode_broadcast_mul(
                                 encoder,
                                 down_out_gpu,
@@ -3826,12 +3964,13 @@ impl MetalOps {
                                 m_dim,
                                 m_dim * nt,
                             );
+                            sb_post!(&[down_out_gpu, router_gpu], &[down_out_gpu]);
                         }
                     }
-                    barrier(encoder);
                 }
             }
 
+            sb_pre!(&[accum_gpu, down_out_gpu], &[accum_gpu]);
             self.elementwise.encode_elementwise_add_batch(
                 encoder,
                 accum_gpu,
@@ -3839,16 +3978,18 @@ impl MetalOps {
                 m_dim,
                 nt,
             );
-            barrier(encoder);
+            sb_post!(&[accum_gpu, down_out_gpu], &[accum_gpu]);
         }
 
+        sb_pre!(&[hidden_gpu, accum_gpu], &[hidden_gpu]);
         self.elementwise
             .encode_elementwise_add_batch(encoder, hidden_gpu, accum_gpu, m_dim, nt);
+        sb_post!(&[hidden_gpu, accum_gpu], &[hidden_gpu]);
         // When decode continues in the same command buffer, the updated hidden
         // state becomes the input to the next layer (or output head) immediately.
         // Keep the final residual add ordered with subsequent reads under the
         // explicit-barrier decode plan.
-        barrier(encoder);
+        sb_flush!();
         if std::env::var("AX_DEBUG_MOE_NATIVE").is_ok() && n_tokens == 1 {
             let norm = unsafe { &norm_gpu.as_slice::<f32>()[..4.min(dim)] };
             let accum = unsafe { &accum_gpu.as_slice::<f32>()[..4.min(dim)] };

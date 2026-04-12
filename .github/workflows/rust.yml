@@ -1,0 +1,145 @@
+name: Rust CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - ".github/workflows/rust.yml"
+
+# Cancel in-progress runs for the same branch/PR
+concurrency:
+  group: rust-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Force CPU-only backend in CI (no Metal GPU in runner)
+  AX_CPU_ONLY: "1"
+  RUST_LOG: warn
+
+jobs:
+  # ── Fast checks (parallel, no compilation needed for fmt) ──
+  format:
+    name: fmt
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # ── Compile + lint (parallel with fmt, depends on nothing) ──
+  check:
+    name: clippy + check
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Cargo check
+        run: cargo check --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --tests -- -D warnings
+
+  # ── Unit tests (runs after check passes, reuses cache) ──
+  test:
+    name: test
+    runs-on: macos-15
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # Build tests (don't run yet — catches compilation issues)
+      - name: Build tests
+        run: cargo test --workspace --no-run 2>&1
+
+      # Run unit tests only — skip integration tests that need GGUF model files.
+      # Tests named test_real_* load multi-GB models from models/ which aren't in CI.
+      - name: Run unit tests
+        timeout-minutes: 30
+        run: cargo test --workspace -- --skip "test_real_" --nocapture
+
+  # ── Release build (only on main push, verifies it compiles in release mode) ──
+  release-build:
+    name: release build
+    runs-on: macos-15
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [format, check, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Build release
+        run: cargo build --workspace --release
+
+      - name: Upload CLI binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ax-engine-cli
+          path: target/release/ax-engine
+          retention-days: 7
+
+      - name: Upload bench binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ax-engine-bench
+          path: target/release/ax-engine-bench
+          retention-days: 7

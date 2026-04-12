@@ -1,0 +1,2 @@
+label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
+gemma4-31b-prefill-bootstrap-final	models/gemma-4-31B-it-Q4_K_M.gguf	512	128	512	1	0	20.05336280133219	150.402525	13.333129082329032	2.455283432224789	15.778942	15.560507366240328

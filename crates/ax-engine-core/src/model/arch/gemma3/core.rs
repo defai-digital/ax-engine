@@ -186,6 +186,12 @@ impl Gemma3Forward {
                 moe_expert_gate: None,
                 moe_expert_up: None,
                 moe_expert_down: None,
+                moe_expert_gate_dtype: None,
+                moe_expert_up_dtype: None,
+                moe_expert_down_dtype: None,
+                moe_expert_gate_stride: None,
+                moe_expert_up_stride: None,
+                moe_expert_down_stride: None,
                 moe_expert_dtype: None,
                 moe_shared_gate: None,
                 moe_shared_up: None,
@@ -1095,50 +1101,78 @@ impl Gemma3Forward {
                         ops_ref.gpu_encode_layer_ffn += gate_up_t.elapsed();
                     }
 
-                    // ── Phase 3e: Batched GELU activation ──
-                    let activation_t = OpTimer::start();
-                    sb.pre_dispatch(&[&bs.gate_buf, &bs.up_buf], &[&bs.gate_buf]);
-                    match ffn_layer_plan.activation {
-                        PrefillFfnActivationPlan::GeluMulGateF32 => {
-                            metal_ops.elementwise.encode_gelu_elementwise_mul_batch(
-                                encoder,
-                                &bs.gate_buf,
-                                &bs.up_buf,
-                                inter_dim as u32,
-                                nt,
-                            );
+                    let wd_buf = weight_cache.get(&lw.wd).unwrap();
+                    let mut fused_gelu_down_encoded = false;
+                    if matches!(
+                        ffn_layer_plan.activation,
+                        PrefillFfnActivationPlan::GeluMulGateF32
+                    ) && lw.wd_dtype == GgmlType::Q6K
+                    {
+                        let fused_gelu_down_t = OpTimer::start();
+                        sb.pre_dispatch(&[&bs.gate_buf, &bs.up_buf], &[&bs.proj_buf]);
+                        fused_gelu_down_encoded = metal_ops.dequant.encode_fused_batch_q6_k_gelu(
+                            encoder,
+                            wd_buf,
+                            &bs.gate_buf,
+                            &bs.up_buf,
+                            &bs.proj_buf,
+                            dim as u32,
+                            nt,
+                            inter_dim as u32,
+                        );
+                        if fused_gelu_down_encoded {
+                            sb.post_dispatch(&[&bs.gate_buf, &bs.up_buf], &[&bs.proj_buf]);
+                            if let Some(ref mut ops_ref) = ops {
+                                ops_ref.gpu_encode_layer_ffn += fused_gelu_down_t.elapsed();
+                            }
                         }
-                        PrefillFfnActivationPlan::SiluMulGateF32
-                        | PrefillFfnActivationPlan::SiluMulScratchF16 => unreachable!(),
-                    }
-                    sb.post_dispatch(&[&bs.gate_buf, &bs.up_buf], &[&bs.gate_buf]);
-                    if let Some(ref mut ops_ref) = ops {
-                        ops_ref.gpu_encode_layer_ffn += activation_t.elapsed();
                     }
 
-                    // ── Phase 3f: Batched down projection ──
-                    let down_proj_t = OpTimer::start();
-                    let wd_buf = weight_cache.get(&lw.wd).unwrap();
-                    sb.pre_dispatch(&[&bs.gate_buf], &[&bs.proj_buf]);
-                    encode_dequant_batch(
-                        &metal_ops.dequant,
-                        &metal_ops.elementwise,
-                        encoder,
-                        wd_buf,
-                        &bs.gate_buf,
-                        &bs.proj_buf,
-                        &bs.matmul_in_f16,
-                        dim as u32,
-                        nt,
-                        inter_dim as u32,
-                        lw.wd_dtype,
-                        prefill_plan.use_f16_batch_io,
-                        prefill_plan.use_batch_simd,
-                        prefill_plan.q5k_prefill_small_n,
-                    );
-                    sb.post_dispatch(&[&bs.gate_buf], &[&bs.proj_buf]);
-                    if let Some(ref mut ops_ref) = ops {
-                        ops_ref.gpu_encode_layer_ffn += down_proj_t.elapsed();
+                    if !fused_gelu_down_encoded {
+                        // ── Phase 3e: Batched GELU activation ──
+                        let activation_t = OpTimer::start();
+                        sb.pre_dispatch(&[&bs.gate_buf, &bs.up_buf], &[&bs.gate_buf]);
+                        match ffn_layer_plan.activation {
+                            PrefillFfnActivationPlan::GeluMulGateF32 => {
+                                metal_ops.elementwise.encode_gelu_elementwise_mul_batch(
+                                    encoder,
+                                    &bs.gate_buf,
+                                    &bs.up_buf,
+                                    inter_dim as u32,
+                                    nt,
+                                );
+                            }
+                            PrefillFfnActivationPlan::SiluMulGateF32
+                            | PrefillFfnActivationPlan::SiluMulScratchF16 => unreachable!(),
+                        }
+                        sb.post_dispatch(&[&bs.gate_buf, &bs.up_buf], &[&bs.gate_buf]);
+                        if let Some(ref mut ops_ref) = ops {
+                            ops_ref.gpu_encode_layer_ffn += activation_t.elapsed();
+                        }
+
+                        // ── Phase 3f: Batched down projection ──
+                        let down_proj_t = OpTimer::start();
+                        sb.pre_dispatch(&[&bs.gate_buf], &[&bs.proj_buf]);
+                        encode_dequant_batch(
+                            &metal_ops.dequant,
+                            &metal_ops.elementwise,
+                            encoder,
+                            wd_buf,
+                            &bs.gate_buf,
+                            &bs.proj_buf,
+                            &bs.matmul_in_f16,
+                            dim as u32,
+                            nt,
+                            inter_dim as u32,
+                            lw.wd_dtype,
+                            prefill_plan.use_f16_batch_io,
+                            prefill_plan.use_batch_simd,
+                            prefill_plan.q5k_prefill_small_n,
+                        );
+                        sb.post_dispatch(&[&bs.gate_buf], &[&bs.proj_buf]);
+                        if let Some(ref mut ops_ref) = ops {
+                            ops_ref.gpu_encode_layer_ffn += down_proj_t.elapsed();
+                        }
                     }
 
                     let residual_plan =

@@ -362,13 +362,14 @@ def write_llama_summary(
     return summary_json
 
 
-def run_ax(config: RunConfig, run_dir: Path) -> tuple[Path, list[str]]:
-    ax_json = run_dir / "ax.json"
+def run_ax(config: RunConfig, run_dir: Path) -> tuple[Path, list[str], list[float]]:
+    """Run AX Engine benchmark, one process per sample (parity with llama.cpp)."""
     print(
         f"--- AX benchmark model={config.model} prompt={config.prompt_tokens} decode={config.decode_tokens} samples={config.samples} ---",
         file=sys.stderr,
     )
-    cmd = [
+    ax_json = run_dir / "ax.json"
+    base_cmd = [
         str(config.ax_bench),
         "bench",
         "--model",
@@ -377,21 +378,68 @@ def run_ax(config: RunConfig, run_dir: Path) -> tuple[Path, list[str]]:
         str(config.prompt_tokens),
         "--decode-tokens",
         str(config.decode_tokens),
-        "--deterministic",
-        "--samples",
-        str(config.samples),
-        "--cooldown-ms",
-        str(config.cooldown_seconds * 1000),
         "--warmup-iters",
         "0",
         "--measure-iters",
         "1",
         "--llama-parity-preset",
-        "--json-output",
-        str(ax_json),
     ]
-    subprocess.run(cmd, check=True, text=True)
-    return ax_json, cmd
+
+    prefill_samples: list[float] = []
+    decode_samples: list[float] = []
+    sample_commands: list[list[str]] = []
+
+    for sample_idx in range(1, config.samples + 1):
+        print(
+            f"--- AX benchmark sample={sample_idx}/{config.samples} ---",
+            file=sys.stderr,
+        )
+        sample_json = run_dir / f"ax-sample{sample_idx}.json"
+        cmd = base_cmd + [
+            "--deterministic",
+            "--samples",
+            "1",
+            "--cooldown-ms",
+            "0",
+            "--json-output",
+            str(sample_json),
+        ]
+        sample_commands.append(cmd.copy())
+        subprocess.run(cmd, check=True, text=True)
+        data = json.loads(sample_json.read_text(encoding="utf-8"))
+        prefill_samples.append(float(data["prefill_tok_per_sec_median"]))
+        decode_samples.append(float(data["decode_tok_per_sec_median"]))
+        if sample_idx < config.samples:
+            sleep_if_needed(config.cooldown_seconds)
+
+    prefill_median = statistics.median(prefill_samples)
+    decode_median = statistics.median(decode_samples)
+    payload = {
+        "engine": {
+            "name": "ax-engine",
+            "binary": str(config.ax_bench),
+        },
+        "model": str(config.model),
+        "prompt_tokens": config.prompt_tokens,
+        "decode_tokens": config.decode_tokens,
+        "decode_depth": config.decode_depth,
+        "samples": config.samples,
+        "cooldown_s": config.cooldown_seconds,
+        "methodology": "process-per-sample outer median (parity with llama.cpp)",
+        "prefill_median_tok_per_s": prefill_median,
+        "prefill_mean_tok_per_s": statistics.mean(prefill_samples),
+        "decode_median_tok_per_s": decode_median,
+        "decode_mean_tok_per_s": statistics.mean(decode_samples),
+        "prefill_samples_tok_per_s": prefill_samples,
+        "decode_samples_tok_per_s": decode_samples,
+        "prefill_sample_commands": sample_commands,
+        "decode_sample_commands": sample_commands,
+        "kv_f16": data.get("kv_f16"),
+        "prefill_plan": data.get("prefill_plan"),
+        "decode_plan": data.get("decode_plan"),
+    }
+    ax_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return ax_json, base_cmd, [prefill_median, decode_median]
 
 
 def snapshot_env(keys: list[str]) -> dict[str, str | None]:
@@ -446,10 +494,13 @@ def build_comparison(
 
     ax = json.loads(ax_json.read_text(encoding="utf-8"))
     llama = json.loads(llama_json.read_text(encoding="utf-8"))
-    ax_prefill = float(ax["prefill_tok_per_sec_median"])
-    ax_decode = float(ax["decode_tok_per_sec_median"])
+    ax_prefill = float(ax["prefill_median_tok_per_s"])
+    ax_decode = float(ax["decode_median_tok_per_s"])
     llama_prefill = float(llama["prefill_median_tok_per_s"])
     llama_decode = float(llama["decode_median_tok_per_s"])
+
+    ax_kv_f16 = ax.get("kv_f16")
+    llama_kv_f16 = config.llama.cache_type_k == "f16"
 
     payload = {
         "label": config.label,
@@ -462,12 +513,31 @@ def build_comparison(
         "methodology": {
             "aggregation": "outer_median",
             "serial": True,
+            "process_per_sample": True,
             "ax": {
-                "deterministic": True,
+                "process_per_sample": True,
                 "warmup_iters": 0,
                 "measure_iters": 1,
+                "kv_f16": ax_kv_f16,
             },
             "llama": asdict(config.llama),
+            "parity_checks": {
+                "kv_f16": {
+                    "ax": ax_kv_f16,
+                    "llama": llama_kv_f16,
+                    "match": ax_kv_f16 == llama_kv_f16,
+                },
+                "flash_attn": {
+                    "ax": True,
+                    "llama": config.llama.flash_attn,
+                    "match": config.llama.flash_attn,
+                },
+                "gpu_offload": {
+                    "ax": "full",
+                    "llama": f"ngl={config.llama.n_gpu_layers}",
+                    "match": config.llama.n_gpu_layers >= 90,
+                },
+            },
         },
         "ax": {
             "engine": "ax-engine",
@@ -507,7 +577,8 @@ def build_comparison(
         f"- Decode: `{config.decode_tokens}` @ depth `{config.decode_depth}`\n"
         f"- Samples: `{config.samples}`\n"
         f"- Cooldown: `{config.cooldown_seconds}s`\n"
-        "- Method: serial outer-sample medians on the same machine\n\n"
+        f"- Method: process-per-sample outer medians on the same machine\n"
+        f"- KV parity: AX f16={ax_kv_f16} llama f16={llama_kv_f16}\n\n"
         "| Engine | Prefill tok/s | Decode tok/s |\n"
         "|---|---:|---:|\n"
         f"| AX Engine | {ax_prefill:.1f} | {ax_decode:.1f} |\n"
@@ -516,6 +587,15 @@ def build_comparison(
         "|---|---:|\n"
         f"| AX / llama prefill | {payload['ratios']['prefill_percent']:.1f}% |\n"
         f"| AX / llama decode | {payload['ratios']['decode_percent']:.1f}% |\n\n"
+        "<details><summary>Per-sample breakdown</summary>\n\n"
+        "| # | AX prefill | AX decode | llama prefill | llama decode |\n"
+        "|---|---:|---:|---:|---:|\n"
+        + "\n".join(
+            f"| {i+1} | {ax['prefill_samples_tok_per_s'][i]:.1f} | {ax['decode_samples_tok_per_s'][i]:.1f} "
+            f"| {llama['prefill_samples_tok_per_s'][i]:.1f} | {llama['decode_samples_tok_per_s'][i]:.1f} |"
+            for i in range(config.samples)
+        )
+        + "\n</details>\n\n"
         f"- AX artifact: `{ax_json}`\n"
         f"- llama.cpp artifact: `{llama_json}`\n",
         encoding="utf-8",
@@ -525,8 +605,8 @@ def build_comparison(
 def write_ax_only_summary(config: RunConfig, run_dir: Path, ax_json: Path, ax_command: list[str]) -> None:
     """Write summary files when running AX-only (no llama.cpp comparison)."""
     ax = json.loads(ax_json.read_text(encoding="utf-8"))
-    ax_prefill = float(ax["prefill_tok_per_sec_median"])
-    ax_decode = float(ax["decode_tok_per_sec_median"])
+    ax_prefill = float(ax["prefill_median_tok_per_s"])
+    ax_decode = float(ax["decode_median_tok_per_s"])
     summary_md = run_dir / "summary.md"
     summary_md.write_text(
         "# AX Engine Benchmark (AX-only)\n\n"
@@ -535,14 +615,15 @@ def write_ax_only_summary(config: RunConfig, run_dir: Path, ax_json: Path, ax_co
         f"- Prompt: `{config.prompt_tokens}`\n"
         f"- Decode: `{config.decode_tokens}` @ depth `{config.decode_depth}`\n"
         f"- Samples: `{config.samples}`\n"
-        f"- Cooldown: `{config.cooldown_seconds}s`\n\n"
+        f"- Cooldown: `{config.cooldown_seconds}s`\n"
+        f"- Method: process-per-sample outer medians\n\n"
         "| Phase | Median tok/s |\n"
         "|---|---:|\n"
         f"| Prefill | {ax_prefill:.1f} |\n"
         f"| Decode | {ax_decode:.1f} |\n\n"
         f"- Prefill plan: `{ax.get('prefill_plan', 'n/a')}`\n"
         f"- Decode plan: `{ax.get('decode_plan', 'n/a')}`\n"
-        f"- Prefill CBs: `{ax.get('prefill_command_buffers', 'n/a')}`\n"
+        f"- KV f16: `{ax.get('kv_f16', 'n/a')}`\n"
         f"- AX artifact: `{ax_json}`\n",
         encoding="utf-8",
     )
@@ -614,7 +695,7 @@ def main() -> int:
     # ── modes that need AX ───────────────────────────────────────────────
     ensure_exists(config.ax_bench, executable=True)
 
-    ax_json, ax_command = run_ax(config, run_dir)
+    ax_json, ax_command, ax_medians = run_ax(config, run_dir)
 
     if config.ax_only and config.llama_baseline is None:
         # AX-only mode: just report AX results, no comparison.
@@ -648,6 +729,16 @@ def main() -> int:
 
     # Full mode: run both AX and llama.cpp.
     ensure_exists(config.llama_bench, executable=True)
+
+    ax_kv_f16 = json.loads(ax_json.read_text(encoding="utf-8")).get("kv_f16")
+    llama_kv_f16 = config.llama.cache_type_k == "f16"
+    if ax_kv_f16 != llama_kv_f16:
+        print(
+            f"WARNING: KV dtype mismatch — AX f16={ax_kv_f16}, llama f16={llama_kv_f16}. "
+            "Results may not be directly comparable.",
+            file=sys.stderr,
+        )
+
     llama_run_dir = run_dir / "llama"
     llama_run_dir.mkdir(parents=True, exist_ok=True)
     print(

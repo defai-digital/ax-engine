@@ -1,0 +1,2 @@
+model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_s	prefill_median_tok_per_s	prefill_mean_tok_per_s	decode_median_tok_per_s	decode_mean_tok_per_s
+models/Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf	512	128	512	5	20	1204.942147	1202.2853012	79.530694	79.8668118

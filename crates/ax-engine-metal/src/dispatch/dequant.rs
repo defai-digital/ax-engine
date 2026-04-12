@@ -30,7 +30,7 @@ pub(super) const Q4K_ILP4_ROWS: usize = 2;
 /// Threadgroup size for the Q6_K ILP4 decode matvec kernel.
 pub(super) const DEQUANT_MATVEC_Q6K_ILP4_TG: usize = 64;
 /// Number of output rows per threadgroup for Q6_K ILP4.
-const Q6K_ILP4_ROWS: usize = 2;
+pub(super) const Q6K_ILP4_ROWS: usize = 2;
 
 /// Threadgroup size for standalone dequant kernels.
 const DEQUANT_TG_SIZE: usize = 256;
@@ -251,6 +251,10 @@ pub struct DequantKernels {
     fused_batch_q6_k_blocked_silu: ComputePipeline,
     /// Fused SiLU activation + blocked Q6_K down projection (full-tile).
     fused_batch_q6_k_blocked_silu_fulltile: ComputePipeline,
+    /// Fused GELU activation + blocked Q6_K down projection (boundary-specialized).
+    fused_batch_q6_k_blocked_gelu: ComputePipeline,
+    /// Fused GELU activation + blocked Q6_K down projection (full-tile).
+    fused_batch_q6_k_blocked_gelu_fulltile: ComputePipeline,
     /// B-transposed batch dequant+matmul for Q4_K with f16 input and f32 output.
     fused_batch_q4_k_f16in: ComputePipeline,
     /// Full-tile (BM=32, BN=64, TG=256) fast path for Q4_K with f16 input. No out_tile → 12 KB.
@@ -349,12 +353,14 @@ pub struct DequantKernels {
     pub moe_mul_mat_selected_pair_q5_k_matvec: ComputePipeline,
     pub moe_mul_mat_selected_weighted_q5_k_blocked: ComputePipeline,
     pub moe_mul_mat_selected_pair_q6_k_matvec: ComputePipeline,
+    pub moe_mul_mat_selected_pair_q6_k_matvec_ilp4: ComputePipeline,
     pub moe_mul_mat_selected_pair_q6_k_matvec_nr2: ComputePipeline,
     pub moe_mul_mat_selected_q6_k_matvec: ComputePipeline,
     pub moe_mul_mat_selected_q6_k_matvec_nr2: ComputePipeline,
     pub moe_mul_mat_selected_weighted_q6_k_matvec: ComputePipeline,
     pub moe_mul_mat_selected_weighted_q6_k_matvec_nr2: ComputePipeline,
     pub moe_mul_mat_selected_pair_q8_0_matvec: ComputePipeline,
+    pub moe_mul_mat_selected_pair_q8_0_matvec_ilp4: ComputePipeline,
     pub moe_mul_mat_selected_pair_q8_0_matvec_nr2: ComputePipeline,
     pub moe_mul_mat_selected_q8_0_matvec: ComputePipeline,
     pub moe_mul_mat_selected_q8_0_matvec_nr2: ComputePipeline,
@@ -489,109 +495,55 @@ impl DequantKernels {
     fn q6_k_selected_matvec_dispatch_with_config(
         &self,
         m: u32,
-        config: DequantDispatchConfig,
+        _config: DequantDispatchConfig,
     ) -> (
         usize,
         usize,
         &ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
     ) {
-        let selection = q6_k_matvec_candidate_selection(m, config);
-        match selection.candidate {
-            MatvecCandidate::Q6KBase => (
-                selection.threadgroups,
-                selection.threadgroup_width,
-                self.moe_mul_mat_selected_q6_k_matvec.state(),
-            ),
-            MatvecCandidate::Q6KNr2 => (
-                selection.threadgroups,
-                selection.threadgroup_width,
-                self.moe_mul_mat_selected_q6_k_matvec_nr2.state(),
-            ),
-            MatvecCandidate::Q6KIlp4 => {
-                unreachable!("q6_k ilp4 is disabled in candidate selection")
-            }
-            MatvecCandidate::Q4KBase
-            | MatvecCandidate::Q4KNr2
-            | MatvecCandidate::Q4KIlp4
-            | MatvecCandidate::Q5KBase
-            | MatvecCandidate::Q5KIlp4
-            | MatvecCandidate::Q5KNr2
-            | MatvecCandidate::Q8_0Base
-            | MatvecCandidate::Q8_0Nr2
-            | MatvecCandidate::Q8_0Ilp4 => unreachable!(),
-        }
+        // The generic fused Q6_K matvec stack can safely prefer NR2, but the
+        // selected-expert MoE decode path still needs the simpler base kernel
+        // as the shipped default. Real-model Qwen3-Coder runs hit non-finite
+        // routed-down outputs with the NR2 variant even though synthetic unit
+        // tests passed, so keep MoE selected matvecs on the stable base path
+        // until the NR2 route is validated on real expert activations.
+        (
+            m as usize,
+            DEQUANT_MATVEC_TG,
+            self.moe_mul_mat_selected_q6_k_matvec.state(),
+        )
     }
 
     fn q6_k_selected_pair_matvec_dispatch_with_config(
         &self,
         m: u32,
-        config: DequantDispatchConfig,
+        _config: DequantDispatchConfig,
     ) -> (
         usize,
         usize,
         &ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
     ) {
-        let selection = q6_k_matvec_candidate_selection(m, config);
-        match selection.candidate {
-            MatvecCandidate::Q6KBase => (
-                selection.threadgroups,
-                selection.threadgroup_width,
-                self.moe_mul_mat_selected_pair_q6_k_matvec.state(),
-            ),
-            MatvecCandidate::Q6KNr2 => (
-                selection.threadgroups,
-                selection.threadgroup_width,
-                self.moe_mul_mat_selected_pair_q6_k_matvec_nr2.state(),
-            ),
-            MatvecCandidate::Q6KIlp4 => {
-                unreachable!("q6_k ilp4 is disabled in candidate selection")
-            }
-            MatvecCandidate::Q4KBase
-            | MatvecCandidate::Q4KNr2
-            | MatvecCandidate::Q4KIlp4
-            | MatvecCandidate::Q5KBase
-            | MatvecCandidate::Q5KIlp4
-            | MatvecCandidate::Q5KNr2
-            | MatvecCandidate::Q8_0Base
-            | MatvecCandidate::Q8_0Nr2
-            | MatvecCandidate::Q8_0Ilp4 => unreachable!(),
-        }
+        (
+            m as usize,
+            DEQUANT_MATVEC_TG,
+            self.moe_mul_mat_selected_pair_q6_k_matvec.state(),
+        )
     }
 
     fn q6_k_selected_weighted_matvec_dispatch_with_config(
         &self,
         m: u32,
-        config: DequantDispatchConfig,
+        _config: DequantDispatchConfig,
     ) -> (
         usize,
         usize,
         &ProtocolObject<dyn objc2_metal::MTLComputePipelineState>,
     ) {
-        let selection = q6_k_matvec_candidate_selection(m, config);
-        match selection.candidate {
-            MatvecCandidate::Q6KBase => (
-                selection.threadgroups,
-                selection.threadgroup_width,
-                self.moe_mul_mat_selected_weighted_q6_k_matvec.state(),
-            ),
-            MatvecCandidate::Q6KNr2 => (
-                selection.threadgroups,
-                selection.threadgroup_width,
-                self.moe_mul_mat_selected_weighted_q6_k_matvec_nr2.state(),
-            ),
-            MatvecCandidate::Q6KIlp4 => {
-                unreachable!("q6_k ilp4 is disabled in candidate selection")
-            }
-            MatvecCandidate::Q4KBase
-            | MatvecCandidate::Q4KNr2
-            | MatvecCandidate::Q4KIlp4
-            | MatvecCandidate::Q5KBase
-            | MatvecCandidate::Q5KIlp4
-            | MatvecCandidate::Q5KNr2
-            | MatvecCandidate::Q8_0Base
-            | MatvecCandidate::Q8_0Nr2
-            | MatvecCandidate::Q8_0Ilp4 => unreachable!(),
-        }
+        (
+            m as usize,
+            DEQUANT_MATVEC_TG,
+            self.moe_mul_mat_selected_weighted_q6_k_matvec.state(),
+        )
     }
 
     fn q8_0_selected_matvec_dispatch_with_config(
@@ -655,11 +607,21 @@ impl DequantKernels {
                 selection.threadgroup_width,
                 self.moe_mul_mat_selected_pair_q8_0_matvec_nr2.state(),
             ),
-            MatvecCandidate::Q8_0Ilp4 => (
-                m as usize,
-                DEQUANT_MATVEC_TG,
-                self.moe_mul_mat_selected_pair_q8_0_matvec.state(),
-            ),
+            MatvecCandidate::Q8_0Ilp4 => {
+                if matches!(selection.stability, KernelStabilityTier::ProfilePreferred) {
+                    (
+                        selection.threadgroups,
+                        selection.threadgroup_width,
+                        self.moe_mul_mat_selected_pair_q8_0_matvec_ilp4.state(),
+                    )
+                } else {
+                    (
+                        m as usize,
+                        DEQUANT_MATVEC_TG,
+                        self.moe_mul_mat_selected_pair_q8_0_matvec.state(),
+                    )
+                }
+            }
             MatvecCandidate::Q4KBase
             | MatvecCandidate::Q4KNr2
             | MatvecCandidate::Q4KIlp4
@@ -1111,6 +1073,26 @@ impl DequantKernels {
             }],
         )
         .context("Failed to compile dequant_batch_q6_k_blocked_silu fulltile kernel")?;
+        let fused_batch_q6_k_blocked_gelu = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q6_k_blocked_gelu",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(true),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q6_k_blocked_gelu boundary kernel")?;
+        let fused_batch_q6_k_blocked_gelu_fulltile = ComputePipeline::from_source_with_constants(
+            device.device(),
+            DEQUANT_SHADER_SRC,
+            "dequant_batch_q6_k_blocked_gelu",
+            &[FunctionConstant {
+                index: BLOCKED_BC_OUT_FC_INDEX,
+                value: FunctionConstantValue::Bool(false),
+            }],
+        )
+        .context("Failed to compile dequant_batch_q6_k_blocked_gelu fulltile kernel")?;
         let fused_batch_q4_k_f16in = ComputePipeline::from_source(
             device.device(),
             DEQUANT_SHADER_SRC,
@@ -1394,6 +1376,8 @@ impl DequantKernels {
             fused_batch_q6_k_blocked_bm32_fulltile,
             fused_batch_q6_k_blocked_silu,
             fused_batch_q6_k_blocked_silu_fulltile,
+            fused_batch_q6_k_blocked_gelu,
+            fused_batch_q6_k_blocked_gelu_fulltile,
             fused_batch_q4_k_f16in,
             fused_batch_q4_k_f16in_full,
             fused_batch_q6_k_f16in,
@@ -1544,6 +1528,12 @@ impl DequantKernels {
                 "moe_mul_mat_selected_pair_q6_k_matvec",
             )
             .context("Failed to compile moe_mul_mat_selected_pair_q6_k_matvec kernel")?,
+            moe_mul_mat_selected_pair_q6_k_matvec_ilp4: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_pair_q6_k_matvec_ilp4",
+            )
+            .context("Failed to compile moe_mul_mat_selected_pair_q6_k_matvec_ilp4 kernel")?,
             moe_mul_mat_selected_pair_q6_k_matvec_nr2: ComputePipeline::from_source(
                 device.device(),
                 DEQUANT_SHADER_SRC,
@@ -1580,6 +1570,12 @@ impl DequantKernels {
                 "moe_mul_mat_selected_pair_q8_0_matvec",
             )
             .context("Failed to compile moe_mul_mat_selected_pair_q8_0_matvec kernel")?,
+            moe_mul_mat_selected_pair_q8_0_matvec_ilp4: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_selected_pair_q8_0_matvec_ilp4",
+            )
+            .context("Failed to compile moe_mul_mat_selected_pair_q8_0_matvec_ilp4 kernel")?,
             moe_mul_mat_selected_pair_q8_0_matvec_nr2: ComputePipeline::from_source(
                 device.device(),
                 DEQUANT_SHADER_SRC,
@@ -3654,7 +3650,7 @@ impl DequantKernels {
     /// - `up`: up activations [N × K] (f32)
     /// - `c`: output [N × M] (f32)
     #[allow(clippy::too_many_arguments)]
-    pub fn encode_fused_batch_q6_k_silu(
+    fn encode_fused_batch_q6_k_glu(
         &self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
         a: &MetalBuffer,
@@ -3664,18 +3660,20 @@ impl DequantKernels {
         m: u32,
         n: u32,
         k: u32,
-    ) {
+        boundary_pipeline: &ComputePipeline,
+        fulltile_pipeline: &ComputePipeline,
+    ) -> bool {
         if !batch_q6k_blocked_enabled() || !k.is_multiple_of(Q6_K_BLOCK_VALUES as u32) {
-            return; // fallback to separate silu+matmul
+            return false;
         }
         const BLOCKED_TG: usize = 128;
         let full_tile = (m as usize).is_multiple_of(32) && (n as usize).is_multiple_of(32);
         // Both paths use 4096 bytes: sa[2KB] + sb[2KB] = 4KB, and boundary
         // output staging = NR0*NR1*4 = 32*32*4 = 4096 bytes (same size).
         let (pipeline, smem) = if full_tile {
-            (&self.fused_batch_q6_k_blocked_silu_fulltile, 4096usize)
+            (fulltile_pipeline, 4096usize)
         } else {
-            (&self.fused_batch_q6_k_blocked_silu, 4096usize)
+            (boundary_pipeline, 4096usize)
         };
         crate::set_pipeline_cached(encoder, pipeline.state());
         unsafe {
@@ -3702,6 +3700,70 @@ impl DequantKernels {
                 depth: 1,
             },
         );
+        true
+    }
+
+    /// Encode a fused SiLU activation + blocked Q6_K down projection.
+    ///
+    /// C[N × M] = dequant(A[M × K]) × silu(gate[N × K]) * up[N × K]
+    /// - `a`: Q6_K quantized down weights [M × K]
+    /// - `gate`: gate activations [N × K] (f32)
+    /// - `up`: up activations [N × K] (f32)
+    /// - `c`: output [N × M] (f32)
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fused_batch_q6_k_silu(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        gate: &MetalBuffer,
+        up: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) {
+        let _ = self.encode_fused_batch_q6_k_glu(
+            encoder,
+            a,
+            gate,
+            up,
+            c,
+            m,
+            n,
+            k,
+            &self.fused_batch_q6_k_blocked_silu,
+            &self.fused_batch_q6_k_blocked_silu_fulltile,
+        );
+    }
+
+    /// Encode a fused GELU activation + blocked Q6_K down projection.
+    ///
+    /// Returns `true` when the blocked kernel was dispatched; `false` means the
+    /// caller should fall back to the separate GELU + batch matmul path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fused_batch_q6_k_gelu(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        a: &MetalBuffer,
+        gate: &MetalBuffer,
+        up: &MetalBuffer,
+        c: &MetalBuffer,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) -> bool {
+        self.encode_fused_batch_q6_k_glu(
+            encoder,
+            a,
+            gate,
+            up,
+            c,
+            m,
+            n,
+            k,
+            &self.fused_batch_q6_k_blocked_gelu,
+            &self.fused_batch_q6_k_blocked_gelu_fulltile,
+        )
     }
 
     /// Encode a B-transposed batch dequant Q4_K + matmul with f16 input and f32 output.
@@ -4185,8 +4247,8 @@ impl DequantKernels {
         bind_u32(encoder, 6, m); // C_STRIDE = M
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
-                width: (n as usize).div_ceil(64),  // DB_BN=64
-                height: (m as usize).div_ceil(32), // DB_BM=32
+                width: (m as usize).div_ceil(32),  // DB_BM=32
+                height: (n as usize).div_ceil(64), // DB_BN=64
                 depth: 1,
             },
             MTLSize {
@@ -5095,7 +5157,7 @@ impl DequantKernels {
                 depth: n_active_experts as usize,
             },
             MTLSize {
-                width: if use_blocked { 128 } else { 256 },
+                width: 128,
                 height: 1,
                 depth: 1,
             },
@@ -5158,7 +5220,7 @@ impl DequantKernels {
                 depth: n_active_experts as usize,
             },
             MTLSize {
-                width: if use_blocked { 128 } else { 256 },
+                width: 128,
                 height: 1,
                 depth: 1,
             },
@@ -5385,7 +5447,7 @@ impl DequantKernels {
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             if use_matvec_kernel {
                 MTLSize {
-                    width: (m as usize).div_ceil(Q5K_NR2_ROWS),
+                    width: (m as usize).div_ceil(2),
                     height: 1,
                     depth: n_selected as usize,
                 }
@@ -5458,7 +5520,7 @@ impl DequantKernels {
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             if use_matvec_kernel {
                 MTLSize {
-                    width: (m as usize).div_ceil(Q5K_NR2_ROWS),
+                    width: (m as usize).div_ceil(2),
                     height: 1,
                     depth: n_selected as usize,
                 }

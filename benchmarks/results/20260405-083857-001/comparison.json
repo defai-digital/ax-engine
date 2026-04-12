@@ -1,0 +1,70 @@
+{
+  "label": "meta-llama-3.1-8b-instruct-q5_k_m",
+  "model": "models/meta-llama-3.1-8b-instruct-q5_k_m.gguf",
+  "prompt_tokens": 512,
+  "decode_tokens": 128,
+  "decode_depth": 512,
+  "samples": 5,
+  "cooldown_seconds": 20,
+  "methodology": {
+    "aggregation": "outer_median",
+    "serial": true,
+    "ax": {
+      "deterministic": true,
+      "warmup_iters": 0,
+      "measure_iters": 1
+    },
+    "llama": {
+      "n_gpu_layers": 99,
+      "batch_size": 2048,
+      "ubatch_size": 512,
+      "cache_type_k": "f16",
+      "cache_type_v": "f16",
+      "flash_attn": true,
+      "threads": 12,
+      "no_warmup": true,
+      "repetitions_per_outer_sample": 1
+    }
+  },
+  "ax": {
+    "engine": "ax-engine",
+    "binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-bench",
+    "command": [
+      "/Users/akiralam/code/ax-engine/target/release/ax-engine-bench",
+      "bench",
+      "--model",
+      "models/meta-llama-3.1-8b-instruct-q5_k_m.gguf",
+      "--prompt-tokens",
+      "512",
+      "--decode-tokens",
+      "128",
+      "--deterministic",
+      "--samples",
+      "5",
+      "--cooldown-ms",
+      "20000",
+      "--warmup-iters",
+      "0",
+      "--measure-iters",
+      "1",
+      "--json-output",
+      "/Users/akiralam/code/ax-engine/benchmarks/results/20260405-083857-001/ax.json"
+    ],
+    "prefill_median_tok_per_s": 617.1358243291248,
+    "decode_median_tok_per_s": 53.08932887165139,
+    "prefill_plan": "mode=gpu_batch kv=f16 f16_io=off pair=off qkv=fused batch_simd=off split_rope=on attn=local window=0 wo_in=attn_f32 attn_route=ax_bc64/experimental q5k_prefill=base",
+    "decode_plan": "sync=pipelined scratch=gpu_shared barriers=implicit qkv=fused kv=f16 attn=f16kv_hd128/stable q4k=q4_k.nr2/stable q5k=q5_k.ilp4/profile_preferred q6k=q6_k.nr2/stable",
+    "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/20260405-083857-001/ax.json"
+  },
+  "llama": {
+    "engine": "llama.cpp",
+    "binary": "/opt/homebrew/bin/llama-bench",
+    "prefill_median_tok_per_s": 703.285191,
+    "decode_median_tok_per_s": 56.473934,
+    "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/20260405-083857-001/llama/summary.json"
+  },
+  "ratios": {
+    "prefill_percent": 87.75043641280438,
+    "decode_percent": 94.00678350414084
+  }
+}

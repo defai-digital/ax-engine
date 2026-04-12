@@ -2067,16 +2067,18 @@ kernel void qkv_split_qk_norm_rope_append_kv_batch_f32(
             sum_sq += vv * vv;
         }
         float inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
-        uint src_base = head_base + 2 * i;
-        uint dst_base = q_row_base + head * head_dim + 2 * i;
-        float v0 = src[src_base] * inv_rms * q_weight[2 * i];
-        float v1 = src[src_base + 1] * inv_rms * q_weight[2 * i + 1];
+        uint src_lo = head_base + i;
+        uint src_hi = head_base + half_dim + i;
+        uint dst_lo = q_row_base + head * head_dim + i;
+        uint dst_hi = q_row_base + head * head_dim + half_dim + i;
+        float v0 = src[src_lo] * inv_rms * q_weight[i];
+        float v1 = src[src_hi] * inv_rms * q_weight[half_dim + i];
         float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
         float theta = position * freq;
         float cos_t = cos(theta);
         float sin_t = sin(theta);
-        q[dst_base] = v0 * cos_t - v1 * sin_t;
-        q[dst_base + 1] = v0 * sin_t + v1 * cos_t;
+        q[dst_lo] = v0 * cos_t - v1 * sin_t;
+        q[dst_hi] = v0 * sin_t + v1 * cos_t;
         return;
     }
 
@@ -2093,21 +2095,24 @@ kernel void qkv_split_qk_norm_rope_append_kv_batch_f32(
             sum_sq += vv * vv;
         }
         float inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
-        uint src_base = head_base + 2 * i;
-        uint dst_base = kv_row_base + head * head_dim + 2 * i;
-        float v0 = src[src_base] * inv_rms * k_weight[2 * i];
-        float v1 = src[src_base + 1] * inv_rms * k_weight[2 * i + 1];
+        uint src_lo = head_base + i;
+        uint src_hi = head_base + half_dim + i;
+        uint dst_lo = kv_row_base + head * head_dim + i;
+        uint dst_hi = kv_row_base + head * head_dim + half_dim + i;
+        float v0 = src[src_lo] * inv_rms * k_weight[i];
+        float v1 = src[src_hi] * inv_rms * k_weight[half_dim + i];
         float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
         float theta = position * freq;
         float cos_t = cos(theta);
         float sin_t = sin(theta);
         float rk0 = v0 * cos_t - v1 * sin_t;
         float rk1 = v0 * sin_t + v1 * cos_t;
-        k[dst_base] = rk0;
-        k[dst_base + 1] = rk1;
-        uint cache_k_off = head * head_dim + 2 * i;
-        cache_k[cache_row_base + cache_k_off] = rk0;
-        cache_k[cache_row_base + cache_k_off + 1] = rk1;
+        k[dst_lo] = rk0;
+        k[dst_hi] = rk1;
+        uint cache_k_lo = head * head_dim + i;
+        uint cache_k_hi = head * head_dim + half_dim + i;
+        cache_k[cache_row_base + cache_k_lo] = rk0;
+        cache_k[cache_row_base + cache_k_hi] = rk1;
     } else {
         uint vc = local - v_start;
         uint src_idx = src_row_base + q_dim + kv_dim + vc;
@@ -2178,16 +2183,19 @@ kernel void qkv_split_bias_qknorm_rope_append_kv_batch_f32(
             sum_sq += vv * vv;
         }
         float inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
-        uint src_base = head_base + 2 * i;
-        uint dst_base = q_row_base + head * head_dim + 2 * i;
-        float v0 = (src[src_base] + q_bias[head * head_dim + 2 * i]) * inv_rms * q_weight[2 * i];
-        float v1 = (src[src_base + 1] + q_bias[head * head_dim + 2 * i + 1]) * inv_rms * q_weight[2 * i + 1];
+        uint src_lo = head_base + i;
+        uint src_hi = head_base + half_dim + i;
+        uint dst_lo = q_row_base + head * head_dim + i;
+        uint dst_hi = q_row_base + head * head_dim + half_dim + i;
+        float v0 = (src[src_lo] + q_bias[head * head_dim + i]) * inv_rms * q_weight[i];
+        float v1 =
+            (src[src_hi] + q_bias[head * head_dim + half_dim + i]) * inv_rms * q_weight[half_dim + i];
         float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
         float theta = position * freq;
         float cos_t = cos(theta);
         float sin_t = sin(theta);
-        q[dst_base] = v0 * cos_t - v1 * sin_t;
-        q[dst_base + 1] = v0 * sin_t + v1 * cos_t;
+        q[dst_lo] = v0 * cos_t - v1 * sin_t;
+        q[dst_hi] = v0 * sin_t + v1 * cos_t;
         return;
     }
 
@@ -2205,21 +2213,25 @@ kernel void qkv_split_bias_qknorm_rope_append_kv_batch_f32(
             sum_sq += vv * vv;
         }
         float inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
-        uint src_base = head_base + 2 * i;
-        uint dst_base = kv_row_base + head * head_dim + 2 * i;
-        float v0 = (src[src_base] + k_bias[head * head_dim + 2 * i]) * inv_rms * k_weight[2 * i];
-        float v1 = (src[src_base + 1] + k_bias[head * head_dim + 2 * i + 1]) * inv_rms * k_weight[2 * i + 1];
+        uint src_lo = head_base + i;
+        uint src_hi = head_base + half_dim + i;
+        uint dst_lo = kv_row_base + head * head_dim + i;
+        uint dst_hi = kv_row_base + head * head_dim + half_dim + i;
+        float v0 = (src[src_lo] + k_bias[head * head_dim + i]) * inv_rms * k_weight[i];
+        float v1 =
+            (src[src_hi] + k_bias[head * head_dim + half_dim + i]) * inv_rms * k_weight[half_dim + i];
         float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
         float theta = position * freq;
         float cos_t = cos(theta);
         float sin_t = sin(theta);
         float rk0 = v0 * cos_t - v1 * sin_t;
         float rk1 = v0 * sin_t + v1 * cos_t;
-        k[dst_base] = rk0;
-        k[dst_base + 1] = rk1;
-        uint cache_k_off = head * head_dim + 2 * i;
-        cache_k[cache_row_base + cache_k_off] = rk0;
-        cache_k[cache_row_base + cache_k_off + 1] = rk1;
+        k[dst_lo] = rk0;
+        k[dst_hi] = rk1;
+        uint cache_k_lo = head * head_dim + i;
+        uint cache_k_hi = head * head_dim + half_dim + i;
+        cache_k[cache_row_base + cache_k_lo] = rk0;
+        cache_k[cache_row_base + cache_k_hi] = rk1;
     } else {
         // V path: split + bias + KV cache append (no norm or RoPE for V)
         uint vc = local - v_start;
@@ -2285,16 +2297,19 @@ kernel void qkv_split_bias_qknorm_rope_append_kv_batch_f16(
             sum_sq += vv * vv;
         }
         float inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
-        uint src_base = head_base + 2 * i;
-        uint dst_base = q_row_base + head * head_dim + 2 * i;
-        float v0 = (src[src_base] + q_bias[head * head_dim + 2 * i]) * inv_rms * q_weight[2 * i];
-        float v1 = (src[src_base + 1] + q_bias[head * head_dim + 2 * i + 1]) * inv_rms * q_weight[2 * i + 1];
+        uint src_lo = head_base + i;
+        uint src_hi = head_base + half_dim + i;
+        uint dst_lo = q_row_base + head * head_dim + i;
+        uint dst_hi = q_row_base + head * head_dim + half_dim + i;
+        float v0 = (src[src_lo] + q_bias[head * head_dim + i]) * inv_rms * q_weight[i];
+        float v1 =
+            (src[src_hi] + q_bias[head * head_dim + half_dim + i]) * inv_rms * q_weight[half_dim + i];
         float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
         float theta = position * freq;
         float cos_t = cos(theta);
         float sin_t = sin(theta);
-        q[dst_base] = v0 * cos_t - v1 * sin_t;
-        q[dst_base + 1] = v0 * sin_t + v1 * cos_t;
+        q[dst_lo] = v0 * cos_t - v1 * sin_t;
+        q[dst_hi] = v0 * sin_t + v1 * cos_t;
         return;
     }
 
@@ -2311,21 +2326,25 @@ kernel void qkv_split_bias_qknorm_rope_append_kv_batch_f16(
             sum_sq += vv * vv;
         }
         float inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
-        uint src_base = head_base + 2 * i;
-        uint dst_base = kv_row_base + head * head_dim + 2 * i;
-        float v0 = (src[src_base] + k_bias[head * head_dim + 2 * i]) * inv_rms * k_weight[2 * i];
-        float v1 = (src[src_base + 1] + k_bias[head * head_dim + 2 * i + 1]) * inv_rms * k_weight[2 * i + 1];
+        uint src_lo = head_base + i;
+        uint src_hi = head_base + half_dim + i;
+        uint dst_lo = kv_row_base + head * head_dim + i;
+        uint dst_hi = kv_row_base + head * head_dim + half_dim + i;
+        float v0 = (src[src_lo] + k_bias[head * head_dim + i]) * inv_rms * k_weight[i];
+        float v1 =
+            (src[src_hi] + k_bias[head * head_dim + half_dim + i]) * inv_rms * k_weight[half_dim + i];
         float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
         float theta = position * freq;
         float cos_t = cos(theta);
         float sin_t = sin(theta);
         float rk0 = v0 * cos_t - v1 * sin_t;
         float rk1 = v0 * sin_t + v1 * cos_t;
-        k[dst_base] = rk0;
-        k[dst_base + 1] = rk1;
-        uint cache_k_off = head * head_dim + 2 * i;
-        cache_k[cache_row_base + cache_k_off] = half(rk0);
-        cache_k[cache_row_base + cache_k_off + 1] = half(rk1);
+        k[dst_lo] = rk0;
+        k[dst_hi] = rk1;
+        uint cache_k_lo = head * head_dim + i;
+        uint cache_k_hi = head * head_dim + half_dim + i;
+        cache_k[cache_row_base + cache_k_lo] = half(rk0);
+        cache_k[cache_row_base + cache_k_hi] = half(rk1);
     } else {
         uint vc = local - v_start;
         float vv = src[src_row_base + q_dim + kv_dim + vc] + v_bias[vc];
@@ -2384,16 +2403,18 @@ kernel void qkv_split_qk_norm_rope_append_kv_batch_f16(
             sum_sq += vv * vv;
         }
         float inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
-        uint src_base = head_base + 2 * i;
-        uint dst_base = q_row_base + head * head_dim + 2 * i;
-        float v0 = src[src_base] * inv_rms * q_weight[2 * i];
-        float v1 = src[src_base + 1] * inv_rms * q_weight[2 * i + 1];
+        uint src_lo = head_base + i;
+        uint src_hi = head_base + half_dim + i;
+        uint dst_lo = q_row_base + head * head_dim + i;
+        uint dst_hi = q_row_base + head * head_dim + half_dim + i;
+        float v0 = src[src_lo] * inv_rms * q_weight[i];
+        float v1 = src[src_hi] * inv_rms * q_weight[half_dim + i];
         float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
         float theta = position * freq;
         float cos_t = cos(theta);
         float sin_t = sin(theta);
-        q[dst_base] = v0 * cos_t - v1 * sin_t;
-        q[dst_base + 1] = v0 * sin_t + v1 * cos_t;
+        q[dst_lo] = v0 * cos_t - v1 * sin_t;
+        q[dst_hi] = v0 * sin_t + v1 * cos_t;
         return;
     }
 
@@ -2410,21 +2431,24 @@ kernel void qkv_split_qk_norm_rope_append_kv_batch_f16(
             sum_sq += vv * vv;
         }
         float inv_rms = rsqrt(sum_sq / float(head_dim) + eps);
-        uint src_base = head_base + 2 * i;
-        uint dst_base = kv_row_base + head * head_dim + 2 * i;
-        float v0 = src[src_base] * inv_rms * k_weight[2 * i];
-        float v1 = src[src_base + 1] * inv_rms * k_weight[2 * i + 1];
+        uint src_lo = head_base + i;
+        uint src_hi = head_base + half_dim + i;
+        uint dst_lo = kv_row_base + head * head_dim + i;
+        uint dst_hi = kv_row_base + head * head_dim + half_dim + i;
+        float v0 = src[src_lo] * inv_rms * k_weight[i];
+        float v1 = src[src_hi] * inv_rms * k_weight[half_dim + i];
         float freq = 1.0f / pow(freq_base, 2.0f * float(i) / float(head_dim));
         float theta = position * freq;
         float cos_t = cos(theta);
         float sin_t = sin(theta);
         float rk0 = v0 * cos_t - v1 * sin_t;
         float rk1 = v0 * sin_t + v1 * cos_t;
-        k[dst_base] = rk0;
-        k[dst_base + 1] = rk1;
-        uint cache_k_off = head * head_dim + 2 * i;
-        cache_k[cache_row_base + cache_k_off] = half(rk0);
-        cache_k[cache_row_base + cache_k_off + 1] = half(rk1);
+        k[dst_lo] = rk0;
+        k[dst_hi] = rk1;
+        uint cache_k_lo = head * head_dim + i;
+        uint cache_k_hi = head * head_dim + half_dim + i;
+        cache_k[cache_row_base + cache_k_lo] = half(rk0);
+        cache_k[cache_row_base + cache_k_hi] = half(rk1);
     } else {
         uint vc = local - v_start;
         uint src_idx = src_row_base + q_dim + kv_dim + vc;

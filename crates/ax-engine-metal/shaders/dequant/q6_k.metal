@@ -87,51 +87,7 @@ kernel void dequant_matmul_simdgroup_q6_k(
 
             if (global_r < M) {
                 device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-                float d = float(blk.d);
-
-                // Offsets into ql/qh/scales for this group and sub-pair
-                uint ql_base = group * 64;
-                uint qh_base = group * 32;
-                uint sc_base = group * 8;
-
-                // c = 0..63 maps to 2 sub-groups of 32
-                uint sub = c / 32;          // 0 or 1: which sub-group within pair
-                uint l = c % 32;            // 0..31: position within sub-group
-                uint is = l / 16;           // 0 or 1: which half of sub-group
-
-                // Scale index: sub_pair*4 + sub*2 + is... but actually the Q6_K
-                // layout maps differently. Let me follow the standalone kernel.
-                // The standalone iterates: for l in 0..31, computing 4 values per l.
-                // Our 64 values per chunk are: sub_pair selects which pair of sub-groups.
-                // sub_pair=0: values 0..63 within the group (offsets 0..31 and 32..63)
-                // sub_pair=1: values 64..127 within the group (offsets 64..95 and 96..127)
-
-                uint ql_idx = ql_base + sub_pair * 32;
-                uint qh_idx = qh_base;
-
-                int q;
-                float sc;
-                if (sub == 0) {
-                    // First 32 of the 64: ql low or high nibble + qh bits
-                    if (sub_pair == 0) {
-                        q = int((blk.ql[ql_idx + l] & 0x0F) | ((blk.qh[qh_idx + l] & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is]);
-                    } else {
-                        q = int((blk.ql[ql_idx + l] >> 4) | (((blk.qh[qh_idx + l] >> 4) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 4]);
-                    }
-                } else {
-                    // Second 32: ql from +32 offset
-                    if (sub_pair == 0) {
-                        q = int((blk.ql[ql_idx + 32 + l] & 0x0F) | (((blk.qh[qh_idx + l] >> 2) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 2]);
-                    } else {
-                        q = int((blk.ql[ql_idx + 32 + l] >> 4) | (((blk.qh[qh_idx + l] >> 6) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 6]);
-                    }
-                }
-
-                tg_A[r * DQ_BK + c] = d * sc * float(q);
+                tg_A[r * DQ_BK + c] = q6_k_dequant_pair_value(blk, group, sub_pair, c);
             } else {
                 tg_A[r * DQ_BK + c] = 0.0f;
             }
@@ -460,6 +416,153 @@ kernel void dequant_batch_q6_k_blocked_silu(
     }
 }
 
+kernel void dequant_batch_q6_k_blocked_gelu(
+    device const Q6_K_Block* A [[buffer(0)]],
+    device const float* gate   [[buffer(1)]],
+    device const float* up     [[buffer(2)]],
+    device float* C            [[buffer(3)]],
+    constant uint& M           [[buffer(4)]],
+    constant uint& N           [[buffer(5)]],
+    constant uint& K           [[buffer(6)]],
+    threadgroup char* shmem    [[threadgroup(0)]],
+    uint2 tgpig                [[threadgroup_position_in_grid]],
+    ushort tiitg               [[thread_index_in_threadgroup]],
+    ushort sgitg               [[simdgroup_index_in_threadgroup]]
+) {
+    threadgroup half* sa = (threadgroup half*)(shmem);
+    threadgroup half* sb = (threadgroup half*)(shmem + 2048);
+
+    constexpr short NR0 = 32;
+    constexpr short NR1 = 32;
+    constexpr short NK  = 32;
+    constexpr short NL0 = NK / 16;
+    constexpr short NL1 = NK / 8;
+    constexpr short QK_NL = 16;
+
+    const int r0 = tgpig.y * NR0;
+    const int r1 = tgpig.x * NR1;
+
+    const short nr0 = short(min(uint(NR0), M - uint(r0)));
+    const short nr1 = short(min(uint(NR1), N - uint(r1)));
+    const short lr0 = short(min(short(tiitg / NL0), short(nr0 - 1)));
+    const short lr1 = short(min(short(tiitg / NL1), short(nr1 - 1)));
+
+    const short il0 = short(tiitg % NL0);
+    short il = il0;
+
+    uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
+    const short offset1 = il0 / QK_NL;
+    device const Q6_K_Block* x = A + uint(r0 + lr0) * blocks_per_row + offset1;
+
+    const short iy = short(8 * (tiitg % NL1));
+    device const float* g_ptr = gate + uint(r1 + lr1) * K + iy;
+    device const float* u_ptr = up   + uint(r1 + lr1) * K + iy;
+
+    simdgroup_half8x8 ma[2];
+    simdgroup_half8x8 mb[2];
+    simdgroup_float8x8 mc[4];
+    for (short i = 0; i < 4; i++) {
+        mc[i] = make_filled_simdgroup_matrix<float, 8>(0.0f);
+    }
+
+    for (uint loop_k = 0; loop_k < K; loop_k += NK) {
+        half4x4 temp_a;
+        dequantize_q6k_blocked(x, il, temp_a);
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        FOR_UNROLL (short i = 0; i < 16; i++) {
+            const short sx = 2 * il0 + i / 8;
+            const short sy = (tiitg / NL0) / 8;
+            const short lx = (tiitg / NL0) % 8;
+            const short ly = i % 8;
+            const short ib = 4 * sx + sy;
+            *(sa + 64 * ib + 8 * ly + lx) = temp_a[i / 4][i % 4];
+        }
+
+        // Match the tanh-approx GELU used by the standalone batch activation
+        // path and the decode fused GELU-down kernels.
+        {
+            const short sx = short(tiitg % NL1);
+            const short sy = (tiitg / NL1) / 8;
+            const short ly = (tiitg / NL1) % 8;
+            const short ib = 4 * sx + sy;
+            float4 gv0 = *(device float4*)(g_ptr);
+            float4 gv1 = *(device float4*)(g_ptr + 4);
+            float4 uv0 = *(device float4*)(u_ptr);
+            float4 uv1 = *(device float4*)(u_ptr + 4);
+            half4 s0 = half4(
+                gelu_mul_f32(gv0[0], uv0[0]),
+                gelu_mul_f32(gv0[1], uv0[1]),
+                gelu_mul_f32(gv0[2], uv0[2]),
+                gelu_mul_f32(gv0[3], uv0[3]));
+            half4 s1 = half4(
+                gelu_mul_f32(gv1[0], uv1[0]),
+                gelu_mul_f32(gv1[1], uv1[1]),
+                gelu_mul_f32(gv1[2], uv1[2]),
+                gelu_mul_f32(gv1[3], uv1[3]));
+            *(threadgroup half2x4*)(sb + 64 * ib + 8 * ly) = half2x4(s0, s1);
+        }
+
+        il = (il + 2 < QK_NL) ? il + 2 : il % 2;
+        x  = (il < 2) ? x + (2 + QK_NL - 1) / QK_NL : x;
+        g_ptr += NK;
+        u_ptr += NK;
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        threadgroup const half* lsma = sa + 2 * 64 * (sgitg % 2);
+        threadgroup const half* lsmb = sb + 2 * 64 * (sgitg / 2);
+
+        FOR_UNROLL (short ik = 0; ik < NK / 8; ik++) {
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 2; i++) {
+                simdgroup_load(ma[i], lsma + 64 * i, 8, ulong2(0, 0), false);
+            }
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 2; i++) {
+                simdgroup_load(mb[i], lsmb + 64 * i, 8, ulong2(0, 0), false);
+            }
+            simdgroup_barrier(mem_flags::mem_none);
+            FOR_UNROLL (short i = 0; i < 4; i++) {
+                simdgroup_multiply_accumulate(mc[i], mb[i / 2], ma[i % 2], mc[i]);
+            }
+            lsma += 4 * 64;
+            lsmb += 4 * 64;
+        }
+    }
+
+    if (!BLOCKED_BC_OUT) {
+        device float* out = C
+            + uint(r0 + 16 * (sgitg & 1))
+            + uint(r1 + 16 * (sgitg >> 1)) * M;
+        for (short i = 0; i < 4; i++) {
+            simdgroup_store(mc[i], out + 8 * (i % 2) + 8 * M * (i / 2), M, ulong2(0, 0), false);
+        }
+    } else {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        threadgroup float* temp_str = ((threadgroup float*)shmem)
+            + 16 * (sgitg & 1) + 16 * (sgitg >> 1) * NR0;
+        for (short i = 0; i < 4; i++) {
+            simdgroup_store(mc[i], temp_str + 8 * (i % 2) + 8 * NR0 * (i / 2),
+                            NR0, ulong2(0, 0), false);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (sgitg == 0) {
+            for (int j = tiitg; j < nr1; j += NR1) {
+                device float*  D  = C + uint(r0) + uint(r1 + j) * M;
+                device float4* D4 = (device float4*)D;
+                threadgroup float*  Cs  = temp_str + j * NR0;
+                threadgroup float4* C4 = (threadgroup float4*)Cs;
+                int i = 0;
+                for (; i < nr0 / 4; i++) { *(D4 + i) = *(C4 + i); }
+                i *= 4;
+                for (; i < nr0; i++) { *(D + i) = *(Cs + i); }
+            }
+        }
+    }
+}
+
 kernel void dequant_batch_q6_k(
     device const Q6_K_Block* A [[buffer(0)]],
     device const float* B      [[buffer(1)]],
@@ -501,38 +604,7 @@ kernel void dequant_batch_q6_k(
 
             if (global_r < M) {
                 device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-                float d = float(blk.d);
-
-                uint ql_base = group * 64;
-                uint qh_base = group * 32;
-                uint sub = c / 32;
-                uint l = c % 32;
-                uint is = l / 16;
-
-                uint ql_idx = ql_base + sub_pair * 32;
-                uint qh_idx = qh_base;
-
-                int q;
-                float sc;
-                if (sub == 0) {
-                    if (sub_pair == 0) {
-                        q = int((blk.ql[ql_idx + l] & 0x0F) | ((blk.qh[qh_idx + l] & 3) << 4)) - 32;
-                        sc = float(blk.scales[group * 8 + is]);
-                    } else {
-                        q = int((blk.ql[ql_idx + l] >> 4) | (((blk.qh[qh_idx + l] >> 4) & 3) << 4)) - 32;
-                        sc = float(blk.scales[group * 8 + is + 4]);
-                    }
-                } else {
-                    if (sub_pair == 0) {
-                        q = int((blk.ql[ql_idx + 32 + l] & 0x0F) | (((blk.qh[qh_idx + l] >> 2) & 3) << 4)) - 32;
-                        sc = float(blk.scales[group * 8 + is + 2]);
-                    } else {
-                        q = int((blk.ql[ql_idx + 32 + l] >> 4) | (((blk.qh[qh_idx + l] >> 6) & 3) << 4)) - 32;
-                        sc = float(blk.scales[group * 8 + is + 6]);
-                    }
-                }
-
-                tg_A[r * DB_BK + c] = half(d * sc * float(q));
+                tg_A[r * DB_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
             } else {
                 tg_A[r * DB_BK + c] = half(0.0f);
             }
@@ -909,37 +981,7 @@ kernel void dequant_batch_q6_k_f16in(
             uint global_r = tile_m + r;
             if (global_r < M) {
                 device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-                float d = float(blk.d);
-
-                uint ql_base = group * 64;
-                uint qh_base = group * 32;
-                uint sc_base = group * 8;
-                uint sub = c / 32;
-                uint l = c % 32;
-                uint is = l / 16;
-                uint ql_idx = ql_base + sub_pair * 32;
-                uint qh_idx = qh_base;
-
-                int q;
-                float sc;
-                if (sub == 0) {
-                    if (sub_pair == 0) {
-                        q = int((blk.ql[ql_idx + l] & 0x0F) | ((blk.qh[qh_idx + l] & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is]);
-                    } else {
-                        q = int((blk.ql[ql_idx + l] >> 4) | (((blk.qh[qh_idx + l] >> 4) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 4]);
-                    }
-                } else {
-                    if (sub_pair == 0) {
-                        q = int((blk.ql[ql_idx + 32 + l] & 0x0F) | (((blk.qh[qh_idx + l] >> 2) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 2]);
-                    } else {
-                        q = int((blk.ql[ql_idx + 32 + l] >> 4) | (((blk.qh[qh_idx + l] >> 6) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 6]);
-                    }
-                }
-                tg_A[r * DB_BK + c] = half(d * sc * float(q));
+                tg_A[r * DB_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
             } else {
                 tg_A[r * DB_BK + c] = half(0.0f);
             }
@@ -1038,37 +1080,7 @@ kernel void dequant_batch_q6_k_f16in_full(
             uint c = i % DB_BK;
             uint global_r = tile_m + r;
             device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-            float d = float(blk.d);
-
-            uint ql_base = group * 64;
-            uint qh_base = group * 32;
-            uint sc_base = group * 8;
-            uint sub = c / 32;
-            uint l = c % 32;
-            uint is = l / 16;
-            uint ql_idx = ql_base + sub_pair * 32;
-            uint qh_idx = qh_base;
-
-            int q;
-            float sc;
-            if (sub == 0) {
-                if (sub_pair == 0) {
-                    q = int((blk.ql[ql_idx + l] & 0x0F) | ((blk.qh[qh_idx + l] & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is]);
-                } else {
-                    q = int((blk.ql[ql_idx + l] >> 4) | (((blk.qh[qh_idx + l] >> 4) & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is + 4]);
-                }
-            } else {
-                if (sub_pair == 0) {
-                    q = int((blk.ql[ql_idx + 32 + l] & 0x0F) | (((blk.qh[qh_idx + l] >> 2) & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is + 2]);
-                } else {
-                    q = int((blk.ql[ql_idx + 32 + l] >> 4) | (((blk.qh[qh_idx + l] >> 6) & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is + 6]);
-                }
-            }
-            tg_A[r * DB_BK + c] = half(d * sc * float(q));
+            tg_A[r * DB_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
         }
 
         for (uint i = tid; i < DB_BN * DB_BK; i += DB_TG) {
@@ -1149,37 +1161,7 @@ kernel void dequant_batch_q6_k_f16in_full64(
             uint c = i % D64_BK;
             uint global_r = tile_m + r;
             device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-            float d = float(blk.d);
-
-            uint ql_base = group * 64;
-            uint qh_base = group * 32;
-            uint sc_base = group * 8;
-            uint sub = c / 32;
-            uint l = c % 32;
-            uint is = l / 16;
-            uint ql_idx = ql_base + sub_pair * 32;
-            uint qh_idx = qh_base;
-
-            int q;
-            float sc;
-            if (sub == 0) {
-                if (sub_pair == 0) {
-                    q = int((blk.ql[ql_idx + l] & 0x0F) | ((blk.qh[qh_idx + l] & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is]);
-                } else {
-                    q = int((blk.ql[ql_idx + l] >> 4) | (((blk.qh[qh_idx + l] >> 4) & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is + 4]);
-                }
-            } else {
-                if (sub_pair == 0) {
-                    q = int((blk.ql[ql_idx + 32 + l] & 0x0F) | (((blk.qh[qh_idx + l] >> 2) & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is + 2]);
-                } else {
-                    q = int((blk.ql[ql_idx + 32 + l] >> 4) | (((blk.qh[qh_idx + l] >> 6) & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is + 6]);
-                }
-            }
-            tg_A[r * D64_BK + c] = half(d * sc * float(q));
+            tg_A[r * D64_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
         }
 
         for (uint i = tid; i < D64_BN * D64_BK; i += D64_TG) {
@@ -1272,37 +1254,7 @@ kernel void dequant_batch_q6_k_f16in_full32(
             uint c = i % D64_BK;
             uint global_r = tile_m + r;
             device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-            float d = float(blk.d);
-
-            uint ql_base = group * 64;
-            uint qh_base = group * 32;
-            uint sc_base = group * 8;
-            uint sub = c / 32;
-            uint l = c % 32;
-            uint is = l / 16;
-            uint ql_idx = ql_base + sub_pair * 32;
-            uint qh_idx = qh_base;
-
-            int q;
-            float sc;
-            if (sub == 0) {
-                if (sub_pair == 0) {
-                    q = int((blk.ql[ql_idx + l] & 0x0F) | ((blk.qh[qh_idx + l] & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is]);
-                } else {
-                    q = int((blk.ql[ql_idx + l] >> 4) | (((blk.qh[qh_idx + l] >> 4) & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is + 4]);
-                }
-            } else {
-                if (sub_pair == 0) {
-                    q = int((blk.ql[ql_idx + 32 + l] & 0x0F) | (((blk.qh[qh_idx + l] >> 2) & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is + 2]);
-                } else {
-                    q = int((blk.ql[ql_idx + 32 + l] >> 4) | (((blk.qh[qh_idx + l] >> 6) & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is + 6]);
-                }
-            }
-            tg_A[r * D64_BK + c] = half(d * sc * float(q));
+            tg_A[r * D64_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
         }
 
         for (uint i = tid; i < D32_BN * D64_BK; i += D32_TG) {
@@ -1395,37 +1347,7 @@ kernel void dequant_batch_q6_k_f16in_tail32(
             uint c = i % D64_BK;
             uint global_r = tile_m + r;
             device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-            float d = float(blk.d);
-
-            uint ql_base = group * 64;
-            uint qh_base = group * 32;
-            uint sc_base = group * 8;
-            uint sub = c / 32;
-            uint l = c % 32;
-            uint is = l / 16;
-            uint ql_idx = ql_base + sub_pair * 32;
-            uint qh_idx = qh_base;
-
-            int q;
-            float sc;
-            if (sub == 0) {
-                if (sub_pair == 0) {
-                    q = int((blk.ql[ql_idx + l] & 0x0F) | ((blk.qh[qh_idx + l] & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is]);
-                } else {
-                    q = int((blk.ql[ql_idx + l] >> 4) | (((blk.qh[qh_idx + l] >> 4) & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is + 4]);
-                }
-            } else {
-                if (sub_pair == 0) {
-                    q = int((blk.ql[ql_idx + 32 + l] & 0x0F) | (((blk.qh[qh_idx + l] >> 2) & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is + 2]);
-                } else {
-                    q = int((blk.ql[ql_idx + 32 + l] >> 4) | (((blk.qh[qh_idx + l] >> 6) & 3) << 4)) - 32;
-                    sc = float(blk.scales[sc_base + is + 6]);
-                }
-            }
-            tg_A[r * D64_BK + c] = half(d * sc * float(q));
+            tg_A[r * D64_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
         }
 
         // B tile load with N bounds check (handles n_tail < D32_BN)
@@ -1536,45 +1458,8 @@ kernel void dequant_batch_pair_q6_k(
             if (global_r < M) {
                 device const Q6_K_Block& blk0 = A0[global_r * blocks_per_row + block_idx];
                 device const Q6_K_Block& blk1 = A1[global_r * blocks_per_row + block_idx];
-
-                uint ql_base = group * 64;
-                uint qh_base = group * 32;
-                uint sc_base = group * 8;
-                uint sub = c / 32;
-                uint l = c % 32;
-                uint is = l / 16;
-                uint ql_idx = ql_base + sub_pair * 32;
-                uint qh_idx = qh_base;
-
-                int q0, q1;
-                float sc0, sc1;
-                if (sub == 0) {
-                    if (sub_pair == 0) {
-                        q0 = int((blk0.ql[ql_idx + l] & 0x0F) | ((blk0.qh[qh_idx + l] & 3) << 4)) - 32;
-                        q1 = int((blk1.ql[ql_idx + l] & 0x0F) | ((blk1.qh[qh_idx + l] & 3) << 4)) - 32;
-                        sc0 = float(blk0.scales[sc_base + is]);
-                        sc1 = float(blk1.scales[sc_base + is]);
-                    } else {
-                        q0 = int((blk0.ql[ql_idx + l] >> 4) | (((blk0.qh[qh_idx + l] >> 4) & 3) << 4)) - 32;
-                        q1 = int((blk1.ql[ql_idx + l] >> 4) | (((blk1.qh[qh_idx + l] >> 4) & 3) << 4)) - 32;
-                        sc0 = float(blk0.scales[sc_base + is + 4]);
-                        sc1 = float(blk1.scales[sc_base + is + 4]);
-                    }
-                } else {
-                    if (sub_pair == 0) {
-                        q0 = int((blk0.ql[ql_idx + 32 + l] & 0x0F) | (((blk0.qh[qh_idx + l] >> 2) & 3) << 4)) - 32;
-                        q1 = int((blk1.ql[ql_idx + 32 + l] & 0x0F) | (((blk1.qh[qh_idx + l] >> 2) & 3) << 4)) - 32;
-                        sc0 = float(blk0.scales[sc_base + is + 2]);
-                        sc1 = float(blk1.scales[sc_base + is + 2]);
-                    } else {
-                        q0 = int((blk0.ql[ql_idx + 32 + l] >> 4) | (((blk0.qh[qh_idx + l] >> 6) & 3) << 4)) - 32;
-                        q1 = int((blk1.ql[ql_idx + 32 + l] >> 4) | (((blk1.qh[qh_idx + l] >> 6) & 3) << 4)) - 32;
-                        sc0 = float(blk0.scales[sc_base + is + 6]);
-                        sc1 = float(blk1.scales[sc_base + is + 6]);
-                    }
-                }
-                tg_A0[r * PB_BK + c] = half(float(blk0.d) * sc0 * float(q0));
-                tg_A1[r * PB_BK + c] = half(float(blk1.d) * sc1 * float(q1));
+                tg_A0[r * PB_BK + c] = half(q6_k_dequant_pair_value(blk0, group, sub_pair, c));
+                tg_A1[r * PB_BK + c] = half(q6_k_dequant_pair_value(blk1, group, sub_pair, c));
             } else {
                 tg_A0[r * PB_BK + c] = half(0.0f);
                 tg_A1[r * PB_BK + c] = half(0.0f);
@@ -1714,45 +1599,8 @@ kernel void dequant_batch_pair_q6_k_f16in(
             if (global_r < M) {
                 device const Q6_K_Block& blk0 = A0[global_r * blocks_per_row + block_idx];
                 device const Q6_K_Block& blk1 = A1[global_r * blocks_per_row + block_idx];
-
-                uint ql_base = group * 64;
-                uint qh_base = group * 32;
-                uint sc_base = group * 8;
-                uint sub = c / 32;
-                uint l = c % 32;
-                uint is = l / 16;
-                uint ql_idx = ql_base + sub_pair * 32;
-                uint qh_idx = qh_base;
-
-                int q0, q1;
-                float sc0, sc1;
-                if (sub == 0) {
-                    if (sub_pair == 0) {
-                        q0 = int((blk0.ql[ql_idx + l] & 0x0F) | ((blk0.qh[qh_idx + l] & 3) << 4)) - 32;
-                        q1 = int((blk1.ql[ql_idx + l] & 0x0F) | ((blk1.qh[qh_idx + l] & 3) << 4)) - 32;
-                        sc0 = float(blk0.scales[sc_base + is]);
-                        sc1 = float(blk1.scales[sc_base + is]);
-                    } else {
-                        q0 = int((blk0.ql[ql_idx + l] >> 4) | (((blk0.qh[qh_idx + l] >> 4) & 3) << 4)) - 32;
-                        q1 = int((blk1.ql[ql_idx + l] >> 4) | (((blk1.qh[qh_idx + l] >> 4) & 3) << 4)) - 32;
-                        sc0 = float(blk0.scales[sc_base + is + 4]);
-                        sc1 = float(blk1.scales[sc_base + is + 4]);
-                    }
-                } else {
-                    if (sub_pair == 0) {
-                        q0 = int((blk0.ql[ql_idx + 32 + l] & 0x0F) | (((blk0.qh[qh_idx + l] >> 2) & 3) << 4)) - 32;
-                        q1 = int((blk1.ql[ql_idx + 32 + l] & 0x0F) | (((blk1.qh[qh_idx + l] >> 2) & 3) << 4)) - 32;
-                        sc0 = float(blk0.scales[sc_base + is + 2]);
-                        sc1 = float(blk1.scales[sc_base + is + 2]);
-                    } else {
-                        q0 = int((blk0.ql[ql_idx + 32 + l] >> 4) | (((blk0.qh[qh_idx + l] >> 6) & 3) << 4)) - 32;
-                        q1 = int((blk1.ql[ql_idx + 32 + l] >> 4) | (((blk1.qh[qh_idx + l] >> 6) & 3) << 4)) - 32;
-                        sc0 = float(blk0.scales[sc_base + is + 6]);
-                        sc1 = float(blk1.scales[sc_base + is + 6]);
-                    }
-                }
-                tg_A0[r * P16_BK + c] = half(float(blk0.d) * sc0 * float(q0));
-                tg_A1[r * P16_BK + c] = half(float(blk1.d) * sc1 * float(q1));
+                tg_A0[r * P16_BK + c] = half(q6_k_dequant_pair_value(blk0, group, sub_pair, c));
+                tg_A1[r * P16_BK + c] = half(q6_k_dequant_pair_value(blk1, group, sub_pair, c));
             } else {
                 tg_A0[r * P16_BK + c] = half(0.0f);
                 tg_A1[r * P16_BK + c] = half(0.0f);
@@ -1883,36 +1731,7 @@ kernel void dequant_batch_q6_k_small(
 
             if (global_r < M) {
                 device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-                float d = float(blk.d);
-                uint ql_base = group * 64;
-                uint qh_base = group * 32;
-                uint sc_base = group * 8;
-                uint sub = c / 32;
-                uint l = c % 32;
-                uint is = l / 16;
-                uint ql_idx = ql_base + sub_pair * 32;
-                uint qh_idx = qh_base;
-
-                int q;
-                float sc;
-                if (sub == 0) {
-                    if (sub_pair == 0) {
-                        q = int((blk.ql[ql_idx + l] & 0x0F) | ((blk.qh[qh_idx + l] & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is]);
-                    } else {
-                        q = int((blk.ql[ql_idx + l] >> 4) | (((blk.qh[qh_idx + l] >> 4) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 4]);
-                    }
-                } else {
-                    if (sub_pair == 0) {
-                        q = int((blk.ql[ql_idx + 32 + l] & 0x0F) | (((blk.qh[qh_idx + l] >> 2) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 2]);
-                    } else {
-                        q = int((blk.ql[ql_idx + 32 + l] >> 4) | (((blk.qh[qh_idx + l] >> 6) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 6]);
-                    }
-                }
-                tg_A[r * SB_BK + c] = half(d * sc * float(q));
+                tg_A[r * SB_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
             } else {
                 tg_A[r * SB_BK + c] = half(0.0f);
             }
@@ -2013,36 +1832,7 @@ kernel void dequant_batch_q6_k_f16in_small(
 
             if (global_r < M) {
                 device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
-                float d = float(blk.d);
-                uint ql_base = group * 64;
-                uint qh_base = group * 32;
-                uint sc_base = group * 8;
-                uint sub = c / 32;
-                uint l = c % 32;
-                uint is = l / 16;
-                uint ql_idx = ql_base + sub_pair * 32;
-                uint qh_idx = qh_base;
-
-                int q;
-                float sc;
-                if (sub == 0) {
-                    if (sub_pair == 0) {
-                        q = int((blk.ql[ql_idx + l] & 0x0F) | ((blk.qh[qh_idx + l] & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is]);
-                    } else {
-                        q = int((blk.ql[ql_idx + l] >> 4) | (((blk.qh[qh_idx + l] >> 4) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 4]);
-                    }
-                } else {
-                    if (sub_pair == 0) {
-                        q = int((blk.ql[ql_idx + 32 + l] & 0x0F) | (((blk.qh[qh_idx + l] >> 2) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 2]);
-                    } else {
-                        q = int((blk.ql[ql_idx + 32 + l] >> 4) | (((blk.qh[qh_idx + l] >> 6) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 6]);
-                    }
-                }
-                tg_A[r * SB_BK + c] = half(d * sc * float(q));
+                tg_A[r * SB_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
             } else {
                 tg_A[r * SB_BK + c] = half(0.0f);
             }
@@ -2519,6 +2309,56 @@ kernel void moe_mul_mat_selected_pair_q6_k_matvec(
     }
 }
 
+kernel void moe_mul_mat_selected_pair_q6_k_matvec_ilp4(
+    device const Q6_K_Block* weights0  [[buffer(0)]],
+    device const Q6_K_Block* weights1  [[buffer(1)]],
+    device const float* input          [[buffer(2)]],
+    device const int32_t* selected     [[buffer(3)]],
+    device float* output0              [[buffer(4)]],
+    device float* output1              [[buffer(5)]],
+    constant uint& M                   [[buffer(6)]],
+    constant uint& K                   [[buffer(7)]],
+    constant uint& n_selected          [[buffer(8)]],
+    constant uint& weight_stride0      [[buffer(9)]],
+    constant uint& weight_stride1      [[buffer(10)]],
+    constant uint& input_is_slot_major [[buffer(11)]],
+    uint3 tgpig                        [[threadgroup_position_in_grid]],
+    uint simd_lane                     [[thread_index_in_simdgroup]],
+    uint simd_id                       [[simdgroup_index_in_threadgroup]]
+) {
+    if (tgpig.z >= n_selected) return;
+
+    const uint slot = tgpig.z;
+    const uint expert = uint(selected[slot]);
+    const uint first_row = tgpig.x * 2 + simd_id;
+    if (first_row >= M) return;
+
+    const uint input_row = input_is_slot_major != 0 ? slot : 0;
+    const uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
+    device const Q6_K_Block* row0 =
+        weights0 + expert * weight_stride0 + first_row * blocks_per_row;
+    device const Q6_K_Block* row1 =
+        weights1 + expert * weight_stride1 + first_row * blocks_per_row;
+    device const float* x = input + input_row * K;
+
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+    ushort ix = simd_lane % 2;
+
+    for (uint ib = ix; ib < blocks_per_row; ib += 2) {
+        device const float* x_block = x + ib * Q6_K_BLOCK_VALUES;
+        sum0 += q6_k_block_dot_ilp2(row0[ib], x_block, simd_lane);
+        sum1 += q6_k_block_dot_ilp2(row1[ib], x_block, simd_lane);
+    }
+
+    sum0 = simd_sum(sum0);
+    sum1 = simd_sum(sum1);
+    if (simd_lane == 0) {
+        output0[slot * M + first_row] = sum0;
+        output1[slot * M + first_row] = sum1;
+    }
+}
+
 kernel void moe_mul_mat_selected_pair_q6_k_matvec_nr2(
     device const Q6_K_Block* weights0  [[buffer(0)]],
     device const Q6_K_Block* weights1  [[buffer(1)]],
@@ -2890,11 +2730,6 @@ kernel void dequant_matvec_q6_k_ilp4(
     uint simd_lane             [[thread_index_in_simdgroup]],
     uint simd_id               [[simdgroup_index_in_threadgroup]]
 ) {
-    constexpr uchar kmask1 = 0x03;
-    constexpr uchar kmask2 = 0x0C;
-    constexpr uchar kmask3 = 0x30;
-    constexpr uchar kmask4 = 0xC0;
-
     uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
     uint first_row = tg_id * 2 + simd_id;
     if (first_row >= M) return;
@@ -2902,49 +2737,13 @@ kernel void dequant_matvec_q6_k_ilp4(
     device const Q6_K_Block* a_row = A + first_row * blocks_per_row;
 
     float sumf = 0.0f;
-    float yl[16];
+    ushort ix = simd_lane % 2;
 
-    // Thread decomposition: 4 block streams, same within-block layout as NR2.
-    ushort tid = simd_lane / 4;
-    ushort ix = simd_lane % 4;
-    ushort ip = tid / 4;      // 0 or 1  (which 128-element half)
-    ushort il = tid % 4;      // 0..3
-    ushort l0 = 4 * il;
-    ushort is = 8 * ip + l0 / 16;
-
-    ushort y_offset = 128 * ip + l0;
-    ushort q_offset_l = 64 * ip + l0;
-    ushort q_offset_h = 32 * ip + l0;
-
-    for (uint ib = ix; ib < blocks_per_row; ib += 4) {
-        device const float* xv = x + ib * Q6_K_BLOCK_VALUES + y_offset;
-
-        FOR_UNROLL (ushort l = 0; l < 4; ++l) {
-            yl[4 * l + 0] = xv[l + 0];
-            yl[4 * l + 1] = xv[l + 32];
-            yl[4 * l + 2] = xv[l + 64];
-            yl[4 * l + 3] = xv[l + 96];
-        }
-
-        device const Q6_K_Block& blk = a_row[ib];
-        device const uchar* q1 = blk.ql + q_offset_l;
-        device const uchar* q2 = q1 + 32;
-        device const uchar* qh = blk.qh + q_offset_h;
-        device const char* sc = blk.scales + is;
-
-        float4 sums = {0.0f, 0.0f, 0.0f, 0.0f};
-        FOR_UNROLL (ushort l = 0; l < 4; ++l) {
-            sums[0] += yl[4 * l + 0] * ((int8_t)((q1[l] & 0xF) | ((qh[l] & kmask1) << 4)) - 32);
-            sums[1] += yl[4 * l + 1] * ((int8_t)((q2[l] & 0xF) | ((qh[l] & kmask2) << 2)) - 32);
-            sums[2] += yl[4 * l + 2] * ((int8_t)((q1[l]  >> 4) | ((qh[l] & kmask3) << 0)) - 32);
-            sums[3] += yl[4 * l + 3] * ((int8_t)((q2[l]  >> 4) | ((qh[l] & kmask4) >> 2)) - 32);
-        }
-
-        sumf += float(blk.d) * (
-            sums[0] * float(sc[0]) +
-            sums[1] * float(sc[2]) +
-            sums[2] * float(sc[4]) +
-            sums[3] * float(sc[6])
+    for (uint ib = ix; ib < blocks_per_row; ib += 2) {
+        sumf += q6_k_block_dot_ilp2(
+            a_row[ib],
+            x + ib * Q6_K_BLOCK_VALUES,
+            simd_lane
         );
     }
 
@@ -3014,36 +2813,7 @@ kernel void moe_mul_mat_id_q6_k(
 
             if (global_r < M) {
                 device const Q6_K_Block& blk = W[global_r * blocks_per_row + block_idx];
-                float d = float(blk.d);
-                uint ql_base = group * 64;
-                uint qh_base = group * 32;
-                uint sc_base = group * 8;
-                uint sub = c / 32;
-                uint l = c % 32;
-                uint is = l / 16;
-                uint ql_idx = ql_base + sub_pair * 32;
-                uint qh_idx = qh_base;
-
-                int q;
-                float sc;
-                if (sub == 0) {
-                    if (sub_pair == 0) {
-                        q = int((blk.ql[ql_idx + l] & 0x0F) | ((blk.qh[qh_idx + l] & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is]);
-                    } else {
-                        q = int((blk.ql[ql_idx + l] >> 4) | (((blk.qh[qh_idx + l] >> 4) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 4]);
-                    }
-                } else {
-                    if (sub_pair == 0) {
-                        q = int((blk.ql[ql_idx + 32 + l] & 0x0F) | (((blk.qh[qh_idx + l] >> 2) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 2]);
-                    } else {
-                        q = int((blk.ql[ql_idx + 32 + l] >> 4) | (((blk.qh[qh_idx + l] >> 6) & 3) << 4)) - 32;
-                        sc = float(blk.scales[sc_base + is + 6]);
-                    }
-                }
-                tg_A[r * DQ_BK + c] = d * sc * float(q);
+                tg_A[r * DQ_BK + c] = q6_k_dequant_pair_value(blk, group, sub_pair, c);
             } else {
                 tg_A[r * DQ_BK + c] = 0.0f;
             }

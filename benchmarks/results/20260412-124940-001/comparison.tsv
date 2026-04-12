@@ -1,0 +1,2 @@
+label	model	prompt_tokens	decode_tokens	decode_depth	samples	cooldown_seconds	ax_prefill_median	llama_prefill_median	prefill_percent	ax_decode_median	llama_decode_median	decode_percent
+gemma4-26b-a4b-q5km	models/gemma-4-26B-A4B-it-Q5_K_M.gguf	512	128	512	5	20	1148.8478845183492	1021.42694	112.474797709795	66.26801307226849	60.480707	109.56884659478018

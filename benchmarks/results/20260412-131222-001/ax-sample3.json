@@ -1,0 +1,45 @@
+{
+  "model": "models/gemma-4-26B-A4B-it-Q8_0.gguf",
+  "prompt_tokens": 512,
+  "effective_prefill_tokens": 512,
+  "decode_tokens": 128,
+  "prefill_tok_per_sec": 10.538960122253021,
+  "prefill_tok_per_sec_median": 10.538960122253021,
+  "effective_prefill_tok_per_sec": 10.538960122253021,
+  "effective_prefill_tok_per_sec_median": 10.538960122253021,
+  "decode_tok_per_sec": 69.7034514958423,
+  "decode_tok_per_sec_median": 69.7034514958423,
+  "p50_latency": {
+    "secs": 0,
+    "nanos": 0
+  },
+  "p95_latency": {
+    "secs": 0,
+    "nanos": 0
+  },
+  "p99_latency": {
+    "secs": 0,
+    "nanos": 0
+  },
+  "prefill_command_buffers": 513.0,
+  "prefill_buffer_barriers": 453.0,
+  "decode_command_buffers": 1.0,
+  "decode_buffer_barriers": 0.0,
+  "decode_command_buffers_per_tok": 1.0,
+  "decode_buffer_barriers_per_tok": 0.0,
+  "decode_command_buffers_per_tok_max": 1.0,
+  "decode_buffer_barriers_per_tok_max": 0.0,
+  "decode_intent": "throughput",
+  "decode_mode": "single_cb",
+  "prefill_plan": "mode=gpu_batch",
+  "prefill_mode": "gpu_batch",
+  "prefill_route_family": "dense_gpu_batch",
+  "prefill_route_detail": "generic_gpu_batch",
+  "decode_plan": "sync=single_cb scratch=gpu_shared barriers=implicit qkv=fused kv=f16 attn=f16kv_hd256/stable q4k=q4_k.nr2/stable q5k=q5_k.ilp4/stable q6k=q6_k.nr2/stable",
+  "decode_fallback_reason": "pipelined decode is unavailable for this model/backend combination",
+  "qwen35_shared_timeline_slots": 1,
+  "kv_f16": true,
+  "deterministic": true,
+  "samples": 1,
+  "cooldown_ms": 0
+}
