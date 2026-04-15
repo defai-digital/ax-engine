@@ -8,6 +8,7 @@
 //!   ax-engine-bench prefill-gap --model <path> [--baseline-json <path> | --baseline-prefill-tok-s <n>] [--json]
 //!   ax-engine-bench profile --model <path> [--profile-tokens 64] [--json] [--json-output <path>]
 //!   ax-engine-bench speculative --model <target> --draft-model <draft> [--json] [--json-output <path>]
+//!   ax-engine-bench workload-bench --model <path> --workload <completion|infill> [--json]
 //!   ax-engine-bench parity --model <path> [--prompt "Hello"] [--decode-tokens 8]
 //!   ax-engine-bench parity --model <path> [--prompt "Hello"] --speculative-verify-k 2
 //!   ax-engine-bench microbench [--suite gpu] [--json]
@@ -34,6 +35,7 @@ use ax_engine_bench::prefill_profile::{
 };
 use ax_engine_bench::profile::{self, ProfileConfig};
 use ax_engine_bench::soak::{self, SoakConfig};
+use ax_engine_bench::workload::{self, WorkloadBenchConfig, WorkloadInput, WorkloadKind};
 use ax_engine_core::backend::BackendConfig;
 use ax_engine_core::model::DecodeIntent;
 
@@ -78,6 +80,12 @@ enum LocalPrefillHd128RouteArg {
     AxBc64,
     Fa2SimdHd128,
     Fa2HalfHd128,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, ValueEnum)]
+enum WorkloadKindArg {
+    Completion,
+    Infill,
 }
 
 impl From<BenchIntentArg> for DecodeIntent {
@@ -133,6 +141,15 @@ impl LocalPrefillHd128RouteArg {
     }
 }
 
+impl From<WorkloadKindArg> for WorkloadKind {
+    fn from(value: WorkloadKindArg) -> Self {
+        match value {
+            WorkloadKindArg::Completion => WorkloadKind::Completion,
+            WorkloadKindArg::Infill => WorkloadKind::Infill,
+        }
+    }
+}
+
 fn parse_non_zero_usize(value: &str) -> Result<usize, String> {
     let parsed = value
         .parse::<usize>()
@@ -144,6 +161,7 @@ fn parse_non_zero_usize(value: &str) -> Result<usize, String> {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Run a long-duration soak test (stability validation).
     Soak {
@@ -529,6 +547,109 @@ enum Command {
         /// Apply llama.cpp-aligned AX runtime preset (if vars are unset).
         #[arg(long)]
         llama_parity_preset: bool,
+
+        /// Output results as JSON.
+        #[arg(long)]
+        json: bool,
+
+        /// Write JSON results to file.
+        #[arg(long)]
+        json_output: Option<String>,
+    },
+
+    /// Run a workload-level benchmark for completion or infill request paths.
+    WorkloadBench {
+        /// Path to GGUF model file.
+        #[arg(long)]
+        model: String,
+
+        /// Optional label to carry into JSON artifacts.
+        #[arg(long)]
+        label: Option<String>,
+
+        /// Workload kind to benchmark.
+        #[arg(long, value_enum)]
+        workload: WorkloadKindArg,
+
+        /// Completion prompt text.
+        #[arg(long, conflicts_with = "prompt_file")]
+        prompt: Option<String>,
+
+        /// Read completion prompt text from a file.
+        #[arg(long)]
+        prompt_file: Option<String>,
+
+        /// Infill prefix text.
+        #[arg(long, conflicts_with = "prefix_file")]
+        prefix: Option<String>,
+
+        /// Read infill prefix text from a file.
+        #[arg(long)]
+        prefix_file: Option<String>,
+
+        /// Infill suffix text.
+        #[arg(long, conflicts_with = "suffix_file")]
+        suffix: Option<String>,
+
+        /// Read infill suffix text from a file.
+        #[arg(long)]
+        suffix_file: Option<String>,
+
+        /// Optional priming completion prompt text.
+        #[arg(long, conflicts_with = "prime_prompt_file")]
+        prime_prompt: Option<String>,
+
+        /// Read priming completion prompt text from a file.
+        #[arg(long)]
+        prime_prompt_file: Option<String>,
+
+        /// Optional priming infill prefix text.
+        #[arg(long, conflicts_with = "prime_prefix_file")]
+        prime_prefix: Option<String>,
+
+        /// Read priming infill prefix text from a file.
+        #[arg(long)]
+        prime_prefix_file: Option<String>,
+
+        /// Optional priming infill suffix text.
+        #[arg(long, conflicts_with = "prime_suffix_file")]
+        prime_suffix: Option<String>,
+
+        /// Read priming infill suffix text from a file.
+        #[arg(long)]
+        prime_suffix_file: Option<String>,
+
+        /// Number of output tokens to request.
+        #[arg(long, default_value = "64", value_parser = parse_non_zero_usize)]
+        max_tokens: usize,
+
+        /// Number of workload warmup iterations.
+        #[arg(long, default_value = "1")]
+        warmup_iters: usize,
+
+        /// Number of measured iterations per sample.
+        #[arg(long, default_value = "5", value_parser = parse_non_zero_usize)]
+        measure_iters: usize,
+
+        /// Deterministic mode: repeated samples with cooldown, report medians.
+        #[arg(long)]
+        deterministic: bool,
+
+        /// Number of repeated samples in deterministic mode.
+        #[arg(long, default_value = "1")]
+        samples: usize,
+
+        /// Cooldown between measured iterations in deterministic mode (ms).
+        #[arg(long, default_value = "0")]
+        cooldown_ms: u64,
+
+        /// Optional context length override when loading the model.
+        #[arg(long)]
+        context_length: Option<u32>,
+
+        /// Deterministic seed used for the request stream.
+        #[arg(long, default_value = "7")]
+        seed: u64,
 
         /// Output results as JSON.
         #[arg(long)]
@@ -1779,6 +1900,119 @@ fn main() {
             }
         }
 
+        Command::WorkloadBench {
+            model,
+            label,
+            workload,
+            prompt,
+            prompt_file,
+            prefix,
+            prefix_file,
+            suffix,
+            suffix_file,
+            prime_prompt,
+            prime_prompt_file,
+            prime_prefix,
+            prime_prefix_file,
+            prime_suffix,
+            prime_suffix_file,
+            max_tokens,
+            warmup_iters,
+            measure_iters,
+            deterministic,
+            samples,
+            cooldown_ms,
+            context_length,
+            seed,
+            json,
+            json_output,
+        } => {
+            ax_engine_core::scheduler::init_global_threadpool();
+            let workload_kind: WorkloadKind = workload.into();
+            let measured = resolve_workload_input(
+                workload_kind,
+                prompt,
+                prompt_file,
+                prefix,
+                prefix_file,
+                suffix,
+                suffix_file,
+                false,
+            )
+            .unwrap_or_else(|error| {
+                eprintln!("Workload benchmark input error: {error}");
+                process::exit(2);
+            })
+            .expect("measured workload input must be present");
+            let prime = resolve_workload_input(
+                workload_kind,
+                prime_prompt,
+                prime_prompt_file,
+                prime_prefix,
+                prime_prefix_file,
+                prime_suffix,
+                prime_suffix_file,
+                true,
+            )
+            .unwrap_or_else(|error| {
+                eprintln!("Workload benchmark input error: {error}");
+                process::exit(2);
+            });
+
+            let config = WorkloadBenchConfig {
+                model_path: model,
+                label,
+                workload: workload_kind,
+                measured,
+                prime,
+                max_tokens,
+                warmup_iters,
+                measure_iters,
+                deterministic,
+                samples,
+                cooldown_ms,
+                context_length,
+                seed,
+            };
+
+            match workload::run_workload_benchmark(&config) {
+                Ok(result) => {
+                    result.print_summary();
+
+                    if json {
+                        match result.to_json() {
+                            Ok(j) => println!("{j}"),
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
+                        }
+                    }
+
+                    if let Some(path) = json_output {
+                        match result.to_json() {
+                            Ok(j) => {
+                                if let Err(e) = std::fs::write(&path, j) {
+                                    eprintln!("Failed to write JSON output to {path}: {e}");
+                                    process::exit(2);
+                                } else {
+                                    eprintln!("Results written to {path}");
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("JSON serialization error: {e}");
+                                process::exit(2);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Workload benchmark error: {e}");
+                    process::exit(2);
+                }
+            }
+        }
+
         Command::Microbench {
             suite,
             iterations,
@@ -1875,6 +2109,72 @@ fn main() {
                     process::exit(2);
                 }
             }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_workload_input(
+    workload: WorkloadKind,
+    prompt: Option<String>,
+    prompt_file: Option<String>,
+    prefix: Option<String>,
+    prefix_file: Option<String>,
+    suffix: Option<String>,
+    suffix_file: Option<String>,
+    optional: bool,
+) -> anyhow::Result<Option<WorkloadInput>> {
+    let prompt = resolve_text_arg("prompt", prompt, prompt_file)?;
+    let prefix = resolve_text_arg("prefix", prefix, prefix_file)?;
+    let suffix = resolve_text_arg("suffix", suffix, suffix_file)?;
+
+    match workload {
+        WorkloadKind::Completion => {
+            if prefix.is_some() || suffix.is_some() {
+                anyhow::bail!("completion workload does not accept prefix or suffix inputs");
+            }
+            match prompt {
+                Some(prompt) => Ok(Some(WorkloadInput::Completion { prompt })),
+                None if optional => Ok(None),
+                None => anyhow::bail!("completion workload requires --prompt or --prompt-file"),
+            }
+        }
+        WorkloadKind::Infill => {
+            if prompt.is_some() {
+                anyhow::bail!("infill workload does not accept prompt inputs");
+            }
+            match (prefix, suffix) {
+                (Some(prefix), Some(suffix)) => Ok(Some(WorkloadInput::Infill { prefix, suffix })),
+                (Some(prefix), None) => Ok(Some(WorkloadInput::Infill {
+                    prefix,
+                    suffix: String::new(),
+                })),
+                (None, Some(suffix)) => Ok(Some(WorkloadInput::Infill {
+                    prefix: String::new(),
+                    suffix,
+                })),
+                (None, None) if optional => Ok(None),
+                (None, None) => {
+                    anyhow::bail!("infill workload requires at least one of prefix or suffix input")
+                }
+            }
+        }
+    }
+}
+
+fn resolve_text_arg(
+    name: &str,
+    inline: Option<String>,
+    file: Option<String>,
+) -> anyhow::Result<Option<String>> {
+    match (inline, file) {
+        (Some(value), None) => Ok(Some(value)),
+        (None, Some(path)) => std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {name} file: {path}"))
+            .map(Some),
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => {
+            anyhow::bail!("{name} accepts either inline text or a file path, but not both")
         }
     }
 }

@@ -337,6 +337,8 @@ pub struct DequantKernels {
     pub moe_map0: ComputePipeline,
     pub moe_mul_mat_id_q4_k: ComputePipeline,
     pub moe_mul_mat_id_q4_k_blocked: ComputePipeline,
+    pub moe_mul_mat_id_q5_0_blocked: ComputePipeline,
+    pub moe_mul_mat_id_q5_1_blocked: ComputePipeline,
     pub moe_mul_mat_id_q5_k_blocked: ComputePipeline,
     pub moe_mul_mat_id_q6_k_blocked: ComputePipeline,
     pub moe_mul_mat_id_q6_k: ComputePipeline,
@@ -1432,6 +1434,18 @@ impl DequantKernels {
                 "moe_mul_mat_id_q4_k_blocked",
             )
             .context("Failed to compile moe_mul_mat_id_q4_k_blocked kernel")?,
+            moe_mul_mat_id_q5_0_blocked: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_id_q5_0_blocked",
+            )
+            .context("Failed to compile moe_mul_mat_id_q5_0_blocked kernel")?,
+            moe_mul_mat_id_q5_1_blocked: ComputePipeline::from_source(
+                device.device(),
+                DEQUANT_SHADER_SRC,
+                "moe_mul_mat_id_q5_1_blocked",
+            )
+            .context("Failed to compile moe_mul_mat_id_q5_1_blocked kernel")?,
             moe_mul_mat_id_q5_k_blocked: ComputePipeline::from_source(
                 device.device(),
                 DEQUANT_SHADER_SRC,
@@ -5039,6 +5053,110 @@ impl DequantKernels {
             MTLSize {
                 width: (n_tokens as usize).div_ceil(32),
                 height: (m as usize).div_ceil(m_tile),
+                depth: n_active_experts as usize,
+            },
+            MTLSize {
+                width: 128,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode MoE mul_mat_id for Q5_0 using the blocked 64x32 kernel.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_moe_mul_mat_id_q5_0(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        weights: &MetalBuffer,
+        input: &MetalBuffer,
+        tpe: &MetalBuffer,
+        hids: &MetalBuffer,
+        output: &MetalBuffer,
+        m: u32,
+        k: u32,
+        n_tokens: u32,
+        n_expert_used: u32,
+        _n_expert: u32,
+        weight_stride: u32,
+        active_experts: &MetalBuffer,
+        n_active_experts: u32,
+        input_is_hid: bool,
+    ) {
+        crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q5_0_blocked.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(tpe.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(hids.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 4);
+        }
+        bind_u32(encoder, 5, m);
+        bind_u32(encoder, 6, k);
+        bind_u32(encoder, 7, n_tokens);
+        bind_u32(encoder, 8, n_expert_used);
+        bind_u32(encoder, 9, weight_stride);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(active_experts.mtl_buffer()), 0, 10);
+            encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+        }
+        bind_u32(encoder, 11, u32::from(input_is_hid));
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n_tokens as usize).div_ceil(32),
+                height: (m as usize).div_ceil(64),
+                depth: n_active_experts as usize,
+            },
+            MTLSize {
+                width: 128,
+                height: 1,
+                depth: 1,
+            },
+        );
+    }
+
+    /// Encode MoE mul_mat_id for Q5_1 using the blocked 64x32 kernel.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_moe_mul_mat_id_q5_1(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        weights: &MetalBuffer,
+        input: &MetalBuffer,
+        tpe: &MetalBuffer,
+        hids: &MetalBuffer,
+        output: &MetalBuffer,
+        m: u32,
+        k: u32,
+        n_tokens: u32,
+        n_expert_used: u32,
+        _n_expert: u32,
+        weight_stride: u32,
+        active_experts: &MetalBuffer,
+        n_active_experts: u32,
+        input_is_hid: bool,
+    ) {
+        crate::set_pipeline_cached(encoder, self.moe_mul_mat_id_q5_1_blocked.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(weights.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(input.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(tpe.mtl_buffer()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(hids.mtl_buffer()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(output.mtl_buffer()), 0, 4);
+        }
+        bind_u32(encoder, 5, m);
+        bind_u32(encoder, 6, k);
+        bind_u32(encoder, 7, n_tokens);
+        bind_u32(encoder, 8, n_expert_used);
+        bind_u32(encoder, 9, weight_stride);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(active_experts.mtl_buffer()), 0, 10);
+            encoder.setThreadgroupMemoryLength_atIndex(8192, 0);
+        }
+        bind_u32(encoder, 11, u32::from(input_is_hid));
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: (n_tokens as usize).div_ceil(32),
+                height: (m as usize).div_ceil(64),
                 depth: n_active_experts as usize,
             },
             MTLSize {

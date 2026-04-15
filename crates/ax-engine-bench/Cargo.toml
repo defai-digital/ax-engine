@@ -9,6 +9,7 @@ description = "AX Engine benchmark harness and soak test runner"
 [dependencies]
 ax-engine-core.workspace = true
 ax-engine-metal.workspace = true
+ax-engine-sdk.workspace = true
 clap.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

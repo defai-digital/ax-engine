@@ -174,6 +174,30 @@ struct Q6_K_Block {
 static_assert(sizeof(Q6_K_Block) == 210, "Q6_K_Block must be exactly 210 bytes");
 
 constant uint Q6_K_BLOCK_VALUES = 256;
+constant uint Q6_K_BLOCK_BYTES = sizeof(Q6_K_Block);
+
+inline device const Q6_K_Block* q6_k_advance_blocks(
+    device const Q6_K_Block* base,
+    ulong block_index
+) {
+    device const char* bytes = (device const char*)base;
+    return (device const Q6_K_Block*)(bytes + block_index * ulong(Q6_K_BLOCK_BYTES));
+}
+
+inline device const Q6_K_Block* q6_k_row_ptr(
+    device const Q6_K_Block* base,
+    uint row,
+    uint blocks_per_row
+) {
+    return q6_k_advance_blocks(base, ulong(row) * ulong(blocks_per_row));
+}
+
+inline device const Q6_K_Block& q6_k_block_ref(
+    device const Q6_K_Block* row_ptr,
+    uint block_index
+) {
+    return *q6_k_advance_blocks(row_ptr, ulong(block_index));
+}
 
 // Keep the 64-value tile mapping aligned with the standalone Q6_K dequant path
 // and llama.cpp's kernel_mul_mv_q6_K_f32_impl. Several Q6 batch/MoE loaders
@@ -1218,6 +1242,7 @@ inline float q6_k_block_dot(
     device const float* x,
     uint simd_lane
 ) {
+    device const Q6_K_Block& blk = q6_k_block_ref(a_row, b);
     uint base = b * Q6_K_BLOCK_VALUES;
     uint l = simd_lane;
 
@@ -1230,11 +1255,11 @@ inline float q6_k_block_dot(
     half rx6 = half(x[base + 192 + l]);
     half rx7 = half(x[base + 224 + l]);
 
-    float d = (simd_lane == 0) ? float(a_row[b].d) : 0.0f;
+    float d = (simd_lane == 0) ? float(blk.d) : 0.0f;
     d = simd_broadcast(d, 0);
-    device const uchar* ql = a_row[b].ql;
-    device const uchar* qh = a_row[b].qh;
-    device const char* scales = a_row[b].scales;
+    device const uchar* ql = blk.ql;
+    device const uchar* qh = blk.qh;
+    device const char* scales = blk.scales;
 
     uint is = l / 16;
     float sum = 0.0f;
@@ -1325,6 +1350,7 @@ inline float q6_k_block_dot_silu(
     device const float* up,
     uint simd_lane
 ) {
+    device const Q6_K_Block& blk = q6_k_block_ref(a_row, b);
     uint base = b * Q6_K_BLOCK_VALUES;
     uint l = simd_lane;
 
@@ -1337,11 +1363,11 @@ inline float q6_k_block_dot_silu(
     half rx6 = half(silu_mul_f32(gate[base + 192 + l], up[base + 192 + l]));
     half rx7 = half(silu_mul_f32(gate[base + 224 + l], up[base + 224 + l]));
 
-    float d = (simd_lane == 0) ? float(a_row[b].d) : 0.0f;
+    float d = (simd_lane == 0) ? float(blk.d) : 0.0f;
     d = simd_broadcast(d, 0);
-    device const uchar* ql = a_row[b].ql;
-    device const uchar* qh = a_row[b].qh;
-    device const char* scales = a_row[b].scales;
+    device const uchar* ql = blk.ql;
+    device const uchar* qh = blk.qh;
+    device const char* scales = blk.scales;
 
     uint is = l / 16;
     float sum = 0.0f;
@@ -1380,6 +1406,7 @@ inline float q6_k_block_dot_gelu(
     device const float* up,
     uint simd_lane
 ) {
+    device const Q6_K_Block& blk = q6_k_block_ref(a_row, b);
     uint base = b * Q6_K_BLOCK_VALUES;
     uint l = simd_lane;
 
@@ -1392,11 +1419,11 @@ inline float q6_k_block_dot_gelu(
     half rx6 = half(gelu_mul_f32(gate[base + 192 + l], up[base + 192 + l]));
     half rx7 = half(gelu_mul_f32(gate[base + 224 + l], up[base + 224 + l]));
 
-    float d = (simd_lane == 0) ? float(a_row[b].d) : 0.0f;
+    float d = (simd_lane == 0) ? float(blk.d) : 0.0f;
     d = simd_broadcast(d, 0);
-    device const uchar* ql = a_row[b].ql;
-    device const uchar* qh = a_row[b].qh;
-    device const char* scales = a_row[b].scales;
+    device const uchar* ql = blk.ql;
+    device const uchar* qh = blk.qh;
+    device const char* scales = blk.scales;
 
     uint is = l / 16;
     float sum = 0.0f;

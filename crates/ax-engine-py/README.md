@@ -10,12 +10,16 @@ local, in-process binding built on the high-level `ax-engine-sdk` facade.
 Current surface:
 
 - `Model.load(path, backend=None)`
+- `Model.supports_infill`
 - `Model.tokenize(text, add_special=False)`
 - `Model.decode(token_ids)`
 - `Model.session(ctx_size=None, seed=None)`
 - `Model.close()`
 - `Session.generate(...)`
+- `Session.infill(...)`
+- `Session.infill_full(...)`
 - `Session.stream(...)`
+- `Session.stream_infill(...)`
 - `Session.chat(...)`
 - `Session.reset()`
 - `Session.close()`
@@ -66,6 +70,7 @@ with ax_engine.Model.load("./models/Qwen3-8B-Q4_K_M.gguf", backend="auto") as mo
     with model.session() as session:
         print(model.architecture)
         print(model.vocab_size)
+        print(model.supports_infill)
 
         reply = session.generate(
             "Explain KV cache in one short sentence.",
@@ -82,4 +87,13 @@ with ax_engine.Model.load("./models/Qwen3-8B-Q4_K_M.gguf", backend="auto") as mo
             temperature=0.0,
         )
         print(reply)
+
+        if model.supports_infill:
+            middle = session.infill(
+                "fn add(a: i32, b: i32) {\n",
+                "}\n",
+                max_tokens=64,
+                temperature=0.0,
+            )
+            print(middle)
 ```

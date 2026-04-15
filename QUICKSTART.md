@@ -218,6 +218,50 @@ For experimental `Q5_K` prefill runs, these artifacts now also carry the
 prefill route explicitly:
 
 - `prefill_plan`
+
+For request-shaped completion and FIM benchmarking, use `workload-bench`:
+
+```bash
+./target/release/ax-engine-bench workload-bench \
+  --model ./models/<model>.gguf \
+  --workload infill \
+  --infill-prefix "fn add(a: i32, b: i32) {\n" \
+  --infill-suffix "}\n" \
+  --max-tokens 64 \
+  --json
+```
+
+## 12. Fill-In-The-Middle
+
+If the loaded model exposes native FIM tokens, AX Engine can generate only the
+missing middle span.
+
+CLI:
+
+```bash
+./target/release/ax-engine \
+  --model ./models/Qwen3.5-9B-Q4_K_M.gguf \
+  --infill-prefix "fn add(a: i32, b: i32) {\n" \
+  --infill-suffix "}\n" \
+  --temp 0.0 \
+  --n-predict 64
+```
+
+Server:
+
+```bash
+curl http://127.0.0.1:8080/infill \
+  -H 'content-type: application/json' \
+  -d '{
+    "input_prefix": "fn add(a: i32, b: i32) {\n",
+    "input_suffix": "}\n",
+    "max_tokens": 64,
+    "temperature": 0.0
+  }'
+```
+
+If the model does not expose native FIM sentinels, AX returns an explicit
+unsupported error instead of pretending to support infill.
 - `q5k_prefill_mode` when present
 
 This applies to:

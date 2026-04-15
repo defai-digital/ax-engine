@@ -1230,6 +1230,32 @@ kernel void gelu_elementwise_mul_batch_f32_vec4(
     g4[gid] = 0.5f * x * (1.0f + tanh(inner)) * u4[gid];
 }
 
+// ── GELU split mul (batch) ─────────────────────────────────────────
+//
+// src[row, i] is laid out as [gate | up] with width 2 * n.
+// dst[row, i] = GELU(src[row, i]) * src[row, n + i]
+
+kernel void gelu_split_mul_batch_f32(
+    device const float* src  [[buffer(0)]],
+    device float* dst        [[buffer(1)]],
+    constant uint& n         [[buffer(2)]],
+    constant uint& n_rows    [[buffer(3)]],
+    uint gid                 [[thread_position_in_grid]]
+) {
+    uint total = n * n_rows;
+    if (gid >= total) return;
+
+    uint row = gid / n;
+    uint col = gid % n;
+    uint base = row * (2 * n);
+    float x = src[base + col];
+    float up = src[base + n + col];
+    float x3 = x * x * x;
+    float inner = SQRT_2_PI * (x + 0.044715f * x3);
+    inner = clamp(inner, -10.0f, 10.0f);
+    dst[gid] = 0.5f * x * (1.0f + tanh(inner)) * up;
+}
+
 // ── GELU inplace ────────────────────────────────────────────────────
 //
 // x[i] = GELU(x[i])
@@ -3136,4 +3162,22 @@ kernel void moe_softmax_topk_f32(
             out_wts[k] = sh_wts[k] * inv_sel;
         }
     }
+}
+
+// Apply per-expert output scales to selected routing weights:
+//   expert_weights[token, slot] *= expert_scales[expert_ids[token, slot]]
+kernel void moe_apply_expert_scales_f32(
+    device const int32_t *expert_ids   [[buffer(0)]],
+    device float *expert_weights       [[buffer(1)]],
+    device const float *expert_scales  [[buffer(2)]],
+    constant uint &n_tokens            [[buffer(3)]],
+    constant uint &n_expert_used       [[buffer(4)]],
+    uint gid                           [[thread_position_in_grid]]
+) {
+    uint total = n_tokens * n_expert_used;
+    if (gid >= total) return;
+
+    int eid = expert_ids[gid];
+    if (eid < 0) return;
+    expert_weights[gid] *= expert_scales[(uint)eid];
 }

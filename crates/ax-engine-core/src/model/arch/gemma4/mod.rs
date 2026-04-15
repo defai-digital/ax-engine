@@ -53,6 +53,50 @@ macro_rules! timed {
 pub struct Gemma4Forward;
 
 impl Gemma4Forward {
+    pub(crate) fn has_any_moe_layer(config: &ModelConfig, weights: &WeightStore) -> bool {
+        if config.n_expert.unwrap_or(0) == 0 {
+            return false;
+        }
+
+        (0..config.n_layers as usize)
+            .any(|layer| weights.has(&format!("blk.{layer}.ffn_gate_inp.weight")))
+    }
+
+    /// Returns true when EVERY MoE layer has Q8_0 for BOTH `ffn_gate_up_exps`
+    /// and `ffn_down_exps`. Empirically, that exact combination GPU-hangs in
+    /// `moe_mul_mat_id_q8_0` on this Gemma-4 dispatch shape (pre-existing in
+    /// HEAD 43541e0). Q6_K schemes promote `ffn_down_exps` to Q8_0 but keep
+    /// `ffn_gate_up_exps` at a lower bit width and run fine on the GPU. The
+    /// Q8_0 scheme has both at Q8_0 and triggers the hang.
+    pub(crate) fn all_layers_q8_0_expert_down(
+        config: &ModelConfig,
+        weights: &WeightStore,
+    ) -> bool {
+        use crate::gguf::GgmlType;
+        if config.n_expert.unwrap_or(0) == 0 {
+            return false;
+        }
+        let mut saw_any = false;
+        for layer in 0..config.n_layers as usize {
+            let down = weights
+                .raw_with_dtype(&format!("blk.{layer}.ffn_down_exps.weight"))
+                .ok();
+            let gate_up = weights
+                .raw_with_dtype(&format!("blk.{layer}.ffn_gate_up_exps.weight"))
+                .ok();
+            match (down, gate_up) {
+                (Some((_, d)), Some((_, g))) => {
+                    if d != GgmlType::Q8_0 || g != GgmlType::Q8_0 {
+                        return false;
+                    }
+                    saw_any = true;
+                }
+                _ => {}
+            }
+        }
+        saw_any
+    }
+
     /// Determine whether a layer uses sliding window attention.
     /// Same pattern as Gemma3: every Nth layer (default 6) is global.
     pub(crate) fn use_sliding_window(layer: usize, config: &ModelConfig) -> bool {

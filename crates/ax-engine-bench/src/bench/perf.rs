@@ -387,9 +387,10 @@ pub fn run_benchmark_with_backend(
     crate::configure_backend_for_model(&*backend, &config.model_path, &mapped, &model_config)?;
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = InferenceModel::with_backend(model_config.clone(), backend)?;
-    crate::report_planned_kv_budget(&mapped, &model)?;
-    let support_note = crate::support_note(&mapped);
     let weights = WeightStore::new(&mapped);
+    let kv_plan = model.kv_plan_for_weights(&weights);
+    crate::report_planned_kv_budget(&mapped, &kv_plan)?;
+    let support_note = crate::support_note(&mapped);
     model.prepare_runtime_for_weights(&weights)?;
 
     let vocab_size = model_config.vocab_size as usize;
@@ -398,7 +399,6 @@ pub fn run_benchmark_with_backend(
         ..Default::default()
     };
 
-    let kv_plan = model.kv_plan();
     let (kv_dtype, kv_f16) = kv_dtype_label_from_plan(&kv_plan);
 
     eprintln!(
@@ -713,16 +713,16 @@ pub fn run_speculative_benchmark_with_backend(
     crate::configure_backend_for_model(&*backend, &config.model_path, &mapped, &model_config)?;
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = InferenceModel::with_backend(model_config.clone(), backend)?;
-    crate::report_planned_kv_budget(&mapped, &model)?;
-    let support_note = crate::support_note(&mapped);
     let weights = WeightStore::new(&mapped);
+    let kv_plan = model.kv_plan_for_weights(&weights);
+    crate::report_planned_kv_budget(&mapped, &kv_plan)?;
+    let support_note = crate::support_note(&mapped);
     model.prepare_runtime_for_weights(&weights)?;
 
     let sampling = SamplingConfig {
         temperature: 0.0,
         ..Default::default()
     };
-    let kv_plan = model.kv_plan();
     let (kv_dtype, kv_f16) = kv_dtype_label_from_plan(&kv_plan);
 
     eprintln!(

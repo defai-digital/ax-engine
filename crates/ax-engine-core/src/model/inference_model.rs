@@ -155,6 +155,19 @@ impl InferenceModel {
         )
     }
 
+    /// Resolve the effective KV plan after weight-dependent decode fallback has
+    /// been applied.
+    pub fn kv_plan_for_weights(&self, weights: &WeightStore) -> crate::backend::KvPlan {
+        match self.kv_plan() {
+            crate::backend::KvPlan::Gpu(plan)
+                if !self.gpu_decode_supported_for_weights(weights) =>
+            {
+                crate::backend::KvPlan::Cpu(plan.fallback)
+            }
+            plan => plan,
+        }
+    }
+
     /// Create a KV cache matched to the active decode support of the loaded weights,
     /// while honoring caller-specified planning requirements such as a smaller
     /// context length than the model maximum.

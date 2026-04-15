@@ -14,6 +14,14 @@ pub struct CliArgs {
     #[arg(short = 'p', long = "prompt")]
     pub prompt: Option<String>,
 
+    /// Prefix text for fill-in-the-middle generation
+    #[arg(long = "infill-prefix")]
+    pub infill_prefix: Option<String>,
+
+    /// Suffix text for fill-in-the-middle generation
+    #[arg(long = "infill-suffix")]
+    pub infill_suffix: Option<String>,
+
     /// Maximum number of tokens to predict (-1 = infinite)
     #[arg(short = 'n', long = "n-predict", default_value_t = -1)]
     pub n_predict: i32,

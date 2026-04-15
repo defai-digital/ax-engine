@@ -6,7 +6,10 @@
 //! [`gguf_chat_template`], but rendering currently uses the built-in family
 //! renderers below.
 
+use anyhow::{anyhow, ensure};
+
 use crate::gguf::GgufHeader;
+use crate::tokenizer::Tokenizer;
 
 /// One structured chat message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +67,23 @@ impl ChatRole {
 pub struct ChatRenderOptions {
     /// Append the model's assistant preamble for generation.
     pub add_generation_prompt: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfillPromptStyle {
+    Pipe,
+    Plain,
+    Short,
+}
+
+impl InfillPromptStyle {
+    fn control_tokens(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Pipe => ("<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>"),
+            Self::Plain => ("<fim_prefix>", "<fim_suffix>", "<fim_middle>"),
+            Self::Short => ("<PRE>", "<SUF>", "<MID>"),
+        }
+    }
 }
 
 impl Default for ChatRenderOptions {
@@ -125,6 +145,38 @@ pub fn render_user_turn(prompt: &str, architecture: &str, first_turn: bool) -> S
     }
 }
 
+pub fn detect_infill_prompt_style(tokenizer: &Tokenizer) -> Option<InfillPromptStyle> {
+    [
+        InfillPromptStyle::Pipe,
+        InfillPromptStyle::Plain,
+        InfillPromptStyle::Short,
+    ]
+    .into_iter()
+    .find(|style| {
+        let (prefix, suffix, middle) = style.control_tokens();
+        [prefix, suffix, middle]
+            .into_iter()
+            .all(|token| tokenizer.encode_with_options(token, false, true).len() == 1)
+    })
+}
+
+pub fn render_infill_prompt(
+    prefix: &str,
+    suffix: &str,
+    tokenizer: &Tokenizer,
+) -> anyhow::Result<String> {
+    ensure!(
+        !(prefix.is_empty() && suffix.is_empty()),
+        "infill requires a non-empty prefix or suffix"
+    );
+    let style = detect_infill_prompt_style(tokenizer)
+        .ok_or_else(|| anyhow!("loaded model does not support infill"))?;
+    let (prefix_token, suffix_token, middle_token) = style.control_tokens();
+    Ok(format!(
+        "{prefix_token}{prefix}{suffix_token}{suffix}{middle_token}"
+    ))
+}
+
 fn render_gemma(messages: &[ChatMessage<'_>], options: ChatRenderOptions) -> String {
     let mut rendered = String::new();
     for message in messages {
@@ -181,6 +233,7 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::gguf::MetadataValue;
+    use crate::tokenizer::{Tokenizer, Vocab, vocab::TokenType};
 
     use super::*;
 
@@ -248,5 +301,68 @@ mod tests {
             rendered,
             "<start_of_turn>user\n\nHi<end_of_turn>\n<start_of_turn>model\n"
         );
+    }
+
+    fn make_infill_tokenizer(
+        prefix_token: &str,
+        suffix_token: &str,
+        middle_token: &str,
+    ) -> Tokenizer {
+        let token_defs: Vec<(&str, f32, TokenType)> = vec![
+            ("<unk>", 0.0, TokenType::Unknown),
+            ("<s>", 0.0, TokenType::Control),
+            ("</s>", 0.0, TokenType::Control),
+            (prefix_token, 0.0, TokenType::Control),
+            (suffix_token, 0.0, TokenType::Control),
+            (middle_token, 0.0, TokenType::Control),
+            ("body", -1.0, TokenType::Normal),
+        ];
+        let tokens: Vec<String> = token_defs.iter().map(|(t, _, _)| t.to_string()).collect();
+        let scores: Vec<f32> = token_defs.iter().map(|(_, s, _)| *s).collect();
+        let types: Vec<TokenType> = token_defs.iter().map(|(_, _, ty)| *ty).collect();
+        let mut token_to_id = HashMap::new();
+        for (i, token) in tokens.iter().enumerate() {
+            token_to_id.insert(token.clone(), i as u32);
+        }
+        Tokenizer::from_vocab(Vocab {
+            tokens,
+            scores,
+            types,
+            token_to_id,
+            merge_ranks: None,
+            bos_id: 1,
+            eos_id: 2,
+            unk_id: 0,
+            add_bos: false,
+            add_eos: false,
+            add_space_prefix: false,
+            model_type: "llama".to_string(),
+            eot_id: None,
+        })
+    }
+
+    #[test]
+    fn test_detect_infill_prompt_style_pipe_tokens() {
+        let tokenizer = make_infill_tokenizer("<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>");
+        assert_eq!(
+            detect_infill_prompt_style(&tokenizer),
+            Some(InfillPromptStyle::Pipe)
+        );
+    }
+
+    #[test]
+    fn test_detect_infill_prompt_style_plain_tokens() {
+        let tokenizer = make_infill_tokenizer("<fim_prefix>", "<fim_suffix>", "<fim_middle>");
+        assert_eq!(
+            detect_infill_prompt_style(&tokenizer),
+            Some(InfillPromptStyle::Plain)
+        );
+    }
+
+    #[test]
+    fn test_render_infill_prompt_short_tokens() {
+        let tokenizer = make_infill_tokenizer("<PRE>", "<SUF>", "<MID>");
+        let rendered = render_infill_prompt("fn foo() {\n", "\n}\n", &tokenizer).unwrap();
+        assert_eq!(rendered, "<PRE>fn foo() {\n<SUF>\n}\n<MID>");
     }
 }

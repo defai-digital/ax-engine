@@ -1,0 +1,52 @@
+{
+  "label": "gemma4-26b-a4b-q6k-postpatch",
+  "model": "models/gemma-4-26B-A4B-it-Q6_K.gguf",
+  "run_dir": "/Users/akiralam/code/ax-engine/benchmarks/results/20260412-135455-001",
+  "engines": {
+    "ax": {
+      "name": "ax-engine",
+      "binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-bench",
+      "command": [
+        "/Users/akiralam/code/ax-engine/target/release/ax-engine-bench",
+        "bench",
+        "--model",
+        "models/gemma-4-26B-A4B-it-Q6_K.gguf",
+        "--prompt-tokens",
+        "512",
+        "--decode-tokens",
+        "128",
+        "--warmup-iters",
+        "0",
+        "--measure-iters",
+        "1",
+        "--llama-parity-preset"
+      ],
+      "environment": {
+        "AX_PRECOMPUTE_F16": null,
+        "AX_METAL_F16_KV_CACHE": null,
+        "AX_METAL_ATTN_PROFILE": null,
+        "AX_METAL_FUSED_QKV": null,
+        "AX_METAL_DECODE_FUSED_QKV": null,
+        "AX_METAL_PREFILL_FA2_MODE": null,
+        "AX_METAL_PREFILL_FA2_HD128_MODE": null,
+        "AX_METAL_PREFILL_FA2_SIMD": null,
+        "AX_METAL_PREFILL_BC64_MODE": null,
+        "AX_METAL_DECODE_SPLITK_MODE": null,
+        "AX_METAL_DECODE_SPLITK_AUTO_MIN_TOKENS": null,
+        "AX_METAL_DECODE_SPLITK_CHUNK_SIZE": null,
+        "AX_METAL_DECODE_SDPA": null,
+        "AX_METAL_DECODE_HD128_N2": null,
+        "AX_METAL_CONCURRENT_DECODE": null,
+        "AX_METAL_BARRIERS": null
+      },
+      "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/20260412-135455-001/ax.json"
+    },
+    "llama": {
+      "name": "llama.cpp",
+      "binary": "/opt/homebrew/bin/llama-bench",
+      "prefill_sample_commands": [],
+      "decode_sample_commands": [],
+      "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/20260412-135455-001/llama/summary.json"
+    }
+  }
+}

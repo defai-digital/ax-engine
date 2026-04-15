@@ -145,6 +145,124 @@ fn test_cli_parse_prefill_gap_rejects_conflicting_baseline_flags() {
 }
 
 #[test]
+fn test_cli_parse_workload_bench_completion_accepts_prompt_file() {
+    let cli = Cli::try_parse_from([
+        "ax-engine-bench",
+        "workload-bench",
+        "--model",
+        "./models/Qwen3.5-9B-Q4_K_M.gguf",
+        "--workload",
+        "completion",
+        "--prompt-file",
+        "./fixtures/prompt.txt",
+        "--prime-prompt",
+        "fn add(a: i32, b: i32) -> i32 {",
+        "--max-tokens",
+        "32",
+    ])
+    .expect("workload-bench completion CLI should parse");
+
+    let Command::WorkloadBench {
+        workload,
+        prompt_file,
+        prime_prompt,
+        max_tokens,
+        ..
+    } = cli.command
+    else {
+        panic!("expected workload-bench command");
+    };
+
+    assert_eq!(workload, WorkloadKindArg::Completion);
+    assert_eq!(prompt_file.as_deref(), Some("./fixtures/prompt.txt"));
+    assert_eq!(
+        prime_prompt.as_deref(),
+        Some("fn add(a: i32, b: i32) -> i32 {")
+    );
+    assert_eq!(max_tokens, 32);
+}
+
+#[test]
+fn test_cli_parse_workload_bench_infill_accepts_prime_suffix_file() {
+    let cli = Cli::try_parse_from([
+        "ax-engine-bench",
+        "workload-bench",
+        "--model",
+        "./models/Qwen3.5-9B-Q4_K_M.gguf",
+        "--workload",
+        "infill",
+        "--prefix",
+        "fn render(name: &str) -> String {\\n",
+        "--suffix-file",
+        "./fixtures/suffix.rs",
+        "--prime-prefix-file",
+        "./fixtures/prefix.rs",
+        "--prime-suffix",
+        "\\n}\\n",
+    ])
+    .expect("workload-bench infill CLI should parse");
+
+    let Command::WorkloadBench {
+        workload,
+        suffix_file,
+        prime_prefix_file,
+        prime_suffix,
+        ..
+    } = cli.command
+    else {
+        panic!("expected workload-bench command");
+    };
+
+    assert_eq!(workload, WorkloadKindArg::Infill);
+    assert_eq!(suffix_file.as_deref(), Some("./fixtures/suffix.rs"));
+    assert_eq!(prime_prefix_file.as_deref(), Some("./fixtures/prefix.rs"));
+    assert_eq!(prime_suffix.as_deref(), Some("\\n}\\n"));
+}
+
+#[test]
+fn test_resolve_workload_input_accepts_prefix_only_infill() {
+    let input = resolve_workload_input(
+        WorkloadKind::Infill,
+        None,
+        None,
+        Some("prefix".to_string()),
+        None,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+
+    match input {
+        Some(WorkloadInput::Infill { prefix, suffix }) => {
+            assert_eq!(prefix, "prefix");
+            assert!(suffix.is_empty());
+        }
+        other => panic!("unexpected workload input: {other:?}"),
+    }
+}
+
+#[test]
+fn test_resolve_workload_input_rejects_partial_infill_prime() {
+    let input = resolve_workload_input(
+        WorkloadKind::Infill,
+        None,
+        None,
+        Some("prefix".to_string()),
+        None,
+        None,
+        None,
+        true,
+    )
+    .unwrap();
+    assert!(matches!(
+        input,
+        Some(WorkloadInput::Infill { ref prefix, ref suffix })
+            if prefix == "prefix" && suffix.is_empty()
+    ));
+}
+
+#[test]
 fn test_cli_parse_soak_rejects_zero_tokens_per_iter() {
     let err = match Cli::try_parse_from([
         "ax-engine-bench",

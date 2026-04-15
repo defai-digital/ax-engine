@@ -89,6 +89,11 @@ impl Model {
     }
 
     #[getter]
+    pub fn supports_infill(&self) -> PyResult<bool> {
+        Ok(self.loaded_model()?.supports_infill())
+    }
+
+    #[getter]
     pub fn closed(&self) -> bool {
         option_state_is_closed(&self.inner)
     }
@@ -203,5 +208,11 @@ mod tests {
         .join();
 
         assert!(option_state_is_closed(&state));
+    }
+
+    #[test]
+    fn test_model_exposes_supports_infill_getter() {
+        let getter: fn(&Model) -> PyResult<bool> = Model::supports_infill;
+        let _ = getter;
     }
 }

@@ -92,6 +92,7 @@ dependencies = [
  "anyhow",
  "ax-engine-core",
  "ax-engine-metal",
+ "ax-engine-sdk",
  "clap",
  "criterion",
  "half",
@@ -153,6 +154,7 @@ dependencies = [
  "anyhow",
  "ax-engine-sdk",
  "pyo3",
+ "pyo3-build-config",
  "tracing",
  "tracing-subscriber",
 ]

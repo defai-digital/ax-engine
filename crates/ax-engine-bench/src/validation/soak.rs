@@ -152,8 +152,9 @@ pub fn run_soak_test_with_backend(
     crate::configure_backend_for_model(&*backend, &config.model_path, &mapped, &model_config)?;
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = InferenceModel::with_backend(model_config.clone(), backend)?;
-    crate::report_planned_kv_budget(&mapped, &model)?;
     let weights = WeightStore::new(&mapped);
+    let kv_plan = model.kv_plan_for_weights(&weights);
+    crate::report_planned_kv_budget(&mapped, &kv_plan)?;
     model.prepare_runtime_for_weights(&weights)?;
     let support_note = crate::support_note(&mapped);
     let prefill_plan = model.prefill_plan_summary(

@@ -232,6 +232,110 @@ impl Session {
             .map_err(py_runtime_error)
     }
 
+    /// Run fill-in-the-middle generation and return only the generated middle string.
+    #[pyo3(signature = (
+        prefix,
+        suffix = "",
+        max_tokens = 128,
+        temperature = 0.8,
+        top_k = 40,
+        top_p = 0.9,
+        min_p = 0.0,
+        repeat_penalty = 1.0,
+        repeat_last_n = 64,
+        frequency_penalty = 0.0,
+        presence_penalty = 0.0,
+        stop = None,
+        seed = None
+    ))]
+    pub fn infill(
+        &self,
+        py: Python<'_>,
+        prefix: &str,
+        suffix: &str,
+        max_tokens: usize,
+        temperature: f32,
+        top_k: i32,
+        top_p: f32,
+        min_p: f32,
+        repeat_penalty: f32,
+        repeat_last_n: i32,
+        frequency_penalty: f32,
+        presence_penalty: f32,
+        stop: Option<Vec<String>>,
+        seed: Option<u64>,
+    ) -> PyResult<String> {
+        let options = generation_options(
+            max_tokens,
+            temperature,
+            top_k,
+            top_p,
+            min_p,
+            repeat_penalty,
+            repeat_last_n,
+            frequency_penalty,
+            presence_penalty,
+            stop,
+            seed,
+        )
+        .map_err(py_value_error)?;
+        self.do_infill(py, prefix, suffix, options)
+            .map(|output| output.text)
+            .map_err(py_runtime_error)
+    }
+
+    /// Run fill-in-the-middle generation and return usage plus finish reason.
+    #[pyo3(signature = (
+        prefix,
+        suffix = "",
+        max_tokens = 128,
+        temperature = 0.8,
+        top_k = 40,
+        top_p = 0.9,
+        min_p = 0.0,
+        repeat_penalty = 1.0,
+        repeat_last_n = 64,
+        frequency_penalty = 0.0,
+        presence_penalty = 0.0,
+        stop = None,
+        seed = None
+    ))]
+    pub fn infill_full(
+        &self,
+        py: Python<'_>,
+        prefix: &str,
+        suffix: &str,
+        max_tokens: usize,
+        temperature: f32,
+        top_k: i32,
+        top_p: f32,
+        min_p: f32,
+        repeat_penalty: f32,
+        repeat_last_n: i32,
+        frequency_penalty: f32,
+        presence_penalty: f32,
+        stop: Option<Vec<String>>,
+        seed: Option<u64>,
+    ) -> PyResult<GenerationResult> {
+        let options = generation_options(
+            max_tokens,
+            temperature,
+            top_k,
+            top_p,
+            min_p,
+            repeat_penalty,
+            repeat_last_n,
+            frequency_penalty,
+            presence_penalty,
+            stop,
+            seed,
+        )
+        .map_err(py_value_error)?;
+        self.do_infill(py, prefix, suffix, options)
+            .map(|output| GenerationResult::from_sdk_output(&output))
+            .map_err(py_runtime_error)
+    }
+
     /// Return a streaming iterator of text chunks.
     #[pyo3(signature = (
         prompt,
@@ -279,6 +383,63 @@ impl Session {
         .map_err(py_value_error)?;
         allow_threads_unsend(py, || {
             self.with_session(|session| session.stream(prompt, options))
+        })
+        .map(|stream| TextStream {
+            inner: Mutex::new(Some(stream)),
+            stored_output: Mutex::new(None),
+        })
+        .map_err(py_runtime_error)
+    }
+
+    /// Return a streaming iterator of fill-in-the-middle text chunks.
+    #[pyo3(signature = (
+        prefix,
+        suffix = "",
+        max_tokens = 128,
+        temperature = 0.8,
+        top_k = 40,
+        top_p = 0.9,
+        min_p = 0.0,
+        repeat_penalty = 1.0,
+        repeat_last_n = 64,
+        frequency_penalty = 0.0,
+        presence_penalty = 0.0,
+        stop = None,
+        seed = None
+    ))]
+    pub fn stream_infill(
+        &self,
+        py: Python<'_>,
+        prefix: &str,
+        suffix: &str,
+        max_tokens: usize,
+        temperature: f32,
+        top_k: i32,
+        top_p: f32,
+        min_p: f32,
+        repeat_penalty: f32,
+        repeat_last_n: i32,
+        frequency_penalty: f32,
+        presence_penalty: f32,
+        stop: Option<Vec<String>>,
+        seed: Option<u64>,
+    ) -> PyResult<TextStream> {
+        let options = generation_options(
+            max_tokens,
+            temperature,
+            top_k,
+            top_p,
+            min_p,
+            repeat_penalty,
+            repeat_last_n,
+            frequency_penalty,
+            presence_penalty,
+            stop,
+            seed,
+        )
+        .map_err(py_value_error)?;
+        allow_threads_unsend(py, || {
+            self.with_session(|session| session.stream_infill(prefix, suffix, options))
         })
         .map(|stream| TextStream {
             inner: Mutex::new(Some(stream)),
@@ -447,6 +608,18 @@ impl Session {
     ) -> anyhow::Result<SdkGenerationOutput> {
         allow_threads_unsend(py, || {
             self.with_session(|session| session.chat(messages, options))
+        })
+    }
+
+    fn do_infill(
+        &self,
+        py: Python<'_>,
+        prefix: &str,
+        suffix: &str,
+        options: GenerationOptions,
+    ) -> anyhow::Result<SdkGenerationOutput> {
+        allow_threads_unsend(py, || {
+            self.with_session(|session| session.infill(prefix, suffix, options))
         })
     }
 
@@ -669,5 +842,62 @@ mod tests {
         };
         let result = GenerationResult::from_sdk_output(&output);
         assert_eq!(result.finish_reason, "length");
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn test_session_exposes_infill_methods() {
+        let infill_fn: fn(
+            &Session,
+            Python<'_>,
+            &str,
+            &str,
+            usize,
+            f32,
+            i32,
+            f32,
+            f32,
+            f32,
+            i32,
+            f32,
+            f32,
+            Option<Vec<String>>,
+            Option<u64>,
+        ) -> PyResult<String> = Session::infill;
+        let infill_full_fn: fn(
+            &Session,
+            Python<'_>,
+            &str,
+            &str,
+            usize,
+            f32,
+            i32,
+            f32,
+            f32,
+            f32,
+            i32,
+            f32,
+            f32,
+            Option<Vec<String>>,
+            Option<u64>,
+        ) -> PyResult<GenerationResult> = Session::infill_full;
+        let stream_infill_fn: fn(
+            &Session,
+            Python<'_>,
+            &str,
+            &str,
+            usize,
+            f32,
+            i32,
+            f32,
+            f32,
+            f32,
+            i32,
+            f32,
+            f32,
+            Option<Vec<String>>,
+            Option<u64>,
+        ) -> PyResult<TextStream> = Session::stream_infill;
+        let _ = (infill_fn, infill_full_fn, stream_infill_fn);
     }
 }

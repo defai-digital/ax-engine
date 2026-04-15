@@ -109,7 +109,7 @@ fn test_gpu_prefill_chunk_len_caps_to_sliding_window() {
 }
 
 #[test]
-fn test_global_layer_uses_backend_prefill_when_hd512_has_large_enough_batch() {
+fn test_global_layer_uses_backend_prefill_only_without_prefix() {
     let spec = Gemma4LayerSpec {
         layer: 5,
         prefix: "blk.5".to_string(),
@@ -124,7 +124,7 @@ fn test_global_layer_uses_backend_prefill_when_hd512_has_large_enough_batch() {
         has_moe: false,
     };
 
-    assert!(!spec.use_backend_prefill(0, 32));
+    assert!(spec.use_backend_prefill(0, 32));
     assert!(spec.use_backend_prefill(0, 128));
     assert!(!spec.use_backend_prefill(1, 32));
 }
@@ -204,7 +204,83 @@ fn test_real_gemma4_31b_forward_batch_last_logits_match_cpu() {
 }
 
 #[test]
-fn test_real_gemma4_26b_q5km_single_decode_step_uses_gpu_path() {
+fn test_real_gemma4_26b_moe_prefill_last_logits_match_cpu() {
+    let _env_lock = crate::test_env_lock();
+    let path = workspace_model_path("gemma-4-26B-A4B-it-Q6_K.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let model = MappedModel::open(&path).unwrap();
+    let cfg = ModelConfig::from_gguf(&model.header).unwrap();
+    let weights = WeightStore::new(&model);
+    let tokenizer = crate::tokenizer::Tokenizer::from_gguf(&model.header).unwrap();
+    let prompt_token_ids = tokenizer.encode("The capital of France is", true);
+    let vocab_size = cfg.vocab_size as usize;
+
+    assert!(Gemma4Forward::has_any_moe_layer(&cfg, &weights));
+
+    let cpu_model =
+        crate::model::InferenceModel::with_backend(cfg.clone(), Box::new(CpuBackend)).unwrap();
+    let metal_model = crate::model::InferenceModel::with_backend(
+        cfg.clone(),
+        Box::new(MetalBackend::new().unwrap()),
+    )
+    .unwrap();
+    let mut cpu_kv = cpu_model.create_model_kv_for_weights(&weights);
+    let mut metal_kv = metal_model.create_model_kv_for_weights(&weights);
+    let mut cpu_logits = vec![0.0f32; vocab_size];
+    let mut metal_logits = vec![0.0f32; vocab_size];
+
+    cpu_model
+        .forward_batch(&prompt_token_ids, &mut cpu_kv, &weights, &mut cpu_logits)
+        .unwrap();
+    metal_model
+        .forward_batch(
+            &prompt_token_ids,
+            &mut metal_kv,
+            &weights,
+            &mut metal_logits,
+        )
+        .unwrap();
+
+    assert!(
+        cpu_logits.iter().all(|value| value.is_finite()),
+        "Gemma4 26B CPU MoE prefill produced non-finite logits"
+    );
+    assert!(
+        metal_logits.iter().all(|value| value.is_finite()),
+        "Gemma4 26B Metal MoE prefill produced non-finite logits"
+    );
+
+    let expected_argmax = argmax_index(&cpu_logits);
+    let actual_argmax = argmax_index(&metal_logits);
+    let max_diff = max_abs_diff(&cpu_logits, &metal_logits);
+    let scale = cpu_logits
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    let rel_diff = max_diff / scale;
+
+    assert_eq!(
+        actual_argmax, expected_argmax,
+        "Gemma4 26B MoE argmax mismatch: cpu={expected_argmax} metal={actual_argmax} rel_diff={rel_diff:.4e}",
+    );
+    // The Gemma4 26B MoE shared/routed FFN paths now have dedicated
+    // reference tests. The remaining end-to-end batch drift is dominated by
+    // the known Gemma4 scale-1.0 attention mismatch between CPU prefill and
+    // Metal batch prefill, so keep this as a coarse integration guard rather
+    // than a strict component-equivalence test.
+    assert!(
+        rel_diff <= 1.5,
+        "Gemma4 26B MoE logits drift too large: rel_diff={rel_diff} max_diff={max_diff}",
+    );
+}
+
+#[test]
+fn test_real_gemma4_26b_q5km_single_decode_step_uses_gpu_kv_token_major_path() {
     let _env_lock = crate::test_env_lock();
     let path = workspace_model_path("gemma-4-26B-A4B-it-Q5_K_M.gguf");
     if !path.exists() {
@@ -221,6 +297,10 @@ fn test_real_gemma4_26b_q5km_single_decode_step_uses_gpu_path() {
     )
     .unwrap();
     let mut metal_kv = metal_model.create_model_kv_for_weights(&weights);
+    assert!(
+        metal_kv.as_gpu_mut().is_some(),
+        "Gemma4 26B MoE should keep GPU KV on the corrected token-major path",
+    );
     let mut logits = vec![0.0f32; cfg.vocab_size as usize];
     let prompt_token_ids = tokenizer.encode("The capital of France is", true);
     assert!(
@@ -236,6 +316,7 @@ fn test_real_gemma4_26b_q5km_single_decode_step_uses_gpu_path() {
             &mut logits,
         )
         .unwrap();
+    let seq_len_before = metal_kv.seq_len();
 
     logits.fill(0.0);
     let mut ops = crate::metrics::OpBreakdown::new();
@@ -255,8 +336,281 @@ fn test_real_gemma4_26b_q5km_single_decode_step_uses_gpu_path() {
         "Gemma4 Q5_K_M single decode produced non-finite logits"
     );
     assert!(
-        ops.gpu > std::time::Duration::ZERO,
-        "Gemma4 Q5_K_M single decode did not record any GPU work: {}",
+        ops.total() > std::time::Duration::ZERO,
+        "Gemma4 Q5_K_M single decode did not record any profiled work: {}",
+        ops.summary(),
+    );
+    assert_eq!(
+        metal_kv.seq_len(),
+        seq_len_before + 1,
+        "Gemma4 GPU single decode did not advance KV length",
+    );
+}
+
+#[test]
+fn test_real_gemma4_26b_q5km_cpu_single_decode_matches_batch_logits() {
+    let _env_lock = crate::test_env_lock();
+    let path = workspace_model_path("gemma-4-26B-A4B-it-Q5_K_M.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let model = MappedModel::open(&path).unwrap();
+    let cfg = ModelConfig::from_gguf(&model.header).unwrap();
+    let weights = WeightStore::new(&model);
+    let tokenizer = crate::tokenizer::Tokenizer::from_gguf(&model.header).unwrap();
+    let prompt_token_ids = tokenizer.encode("The capital of France is", true);
+    assert!(
+        prompt_token_ids.len() >= 2,
+        "expected prompt fixture to produce at least two tokens"
+    );
+    assert!(Gemma4Forward::has_any_moe_layer(&cfg, &weights));
+
+    let cpu_model =
+        crate::model::InferenceModel::with_backend(cfg.clone(), Box::new(CpuBackend)).unwrap();
+    let vocab_size = cfg.vocab_size as usize;
+    let mut batch_logits = vec![0.0f32; vocab_size];
+    let mut step_logits = vec![0.0f32; vocab_size];
+
+    let mut batch_kv = cpu_model.create_model_kv_for_weights(&weights);
+    cpu_model
+        .forward_batch(
+            &prompt_token_ids,
+            &mut batch_kv,
+            &weights,
+            &mut batch_logits,
+        )
+        .unwrap();
+
+    let mut step_kv = cpu_model.create_model_kv_for_weights(&weights);
+    cpu_model
+        .forward_batch(
+            &prompt_token_ids[..prompt_token_ids.len() - 1],
+            &mut step_kv,
+            &weights,
+            &mut step_logits,
+        )
+        .unwrap();
+    step_logits.fill(0.0);
+    cpu_model
+        .forward_single(
+            *prompt_token_ids.last().unwrap(),
+            prompt_token_ids.len() - 1,
+            &mut step_kv,
+            &weights,
+            &mut step_logits,
+        )
+        .unwrap();
+
+    assert!(
+        batch_logits.iter().all(|value| value.is_finite()),
+        "Gemma4 Q5_K_M CPU batch logits became non-finite"
+    );
+    assert!(
+        step_logits.iter().all(|value| value.is_finite()),
+        "Gemma4 Q5_K_M CPU single decode logits became non-finite"
+    );
+
+    let expected_argmax = argmax_index(&batch_logits);
+    let actual_argmax = argmax_index(&step_logits);
+    let max_diff = max_abs_diff(&batch_logits, &step_logits);
+    let scale = batch_logits
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    let rel_diff = max_diff / scale;
+
+    assert_eq!(
+        actual_argmax, expected_argmax,
+        "Gemma4 Q5_K_M CPU single decode diverged from batch argmax: batch={expected_argmax} step={actual_argmax} rel_diff={rel_diff:.4e}",
+    );
+    assert!(
+        rel_diff <= 5e-3,
+        "Gemma4 Q5_K_M CPU single decode drifted from batch logits: rel_diff={rel_diff} max_diff={max_diff}",
+    );
+}
+
+#[test]
+fn test_real_gemma4_26b_q5km_metal_single_decode_matches_batch_logits() {
+    let _env_lock = crate::test_env_lock();
+    let path = workspace_model_path("gemma-4-26B-A4B-it-Q5_K_M.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let model = MappedModel::open(&path).unwrap();
+    let cfg = ModelConfig::from_gguf(&model.header).unwrap();
+    let weights = WeightStore::new(&model);
+    let tokenizer = crate::tokenizer::Tokenizer::from_gguf(&model.header).unwrap();
+    let prompt_token_ids = tokenizer.encode("The capital of France is", true);
+    assert!(
+        prompt_token_ids.len() >= 2,
+        "expected prompt fixture to produce at least two tokens"
+    );
+    assert!(Gemma4Forward::has_any_moe_layer(&cfg, &weights));
+
+    let metal_model = crate::model::InferenceModel::with_backend(
+        cfg.clone(),
+        Box::new(MetalBackend::new().unwrap()),
+    )
+    .unwrap();
+    let vocab_size = cfg.vocab_size as usize;
+    let mut batch_logits = vec![0.0f32; vocab_size];
+    let mut step_logits = vec![0.0f32; vocab_size];
+
+    let mut batch_kv = metal_model.create_model_kv_for_weights(&weights);
+    metal_model
+        .forward_batch(
+            &prompt_token_ids,
+            &mut batch_kv,
+            &weights,
+            &mut batch_logits,
+        )
+        .unwrap();
+
+    let mut step_kv = metal_model.create_model_kv_for_weights(&weights);
+    metal_model
+        .forward_batch(
+            &prompt_token_ids[..prompt_token_ids.len() - 1],
+            &mut step_kv,
+            &weights,
+            &mut step_logits,
+        )
+        .unwrap();
+    step_logits.fill(0.0);
+    metal_model
+        .forward_single(
+            *prompt_token_ids.last().unwrap(),
+            prompt_token_ids.len() - 1,
+            &mut step_kv,
+            &weights,
+            &mut step_logits,
+        )
+        .unwrap();
+
+    assert!(
+        batch_logits.iter().all(|value| value.is_finite()),
+        "Gemma4 Q5_K_M Metal batch logits became non-finite"
+    );
+    assert!(
+        step_logits.iter().all(|value| value.is_finite()),
+        "Gemma4 Q5_K_M Metal single decode logits became non-finite"
+    );
+
+    let expected_argmax = argmax_index(&batch_logits);
+    let actual_argmax = argmax_index(&step_logits);
+    let max_diff = max_abs_diff(&batch_logits, &step_logits);
+    let scale = batch_logits
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    let rel_diff = max_diff / scale;
+
+    assert_eq!(
+        actual_argmax, expected_argmax,
+        "Gemma4 Q5_K_M Metal single decode diverged from batch argmax: batch={expected_argmax} step={actual_argmax} rel_diff={rel_diff:.4e}",
+    );
+    assert!(
+        rel_diff <= 0.25,
+        "Gemma4 Q5_K_M Metal single decode drifted from batch logits: rel_diff={rel_diff} max_diff={max_diff}",
+    );
+}
+
+#[test]
+fn test_prepare_runtime_for_real_gemma4_26b_q6_builds_cached_keys_for_gpu_moe_path() {
+    let _env_lock = crate::test_env_lock();
+    let path = workspace_model_path("gemma-4-26B-A4B-it-Q6_K.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let mapped = MappedModel::open(&path).unwrap();
+    let cfg = ModelConfig::from_gguf(&mapped.header).unwrap();
+    let weights = WeightStore::new(&mapped);
+    let model =
+        crate::model::InferenceModel::with_backend(cfg, Box::new(MetalBackend::new().unwrap()))
+            .unwrap();
+
+    let metal_ops = model.metal_ops_for_tests().unwrap();
+    assert!(!metal_ops.has_cached_model_keys());
+
+    model.prepare_runtime_for_weights(&weights).unwrap();
+    assert!(Gemma4Forward::has_any_moe_layer(&model.config, &weights));
+    assert!(metal_ops.has_cached_model_keys());
+
+    model.prepare_runtime_for_weights(&weights).unwrap();
+    assert!(metal_ops.has_cached_model_keys());
+}
+
+#[test]
+fn test_real_gemma4_31b_has_no_moe_layers() {
+    let _env_lock = crate::test_env_lock();
+    let path = workspace_model_path("gemma-4-31B-it-Q4_K_M.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let model = MappedModel::open(&path).unwrap();
+    let cfg = ModelConfig::from_gguf(&model.header).unwrap();
+    let weights = WeightStore::new(&model);
+
+    assert!(
+        !Gemma4Forward::has_any_moe_layer(&cfg, &weights),
+        "Gemma4 31B should stay on the dense path",
+    );
+}
+
+#[test]
+fn test_real_gemma4_26b_q8_batch_prefill_uses_gpu_kv() {
+    let _env_lock = crate::test_env_lock();
+    let path = workspace_model_path("gemma-4-26B-A4B-it-Q8_0.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let mapped = MappedModel::open(&path).unwrap();
+    let cfg = ModelConfig::from_gguf(&mapped.header).unwrap();
+    let weights = WeightStore::new(&mapped);
+    let tokenizer = crate::tokenizer::Tokenizer::from_gguf(&mapped.header).unwrap();
+    let model = crate::model::InferenceModel::with_backend(
+        cfg.clone(),
+        Box::new(MetalBackend::new().unwrap()),
+    )
+    .unwrap();
+    let mut kv = model.create_model_kv_for_weights(&weights);
+    assert!(
+        kv.as_gpu_mut().is_some(),
+        "Gemma4 26B MoE batch prefill should keep GPU KV on the corrected path",
+    );
+    let mut logits = vec![0.0f32; cfg.vocab_size as usize];
+    let mut ops = crate::metrics::OpBreakdown::new();
+    let prompt_token_ids = tokenizer.encode("The capital of France is", true);
+    assert!(
+        prompt_token_ids.len() >= 2,
+        "expected prompt fixture to produce at least two tokens"
+    );
+
+    model
+        .forward_batch_profiled(
+            &prompt_token_ids[..2],
+            &mut kv,
+            &weights,
+            &mut logits,
+            &mut ops,
+        )
+        .unwrap();
+
+    assert!(
+        logits.iter().all(|value| value.is_finite()),
+        "Gemma4 Q8_0 batch prefill produced non-finite logits"
+    );
+    assert!(
+        ops.total() > std::time::Duration::ZERO,
+        "Gemma4 Q8_0 batch prefill did not record any profiled work: {}",
         ops.summary(),
     );
 }

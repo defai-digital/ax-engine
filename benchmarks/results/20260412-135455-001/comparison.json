@@ -1,0 +1,83 @@
+{
+  "label": "gemma4-26b-a4b-q6k-postpatch",
+  "model": "models/gemma-4-26B-A4B-it-Q6_K.gguf",
+  "prompt_tokens": 512,
+  "decode_tokens": 128,
+  "decode_depth": 512,
+  "samples": 5,
+  "cooldown_seconds": 20,
+  "methodology": {
+    "aggregation": "outer_median",
+    "serial": true,
+    "process_per_sample": true,
+    "ax": {
+      "process_per_sample": true,
+      "warmup_iters": 0,
+      "measure_iters": 1,
+      "kv_f16": true
+    },
+    "llama": {
+      "n_gpu_layers": 99,
+      "batch_size": 2048,
+      "ubatch_size": 512,
+      "cache_type_k": "f16",
+      "cache_type_v": "f16",
+      "flash_attn": true,
+      "threads": 12,
+      "no_warmup": true,
+      "repetitions_per_outer_sample": 1
+    },
+    "parity_checks": {
+      "kv_f16": {
+        "ax": true,
+        "llama": true,
+        "match": true
+      },
+      "flash_attn": {
+        "ax": true,
+        "llama": true,
+        "match": true
+      },
+      "gpu_offload": {
+        "ax": "full",
+        "llama": "ngl=99",
+        "match": true
+      }
+    }
+  },
+  "ax": {
+    "engine": "ax-engine",
+    "binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-bench",
+    "command": [
+      "/Users/akiralam/code/ax-engine/target/release/ax-engine-bench",
+      "bench",
+      "--model",
+      "models/gemma-4-26B-A4B-it-Q6_K.gguf",
+      "--prompt-tokens",
+      "512",
+      "--decode-tokens",
+      "128",
+      "--warmup-iters",
+      "0",
+      "--measure-iters",
+      "1",
+      "--llama-parity-preset"
+    ],
+    "prefill_median_tok_per_s": 917.0102729831045,
+    "decode_median_tok_per_s": 71.29634793508995,
+    "prefill_plan": "mode=gpu_batch",
+    "decode_plan": "sync=single_cb scratch=gpu_shared barriers=implicit qkv=fused kv=f16 attn=splitk_hd256/profile_preferred q4k=q4_k.nr2/stable q5k=q5_k.ilp4/stable q6k=q6_k.nr2/stable",
+    "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/20260412-135455-001/ax.json"
+  },
+  "llama": {
+    "engine": "llama.cpp",
+    "binary": "/opt/homebrew/bin/llama-bench",
+    "prefill_median_tok_per_s": 1177.628171,
+    "decode_median_tok_per_s": 65.252022,
+    "artifact": "/Users/akiralam/code/ax-engine/benchmarks/results/20260412-135455-001/llama/summary.json"
+  },
+  "ratios": {
+    "prefill_percent": 77.86925411307135,
+    "decode_percent": 109.26304771841393
+  }
+}

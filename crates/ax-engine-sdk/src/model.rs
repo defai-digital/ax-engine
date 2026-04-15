@@ -4,6 +4,7 @@ use std::sync::{Arc, Once};
 
 use anyhow::{Context, anyhow, ensure};
 use ax_engine_core::backend::{BackendConfig, create_backend};
+use ax_engine_core::chat::{detect_infill_prompt_style, render_infill_prompt};
 use ax_engine_core::gguf::MappedModel;
 use ax_engine_core::model::{InferenceModel, ModelConfig, ModelFingerprint};
 use ax_engine_core::tokenizer::{TokenPiece, Tokenizer};
@@ -253,6 +254,14 @@ impl Model {
         self.tokenizer().chat_template()
     }
 
+    pub fn supports_infill(&self) -> bool {
+        detect_infill_prompt_style(self.tokenizer()).is_some()
+    }
+
+    pub fn render_infill_prompt(&self, prefix: &str, suffix: &str) -> anyhow::Result<String> {
+        render_infill_prompt(prefix, suffix, self.tokenizer())
+    }
+
     pub fn session(&self, options: SessionOptions) -> anyhow::Result<Session> {
         Session::new(self.clone(), options)
     }
@@ -314,5 +323,14 @@ mod tests {
     fn test_backend_kind_from_str_rejects_unknown_values() {
         let err = "cuda".parse::<BackendKind>().unwrap_err().to_string();
         assert!(err.contains("unsupported backend"));
+    }
+
+    #[test]
+    fn test_model_exposes_infill_helpers() {
+        let supports_infill_fn: fn(&Model) -> bool = Model::supports_infill;
+        let render_infill_prompt_fn: fn(&Model, &str, &str) -> anyhow::Result<String> =
+            Model::render_infill_prompt;
+
+        let _ = (supports_infill_fn, render_infill_prompt_fn);
     }
 }

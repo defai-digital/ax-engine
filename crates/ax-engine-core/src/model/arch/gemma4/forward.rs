@@ -74,11 +74,11 @@ impl Gemma4LayerSpec {
         (prefix_read_len, prefix_start)
     }
 
-    fn use_backend_prefill(&self, _prefix_read_len: usize, _n_tokens: usize) -> bool {
-        // Gemma4 requires attention scale=1.0 (QK norms handle scaling).
-        // backend.attention_prefill() hardcodes 1/sqrt(head_dim), so we must
-        // always use the manual path which passes scale=1.0 explicitly.
-        false
+    fn use_backend_prefill(&self, prefix_read_len: usize, _n_tokens: usize) -> bool {
+        // Gemma4 requires attention scale=1.0. AX's generic prefill kernels
+        // apply 1/sqrt(head_dim), so we only use them for the no-prefix case
+        // and compensate by pre-scaling Q with sqrt(head_dim) before dispatch.
+        prefix_read_len == 0
     }
 }
 
@@ -86,6 +86,30 @@ struct MoeScratch {
     logits: Vec<f32>,
     fused: Vec<f32>,
     down: Vec<f32>,
+    expert_ids: Vec<i32>,
+    expert_weights: Vec<f32>,
+}
+
+struct Gemma4SingleMoeScratch {
+    router_input: Vec<f32>,
+    expert_accum: Vec<f32>,
+    fused: Vec<f32>,
+    router_logits: Vec<f32>,
+}
+
+impl Gemma4SingleMoeScratch {
+    fn new(config: &ModelConfig) -> Self {
+        let dim = config.embedding_dim as usize;
+        let expert_inter_dim = config.expert_intermediate_dim.unwrap_or(0) as usize;
+        let n_expert = config.n_expert.unwrap_or(0) as usize;
+
+        Self {
+            router_input: vec![0.0; dim],
+            expert_accum: vec![0.0; dim],
+            fused: vec![0.0; 2 * expert_inter_dim],
+            router_logits: vec![0.0; n_expert],
+        }
+    }
 }
 
 struct Gemma4BatchScratch {
@@ -152,6 +176,14 @@ impl Gemma4BatchScratch {
                 logits: vec![0.0; config.n_expert.unwrap_or(0) as usize],
                 fused: vec![0.0; 2 * config.expert_intermediate_dim.unwrap_or(0) as usize],
                 down: vec![0.0; dim],
+                expert_ids: vec![
+                    -1;
+                    chunk_len * config.n_expert_used.unwrap_or(0) as usize
+                ],
+                expert_weights: vec![
+                    0.0;
+                    chunk_len * config.n_expert_used.unwrap_or(0) as usize
+                ],
             },
         }
     }
@@ -269,6 +301,24 @@ impl Gemma4Forward {
         } else {
             for value in values.iter_mut() {
                 *value *= scale;
+            }
+        }
+    }
+
+    fn apply_row_rms_norm(
+        buf: &mut [f32],
+        weight: &[f32],
+        n_tokens: usize,
+        dim: usize,
+        eps: f32,
+    ) {
+        if n_tokens >= Self::PARALLEL_BATCH_MIN_TOKENS {
+            buf[..n_tokens * dim]
+                .par_chunks_mut(dim)
+                .for_each(|row| rms_norm::rms_norm(row, weight, eps));
+        } else {
+            for row in buf[..n_tokens * dim].chunks_exact_mut(dim) {
+                rms_norm::rms_norm(row, weight, eps);
             }
         }
     }
@@ -635,7 +685,7 @@ impl Gemma4Forward {
         prefix_k: &[f32],
         prefix_v: &[f32],
         prefix_read_len: usize,
-        q_batch: &[f32],
+        q_batch: &mut [f32],
         k_batch: &[f32],
         v_batch: &[f32],
         attn_out_batch: &mut [f32],
@@ -644,6 +694,20 @@ impl Gemma4Forward {
     ) {
         let n_heads = spec.q_dim / spec.head_dim;
         if spec.use_backend_prefill(prefix_read_len, n_tokens) {
+            let q_attn_compensation = (spec.head_dim as f32).sqrt();
+            if n_tokens >= Self::PARALLEL_BATCH_MIN_TOKENS {
+                q_batch
+                    .par_chunks_mut(Self::PARALLEL_FLOAT_CHUNK)
+                    .for_each(|chunk| {
+                        for value in chunk {
+                            *value *= q_attn_compensation;
+                        }
+                    });
+            } else {
+                for value in q_batch.iter_mut() {
+                    *value *= q_attn_compensation;
+                }
+            }
             timed!(ops, attention, backend.attention_prefill(
                 q_batch,
                 k_batch,
@@ -888,6 +952,8 @@ impl Gemma4Forward {
         config: &ModelConfig,
         mut ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<()> {
+        debug_assert!(spec.has_moe, "Gemma4 MoE helper called for dense layer");
+
         // ── 1. Output projection ──
         let (wo_raw, wo_dtype) =
             weights.raw_with_dtype(&format!("{}.attn_output.weight", spec.prefix))?;
@@ -924,159 +990,420 @@ impl Gemma4Forward {
         Self::parallel_elementwise_add(layer_hidden, proj_batch);
 
         let hidden_len = n_tokens * dim;
-
-        // ── 4. Save pre-shared-FFN state for MoE routing ──
-        // Per llama.cpp gemma4-iswa: both shared FFN and MoE branch from the
-        // same `attn_out` state. Save it before the shared FFN mutates hidden.
         let n_expert = config.n_expert.unwrap_or(0) as usize;
         let n_expert_used = config.n_expert_used.unwrap_or(0) as usize;
         let expert_inter_dim = config.expert_intermediate_dim.unwrap_or(0) as usize;
-        let has_moe = n_expert > 0 && n_expert_used > 0 && expert_inter_dim > 0;
-
-        if has_moe {
-            // Save attn_out (pre-shared-FFN) into moe_norm_buf for MoE routing
-            moe_norm_buf[..hidden_len].copy_from_slice(&layer_hidden[..hidden_len]);
-        }
-
-        // ── 5. Shared FFN: norm → gate/up → GELU*mul → down → post_ffw_norm ──
-        let ffn_norm_w = weights.f32_slice(&format!("{}.ffn_norm.weight", spec.prefix))?;
-        crate::model::layer_ops::apply_ffn_batch(
-            ctx.backend,
-            weights,
-            &spec.prefix,
-            layer_hidden,
-            layer_norm,
-            gate_batch,
-            up_batch,
-            down_batch,
-            n_tokens,
-            dim,
-            inter_dim,
-            ffn_norm_w,
-            rms_norm_eps,
-            crate::model::layer_ops::FfnActivation::GELU,
+        anyhow::ensure!(
+            n_expert > 0 && n_expert_used > 0 && expert_inter_dim > 0,
+            "Gemma4 MoE layer {} missing MoE dimensions in config",
+            spec.layer,
         );
 
-        // ── 6. MoE FFN ──
-        if has_moe {
-            // Norm the saved pre-shared-FFN state (attn_out) in-place for MoE
-            // routing and expert inputs. Both branches see the same starting
-            // point, matching llama.cpp gemma4-iswa where router operates on
-            // attn_out. After this, moe_norm_buf holds the normed attn_out.
-            let moe_norm_slice = &mut moe_norm_buf[..hidden_len];
-            timed!(ops, norm, {
+        // Save the post-attention residual state. Both the shared FFN and the
+        // routed experts branch from this same tensor.
+        let attn_out_hidden = &mut moe_norm_buf[..hidden_len];
+        attn_out_hidden.copy_from_slice(&layer_hidden[..hidden_len]);
+
+        // ── 4. Shared FFN branch: ffn_norm -> gate/up -> GELU*mul -> down -> post_ffw_norm_1 ──
+        let ffn_norm_w = weights.f32_slice(&format!("{}.ffn_norm.weight", spec.prefix))?;
+        timed!(ops, norm, {
+            if n_tokens >= Self::PARALLEL_BATCH_MIN_TOKENS {
+                attn_out_hidden
+                    .par_chunks(dim)
+                    .zip(layer_norm[..hidden_len].par_chunks_mut(dim))
+                    .for_each(|(src, dst)| rms_norm::rms_norm_out(src, ffn_norm_w, dst, rms_norm_eps));
+            } else {
                 for t in 0..n_tokens {
                     let start = t * dim;
-                    rms_norm::rms_norm(
-                        &mut moe_norm_slice[start..start + dim],
+                    rms_norm::rms_norm_out(
+                        &attn_out_hidden[start..start + dim],
                         ffn_norm_w,
+                        &mut layer_norm[start..start + dim],
                         rms_norm_eps,
                     );
                 }
-            });
+            }
+        });
 
-            let (router_raw, router_dtype) =
-                weights.raw_with_dtype(&format!("{}.ffn_gate_inp.weight", spec.prefix))?;
+        let (wg_raw, wg_dtype) = weights.raw_with_dtype(&format!("{}.ffn_gate.weight", spec.prefix))?;
+        let (wu_raw, wu_dtype) = weights.raw_with_dtype(&format!("{}.ffn_up.weight", spec.prefix))?;
+        timed!(ops, matmul, {
+            ctx.backend.dequant_matmul_token_major(
+                wg_raw,
+                wg_dtype,
+                layer_norm,
+                gate_batch,
+                n_tokens,
+                inter_dim,
+                dim,
+            );
+            ctx.backend.dequant_matmul_token_major(
+                wu_raw,
+                wu_dtype,
+                layer_norm,
+                up_batch,
+                n_tokens,
+                inter_dim,
+                dim,
+            );
+        });
+        if n_tokens >= Self::PARALLEL_BATCH_MIN_TOKENS {
+            gate_batch
+                .par_chunks_mut(Self::PARALLEL_FLOAT_CHUNK)
+                .zip(up_batch.par_chunks(Self::PARALLEL_FLOAT_CHUNK))
+                .for_each(|(gate_chunk, up_chunk)| {
+                    crate::compute::gelu::gelu_elementwise_mul(gate_chunk, up_chunk);
+                });
+        } else {
+            crate::compute::gelu::gelu_elementwise_mul(gate_batch, up_batch);
+        }
 
-            // Get raw expert weight tensors and compute per-expert byte strides
-            let gate_up_name = format!("{}.ffn_gate_up_exps.weight", spec.prefix);
-            let down_name = format!("{}.ffn_down_exps.weight", spec.prefix);
-            let (gate_up_raw, gate_up_dtype) = weights.raw_with_dtype(&gate_up_name)?;
-            let (down_raw, down_dtype) = weights.raw_with_dtype(&down_name)?;
+        let (wd_raw, wd_dtype) = weights.raw_with_dtype(&format!("{}.ffn_down.weight", spec.prefix))?;
+        timed!(ops, matmul, {
+            ctx.backend.dequant_matmul_token_major(
+                wd_raw,
+                wd_dtype,
+                gate_batch,
+                proj_batch,
+                n_tokens,
+                dim,
+                inter_dim,
+            );
+        });
+        if let Ok(post_ff1_w) = weights.f32_slice(&format!("{}.post_ffw_norm_1.weight", spec.prefix)) {
+            timed!(
+                ops,
+                norm,
+                Self::apply_row_rms_norm(proj_batch, post_ff1_w, n_tokens, dim, rms_norm_eps)
+            );
+        }
 
-            let fused_dim = 2 * expert_inter_dim;
-            let gate_up_stride =
-                crate::model::moe_utils::expert_byte_stride(gate_up_dtype, fused_dim * dim);
-            let down_stride =
-                crate::model::moe_utils::expert_byte_stride(down_dtype, dim * expert_inter_dim);
+        // ── 5. Routed experts branch: router(attn_out) + pre_ffw_norm_2 -> experts -> post_ffw_norm_2 ──
+        let router_scale = weights.f32_slice(&format!("{}.ffn_gate_inp.scale", spec.prefix))?;
+        let pre_ff2_w = weights.f32_slice(&format!("{}.pre_ffw_norm_2.weight", spec.prefix))?;
+        let post_ff2_w = weights.f32_slice(&format!("{}.post_ffw_norm_2.weight", spec.prefix))?;
+        let expert_scales = weights.f32_slice(&format!("{}.ffn_down_exps.scale", spec.prefix))?;
+        let (router_raw, router_dtype) =
+            weights.raw_with_dtype(&format!("{}.ffn_gate_inp.weight", spec.prefix))?;
+        let gate_up_name = format!("{}.ffn_gate_up_exps.weight", spec.prefix);
+        let down_name = format!("{}.ffn_down_exps.weight", spec.prefix);
+        let (gate_up_raw, gate_up_dtype) = weights.raw_with_dtype(&gate_up_name)?;
+        let (down_raw, down_dtype) = weights.raw_with_dtype(&down_name)?;
+        let fused_dim = 2 * expert_inter_dim;
+        let gate_up_stride =
+            crate::model::moe_utils::expert_byte_stride(gate_up_dtype, fused_dim * dim);
+        let down_stride =
+            crate::model::moe_utils::expert_byte_stride(down_dtype, dim * expert_inter_dim);
+        let router_input_scale = (dim as f32).sqrt().recip();
+        let cpu = crate::backend::cpu::CpuBackend;
+        let moe_accum_slice = &mut moe_accum_buf[..hidden_len];
+        moe_accum_slice.fill(0.0);
+        let use_gpu_routed_expert_dispatch = ctx.backend.metal_ops().is_some()
+            && crate::model::shared::moe_routed_expert_dtype_supported(gate_up_dtype)
+            && crate::model::shared::moe_routed_expert_dtype_supported(down_dtype);
+        let MoeScratch {
+            logits: moe_logits,
+            fused: fused_scratch,
+            down: down_scratch,
+            expert_ids: scratch_expert_ids,
+            expert_weights: scratch_expert_weights,
+        } = moe_scratch;
+        let expert_ids = &mut scratch_expert_ids[..n_tokens * n_expert_used];
+        let expert_weights = &mut scratch_expert_weights[..n_tokens * n_expert_used];
+        expert_ids.fill(-1);
+        expert_weights.fill(0.0);
 
-            let cpu = crate::backend::cpu::CpuBackend;
+        for t in 0..n_tokens {
+            let start = t * dim;
+            let end = start + dim;
+            let attn_token = &attn_out_hidden[start..end];
+            let expert_input = &mut layer_norm[start..end];
+            rms_norm::rms_norm_out(attn_token, pre_ff2_w, expert_input, rms_norm_eps);
 
-            let moe_accum_slice = &mut moe_accum_buf[..hidden_len];
-            moe_accum_slice.fill(0.0);
+            let router_input = &mut down_batch[start..end];
+            router_input.copy_from_slice(attn_token);
+            rms_norm::rms_norm_no_weight(router_input, rms_norm_eps);
+            for (value, &scale) in router_input.iter_mut().zip(router_scale.iter()) {
+                *value *= router_input_scale * scale;
+            }
 
-            // Process each token independently through the MoE
-            for t in 0..n_tokens {
-                let token_hidden = &moe_norm_slice[t * dim..(t + 1) * dim];
-                let token_accum = &mut moe_accum_slice[t * dim..(t + 1) * dim];
+            let router_logits = &mut moe_logits[..n_expert];
+            timed!(ops, matmul, cpu.dequant_matmul(
+                router_raw,
+                router_dtype,
+                router_input,
+                router_logits,
+                n_expert,
+                1,
+                dim,
+            ));
 
-                // Router: hidden → logits (dim → n_expert)
-                let router_logits = &mut moe_scratch.logits[..n_expert];
-                timed!(ops, matmul, ctx.backend.dequant_matmul(
-                    router_raw,
-                    router_dtype,
-                    token_hidden,
-                    router_logits,
-                    n_expert,
+            let (top_indices, mut top_weights) =
+                crate::model::moe_utils::top_k_softmax(router_logits, n_expert_used);
+            for (weight, &expert_idx) in top_weights.iter_mut().zip(top_indices.iter()) {
+                *weight *= expert_scales[expert_idx];
+            }
+            let slot_base = t * n_expert_used;
+            for (slot_idx, (&expert_idx, &weight)) in top_indices.iter().zip(top_weights.iter()).enumerate()
+            {
+                expert_ids[slot_base + slot_idx] = expert_idx as i32;
+                expert_weights[slot_base + slot_idx] = weight;
+            }
+            if use_gpu_routed_expert_dispatch {
+                continue;
+            }
+
+            let token_accum = &mut moe_accum_slice[start..end];
+            for (slot, &weight) in top_indices.iter().zip(top_weights.iter()) {
+                let fused_buf = &mut fused_scratch[..fused_dim];
+                let expert_gate_up = crate::model::moe_utils::expert_quant_slice(
+                    gate_up_raw,
+                    gate_up_stride,
+                    *slot,
+                    &gate_up_name,
+                )?;
+                timed!(ops, matmul, cpu.dequant_matmul(
+                    expert_gate_up,
+                    gate_up_dtype,
+                    expert_input,
+                    fused_buf,
+                    fused_dim,
                     1,
                     dim,
                 ));
 
-                // Top-k softmax selection with re-normalization
-                let (top_indices, top_weights) =
-                    crate::model::moe_utils::top_k_softmax(router_logits, n_expert_used);
+                let (gate_half, up_half) = fused_buf.split_at_mut(expert_inter_dim);
+                crate::compute::gelu::gelu_elementwise_mul(gate_half, up_half);
 
-                // Per-expert computation using batched dequant_matmul
-                for (i, &expert_idx) in top_indices.iter().enumerate() {
-                    let weight = top_weights[i];
+                let expert_down = &mut down_scratch[..dim];
+                let expert_down_slice = crate::model::moe_utils::expert_quant_slice(
+                    down_raw,
+                    down_stride,
+                    *slot,
+                    &down_name,
+                )?;
+                timed!(ops, matmul, cpu.dequant_matmul(
+                    expert_down_slice,
+                    down_dtype,
+                    gate_half,
+                    expert_down,
+                    dim,
+                    1,
+                    expert_inter_dim,
+                ));
 
-                    // Fused gate+up: token_hidden → fused (dim → 2*expert_inter_dim)
-                    let fused_buf = &mut moe_scratch.fused[..fused_dim];
-                    let expert_gate_up = crate::model::moe_utils::expert_quant_slice(
-                        gate_up_raw,
-                        gate_up_stride,
-                        expert_idx,
-                        &gate_up_name,
-                    )?;
-                    timed!(ops, matmul, cpu.dequant_matmul(
-                        expert_gate_up,
-                        gate_up_dtype,
-                        token_hidden,
-                        fused_buf,
-                        fused_dim,
-                        1,
-                        dim,
-                    ));
-
-                    // Split fused into gate and up, apply GELU*mul
-                    let (gate_half, up_half) = fused_buf.split_at_mut(expert_inter_dim);
-                    crate::compute::gelu::gelu_elementwise_mul(gate_half, up_half);
-
-                    // Down projection: activated → expert_down (expert_inter_dim → dim)
-                    let expert_down = &mut moe_scratch.down[..dim];
-                    let expert_down_slice = crate::model::moe_utils::expert_quant_slice(
-                        down_raw,
-                        down_stride,
-                        expert_idx,
-                        &down_name,
-                    )?;
-                    timed!(ops, matmul, cpu.dequant_matmul(
-                        expert_down_slice,
-                        down_dtype,
-                        gate_half,
-                        expert_down,
-                        dim,
-                        1,
-                        expert_inter_dim,
-                    ));
-
-                    // Weighted accumulate
-                    for (acc, &val) in token_accum.iter_mut().zip(expert_down.iter()) {
-                        *acc += weight * val;
-                    }
+                for (acc, &value) in token_accum.iter_mut().zip(expert_down.iter()) {
+                    *acc += weight * value;
                 }
             }
-
-            // Add MoE output to hidden
-            Self::parallel_elementwise_add(layer_hidden, moe_accum_slice);
+        }
+        if use_gpu_routed_expert_dispatch && let Some(metal_ops) = ctx.backend.metal_ops() {
+            timed!(ops, gpu, metal_ops.moe_fused_gate_up_gelu_dispatch(
+                &layer_norm[..hidden_len],
+                moe_accum_slice,
+                expert_ids,
+                expert_weights,
+                gate_up_raw,
+                down_raw,
+                gate_up_dtype,
+                down_dtype,
+                n_tokens,
+                n_expert,
+                n_expert_used,
+                dim,
+                expert_inter_dim,
+                gate_up_stride,
+                down_stride,
+            ))?;
         }
 
-        // ── 6. Layer output scale ──
+        timed!(
+            ops,
+            norm,
+            Self::apply_row_rms_norm(moe_accum_slice, post_ff2_w, n_tokens, dim, rms_norm_eps)
+        );
+
+        // ── 6. Combine branches -> post_ffw_norm -> residual ──
+        Self::parallel_elementwise_add(proj_batch, moe_accum_slice);
+        if let Ok(post_ff_w) = weights.f32_slice(&format!("{}.post_ffw_norm.weight", spec.prefix)) {
+            timed!(
+                ops,
+                norm,
+                Self::apply_row_rms_norm(proj_batch, post_ff_w, n_tokens, dim, rms_norm_eps)
+            );
+        }
+        Self::parallel_elementwise_add(layer_hidden, proj_batch);
+
+        // ── 7. Layer output scale ──
         if weights.has(&format!("{}.layer_output_scale.weight", spec.prefix)) {
             let scale = weights.f32_slice(&format!("{}.layer_output_scale.weight", spec.prefix))?[0];
             Self::parallel_scale(layer_hidden, scale);
         }
 
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_post_attention_and_moe_ffn_single(
+        ctx: &ForwardContext,
+        weights: &WeightStore,
+        prefix: &str,
+        hidden: &mut [f32],
+        norm_buf: &mut [f32],
+        gate_buf: &mut [f32],
+        up_buf: &mut [f32],
+        down_buf: &mut [f32],
+        dim: usize,
+        inter_dim: usize,
+        rms_norm_eps: f32,
+        config: &ModelConfig,
+        moe_scratch: &mut Gemma4SingleMoeScratch,
+        mut ops: Option<&mut OpBreakdown>,
+    ) -> anyhow::Result<()> {
+        let attn_out_hidden = hidden.to_vec();
+        let n_expert = config.n_expert.unwrap_or(0) as usize;
+        let n_expert_used = config.n_expert_used.unwrap_or(0) as usize;
+        let expert_inter_dim = config.expert_intermediate_dim.unwrap_or(0) as usize;
+        anyhow::ensure!(
+            n_expert > 0 && n_expert_used > 0 && expert_inter_dim > 0,
+            "Gemma4 MoE layer {prefix} missing MoE dimensions in config",
+        );
+
+        // Shared FFN branch: ffn_norm -> gate/up -> GELU*mul -> down -> post_ffw_norm_1.
+        let ffn_norm_w = weights.f32_slice(&format!("{prefix}.ffn_norm.weight"))?;
+        timed!(ops, norm, {
+            rms_norm::rms_norm_out(&attn_out_hidden, ffn_norm_w, norm_buf, rms_norm_eps)
+        });
+        let (wg_raw, wg_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_gate.weight"))?;
+        let (wu_raw, wu_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_up.weight"))?;
+        timed!(ops, matmul, {
+            ctx.backend.batch_dequant_matvec(
+                &[(wg_raw, wg_dtype, inter_dim), (wu_raw, wu_dtype, inter_dim)],
+                norm_buf,
+                dim,
+                &mut [gate_buf, up_buf],
+            );
+        });
+        crate::compute::gelu::gelu_elementwise_mul(&mut gate_buf[..inter_dim], &up_buf[..inter_dim]);
+
+        let (wd_raw, wd_dtype) = weights.raw_with_dtype(&format!("{prefix}.ffn_down.weight"))?;
+        timed!(ops, matmul, {
+            ctx.backend.dequant_matmul(
+                wd_raw,
+                wd_dtype,
+                &gate_buf[..inter_dim],
+                down_buf,
+                dim,
+                1,
+                inter_dim,
+            );
+        });
+        if let Ok(post_ff1_w) = weights.f32_slice(&format!("{prefix}.post_ffw_norm_1.weight")) {
+            timed!(ops, norm, rms_norm::rms_norm(down_buf, post_ff1_w, rms_norm_eps));
+        }
+
+        // Routed experts branch: router(attn_out) + pre_ffw_norm_2 -> experts -> post_ffw_norm_2.
+        let router_scale = weights.f32_slice(&format!("{prefix}.ffn_gate_inp.scale"))?;
+        let pre_ff2_w = weights.f32_slice(&format!("{prefix}.pre_ffw_norm_2.weight"))?;
+        let post_ff2_w = weights.f32_slice(&format!("{prefix}.post_ffw_norm_2.weight"))?;
+        let expert_scales = weights.f32_slice(&format!("{prefix}.ffn_down_exps.scale"))?;
+        let (router_raw, router_dtype) =
+            weights.raw_with_dtype(&format!("{prefix}.ffn_gate_inp.weight"))?;
+        let gate_up_name = format!("{prefix}.ffn_gate_up_exps.weight");
+        let down_name = format!("{prefix}.ffn_down_exps.weight");
+        let (gate_up_raw, gate_up_dtype) = weights.raw_with_dtype(&gate_up_name)?;
+        let (down_raw, down_dtype) = weights.raw_with_dtype(&down_name)?;
+        let fused_dim = 2 * expert_inter_dim;
+        let gate_up_stride =
+            crate::model::moe_utils::expert_byte_stride(gate_up_dtype, fused_dim * dim);
+        let down_stride =
+            crate::model::moe_utils::expert_byte_stride(down_dtype, dim * expert_inter_dim);
+        let router_input_scale = (dim as f32).sqrt().recip();
+        let cpu = crate::backend::cpu::CpuBackend;
+        let routed_accum = &mut moe_scratch.expert_accum[..dim];
+        routed_accum.fill(0.0);
+
+        timed!(ops, norm, {
+            rms_norm::rms_norm_out(&attn_out_hidden, pre_ff2_w, norm_buf, rms_norm_eps)
+        });
+        moe_scratch
+            .router_input
+            .copy_from_slice(&attn_out_hidden);
+        rms_norm::rms_norm_no_weight(&mut moe_scratch.router_input, rms_norm_eps);
+        for (value, &scale) in moe_scratch.router_input.iter_mut().zip(router_scale.iter()) {
+            *value *= router_input_scale * scale;
+        }
+
+        let router_logits = &mut moe_scratch.router_logits[..n_expert];
+        timed!(ops, matmul, {
+            cpu.dequant_matmul(
+                router_raw,
+                router_dtype,
+                &moe_scratch.router_input,
+                router_logits,
+                n_expert,
+                1,
+                dim,
+            )
+        });
+        let (expert_ids, mut expert_weights) =
+            crate::model::moe_utils::top_k_softmax(router_logits, n_expert_used);
+        for (weight, &expert_idx) in expert_weights.iter_mut().zip(expert_ids.iter()) {
+            *weight *= expert_scales[expert_idx];
+        }
+
+        for (&expert_idx, &weight) in expert_ids.iter().zip(expert_weights.iter()) {
+            let expert_gate_up = crate::model::moe_utils::expert_quant_slice(
+                gate_up_raw,
+                gate_up_stride,
+                expert_idx,
+                &gate_up_name,
+            )?;
+            timed!(ops, matmul, {
+                cpu.dequant_matmul(
+                    expert_gate_up,
+                    gate_up_dtype,
+                    norm_buf,
+                    &mut moe_scratch.fused[..fused_dim],
+                    fused_dim,
+                    1,
+                    dim,
+                )
+            });
+            let (gate_half, up_half) =
+                moe_scratch.fused[..fused_dim].split_at_mut(expert_inter_dim);
+            crate::compute::gelu::gelu_elementwise_mul(gate_half, up_half);
+
+            let expert_down = crate::model::moe_utils::expert_quant_slice(
+                down_raw,
+                down_stride,
+                expert_idx,
+                &down_name,
+            )?;
+            timed!(ops, matmul, {
+                cpu.dequant_matmul(
+                    expert_down,
+                    down_dtype,
+                    gate_half,
+                    up_buf,
+                    dim,
+                    1,
+                    expert_inter_dim,
+                )
+            });
+
+            for (acc, &value) in routed_accum.iter_mut().zip(up_buf.iter()) {
+                *acc += weight * value;
+            }
+        }
+        timed!(ops, norm, rms_norm::rms_norm(routed_accum, post_ff2_w, rms_norm_eps));
+
+        // Combine shared + routed branches -> post_ffw_norm -> residual.
+        Self::parallel_elementwise_add(down_buf, routed_accum);
+        if let Ok(post_ff_w) = weights.f32_slice(&format!("{prefix}.post_ffw_norm.weight")) {
+            timed!(ops, norm, rms_norm::rms_norm(down_buf, post_ff_w, rms_norm_eps));
+        }
+        silu::elementwise_add(hidden, down_buf);
         Ok(())
     }
 
@@ -1287,15 +1614,15 @@ impl Gemma4Forward {
                     &mut scratch.padded_prefix_v_scratch,
                     |prefix_k, prefix_v, prefix_read_len| {
                         Self::run_attention_batch(
-                            spec,
-                            ctx.backend,
-                            prefix_k,
-                            prefix_v,
-                            prefix_read_len,
-                            q_batch,
-                            k_batch,
-                            v_batch,
-                            attn_out_batch,
+                spec,
+                ctx.backend,
+                prefix_k,
+                prefix_v,
+                prefix_read_len,
+                q_batch,
+                k_batch,
+                v_batch,
+                attn_out_batch,
                             n_tokens,
                             ops.as_deref_mut(),
                         );
@@ -1376,6 +1703,18 @@ impl Gemma4Forward {
 }
 
 impl ForwardPass for Gemma4Forward {
+    fn prepare_runtime(&self, ctx: &ForwardContext, weights: &WeightStore) -> anyhow::Result<()> {
+        if ctx.backend.use_gpu_decode()
+            && let Some(metal_ops) = ctx.backend.metal_ops()
+            && gpu_decode_quant_supported(ctx.config, weights)
+            && !metal_ops.has_cached_model_keys()
+        {
+            Self::build_cached_model_keys_gemma4(metal_ops, weights, ctx.config)?;
+        }
+
+        Ok(())
+    }
+
     fn forward_single(
         &self,
         ctx: &ForwardContext,
@@ -1386,6 +1725,49 @@ impl ForwardPass for Gemma4Forward {
         logits: &mut [f32],
         mut ops: Option<&mut OpBreakdown>,
     ) -> anyhow::Result<()> {
+        let moe_gpu_safe = Self::has_any_moe_layer(ctx.config, weights)
+            && !Self::all_layers_q8_0_expert_down(ctx.config, weights);
+
+        if moe_gpu_safe
+            && let Some(metal_ops) = ctx.backend.metal_ops()
+            && let Some(gpu_kv) = kv.as_gpu_mut()
+        {
+            if let Some(ops_ref) = ops {
+                let t = OpTimer::start();
+                let r = self.forward_batch_gpu_unified(
+                    ctx,
+                    metal_ops,
+                    std::slice::from_ref(&token_id),
+                    gpu_kv,
+                    weights,
+                    Some(logits),
+                    None,
+                    Some(ops_ref),
+                );
+                ops_ref.gpu += t.elapsed();
+                return r;
+            }
+            return self.forward_batch_gpu_unified(
+                ctx,
+                metal_ops,
+                std::slice::from_ref(&token_id),
+                gpu_kv,
+                weights,
+                Some(logits),
+                None,
+                None,
+            );
+        } else if Self::has_any_moe_layer(ctx.config, weights) {
+            return self.forward_batch_token_major(
+                ctx,
+                std::slice::from_ref(&token_id),
+                kv,
+                weights,
+                logits,
+                ops,
+            );
+        }
+
         if ctx.backend.use_gpu_decode()
             && let Some(metal_ops) = ctx.backend.metal_ops()
             && let Some(gpu_kv) = kv.as_gpu_mut()
@@ -1464,6 +1846,11 @@ impl ForwardPass for Gemma4Forward {
         let mut gate_buf = vec![0.0f32; inter_dim];
         let mut up_buf = vec![0.0f32; inter_dim];
         let mut down_buf = vec![0.0f32; dim];
+        let mut single_moe_scratch = if Self::has_any_moe_layer(cfg, weights) {
+            Some(Gemma4SingleMoeScratch::new(cfg))
+        } else {
+            None
+        };
 
         // KV cache stride: max product across SWA and global layer types
         let swa_kv_dim = cfg.gemma4_n_kv_heads_swa.unwrap_or(cfg.n_kv_heads) as usize
@@ -1702,23 +2089,44 @@ impl ForwardPass for Gemma4Forward {
             // 2i. Residual add
             silu::elementwise_add(&mut hidden, &proj_buf);
 
-            // 2j-2o. FFN: norm → gate/up → GELU → down → [post-FFN norm] → residual
-            let ffn_norm_w = weights.f32_slice(&format!("{prefix}.ffn_norm.weight"))?;
-            crate::model::layer_ops::apply_ffn_single(
-                ctx.backend,
-                weights,
-                &prefix,
-                &mut hidden,
-                &mut norm_buf,
-                &mut gate_buf,
-                &mut up_buf,
-                &mut down_buf,
-                dim,
-                inter_dim,
-                ffn_norm_w,
-                cfg.rms_norm_eps,
-                crate::model::layer_ops::FfnActivation::GELU,
-            );
+            if weights.has(&format!("{prefix}.ffn_gate_inp.weight")) {
+                Self::apply_post_attention_and_moe_ffn_single(
+                    ctx,
+                    weights,
+                    &prefix,
+                    &mut hidden,
+                    &mut norm_buf,
+                    &mut gate_buf,
+                    &mut up_buf,
+                    &mut down_buf,
+                    dim,
+                    inter_dim,
+                    cfg.rms_norm_eps,
+                    cfg,
+                    single_moe_scratch
+                        .as_mut()
+                        .expect("Gemma4 MoE single scratch missing"),
+                    ops.as_deref_mut(),
+                )?;
+            } else {
+                // 2j-2o. FFN: norm → gate/up → GELU → down → [post-FFN norm] → residual
+                let ffn_norm_w = weights.f32_slice(&format!("{prefix}.ffn_norm.weight"))?;
+                crate::model::layer_ops::apply_ffn_single(
+                    ctx.backend,
+                    weights,
+                    &prefix,
+                    &mut hidden,
+                    &mut norm_buf,
+                    &mut gate_buf,
+                    &mut up_buf,
+                    &mut down_buf,
+                    dim,
+                    inter_dim,
+                    ffn_norm_w,
+                    cfg.rms_norm_eps,
+                    crate::model::layer_ops::FfnActivation::GELU,
+                );
+            }
 
             // 2p. Layer output scale (Gemma4-specific)
             if weights.has(&format!("{prefix}.layer_output_scale.weight")) {
@@ -1765,6 +2173,14 @@ impl ForwardPass for Gemma4Forward {
         weights: &WeightStore,
         logits: &mut [f32],
     ) -> anyhow::Result<()> {
+        // Q8_0 expert-down weights trip a GPU hang in `moe_mul_mat_id_q8_0`
+        // (both blocked and non-blocked variants). Route to the CPU MoE path
+        // only when the model is pure Q8_0 (all layers), so mixed-quant schemes
+        // like Q4_K_M that use Q8_0 only on a few layers keep the GPU path.
+        if Self::all_layers_q8_0_expert_down(ctx.config, weights) {
+            return self.forward_batch_token_major(ctx, token_ids, kv, weights, logits, None);
+        }
+
         let prefill_plan = crate::model::execution_plan::PrefillExecutionPlan::for_forward_batch(
             ctx,
             kv,
@@ -1858,6 +2274,10 @@ impl ForwardPass for Gemma4Forward {
         logits: &mut [f32],
         ops: &mut OpBreakdown,
     ) -> anyhow::Result<()> {
+        if Self::all_layers_q8_0_expert_down(ctx.config, weights) {
+            return self.forward_batch_token_major(ctx, token_ids, kv, weights, logits, Some(ops));
+        }
+
         let prefill_plan = crate::model::execution_plan::PrefillExecutionPlan::for_forward_batch(
             ctx,
             kv,

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use anyhow::{Context, anyhow, ensure};
 use ax_engine_core::chat::{
     ChatMessage as CoreChatMessage, ChatRenderOptions, ChatRole as CoreChatRole,
-    render_chat_messages,
+    render_chat_messages, render_infill_prompt,
 };
 use ax_engine_core::kv::{ModelKv, ModelKvSnapshot};
 use ax_engine_core::model::WeightStore;
@@ -337,6 +337,49 @@ impl Session {
         self.start_stream_tokens(prompt_tokens, options)
     }
 
+    pub fn infill(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        options: GenerationOptions,
+    ) -> anyhow::Result<GenerationOutput> {
+        self.stream_infill(prefix, suffix, options)?.into_output()
+    }
+
+    pub fn infill_with_stats(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        options: GenerationOptions,
+    ) -> anyhow::Result<(GenerationOutput, PromptCacheStats)> {
+        let (stream, cache_stats) = self.stream_infill_with_stats(prefix, suffix, options)?;
+        Ok((stream.into_output()?, cache_stats))
+    }
+
+    pub fn stream_infill(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        options: GenerationOptions,
+    ) -> anyhow::Result<TextStream> {
+        let (stream, _) = self.stream_infill_with_stats(prefix, suffix, options)?;
+        Ok(stream)
+    }
+
+    pub fn stream_infill_with_stats(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        options: GenerationOptions,
+    ) -> anyhow::Result<(TextStream, PromptCacheStats)> {
+        let prompt_tokens = self.tokenize_infill_prompt(prefix, suffix)?;
+        validate_generation_options(&options)?;
+        let prepared = self.prepare_prompt_context(&prompt_tokens, true)?;
+        let cache_stats = prepared.cache_stats;
+        let stream = self.build_text_stream_from_prepared(prepared, options)?;
+        Ok((stream, cache_stats))
+    }
+
     pub fn generate_tokens(
         &self,
         prompt_tokens: &[u32],
@@ -452,6 +495,16 @@ impl Session {
 
     fn prepare_append_prompt(&self, prompt_tokens: &[u32]) -> anyhow::Result<PreparedPromptState> {
         self.prepare_prompt(prompt_tokens, None)
+    }
+
+    fn tokenize_infill_prompt(&self, prefix: &str, suffix: &str) -> anyhow::Result<Vec<u32>> {
+        let rendered = render_infill_prompt(prefix, suffix, self.model.tokenizer())?;
+        let prompt_tokens = self.model.tokenize_with_options(&rendered, true, true);
+        ensure!(
+            !prompt_tokens.is_empty(),
+            "prompt produced no tokens; provide a non-empty prompt"
+        );
+        Ok(prompt_tokens)
     }
 
     fn prepare_prompt_context(
@@ -719,7 +772,7 @@ fn prune_checkpoints(state: &mut SessionState) {
 
 fn should_keep_checkpoint_position(position: usize, current_len: usize) -> bool {
     position == current_len
-        || position % QWEN35_CHECKPOINT_INTERVAL == 0
+        || position.is_multiple_of(QWEN35_CHECKPOINT_INTERVAL)
         || position >= current_len.saturating_sub(QWEN35_TAIL_CHECKPOINT_TOKENS)
 }
 
@@ -1148,6 +1201,91 @@ mod tests {
     #[test]
     fn test_should_keep_checkpoint_position_always_keeps_current_position() {
         assert!(should_keep_checkpoint_position(17, 17));
+    }
+
+    #[test]
+    fn test_session_exposes_infill_methods() {
+        let infill_fn: fn(
+            &Session,
+            &str,
+            &str,
+            GenerationOptions,
+        ) -> anyhow::Result<GenerationOutput> = Session::infill;
+        #[allow(clippy::type_complexity)]
+        let infill_with_stats_fn: fn(
+            &Session,
+            &str,
+            &str,
+            GenerationOptions,
+        ) -> anyhow::Result<(
+            GenerationOutput,
+            PromptCacheStats,
+        )> = Session::infill_with_stats;
+        let stream_infill_fn: fn(
+            &Session,
+            &str,
+            &str,
+            GenerationOptions,
+        ) -> anyhow::Result<TextStream> = Session::stream_infill;
+        #[allow(clippy::type_complexity)]
+        let stream_infill_with_stats_fn: fn(
+            &Session,
+            &str,
+            &str,
+            GenerationOptions,
+        ) -> anyhow::Result<(
+            TextStream,
+            PromptCacheStats,
+        )> = Session::stream_infill_with_stats;
+
+        let _ = (
+            infill_fn,
+            infill_with_stats_fn,
+            stream_infill_fn,
+            stream_infill_with_stats_fn,
+        );
+    }
+
+    #[test]
+    #[ignore = "requires local GGUF FIM-capable model and Metal GPU"]
+    fn test_infill_with_stats_reuses_prefix_cache() {
+        let model_path = std::env::var("AX_ENGINE_TEST_FIM_MODEL")
+            .expect("AX_ENGINE_TEST_FIM_MODEL must be set");
+        let model =
+            Model::load(model_path, crate::LoadOptions::default()).expect("test model should load");
+        assert!(
+            model.supports_infill(),
+            "test model must expose native FIM tokens"
+        );
+
+        let session = model
+            .session(SessionOptions::default())
+            .expect("session should be created");
+        let options = GenerationOptions::default()
+            .max_tokens(1)
+            .temperature(0.0)
+            .top_k(1)
+            .top_p(1.0)
+            .seed(7);
+
+        let (_, first_stats) = session
+            .infill_with_stats("fn add(a: i32, b: i32) {\n", "\n}\n", options.clone())
+            .expect("first infill should succeed");
+        assert_eq!(first_stats.cached_tokens, 0);
+
+        let (_, second_stats) = session
+            .infill_with_stats("fn add(a: i32, b: i32) {\n", "\n}\n", options)
+            .expect("second infill should succeed");
+        assert!(
+            second_stats.cached_tokens > 0,
+            "expected cached prefix reuse on repeated infill, got {:?}",
+            second_stats
+        );
+        assert!(
+            second_stats.prompt_tokens_evaluated < second_stats.prompt_tokens,
+            "expected reduced prompt evaluation on repeated infill, got {:?}",
+            second_stats
+        );
     }
 
     #[test]

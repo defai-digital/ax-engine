@@ -1663,6 +1663,11 @@ pub struct CachedLayerKeys {
     // Gemma4-specific
     pub v_equals_k: bool,
     pub layer_output_scale: Option<usize>,
+    pub gemma4_moe_router_scale: Option<usize>,
+    pub gemma4_moe_pre_ffw_norm_2: Option<usize>,
+    pub gemma4_moe_post_ffw_norm_1: Option<usize>,
+    pub gemma4_moe_post_ffw_norm_2: Option<usize>,
+    pub gemma4_moe_expert_scales: Option<usize>,
     // Qwen3-specific
     pub q_bias: Option<usize>,
     pub k_bias: Option<usize>,
@@ -1777,6 +1782,8 @@ pub struct GpuBatchScratchBuffers {
     pub moe_gate_out: Option<MetalBuffer>,
     /// Up matmul output [N × n_expert_used × expert_inter_dim].
     pub moe_up_out: Option<MetalBuffer>,
+    /// Fused gate_up output [N × n_expert_used × (2 * expert_inter_dim)].
+    pub moe_fused_gate_up: Option<MetalBuffer>,
     /// Down matmul output [N × n_expert_used × dim].
     pub moe_down_out: Option<MetalBuffer>,
     /// Tokens per expert [n_expert] u32.
@@ -2246,6 +2253,7 @@ impl MetalOps {
             moe_accum: None,
             moe_gate_out: None,
             moe_up_out: None,
+            moe_fused_gate_up: None,
             moe_down_out: None,
             moe_tpe: None,
             moe_hids: None,
@@ -2273,6 +2281,9 @@ impl MetalOps {
             ));
             bs.moe_up_out = Some(alloc_bytes(
                 n_tokens * n_expert_used * expert_inter_dim * f4,
+            ));
+            bs.moe_fused_gate_up = Some(alloc_bytes(
+                n_tokens * n_expert_used * 2 * expert_inter_dim * f4,
             ));
             bs.moe_down_out = Some(alloc_bytes(n_tokens * n_expert_used * dim * f4));
             bs.moe_tpe = Some(alloc_bytes(n_expert * u4));
@@ -2484,6 +2495,12 @@ impl MetalOps {
             GgmlType::F32 => self
                 .matmul
                 .encode_matvec(encoder, weights, input, output, m, k),
+            GgmlType::Q5_0 => self
+                .dequant
+                .encode_fused_matvec_q5_0(encoder, weights, input, output, m, k),
+            GgmlType::Q5_1 => self
+                .dequant
+                .encode_fused_matvec_q5_1(encoder, weights, input, output, m, k),
             GgmlType::Q4K => self.dequant.encode_fused_matvec_q4_k_with_config(
                 encoder, weights, input, output, m, k, config,
             ),
@@ -2504,12 +2521,17 @@ impl MetalOps {
     fn validate_moe_mul_mat_id_dtype(dtype: GgmlType, role: &str) -> anyhow::Result<()> {
         if matches!(
             dtype,
-            GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K | GgmlType::Q8_0
+            GgmlType::Q4K
+                | GgmlType::Q5_0
+                | GgmlType::Q5_1
+                | GgmlType::Q5K
+                | GgmlType::Q6K
+                | GgmlType::Q8_0
         ) {
             Ok(())
         } else {
             anyhow::bail!(
-                "Metal MoE mul_mat_id path only supports Q4_K/Q5_K/Q6_K/Q8_0 {role} weights today; got {dtype:?}",
+                "Metal MoE mul_mat_id path only supports Q4_K/Q5_0/Q5_1/Q5_K/Q6_K/Q8_0 {role} weights today; got {dtype:?}",
             )
         }
     }
@@ -2563,6 +2585,40 @@ impl MetalOps {
     ) -> anyhow::Result<()> {
         match dtype {
             GgmlType::Q4K => self.dequant.encode_moe_mul_mat_id_q4_k(
+                encoder,
+                weights,
+                input,
+                tpe,
+                hids,
+                output,
+                m,
+                k,
+                n_tokens,
+                n_expert_used,
+                n_expert,
+                weight_stride,
+                active_experts,
+                n_active_experts,
+                input_is_hid,
+            ),
+            GgmlType::Q5_0 => self.dequant.encode_moe_mul_mat_id_q5_0(
+                encoder,
+                weights,
+                input,
+                tpe,
+                hids,
+                output,
+                m,
+                k,
+                n_tokens,
+                n_expert_used,
+                n_expert,
+                weight_stride,
+                active_experts,
+                n_active_experts,
+                input_is_hid,
+            ),
+            GgmlType::Q5_1 => self.dequant.encode_moe_mul_mat_id_q5_1(
                 encoder,
                 weights,
                 input,
@@ -4497,6 +4553,456 @@ impl MetalOps {
             accum_out[..n_tokens * dim]
                 .copy_from_slice(&accum_gpu.as_slice::<f32>()[..n_tokens * dim]);
         }
+        Ok(())
+    }
+
+    /// Execute Gemma4-style routed experts with fused `gate_up` weights.
+    ///
+    /// This mirrors llama.cpp's merged `gate_up_exps` path: one routed
+    /// matmul produces `[gate | up]`, a split GELU-mul kernel materializes the
+    /// activated expert hidden state, and a routed down matmul plus weighted
+    /// slot reduction accumulates per-token outputs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_fused_gate_up_gelu_dispatch(
+        &self,
+        norm_buf: &[f32],
+        accum_out: &mut [f32],
+        expert_ids: &[i32],
+        expert_weights_flat: &[f32],
+        gate_up_exps_raw: &[u8],
+        down_exps_raw: &[u8],
+        gate_up_dtype: GgmlType,
+        down_dtype: GgmlType,
+        n_tokens: usize,
+        n_expert: usize,
+        n_expert_used: usize,
+        dim: usize,
+        expert_inter_dim: usize,
+        gate_up_stride: usize,
+        down_stride: usize,
+    ) -> anyhow::Result<()> {
+        let f4 = std::mem::size_of::<f32>();
+        let i4 = std::mem::size_of::<i32>();
+        let u4 = std::mem::size_of::<u32>();
+        let dev = self.device.device();
+        let fused_dim = expert_inter_dim
+            .checked_mul(2)
+            .ok_or_else(|| anyhow::anyhow!("Gemma4 fused gate_up dimension overflow"))?;
+        let blocks_per_expert_gate_up =
+            Self::moe_blocks_per_expert(gate_up_stride, gate_up_dtype, "expert gate_up")?;
+        let blocks_per_expert_down =
+            Self::moe_blocks_per_expert(down_stride, down_dtype, "expert down")?;
+
+        let gate_up_key = self.ensure_moe_quant_cached(gate_up_exps_raw);
+        let down_key = self.ensure_moe_quant_cached(down_exps_raw);
+
+        let mut input_gpu = MetalBuffer::new(dev, n_tokens * dim * f4)?;
+        let mut accum_gpu = MetalBuffer::new(dev, n_tokens * dim * f4)?;
+        let mut ids_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * i4)?;
+        let mut weights_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * f4)?;
+        let tpe_gpu = MetalBuffer::new(dev, n_expert * u4)?;
+        let hids_gpu = MetalBuffer::new(dev, n_expert * n_tokens * i4)?;
+        let gate_up_out_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * fused_dim * f4)?;
+        let activated_gpu =
+            MetalBuffer::new(dev, n_tokens * n_expert_used * expert_inter_dim * f4)?;
+        let down_out_gpu = MetalBuffer::new(dev, n_tokens * n_expert_used * dim * f4)?;
+
+        unsafe {
+            input_gpu.as_mut_slice::<f32>()[..n_tokens * dim].copy_from_slice(norm_buf);
+            accum_gpu.as_mut_slice::<f32>()[..n_tokens * dim].fill(0.0);
+            let ids_u8: &[u8] = std::slice::from_raw_parts(
+                expert_ids.as_ptr() as *const u8,
+                std::mem::size_of_val(expert_ids),
+            );
+            std::ptr::copy_nonoverlapping(
+                ids_u8.as_ptr(),
+                ids_gpu.as_mut_slice::<u8>().as_mut_ptr(),
+                ids_u8.len(),
+            );
+            weights_gpu.as_mut_slice::<f32>()[..expert_weights_flat.len()]
+                .copy_from_slice(expert_weights_flat);
+        }
+
+        let cache = self.moe_quant_cache.lock().unwrap();
+        let gate_up_buf = cache.get(&gate_up_key).unwrap();
+        let down_buf = cache.get(&down_key).unwrap();
+
+        let nt = n_tokens as u32;
+        let ne = n_expert as u32;
+        let neu = n_expert_used as u32;
+        let m_fused = fused_dim as u32;
+        let m_dim = dim as u32;
+        let k_dim = dim as u32;
+        let k_inter = expert_inter_dim as u32;
+
+        let mut active_set = std::collections::BTreeSet::new();
+        for &eid in expert_ids {
+            if eid >= 0 {
+                active_set.insert(eid as u32);
+            }
+        }
+        let active_list: Vec<u32> = active_set.into_iter().collect();
+        let n_active = active_list.len() as u32;
+
+        let mut active_buf = MetalBuffer::new(dev, (n_active as usize + 1).max(1) * u4)?;
+        unsafe {
+            let active_meta = active_buf.as_mut_slice::<u32>();
+            active_meta[0] = n_active;
+            active_meta[1..1 + active_list.len()].copy_from_slice(&active_list);
+        }
+
+        self.device.execute_sync(|encoder| {
+            self.dequant.encode_moe_map0(
+                encoder,
+                &ids_gpu,
+                &tpe_gpu,
+                &hids_gpu,
+                &active_buf,
+                nt,
+                neu,
+                ne,
+            );
+            self.encode_moe_mul_mat_id(
+                encoder,
+                gate_up_buf,
+                &input_gpu,
+                &tpe_gpu,
+                &hids_gpu,
+                &gate_up_out_gpu,
+                gate_up_dtype,
+                m_fused,
+                k_dim,
+                nt,
+                neu,
+                ne,
+                blocks_per_expert_gate_up,
+                &active_buf,
+                n_active,
+                false,
+                false,
+            )?;
+            self.elementwise.encode_gelu_split_mul_batch(
+                encoder,
+                &gate_up_out_gpu,
+                &activated_gpu,
+                k_inter,
+                nt * neu,
+            );
+            self.encode_moe_mul_mat_id(
+                encoder,
+                down_buf,
+                &activated_gpu,
+                &tpe_gpu,
+                &hids_gpu,
+                &down_out_gpu,
+                down_dtype,
+                m_dim,
+                k_inter,
+                nt,
+                neu,
+                ne,
+                blocks_per_expert_down,
+                &active_buf,
+                n_active,
+                false,
+                true,
+            )?;
+            self.elementwise.encode_moe_weighted_reduce_slots(
+                encoder,
+                &down_out_gpu,
+                &weights_gpu,
+                &accum_gpu,
+                m_dim,
+                nt,
+                neu,
+            );
+            Ok(())
+        })?;
+
+        drop(cache);
+
+        unsafe {
+            accum_out[..n_tokens * dim]
+                .copy_from_slice(&accum_gpu.as_slice::<f32>()[..n_tokens * dim]);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn encode_gemma4_routed_moe_fused_gate_up(
+        &self,
+        encoder: &ax_engine_metal::MetalEncoder,
+        bs: &mut GpuBatchScratchBuffers,
+        router_scale: &MetalBuffer,
+        router_buf: &MetalBuffer,
+        router_dtype: GgmlType,
+        pre_ff2_w: &MetalBuffer,
+        post_ff2_w: &MetalBuffer,
+        expert_scales: &MetalBuffer,
+        gate_up_buf: &MetalBuffer,
+        gate_up_dtype: GgmlType,
+        down_buf: &MetalBuffer,
+        down_dtype: GgmlType,
+        n_tokens: usize,
+        n_expert: usize,
+        n_expert_used: usize,
+        dim: usize,
+        expert_inter_dim: usize,
+        gate_up_stride: usize,
+        down_stride: usize,
+        eps: f32,
+    ) -> anyhow::Result<()> {
+        let expert_input_gpu = bs
+            .moe_norm
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Gemma4 MoE missing moe_norm scratch"))?;
+        let router_logits_gpu = bs
+            .moe_router_out
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Gemma4 MoE missing moe_router_out scratch"))?;
+        let accum_gpu = bs
+            .moe_accum
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Gemma4 MoE missing moe_accum scratch"))?;
+        let gate_out_gpu = bs
+            .moe_gate_out
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Gemma4 MoE missing moe_gate_out scratch"))?;
+        let fused_gate_up_gpu = bs
+            .moe_fused_gate_up
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Gemma4 MoE missing moe_fused_gate_up scratch"))?;
+        let down_out_gpu = bs
+            .moe_down_out
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Gemma4 MoE missing moe_down_out scratch"))?;
+        let tpe_gpu = bs
+            .moe_tpe
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Gemma4 MoE missing moe_tpe scratch"))?;
+        let hids_gpu = bs
+            .moe_hids
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Gemma4 MoE missing moe_hids scratch"))?;
+        let ids_gpu = bs
+            .moe_expert_ids
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Gemma4 MoE missing moe_expert_ids scratch"))?;
+        let weights_gpu = bs
+            .moe_expert_weights
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Gemma4 MoE missing moe_expert_weights scratch"))?;
+        let active_buf = bs
+            .moe_active_experts
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Gemma4 MoE missing moe_active_experts scratch"))?;
+
+        let blocks_per_expert_gate_up =
+            Self::moe_blocks_per_expert(gate_up_stride, gate_up_dtype, "expert gate_up")?;
+        let blocks_per_expert_down =
+            Self::moe_blocks_per_expert(down_stride, down_dtype, "expert down")?;
+        let nt = n_tokens as u32;
+        let ne = n_expert as u32;
+        let neu = n_expert_used as u32;
+        let max_active_experts = ne.min(nt.saturating_mul(neu));
+        let fused_dim = expert_inter_dim
+            .checked_mul(2)
+            .ok_or_else(|| anyhow::anyhow!("Gemma4 fused gate_up dimension overflow"))?;
+        let m_fused = fused_dim as u32;
+        let m_dim = dim as u32;
+        let k_dim = dim as u32;
+        let k_inter = expert_inter_dim as u32;
+        let router_input_scale = (dim as f32).sqrt().recip();
+        let hidden = &bs.hidden;
+
+        unsafe {
+            active_buf.as_mut_slice::<u32>()[0] = 0;
+        }
+
+        let mut sb = ax_engine_metal::SmartBarrier::new(encoder);
+        sb.pre_dispatch(&[hidden], &[expert_input_gpu]);
+        self.elementwise.encode_rms_norm_out_batch(
+            encoder,
+            hidden,
+            pre_ff2_w,
+            expert_input_gpu,
+            dim as u32,
+            nt,
+            eps,
+        );
+        sb.post_dispatch(&[hidden], &[expert_input_gpu]);
+
+        sb.pre_dispatch(&[hidden], &[accum_gpu]);
+        self.elementwise.encode_rms_norm_out_batch(
+            encoder,
+            hidden,
+            router_scale,
+            accum_gpu,
+            dim as u32,
+            nt,
+            eps,
+        );
+        sb.post_dispatch(&[hidden], &[accum_gpu]);
+
+        sb.pre_dispatch(&[accum_gpu], &[accum_gpu]);
+        self.elementwise.encode_gen_scale(
+            encoder,
+            accum_gpu,
+            accum_gpu,
+            router_input_scale,
+            u32::try_from(n_tokens * dim)
+                .map_err(|_| anyhow::anyhow!("Gemma4 router input element count overflow"))?,
+        );
+        sb.post_dispatch(&[accum_gpu], &[accum_gpu]);
+
+        sb.pre_dispatch(&[accum_gpu], &[router_logits_gpu]);
+        if router_dtype == GgmlType::F32 {
+            self.encode_token_major_batch_matmul_f32(
+                encoder,
+                router_buf,
+                accum_gpu,
+                &bs.matmul_in_f16,
+                router_logits_gpu,
+                ne,
+                nt,
+                k_dim,
+            )?;
+        } else {
+            self.encode_quant_batch_matmul(
+                encoder,
+                router_buf,
+                accum_gpu,
+                router_logits_gpu,
+                ne,
+                nt,
+                k_dim,
+                router_dtype,
+            )?;
+        }
+        sb.post_dispatch(&[accum_gpu], &[router_logits_gpu]);
+
+        sb.pre_dispatch(&[router_logits_gpu], &[ids_gpu, weights_gpu]);
+        self.elementwise.encode_moe_softmax_topk(
+            encoder,
+            router_logits_gpu,
+            ids_gpu,
+            weights_gpu,
+            nt,
+            ne,
+            neu,
+        );
+        sb.post_dispatch(&[router_logits_gpu], &[ids_gpu, weights_gpu]);
+
+        sb.pre_dispatch(&[ids_gpu, weights_gpu, expert_scales], &[weights_gpu]);
+        self.elementwise.encode_moe_apply_expert_scales(
+            encoder,
+            ids_gpu,
+            weights_gpu,
+            expert_scales,
+            nt,
+            neu,
+        );
+        sb.post_dispatch(&[ids_gpu, weights_gpu, expert_scales], &[weights_gpu]);
+
+        sb.pre_dispatch(&[accum_gpu], &[accum_gpu]);
+        self.elementwise.encode_gen_scale(
+            encoder,
+            accum_gpu,
+            accum_gpu,
+            0.0,
+            u32::try_from(n_tokens * dim)
+                .map_err(|_| anyhow::anyhow!("Gemma4 MoE accum element count overflow"))?,
+        );
+        sb.post_dispatch(&[accum_gpu], &[accum_gpu]);
+
+        sb.pre_dispatch(&[ids_gpu, active_buf], &[tpe_gpu, hids_gpu]);
+        self.dequant
+            .encode_moe_map0(encoder, ids_gpu, tpe_gpu, hids_gpu, active_buf, nt, neu, ne);
+        sb.post_dispatch(&[ids_gpu, active_buf], &[tpe_gpu, hids_gpu]);
+
+        sb.pre_dispatch(
+            &[expert_input_gpu, tpe_gpu, hids_gpu, active_buf],
+            &[fused_gate_up_gpu],
+        );
+        self.encode_moe_mul_mat_id(
+            encoder,
+            gate_up_buf,
+            expert_input_gpu,
+            tpe_gpu,
+            hids_gpu,
+            fused_gate_up_gpu,
+            gate_up_dtype,
+            m_fused,
+            k_dim,
+            nt,
+            neu,
+            ne,
+            blocks_per_expert_gate_up,
+            active_buf,
+            max_active_experts,
+            false,
+            false,
+        )?;
+        sb.post_dispatch(
+            &[expert_input_gpu, tpe_gpu, hids_gpu, active_buf],
+            &[fused_gate_up_gpu],
+        );
+
+        sb.pre_dispatch(&[fused_gate_up_gpu], &[gate_out_gpu]);
+        self.elementwise.encode_gelu_split_mul_batch(
+            encoder,
+            fused_gate_up_gpu,
+            gate_out_gpu,
+            k_inter,
+            nt * neu,
+        );
+        sb.post_dispatch(&[fused_gate_up_gpu], &[gate_out_gpu]);
+
+        sb.pre_dispatch(
+            &[gate_out_gpu, tpe_gpu, hids_gpu, active_buf],
+            &[down_out_gpu],
+        );
+        self.encode_moe_mul_mat_id(
+            encoder,
+            down_buf,
+            gate_out_gpu,
+            tpe_gpu,
+            hids_gpu,
+            down_out_gpu,
+            down_dtype,
+            m_dim,
+            k_inter,
+            nt,
+            neu,
+            ne,
+            blocks_per_expert_down,
+            active_buf,
+            max_active_experts,
+            false,
+            true,
+        )?;
+        sb.post_dispatch(
+            &[gate_out_gpu, tpe_gpu, hids_gpu, active_buf],
+            &[down_out_gpu],
+        );
+
+        sb.pre_dispatch(&[down_out_gpu, weights_gpu], &[accum_gpu]);
+        self.elementwise.encode_moe_weighted_reduce_slots(
+            encoder,
+            down_out_gpu,
+            weights_gpu,
+            accum_gpu,
+            m_dim,
+            nt,
+            neu,
+        );
+        sb.post_dispatch(&[down_out_gpu, weights_gpu], &[accum_gpu]);
+
+        sb.pre_dispatch(&[accum_gpu], &[accum_gpu]);
+        self.elementwise
+            .encode_rms_norm_batch(encoder, accum_gpu, post_ff2_w, m_dim, nt, eps);
+        sb.post_dispatch(&[accum_gpu], &[accum_gpu]);
+        sb.flush();
         Ok(())
     }
 

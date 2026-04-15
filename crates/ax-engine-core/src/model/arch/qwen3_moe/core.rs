@@ -260,6 +260,11 @@ impl Qwen3MoeForward {
                 post_ffn_norm: None,
                 v_equals_k: false,
                 layer_output_scale: None,
+                gemma4_moe_router_scale: None,
+                gemma4_moe_pre_ffw_norm_2: None,
+                gemma4_moe_post_ffw_norm_1: None,
+                gemma4_moe_post_ffw_norm_2: None,
+                gemma4_moe_expert_scales: None,
                 q_bias: None,
                 k_bias: None,
                 v_bias: None,
@@ -297,6 +302,7 @@ impl Qwen3MoeForward {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn qwen3moe_decode_plan(
         metal_ops: &MetalOps,
         gpu_kv: &mut crate::kv::GpuKv,
@@ -997,17 +1003,16 @@ impl Qwen3MoeForward {
                 };
                 if std::env::var("AX_DEBUG_QWEN3_Q5_RUNTIME_MOE").is_ok()
                     && hidden_gpu.iter().any(|value| !value.is_finite())
-                {
-                    if let Some(summary) = Self::qwen3moe_single_token_moe_scratch_summary(
+                    && let Some(summary) = Self::qwen3moe_single_token_moe_scratch_summary(
                         metal_ops,
                         dim,
                         cfg.n_expert_used.unwrap_or(0) as usize,
                         expert_inter_dim,
-                    ) {
-                        eprintln!(
-                            "[QWEN3MOE-RUNTIME] layer={layer} position={position} {summary}"
-                        );
-                    }
+                    )
+                {
+                    eprintln!(
+                        "[QWEN3MOE-RUNTIME] layer={layer} position={position} {summary}"
+                    );
                 }
                 Self::assert_finite_if_enabled("layer_hidden", hidden_gpu, layer, position)?;
             }
@@ -1094,7 +1099,7 @@ impl Qwen3MoeForward {
         Self::assert_finite_if_enabled("logits", logits_gpu, cfg.n_layers as usize, position)?;
         logits[..vocab_size].copy_from_slice(logits_gpu);
         gpu_kv.finalize_batch(1);
-        if let Some(ops_ref) = ops.as_deref_mut() {
+        if let Some(ops_ref) = ops {
             ops_ref.gpu_readback += readback_t.elapsed();
             ops_ref.gpu += total_t.elapsed();
         }

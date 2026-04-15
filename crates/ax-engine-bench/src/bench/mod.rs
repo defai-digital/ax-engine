@@ -6,3 +6,4 @@ pub mod microbench;
 pub mod perf;
 pub mod prefill_gap;
 pub mod report;
+pub mod workload;

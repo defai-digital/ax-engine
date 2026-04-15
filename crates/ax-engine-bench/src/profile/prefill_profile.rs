@@ -688,12 +688,13 @@ pub fn run_prefill_profile_with_backend(
     let runtime_policy = backend.runtime_policy();
     let tokenizer = Tokenizer::from_gguf(&mapped.header)?;
     let model = InferenceModel::with_backend(model_config.clone(), backend)?;
-    crate::report_planned_kv_budget(&mapped, &model)?;
+    let weights = WeightStore::new(&mapped);
+    let kv_plan = model.kv_plan_for_weights(&weights);
+    crate::report_planned_kv_budget(&mapped, &kv_plan)?;
     let support_note = merged_support_note(
         crate::support_note(&mapped),
         prefill_profile_support_note(&model),
     );
-    let weights = WeightStore::new(&mapped);
     model.prepare_runtime_for_weights(&weights)?;
 
     let vocab_size = model_config.vocab_size as usize;

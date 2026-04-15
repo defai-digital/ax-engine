@@ -229,6 +229,44 @@ struct CompletionRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct InfillRequest {
+    #[serde(default)]
+    model: Option<String>,
+    input_prefix: String,
+    input_suffix: String,
+    #[serde(default)]
+    id_slot: Option<u32>,
+    #[serde(default = "default_true")]
+    cache_prompt: bool,
+    #[serde(default)]
+    stream: bool,
+    #[serde(default)]
+    max_tokens: Option<usize>,
+    #[serde(default)]
+    n_predict: Option<i32>,
+    #[serde(default)]
+    temperature: Option<f32>,
+    #[serde(default)]
+    top_k: Option<i32>,
+    #[serde(default)]
+    top_p: Option<f32>,
+    #[serde(default)]
+    min_p: Option<f32>,
+    #[serde(default)]
+    repeat_penalty: Option<f32>,
+    #[serde(default)]
+    repeat_last_n: Option<i32>,
+    #[serde(default)]
+    frequency_penalty: Option<f32>,
+    #[serde(default)]
+    presence_penalty: Option<f32>,
+    #[serde(default)]
+    stop: Option<StopInput>,
+    #[serde(default)]
+    seed: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ChatCompletionRequest {
     #[serde(default)]
     model: Option<String>,
@@ -535,7 +573,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/rerank", post(unsupported_reranking))
         .route("/v1/rerank", post(unsupported_reranking))
         .route("/v1/reranking", post(unsupported_reranking))
-        .route("/infill", post(unsupported_infill))
+        .route("/infill", post(infill))
         .fallback(not_found)
         .with_state(state.clone());
 
@@ -587,6 +625,7 @@ async fn list_models(
             "capabilities": {
                 "completion": true,
                 "chat_completion": true,
+                "infill": state.model.supports_infill(),
                 "tokenize": true,
                 "apply_template": true,
                 "multimodal": false,
@@ -1152,6 +1191,52 @@ async fn openai_chat_completions(
     .into_response())
 }
 
+async fn infill(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<InfillRequest>,
+) -> ApiResult<Response> {
+    require_api_key(&state, &headers)?;
+    ensure_requested_model(&state, request.model.as_deref())?;
+    let prompt = prepare_infill_prompt(&state.model, &request.input_prefix, &request.input_suffix)?;
+    let use_slot_cache = use_slot_prompt_cache(request.id_slot, request.cache_prompt, 1)?;
+    let generation_options = build_generation_options(
+        &state.defaults,
+        GenerationOverrides {
+            max_tokens: request.max_tokens,
+            n_predict: request.n_predict,
+            temperature: request.temperature,
+            top_k: request.top_k,
+            top_p: request.top_p,
+            min_p: request.min_p,
+            repeat_penalty: request.repeat_penalty,
+            repeat_last_n: request.repeat_last_n,
+            frequency_penalty: request.frequency_penalty,
+            presence_penalty: request.presence_penalty,
+            stop: request.stop.map(StopInput::into_vec),
+            seed: request.seed,
+        },
+    );
+
+    if request.stream {
+        let permit = acquire_inference_slot(&state).await?;
+        return Ok(infill_stream(
+            state,
+            prompt,
+            generation_options,
+            permit,
+            use_slot_cache,
+        ));
+    }
+
+    let run = if use_slot_cache {
+        run_cached_generation(state.clone(), prompt.tokens, generation_options, false).await?
+    } else {
+        run_generation(state.clone(), prompt.tokens, generation_options, false).await?
+    };
+    Ok(Json(infill_body(&run)).into_response())
+}
+
 async fn openai_responses(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1233,10 +1318,6 @@ async fn unsupported_embedding() -> ApiError {
 
 async fn unsupported_reranking() -> ApiError {
     ApiError::not_implemented("reranking routes are not implemented in ax-engine-server yet")
-}
-
-async fn unsupported_infill() -> ApiError {
-    ApiError::not_implemented("infill is not implemented in ax-engine-server yet")
 }
 
 async fn not_found() -> ApiError {
@@ -1325,6 +1406,17 @@ fn normalize_single_prompt(model: &Model, value: &Value) -> ApiResult<PreparedPr
         return Err(ApiError::bad_request("prompt produced no tokens"));
     }
 
+    Ok(PreparedPrompt { tokens })
+}
+
+fn prepare_infill_prompt(model: &Model, prefix: &str, suffix: &str) -> ApiResult<PreparedPrompt> {
+    let rendered = model
+        .render_infill_prompt(prefix, suffix)
+        .map_err(classify_infill_render_error)?;
+    let tokens = model.tokenize_with_options(&rendered, true, true);
+    if tokens.is_empty() {
+        return Err(ApiError::bad_request("prompt produced no tokens"));
+    }
     Ok(PreparedPrompt { tokens })
 }
 
@@ -1994,6 +2086,21 @@ fn response_object_json(
     })
 }
 
+fn infill_body(run: &RunResult) -> Value {
+    json!({
+        "content": run.output.text,
+        "finish_reason": finish_reason_name(run.output.finish_reason),
+        "usage": {
+            "prompt_tokens": run.output.usage.prompt_tokens,
+            "completion_tokens": run.output.usage.completion_tokens,
+            "total_tokens": run.output.usage.total_tokens
+        },
+        "cache": {
+            "cached_tokens": run.cache_tokens
+        }
+    })
+}
+
 async fn run_generation(
     state: Arc<AppState>,
     prompt_tokens: Vec<u32>,
@@ -2133,6 +2240,94 @@ fn build_stream_for_prompt(
             .context("failed to start stream")?;
         Ok((session, stream, PromptCacheStats::default()))
     }
+}
+
+fn infill_stream(
+    state: Arc<AppState>,
+    prompt: PreparedPrompt,
+    options: GenerationOptions,
+    permit: OwnedSemaphorePermit,
+    use_slot_cache: bool,
+) -> Response {
+    let task_id = begin_request_tracking(state.as_ref(), &options, true);
+    let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(32);
+    tokio::task::spawn_blocking(move || {
+        let result: anyhow::Result<()> = (|| {
+            let _permit = permit;
+            let started = Instant::now();
+            let (session, mut stream, cache_stats) = build_stream_for_prompt(
+                state.as_ref(),
+                &prompt.tokens,
+                options.clone(),
+                use_slot_cache,
+            )
+            .context("failed to start infill stream")?;
+
+            while let Some(chunk) = stream.next_chunk()? {
+                record_stream_chunk(state.as_ref(), task_id, &chunk);
+                if tx
+                    .blocking_send(Ok(json_event(&json!({
+                        "content": chunk,
+                        "stop": false
+                    }))?))
+                    .is_err()
+                {
+                    return Ok(());
+                }
+            }
+
+            let output = stream
+                .output()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("stream ended without output"))?;
+            if use_slot_cache {
+                let snapshot = session
+                    .snapshot()
+                    .context("failed to capture cached session snapshot")?;
+                replace_slot_snapshot(state.as_ref(), Some(snapshot))
+                    .map_err(|error| anyhow::anyhow!(error.message))?;
+            }
+            finish_request_tracking(
+                state.as_ref(),
+                task_id,
+                &options,
+                &output,
+                started.elapsed().as_secs_f64() * 1_000.0,
+            );
+            let _ = tx.blocking_send(Ok(json_event(&json!({
+                "content": "",
+                "stop": true,
+                "finish_reason": finish_reason_name(output.finish_reason),
+                "usage": {
+                    "prompt_tokens": output.usage.prompt_tokens,
+                    "completion_tokens": output.usage.completion_tokens,
+                    "total_tokens": output.usage.total_tokens
+                },
+                "cache": {
+                    "cached_tokens": cache_stats.cached_tokens,
+                    "prompt_tokens": cache_stats.prompt_tokens,
+                    "prompt_tokens_evaluated": cache_stats.prompt_tokens_evaluated
+                }
+            }))?));
+            Ok(())
+        })();
+
+        if let Err(error) = result {
+            fail_request_tracking(state.as_ref(), task_id);
+            let api_error = ApiError::from_anyhow(error);
+            let _ = tx.blocking_send(Ok(json_event(&json!({
+                "error": {
+                    "code": api_error.status.as_u16(),
+                    "message": api_error.message,
+                    "type": api_error.kind
+                }
+            })).unwrap_or_else(|_| Event::default().data("{\"error\":{\"code\":500,\"message\":\"internal error\",\"type\":\"internal_error\"}}"))));
+        }
+    });
+
+    Sse::new(ReceiverStream::new(rx))
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 fn legacy_completion_stream(
@@ -2533,11 +2728,11 @@ fn legacy_completion_body(
     prompt_tokens: &[u32],
     run: &RunResult,
     options: &GenerationOptions,
-    return_tokens: bool,
+    _return_tokens: bool,
 ) -> Value {
     json!({
         "content": run.output.text,
-        "tokens": if return_tokens { json!([]) } else { json!([]) },
+        "tokens": json!([]),
         "stop": true,
         "generation_settings": generation_settings_json(state, options),
         "model": state.model_alias,
@@ -2712,8 +2907,39 @@ impl ApiError {
     }
 
     fn from_anyhow(error: anyhow::Error) -> Self {
-        Self::internal(error.to_string())
+        classify_anyhow_message(&error.to_string())
     }
+}
+
+fn classify_infill_render_error(error: anyhow::Error) -> ApiError {
+    let message = error.to_string();
+    if message.contains("loaded model does not support infill") {
+        return ApiError::not_supported(message);
+    }
+    ApiError::bad_request(message)
+}
+
+fn classify_anyhow_message(message: &str) -> ApiError {
+    if message.contains("loaded model does not support infill") {
+        return ApiError::not_supported(message.to_string());
+    }
+    if message.contains("infill requires a non-empty prefix or suffix")
+        || message.contains("prompt produced no tokens")
+        || message.contains("prompt does not fit in remaining context")
+        || message.contains("chat messages must not be empty")
+        || message.contains("messages must not be empty")
+        || message.contains("temperature must be finite and non-negative")
+        || message.contains("top_k must be -1 (disabled) or greater")
+        || message.contains("top_p must be finite and between 0.0 and 1.0")
+        || message.contains("min_p must be finite and between 0.0 and 1.0")
+        || message.contains("repeat_penalty must be finite and greater than zero")
+        || message.contains("frequency_penalty must be finite")
+        || message.contains("presence_penalty must be finite")
+        || message.contains("repeat_last_n must be -1 or greater")
+    {
+        return ApiError::bad_request(message.to_string());
+    }
+    ApiError::internal(message.to_string())
 }
 
 impl IntoResponse for ApiError {
@@ -2735,6 +2961,7 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ax_engine_sdk::{GenerationOutput, Usage};
 
     #[test]
     fn test_flatten_message_content_text_parts() {
@@ -2838,5 +3065,59 @@ mod tests {
     fn test_use_slot_prompt_cache_rejects_unknown_slot() {
         let err = use_slot_prompt_cache(Some(1), true, 1).unwrap_err();
         assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_infill_request_deserializes_minimal_contract() {
+        let request: InfillRequest = serde_json::from_value(json!({
+            "input_prefix": "fn add(a: i32, b: i32) {",
+            "input_suffix": "}",
+            "max_tokens": 64,
+            "stream": false
+        }))
+        .expect("minimal infill contract should deserialize");
+        assert_eq!(request.input_prefix, "fn add(a: i32, b: i32) {");
+        assert_eq!(request.input_suffix, "}");
+        assert_eq!(request.max_tokens, Some(64));
+        assert!(!request.stream);
+        assert!(request.cache_prompt);
+    }
+
+    #[test]
+    fn test_classify_anyhow_message_marks_infill_unsupported() {
+        let error = classify_anyhow_message("loaded model does not support infill");
+        assert_eq!(error.status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(error.kind, "not_supported_error");
+    }
+
+    #[test]
+    fn test_classify_anyhow_message_marks_context_overflow_as_bad_request() {
+        let error = classify_anyhow_message(
+            "prompt does not fit in remaining context: 8193 tokens requested, 4096 available",
+        );
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.kind, "invalid_request_error");
+    }
+
+    #[test]
+    fn test_infill_body_returns_expected_shape() {
+        let run = RunResult {
+            output: GenerationOutput {
+                text: "    a + b\n".to_string(),
+                finish_reason: FinishReason::Stop,
+                usage: Usage {
+                    prompt_tokens: 24,
+                    completion_tokens: 4,
+                    total_tokens: 28,
+                },
+            },
+            elapsed_ms: 12.5,
+            cache_tokens: 16,
+        };
+        let body = infill_body(&run);
+        assert_eq!(body["content"], "    a + b\n");
+        assert_eq!(body["finish_reason"], "stop");
+        assert_eq!(body["usage"]["prompt_tokens"], 24);
+        assert_eq!(body["cache"]["cached_tokens"], 16);
     }
 }

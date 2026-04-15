@@ -8,6 +8,7 @@ use crate::model::qwen35::{
     Qwen3_5Forward, Qwen3_5NativeRecurrentCachedWeights, Qwen3_5NativeRecurrentDtypes,
     Qwen3_5NativeRecurrentProjectionScratch,
 };
+use ax_engine_metal::MatvecProfileVariant;
 use std::path::PathBuf;
 
 fn lock_env_test() -> std::sync::MutexGuard<'static, ()> {
@@ -95,6 +96,7 @@ fn test_fingerprint() -> ModelFingerprint {
 #[test]
 fn test_validate_moe_mul_mat_id_dtype_accepts_supported_routed_quants() {
     MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q4K, "expert").unwrap();
+    MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q5_1, "expert").unwrap();
     MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q5K, "expert").unwrap();
     MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q6K, "expert").unwrap();
     MetalOps::validate_moe_mul_mat_id_dtype(GgmlType::Q8_0, "expert").unwrap();
@@ -3209,6 +3211,1222 @@ fn test_real_gemma4_q5km_q5_1_tensor_matches_cpu_matvec() {
         "Gemma4 Q5_1 tensor '{}' mismatched CPU reference: max_diff={diff}",
         info.name,
     );
+}
+
+#[test]
+fn test_real_gemma4_q5km_down_moe_mul_mat_id_matches_cpu_hid_major_input() {
+    let _env_lock = lock_env_test();
+    let path = workspace_model_path("gemma-4-26B-A4B-it-Q5_K_M.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let mapped = MappedModel::open(&path).unwrap();
+    let cfg = ModelConfig::from_gguf(&mapped.header).unwrap();
+    let weights = WeightStore::new(&mapped);
+    let backend = MetalBackend::new().unwrap();
+    let cpu = super::super::cpu::CpuBackend;
+
+    let (prefix, down_raw, down_dtype) = (0..cfg.n_layers as usize)
+        .map(|layer| format!("blk.{layer}"))
+        .find_map(|prefix| {
+            let (down_raw, down_dtype) = weights
+                .raw_with_dtype(&format!("{prefix}.ffn_down_exps.weight"))
+                .ok()?;
+            if down_dtype == GgmlType::Q5_1 {
+                Some((prefix, down_raw, down_dtype))
+            } else {
+                None
+            }
+        })
+        .expect("expected Gemma4 Q5_K_M fixture to include at least one Q5_1 MoE down layer");
+
+    assert_eq!(
+        down_dtype,
+        GgmlType::Q5_1,
+        "expected Gemma4 Q5_K_M routed down weights to use Q5_1 in {prefix}",
+    );
+
+    let n_tokens = 1usize;
+    let n_expert = cfg.n_expert.unwrap_or(0) as usize;
+    let n_expert_used = cfg.n_expert_used.unwrap_or(0) as usize;
+    let dim = cfg.embedding_dim as usize;
+    let expert_inter_dim = cfg.expert_intermediate_dim.unwrap_or(0) as usize;
+    let expert_weight_name = format!("{prefix}.ffn_down_exps.weight");
+    let expert_stride =
+        crate::model::moe_utils::expert_byte_stride(down_dtype, dim * expert_inter_dim);
+    let blocks_per_expert =
+        MetalOps::moe_blocks_per_expert(expert_stride, down_dtype, "real gemma4 q5km down")
+            .unwrap();
+    let active_list: Vec<usize> = (0..n_expert_used).map(|slot| n_expert - 1 - slot).collect();
+    let input: Vec<f32> = (0..n_expert_used * expert_inter_dim)
+        .map(|i| ((i * 17 % 257) as f32 - 128.0) * 0.01)
+        .collect();
+
+    let mut tpe = vec![0u32; n_expert];
+    let mut hids = vec![0i32; n_expert * n_tokens];
+    for (slot, &expert) in active_list.iter().enumerate() {
+        tpe[expert] = 1;
+        hids[expert * n_tokens] = slot as i32;
+    }
+    let mut active = vec![0u32; 1 + n_expert_used];
+    active[0] = active_list.len() as u32;
+    for (slot, &expert) in active_list.iter().enumerate() {
+        active[1 + slot] = expert as u32;
+    }
+
+    let weights_buf = MetalBuffer::from_slice(backend.device.device(), down_raw).unwrap();
+    let input_buf = MetalBuffer::from_slice(backend.device.device(), &input).unwrap();
+    let tpe_buf = MetalBuffer::from_slice(backend.device.device(), &tpe).unwrap();
+    let hids_buf = MetalBuffer::from_slice(backend.device.device(), &hids).unwrap();
+    let active_buf = MetalBuffer::from_slice(backend.device.device(), &active).unwrap();
+    let output_buf = MetalBuffer::new(
+        backend.device.device(),
+        n_expert_used * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend.ops.encode_moe_mul_mat_id(
+                encoder,
+                &weights_buf,
+                &input_buf,
+                &tpe_buf,
+                &hids_buf,
+                &output_buf,
+                down_dtype,
+                dim as u32,
+                expert_inter_dim as u32,
+                n_tokens as u32,
+                n_expert_used as u32,
+                n_expert as u32,
+                blocks_per_expert,
+                &active_buf,
+                active_list.len() as u32,
+                false,
+                true,
+            )
+        })
+        .unwrap();
+
+    let actual = unsafe { output_buf.as_slice::<f32>()[..n_expert_used * dim].to_vec() };
+    let mut expected = vec![0.0f32; n_expert_used * dim];
+    for (slot, &expert) in active_list.iter().enumerate() {
+        let expert_weights = crate::model::moe_utils::expert_quant_slice(
+            down_raw,
+            expert_stride,
+            expert,
+            &expert_weight_name,
+        )
+        .unwrap();
+        cpu.dequant_matmul(
+            expert_weights,
+            down_dtype,
+            &input[slot * expert_inter_dim..(slot + 1) * expert_inter_dim],
+            &mut expected[slot * dim..(slot + 1) * dim],
+            dim,
+            1,
+            expert_inter_dim,
+        );
+    }
+
+    let diff = max_abs_diff(&actual, &expected);
+    let scale = expected
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        diff / scale < 3e-3,
+        "real Gemma4 Q5_K_M down moe_mul_mat_id mismatch in {prefix}: rel_diff={} max_diff={diff}",
+        diff / scale,
+    );
+}
+
+#[test]
+fn test_real_gemma4_q6_routed_moe_helper_matches_cpu_reference() {
+    let _env_lock = lock_env_test();
+    let path = workspace_model_path("gemma-4-26B-A4B-it-Q6_K.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let mapped = MappedModel::open(&path).unwrap();
+    let cfg = ModelConfig::from_gguf(&mapped.header).unwrap();
+    let weights = WeightStore::new(&mapped);
+    let backend = MetalBackend::new().unwrap();
+    let cpu = super::super::cpu::CpuBackend;
+
+    let prefix = (0..cfg.n_layers as usize)
+        .map(|layer| format!("blk.{layer}"))
+        .find(|prefix| weights.has(&format!("{prefix}.ffn_gate_inp.weight")))
+        .expect("expected Gemma4 Q6_K fixture to include at least one MoE layer");
+
+    let n_tokens = 2usize;
+    let n_expert = cfg.n_expert.unwrap_or(0) as usize;
+    let n_expert_used = cfg.n_expert_used.unwrap_or(0) as usize;
+    let dim = cfg.embedding_dim as usize;
+    let expert_inter_dim = cfg.expert_intermediate_dim.unwrap_or(0) as usize;
+    let eps = cfg.rms_norm_eps;
+    let router_input_scale = (dim as f32).sqrt().recip();
+    let hidden: Vec<f32> = (0..n_tokens * dim)
+        .map(|i| ((i * 31 % 997) as f32 - 498.0) * 0.002)
+        .collect();
+
+    let router_scale = weights
+        .f32_slice(&format!("{prefix}.ffn_gate_inp.scale"))
+        .unwrap();
+    let pre_ff2_w = weights
+        .f32_slice(&format!("{prefix}.pre_ffw_norm_2.weight"))
+        .unwrap();
+    let post_ff2_w = weights
+        .f32_slice(&format!("{prefix}.post_ffw_norm_2.weight"))
+        .unwrap();
+    let expert_scales = weights
+        .f32_slice(&format!("{prefix}.ffn_down_exps.scale"))
+        .unwrap();
+    let (router_raw, router_dtype) = weights
+        .raw_with_dtype(&format!("{prefix}.ffn_gate_inp.weight"))
+        .unwrap();
+    let (gate_up_raw, gate_up_dtype) = weights
+        .raw_with_dtype(&format!("{prefix}.ffn_gate_up_exps.weight"))
+        .unwrap();
+    let (down_raw, down_dtype) = weights
+        .raw_with_dtype(&format!("{prefix}.ffn_down_exps.weight"))
+        .unwrap();
+    let fused_dim = 2 * expert_inter_dim;
+    let gate_up_stride =
+        crate::model::moe_utils::expert_byte_stride(gate_up_dtype, fused_dim * dim);
+    let down_stride =
+        crate::model::moe_utils::expert_byte_stride(down_dtype, dim * expert_inter_dim);
+
+    let mut expert_input = vec![0.0f32; n_tokens * dim];
+    let mut router_input = vec![0.0f32; n_tokens * dim];
+    let mut expert_ids = vec![-1i32; n_tokens * n_expert_used];
+    let mut expert_weights = vec![0.0f32; n_tokens * n_expert_used];
+    let mut expected = vec![0.0f32; n_tokens * dim];
+    let mut fused_buf = vec![0.0f32; fused_dim];
+    let mut down_buf = vec![0.0f32; dim];
+    let mut router_logits = vec![0.0f32; n_expert];
+    let gate_up_name = format!("{prefix}.ffn_gate_up_exps.weight");
+    let down_name = format!("{prefix}.ffn_down_exps.weight");
+
+    for token in 0..n_tokens {
+        let start = token * dim;
+        let end = start + dim;
+        let hidden_token = &hidden[start..end];
+        let expert_input_token = &mut expert_input[start..end];
+        rms_norm::rms_norm_out(hidden_token, pre_ff2_w, expert_input_token, eps);
+
+        let router_input_token = &mut router_input[start..end];
+        router_input_token.copy_from_slice(hidden_token);
+        rms_norm::rms_norm_no_weight(router_input_token, eps);
+        for ((value, &scale),) in router_input_token
+            .iter_mut()
+            .zip(router_scale.iter())
+            .map(|pair| (pair,))
+        {
+            *value *= router_input_scale * scale;
+        }
+
+        cpu.dequant_matmul(
+            router_raw,
+            router_dtype,
+            router_input_token,
+            &mut router_logits,
+            n_expert,
+            1,
+            dim,
+        );
+        let (top_indices, mut top_weights) =
+            crate::model::moe_utils::top_k_softmax(&router_logits, n_expert_used);
+        for (weight, &expert_idx) in top_weights.iter_mut().zip(top_indices.iter()) {
+            *weight *= expert_scales[expert_idx];
+        }
+
+        let slot_base = token * n_expert_used;
+        let expected_token = &mut expected[start..end];
+        for (slot_idx, (&expert_idx, &weight)) in
+            top_indices.iter().zip(top_weights.iter()).enumerate()
+        {
+            expert_ids[slot_base + slot_idx] = expert_idx as i32;
+            expert_weights[slot_base + slot_idx] = weight;
+
+            let expert_gate_up = crate::model::moe_utils::expert_quant_slice(
+                gate_up_raw,
+                gate_up_stride,
+                expert_idx,
+                &gate_up_name,
+            )
+            .unwrap();
+            cpu.dequant_matmul(
+                expert_gate_up,
+                gate_up_dtype,
+                expert_input_token,
+                &mut fused_buf,
+                fused_dim,
+                1,
+                dim,
+            );
+            let (gate_half, up_half) = fused_buf.split_at_mut(expert_inter_dim);
+            crate::compute::gelu::gelu_elementwise_mul(gate_half, up_half);
+
+            let expert_down = crate::model::moe_utils::expert_quant_slice(
+                down_raw,
+                down_stride,
+                expert_idx,
+                &down_name,
+            )
+            .unwrap();
+            cpu.dequant_matmul(
+                expert_down,
+                down_dtype,
+                gate_half,
+                &mut down_buf,
+                dim,
+                1,
+                expert_inter_dim,
+            );
+            for (dst, &src) in expected_token.iter_mut().zip(down_buf.iter()) {
+                *dst += weight * src;
+            }
+        }
+    }
+
+    for token in 0..n_tokens {
+        let start = token * dim;
+        rms_norm::rms_norm(&mut expected[start..start + dim], post_ff2_w, eps);
+    }
+
+    let mut expected_via_old_helper = vec![0.0f32; n_tokens * dim];
+    backend
+        .ops
+        .moe_fused_gate_up_gelu_dispatch(
+            &expert_input,
+            &mut expected_via_old_helper,
+            &expert_ids,
+            &expert_weights,
+            gate_up_raw,
+            down_raw,
+            gate_up_dtype,
+            down_dtype,
+            n_tokens,
+            n_expert,
+            n_expert_used,
+            dim,
+            expert_inter_dim,
+            gate_up_stride,
+            down_stride,
+        )
+        .unwrap();
+    for token in 0..n_tokens {
+        let start = token * dim;
+        rms_norm::rms_norm(
+            &mut expected_via_old_helper[start..start + dim],
+            post_ff2_w,
+            eps,
+        );
+    }
+
+    let old_diff = max_abs_diff(&expected_via_old_helper, &expected);
+    let old_scale = expected
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        old_diff / old_scale < 3e-3,
+        "real Gemma4 Q6 old fused gate_up helper drifted from CPU in {prefix}: rel_diff={} max_diff={old_diff}",
+        old_diff / old_scale,
+    );
+
+    backend.ops.init_batch_scratches(&cfg, n_tokens);
+    let router_scale_key = backend.ops.ensure_f32_cached(router_scale);
+    let pre_ff2_key = backend.ops.ensure_f32_cached(pre_ff2_w);
+    let post_ff2_key = backend.ops.ensure_f32_cached(post_ff2_w);
+    let expert_scales_key = backend.ops.ensure_f32_cached(expert_scales);
+    let router_key = backend.ops.ensure_moe_quant_cached(router_raw);
+    let gate_up_key = backend.ops.ensure_moe_quant_cached(gate_up_raw);
+    let down_key = backend.ops.ensure_moe_quant_cached(down_raw);
+
+    let weight_cache = backend.ops.lock_weight_cache();
+    let moe_weight_cache = backend.ops.lock_moe_weight_cache();
+    let router_scale_buf = weight_cache.get(&router_scale_key).unwrap();
+    let pre_ff2_buf = weight_cache.get(&pre_ff2_key).unwrap();
+    let post_ff2_buf = weight_cache.get(&post_ff2_key).unwrap();
+    let expert_scales_buf = weight_cache.get(&expert_scales_key).unwrap();
+    let router_buf = moe_weight_cache.get(&router_key).unwrap();
+    let gate_up_buf = moe_weight_cache.get(&gate_up_key).unwrap();
+    let down_buf_gpu = moe_weight_cache.get(&down_key).unwrap();
+
+    let mut batch_guard = backend.ops.batch_scratches();
+    let bs = batch_guard.as_mut().unwrap();
+    unsafe {
+        bs.hidden.as_mut_slice::<f32>()[..hidden.len()].copy_from_slice(&hidden);
+    }
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend.ops.encode_gemma4_routed_moe_fused_gate_up(
+                encoder,
+                bs,
+                router_scale_buf,
+                router_buf,
+                router_dtype,
+                pre_ff2_buf,
+                post_ff2_buf,
+                expert_scales_buf,
+                gate_up_buf,
+                gate_up_dtype,
+                down_buf_gpu,
+                down_dtype,
+                n_tokens,
+                n_expert,
+                n_expert_used,
+                dim,
+                expert_inter_dim,
+                gate_up_stride,
+                down_stride,
+                eps,
+            )
+        })
+        .unwrap();
+
+    let actual =
+        unsafe { bs.moe_accum.as_ref().unwrap().as_slice::<f32>()[..n_tokens * dim].to_vec() };
+    let actual_ids = unsafe {
+        bs.moe_expert_ids.as_ref().unwrap().as_slice::<i32>()[..n_tokens * n_expert_used].to_vec()
+    };
+    let actual_weights = unsafe {
+        bs.moe_expert_weights.as_ref().unwrap().as_slice::<f32>()[..n_tokens * n_expert_used]
+            .to_vec()
+    };
+
+    assert_eq!(
+        actual_ids, expert_ids,
+        "real Gemma4 Q6 routed helper selected different experts in {prefix}",
+    );
+
+    let router_weight_diff = max_abs_diff(&actual_weights, &expert_weights);
+    let router_weight_scale = expert_weights
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        router_weight_diff / router_weight_scale < 3e-3,
+        "real Gemma4 Q6 routed helper produced different expert weights in {prefix}: rel_diff={} max_diff={router_weight_diff}",
+        router_weight_diff / router_weight_scale,
+    );
+
+    let diff = max_abs_diff(&actual, &expected_via_old_helper);
+    let scale = expected_via_old_helper
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    assert!(
+        diff / scale < 3e-3,
+        "real Gemma4 Q6 routed helper mismatch in {prefix}: rel_diff={} max_diff={diff}",
+        diff / scale,
+    );
+}
+
+#[test]
+fn test_real_gemma4_q6_shared_ffn_path_matches_cpu_reference() {
+    let _env_lock = lock_env_test();
+    let path = workspace_model_path("gemma-4-26B-A4B-it-Q6_K.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let mapped = MappedModel::open(&path).unwrap();
+    let cfg = ModelConfig::from_gguf(&mapped.header).unwrap();
+    let weights = WeightStore::new(&mapped);
+    let backend = MetalBackend::new().unwrap();
+    let cpu = super::super::cpu::CpuBackend;
+
+    let prefix = (0..cfg.n_layers as usize)
+        .map(|layer| format!("blk.{layer}"))
+        .find(|prefix| weights.has(&format!("{prefix}.ffn_gate_inp.weight")))
+        .expect("expected Gemma4 Q6_K fixture to include at least one MoE layer");
+
+    let tensor_output_rows = |name: &str| -> usize {
+        match weights.info(name).unwrap().shape.as_slice() {
+            [_input_dim] => 1,
+            [_input_dim, output_dim, ..] => *output_dim as usize,
+            other => panic!("unexpected tensor shape for {name}: {other:?}"),
+        }
+    };
+
+    let n_tokens = 2usize;
+    let dim = cfg.embedding_dim as usize;
+    let inter_dim = tensor_output_rows(&format!("{prefix}.ffn_gate.weight"));
+    let eps = cfg.rms_norm_eps;
+    let hidden: Vec<f32> = (0..n_tokens * dim)
+        .map(|i| ((i * 37 % 1021) as f32 - 510.0) * 0.0015)
+        .collect();
+
+    let ffn_norm_w = weights
+        .f32_slice(&format!("{prefix}.ffn_norm.weight"))
+        .unwrap();
+    let post_ff1_w = weights
+        .f32_slice(&format!("{prefix}.post_ffw_norm_1.weight"))
+        .unwrap();
+    let (wg_raw, wg_dtype) = weights
+        .raw_with_dtype(&format!("{prefix}.ffn_gate.weight"))
+        .unwrap();
+    let (wu_raw, wu_dtype) = weights
+        .raw_with_dtype(&format!("{prefix}.ffn_up.weight"))
+        .unwrap();
+    let (wd_raw, wd_dtype) = weights
+        .raw_with_dtype(&format!("{prefix}.ffn_down.weight"))
+        .unwrap();
+    let wu_rows = tensor_output_rows(&format!("{prefix}.ffn_up.weight"));
+    let wd_input_rows = match weights
+        .info(&format!("{prefix}.ffn_down.weight"))
+        .unwrap()
+        .shape
+        .as_slice()
+    {
+        [input_dim, _output_dim, ..] => *input_dim as usize,
+        other => panic!("unexpected tensor shape for {prefix}.ffn_down.weight: {other:?}"),
+    };
+    assert_eq!(
+        wu_rows, inter_dim,
+        "Gemma4 shared FFN gate/up rows diverged in {prefix}: gate_rows={inter_dim} up_rows={wu_rows}",
+    );
+    assert_eq!(
+        wd_input_rows, inter_dim,
+        "Gemma4 shared FFN down input rows diverged in {prefix}: gate_rows={inter_dim} down_input_rows={wd_input_rows}",
+    );
+
+    let q6_blocks_per_row = dim / 256;
+    let q6_row_bytes = q6_blocks_per_row * 210;
+    assert_eq!(
+        wg_raw.len(),
+        inter_dim * q6_row_bytes,
+        "Gemma4 Q6 shared gate raw bytes are not tightly packed rows in {prefix}: len={} expected={}",
+        wg_raw.len(),
+        inter_dim * q6_row_bytes,
+    );
+    let q6_first_row = &wg_raw[..q6_row_bytes];
+    let mut q6_first_row_cpu = vec![0.0f32; dim];
+    crate::quant::q6_k::dequantize(q6_first_row, &mut q6_first_row_cpu);
+    let q6_first_row_buf = MetalBuffer::from_bytes(backend.device.device(), q6_first_row).unwrap();
+    let q6_first_row_gpu_buf =
+        MetalBuffer::new(backend.device.device(), dim * std::mem::size_of::<f32>()).unwrap();
+    backend
+        .ops
+        .dequant
+        .dequant_q6_k(
+            &backend.device,
+            &q6_first_row_buf,
+            &q6_first_row_gpu_buf,
+            q6_blocks_per_row as u32,
+        )
+        .unwrap();
+    let q6_first_row_gpu = unsafe { q6_first_row_gpu_buf.as_slice::<f32>()[..dim].to_vec() };
+    let q6_row_scale = q6_first_row_cpu
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    let q6_row_diff = max_abs_diff(&q6_first_row_gpu, &q6_first_row_cpu);
+    assert!(
+        q6_row_diff / q6_row_scale < 3e-3,
+        "real Gemma4 Q6 first-row dequant mismatch in {prefix}: rel_diff={} max_diff={q6_row_diff}",
+        q6_row_diff / q6_row_scale,
+    );
+
+    let mut norm = vec![0.0f32; n_tokens * dim];
+    let mut expected_gate = vec![0.0f32; n_tokens * inter_dim];
+    let mut expected_up = vec![0.0f32; n_tokens * inter_dim];
+    let mut expected = vec![0.0f32; n_tokens * dim];
+    for token in 0..n_tokens {
+        let src = &hidden[token * dim..(token + 1) * dim];
+        let dst = &mut norm[token * dim..(token + 1) * dim];
+        rms_norm::rms_norm_out(src, ffn_norm_w, dst, eps);
+    }
+    cpu.dequant_matmul_token_major(
+        wg_raw,
+        wg_dtype,
+        &norm,
+        &mut expected_gate,
+        n_tokens,
+        inter_dim,
+        dim,
+    );
+    cpu.dequant_matmul_token_major(
+        wu_raw,
+        wu_dtype,
+        &norm,
+        &mut expected_up,
+        n_tokens,
+        inter_dim,
+        dim,
+    );
+    let expected_gate_raw = expected_gate.clone();
+    for token in 0..n_tokens {
+        let gate_row = &mut expected_gate[token * inter_dim..(token + 1) * inter_dim];
+        let up_row = &expected_up[token * inter_dim..(token + 1) * inter_dim];
+        crate::compute::gelu::gelu_elementwise_mul(gate_row, up_row);
+    }
+    cpu.dequant_matmul_token_major(
+        wd_raw,
+        wd_dtype,
+        &expected_gate,
+        &mut expected,
+        n_tokens,
+        dim,
+        inter_dim,
+    );
+    for token in 0..n_tokens {
+        let dst = &mut expected[token * dim..(token + 1) * dim];
+        rms_norm::rms_norm(dst, post_ff1_w, eps);
+    }
+
+    let norm_buf = MetalBuffer::from_slice(backend.device.device(), &norm).unwrap();
+    let gate_buf = MetalBuffer::new(
+        backend.device.device(),
+        n_tokens * inter_dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let up_buf = MetalBuffer::new(
+        backend.device.device(),
+        n_tokens * inter_dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let fused_out_buf = MetalBuffer::new(
+        backend.device.device(),
+        n_tokens * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let sep_out_buf = MetalBuffer::new(
+        backend.device.device(),
+        n_tokens * dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let norm_token0_buf = MetalBuffer::from_slice(backend.device.device(), &norm[..dim]).unwrap();
+    let gate_matvec_buf = MetalBuffer::new(
+        backend.device.device(),
+        inter_dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let gate_matvec_base_buf = MetalBuffer::new(
+        backend.device.device(),
+        inter_dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let gate_matvec_nr2_buf = MetalBuffer::new(
+        backend.device.device(),
+        inter_dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let gate_matvec_ilp4_buf = MetalBuffer::new(
+        backend.device.device(),
+        inter_dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let gate_matvec_row0_buf =
+        MetalBuffer::new(backend.device.device(), std::mem::size_of::<f32>()).unwrap();
+    let gate_matvec_row4_buf =
+        MetalBuffer::new(backend.device.device(), 4 * std::mem::size_of::<f32>()).unwrap();
+    let norm_f16_buf = MetalBuffer::new(
+        backend.device.device(),
+        n_tokens * dim * std::mem::size_of::<half::f16>(),
+    )
+    .unwrap();
+    let gate_f16in_buf = MetalBuffer::new(
+        backend.device.device(),
+        n_tokens * inter_dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    let wg_buf = MetalBuffer::from_bytes(backend.device.device(), wg_raw).unwrap();
+    let wu_buf = MetalBuffer::from_bytes(backend.device.device(), wu_raw).unwrap();
+    let wd_buf = MetalBuffer::from_bytes(backend.device.device(), wd_raw).unwrap();
+    let post_ff1_buf = MetalBuffer::from_slice(backend.device.device(), post_ff1_w).unwrap();
+
+    if wd_dtype == GgmlType::Q6K {
+        backend
+            .device
+            .execute_sync(|encoder| {
+                backend.ops.encode_quant_batch_matmul(
+                    encoder,
+                    &wg_buf,
+                    &norm_buf,
+                    &gate_buf,
+                    inter_dim as u32,
+                    n_tokens as u32,
+                    dim as u32,
+                    wg_dtype,
+                )?;
+                backend.ops.encode_quant_batch_matmul(
+                    encoder,
+                    &wu_buf,
+                    &norm_buf,
+                    &up_buf,
+                    inter_dim as u32,
+                    n_tokens as u32,
+                    dim as u32,
+                    wu_dtype,
+                )?;
+                backend.ops.dequant.encode_fused_batch_q6_k_gelu(
+                    encoder,
+                    &wd_buf,
+                    &gate_buf,
+                    &up_buf,
+                    &fused_out_buf,
+                    dim as u32,
+                    n_tokens as u32,
+                    inter_dim as u32,
+                );
+                backend.ops.elementwise.encode_rms_norm_batch(
+                    encoder,
+                    &fused_out_buf,
+                    &post_ff1_buf,
+                    dim as u32,
+                    n_tokens as u32,
+                    eps,
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    backend
+        .device
+        .execute_sync(|encoder| {
+            let base_config = ax_engine_metal::DequantDispatchConfig {
+                q6_k_variant: Some(MatvecProfileVariant::Base),
+                ..backend.ops.dequant_dispatch_config()
+            };
+            let nr2_config = ax_engine_metal::DequantDispatchConfig {
+                q6_k_variant: Some(MatvecProfileVariant::Nr2),
+                ..backend.ops.dequant_dispatch_config()
+            };
+            let ilp4_config = ax_engine_metal::DequantDispatchConfig {
+                q6_k_variant: Some(MatvecProfileVariant::Ilp4),
+                ..backend.ops.dequant_dispatch_config()
+            };
+            backend.ops.elementwise.encode_cast_f32_to_f16(
+                encoder,
+                &norm_buf,
+                &norm_f16_buf,
+                (n_tokens * dim) as u32,
+            );
+            backend.ops.encode_quant_matvec(
+                encoder,
+                &wg_buf,
+                &norm_token0_buf,
+                &gate_matvec_buf,
+                inter_dim as u32,
+                dim as u32,
+                wg_dtype,
+            )?;
+            backend.ops.dequant.encode_fused_matvec_q6_k_with_config(
+                encoder,
+                &wg_buf,
+                &norm_token0_buf,
+                &gate_matvec_base_buf,
+                inter_dim as u32,
+                dim as u32,
+                base_config,
+            );
+            backend.ops.dequant.encode_fused_matvec_q6_k_with_config(
+                encoder,
+                &wg_buf,
+                &norm_token0_buf,
+                &gate_matvec_nr2_buf,
+                inter_dim as u32,
+                dim as u32,
+                nr2_config,
+            );
+            backend.ops.dequant.encode_fused_matvec_q6_k_with_config(
+                encoder,
+                &wg_buf,
+                &norm_token0_buf,
+                &gate_matvec_ilp4_buf,
+                inter_dim as u32,
+                dim as u32,
+                ilp4_config,
+            );
+            backend.ops.dequant.encode_fused_matvec_q6_k_with_config(
+                encoder,
+                &wg_buf,
+                &norm_token0_buf,
+                &gate_matvec_row0_buf,
+                1,
+                dim as u32,
+                base_config,
+            );
+            backend.ops.dequant.encode_fused_matvec_q6_k_with_config(
+                encoder,
+                &wg_buf,
+                &norm_token0_buf,
+                &gate_matvec_row4_buf,
+                4,
+                dim as u32,
+                base_config,
+            );
+            backend.ops.encode_quant_batch_matmul(
+                encoder,
+                &wg_buf,
+                &norm_buf,
+                &gate_buf,
+                inter_dim as u32,
+                n_tokens as u32,
+                dim as u32,
+                wg_dtype,
+            )?;
+            backend
+                .ops
+                .dequant
+                .encode_fused_batch_q6_k_f16in_with_config(
+                    encoder,
+                    &wg_buf,
+                    &norm_f16_buf,
+                    &gate_f16in_buf,
+                    inter_dim as u32,
+                    n_tokens as u32,
+                    dim as u32,
+                    backend.ops.dequant_dispatch_config(),
+                );
+            backend.ops.encode_quant_batch_matmul(
+                encoder,
+                &wu_buf,
+                &norm_buf,
+                &up_buf,
+                inter_dim as u32,
+                n_tokens as u32,
+                dim as u32,
+                wu_dtype,
+            )?;
+            backend.ops.elementwise.encode_gelu_elementwise_mul_batch(
+                encoder,
+                &gate_buf,
+                &up_buf,
+                inter_dim as u32,
+                n_tokens as u32,
+            );
+            backend.ops.encode_quant_batch_matmul(
+                encoder,
+                &wd_buf,
+                &gate_buf,
+                &sep_out_buf,
+                dim as u32,
+                n_tokens as u32,
+                inter_dim as u32,
+                wd_dtype,
+            )?;
+            backend.ops.elementwise.encode_rms_norm_batch(
+                encoder,
+                &sep_out_buf,
+                &post_ff1_buf,
+                dim as u32,
+                n_tokens as u32,
+                eps,
+            );
+            Ok(())
+        })
+        .unwrap();
+
+    let sep_actual = unsafe { sep_out_buf.as_slice::<f32>()[..n_tokens * dim].to_vec() };
+    let gate_actual = unsafe { gate_buf.as_slice::<f32>()[..n_tokens * inter_dim].to_vec() };
+    let up_actual = unsafe { up_buf.as_slice::<f32>()[..n_tokens * inter_dim].to_vec() };
+    let gate_matvec_actual = unsafe { gate_matvec_buf.as_slice::<f32>()[..inter_dim].to_vec() };
+    let gate_matvec_base = unsafe { gate_matvec_base_buf.as_slice::<f32>()[..inter_dim].to_vec() };
+    let gate_matvec_nr2 = unsafe { gate_matvec_nr2_buf.as_slice::<f32>()[..inter_dim].to_vec() };
+    let gate_matvec_ilp4 = unsafe { gate_matvec_ilp4_buf.as_slice::<f32>()[..inter_dim].to_vec() };
+    let gate_matvec_row0 = unsafe { gate_matvec_row0_buf.as_slice::<f32>()[0] };
+    let gate_matvec_row4 = unsafe { gate_matvec_row4_buf.as_slice::<f32>()[..4].to_vec() };
+    let gate_f16in_actual =
+        unsafe { gate_f16in_buf.as_slice::<f32>()[..n_tokens * inter_dim].to_vec() };
+
+    let scale = expected
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    let gate_proj_scale = expected_gate_raw
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    let gate_scale = expected_gate
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    let up_scale = expected_up
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    let gate_diff = max_abs_diff(&gate_actual, &expected_gate);
+    let gate_matvec_diff = max_abs_diff(&gate_matvec_actual, &expected_gate_raw[..inter_dim]);
+    let gate_matvec_base_diff = max_abs_diff(&gate_matvec_base, &expected_gate_raw[..inter_dim]);
+    let gate_matvec_nr2_diff = max_abs_diff(&gate_matvec_nr2, &expected_gate_raw[..inter_dim]);
+    let gate_matvec_ilp4_diff = max_abs_diff(&gate_matvec_ilp4, &expected_gate_raw[..inter_dim]);
+    let gate_matvec_row0_diff = (gate_matvec_row0 - expected_gate[0]).abs();
+    let gate_matvec_row4_diff = max_abs_diff(&gate_matvec_row4, &expected_gate_raw[..4]);
+    let gate_f16in_diff = max_abs_diff(&gate_f16in_actual, &expected_gate_raw);
+    let up_diff = max_abs_diff(&up_actual, &expected_up);
+    let gate_matvec_max_row = gate_matvec_actual
+        .iter()
+        .zip(expected_gate_raw[..inter_dim].iter())
+        .enumerate()
+        .max_by(
+            |(_, (lhs_actual, lhs_expected)), (_, (rhs_actual, rhs_expected))| {
+                (*lhs_actual - *lhs_expected)
+                    .abs()
+                    .partial_cmp(&(*rhs_actual - *rhs_expected).abs())
+                    .unwrap()
+            },
+        )
+        .map(|(row, _)| row)
+        .unwrap();
+    let gate_matvec_standalone_buf = MetalBuffer::new(
+        backend.device.device(),
+        inter_dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    backend
+        .ops
+        .dequant
+        .fused_matvec_q6_k_with_config(
+            &backend.device,
+            &wg_buf,
+            &norm_token0_buf,
+            &gate_matvec_standalone_buf,
+            inter_dim as u32,
+            dim as u32,
+            ax_engine_metal::DequantDispatchConfig {
+                q6_k_variant: Some(MatvecProfileVariant::Base),
+                ..backend.ops.dequant_dispatch_config()
+            },
+        )
+        .unwrap();
+    let gate_matvec_standalone =
+        unsafe { gate_matvec_standalone_buf.as_slice::<f32>()[..inter_dim].to_vec() };
+    let gate_matvec_standalone_diff =
+        max_abs_diff(&gate_matvec_standalone, &expected_gate_raw[..inter_dim]);
+    let gate_batch_standalone_buf = MetalBuffer::new(
+        backend.device.device(),
+        n_tokens * inter_dim * std::mem::size_of::<f32>(),
+    )
+    .unwrap();
+    backend
+        .device
+        .execute_sync(|encoder| {
+            backend.ops.encode_quant_batch_matmul(
+                encoder,
+                &wg_buf,
+                &norm_buf,
+                &gate_batch_standalone_buf,
+                inter_dim as u32,
+                n_tokens as u32,
+                dim as u32,
+                wg_dtype,
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let gate_batch_standalone =
+        unsafe { gate_batch_standalone_buf.as_slice::<f32>()[..n_tokens * inter_dim].to_vec() };
+    let gate_batch_standalone_diff = max_abs_diff(&gate_batch_standalone, &expected_gate_raw);
+    let probe_single_row = |row: usize| -> f32 {
+        let row_start = row * q6_row_bytes;
+        let row_end = row_start + q6_row_bytes;
+        let row_buf =
+            MetalBuffer::from_bytes(backend.device.device(), &wg_raw[row_start..row_end]).unwrap();
+        let out_buf =
+            MetalBuffer::new(backend.device.device(), std::mem::size_of::<f32>()).unwrap();
+        backend
+            .ops
+            .dequant
+            .fused_matvec_q6_k_with_config(
+                &backend.device,
+                &row_buf,
+                &norm_token0_buf,
+                &out_buf,
+                1,
+                dim as u32,
+                ax_engine_metal::DequantDispatchConfig {
+                    q6_k_variant: Some(MatvecProfileVariant::Base),
+                    ..backend.ops.dequant_dispatch_config()
+                },
+            )
+            .unwrap();
+        let actual = unsafe { out_buf.as_slice::<f32>()[0] };
+        (actual - expected_gate_raw[row]).abs()
+    };
+    let gate_matvec_mid_single_row_diff = probe_single_row(inter_dim / 2);
+    let gate_matvec_last_single_row_diff = probe_single_row(inter_dim - 1);
+    let gate_matvec_max_row_single_row_diff = probe_single_row(gate_matvec_max_row);
+    let max_row_start = gate_matvec_max_row * q6_row_bytes;
+    let max_row_end = max_row_start + q6_row_bytes;
+    let max_row_raw = &wg_raw[max_row_start..max_row_end];
+    let mut max_row_cpu = vec![0.0f32; dim];
+    crate::quant::q6_k::dequantize(max_row_raw, &mut max_row_cpu);
+    let max_row_src_buf = MetalBuffer::from_bytes(backend.device.device(), max_row_raw).unwrap();
+    let max_row_gpu_buf =
+        MetalBuffer::new(backend.device.device(), dim * std::mem::size_of::<f32>()).unwrap();
+    backend
+        .ops
+        .dequant
+        .dequant_q6_k(
+            &backend.device,
+            &max_row_src_buf,
+            &max_row_gpu_buf,
+            q6_blocks_per_row as u32,
+        )
+        .unwrap();
+    let max_row_gpu = unsafe { max_row_gpu_buf.as_slice::<f32>()[..dim].to_vec() };
+    let max_row_dequant_scale = max_row_cpu
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
+    let max_row_dequant_diff = max_abs_diff(&max_row_gpu, &max_row_cpu);
+    let mut max_row_block_idx = 0usize;
+    let mut max_row_block_diff = 0.0f32;
+    let mut max_row_fullk_block_idx = 0usize;
+    let mut max_row_fullk_block_diff = 0.0f32;
+    let mut max_row_abs_block_sum = 0.0f32;
+    let mut first_bad_prefix_blocks = 0usize;
+    let mut worst_prefix_blocks = 0usize;
+    let mut worst_prefix_diff = 0.0f32;
+    let run_sparse_fullk = |block_indices: &[usize]| -> f32 {
+        let mut input_sparse = vec![0.0f32; dim];
+        let mut expected = 0.0f32;
+        for &block_idx in block_indices {
+            let input_start = block_idx * 256;
+            let input_end = input_start + 256;
+            let input_block = &norm[input_start..input_end];
+            input_sparse[input_start..input_end].copy_from_slice(input_block);
+
+            let block_start = block_idx * 210;
+            let block_end = block_start + 210;
+            let block_raw = &max_row_raw[block_start..block_end];
+            let mut cpu_block = vec![0.0f32; 256];
+            crate::quant::q6_k::dequantize(block_raw, &mut cpu_block);
+            expected += cpu_block
+                .iter()
+                .zip(input_block.iter())
+                .map(|(w, x)| w * x)
+                .sum::<f32>();
+        }
+
+        let input_sparse_buf =
+            MetalBuffer::from_slice(backend.device.device(), &input_sparse).unwrap();
+        let out_buf =
+            MetalBuffer::new(backend.device.device(), std::mem::size_of::<f32>()).unwrap();
+        backend
+            .ops
+            .dequant
+            .fused_matvec_q6_k_with_config(
+                &backend.device,
+                &max_row_src_buf,
+                &input_sparse_buf,
+                &out_buf,
+                1,
+                dim as u32,
+                ax_engine_metal::DequantDispatchConfig {
+                    q6_k_variant: Some(MatvecProfileVariant::Base),
+                    ..backend.ops.dequant_dispatch_config()
+                },
+            )
+            .unwrap();
+        let actual = unsafe { out_buf.as_slice::<f32>()[0] };
+        (actual - expected).abs()
+    };
+    for block_idx in 0..q6_blocks_per_row {
+        let block_start = block_idx * 210;
+        let block_end = block_start + 210;
+        let block_raw = &max_row_raw[block_start..block_end];
+        let input_start = block_idx * 256;
+        let input_end = input_start + 256;
+        let input_block = &norm[..dim][input_start..input_end];
+        let mut cpu_block = vec![0.0f32; 256];
+        crate::quant::q6_k::dequantize(block_raw, &mut cpu_block);
+        let expected_block = cpu_block
+            .iter()
+            .zip(input_block.iter())
+            .map(|(w, x)| w * x)
+            .sum::<f32>();
+        max_row_abs_block_sum += expected_block.abs();
+        let block_weights_buf =
+            MetalBuffer::from_bytes(backend.device.device(), block_raw).unwrap();
+        let block_input_buf =
+            MetalBuffer::from_slice(backend.device.device(), input_block).unwrap();
+        let block_out_buf =
+            MetalBuffer::new(backend.device.device(), std::mem::size_of::<f32>()).unwrap();
+        backend
+            .ops
+            .dequant
+            .fused_matvec_q6_k_with_config(
+                &backend.device,
+                &block_weights_buf,
+                &block_input_buf,
+                &block_out_buf,
+                1,
+                256,
+                ax_engine_metal::DequantDispatchConfig {
+                    q6_k_variant: Some(MatvecProfileVariant::Base),
+                    ..backend.ops.dequant_dispatch_config()
+                },
+            )
+            .unwrap();
+        let actual_block = unsafe { block_out_buf.as_slice::<f32>()[0] };
+        let block_diff = (actual_block - expected_block).abs();
+        if block_diff > max_row_block_diff {
+            max_row_block_diff = block_diff;
+            max_row_block_idx = block_idx;
+        }
+
+        let mut input_sparse = vec![0.0f32; dim];
+        input_sparse[input_start..input_end].copy_from_slice(input_block);
+        let input_sparse_buf =
+            MetalBuffer::from_slice(backend.device.device(), &input_sparse).unwrap();
+        let fullk_out_buf =
+            MetalBuffer::new(backend.device.device(), std::mem::size_of::<f32>()).unwrap();
+        backend
+            .ops
+            .dequant
+            .fused_matvec_q6_k_with_config(
+                &backend.device,
+                &max_row_src_buf,
+                &input_sparse_buf,
+                &fullk_out_buf,
+                1,
+                dim as u32,
+                ax_engine_metal::DequantDispatchConfig {
+                    q6_k_variant: Some(MatvecProfileVariant::Base),
+                    ..backend.ops.dequant_dispatch_config()
+                },
+            )
+            .unwrap();
+        let actual_fullk_block = unsafe { fullk_out_buf.as_slice::<f32>()[0] };
+        let fullk_block_diff = (actual_fullk_block - expected_block).abs();
+        if fullk_block_diff > max_row_fullk_block_diff {
+            max_row_fullk_block_diff = fullk_block_diff;
+            max_row_fullk_block_idx = block_idx;
+        }
+    }
+    for prefix_blocks in 1..=q6_blocks_per_row {
+        let prefix_dim = prefix_blocks * 256;
+        let prefix_row_raw = &max_row_raw[..prefix_blocks * 210];
+        let prefix_input = &norm[..prefix_dim];
+        let mut prefix_row_cpu = vec![0.0f32; prefix_dim];
+        crate::quant::q6_k::dequantize(prefix_row_raw, &mut prefix_row_cpu);
+        let prefix_expected = prefix_row_cpu
+            .iter()
+            .zip(prefix_input.iter())
+            .map(|(w, x)| w * x)
+            .sum::<f32>();
+        let prefix_row_buf =
+            MetalBuffer::from_bytes(backend.device.device(), prefix_row_raw).unwrap();
+        let prefix_input_buf =
+            MetalBuffer::from_slice(backend.device.device(), prefix_input).unwrap();
+        let prefix_out_buf =
+            MetalBuffer::new(backend.device.device(), std::mem::size_of::<f32>()).unwrap();
+        backend
+            .ops
+            .dequant
+            .fused_matvec_q6_k_with_config(
+                &backend.device,
+                &prefix_row_buf,
+                &prefix_input_buf,
+                &prefix_out_buf,
+                1,
+                prefix_dim as u32,
+                ax_engine_metal::DequantDispatchConfig {
+                    q6_k_variant: Some(MatvecProfileVariant::Base),
+                    ..backend.ops.dequant_dispatch_config()
+                },
+            )
+            .unwrap();
+        let prefix_actual = unsafe { prefix_out_buf.as_slice::<f32>()[0] };
+        let prefix_diff = (prefix_actual - prefix_expected).abs();
+        if first_bad_prefix_blocks == 0 && prefix_diff > 1e-2 {
+            first_bad_prefix_blocks = prefix_blocks;
+        }
+        if prefix_diff > worst_prefix_diff {
+            worst_prefix_diff = prefix_diff;
+            worst_prefix_blocks = prefix_blocks;
+        }
+    }
+    let same_group_two_block_diff = run_sparse_fullk(&[0, 4]);
+    let diff_group_two_block_diff = run_sparse_fullk(&[0, 1]);
+    assert!(
+        gate_matvec_diff / gate_proj_scale < 3e-3,
+        "real Gemma4 Q6 shared gate matvec mismatch in {prefix} (wg={wg_dtype:?}): default_rel_diff={} max_diff={gate_matvec_diff} base_rel_diff={} nr2_rel_diff={} ilp4_rel_diff={} standalone_matvec_rel_diff={} row0_rel_diff={} row4_rel_diff={} mid_single_row_rel_diff={} last_single_row_rel_diff={} max_row={} max_row_single_row_rel_diff={} max_row_dequant_rel_diff={} max_row_abs_block_sum={} max_row_block={} max_row_block_abs_diff={} max_row_fullk_block={} max_row_fullk_block_abs_diff={} first_bad_prefix_blocks={} worst_prefix_blocks={} worst_prefix_abs_diff={} same_group_two_block_abs_diff={} diff_group_two_block_abs_diff={} batch_f32_rel_diff={} standalone_batch_rel_diff={} batch_f16in_rel_diff={}",
+        gate_matvec_diff / gate_proj_scale,
+        gate_matvec_base_diff / gate_proj_scale,
+        gate_matvec_nr2_diff / gate_proj_scale,
+        gate_matvec_ilp4_diff / gate_proj_scale,
+        gate_matvec_standalone_diff / gate_proj_scale,
+        gate_matvec_row0_diff / gate_proj_scale,
+        gate_matvec_row4_diff / gate_proj_scale,
+        gate_matvec_mid_single_row_diff / gate_proj_scale,
+        gate_matvec_last_single_row_diff / gate_proj_scale,
+        gate_matvec_max_row,
+        gate_matvec_max_row_single_row_diff / gate_proj_scale,
+        max_row_dequant_diff / max_row_dequant_scale,
+        max_row_abs_block_sum,
+        max_row_block_idx,
+        max_row_block_diff,
+        max_row_fullk_block_idx,
+        max_row_fullk_block_diff,
+        first_bad_prefix_blocks,
+        worst_prefix_blocks,
+        worst_prefix_diff,
+        same_group_two_block_diff,
+        diff_group_two_block_diff,
+        gate_diff / gate_scale,
+        gate_batch_standalone_diff / gate_proj_scale,
+        gate_f16in_diff / gate_proj_scale,
+    );
+    assert!(
+        gate_diff / gate_scale < 3e-3,
+        "real Gemma4 Q6 shared gate projection mismatch in {prefix} (wg={wg_dtype:?}): rel_diff={} max_diff={gate_diff} f16in_rel_diff={}",
+        gate_diff / gate_scale,
+        gate_f16in_diff / gate_scale,
+    );
+    assert!(
+        up_diff / up_scale < 3e-3,
+        "real Gemma4 Q6 shared up projection mismatch in {prefix} (wu={wu_dtype:?}): rel_diff={} max_diff={up_diff}",
+        up_diff / up_scale,
+    );
+    let sep_diff = max_abs_diff(&sep_actual, &expected);
+    assert!(
+        sep_diff / scale < 3e-3,
+        "real Gemma4 Q6 shared FFN path mismatch in {prefix} (wg={wg_dtype:?} wu={wu_dtype:?} wd={wd_dtype:?}): rel_diff={} max_diff={sep_diff}",
+        sep_diff / scale,
+    );
+    if wd_dtype == GgmlType::Q6K {
+        let fused_actual = unsafe { fused_out_buf.as_slice::<f32>()[..n_tokens * dim].to_vec() };
+        let fused_diff = max_abs_diff(&fused_actual, &expected);
+        assert!(
+            fused_diff / scale < 3e-3,
+            "real Gemma4 Q6 shared FFN fused path mismatch in {prefix}: rel_diff={} max_diff={fused_diff}",
+            fused_diff / scale,
+        );
+    }
 }
 
 #[test]

@@ -8,11 +8,14 @@ description = "AX Engine Python bindings for local Apple Silicon inference"
 
 [lib]
 name = "_ax_engine"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 ax-engine-sdk.workspace = true
 anyhow.workspace = true
-pyo3.workspace = true
+pyo3 = { workspace = true, features = ["auto-initialize"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[build-dependencies]
+pyo3-build-config = { version = "0.24", features = ["resolve-config"] }

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use ax_engine_core::gguf::MappedModel;
 use ax_engine_core::memory::MemoryBudget;
-use ax_engine_core::model::{InferenceModel, ModelConfig, ModelFingerprint};
+use ax_engine_core::model::{ModelConfig, ModelFingerprint};
 
 #[path = "bench/mod.rs"]
 mod bench_group;
@@ -14,7 +14,7 @@ mod profile_group;
 mod validation_group;
 
 pub use bench_group::arch_config;
-pub use bench_group::{baseline, microbench, perf, prefill_gap, report};
+pub use bench_group::{baseline, microbench, perf, prefill_gap, report, workload};
 pub use profile_group::{prefill_profile, profile};
 pub use validation_group::{parity, soak};
 
@@ -31,9 +31,8 @@ pub(crate) fn configure_backend_for_model(
 
 pub(crate) fn report_planned_kv_budget(
     mapped: &MappedModel,
-    model: &InferenceModel,
+    kv_plan: &ax_engine_core::backend::KvPlan,
 ) -> anyhow::Result<()> {
-    let kv_plan = model.kv_plan();
     let kv_memory = kv_plan.memory_estimate();
     let kv_capacity = kv_plan.capacity_policy();
     let model_bytes = mapped.total_tensor_bytes();

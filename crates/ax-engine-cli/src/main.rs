@@ -9,7 +9,7 @@ use std::path::Path;
 use clap::Parser;
 use serde_json::json;
 
-use ax_engine_core::chat::render_user_prompt;
+use ax_engine_core::chat::{render_infill_prompt, render_user_prompt};
 use ax_engine_core::gguf::MappedModel;
 use ax_engine_core::memory::MemoryBudget;
 use ax_engine_core::metrics::counters::OpTimer;
@@ -147,10 +147,20 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn validate_mode_combinations(args: &args::CliArgs) -> anyhow::Result<()> {
+    let infill_requested = args.infill_prefix.is_some() || args.infill_suffix.is_some();
+
     if args.qwen35_spec_verify_branch != args::Qwen35SpecVerifyBranchArg::Auto
         && args.speculative_draft.is_none()
     {
         anyhow::bail!("--qwen35-spec-verify-branch requires --speculative-draft");
+    }
+
+    if infill_requested && args.prompt.is_some() {
+        anyhow::bail!("--prompt cannot be combined with --infill-prefix/--infill-suffix");
+    }
+
+    if infill_requested && args.chat {
+        anyhow::bail!("--chat cannot be combined with --infill-prefix/--infill-suffix");
     }
 
     if !args.interactive {
@@ -167,6 +177,9 @@ fn validate_mode_combinations(args: &args::CliArgs) -> anyhow::Result<()> {
     }
     if args.speculative_draft.is_some() {
         anyhow::bail!("--speculative-draft is not supported in --interactive mode");
+    }
+    if infill_requested {
+        anyhow::bail!("--infill-prefix/--infill-suffix are not supported in --interactive mode");
     }
 
     Ok(())
@@ -435,10 +448,13 @@ fn run_single(
     args: &args::CliArgs,
     backend: Box<dyn ax_engine_core::backend::Backend>,
 ) -> anyhow::Result<()> {
+    let infill_requested = args.infill_prefix.is_some() || args.infill_suffix.is_some();
     let prompt = args.prompt.as_deref().unwrap_or("");
-    if prompt.is_empty() {
+    if !infill_requested && prompt.is_empty() {
         anyhow::bail!("No prompt provided. Use -p/--prompt or --interactive mode.");
     }
+    let infill_prefix = args.infill_prefix.as_deref().unwrap_or("");
+    let infill_suffix = args.infill_suffix.as_deref().unwrap_or("");
 
     let (mapped, _config, tokenizer, model) =
         load_model(&args.model, args.ctx_size, args.verbose, backend)?;
@@ -454,7 +470,13 @@ fn run_single(
     metrics.update_peak_rss();
 
     // Apply chat template if requested
-    let effective_prompt = if args.chat {
+    let effective_prompt = if infill_requested {
+        let rendered = render_infill_prompt(infill_prefix, infill_suffix, &tokenizer)?;
+        if args.verbose {
+            eprintln!("Infill prompt rendered with model-native FIM tokens");
+        }
+        rendered
+    } else if args.chat {
         let arch = model.arch_name();
         let wrapped = render_user_prompt(prompt, arch);
         if args.verbose {
@@ -466,7 +488,7 @@ fn run_single(
     };
 
     // Tokenize prompt
-    let prompt_tokens = tokenizer.encode(&effective_prompt, true);
+    let prompt_tokens = tokenizer.encode_with_options(&effective_prompt, true, true);
     let n_prompt = prompt_tokens.len();
 
     if args.verbose {
@@ -479,7 +501,9 @@ fn run_single(
     let max_tokens = resolved_max_tokens(args.n_predict, remaining_decode_capacity);
 
     if max_tokens == 0 {
-        if args.chat {
+        if infill_requested {
+            print!("{infill_prefix}{infill_suffix}");
+        } else if args.chat {
             print!("{prompt}\n\n");
         } else {
             let prompt_text = tokenizer.decode(&prompt_tokens);
@@ -545,7 +569,9 @@ fn run_single(
     metrics.prefill_duration = prefill_timer.elapsed();
 
     // Print prompt (in chat mode, show user's original prompt instead of template markup)
-    if args.chat {
+    if infill_requested {
+        print!("{infill_prefix}");
+    } else if args.chat {
         print!("{prompt}\n\n");
     } else {
         let prompt_text = tokenizer.decode(&prompt_tokens);
@@ -705,6 +731,10 @@ fn run_single(
         decode_metal_perf = outcome.metal_perf;
     }
     stream.flush()?;
+    if infill_requested {
+        print!("{infill_suffix}");
+        std::io::stdout().flush()?;
+    }
     metrics.update_peak_rss();
 
     println!(); // final newline
@@ -1155,6 +1185,8 @@ mod tests {
         args::CliArgs {
             model: "model.gguf".to_string(),
             prompt: Some("hello".to_string()),
+            infill_prefix: None,
+            infill_suffix: None,
             n_predict: 16,
             ctx_size: 4096,
             threads: 0,
@@ -1303,6 +1335,37 @@ mod tests {
             err.to_string()
                 .contains("--qwen35-spec-verify-branch requires --speculative-draft")
         );
+    }
+
+    #[test]
+    fn test_validate_mode_combinations_rejects_prompt_with_infill() {
+        let mut args = make_args();
+        args.infill_prefix = Some("fn add(".to_string());
+
+        let err = validate_mode_combinations(&args).unwrap_err();
+        assert!(err.to_string().contains("--prompt cannot be combined"));
+    }
+
+    #[test]
+    fn test_validate_mode_combinations_rejects_chat_with_infill() {
+        let mut args = make_args();
+        args.prompt = None;
+        args.chat = true;
+        args.infill_suffix = Some("}".to_string());
+
+        let err = validate_mode_combinations(&args).unwrap_err();
+        assert!(err.to_string().contains("--chat cannot be combined"));
+    }
+
+    #[test]
+    fn test_validate_mode_combinations_rejects_infill_in_interactive_mode() {
+        let mut args = make_args();
+        args.prompt = None;
+        args.interactive = true;
+        args.infill_prefix = Some("fn add(".to_string());
+
+        let err = validate_mode_combinations(&args).unwrap_err();
+        assert!(err.to_string().contains("--infill-prefix/--infill-suffix"));
     }
 
     #[test]

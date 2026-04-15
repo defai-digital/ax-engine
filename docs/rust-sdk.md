@@ -20,9 +20,15 @@ Use it when you want:
 - `Model::info()`
 - `Model::tokenize(...)`
 - `Model::decode(...)`
+- `Model::supports_infill()`
+- `Model::render_infill_prompt(...)`
 - `Model::session(...)`
 - `Session::generate(...)`
 - `Session::stream(...)`
+- `Session::infill(...)`
+- `Session::infill_with_stats(...)`
+- `Session::stream_infill(...)`
+- `Session::stream_infill_with_stats(...)`
 - `Session::chat(...)`
 - `Session::stream_chat(...)`
 - `Session::reset()`
@@ -45,6 +51,31 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     println!("{}", output.text);
+    Ok(())
+}
+```
+
+## Infill
+
+```rust
+use ax_engine_sdk::{GenerationOptions, LoadOptions, Model, SessionOptions};
+
+fn main() -> anyhow::Result<()> {
+    let model = Model::load(
+        "./models/Qwen3.5-9B-Q4_K_M.gguf",
+        LoadOptions::default(),
+    )?;
+    anyhow::ensure!(model.supports_infill(), "model does not support infill");
+
+    let session = model.session(SessionOptions::default())?;
+    let (output, cache_stats) = session.infill_with_stats(
+        "fn add(a: i32, b: i32) {\n",
+        "\n}\n",
+        GenerationOptions::default().max_tokens(32),
+    )?;
+
+    println!("{}", output.text);
+    println!("cached tokens: {}", cache_stats.cached_tokens);
     Ok(())
 }
 ```

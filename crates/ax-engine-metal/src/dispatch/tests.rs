@@ -5353,11 +5353,11 @@ fn test_elementwise_per_head_rms_norm_silu_mul_batch_matches_cpu() {
                 sum_sq += v * v;
             }
             let inv_rms = 1.0f32 / ((sum_sq / head_dim as f32) + eps).sqrt();
-            for i in 0..head_dim {
+            for (i, w) in weight.iter().copied().take(head_dim).enumerate() {
                 let idx = base + i;
                 let x = expected[idx];
                 let silu = x / (1.0 + (-x).exp());
-                expected[idx] = silu * (src[idx] * inv_rms * weight[i]);
+                expected[idx] = silu * (src[idx] * inv_rms * w);
             }
         }
     }

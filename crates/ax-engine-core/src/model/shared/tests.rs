@@ -81,7 +81,7 @@ fn test_q5_1_is_supported_gpu_decode_and_prefill_quant() {
 }
 
 #[test]
-fn test_real_gemma4_q5km_is_gpu_decode_supported_with_mixed_q5_1_layer_weights() {
+fn test_real_gemma4_q5km_quant_support_includes_mixed_q5_1_layer_weights() {
     let path = workspace_model_path("gemma-4-26B-A4B-it-Q5_K_M.gguf");
     if !path.exists() {
         return;
@@ -104,7 +104,32 @@ fn test_real_gemma4_q5km_is_gpu_decode_supported_with_mixed_q5_1_layer_weights()
     );
     assert!(
         gpu_decode_quant_supported(&cfg, &weights),
-        "Gemma4 Q5_K_M mixed-quant model should stay on GPU decode",
+        "Gemma4 Q5_K_M mixed-quant tensors should remain individually GPU-decode capable",
+    );
+}
+
+#[test]
+fn test_real_gemma4_q5km_effective_kv_plan_keeps_gpu_kv_for_token_major_moe_path() {
+    let path = workspace_model_path("gemma-4-26B-A4B-it-Q5_K_M.gguf");
+    if !path.exists() {
+        return;
+    }
+
+    let mapped = MappedModel::open(&path).unwrap();
+    let cfg = ModelConfig::from_gguf(&mapped.header).unwrap();
+    let weights = WeightStore::new(&mapped);
+    let model = crate::model::InferenceModel::with_backend(
+        cfg,
+        Box::new(crate::backend::metal::MetalBackend::new().unwrap()),
+    )
+    .unwrap();
+
+    assert!(
+        matches!(
+            model.create_model_kv_for_weights(&weights),
+            crate::kv::ModelKv::Gpu(_)
+        ),
+        "Gemma4 26B MoE should keep GPU KV once the token-major MoE path is corrected",
     );
 }
 

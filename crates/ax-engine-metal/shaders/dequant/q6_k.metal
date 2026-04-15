@@ -86,7 +86,8 @@ kernel void dequant_matmul_simdgroup_q6_k(
             uint global_r = tile_row + r;
 
             if (global_r < M) {
-                device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+                device const Q6_K_Block& blk =
+                    q6_k_block_ref(q6_k_row_ptr(A, global_r, blocks_per_row), block_idx);
                 tg_A[r * DQ_BK + c] = q6_k_dequant_pair_value(blk, group, sub_pair, c);
             } else {
                 tg_A[r * DQ_BK + c] = 0.0f;
@@ -178,7 +179,8 @@ kernel void dequant_batch_q6_k_blocked_bm32(
 
     uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
     const short offset1 = il0 / QK_NL;
-    device const Q6_K_Block* x = A + uint(r0 + lr0) * blocks_per_row + offset1;
+    device const Q6_K_Block* x =
+        q6_k_row_ptr(A, uint(r0 + lr0), blocks_per_row) + offset1;
 
     const short iy = short(8 * (tiitg % NL1));
     device const float* y = B + uint(r1 + lr1) * K + iy;
@@ -306,7 +308,8 @@ kernel void dequant_batch_q6_k_blocked_silu(
 
     uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
     const short offset1 = il0 / QK_NL;
-    device const Q6_K_Block* x = A + uint(r0 + lr0) * blocks_per_row + offset1;
+    device const Q6_K_Block* x =
+        q6_k_row_ptr(A, uint(r0 + lr0), blocks_per_row) + offset1;
 
     const short iy = short(8 * (tiitg % NL1));
     device const float* g_ptr = gate + uint(r1 + lr1) * K + iy;
@@ -452,7 +455,8 @@ kernel void dequant_batch_q6_k_blocked_gelu(
 
     uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
     const short offset1 = il0 / QK_NL;
-    device const Q6_K_Block* x = A + uint(r0 + lr0) * blocks_per_row + offset1;
+    device const Q6_K_Block* x =
+        q6_k_row_ptr(A, uint(r0 + lr0), blocks_per_row) + offset1;
 
     const short iy = short(8 * (tiitg % NL1));
     device const float* g_ptr = gate + uint(r1 + lr1) * K + iy;
@@ -603,7 +607,8 @@ kernel void dequant_batch_q6_k(
             uint global_r = tile_m + r;
 
             if (global_r < M) {
-                device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+                device const Q6_K_Block& blk =
+                    q6_k_block_ref(q6_k_row_ptr(A, global_r, blocks_per_row), block_idx);
                 tg_A[r * DB_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
             } else {
                 tg_A[r * DB_BK + c] = half(0.0f);
@@ -701,7 +706,8 @@ kernel void dequant_batch_q6_k_blocked(
 
     uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
     const short offset1 = il0 / QK_NL;
-    device const Q6_K_Block* x = A + uint(r0 + lr0) * blocks_per_row + offset1;
+    device const Q6_K_Block* x =
+        q6_k_row_ptr(A, uint(r0 + lr0), blocks_per_row) + offset1;
 
     const short iy = short(8 * (tiitg % NL1));
     device const float* y = B + uint(r1 + lr1) * K + iy;
@@ -846,7 +852,7 @@ kernel void moe_mul_mat_id_q6_k_blocked(
     threadgroup half *sb = (threadgroup half *)(shmem + 4096);
 
     uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
-    device const Q6_K_Block *W = weights + expert * weight_stride;
+    device const Q6_K_Block *W = q6_k_advance_blocks(weights, ulong(expert) * ulong(weight_stride));
     const short offset1 = il0 / QK_NL;
     device const Q6_K_Block *x = W + uint(r0 + lr0) * blocks_per_row + offset1;
 
@@ -980,7 +986,8 @@ kernel void dequant_batch_q6_k_f16in(
             uint c = i % DB_BK;
             uint global_r = tile_m + r;
             if (global_r < M) {
-                device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+                device const Q6_K_Block& blk =
+                    q6_k_block_ref(q6_k_row_ptr(A, global_r, blocks_per_row), block_idx);
                 tg_A[r * DB_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
             } else {
                 tg_A[r * DB_BK + c] = half(0.0f);
@@ -1079,7 +1086,8 @@ kernel void dequant_batch_q6_k_f16in_full(
             uint r = i / DB_BK;
             uint c = i % DB_BK;
             uint global_r = tile_m + r;
-            device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+            device const Q6_K_Block& blk =
+                q6_k_block_ref(q6_k_row_ptr(A, global_r, blocks_per_row), block_idx);
             tg_A[r * DB_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
         }
 
@@ -1160,7 +1168,8 @@ kernel void dequant_batch_q6_k_f16in_full64(
             uint r = i / D64_BK;
             uint c = i % D64_BK;
             uint global_r = tile_m + r;
-            device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+            device const Q6_K_Block& blk =
+                q6_k_block_ref(q6_k_row_ptr(A, global_r, blocks_per_row), block_idx);
             tg_A[r * D64_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
         }
 
@@ -1253,7 +1262,8 @@ kernel void dequant_batch_q6_k_f16in_full32(
             uint r = i / D64_BK;
             uint c = i % D64_BK;
             uint global_r = tile_m + r;
-            device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+            device const Q6_K_Block& blk =
+                q6_k_block_ref(q6_k_row_ptr(A, global_r, blocks_per_row), block_idx);
             tg_A[r * D64_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
         }
 
@@ -1346,7 +1356,8 @@ kernel void dequant_batch_q6_k_f16in_tail32(
             uint r = i / D64_BK;
             uint c = i % D64_BK;
             uint global_r = tile_m + r;
-            device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+            device const Q6_K_Block& blk =
+                q6_k_block_ref(q6_k_row_ptr(A, global_r, blocks_per_row), block_idx);
             tg_A[r * D64_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
         }
 
@@ -1730,7 +1741,8 @@ kernel void dequant_batch_q6_k_small(
             uint global_r = tile_m + r;
 
             if (global_r < M) {
-                device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+            device const Q6_K_Block& blk =
+                q6_k_block_ref(q6_k_row_ptr(A, global_r, blocks_per_row), block_idx);
                 tg_A[r * SB_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
             } else {
                 tg_A[r * SB_BK + c] = half(0.0f);
@@ -1831,7 +1843,8 @@ kernel void dequant_batch_q6_k_f16in_small(
             uint global_r = tile_m + r;
 
             if (global_r < M) {
-                device const Q6_K_Block& blk = A[global_r * blocks_per_row + block_idx];
+                device const Q6_K_Block& blk =
+                    q6_k_block_ref(q6_k_row_ptr(A, global_r, blocks_per_row), block_idx);
                 tg_A[r * SB_BK + c] = half(q6_k_dequant_pair_value(blk, group, sub_pair, c));
             } else {
                 tg_A[r * SB_BK + c] = half(0.0f);
@@ -1907,7 +1920,7 @@ kernel void dequant_matvec_q6_k(
     if (row >= M) return;
 
     uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
-    device const Q6_K_Block* a_row = A + row * blocks_per_row;
+    device const Q6_K_Block* a_row = q6_k_row_ptr(A, row, blocks_per_row);
     constexpr uint num_simd_groups = DEQUANT_MATVEC_TG / 32;
 
     float sum = 0.0f;
@@ -1926,11 +1939,12 @@ kernel void dequant_matvec_q6_k(
         half rx6 = half(x[base + 192 + l]);  // group 1, q3
         half rx7 = half(x[base + 224 + l]);  // group 1, q4
 
-        float d = (simd_lane == 0) ? float(a_row[b].d) : 0.0f;
+        device const Q6_K_Block& blk = q6_k_block_ref(a_row, b);
+        float d = (simd_lane == 0) ? float(blk.d) : 0.0f;
         d = simd_broadcast(d, 0);
-        device const uchar* ql     = a_row[b].ql;
-        device const uchar* qh     = a_row[b].qh;
-        device const char*  scales = a_row[b].scales;
+        device const uchar* ql     = blk.ql;
+        device const uchar* qh     = blk.qh;
+        device const char*  scales = blk.scales;
 
         uint is = l / 16;  // scale row index: 0 or 1
 
@@ -1995,8 +2009,8 @@ kernel void dequant_matvec_pair_q6_k(
     if (row >= M) return;
 
     uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
-    device const Q6_K_Block* a_row0 = A0 + row * blocks_per_row;
-    device const Q6_K_Block* a_row1 = A1 + row * blocks_per_row;
+    device const Q6_K_Block* a_row0 = q6_k_row_ptr(A0, row, blocks_per_row);
+    device const Q6_K_Block* a_row1 = q6_k_row_ptr(A1, row, blocks_per_row);
     constexpr uint num_simd_groups = DEQUANT_MATVEC_TG / 32;
 
     float sum0 = 0.0f;
@@ -2043,7 +2057,7 @@ kernel void dequant_matvec_silu_down_q6_k(
     if (row >= M) return;
 
     uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
-    device const Q6_K_Block* a_row = A + row * blocks_per_row;
+    device const Q6_K_Block* a_row = q6_k_row_ptr(A, row, blocks_per_row);
     constexpr uint num_simd_groups = DEQUANT_MATVEC_TG / 32;
 
     float sum = 0.0f;
@@ -2084,8 +2098,8 @@ kernel void dequant_matvec_gelu_down_q6_k(
 
     uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
     bool valid1 = (first_row + 1) < M;
-    device const Q6_K_Block* row0 = A + first_row * blocks_per_row;
-    device const Q6_K_Block* row1 = valid1 ? row0 + blocks_per_row : row0;
+    device const Q6_K_Block* row0 = q6_k_row_ptr(A, first_row, blocks_per_row);
+    device const Q6_K_Block* row1 = valid1 ? q6_k_row_ptr(A, first_row + 1, blocks_per_row) : row0;
 
     float sum0 = 0.0f;
     float sum1 = 0.0f;
@@ -2130,8 +2144,9 @@ kernel void moe_mul_mat_selected_q6_k_matvec(
     constexpr uint num_simd_groups = DEQUANT_MATVEC_TG / 32;
     threadgroup float simd_sums[num_simd_groups];
 
-    device const Q6_K_Block* a_row =
-        weights + expert * weight_stride + row * blocks_per_row;
+    device const Q6_K_Block* expert_base =
+        q6_k_advance_blocks(weights, ulong(expert) * ulong(weight_stride));
+    device const Q6_K_Block* a_row = q6_k_row_ptr(expert_base, row, blocks_per_row);
     device const float* x = input + input_row * K;
 
     float sum = 0.0f;
@@ -2182,9 +2197,11 @@ kernel void moe_mul_mat_selected_q6_k_matvec_nr2(
     if (first_row >= M) return;
 
     const bool valid1 = (first_row + 1) < M;
-    device const Q6_K_Block* base = weights + expert * weight_stride;
-    device const Q6_K_Block* row0 = base + first_row * blocks_per_row;
-    device const Q6_K_Block* row1 = valid1 ? row0 + blocks_per_row : row0;
+    device const Q6_K_Block* base =
+        q6_k_advance_blocks(weights, ulong(expert) * ulong(weight_stride));
+    device const Q6_K_Block* row0 = q6_k_row_ptr(base, first_row, blocks_per_row);
+    device const Q6_K_Block* row1 =
+        valid1 ? q6_k_row_ptr(base, first_row + 1, blocks_per_row) : row0;
     const uint input_row = input_is_slot_major != 0 ? slot : 0;
     device const float* x = input + input_row * K;
 
@@ -2214,7 +2231,7 @@ kernel void moe_mul_mat_selected_q6_k_matvec_nr2(
 
         for (ushort row = 0; row < Q6K_NR2_ROWS_PER_SG; ++row) {
             device const Q6_K_Block* row_ptr = (row == 0) ? row0 : row1;
-            device const Q6_K_Block& blk = row_ptr[ib];
+            device const Q6_K_Block& blk = q6_k_block_ref(row_ptr, ib);
             device const uchar* q1 = blk.ql + q_offset_l;
             device const uchar* q2 = q1 + 32;
             device const uchar* qh = blk.qh + q_offset_h;
@@ -2507,8 +2524,9 @@ kernel void moe_mul_mat_selected_weighted_q6_k_matvec(
     for (uint slot = 0; slot < n_selected; ++slot) {
         const uint expert = uint(selected[slot]);
         const float route_weight = expert_weights[slot];
-        device const Q6_K_Block* a_row =
-            weights + expert * weight_stride + row * blocks_per_row;
+        device const Q6_K_Block* expert_base =
+            q6_k_advance_blocks(weights, ulong(expert) * ulong(weight_stride));
+        device const Q6_K_Block* a_row = q6_k_row_ptr(expert_base, row, blocks_per_row);
         device const float* x = input + slot * K;
 
         float sum = 0.0f;
@@ -2578,9 +2596,11 @@ kernel void moe_mul_mat_selected_weighted_q6_k_matvec_nr2(
     for (uint slot = 0; slot < n_selected; ++slot) {
         const uint expert = uint(selected[slot]);
         const float route_weight = expert_weights[slot];
-        device const Q6_K_Block* base = weights + expert * weight_stride;
-        device const Q6_K_Block* row0 = base + first_row * blocks_per_row;
-        device const Q6_K_Block* row1 = valid1 ? row0 + blocks_per_row : row0;
+        device const Q6_K_Block* base =
+            q6_k_advance_blocks(weights, ulong(expert) * ulong(weight_stride));
+        device const Q6_K_Block* row0 = q6_k_row_ptr(base, first_row, blocks_per_row);
+        device const Q6_K_Block* row1 =
+            valid1 ? q6_k_row_ptr(base, first_row + 1, blocks_per_row) : row0;
         device const float* x = input + slot * K;
 
         float sumf[Q6K_NR2_ROWS_PER_SG] = {0.0f, 0.0f};
@@ -2597,7 +2617,7 @@ kernel void moe_mul_mat_selected_weighted_q6_k_matvec_nr2(
 
             for (ushort row = 0; row < Q6K_NR2_ROWS_PER_SG; ++row) {
                 device const Q6_K_Block* row_ptr = (row == 0) ? row0 : row1;
-                device const Q6_K_Block& blk = row_ptr[ib];
+                device const Q6_K_Block& blk = q6_k_block_ref(row_ptr, ib);
                 device const uchar* q1 = blk.ql + q_offset_l;
                 device const uchar* q2 = q1 + 32;
                 device const uchar* qh = blk.qh + q_offset_h;
@@ -2658,8 +2678,8 @@ kernel void dequant_matvec_q6_k_nr2(
     if (first_row >= M) return;
 
     bool valid1 = (first_row + 1) < M;
-    device const Q6_K_Block* row0 = A + first_row * blocks_per_row;
-    device const Q6_K_Block* row1 = valid1 ? row0 + blocks_per_row : row0;
+    device const Q6_K_Block* row0 = q6_k_row_ptr(A, first_row, blocks_per_row);
+    device const Q6_K_Block* row1 = valid1 ? q6_k_row_ptr(A, first_row + 1, blocks_per_row) : row0;
 
     float sumf[Q6K_NR2_ROWS_PER_SG] = {0.0f, 0.0f};
     float yl[16];
@@ -2687,7 +2707,7 @@ kernel void dequant_matvec_q6_k_nr2(
 
         for (ushort row = 0; row < Q6K_NR2_ROWS_PER_SG; ++row) {
             device const Q6_K_Block* row_ptr = (row == 0) ? row0 : row1;
-            device const Q6_K_Block& blk = row_ptr[ib];
+            device const Q6_K_Block& blk = q6_k_block_ref(row_ptr, ib);
             device const uchar* q1 = blk.ql + q_offset_l;
             device const uchar* q2 = q1 + 32;
             device const uchar* qh = blk.qh + q_offset_h;
@@ -2734,14 +2754,14 @@ kernel void dequant_matvec_q6_k_ilp4(
     uint first_row = tg_id * 2 + simd_id;
     if (first_row >= M) return;
 
-    device const Q6_K_Block* a_row = A + first_row * blocks_per_row;
+    device const Q6_K_Block* a_row = q6_k_row_ptr(A, first_row, blocks_per_row);
 
     float sumf = 0.0f;
     ushort ix = simd_lane % 2;
 
     for (uint ib = ix; ib < blocks_per_row; ib += 2) {
         sumf += q6_k_block_dot_ilp2(
-            a_row[ib],
+            q6_k_block_ref(a_row, ib),
             x + ib * Q6_K_BLOCK_VALUES,
             simd_lane
         );
@@ -2787,7 +2807,7 @@ kernel void moe_mul_mat_id_q6_k(
     if (n_assigned == 0 || tile_col >= n_assigned) return;
 
     const uint blocks_per_row = K / Q6_K_BLOCK_VALUES;
-    device const Q6_K_Block *W = weights + expert * weight_stride;
+    device const Q6_K_Block *W = q6_k_advance_blocks(weights, ulong(expert) * ulong(weight_stride));
     device const int32_t *expert_hids = hids + expert * n_tokens;
 
     threadgroup float tg_A[DQ_BM * DQ_BK];
@@ -2812,7 +2832,8 @@ kernel void moe_mul_mat_id_q6_k(
             uint global_r = tile_row + r;
 
             if (global_r < M) {
-                device const Q6_K_Block& blk = W[global_r * blocks_per_row + block_idx];
+                device const Q6_K_Block& blk =
+                    q6_k_block_ref(q6_k_row_ptr(W, global_r, blocks_per_row), block_idx);
                 tg_A[r * DQ_BK + c] = q6_k_dequant_pair_value(blk, group, sub_pair, c);
             } else {
                 tg_A[r * DQ_BK + c] = 0.0f;

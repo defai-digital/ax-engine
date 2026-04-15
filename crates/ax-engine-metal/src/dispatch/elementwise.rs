@@ -49,6 +49,7 @@ pub struct ElementwiseKernels {
     gelu_elementwise_mul: ComputePipeline,
     gelu_elementwise_mul_batch: ComputePipeline,
     gelu_elementwise_mul_batch_vec4: ComputePipeline,
+    gelu_split_mul_batch: ComputePipeline,
     gelu_inplace: ComputePipeline,
     gelu_inplace_batch: ComputePipeline,
     silu_elementwise_mul: ComputePipeline,
@@ -99,6 +100,7 @@ pub struct ElementwiseKernels {
     pub moe_weighted_reduce_slots_add: ComputePipeline,
     pub moe_weighted_reduce_slots8_add_vec4: ComputePipeline,
     pub moe_softmax_topk: ComputePipeline,
+    pub moe_apply_expert_scales: ComputePipeline,
     // GPU-side argmax for greedy decode
     argmax_f32: ComputePipeline,
 }
@@ -293,6 +295,12 @@ impl ElementwiseKernels {
             "gelu_elementwise_mul_batch_f32_vec4",
         )
         .context("Failed to compile gelu_elementwise_mul_batch_f32_vec4 kernel")?;
+        let gelu_split_mul_batch = ComputePipeline::from_source(
+            device.device(),
+            ELEMENTWISE_SHADER_SRC,
+            "gelu_split_mul_batch_f32",
+        )
+        .context("Failed to compile gelu_split_mul_batch_f32 kernel")?;
         let gelu_inplace = ComputePipeline::from_source(
             device.device(),
             ELEMENTWISE_SHADER_SRC,
@@ -547,6 +555,7 @@ impl ElementwiseKernels {
             gelu_elementwise_mul,
             gelu_elementwise_mul_batch,
             gelu_elementwise_mul_batch_vec4,
+            gelu_split_mul_batch,
             gelu_inplace,
             gelu_inplace_batch,
             silu_elementwise_mul,
@@ -650,6 +659,12 @@ impl ElementwiseKernels {
                 "moe_softmax_topk_f32",
             )
             .context("Failed to compile moe_softmax_topk_f32")?,
+            moe_apply_expert_scales: ComputePipeline::from_source(
+                device.device(),
+                ELEMENTWISE_SHADER_SRC,
+                "moe_apply_expert_scales_f32",
+            )
+            .context("Failed to compile moe_apply_expert_scales_f32")?,
             argmax_f32,
         })
     }
@@ -1635,6 +1650,32 @@ impl ElementwiseKernels {
         }
     }
 
+    /// Encode batched `dst[row, i] = GELU(src[row, i]) * src[row, n + i]`.
+    ///
+    /// `src` is laid out as contiguous `[gate | up]` rows with width `2 * n`.
+    pub fn encode_gelu_split_mul_batch(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        src: &MetalBuffer,
+        dst: &MetalBuffer,
+        n: u32,
+        n_rows: u32,
+    ) {
+        let total = (n as usize) * (n_rows as usize);
+        let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
+        crate::set_pipeline_cached(encoder, self.gelu_split_mul_batch.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(src.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(dst.mtl_buffer()), 0, 1);
+        }
+        bind_u32(encoder, 2, n);
+        bind_u32(encoder, 3, n_rows);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
+        );
+    }
+
     /// Encode in-place GELU: x[i] = GELU(x[i]).
     pub fn encode_gelu_inplace(
         &self,
@@ -1804,6 +1845,7 @@ impl ElementwiseKernels {
 
     /// Encode batched fused softplus(alpha + bias[head]) * a[head] and
     /// sigmoid(beta) in-place.
+    #[allow(clippy::too_many_arguments)]
     pub fn encode_softplus_bias_mul_sigmoid_pair_batch(
         &self,
         encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
@@ -2330,6 +2372,33 @@ impl ElementwiseKernels {
                 height: 1,
                 depth: 1,
             },
+        );
+    }
+
+    /// Encode per-selected-expert output scaling:
+    /// `expert_weights[token, slot] *= expert_scales[expert_ids[token, slot]]`.
+    pub fn encode_moe_apply_expert_scales(
+        &self,
+        encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+        expert_ids: &MetalBuffer,
+        expert_weights: &MetalBuffer,
+        expert_scales: &MetalBuffer,
+        n_tokens: u32,
+        n_expert_used: u32,
+    ) {
+        let total = (n_tokens as usize) * (n_expert_used as usize);
+        let dims = DispatchDims::d1(total, ELEMENTWISE_TG_SIZE);
+        crate::set_pipeline_cached(encoder, self.moe_apply_expert_scales.state());
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(expert_ids.mtl_buffer()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(expert_weights.mtl_buffer()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(expert_scales.mtl_buffer()), 0, 2);
+        }
+        bind_u32(encoder, 3, n_tokens);
+        bind_u32(encoder, 4, n_expert_used);
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            dims.threadgroups,
+            dims.threads_per_threadgroup,
         );
     }
 

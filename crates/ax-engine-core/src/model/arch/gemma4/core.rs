@@ -143,6 +143,40 @@ impl Gemma4Forward {
                 &spec.prefix,
                 "layer_output_scale.weight",
             )?;
+            let gemma4_moe_router_scale = crate::model::shared::cache_optional_prefixed_f32_key(
+                metal_ops,
+                weights,
+                &spec.prefix,
+                "ffn_gate_inp.scale",
+            )?;
+            let gemma4_moe_pre_ffw_norm_2 =
+                crate::model::shared::cache_optional_prefixed_f32_key(
+                    metal_ops,
+                    weights,
+                    &spec.prefix,
+                    "pre_ffw_norm_2.weight",
+                )?;
+            let gemma4_moe_post_ffw_norm_1 =
+                crate::model::shared::cache_optional_prefixed_f32_key(
+                    metal_ops,
+                    weights,
+                    &spec.prefix,
+                    "post_ffw_norm_1.weight",
+                )?;
+            let gemma4_moe_post_ffw_norm_2 =
+                crate::model::shared::cache_optional_prefixed_f32_key(
+                    metal_ops,
+                    weights,
+                    &spec.prefix,
+                    "post_ffw_norm_2.weight",
+                )?;
+            let gemma4_moe_expert_scales =
+                crate::model::shared::cache_optional_prefixed_f32_key(
+                    metal_ops,
+                    weights,
+                    &spec.prefix,
+                    "ffn_down_exps.scale",
+                )?;
             let post_ffn_norm_key = crate::model::shared::cache_optional_prefixed_f32_key(
                 metal_ops,
                 weights,
@@ -156,9 +190,11 @@ impl Gemma4Forward {
                 moe_router_key,
                 moe_router_dtype_val,
                 moe_gate_up_key,
-                _moe_gate_up_dtype,
+                moe_gate_up_dtype,
+                moe_gate_up_stride,
                 moe_down_key,
                 moe_down_dtype,
+                moe_down_stride,
             ) = if has_moe {
                 let (router_raw, router_dtype) =
                     weights.raw_with_dtype(&format!("{}.ffn_gate_inp.weight", spec.prefix))?;
@@ -166,6 +202,14 @@ impl Gemma4Forward {
                     weights.raw_with_dtype(&format!("{}.ffn_gate_up_exps.weight", spec.prefix))?;
                 let (down_raw, down_dtype) =
                     weights.raw_with_dtype(&format!("{}.ffn_down_exps.weight", spec.prefix))?;
+                let gate_up_stride = crate::model::moe_utils::expert_byte_stride(
+                    gate_up_dtype,
+                    2 * cfg.expert_intermediate_dim.unwrap_or(0) as usize * dim,
+                );
+                let down_stride = crate::model::moe_utils::expert_byte_stride(
+                    down_dtype,
+                    dim * cfg.expert_intermediate_dim.unwrap_or(0) as usize,
+                );
                 let rk = metal_ops.ensure_moe_quant_cached(router_raw);
                 let guk = metal_ops.ensure_moe_quant_cached(gate_up_raw);
                 let dk = metal_ops.ensure_moe_quant_cached(down_raw);
@@ -174,11 +218,13 @@ impl Gemma4Forward {
                     Some(router_dtype),
                     Some(guk),
                     Some(gate_up_dtype),
+                    Some(gate_up_stride),
                     Some(dk),
                     Some(down_dtype),
+                    Some(down_stride),
                 )
             } else {
-                (None, None, None, None, None, None)
+                (None, None, None, None, None, None, None, None)
             };
 
             layers.push(CachedLayerKeys {
@@ -204,6 +250,11 @@ impl Gemma4Forward {
                 post_ffn_norm: post_ffn_norm_key,
                 v_equals_k: spec.v_equals_k,
                 layer_output_scale,
+                gemma4_moe_router_scale,
+                gemma4_moe_pre_ffw_norm_2,
+                gemma4_moe_post_ffw_norm_1,
+                gemma4_moe_post_ffw_norm_2,
+                gemma4_moe_expert_scales,
                 q_bias: None,
                 k_bias: None,
                 v_bias: None,
@@ -217,12 +268,12 @@ impl Gemma4Forward {
                 moe_expert_gate: moe_gate_up_key.map(|k| vec![k]),
                 moe_expert_up: None,
                 moe_expert_down: moe_down_key.map(|k| vec![k]),
-                moe_expert_gate_dtype: None,
+                moe_expert_gate_dtype: moe_gate_up_dtype,
                 moe_expert_up_dtype: None,
                 moe_expert_down_dtype: moe_down_dtype,
-                moe_expert_gate_stride: None,
+                moe_expert_gate_stride: moe_gate_up_stride,
                 moe_expert_up_stride: None,
-                moe_expert_down_stride: None,
+                moe_expert_down_stride: moe_down_stride,
                 moe_expert_dtype: moe_down_dtype,
                 moe_shared_gate: None,
                 moe_shared_up: None,
@@ -287,8 +338,8 @@ impl Gemma4Forward {
 
         let scratch_guard = metal_ops.scratches();
         let s = scratch_guard.as_ref().unwrap();
-        let batch_guard = metal_ops.batch_scratches();
-        let bs = batch_guard.as_ref().unwrap();
+        let mut batch_guard = metal_ops.batch_scratches();
+        let bs = batch_guard.as_mut().unwrap();
 
         gpu_kv.ensure_capacity(&metal_ops.device, gpu_kv.seq_len() + n_tokens)?;
         anyhow::ensure!(
@@ -338,6 +389,7 @@ impl Gemma4Forward {
         }
 
         let weight_cache = metal_ops.lock_weight_cache();
+        let moe_weight_cache = metal_ops.lock_moe_weight_cache();
         let fused_qkv_cache = metal_ops.lock_fused_qkv_weight_cache();
         let has_q5k_weights = gpu_prefill_uses_q5k(weights);
         let q5k_small_n_auto_eligible = gpu_prefill_q5k_small_n_auto_eligible(weights);
@@ -941,10 +993,17 @@ impl Gemma4Forward {
 
                 let wd_buf = weight_cache.get(&lw.wd).unwrap();
                 let mut fused_gelu_down_encoded = false;
-                if matches!(
-                    ffn_layer_plan.activation,
-                    PrefillFfnActivationPlan::GeluMulGateF32
-                ) && lw.wd_dtype == GgmlType::Q6K
+                // The fused `dequant_batch_q6_k_blocked_gelu` path produces non-finite
+                // logits on dense Gemma-4 Q4_K_M prefill (regression introduced in
+                // commit 43541e0). The non-fused GELU + batch dequant path used below
+                // works correctly. Set `AX_ENABLE_FUSED_Q6K_GELU=1` to opt in for
+                // testing once the shader bug is root-caused.
+                if std::env::var("AX_ENABLE_FUSED_Q6K_GELU").ok().as_deref() == Some("1")
+                    && matches!(
+                        ffn_layer_plan.activation,
+                        PrefillFfnActivationPlan::GeluMulGateF32
+                    )
+                    && lw.wd_dtype == GgmlType::Q6K
                 {
                     let fused_gelu_down_t = OpTimer::start();
                     sb.pre_dispatch(&[&bs.gate_buf, &bs.up_buf], &[&bs.proj_buf]);
@@ -1009,6 +1068,101 @@ impl Gemma4Forward {
                     if let Some(ref mut ops_ref) = ops {
                         ops_ref.gpu_encode_layer_ffn += down_t.elapsed();
                     }
+                }
+
+                if spec.has_moe {
+                    if let Some(post_ff1_key) = lw.gemma4_moe_post_ffw_norm_1 {
+                        let post_ff1 = weight_cache.get(&post_ff1_key).unwrap();
+                        sb.pre_dispatch(&[&bs.proj_buf], &[&bs.proj_buf]);
+                        metal_ops.elementwise.encode_rms_norm_batch(
+                            encoder,
+                            &bs.proj_buf,
+                            post_ff1,
+                            dim as u32,
+                            nt,
+                            eps,
+                        );
+                        sb.post_dispatch(&[&bs.proj_buf], &[&bs.proj_buf]);
+                    }
+
+                    let router_scale = weight_cache
+                        .get(&lw.gemma4_moe_router_scale.expect("Gemma4 MoE router scale missing"))
+                        .unwrap();
+                    let pre_ff2_w = weight_cache
+                        .get(
+                            &lw.gemma4_moe_pre_ffw_norm_2
+                                .expect("Gemma4 MoE pre_ffw_norm_2 missing"),
+                        )
+                        .unwrap();
+                    let post_ff2_w = weight_cache
+                        .get(
+                            &lw.gemma4_moe_post_ffw_norm_2
+                                .expect("Gemma4 MoE post_ffw_norm_2 missing"),
+                        )
+                        .unwrap();
+                    let expert_scales = weight_cache
+                        .get(
+                            &lw.gemma4_moe_expert_scales
+                                .expect("Gemma4 MoE expert scales missing"),
+                        )
+                        .unwrap();
+                    let router_buf = moe_weight_cache
+                        .get(&lw.moe_router.expect("Gemma4 MoE router weight missing"))
+                        .unwrap();
+                    let gate_up_buf = moe_weight_cache
+                        .get(
+                            &lw.moe_expert_gate
+                                .as_ref()
+                                .and_then(|keys| keys.first().copied())
+                                .expect("Gemma4 MoE fused gate_up weight missing"),
+                        )
+                        .unwrap();
+                    let routed_down_buf = moe_weight_cache
+                        .get(
+                            &lw.moe_expert_down
+                                .as_ref()
+                                .and_then(|keys| keys.first().copied())
+                                .expect("Gemma4 MoE expert down weight missing"),
+                        )
+                        .unwrap();
+                    sb.flush();
+                    metal_ops.encode_gemma4_routed_moe_fused_gate_up(
+                        encoder,
+                        bs,
+                        router_scale,
+                        router_buf,
+                        lw.moe_router_dtype.expect("Gemma4 MoE router dtype missing"),
+                        pre_ff2_w,
+                        post_ff2_w,
+                        expert_scales,
+                        gate_up_buf,
+                        lw.moe_expert_gate_dtype
+                            .expect("Gemma4 MoE fused gate_up dtype missing"),
+                        routed_down_buf,
+                        lw.moe_expert_down_dtype
+                            .expect("Gemma4 MoE expert down dtype missing"),
+                        n_tokens,
+                        cfg.n_expert.expect("Gemma4 MoE n_expert missing") as usize,
+                        cfg.n_expert_used.expect("Gemma4 MoE n_expert_used missing") as usize,
+                        dim,
+                        cfg.expert_intermediate_dim
+                            .expect("Gemma4 MoE expert_intermediate_dim missing")
+                            as usize,
+                        lw.moe_expert_gate_stride
+                            .expect("Gemma4 MoE fused gate_up stride missing"),
+                        lw.moe_expert_down_stride
+                            .expect("Gemma4 MoE expert down stride missing"),
+                        eps,
+                    )?;
+                    sb.pre_dispatch(&[&bs.proj_buf, bs.moe_accum.as_ref().unwrap()], &[&bs.proj_buf]);
+                    metal_ops.elementwise.encode_elementwise_add_batch(
+                        encoder,
+                        &bs.proj_buf,
+                        bs.moe_accum.as_ref().unwrap(),
+                        dim as u32,
+                        nt,
+                    );
+                    sb.post_dispatch(&[&bs.proj_buf, bs.moe_accum.as_ref().unwrap()], &[&bs.proj_buf]);
                 }
 
                 // ── Post-FFN RMSNorm (Gemma4: post_ffw_norm.weight) ──
@@ -1308,7 +1462,18 @@ impl Gemma4Forward {
             ops_ref.gpu_encode += setup_t.elapsed();
         }
 
+        let has_moe_layers = layer_specs.iter().any(|spec| spec.has_moe);
+        if has_moe_layers {
+            metal_ops.init_batch_scratches(cfg, 1);
+        }
+
         let weight_cache = metal_ops.lock_weight_cache();
+        let moe_weight_cache = metal_ops.lock_moe_weight_cache();
+        let mut batch_guard = if has_moe_layers {
+            Some(metal_ops.batch_scratches())
+        } else {
+            None
+        };
 
         let exec_t = OpTimer::start();
         let encode_body = |encoder: &ax_engine_metal::MetalEncoder| -> anyhow::Result<()> {
@@ -1617,7 +1782,6 @@ impl Gemma4Forward {
                 barrier.post_dispatch(&[&s.hidden, &s.proj_buf], &[&s.hidden]);
                 barrier.step(encoder);
 
-
                 barrier.pre_dispatch(&[&s.hidden], &[&s.norm_buf]);
                 metal_ops.elementwise.encode_rms_norm_out(
                     encoder,
@@ -1697,6 +1861,122 @@ impl Gemma4Forward {
                 );
                 barrier.post_dispatch(&[&s.gate_buf, &s.up_buf], &[&s.down_buf]);
                 barrier.step(encoder);
+
+                if spec.has_moe {
+                    if let Some(post_ff1_key) = lw.gemma4_moe_post_ffw_norm_1 {
+                        let post_ff1_w = weight_cache.get(&post_ff1_key).unwrap();
+                        barrier.pre_dispatch(&[&s.down_buf], &[&s.down_buf]);
+                        metal_ops.elementwise.encode_rms_norm(
+                            encoder,
+                            &s.down_buf,
+                            post_ff1_w,
+                            dim as u32,
+                            cfg.rms_norm_eps,
+                        );
+                        barrier.post_dispatch(&[&s.down_buf], &[&s.down_buf]);
+                        barrier.step(encoder);
+                    }
+
+                    let bs = batch_guard
+                        .as_mut()
+                        .expect("Gemma4 MoE batch scratch missing")
+                        .as_mut()
+                        .expect("Gemma4 MoE batch scratch not initialized");
+                    let router_scale = weight_cache
+                        .get(&lw.gemma4_moe_router_scale.expect("Gemma4 MoE router scale missing"))
+                        .unwrap();
+                    let pre_ff2_w = weight_cache
+                        .get(
+                            &lw.gemma4_moe_pre_ffw_norm_2
+                                .expect("Gemma4 MoE pre_ffw_norm_2 missing"),
+                        )
+                        .unwrap();
+                    let post_ff2_w = weight_cache
+                        .get(
+                            &lw.gemma4_moe_post_ffw_norm_2
+                                .expect("Gemma4 MoE post_ffw_norm_2 missing"),
+                        )
+                        .unwrap();
+                    let expert_scales = weight_cache
+                        .get(
+                            &lw.gemma4_moe_expert_scales
+                                .expect("Gemma4 MoE expert scales missing"),
+                        )
+                        .unwrap();
+                    let router_buf = moe_weight_cache
+                        .get(&lw.moe_router.expect("Gemma4 MoE router weight missing"))
+                        .unwrap();
+                    let gate_up_buf = moe_weight_cache
+                        .get(
+                            &lw.moe_expert_gate
+                                .as_ref()
+                                .and_then(|keys| keys.first().copied())
+                                .expect("Gemma4 MoE fused gate_up weight missing"),
+                        )
+                        .unwrap();
+                    let routed_down_buf = moe_weight_cache
+                        .get(
+                            &lw.moe_expert_down
+                                .as_ref()
+                                .and_then(|keys| keys.first().copied())
+                                .expect("Gemma4 MoE expert down weight missing"),
+                        )
+                        .unwrap();
+
+                    let mut moe_barrier = ax_engine_metal::SmartBarrier::new(encoder);
+                    moe_barrier.pre_dispatch(&[&s.hidden], &[&bs.hidden]);
+                    metal_ops.elementwise.encode_buffer_copy(
+                        encoder,
+                        &s.hidden,
+                        0,
+                        &bs.hidden,
+                        0,
+                        dim as u32,
+                    );
+                    moe_barrier.post_dispatch(&[&s.hidden], &[&bs.hidden]);
+                    moe_barrier.flush();
+
+                    metal_ops.encode_gemma4_routed_moe_fused_gate_up(
+                        encoder,
+                        bs,
+                        router_scale,
+                        router_buf,
+                        lw.moe_router_dtype.expect("Gemma4 MoE router dtype missing"),
+                        pre_ff2_w,
+                        post_ff2_w,
+                        expert_scales,
+                        gate_up_buf,
+                        lw.moe_expert_gate_dtype
+                            .expect("Gemma4 MoE fused gate_up dtype missing"),
+                        routed_down_buf,
+                        lw.moe_expert_down_dtype
+                            .expect("Gemma4 MoE expert down dtype missing"),
+                        1,
+                        cfg.n_expert.expect("Gemma4 MoE n_expert missing") as usize,
+                        cfg.n_expert_used.expect("Gemma4 MoE n_expert_used missing") as usize,
+                        dim,
+                        cfg.expert_intermediate_dim
+                            .expect("Gemma4 MoE expert_intermediate_dim missing")
+                            as usize,
+                        lw.moe_expert_gate_stride
+                            .expect("Gemma4 MoE fused gate_up stride missing"),
+                        lw.moe_expert_down_stride
+                            .expect("Gemma4 MoE expert down stride missing"),
+                        cfg.rms_norm_eps,
+                    )?;
+
+                    let moe_accum = bs.moe_accum.as_ref().unwrap();
+                    let mut combine_barrier = ax_engine_metal::SmartBarrier::new(encoder);
+                    combine_barrier.pre_dispatch(&[&s.down_buf, moe_accum], &[&s.down_buf]);
+                    metal_ops.elementwise.encode_elementwise_add(
+                        encoder,
+                        &s.down_buf,
+                        moe_accum,
+                        dim as u32,
+                    );
+                    combine_barrier.post_dispatch(&[&s.down_buf, moe_accum], &[&s.down_buf]);
+                    combine_barrier.flush();
+                }
 
                 // Post-FFN RMSNorm (Gemma4: post_ffw_norm.weight)
                 if let Some(pfn_key) = lw.post_ffn_norm {

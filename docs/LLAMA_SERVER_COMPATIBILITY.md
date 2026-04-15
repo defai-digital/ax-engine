@@ -54,6 +54,7 @@ Those belong in `ax-serving`.
 - `GET /slots`
 - `GET /metrics` when `--metrics` is enabled
 - `POST /completion`
+- `POST /infill`
 - `POST /v1/completions`
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
@@ -137,6 +138,8 @@ Acceptance criteria:
 ### Manual Checks Before Declaring a Compatibility Improvement
 
 - verify both JSON and SSE variants when an endpoint supports streaming
+- verify `/infill` returns explicit `not_supported_error` on models without native
+  FIM tokens
 - verify both direct string prompts and token-array prompts where supported
 - verify a repeated request preserves contract shape and reports `cache_n` when
   the backend can expose cached prompt reuse directly

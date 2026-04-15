@@ -10,6 +10,17 @@ use std::borrow::Cow;
 use super::page::{KvCacheConfig, KvDtype, recommended_page_size};
 use super::{CpuKv, CpuKvSnapshot, GpuKv, GpuKvDtype};
 
+/// Increment a monotonic generation counter, skipping zero on wraparound.
+/// Zero is reserved as a "never written" sentinel.
+#[inline]
+fn bump_nonzero(generation: &mut u64) -> u64 {
+    *generation = generation.wrapping_add(1);
+    if *generation == 0 {
+        *generation = 1;
+    }
+    *generation
+}
+
 #[derive(Debug, Clone)]
 pub struct Qwen3_5RecurrentSlotSnapshot {
     conv_states: Vec<Vec<f32>>,
@@ -101,8 +112,8 @@ impl Qwen35RecurrentSlot {
             recurrent_state_generations: vec![1; recurrent_layers.len()],
             cpu_materialized_conv_generations: vec![1; recurrent_layers.len()],
             cpu_materialized_recurrent_generations: vec![1; recurrent_layers.len()],
-            conv_state_pristine_zero: recurrent_layers.iter().map(|_| true).collect(),
-            recurrent_state_pristine_zero: recurrent_layers.iter().map(|_| true).collect(),
+            conv_state_pristine_zero: vec![true; recurrent_layers.len()],
+            recurrent_state_pristine_zero: vec![true; recurrent_layers.len()],
             seqlen_offset: 0,
         }
     }
@@ -230,21 +241,11 @@ impl Qwen35RecurrentSlot {
     }
 
     fn bump_conv_generation(&mut self, layer: usize) -> u64 {
-        let generation = &mut self.conv_state_generations[layer];
-        *generation = generation.wrapping_add(1);
-        if *generation == 0 {
-            *generation = 1;
-        }
-        *generation
+        bump_nonzero(&mut self.conv_state_generations[layer])
     }
 
     fn bump_recurrent_generation(&mut self, layer: usize) -> u64 {
-        let generation = &mut self.recurrent_state_generations[layer];
-        *generation = generation.wrapping_add(1);
-        if *generation == 0 {
-            *generation = 1;
-        }
-        *generation
+        bump_nonzero(&mut self.recurrent_state_generations[layer])
     }
 
     fn touch_conv_state(&mut self, layer: usize) {
@@ -260,27 +261,16 @@ impl Qwen35RecurrentSlot {
     }
 
     fn touch_layer_state(&mut self, layer: usize) {
-        let conv_generation = self.bump_conv_generation(layer);
-        self.cpu_materialized_conv_generations[layer] = conv_generation;
-        let recurrent_generation = self.bump_recurrent_generation(layer);
-        self.cpu_materialized_recurrent_generations[layer] = recurrent_generation;
-        self.conv_state_pristine_zero[layer] = false;
-        self.recurrent_state_pristine_zero[layer] = false;
+        self.touch_conv_state(layer);
+        self.touch_recurrent_state(layer);
     }
 
     fn touch_all_state(&mut self) {
         for i in 0..self.conv_state_generations.len() {
-            self.conv_state_generations[i] = self.conv_state_generations[i].wrapping_add(1);
-            if self.conv_state_generations[i] == 0 {
-                self.conv_state_generations[i] = 1;
-            }
-            self.cpu_materialized_conv_generations[i] = self.conv_state_generations[i];
-            self.recurrent_state_generations[i] =
-                self.recurrent_state_generations[i].wrapping_add(1);
-            if self.recurrent_state_generations[i] == 0 {
-                self.recurrent_state_generations[i] = 1;
-            }
-            self.cpu_materialized_recurrent_generations[i] = self.recurrent_state_generations[i];
+            let conv = bump_nonzero(&mut self.conv_state_generations[i]);
+            self.cpu_materialized_conv_generations[i] = conv;
+            let rec = bump_nonzero(&mut self.recurrent_state_generations[i]);
+            self.cpu_materialized_recurrent_generations[i] = rec;
         }
     }
 
