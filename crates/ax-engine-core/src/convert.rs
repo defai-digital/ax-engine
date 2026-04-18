@@ -1090,18 +1090,15 @@ mod tests {
                     || t.dtype == NativeTensorDataType::F32)
         );
 
-        // Write manifest and verify it round-trips as JSON
+        // Write manifest, then validate the full NativeModelArtifacts pipeline
         write_manifest(&model_dir, &manifest).expect("write manifest should succeed");
-        let manifest_path = model_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
-        let reloaded: NativeModelManifest =
-            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-        assert_eq!(reloaded.layer_count, 24);
-        assert_eq!(reloaded.tensors.len(), manifest.tensors.len());
-
-        // Note: NativeModelArtifacts::from_dir validation currently requires
-        // all layers to have attention_o, which fails for Qwen3.5's mixed
-        // linear_attention / full_attention architecture. Supporting mixed
-        // layer types in the native model validator is a separate task.
+        let artifacts = crate::model::NativeModelArtifacts::from_dir(&model_dir)
+            .expect("NativeModelArtifacts should validate the real Qwen3.5 model");
+        assert_eq!(artifacts.manifest().layer_count, 24);
+        assert_eq!(
+            artifacts.summary().tensor_count,
+            manifest.tensors.len() as u32
+        );
 
         eprintln!(
             "✓ converted {} tensors, {} layers, family={}",

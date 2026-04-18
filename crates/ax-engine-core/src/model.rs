@@ -100,6 +100,10 @@ pub struct NativeModelManifest {
     pub query_pre_attn_scalar: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_logit_softcap: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attention_value_from_key_layers: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attention_v_norm_no_scale_layers: Vec<u32>,
     pub tensors: Vec<NativeTensorSpec>,
 }
 
@@ -172,6 +176,18 @@ impl NativeModelArtifacts {
             tie_word_embeddings: self.manifest.tie_word_embeddings,
         }
     }
+
+    pub fn layer_uses_attention_value_from_key(&self, layer_index: u32) -> bool {
+        self.manifest
+            .attention_value_from_key_layers
+            .contains(&layer_index)
+    }
+
+    pub fn layer_uses_attention_v_norm_no_scale(&self, layer_index: u32) -> bool {
+        self.manifest
+            .attention_v_norm_no_scale_layers
+            .contains(&layer_index)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -234,6 +250,16 @@ fn validate_native_model_manifest(
             message: "tensors must not be empty".to_string(),
         });
     }
+    validate_manifest_layer_index_list(
+        manifest,
+        &manifest.attention_value_from_key_layers,
+        "attention_value_from_key_layers",
+    )?;
+    validate_manifest_layer_index_list(
+        manifest,
+        &manifest.attention_v_norm_no_scale_layers,
+        "attention_v_norm_no_scale_layers",
+    )?;
     if let Some(rope_theta) = manifest.rope_theta {
         if rope_theta == 0 {
             return Err(NativeModelError::InvalidManifest {
@@ -336,27 +362,8 @@ fn validate_native_model_manifest(
             layer_index,
             "attention_norm",
         )?;
-        require_layer_role(
-            roles,
-            NativeTensorRole::AttentionO,
-            layer_index,
-            "attention_o",
-        )?;
         require_layer_role(roles, NativeTensorRole::FfnNorm, layer_index, "ffn_norm")?;
         require_layer_role(roles, NativeTensorRole::FfnDown, layer_index, "ffn_down")?;
-
-        let has_packed_qkv = roles.contains(&NativeTensorRole::AttentionQkvPacked);
-        let has_split_qkv = roles.contains(&NativeTensorRole::AttentionQ)
-            && roles.contains(&NativeTensorRole::AttentionK)
-            && roles.contains(&NativeTensorRole::AttentionV);
-        if !(has_packed_qkv || has_split_qkv) {
-            return Err(NativeModelError::InvalidManifest {
-                message: format!(
-                    "layer {} must provide attention_qkv_packed or attention_q/attention_k/attention_v",
-                    layer_index
-                ),
-            });
-        }
 
         let has_packed_gate_up = roles.contains(&NativeTensorRole::FfnGateUpPacked);
         let has_split_gate_up =
@@ -368,6 +375,36 @@ fn validate_native_model_manifest(
                     layer_index
                 ),
             });
+        }
+
+        // Attention QKV/O are required for full-attention layers but optional
+        // for mixed-architecture models (e.g. Qwen3.5 linear_attention layers).
+        let has_any_attention = roles.contains(&NativeTensorRole::AttentionO)
+            || roles.contains(&NativeTensorRole::AttentionQ)
+            || roles.contains(&NativeTensorRole::AttentionK)
+            || roles.contains(&NativeTensorRole::AttentionQkvPacked);
+        if has_any_attention {
+            require_layer_role(
+                roles,
+                NativeTensorRole::AttentionO,
+                layer_index,
+                "attention_o",
+            )?;
+            let has_packed_qkv = roles.contains(&NativeTensorRole::AttentionQkvPacked);
+            let has_split_qkv = roles.contains(&NativeTensorRole::AttentionQ)
+                && roles.contains(&NativeTensorRole::AttentionK)
+                && (roles.contains(&NativeTensorRole::AttentionV)
+                    || manifest
+                        .attention_value_from_key_layers
+                        .contains(&layer_index));
+            if !(has_packed_qkv || has_split_qkv) {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer {} must provide attention_qkv_packed or attention_q/attention_k plus attention_v (or mark the layer in attention_value_from_key_layers)",
+                        layer_index
+                    ),
+                });
+            }
         }
     }
 
@@ -393,9 +430,6 @@ fn validate_native_model_tensor_shapes(
 
     let hidden_size = u64::from(manifest.hidden_size);
     let vocab_size = u64::from(manifest.vocab_size);
-    let q_rows = u64::from(manifest.attention_head_count) * u64::from(manifest.attention_head_dim);
-    let kv_rows = u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim);
-
     let token_embedding = required_global_tensor_spec(
         manifest,
         NativeTensorRole::TokenEmbedding,
@@ -442,14 +476,30 @@ fn validate_native_model_tensor_shapes(
                 "attention_k_norm",
             )?;
         }
-
-        let attention_o = required_layer_tensor_spec(
-            manifest,
-            layer_index,
-            NativeTensorRole::AttentionO,
-            "attention_o",
-        )?;
-        expect_matrix_shape(attention_o, hidden_size, q_rows, "attention_o")?;
+        // Attention O shape validation — only for layers that have attention tensors.
+        // The output projection maps from attention output dim back to hidden_size.
+        // For standard attention: o_proj shape is [hidden_size, num_heads * head_dim].
+        // For gated attention (Qwen3.5): q_proj has 2x rows (queries + gate), but
+        // o_proj still maps from num_heads * head_dim, not from q_proj rows.
+        if let Some(attention_o) =
+            manifest_tensor(manifest, NativeTensorRole::AttentionO, Some(layer_index))
+        {
+            let o_shape =
+                matrix_shape(attention_o).ok_or_else(|| NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer {} tensor attention_o must be a rank-2 matrix",
+                        layer_index
+                    ),
+                })?;
+            if o_shape.0 != hidden_size {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer {} tensor attention_o must have {} output rows, got {}",
+                        layer_index, hidden_size, o_shape.0
+                    ),
+                });
+            }
+        }
 
         let ffn_norm = required_layer_tensor_spec(
             manifest,
@@ -486,35 +536,41 @@ fn validate_native_model_tensor_shapes(
             NativeTensorRole::AttentionQkvPacked,
             Some(layer_index),
         ) {
+            let q_rows =
+                u64::from(manifest.attention_head_count) * u64::from(manifest.attention_head_dim);
+            let kv_rows =
+                u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim);
             expect_matrix_shape(
                 attention_qkv,
                 q_rows + kv_rows + kv_rows,
                 hidden_size,
                 "attention_qkv_packed",
             )?;
-        } else {
+        } else if manifest_tensor(manifest, NativeTensorRole::AttentionQ, Some(layer_index))
+            .is_some()
+        {
             let attention_q = required_layer_tensor_spec(
                 manifest,
                 layer_index,
                 NativeTensorRole::AttentionQ,
                 "attention_q",
             )?;
-            expect_matrix_shape(attention_q, q_rows, hidden_size, "attention_q")?;
             let attention_k = required_layer_tensor_spec(
                 manifest,
                 layer_index,
                 NativeTensorRole::AttentionK,
                 "attention_k",
             )?;
-            expect_matrix_shape(attention_k, kv_rows, hidden_size, "attention_k")?;
-            let attention_v = required_layer_tensor_spec(
-                manifest,
-                layer_index,
-                NativeTensorRole::AttentionV,
-                "attention_v",
-            )?;
-            expect_matrix_shape(attention_v, kv_rows, hidden_size, "attention_v")?;
+            let split_dims = resolved_split_attention_dims(manifest, layer_index)?;
+            expect_matrix_shape(attention_q, split_dims.q_rows, hidden_size, "attention_q")?;
+            expect_matrix_shape(attention_k, split_dims.kv_rows, hidden_size, "attention_k")?;
+            if let Some(attention_v) =
+                manifest_tensor(manifest, NativeTensorRole::AttentionV, Some(layer_index))
+            {
+                expect_matrix_shape(attention_v, split_dims.kv_rows, hidden_size, "attention_v")?;
+            }
         }
+        // Layers without any attention tensors (e.g. linear_attention) skip QKV shape validation.
 
         let intermediate_dim = if let Some(ffn_gate_up_packed) = manifest_tensor(
             manifest,
@@ -613,6 +669,199 @@ fn validate_native_model_tensor_shapes(
     Ok(())
 }
 
+fn validate_manifest_layer_index_list(
+    manifest: &NativeModelManifest,
+    layer_indices: &[u32],
+    field_name: &str,
+) -> Result<(), NativeModelError> {
+    for &layer_index in layer_indices {
+        if layer_index >= manifest.layer_count {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "{} contains out-of-range layer index {} (layer_count={})",
+                    field_name, layer_index, manifest.layer_count
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeSplitAttentionDims {
+    q_rows: u64,
+    kv_rows: u64,
+}
+
+fn resolved_split_attention_dims(
+    manifest: &NativeModelManifest,
+    layer_index: u32,
+) -> Result<NativeSplitAttentionDims, NativeModelError> {
+    let attention_q = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionQ,
+        "attention_q",
+    )?;
+    let attention_k = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionK,
+        "attention_k",
+    )?;
+    let (q_rows, q_cols) =
+        matrix_shape(attention_q).ok_or_else(|| NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} tensor attention_q must be a rank-2 matrix",
+                layer_index
+            ),
+        })?;
+    let (k_rows, k_cols) =
+        matrix_shape(attention_k).ok_or_else(|| NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} tensor attention_k must be a rank-2 matrix",
+                layer_index
+            ),
+        })?;
+    let hidden_size = u64::from(manifest.hidden_size);
+    if q_cols != hidden_size {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} tensor attention_q must have shape [q_rows, {}], got {:?}",
+                layer_index, hidden_size, attention_q.shape
+            ),
+        });
+    }
+    if k_cols != hidden_size {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} tensor attention_k must have shape [kv_rows, {}], got {:?}",
+                layer_index, hidden_size, attention_k.shape
+            ),
+        });
+    }
+
+    let mut head_dim = None;
+    if let Some(attention_q_norm) = manifest_tensor(
+        manifest,
+        NativeTensorRole::AttentionQNorm,
+        Some(layer_index),
+    ) {
+        let q_norm_dim =
+            vector_shape(attention_q_norm).ok_or_else(|| NativeModelError::InvalidManifest {
+                message: format!(
+                    "layer {} tensor attention_q_norm must be a rank-1 vector",
+                    layer_index
+                ),
+            })?;
+        head_dim = Some(q_norm_dim);
+    }
+    if let Some(attention_k_norm) = manifest_tensor(
+        manifest,
+        NativeTensorRole::AttentionKNorm,
+        Some(layer_index),
+    ) {
+        let k_norm_dim =
+            vector_shape(attention_k_norm).ok_or_else(|| NativeModelError::InvalidManifest {
+                message: format!(
+                    "layer {} tensor attention_k_norm must be a rank-1 vector",
+                    layer_index
+                ),
+            })?;
+        if let Some(existing) = head_dim {
+            if existing != k_norm_dim {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer {} attention_q_norm and attention_k_norm must agree on head_dim, got {} vs {}",
+                        layer_index, existing, k_norm_dim
+                    ),
+                });
+            }
+        } else {
+            head_dim = Some(k_norm_dim);
+        }
+    }
+    let head_dim = head_dim.unwrap_or(u64::from(manifest.attention_head_dim));
+    if head_dim == 0 {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} resolved attention head_dim must be > 0",
+                layer_index
+            ),
+        });
+    }
+    if !q_rows.is_multiple_of(head_dim) {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} attention_q rows {} must be divisible by head_dim {}",
+                layer_index, q_rows, head_dim
+            ),
+        });
+    }
+    if !k_rows.is_multiple_of(head_dim) {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} attention_k rows {} must be divisible by head_dim {}",
+                layer_index, k_rows, head_dim
+            ),
+        });
+    }
+    let q_heads = q_rows / head_dim;
+    let kv_heads = k_rows / head_dim;
+    if q_heads == 0 || kv_heads == 0 || q_heads < kv_heads || !q_heads.is_multiple_of(kv_heads) {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} requires q_heads >= kv_heads and divisible; resolved q_heads={} kv_heads={}",
+                layer_index, q_heads, kv_heads
+            ),
+        });
+    }
+
+    let kv_rows = if let Some(attention_v) =
+        manifest_tensor(manifest, NativeTensorRole::AttentionV, Some(layer_index))
+    {
+        let (v_rows, v_cols) =
+            matrix_shape(attention_v).ok_or_else(|| NativeModelError::InvalidManifest {
+                message: format!(
+                    "layer {} tensor attention_v must be a rank-2 matrix",
+                    layer_index
+                ),
+            })?;
+        if v_cols != hidden_size {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "layer {} tensor attention_v must have shape [kv_rows, {}], got {:?}",
+                    layer_index, hidden_size, attention_v.shape
+                ),
+            });
+        }
+        if v_rows != k_rows {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "layer {} attention_k and attention_v must agree on row count, got {} vs {}",
+                    layer_index, k_rows, v_rows
+                ),
+            });
+        }
+        v_rows
+    } else if manifest
+        .attention_value_from_key_layers
+        .contains(&layer_index)
+    {
+        k_rows
+    } else {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} must provide attention_v or be listed in attention_value_from_key_layers",
+                layer_index
+            ),
+        });
+    };
+
+    Ok(NativeSplitAttentionDims { q_rows, kv_rows })
+}
+
 fn manifest_tensor(
     manifest: &NativeModelManifest,
     role: NativeTensorRole,
@@ -652,6 +901,10 @@ fn required_layer_tensor_spec<'a>(
 
 fn matrix_shape(tensor: &NativeTensorSpec) -> Option<(u64, u64)> {
     (tensor.shape.len() == 2).then_some((*tensor.shape.first()?, *tensor.shape.get(1)?))
+}
+
+fn vector_shape(tensor: &NativeTensorSpec) -> Option<u64> {
+    (tensor.shape.len() == 1).then_some(*tensor.shape.first()?)
 }
 
 fn expect_vector_shape(
@@ -832,6 +1085,8 @@ mod tests {
             rope_theta: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
+            attention_value_from_key_layers: Vec::new(),
+            attention_v_norm_no_scale_layers: Vec::new(),
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",
@@ -925,6 +1180,29 @@ mod tests {
                 ),
             ],
         }
+    }
+
+    fn split_layer_manifest_with_value_from_key() -> NativeModelManifest {
+        let mut manifest = packed_layer_manifest();
+        manifest.attention_value_from_key_layers = vec![1];
+        manifest.tensors.retain(|tensor| {
+            !(tensor.layer_index == Some(1) && tensor.role == NativeTensorRole::AttentionQkvPacked)
+        });
+        manifest.tensors.extend([
+            tensor(
+                "model.layers.1.self_attn.q_proj.weight",
+                NativeTensorRole::AttentionQ,
+                Some(1),
+                vec![2048, 2048],
+            ),
+            tensor(
+                "model.layers.1.self_attn.k_proj.weight",
+                NativeTensorRole::AttentionK,
+                Some(1),
+                vec![1024, 2048],
+            ),
+        ]);
+        manifest
     }
 
     fn tensor(
@@ -1031,6 +1309,33 @@ mod tests {
             panic!("expected invalid manifest error");
         };
         assert!(message.contains("attention_qkv_packed"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_missing_attention_v_when_value_comes_from_key() {
+        let manifest = split_layer_manifest_with_value_from_key();
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        NativeModelArtifacts::from_dir(&dir)
+            .expect("attention_value_from_key_layers should allow missing attention_v");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_out_of_range_attention_value_from_key_layers() {
+        let mut manifest = packed_layer_manifest();
+        manifest.attention_value_from_key_layers = vec![99];
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("out-of-range attention_value_from_key_layers should fail");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(message.contains("attention_value_from_key_layers"));
 
         let _ = fs::remove_dir_all(dir);
     }
