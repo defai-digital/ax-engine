@@ -736,11 +736,16 @@ fn validate_native_model_tensor_shapes(
         ) {
             let q_rows =
                 u64::from(manifest.attention_head_count) * u64::from(manifest.attention_head_dim);
+            let packed_q_rows = if manifest.attn_output_gate {
+                q_rows.saturating_mul(2)
+            } else {
+                q_rows
+            };
             let kv_rows =
                 u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim);
             expect_matrix_shape(
                 attention_qkv,
-                q_rows + kv_rows + kv_rows,
+                packed_q_rows + kv_rows + kv_rows,
                 hidden_size,
                 "attention_qkv_packed",
             )?;
@@ -1708,6 +1713,23 @@ mod tests {
                 tie_word_embeddings: false,
             }
         );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_attn_output_gate_with_packed_qkv() {
+        let mut manifest = packed_layer_manifest();
+        manifest.attn_output_gate = true;
+        for tensor in &mut manifest.tensors {
+            if tensor.role == NativeTensorRole::AttentionQkvPacked {
+                tensor.shape[0] = 6144;
+            }
+        }
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        NativeModelArtifacts::from_dir(&dir)
+            .expect("packed attn_output_gate manifest should validate");
 
         let _ = fs::remove_dir_all(dir);
     }

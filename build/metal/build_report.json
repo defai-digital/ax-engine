@@ -214,19 +214,39 @@
       "purpose": "single-step depthwise conv1d over bf16 linear-attention QKV staging"
     },
     {
+      "name": "linear_attention_gate_silu_f32",
+      "tier": "optional",
+      "purpose": "batched SiLU gating over AX-native linear-attention recurrent outputs"
+    },
+    {
+      "name": "attention_output_gate_sigmoid_product_f32",
+      "tier": "optional",
+      "purpose": "batched sigmoid gating over AX-native dense attention outputs before o_proj"
+    },
+    {
+      "name": "linear_attention_beta_sigmoid_f32",
+      "tier": "optional",
+      "purpose": "batched sigmoid beta precompute over AX-native linear-attention heads"
+    },
+    {
+      "name": "linear_attention_decay_f32",
+      "tier": "optional",
+      "purpose": "batched decay precompute over AX-native linear-attention heads"
+    },
+    {
       "name": "linear_gated_delta_step_f32",
       "tier": "optional",
       "purpose": "single-step recurrent linear-attention update over AX-native dense states"
     }
   ],
-  "source_sha256": "7e2fc35cd0400e914d2a68791693dcc1519629841bf6e0b0fecaa047a9f7dee9",
+  "source_sha256": "f0d128db1d24e7ee660ab49aeca8f99d9bc49240d9faf0b4dd6ea8d0382da5bd",
   "outputs": {
     "air": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.air",
     "metalar": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.metalar",
     "metallib": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.metallib",
-    "air_sha256": "9c22446cff5deb95fafc76813247c77e99b541f3257c62f8d10563a7e84375dd",
-    "metalar_sha256": "94cda6742d8fe146eb208bc2dd75e33693c853ea02b98f223d2e6cc788401e53",
-    "metallib_sha256": "88fa760e64eb2103872ce358800ec0bdf8e44fa52480e94e9ce83f09cf6044ff"
+    "air_sha256": "f6c6224366a335b1b19067aaef263c3901dccd89488d618c985c11e24873edd4",
+    "metalar_sha256": "0cd504bc4fbe44760d1948c6815d81eaf2b462c98b490bd120892f0cab4e8f36",
+    "metallib_sha256": "dcbf3a5bd0eaf6a5593c2417f0d34f6241ae28d4d3c50514f7bd9266e5a5d1b6"
   },
   "compile_commands": [
     [

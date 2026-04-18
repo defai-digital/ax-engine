@@ -87,6 +87,7 @@ pub const PHASE1_OPTIONAL_METAL_KERNELS: &[&str] = &[
     "linear_attention_conv1d_f16",
     "linear_attention_conv1d_bf16",
     "linear_attention_gate_silu_f32",
+    "attention_output_gate_sigmoid_product_f32",
     "linear_attention_beta_sigmoid_f32",
     "linear_attention_decay_f32",
     "linear_gated_delta_step_f32",
@@ -262,6 +263,7 @@ struct MetalOptionalKernelDispatchPlan {
     linear_attention_conv1d_f16: Option<usize>,
     linear_attention_conv1d_bf16: Option<usize>,
     linear_attention_gate_silu_f32: Option<usize>,
+    attention_output_gate_sigmoid_product_f32: Option<usize>,
     linear_attention_beta_sigmoid_f32: Option<usize>,
     linear_attention_decay_f32: Option<usize>,
     linear_gated_delta_step_f32: Option<usize>,
@@ -374,6 +376,11 @@ impl MetalOptionalKernelDispatchPlan {
     fn linear_attention_gate_kernel(self) -> Option<(&'static str, usize)> {
         self.linear_attention_gate_silu_f32
             .map(|index| ("linear_attention_gate_silu_f32", index))
+    }
+
+    fn attention_output_gate_kernel(self) -> Option<(&'static str, usize)> {
+        self.attention_output_gate_sigmoid_product_f32
+            .map(|index| ("attention_output_gate_sigmoid_product_f32", index))
     }
 
     fn linear_attention_beta_kernel(self) -> Option<(&'static str, usize)> {
@@ -3871,6 +3878,18 @@ fn derive_model_bound_direct_decode_result_from_hidden_states_batched(
             };
             let feedback_key = direct_decode_batched_group_feedback_key(candidate.len(), dims);
             optional_kernel_allowed(bringup, &feedback_key)
+                && direct_decode_batched_attention_output_gate_group_allowed(
+                    bringup,
+                    artifacts,
+                    candidate.len(),
+                    dims,
+                )
+                && direct_decode_batched_logits_group_allowed(
+                    bringup,
+                    decode_projection,
+                    candidate.len(),
+                    dims,
+                )
         };
         partitioned_groups.extend(partition_prepared_direct_decode_group_by_batched_viability(
             group,
@@ -3896,7 +3915,20 @@ fn derive_model_bound_direct_decode_result_from_hidden_states_batched(
                 ))
             });
             if let Some((bringup, feedback_key)) = feedback_key.as_ref() {
-                if !optional_kernel_allowed(bringup, feedback_key) {
+                if !optional_kernel_allowed(bringup, feedback_key)
+                    || !direct_decode_batched_attention_output_gate_group_allowed(
+                        bringup,
+                        artifacts,
+                        group.len(),
+                        group.first()?.dims,
+                    )
+                    || !direct_decode_batched_logits_group_allowed(
+                        bringup,
+                        decode_projection,
+                        group.len(),
+                        group.first()?.dims,
+                    )
+                {
                     return None;
                 }
             }
@@ -4050,10 +4082,29 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
         return None;
     }
 
-    let attention_input_rows = prepared
+    let mut attention_input_rows = prepared
         .iter()
         .map(|item| item.attention_input.clone())
         .collect::<Vec<_>>();
+    let mut native_dense_tally = DirectDecodeNativeDenseTally::default();
+    if artifacts.manifest().attn_output_gate {
+        let hidden_rows = prepared
+            .iter()
+            .map(|item| item.hidden.clone())
+            .collect::<Vec<_>>();
+        let gate =
+            compute_attn_output_gate(artifacts, final_layer, buffers, &hidden_rows, bringup)?;
+        native_dense_tally = native_dense_tally.merge(
+            direct_decode_native_dense_tally_from_prefix_attention_tally(
+                apply_attention_output_gate_in_place_with_tally(
+                    &mut attention_input_rows,
+                    &gate,
+                    dims.input_width,
+                    bringup,
+                )?,
+            ),
+        );
+    }
     let (attention_hidden_rows, attention_o_tally) = project_batched_matrix_rows_with_tally(
         attention_o,
         0,
@@ -4062,7 +4113,7 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
         dims.input_width,
         bringup,
     )?;
-    let mut native_dense_tally = DirectDecodeNativeDenseTally::default().merge(attention_o_tally);
+    native_dense_tally = native_dense_tally.merge(attention_o_tally);
     let attention_hidden_rows_len = attention_hidden_rows.len();
     let mut hidden_rows = prepared
         .iter()
@@ -4071,16 +4122,13 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
     if hidden_rows.len() != attention_hidden_rows_len {
         return None;
     }
-    let used_native_attention_residual_add = add_batched_rows_in_place_with_path(
+    let attention_residual_add_tally = add_batched_rows_in_place_with_direct_decode_tally(
         &mut hidden_rows,
         &attention_hidden_rows,
         dims.hidden_dim,
         bringup,
     )?;
-    native_dense_tally = native_dense_tally.record_residual_add_elements(
-        hidden_rows.len().checked_mul(dims.hidden_dim)?,
-        used_native_attention_residual_add,
-    );
+    native_dense_tally = native_dense_tally.merge(attention_residual_add_tally);
     for (item, hidden) in prepared.iter_mut().zip(hidden_rows.into_iter()) {
         item.hidden = hidden;
     }
@@ -4140,16 +4188,13 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
     if hidden_rows.len() != ffn_output_rows_len {
         return None;
     }
-    let used_native_ffn_residual_add = add_batched_rows_in_place_with_path(
+    let ffn_residual_add_tally = add_batched_rows_in_place_with_direct_decode_tally(
         &mut hidden_rows,
         &ffn_output_rows,
         dims.hidden_dim,
         bringup,
     )?;
-    native_dense_tally = native_dense_tally.record_residual_add_elements(
-        hidden_rows.len().checked_mul(dims.hidden_dim)?,
-        used_native_ffn_residual_add,
-    );
+    native_dense_tally = native_dense_tally.merge(ffn_residual_add_tally);
     model_bound_ffn_decode |= ffn_output_rows_nontrivial;
     for (item, hidden) in prepared.iter_mut().zip(hidden_rows.into_iter()) {
         item.hidden = hidden;
@@ -4299,13 +4344,25 @@ fn decode_logits_from_model_attention_output_with_metadata(
     )?;
     let mut native_dense_tally = DirectDecodeNativeDenseTally::default();
     let residual = final_layer_hidden_state.get(..dims.hidden_dim)?.to_vec();
-    let (mut hidden, used_native_attention_o_projection) = project_matrix_rows_with_path(
-        attention_o,
-        0,
-        dims.hidden_dim,
-        &attention_output[..dims.input_width],
-        bringup,
-    )?;
+    let mut attention_input = attention_output.get(..dims.input_width)?.to_vec();
+    if artifacts.manifest().attn_output_gate {
+        let gate =
+            compute_attn_output_gate(artifacts, layer, buffers, &[residual.clone()], bringup)?;
+        let mut attention_input_rows = vec![attention_input];
+        native_dense_tally = native_dense_tally.merge(
+            direct_decode_native_dense_tally_from_prefix_attention_tally(
+                apply_attention_output_gate_in_place_with_tally(
+                    &mut attention_input_rows,
+                    &gate,
+                    dims.input_width,
+                    bringup,
+                )?,
+            ),
+        );
+        attention_input = attention_input_rows.pop()?;
+    }
+    let (mut hidden, used_native_attention_o_projection) =
+        project_matrix_rows_with_path(attention_o, 0, dims.hidden_dim, &attention_input, bringup)?;
     native_dense_tally = native_dense_tally
         .record_projection_rows(dims.hidden_dim, used_native_attention_o_projection);
     let used_native_attention_residual_add =
@@ -4727,6 +4784,77 @@ fn direct_decode_batched_group_feedback_key(
         "batched_group:direct_decode:{group_size}:{}:{}:{}:{}",
         dims.input_width, dims.hidden_dim, dims.intermediate_dim, dims.vocab_rows
     )
+}
+
+#[cfg(target_os = "macos")]
+fn direct_decode_batched_logits_group_allowed(
+    bringup: &MetalRuntimeBringup,
+    decode_projection: &MetalNativeTensorBufferBinding,
+    group_size: usize,
+    dims: ModelBoundDecodeDims,
+) -> bool {
+    let Some((projection_kernel_name, _)) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .batched_projection_kernel(decode_projection.native_dtype)
+    else {
+        return false;
+    };
+    let Some(_) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .logits_argmax_batched_f32
+    else {
+        return false;
+    };
+    let Some((vocab_rows, projection_cols)) =
+        tensor_matrix_dimensions(&decode_projection.meta.spec)
+    else {
+        return false;
+    };
+    let input_width = dims.hidden_dim.min(projection_cols);
+    if group_size == 0 || vocab_rows == 0 || input_width == 0 || vocab_rows != dims.vocab_rows {
+        return false;
+    }
+
+    let projection_feedback_key = batched_projection_feedback_key(
+        projection_kernel_name,
+        group_size,
+        vocab_rows,
+        input_width,
+        input_width,
+        projection_cols,
+    );
+    let argmax_feedback_key =
+        batched_logits_argmax_feedback_key("logits_argmax_batched_f32", group_size, vocab_rows);
+    optional_kernel_allowed(bringup, &projection_feedback_key)
+        && optional_kernel_allowed(bringup, &argmax_feedback_key)
+}
+
+#[cfg(target_os = "macos")]
+fn direct_decode_batched_attention_output_gate_group_allowed(
+    bringup: &MetalRuntimeBringup,
+    artifacts: &NativeModelArtifacts,
+    group_size: usize,
+    dims: ModelBoundDecodeDims,
+) -> bool {
+    if !artifacts.manifest().attn_output_gate {
+        return true;
+    }
+    let Some((kernel_name, _)) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .attention_output_gate_kernel()
+    else {
+        return false;
+    };
+    if group_size == 0 || dims.input_width == 0 {
+        return false;
+    }
+
+    let feedback_key =
+        batched_ffn_gate_product_feedback_key(kernel_name, group_size, dims.input_width);
+    optional_kernel_allowed(bringup, &feedback_key)
 }
 
 #[cfg(target_os = "macos")]
@@ -6282,6 +6410,9 @@ fn build_optional_kernel_dispatch_plan(
         linear_attention_conv1d_f16: index("linear_attention_conv1d_f16"),
         linear_attention_conv1d_bf16: index("linear_attention_conv1d_bf16"),
         linear_attention_gate_silu_f32: index("linear_attention_gate_silu_f32"),
+        attention_output_gate_sigmoid_product_f32: index(
+            "attention_output_gate_sigmoid_product_f32",
+        ),
         linear_attention_beta_sigmoid_f32: index("linear_attention_beta_sigmoid_f32"),
         linear_attention_decay_f32: index("linear_attention_decay_f32"),
         linear_gated_delta_step_f32: index("linear_gated_delta_step_f32"),
@@ -7935,6 +8066,14 @@ fn advance_hidden_states_through_model_layer(
         return None;
     }
 
+    // When attn_output_gate is enabled, compute the gate from the second half
+    // of q_proj by re-projecting the normalized hidden states.
+    let attn_gate = if artifacts.manifest().attn_output_gate {
+        compute_attn_output_gate(artifacts, layer, buffers, hidden_states, bringup)
+    } else {
+        None
+    };
+
     let (next_hidden_states, continuation_tally) =
         project_hidden_states_from_layer_attention_output(
             artifacts,
@@ -7946,6 +8085,7 @@ fn advance_hidden_states_through_model_layer(
             hidden_states,
             &attention_output,
             attention_head_size,
+            attn_gate.as_deref(),
             bringup,
         )?;
     let continuation_tokens = u32::try_from(next_hidden_states.len()).unwrap_or(u32::MAX);
@@ -7954,6 +8094,67 @@ fn advance_hidden_states_through_model_layer(
         .record_layer_continuation_tokens(continuation_tokens);
 
     Some((next_hidden_states, prefix_attention_tally))
+}
+
+/// Compute the attention output gate by projecting normalized hidden states
+/// through the second half of q_proj. Returns a flat buffer of gate values
+/// (one `q_heads * head_dim` gate vector per token).
+#[cfg(target_os = "macos")]
+fn compute_attn_output_gate(
+    artifacts: &NativeModelArtifacts,
+    layer: &MetalNativeLayerBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    hidden_states: &[Vec<f32>],
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<Vec<f32>> {
+    let attention_norm = buffers.binding_for(&layer.attention_norm)?;
+    let stage_dims = resolved_model_stage_dims_for_input_width(
+        artifacts,
+        layer,
+        attention_norm,
+        buffers,
+        hidden_states.iter().map(Vec::len).min()?,
+    )?;
+    let gate_row_offset = stage_dims.q_heads * stage_dims.head_dim;
+    let gate_output_dim = gate_row_offset; // gate has same dim as Q
+
+    let mut normalized = hidden_states
+        .iter()
+        .map(|h| h.get(..stage_dims.input_dim).map(|s| s.to_vec()))
+        .collect::<Option<Vec<_>>>()?;
+    apply_batched_row_rms_norm_with_binding_in_place_with_tally(
+        &mut normalized,
+        stage_dims.input_dim,
+        attention_norm,
+        native_model_rms_norm_epsilon(artifacts),
+        native_model_rms_norm_weight_offset(artifacts),
+        bringup,
+    )?;
+
+    let (gate_rows, _) = match layer.attention_qkv.as_ref()? {
+        MetalAttentionQkvBindings::Split { q, .. } => project_batched_matrix_rows_with_tally(
+            buffers.binding_for(q)?,
+            gate_row_offset,
+            gate_output_dim,
+            &normalized,
+            stage_dims.input_dim,
+            bringup,
+        )?,
+        MetalAttentionQkvBindings::Packed(binding) => project_batched_matrix_rows_with_tally(
+            buffers.binding_for(binding)?,
+            gate_row_offset,
+            gate_output_dim,
+            &normalized,
+            stage_dims.input_dim,
+            bringup,
+        )?,
+    };
+
+    let mut gate_flat = Vec::with_capacity(gate_rows.len() * gate_output_dim);
+    for row in &gate_rows {
+        gate_flat.extend_from_slice(row.get(..gate_output_dim)?);
+    }
+    Some(gate_flat)
 }
 
 /// FFN-only path for layers without attention (e.g. Qwen3.5 linear_attention).
@@ -9895,6 +10096,160 @@ fn apply_linear_attention_gate_in_place(
 }
 
 #[cfg(target_os = "macos")]
+fn apply_attention_output_gate_in_place_with_tally(
+    rows: &mut [Vec<f32>],
+    gate: &[f32],
+    row_width: usize,
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<PrefixAttentionExecutionTally> {
+    if row_width == 0 {
+        return Some(PrefixAttentionExecutionTally::default());
+    }
+    if rows.iter().any(|row| row.len() < row_width)
+        || gate.len() != rows.len().checked_mul(row_width)?
+    {
+        return None;
+    }
+
+    if let Some(output_rows) =
+        apply_attention_output_gate_with_optional_native_path(bringup, rows, gate, row_width)
+    {
+        for (row, output_row) in rows.iter_mut().zip(output_rows.into_iter()) {
+            row.get_mut(..row_width)?
+                .copy_from_slice(output_row.get(..row_width)?);
+        }
+        return Some(
+            PrefixAttentionExecutionTally::default()
+                .record_ffn_activation_elements(rows.len().checked_mul(row_width)?, true),
+        );
+    }
+    if bringup.is_some() && rows.len() > 1 {
+        let split_index = rows.len() / 2;
+        let (left_rows, right_rows) = rows.split_at_mut(split_index);
+        let gate_split = split_index.checked_mul(row_width)?;
+        let (left_gate, right_gate) = gate.split_at(gate_split);
+        let left_tally = apply_attention_output_gate_in_place_with_tally(
+            left_rows, left_gate, row_width, bringup,
+        )?;
+        let right_tally = apply_attention_output_gate_in_place_with_tally(
+            right_rows, right_gate, row_width, bringup,
+        )?;
+        return Some(left_tally.merge(right_tally));
+    }
+
+    for (token_index, row) in rows.iter_mut().enumerate() {
+        let gate_base = token_index.checked_mul(row_width)?;
+        let token_gate = gate.get(gate_base..gate_base.checked_add(row_width)?)?;
+        for (value, gate_value) in row.get_mut(..row_width)?.iter_mut().zip(token_gate.iter()) {
+            *value *= 1.0 / (1.0 + (-gate_value).exp());
+        }
+    }
+    Some(
+        PrefixAttentionExecutionTally::default()
+            .record_ffn_activation_elements(rows.len().checked_mul(row_width)?, false),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn apply_attention_output_gate_with_optional_native_path(
+    bringup: Option<&MetalRuntimeBringup>,
+    rows: &[Vec<f32>],
+    gate: &[f32],
+    row_width: usize,
+) -> Option<Vec<Vec<f32>>> {
+    let bringup = bringup?;
+    let row_count = rows.len();
+    let element_count = row_count.checked_mul(row_width)?;
+    if row_count == 0
+        || row_width == 0
+        || gate.len() != element_count
+        || rows.iter().any(|row| row.len() < row_width)
+    {
+        return None;
+    }
+
+    let (kernel_name, pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .attention_output_gate_kernel()?;
+    let feedback_key = batched_ffn_gate_product_feedback_key(kernel_name, row_count, row_width);
+    if !optional_kernel_allowed(bringup, &feedback_key) {
+        return None;
+    }
+
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let mut flattened_rows = Vec::with_capacity(element_count);
+            for row in rows {
+                flattened_rows.extend_from_slice(row.get(..row_width)?);
+            }
+
+            let row_buffer = new_shared_buffer_with_data(&bringup.state.device, &flattened_rows);
+            let gate_buffer = new_shared_buffer_with_data(&bringup.state.device, gate);
+            let output_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(element_count),
+            );
+
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.attention_output_gate");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.attention_output_gate.compute");
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&gate_buffer), 0);
+            encoder.set_buffer(1, Some(&row_buffer), 0);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            set_ffn_gate_product_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(element_count),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(element_count.max(1) as u64, 1, 1),
+                MTLSize::new(
+                    pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(element_count.max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+
+            if command_buffer_status(command_buffer.status()) != MetalCommandBufferStatus::Completed
+            {
+                return None;
+            }
+
+            let output =
+                read_shared_buffer_prefix(&output_buffer, saturating_usize_to_u32(element_count));
+            if output.len() != element_count || output.iter().any(|value| !value.is_finite()) {
+                return None;
+            }
+            Some(
+                output
+                    .chunks_exact(row_width)
+                    .map(|chunk| chunk.to_vec())
+                    .collect::<Vec<_>>(),
+            )
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
+    output
+}
+
+#[cfg(target_os = "macos")]
 fn apply_linear_attention_gate_in_place_with_tally(
     outputs: &mut [Vec<f32>],
     z_rows: &[Vec<f32>],
@@ -10522,6 +10877,7 @@ fn project_hidden_states_from_layer_attention_output(
     hidden_states: &[Vec<f32>],
     attention_output: &[f32],
     attention_head_size: usize,
+    attn_output_gate: Option<&[f32]>,
     bringup: Option<&MetalRuntimeBringup>,
 ) -> Option<(Vec<Vec<f32>>, PrefixAttentionExecutionTally)> {
     let hidden_width = hidden_states.iter().map(Vec::len).min()?;
@@ -10534,7 +10890,7 @@ fn project_hidden_states_from_layer_attention_output(
         hidden_width,
         attention_head_size,
     )?;
-    let attention_input_rows = hidden_states
+    let mut attention_input_rows = hidden_states
         .iter()
         .enumerate()
         .map(|(token_index, _)| {
@@ -10544,6 +10900,19 @@ fn project_hidden_states_from_layer_attention_output(
             Some(token_attention_output.get(..dims.input_width)?.to_vec())
         })
         .collect::<Option<Vec<_>>>()?;
+    let mut tally = PrefixAttentionExecutionTally::default();
+
+    // When attn_output_gate is enabled, apply sigmoid(gate) * attention_output
+    // before the O projection. The gate has the same shape as the attention output.
+    if let Some(gate) = attn_output_gate {
+        tally = tally.merge(apply_attention_output_gate_in_place_with_tally(
+            &mut attention_input_rows,
+            gate,
+            dims.input_width,
+            bringup,
+        )?);
+    }
+
     let (attention_hidden_rows, attention_projection_tally) =
         project_batched_matrix_rows_with_tally(
             attention_o,
@@ -10553,7 +10922,6 @@ fn project_hidden_states_from_layer_attention_output(
             dims.input_width,
             bringup,
         )?;
-    let mut tally = PrefixAttentionExecutionTally::default();
     tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
         attention_projection_tally,
     ));
@@ -11260,11 +11628,20 @@ fn project_attention_qkv_with_dims_and_tally(
             let packed = buffers.binding_for(binding)?;
             let q_rows = artifacts.manifest().attention_head_count as usize
                 * artifacts.manifest().attention_head_dim as usize;
+            let packed_q_rows = if artifacts.manifest().attn_output_gate {
+                q_rows.saturating_mul(2)
+            } else {
+                q_rows
+            };
             let k_rows = artifacts.manifest().kv_head_count as usize
                 * artifacts.manifest().attention_head_dim as usize;
             let v_rows = artifacts.manifest().kv_head_count as usize
                 * artifacts.manifest().attention_head_dim as usize;
-            if q_rows < query_output_dim || k_rows < kv_output_dim || v_rows < kv_output_dim {
+            if q_rows < query_output_dim
+                || packed_q_rows < q_rows
+                || k_rows < kv_output_dim
+                || v_rows < kv_output_dim
+            {
                 return None;
             }
 
@@ -11279,7 +11656,7 @@ fn project_attention_qkv_with_dims_and_tally(
             )?;
             let (key, key_tally) = project_matrix_head_prefix_with_tally(
                 packed,
-                q_rows,
+                packed_q_rows,
                 stage_dims.kv_heads,
                 stage_dims.head_dim,
                 artifacts.manifest().attention_head_dim as usize,
@@ -11288,7 +11665,7 @@ fn project_attention_qkv_with_dims_and_tally(
             )?;
             let (value, value_tally) = project_matrix_head_prefix_with_tally(
                 packed,
-                q_rows + k_rows,
+                packed_q_rows + k_rows,
                 stage_dims.kv_heads,
                 stage_dims.head_dim,
                 artifacts.manifest().attention_head_dim as usize,
@@ -11376,11 +11753,20 @@ fn project_batched_attention_qkv_with_dims_and_tally(
             let packed = buffers.binding_for(binding)?;
             let q_rows = artifacts.manifest().attention_head_count as usize
                 * artifacts.manifest().attention_head_dim as usize;
+            let packed_q_rows = if artifacts.manifest().attn_output_gate {
+                q_rows.saturating_mul(2)
+            } else {
+                q_rows
+            };
             let k_rows = artifacts.manifest().kv_head_count as usize
                 * artifacts.manifest().attention_head_dim as usize;
             let v_rows = artifacts.manifest().kv_head_count as usize
                 * artifacts.manifest().attention_head_dim as usize;
-            if q_rows < query_output_dim || k_rows < kv_output_dim || v_rows < kv_output_dim {
+            if q_rows < query_output_dim
+                || packed_q_rows < q_rows
+                || k_rows < kv_output_dim
+                || v_rows < kv_output_dim
+            {
                 return None;
             }
 
@@ -11396,7 +11782,7 @@ fn project_batched_attention_qkv_with_dims_and_tally(
             )?;
             let (key, key_tally) = project_batched_matrix_head_prefix_with_tally(
                 packed,
-                q_rows,
+                packed_q_rows,
                 stage_dims.kv_heads,
                 stage_dims.head_dim,
                 artifacts.manifest().attention_head_dim as usize,
@@ -11406,7 +11792,7 @@ fn project_batched_attention_qkv_with_dims_and_tally(
             )?;
             let (value, value_tally) = project_batched_matrix_head_prefix_with_tally(
                 packed,
-                q_rows + k_rows,
+                packed_q_rows + k_rows,
                 stage_dims.kv_heads,
                 stage_dims.head_dim,
                 artifacts.manifest().attention_head_dim as usize,
@@ -12734,45 +13120,17 @@ fn add_in_place_with_path(
     Some(false)
 }
 
-#[cfg(target_os = "macos")]
-fn add_batched_rows_in_place_with_path(
+fn add_batched_rows_in_place_with_direct_decode_tally(
     rows: &mut [Vec<f32>],
     delta_rows: &[Vec<f32>],
     row_width: usize,
     bringup: Option<&MetalRuntimeBringup>,
-) -> Option<bool> {
-    if row_width == 0 {
-        return Some(true);
-    }
-    if rows.len() != delta_rows.len()
-        || rows.iter().any(|row| row.len() < row_width)
-        || delta_rows.iter().any(|row| row.len() < row_width)
-    {
-        return None;
-    }
-
-    let row_count = rows.len();
-    let element_count = row_count.checked_mul(row_width)?;
-    let mut flattened_rows = Vec::with_capacity(element_count);
-    let mut flattened_deltas = Vec::with_capacity(element_count);
-    for (row, delta_row) in rows.iter().zip(delta_rows.iter()) {
-        flattened_rows.extend_from_slice(row.get(..row_width)?);
-        flattened_deltas.extend_from_slice(delta_row.get(..row_width)?);
-    }
-
-    if let Some(output) =
-        apply_vector_add_with_optional_native_path(bringup, &flattened_rows, &flattened_deltas)
-    {
-        for (row, output_row) in rows.iter_mut().zip(output.chunks_exact(row_width)) {
-            row.get_mut(..row_width)?.copy_from_slice(output_row);
-        }
-        return Some(true);
-    }
-
-    for (row, delta_row) in rows.iter_mut().zip(delta_rows.iter()) {
-        add_in_place(row.get_mut(..row_width)?, delta_row.get(..row_width)?);
-    }
-    Some(false)
+) -> Option<DirectDecodeNativeDenseTally> {
+    Some(
+        direct_decode_native_dense_tally_from_prefix_attention_tally(
+            add_batched_rows_in_place_with_prefix_tally(rows, delta_rows, row_width, bringup)?,
+        ),
+    )
 }
 
 #[cfg(target_os = "macos")]

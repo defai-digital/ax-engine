@@ -2505,6 +2505,8 @@ mod tests {
             rope_theta: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
+            attn_output_gate: false,
+            partial_rotary_factor: None,
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
             linear_attention: NativeLinearAttentionConfig::default(),
