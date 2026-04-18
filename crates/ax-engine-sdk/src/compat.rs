@@ -733,6 +733,8 @@ fn run_mlx_cli_generate(
         .arg(request.sampling.top_k.to_string())
         .arg("--seed")
         .arg(request.sampling.seed.to_string())
+        .arg("--repetition-penalty")
+        .arg(request.sampling.repetition_penalty.to_string())
         .arg("--verbose")
         .arg("false");
     command.args(&config.extra_args);
@@ -1319,6 +1321,7 @@ assert args[args.index("--temp") + 1] == "0"
 assert args[args.index("--top-p") + 1] == "1"
 assert args[args.index("--top-k") + 1] == "1"
 assert args[args.index("--seed") + 1] == "7"
+assert args[args.index("--repetition-penalty") + 1] == "1"
 assert args[args.index("--verbose") + 1] == "false"
 assert "--ignore-chat-template" in args
 sys.stdout.write(f"mlx::{model}::{prompt}")
@@ -1348,6 +1351,7 @@ assert args[args.index("--temp") + 1] == "0"
 assert args[args.index("--top-p") + 1] == "1"
 assert args[args.index("--top-k") + 1] == "1"
 assert args[args.index("--seed") + 1] == "7"
+assert args[args.index("--repetition-penalty") + 1] == "1"
 assert args[args.index("--verbose") + 1] == "false"
 assert "--ignore-chat-template" in args
 sys.stdout.write(f"mlx::{model}::{prompt}")
