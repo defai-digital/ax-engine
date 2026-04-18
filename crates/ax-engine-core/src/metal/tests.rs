@@ -120,6 +120,65 @@ fn optional_kernel_dispatch_plan_tracks_available_hot_path_kernels() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn batched_linear_attention_decode_candidate_indices_only_include_single_token_items() {
+    let make_item = |request_id: u64, token_count: usize| PreparedLinearAttentionItem {
+        request_id: RequestId(request_id),
+        token_count,
+        q_rows: vec![vec![0.1, 0.2]; token_count],
+        k_rows: vec![vec![0.3, 0.4]; token_count],
+        v_rows: vec![vec![0.5, 0.6]; token_count],
+        g_rows: vec![vec![0.7]; token_count],
+        beta_rows: vec![vec![0.8]; token_count],
+        z_rows: vec![vec![0.9, 1.0]; token_count],
+        residual_rows: vec![vec![0.0, 0.0]; token_count],
+        state_before: vec![0.0, 0.0],
+        pre_recurrent_tally: PrefixAttentionExecutionTally::default(),
+    };
+
+    let items = vec![make_item(1, 1), make_item(2, 3), make_item(3, 1)];
+
+    assert_eq!(
+        batched_linear_attention_decode_candidate_indices(&items),
+        vec![0, 2]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn linear_gated_delta_feedback_key_distinguishes_batch_and_head_shape() {
+    let dims = ResolvedLinearAttentionDims {
+        hidden_dim: 16,
+        num_value_heads: 4,
+        num_key_heads: 2,
+        key_head_dim: 8,
+        value_head_dim: 4,
+        conv_kernel_dim: 3,
+        key_dim: 16,
+        value_dim: 16,
+        conv_dim: 48,
+        repeat_factor: 2,
+    };
+
+    assert_ne!(
+        linear_gated_delta_feedback_key(2, dims),
+        linear_gated_delta_feedback_key(1, dims)
+    );
+    assert_ne!(
+        linear_gated_delta_feedback_key(2, dims),
+        linear_gated_delta_feedback_key(
+            2,
+            ResolvedLinearAttentionDims {
+                value_head_dim: 8,
+                value_dim: 32,
+                conv_dim: 64,
+                ..dims
+            }
+        )
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn optional_kernel_feedback_disables_kernel_after_threshold_failures() {
     let mut feedback = MetalOptionalKernelFeedbackState::default();
     let kernel_name = "decode_logits_projection_f32";
@@ -4882,6 +4941,10 @@ fn complete_model_forward_support_requires_model_conditioned_source() {
     ));
     assert!(complete_model_forward_support_for_source(
         Some(&multilayer_model),
+        Some(MetalStagedInputSource::ModelConditionedCpuPrefixAttention)
+    ));
+    assert!(complete_model_forward_support_for_source(
+        Some(&multilayer_model),
         Some(MetalStagedInputSource::ModelConditionedNativePrefixAttention)
     ));
     assert!(complete_model_forward_support_for_source(
@@ -6108,6 +6171,59 @@ fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_atte
     };
     let mut output = successful_runner_output_from_input(&input);
     let direct_decode_tokens = vec![(RequestId(9), 17), (RequestId(11), 23)];
+    let direct_logits_outputs = direct_decode_tokens
+        .iter()
+        .map(|(request_id, token_id)| RequestLogitsOutput {
+            request_id: *request_id,
+            logits: vec![0.0, *token_id as f32],
+        })
+        .collect::<Vec<_>>();
+
+    apply_direct_decode_logits_to_runner_output(&mut output, &direct_logits_outputs);
+
+    assert!(completed_real_model_forward_step(
+        &input,
+        &output,
+        &runtime,
+        &direct_decode_tokens,
+    ));
+}
+
+#[test]
+fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_attention_is_cpu_only()
+{
+    let input = sample_decode_only_runner_input();
+    let runtime = MetalDispatchRuntimeInfo {
+        device_name: "Apple M4 Max".to_string(),
+        required_pipeline_count: 4,
+        max_thread_execution_width: 64,
+        binary_archive: MetalBinaryArchiveInfo {
+            path: PathBuf::from("/tmp/ax-phase1.binary_archive.metallib"),
+            state: MetalBinaryArchiveState::Loaded,
+            attached_pipeline_count: 4,
+            serialized: true,
+            note: None,
+        },
+        command_queue_ready: true,
+        model_conditioned_inputs: true,
+        real_model_tensor_inputs: true,
+        complete_model_forward_supported: true,
+        model_bindings_prepared: true,
+        model_buffers_bound: true,
+        model_buffer_count: 4,
+        model_buffer_bytes: 4096,
+        native_dense_kernel_coverage: MetalNativeDenseKernelCoverage::default(),
+        model: Some(NativeModelArtifactsSummary {
+            model_family: "qwen3_5".to_string(),
+            tensor_format: crate::model::NativeTensorFormat::Safetensors,
+            layer_count: 24,
+            tensor_count: 250,
+            tie_word_embeddings: true,
+        }),
+    };
+    let mut output = successful_runner_output_from_input(&input);
+    let direct_decode_tokens = vec![(RequestId(9), 17), (RequestId(11), 23)];
+
     let direct_logits_outputs = direct_decode_tokens
         .iter()
         .map(|(request_id, token_id)| RequestLogitsOutput {
