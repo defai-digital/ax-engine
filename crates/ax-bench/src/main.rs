@@ -8,14 +8,15 @@ use ax_engine_core::{
     SequenceNo, StepId, StopReason,
 };
 use ax_engine_sdk::{
-    current_host_report, current_metal_toolchain_report, preview_support_tier_from_label,
-    BackendPolicy, CompatibilityBackendConfig, CompatibilityBackendKind, EngineSession,
-    EngineSessionConfig, EngineStepReport, GenerateFinishReason, GenerateRequest, GenerateResponse,
-    GenerateRouteReport, GenerateSampling, GenerateStatus, GenerateStreamEvent, HostReport,
-    LlamaCppConfig, MetalToolchainReport, NativeModelArtifactsSource, NativeModelReport,
-    NativeRuntimeArtifactsSource, NativeRuntimeReport, PreviewBackendRequest, ResolutionPolicy,
-    ResolvedBackend, ResolvedSessionConfigRequest, RuntimeReport, SelectedBackend,
-    SessionRequestReport, SessionRequestState, SupportTier, ToolStatusReport,
+    classify_native_gguf_export_failure_message, current_host_report,
+    current_metal_toolchain_report, preview_support_tier_from_label, BackendPolicy,
+    CompatibilityBackendConfig, CompatibilityBackendKind, EngineSession, EngineSessionConfig,
+    EngineStepReport, GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport,
+    GenerateSampling, GenerateStatus, GenerateStreamEvent, HostReport, LlamaCppConfig,
+    MetalToolchainReport, NativeGgufExportFailureKind, NativeModelArtifactsSource,
+    NativeModelReport, NativeRuntimeArtifactsSource, NativeRuntimeReport, PreviewBackendRequest,
+    ResolutionPolicy, ResolvedBackend, ResolvedSessionConfigRequest, RuntimeReport,
+    SelectedBackend, SessionRequestReport, SessionRequestState, SupportTier, ToolStatusReport,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -30,6 +31,10 @@ use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tracing_subscriber::EnvFilter;
+
+const NATIVE_GGUF_EXPORTER_ENV: &str = "AX_ENGINE_NATIVE_GGUF_EXPORTER";
+const NATIVE_GGUF_PYTHON_ENV: &str = "AX_ENGINE_NATIVE_GGUF_PYTHON";
+const NATIVE_GGUF_EXPORT_DTYPE_ENV: &str = "AX_ENGINE_NATIVE_GGUF_EXPORT_DTYPE";
 
 fn main() -> ExitCode {
     init_tracing();
@@ -520,7 +525,11 @@ fn handle_matrix(args: &[String]) -> Result<(), CliError> {
 
 fn handle_doctor(args: &[String]) -> Result<(), CliError> {
     let doctor_args = parse_doctor_args(args)?;
-    let report = build_doctor_report(current_host_report(), current_metal_toolchain_report());
+    let report = build_doctor_report_for_model(
+        current_host_report(),
+        current_metal_toolchain_report(),
+        doctor_args.native_model_artifacts_dir.as_deref(),
+    );
 
     if doctor_args.json {
         let json = serde_json::to_string_pretty(&report).map_err(|error| {
@@ -1099,17 +1108,27 @@ fn stop_reason_from_generate_finish_reason(
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct DoctorArgs {
     json: bool,
+    native_model_artifacts_dir: Option<PathBuf>,
 }
 
 fn parse_doctor_args(args: &[String]) -> Result<DoctorArgs, CliError> {
     let mut doctor_args = DoctorArgs::default();
+    let mut iter = args.iter();
 
-    for arg in args {
+    while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--json" => doctor_args.json = true,
+            "--native-model-artifacts-dir" => {
+                let Some(value) = iter.next() else {
+                    return Err(CliError::Usage(
+                        "missing value for flag --native-model-artifacts-dir".to_string(),
+                    ));
+                };
+                doctor_args.native_model_artifacts_dir = Some(PathBuf::from(value));
+            }
             other => {
                 return Err(CliError::Usage(format!(
                     "unknown flag for doctor: {other}\n\n{}",
@@ -1209,6 +1228,8 @@ struct DoctorReport {
     status: DoctorStatus,
     native_runtime_ready: bool,
     bringup_allowed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_model_bridge: Option<Value>,
     host: HostReport,
     metal_toolchain: MetalToolchainReport,
     issues: Vec<String>,
@@ -1274,12 +1295,39 @@ fn map_metal_build_error(error: ax_engine_core::MetalRuntimeError) -> CliError {
 }
 
 fn build_doctor_report(host: HostReport, metal_toolchain: MetalToolchainReport) -> DoctorReport {
+    build_doctor_report_with_native_model_bridge(host, metal_toolchain, None)
+}
+
+fn build_doctor_report_for_model(
+    host: HostReport,
+    metal_toolchain: MetalToolchainReport,
+    native_model_artifacts_dir: Option<&Path>,
+) -> DoctorReport {
+    let native_model_bridge = native_model_artifacts_dir.and_then(|path| {
+        is_native_model_gguf_path(path).then(|| {
+            probe_native_gguf_bridge_with_config(path, &default_native_gguf_bridge_probe_config())
+        })
+    });
+    build_doctor_report_with_native_model_bridge(host, metal_toolchain, native_model_bridge)
+}
+
+fn build_doctor_report_with_native_model_bridge(
+    host: HostReport,
+    metal_toolchain: MetalToolchainReport,
+    native_model_bridge: Option<Value>,
+) -> DoctorReport {
     let native_runtime_ready = host.supported_native_runtime && metal_toolchain.fully_available;
     let bringup_allowed = metal_toolchain.fully_available
         && (host.supported_native_runtime || host.unsupported_host_override_active);
-    let status = if native_runtime_ready {
+    let native_model_bridge_ready = native_model_bridge
+        .as_ref()
+        .and_then(|bridge| bridge.get("status"))
+        .and_then(Value::as_str)
+        .map(|status| status == "ready")
+        .unwrap_or(true);
+    let status = if native_runtime_ready && native_model_bridge_ready {
         DoctorStatus::Ready
-    } else if bringup_allowed {
+    } else if bringup_allowed && native_model_bridge_ready {
         DoctorStatus::BringupOnly
     } else {
         DoctorStatus::NotReady
@@ -1291,14 +1339,19 @@ fn build_doctor_report(host: HostReport, metal_toolchain: MetalToolchainReport) 
         status,
         native_runtime_ready,
         bringup_allowed,
+        native_model_bridge: native_model_bridge.clone(),
         host: host.clone(),
         metal_toolchain: metal_toolchain.clone(),
-        issues: doctor_issues(&host, &metal_toolchain),
-        notes: doctor_notes(&host),
+        issues: doctor_issues(&host, &metal_toolchain, native_model_bridge.as_ref()),
+        notes: doctor_notes(&host, native_model_bridge.as_ref()),
     }
 }
 
-fn doctor_issues(host: &HostReport, metal_toolchain: &MetalToolchainReport) -> Vec<String> {
+fn doctor_issues(
+    host: &HostReport,
+    metal_toolchain: &MetalToolchainReport,
+    native_model_bridge: Option<&Value>,
+) -> Vec<String> {
     let mut issues = Vec::new();
 
     if !host.supported_native_runtime {
@@ -1329,16 +1382,37 @@ fn doctor_issues(host: &HostReport, metal_toolchain: &MetalToolchainReport) -> V
         ));
     }
 
+    if let Some(native_model_bridge) = native_model_bridge {
+        let status = native_model_bridge
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let blockers = native_model_bridge
+            .get("blockers")
+            .map(json_value_label)
+            .unwrap_or_else(|| "[]".to_string());
+        if status != "ready" {
+            issues.push(format!(
+                "native GGUF bridge is not ready for the selected model (status={status}, blockers={blockers})"
+            ));
+        }
+    }
+
     issues
 }
 
-fn doctor_notes(host: &HostReport) -> Vec<String> {
+fn doctor_notes(host: &HostReport, native_model_bridge: Option<&Value>) -> Vec<String> {
     let mut notes = vec!["compatibility backends do not widen supported host scope".to_string()];
     if host.unsupported_host_override_active {
         notes.push(
             "AX_ALLOW_UNSUPPORTED_HOST only unlocks development or CI bring-up and does not make benchmark or runtime results supported"
                 .to_string(),
         );
+    }
+    if let Some(native_model_bridge) = native_model_bridge {
+        if let Some(status) = native_model_bridge.get("status").and_then(Value::as_str) {
+            notes.push(format!("native GGUF bridge probe status={status}"));
+        }
     }
     notes
 }
@@ -1389,6 +1463,33 @@ fn render_doctor_report(report: &DoctorReport) -> String {
             "metal_toolchain.fully_available={}",
             report.metal_toolchain.fully_available
         ),
+    ];
+
+    if let Some(native_model_bridge) = report.native_model_bridge.as_ref() {
+        lines.push(format!(
+            "native_model_bridge.status={}",
+            native_model_bridge
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ));
+        lines.push(format!(
+            "native_model_bridge.source_path={}",
+            native_model_bridge
+                .get("source_path")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ));
+        lines.push(format!(
+            "native_model_bridge.blockers={}",
+            native_model_bridge
+                .get("blockers")
+                .map(json_value_label)
+                .unwrap_or_else(|| "[]".to_string())
+        ));
+    }
+
+    lines.extend([
         format!(
             "metal.available={} ({})",
             report.metal_toolchain.metal.available,
@@ -1405,7 +1506,7 @@ fn render_doctor_report(report: &DoctorReport) -> String {
             tool_version_text(&report.metal_toolchain.metal_ar)
         ),
         "issues:".to_string(),
-    ];
+    ]);
 
     if report.issues.is_empty() {
         lines.push("  - none".to_string());
@@ -1775,10 +1876,12 @@ struct AutotuneTrialMetrics {
     prefix_cpu_projection_row_count: u32,
     prefix_cpu_rms_norm_element_count: u32,
     prefix_cpu_ffn_activation_element_count: u32,
+    prefix_cpu_residual_add_element_count: u32,
     direct_decode_batched_group_fallback_count: u32,
     direct_decode_cpu_projection_row_count: u32,
     direct_decode_cpu_rms_norm_element_count: u32,
     direct_decode_cpu_ffn_activation_element_count: u32,
+    direct_decode_cpu_residual_add_element_count: u32,
     native_hot_path_cpu_fallback_free: bool,
     real_model_forward: bool,
     model_bound_ffn_decode: bool,
@@ -3014,6 +3117,10 @@ fn autotune_metrics_from_history_json(
             .get("prefix_cpu_ffn_activation_element_count")
             .and_then(Value::as_u64)
             .unwrap_or_default() as u32,
+        prefix_cpu_residual_add_element_count: metrics_json
+            .get("prefix_cpu_residual_add_element_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default() as u32,
         direct_decode_batched_group_fallback_count: metrics_json
             .get("direct_decode_batched_group_fallback_count")
             .and_then(Value::as_u64)? as u32,
@@ -3027,6 +3134,10 @@ fn autotune_metrics_from_history_json(
             .unwrap_or_default() as u32,
         direct_decode_cpu_ffn_activation_element_count: metrics_json
             .get("direct_decode_cpu_ffn_activation_element_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default() as u32,
+        direct_decode_cpu_residual_add_element_count: metrics_json
+            .get("direct_decode_cpu_residual_add_element_count")
             .and_then(Value::as_u64)
             .unwrap_or_default() as u32,
         native_hot_path_cpu_fallback_free: metrics_json
@@ -3080,6 +3191,10 @@ fn autotune_trial_metrics(execution: &RuntimeResult) -> AutotuneTrialMetrics {
             route,
             "metal_dispatch_prefix_cpu_ffn_activation_element_count",
         ),
+        prefix_cpu_residual_add_element_count: route_decision_value(
+            route,
+            "metal_dispatch_prefix_cpu_residual_add_element_count",
+        ),
         direct_decode_batched_group_fallback_count: route_decision_value(
             route,
             "metal_dispatch_direct_decode_batched_group_fallback_count",
@@ -3096,12 +3211,20 @@ fn autotune_trial_metrics(execution: &RuntimeResult) -> AutotuneTrialMetrics {
             route,
             "metal_dispatch_direct_decode_cpu_ffn_activation_element_count",
         ),
+        direct_decode_cpu_residual_add_element_count: route_decision_value(
+            route,
+            "metal_dispatch_direct_decode_cpu_residual_add_element_count",
+        ),
         native_hot_path_cpu_fallback_free: route_prefix_cpu_reference_dispatch_count(route) == 0
             && route_decision_value(route, "metal_dispatch_prefix_cpu_projection_row_count") == 0
             && route_decision_value(route, "metal_dispatch_prefix_cpu_rms_norm_element_count") == 0
             && route_decision_value(
                 route,
                 "metal_dispatch_prefix_cpu_ffn_activation_element_count",
+            ) == 0
+            && route_decision_value(
+                route,
+                "metal_dispatch_prefix_cpu_residual_add_element_count",
             ) == 0
             && route_decision_value(
                 route,
@@ -3114,6 +3237,10 @@ fn autotune_trial_metrics(execution: &RuntimeResult) -> AutotuneTrialMetrics {
             && route_decision_value(
                 route,
                 "metal_dispatch_direct_decode_cpu_ffn_activation_element_count",
+            ) == 0
+            && route_decision_value(
+                route,
+                "metal_dispatch_direct_decode_cpu_residual_add_element_count",
             ) == 0,
         real_model_forward: route_decision_flag(route, "metal_dispatch_real_model_forward"),
         model_bound_ffn_decode: route_decision_flag(
@@ -3133,9 +3260,11 @@ fn autotune_score(execution: &RuntimeResult, metrics: &AutotuneTrialMetrics) -> 
         + f64::from(metrics.prefix_cpu_projection_row_count) * 0.05
         + f64::from(metrics.prefix_cpu_rms_norm_element_count) * 0.001
         + f64::from(metrics.prefix_cpu_ffn_activation_element_count) * 0.001
+        + f64::from(metrics.prefix_cpu_residual_add_element_count) * 0.001
         + f64::from(metrics.direct_decode_cpu_projection_row_count) * 0.05
         + f64::from(metrics.direct_decode_cpu_rms_norm_element_count) * 0.001
-        + f64::from(metrics.direct_decode_cpu_ffn_activation_element_count) * 0.001;
+        + f64::from(metrics.direct_decode_cpu_ffn_activation_element_count) * 0.001
+        + f64::from(metrics.direct_decode_cpu_residual_add_element_count) * 0.001;
     let readiness_reward = if metrics.native_hot_path_cpu_fallback_free {
         500.0
     } else {
@@ -3319,7 +3448,15 @@ fn build_autotune_result_json(
                 "prefix_hit_rate": metrics.prefix_hit_rate,
                 "prefix_native_dispatch_count": metrics.prefix_native_dispatch_count,
                 "prefix_cpu_reference_dispatch_count": metrics.prefix_cpu_reference_dispatch_count,
+                "prefix_cpu_projection_row_count": metrics.prefix_cpu_projection_row_count,
+                "prefix_cpu_rms_norm_element_count": metrics.prefix_cpu_rms_norm_element_count,
+                "prefix_cpu_ffn_activation_element_count": metrics.prefix_cpu_ffn_activation_element_count,
+                "prefix_cpu_residual_add_element_count": metrics.prefix_cpu_residual_add_element_count,
                 "direct_decode_batched_group_fallback_count": metrics.direct_decode_batched_group_fallback_count,
+                "direct_decode_cpu_projection_row_count": metrics.direct_decode_cpu_projection_row_count,
+                "direct_decode_cpu_rms_norm_element_count": metrics.direct_decode_cpu_rms_norm_element_count,
+                "direct_decode_cpu_ffn_activation_element_count": metrics.direct_decode_cpu_ffn_activation_element_count,
+                "direct_decode_cpu_residual_add_element_count": metrics.direct_decode_cpu_residual_add_element_count,
                 "native_hot_path_cpu_fallback_free": metrics.native_hot_path_cpu_fallback_free,
                 "real_model_forward": metrics.real_model_forward,
                 "model_bound_ffn_decode": metrics.model_bound_ffn_decode,
@@ -6592,6 +6729,14 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_cpu_ffn_activation_element_count",
     );
+    let metal_prefix_native_residual_add_element_count = route_decision_value(
+        &execution.observation.route_metadata,
+        "metal_dispatch_prefix_native_residual_add_element_count",
+    );
+    let metal_prefix_cpu_residual_add_element_count = route_decision_value(
+        &execution.observation.route_metadata,
+        "metal_dispatch_prefix_cpu_residual_add_element_count",
+    );
     let metal_direct_decode_tokens = route_decision_flag(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_tokens",
@@ -6671,6 +6816,14 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_cpu_ffn_activation_element_count",
     );
+    let metal_direct_decode_native_residual_add_element_count = route_decision_value(
+        &execution.observation.route_metadata,
+        "metal_dispatch_direct_decode_native_residual_add_element_count",
+    );
+    let metal_direct_decode_cpu_residual_add_element_count = route_decision_value(
+        &execution.observation.route_metadata,
+        "metal_dispatch_direct_decode_cpu_residual_add_element_count",
+    );
     let metal_direct_decode_batched_logits_group_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_batched_logits_group_count",
@@ -6709,6 +6862,12 @@ fn build_execution_summary_markdown(
     )
     .map(|value| format!("{:.2}%", value * 100.0))
     .unwrap_or_else(|| "n/a".to_string());
+    let prefix_residual_add_native_share = native_coverage_ratio(
+        metal_prefix_native_residual_add_element_count,
+        metal_prefix_cpu_residual_add_element_count,
+    )
+    .map(|value| format!("{:.2}%", value * 100.0))
+    .unwrap_or_else(|| "n/a".to_string());
     let direct_decode_projection_native_share = native_coverage_ratio(
         metal_direct_decode_native_projection_row_count,
         metal_direct_decode_cpu_projection_row_count,
@@ -6724,6 +6883,12 @@ fn build_execution_summary_markdown(
     let direct_decode_ffn_activation_native_share = native_coverage_ratio(
         metal_direct_decode_native_ffn_activation_element_count,
         metal_direct_decode_cpu_ffn_activation_element_count,
+    )
+    .map(|value| format!("{:.2}%", value * 100.0))
+    .unwrap_or_else(|| "n/a".to_string());
+    let direct_decode_residual_add_native_share = native_coverage_ratio(
+        metal_direct_decode_native_residual_add_element_count,
+        metal_direct_decode_cpu_residual_add_element_count,
     )
     .map(|value| format!("{:.2}%", value * 100.0))
     .unwrap_or_else(|| "n/a".to_string());
@@ -6743,6 +6908,8 @@ fn build_execution_summary_markdown(
         metal_prefix_cpu_rms_norm_element_count,
         metal_prefix_native_ffn_activation_element_count,
         metal_prefix_cpu_ffn_activation_element_count,
+        metal_prefix_native_residual_add_element_count,
+        metal_prefix_cpu_residual_add_element_count,
         metal_direct_decode_tokens,
         metal_direct_decode_model_bound_ffn,
         metal_direct_decode_batched_logits_group_count,
@@ -6755,6 +6922,8 @@ fn build_execution_summary_markdown(
         metal_direct_decode_cpu_rms_norm_element_count,
         metal_direct_decode_native_ffn_activation_element_count,
         metal_direct_decode_cpu_ffn_activation_element_count,
+        metal_direct_decode_native_residual_add_element_count,
+        metal_direct_decode_cpu_residual_add_element_count,
     });
     let native_benchmark_readiness_status = native_benchmark_readiness.status;
     let native_hot_path_cpu_fallback_free = native_benchmark_readiness.hot_path_cpu_fallback_free;
@@ -6792,7 +6961,7 @@ fn build_execution_summary_markdown(
     };
 
     format!(
-        "# Benchmark Run\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `{}`\n- tool_mode: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- fallback_reason: `{fallback_reason}`\n- execution_semantics: `{execution_semantics}`\n- native_placeholder_execution: `{native_placeholder_execution}`\n- native_benchmark_readiness: `{native_benchmark_readiness_status}`\n- native_hot_path_cpu_fallback_free: `{native_hot_path_cpu_fallback_free}`\n- native_batched_direct_decode_logits_ready: `{native_batched_direct_decode_logits_ready}`\n- native_prefix_min_native_share: `{native_prefix_min_native_share}`\n- native_direct_decode_min_native_share: `{native_direct_decode_min_native_share}`\n- native_readiness_blockers: `{native_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- metal_prefix_layers_native_attention: `{metal_prefix_layers_native_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- metal_prefix_native_dispatch_count: `{metal_prefix_native_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_prefix_native_projection_row_count: `{metal_prefix_native_projection_row_count}`\n- metal_prefix_cpu_projection_row_count: `{metal_prefix_cpu_projection_row_count}`\n- metal_prefix_projection_native_share: `{prefix_projection_native_share}`\n- metal_prefix_native_rms_norm_element_count: `{metal_prefix_native_rms_norm_element_count}`\n- metal_prefix_cpu_rms_norm_element_count: `{metal_prefix_cpu_rms_norm_element_count}`\n- metal_prefix_rms_norm_native_share: `{prefix_rms_norm_native_share}`\n- metal_prefix_native_ffn_activation_element_count: `{metal_prefix_native_ffn_activation_element_count}`\n- metal_prefix_cpu_ffn_activation_element_count: `{metal_prefix_cpu_ffn_activation_element_count}`\n- metal_prefix_ffn_activation_native_share: `{prefix_ffn_activation_native_share}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- metal_native_projection_f32_binding_count: `{metal_native_projection_f32_binding_count}`\n- metal_native_projection_f16_binding_count: `{metal_native_projection_f16_binding_count}`\n- metal_native_projection_bf16_binding_count: `{metal_native_projection_bf16_binding_count}`\n- metal_native_projection_unsupported_binding_count: `{metal_native_projection_unsupported_binding_count}`\n- metal_native_rms_norm_f32_binding_count: `{metal_native_rms_norm_f32_binding_count}`\n- metal_native_rms_norm_f16_binding_count: `{metal_native_rms_norm_f16_binding_count}`\n- metal_native_rms_norm_bf16_binding_count: `{metal_native_rms_norm_bf16_binding_count}`\n- metal_native_rms_norm_unsupported_binding_count: `{metal_native_rms_norm_unsupported_binding_count}`\n- metal_direct_decode_native_projection_row_count: `{metal_direct_decode_native_projection_row_count}`\n- metal_direct_decode_cpu_projection_row_count: `{metal_direct_decode_cpu_projection_row_count}`\n- metal_direct_decode_projection_native_share: `{direct_decode_projection_native_share}`\n- metal_direct_decode_native_rms_norm_element_count: `{metal_direct_decode_native_rms_norm_element_count}`\n- metal_direct_decode_cpu_rms_norm_element_count: `{metal_direct_decode_cpu_rms_norm_element_count}`\n- metal_direct_decode_rms_norm_native_share: `{direct_decode_rms_norm_native_share}`\n- metal_direct_decode_native_ffn_activation_element_count: `{metal_direct_decode_native_ffn_activation_element_count}`\n- metal_direct_decode_cpu_ffn_activation_element_count: `{metal_direct_decode_cpu_ffn_activation_element_count}`\n- metal_direct_decode_ffn_activation_native_share: `{direct_decode_ffn_activation_native_share}`\n- correctness: `{}`\n- determinism: `{}`\n- ttft_ms: `{:.2}`\n- prefill_tok_s: `{:.2}`\n- decode_tok_s: `{:.2}`\n- e2e_latency_ms: `{:.2}`\n- cpu_time_per_token_us: `{:.2}`\n- runner_time_per_token_us: `{:.2}`\n- runner_time_share_pct: `{:.2}`\n- prefix_hit_rate: `{:.2}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- kv_peak_blocks: `{}`\n{}",
+        "# Benchmark Run\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `{}`\n- tool_mode: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- fallback_reason: `{fallback_reason}`\n- execution_semantics: `{execution_semantics}`\n- native_placeholder_execution: `{native_placeholder_execution}`\n- native_benchmark_readiness: `{native_benchmark_readiness_status}`\n- native_hot_path_cpu_fallback_free: `{native_hot_path_cpu_fallback_free}`\n- native_batched_direct_decode_logits_ready: `{native_batched_direct_decode_logits_ready}`\n- native_prefix_min_native_share: `{native_prefix_min_native_share}`\n- native_direct_decode_min_native_share: `{native_direct_decode_min_native_share}`\n- native_readiness_blockers: `{native_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- metal_prefix_layers_native_attention: `{metal_prefix_layers_native_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- metal_prefix_native_dispatch_count: `{metal_prefix_native_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_prefix_native_projection_row_count: `{metal_prefix_native_projection_row_count}`\n- metal_prefix_cpu_projection_row_count: `{metal_prefix_cpu_projection_row_count}`\n- metal_prefix_projection_native_share: `{prefix_projection_native_share}`\n- metal_prefix_native_rms_norm_element_count: `{metal_prefix_native_rms_norm_element_count}`\n- metal_prefix_cpu_rms_norm_element_count: `{metal_prefix_cpu_rms_norm_element_count}`\n- metal_prefix_rms_norm_native_share: `{prefix_rms_norm_native_share}`\n- metal_prefix_native_ffn_activation_element_count: `{metal_prefix_native_ffn_activation_element_count}`\n- metal_prefix_cpu_ffn_activation_element_count: `{metal_prefix_cpu_ffn_activation_element_count}`\n- metal_prefix_ffn_activation_native_share: `{prefix_ffn_activation_native_share}`\n- metal_prefix_native_residual_add_element_count: `{metal_prefix_native_residual_add_element_count}`\n- metal_prefix_cpu_residual_add_element_count: `{metal_prefix_cpu_residual_add_element_count}`\n- metal_prefix_residual_add_native_share: `{prefix_residual_add_native_share}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- metal_native_projection_f32_binding_count: `{metal_native_projection_f32_binding_count}`\n- metal_native_projection_f16_binding_count: `{metal_native_projection_f16_binding_count}`\n- metal_native_projection_bf16_binding_count: `{metal_native_projection_bf16_binding_count}`\n- metal_native_projection_unsupported_binding_count: `{metal_native_projection_unsupported_binding_count}`\n- metal_native_rms_norm_f32_binding_count: `{metal_native_rms_norm_f32_binding_count}`\n- metal_native_rms_norm_f16_binding_count: `{metal_native_rms_norm_f16_binding_count}`\n- metal_native_rms_norm_bf16_binding_count: `{metal_native_rms_norm_bf16_binding_count}`\n- metal_native_rms_norm_unsupported_binding_count: `{metal_native_rms_norm_unsupported_binding_count}`\n- metal_direct_decode_native_projection_row_count: `{metal_direct_decode_native_projection_row_count}`\n- metal_direct_decode_cpu_projection_row_count: `{metal_direct_decode_cpu_projection_row_count}`\n- metal_direct_decode_projection_native_share: `{direct_decode_projection_native_share}`\n- metal_direct_decode_native_rms_norm_element_count: `{metal_direct_decode_native_rms_norm_element_count}`\n- metal_direct_decode_cpu_rms_norm_element_count: `{metal_direct_decode_cpu_rms_norm_element_count}`\n- metal_direct_decode_rms_norm_native_share: `{direct_decode_rms_norm_native_share}`\n- metal_direct_decode_native_ffn_activation_element_count: `{metal_direct_decode_native_ffn_activation_element_count}`\n- metal_direct_decode_cpu_ffn_activation_element_count: `{metal_direct_decode_cpu_ffn_activation_element_count}`\n- metal_direct_decode_ffn_activation_native_share: `{direct_decode_ffn_activation_native_share}`\n- metal_direct_decode_native_residual_add_element_count: `{metal_direct_decode_native_residual_add_element_count}`\n- metal_direct_decode_cpu_residual_add_element_count: `{metal_direct_decode_cpu_residual_add_element_count}`\n- metal_direct_decode_residual_add_native_share: `{direct_decode_residual_add_native_share}`\n- correctness: `{}`\n- determinism: `{}`\n- ttft_ms: `{:.2}`\n- prefill_tok_s: `{:.2}`\n- decode_tok_s: `{:.2}`\n- e2e_latency_ms: `{:.2}`\n- cpu_time_per_token_us: `{:.2}`\n- runner_time_per_token_us: `{:.2}`\n- runner_time_share_pct: `{:.2}`\n- prefix_hit_rate: `{:.2}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- kv_peak_blocks: `{}`\n{}",
         manifest_path.display(),
         execution.status_label(),
         execution.tool_mode,
@@ -6877,9 +7046,15 @@ fn build_contract_failure_summary_markdown(
     let backend_adapter = nested_value(&runtime, &["backend_adapter"])
         .cloned()
         .unwrap_or(Value::String("none".to_string()));
+    let native_model_bridge_status = nested_value(&runtime, &["native_model_bridge", "status"])
+        .and_then(Value::as_str)
+        .unwrap_or("none");
+    let native_model_bridge_blockers = nested_value(&runtime, &["native_model_bridge", "blockers"])
+        .map(json_value_label)
+        .unwrap_or_else(|| "[]".to_string());
 
     format!(
-        "# Benchmark Contract Failure\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `contract_failure`\n- code: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{}`\n- scenario: `{}`\n\nFailure reason:\n\n{}\n\nRecommended action:\n\n{}\n",
+        "# Benchmark Contract Failure\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `contract_failure`\n- code: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{}`\n- native_model_bridge_status: `{native_model_bridge_status}`\n- native_model_bridge_blockers: `{native_model_bridge_blockers}`\n- scenario: `{}`\n\nFailure reason:\n\n{}\n\nRecommended action:\n\n{}\n",
         manifest_path.display(),
         failure.code,
         json_value_label(&backend_adapter),
@@ -6937,6 +7112,28 @@ fn classify_contract_failure(
             code: "runtime_backend_resolution_contract_invalid",
             recommended_action:
                 "Fix selected_backend, support_tier, resolution_policy, and fallback_reason so they satisfy the benchmark runtime contract.",
+        };
+    }
+
+    if message.contains("failed to export native model artifacts from GGUF") {
+        return match classify_native_gguf_export_failure_message(message) {
+            NativeGgufExportFailureKind::UnsupportedModel => ContractFailureClassification {
+                code: "native_gguf_bridge_unsupported_model",
+                recommended_action:
+                    "Use a GGUF model whose dense attention/FFN layout is supported by the native exporter, or switch this benchmark to a compatibility backend for the unsupported model.",
+            },
+            NativeGgufExportFailureKind::MissingPythonDependency => {
+                ContractFailureClassification {
+                    code: "native_gguf_bridge_missing_dependency",
+                    recommended_action:
+                        "Run ax-bench with a Python environment that has numpy and PyYAML available, or point AX_ENGINE_NATIVE_GGUF_PYTHON / AX_ENGINE_NATIVE_GGUF_EXPORTER at a ready GGUF exporter toolchain.",
+                }
+            }
+            NativeGgufExportFailureKind::ExportFailed => ContractFailureClassification {
+                code: "native_gguf_bridge_export_failed",
+                recommended_action:
+                    "Inspect the GGUF bridge diagnostics, fix the exporter failure, and rerun the native benchmark.",
+            },
         };
     }
 
@@ -8032,7 +8229,7 @@ fn runtime_config_from_manifest(manifest: &BenchmarkManifest) -> Result<RuntimeC
         .runtime
         .native_model_artifacts_dir
         .as_ref()
-        .map(|_| NativeModelArtifactsSource::ExplicitConfig)
+        .map(|path| classify_native_model_artifacts_source(path))
         .or(default_session_config.native_model_artifacts_source());
 
     Ok(RuntimeConfig {
@@ -8194,6 +8391,8 @@ struct NativeBenchmarkReadinessInputs<'a> {
     metal_prefix_cpu_rms_norm_element_count: u32,
     metal_prefix_native_ffn_activation_element_count: u32,
     metal_prefix_cpu_ffn_activation_element_count: u32,
+    metal_prefix_native_residual_add_element_count: u32,
+    metal_prefix_cpu_residual_add_element_count: u32,
     metal_direct_decode_tokens: bool,
     metal_direct_decode_model_bound_ffn: bool,
     metal_direct_decode_batched_logits_group_count: u32,
@@ -8206,6 +8405,8 @@ struct NativeBenchmarkReadinessInputs<'a> {
     metal_direct_decode_cpu_rms_norm_element_count: u32,
     metal_direct_decode_native_ffn_activation_element_count: u32,
     metal_direct_decode_cpu_ffn_activation_element_count: u32,
+    metal_direct_decode_native_residual_add_element_count: u32,
+    metal_direct_decode_cpu_residual_add_element_count: u32,
 }
 
 fn min_native_share(shares: &[Option<f64>]) -> Option<f64> {
@@ -8249,6 +8450,10 @@ fn native_benchmark_readiness(
         inputs.metal_prefix_native_ffn_activation_element_count,
         inputs.metal_prefix_cpu_ffn_activation_element_count,
     );
+    let prefix_residual_add_native_share = native_coverage_ratio(
+        inputs.metal_prefix_native_residual_add_element_count,
+        inputs.metal_prefix_cpu_residual_add_element_count,
+    );
     let direct_decode_projection_native_share = native_coverage_ratio(
         inputs.metal_direct_decode_native_projection_row_count,
         inputs.metal_direct_decode_cpu_projection_row_count,
@@ -8261,23 +8466,31 @@ fn native_benchmark_readiness(
         inputs.metal_direct_decode_native_ffn_activation_element_count,
         inputs.metal_direct_decode_cpu_ffn_activation_element_count,
     );
+    let direct_decode_residual_add_native_share = native_coverage_ratio(
+        inputs.metal_direct_decode_native_residual_add_element_count,
+        inputs.metal_direct_decode_cpu_residual_add_element_count,
+    );
     let prefix_min_native_share = min_native_share(&[
         prefix_projection_native_share,
         prefix_rms_norm_native_share,
         prefix_ffn_activation_native_share,
+        prefix_residual_add_native_share,
     ]);
     let direct_decode_min_native_share = min_native_share(&[
         direct_decode_projection_native_share,
         direct_decode_rms_norm_native_share,
         direct_decode_ffn_activation_native_share,
+        direct_decode_residual_add_native_share,
     ]);
     let hot_path_cpu_fallback_free = inputs.metal_prefix_cpu_reference_dispatch_count == 0
         && inputs.metal_prefix_cpu_projection_row_count == 0
         && inputs.metal_prefix_cpu_rms_norm_element_count == 0
         && inputs.metal_prefix_cpu_ffn_activation_element_count == 0
+        && inputs.metal_prefix_cpu_residual_add_element_count == 0
         && inputs.metal_direct_decode_cpu_projection_row_count == 0
         && inputs.metal_direct_decode_cpu_rms_norm_element_count == 0
-        && inputs.metal_direct_decode_cpu_ffn_activation_element_count == 0;
+        && inputs.metal_direct_decode_cpu_ffn_activation_element_count == 0
+        && inputs.metal_direct_decode_cpu_residual_add_element_count == 0;
     let batched_direct_decode_logits_ready = inputs.metal_direct_decode_tokens
         && inputs.metal_direct_decode_batched_logits_group_count > 0
         && inputs.metal_direct_decode_batched_logits_token_count > 0
@@ -8311,6 +8524,9 @@ fn native_benchmark_readiness(
     if inputs.metal_prefix_cpu_ffn_activation_element_count > 0 {
         blockers.push("prefix_ffn_cpu_fallback_remaining");
     }
+    if inputs.metal_prefix_cpu_residual_add_element_count > 0 {
+        blockers.push("prefix_residual_add_cpu_fallback_remaining");
+    }
     if !inputs.metal_direct_decode_tokens {
         blockers.push("direct_decode_tokens_not_observed");
     } else {
@@ -8333,6 +8549,9 @@ fn native_benchmark_readiness(
         }
         if inputs.metal_direct_decode_cpu_ffn_activation_element_count > 0 {
             blockers.push("direct_decode_ffn_cpu_fallback_remaining");
+        }
+        if inputs.metal_direct_decode_cpu_residual_add_element_count > 0 {
+            blockers.push("direct_decode_residual_add_cpu_fallback_remaining");
         }
     }
 
@@ -8426,6 +8645,16 @@ fn native_benchmark_readiness_from_route_json(
             "metal_prefix_cpu_ffn_activation_element_count",
             &["metal_dispatch_prefix_cpu_ffn_activation_element_count"],
         ),
+        metal_prefix_native_residual_add_element_count: route_count_from_json(
+            route_json,
+            "metal_prefix_native_residual_add_element_count",
+            &["metal_dispatch_prefix_native_residual_add_element_count"],
+        ),
+        metal_prefix_cpu_residual_add_element_count: route_count_from_json(
+            route_json,
+            "metal_prefix_cpu_residual_add_element_count",
+            &["metal_dispatch_prefix_cpu_residual_add_element_count"],
+        ),
         metal_direct_decode_tokens: route_flag_from_json(
             route_json,
             "metal_direct_decode_tokens",
@@ -8485,6 +8714,16 @@ fn native_benchmark_readiness_from_route_json(
             route_json,
             "metal_direct_decode_cpu_ffn_activation_element_count",
             &["metal_dispatch_direct_decode_cpu_ffn_activation_element_count"],
+        ),
+        metal_direct_decode_native_residual_add_element_count: route_count_from_json(
+            route_json,
+            "metal_direct_decode_native_residual_add_element_count",
+            &["metal_dispatch_direct_decode_native_residual_add_element_count"],
+        ),
+        metal_direct_decode_cpu_residual_add_element_count: route_count_from_json(
+            route_json,
+            "metal_direct_decode_cpu_residual_add_element_count",
+            &["metal_dispatch_direct_decode_cpu_residual_add_element_count"],
         ),
     })
 }
@@ -8882,6 +9121,20 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
+        "metal_prefix_native_residual_add_element_count".to_string(),
+        json!(route_decision_value(
+            route,
+            "metal_dispatch_prefix_native_residual_add_element_count"
+        )),
+    );
+    route_json.insert(
+        "metal_prefix_cpu_residual_add_element_count".to_string(),
+        json!(route_decision_value(
+            route,
+            "metal_dispatch_prefix_cpu_residual_add_element_count"
+        )),
+    );
+    route_json.insert(
         "metal_prefix_projection_native_share".to_string(),
         native_coverage_ratio(
             route_decision_value(route, "metal_dispatch_prefix_native_projection_row_count"),
@@ -8907,6 +9160,20 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
             route_decision_value(
                 route,
                 "metal_dispatch_prefix_cpu_ffn_activation_element_count",
+            ),
+        )
+        .map_or(Value::Null, Value::from),
+    );
+    route_json.insert(
+        "metal_prefix_residual_add_native_share".to_string(),
+        native_coverage_ratio(
+            route_decision_value(
+                route,
+                "metal_dispatch_prefix_native_residual_add_element_count",
+            ),
+            route_decision_value(
+                route,
+                "metal_dispatch_prefix_cpu_residual_add_element_count",
             ),
         )
         .map_or(Value::Null, Value::from),
@@ -9045,6 +9312,20 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
+        "metal_direct_decode_native_residual_add_element_count".to_string(),
+        json!(route_decision_value(
+            route,
+            "metal_dispatch_direct_decode_native_residual_add_element_count"
+        )),
+    );
+    route_json.insert(
+        "metal_direct_decode_cpu_residual_add_element_count".to_string(),
+        json!(route_decision_value(
+            route,
+            "metal_dispatch_direct_decode_cpu_residual_add_element_count"
+        )),
+    );
+    route_json.insert(
         "metal_direct_decode_batched_logits_group_count".to_string(),
         json!(route_decision_value(
             route,
@@ -9115,6 +9396,20 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         .map_or(Value::Null, Value::from),
     );
     route_json.insert(
+        "metal_direct_decode_residual_add_native_share".to_string(),
+        native_coverage_ratio(
+            route_decision_value(
+                route,
+                "metal_dispatch_direct_decode_native_residual_add_element_count",
+            ),
+            route_decision_value(
+                route,
+                "metal_dispatch_direct_decode_cpu_residual_add_element_count",
+            ),
+        )
+        .map_or(Value::Null, Value::from),
+    );
+    route_json.insert(
         "crossover_decisions".to_string(),
         Value::Object(crossover_decisions),
     );
@@ -9167,6 +9462,19 @@ fn backend_reported_cached_prompt_tokens(route: &RouteMetadata) -> Option<u32> {
 fn serialize_runtime_metadata(
     runtime: &RuntimeConfig,
     actual_runtime: Option<&RuntimeReport>,
+) -> Value {
+    let native_model_bridge = native_model_bridge_report(runtime);
+    serialize_runtime_metadata_with_native_model_bridge(
+        runtime,
+        actual_runtime,
+        native_model_bridge,
+    )
+}
+
+fn serialize_runtime_metadata_with_native_model_bridge(
+    runtime: &RuntimeConfig,
+    actual_runtime: Option<&RuntimeReport>,
+    native_model_bridge: Option<Value>,
 ) -> Value {
     let mut runtime_json = json!({
         "selected_backend": runtime.resolved_backend.selected_backend,
@@ -9283,6 +9591,13 @@ fn serialize_runtime_metadata(
                     serde_json::to_value(native_model).expect("native model should serialize"),
                 );
         }
+    }
+
+    if let Some(native_model_bridge) = native_model_bridge {
+        runtime_json
+            .as_object_mut()
+            .expect("runtime metadata should serialize as object")
+            .insert("native_model_bridge".to_string(), native_model_bridge);
     }
 
     runtime_json
@@ -9647,7 +9962,7 @@ Usage:
   ax-bench matrix-compare --baseline <path> --candidate <path> --output-root <path>
   ax-bench baseline --source <path> --name <name> --output-root <path>
   ax-bench matrix --manifest <path> --output-root <path>
-  ax-bench doctor [--json]
+  ax-bench doctor [--json] [--native-model-artifacts-dir <path>]
   ax-bench metal-build [--manifest <path>] [--output-dir <path>]
 "#;
 
@@ -9924,6 +10239,38 @@ struct RuntimeConfig {
     native_model_artifacts_source: Option<NativeModelArtifactsSource>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NativeGgufBridgeProbeConfig {
+    python_bin: PathBuf,
+    script_path: PathBuf,
+    output_dtype: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct NativeGgufBridgeProbeResult {
+    status: String,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    report: Option<NativeGgufBridgeSupportReport>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct NativeGgufBridgeSupportReport {
+    architecture: String,
+    layer_count: u32,
+    #[serde(default)]
+    hidden_size: Option<u32>,
+    #[serde(default)]
+    vocab_size: Option<u32>,
+    fixed_attention_dims: bool,
+    supports_export: bool,
+    #[serde(default)]
+    blockers: Vec<String>,
+    #[serde(default)]
+    notes: Vec<String>,
+}
+
 impl RuntimeConfig {
     fn uses_native_runtime(&self) -> bool {
         self.resolved_backend.selected_backend == SelectedBackend::AxNative
@@ -9956,6 +10303,9 @@ impl RuntimeConfig {
         }
 
         let model_dir = self.native_model_artifacts_dir.as_ref()?;
+        if is_native_model_gguf_path(model_dir) {
+            return None;
+        }
         let summary = NativeModelArtifacts::from_dir(model_dir).ok()?.summary();
         let source = self
             .native_model_artifacts_source
@@ -9968,6 +10318,9 @@ impl RuntimeConfig {
     fn resolved_native_model_binding_summary(&self) -> Option<NativeModelBindingSummary> {
         let build_dir = self.native_runtime_artifacts_dir.as_ref()?;
         let model_dir = self.native_model_artifacts_dir.as_deref()?;
+        if is_native_model_gguf_path(model_dir) {
+            return None;
+        }
 
         MetalBringupRunner::from_build_dir_and_model_artifacts(build_dir, Some(model_dir))
             .ok()
@@ -9988,6 +10341,169 @@ impl RuntimeConfig {
         } else {
             "compatibility_blocking_runtime"
         }
+    }
+}
+
+fn is_native_model_gguf_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"))
+}
+
+fn default_native_gguf_bridge_probe_config() -> NativeGgufBridgeProbeConfig {
+    let script_path = env::var_os(NATIVE_GGUF_EXPORTER_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join("scripts/export_native_model_from_gguf.py")
+        });
+    let python_bin = env::var_os(NATIVE_GGUF_PYTHON_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("python3"));
+    let output_dtype = env::var(NATIVE_GGUF_EXPORT_DTYPE_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "f16".to_string());
+    NativeGgufBridgeProbeConfig {
+        python_bin,
+        script_path,
+        output_dtype,
+    }
+}
+
+fn parse_native_gguf_bridge_probe_result(
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Option<NativeGgufBridgeProbeResult> {
+    for bytes in [stdout, stderr] {
+        let text = String::from_utf8_lossy(bytes).trim().to_string();
+        if text.is_empty() {
+            continue;
+        }
+        if let Ok(result) = serde_json::from_str::<NativeGgufBridgeProbeResult>(&text) {
+            return Some(result);
+        }
+    }
+    None
+}
+
+fn probe_native_gguf_bridge_with_config(
+    gguf_path: &Path,
+    probe_config: &NativeGgufBridgeProbeConfig,
+) -> Value {
+    let launch = Command::new(&probe_config.python_bin)
+        .arg(&probe_config.script_path)
+        .arg("--gguf-path")
+        .arg(gguf_path)
+        .arg("--dry-run")
+        .output();
+
+    let mut report = serde_json::Map::new();
+    report.insert(
+        "source_path".to_string(),
+        json!(gguf_path.display().to_string()),
+    );
+    report.insert(
+        "python_bin".to_string(),
+        json!(probe_config.python_bin.display().to_string()),
+    );
+    report.insert(
+        "script_path".to_string(),
+        json!(probe_config.script_path.display().to_string()),
+    );
+    report.insert(
+        "output_dtype".to_string(),
+        json!(probe_config.output_dtype.clone()),
+    );
+
+    match launch {
+        Ok(output) => {
+            let parsed = parse_native_gguf_bridge_probe_result(&output.stdout, &output.stderr);
+            if let Some(parsed) = parsed {
+                let bridge_status = if parsed.status == "ok" {
+                    "ready"
+                } else if parsed.status == "unsupported" {
+                    "unsupported"
+                } else {
+                    "error"
+                };
+                report.insert("status".to_string(), json!(bridge_status));
+                if let Some(reason) = parsed.reason {
+                    report.insert("reason".to_string(), json!(reason));
+                }
+                if let Some(support_report) = parsed.report {
+                    report.insert(
+                        "architecture".to_string(),
+                        json!(support_report.architecture),
+                    );
+                    report.insert("layer_count".to_string(), json!(support_report.layer_count));
+                    report.insert(
+                        "hidden_size".to_string(),
+                        support_report.hidden_size.map_or(Value::Null, Value::from),
+                    );
+                    report.insert(
+                        "vocab_size".to_string(),
+                        support_report.vocab_size.map_or(Value::Null, Value::from),
+                    );
+                    report.insert(
+                        "fixed_attention_dims".to_string(),
+                        json!(support_report.fixed_attention_dims),
+                    );
+                    report.insert(
+                        "supports_export".to_string(),
+                        json!(support_report.supports_export),
+                    );
+                    report.insert("blockers".to_string(), json!(support_report.blockers));
+                    report.insert("notes".to_string(), json!(support_report.notes));
+                }
+            } else {
+                report.insert("status".to_string(), json!("error"));
+                report.insert(
+                    "reason".to_string(),
+                    json!(format!(
+                        "failed to parse exporter output (exit_status={})",
+                        output.status
+                    )),
+                );
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                if !stdout.is_empty() {
+                    report.insert("stdout".to_string(), json!(stdout));
+                }
+                if !stderr.is_empty() {
+                    report.insert("stderr".to_string(), json!(stderr));
+                }
+            }
+        }
+        Err(error) => {
+            report.insert("status".to_string(), json!("launch_error"));
+            report.insert("reason".to_string(), json!(error.to_string()));
+        }
+    }
+
+    Value::Object(report)
+}
+
+fn native_model_bridge_report(runtime: &RuntimeConfig) -> Option<Value> {
+    if !runtime.uses_native_runtime() {
+        return None;
+    }
+    let gguf_path = runtime.native_model_artifacts_dir.as_deref()?;
+    if !is_native_model_gguf_path(gguf_path) {
+        return None;
+    }
+    Some(probe_native_gguf_bridge_with_config(
+        gguf_path,
+        &default_native_gguf_bridge_probe_config(),
+    ))
+}
+
+fn classify_native_model_artifacts_source(path: &Path) -> NativeModelArtifactsSource {
+    if is_native_model_gguf_path(path) {
+        NativeModelArtifactsSource::GeneratedFromGguf
+    } else {
+        NativeModelArtifactsSource::ExplicitConfig
     }
 }
 
@@ -10726,12 +11242,16 @@ struct MetalDispatchStepTrace {
     execution_prefix_cpu_rms_norm_element_count: u32,
     execution_prefix_native_ffn_activation_element_count: u32,
     execution_prefix_cpu_ffn_activation_element_count: u32,
+    execution_prefix_native_residual_add_element_count: u32,
+    execution_prefix_cpu_residual_add_element_count: u32,
     execution_direct_decode_native_projection_row_count: u32,
     execution_direct_decode_cpu_projection_row_count: u32,
     execution_direct_decode_native_rms_norm_element_count: u32,
     execution_direct_decode_cpu_rms_norm_element_count: u32,
     execution_direct_decode_native_ffn_activation_element_count: u32,
     execution_direct_decode_cpu_ffn_activation_element_count: u32,
+    execution_direct_decode_native_residual_add_element_count: u32,
+    execution_direct_decode_cpu_residual_add_element_count: u32,
     execution_direct_decode_batched_logits_group_count: u32,
     execution_direct_decode_batched_logits_token_count: u32,
     execution_direct_decode_batched_group_fallback_count: u32,
@@ -10809,6 +11329,12 @@ impl MetalDispatchStepTrace {
             execution_prefix_cpu_ffn_activation_element_count: trace
                 .execution
                 .prefix_cpu_ffn_activation_element_count,
+            execution_prefix_native_residual_add_element_count: trace
+                .execution
+                .prefix_native_residual_add_element_count,
+            execution_prefix_cpu_residual_add_element_count: trace
+                .execution
+                .prefix_cpu_residual_add_element_count,
             execution_direct_decode_native_projection_row_count: trace
                 .execution
                 .direct_decode_native_projection_row_count,
@@ -10827,6 +11353,12 @@ impl MetalDispatchStepTrace {
             execution_direct_decode_cpu_ffn_activation_element_count: trace
                 .execution
                 .direct_decode_cpu_ffn_activation_element_count,
+            execution_direct_decode_native_residual_add_element_count: trace
+                .execution
+                .direct_decode_native_residual_add_element_count,
+            execution_direct_decode_cpu_residual_add_element_count: trace
+                .execution
+                .direct_decode_cpu_residual_add_element_count,
             execution_direct_decode_batched_logits_group_count: trace
                 .execution
                 .direct_decode_batched_logits_group_count,
@@ -11223,12 +11755,16 @@ mod tests {
                 prefix_cpu_rms_norm_element_count: 128,
                 prefix_native_ffn_activation_element_count: 1024,
                 prefix_cpu_ffn_activation_element_count: 64,
+                prefix_native_residual_add_element_count: 4096,
+                prefix_cpu_residual_add_element_count: 0,
                 direct_decode_native_projection_row_count: 151936,
                 direct_decode_cpu_projection_row_count: 3072,
                 direct_decode_native_rms_norm_element_count: 6144,
                 direct_decode_cpu_rms_norm_element_count: 0,
                 direct_decode_native_ffn_activation_element_count: 1536,
                 direct_decode_cpu_ffn_activation_element_count: 0,
+                direct_decode_native_residual_add_element_count: 3072,
+                direct_decode_cpu_residual_add_element_count: 0,
                 direct_decode_batched_logits_group_count: 1,
                 direct_decode_batched_logits_token_count: 2,
                 direct_decode_batched_group_fallback_count: 0,
@@ -11404,6 +11940,18 @@ mod tests {
         );
         assert_eq!(
             json.get("metal_dispatch")
+                .and_then(|trace| trace.get("execution_prefix_native_residual_add_element_count"))
+                .and_then(Value::as_u64),
+            Some(4096)
+        );
+        assert_eq!(
+            json.get("metal_dispatch")
+                .and_then(|trace| trace.get("execution_prefix_cpu_residual_add_element_count"))
+                .and_then(Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            json.get("metal_dispatch")
                 .and_then(|trace| trace.get("execution_direct_decode_native_projection_row_count"))
                 .and_then(Value::as_u64),
             Some(151936)
@@ -11425,6 +11973,22 @@ mod tests {
         assert_eq!(
             json.get("metal_dispatch")
                 .and_then(|trace| trace.get("execution_direct_decode_cpu_rms_norm_element_count"))
+                .and_then(Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            json.get("metal_dispatch")
+                .and_then(|trace| {
+                    trace.get("execution_direct_decode_native_residual_add_element_count")
+                })
+                .and_then(Value::as_u64),
+            Some(3072)
+        );
+        assert_eq!(
+            json.get("metal_dispatch")
+                .and_then(|trace| {
+                    trace.get("execution_direct_decode_cpu_residual_add_element_count")
+                })
                 .and_then(Value::as_u64),
             Some(0)
         );
@@ -11500,6 +12064,22 @@ mod tests {
         std::env::temp_dir().join(format!("ax-bench-{label}-{}-{nanos}", std::process::id()))
     }
 
+    fn fake_gguf_bridge_probe_script(body: &str, label: &str) -> PathBuf {
+        let path = unique_test_dir(label).with_extension("py");
+        fs::write(&path, body).expect("fake gguf bridge probe script should write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = fs::metadata(&path)
+                .expect("script metadata should exist")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).expect("script should be executable");
+        }
+        path
+    }
+
     #[cfg(target_os = "macos")]
     fn compiled_repo_metal_build_dir() -> Option<PathBuf> {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -11550,6 +12130,8 @@ mod tests {
             rope_theta: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
+            attention_value_from_key_layers: Vec::new(),
+            attention_v_norm_no_scale_layers: Vec::new(),
             tensors: vec![
                 native_model_tensor(
                     "model.embed_tokens.weight",
@@ -11704,6 +12286,8 @@ mod tests {
             rope_theta: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
+            attention_value_from_key_layers: Vec::new(),
+            attention_v_norm_no_scale_layers: Vec::new(),
             tensors: vec![
                 native_model_tensor_with_file(
                     "model.embed_tokens.weight",
@@ -12298,6 +12882,14 @@ mod tests {
             64,
         ));
         route.crossover_decisions.push((
+            "metal_dispatch_prefix_native_residual_add_element_count".to_string(),
+            4096,
+        ));
+        route.crossover_decisions.push((
+            "metal_dispatch_prefix_cpu_residual_add_element_count".to_string(),
+            0,
+        ));
+        route.crossover_decisions.push((
             "metal_dispatch_native_projection_f16_binding_count".to_string(),
             28,
         ));
@@ -12327,6 +12919,14 @@ mod tests {
         ));
         route.crossover_decisions.push((
             "metal_dispatch_direct_decode_cpu_ffn_activation_element_count".to_string(),
+            0,
+        ));
+        route.crossover_decisions.push((
+            "metal_dispatch_direct_decode_native_residual_add_element_count".to_string(),
+            3072,
+        ));
+        route.crossover_decisions.push((
+            "metal_dispatch_direct_decode_cpu_residual_add_element_count".to_string(),
             0,
         ));
         route.crossover_decisions.push((
@@ -12385,6 +12985,14 @@ mod tests {
             Some(&Value::from(64))
         );
         assert_eq!(
+            route_json.get("metal_prefix_native_residual_add_element_count"),
+            Some(&Value::from(4096))
+        );
+        assert_eq!(
+            route_json.get("metal_prefix_cpu_residual_add_element_count"),
+            Some(&Value::from(0))
+        );
+        assert_eq!(
             route_json.get("metal_prefix_projection_native_share"),
             Some(&Value::from(4096.0_f64 / 4608.0_f64))
         );
@@ -12395,6 +13003,10 @@ mod tests {
         assert_eq!(
             route_json.get("metal_prefix_ffn_activation_native_share"),
             Some(&Value::from(1024.0_f64 / 1088.0_f64))
+        );
+        assert_eq!(
+            route_json.get("metal_prefix_residual_add_native_share"),
+            Some(&Value::from(1.0_f64))
         );
         assert_eq!(
             route_json.get("metal_native_projection_f16_binding_count"),
@@ -12429,6 +13041,14 @@ mod tests {
             Some(&Value::from(0))
         );
         assert_eq!(
+            route_json.get("metal_direct_decode_native_residual_add_element_count"),
+            Some(&Value::from(3072))
+        );
+        assert_eq!(
+            route_json.get("metal_direct_decode_cpu_residual_add_element_count"),
+            Some(&Value::from(0))
+        );
+        assert_eq!(
             route_json.get("metal_direct_decode_batched_logits_group_count"),
             Some(&Value::from(1))
         );
@@ -12454,6 +13074,10 @@ mod tests {
         );
         assert_eq!(
             route_json.get("metal_direct_decode_ffn_activation_native_share"),
+            Some(&Value::from(1.0_f64))
+        );
+        assert_eq!(
+            route_json.get("metal_direct_decode_residual_add_native_share"),
             Some(&Value::from(1.0_f64))
         );
     }
@@ -12620,7 +13244,8 @@ mod tests {
             native_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
         };
 
-        let runtime_json = serialize_runtime_metadata(&runtime, None);
+        let runtime_json =
+            serialize_runtime_metadata_with_native_model_bridge(&runtime, None, None);
 
         assert_eq!(
             runtime_json
@@ -12717,6 +13342,150 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(model_dir);
+    }
+
+    #[test]
+    fn serialize_runtime_metadata_omits_config_side_native_model_summary_for_gguf_bridge() {
+        let runtime = RuntimeConfig {
+            deterministic: false,
+            allow_deterministic_native_fallback: false,
+            max_batch_tokens: 128,
+            block_size_tokens: 16,
+            kv_total_blocks: Some(32),
+            flags: RuntimeFlags::default(),
+            backend_policy: BackendPolicy::new(ResolutionPolicy::StrictNative),
+            resolved_backend: ResolvedBackend::new(
+                SelectedBackend::AxNative,
+                SupportTier::NativePreview,
+                None,
+            ),
+            backend_adapter: None,
+            native_runtime_artifacts_dir: Some(PathBuf::from("/tmp/config-native-runtime")),
+            native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
+            native_model_artifacts_dir: Some(PathBuf::from(
+                "/tmp/google_gemma-4-26b-it-q4_k_m.gguf",
+            )),
+            native_model_artifacts_source: Some(NativeModelArtifactsSource::GeneratedFromGguf),
+        };
+
+        let runtime_json = serialize_runtime_metadata(&runtime, None);
+
+        assert_eq!(
+            runtime_json
+                .get("native_runtime")
+                .and_then(|value| value.get("runner"))
+                .and_then(Value::as_str),
+            Some("metal_bringup")
+        );
+        assert_eq!(runtime_json.get("native_model"), None);
+    }
+
+    #[test]
+    fn probe_native_gguf_bridge_with_config_reports_ready_support() {
+        let gguf_path = unique_test_dir("gguf-bridge-ready-input").with_extension("gguf");
+        fs::write(&gguf_path, b"fake-gguf").expect("gguf input should write");
+        let script = fake_gguf_bridge_probe_script(
+            r#"#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+
+print(json.dumps({
+    "status": "ok",
+    "report": {
+        "architecture": "gemma4",
+        "layer_count": 62,
+        "hidden_size": 5376,
+        "vocab_size": 256000,
+        "fixed_attention_dims": False,
+        "supports_export": True,
+        "blockers": [],
+        "notes": ["attention_value_from_key_layers=5,11"]
+    }
+}))
+"#,
+            "gguf-bridge-ready-script",
+        );
+
+        let report = probe_native_gguf_bridge_with_config(
+            &gguf_path,
+            &NativeGgufBridgeProbeConfig {
+                python_bin: PathBuf::from("python3"),
+                script_path: script.clone(),
+                output_dtype: "f16".to_string(),
+            },
+        );
+
+        assert_eq!(report.get("status").and_then(Value::as_str), Some("ready"));
+        assert_eq!(
+            report.get("architecture").and_then(Value::as_str),
+            Some("gemma4")
+        );
+        assert_eq!(
+            report.get("supports_export").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            report
+                .get("blockers")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+
+        let _ = fs::remove_file(script);
+        let _ = fs::remove_file(gguf_path);
+    }
+
+    #[test]
+    fn serialize_runtime_metadata_with_native_model_bridge_override_includes_bridge_report() {
+        let runtime = RuntimeConfig {
+            deterministic: false,
+            allow_deterministic_native_fallback: false,
+            max_batch_tokens: 128,
+            block_size_tokens: 16,
+            kv_total_blocks: Some(32),
+            flags: RuntimeFlags::default(),
+            backend_policy: BackendPolicy::new(ResolutionPolicy::StrictNative),
+            resolved_backend: ResolvedBackend::new(
+                SelectedBackend::AxNative,
+                SupportTier::NativePreview,
+                None,
+            ),
+            backend_adapter: None,
+            native_runtime_artifacts_dir: Some(PathBuf::from("/tmp/config-native-runtime")),
+            native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
+            native_model_artifacts_dir: Some(PathBuf::from(
+                "/tmp/google_gemma-4-26b-it-q4_k_m.gguf",
+            )),
+            native_model_artifacts_source: Some(NativeModelArtifactsSource::GeneratedFromGguf),
+        };
+
+        let runtime_json = serialize_runtime_metadata_with_native_model_bridge(
+            &runtime,
+            None,
+            Some(json!({
+                "status": "unsupported",
+                "blockers": ["moe_expert_tensors_present"],
+                "source_path": "/tmp/google_gemma-4-26b-it-q4_k_m.gguf"
+            })),
+        );
+
+        assert_eq!(
+            runtime_json
+                .get("native_model_bridge")
+                .and_then(|value| value.get("status"))
+                .and_then(Value::as_str),
+            Some("unsupported")
+        );
+        assert_eq!(
+            runtime_json
+                .get("native_model_bridge")
+                .and_then(|value| value.get("blockers"))
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
     }
 
     #[test]
@@ -12982,6 +13751,31 @@ mod tests {
     }
 
     #[test]
+    fn doctor_report_marks_unsupported_gguf_bridge_not_ready() {
+        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+        let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+        let report = build_doctor_report_with_native_model_bridge(
+            host,
+            toolchain,
+            Some(json!({
+                "status": "unsupported",
+                "source_path": "/tmp/google_gemma-4-26b-it-q4_k_m.gguf",
+                "blockers": ["moe_expert_tensors_present"]
+            })),
+        );
+
+        assert_eq!(report.status, DoctorStatus::NotReady);
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.contains("native GGUF bridge is not ready")));
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("native GGUF bridge probe status=unsupported")));
+    }
+
+    #[test]
     fn doctor_report_marks_override_host_as_bringup_only() {
         let host = doctor_host_fixture(false, true, Some("Apple M3 Max"));
         let toolchain = doctor_metal_toolchain_fixture(true, true, true);
@@ -13042,10 +13836,41 @@ mod tests {
     }
 
     #[test]
+    fn render_doctor_report_includes_native_model_bridge_section_when_present() {
+        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+        let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+        let report = build_doctor_report_with_native_model_bridge(
+            host,
+            toolchain,
+            Some(json!({
+                "status": "ready",
+                "source_path": "/tmp/google_gemma-4-31b-it-q4_k_m.gguf",
+                "blockers": []
+            })),
+        );
+
+        let text = render_doctor_report(&report);
+
+        assert!(text.contains("native_model_bridge.status=ready"));
+        assert!(
+            text.contains("native_model_bridge.source_path=/tmp/google_gemma-4-31b-it-q4_k_m.gguf")
+        );
+        assert!(text.contains("native_model_bridge.blockers=[]"));
+    }
+
+    #[test]
     fn parse_doctor_args_accepts_json_and_rejects_unknown_flags() {
-        let args = vec!["--json".to_string()];
+        let args = vec![
+            "--json".to_string(),
+            "--native-model-artifacts-dir".to_string(),
+            "/tmp/google_gemma-4-26b-it-q4_k_m.gguf".to_string(),
+        ];
         let parsed = parse_doctor_args(&args).expect("doctor args should parse");
         assert!(parsed.json);
+        assert_eq!(
+            parsed.native_model_artifacts_dir,
+            Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf"))
+        );
 
         let error = parse_doctor_args(&["--bogus".to_string()])
             .expect_err("doctor args should reject unknown flags");
@@ -13053,7 +13878,7 @@ mod tests {
             panic!("doctor args should surface a usage error");
         };
         assert!(message.contains("unknown flag for doctor"));
-        assert!(message.contains("ax-bench doctor [--json]"));
+        assert!(message.contains("ax-bench doctor [--json] [--native-model-artifacts-dir <path>]"));
     }
 
     #[test]
@@ -15366,6 +16191,62 @@ mod tests {
     }
 
     #[test]
+    fn contract_failure_json_classifies_native_gguf_bridge_unsupported_model() {
+        let mut manifest = load_test_manifest(
+            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+        );
+        manifest.runtime.native_model_artifacts_dir =
+            Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf"));
+
+        let artifact = build_contract_failure_json(
+            "run-gguf-unsupported",
+            "scenario",
+            Path::new("/tmp/manifest.json"),
+            &manifest,
+            Path::new("/tmp/results"),
+            123,
+            "failed to export native model artifacts from GGUF /tmp/google_gemma-4-26b-it-q4_k_m.gguf: status=unsupported blockers=moe_expert_tensors_present",
+        )
+        .expect("contract failure artifact should build");
+
+        assert_eq!(
+            artifact
+                .get("failure")
+                .and_then(|failure| failure.get("code"))
+                .and_then(Value::as_str),
+            Some("native_gguf_bridge_unsupported_model")
+        );
+    }
+
+    #[test]
+    fn contract_failure_json_classifies_native_gguf_bridge_missing_dependency() {
+        let mut manifest = load_test_manifest(
+            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+        );
+        manifest.runtime.native_model_artifacts_dir =
+            Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf"));
+
+        let artifact = build_contract_failure_json(
+            "run-gguf-missing-dep",
+            "scenario",
+            Path::new("/tmp/manifest.json"),
+            &manifest,
+            Path::new("/tmp/results"),
+            123,
+            "failed to export native model artifacts from GGUF /tmp/google_gemma-4-26b-it-q4_k_m.gguf: status=error reason=missing_python_dependency",
+        )
+        .expect("contract failure artifact should build");
+
+        assert_eq!(
+            artifact
+                .get("failure")
+                .and_then(|failure| failure.get("code"))
+                .and_then(Value::as_str),
+            Some("native_gguf_bridge_missing_dependency")
+        );
+    }
+
+    #[test]
     fn build_session_preserves_compatibility_runtime_fields_via_sdk_factory() {
         let server_url = "http://127.0.0.1:8081";
         let mut manifest = compatibility_scenario_manifest(server_url);
@@ -15470,6 +16351,29 @@ mod tests {
         assert_eq!(
             config.native_model_artifacts_source,
             Some(NativeModelArtifactsSource::ExplicitConfig)
+        );
+    }
+
+    #[test]
+    fn build_session_marks_gguf_native_model_override_as_generated_bridge() {
+        let mut manifest = load_test_manifest(
+            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+        );
+        manifest.runtime.native_model_artifacts_dir =
+            Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf"));
+
+        let runtime = runtime_config_from_manifest(&manifest).expect("runtime config should load");
+        let specs = scenario_specs_from_manifest(&manifest).expect("scenario specs should build");
+
+        let config = session_config_from_runtime(&runtime, &specs);
+
+        assert_eq!(
+            config.native_model_artifacts_dir,
+            Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf"))
+        );
+        assert_eq!(
+            config.native_model_artifacts_source,
+            Some(NativeModelArtifactsSource::GeneratedFromGguf)
         );
     }
 

@@ -58,6 +58,7 @@ pub const PHASE1_REQUIRED_METAL_KERNELS: &[&str] = &[
 pub const PHASE1_DEFERRED_METAL_KERNELS: &[&str] = &["swap_blocks"];
 pub const PHASE1_OPTIONAL_METAL_KERNELS: &[&str] = &[
     "kv_scale_update",
+    "vector_add_f32",
     "gather_embedding_rows_f32",
     "gather_embedding_rows_f16",
     "gather_embedding_rows_bf16",
@@ -211,7 +212,6 @@ struct MetalRuntimeState {
     required_pipelines: Vec<MetalPipelineHandle>,
     required_pipeline_lookup: BTreeMap<String, usize>,
     optional_pipelines: Vec<MetalPipelineHandle>,
-    optional_pipeline_lookup: BTreeMap<String, usize>,
     optional_kernel_dispatch_plan: MetalOptionalKernelDispatchPlan,
     optional_kernel_feedback: Mutex<MetalOptionalKernelFeedbackState>,
     dispatch_arena: Mutex<Option<MetalDispatchArena>>,
@@ -226,30 +226,31 @@ struct MetalPipelineHandle {
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct MetalOptionalKernelDispatchPlan {
-    projection_f32: bool,
-    projection_f16: bool,
-    projection_bf16: bool,
-    batched_projection_f32: bool,
-    batched_projection_f16: bool,
-    batched_projection_bf16: bool,
-    embedding_gather_f32: bool,
-    embedding_gather_f16: bool,
-    embedding_gather_bf16: bool,
-    rms_norm_f32: bool,
-    rms_norm_f16: bool,
-    rms_norm_bf16: bool,
-    batched_rms_norm_f32: bool,
-    batched_rms_norm_f16: bool,
-    batched_rms_norm_bf16: bool,
-    logits_argmax_f32: bool,
-    logits_argmax_batched_f32: bool,
-    sample_argmax_logprob_f32: bool,
-    sample_argmax_logprob_batched_f32: bool,
-    apply_rope_f32: bool,
-    apply_rope_batched_f32: bool,
-    expand_grouped_kv_heads_f32: bool,
-    ffn_gate_silu_product_f32: bool,
-    ffn_gate_gelu_approx_product_f32: bool,
+    vector_add_f32: Option<usize>,
+    projection_f32: Option<usize>,
+    projection_f16: Option<usize>,
+    projection_bf16: Option<usize>,
+    batched_projection_f32: Option<usize>,
+    batched_projection_f16: Option<usize>,
+    batched_projection_bf16: Option<usize>,
+    embedding_gather_f32: Option<usize>,
+    embedding_gather_f16: Option<usize>,
+    embedding_gather_bf16: Option<usize>,
+    rms_norm_f32: Option<usize>,
+    rms_norm_f16: Option<usize>,
+    rms_norm_bf16: Option<usize>,
+    batched_rms_norm_f32: Option<usize>,
+    batched_rms_norm_f16: Option<usize>,
+    batched_rms_norm_bf16: Option<usize>,
+    logits_argmax_f32: Option<usize>,
+    logits_argmax_batched_f32: Option<usize>,
+    sample_argmax_logprob_f32: Option<usize>,
+    sample_argmax_logprob_batched_f32: Option<usize>,
+    apply_rope_f32: Option<usize>,
+    apply_rope_batched_f32: Option<usize>,
+    expand_grouped_kv_heads_f32: Option<usize>,
+    ffn_gate_silu_product_f32: Option<usize>,
+    ffn_gate_gelu_approx_product_f32: Option<usize>,
 }
 
 #[cfg(target_os = "macos")]
@@ -261,80 +262,93 @@ struct MetalOptionalKernelFeedbackState {
 
 #[cfg(target_os = "macos")]
 impl MetalOptionalKernelDispatchPlan {
-    fn projection_kernel_name(self, dtype: NativeTensorDataType) -> Option<&'static str> {
+    fn vector_add_kernel(self) -> Option<(&'static str, usize)> {
+        self.vector_add_f32.map(|index| ("vector_add_f32", index))
+    }
+
+    fn projection_kernel(self, dtype: NativeTensorDataType) -> Option<(&'static str, usize)> {
         match dtype {
-            NativeTensorDataType::F32 if self.projection_f32 => {
-                Some("decode_logits_projection_f32")
-            }
-            NativeTensorDataType::F16 if self.projection_f16 => {
-                Some("decode_logits_projection_f16")
-            }
-            NativeTensorDataType::Bf16 if self.projection_bf16 => {
-                Some("decode_logits_projection_bf16")
-            }
+            NativeTensorDataType::F32 => self
+                .projection_f32
+                .map(|index| ("decode_logits_projection_f32", index)),
+            NativeTensorDataType::F16 => self
+                .projection_f16
+                .map(|index| ("decode_logits_projection_f16", index)),
+            NativeTensorDataType::Bf16 => self
+                .projection_bf16
+                .map(|index| ("decode_logits_projection_bf16", index)),
             _ => None,
         }
     }
 
-    fn batched_projection_kernel_name(self, dtype: NativeTensorDataType) -> Option<&'static str> {
+    fn batched_projection_kernel(
+        self,
+        dtype: NativeTensorDataType,
+    ) -> Option<(&'static str, usize)> {
         match dtype {
-            NativeTensorDataType::F32 if self.batched_projection_f32 => {
-                Some("decode_logits_projection_batched_f32")
-            }
-            NativeTensorDataType::F16 if self.batched_projection_f16 => {
-                Some("decode_logits_projection_batched_f16")
-            }
-            NativeTensorDataType::Bf16 if self.batched_projection_bf16 => {
-                Some("decode_logits_projection_batched_bf16")
-            }
+            NativeTensorDataType::F32 => self
+                .batched_projection_f32
+                .map(|index| ("decode_logits_projection_batched_f32", index)),
+            NativeTensorDataType::F16 => self
+                .batched_projection_f16
+                .map(|index| ("decode_logits_projection_batched_f16", index)),
+            NativeTensorDataType::Bf16 => self
+                .batched_projection_bf16
+                .map(|index| ("decode_logits_projection_batched_bf16", index)),
             _ => None,
         }
     }
 
-    fn embedding_gather_kernel_name(self, dtype: NativeTensorDataType) -> Option<&'static str> {
+    fn embedding_gather_kernel(self, dtype: NativeTensorDataType) -> Option<(&'static str, usize)> {
         match dtype {
-            NativeTensorDataType::F32 if self.embedding_gather_f32 => {
-                Some("gather_embedding_rows_f32")
-            }
-            NativeTensorDataType::F16 if self.embedding_gather_f16 => {
-                Some("gather_embedding_rows_f16")
-            }
-            NativeTensorDataType::Bf16 if self.embedding_gather_bf16 => {
-                Some("gather_embedding_rows_bf16")
-            }
+            NativeTensorDataType::F32 => self
+                .embedding_gather_f32
+                .map(|index| ("gather_embedding_rows_f32", index)),
+            NativeTensorDataType::F16 => self
+                .embedding_gather_f16
+                .map(|index| ("gather_embedding_rows_f16", index)),
+            NativeTensorDataType::Bf16 => self
+                .embedding_gather_bf16
+                .map(|index| ("gather_embedding_rows_bf16", index)),
             _ => None,
         }
     }
 
-    fn rms_norm_kernel_name(self, dtype: NativeTensorDataType) -> Option<&'static str> {
+    fn rms_norm_kernel(self, dtype: NativeTensorDataType) -> Option<(&'static str, usize)> {
         match dtype {
-            NativeTensorDataType::F32 if self.rms_norm_f32 => Some("rms_norm_f32"),
-            NativeTensorDataType::F16 if self.rms_norm_f16 => Some("rms_norm_f16"),
-            NativeTensorDataType::Bf16 if self.rms_norm_bf16 => Some("rms_norm_bf16"),
+            NativeTensorDataType::F32 => self.rms_norm_f32.map(|index| ("rms_norm_f32", index)),
+            NativeTensorDataType::F16 => self.rms_norm_f16.map(|index| ("rms_norm_f16", index)),
+            NativeTensorDataType::Bf16 => self.rms_norm_bf16.map(|index| ("rms_norm_bf16", index)),
             _ => None,
         }
     }
 
-    fn batched_rms_norm_kernel_name(self, dtype: NativeTensorDataType) -> Option<&'static str> {
+    fn batched_rms_norm_kernel(self, dtype: NativeTensorDataType) -> Option<(&'static str, usize)> {
         match dtype {
-            NativeTensorDataType::F32 if self.batched_rms_norm_f32 => Some("rms_norm_batched_f32"),
-            NativeTensorDataType::F16 if self.batched_rms_norm_f16 => Some("rms_norm_batched_f16"),
-            NativeTensorDataType::Bf16 if self.batched_rms_norm_bf16 => {
-                Some("rms_norm_batched_bf16")
-            }
+            NativeTensorDataType::F32 => self
+                .batched_rms_norm_f32
+                .map(|index| ("rms_norm_batched_f32", index)),
+            NativeTensorDataType::F16 => self
+                .batched_rms_norm_f16
+                .map(|index| ("rms_norm_batched_f16", index)),
+            NativeTensorDataType::Bf16 => self
+                .batched_rms_norm_bf16
+                .map(|index| ("rms_norm_batched_bf16", index)),
             _ => None,
         }
     }
 
-    fn ffn_gate_product_kernel_name(self, activation: ModelFfnActivation) -> Option<&'static str> {
+    fn ffn_gate_product_kernel(
+        self,
+        activation: ModelFfnActivation,
+    ) -> Option<(&'static str, usize)> {
         match activation {
-            ModelFfnActivation::Silu if self.ffn_gate_silu_product_f32 => {
-                Some("ffn_gate_silu_product_f32")
-            }
-            ModelFfnActivation::GeluApprox if self.ffn_gate_gelu_approx_product_f32 => {
-                Some("ffn_gate_gelu_approx_product_f32")
-            }
-            _ => None,
+            ModelFfnActivation::Silu => self
+                .ffn_gate_silu_product_f32
+                .map(|index| ("ffn_gate_silu_product_f32", index)),
+            ModelFfnActivation::GeluApprox => self
+                .ffn_gate_gelu_approx_product_f32
+                .map(|index| ("ffn_gate_gelu_approx_product_f32", index)),
         }
     }
 }
@@ -576,22 +590,24 @@ impl MetalBringupSampler {
         if logits.is_empty() {
             return None;
         }
-        if !self
+        let Some(pipeline_index) = self
             .bringup
             .state
             .optional_kernel_dispatch_plan
             .sample_argmax_logprob_f32
-        {
+        else {
             return None;
-        }
-        if !optional_kernel_allowed(&self.bringup, kernel_name) {
+        };
+        let feedback_key = sampler_feedback_key(kernel_name, logits.len());
+        if !optional_kernel_allowed(&self.bringup, &feedback_key) {
             return None;
         }
 
-        let output = find_optional_pipeline_handle(
+        let output = find_optional_pipeline_handle_by_index(
             &self.bringup.state,
             &self.bringup.metallib.path,
             kernel_name,
+            pipeline_index,
         )
         .ok()
         .and_then(|pipeline| {
@@ -634,7 +650,7 @@ impl MetalBringupSampler {
                 logprob.is_finite().then_some((token_id, logprob))
             })
         });
-        record_optional_kernel_result(&self.bringup, kernel_name, output.is_some());
+        record_optional_kernel_result(&self.bringup, &feedback_key, output.is_some());
         output
     }
 
@@ -647,33 +663,35 @@ impl MetalBringupSampler {
         if logits_rows.is_empty() {
             return Some(Vec::new());
         }
-        if !self
+        let Some(pipeline_index) = self
             .bringup
             .state
             .optional_kernel_dispatch_plan
             .sample_argmax_logprob_batched_f32
-        {
+        else {
             return None;
-        }
-        if !optional_kernel_allowed(&self.bringup, kernel_name) {
-            return None;
-        }
+        };
         let vocab_rows = logits_rows.first()?.len();
         if vocab_rows == 0 || logits_rows.iter().any(|row| row.len() != vocab_rows) {
             return None;
         }
 
         let token_count = logits_rows.len();
+        let feedback_key = batched_sampler_feedback_key(kernel_name, token_count, vocab_rows);
+        if !optional_kernel_allowed(&self.bringup, &feedback_key) {
+            return None;
+        }
         let logits_element_count = token_count.checked_mul(vocab_rows)?;
         let mut flattened_logits = Vec::with_capacity(logits_element_count);
         for row in logits_rows {
             flattened_logits.extend_from_slice(row);
         }
 
-        let output = find_optional_pipeline_handle(
+        let output = find_optional_pipeline_handle_by_index(
             &self.bringup.state,
             &self.bringup.metallib.path,
             kernel_name,
+            pipeline_index,
         )
         .ok()
         .and_then(|pipeline| {
@@ -744,7 +762,7 @@ impl MetalBringupSampler {
                 Some(token_ids.into_iter().zip(logprobs).collect())
             })
         });
-        record_optional_kernel_result(&self.bringup, kernel_name, output.is_some());
+        record_optional_kernel_result(&self.bringup, &feedback_key, output.is_some());
         output
     }
 }
@@ -756,7 +774,8 @@ impl TokenSampler for MetalBringupSampler {
 
         #[cfg(target_os = "macos")]
         {
-            for indices in grouped_sampler_request_indices_by_logits_width(&requests).into_values()
+            for (logits_width, indices) in
+                grouped_sampler_request_indices_by_logits_width(&requests)
             {
                 if let Some(group_results) = collect_grouped_sampler_results_with_item_fallback(
                     &indices,
@@ -764,7 +783,8 @@ impl TokenSampler for MetalBringupSampler {
                         if group_indices.len() < 2 {
                             return None;
                         }
-                        let feedback_key = sampler_batched_group_feedback_key(group_indices.len());
+                        let feedback_key =
+                            sampler_batched_group_feedback_key(group_indices.len(), logits_width);
                         if !optional_kernel_allowed(&self.bringup, &feedback_key) {
                             return None;
                         }
@@ -779,11 +799,9 @@ impl TokenSampler for MetalBringupSampler {
                             .collect::<Vec<_>>();
                         let output = self
                             .sample_argmax_logprob_batched_with_optional_native_path(&logits_rows);
-                        record_optional_kernel_result(
-                            &self.bringup,
-                            &feedback_key,
-                            output.is_some(),
-                        );
+                        let (output, success) =
+                            validate_batched_sampler_group_output(output, group_indices.len());
+                        record_optional_kernel_result(&self.bringup, &feedback_key, success);
                         output
                     },
                     &mut |request_index| {
@@ -894,8 +912,229 @@ fn collect_grouped_sampler_results_with_item_fallback<T>(
 }
 
 #[cfg(target_os = "macos")]
-fn sampler_batched_group_feedback_key(group_size: usize) -> String {
-    format!("batched_group:sampler_argmax_logprob:{group_size}")
+fn sampler_batched_group_feedback_key(group_size: usize, logits_width: usize) -> String {
+    format!("batched_group:sampler_argmax_logprob:{group_size}:{logits_width}")
+}
+
+#[cfg(target_os = "macos")]
+fn batched_projection_feedback_key(
+    kernel_name: &str,
+    row_count: usize,
+    output_dim: usize,
+    input_width: usize,
+    hidden_stride: usize,
+    matrix_cols: usize,
+) -> String {
+    format!(
+        "batched_projection:{kernel_name}:{row_count}:{output_dim}:{input_width}:{hidden_stride}:{matrix_cols}"
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn projection_feedback_key(
+    kernel_name: &str,
+    output_dim: usize,
+    input_width: usize,
+    matrix_cols: usize,
+) -> String {
+    format!("projection:{kernel_name}:{output_dim}:{input_width}:{matrix_cols}")
+}
+
+#[cfg(target_os = "macos")]
+fn sampler_feedback_key(kernel_name: &str, logits_width: usize) -> String {
+    format!("sampler:{kernel_name}:{logits_width}")
+}
+
+#[cfg(target_os = "macos")]
+fn batched_logits_argmax_feedback_key(
+    kernel_name: &str,
+    row_count: usize,
+    vocab_rows: usize,
+) -> String {
+    format!("batched_logits_argmax:{kernel_name}:{row_count}:{vocab_rows}")
+}
+
+#[cfg(target_os = "macos")]
+fn batched_sampler_feedback_key(
+    kernel_name: &str,
+    row_count: usize,
+    logits_width: usize,
+) -> String {
+    format!("batched_sampler:{kernel_name}:{row_count}:{logits_width}")
+}
+
+#[cfg(target_os = "macos")]
+fn logits_argmax_feedback_key(kernel_name: &str, vocab_rows: usize) -> String {
+    format!("logits_argmax:{kernel_name}:{vocab_rows}")
+}
+
+#[cfg(target_os = "macos")]
+fn batched_ffn_gate_product_feedback_key(
+    kernel_name: &str,
+    row_count: usize,
+    row_width: usize,
+) -> String {
+    format!("batched_ffn_gate_product:{kernel_name}:{row_count}:{row_width}")
+}
+
+#[cfg(target_os = "macos")]
+fn ffn_gate_product_feedback_key(kernel_name: &str, value_count: usize) -> String {
+    format!("ffn_gate_product:{kernel_name}:{value_count}")
+}
+
+#[cfg(target_os = "macos")]
+fn rope_feedback_key(
+    kernel_name: &str,
+    q_heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+    rope_style: ModelStageRopeStyle,
+) -> String {
+    format!(
+        "rope:{kernel_name}:{q_heads}:{kv_heads}:{head_dim}:{}",
+        rope_style_dispatch_value(rope_style)
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn embedding_gather_feedback_key(
+    kernel_name: &str,
+    token_count: usize,
+    embedding_rows: usize,
+    hidden_dim: usize,
+) -> String {
+    format!("embedding_gather:{kernel_name}:{token_count}:{embedding_rows}:{hidden_dim}")
+}
+
+#[cfg(target_os = "macos")]
+fn batched_grouped_kv_expand_feedback_key(
+    kernel_name: &str,
+    token_count: usize,
+    q_heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+) -> String {
+    format!("batched_grouped_kv_expand:{kernel_name}:{token_count}:{q_heads}:{kv_heads}:{head_dim}")
+}
+
+#[cfg(target_os = "macos")]
+fn grouped_kv_expand_feedback_key(
+    kernel_name: &str,
+    q_heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+) -> String {
+    format!("grouped_kv_expand:{kernel_name}:{q_heads}:{kv_heads}:{head_dim}")
+}
+
+#[cfg(target_os = "macos")]
+fn vector_add_feedback_key(kernel_name: &str, element_count: usize) -> String {
+    format!("vector_add:{kernel_name}:{element_count}")
+}
+
+#[cfg(target_os = "macos")]
+fn batched_rope_feedback_key(
+    kernel_name: &str,
+    token_count: usize,
+    q_heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+    rope_style: ModelStageRopeStyle,
+) -> String {
+    format!(
+        "batched_rope:{kernel_name}:{token_count}:{q_heads}:{kv_heads}:{head_dim}:{}",
+        rope_style_dispatch_value(rope_style)
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn rms_norm_feedback_key(kernel_name: &str, value_count: usize) -> String {
+    format!("rms_norm:{kernel_name}:{value_count}")
+}
+
+#[cfg(target_os = "macos")]
+fn batched_rms_norm_feedback_key(kernel_name: &str, row_count: usize, row_width: usize) -> String {
+    format!("batched_rms_norm:{kernel_name}:{row_count}:{row_width}")
+}
+
+#[cfg(target_os = "macos")]
+fn batched_rms_norm_feedback_binding(
+    bringup: &MetalRuntimeBringup,
+    weight_binding: &MetalNativeTensorBufferBinding,
+    row_count: usize,
+    row_width: usize,
+) -> Option<(&'static str, usize, String)> {
+    let (kernel_name, pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .batched_rms_norm_kernel(weight_binding.native_dtype)?;
+    Some((
+        kernel_name,
+        pipeline_index,
+        batched_rms_norm_feedback_key(kernel_name, row_count, row_width),
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn ffn_gate_product_feedback_binding(
+    bringup: &MetalRuntimeBringup,
+    activation: ModelFfnActivation,
+    row_count: usize,
+    row_width: usize,
+) -> Option<(&'static str, usize, String)> {
+    let (kernel_name, pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .ffn_gate_product_kernel(activation)?;
+    Some((
+        kernel_name,
+        pipeline_index,
+        batched_ffn_gate_product_feedback_key(kernel_name, row_count, row_width),
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn validate_batched_sampler_group_output<T>(
+    output: Option<Vec<T>>,
+    expected_len: usize,
+) -> (Option<Vec<T>>, bool) {
+    match output {
+        Some(results) if results.len() == expected_len => (Some(results), true),
+        Some(_) | None => (None, false),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn validate_model_bound_direct_decode_group_output(
+    output: Option<ModelBoundDirectDecodeResult>,
+    expected_request_ids: &[crate::ids::RequestId],
+) -> (Option<ModelBoundDirectDecodeResult>, bool) {
+    let expected_ids = expected_request_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let Some(result) = output else {
+        return (None, false);
+    };
+    let token_ids = result
+        .tokens
+        .iter()
+        .map(|(request_id, _)| *request_id)
+        .collect::<BTreeSet<_>>();
+    let logits_request_ids = result
+        .logits_outputs
+        .iter()
+        .map(|output| output.request_id)
+        .collect::<BTreeSet<_>>();
+    let success = result.tokens.len() == expected_request_ids.len()
+        && result.logits_outputs.len() == expected_request_ids.len()
+        && token_ids == expected_ids
+        && logits_request_ids == expected_ids;
+    if success {
+        (Some(result), true)
+    } else {
+        (None, false)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1177,6 +1416,10 @@ pub struct MetalDispatchExecutionInfo {
     #[serde(default)]
     pub prefix_cpu_ffn_activation_element_count: u32,
     #[serde(default)]
+    pub prefix_native_residual_add_element_count: u32,
+    #[serde(default)]
+    pub prefix_cpu_residual_add_element_count: u32,
+    #[serde(default)]
     pub direct_decode_native_projection_row_count: u32,
     #[serde(default)]
     pub direct_decode_cpu_projection_row_count: u32,
@@ -1188,6 +1431,10 @@ pub struct MetalDispatchExecutionInfo {
     pub direct_decode_native_ffn_activation_element_count: u32,
     #[serde(default)]
     pub direct_decode_cpu_ffn_activation_element_count: u32,
+    #[serde(default)]
+    pub direct_decode_native_residual_add_element_count: u32,
+    #[serde(default)]
+    pub direct_decode_cpu_residual_add_element_count: u32,
     #[serde(default)]
     pub direct_decode_batched_logits_group_count: u32,
     #[serde(default)]
@@ -1312,7 +1559,8 @@ enum MetalAttentionQkvBindings {
     Split {
         q: MetalNativeTensorBinding,
         k: MetalNativeTensorBinding,
-        v: MetalNativeTensorBinding,
+        v: Option<MetalNativeTensorBinding>,
+        value_from_key: bool,
     },
 }
 
@@ -1330,8 +1578,9 @@ struct MetalNativeLayerBindings {
     attention_norm: MetalNativeTensorBinding,
     attention_q_norm: Option<MetalNativeTensorBinding>,
     attention_k_norm: Option<MetalNativeTensorBinding>,
-    attention_qkv: MetalAttentionQkvBindings,
-    attention_o: MetalNativeTensorBinding,
+    attention_v_norm_no_scale: bool,
+    attention_qkv: Option<MetalAttentionQkvBindings>,
+    attention_o: Option<MetalNativeTensorBinding>,
     ffn_norm: MetalNativeTensorBinding,
     ffn_gate_up: MetalFfnGateUpBindings,
     ffn_down: MetalNativeTensorBinding,
@@ -1414,17 +1663,23 @@ fn native_dense_kernel_coverage_for_model_bindings(
         if let Some(binding) = &layer.attention_k_norm {
             record_rms_norm_binding_coverage(&mut coverage, binding);
         }
-        match &layer.attention_qkv {
-            MetalAttentionQkvBindings::Packed(binding) => {
-                record_projection_binding_coverage(&mut coverage, binding);
-            }
-            MetalAttentionQkvBindings::Split { q, k, v } => {
-                record_projection_binding_coverage(&mut coverage, q);
-                record_projection_binding_coverage(&mut coverage, k);
-                record_projection_binding_coverage(&mut coverage, v);
+        if let Some(attention_qkv) = &layer.attention_qkv {
+            match attention_qkv {
+                MetalAttentionQkvBindings::Packed(binding) => {
+                    record_projection_binding_coverage(&mut coverage, binding);
+                }
+                MetalAttentionQkvBindings::Split { q, k, v, .. } => {
+                    record_projection_binding_coverage(&mut coverage, q);
+                    record_projection_binding_coverage(&mut coverage, k);
+                    if let Some(binding) = v {
+                        record_projection_binding_coverage(&mut coverage, binding);
+                    }
+                }
             }
         }
-        record_projection_binding_coverage(&mut coverage, &layer.attention_o);
+        if let Some(attention_o) = &layer.attention_o {
+            record_projection_binding_coverage(&mut coverage, attention_o);
+        }
         record_rms_norm_binding_coverage(&mut coverage, &layer.ffn_norm);
         match &layer.ffn_gate_up {
             MetalFfnGateUpBindings::Packed(binding) => {
@@ -1469,13 +1724,12 @@ impl MetalNativeModelBindings {
                 attention_k_norm: artifacts
                     .layer_tensor(layer_index, NativeTensorRole::AttentionKNorm)
                     .map(|spec| MetalNativeTensorBinding::from_spec(artifacts, spec)),
-                attention_qkv: attention_qkv_bindings(artifacts, layer_index)?,
-                attention_o: required_layer_tensor_binding(
-                    artifacts,
-                    layer_index,
-                    NativeTensorRole::AttentionO,
-                    "attention_o",
-                )?,
+                attention_v_norm_no_scale: artifacts
+                    .layer_uses_attention_v_norm_no_scale(layer_index),
+                attention_qkv: attention_qkv_bindings(artifacts, layer_index).ok(),
+                attention_o: artifacts
+                    .layer_tensor(layer_index, NativeTensorRole::AttentionO)
+                    .map(|spec| MetalNativeTensorBinding::from_spec(artifacts, spec)),
                 ffn_norm: required_layer_tensor_binding(
                     artifacts,
                     layer_index,
@@ -1516,15 +1770,21 @@ impl MetalNativeModelBindings {
             if let Some(k_norm) = &layer.attention_k_norm {
                 bindings.push(k_norm.clone());
             }
-            match &layer.attention_qkv {
-                MetalAttentionQkvBindings::Packed(binding) => bindings.push(binding.clone()),
-                MetalAttentionQkvBindings::Split { q, k, v } => {
-                    bindings.push(q.clone());
-                    bindings.push(k.clone());
-                    bindings.push(v.clone());
+            if let Some(attention_qkv) = &layer.attention_qkv {
+                match attention_qkv {
+                    MetalAttentionQkvBindings::Packed(binding) => bindings.push(binding.clone()),
+                    MetalAttentionQkvBindings::Split { q, k, v, .. } => {
+                        bindings.push(q.clone());
+                        bindings.push(k.clone());
+                        if let Some(binding) = v {
+                            bindings.push(binding.clone());
+                        }
+                    }
                 }
             }
-            bindings.push(layer.attention_o.clone());
+            if let Some(attention_o) = &layer.attention_o {
+                bindings.push(attention_o.clone());
+            }
             bindings.push(layer.ffn_norm.clone());
             match &layer.ffn_gate_up {
                 MetalFfnGateUpBindings::Packed(binding) => bindings.push(binding.clone()),
@@ -1683,6 +1943,7 @@ fn attention_qkv_bindings(
         ));
     }
 
+    let value_from_key = artifacts.layer_uses_attention_value_from_key(layer_index);
     Ok(MetalAttentionQkvBindings::Split {
         q: required_layer_tensor_binding(
             artifacts,
@@ -1696,12 +1957,10 @@ fn attention_qkv_bindings(
             NativeTensorRole::AttentionK,
             "attention_k",
         )?,
-        v: required_layer_tensor_binding(
-            artifacts,
-            layer_index,
-            NativeTensorRole::AttentionV,
-            "attention_v",
-        )?,
+        v: artifacts
+            .layer_tensor(layer_index, NativeTensorRole::AttentionV)
+            .map(|spec| MetalNativeTensorBinding::from_spec(artifacts, spec)),
+        value_from_key,
     })
 }
 
@@ -1829,6 +2088,8 @@ struct DirectDecodeNativeDenseTally {
     cpu_rms_norm_elements: u32,
     native_ffn_activation_elements: u32,
     cpu_ffn_activation_elements: u32,
+    native_residual_add_elements: u32,
+    cpu_residual_add_elements: u32,
     native_batched_logits_group_count: u32,
     native_batched_logits_token_count: u32,
     batched_group_fallback_count: u32,
@@ -1856,6 +2117,12 @@ impl DirectDecodeNativeDenseTally {
         self.cpu_ffn_activation_elements = self
             .cpu_ffn_activation_elements
             .saturating_add(other.cpu_ffn_activation_elements);
+        self.native_residual_add_elements = self
+            .native_residual_add_elements
+            .saturating_add(other.native_residual_add_elements);
+        self.cpu_residual_add_elements = self
+            .cpu_residual_add_elements
+            .saturating_add(other.cpu_residual_add_elements);
         self.native_batched_logits_group_count = self
             .native_batched_logits_group_count
             .saturating_add(other.native_batched_logits_group_count);
@@ -1906,6 +2173,19 @@ impl DirectDecodeNativeDenseTally {
         self
     }
 
+    fn record_residual_add_elements(mut self, element_count: usize, used_native: bool) -> Self {
+        let element_count = saturating_usize_to_u32(element_count);
+        if used_native {
+            self.native_residual_add_elements = self
+                .native_residual_add_elements
+                .saturating_add(element_count);
+        } else {
+            self.cpu_residual_add_elements =
+                self.cpu_residual_add_elements.saturating_add(element_count);
+        }
+        self
+    }
+
     fn record_batched_logits_group(mut self, token_count: usize) -> Self {
         if token_count > 1 {
             self.native_batched_logits_group_count =
@@ -1939,6 +2219,8 @@ fn prefix_attention_tally_from_native_dense_tally(
         .record_rms_norm_elements(tally.cpu_rms_norm_elements as usize, false)
         .record_ffn_activation_elements(tally.native_ffn_activation_elements as usize, true)
         .record_ffn_activation_elements(tally.cpu_ffn_activation_elements as usize, false)
+        .record_residual_add_elements(tally.native_residual_add_elements as usize, true)
+        .record_residual_add_elements(tally.cpu_residual_add_elements as usize, false)
 }
 
 #[cfg(target_os = "macos")]
@@ -1952,6 +2234,8 @@ fn direct_decode_native_dense_tally_from_prefix_attention_tally(
         .record_rms_norm_elements(tally.cpu_rms_norm_element_count() as usize, false)
         .record_ffn_activation_elements(tally.native_ffn_activation_element_count() as usize, true)
         .record_ffn_activation_elements(tally.cpu_ffn_activation_element_count() as usize, false)
+        .record_residual_add_elements(tally.native_residual_add_element_count() as usize, true)
+        .record_residual_add_elements(tally.cpu_residual_add_element_count() as usize, false)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -3334,7 +3618,7 @@ fn derive_model_bound_direct_decode_result_from_hidden_states_batched(
     bringup: Option<&MetalRuntimeBringup>,
 ) -> Option<ModelBoundDirectDecodeResult> {
     let final_layer = bindings.layers.get(final_layer_index)?;
-    let attention_o = buffers.binding_for(&final_layer.attention_o)?;
+    let attention_o = buffers.binding_for(final_layer.attention_o.as_ref()?)?;
     let ffn_norm = buffers.binding_for(&final_layer.ffn_norm)?;
     let ffn_down = buffers.binding_for(&final_layer.ffn_down)?;
     let final_norm = buffers.binding_for(&bindings.final_norm)?;
@@ -3401,6 +3685,7 @@ fn derive_model_bound_direct_decode_result_from_hidden_states_batched(
     let grouped_results = collect_model_bound_direct_decode_group_results_with_item_fallback(
         grouped_prepared.into_values(),
         |group| {
+            let expected_request_ids = group.iter().map(|item| item.request_id).collect::<Vec<_>>();
             let feedback_key = bringup.and_then(|bringup| {
                 let dims = group.first()?.dims;
                 Some((
@@ -3425,8 +3710,10 @@ fn derive_model_bound_direct_decode_result_from_hidden_states_batched(
                 group,
                 bringup,
             );
+            let (output, success) =
+                validate_model_bound_direct_decode_group_output(output, &expected_request_ids);
             if let Some((bringup, feedback_key)) = feedback_key.as_ref() {
-                record_optional_kernel_result(bringup, feedback_key, output.is_some());
+                record_optional_kernel_result(bringup, feedback_key, success);
             }
             output
         },
@@ -3554,8 +3841,26 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
         bringup,
     )?;
     let mut native_dense_tally = DirectDecodeNativeDenseTally::default().merge(attention_o_tally);
-    for (item, attention_hidden) in prepared.iter_mut().zip(attention_hidden_rows.into_iter()) {
-        add_in_place(&mut item.hidden, &attention_hidden);
+    let attention_hidden_rows_len = attention_hidden_rows.len();
+    let mut hidden_rows = prepared
+        .iter()
+        .map(|item| item.hidden.clone())
+        .collect::<Vec<_>>();
+    if hidden_rows.len() != attention_hidden_rows_len {
+        return None;
+    }
+    let used_native_attention_residual_add = add_batched_rows_in_place_with_path(
+        &mut hidden_rows,
+        &attention_hidden_rows,
+        dims.hidden_dim,
+        bringup,
+    )?;
+    native_dense_tally = native_dense_tally.record_residual_add_elements(
+        hidden_rows.len().checked_mul(dims.hidden_dim)?,
+        used_native_attention_residual_add,
+    );
+    for (item, hidden) in prepared.iter_mut().zip(hidden_rows.into_iter()) {
+        item.hidden = hidden;
     }
 
     let mut ffn_hidden_rows = prepared
@@ -3602,9 +3907,30 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
         bringup,
     )?;
     native_dense_tally = native_dense_tally.merge(ffn_down_tally);
-    for (item, ffn_output) in prepared.iter_mut().zip(ffn_output_rows.into_iter()) {
-        model_bound_ffn_decode |= has_nontrivial_ffn_contribution(&ffn_output);
-        add_in_place(&mut item.hidden, &ffn_output);
+    let ffn_output_rows_len = ffn_output_rows.len();
+    let ffn_output_rows_nontrivial = ffn_output_rows
+        .iter()
+        .any(|ffn_output| has_nontrivial_ffn_contribution(ffn_output));
+    let mut hidden_rows = prepared
+        .iter()
+        .map(|item| item.hidden.clone())
+        .collect::<Vec<_>>();
+    if hidden_rows.len() != ffn_output_rows_len {
+        return None;
+    }
+    let used_native_ffn_residual_add = add_batched_rows_in_place_with_path(
+        &mut hidden_rows,
+        &ffn_output_rows,
+        dims.hidden_dim,
+        bringup,
+    )?;
+    native_dense_tally = native_dense_tally.record_residual_add_elements(
+        hidden_rows.len().checked_mul(dims.hidden_dim)?,
+        used_native_ffn_residual_add,
+    );
+    model_bound_ffn_decode |= ffn_output_rows_nontrivial;
+    for (item, hidden) in prepared.iter_mut().zip(hidden_rows.into_iter()) {
+        item.hidden = hidden;
     }
 
     let mut final_hidden_rows = prepared
@@ -3731,7 +4057,7 @@ fn decode_logits_from_model_attention_output_with_metadata(
     attention_output_bits: &[u32],
     bringup: Option<&MetalRuntimeBringup>,
 ) -> Option<(Vec<f32>, u32, bool, u32, bool, DirectDecodeNativeDenseTally)> {
-    let attention_o = buffers.binding_for(&layer.attention_o)?;
+    let attention_o = buffers.binding_for(layer.attention_o.as_ref()?)?;
     let ffn_norm = buffers.binding_for(&layer.ffn_norm)?;
     let ffn_down = buffers.binding_for(&layer.ffn_down)?;
     let final_norm = buffers.binding_for(&bindings.final_norm)?;
@@ -3760,7 +4086,10 @@ fn decode_logits_from_model_attention_output_with_metadata(
     )?;
     native_dense_tally = native_dense_tally
         .record_projection_rows(dims.hidden_dim, used_native_attention_o_projection);
-    add_in_place(&mut hidden, &residual);
+    let used_native_attention_residual_add =
+        add_in_place_with_path(&mut hidden, &residual, bringup)?;
+    native_dense_tally = native_dense_tally
+        .record_residual_add_elements(hidden.len(), used_native_attention_residual_add);
 
     let mut ffn_hidden = hidden.clone();
     let used_native_ffn_norm = apply_rms_norm_with_binding_in_place_with_path(
@@ -3789,7 +4118,9 @@ fn decode_logits_from_model_attention_output_with_metadata(
     native_dense_tally =
         native_dense_tally.record_projection_rows(dims.hidden_dim, used_native_ffn_down_projection);
     let used_model_bound_ffn = has_nontrivial_ffn_contribution(&ffn_output);
-    add_in_place(&mut hidden, &ffn_output);
+    let used_native_ffn_residual_add = add_in_place_with_path(&mut hidden, &ffn_output, bringup)?;
+    native_dense_tally =
+        native_dense_tally.record_residual_add_elements(hidden.len(), used_native_ffn_residual_add);
 
     let used_native_final_norm = apply_rms_norm_with_binding_in_place_with_path(
         &mut hidden,
@@ -3856,39 +4187,51 @@ fn project_decode_logits_with_optional_native_path(
     hidden: &[f32],
 ) -> Option<(Vec<f32>, u32)> {
     let bringup = bringup?;
-    let projection_kernel_name = bringup
+    let (projection_kernel_name, projection_pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
-        .projection_kernel_name(decode_projection.native_dtype)?;
+        .projection_kernel(decode_projection.native_dtype)?;
     let argmax_kernel_name = "logits_argmax_f32";
-    if !bringup
+    let Some(argmax_pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
         .logits_argmax_f32
-    {
+    else {
         return None;
-    }
-    if !optional_kernel_allowed(bringup, projection_kernel_name)
-        || !optional_kernel_allowed(bringup, argmax_kernel_name)
-    {
-        return None;
-    }
-
+    };
     let (vocab_rows, projection_cols) = tensor_matrix_dimensions(&decode_projection.meta.spec)?;
     let input_width = hidden.len().min(projection_cols);
     if vocab_rows == 0 || input_width == 0 {
         return None;
     }
+    let projection_feedback_key = projection_feedback_key(
+        projection_kernel_name,
+        vocab_rows,
+        input_width,
+        projection_cols,
+    );
+    let argmax_feedback_key = logits_argmax_feedback_key(argmax_kernel_name, vocab_rows);
+    if !optional_kernel_allowed(bringup, &projection_feedback_key)
+        || !optional_kernel_allowed(bringup, &argmax_feedback_key)
+    {
+        return None;
+    }
 
-    let output = find_optional_pipeline_handle(
+    let output = find_optional_pipeline_handle_by_index(
         &bringup.state,
         &bringup.metallib.path,
         projection_kernel_name,
+        projection_pipeline_index,
     )
     .ok()
     .zip(
-        find_optional_pipeline_handle(&bringup.state, &bringup.metallib.path, argmax_kernel_name)
-            .ok(),
+        find_optional_pipeline_handle_by_index(
+            &bringup.state,
+            &bringup.metallib.path,
+            argmax_kernel_name,
+            argmax_pipeline_index,
+        )
+        .ok(),
     )
     .and_then(|(projection_pipeline, argmax_pipeline)| {
         autoreleasepool(|| {
@@ -3956,8 +4299,8 @@ fn project_decode_logits_with_optional_native_path(
         })
     });
     let success = output.is_some();
-    record_optional_kernel_result(bringup, projection_kernel_name, success);
-    record_optional_kernel_result(bringup, argmax_kernel_name, success);
+    record_optional_kernel_result(bringup, &projection_feedback_key, success);
+    record_optional_kernel_result(bringup, &argmax_feedback_key, success);
     output
 }
 
@@ -3976,23 +4319,18 @@ fn project_batched_decode_logits_with_optional_native_path(
         return None;
     }
 
-    let projection_kernel_name = bringup
+    let (projection_kernel_name, projection_pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
-        .batched_projection_kernel_name(decode_projection.native_dtype)?;
+        .batched_projection_kernel(decode_projection.native_dtype)?;
     let argmax_kernel_name = "logits_argmax_batched_f32";
-    if !bringup
+    let Some(argmax_pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
         .logits_argmax_batched_f32
-    {
+    else {
         return None;
-    }
-    if !optional_kernel_allowed(bringup, projection_kernel_name)
-        || !optional_kernel_allowed(bringup, argmax_kernel_name)
-    {
-        return None;
-    }
+    };
     let (vocab_rows, projection_cols) = tensor_matrix_dimensions(&decode_projection.meta.spec)?;
     let input_width = hidden_width.min(projection_cols);
     if vocab_rows == 0 || input_width == 0 {
@@ -4000,21 +4338,45 @@ fn project_batched_decode_logits_with_optional_native_path(
     }
 
     let token_count = hidden_rows.len();
-    let logits_element_count = token_count.checked_mul(vocab_rows)?;
-    let mut flattened_hidden = Vec::with_capacity(token_count.checked_mul(hidden_width)?);
-    for row in hidden_rows {
-        flattened_hidden.extend_from_slice(row.get(..hidden_width)?);
+    let serialized_hidden_stride = input_width;
+    let projection_feedback_key = batched_projection_feedback_key(
+        projection_kernel_name,
+        token_count,
+        vocab_rows,
+        input_width,
+        serialized_hidden_stride,
+        projection_cols,
+    );
+    let argmax_feedback_key =
+        batched_logits_argmax_feedback_key(argmax_kernel_name, token_count, vocab_rows);
+    if !optional_kernel_allowed(bringup, &projection_feedback_key)
+        || !optional_kernel_allowed(bringup, &argmax_feedback_key)
+    {
+        return None;
     }
 
-    let output = find_optional_pipeline_handle(
+    let logits_element_count = token_count.checked_mul(vocab_rows)?;
+    let mut flattened_hidden =
+        Vec::with_capacity(token_count.checked_mul(serialized_hidden_stride)?);
+    for row in hidden_rows {
+        flattened_hidden.extend_from_slice(row.get(..serialized_hidden_stride)?);
+    }
+
+    let output = find_optional_pipeline_handle_by_index(
         &bringup.state,
         &bringup.metallib.path,
         projection_kernel_name,
+        projection_pipeline_index,
     )
     .ok()
     .zip(
-        find_optional_pipeline_handle(&bringup.state, &bringup.metallib.path, argmax_kernel_name)
-            .ok(),
+        find_optional_pipeline_handle_by_index(
+            &bringup.state,
+            &bringup.metallib.path,
+            argmax_kernel_name,
+            argmax_pipeline_index,
+        )
+        .ok(),
     )
     .and_then(|(projection_pipeline, argmax_pipeline)| {
         autoreleasepool(|| {
@@ -4045,7 +4407,7 @@ fn project_batched_decode_logits_with_optional_native_path(
                 saturating_usize_to_u32(vocab_rows),
                 saturating_usize_to_u32(projection_cols),
                 saturating_usize_to_u32(input_width),
-                saturating_usize_to_u32(hidden_width),
+                saturating_usize_to_u32(serialized_hidden_stride),
             );
             encoder.dispatch_threads(
                 MTLSize::new(logits_element_count.max(1) as u64, 1, 1),
@@ -4115,8 +4477,8 @@ fn project_batched_decode_logits_with_optional_native_path(
         })
     });
     let success = output.is_some();
-    record_optional_kernel_result(bringup, projection_kernel_name, success);
-    record_optional_kernel_result(bringup, argmax_kernel_name, success);
+    record_optional_kernel_result(bringup, &projection_feedback_key, success);
+    record_optional_kernel_result(bringup, &argmax_feedback_key, success);
     output
 }
 
@@ -4142,6 +4504,21 @@ fn direct_decode_batched_group_feedback_key(
     format!(
         "batched_group:direct_decode:{group_size}:{}:{}:{}:{}",
         dims.input_width, dims.hidden_dim, dims.intermediate_dim, dims.vocab_rows
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn prefix_attention_group_feedback_key(workload: &MetalDispatchWorkload) -> String {
+    format!(
+        "batched_group:prefix_attention:{}:{}:{}:{}:{}:{}:{}:{}",
+        workload.scheduled_requests,
+        workload.prefill_requests,
+        workload.decode_requests,
+        workload.scheduled_tokens,
+        workload.kv_metadata.gather_token_count(),
+        workload.kv_metadata.block_size_tokens,
+        workload.numeric_layout.head_count,
+        workload.numeric_layout.head_dim,
     )
 }
 
@@ -4590,6 +4967,18 @@ fn annotate_bringup_execution_flags(
             .cpu_ffn_activation_element_count(),
     ));
     route_metadata.crossover_decisions.push((
+        "metal_dispatch_prefix_native_residual_add_element_count".to_string(),
+        flags
+            .prefix_attention_tally
+            .native_residual_add_element_count(),
+    ));
+    route_metadata.crossover_decisions.push((
+        "metal_dispatch_prefix_cpu_residual_add_element_count".to_string(),
+        flags
+            .prefix_attention_tally
+            .cpu_residual_add_element_count(),
+    ));
+    route_metadata.crossover_decisions.push((
         "metal_dispatch_direct_decode_native_logits_projection".to_string(),
         u32::from(flags.native_logits_projection_decode),
     ));
@@ -4675,6 +5064,14 @@ fn annotate_direct_decode_tokens(
         direct_decode_native_dense_tally.cpu_ffn_activation_elements,
     ));
     route_metadata.crossover_decisions.push((
+        "metal_dispatch_direct_decode_native_residual_add_element_count".to_string(),
+        direct_decode_native_dense_tally.native_residual_add_elements,
+    ));
+    route_metadata.crossover_decisions.push((
+        "metal_dispatch_direct_decode_cpu_residual_add_element_count".to_string(),
+        direct_decode_native_dense_tally.cpu_residual_add_elements,
+    ));
+    route_metadata.crossover_decisions.push((
         "metal_dispatch_direct_decode_batched_logits_group_count".to_string(),
         direct_decode_native_dense_tally.native_batched_logits_group_count,
     ));
@@ -4738,6 +5135,10 @@ fn metal_dispatch_execution_info(
             .native_ffn_activation_element_count(),
         prefix_cpu_ffn_activation_element_count: prefix_attention_tally
             .cpu_ffn_activation_element_count(),
+        prefix_native_residual_add_element_count: prefix_attention_tally
+            .native_residual_add_element_count(),
+        prefix_cpu_residual_add_element_count: prefix_attention_tally
+            .cpu_residual_add_element_count(),
         direct_decode_native_projection_row_count: direct_decode_native_dense_tally
             .native_projection_rows,
         direct_decode_cpu_projection_row_count: direct_decode_native_dense_tally
@@ -4750,6 +5151,10 @@ fn metal_dispatch_execution_info(
             .native_ffn_activation_elements,
         direct_decode_cpu_ffn_activation_element_count: direct_decode_native_dense_tally
             .cpu_ffn_activation_elements,
+        direct_decode_native_residual_add_element_count: direct_decode_native_dense_tally
+            .native_residual_add_elements,
+        direct_decode_cpu_residual_add_element_count: direct_decode_native_dense_tally
+            .cpu_residual_add_elements,
         direct_decode_batched_logits_group_count: direct_decode_native_dense_tally
             .native_batched_logits_group_count,
         direct_decode_batched_logits_token_count: direct_decode_native_dense_tally
@@ -4850,7 +5255,6 @@ fn load_macos_runtime_bringup(
             required_pipelines: required_pipeline_handles,
             required_pipeline_lookup,
             optional_pipelines: optional_pipeline_handles,
-            optional_pipeline_lookup,
             optional_kernel_dispatch_plan,
             optional_kernel_feedback: Mutex::new(MetalOptionalKernelFeedbackState::default()),
             dispatch_arena: Mutex::new(None),
@@ -5578,18 +5982,20 @@ fn find_required_pipeline_handle<'a>(
 }
 
 #[cfg(target_os = "macos")]
-fn find_optional_pipeline_handle<'a>(
+fn find_optional_pipeline_handle_by_index<'a>(
     state: &'a MetalRuntimeState,
     metallib_path: &Path,
     function_name: &str,
+    pipeline_index: usize,
 ) -> Result<&'a MetalPipelineHandle, MetalRuntimeError> {
-    find_pipeline_handle(
-        &state.optional_pipelines,
-        &state.optional_pipeline_lookup,
-        metallib_path,
-        function_name,
-        "optional",
-    )
+    state
+        .optional_pipelines
+        .get(pipeline_index)
+        .ok_or(MetalRuntimeError::ResolveCompiledKernel {
+            path: metallib_path.to_path_buf(),
+            function_name: function_name.to_string(),
+            message: "optional pipeline handle index is missing from runtime state".to_string(),
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -5622,32 +6028,33 @@ fn pipeline_lookup_index(function_names: &[String]) -> BTreeMap<String, usize> {
 fn build_optional_kernel_dispatch_plan(
     optional_pipeline_lookup: &BTreeMap<String, usize>,
 ) -> MetalOptionalKernelDispatchPlan {
-    let has = |name: &str| optional_pipeline_lookup.contains_key(name);
+    let index = |name: &str| optional_pipeline_lookup.get(name).copied();
     MetalOptionalKernelDispatchPlan {
-        projection_f32: has("decode_logits_projection_f32"),
-        projection_f16: has("decode_logits_projection_f16"),
-        projection_bf16: has("decode_logits_projection_bf16"),
-        batched_projection_f32: has("decode_logits_projection_batched_f32"),
-        batched_projection_f16: has("decode_logits_projection_batched_f16"),
-        batched_projection_bf16: has("decode_logits_projection_batched_bf16"),
-        embedding_gather_f32: has("gather_embedding_rows_f32"),
-        embedding_gather_f16: has("gather_embedding_rows_f16"),
-        embedding_gather_bf16: has("gather_embedding_rows_bf16"),
-        rms_norm_f32: has("rms_norm_f32"),
-        rms_norm_f16: has("rms_norm_f16"),
-        rms_norm_bf16: has("rms_norm_bf16"),
-        batched_rms_norm_f32: has("rms_norm_batched_f32"),
-        batched_rms_norm_f16: has("rms_norm_batched_f16"),
-        batched_rms_norm_bf16: has("rms_norm_batched_bf16"),
-        logits_argmax_f32: has("logits_argmax_f32"),
-        logits_argmax_batched_f32: has("logits_argmax_batched_f32"),
-        sample_argmax_logprob_f32: has("sample_argmax_logprob_f32"),
-        sample_argmax_logprob_batched_f32: has("sample_argmax_logprob_batched_f32"),
-        apply_rope_f32: has("apply_rope_f32"),
-        apply_rope_batched_f32: has("apply_rope_batched_f32"),
-        expand_grouped_kv_heads_f32: has("expand_grouped_kv_heads_f32"),
-        ffn_gate_silu_product_f32: has("ffn_gate_silu_product_f32"),
-        ffn_gate_gelu_approx_product_f32: has("ffn_gate_gelu_approx_product_f32"),
+        vector_add_f32: index("vector_add_f32"),
+        projection_f32: index("decode_logits_projection_f32"),
+        projection_f16: index("decode_logits_projection_f16"),
+        projection_bf16: index("decode_logits_projection_bf16"),
+        batched_projection_f32: index("decode_logits_projection_batched_f32"),
+        batched_projection_f16: index("decode_logits_projection_batched_f16"),
+        batched_projection_bf16: index("decode_logits_projection_batched_bf16"),
+        embedding_gather_f32: index("gather_embedding_rows_f32"),
+        embedding_gather_f16: index("gather_embedding_rows_f16"),
+        embedding_gather_bf16: index("gather_embedding_rows_bf16"),
+        rms_norm_f32: index("rms_norm_f32"),
+        rms_norm_f16: index("rms_norm_f16"),
+        rms_norm_bf16: index("rms_norm_bf16"),
+        batched_rms_norm_f32: index("rms_norm_batched_f32"),
+        batched_rms_norm_f16: index("rms_norm_batched_f16"),
+        batched_rms_norm_bf16: index("rms_norm_batched_bf16"),
+        logits_argmax_f32: index("logits_argmax_f32"),
+        logits_argmax_batched_f32: index("logits_argmax_batched_f32"),
+        sample_argmax_logprob_f32: index("sample_argmax_logprob_f32"),
+        sample_argmax_logprob_batched_f32: index("sample_argmax_logprob_batched_f32"),
+        apply_rope_f32: index("apply_rope_f32"),
+        apply_rope_batched_f32: index("apply_rope_batched_f32"),
+        expand_grouped_kv_heads_f32: index("expand_grouped_kv_heads_f32"),
+        ffn_gate_silu_product_f32: index("ffn_gate_silu_product_f32"),
+        ffn_gate_gelu_approx_product_f32: index("ffn_gate_gelu_approx_product_f32"),
     }
 }
 
@@ -5805,6 +6212,13 @@ struct BatchedRmsNormDispatchParams {
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct FfnGateProductDispatchParams {
+    element_count: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct VectorAddDispatchParams {
     element_count: u32,
 }
 
@@ -6251,8 +6665,8 @@ impl ModelStageDims {
 #[cfg(target_os = "macos")]
 fn resolved_model_stage_dims_for_input_width(
     artifacts: &NativeModelArtifacts,
+    layer: &MetalNativeLayerBindings,
     attention_norm: &MetalNativeTensorBufferBinding,
-    attention_qkv: &MetalAttentionQkvBindings,
     buffers: &MetalNativeModelBufferBindings,
     input_width: usize,
 ) -> Option<ModelStageDims> {
@@ -6261,26 +6675,49 @@ fn resolved_model_stage_dims_for_input_width(
         .min(input_width)
         .min(norm_len);
 
-    match attention_qkv {
+    let (q_heads, kv_heads, head_dim) = match layer.attention_qkv.as_ref()? {
         MetalAttentionQkvBindings::Packed(binding) => {
             let packed = buffers.binding_for(binding)?;
             let (_, cols) = tensor_matrix_dimensions(&packed.meta.spec)?;
             input_dim = input_dim.min(cols);
+            (
+                artifacts.manifest().attention_head_count as usize,
+                artifacts.manifest().kv_head_count as usize,
+                artifacts.manifest().attention_head_dim as usize,
+            )
         }
-        MetalAttentionQkvBindings::Split { q, k, v } => {
+        MetalAttentionQkvBindings::Split { q, k, v, .. } => {
             let q_binding = buffers.binding_for(q)?;
             let k_binding = buffers.binding_for(k)?;
-            let v_binding = buffers.binding_for(v)?;
-            input_dim = input_dim
-                .min(tensor_matrix_dimensions(&q_binding.meta.spec)?.1)
-                .min(tensor_matrix_dimensions(&k_binding.meta.spec)?.1)
-                .min(tensor_matrix_dimensions(&v_binding.meta.spec)?.1);
-        }
-    }
+            let (q_rows, q_cols) = tensor_matrix_dimensions(&q_binding.meta.spec)?;
+            let (k_rows, k_cols) = tensor_matrix_dimensions(&k_binding.meta.spec)?;
+            input_dim = input_dim.min(q_cols).min(k_cols);
+            if let Some(v_binding) = v.as_ref().and_then(|binding| buffers.binding_for(binding)) {
+                input_dim = input_dim.min(tensor_matrix_dimensions(&v_binding.meta.spec)?.1);
+            }
 
-    let q_heads = artifacts.manifest().attention_head_count as usize;
-    let kv_heads = artifacts.manifest().kv_head_count as usize;
-    let head_dim = artifacts.manifest().attention_head_dim as usize;
+            let head_dim = layer
+                .attention_q_norm
+                .as_ref()
+                .and_then(|binding| buffers.binding_for(binding))
+                .and_then(|binding| tensor_element_count(&binding.meta.spec))
+                .or_else(|| {
+                    layer
+                        .attention_k_norm
+                        .as_ref()
+                        .and_then(|binding| buffers.binding_for(binding))
+                        .and_then(|binding| tensor_element_count(&binding.meta.spec))
+                })
+                .unwrap_or(artifacts.manifest().attention_head_dim as usize);
+            if head_dim == 0 || !q_rows.is_multiple_of(head_dim) || !k_rows.is_multiple_of(head_dim)
+            {
+                return None;
+            }
+            let q_heads = q_rows / head_dim;
+            let kv_heads = k_rows / head_dim;
+            (q_heads, kv_heads, head_dim)
+        }
+    };
     let rope_head_dim_supported = model_stage_rope_style(artifacts) == ModelStageRopeStyle::None
         || head_dim.is_multiple_of(2);
 
@@ -6675,86 +7112,92 @@ fn initial_model_hidden_states_with_optional_native_path(
         return None;
     }
 
-    let kernel_name = bringup
+    let (kernel_name, pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
-        .embedding_gather_kernel_name(token_embedding.native_dtype)?;
-    if !optional_kernel_allowed(bringup, kernel_name) {
+        .embedding_gather_kernel(token_embedding.native_dtype)?;
+    let token_count = workload.scheduled_token_ids.len();
+    let feedback_key =
+        embedding_gather_feedback_key(kernel_name, token_count, embedding_rows, hidden_dim);
+    if !optional_kernel_allowed(bringup, &feedback_key) {
         return None;
     }
-    let output_element_count = workload.scheduled_token_ids.len().checked_mul(hidden_dim)?;
+    let output_element_count = token_count.checked_mul(hidden_dim)?;
 
-    let output = find_optional_pipeline_handle(&bringup.state, &bringup.metallib.path, kernel_name)
-        .ok()
-        .and_then(|pipeline| {
-            autoreleasepool(|| {
-                let token_ids_buffer = new_shared_buffer_with_data(
-                    &bringup.state.device,
-                    &workload.scheduled_token_ids,
-                );
-                let output_buffer = new_zeroed_shared_buffer::<f32>(
-                    &bringup.state.device,
-                    saturating_usize_to_u32(output_element_count),
-                );
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let token_ids_buffer =
+                new_shared_buffer_with_data(&bringup.state.device, &workload.scheduled_token_ids);
+            let output_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(output_element_count),
+            );
 
-                let command_buffer = bringup.state.command_queue.new_command_buffer();
-                command_buffer.set_label("ax.phase1.gather_embedding_rows");
-                let encoder = command_buffer.new_compute_command_encoder();
-                encoder.set_label("ax.phase1.gather_embedding_rows.compute");
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.gather_embedding_rows");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.gather_embedding_rows.compute");
 
-                encoder.set_compute_pipeline_state(&pipeline.pipeline);
-                encoder.set_buffer(0, Some(&token_ids_buffer), 0);
-                encoder.set_buffer(1, Some(&token_embedding.native_buffer), 0);
-                encoder.set_buffer(2, Some(&output_buffer), 0);
-                set_embedding_gather_dispatch_params(
-                    encoder,
-                    3,
-                    saturating_usize_to_u32(workload.scheduled_token_ids.len()),
-                    saturating_usize_to_u32(embedding_rows),
-                    saturating_usize_to_u32(hidden_dim),
-                    embedding_scale,
-                );
-                encoder.dispatch_threads(
-                    MTLSize::new(output_element_count.max(1) as u64, 1, 1),
-                    MTLSize::new(
-                        pipeline
-                            .pipeline
-                            .thread_execution_width()
-                            .max(1)
-                            .min(output_element_count.max(1) as u64),
-                        1,
-                        1,
-                    ),
-                );
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&token_ids_buffer), 0);
+            encoder.set_buffer(1, Some(&token_embedding.native_buffer), 0);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            set_embedding_gather_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(workload.scheduled_token_ids.len()),
+                saturating_usize_to_u32(embedding_rows),
+                saturating_usize_to_u32(hidden_dim),
+                embedding_scale,
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(output_element_count.max(1) as u64, 1, 1),
+                MTLSize::new(
+                    pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(output_element_count.max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
 
-                encoder.end_encoding();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
 
-                let command_buffer_status = command_buffer_status(command_buffer.status());
-                if command_buffer_status != MetalCommandBufferStatus::Completed {
-                    return None;
-                }
+            let command_buffer_status = command_buffer_status(command_buffer.status());
+            if command_buffer_status != MetalCommandBufferStatus::Completed {
+                return None;
+            }
 
-                let hidden_values = read_shared_buffer_prefix(
-                    &output_buffer,
-                    saturating_usize_to_u32(output_element_count),
-                );
-                if hidden_values.len() != output_element_count
-                    || !hidden_values.iter().all(|value| value.is_finite())
-                {
-                    return None;
-                }
+            let hidden_values = read_shared_buffer_prefix(
+                &output_buffer,
+                saturating_usize_to_u32(output_element_count),
+            );
+            if hidden_values.len() != output_element_count
+                || !hidden_values.iter().all(|value| value.is_finite())
+            {
+                return None;
+            }
 
-                Some(
-                    hidden_values
-                        .chunks_exact(hidden_dim)
-                        .map(|chunk| chunk.to_vec())
-                        .collect(),
-                )
-            })
-        });
-    record_optional_kernel_result(bringup, kernel_name, output.is_some());
+            Some(
+                hidden_values
+                    .chunks_exact(hidden_dim)
+                    .map(|chunk| chunk.to_vec())
+                    .collect(),
+            )
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
     output
 }
 
@@ -6775,8 +7218,8 @@ fn stage_model_layer_qkv_inputs(
     let hidden_width = hidden_states.iter().map(Vec::len).min()?;
     let stage_dims = resolved_model_stage_dims_for_input_width(
         artifacts,
+        layer,
         attention_norm,
-        &layer.attention_qkv,
         buffers,
         hidden_width,
     )?;
@@ -6809,10 +7252,10 @@ fn stage_model_layer_qkv_inputs(
         native_model_rms_norm_weight_offset(artifacts),
         bringup,
     )?;
-    let (mut projected_queries, mut projected_keys, projected_values, qkv_tally) =
+    let (mut projected_queries, mut projected_keys, mut projected_values, qkv_tally) =
         project_batched_attention_qkv_with_dims_and_tally(
             artifacts,
-            &layer.attention_qkv,
+            layer.attention_qkv.as_ref()?,
             buffers,
             &normalized_hidden_states,
             stage_dims.input_dim,
@@ -6843,6 +7286,17 @@ fn stage_model_layer_qkv_inputs(
                 native_model_rms_norm_weight_offset(artifacts),
                 bringup,
             )?);
+    }
+    if layer.attention_v_norm_no_scale {
+        prefix_attention_tally = prefix_attention_tally.merge(
+            apply_batched_per_head_rms_norm_rows_without_weights_with_tally(
+                &mut projected_values,
+                stage_dims.kv_heads,
+                stage_dims.head_dim,
+                native_model_rms_norm_epsilon(artifacts),
+                bringup,
+            )?,
+        );
     }
 
     apply_batched_model_stage_rope_with_path(
@@ -6911,6 +7365,8 @@ struct PrefixAttentionExecutionTally {
     cpu_rms_norm_elements: u32,
     native_ffn_activation_elements: u32,
     cpu_ffn_activation_elements: u32,
+    native_residual_add_elements: u32,
+    cpu_residual_add_elements: u32,
 }
 
 impl PrefixAttentionExecutionTally {
@@ -6960,6 +7416,12 @@ impl PrefixAttentionExecutionTally {
         self.cpu_ffn_activation_elements = self
             .cpu_ffn_activation_elements
             .saturating_add(other.cpu_ffn_activation_elements);
+        self.native_residual_add_elements = self
+            .native_residual_add_elements
+            .saturating_add(other.native_residual_add_elements);
+        self.cpu_residual_add_elements = self
+            .cpu_residual_add_elements
+            .saturating_add(other.cpu_residual_add_elements);
         self
     }
 
@@ -7014,6 +7476,19 @@ impl PrefixAttentionExecutionTally {
         self
     }
 
+    fn record_residual_add_elements(mut self, element_count: usize, used_native: bool) -> Self {
+        let element_count = saturating_usize_to_u32(element_count);
+        if used_native {
+            self.native_residual_add_elements = self
+                .native_residual_add_elements
+                .saturating_add(element_count);
+        } else {
+            self.cpu_residual_add_elements =
+                self.cpu_residual_add_elements.saturating_add(element_count);
+        }
+        self
+    }
+
     fn native_dispatch_count(self) -> u32 {
         self.native_dispatches
     }
@@ -7060,6 +7535,14 @@ impl PrefixAttentionExecutionTally {
 
     fn cpu_ffn_activation_element_count(self) -> u32 {
         self.cpu_ffn_activation_elements
+    }
+
+    fn native_residual_add_element_count(self) -> u32 {
+        self.native_residual_add_elements
+    }
+
+    fn cpu_residual_add_element_count(self) -> u32 {
+        self.cpu_residual_add_elements
     }
 
     fn staged_input_source(self) -> MetalStagedInputSource {
@@ -7122,7 +7605,7 @@ fn advance_hidden_states_through_model_layer(
 
     let ephemeral_layer_cache = Mutex::new(MetalPersistentLayerKvCache::default());
     let shared_layer_cache = layer_cache.or(Some(&ephemeral_layer_cache));
-    let attention_o = buffers.binding_for(&layer.attention_o)?;
+    let attention_o = buffers.binding_for(layer.attention_o.as_ref()?)?;
     let ffn_norm = buffers.binding_for(&layer.ffn_norm)?;
     let ffn_down = buffers.binding_for(&layer.ffn_down)?;
     let staged_inputs =
@@ -7204,7 +7687,22 @@ fn collect_prefix_attention_outputs_with_item_fallback(
     let group_workload = MetalDispatchWorkload::from_runner_input(&group_input).ok()?;
     let group_staged_inputs =
         slice_staged_inputs_for_token_range(staged_inputs, group_token_range)?;
-    if native_prefix_attention_is_viable(&group_workload, bringup.is_some(), layer_cache) {
+    let numeric_group_workload = group_workload.with_numeric_layout(group_staged_inputs.layout);
+    let native_dispatch_available = bringup.is_some();
+    let native_supported =
+        native_prefix_attention_is_viable(&group_workload, native_dispatch_available, layer_cache);
+    let prefix_group_feedback = bringup.map(|bringup| {
+        let feedback_key = prefix_attention_group_feedback_key(&numeric_group_workload);
+        let allowed = optional_kernel_allowed(bringup, &feedback_key);
+        (bringup, feedback_key, allowed)
+    });
+    let native_feedback_allowed = prefix_group_feedback
+        .as_ref()
+        .map_or(true, |(_, _, allowed)| *allowed);
+    let native_viable = native_supported && native_feedback_allowed;
+    let mut native_attempt_failed = false;
+    let mut skip_native_retry = false;
+    if native_viable {
         if let Some(mut native_attempt) = try_native_attention_output_from_model_layer(
             artifacts,
             &group_workload,
@@ -7212,34 +7710,36 @@ fn collect_prefix_attention_outputs_with_item_fallback(
             bringup,
             layer_cache,
         ) {
+            if let Some((bringup, feedback_key, _)) = prefix_group_feedback.as_ref() {
+                record_optional_kernel_result(bringup, feedback_key, true);
+            }
             commit_prefix_attention_dispatch_attempt(layer_cache, &mut native_attempt);
             return Some((
                 native_attempt.attention_output,
                 PrefixAttentionExecutionTally::default().record(true),
             ));
         }
-    } else if bringup.is_some() && group_items.len() > 1 {
-        let split_index = item_range.start.checked_add(group_items.len() / 2)?;
-        let (mut left_output, left_tally) = collect_prefix_attention_outputs_with_item_fallback(
+        native_attempt_failed = true;
+        skip_native_retry = true;
+        if let Some((bringup, feedback_key, _)) = prefix_group_feedback.as_ref() {
+            record_optional_kernel_result(bringup, feedback_key, false);
+        }
+    }
+    if prefix_attention_group_should_split(
+        group_items.len(),
+        native_dispatch_available,
+        native_viable,
+        native_attempt_failed,
+    ) {
+        return split_prefix_attention_outputs_with_item_fallback(
             artifacts,
             input,
             staged_inputs,
             item_token_ranges,
-            item_range.start..split_index,
+            item_range,
             bringup,
             layer_cache,
-        )?;
-        let (right_output, right_tally) = collect_prefix_attention_outputs_with_item_fallback(
-            artifacts,
-            input,
-            staged_inputs,
-            item_token_ranges,
-            split_index..item_range.end,
-            bringup,
-            layer_cache,
-        )?;
-        left_output.extend(right_output);
-        return Some((left_output, left_tally.merge(right_tally)));
+        );
     }
     let mut attempt = resolve_attention_output_from_model_layer(
         artifacts,
@@ -7247,12 +7747,60 @@ fn collect_prefix_attention_outputs_with_item_fallback(
         &group_staged_inputs,
         bringup,
         layer_cache,
+        !skip_native_retry,
     )?;
     commit_prefix_attention_dispatch_attempt(layer_cache, &mut attempt);
     Some((
         attempt.attention_output,
         PrefixAttentionExecutionTally::default().record(attempt.used_native_dispatch),
     ))
+}
+
+#[cfg(target_os = "macos")]
+fn split_prefix_attention_outputs_with_item_fallback(
+    artifacts: &NativeModelArtifacts,
+    input: &RunnerInput,
+    staged_inputs: &MetalDispatchStagedInputs,
+    item_token_ranges: &[std::ops::Range<usize>],
+    item_range: std::ops::Range<usize>,
+    bringup: Option<&MetalRuntimeBringup>,
+    layer_cache: Option<&Mutex<MetalPersistentLayerKvCache>>,
+) -> Option<(Vec<f32>, PrefixAttentionExecutionTally)> {
+    let item_count = item_range.end.checked_sub(item_range.start)?;
+    if item_count <= 1 {
+        return None;
+    }
+    let split_index = item_range.start.checked_add(item_count / 2)?;
+    let (mut left_output, left_tally) = collect_prefix_attention_outputs_with_item_fallback(
+        artifacts,
+        input,
+        staged_inputs,
+        item_token_ranges,
+        item_range.start..split_index,
+        bringup,
+        layer_cache,
+    )?;
+    let (right_output, right_tally) = collect_prefix_attention_outputs_with_item_fallback(
+        artifacts,
+        input,
+        staged_inputs,
+        item_token_ranges,
+        split_index..item_range.end,
+        bringup,
+        layer_cache,
+    )?;
+    left_output.extend(right_output);
+    Some((left_output, left_tally.merge(right_tally)))
+}
+
+#[cfg(target_os = "macos")]
+fn prefix_attention_group_should_split(
+    group_item_count: usize,
+    native_dispatch_available: bool,
+    native_viable: bool,
+    native_attempt_failed: bool,
+) -> bool {
+    native_dispatch_available && group_item_count > 1 && (!native_viable || native_attempt_failed)
 }
 
 #[cfg(target_os = "macos")]
@@ -7393,6 +7941,7 @@ fn resolve_attention_output_from_model_layer(
     staged_inputs: &MetalDispatchStagedInputs,
     bringup: Option<&MetalRuntimeBringup>,
     layer_cache: Option<&Mutex<MetalPersistentLayerKvCache>>,
+    allow_native_retry: bool,
 ) -> Option<PrefixAttentionDispatchAttempt> {
     if let Some(layer_cache) = layer_cache {
         let cached_state = layer_cache
@@ -7406,6 +7955,7 @@ fn resolve_attention_output_from_model_layer(
             staged_inputs,
             bringup,
             Some(&trial_cache),
+            allow_native_retry,
         )?;
         return Some(PrefixAttentionDispatchAttempt {
             attention_output,
@@ -7418,8 +7968,14 @@ fn resolve_attention_output_from_model_layer(
         });
     }
 
-    let (attention_output, used_native_dispatch) =
-        attention_output_from_model_layer(artifacts, workload, staged_inputs, bringup, None)?;
+    let (attention_output, used_native_dispatch) = attention_output_from_model_layer(
+        artifacts,
+        workload,
+        staged_inputs,
+        bringup,
+        None,
+        allow_native_retry,
+    )?;
     Some(PrefixAttentionDispatchAttempt {
         attention_output,
         used_native_dispatch,
@@ -7487,17 +8043,30 @@ fn project_hidden_states_from_layer_attention_output(
             dims.input_width,
             bringup,
         )?;
-    let mut hidden_after_attention = Vec::with_capacity(hidden_states.len());
     let mut tally = PrefixAttentionExecutionTally::default();
     tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
         attention_projection_tally,
     ));
 
-    for (hidden_state, mut hidden) in hidden_states.iter().zip(attention_hidden_rows.into_iter()) {
-        let residual = hidden_state.get(..dims.hidden_dim)?.to_vec();
-        add_in_place(&mut hidden, &residual);
-        hidden_after_attention.push(hidden);
-    }
+    let residual_rows = hidden_states
+        .iter()
+        .map(|hidden_state| {
+            hidden_state
+                .get(..dims.hidden_dim)
+                .map(|slice| slice.to_vec())
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mut hidden_after_attention = attention_hidden_rows;
+    let used_native_attention_residual_add = add_batched_rows_in_place_with_path(
+        &mut hidden_after_attention,
+        &residual_rows,
+        dims.hidden_dim,
+        bringup,
+    )?;
+    tally = tally.record_residual_add_elements(
+        hidden_after_attention.len().checked_mul(dims.hidden_dim)?,
+        used_native_attention_residual_add,
+    );
 
     let mut ffn_hidden_states = hidden_after_attention.clone();
     tally = tally.merge(apply_batched_row_rms_norm_with_binding_in_place_with_tally(
@@ -7541,14 +8110,17 @@ fn project_hidden_states_from_layer_attention_output(
         ffn_down_tally,
     ));
 
-    let mut next_hidden_states = Vec::with_capacity(hidden_after_attention.len());
-    for (mut hidden, ffn_output) in hidden_after_attention
-        .into_iter()
-        .zip(ffn_output_rows.into_iter())
-    {
-        add_in_place(&mut hidden, &ffn_output);
-        next_hidden_states.push(hidden);
-    }
+    let mut next_hidden_states = hidden_after_attention;
+    let used_native_ffn_residual_add = add_batched_rows_in_place_with_path(
+        &mut next_hidden_states,
+        &ffn_output_rows,
+        dims.hidden_dim,
+        bringup,
+    )?;
+    tally = tally.record_residual_add_elements(
+        next_hidden_states.len().checked_mul(dims.hidden_dim)?,
+        used_native_ffn_residual_add,
+    );
 
     Some((next_hidden_states, tally))
 }
@@ -7560,6 +8132,7 @@ fn attention_output_from_model_layer(
     staged_inputs: &MetalDispatchStagedInputs,
     bringup: Option<&MetalRuntimeBringup>,
     layer_cache: Option<&Mutex<MetalPersistentLayerKvCache>>,
+    allow_native_retry: bool,
 ) -> Option<(Vec<f32>, bool)> {
     let numeric_workload = workload.with_numeric_layout(staged_inputs.layout);
     let attention_config =
@@ -7570,7 +8143,7 @@ fn attention_output_from_model_layer(
             .expect("metal prefix layer cache mutex should not be poisoned");
         let workload_is_self_contained =
             workload_supports_native_prefix_attention(&numeric_workload, None);
-        let native_trace = {
+        let native_trace = if allow_native_retry {
             let cache_seed = layer_cache.seed_for_workload(&numeric_workload);
             bringup.and_then(|bringup| {
                 bringup
@@ -7582,6 +8155,8 @@ fn attention_output_from_model_layer(
                     )
                     .ok()
             })
+        } else {
+            None
         };
         if let Some((trace, cache_snapshot)) = native_trace {
             if let Some(attention_output) =
@@ -7591,7 +8166,7 @@ fn attention_output_from_model_layer(
                 return Some((attention_output, true));
             }
         }
-        if workload_is_self_contained {
+        if allow_native_retry && workload_is_self_contained {
             let native_trace_without_seed = bringup.and_then(|bringup| {
                 bringup
                     .dispatch_numeric_workload_ephemeral_with_cache_snapshot_and_attention_config(
@@ -7630,16 +8205,18 @@ fn attention_output_from_model_layer(
         return Some((reference.attention_output, false));
     }
 
-    if let Some(bringup) = bringup {
-        if let Ok(trace) = bringup.dispatch_numeric_workload_ephemeral_with_attention_config(
-            &numeric_workload,
-            staged_inputs,
-            Some(attention_config),
-        ) {
-            if let Some(attention_output) =
-                decode_attention_output_values(&trace.numeric.attention_output_bits)
-            {
-                return Some((attention_output, true));
+    if allow_native_retry {
+        if let Some(bringup) = bringup {
+            if let Ok(trace) = bringup.dispatch_numeric_workload_ephemeral_with_attention_config(
+                &numeric_workload,
+                staged_inputs,
+                Some(attention_config),
+            ) {
+                if let Some(attention_output) =
+                    decode_attention_output_values(&trace.numeric.attention_output_bits)
+                {
+                    return Some((attention_output, true));
+                }
             }
         }
     }
@@ -7911,65 +8488,77 @@ fn apply_model_stage_rope_with_optional_native_path(
     if query.len() != query_len || key.len() != key_len {
         return None;
     }
-    if !bringup.state.optional_kernel_dispatch_plan.apply_rope_f32 {
+    let Some(pipeline_index) = bringup.state.optional_kernel_dispatch_plan.apply_rope_f32 else {
         return None;
-    }
+    };
     let kernel_name = "apply_rope_f32";
-    if !optional_kernel_allowed(bringup, kernel_name) {
+    let feedback_key = rope_feedback_key(
+        kernel_name,
+        stage_dims.q_heads,
+        stage_dims.kv_heads,
+        head_dim,
+        rope_style,
+    );
+    if !optional_kernel_allowed(bringup, &feedback_key) {
         return None;
     }
     let (cos_table, sin_table) = build_model_stage_rope_tables(head_dim, position, freq_base);
 
-    let output = find_optional_pipeline_handle(&bringup.state, &bringup.metallib.path, kernel_name)
-        .ok()
-        .and_then(|pipeline| {
-            autoreleasepool(|| {
-                let query_buffer = new_shared_buffer_with_data(&bringup.state.device, query);
-                let key_buffer = new_shared_buffer_with_data(&bringup.state.device, key);
-                let cos_buffer = new_shared_buffer_with_data(&bringup.state.device, &cos_table);
-                let sin_buffer = new_shared_buffer_with_data(&bringup.state.device, &sin_table);
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let query_buffer = new_shared_buffer_with_data(&bringup.state.device, query);
+            let key_buffer = new_shared_buffer_with_data(&bringup.state.device, key);
+            let cos_buffer = new_shared_buffer_with_data(&bringup.state.device, &cos_table);
+            let sin_buffer = new_shared_buffer_with_data(&bringup.state.device, &sin_table);
 
-                let command_buffer = bringup.state.command_queue.new_command_buffer();
-                command_buffer.set_label("ax.phase1.apply_rope");
-                let encoder = command_buffer.new_compute_command_encoder();
-                encoder.set_label("ax.phase1.apply_rope.compute");
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.apply_rope");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.apply_rope.compute");
 
-                encoder.set_compute_pipeline_state(&pipeline.pipeline);
-                encoder.set_buffer(0, Some(&query_buffer), 0);
-                encoder.set_buffer(1, Some(&key_buffer), 0);
-                encoder.set_buffer(2, Some(&cos_buffer), 0);
-                encoder.set_buffer(3, Some(&sin_buffer), 0);
-                set_model_stage_rope_dispatch_params(
-                    encoder,
-                    4,
-                    saturating_usize_to_u32(stage_dims.q_heads),
-                    saturating_usize_to_u32(stage_dims.kv_heads),
-                    saturating_usize_to_u32(head_dim),
-                    rope_style_dispatch_value(rope_style),
-                );
-                encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&query_buffer), 0);
+            encoder.set_buffer(1, Some(&key_buffer), 0);
+            encoder.set_buffer(2, Some(&cos_buffer), 0);
+            encoder.set_buffer(3, Some(&sin_buffer), 0);
+            set_model_stage_rope_dispatch_params(
+                encoder,
+                4,
+                saturating_usize_to_u32(stage_dims.q_heads),
+                saturating_usize_to_u32(stage_dims.kv_heads),
+                saturating_usize_to_u32(head_dim),
+                rope_style_dispatch_value(rope_style),
+            );
+            encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
 
-                encoder.end_encoding();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
 
-                let command_buffer_status = command_buffer_status(command_buffer.status());
-                if command_buffer_status != MetalCommandBufferStatus::Completed {
-                    return None;
-                }
+            let command_buffer_status = command_buffer_status(command_buffer.status());
+            if command_buffer_status != MetalCommandBufferStatus::Completed {
+                return None;
+            }
 
-                let native_query =
-                    read_shared_buffer_prefix(&query_buffer, saturating_usize_to_u32(query_len));
-                let native_key =
-                    read_shared_buffer_prefix(&key_buffer, saturating_usize_to_u32(key_len));
-                (native_query.len() == query_len
-                    && native_key.len() == key_len
-                    && native_query.iter().all(|value| value.is_finite())
-                    && native_key.iter().all(|value| value.is_finite()))
-                .then_some((native_query, native_key))
-            })
-        });
-    record_optional_kernel_result(bringup, kernel_name, output.is_some());
+            let native_query =
+                read_shared_buffer_prefix(&query_buffer, saturating_usize_to_u32(query_len));
+            let native_key =
+                read_shared_buffer_prefix(&key_buffer, saturating_usize_to_u32(key_len));
+            (native_query.len() == query_len
+                && native_key.len() == key_len
+                && native_query.iter().all(|value| value.is_finite())
+                && native_key.iter().all(|value| value.is_finite()))
+            .then_some((native_query, native_key))
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
     output
 }
 
@@ -8011,15 +8600,23 @@ fn apply_batched_model_stage_rope_with_optional_native_path(
     {
         return None;
     }
-    if !bringup
+    let Some(pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
         .apply_rope_batched_f32
-    {
+    else {
         return None;
-    }
+    };
     let kernel_name = "apply_rope_batched_f32";
-    if !optional_kernel_allowed(bringup, kernel_name) {
+    let feedback_key = batched_rope_feedback_key(
+        kernel_name,
+        token_count,
+        stage_dims.q_heads,
+        stage_dims.kv_heads,
+        head_dim,
+        rope_style,
+    );
+    if !optional_kernel_allowed(bringup, &feedback_key) {
         return None;
     }
     let mut flattened_query = Vec::with_capacity(token_count.checked_mul(query_len)?);
@@ -8035,86 +8632,89 @@ fn apply_batched_model_stage_rope_with_optional_native_path(
         .map(|position| *position as f32)
         .collect::<Vec<_>>();
 
-    let output = find_optional_pipeline_handle(&bringup.state, &bringup.metallib.path, kernel_name)
-        .ok()
-        .and_then(|pipeline| {
-            autoreleasepool(|| {
-                let query_buffer =
-                    new_shared_buffer_with_data(&bringup.state.device, &flattened_query);
-                let key_buffer = new_shared_buffer_with_data(&bringup.state.device, &flattened_key);
-                let positions_buffer =
-                    new_shared_buffer_with_data(&bringup.state.device, &positions);
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let query_buffer = new_shared_buffer_with_data(&bringup.state.device, &flattened_query);
+            let key_buffer = new_shared_buffer_with_data(&bringup.state.device, &flattened_key);
+            let positions_buffer = new_shared_buffer_with_data(&bringup.state.device, &positions);
 
-                let command_buffer = bringup.state.command_queue.new_command_buffer();
-                command_buffer.set_label("ax.phase1.apply_rope_batched");
-                let encoder = command_buffer.new_compute_command_encoder();
-                encoder.set_label("ax.phase1.apply_rope_batched.compute");
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.apply_rope_batched");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.apply_rope_batched.compute");
 
-                encoder.set_compute_pipeline_state(&pipeline.pipeline);
-                encoder.set_buffer(0, Some(&query_buffer), 0);
-                encoder.set_buffer(1, Some(&key_buffer), 0);
-                encoder.set_buffer(2, Some(&positions_buffer), 0);
-                set_batched_model_stage_rope_dispatch_params(
-                    encoder,
-                    3,
-                    saturating_usize_to_u32(token_count),
-                    saturating_usize_to_u32(stage_dims.q_heads),
-                    saturating_usize_to_u32(stage_dims.kv_heads),
-                    saturating_usize_to_u32(head_dim),
-                    rope_style_dispatch_value(rope_style),
-                    freq_base,
-                );
-                encoder.dispatch_threads(
-                    MTLSize::new(token_count.max(1) as u64, 1, 1),
-                    MTLSize::new(
-                        pipeline
-                            .pipeline
-                            .thread_execution_width()
-                            .max(1)
-                            .min(token_count.max(1) as u64),
-                        1,
-                        1,
-                    ),
-                );
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&query_buffer), 0);
+            encoder.set_buffer(1, Some(&key_buffer), 0);
+            encoder.set_buffer(2, Some(&positions_buffer), 0);
+            set_batched_model_stage_rope_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(token_count),
+                saturating_usize_to_u32(stage_dims.q_heads),
+                saturating_usize_to_u32(stage_dims.kv_heads),
+                saturating_usize_to_u32(head_dim),
+                rope_style_dispatch_value(rope_style),
+                freq_base,
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(token_count.max(1) as u64, 1, 1),
+                MTLSize::new(
+                    pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(token_count.max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
 
-                encoder.end_encoding();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
 
-                let command_buffer_status = command_buffer_status(command_buffer.status());
-                if command_buffer_status != MetalCommandBufferStatus::Completed {
-                    return None;
-                }
+            let command_buffer_status = command_buffer_status(command_buffer.status());
+            if command_buffer_status != MetalCommandBufferStatus::Completed {
+                return None;
+            }
 
-                let native_query = read_shared_buffer_prefix(
-                    &query_buffer,
-                    saturating_usize_to_u32(token_count.checked_mul(query_len)?),
-                );
-                let native_key = read_shared_buffer_prefix(
-                    &key_buffer,
-                    saturating_usize_to_u32(token_count.checked_mul(key_len)?),
-                );
-                if native_query.len() != token_count.checked_mul(query_len)?
-                    || native_key.len() != token_count.checked_mul(key_len)?
-                    || native_query.iter().any(|value| !value.is_finite())
-                    || native_key.iter().any(|value| !value.is_finite())
-                {
-                    return None;
-                }
+            let native_query = read_shared_buffer_prefix(
+                &query_buffer,
+                saturating_usize_to_u32(token_count.checked_mul(query_len)?),
+            );
+            let native_key = read_shared_buffer_prefix(
+                &key_buffer,
+                saturating_usize_to_u32(token_count.checked_mul(key_len)?),
+            );
+            if native_query.len() != token_count.checked_mul(query_len)?
+                || native_key.len() != token_count.checked_mul(key_len)?
+                || native_query.iter().any(|value| !value.is_finite())
+                || native_key.iter().any(|value| !value.is_finite())
+            {
+                return None;
+            }
 
-                Some((
-                    native_query
-                        .chunks_exact(query_len)
-                        .map(|chunk| chunk.to_vec())
-                        .collect(),
-                    native_key
-                        .chunks_exact(key_len)
-                        .map(|chunk| chunk.to_vec())
-                        .collect(),
-                ))
-            })
-        });
-    record_optional_kernel_result(bringup, kernel_name, output.is_some());
+            Some((
+                native_query
+                    .chunks_exact(query_len)
+                    .map(|chunk| chunk.to_vec())
+                    .collect(),
+                native_key
+                    .chunks_exact(key_len)
+                    .map(|chunk| chunk.to_vec())
+                    .collect(),
+            ))
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
     output
 }
 
@@ -8187,16 +8787,20 @@ fn project_attention_qkv_with_dims_and_tally(
                 query_tally.merge(key_tally).merge(value_tally),
             ))
         }
-        MetalAttentionQkvBindings::Split { q, k, v } => {
+        MetalAttentionQkvBindings::Split {
+            q,
+            k,
+            v,
+            value_from_key,
+        } => {
             let q_binding = buffers.binding_for(q)?;
             let k_binding = buffers.binding_for(k)?;
-            let v_binding = buffers.binding_for(v)?;
             let (query, query_tally) = project_matrix_head_prefix_with_tally(
                 q_binding,
                 0,
                 stage_dims.q_heads,
                 stage_dims.head_dim,
-                artifacts.manifest().attention_head_dim as usize,
+                stage_dims.head_dim,
                 input,
                 bringup,
             )?;
@@ -8205,19 +8809,24 @@ fn project_attention_qkv_with_dims_and_tally(
                 0,
                 stage_dims.kv_heads,
                 stage_dims.head_dim,
-                artifacts.manifest().attention_head_dim as usize,
-                input,
-                bringup,
-            )?;
-            let (value, value_tally) = project_matrix_head_prefix_with_tally(
-                v_binding,
-                0,
-                stage_dims.kv_heads,
                 stage_dims.head_dim,
-                artifacts.manifest().attention_head_dim as usize,
                 input,
                 bringup,
             )?;
+            let (value, value_tally) = if *value_from_key {
+                (key.clone(), PrefixAttentionExecutionTally::default())
+            } else {
+                let v_binding = buffers.binding_for(v.as_ref()?)?;
+                project_matrix_head_prefix_with_tally(
+                    v_binding,
+                    0,
+                    stage_dims.kv_heads,
+                    stage_dims.head_dim,
+                    stage_dims.head_dim,
+                    input,
+                    bringup,
+                )?
+            };
             Some((
                 query,
                 key,
@@ -8297,16 +8906,20 @@ fn project_batched_attention_qkv_with_dims_and_tally(
                 query_tally.merge(key_tally).merge(value_tally),
             ))
         }
-        MetalAttentionQkvBindings::Split { q, k, v } => {
+        MetalAttentionQkvBindings::Split {
+            q,
+            k,
+            v,
+            value_from_key,
+        } => {
             let q_binding = buffers.binding_for(q)?;
             let k_binding = buffers.binding_for(k)?;
-            let v_binding = buffers.binding_for(v)?;
             let (query, query_tally) = project_batched_matrix_head_prefix_with_tally(
                 q_binding,
                 0,
                 stage_dims.q_heads,
                 stage_dims.head_dim,
-                artifacts.manifest().attention_head_dim as usize,
+                stage_dims.head_dim,
                 input_rows,
                 input_width,
                 bringup,
@@ -8316,21 +8929,26 @@ fn project_batched_attention_qkv_with_dims_and_tally(
                 0,
                 stage_dims.kv_heads,
                 stage_dims.head_dim,
-                artifacts.manifest().attention_head_dim as usize,
-                input_rows,
-                input_width,
-                bringup,
-            )?;
-            let (value, value_tally) = project_batched_matrix_head_prefix_with_tally(
-                v_binding,
-                0,
-                stage_dims.kv_heads,
                 stage_dims.head_dim,
-                artifacts.manifest().attention_head_dim as usize,
                 input_rows,
                 input_width,
                 bringup,
             )?;
+            let (value, value_tally) = if *value_from_key {
+                (key.clone(), PrefixAttentionExecutionTally::default())
+            } else {
+                let v_binding = buffers.binding_for(v.as_ref()?)?;
+                project_batched_matrix_head_prefix_with_tally(
+                    v_binding,
+                    0,
+                    stage_dims.kv_heads,
+                    stage_dims.head_dim,
+                    stage_dims.head_dim,
+                    input_rows,
+                    input_width,
+                    bringup,
+                )?
+            };
             Some((
                 query,
                 key,
@@ -8458,76 +9076,82 @@ fn expand_grouped_kv_heads_with_optional_native_path(
 
     let output_element_count = q_heads.checked_mul(head_dim)?;
     let heads_per_kv = q_heads / kv_heads;
-    if !bringup
+    let Some(pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
         .expand_grouped_kv_heads_f32
-    {
+    else {
         return None;
-    }
+    };
     let kernel_name = "expand_grouped_kv_heads_f32";
-    if !optional_kernel_allowed(bringup, kernel_name) {
+    let feedback_key = grouped_kv_expand_feedback_key(kernel_name, q_heads, kv_heads, head_dim);
+    if !optional_kernel_allowed(bringup, &feedback_key) {
         return None;
     }
 
-    let output = find_optional_pipeline_handle(&bringup.state, &bringup.metallib.path, kernel_name)
-        .ok()
-        .and_then(|pipeline| {
-            autoreleasepool(|| {
-                let input_buffer = new_shared_buffer_with_data(&bringup.state.device, values);
-                let output_buffer = new_zeroed_shared_buffer::<f32>(
-                    &bringup.state.device,
-                    saturating_usize_to_u32(output_element_count),
-                );
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let input_buffer = new_shared_buffer_with_data(&bringup.state.device, values);
+            let output_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(output_element_count),
+            );
 
-                let command_buffer = bringup.state.command_queue.new_command_buffer();
-                command_buffer.set_label("ax.phase1.expand_grouped_kv_heads");
-                let encoder = command_buffer.new_compute_command_encoder();
-                encoder.set_label("ax.phase1.expand_grouped_kv_heads.compute");
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.expand_grouped_kv_heads");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.expand_grouped_kv_heads.compute");
 
-                encoder.set_compute_pipeline_state(&pipeline.pipeline);
-                encoder.set_buffer(0, Some(&input_buffer), 0);
-                encoder.set_buffer(1, Some(&output_buffer), 0);
-                set_grouped_kv_expand_dispatch_params(
-                    encoder,
-                    2,
-                    saturating_usize_to_u32(output_element_count),
-                    saturating_usize_to_u32(kv_heads),
-                    saturating_usize_to_u32(heads_per_kv),
-                    saturating_usize_to_u32(head_dim),
-                );
-                encoder.dispatch_threads(
-                    MTLSize::new(output_element_count.max(1) as u64, 1, 1),
-                    MTLSize::new(
-                        pipeline
-                            .pipeline
-                            .thread_execution_width()
-                            .max(1)
-                            .min(output_element_count.max(1) as u64),
-                        1,
-                        1,
-                    ),
-                );
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&input_buffer), 0);
+            encoder.set_buffer(1, Some(&output_buffer), 0);
+            set_grouped_kv_expand_dispatch_params(
+                encoder,
+                2,
+                saturating_usize_to_u32(output_element_count),
+                saturating_usize_to_u32(kv_heads),
+                saturating_usize_to_u32(heads_per_kv),
+                saturating_usize_to_u32(head_dim),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(output_element_count.max(1) as u64, 1, 1),
+                MTLSize::new(
+                    pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(output_element_count.max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
 
-                encoder.end_encoding();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
 
-                let command_buffer_status = command_buffer_status(command_buffer.status());
-                if command_buffer_status != MetalCommandBufferStatus::Completed {
-                    return None;
-                }
+            let command_buffer_status = command_buffer_status(command_buffer.status());
+            if command_buffer_status != MetalCommandBufferStatus::Completed {
+                return None;
+            }
 
-                let expanded = read_shared_buffer_prefix(
-                    &output_buffer,
-                    saturating_usize_to_u32(output_element_count),
-                );
-                (expanded.len() == output_element_count
-                    && expanded.iter().all(|value| value.is_finite()))
-                .then_some(expanded)
-            })
-        });
-    record_optional_kernel_result(bringup, kernel_name, output.is_some());
+            let expanded = read_shared_buffer_prefix(
+                &output_buffer,
+                saturating_usize_to_u32(output_element_count),
+            );
+            (expanded.len() == output_element_count
+                && expanded.iter().all(|value| value.is_finite()))
+            .then_some(expanded)
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
     output
 }
 
@@ -8560,15 +9184,22 @@ fn expand_batched_grouped_kv_heads_with_optional_native_path(
     let output_row_width = q_heads.checked_mul(head_dim)?;
     let output_element_count = token_count.checked_mul(output_row_width)?;
     let heads_per_kv = q_heads / kv_heads;
-    if !bringup
+    let Some(pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
         .expand_grouped_kv_heads_f32
-    {
+    else {
         return None;
-    }
+    };
     let kernel_name = "expand_grouped_kv_heads_f32";
-    if !optional_kernel_allowed(bringup, kernel_name) {
+    let feedback_key = batched_grouped_kv_expand_feedback_key(
+        kernel_name,
+        token_count,
+        q_heads,
+        kv_heads,
+        head_dim,
+    );
+    if !optional_kernel_allowed(bringup, &feedback_key) {
         return None;
     }
 
@@ -8577,74 +9208,78 @@ fn expand_batched_grouped_kv_heads_with_optional_native_path(
         flattened_input.extend_from_slice(row);
     }
 
-    let output = find_optional_pipeline_handle(&bringup.state, &bringup.metallib.path, kernel_name)
-        .ok()
-        .and_then(|pipeline| {
-            autoreleasepool(|| {
-                let input_buffer =
-                    new_shared_buffer_with_data(&bringup.state.device, &flattened_input);
-                let output_buffer = new_zeroed_shared_buffer::<f32>(
-                    &bringup.state.device,
-                    saturating_usize_to_u32(output_element_count),
-                );
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let input_buffer = new_shared_buffer_with_data(&bringup.state.device, &flattened_input);
+            let output_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(output_element_count),
+            );
 
-                let command_buffer = bringup.state.command_queue.new_command_buffer();
-                command_buffer.set_label("ax.phase1.expand_grouped_kv_heads_batched");
-                let encoder = command_buffer.new_compute_command_encoder();
-                encoder.set_label("ax.phase1.expand_grouped_kv_heads_batched.compute");
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.expand_grouped_kv_heads_batched");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.expand_grouped_kv_heads_batched.compute");
 
-                encoder.set_compute_pipeline_state(&pipeline.pipeline);
-                encoder.set_buffer(0, Some(&input_buffer), 0);
-                encoder.set_buffer(1, Some(&output_buffer), 0);
-                set_grouped_kv_expand_dispatch_params(
-                    encoder,
-                    2,
-                    saturating_usize_to_u32(output_element_count),
-                    saturating_usize_to_u32(token_count.checked_mul(kv_heads)?),
-                    saturating_usize_to_u32(heads_per_kv),
-                    saturating_usize_to_u32(head_dim),
-                );
-                encoder.dispatch_threads(
-                    MTLSize::new(output_element_count.max(1) as u64, 1, 1),
-                    MTLSize::new(
-                        pipeline
-                            .pipeline
-                            .thread_execution_width()
-                            .max(1)
-                            .min(output_element_count.max(1) as u64),
-                        1,
-                        1,
-                    ),
-                );
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&input_buffer), 0);
+            encoder.set_buffer(1, Some(&output_buffer), 0);
+            set_grouped_kv_expand_dispatch_params(
+                encoder,
+                2,
+                saturating_usize_to_u32(output_element_count),
+                saturating_usize_to_u32(token_count.checked_mul(kv_heads)?),
+                saturating_usize_to_u32(heads_per_kv),
+                saturating_usize_to_u32(head_dim),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(output_element_count.max(1) as u64, 1, 1),
+                MTLSize::new(
+                    pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(output_element_count.max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
 
-                encoder.end_encoding();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
 
-                let command_buffer_status = command_buffer_status(command_buffer.status());
-                if command_buffer_status != MetalCommandBufferStatus::Completed {
-                    return None;
-                }
+            let command_buffer_status = command_buffer_status(command_buffer.status());
+            if command_buffer_status != MetalCommandBufferStatus::Completed {
+                return None;
+            }
 
-                let expanded = read_shared_buffer_prefix(
-                    &output_buffer,
-                    saturating_usize_to_u32(output_element_count),
-                );
-                if expanded.len() != output_element_count
-                    || expanded.iter().any(|value| !value.is_finite())
-                {
-                    return None;
-                }
+            let expanded = read_shared_buffer_prefix(
+                &output_buffer,
+                saturating_usize_to_u32(output_element_count),
+            );
+            if expanded.len() != output_element_count
+                || expanded.iter().any(|value| !value.is_finite())
+            {
+                return None;
+            }
 
-                Some(
-                    expanded
-                        .chunks_exact(output_row_width)
-                        .map(|chunk| chunk.to_vec())
-                        .collect(),
-                )
-            })
-        });
-    record_optional_kernel_result(bringup, kernel_name, output.is_some());
+            Some(
+                expanded
+                    .chunks_exact(output_row_width)
+                    .map(|chunk| chunk.to_vec())
+                    .collect(),
+            )
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
     output
 }
 
@@ -8754,6 +9389,106 @@ fn apply_rms_norm_with_weights_in_place(
 }
 
 #[cfg(target_os = "macos")]
+fn apply_rms_norm_without_weights_in_place(values: &mut [f32], epsilon: f32) -> Option<()> {
+    if values.is_empty() || !epsilon.is_finite() || epsilon <= 0.0 {
+        return None;
+    }
+
+    let mean_square = values.iter().map(|value| value * value).sum::<f32>() / values.len() as f32;
+    if !mean_square.is_finite() {
+        return None;
+    }
+
+    let denom = (mean_square + epsilon).sqrt();
+    if !denom.is_finite() || denom <= 0.0 {
+        return None;
+    }
+
+    for value in values.iter_mut() {
+        let normalized = *value / denom;
+        if !normalized.is_finite() {
+            return None;
+        }
+        *value = normalized;
+    }
+
+    Some(())
+}
+
+#[cfg(target_os = "macos")]
+fn apply_rms_norm_without_weights_with_optional_native_path(
+    bringup: Option<&MetalRuntimeBringup>,
+    values: &[f32],
+    epsilon: f32,
+) -> Option<Vec<f32>> {
+    let bringup = bringup?;
+    if values.is_empty() || !epsilon.is_finite() || epsilon <= 0.0 {
+        return None;
+    }
+    let (kernel_name, pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .rms_norm_kernel(NativeTensorDataType::F32)?;
+    let feedback_key = rms_norm_feedback_key(kernel_name, values.len());
+    if !optional_kernel_allowed(bringup, &feedback_key) {
+        return None;
+    }
+
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let input_buffer = new_shared_buffer_with_data(&bringup.state.device, values);
+            let zero_weights = vec![0.0_f32; values.len()];
+            let weight_buffer = new_shared_buffer_with_data(&bringup.state.device, &zero_weights);
+            let output_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(values.len()),
+            );
+
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.rms_norm_no_weight");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.rms_norm_no_weight.compute");
+
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&input_buffer), 0);
+            encoder.set_buffer(1, Some(&weight_buffer), 0);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            set_rms_norm_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(values.len()),
+                epsilon,
+                1.0,
+            );
+            encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+
+            let command_buffer_status = command_buffer_status(command_buffer.status());
+            if command_buffer_status != MetalCommandBufferStatus::Completed {
+                return None;
+            }
+
+            let output =
+                read_shared_buffer_prefix(&output_buffer, saturating_usize_to_u32(values.len()));
+            (output.len() == values.len() && output.iter().all(|value| value.is_finite()))
+                .then_some(output)
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
+    output
+}
+
+#[cfg(target_os = "macos")]
 #[allow(dead_code)]
 fn apply_rms_norm_with_binding_in_place(
     values: &mut [f32],
@@ -8805,14 +9540,15 @@ fn apply_rms_norm_with_optional_native_path(
     weight_offset: f32,
 ) -> Option<Vec<f32>> {
     let bringup = bringup?;
-    let rms_norm_kernel_name = bringup
+    let (rms_norm_kernel_name, pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
-        .rms_norm_kernel_name(weight_binding.native_dtype)?;
+        .rms_norm_kernel(weight_binding.native_dtype)?;
     if values.is_empty() || !epsilon.is_finite() || epsilon <= 0.0 {
         return None;
     }
-    if !optional_kernel_allowed(bringup, rms_norm_kernel_name) {
+    let feedback_key = rms_norm_feedback_key(rms_norm_kernel_name, values.len());
+    if !optional_kernel_allowed(bringup, &feedback_key) {
         return None;
     }
 
@@ -8821,53 +9557,55 @@ fn apply_rms_norm_with_optional_native_path(
         return None;
     }
 
-    let output =
-        find_optional_pipeline_handle(&bringup.state, &bringup.metallib.path, rms_norm_kernel_name)
-            .ok()
-            .and_then(|pipeline| {
-                autoreleasepool(|| {
-                    let input_buffer = new_shared_buffer_with_data(&bringup.state.device, values);
-                    let output_buffer = new_zeroed_shared_buffer::<f32>(
-                        &bringup.state.device,
-                        saturating_usize_to_u32(values.len()),
-                    );
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        rms_norm_kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let input_buffer = new_shared_buffer_with_data(&bringup.state.device, values);
+            let output_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(values.len()),
+            );
 
-                    let command_buffer = bringup.state.command_queue.new_command_buffer();
-                    command_buffer.set_label("ax.phase1.rms_norm");
-                    let encoder = command_buffer.new_compute_command_encoder();
-                    encoder.set_label("ax.phase1.rms_norm.compute");
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.rms_norm");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.rms_norm.compute");
 
-                    encoder.set_compute_pipeline_state(&pipeline.pipeline);
-                    encoder.set_buffer(0, Some(&input_buffer), 0);
-                    encoder.set_buffer(1, Some(&weight_binding.native_buffer), 0);
-                    encoder.set_buffer(2, Some(&output_buffer), 0);
-                    set_rms_norm_dispatch_params(
-                        encoder,
-                        3,
-                        saturating_usize_to_u32(values.len()),
-                        epsilon,
-                        weight_offset,
-                    );
-                    encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&input_buffer), 0);
+            encoder.set_buffer(1, Some(&weight_binding.native_buffer), 0);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            set_rms_norm_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(values.len()),
+                epsilon,
+                weight_offset,
+            );
+            encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
 
-                    encoder.end_encoding();
-                    command_buffer.commit();
-                    command_buffer.wait_until_completed();
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
 
-                    let command_buffer_status = command_buffer_status(command_buffer.status());
-                    if command_buffer_status != MetalCommandBufferStatus::Completed {
-                        return None;
-                    }
+            let command_buffer_status = command_buffer_status(command_buffer.status());
+            if command_buffer_status != MetalCommandBufferStatus::Completed {
+                return None;
+            }
 
-                    let output = read_shared_buffer_prefix(
-                        &output_buffer,
-                        saturating_usize_to_u32(values.len()),
-                    );
-                    (output.len() == values.len() && output.iter().all(|value| value.is_finite()))
-                        .then_some(output)
-                })
-            });
-    record_optional_kernel_result(bringup, rms_norm_kernel_name, output.is_some());
+            let output =
+                read_shared_buffer_prefix(&output_buffer, saturating_usize_to_u32(values.len()));
+            (output.len() == values.len() && output.iter().all(|value| value.is_finite()))
+                .then_some(output)
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
     output
 }
 
@@ -8955,27 +9693,36 @@ fn apply_batched_row_rms_norm_with_binding_in_place_with_tally(
     }
 
     let row_count = rows.len();
-    let mut flattened = Vec::with_capacity(row_count.checked_mul(row_width)?);
-    for row in rows.iter() {
-        flattened.extend_from_slice(row.get(..row_width)?);
-    }
-
-    if let Some(output) = apply_batched_per_head_rms_norm_with_optional_native_path(
-        bringup,
-        &flattened,
-        row_count,
-        row_width,
-        weight_binding,
-        epsilon,
-        weight_offset,
-    ) {
-        for (row, normalized) in rows.iter_mut().zip(output.chunks_exact(row_width)) {
-            row.get_mut(..row_width)?.copy_from_slice(normalized);
+    let flattened_element_count = row_count.checked_mul(row_width)?;
+    if let Some(bringup) = bringup {
+        let allow_batched_native =
+            batched_rms_norm_feedback_binding(bringup, weight_binding, row_count, row_width)
+                .is_some_and(|(_, _, feedback_key)| {
+                    optional_kernel_allowed(bringup, &feedback_key)
+                });
+        if allow_batched_native {
+            let mut flattened = Vec::with_capacity(flattened_element_count);
+            for row in rows.iter() {
+                flattened.extend_from_slice(row.get(..row_width)?);
+            }
+            if let Some(output) = apply_batched_per_head_rms_norm_with_optional_native_path(
+                Some(bringup),
+                &flattened,
+                row_count,
+                row_width,
+                weight_binding,
+                epsilon,
+                weight_offset,
+            ) {
+                for (row, normalized) in rows.iter_mut().zip(output.chunks_exact(row_width)) {
+                    row.get_mut(..row_width)?.copy_from_slice(normalized);
+                }
+                return Some(
+                    PrefixAttentionExecutionTally::default()
+                        .record_rms_norm_elements(flattened_element_count, true),
+                );
+            }
         }
-        return Some(
-            PrefixAttentionExecutionTally::default()
-                .record_rms_norm_elements(flattened.len(), true),
-        );
     }
     if bringup.is_some() && rows.len() > 1 {
         let split_index = rows.len() / 2;
@@ -9060,6 +9807,217 @@ fn apply_batched_per_head_rms_norm_rows_with_tally(
 }
 
 #[cfg(target_os = "macos")]
+fn apply_batched_per_head_rms_norm_rows_without_weights_with_tally(
+    rows: &mut [Vec<f32>],
+    head_count: usize,
+    head_dim: usize,
+    epsilon: f32,
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<PrefixAttentionExecutionTally> {
+    if head_count == 0 || head_dim == 0 {
+        return Some(PrefixAttentionExecutionTally::default());
+    }
+    let row_width = head_count.checked_mul(head_dim)?;
+    if rows.is_empty() || rows.iter().any(|row| row.len() != row_width) {
+        return None;
+    }
+
+    let total_heads = rows.len().checked_mul(head_count)?;
+    let mut per_head_rows = Vec::with_capacity(total_heads);
+    for row in rows.iter() {
+        for head in row.chunks_exact(head_dim) {
+            per_head_rows.push(head.to_vec());
+        }
+    }
+
+    let tally = apply_batched_row_rms_norm_without_weights_in_place_with_tally(
+        &mut per_head_rows,
+        head_dim,
+        epsilon,
+        bringup,
+    )?;
+
+    let mut normalized_heads = per_head_rows.into_iter();
+    for row in rows.iter_mut() {
+        for head in row.chunks_exact_mut(head_dim) {
+            let normalized = normalized_heads.next()?;
+            head.copy_from_slice(&normalized);
+        }
+    }
+
+    Some(tally)
+}
+
+#[cfg(target_os = "macos")]
+fn apply_batched_row_rms_norm_without_weights_in_place_with_tally(
+    rows: &mut [Vec<f32>],
+    row_width: usize,
+    epsilon: f32,
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<PrefixAttentionExecutionTally> {
+    if row_width == 0 {
+        return Some(PrefixAttentionExecutionTally::default());
+    }
+    if rows.is_empty() || rows.iter().any(|row| row.len() < row_width) {
+        return None;
+    }
+
+    let row_count = rows.len();
+    let flattened_element_count = row_count.checked_mul(row_width)?;
+    if let Some(bringup) = bringup {
+        let (kernel_name, _) = bringup
+            .state
+            .optional_kernel_dispatch_plan
+            .batched_rms_norm_kernel(NativeTensorDataType::F32)?;
+        let feedback_key = batched_rms_norm_feedback_key(kernel_name, row_count, row_width);
+        if optional_kernel_allowed(bringup, &feedback_key) {
+            let mut flattened = Vec::with_capacity(flattened_element_count);
+            for row in rows.iter() {
+                flattened.extend_from_slice(row.get(..row_width)?);
+            }
+            if let Some(output) =
+                apply_batched_per_head_rms_norm_without_weights_with_optional_native_path(
+                    Some(bringup),
+                    &flattened,
+                    row_count,
+                    row_width,
+                    epsilon,
+                )
+            {
+                for (row, normalized) in rows.iter_mut().zip(output.chunks_exact(row_width)) {
+                    row.get_mut(..row_width)?.copy_from_slice(normalized);
+                }
+                return Some(
+                    PrefixAttentionExecutionTally::default()
+                        .record_rms_norm_elements(flattened_element_count, true),
+                );
+            }
+        }
+    }
+    if bringup.is_some() && rows.len() > 1 {
+        let split_index = rows.len() / 2;
+        let (left_rows, right_rows) = rows.split_at_mut(split_index);
+        let left_tally = apply_batched_row_rms_norm_without_weights_in_place_with_tally(
+            left_rows, row_width, epsilon, bringup,
+        )?;
+        let right_tally = apply_batched_row_rms_norm_without_weights_in_place_with_tally(
+            right_rows, row_width, epsilon, bringup,
+        )?;
+        return Some(left_tally.merge(right_tally));
+    }
+
+    let mut tally = PrefixAttentionExecutionTally::default();
+    for row in rows.iter_mut() {
+        let used_native = if let Some(output) =
+            apply_rms_norm_without_weights_with_optional_native_path(
+                bringup,
+                row.get(..row_width)?,
+                epsilon,
+            ) {
+            row.get_mut(..row_width)?.copy_from_slice(&output);
+            true
+        } else {
+            apply_rms_norm_without_weights_in_place(row.get_mut(..row_width)?, epsilon)?;
+            false
+        };
+        tally = tally.record_rms_norm_elements(row_width, used_native);
+    }
+
+    Some(tally)
+}
+
+#[cfg(target_os = "macos")]
+fn apply_batched_per_head_rms_norm_without_weights_with_optional_native_path(
+    bringup: Option<&MetalRuntimeBringup>,
+    values: &[f32],
+    head_count: usize,
+    head_dim: usize,
+    epsilon: f32,
+) -> Option<Vec<f32>> {
+    let bringup = bringup?;
+    if head_count == 0
+        || head_dim == 0
+        || values.len() != head_count.checked_mul(head_dim)?
+        || !epsilon.is_finite()
+        || epsilon <= 0.0
+    {
+        return None;
+    }
+
+    let (kernel_name, pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .batched_rms_norm_kernel(NativeTensorDataType::F32)?;
+    let feedback_key = batched_rms_norm_feedback_key(kernel_name, head_count, head_dim);
+    if !optional_kernel_allowed(bringup, &feedback_key) {
+        return None;
+    }
+
+    let element_count = saturating_usize_to_u32(values.len());
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let input_buffer = new_shared_buffer_with_data(&bringup.state.device, values);
+            let zero_weights = vec![0.0_f32; head_dim];
+            let weight_buffer = new_shared_buffer_with_data(&bringup.state.device, &zero_weights);
+            let output_buffer =
+                new_zeroed_shared_buffer::<f32>(&bringup.state.device, element_count.max(1));
+
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.rms_norm_batched_no_weight");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.rms_norm_batched_no_weight.compute");
+
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&input_buffer), 0);
+            encoder.set_buffer(1, Some(&weight_buffer), 0);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            set_batched_rms_norm_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(head_count),
+                saturating_usize_to_u32(head_dim),
+                epsilon,
+                1.0,
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(u64::from(element_count.max(1)), 1, 1),
+                MTLSize::new(
+                    pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(u64::from(element_count.max(1))),
+                    1,
+                    1,
+                ),
+            );
+
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+
+            let command_buffer_status = command_buffer_status(command_buffer.status());
+            if command_buffer_status != MetalCommandBufferStatus::Completed {
+                return None;
+            }
+
+            let output = read_shared_buffer_prefix(&output_buffer, element_count);
+            (output.len() == values.len() && output.iter().all(|value| value.is_finite()))
+                .then_some(output)
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
+    output
+}
+
+#[cfg(target_os = "macos")]
 fn apply_batched_per_head_rms_norm_with_optional_native_path(
     bringup: Option<&MetalRuntimeBringup>,
     values: &[f32],
@@ -9084,68 +10042,71 @@ fn apply_batched_per_head_rms_norm_with_optional_native_path(
         return None;
     }
 
-    let kernel_name = bringup
-        .state
-        .optional_kernel_dispatch_plan
-        .batched_rms_norm_kernel_name(weight_binding.native_dtype)?;
-    if !optional_kernel_allowed(bringup, kernel_name) {
+    let (kernel_name, pipeline_index, feedback_key) =
+        batched_rms_norm_feedback_binding(bringup, weight_binding, head_count, head_dim)?;
+    let element_count = saturating_usize_to_u32(values.len());
+    if !optional_kernel_allowed(bringup, &feedback_key) {
         return None;
     }
-    let element_count = saturating_usize_to_u32(values.len());
 
-    let output = find_optional_pipeline_handle(&bringup.state, &bringup.metallib.path, kernel_name)
-        .ok()
-        .and_then(|pipeline| {
-            autoreleasepool(|| {
-                let input_buffer = new_shared_buffer_with_data(&bringup.state.device, values);
-                let output_buffer =
-                    new_zeroed_shared_buffer::<f32>(&bringup.state.device, element_count.max(1));
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let input_buffer = new_shared_buffer_with_data(&bringup.state.device, values);
+            let output_buffer =
+                new_zeroed_shared_buffer::<f32>(&bringup.state.device, element_count.max(1));
 
-                let command_buffer = bringup.state.command_queue.new_command_buffer();
-                command_buffer.set_label("ax.phase1.rms_norm_batched");
-                let encoder = command_buffer.new_compute_command_encoder();
-                encoder.set_label("ax.phase1.rms_norm_batched.compute");
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.rms_norm_batched");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.rms_norm_batched.compute");
 
-                encoder.set_compute_pipeline_state(&pipeline.pipeline);
-                encoder.set_buffer(0, Some(&input_buffer), 0);
-                encoder.set_buffer(1, Some(&weight_binding.native_buffer), 0);
-                encoder.set_buffer(2, Some(&output_buffer), 0);
-                set_batched_rms_norm_dispatch_params(
-                    encoder,
-                    3,
-                    saturating_usize_to_u32(head_count),
-                    saturating_usize_to_u32(head_dim),
-                    epsilon,
-                    weight_offset,
-                );
-                encoder.dispatch_threads(
-                    MTLSize::new(u64::from(element_count.max(1)), 1, 1),
-                    MTLSize::new(
-                        pipeline
-                            .pipeline
-                            .thread_execution_width()
-                            .max(1)
-                            .min(u64::from(element_count.max(1))),
-                        1,
-                        1,
-                    ),
-                );
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&input_buffer), 0);
+            encoder.set_buffer(1, Some(&weight_binding.native_buffer), 0);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            set_batched_rms_norm_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(head_count),
+                saturating_usize_to_u32(head_dim),
+                epsilon,
+                weight_offset,
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(u64::from(element_count.max(1)), 1, 1),
+                MTLSize::new(
+                    pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(u64::from(element_count.max(1))),
+                    1,
+                    1,
+                ),
+            );
 
-                encoder.end_encoding();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
 
-                let command_buffer_status = command_buffer_status(command_buffer.status());
-                if command_buffer_status != MetalCommandBufferStatus::Completed {
-                    return None;
-                }
+            let command_buffer_status = command_buffer_status(command_buffer.status());
+            if command_buffer_status != MetalCommandBufferStatus::Completed {
+                return None;
+            }
 
-                let output = read_shared_buffer_prefix(&output_buffer, element_count);
-                (output.len() == values.len() && output.iter().all(|value| value.is_finite()))
-                    .then_some(output)
-            })
-        });
-    record_optional_kernel_result(bringup, kernel_name, output.is_some());
+            let output = read_shared_buffer_prefix(&output_buffer, element_count);
+            (output.len() == values.len() && output.iter().all(|value| value.is_finite()))
+                .then_some(output)
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
     output
 }
 
@@ -9161,6 +10122,142 @@ fn add_in_place(values: &mut [f32], delta: &[f32]) {
     for (value, addition) in values.iter_mut().zip(delta.iter()) {
         *value += *addition;
     }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_vector_add_with_optional_native_path(
+    bringup: Option<&MetalRuntimeBringup>,
+    values: &[f32],
+    delta: &[f32],
+) -> Option<Vec<f32>> {
+    let bringup = bringup?;
+    if values.is_empty() || values.len() != delta.len() {
+        return None;
+    }
+
+    let (kernel_name, pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .vector_add_kernel()?;
+    let feedback_key = vector_add_feedback_key(kernel_name, values.len());
+    if !optional_kernel_allowed(bringup, &feedback_key) {
+        return None;
+    }
+
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let input_buffer = new_shared_buffer_with_data(&bringup.state.device, values);
+            let delta_buffer = new_shared_buffer_with_data(&bringup.state.device, delta);
+            let output_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(values.len()),
+            );
+
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.vector_add");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.vector_add.compute");
+
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&input_buffer), 0);
+            encoder.set_buffer(1, Some(&delta_buffer), 0);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            set_vector_add_dispatch_params(encoder, 3, saturating_usize_to_u32(values.len()));
+            encoder.dispatch_threads(
+                MTLSize::new(values.len().max(1) as u64, 1, 1),
+                MTLSize::new(
+                    pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(values.len().max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
+
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+
+            let command_buffer_status = command_buffer_status(command_buffer.status());
+            if command_buffer_status != MetalCommandBufferStatus::Completed {
+                return None;
+            }
+
+            let output =
+                read_shared_buffer_prefix(&output_buffer, saturating_usize_to_u32(values.len()));
+            (output.len() == values.len() && output.iter().all(|value| value.is_finite()))
+                .then_some(output)
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
+    output
+}
+
+#[cfg(target_os = "macos")]
+fn add_in_place_with_path(
+    values: &mut [f32],
+    delta: &[f32],
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<bool> {
+    if values.len() != delta.len() {
+        return None;
+    }
+    if let Some(output) = apply_vector_add_with_optional_native_path(bringup, values, delta) {
+        values.copy_from_slice(&output);
+        return Some(true);
+    }
+    add_in_place(values, delta);
+    Some(false)
+}
+
+#[cfg(target_os = "macos")]
+fn add_batched_rows_in_place_with_path(
+    rows: &mut [Vec<f32>],
+    delta_rows: &[Vec<f32>],
+    row_width: usize,
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<bool> {
+    if row_width == 0 {
+        return Some(true);
+    }
+    if rows.len() != delta_rows.len()
+        || rows.iter().any(|row| row.len() < row_width)
+        || delta_rows.iter().any(|row| row.len() < row_width)
+    {
+        return None;
+    }
+
+    let row_count = rows.len();
+    let element_count = row_count.checked_mul(row_width)?;
+    let mut flattened_rows = Vec::with_capacity(element_count);
+    let mut flattened_deltas = Vec::with_capacity(element_count);
+    for (row, delta_row) in rows.iter().zip(delta_rows.iter()) {
+        flattened_rows.extend_from_slice(row.get(..row_width)?);
+        flattened_deltas.extend_from_slice(delta_row.get(..row_width)?);
+    }
+
+    if let Some(output) =
+        apply_vector_add_with_optional_native_path(bringup, &flattened_rows, &flattened_deltas)
+    {
+        for (row, output_row) in rows.iter_mut().zip(output.chunks_exact(row_width)) {
+            row.get_mut(..row_width)?.copy_from_slice(output_row);
+        }
+        return Some(true);
+    }
+
+    for (row, delta_row) in rows.iter_mut().zip(delta_rows.iter()) {
+        add_in_place(row.get_mut(..row_width)?, delta_row.get(..row_width)?);
+    }
+    Some(false)
 }
 
 #[cfg(target_os = "macos")]
@@ -9184,7 +10281,7 @@ fn apply_model_gate_up_product_with_path(
 ) -> Option<bool> {
     let activation = native_model_ffn_activation(artifacts);
     if let Some(output) =
-        apply_model_gate_up_product_with_optional_native_path(bringup, activation, gate, up)
+        apply_model_gate_up_product_with_optional_native_path(bringup, activation, gate, up, None)
     {
         gate.copy_from_slice(&output);
         return Some(true);
@@ -9214,27 +10311,39 @@ fn apply_batched_model_gate_up_product_in_place_with_tally(
 
     let row_count = gate_rows.len();
     let flattened_len = row_count.checked_mul(row_width)?;
-    let mut flattened_gate = Vec::with_capacity(flattened_len);
-    let mut flattened_up = Vec::with_capacity(flattened_len);
-    for (gate_row, up_row) in gate_rows.iter().zip(up_rows.iter()) {
-        flattened_gate.extend_from_slice(gate_row.get(..row_width)?);
-        flattened_up.extend_from_slice(up_row.get(..row_width)?);
-    }
-
     let activation = native_model_ffn_activation(artifacts);
-    if let Some(output) = apply_model_gate_up_product_with_optional_native_path(
-        bringup,
-        activation,
-        &flattened_gate,
-        &flattened_up,
-    ) {
-        for (gate_row, output_row) in gate_rows.iter_mut().zip(output.chunks_exact(row_width)) {
-            gate_row.get_mut(..row_width)?.copy_from_slice(output_row);
+    if let Some(bringup) = bringup {
+        let allow_batched_native =
+            ffn_gate_product_feedback_binding(bringup, activation, row_count, row_width)
+                .is_some_and(|(_, _, feedback_key)| {
+                    optional_kernel_allowed(bringup, &feedback_key)
+                });
+        if allow_batched_native {
+            let mut flattened_gate = Vec::with_capacity(flattened_len);
+            let mut flattened_up = Vec::with_capacity(flattened_len);
+            for (gate_row, up_row) in gate_rows.iter().zip(up_rows.iter()) {
+                flattened_gate.extend_from_slice(gate_row.get(..row_width)?);
+                flattened_up.extend_from_slice(up_row.get(..row_width)?);
+            }
+
+            if let Some(output) = apply_model_gate_up_product_with_optional_native_path(
+                Some(bringup),
+                activation,
+                &flattened_gate,
+                &flattened_up,
+                Some((row_count, row_width)),
+            ) {
+                for (gate_row, output_row) in
+                    gate_rows.iter_mut().zip(output.chunks_exact(row_width))
+                {
+                    gate_row.get_mut(..row_width)?.copy_from_slice(output_row);
+                }
+                return Some(
+                    DirectDecodeNativeDenseTally::default()
+                        .record_ffn_activation_elements(flattened_len, true),
+                );
+            }
         }
-        return Some(
-            DirectDecodeNativeDenseTally::default()
-                .record_ffn_activation_elements(flattened_len, true),
-        );
     }
     if bringup.is_some() && gate_rows.len() > 1 {
         let split_index = gate_rows.len() / 2;
@@ -9277,74 +10386,81 @@ fn apply_model_gate_up_product_with_optional_native_path(
     activation: ModelFfnActivation,
     gate: &[f32],
     up: &[f32],
+    batched_shape: Option<(usize, usize)>,
 ) -> Option<Vec<f32>> {
     let bringup = bringup?;
     if gate.is_empty() || gate.len() != up.len() {
         return None;
     }
 
-    let kernel_name = bringup
+    let (kernel_name, pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
-        .ffn_gate_product_kernel_name(activation)?;
-    if !optional_kernel_allowed(bringup, kernel_name) {
+        .ffn_gate_product_kernel(activation)?;
+    let feedback_key = batched_shape
+        .map(|(row_count, row_width)| {
+            batched_ffn_gate_product_feedback_key(kernel_name, row_count, row_width)
+        })
+        .unwrap_or_else(|| ffn_gate_product_feedback_key(kernel_name, gate.len()));
+    if !optional_kernel_allowed(bringup, &feedback_key) {
         return None;
     }
 
-    let output = find_optional_pipeline_handle(&bringup.state, &bringup.metallib.path, kernel_name)
-        .ok()
-        .and_then(|pipeline| {
-            autoreleasepool(|| {
-                let gate_buffer = new_shared_buffer_with_data(&bringup.state.device, gate);
-                let up_buffer = new_shared_buffer_with_data(&bringup.state.device, up);
-                let output_buffer = new_zeroed_shared_buffer::<f32>(
-                    &bringup.state.device,
-                    saturating_usize_to_u32(gate.len()),
-                );
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let gate_buffer = new_shared_buffer_with_data(&bringup.state.device, gate);
+            let up_buffer = new_shared_buffer_with_data(&bringup.state.device, up);
+            let output_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(gate.len()),
+            );
 
-                let command_buffer = bringup.state.command_queue.new_command_buffer();
-                command_buffer.set_label("ax.phase1.ffn_gate_product");
-                let encoder = command_buffer.new_compute_command_encoder();
-                encoder.set_label("ax.phase1.ffn_gate_product.compute");
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.ffn_gate_product");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.ffn_gate_product.compute");
 
-                encoder.set_compute_pipeline_state(&pipeline.pipeline);
-                encoder.set_buffer(0, Some(&gate_buffer), 0);
-                encoder.set_buffer(1, Some(&up_buffer), 0);
-                encoder.set_buffer(2, Some(&output_buffer), 0);
-                set_ffn_gate_product_dispatch_params(
-                    encoder,
-                    3,
-                    saturating_usize_to_u32(gate.len()),
-                );
-                encoder.dispatch_threads(
-                    MTLSize::new(gate.len().max(1) as u64, 1, 1),
-                    MTLSize::new(
-                        pipeline
-                            .pipeline
-                            .thread_execution_width()
-                            .max(1)
-                            .min(gate.len().max(1) as u64),
-                        1,
-                        1,
-                    ),
-                );
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&gate_buffer), 0);
+            encoder.set_buffer(1, Some(&up_buffer), 0);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            set_ffn_gate_product_dispatch_params(encoder, 3, saturating_usize_to_u32(gate.len()));
+            encoder.dispatch_threads(
+                MTLSize::new(gate.len().max(1) as u64, 1, 1),
+                MTLSize::new(
+                    pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(gate.len().max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
 
-                encoder.end_encoding();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
 
-                let command_buffer_status = command_buffer_status(command_buffer.status());
-                if command_buffer_status != MetalCommandBufferStatus::Completed {
-                    return None;
-                }
+            let command_buffer_status = command_buffer_status(command_buffer.status());
+            if command_buffer_status != MetalCommandBufferStatus::Completed {
+                return None;
+            }
 
-                let output =
-                    read_shared_buffer_prefix(&output_buffer, saturating_usize_to_u32(gate.len()));
-                (output.len() == gate.len() && output.iter().all(|value| value.is_finite()))
-                    .then_some(output)
-            })
-        });
-    record_optional_kernel_result(bringup, kernel_name, output.is_some());
+            let output =
+                read_shared_buffer_prefix(&output_buffer, saturating_usize_to_u32(gate.len()));
+            (output.len() == gate.len() && output.iter().all(|value| value.is_finite()))
+                .then_some(output)
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
     output
 }
 
@@ -9614,36 +10730,44 @@ fn project_batched_matrix_rows_with_optional_native_path(
     input_width: usize,
 ) -> Option<Vec<Vec<f32>>> {
     let bringup = bringup?;
-    let projection_kernel_name = bringup
+    let (projection_kernel_name, projection_pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
-        .batched_projection_kernel_name(binding.native_dtype)?;
-    if !optional_kernel_allowed(bringup, projection_kernel_name) {
-        return None;
-    }
+        .batched_projection_kernel(binding.native_dtype)?;
 
     let (_, cols) = tensor_matrix_dimensions(&binding.meta.spec)?;
     if input_width > cols || output_dim == 0 || input_rows.is_empty() {
         return None;
     }
 
+    let row_count = input_rows.len();
+    let hidden_stride = input_width;
+    let feedback_key = batched_projection_feedback_key(
+        projection_kernel_name,
+        row_count,
+        output_dim,
+        input_width,
+        hidden_stride,
+        cols,
+    );
+    if !optional_kernel_allowed(bringup, &feedback_key) {
+        return None;
+    }
+
     let row_byte_offset = row_offset
         .checked_mul(cols)?
         .checked_mul(native_dtype_size_bytes(binding.native_dtype))?;
-    let row_count = input_rows.len();
     let output_element_count = row_count.checked_mul(output_dim)?;
-    let hidden_stride = input_rows.iter().map(Vec::len).max()?;
     let mut flattened_input = Vec::with_capacity(row_count.checked_mul(hidden_stride)?);
     for row in input_rows {
-        let mut padded = row.get(..input_width)?.to_vec();
-        padded.resize(hidden_stride, 0.0);
-        flattened_input.extend_from_slice(&padded);
+        flattened_input.extend_from_slice(row.get(..input_width)?);
     }
 
-    let output = find_optional_pipeline_handle(
+    let output = find_optional_pipeline_handle_by_index(
         &bringup.state,
         &bringup.metallib.path,
         projection_kernel_name,
+        projection_pipeline_index,
     )
     .ok()
     .and_then(|projection_pipeline| {
@@ -9711,7 +10835,7 @@ fn project_batched_matrix_rows_with_optional_native_path(
             )
         })
     });
-    record_optional_kernel_result(bringup, projection_kernel_name, output.is_some());
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
     output
 }
 
@@ -9724,13 +10848,10 @@ fn project_matrix_rows_with_optional_native_path(
     input: &[f32],
 ) -> Option<Vec<f32>> {
     let bringup = bringup?;
-    let projection_kernel_name = bringup
+    let (projection_kernel_name, projection_pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
-        .projection_kernel_name(binding.native_dtype)?;
-    if !optional_kernel_allowed(bringup, projection_kernel_name) {
-        return None;
-    }
+        .projection_kernel(binding.native_dtype)?;
 
     let (_, cols) = tensor_matrix_dimensions(&binding.meta.spec)?;
     if input.len() > cols {
@@ -9739,15 +10860,21 @@ fn project_matrix_rows_with_optional_native_path(
     if output_dim == 0 {
         return Some(Vec::new());
     }
+    let feedback_key =
+        projection_feedback_key(projection_kernel_name, output_dim, input.len(), cols);
+    if !optional_kernel_allowed(bringup, &feedback_key) {
+        return None;
+    }
 
     let row_byte_offset = row_offset
         .checked_mul(cols)?
         .checked_mul(native_dtype_size_bytes(binding.native_dtype))?;
 
-    let output = find_optional_pipeline_handle(
+    let output = find_optional_pipeline_handle_by_index(
         &bringup.state,
         &bringup.metallib.path,
         projection_kernel_name,
+        projection_pipeline_index,
     )
     .ok()
     .and_then(|projection_pipeline| {
@@ -9802,7 +10929,7 @@ fn project_matrix_rows_with_optional_native_path(
                 .then_some(output)
         })
     });
-    record_optional_kernel_result(bringup, projection_kernel_name, output.is_some());
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
     output
 }
 
@@ -10963,6 +12090,20 @@ fn set_ffn_gate_product_dispatch_params(
 }
 
 #[cfg(target_os = "macos")]
+fn set_vector_add_dispatch_params(
+    encoder: &metal::ComputeCommandEncoderRef,
+    buffer_index: u64,
+    element_count: u32,
+) {
+    let params = VectorAddDispatchParams { element_count };
+    encoder.set_bytes(
+        buffer_index,
+        size_of::<VectorAddDispatchParams>() as u64,
+        (&params as *const VectorAddDispatchParams).cast(),
+    );
+}
+
+#[cfg(target_os = "macos")]
 fn set_model_stage_rope_dispatch_params(
     encoder: &metal::ComputeCommandEncoderRef,
     buffer_index: u64,
@@ -11054,7 +12195,6 @@ fn set_embedding_gather_dispatch_params(
         (&params as *const EmbeddingGatherDispatchParams).cast(),
     );
 }
-
 
 #[cfg(test)]
 mod tests;
