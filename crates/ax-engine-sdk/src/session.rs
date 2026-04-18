@@ -1988,6 +1988,10 @@ mod tests {
                 direct_decode_cpu_ffn_activation_element_count: 0,
                 prefix_native_ffn_activation_element_count: 0,
                 prefix_cpu_ffn_activation_element_count: 0,
+                direct_decode_batched_logits_group_count: 0,
+                direct_decode_batched_logits_token_count: 0,
+                direct_decode_batched_group_fallback_count: 0,
+                direct_decode_batched_group_fallback_token_count: 0,
             },
             kernels: vec![
                 MetalDispatchKernelTrace {
