@@ -1,0 +1,28 @@
+{
+  "status": "ready",
+  "bringup_allowed": true,
+  "native_runtime_ready": true,
+  "metal_toolchain_fully_available": true,
+  "host": {
+    "os": "macos",
+    "arch": "aarch64",
+    "detected_soc": "Apple M5 Max",
+    "supported_native_runtime": true,
+    "unsupported_host_override_active": false
+  },
+  "metal_toolchain": {
+    "fully_available": true,
+    "metal": {
+      "available": true,
+      "version": "Apple metal version 32023.883 (metalfe-32023.883)\nTarget: air64-apple-darwin25.4.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.5.188.0.WExZfq/Metal.xctoolchain/usr/metal/current/bin"
+    },
+    "metallib": {
+      "available": true,
+      "version": "AIR-LLD 32023.883 (metalfe-32023.883) (compatible with legacy metallib linker)"
+    },
+    "metal_ar": {
+      "available": true,
+      "version": "Apple LLVM version 32023.883\n  Optimized build.\n  Default target: x86_64-apple-darwin25.4.0\n  Host CPU: apple-m1"
+    }
+  }
+}

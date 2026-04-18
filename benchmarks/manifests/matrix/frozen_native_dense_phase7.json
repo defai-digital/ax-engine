@@ -1,0 +1,32 @@
+{
+  "schema_version": "ax.bench.matrix.v1",
+  "id": "frozen_native_dense_phase7",
+  "class": "scenario_matrix",
+  "members": [
+    {
+      "manifest": "../scenario/chat_qwen_short.json",
+      "label": "Chat Qwen Short"
+    },
+    {
+      "manifest": "../scenario/chat_gemma_short.json",
+      "label": "Chat Gemma Short"
+    },
+    {
+      "manifest": "../scenario/coding_qwen_medium.json",
+      "label": "Coding Qwen Medium"
+    },
+    {
+      "manifest": "../scenario/long_context_qwen_8k.json",
+      "label": "Long Context Qwen 8K"
+    },
+    {
+      "manifest": "../scenario/concurrent_qwen_dual.json",
+      "label": "Concurrent Qwen Dual"
+    },
+    {
+      "manifest": "../scenario/shared_prefix_qwen_enterprise.json",
+      "label": "Shared Prefix Qwen Enterprise"
+    }
+  ],
+  "notes": "Frozen native dense Tier 2 scenario matrix for Phase 7 performance hardening on the supported M4-or-newer AX-native target baseline."
+}

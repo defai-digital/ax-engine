@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+
+cd "$ROOT_DIR"
+
+"$PYTHON_BIN" - <<'PY'
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+
+repo = Path.cwd()
+
+doctor_json = subprocess.check_output(
+    ["cargo", "run", "-p", "ax-bench", "--", "doctor", "--json"],
+    cwd=repo,
+    text=True,
+)
+report = json.loads(doctor_json)
+
+assert report["schema_version"] == "ax.bench.doctor.v1"
+assert report["native_target"] == "apple_m4_or_newer_macos_aarch64"
+
+host = report["host"]
+toolchain = report["metal_toolchain"]
+
+expected_ready = host["supported_native_runtime"] and toolchain["fully_available"]
+expected_bringup_allowed = toolchain["fully_available"] and (
+    host["supported_native_runtime"] or host["unsupported_host_override_active"]
+)
+expected_status = (
+    "ready"
+    if expected_ready
+    else "bringup_only"
+    if expected_bringup_allowed
+    else "not_ready"
+)
+
+assert report["native_runtime_ready"] is expected_ready
+assert report["bringup_allowed"] is expected_bringup_allowed
+assert report["status"] == expected_status
+assert isinstance(report["issues"], list)
+assert isinstance(report["notes"], list)
+assert any(
+    note == "compatibility backends do not widen supported host scope"
+    for note in report["notes"]
+)
+
+doctor_text = subprocess.check_output(
+    ["cargo", "run", "-p", "ax-bench", "--", "doctor"],
+    cwd=repo,
+    text=True,
+)
+
+assert "AX Engine v4 doctor" in doctor_text
+assert f"status={expected_status}" in doctor_text
+assert "issues:" in doctor_text
+assert "notes:" in doctor_text
+assert "compatibility backends do not widen supported host scope" in doctor_text
+PY

@@ -1,0 +1,16 @@
+[package]
+name = "ax-bench"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+ax-engine-core = { path = "../ax-engine-core" }
+ax-engine-sdk = { path = "../ax-engine-sdk" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

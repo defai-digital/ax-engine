@@ -1,0 +1,169 @@
+{
+  "schema_version": "ax.metal.kernel_manifest.v1",
+  "native_target": "apple_m4_or_newer_macos_aarch64",
+  "metal_language_standard": "metal3.1",
+  "library_name": "ax_phase1_dense_path",
+  "default_block_size_tokens": 16,
+  "supported_block_size_tokens": [
+    16
+  ],
+  "source_file": "metal/kernels/phase1_dense_path.metal",
+  "toolchain_requirements": [
+    "xcrun metal",
+    "xcrun metallib",
+    "xcrun metal-ar"
+  ],
+  "build_gate": "bringup_allowed",
+  "kernels": [
+    {
+      "name": "reshape_and_cache",
+      "tier": "required",
+      "purpose": "paged KV writes into scheduler-owned block destinations"
+    },
+    {
+      "name": "paged_decode_attention",
+      "tier": "required",
+      "purpose": "first narrow decode attention fast path over paged KV"
+    },
+    {
+      "name": "gather_kv_cache",
+      "tier": "required",
+      "purpose": "bridge block-table metadata to attention-visible KV slices"
+    },
+    {
+      "name": "copy_blocks",
+      "tier": "required",
+      "purpose": "block movement primitive for sharing and compaction"
+    },
+    {
+      "name": "swap_blocks",
+      "tier": "deferred",
+      "purpose": "future host or device remapping primitive, kept explicit but not part of the phase1 runtime-required pipeline set"
+    },
+    {
+      "name": "kv_scale_update",
+      "tier": "optional",
+      "purpose": "quantized-KV scale maintenance when runtime storage requires it"
+    },
+    {
+      "name": "gather_embedding_rows_f32",
+      "tier": "optional",
+      "purpose": "native embedding row gather for f32 token embeddings"
+    },
+    {
+      "name": "gather_embedding_rows_f16",
+      "tier": "optional",
+      "purpose": "native embedding row gather for f16 token embeddings"
+    },
+    {
+      "name": "gather_embedding_rows_bf16",
+      "tier": "optional",
+      "purpose": "native embedding row gather for bf16 token embeddings"
+    },
+    {
+      "name": "decode_logits_projection_f32",
+      "tier": "optional",
+      "purpose": "final decode logits projection over an f32 lm_head matrix"
+    },
+    {
+      "name": "decode_logits_projection_f16",
+      "tier": "optional",
+      "purpose": "decode or dense projection over an f16 weight matrix into f32 logits or activations"
+    },
+    {
+      "name": "decode_logits_projection_bf16",
+      "tier": "optional",
+      "purpose": "decode or dense projection over a bf16 weight matrix into f32 logits or activations"
+    },
+    {
+      "name": "decode_logits_projection_batched_f32",
+      "tier": "optional",
+      "purpose": "batched final decode logits projection over an f32 lm_head matrix"
+    },
+    {
+      "name": "decode_logits_projection_batched_f16",
+      "tier": "optional",
+      "purpose": "batched decode or dense projection over an f16 weight matrix into per-request f32 logits"
+    },
+    {
+      "name": "decode_logits_projection_batched_bf16",
+      "tier": "optional",
+      "purpose": "batched decode or dense projection over a bf16 weight matrix into per-request f32 logits"
+    },
+    {
+      "name": "logits_argmax_f32",
+      "tier": "optional",
+      "purpose": "native top-1 vocab scan over projected decode logits"
+    },
+    {
+      "name": "logits_argmax_batched_f32",
+      "tier": "optional",
+      "purpose": "native batched top-1 vocab scan over projected decode logits"
+    },
+    {
+      "name": "sample_argmax_logprob_f32",
+      "tier": "optional",
+      "purpose": "native deterministic top-1 sampling with logprob"
+    },
+    {
+      "name": "sample_argmax_logprob_batched_f32",
+      "tier": "optional",
+      "purpose": "native batched deterministic top-1 sampling with logprob"
+    },
+    {
+      "name": "apply_rope_batched_f32",
+      "tier": "optional",
+      "purpose": "native batched RoPE rotation across multiple token rows"
+    },
+    {
+      "name": "rms_norm_f32",
+      "tier": "optional",
+      "purpose": "vector RMSNorm using f32 weights for native dense forward stages"
+    },
+    {
+      "name": "rms_norm_f16",
+      "tier": "optional",
+      "purpose": "vector RMSNorm using f16 weights for native dense forward stages"
+    },
+    {
+      "name": "rms_norm_bf16",
+      "tier": "optional",
+      "purpose": "vector RMSNorm using bf16 weights for native dense forward stages"
+    },
+    {
+      "name": "rms_norm_batched_f32",
+      "tier": "optional",
+      "purpose": "batched per-head RMSNorm using f32 weights for native Q/K head normalization"
+    },
+    {
+      "name": "rms_norm_batched_f16",
+      "tier": "optional",
+      "purpose": "batched per-head RMSNorm using f16 weights for native Q/K head normalization"
+    },
+    {
+      "name": "rms_norm_batched_bf16",
+      "tier": "optional",
+      "purpose": "batched per-head RMSNorm using bf16 weights for native Q/K head normalization"
+    },
+    {
+      "name": "ffn_gate_silu_product_f32",
+      "tier": "optional",
+      "purpose": "native SiLU gate-up activation product for dense FFN continuation"
+    },
+    {
+      "name": "ffn_gate_gelu_approx_product_f32",
+      "tier": "optional",
+      "purpose": "native GELU-approx gate-up activation product for dense FFN continuation"
+    },
+    {
+      "name": "apply_rope_f32",
+      "tier": "optional",
+      "purpose": "native Q/K rotary position embedding application during dense staging"
+    },
+    {
+      "name": "expand_grouped_kv_heads_f32",
+      "tier": "optional",
+      "purpose": "native grouped-KV expansion into query-head layout during dense staging"
+    }
+  ]
+}

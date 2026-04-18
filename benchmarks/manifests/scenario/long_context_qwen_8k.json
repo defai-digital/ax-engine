@@ -1,0 +1,43 @@
+{
+  "schema_version": "ax.bench.manifest.v1",
+  "id": "long_context_qwen_8k",
+  "class": "scenario",
+  "scenario": "long_context",
+  "model": {
+    "family": "qwen3_dense",
+    "revision": "phase1-canonical",
+    "quant": "q4_k_m",
+    "tokenizer_revision": "qwen-tokenizer-v1",
+    "chat_template_revision": "chatml-v1"
+  },
+  "runtime": {
+    "selected_backend": "ax_native",
+    "support_tier": "native_preview",
+    "resolution_policy": "strict_native",
+    "deterministic": true,
+    "max_batch_tokens": 12288,
+    "flags": {
+      "prefix_cache": false
+    }
+  },
+  "sampling": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "seed": 1234
+  },
+  "shape": {
+    "input_tokens_target": 8192,
+    "output_tokens_target": 256,
+    "concurrency": 1
+  },
+  "source": {
+    "dataset_id": "ax-long-context-v1",
+    "prompt_set": "rag-8k"
+  },
+  "checks": {
+    "expect_deterministic": true,
+    "require_prefix_reuse": false
+  },
+  "notes": "Canonical long-context scenario for prefill cost and memory residency."
+}

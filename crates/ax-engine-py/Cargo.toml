@@ -1,0 +1,27 @@
+[package]
+name = "ax-engine-py"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+description = "Preview Python bindings for AX Engine v4"
+build = "build.rs"
+
+[lib]
+name = "_ax_engine"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+python-extension = ["pyo3/extension-module"]
+
+[dependencies]
+ax-engine-sdk = { path = "../ax-engine-sdk" }
+pyo3 = { version = "0.23", features = ["abi3-py310"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
+
+[build-dependencies]
+pyo3-build-config = "0.23"

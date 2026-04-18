@@ -1,0 +1,44 @@
+{
+  "schema_version": "ax.bench.manifest.v1",
+  "id": "compatibility_chat_qwen_short_mlx",
+  "class": "scenario",
+  "scenario": "chat",
+  "model": {
+    "family": "qwen3_dense",
+    "revision": "phase1-compat",
+    "quant": "q4_k_m",
+    "tokenizer_revision": "qwen-tokenizer-v1",
+    "chat_template_revision": "chatml-v1"
+  },
+  "runtime": {
+    "selected_backend": "mlx",
+    "support_tier": "compatibility",
+    "resolution_policy": "allow_compat",
+    "fallback_reason": "benchmark requested delegated runtime",
+    "backend_adapter": {
+      "kind": "mlx_server_completions",
+      "server_url": "http://127.0.0.1:8082"
+    },
+    "deterministic": true,
+    "max_batch_tokens": 2048,
+    "flags": {
+      "prefix_cache": false
+    }
+  },
+  "sampling": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "seed": 1234
+  },
+  "shape": {
+    "input_tokens_target": 32,
+    "output_tokens_target": 4,
+    "concurrency": 1
+  },
+  "checks": {
+    "expect_deterministic": false,
+    "require_prefix_reuse": false
+  },
+  "notes": "Compatibility example manifest for server-backed MLX benchmarking. Update runtime.backend_adapter.server_url before running directly. This blocking compatibility path currently supports scenario manifests only, with concurrency=1 and no delegated prefix-reuse requirement."
+}

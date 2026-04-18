@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)",
+      "Bash(grep -E \"^test|^error|FAILED|ok$\")",
+      "Bash(grep -r \"cpu_\\\\|native_\" /Users/akiralam/code/ax-engine-v4/crates/ax-engine-sdk/src/*.rs)",
+      "Bash(grep:*)",
+      "Bash(chmod +x /tmp/check_cpu_coverage.sh)",
+      "Bash(/tmp/check_cpu_coverage.sh)",
+      "Bash(xcrun --version)",
+      "Bash(xcrun metal:*)",
+      "Bash(xcode-select:*)",
+      "Bash(./target/debug/deps/ax_engine_core-8f3a3e9592e8fbd6 expand_grouped_kv_heads_f32_gpu_output_matches_cpu_reference)",
+      "Bash(echo \"exit code: $?\")",
+      "Bash(lldb:*)",
+      "Bash(xcrun:*)",
+      "Bash(DEVELOPER_DIR=/Library/Developer/CommandLineTools xcrun:*)",
+      "Bash(cargo metadata:*)",
+      "Bash(python3 -c \"import json,sys; data=json.load\\(sys.stdin\\); pkgs=[p for p in data['packages'] if p['name']=='metal']; print\\(pkgs[0]['version'] if pkgs else 'not found'\\)\")",
+      "Bash(cargo check:*)",
+      "Bash(cat /Users/akiralam/code/ax-engine-v4/metal/kernels/*.metal)",
+      "Bash(awk NR==12456:*)",
+      "Bash(wc:*)",
+      "Bash(awk 'NR >= 380')",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}

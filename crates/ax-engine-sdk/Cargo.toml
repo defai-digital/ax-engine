@@ -1,0 +1,21 @@
+[package]
+name = "ax-engine-sdk"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+ax-engine-core = { path = "../ax-engine-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ureq = { version = "2", features = ["json"] }
+
+[dev-dependencies]
+sha2.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"

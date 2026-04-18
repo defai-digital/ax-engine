@@ -1,0 +1,43 @@
+{
+  "schema_version": "ax.bench.manifest.v1",
+  "id": "shared_prefix_qwen_enterprise",
+  "class": "scenario",
+  "scenario": "shared_prefix",
+  "model": {
+    "family": "qwen3_dense",
+    "revision": "phase1-canonical",
+    "quant": "q4_k_m",
+    "tokenizer_revision": "qwen-tokenizer-v1",
+    "chat_template_revision": "chatml-v1"
+  },
+  "runtime": {
+    "selected_backend": "ax_native",
+    "support_tier": "native_preview",
+    "resolution_policy": "strict_native",
+    "deterministic": true,
+    "max_batch_tokens": 8192,
+    "flags": {
+      "prefix_cache": true
+    }
+  },
+  "sampling": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "seed": 1234
+  },
+  "shape": {
+    "input_tokens_target": 4096,
+    "output_tokens_target": 256,
+    "concurrency": 2
+  },
+  "source": {
+    "dataset_id": "ax-shared-prefix-v1",
+    "prompt_set": "enterprise-common-header"
+  },
+  "checks": {
+    "expect_deterministic": true,
+    "require_prefix_reuse": true
+  },
+  "notes": "Canonical shared-prefix scenario for cache hit rate and block reuse reporting."
+}

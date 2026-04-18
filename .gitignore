@@ -1,0 +1,11 @@
+/target/
+.DS_Store
+**/.DS_Store
+
+# Internal design and planning materials — not for publication
+.internal/
+
+# AI assistant configuration — not for publication
+CLAUDE.md
+agents.md
+AGENTS.md

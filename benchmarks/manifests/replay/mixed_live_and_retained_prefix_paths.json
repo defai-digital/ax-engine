@@ -1,0 +1,61 @@
+{
+  "schema_version": "ax.bench.manifest.v1",
+  "id": "mixed_live_and_retained_prefix_paths",
+  "class": "replay",
+  "scenario": "replay",
+  "model": {
+    "family": "qwen3_dense",
+    "revision": "phase1-canonical",
+    "quant": "q4_k_m",
+    "tokenizer_revision": "qwen-tokenizer-v1",
+    "chat_template_revision": "chatml-v1"
+  },
+  "runtime": {
+    "selected_backend": "ax_native",
+    "support_tier": "native_preview",
+    "resolution_policy": "strict_native",
+    "deterministic": true,
+    "max_batch_tokens": 12288,
+    "flags": {
+      "prefix_cache": true
+    }
+  },
+  "sampling": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "seed": 1234
+  },
+  "events": [
+    {
+      "t_ms": 0,
+      "type": "submit",
+      "request_id": "req-1",
+      "prompt_ref": "prompts/prefix_a.txt",
+      "output_tokens_target": 8,
+      "prefix_group": "group-a"
+    },
+    {
+      "t_ms": 40,
+      "type": "submit",
+      "request_id": "req-2",
+      "prompt_ref": "prompts/prefix_a_variant.txt",
+      "output_tokens_target": 256,
+      "prefix_group": "group-a"
+    },
+    {
+      "t_ms": 41,
+      "type": "submit",
+      "request_id": "req-3",
+      "prompt_ref": "prompts/prefix_a_variant_2.txt",
+      "output_tokens_target": 256,
+      "prefix_group": "group-a"
+    }
+  ],
+  "checks": {
+    "expect_deterministic": true,
+    "require_prefix_reuse": true,
+    "require_no_allocator_churn_failure": true
+  },
+  "notes": "Canonical replay workload that exercises retained-cache reuse first and live request sharing afterward so route aggregation reports a mixed prefix path."
+}

@@ -1,0 +1,63 @@
+name: Preview Surfaces
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  python-preview:
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      AX_ALLOW_UNSUPPORTED_HOST: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ensure stable Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Run workspace tests
+        run: cargo test --quiet
+
+      - name: Run workspace clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run server preview smoke check
+        run: bash scripts/check-server-preview.sh
+
+      - name: Run native benchmark smoke check
+        run: bash scripts/check-bench-native.sh
+
+      - name: Run benchmark doctor smoke check
+        run: bash scripts/check-bench-doctor.sh
+
+      - name: Run Metal kernel contract smoke check
+        run: bash scripts/check-metal-kernel-contract.sh
+
+      - name: Run frozen matrix benchmark smoke check
+        run: bash scripts/check-bench-matrix.sh
+
+      - name: Run matrix compare benchmark smoke check
+        run: bash scripts/check-bench-matrix-compare.sh
+
+      - name: Run trusted baseline benchmark smoke check
+        run: bash scripts/check-bench-baseline.sh
+
+      - name: Run replay benchmark smoke check
+        run: bash scripts/check-bench-replay.sh
+
+      - name: Run benchmark preview smoke check
+        run: bash scripts/check-bench-preview.sh
+
+      - name: Run Python preview packaging smoke check
+        run: bash scripts/check-python-preview.sh
