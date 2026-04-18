@@ -735,6 +735,101 @@ fn metal_dispatch_dict<'py>(py: Python<'py>, report: &MetalDispatchStepReport) -
     )
     .expect("runtime_max_thread_execution_width should serialize");
     dict.set_item(
+        "runtime_model_conditioned_inputs",
+        report.runtime_model_conditioned_inputs,
+    )
+    .expect("runtime_model_conditioned_inputs should serialize");
+    dict.set_item(
+        "runtime_real_model_tensor_inputs",
+        report.runtime_real_model_tensor_inputs,
+    )
+    .expect("runtime_real_model_tensor_inputs should serialize");
+    dict.set_item(
+        "runtime_complete_model_forward_supported",
+        report.runtime_complete_model_forward_supported,
+    )
+    .expect("runtime_complete_model_forward_supported should serialize");
+    dict.set_item(
+        "runtime_model_bindings_prepared",
+        report.runtime_model_bindings_prepared,
+    )
+    .expect("runtime_model_bindings_prepared should serialize");
+    dict.set_item(
+        "runtime_model_buffers_bound",
+        report.runtime_model_buffers_bound,
+    )
+    .expect("runtime_model_buffers_bound should serialize");
+    dict.set_item(
+        "runtime_model_buffer_count",
+        report.runtime_model_buffer_count,
+    )
+    .expect("runtime_model_buffer_count should serialize");
+    dict.set_item(
+        "runtime_model_buffer_bytes",
+        report.runtime_model_buffer_bytes,
+    )
+    .expect("runtime_model_buffer_bytes should serialize");
+    dict.set_item(
+        "execution_direct_decode_token_count",
+        report.execution_direct_decode_token_count,
+    )
+    .expect("execution_direct_decode_token_count should serialize");
+    dict.set_item(
+        "execution_direct_decode_checksum_lo",
+        report.execution_direct_decode_checksum_lo,
+    )
+    .expect("execution_direct_decode_checksum_lo should serialize");
+    dict.set_item(
+        "execution_logits_output_count",
+        report.execution_logits_output_count,
+    )
+    .expect("execution_logits_output_count should serialize");
+    dict.set_item(
+        "execution_remaining_logits_handle_count",
+        report.execution_remaining_logits_handle_count,
+    )
+    .expect("execution_remaining_logits_handle_count should serialize");
+    dict.set_item(
+        "execution_model_bound_ffn_decode",
+        report.execution_model_bound_ffn_decode,
+    )
+    .expect("execution_model_bound_ffn_decode should serialize");
+    dict.set_item(
+        "execution_real_model_forward_completed",
+        report.execution_real_model_forward_completed,
+    )
+    .expect("execution_real_model_forward_completed should serialize");
+    dict.set_item(
+        "execution_prefix_native_dispatch_count",
+        report.execution_prefix_native_dispatch_count,
+    )
+    .expect("execution_prefix_native_dispatch_count should serialize");
+    dict.set_item(
+        "execution_prefix_cpu_reference_dispatch_count",
+        report.execution_prefix_cpu_reference_dispatch_count,
+    )
+    .expect("execution_prefix_cpu_reference_dispatch_count should serialize");
+    dict.set_item(
+        "execution_qkv_projection_token_count",
+        report.execution_qkv_projection_token_count,
+    )
+    .expect("execution_qkv_projection_token_count should serialize");
+    dict.set_item(
+        "execution_layer_continuation_token_count",
+        report.execution_layer_continuation_token_count,
+    )
+    .expect("execution_layer_continuation_token_count should serialize");
+    dict.set_item(
+        "execution_logits_projection_token_count",
+        report.execution_logits_projection_token_count,
+    )
+    .expect("execution_logits_projection_token_count should serialize");
+    dict.set_item(
+        "execution_logits_vocab_scan_row_count",
+        report.execution_logits_vocab_scan_row_count,
+    )
+    .expect("execution_logits_vocab_scan_row_count should serialize");
+    dict.set_item(
         "binary_archive_state",
         enum_label(py, report.binary_archive_state),
     )
