@@ -836,6 +836,7 @@ impl EngineSession {
                     };
                     let step = request.step_report(selected_backend)?;
                     if is_terminal_request_state(request.current_report.state) {
+                        request.drain_trailing_usage();
                         terminal_reports.push((request_id, request.current_report.clone()));
                     }
                     step
@@ -1269,6 +1270,33 @@ impl CompatibilityLifecycleRequest {
             },
         )?;
         Ok(self.apply_chunk(chunk))
+    }
+
+    /// Drain any remaining stream chunks after the stop signal to capture
+    /// trailing usage data. Some OpenAI-compatible servers (including MLX)
+    /// send a final chunk with `usage` but empty `choices` after the stop
+    /// chunk. Without draining, that usage data is lost when the slot
+    /// transitions to Terminal.
+    fn drain_trailing_usage(&mut self) {
+        loop {
+            match self.stream.next_chunk() {
+                Ok(Some(chunk)) => {
+                    apply_compatibility_usage_counts(
+                        &mut self.current_report,
+                        &mut self.prompt_token_count,
+                        &mut self.output_token_count,
+                        &chunk,
+                    );
+                    apply_compatibility_prompt_progress(
+                        &mut self.current_report,
+                        chunk.prompt_progress.as_ref(),
+                        &mut self.cached_prompt_tokens_observed,
+                        &mut self.prefix_hit_recorded,
+                    );
+                }
+                Ok(None) | Err(_) => break,
+            }
+        }
     }
 
     fn cancel(&mut self) -> SessionRequestReport {
