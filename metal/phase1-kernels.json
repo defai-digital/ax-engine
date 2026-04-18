@@ -171,6 +171,21 @@
       "purpose": "native grouped-KV expansion into query-head layout during dense staging"
     },
     {
+      "name": "linear_attention_conv1d_f32",
+      "tier": "optional",
+      "purpose": "single-step depthwise conv1d over AX-native linear-attention QKV staging"
+    },
+    {
+      "name": "linear_attention_conv1d_f16",
+      "tier": "optional",
+      "purpose": "single-step depthwise conv1d over f16 linear-attention QKV staging"
+    },
+    {
+      "name": "linear_attention_conv1d_bf16",
+      "tier": "optional",
+      "purpose": "single-step depthwise conv1d over bf16 linear-attention QKV staging"
+    },
+    {
       "name": "linear_gated_delta_step_f32",
       "tier": "optional",
       "purpose": "single-step recurrent linear-attention update over AX-native dense states"

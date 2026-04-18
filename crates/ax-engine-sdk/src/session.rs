@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ax_engine_core::{
     CacheGroupId, DeterministicRunner, DeterministicSampler, EngineCore, EngineCoreError,
@@ -33,6 +36,9 @@ const COMPATIBILITY_STREAM_EXECUTION_PLAN: &str =
     "compatibility.llama_cpp.server_completion_stream";
 const NATIVE_METAL_BUILD_DIR_ENV: &str = "AX_ENGINE_METAL_BUILD_DIR";
 const NATIVE_MODEL_DIR_ENV: &str = "AX_ENGINE_NATIVE_MODEL_DIR";
+const NATIVE_GGUF_EXPORTER_ENV: &str = "AX_ENGINE_NATIVE_GGUF_EXPORTER";
+const NATIVE_GGUF_PYTHON_ENV: &str = "AX_ENGINE_NATIVE_GGUF_PYTHON";
+const NATIVE_GGUF_EXPORT_DTYPE_ENV: &str = "AX_ENGINE_NATIVE_GGUF_EXPORT_DTYPE";
 const NATIVE_PLACEHOLDER_EXECUTION_DECISION: &str = "native_placeholder_execution";
 const NATIVE_PLACEHOLDER_EXPLICIT_OPT_IN_DECISION: &str = "native_placeholder_explicit_opt_in";
 const NATIVE_RUNTIME_RUNNER_DETERMINISTIC_DECISION: &str = "native_runtime_runner_deterministic";
@@ -170,8 +176,11 @@ impl EngineSessionConfig {
             request
                 .native_model_artifacts_dir
                 .map(|dir| NativeModelArtifactsSelection {
+                    source: native_model_artifacts_source_from_path(
+                        &dir,
+                        NativeModelArtifactsSource::ExplicitConfig,
+                    ),
                     dir,
-                    source: NativeModelArtifactsSource::ExplicitConfig,
                 });
 
         Ok(Self {
@@ -249,8 +258,11 @@ impl EngineSessionConfig {
         env::var_os(NATIVE_MODEL_DIR_ENV)
             .map(PathBuf::from)
             .map(|dir| NativeModelArtifactsSelection {
+                source: native_model_artifacts_source_from_path(
+                    &dir,
+                    NativeModelArtifactsSource::ExplicitEnv,
+                ),
                 dir,
-                source: NativeModelArtifactsSource::ExplicitEnv,
             })
     }
 
@@ -355,6 +367,58 @@ struct NativeModelArtifactsSelection {
     source: NativeModelArtifactsSource,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NativeGgufExportConfig {
+    python_bin: PathBuf,
+    script_path: PathBuf,
+    output_dtype: String,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedEngineSessionConfig {
+    config: EngineSessionConfig,
+    ephemeral_native_model_artifacts_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct NativeGgufExportResult {
+    status: String,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    report: Option<NativeGgufExportSupportReport>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct NativeGgufExportSupportReport {
+    #[serde(default)]
+    blockers: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeGgufExportFailureKind {
+    MissingPythonDependency,
+    UnsupportedModel,
+    ExportFailed,
+}
+
+pub fn classify_native_gguf_export_failure_message(message: &str) -> NativeGgufExportFailureKind {
+    if message.contains("missing_python_dependency") {
+        return NativeGgufExportFailureKind::MissingPythonDependency;
+    }
+
+    if message.contains("status=unsupported")
+        || message.contains("blockers=")
+        || message.contains("moe_expert_tensors_present")
+        || message.contains("hybrid_ssm_or_attention_gate_tensors_present")
+        || message.contains("packed_qkv_export_not_implemented")
+    {
+        return NativeGgufExportFailureKind::UnsupportedModel;
+    }
+
+    NativeGgufExportFailureKind::ExportFailed
+}
+
 fn resolve_default_native_runtime_artifacts_selection(
     explicit_dir: Option<PathBuf>,
     current_dir: Option<&Path>,
@@ -391,12 +455,203 @@ fn detect_repo_owned_native_runtime_artifacts_dir_from(
 
     None
 }
+
+fn default_native_gguf_export_config() -> NativeGgufExportConfig {
+    let script_path = env::var_os(NATIVE_GGUF_EXPORTER_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join("scripts/export_native_model_from_gguf.py")
+        });
+    let python_bin = env::var_os(NATIVE_GGUF_PYTHON_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("python3"));
+    let output_dtype = env::var(NATIVE_GGUF_EXPORT_DTYPE_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "f16".to_string());
+    NativeGgufExportConfig {
+        python_bin,
+        script_path,
+        output_dtype,
+    }
+}
+
+fn is_gguf_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"))
+}
+
+/// If `model_dir` looks like an HF/MLX model directory (has `config.json` and
+/// safetensors files but no `model-manifest.json`), run the native converter
+/// and write the manifest in-place so `NativeModelArtifacts::from_dir` can load
+/// it directly without a separate conversion step.
+fn try_auto_convert_hf_model_dir(model_dir: &Path) {
+    let manifest_path = model_dir.join(ax_engine_core::AX_NATIVE_MODEL_MANIFEST_FILE);
+    if manifest_path.is_file() {
+        return;
+    }
+    let config_path = model_dir.join("config.json");
+    if !config_path.is_file() {
+        return;
+    }
+    let Ok(manifest) = ax_engine_core::convert::convert_hf_model_dir(model_dir) else {
+        return;
+    };
+    let _ = ax_engine_core::convert::write_manifest(model_dir, &manifest);
+}
+
+fn native_model_artifacts_source_from_path(
+    path: &Path,
+    default_source: NativeModelArtifactsSource,
+) -> NativeModelArtifactsSource {
+    if is_gguf_path(path) {
+        NativeModelArtifactsSource::GeneratedFromGguf
+    } else {
+        default_source
+    }
+}
+
+fn unique_native_gguf_export_dir(gguf_path: &Path) -> PathBuf {
+    let model_stem = gguf_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("model");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    env::temp_dir().join(format!(
+        "ax-engine-native-gguf-{model_stem}-{pid}-{timestamp}"
+    ))
+}
+
+fn summarize_native_gguf_export_failure(stdout: &[u8], stderr: &[u8]) -> String {
+    for bytes in [stderr, stdout] {
+        let text = String::from_utf8_lossy(bytes).trim().to_string();
+        if text.is_empty() {
+            continue;
+        }
+        if let Ok(parsed) = serde_json::from_str::<NativeGgufExportResult>(&text) {
+            if let Some(report) = parsed.report {
+                if !report.blockers.is_empty() {
+                    return format!(
+                        "status={} blockers={}",
+                        parsed.status,
+                        report.blockers.join(",")
+                    );
+                }
+            }
+            if let Some(reason) = parsed.reason {
+                return format!("status={} reason={reason}", parsed.status);
+            }
+            return format!("status={}", parsed.status);
+        }
+        return text;
+    }
+    "exporter produced no diagnostic output".to_string()
+}
+
+fn export_native_model_artifacts_from_gguf_with_config(
+    gguf_path: &Path,
+    export_config: &NativeGgufExportConfig,
+) -> Result<PathBuf, EngineSessionError> {
+    let output_dir = unique_native_gguf_export_dir(gguf_path);
+    let command_output = Command::new(&export_config.python_bin)
+        .arg(&export_config.script_path)
+        .arg("--gguf-path")
+        .arg(gguf_path)
+        .arg("--output-dir")
+        .arg(&output_dir)
+        .arg("--dtype")
+        .arg(&export_config.output_dtype)
+        .output()
+        .map_err(|source| EngineSessionError::NativeModelGgufExportLaunch {
+            gguf_path: gguf_path.to_path_buf(),
+            program: export_config.python_bin.clone(),
+            source,
+        })?;
+
+    if !command_output.status.success() {
+        let message =
+            summarize_native_gguf_export_failure(&command_output.stdout, &command_output.stderr);
+        let _ = fs::remove_dir_all(&output_dir);
+        return Err(EngineSessionError::NativeModelGgufExportFailed {
+            gguf_path: gguf_path.to_path_buf(),
+            message,
+        });
+    }
+
+    let manifest_path = output_dir.join(ax_engine_core::AX_NATIVE_MODEL_MANIFEST_FILE);
+    if !manifest_path.is_file() {
+        let message =
+            summarize_native_gguf_export_failure(&command_output.stdout, &command_output.stderr);
+        let _ = fs::remove_dir_all(&output_dir);
+        return Err(EngineSessionError::NativeModelGgufExportFailed {
+            gguf_path: gguf_path.to_path_buf(),
+            message: format!("export succeeded without manifest output: {message}"),
+        });
+    }
+
+    Ok(output_dir)
+}
+
+fn prepare_engine_session_config(
+    mut config: EngineSessionConfig,
+    export_config: &NativeGgufExportConfig,
+) -> Result<PreparedEngineSessionConfig, EngineSessionError> {
+    if config.resolved_backend.selected_backend != SelectedBackend::AxNative {
+        return Ok(PreparedEngineSessionConfig {
+            config,
+            ephemeral_native_model_artifacts_dir: None,
+        });
+    }
+
+    let Some(native_model_artifacts_dir) = config.native_model_artifacts_dir.clone() else {
+        return Ok(PreparedEngineSessionConfig {
+            config,
+            ephemeral_native_model_artifacts_dir: None,
+        });
+    };
+
+    if !is_gguf_path(&native_model_artifacts_dir) {
+        try_auto_convert_hf_model_dir(&native_model_artifacts_dir);
+        return Ok(PreparedEngineSessionConfig {
+            config,
+            ephemeral_native_model_artifacts_dir: None,
+        });
+    }
+
+    let exported_dir = export_native_model_artifacts_from_gguf_with_config(
+        &native_model_artifacts_dir,
+        export_config,
+    )?;
+    config.native_model_artifacts_dir = Some(exported_dir.clone());
+    config.native_model_artifacts_source = Some(NativeModelArtifactsSource::GeneratedFromGguf);
+
+    Ok(PreparedEngineSessionConfig {
+        config,
+        ephemeral_native_model_artifacts_dir: Some(exported_dir),
+    })
+}
+
+fn cleanup_ephemeral_native_model_artifacts_dir(path: Option<&Path>) {
+    if let Some(path) = path {
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
 #[derive(Debug)]
 pub struct EngineSession {
     core: EngineCore,
     config: EngineSessionConfig,
     runtime: RuntimeReport,
     next_request_id: u64,
+    ephemeral_native_model_artifacts_dir: Option<PathBuf>,
     compatibility_requests: BTreeMap<u64, CompatibilityLifecycleRequestSlot>,
     compatibility_terminal_request_order: VecDeque<u64>,
 }
@@ -732,8 +987,25 @@ impl EngineSession {
     }
 
     pub fn new(config: EngineSessionConfig) -> Result<Self, EngineSessionError> {
-        config.validate()?;
-        let core = build_native_core(&config)?;
+        let PreparedEngineSessionConfig {
+            config,
+            ephemeral_native_model_artifacts_dir,
+        } = prepare_engine_session_config(config, &default_native_gguf_export_config())?;
+        if let Err(error) = config.validate() {
+            cleanup_ephemeral_native_model_artifacts_dir(
+                ephemeral_native_model_artifacts_dir.as_deref(),
+            );
+            return Err(error);
+        }
+        let core = match build_native_core(&config) {
+            Ok(core) => core,
+            Err(error) => {
+                cleanup_ephemeral_native_model_artifacts_dir(
+                    ephemeral_native_model_artifacts_dir.as_deref(),
+                );
+                return Err(error);
+            }
+        };
         let runtime = config
             .runtime_report()
             .with_native_model(resolve_native_model_report(&config, &core));
@@ -742,6 +1014,7 @@ impl EngineSession {
             config,
             runtime,
             next_request_id: 1,
+            ephemeral_native_model_artifacts_dir,
             compatibility_requests: BTreeMap::new(),
             compatibility_terminal_request_order: VecDeque::new(),
         })
@@ -1639,6 +1912,14 @@ fn terminal_stop_reason_from_finish_reason(
     }
 }
 
+impl Drop for EngineSession {
+    fn drop(&mut self) {
+        cleanup_ephemeral_native_model_artifacts_dir(
+            self.ephemeral_native_model_artifacts_dir.as_deref(),
+        );
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum EngineSessionError {
     #[error(transparent)]
@@ -1674,6 +1955,15 @@ pub enum EngineSessionError {
         configured_backend: SelectedBackend,
         selected_backend: SelectedBackend,
     },
+    #[error("failed to launch native GGUF exporter {program} for model {gguf_path}: {source}")]
+    NativeModelGgufExportLaunch {
+        gguf_path: PathBuf,
+        program: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to export native model artifacts from GGUF {gguf_path}: {message}")]
+    NativeModelGgufExportFailed { gguf_path: PathBuf, message: String },
     #[error(
         "compatibility backend {selected_backend:?} does not support {operation} in the preview SDK session yet"
     )]
@@ -1759,10 +2049,11 @@ mod tests {
         MetalBuildHostReport, MetalBuildReport, MetalBuildStatus, MetalBuildToolStatus,
         MetalBuildToolchainReport, MetalCommandBufferStatus, MetalDispatchArenaInfo,
         MetalDispatchKernelTrace, MetalDispatchTrace, MetalDispatchWorkload, MetalKernelManifest,
-        MetalKernelSpec, MetalKernelTier, MetalThreadgroupSize, ModelId, NativeModelArtifacts,
-        NativeModelArtifactsSummary, NativeModelManifest, NativeTensorDataType, NativeTensorFormat,
-        NativeTensorRole, NativeTensorSpec, RequestExecutionUpdate, RequestState, RunnerInput,
-        RunnerOutput, SamplingParams, SequenceNo, AX_NATIVE_MODEL_MANIFEST_FILE,
+        MetalKernelSpec, MetalKernelTier, MetalThreadgroupSize, ModelId,
+        NativeLinearAttentionConfig, NativeModelArtifacts, NativeModelArtifactsSummary,
+        NativeModelManifest, NativeTensorDataType, NativeTensorFormat, NativeTensorRole,
+        NativeTensorSpec, RequestExecutionUpdate, RequestState, RunnerInput, RunnerOutput,
+        SamplingParams, SequenceNo, AX_NATIVE_MODEL_MANIFEST_FILE,
         AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, PHASE1_METAL_BUILD_GATE,
         PHASE1_METAL_BUILD_REPORT_SCHEMA_VERSION, PHASE1_METAL_KERNEL_MANIFEST_SCHEMA_VERSION,
         PHASE1_METAL_LANGUAGE_STANDARD, PHASE1_METAL_LIBRARY_NAME, PHASE1_METAL_NATIVE_TARGET,
@@ -2025,6 +2316,10 @@ mod tests {
                 direct_decode_batched_logits_token_count: 0,
                 direct_decode_batched_group_fallback_count: 0,
                 direct_decode_batched_group_fallback_token_count: 0,
+                direct_decode_native_residual_add_element_count: 0,
+                direct_decode_cpu_residual_add_element_count: 0,
+                prefix_native_residual_add_element_count: 0,
+                prefix_cpu_residual_add_element_count: 0,
             },
             kernels: vec![
                 MetalDispatchKernelTrace {
@@ -2192,12 +2487,10 @@ mod tests {
         unique_test_dir("missing-metal-build")
     }
 
-    fn write_valid_native_model_fixture() -> std::path::PathBuf {
-        let root_dir = unique_test_dir("native-model-valid-fixture");
-        fs::create_dir_all(&root_dir).expect("native model fixture directory should create");
+    fn write_valid_native_model_fixture_into(root_dir: &Path) {
+        fs::create_dir_all(root_dir).expect("native model fixture directory should create");
         fs::write(root_dir.join("model.safetensors"), vec![0_u8; 4096])
             .expect("native model weights should write");
-
         let manifest = NativeModelManifest {
             schema_version: AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
             model_family: "qwen3_dense".to_string(),
@@ -2212,6 +2505,9 @@ mod tests {
             rope_theta: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
+            attention_value_from_key_layers: Vec::new(),
+            attention_v_norm_no_scale_layers: Vec::new(),
+            linear_attention: NativeLinearAttentionConfig::default(),
             tensors: vec![
                 native_model_tensor(
                     "model.embed_tokens.weight",
@@ -2270,7 +2566,11 @@ mod tests {
             ],
         };
         write_json_file(&root_dir.join(AX_NATIVE_MODEL_MANIFEST_FILE), &manifest);
+    }
 
+    fn write_valid_native_model_fixture() -> std::path::PathBuf {
+        let root_dir = unique_test_dir("native-model-valid-fixture");
+        write_valid_native_model_fixture_into(&root_dir);
         root_dir
     }
 
@@ -2309,6 +2609,82 @@ sys.stdout.write(f"session::{prompt}")
 "#;
 
         fs::write(&path, script).expect("fake script should be written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = fs::metadata(&path)
+                .expect("script metadata should exist")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).expect("script should be executable");
+        }
+        path
+    }
+
+    fn fake_gguf_exporter_script(fixture_dir: &Path) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("ax-engine-session-gguf-export-{unique}.py"));
+        let script = format!(
+            r#"#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import shutil
+import sys
+from pathlib import Path
+
+fixture_dir = Path({fixture_dir:?})
+args = sys.argv[1:]
+output_dir = Path(args[args.index("--output-dir") + 1])
+output_dir.mkdir(parents=True, exist_ok=True)
+shutil.copytree(fixture_dir, output_dir, dirs_exist_ok=True)
+print(json.dumps({{
+    "status": "ok",
+    "output_dir": str(output_dir),
+    "manifest_path": str(output_dir / "model-manifest.json"),
+}}))
+"#,
+            fixture_dir = fixture_dir
+        );
+
+        fs::write(&path, script).expect("fake gguf exporter should be written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = fs::metadata(&path)
+                .expect("script metadata should exist")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).expect("script should be executable");
+        }
+        path
+    }
+
+    fn failing_gguf_exporter_script() -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("ax-engine-session-gguf-fail-{unique}.py"));
+        let script = r#"#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+
+print(json.dumps({
+    "status": "unsupported",
+    "report": {"blockers": ["moe_expert_tensors_present"]},
+}))
+raise SystemExit(1)
+"#;
+
+        fs::write(&path, script).expect("failing fake gguf exporter should be written");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -2594,6 +2970,127 @@ kernel void kv_scale_update() {}
     }
 
     #[test]
+    fn prepare_engine_session_config_exports_gguf_to_native_model_artifacts() {
+        let fixture_dir = write_valid_native_model_fixture();
+        let exporter_script = fake_gguf_exporter_script(&fixture_dir);
+        let gguf_path = unique_test_dir("native-model-gguf-input").with_extension("gguf");
+        fs::write(&gguf_path, b"fake-gguf").expect("gguf input should write");
+
+        let prepared = prepare_engine_session_config(
+            EngineSessionConfig {
+                native_model_artifacts_dir: Some(gguf_path.clone()),
+                native_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
+                ..EngineSessionConfig::default()
+            },
+            &NativeGgufExportConfig {
+                python_bin: PathBuf::from("python3"),
+                script_path: exporter_script.clone(),
+                output_dtype: "f16".to_string(),
+            },
+        )
+        .expect("gguf path should export into native model artifacts");
+
+        let exported_dir = prepared
+            .config
+            .native_model_artifacts_dir
+            .clone()
+            .expect("exported dir should be recorded");
+        assert_ne!(exported_dir, gguf_path);
+        assert!(exported_dir.join(AX_NATIVE_MODEL_MANIFEST_FILE).is_file());
+        assert_eq!(
+            prepared.config.native_model_artifacts_source,
+            Some(NativeModelArtifactsSource::GeneratedFromGguf)
+        );
+        assert_eq!(
+            prepared.ephemeral_native_model_artifacts_dir.as_deref(),
+            Some(exported_dir.as_path())
+        );
+
+        let summary = NativeModelArtifacts::from_dir(&exported_dir)
+            .expect("exported native model artifacts should validate")
+            .summary();
+        let core = EngineCore::with_runtime_components(
+            KvManagerConfig::new(CacheGroupId(0), 16, 64),
+            NativeModelReportingRunner {
+                summary,
+                binding: Some(ax_engine_core::NativeModelBindingSummary {
+                    bindings_prepared: true,
+                    buffers_bound: true,
+                    buffer_count: 9,
+                    buffer_bytes: 288,
+                }),
+            },
+            DeterministicSampler,
+        );
+        let report = resolve_native_model_report(&prepared.config, &core)
+            .expect("exported native model artifacts should resolve to a report");
+        assert_eq!(
+            report.artifacts_source,
+            NativeModelArtifactsSource::GeneratedFromGguf
+        );
+
+        let _ = fs::remove_dir_all(fixture_dir);
+        let _ = fs::remove_file(exporter_script);
+        let _ = fs::remove_file(gguf_path);
+        let _ = fs::remove_dir_all(exported_dir);
+    }
+
+    #[test]
+    fn prepare_engine_session_config_surfaces_gguf_export_blockers() {
+        let exporter_script = failing_gguf_exporter_script();
+        let gguf_path = unique_test_dir("native-model-gguf-unsupported").with_extension("gguf");
+        fs::write(&gguf_path, b"fake-gguf").expect("gguf input should write");
+
+        let error = prepare_engine_session_config(
+            EngineSessionConfig {
+                native_model_artifacts_dir: Some(gguf_path.clone()),
+                native_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
+                ..EngineSessionConfig::default()
+            },
+            &NativeGgufExportConfig {
+                python_bin: PathBuf::from("python3"),
+                script_path: exporter_script.clone(),
+                output_dtype: "f16".to_string(),
+            },
+        )
+        .expect_err("unsupported gguf should surface exporter blockers");
+
+        match error {
+            EngineSessionError::NativeModelGgufExportFailed {
+                gguf_path: path,
+                message,
+            } => {
+                assert_eq!(path, gguf_path);
+                assert!(message.contains("moe_expert_tensors_present"));
+            }
+            other => panic!("expected GGUF export failure, got {other:?}"),
+        }
+
+        let _ = fs::remove_file(exporter_script);
+        let _ = fs::remove_file(gguf_path);
+    }
+
+    #[test]
+    fn classify_native_gguf_export_failure_message_distinguishes_failure_kinds() {
+        assert_eq!(
+            classify_native_gguf_export_failure_message(
+                "status=unsupported blockers=moe_expert_tensors_present"
+            ),
+            NativeGgufExportFailureKind::UnsupportedModel
+        );
+        assert_eq!(
+            classify_native_gguf_export_failure_message(
+                "status=error reason=missing_python_dependency"
+            ),
+            NativeGgufExportFailureKind::MissingPythonDependency
+        );
+        assert_eq!(
+            classify_native_gguf_export_failure_message("exporter produced no diagnostic output"),
+            NativeGgufExportFailureKind::ExportFailed
+        );
+    }
+
+    #[test]
     fn resolve_native_model_report_uses_runner_owned_validated_summary() {
         let config = EngineSessionConfig {
             native_model_artifacts_dir: Some(PathBuf::from("/tmp/ax-model")),
@@ -2745,6 +3242,26 @@ kernel void kv_scale_update() {}
         assert_eq!(
             config.native_model_artifacts_source,
             Some(NativeModelArtifactsSource::ExplicitConfig)
+        );
+    }
+
+    #[test]
+    fn preview_session_config_factory_marks_explicit_gguf_model_path_as_generated_bridge() {
+        let config = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
+            native_model_artifacts_dir: Some(
+                Path::new("/tmp/google_gemma-4-26b-it-q4_k_m.gguf").to_path_buf(),
+            ),
+            ..PreviewSessionConfigRequest::default()
+        })
+        .expect("preview config factory should preserve explicit gguf model config");
+
+        assert_eq!(
+            config.native_model_artifacts_dir.as_deref(),
+            Some(Path::new("/tmp/google_gemma-4-26b-it-q4_k_m.gguf"))
+        );
+        assert_eq!(
+            config.native_model_artifacts_source,
+            Some(NativeModelArtifactsSource::GeneratedFromGguf)
         );
     }
 
@@ -4053,6 +4570,7 @@ kernel void kv_scale_update() {}
             runtime: config.runtime_report(),
             config,
             next_request_id: 2,
+            ephemeral_native_model_artifacts_dir: None,
             compatibility_requests: BTreeMap::new(),
             compatibility_terminal_request_order: VecDeque::new(),
         };

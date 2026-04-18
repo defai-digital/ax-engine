@@ -12132,6 +12132,7 @@ mod tests {
             attention_logit_softcap: None,
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
+            linear_attention: ax_engine_core::NativeLinearAttentionConfig::default(),
             tensors: vec![
                 native_model_tensor(
                     "model.embed_tokens.weight",
@@ -12288,6 +12289,7 @@ mod tests {
             attention_logit_softcap: None,
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
+            linear_attention: ax_engine_core::NativeLinearAttentionConfig::default(),
             tensors: vec![
                 native_model_tensor_with_file(
                     "model.embed_tokens.weight",

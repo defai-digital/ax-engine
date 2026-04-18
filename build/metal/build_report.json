@@ -199,19 +199,34 @@
       "purpose": "native grouped-KV expansion into query-head layout during dense staging"
     },
     {
+      "name": "linear_attention_conv1d_f32",
+      "tier": "optional",
+      "purpose": "single-step depthwise conv1d over AX-native linear-attention QKV staging"
+    },
+    {
+      "name": "linear_attention_conv1d_f16",
+      "tier": "optional",
+      "purpose": "single-step depthwise conv1d over f16 linear-attention QKV staging"
+    },
+    {
+      "name": "linear_attention_conv1d_bf16",
+      "tier": "optional",
+      "purpose": "single-step depthwise conv1d over bf16 linear-attention QKV staging"
+    },
+    {
       "name": "linear_gated_delta_step_f32",
       "tier": "optional",
       "purpose": "single-step recurrent linear-attention update over AX-native dense states"
     }
   ],
-  "source_sha256": "f2682594c211caaf8639d8d09970fd8f56dd3c569c68d8c3d3b09b03b41a3917",
+  "source_sha256": "7e2fc35cd0400e914d2a68791693dcc1519629841bf6e0b0fecaa047a9f7dee9",
   "outputs": {
     "air": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.air",
     "metalar": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.metalar",
     "metallib": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.metallib",
-    "air_sha256": "930ecc56ee2b6a5bd5fc95c661be29b94fc2f005d4b69ab55901160256f0ba08",
-    "metalar_sha256": "c9294c51486b6f3aa5daa4de19d844ed56a41b01f42775ca06605c2929d3e5b6",
-    "metallib_sha256": "c3a52db2b17959c90eca1eb168d846a6546d37707ca6151a19710375ba1554c7"
+    "air_sha256": "9c22446cff5deb95fafc76813247c77e99b541f3257c62f8d10563a7e84375dd",
+    "metalar_sha256": "94cda6742d8fe146eb208bc2dd75e33693c853ea02b98f223d2e6cc788401e53",
+    "metallib_sha256": "88fa760e64eb2103872ce358800ec0bdf8e44fa52480e94e9ce83f09cf6044ff"
   },
   "compile_commands": [
     [

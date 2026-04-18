@@ -35,9 +35,10 @@ pub use metal::{
     PHASE1_REQUIRED_METAL_KERNELS,
 };
 pub use model::{
-    NativeModelArtifacts, NativeModelArtifactsSummary, NativeModelError, NativeModelManifest,
-    NativeTensorDataType, NativeTensorFormat, NativeTensorRole, NativeTensorSpec,
-    AX_NATIVE_MODEL_MANIFEST_FILE, AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+    NativeLinearAttentionConfig, NativeModelArtifacts, NativeModelArtifactsSummary,
+    NativeModelError, NativeModelManifest, NativeTensorDataType, NativeTensorFormat,
+    NativeTensorRole, NativeTensorSpec, AX_NATIVE_MODEL_MANIFEST_FILE,
+    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
 };
 pub use request::{
     RequestRecord, RequestSnapshot, RequestState, RequestSubmission, StateTransitionError,
