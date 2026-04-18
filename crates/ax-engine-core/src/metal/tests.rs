@@ -2796,9 +2796,11 @@
             MetalStagedInputSource::ModelConditionedCpuPrefixAttention
         );
         assert_eq!(staged.prefix_attention_tally.native_dispatch_count(), 0);
+        // 2-layer model: only layer 0 runs through advance_hidden_states_through_model_layer
+        // (final_layer_index=1, loop is layers[..1]), producing 1 CPU reference dispatch.
         assert_eq!(
             staged.prefix_attention_tally.cpu_reference_dispatch_count(),
-            2
+            1
         );
         assert!(staged.query.iter().all(|value| value.abs() <= 1e-6));
         assert!(staged.key.iter().all(|value| value.abs() <= 1e-6));
@@ -5921,14 +5923,24 @@
             ),
             4
         );
+        // copy_block_mapping for sample_runner_input is the default dummy [[0, 0]],
+        // so only block 0 is copied. Verify the copied block matches key_cache at that range.
+        let block_width = workload.block_numeric_elements() as usize;
         assert_eq!(
-            checksum_f32_slice(&simulated.key_cache),
-            checksum_f32_slice(&simulated.copy_key)
+            &simulated.copy_key[..block_width],
+            &simulated.key_cache[..block_width]
         );
         assert_eq!(
-            checksum_f32_slice(&simulated.value_cache),
-            checksum_f32_slice(&simulated.copy_value)
+            &simulated.copy_value[..block_width],
+            &simulated.value_cache[..block_width]
         );
+        // Remaining slots in copy buffers should be zero (no other blocks were copied).
+        assert!(simulated.copy_key[block_width..]
+            .iter()
+            .all(|v| *v == 0.0));
+        assert!(simulated.copy_value[block_width..]
+            .iter()
+            .all(|v| *v == 0.0));
     }
 
     #[cfg(target_os = "macos")]
