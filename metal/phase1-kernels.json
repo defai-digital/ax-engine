@@ -46,6 +46,11 @@
       "purpose": "quantized-KV scale maintenance when runtime storage requires it"
     },
     {
+      "name": "vector_add_f32",
+      "tier": "optional",
+      "purpose": "native residual or elementwise add over f32 activation vectors"
+    },
+    {
       "name": "gather_embedding_rows_f32",
       "tier": "optional",
       "purpose": "native embedding row gather for f32 token embeddings"
@@ -164,6 +169,11 @@
       "name": "expand_grouped_kv_heads_f32",
       "tier": "optional",
       "purpose": "native grouped-KV expansion into query-head layout during dense staging"
+    },
+    {
+      "name": "linear_gated_delta_step_f32",
+      "tier": "optional",
+      "purpose": "single-step recurrent linear-attention update over AX-native dense states"
     }
   ]
 }

@@ -74,6 +74,11 @@
       "purpose": "quantized-KV scale maintenance when runtime storage requires it"
     },
     {
+      "name": "vector_add_f32",
+      "tier": "optional",
+      "purpose": "native residual or elementwise add over f32 activation vectors"
+    },
+    {
       "name": "gather_embedding_rows_f32",
       "tier": "optional",
       "purpose": "native embedding row gather for f32 token embeddings"
@@ -192,16 +197,21 @@
       "name": "expand_grouped_kv_heads_f32",
       "tier": "optional",
       "purpose": "native grouped-KV expansion into query-head layout during dense staging"
+    },
+    {
+      "name": "linear_gated_delta_step_f32",
+      "tier": "optional",
+      "purpose": "single-step recurrent linear-attention update over AX-native dense states"
     }
   ],
-  "source_sha256": "f478c0ddb7eb6d7004e14e195d3e125b1a84d080505edfc2d3c7b5de4927d479",
+  "source_sha256": "f2682594c211caaf8639d8d09970fd8f56dd3c569c68d8c3d3b09b03b41a3917",
   "outputs": {
     "air": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.air",
     "metalar": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.metalar",
     "metallib": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.metallib",
-    "air_sha256": "062eb866f92cedd20ca82c25ef0d9f6e4db887beb6082a26f634717a0570a43c",
-    "metalar_sha256": "7c0b92a020c42b1e340c42764c413b152dc539682ec95a0d64d0aec661a861ba",
-    "metallib_sha256": "53b843923281d1d1a447a56976e1179dff5f68b7099f105b51c0283417ad061d"
+    "air_sha256": "930ecc56ee2b6a5bd5fc95c661be29b94fc2f005d4b69ab55901160256f0ba08",
+    "metalar_sha256": "c9294c51486b6f3aa5daa4de19d844ed56a41b01f42775ca06605c2929d3e5b6",
+    "metallib_sha256": "c3a52db2b17959c90eca1eb168d846a6546d37707ca6151a19710375ba1554c7"
   },
   "compile_commands": [
     [

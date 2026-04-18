@@ -108,6 +108,19 @@ struct EmbeddingGatherParams {
     float scale;
 };
 
+struct VectorAddParams {
+    uint element_count;
+};
+
+struct LinearGatedDeltaParams {
+    uint batch_size;
+    uint num_key_heads;
+    uint num_value_heads;
+    uint key_head_dim;
+    uint value_head_dim;
+    uint repeat_factor;
+};
+
 kernel void reshape_and_cache(
     device const float* key [[buffer(0)]],
     device const float* value [[buffer(1)]],
@@ -298,6 +311,62 @@ kernel void kv_scale_update(
     value_cache[gid] *= params.scale;
 }
 
+kernel void linear_gated_delta_step_f32(
+    device const float* q [[buffer(0)]],
+    device const float* k [[buffer(1)]],
+    device const float* v [[buffer(2)]],
+    device const float* g [[buffer(3)]],
+    device const float* beta [[buffer(4)]],
+    device const float* state_in [[buffer(5)]],
+    device float* output [[buffer(6)]],
+    device float* state_out [[buffer(7)]],
+    constant LinearGatedDeltaParams& params [[buffer(8)]],
+    uint3 gid [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    if (gid.z >= params.batch_size * params.num_value_heads || gid.y >= params.value_head_dim) {
+        return;
+    }
+
+    uint batch_idx = gid.z / params.num_value_heads;
+    uint value_head_idx = gid.z % params.num_value_heads;
+    uint key_head_idx = value_head_idx / max(params.repeat_factor, 1u);
+    if (key_head_idx >= params.num_key_heads) {
+        return;
+    }
+
+    uint key_dim = params.key_head_dim;
+    uint value_dim = params.value_head_dim;
+    uint qk_base = (batch_idx * params.num_key_heads + key_head_idx) * key_dim;
+    uint value_base = (batch_idx * params.num_value_heads + value_head_idx) * value_dim;
+    uint state_base = ((batch_idx * params.num_value_heads + value_head_idx) * value_dim + gid.y) * key_dim;
+    float decay = g[batch_idx * params.num_value_heads + value_head_idx];
+    float blend = beta[batch_idx * params.num_value_heads + value_head_idx];
+
+    float kv_mem = 0.0f;
+    constexpr uint simd_width = 32;
+    for (uint key_lane = lane; key_lane < key_dim; key_lane += simd_width) {
+        uint state_index = state_base + key_lane;
+        float decayed = state_in[state_index] * decay;
+        state_out[state_index] = decayed;
+        kv_mem += decayed * k[qk_base + key_lane];
+    }
+    kv_mem = simd_sum(kv_mem);
+
+    float delta = (v[value_base + gid.y] - kv_mem) * blend;
+    float out = 0.0f;
+    for (uint key_lane = lane; key_lane < key_dim; key_lane += simd_width) {
+        uint state_index = state_base + key_lane;
+        float updated = state_out[state_index] + k[qk_base + key_lane] * delta;
+        state_out[state_index] = updated;
+        out += updated * q[qk_base + key_lane];
+    }
+    out = simd_sum(out);
+    if (lane == 0) {
+        output[value_base + gid.y] = out;
+    }
+}
+
 kernel void gather_embedding_rows_f32(
     device const uint* token_ids [[buffer(0)]],
     device const float* embedding [[buffer(1)]],
@@ -347,6 +416,20 @@ kernel void gather_embedding_rows_bf16(
     uint lane_index = gid % params.hidden_dim;
     uint row_index = token_ids[token_index] % params.embedding_rows;
     output[gid] = float(embedding[row_index * params.hidden_dim + lane_index]) * params.scale;
+}
+
+kernel void vector_add_f32(
+    device const float* input [[buffer(0)]],
+    device const float* delta [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant VectorAddParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= params.element_count) {
+        return;
+    }
+
+    output[gid] = input[gid] + delta[gid];
 }
 
 kernel void decode_logits_projection_f32(

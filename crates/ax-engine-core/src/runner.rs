@@ -69,6 +69,8 @@ pub struct NativeModelBindingSummary {
 pub trait ExecutionRunner: fmt::Debug + Send + Sync {
     fn run(&self, input: RunnerInput) -> RunnerOutput;
 
+    fn release_request_state(&self, _request_id: RequestId) {}
+
     fn metal_dispatch_trace(&self) -> Option<MetalDispatchTrace> {
         None
     }

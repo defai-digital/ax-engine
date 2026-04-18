@@ -36,6 +36,15 @@ pub enum NativeTensorRole {
     AttentionV,
     AttentionQkvPacked,
     AttentionO,
+    LinearAttentionInProjQkv,
+    LinearAttentionInProjZ,
+    LinearAttentionInProjA,
+    LinearAttentionInProjB,
+    LinearAttentionConv1d,
+    LinearAttentionDtBias,
+    LinearAttentionALog,
+    LinearAttentionNorm,
+    LinearAttentionOutProj,
     FfnNorm,
     FfnGate,
     FfnUp,
@@ -59,12 +68,49 @@ impl NativeTensorRole {
                 | Self::AttentionV
                 | Self::AttentionQkvPacked
                 | Self::AttentionO
+                | Self::LinearAttentionInProjQkv
+                | Self::LinearAttentionInProjZ
+                | Self::LinearAttentionInProjA
+                | Self::LinearAttentionInProjB
+                | Self::LinearAttentionConv1d
+                | Self::LinearAttentionDtBias
+                | Self::LinearAttentionALog
+                | Self::LinearAttentionNorm
+                | Self::LinearAttentionOutProj
                 | Self::FfnNorm
                 | Self::FfnGate
                 | Self::FfnUp
                 | Self::FfnGateUpPacked
                 | Self::FfnDown
         )
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NativeLinearAttentionConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_value_heads: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_key_heads: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_head_dim: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_head_dim: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conv_kernel_dim: Option<u32>,
+}
+
+impl NativeLinearAttentionConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.num_value_heads.is_some()
+            || self.num_key_heads.is_some()
+            || self.key_head_dim.is_some()
+            || self.value_head_dim.is_some()
+            || self.conv_kernel_dim.is_some()
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        !self.is_enabled()
     }
 }
 
@@ -104,6 +150,11 @@ pub struct NativeModelManifest {
     pub attention_value_from_key_layers: Vec<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attention_v_norm_no_scale_layers: Vec<u32>,
+    #[serde(
+        default,
+        skip_serializing_if = "NativeLinearAttentionConfig::is_disabled"
+    )]
+    pub linear_attention: NativeLinearAttentionConfig,
     pub tensors: Vec<NativeTensorSpec>,
 }
 
@@ -187,6 +238,13 @@ impl NativeModelArtifacts {
         self.manifest
             .attention_v_norm_no_scale_layers
             .contains(&layer_index)
+    }
+
+    pub fn linear_attention_config(&self) -> Option<&NativeLinearAttentionConfig> {
+        self.manifest
+            .linear_attention
+            .is_enabled()
+            .then_some(&self.manifest.linear_attention)
     }
 }
 
@@ -281,6 +339,41 @@ fn validate_native_model_manifest(
                     "attention_logit_softcap must be > 0, got {attention_logit_softcap}"
                 ),
             });
+        }
+    }
+    if manifest.linear_attention.is_enabled() {
+        validate_positive_optional_field(
+            manifest.linear_attention.num_value_heads,
+            "linear_attention.num_value_heads",
+        )?;
+        validate_positive_optional_field(
+            manifest.linear_attention.num_key_heads,
+            "linear_attention.num_key_heads",
+        )?;
+        validate_positive_optional_field(
+            manifest.linear_attention.key_head_dim,
+            "linear_attention.key_head_dim",
+        )?;
+        validate_positive_optional_field(
+            manifest.linear_attention.value_head_dim,
+            "linear_attention.value_head_dim",
+        )?;
+        validate_positive_optional_field(
+            manifest.linear_attention.conv_kernel_dim,
+            "linear_attention.conv_kernel_dim",
+        )?;
+        if let (Some(num_value_heads), Some(num_key_heads)) = (
+            manifest.linear_attention.num_value_heads,
+            manifest.linear_attention.num_key_heads,
+        ) {
+            if !num_value_heads.is_multiple_of(num_key_heads) {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "linear_attention.num_value_heads {} must be divisible by linear_attention.num_key_heads {}",
+                        num_value_heads, num_key_heads
+                    ),
+                });
+            }
         }
     }
 
@@ -383,6 +476,15 @@ fn validate_native_model_manifest(
             || roles.contains(&NativeTensorRole::AttentionQ)
             || roles.contains(&NativeTensorRole::AttentionK)
             || roles.contains(&NativeTensorRole::AttentionQkvPacked);
+        let has_any_linear_attention = roles.contains(&NativeTensorRole::LinearAttentionInProjQkv)
+            || roles.contains(&NativeTensorRole::LinearAttentionInProjZ)
+            || roles.contains(&NativeTensorRole::LinearAttentionInProjA)
+            || roles.contains(&NativeTensorRole::LinearAttentionInProjB)
+            || roles.contains(&NativeTensorRole::LinearAttentionConv1d)
+            || roles.contains(&NativeTensorRole::LinearAttentionDtBias)
+            || roles.contains(&NativeTensorRole::LinearAttentionALog)
+            || roles.contains(&NativeTensorRole::LinearAttentionNorm)
+            || roles.contains(&NativeTensorRole::LinearAttentionOutProj);
         if has_any_attention {
             require_layer_role(
                 roles,
@@ -405,6 +507,70 @@ fn validate_native_model_manifest(
                     ),
                 });
             }
+        }
+        if has_any_linear_attention {
+            if !manifest.linear_attention.is_enabled() {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer {} provides linear attention tensors but manifest.linear_attention is not configured",
+                        layer_index
+                    ),
+                });
+            }
+            require_layer_role(
+                roles,
+                NativeTensorRole::LinearAttentionInProjQkv,
+                layer_index,
+                "linear_attention_in_proj_qkv",
+            )?;
+            require_layer_role(
+                roles,
+                NativeTensorRole::LinearAttentionInProjZ,
+                layer_index,
+                "linear_attention_in_proj_z",
+            )?;
+            require_layer_role(
+                roles,
+                NativeTensorRole::LinearAttentionInProjA,
+                layer_index,
+                "linear_attention_in_proj_a",
+            )?;
+            require_layer_role(
+                roles,
+                NativeTensorRole::LinearAttentionInProjB,
+                layer_index,
+                "linear_attention_in_proj_b",
+            )?;
+            require_layer_role(
+                roles,
+                NativeTensorRole::LinearAttentionConv1d,
+                layer_index,
+                "linear_attention_conv1d",
+            )?;
+            require_layer_role(
+                roles,
+                NativeTensorRole::LinearAttentionDtBias,
+                layer_index,
+                "linear_attention_dt_bias",
+            )?;
+            require_layer_role(
+                roles,
+                NativeTensorRole::LinearAttentionALog,
+                layer_index,
+                "linear_attention_a_log",
+            )?;
+            require_layer_role(
+                roles,
+                NativeTensorRole::LinearAttentionNorm,
+                layer_index,
+                "linear_attention_norm",
+            )?;
+            require_layer_role(
+                roles,
+                NativeTensorRole::LinearAttentionOutProj,
+                layer_index,
+                "linear_attention_out_proj",
+            )?;
         }
     }
 
@@ -571,6 +737,111 @@ fn validate_native_model_tensor_shapes(
             }
         }
         // Layers without any attention tensors (e.g. linear_attention) skip QKV shape validation.
+        if manifest_tensor(
+            manifest,
+            NativeTensorRole::LinearAttentionInProjQkv,
+            Some(layer_index),
+        )
+        .is_some()
+        {
+            let linear_dims = resolved_linear_attention_dims(manifest)?;
+            let in_proj_qkv = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::LinearAttentionInProjQkv,
+                "linear_attention_in_proj_qkv",
+            )?;
+            expect_matrix_shape(
+                in_proj_qkv,
+                linear_dims.conv_dim,
+                hidden_size,
+                "linear_attention_in_proj_qkv",
+            )?;
+            let in_proj_z = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::LinearAttentionInProjZ,
+                "linear_attention_in_proj_z",
+            )?;
+            expect_matrix_shape(
+                in_proj_z,
+                linear_dims.value_dim,
+                hidden_size,
+                "linear_attention_in_proj_z",
+            )?;
+            let in_proj_a = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::LinearAttentionInProjA,
+                "linear_attention_in_proj_a",
+            )?;
+            expect_matrix_shape(
+                in_proj_a,
+                linear_dims.num_value_heads,
+                hidden_size,
+                "linear_attention_in_proj_a",
+            )?;
+            let in_proj_b = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::LinearAttentionInProjB,
+                "linear_attention_in_proj_b",
+            )?;
+            expect_matrix_shape(
+                in_proj_b,
+                linear_dims.num_value_heads,
+                hidden_size,
+                "linear_attention_in_proj_b",
+            )?;
+            let dt_bias = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::LinearAttentionDtBias,
+                "linear_attention_dt_bias",
+            )?;
+            expect_vector_shape(
+                dt_bias,
+                linear_dims.num_value_heads,
+                "linear_attention_dt_bias",
+            )?;
+            let a_log = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::LinearAttentionALog,
+                "linear_attention_a_log",
+            )?;
+            expect_vector_shape(a_log, linear_dims.num_value_heads, "linear_attention_a_log")?;
+            let norm = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::LinearAttentionNorm,
+                "linear_attention_norm",
+            )?;
+            expect_vector_shape(norm, linear_dims.value_head_dim, "linear_attention_norm")?;
+            let out_proj = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::LinearAttentionOutProj,
+                "linear_attention_out_proj",
+            )?;
+            expect_matrix_shape(
+                out_proj,
+                hidden_size,
+                linear_dims.value_dim,
+                "linear_attention_out_proj",
+            )?;
+            let conv1d = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::LinearAttentionConv1d,
+                "linear_attention_conv1d",
+            )?;
+            validate_linear_attention_conv_tensor(
+                conv1d,
+                linear_dims.conv_dim,
+                linear_dims.conv_kernel_dim,
+            )?;
+        }
 
         let intermediate_dim = if let Some(ffn_gate_up_packed) = manifest_tensor(
             manifest,
@@ -688,10 +959,107 @@ fn validate_manifest_layer_index_list(
     Ok(())
 }
 
+fn validate_positive_optional_field(
+    value: Option<u32>,
+    field_name: &str,
+) -> Result<(), NativeModelError> {
+    if matches!(value, Some(0)) {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!("{field_name} must be > 0"),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeSplitAttentionDims {
     q_rows: u64,
     kv_rows: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeLinearAttentionDims {
+    num_value_heads: u64,
+    num_key_heads: u64,
+    key_head_dim: u64,
+    value_head_dim: u64,
+    conv_kernel_dim: u64,
+    key_dim: u64,
+    value_dim: u64,
+    conv_dim: u64,
+}
+
+fn resolved_linear_attention_dims(
+    manifest: &NativeModelManifest,
+) -> Result<NativeLinearAttentionDims, NativeModelError> {
+    let config = &manifest.linear_attention;
+    let num_value_heads =
+        u64::from(
+            config
+                .num_value_heads
+                .ok_or_else(|| NativeModelError::InvalidManifest {
+                    message: "linear_attention.num_value_heads must be configured".to_string(),
+                })?,
+        );
+    let num_key_heads =
+        u64::from(
+            config
+                .num_key_heads
+                .ok_or_else(|| NativeModelError::InvalidManifest {
+                    message: "linear_attention.num_key_heads must be configured".to_string(),
+                })?,
+        );
+    let key_head_dim =
+        u64::from(
+            config
+                .key_head_dim
+                .ok_or_else(|| NativeModelError::InvalidManifest {
+                    message: "linear_attention.key_head_dim must be configured".to_string(),
+                })?,
+        );
+    let value_head_dim =
+        u64::from(
+            config
+                .value_head_dim
+                .ok_or_else(|| NativeModelError::InvalidManifest {
+                    message: "linear_attention.value_head_dim must be configured".to_string(),
+                })?,
+        );
+    let conv_kernel_dim =
+        u64::from(
+            config
+                .conv_kernel_dim
+                .ok_or_else(|| NativeModelError::InvalidManifest {
+                    message: "linear_attention.conv_kernel_dim must be configured".to_string(),
+                })?,
+        );
+    let key_dim = num_key_heads.checked_mul(key_head_dim).ok_or_else(|| {
+        NativeModelError::InvalidManifest {
+            message: "linear attention key_dim overflowed".to_string(),
+        }
+    })?;
+    let value_dim = num_value_heads.checked_mul(value_head_dim).ok_or_else(|| {
+        NativeModelError::InvalidManifest {
+            message: "linear attention value_dim overflowed".to_string(),
+        }
+    })?;
+    let conv_dim = key_dim
+        .checked_mul(2)
+        .and_then(|twice_key_dim| twice_key_dim.checked_add(value_dim))
+        .ok_or_else(|| NativeModelError::InvalidManifest {
+            message: "linear attention conv_dim overflowed".to_string(),
+        })?;
+
+    Ok(NativeLinearAttentionDims {
+        num_value_heads,
+        num_key_heads,
+        key_head_dim,
+        value_head_dim,
+        conv_kernel_dim,
+        key_dim,
+        value_dim,
+        conv_dim,
+    })
 }
 
 fn resolved_split_attention_dims(
@@ -903,6 +1271,13 @@ fn matrix_shape(tensor: &NativeTensorSpec) -> Option<(u64, u64)> {
     (tensor.shape.len() == 2).then_some((*tensor.shape.first()?, *tensor.shape.get(1)?))
 }
 
+fn total_elements(tensor: &NativeTensorSpec) -> Option<u64> {
+    tensor
+        .shape
+        .iter()
+        .try_fold(1_u64, |acc, dim| acc.checked_mul(*dim))
+}
+
 fn vector_shape(tensor: &NativeTensorSpec) -> Option<u64> {
     (tensor.shape.len() == 1).then_some(*tensor.shape.first()?)
 }
@@ -940,6 +1315,45 @@ fn expect_matrix_shape(
             ),
         })
     }
+}
+
+fn validate_linear_attention_conv_tensor(
+    tensor: &NativeTensorSpec,
+    expected_channels: u64,
+    expected_kernel_dim: u64,
+) -> Result<(), NativeModelError> {
+    if tensor.shape.is_empty() || tensor.shape[0] != expected_channels {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor linear_attention_conv1d must start with channel dimension {}, got {:?}",
+                expected_channels, tensor.shape
+            ),
+        });
+    }
+    let remaining_product = tensor.shape[1..]
+        .iter()
+        .try_fold(1_u64, |acc, dim| acc.checked_mul(*dim))
+        .ok_or_else(|| NativeModelError::InvalidManifest {
+            message: "linear_attention_conv1d shape overflowed".to_string(),
+        })?;
+    if remaining_product != expected_kernel_dim {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor linear_attention_conv1d must encode kernel size {}, got {:?}",
+                expected_kernel_dim, tensor.shape
+            ),
+        });
+    }
+    if total_elements(tensor) != expected_channels.checked_mul(expected_kernel_dim) {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor linear_attention_conv1d total element count must be {}, got {:?}",
+                expected_channels.saturating_mul(expected_kernel_dim),
+                tensor.shape
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn require_global_role(
@@ -1087,6 +1501,7 @@ mod tests {
             attention_logit_softcap: None,
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
+            linear_attention: NativeLinearAttentionConfig::default(),
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",

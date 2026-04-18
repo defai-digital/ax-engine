@@ -896,6 +896,7 @@ fn write_valid_native_model_fixture() -> PathBuf {
         attention_logit_softcap: None,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
+        linear_attention: crate::model::NativeLinearAttentionConfig::default(),
         tensors: vec![
             native_model_tensor(
                 "model.embed_tokens.weight",
@@ -1066,6 +1067,7 @@ fn write_projection_native_model_fixture() -> PathBuf {
         attention_logit_softcap: None,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
+        linear_attention: crate::model::NativeLinearAttentionConfig::default(),
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -1386,6 +1388,7 @@ fn write_grouped_projection_native_model_fixture() -> PathBuf {
         attention_logit_softcap: None,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
+        linear_attention: crate::model::NativeLinearAttentionConfig::default(),
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -1668,6 +1671,7 @@ fn write_wide_projection_native_model_fixture() -> PathBuf {
         attention_logit_softcap: None,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
+        linear_attention: crate::model::NativeLinearAttentionConfig::default(),
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -1837,6 +1841,7 @@ fn write_wide_direct_decode_native_model_fixture() -> PathBuf {
         attention_logit_softcap: None,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
+        linear_attention: crate::model::NativeLinearAttentionConfig::default(),
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -2181,6 +2186,7 @@ fn write_direct_decode_native_model_fixture_with_variant(
         attention_logit_softcap: None,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
+        linear_attention: crate::model::NativeLinearAttentionConfig::default(),
         tensors,
     };
 
@@ -2849,7 +2855,7 @@ fn model_conditioned_staged_inputs_use_bound_tensor_bytes() {
 
     let input = sample_runner_input();
     let staged = model_conditioned_staged_inputs(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("projection-backed staged inputs should resolve");
     let synthetic = synthetic_staged_inputs(&workload);
@@ -2945,7 +2951,7 @@ fn model_conditioned_staged_inputs_apply_optional_qk_head_norms() {
 
     let input = sample_runner_input();
     let staged = model_conditioned_staged_inputs(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("qk norm staged inputs should resolve");
 
@@ -3141,7 +3147,7 @@ fn model_conditioned_staged_inputs_apply_gemma_weight_offset_norms() {
 
     let input = sample_runner_input();
     let staged = model_conditioned_staged_inputs(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("gemma staged inputs should resolve");
 
@@ -3177,7 +3183,7 @@ fn model_hidden_states_before_final_layer_apply_gemma_embedding_scale() {
         MetalDispatchWorkload::from_runner_input(&input).expect("workload should resolve");
 
     let (hidden_states, final_layer_index, _) = model_hidden_states_before_final_layer(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("gemma hidden states should resolve");
 
@@ -3208,7 +3214,7 @@ fn model_conditioned_staged_inputs_expand_grouped_kv_heads_to_query_layout() {
 
     let input = sample_runner_input();
     let staged = model_conditioned_staged_inputs(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("grouped projection staged inputs should resolve");
 
@@ -3263,7 +3269,7 @@ fn model_conditioned_staged_inputs_apply_qwen_rope_for_nonzero_positions() {
 
     let input = sample_runner_input();
     let staged = model_conditioned_staged_inputs(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("projection-backed staged inputs should resolve");
     let normalized_hidden =
@@ -3303,7 +3309,7 @@ fn model_conditioned_staged_inputs_apply_gemma_interleaved_rope_for_nonzero_posi
 
     let input = sample_runner_input();
     let staged = model_conditioned_staged_inputs(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("gemma projection-backed staged inputs should resolve");
     let normalized_hidden =
@@ -3343,7 +3349,7 @@ fn model_conditioned_staged_inputs_apply_manifest_rope_theta() {
 
     let input = sample_runner_input();
     let staged = model_conditioned_staged_inputs(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("custom rope staged inputs should resolve");
     let normalized_hidden =
@@ -3382,7 +3388,7 @@ fn model_conditioned_gemma_staged_inputs_apply_manifest_rope_theta() {
 
     let input = sample_runner_input();
     let staged = model_conditioned_staged_inputs(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("custom gemma rope staged inputs should resolve");
     let normalized_hidden =
@@ -3437,6 +3443,7 @@ fn gemma_attention_output_uses_manifest_scale_and_softcap() {
         &workload,
         None,
         None,
+        None,
     )
     .expect("default staged inputs should resolve");
     let configured_staged = model_conditioned_staged_inputs(
@@ -3445,6 +3452,7 @@ fn gemma_attention_output_uses_manifest_scale_and_softcap() {
         &configured_buffers,
         &input,
         &workload,
+        None,
         None,
         None,
     )
@@ -3534,7 +3542,7 @@ fn model_conditioned_staged_inputs_use_final_layer_qkv_for_multilayer_fixture() 
 
     let input = sample_runner_input();
     let staged = model_conditioned_staged_inputs(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("projection-backed staged inputs should resolve");
 
@@ -3573,7 +3581,7 @@ fn model_conditioned_staged_inputs_match_explicit_prefix_cache_for_multilayer_fi
     let prefix_layer_caches = vec![Mutex::new(MetalPersistentLayerKvCache::default())];
 
     let staged_without_cache = model_conditioned_staged_inputs(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("projection-backed staged inputs should resolve without explicit cache");
     let staged_with_cache = model_conditioned_staged_inputs(
@@ -3583,6 +3591,7 @@ fn model_conditioned_staged_inputs_match_explicit_prefix_cache_for_multilayer_fi
         &input,
         &workload,
         Some(prefix_layer_caches.as_slice()),
+        None,
         None,
     )
     .expect("projection-backed staged inputs should resolve with explicit cache");
@@ -3914,7 +3923,7 @@ fn model_bound_direct_decode_reuses_cached_multilayer_hidden_states() {
     let workload =
         MetalDispatchWorkload::from_runner_input(&input).expect("workload should resolve");
     let staged = model_conditioned_staged_inputs(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("multilayer staged inputs should resolve");
     let hidden_state_cache = staged
@@ -3983,7 +3992,7 @@ fn model_bound_direct_decode_batches_multiple_decode_items_without_changing_outp
     let workload =
         MetalDispatchWorkload::from_runner_input(&input).expect("workload should resolve");
     let (hidden_states, final_layer_index, _) = model_hidden_states_before_final_layer(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("hidden states before final layer should resolve");
     let final_layer = bindings
@@ -4263,7 +4272,7 @@ fn model_conditioned_staged_inputs_use_full_hidden_width_beyond_32d_cap() {
         MetalDispatchWorkload::from_runner_input(&input).expect("workload should resolve");
 
     let staged = model_conditioned_staged_inputs(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("wide projection staged inputs should resolve");
 
@@ -4329,7 +4338,7 @@ fn numeric_trace_validation_accepts_model_conditioned_reference_path() {
         .expect("workload should resolve");
     let input = sample_runner_input();
     let staged = model_conditioned_staged_inputs(
-        &artifacts, &bindings, &buffers, &input, &workload, None, None,
+        &artifacts, &bindings, &buffers, &input, &workload, None, None, None,
     )
     .expect("projection-backed staged inputs should resolve");
     let simulated = reference_numeric_path_with_inputs(&workload, &staged);

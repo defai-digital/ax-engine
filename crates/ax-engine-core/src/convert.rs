@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::model::{
-    NativeModelManifest, NativeTensorDataType, NativeTensorFormat, NativeTensorRole,
-    NativeTensorSpec, AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+    NativeLinearAttentionConfig, NativeModelManifest, NativeTensorDataType, NativeTensorFormat,
+    NativeTensorRole, NativeTensorSpec, AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -83,6 +83,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
 
     let attention_logit_softcap =
         arch_f64(&config, &model_type, "attn_logit_softcapping").map(|v| v as u32);
+    let linear_attention = linear_attention_config(&config, &model_type);
 
     Ok(NativeModelManifest {
         schema_version: AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
@@ -100,6 +101,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         attention_logit_softcap,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
+        linear_attention,
         tensors: mapped_tensors,
     })
 }
@@ -228,6 +230,45 @@ const HF_STANDARD_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
 ];
 
+const QWEN35_LINEAR_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "linear_attn.in_proj_qkv.weight",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionInProjQkv),
+    ),
+    (
+        "linear_attn.in_proj_z.weight",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionInProjZ),
+    ),
+    (
+        "linear_attn.in_proj_a.weight",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionInProjA),
+    ),
+    (
+        "linear_attn.in_proj_b.weight",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionInProjB),
+    ),
+    (
+        "linear_attn.conv1d.weight",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionConv1d),
+    ),
+    (
+        "linear_attn.dt_bias",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionDtBias),
+    ),
+    (
+        "linear_attn.A_log",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionALog),
+    ),
+    (
+        "linear_attn.norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionNorm),
+    ),
+    (
+        "linear_attn.out_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionOutProj),
+    ),
+];
+
 /// Gemma4 and Qwen3.5+ wrap the text model under `language_model.model.`, so
 /// tensor names in safetensors appear as
 /// `language_model.model.layers.0.self_attn.q_proj.weight`.
@@ -344,6 +385,26 @@ fn arch_f64(config: &serde_json::Value, model_type: &str, field: &str) -> Option
             None
         }
     })
+}
+
+fn linear_attention_config(
+    config: &serde_json::Value,
+    model_type: &str,
+) -> NativeLinearAttentionConfig {
+    if !matches!(
+        model_type,
+        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_text"
+    ) {
+        return NativeLinearAttentionConfig::default();
+    }
+
+    NativeLinearAttentionConfig {
+        num_value_heads: arch_u64(config, model_type, "linear_num_value_heads").map(|v| v as u32),
+        num_key_heads: arch_u64(config, model_type, "linear_num_key_heads").map(|v| v as u32),
+        key_head_dim: arch_u64(config, model_type, "linear_key_head_dim").map(|v| v as u32),
+        value_head_dim: arch_u64(config, model_type, "linear_value_head_dim").map(|v| v as u32),
+        conv_kernel_dim: arch_u64(config, model_type, "linear_conv_kernel_dim").map(|v| v as u32),
+    }
 }
 
 fn require_arch_u64(
@@ -533,6 +594,21 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
         }
         if let Some(result) =
             match_prefixed_per_layer(name, "language_model.model.layers.", family.tensor_map)
+        {
+            return Some(result);
+        }
+        if family.family_name == "qwen3_5" {
+            if let Some(result) = match_prefixed_per_layer(
+                name,
+                "language_model.model.layers.",
+                QWEN35_LINEAR_TENSOR_MAP,
+            ) {
+                return Some(result);
+            }
+        }
+    } else if family.family_name == "qwen3_5" {
+        if let Some(result) =
+            match_prefixed_per_layer(name, "model.layers.", QWEN35_LINEAR_TENSOR_MAP)
         {
             return Some(result);
         }
@@ -931,6 +1007,138 @@ mod tests {
             .iter()
             .any(|t| t.role == NativeTensorRole::LmHead);
         assert!(has_lm_head);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn converts_qwen3_5_linear_attention_model_directory() {
+        let dir = unique_test_dir("qwen3_5_linear");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "qwen3_5",
+                "vocab_size": 32,
+                "text_config": {
+                    "hidden_size": 8,
+                    "num_attention_heads": 2,
+                    "num_key_value_heads": 1,
+                    "head_dim": 4,
+                    "num_hidden_layers": 1,
+                    "vocab_size": 32,
+                    "linear_num_value_heads": 2,
+                    "linear_num_key_heads": 1,
+                    "linear_key_head_dim": 4,
+                    "linear_value_head_dim": 2,
+                    "linear_conv_kernel_dim": 4
+                }
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                ("language_model.model.embed_tokens.weight", "BF16", &[32, 8]),
+                ("language_model.model.norm.weight", "BF16", &[8]),
+                ("language_model.lm_head.weight", "BF16", &[32, 8]),
+                (
+                    "language_model.model.layers.0.input_layernorm.weight",
+                    "BF16",
+                    &[8],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.in_proj_qkv.weight",
+                    "BF16",
+                    &[12, 8],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.in_proj_z.weight",
+                    "BF16",
+                    &[4, 8],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.in_proj_a.weight",
+                    "BF16",
+                    &[2, 8],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.in_proj_b.weight",
+                    "BF16",
+                    &[2, 8],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.conv1d.weight",
+                    "BF16",
+                    &[12, 1, 4],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.dt_bias",
+                    "F32",
+                    &[2],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.A_log",
+                    "F32",
+                    &[2],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.norm.weight",
+                    "BF16",
+                    &[2],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.out_proj.weight",
+                    "BF16",
+                    &[8, 4],
+                ),
+                (
+                    "language_model.model.layers.0.post_attention_layernorm.weight",
+                    "BF16",
+                    &[8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.gate_proj.weight",
+                    "BF16",
+                    &[16, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.up_proj.weight",
+                    "BF16",
+                    &[16, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.down_proj.weight",
+                    "BF16",
+                    &[8, 16],
+                ),
+            ],
+        );
+
+        let manifest =
+            convert_hf_model_dir(&dir).expect("qwen3.5 linear conversion should succeed");
+
+        assert_eq!(manifest.model_family, "qwen3_5");
+        assert_eq!(manifest.linear_attention.num_value_heads, Some(2));
+        assert_eq!(manifest.linear_attention.num_key_heads, Some(1));
+        assert_eq!(manifest.linear_attention.key_head_dim, Some(4));
+        assert_eq!(manifest.linear_attention.value_head_dim, Some(2));
+        assert_eq!(manifest.linear_attention.conv_kernel_dim, Some(4));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::LinearAttentionInProjQkv));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::LinearAttentionConv1d));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::LinearAttentionOutProj));
+
+        write_manifest(&dir, &manifest).expect("write should succeed");
+        crate::model::NativeModelArtifacts::from_dir(&dir)
+            .expect("linear-attention manifest should validate");
 
         let _ = fs::remove_dir_all(dir);
     }

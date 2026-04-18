@@ -83,6 +83,7 @@ pub const PHASE1_OPTIONAL_METAL_KERNELS: &[&str] = &[
     "apply_rope_f32",
     "apply_rope_batched_f32",
     "expand_grouped_kv_heads_f32",
+    "linear_gated_delta_step_f32",
 ];
 const PHASE1_MODEL_STAGE_ROPE_FREQ_BASE: f32 = 10_000.0;
 pub(super) const REQUIRED_TOOLCHAIN_REQUIREMENTS: &[&str] =
@@ -251,6 +252,7 @@ struct MetalOptionalKernelDispatchPlan {
     expand_grouped_kv_heads_f32: Option<usize>,
     ffn_gate_silu_product_f32: Option<usize>,
     ffn_gate_gelu_approx_product_f32: Option<usize>,
+    linear_gated_delta_step_f32: Option<usize>,
 }
 
 #[cfg(target_os = "macos")]
@@ -350,6 +352,11 @@ impl MetalOptionalKernelDispatchPlan {
                 .ffn_gate_gelu_approx_product_f32
                 .map(|index| ("ffn_gate_gelu_approx_product_f32", index)),
         }
+    }
+
+    fn linear_gated_delta_step_kernel(self) -> Option<(&'static str, usize)> {
+        self.linear_gated_delta_step_f32
+            .map(|index| ("linear_gated_delta_step_f32", index))
     }
 }
 
@@ -1574,6 +1581,19 @@ enum MetalFfnGateUpBindings {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct MetalLinearAttentionBindings {
+    in_proj_qkv: MetalNativeTensorBinding,
+    in_proj_z: MetalNativeTensorBinding,
+    in_proj_a: MetalNativeTensorBinding,
+    in_proj_b: MetalNativeTensorBinding,
+    conv1d: MetalNativeTensorBinding,
+    dt_bias: MetalNativeTensorBinding,
+    a_log: MetalNativeTensorBinding,
+    norm: MetalNativeTensorBinding,
+    out_proj: MetalNativeTensorBinding,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct MetalNativeLayerBindings {
     attention_norm: MetalNativeTensorBinding,
     attention_q_norm: Option<MetalNativeTensorBinding>,
@@ -1581,6 +1601,7 @@ struct MetalNativeLayerBindings {
     attention_v_norm_no_scale: bool,
     attention_qkv: Option<MetalAttentionQkvBindings>,
     attention_o: Option<MetalNativeTensorBinding>,
+    linear_attention: Option<MetalLinearAttentionBindings>,
     ffn_norm: MetalNativeTensorBinding,
     ffn_gate_up: MetalFfnGateUpBindings,
     ffn_down: MetalNativeTensorBinding,
@@ -1680,6 +1701,14 @@ fn native_dense_kernel_coverage_for_model_bindings(
         if let Some(attention_o) = &layer.attention_o {
             record_projection_binding_coverage(&mut coverage, attention_o);
         }
+        if let Some(linear_attention) = &layer.linear_attention {
+            record_projection_binding_coverage(&mut coverage, &linear_attention.in_proj_qkv);
+            record_projection_binding_coverage(&mut coverage, &linear_attention.in_proj_z);
+            record_projection_binding_coverage(&mut coverage, &linear_attention.in_proj_a);
+            record_projection_binding_coverage(&mut coverage, &linear_attention.in_proj_b);
+            record_rms_norm_binding_coverage(&mut coverage, &linear_attention.norm);
+            record_projection_binding_coverage(&mut coverage, &linear_attention.out_proj);
+        }
         record_rms_norm_binding_coverage(&mut coverage, &layer.ffn_norm);
         match &layer.ffn_gate_up {
             MetalFfnGateUpBindings::Packed(binding) => {
@@ -1730,6 +1759,7 @@ impl MetalNativeModelBindings {
                 attention_o: artifacts
                     .layer_tensor(layer_index, NativeTensorRole::AttentionO)
                     .map(|spec| MetalNativeTensorBinding::from_spec(artifacts, spec)),
+                linear_attention: linear_attention_bindings(artifacts, layer_index)?,
                 ffn_norm: required_layer_tensor_binding(
                     artifacts,
                     layer_index,
@@ -1784,6 +1814,17 @@ impl MetalNativeModelBindings {
             }
             if let Some(attention_o) = &layer.attention_o {
                 bindings.push(attention_o.clone());
+            }
+            if let Some(linear_attention) = &layer.linear_attention {
+                bindings.push(linear_attention.in_proj_qkv.clone());
+                bindings.push(linear_attention.in_proj_z.clone());
+                bindings.push(linear_attention.in_proj_a.clone());
+                bindings.push(linear_attention.in_proj_b.clone());
+                bindings.push(linear_attention.conv1d.clone());
+                bindings.push(linear_attention.dt_bias.clone());
+                bindings.push(linear_attention.a_log.clone());
+                bindings.push(linear_attention.norm.clone());
+                bindings.push(linear_attention.out_proj.clone());
             }
             bindings.push(layer.ffn_norm.clone());
             match &layer.ffn_gate_up {
@@ -1988,6 +2029,73 @@ fn ffn_gate_up_bindings(
             "ffn_up",
         )?,
     })
+}
+
+fn linear_attention_bindings(
+    artifacts: &NativeModelArtifacts,
+    layer_index: u32,
+) -> Result<Option<MetalLinearAttentionBindings>, NativeModelError> {
+    let Some(_) = artifacts.layer_tensor(layer_index, NativeTensorRole::LinearAttentionInProjQkv)
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(MetalLinearAttentionBindings {
+        in_proj_qkv: required_layer_tensor_binding(
+            artifacts,
+            layer_index,
+            NativeTensorRole::LinearAttentionInProjQkv,
+            "linear_attention_in_proj_qkv",
+        )?,
+        in_proj_z: required_layer_tensor_binding(
+            artifacts,
+            layer_index,
+            NativeTensorRole::LinearAttentionInProjZ,
+            "linear_attention_in_proj_z",
+        )?,
+        in_proj_a: required_layer_tensor_binding(
+            artifacts,
+            layer_index,
+            NativeTensorRole::LinearAttentionInProjA,
+            "linear_attention_in_proj_a",
+        )?,
+        in_proj_b: required_layer_tensor_binding(
+            artifacts,
+            layer_index,
+            NativeTensorRole::LinearAttentionInProjB,
+            "linear_attention_in_proj_b",
+        )?,
+        conv1d: required_layer_tensor_binding(
+            artifacts,
+            layer_index,
+            NativeTensorRole::LinearAttentionConv1d,
+            "linear_attention_conv1d",
+        )?,
+        dt_bias: required_layer_tensor_binding(
+            artifacts,
+            layer_index,
+            NativeTensorRole::LinearAttentionDtBias,
+            "linear_attention_dt_bias",
+        )?,
+        a_log: required_layer_tensor_binding(
+            artifacts,
+            layer_index,
+            NativeTensorRole::LinearAttentionALog,
+            "linear_attention_a_log",
+        )?,
+        norm: required_layer_tensor_binding(
+            artifacts,
+            layer_index,
+            NativeTensorRole::LinearAttentionNorm,
+            "linear_attention_norm",
+        )?,
+        out_proj: required_layer_tensor_binding(
+            artifacts,
+            layer_index,
+            NativeTensorRole::LinearAttentionOutProj,
+            "linear_attention_out_proj",
+        )?,
+    }))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -2328,7 +2436,23 @@ pub struct MetalBringupRunner {
     model_buffers: Option<MetalNativeModelBufferBindings>,
     #[cfg(target_os = "macos")]
     prefix_layer_caches: Vec<Mutex<MetalPersistentLayerKvCache>>,
+    #[cfg(target_os = "macos")]
+    linear_request_states: Mutex<BTreeMap<crate::ids::RequestId, MetalLinearRequestState>>,
     last_dispatch: Mutex<Option<MetalDispatchTrace>>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, Default, PartialEq)]
+struct MetalLinearRequestState {
+    layers: BTreeMap<u32, MetalLinearLayerState>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, Default, PartialEq)]
+struct MetalLinearLayerState {
+    processed_tokens: usize,
+    conv_state: Vec<f32>,
+    ssm_state: Vec<f32>,
 }
 
 impl fmt::Debug for MetalBringupRunner {
@@ -2408,6 +2532,8 @@ impl MetalBringupRunner {
             model_buffers,
             #[cfg(target_os = "macos")]
             prefix_layer_caches,
+            #[cfg(target_os = "macos")]
+            linear_request_states: Mutex::new(BTreeMap::new()),
             last_dispatch: Mutex::new(None),
         })
     }
@@ -2446,6 +2572,7 @@ impl MetalBringupRunner {
                 self.model_bindings.as_ref(),
                 self.model_buffers.as_ref(),
                 self.prefix_layer_caches(),
+                Some(&self.linear_request_states),
                 Some(&self.bringup),
             )
         }
@@ -2713,6 +2840,13 @@ impl ExecutionRunner for MetalBringupRunner {
 
     fn metal_dispatch_trace(&self) -> Option<MetalDispatchTrace> {
         self.last_dispatch()
+    }
+
+    fn release_request_state(&self, request_id: crate::ids::RequestId) {
+        #[cfg(target_os = "macos")]
+        if let Ok(mut states) = self.linear_request_states.lock() {
+            states.remove(&request_id);
+        }
     }
 
     fn native_model_artifacts_summary(&self) -> Option<NativeModelArtifactsSummary> {
@@ -3470,6 +3604,7 @@ fn derive_model_bound_direct_decode_result(
             &workload,
             bringup,
             prefix_layer_caches,
+            None,
         ) else {
             return ModelBoundDirectDecodeResult::default();
         };
@@ -6055,6 +6190,7 @@ fn build_optional_kernel_dispatch_plan(
         expand_grouped_kv_heads_f32: index("expand_grouped_kv_heads_f32"),
         ffn_gate_silu_product_f32: index("ffn_gate_silu_product_f32"),
         ffn_gate_gelu_approx_product_f32: index("ffn_gate_gelu_approx_product_f32"),
+        linear_gated_delta_step_f32: index("linear_gated_delta_step_f32"),
     }
 }
 
@@ -6220,6 +6356,18 @@ struct FfnGateProductDispatchParams {
 #[repr(C)]
 struct VectorAddDispatchParams {
     element_count: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct LinearGatedDeltaDispatchParams {
+    batch_size: u32,
+    num_key_heads: u32,
+    num_value_heads: u32,
+    key_head_dim: u32,
+    value_head_dim: u32,
+    repeat_factor: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -6523,6 +6671,7 @@ fn resolve_runtime_staged_inputs(
     bindings: Option<&MetalNativeModelBindings>,
     buffers: Option<&MetalNativeModelBufferBindings>,
     prefix_layer_caches: Option<&[Mutex<MetalPersistentLayerKvCache>]>,
+    linear_request_states: Option<&Mutex<BTreeMap<crate::ids::RequestId, MetalLinearRequestState>>>,
     bringup: Option<&MetalRuntimeBringup>,
 ) -> Result<MetalDispatchStagedInputs, MetalRuntimeError> {
     match (artifacts, bindings, buffers) {
@@ -6535,6 +6684,7 @@ fn resolve_runtime_staged_inputs(
                 input,
                 workload,
                 prefix_layer_caches,
+                linear_request_states,
                 bringup,
             )
             .ok_or_else(|| MetalRuntimeError::InvalidDispatchInput {
@@ -6598,6 +6748,7 @@ fn model_conditioned_staged_inputs(
     input: &RunnerInput,
     workload: &MetalDispatchWorkload,
     prefix_layer_caches: Option<&[Mutex<MetalPersistentLayerKvCache>]>,
+    linear_request_states: Option<&Mutex<BTreeMap<crate::ids::RequestId, MetalLinearRequestState>>>,
     bringup: Option<&MetalRuntimeBringup>,
 ) -> Option<MetalDispatchStagedInputs> {
     let (hidden_states, final_layer_index, prefix_attention_tally) =
@@ -6609,6 +6760,7 @@ fn model_conditioned_staged_inputs(
             workload,
             bringup,
             prefix_layer_caches,
+            linear_request_states,
         )?;
     let final_layer = bindings.layers.get(final_layer_index)?;
     let mut staged = stage_model_layer_qkv_inputs(
@@ -6930,6 +7082,7 @@ fn model_hidden_states_before_final_layer(
     workload: &MetalDispatchWorkload,
     bringup: Option<&MetalRuntimeBringup>,
     prefix_layer_caches: Option<&[Mutex<MetalPersistentLayerKvCache>]>,
+    linear_request_states: Option<&Mutex<BTreeMap<crate::ids::RequestId, MetalLinearRequestState>>>,
 ) -> Option<(Vec<Vec<f32>>, usize, PrefixAttentionExecutionTally)> {
     let token_embedding = buffers.binding_for(&bindings.token_embedding)?;
     let (_, embedding_cols) = tensor_matrix_dimensions(&token_embedding.meta.spec)?;
@@ -6945,6 +7098,7 @@ fn model_hidden_states_before_final_layer(
         final_layer_index,
         bringup,
         prefix_layer_caches,
+        linear_request_states,
     )?;
     let mut hidden_states = initial_model_hidden_states(
         token_embedding,
@@ -6964,6 +7118,8 @@ fn model_hidden_states_before_final_layer(
             &hidden_states,
             bringup,
             prefix_layer_caches.and_then(|caches| caches.get(layer_index)),
+            linear_request_states,
+            layer_index as u32,
         )?;
         hidden_states = advanced_hidden_states;
         prefix_attention_tally = prefix_attention_tally.merge(layer_tally);
@@ -6984,6 +7140,7 @@ fn warm_prefix_reuse_layer_caches_before_final_layer(
     final_layer_index: usize,
     bringup: Option<&MetalRuntimeBringup>,
     prefix_layer_caches: Option<&[Mutex<MetalPersistentLayerKvCache>]>,
+    linear_request_states: Option<&Mutex<BTreeMap<crate::ids::RequestId, MetalLinearRequestState>>>,
 ) -> Option<PrefixAttentionExecutionTally> {
     if bringup.is_none() || final_layer_index == 0 {
         return Some(PrefixAttentionExecutionTally::default());
@@ -7028,6 +7185,8 @@ fn warm_prefix_reuse_layer_caches_before_final_layer(
                 &warmup_hidden_states,
                 bringup,
                 prefix_layer_caches.get(layer_index),
+                linear_request_states,
+                layer_index as u32,
             )?;
             warmup_hidden_states = advanced_hidden_states;
             warmup_tally = warmup_tally.merge(layer_tally);
@@ -7598,9 +7757,33 @@ fn advance_hidden_states_through_model_layer(
     hidden_states: &[Vec<f32>],
     bringup: Option<&MetalRuntimeBringup>,
     layer_cache: Option<&Mutex<MetalPersistentLayerKvCache>>,
+    linear_request_states: Option<&Mutex<BTreeMap<crate::ids::RequestId, MetalLinearRequestState>>>,
+    layer_index: u32,
 ) -> Option<(Vec<Vec<f32>>, PrefixAttentionExecutionTally)> {
     if input.execution_batch.items.is_empty() {
         return Some((Vec::new(), PrefixAttentionExecutionTally::default()));
+    }
+
+    // Layers without attention tensors (e.g. Qwen3.5 linear_attention) skip the
+    // attention block entirely and only run FFN. The hidden states pass through
+    // unchanged for the attention residual (equivalent to zero attention output).
+    let has_attention = layer.attention_qkv.is_some() && layer.attention_o.is_some();
+    if let Some(linear_attention) = &layer.linear_attention {
+        return advance_hidden_states_through_linear_attention_layer(
+            artifacts,
+            linear_attention,
+            layer,
+            buffers,
+            input,
+            workload,
+            hidden_states,
+            bringup,
+            linear_request_states,
+            layer_index,
+        );
+    }
+    if !has_attention {
+        return advance_hidden_states_ffn_only(artifacts, layer, buffers, hidden_states, bringup);
     }
 
     let ephemeral_layer_cache = Mutex::new(MetalPersistentLayerKvCache::default());
@@ -7651,6 +7834,897 @@ fn advance_hidden_states_through_model_layer(
         .record_layer_continuation_tokens(continuation_tokens);
 
     Some((next_hidden_states, prefix_attention_tally))
+}
+
+/// FFN-only path for layers without attention (e.g. Qwen3.5 linear_attention).
+/// Applies: FFN norm → gate/up projection → activation → down projection → residual add.
+#[cfg(target_os = "macos")]
+fn advance_hidden_states_ffn_only(
+    artifacts: &NativeModelArtifacts,
+    layer: &MetalNativeLayerBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    hidden_states: &[Vec<f32>],
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<(Vec<Vec<f32>>, PrefixAttentionExecutionTally)> {
+    let ffn_norm = buffers.binding_for(&layer.ffn_norm)?;
+    let ffn_down = buffers.binding_for(&layer.ffn_down)?;
+    let hidden_width = hidden_states.iter().map(Vec::len).min()?;
+    let (hidden_dim, intermediate_dim) = resolved_ffn_only_layer_dims(
+        ffn_norm,
+        &layer.ffn_gate_up,
+        buffers,
+        ffn_down,
+        hidden_width,
+    )?;
+
+    let mut ffn_hidden_states = hidden_states
+        .iter()
+        .map(|h| h.get(..hidden_dim).map(|s| s.to_vec()))
+        .collect::<Option<Vec<_>>>()?;
+
+    let mut tally = PrefixAttentionExecutionTally::default();
+
+    tally = tally.merge(apply_batched_row_rms_norm_with_binding_in_place_with_tally(
+        &mut ffn_hidden_states,
+        hidden_dim,
+        ffn_norm,
+        native_model_rms_norm_epsilon(artifacts),
+        native_model_rms_norm_weight_offset(artifacts),
+        bringup,
+    )?);
+
+    let (mut gate_rows, up_rows, gate_up_tally) = project_batched_ffn_gate_up_with_tally(
+        &layer.ffn_gate_up,
+        buffers,
+        intermediate_dim,
+        &ffn_hidden_states,
+        hidden_dim,
+        bringup,
+    )?;
+    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
+        gate_up_tally,
+    ));
+    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
+        apply_batched_model_gate_up_product_in_place_with_tally(
+            artifacts,
+            &mut gate_rows,
+            &up_rows,
+            intermediate_dim,
+            bringup,
+        )?,
+    ));
+
+    let (ffn_output_rows, ffn_down_tally) = project_batched_matrix_rows_with_tally(
+        ffn_down,
+        0,
+        hidden_dim,
+        &gate_rows,
+        intermediate_dim,
+        bringup,
+    )?;
+    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
+        ffn_down_tally,
+    ));
+
+    let mut next_hidden_states = hidden_states
+        .iter()
+        .map(|h| h.get(..hidden_dim).map(|s| s.to_vec()))
+        .collect::<Option<Vec<_>>>()?;
+    for (next, ffn_output) in next_hidden_states.iter_mut().zip(ffn_output_rows.iter()) {
+        add_in_place(next, ffn_output);
+    }
+
+    let continuation_tokens = u32::try_from(next_hidden_states.len()).unwrap_or(u32::MAX);
+    tally = tally.record_layer_continuation_tokens(continuation_tokens);
+
+    Some((next_hidden_states, tally))
+}
+
+/// Resolve FFN dimensions without requiring attention_o binding.
+#[cfg(target_os = "macos")]
+fn resolved_ffn_only_layer_dims(
+    ffn_norm: &MetalNativeTensorBufferBinding,
+    ffn_gate_up: &MetalFfnGateUpBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    ffn_down: &MetalNativeTensorBufferBinding,
+    hidden_width: usize,
+) -> Option<(usize, usize)> {
+    let ffn_norm_len = tensor_element_count(&ffn_norm.meta.spec)?;
+    let ffn_gate_up_input_cols = ffn_gate_up_input_cols(ffn_gate_up, buffers)?;
+    let (ffn_down_rows, ffn_down_cols) = tensor_matrix_dimensions(&ffn_down.meta.spec)?;
+    let hidden_dim = hidden_width
+        .min(ffn_norm_len)
+        .min(ffn_gate_up_input_cols)
+        .min(ffn_down_rows);
+    let intermediate_dim = resolved_ffn_intermediate_dim(ffn_gate_up, buffers, ffn_down_cols)?;
+    (hidden_dim > 0 && intermediate_dim > 0).then_some((hidden_dim, intermediate_dim))
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ResolvedLinearAttentionDims {
+    hidden_dim: usize,
+    num_value_heads: usize,
+    num_key_heads: usize,
+    key_head_dim: usize,
+    value_head_dim: usize,
+    conv_kernel_dim: usize,
+    key_dim: usize,
+    value_dim: usize,
+    conv_dim: usize,
+    repeat_factor: usize,
+}
+
+#[cfg(target_os = "macos")]
+fn resolved_linear_attention_dims(
+    artifacts: &NativeModelArtifacts,
+    bindings: &MetalLinearAttentionBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    hidden_width: usize,
+) -> Option<ResolvedLinearAttentionDims> {
+    let config = artifacts.linear_attention_config()?;
+    let num_value_heads = usize::try_from(config.num_value_heads?).ok()?;
+    let num_key_heads = usize::try_from(config.num_key_heads?).ok()?;
+    let key_head_dim = usize::try_from(config.key_head_dim?).ok()?;
+    let value_head_dim = usize::try_from(config.value_head_dim?).ok()?;
+    let conv_kernel_dim = usize::try_from(config.conv_kernel_dim?).ok()?;
+    let key_dim = num_key_heads.checked_mul(key_head_dim)?;
+    let value_dim = num_value_heads.checked_mul(value_head_dim)?;
+    let conv_dim = key_dim.checked_mul(2)?.checked_add(value_dim)?;
+    let repeat_factor = num_value_heads.checked_div(num_key_heads)?;
+    if repeat_factor == 0 || !num_value_heads.is_multiple_of(num_key_heads) {
+        return None;
+    }
+
+    let in_proj_qkv = buffers.binding_for(&bindings.in_proj_qkv)?;
+    let in_proj_z = buffers.binding_for(&bindings.in_proj_z)?;
+    let in_proj_a = buffers.binding_for(&bindings.in_proj_a)?;
+    let in_proj_b = buffers.binding_for(&bindings.in_proj_b)?;
+    let out_proj = buffers.binding_for(&bindings.out_proj)?;
+    let (_qkv_rows, qkv_cols) = tensor_matrix_dimensions(&in_proj_qkv.meta.spec)?;
+    let (_z_rows, z_cols) = tensor_matrix_dimensions(&in_proj_z.meta.spec)?;
+    let (_a_rows, a_cols) = tensor_matrix_dimensions(&in_proj_a.meta.spec)?;
+    let (_b_rows, b_cols) = tensor_matrix_dimensions(&in_proj_b.meta.spec)?;
+    let (_out_rows, out_cols) = tensor_matrix_dimensions(&out_proj.meta.spec)?;
+    let hidden_dim = hidden_width
+        .min(qkv_cols)
+        .min(z_cols)
+        .min(a_cols)
+        .min(b_cols);
+    if hidden_dim == 0 || out_cols < value_dim {
+        return None;
+    }
+
+    Some(ResolvedLinearAttentionDims {
+        hidden_dim,
+        num_value_heads,
+        num_key_heads,
+        key_head_dim,
+        value_head_dim,
+        conv_kernel_dim,
+        key_dim,
+        value_dim,
+        conv_dim,
+        repeat_factor,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn advance_hidden_states_through_linear_attention_layer(
+    artifacts: &NativeModelArtifacts,
+    linear_attention: &MetalLinearAttentionBindings,
+    layer: &MetalNativeLayerBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    input: &RunnerInput,
+    _workload: &MetalDispatchWorkload,
+    hidden_states: &[Vec<f32>],
+    bringup: Option<&MetalRuntimeBringup>,
+    linear_request_states: Option<&Mutex<BTreeMap<crate::ids::RequestId, MetalLinearRequestState>>>,
+    layer_index: u32,
+) -> Option<(Vec<Vec<f32>>, PrefixAttentionExecutionTally)> {
+    if input.execution_batch.items.is_empty() {
+        return Some((Vec::new(), PrefixAttentionExecutionTally::default()));
+    }
+
+    let attention_norm = buffers.binding_for(&layer.attention_norm)?;
+    let ffn_norm = buffers.binding_for(&layer.ffn_norm)?;
+    let ffn_down = buffers.binding_for(&layer.ffn_down)?;
+    let in_proj_qkv = buffers.binding_for(&linear_attention.in_proj_qkv)?;
+    let in_proj_z = buffers.binding_for(&linear_attention.in_proj_z)?;
+    let in_proj_a = buffers.binding_for(&linear_attention.in_proj_a)?;
+    let in_proj_b = buffers.binding_for(&linear_attention.in_proj_b)?;
+    let conv1d = buffers.binding_for(&linear_attention.conv1d)?;
+    let dt_bias = tensor_prefix_f32(
+        buffers.binding_for(&linear_attention.dt_bias)?,
+        usize::try_from(artifacts.linear_attention_config()?.num_value_heads?).ok()?,
+    )?;
+    let a_log = tensor_prefix_f32(
+        buffers.binding_for(&linear_attention.a_log)?,
+        usize::try_from(artifacts.linear_attention_config()?.num_value_heads?).ok()?,
+    )?;
+    let linear_norm = buffers.binding_for(&linear_attention.norm)?;
+    let out_proj = buffers.binding_for(&linear_attention.out_proj)?;
+    let item_token_ranges = execution_item_token_ranges(input)?;
+    let hidden_width = hidden_states.iter().map(Vec::len).min()?;
+    let dims = resolved_linear_attention_dims(artifacts, linear_attention, buffers, hidden_width)?;
+    let ephemeral_request_states = Mutex::new(BTreeMap::new());
+    let request_states = linear_request_states.unwrap_or(&ephemeral_request_states);
+    let mut request_states = request_states
+        .lock()
+        .expect("linear attention request state mutex should not be poisoned");
+    let mut next_hidden_states = Vec::with_capacity(hidden_states.len());
+    let mut tally = PrefixAttentionExecutionTally::default();
+
+    for (item, token_range) in input
+        .execution_batch
+        .items
+        .iter()
+        .zip(item_token_ranges.iter())
+    {
+        let item_hidden_states = hidden_states.get(token_range.clone())?;
+        let request_state = request_states.entry(item.request_id).or_default();
+        let layer_state = request_state.layers.entry(layer_index).or_default();
+        let (mut item_hidden_rows, item_tally) = process_linear_attention_item(
+            artifacts,
+            item.request_id,
+            item.position_range.start as usize,
+            item_hidden_states,
+            layer_state,
+            attention_norm,
+            in_proj_qkv,
+            in_proj_z,
+            in_proj_a,
+            in_proj_b,
+            conv1d,
+            &dt_bias,
+            &a_log,
+            linear_norm,
+            out_proj,
+            layer,
+            buffers,
+            ffn_norm,
+            ffn_down,
+            dims,
+            bringup,
+        )?;
+        tally = tally.merge(item_tally);
+        next_hidden_states.append(&mut item_hidden_rows);
+    }
+
+    let continuation_tokens = u32::try_from(next_hidden_states.len()).unwrap_or(u32::MAX);
+    tally = tally.record_layer_continuation_tokens(continuation_tokens);
+    Some((next_hidden_states, tally))
+}
+
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn process_linear_attention_item(
+    artifacts: &NativeModelArtifacts,
+    _request_id: crate::ids::RequestId,
+    position_start: usize,
+    hidden_states: &[Vec<f32>],
+    layer_state: &mut MetalLinearLayerState,
+    attention_norm: &MetalNativeTensorBufferBinding,
+    in_proj_qkv: &MetalNativeTensorBufferBinding,
+    in_proj_z: &MetalNativeTensorBufferBinding,
+    in_proj_a: &MetalNativeTensorBufferBinding,
+    in_proj_b: &MetalNativeTensorBufferBinding,
+    conv1d: &MetalNativeTensorBufferBinding,
+    dt_bias: &[f32],
+    a_log: &[f32],
+    linear_norm: &MetalNativeTensorBufferBinding,
+    out_proj: &MetalNativeTensorBufferBinding,
+    layer: &MetalNativeLayerBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    ffn_norm: &MetalNativeTensorBufferBinding,
+    ffn_down: &MetalNativeTensorBufferBinding,
+    dims: ResolvedLinearAttentionDims,
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<(Vec<Vec<f32>>, PrefixAttentionExecutionTally)> {
+    if position_start < layer_state.processed_tokens {
+        if position_start == 0 {
+            reset_linear_layer_state(layer_state, dims);
+        } else {
+            return None;
+        }
+    }
+    if position_start != layer_state.processed_tokens {
+        return None;
+    }
+
+    let mut normalized_hidden_states = hidden_states
+        .iter()
+        .map(|hidden_state| {
+            hidden_state
+                .get(..dims.hidden_dim)
+                .map(|slice| slice.to_vec())
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mut tally = apply_batched_row_rms_norm_with_binding_in_place_with_tally(
+        &mut normalized_hidden_states,
+        dims.hidden_dim,
+        attention_norm,
+        native_model_rms_norm_epsilon(artifacts),
+        native_model_rms_norm_weight_offset(artifacts),
+        bringup,
+    )?;
+
+    let (qkv_rows, qkv_tally) = project_batched_matrix_rows_with_tally(
+        in_proj_qkv,
+        0,
+        dims.conv_dim,
+        &normalized_hidden_states,
+        dims.hidden_dim,
+        bringup,
+    )?;
+    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(qkv_tally));
+    let (z_rows, z_tally) = project_batched_matrix_rows_with_tally(
+        in_proj_z,
+        0,
+        dims.value_dim,
+        &normalized_hidden_states,
+        dims.hidden_dim,
+        bringup,
+    )?;
+    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(z_tally));
+    let (a_rows, a_tally) = project_batched_matrix_rows_with_tally(
+        in_proj_a,
+        0,
+        dims.num_value_heads,
+        &normalized_hidden_states,
+        dims.hidden_dim,
+        bringup,
+    )?;
+    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(a_tally));
+    let (b_rows, b_tally) = project_batched_matrix_rows_with_tally(
+        in_proj_b,
+        0,
+        dims.num_value_heads,
+        &normalized_hidden_states,
+        dims.hidden_dim,
+        bringup,
+    )?;
+    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(b_tally));
+
+    let (mut q_rows, mut k_rows, v_rows) =
+        apply_linear_attention_conv_rows(conv1d, &qkv_rows, &mut layer_state.conv_state, dims)?;
+    tally = tally.record_projection_rows(q_rows.len().checked_mul(dims.conv_dim)?, false);
+    tally = tally.merge(
+        apply_batched_per_head_rms_norm_rows_without_weights_with_tally(
+            &mut q_rows,
+            dims.num_key_heads,
+            dims.key_head_dim,
+            native_model_rms_norm_epsilon(artifacts),
+            bringup,
+        )?,
+    );
+    tally = tally.merge(
+        apply_batched_per_head_rms_norm_rows_without_weights_with_tally(
+            &mut k_rows,
+            dims.num_key_heads,
+            dims.key_head_dim,
+            native_model_rms_norm_epsilon(artifacts),
+            bringup,
+        )?,
+    );
+
+    let (mut linear_outputs, used_native_recurrent) = apply_linear_attention_recurrent_with_state(
+        &q_rows,
+        &k_rows,
+        &v_rows,
+        &a_rows,
+        &b_rows,
+        dt_bias,
+        a_log,
+        &mut layer_state.ssm_state,
+        dims,
+        bringup,
+    )?;
+    tally = tally.record_projection_rows(
+        linear_outputs.len().checked_mul(dims.value_dim)?,
+        used_native_recurrent,
+    );
+    tally = tally.merge(apply_batched_per_head_rms_norm_rows_with_tally(
+        &mut linear_outputs,
+        dims.num_value_heads,
+        dims.value_head_dim,
+        linear_norm,
+        native_model_rms_norm_epsilon(artifacts),
+        native_model_rms_norm_weight_offset(artifacts),
+        bringup,
+    )?);
+    apply_linear_attention_gate_in_place(&mut linear_outputs, &z_rows, dims)?;
+
+    let (attention_hidden_rows, attention_tally) = project_batched_matrix_rows_with_tally(
+        out_proj,
+        0,
+        dims.hidden_dim,
+        &linear_outputs,
+        dims.value_dim,
+        bringup,
+    )?;
+    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
+        attention_tally,
+    ));
+
+    let residual_rows = hidden_states
+        .iter()
+        .map(|hidden_state| {
+            hidden_state
+                .get(..dims.hidden_dim)
+                .map(|slice| slice.to_vec())
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mut hidden_after_attention = attention_hidden_rows;
+    let used_native_attention_residual_add = add_batched_rows_in_place_with_path(
+        &mut hidden_after_attention,
+        &residual_rows,
+        dims.hidden_dim,
+        bringup,
+    )?;
+    tally = tally.record_residual_add_elements(
+        hidden_after_attention.len().checked_mul(dims.hidden_dim)?,
+        used_native_attention_residual_add,
+    );
+
+    let mut ffn_hidden_states = hidden_after_attention.clone();
+    tally = tally.merge(apply_batched_row_rms_norm_with_binding_in_place_with_tally(
+        &mut ffn_hidden_states,
+        dims.hidden_dim,
+        ffn_norm,
+        native_model_rms_norm_epsilon(artifacts),
+        native_model_rms_norm_weight_offset(artifacts),
+        bringup,
+    )?);
+    let (mut gate_rows, up_rows, gate_up_tally) = project_batched_ffn_gate_up_with_tally(
+        &layer.ffn_gate_up,
+        buffers,
+        resolved_ffn_intermediate_dim(
+            &layer.ffn_gate_up,
+            buffers,
+            tensor_matrix_dimensions(&ffn_down.meta.spec)?.1,
+        )?,
+        &ffn_hidden_states,
+        dims.hidden_dim,
+        bringup,
+    )?;
+    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
+        gate_up_tally,
+    ));
+    let intermediate_dim = gate_rows.first().map(Vec::len)?;
+    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
+        apply_batched_model_gate_up_product_in_place_with_tally(
+            artifacts,
+            &mut gate_rows,
+            &up_rows,
+            intermediate_dim,
+            bringup,
+        )?,
+    ));
+    let (ffn_output_rows, ffn_down_tally) = project_batched_matrix_rows_with_tally(
+        ffn_down,
+        0,
+        dims.hidden_dim,
+        &gate_rows,
+        intermediate_dim,
+        bringup,
+    )?;
+    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
+        ffn_down_tally,
+    ));
+
+    let mut next_hidden_states = hidden_after_attention;
+    let used_native_ffn_residual_add = add_batched_rows_in_place_with_path(
+        &mut next_hidden_states,
+        &ffn_output_rows,
+        dims.hidden_dim,
+        bringup,
+    )?;
+    tally = tally.record_residual_add_elements(
+        next_hidden_states.len().checked_mul(dims.hidden_dim)?,
+        used_native_ffn_residual_add,
+    );
+    layer_state.processed_tokens = layer_state
+        .processed_tokens
+        .checked_add(next_hidden_states.len())?;
+    Some((next_hidden_states, tally))
+}
+
+#[cfg(target_os = "macos")]
+fn reset_linear_layer_state(
+    layer_state: &mut MetalLinearLayerState,
+    dims: ResolvedLinearAttentionDims,
+) {
+    layer_state.processed_tokens = 0;
+    layer_state.conv_state.clear();
+    layer_state.conv_state.resize(
+        (dims.conv_kernel_dim.saturating_sub(1)).saturating_mul(dims.conv_dim),
+        0.0,
+    );
+    layer_state.ssm_state.clear();
+    layer_state.ssm_state.resize(
+        dims.num_value_heads
+            .saturating_mul(dims.value_head_dim)
+            .saturating_mul(dims.key_head_dim),
+        0.0,
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn apply_linear_attention_conv_rows(
+    conv1d: &MetalNativeTensorBufferBinding,
+    qkv_rows: &[Vec<f32>],
+    conv_state: &mut Vec<f32>,
+    dims: ResolvedLinearAttentionDims,
+) -> Option<(Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+    if conv_state.len()
+        != dims
+            .conv_kernel_dim
+            .saturating_sub(1)
+            .checked_mul(dims.conv_dim)?
+    {
+        conv_state.clear();
+        conv_state.resize(
+            dims.conv_kernel_dim
+                .saturating_sub(1)
+                .checked_mul(dims.conv_dim)?,
+            0.0,
+        );
+    }
+    let mut q_rows = Vec::with_capacity(qkv_rows.len());
+    let mut k_rows = Vec::with_capacity(qkv_rows.len());
+    let mut v_rows = Vec::with_capacity(qkv_rows.len());
+    for qkv in qkv_rows {
+        let mut conv_out = vec![0.0_f32; dims.conv_dim];
+        for channel in 0..dims.conv_dim {
+            let mut acc = 0.0_f32;
+            for tap in 0..dims.conv_kernel_dim.saturating_sub(1) {
+                let state_index = tap.checked_mul(dims.conv_dim)?.checked_add(channel)?;
+                acc += conv_state.get(state_index).copied()?
+                    * linear_attention_conv_weight(conv1d, dims, channel, tap)?;
+            }
+            acc += qkv.get(channel).copied()?
+                * linear_attention_conv_weight(conv1d, dims, channel, dims.conv_kernel_dim - 1)?;
+            conv_out[channel] = silu(acc);
+        }
+        if dims.conv_kernel_dim > 1 {
+            for tap in 0..dims.conv_kernel_dim - 2 {
+                let dst = tap.checked_mul(dims.conv_dim)?;
+                let src = (tap + 1).checked_mul(dims.conv_dim)?;
+                let moved = conv_state.get(src..src + dims.conv_dim)?.to_vec();
+                conv_state
+                    .get_mut(dst..dst + dims.conv_dim)?
+                    .copy_from_slice(&moved);
+            }
+            let tail_base = (dims.conv_kernel_dim - 2).checked_mul(dims.conv_dim)?;
+            conv_state
+                .get_mut(tail_base..tail_base + dims.conv_dim)?
+                .copy_from_slice(qkv.get(..dims.conv_dim)?);
+        }
+        q_rows.push(conv_out.get(..dims.key_dim)?.to_vec());
+        k_rows.push(conv_out.get(dims.key_dim..dims.key_dim * 2)?.to_vec());
+        v_rows.push(conv_out.get(dims.key_dim * 2..dims.conv_dim)?.to_vec());
+    }
+    Some((q_rows, k_rows, v_rows))
+}
+
+#[cfg(target_os = "macos")]
+fn linear_attention_conv_weight(
+    conv1d: &MetalNativeTensorBufferBinding,
+    dims: ResolvedLinearAttentionDims,
+    channel: usize,
+    tap: usize,
+) -> Option<f32> {
+    if channel >= dims.conv_dim || tap >= dims.conv_kernel_dim {
+        return None;
+    }
+    tensor_scalar_f32(
+        conv1d,
+        channel
+            .checked_mul(dims.conv_kernel_dim)?
+            .checked_add(tap)?,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn apply_linear_attention_recurrent_with_state(
+    q_rows: &[Vec<f32>],
+    k_rows: &[Vec<f32>],
+    v_rows: &[Vec<f32>],
+    a_rows: &[Vec<f32>],
+    b_rows: &[Vec<f32>],
+    dt_bias: &[f32],
+    a_log: &[f32],
+    state: &mut Vec<f32>,
+    dims: ResolvedLinearAttentionDims,
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<(Vec<Vec<f32>>, bool)> {
+    let expected_state_len = dims
+        .num_value_heads
+        .checked_mul(dims.value_head_dim)?
+        .checked_mul(dims.key_head_dim)?;
+    if state.len() != expected_state_len {
+        state.clear();
+        state.resize(expected_state_len, 0.0);
+    }
+
+    let mut outputs = Vec::with_capacity(q_rows.len());
+    let mut used_native = false;
+    if q_rows.len() == 1 {
+        let g = compute_linear_attention_decay(a_rows.first()?, a_log, dt_bias)?;
+        let beta = compute_linear_attention_beta(b_rows.first()?)?;
+        if let Some((output, next_state)) = linear_attention_single_step_with_optional_native_path(
+            bringup,
+            q_rows.first()?,
+            k_rows.first()?,
+            v_rows.first()?,
+            &g,
+            &beta,
+            state,
+            dims,
+        ) {
+            *state = next_state;
+            outputs.push(output);
+            used_native = true;
+            return Some((outputs, used_native));
+        }
+    }
+
+    for (((q_row, k_row), v_row), (a_row, b_row)) in q_rows
+        .iter()
+        .zip(k_rows.iter())
+        .zip(v_rows.iter())
+        .zip(a_rows.iter().zip(b_rows.iter()))
+    {
+        let g = compute_linear_attention_decay(a_row, a_log, dt_bias)?;
+        let beta = compute_linear_attention_beta(b_row)?;
+        outputs.push(apply_linear_attention_recurrent_step_cpu(
+            q_row, k_row, v_row, &g, &beta, state, dims,
+        )?);
+    }
+    Some((outputs, used_native))
+}
+
+#[cfg(target_os = "macos")]
+fn linear_gated_delta_feedback_key(batch_size: usize, dims: ResolvedLinearAttentionDims) -> String {
+    format!(
+        "linear_gated_delta_step_f32:{batch_size}:{}:{}:{}:{}",
+        dims.num_key_heads, dims.num_value_heads, dims.key_head_dim, dims.value_head_dim
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn linear_attention_single_step_with_optional_native_path(
+    bringup: Option<&MetalRuntimeBringup>,
+    q_row: &[f32],
+    k_row: &[f32],
+    v_row: &[f32],
+    g: &[f32],
+    beta: &[f32],
+    state_in: &[f32],
+    dims: ResolvedLinearAttentionDims,
+) -> Option<(Vec<f32>, Vec<f32>)> {
+    let bringup = bringup?;
+    if q_row.len() != dims.key_dim
+        || k_row.len() != dims.key_dim
+        || v_row.len() != dims.value_dim
+        || g.len() != dims.num_value_heads
+        || beta.len() != dims.num_value_heads
+        || state_in.len()
+            != dims
+                .num_value_heads
+                .checked_mul(dims.value_head_dim)?
+                .checked_mul(dims.key_head_dim)?
+    {
+        return None;
+    }
+
+    let (kernel_name, pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .linear_gated_delta_step_kernel()?;
+    let feedback_key = linear_gated_delta_feedback_key(1, dims);
+    if !optional_kernel_allowed(bringup, &feedback_key) {
+        return None;
+    }
+
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let q_buffer = new_shared_buffer_with_data(&bringup.state.device, q_row);
+            let k_buffer = new_shared_buffer_with_data(&bringup.state.device, k_row);
+            let v_buffer = new_shared_buffer_with_data(&bringup.state.device, v_row);
+            let g_buffer = new_shared_buffer_with_data(&bringup.state.device, g);
+            let beta_buffer = new_shared_buffer_with_data(&bringup.state.device, beta);
+            let state_buffer = new_shared_buffer_with_data(&bringup.state.device, state_in);
+            let output_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(v_row.len()),
+            );
+            let state_out_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(state_in.len()),
+            );
+
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.linear_gated_delta_step");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.linear_gated_delta_step.compute");
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&q_buffer), 0);
+            encoder.set_buffer(1, Some(&k_buffer), 0);
+            encoder.set_buffer(2, Some(&v_buffer), 0);
+            encoder.set_buffer(3, Some(&g_buffer), 0);
+            encoder.set_buffer(4, Some(&beta_buffer), 0);
+            encoder.set_buffer(5, Some(&state_buffer), 0);
+            encoder.set_buffer(6, Some(&output_buffer), 0);
+            encoder.set_buffer(7, Some(&state_out_buffer), 0);
+            set_linear_gated_delta_dispatch_params(encoder, 8, 1, dims);
+            encoder.dispatch_threads(
+                MTLSize::new(
+                    pipeline.pipeline.thread_execution_width().max(32),
+                    dims.value_head_dim.max(1) as u64,
+                    dims.num_value_heads.max(1) as u64,
+                ),
+                MTLSize::new(
+                    pipeline.pipeline.thread_execution_width().max(1).min(64),
+                    1,
+                    1,
+                ),
+            );
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+
+            if command_buffer_status(command_buffer.status()) != MetalCommandBufferStatus::Completed
+            {
+                return None;
+            }
+
+            let output =
+                read_shared_buffer_prefix(&output_buffer, saturating_usize_to_u32(v_row.len()));
+            let state_out = read_shared_buffer_prefix(
+                &state_out_buffer,
+                saturating_usize_to_u32(state_in.len()),
+            );
+            (output.len() == v_row.len()
+                && state_out.len() == state_in.len()
+                && output.iter().all(|value| value.is_finite())
+                && state_out.iter().all(|value| value.is_finite()))
+            .then_some((output, state_out))
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
+    output
+}
+
+#[cfg(target_os = "macos")]
+fn compute_linear_attention_beta(beta_row: &[f32]) -> Option<Vec<f32>> {
+    Some(
+        beta_row
+            .iter()
+            .map(|value| sigmoid(*value))
+            .collect::<Vec<_>>(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn compute_linear_attention_decay(
+    a_row: &[f32],
+    a_log: &[f32],
+    dt_bias: &[f32],
+) -> Option<Vec<f32>> {
+    if a_row.len() != a_log.len() || a_row.len() != dt_bias.len() {
+        return None;
+    }
+    Some(
+        a_row
+            .iter()
+            .zip(a_log.iter())
+            .zip(dt_bias.iter())
+            .map(|((a, a_log), dt_bias)| (-a_log.exp() * softplus(*a + *dt_bias)).exp())
+            .collect::<Vec<_>>(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn apply_linear_attention_recurrent_step_cpu(
+    q_row: &[f32],
+    k_row: &[f32],
+    v_row: &[f32],
+    g: &[f32],
+    beta: &[f32],
+    state: &mut [f32],
+    dims: ResolvedLinearAttentionDims,
+) -> Option<Vec<f32>> {
+    let mut output = vec![0.0_f32; dims.value_dim];
+    for value_head in 0..dims.num_value_heads {
+        let key_head = value_head.checked_div(dims.repeat_factor)?;
+        let q_head = q_row.get(
+            key_head.checked_mul(dims.key_head_dim)?
+                ..(key_head + 1).checked_mul(dims.key_head_dim)?,
+        )?;
+        let k_head = k_row.get(
+            key_head.checked_mul(dims.key_head_dim)?
+                ..(key_head + 1).checked_mul(dims.key_head_dim)?,
+        )?;
+        let v_head = v_row.get(
+            value_head.checked_mul(dims.value_head_dim)?
+                ..(value_head + 1).checked_mul(dims.value_head_dim)?,
+        )?;
+        let output_head = output.get_mut(
+            value_head.checked_mul(dims.value_head_dim)?
+                ..(value_head + 1).checked_mul(dims.value_head_dim)?,
+        )?;
+        for value_lane in 0..dims.value_head_dim {
+            let state_base = value_head
+                .checked_mul(dims.value_head_dim)?
+                .checked_add(value_lane)?
+                .checked_mul(dims.key_head_dim)?;
+            let mut kv_mem = 0.0_f32;
+            for key_lane in 0..dims.key_head_dim {
+                let idx = state_base.checked_add(key_lane)?;
+                let decayed = state.get(idx).copied()? * g.get(value_head).copied()?;
+                state.get_mut(idx).map(|slot| *slot = decayed)?;
+                kv_mem += decayed * k_head.get(key_lane).copied()?;
+            }
+            let delta =
+                (v_head.get(value_lane).copied()? - kv_mem) * beta.get(value_head).copied()?;
+            let mut head_out = 0.0_f32;
+            for key_lane in 0..dims.key_head_dim {
+                let idx = state_base.checked_add(key_lane)?;
+                let updated = state.get(idx).copied()? + k_head.get(key_lane).copied()? * delta;
+                state.get_mut(idx).map(|slot| *slot = updated)?;
+                head_out += updated * q_head.get(key_lane).copied()?;
+            }
+            output_head[value_lane] = head_out;
+        }
+    }
+    Some(output)
+}
+
+#[cfg(target_os = "macos")]
+fn apply_linear_attention_gate_in_place(
+    outputs: &mut [Vec<f32>],
+    z_rows: &[Vec<f32>],
+    dims: ResolvedLinearAttentionDims,
+) -> Option<()> {
+    if outputs.len() != z_rows.len() {
+        return None;
+    }
+    for (output_row, z_row) in outputs.iter_mut().zip(z_rows.iter()) {
+        if output_row.len() < dims.value_dim || z_row.len() < dims.value_dim {
+            return None;
+        }
+        for (output, gate) in output_row
+            .get_mut(..dims.value_dim)?
+            .iter_mut()
+            .zip(z_row.get(..dims.value_dim)?.iter())
+        {
+            *output *= silu(*gate);
+        }
+    }
+    Some(())
+}
+
+#[cfg(target_os = "macos")]
+fn sigmoid(value: f32) -> f32 {
+    1.0 / (1.0 + (-value).exp())
+}
+
+#[cfg(target_os = "macos")]
+fn softplus(value: f32) -> f32 {
+    if value > 20.0 {
+        value
+    } else {
+        (1.0 + value.exp()).ln()
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -12100,6 +13174,28 @@ fn set_vector_add_dispatch_params(
         buffer_index,
         size_of::<VectorAddDispatchParams>() as u64,
         (&params as *const VectorAddDispatchParams).cast(),
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn set_linear_gated_delta_dispatch_params(
+    encoder: &metal::ComputeCommandEncoderRef,
+    buffer_index: u64,
+    batch_size: u32,
+    dims: ResolvedLinearAttentionDims,
+) {
+    let params = LinearGatedDeltaDispatchParams {
+        batch_size,
+        num_key_heads: saturating_usize_to_u32(dims.num_key_heads),
+        num_value_heads: saturating_usize_to_u32(dims.num_value_heads),
+        key_head_dim: saturating_usize_to_u32(dims.key_head_dim),
+        value_head_dim: saturating_usize_to_u32(dims.value_head_dim),
+        repeat_factor: saturating_usize_to_u32(dims.repeat_factor),
+    };
+    encoder.set_bytes(
+        buffer_index,
+        size_of::<LinearGatedDeltaDispatchParams>() as u64,
+        (&params as *const LinearGatedDeltaDispatchParams).cast(),
     );
 }
 

@@ -973,6 +973,7 @@ impl EngineCore {
         let mut free_results = Vec::with_capacity(pending.len());
         for request_id in pending {
             let free_result = self.kv_manager.free(request_id)?;
+            self.runner.release_request_state(request_id);
             self.request_manager.mark_terminal_cleaned(request_id)?;
             free_results.push(free_result);
         }
