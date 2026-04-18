@@ -1760,6 +1760,11 @@ mod tests {
     fn native_placeholder_session_config() -> EngineSessionConfig {
         EngineSessionConfig {
             allow_deterministic_native_fallback: true,
+            // Explicitly clear auto-detected repo artifacts so the test
+            // exercises the deterministic placeholder path regardless of
+            // working directory.
+            native_runtime_artifacts_dir: None,
+            native_runtime_artifacts_source: None,
             ..EngineSessionConfig::default()
         }
     }
@@ -2307,8 +2312,14 @@ sys.stdout.write(f"session::{prompt}")
 
     #[test]
     fn native_session_requires_validated_artifacts_without_explicit_placeholder_opt_in() {
-        let error = EngineSession::new(EngineSessionConfig::default())
-            .expect_err("native session should fail closed");
+        let error = EngineSession::new(EngineSessionConfig {
+            // Explicitly clear auto-detected repo artifacts so the test
+            // exercises the "no artifacts" path regardless of working directory.
+            native_runtime_artifacts_dir: None,
+            native_runtime_artifacts_source: None,
+            ..EngineSessionConfig::default()
+        })
+        .expect_err("native session should fail closed");
 
         assert!(matches!(
             error,
