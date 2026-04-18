@@ -769,6 +769,10 @@ fn metal_dispatch_dict<'py>(py: Python<'py>, report: &MetalDispatchStepReport) -
         report.runtime_model_buffer_bytes,
     )
     .expect("runtime_model_buffer_bytes should serialize");
+    if let Some(model_family) = report.runtime_model_family.as_deref() {
+        dict.set_item("runtime_model_family", model_family)
+            .expect("runtime_model_family should serialize");
+    }
     dict.set_item(
         "execution_direct_decode_token_count",
         report.execution_direct_decode_token_count,

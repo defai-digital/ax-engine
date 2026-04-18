@@ -7,13 +7,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
-    MetalKernelSpec, MetalKernelTier, MetalRuntimeError,
-    PHASE1_METAL_KERNEL_MANIFEST_SCHEMA_VERSION, PHASE1_METAL_BUILD_REPORT_SCHEMA_VERSION,
-    PHASE1_METAL_NATIVE_TARGET, PHASE1_METAL_LANGUAGE_STANDARD,
-    PHASE1_METAL_LIBRARY_NAME, PHASE1_METAL_BUILD_GATE,
-    PHASE1_METAL_BLOCK_SIZE_ALIGNMENT_TOKENS, PHASE1_DEFAULT_BLOCK_SIZE_TOKENS,
-    PHASE1_SUPPORTED_BLOCK_SIZE_TOKENS,
-    PHASE1_REQUIRED_METAL_KERNELS, PHASE1_OPTIONAL_METAL_KERNELS, PHASE1_DEFERRED_METAL_KERNELS,
+    MetalKernelSpec, MetalKernelTier, MetalRuntimeError, PHASE1_DEFAULT_BLOCK_SIZE_TOKENS,
+    PHASE1_DEFERRED_METAL_KERNELS, PHASE1_METAL_BLOCK_SIZE_ALIGNMENT_TOKENS,
+    PHASE1_METAL_BUILD_GATE, PHASE1_METAL_BUILD_REPORT_SCHEMA_VERSION,
+    PHASE1_METAL_KERNEL_MANIFEST_SCHEMA_VERSION, PHASE1_METAL_LANGUAGE_STANDARD,
+    PHASE1_METAL_LIBRARY_NAME, PHASE1_METAL_NATIVE_TARGET, PHASE1_OPTIONAL_METAL_KERNELS,
+    PHASE1_REQUIRED_METAL_KERNELS, PHASE1_SUPPORTED_BLOCK_SIZE_TOKENS,
     REQUIRED_TOOLCHAIN_REQUIREMENTS,
 };
 
@@ -1177,7 +1176,7 @@ fn validate_phase1_block_size_policy(
     Ok(())
 }
 
-pub(super) fn validate_supported_block_size_tokens(
+fn validate_supported_block_size_tokens(
     block_size_tokens: u32,
     default_block_size_tokens: u32,
     supported_block_size_tokens: &[u32],
@@ -1407,7 +1406,7 @@ fn file_sha256(path: &Path) -> Result<String, MetalRuntimeError> {
     Ok(sha256_hex(&bytes))
 }
 
-pub fn sha256_hex(bytes: &[u8]) -> String {
+pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut text = String::with_capacity(digest.len() * 2);
     for byte in digest {
