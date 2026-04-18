@@ -83,6 +83,7 @@ struct RopeDispatchParams {
     uint key_head_count;
     uint head_dim;
     uint rope_style;
+    uint rotary_dim;
 };
 
 struct BatchedRopeDispatchParams {
@@ -92,6 +93,7 @@ struct BatchedRopeDispatchParams {
     uint head_dim;
     uint rope_style;
     float freq_base;
+    uint rotary_dim;
 };
 
 struct GroupedKvExpandParams {
@@ -119,6 +121,12 @@ struct LinearGatedDeltaParams {
     uint key_head_dim;
     uint value_head_dim;
     uint repeat_factor;
+};
+
+struct LinearAttentionConvParams {
+    uint batch_size;
+    uint conv_dim;
+    uint conv_kernel_dim;
 };
 
 kernel void reshape_and_cache(
@@ -364,6 +372,120 @@ kernel void linear_gated_delta_step_f32(
     out = simd_sum(out);
     if (lane == 0) {
         output[value_base + gid.y] = out;
+    }
+}
+
+kernel void linear_attention_conv1d_f32(
+    device const float* qkv [[buffer(0)]],
+    device const float* conv_weight [[buffer(1)]],
+    device const float* state_in [[buffer(2)]],
+    device float* output [[buffer(3)]],
+    device float* state_out [[buffer(4)]],
+    constant LinearAttentionConvParams& params [[buffer(5)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    uint total_elements = params.batch_size * params.conv_dim;
+    if (gid >= total_elements || params.conv_dim == 0 || params.conv_kernel_dim == 0) {
+        return;
+    }
+
+    uint batch_idx = gid / params.conv_dim;
+    uint channel = gid % params.conv_dim;
+    uint qkv_base = batch_idx * params.conv_dim;
+    uint state_batch_base = batch_idx * max(params.conv_kernel_dim - 1, 0u) * params.conv_dim;
+    float acc = 0.0f;
+    for (uint tap = 0; tap + 1 < params.conv_kernel_dim; ++tap) {
+        uint state_index = state_batch_base + tap * params.conv_dim + channel;
+        acc += state_in[state_index] * conv_weight[channel * params.conv_kernel_dim + tap];
+    }
+    acc += qkv[qkv_base + channel]
+        * conv_weight[channel * params.conv_kernel_dim + (params.conv_kernel_dim - 1)];
+    output[gid] = acc / (1.0f + exp(-acc));
+
+    if (params.conv_kernel_dim > 1) {
+        for (uint tap = 0; tap + 2 < params.conv_kernel_dim; ++tap) {
+            uint dst_index = state_batch_base + tap * params.conv_dim + channel;
+            uint src_index = state_batch_base + (tap + 1) * params.conv_dim + channel;
+            state_out[dst_index] = state_in[src_index];
+        }
+        uint tail_index = state_batch_base + (params.conv_kernel_dim - 2) * params.conv_dim + channel;
+        state_out[tail_index] = qkv[qkv_base + channel];
+    }
+}
+
+kernel void linear_attention_conv1d_f16(
+    device const float* qkv [[buffer(0)]],
+    device const half* conv_weight [[buffer(1)]],
+    device const float* state_in [[buffer(2)]],
+    device float* output [[buffer(3)]],
+    device float* state_out [[buffer(4)]],
+    constant LinearAttentionConvParams& params [[buffer(5)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    uint total_elements = params.batch_size * params.conv_dim;
+    if (gid >= total_elements || params.conv_dim == 0 || params.conv_kernel_dim == 0) {
+        return;
+    }
+
+    uint batch_idx = gid / params.conv_dim;
+    uint channel = gid % params.conv_dim;
+    uint qkv_base = batch_idx * params.conv_dim;
+    uint state_batch_base = batch_idx * max(params.conv_kernel_dim - 1, 0u) * params.conv_dim;
+    float acc = 0.0f;
+    for (uint tap = 0; tap + 1 < params.conv_kernel_dim; ++tap) {
+        uint state_index = state_batch_base + tap * params.conv_dim + channel;
+        acc += state_in[state_index] * float(conv_weight[channel * params.conv_kernel_dim + tap]);
+    }
+    acc += qkv[qkv_base + channel]
+        * float(conv_weight[channel * params.conv_kernel_dim + (params.conv_kernel_dim - 1)]);
+    output[gid] = acc / (1.0f + exp(-acc));
+
+    if (params.conv_kernel_dim > 1) {
+        for (uint tap = 0; tap + 2 < params.conv_kernel_dim; ++tap) {
+            uint dst_index = state_batch_base + tap * params.conv_dim + channel;
+            uint src_index = state_batch_base + (tap + 1) * params.conv_dim + channel;
+            state_out[dst_index] = state_in[src_index];
+        }
+        uint tail_index = state_batch_base + (params.conv_kernel_dim - 2) * params.conv_dim + channel;
+        state_out[tail_index] = qkv[qkv_base + channel];
+    }
+}
+
+kernel void linear_attention_conv1d_bf16(
+    device const float* qkv [[buffer(0)]],
+    device const bfloat* conv_weight [[buffer(1)]],
+    device const float* state_in [[buffer(2)]],
+    device float* output [[buffer(3)]],
+    device float* state_out [[buffer(4)]],
+    constant LinearAttentionConvParams& params [[buffer(5)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    uint total_elements = params.batch_size * params.conv_dim;
+    if (gid >= total_elements || params.conv_dim == 0 || params.conv_kernel_dim == 0) {
+        return;
+    }
+
+    uint batch_idx = gid / params.conv_dim;
+    uint channel = gid % params.conv_dim;
+    uint qkv_base = batch_idx * params.conv_dim;
+    uint state_batch_base = batch_idx * max(params.conv_kernel_dim - 1, 0u) * params.conv_dim;
+    float acc = 0.0f;
+    for (uint tap = 0; tap + 1 < params.conv_kernel_dim; ++tap) {
+        uint state_index = state_batch_base + tap * params.conv_dim + channel;
+        acc += state_in[state_index] * float(conv_weight[channel * params.conv_kernel_dim + tap]);
+    }
+    acc += qkv[qkv_base + channel]
+        * float(conv_weight[channel * params.conv_kernel_dim + (params.conv_kernel_dim - 1)]);
+    output[gid] = acc / (1.0f + exp(-acc));
+
+    if (params.conv_kernel_dim > 1) {
+        for (uint tap = 0; tap + 2 < params.conv_kernel_dim; ++tap) {
+            uint dst_index = state_batch_base + tap * params.conv_dim + channel;
+            uint src_index = state_batch_base + (tap + 1) * params.conv_dim + channel;
+            state_out[dst_index] = state_in[src_index];
+        }
+        uint tail_index = state_batch_base + (params.conv_kernel_dim - 2) * params.conv_dim + channel;
+        state_out[tail_index] = qkv[qkv_base + channel];
     }
 }
 
@@ -889,6 +1011,53 @@ kernel void ffn_gate_gelu_approx_product_f32(
     output[gid] = activated * up[gid];
 }
 
+kernel void linear_attention_gate_silu_f32(
+    device const float* gate [[buffer(0)]],
+    device const float* input [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant FfnGateProductParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= params.element_count) {
+        return;
+    }
+
+    float gate_value = gate[gid];
+    float activated = gate_value / (1.0f + exp(-gate_value));
+    output[gid] = activated * input[gid];
+}
+
+kernel void linear_attention_beta_sigmoid_f32(
+    device const float* input [[buffer(0)]],
+    device float* output [[buffer(1)]],
+    constant FfnGateProductParams& params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= params.element_count) {
+        return;
+    }
+
+    float value = input[gid];
+    output[gid] = 1.0f / (1.0f + exp(-value));
+}
+
+kernel void linear_attention_decay_f32(
+    device const float* input [[buffer(0)]],
+    device const float* a_log [[buffer(1)]],
+    device const float* dt_bias [[buffer(2)]],
+    device float* output [[buffer(3)]],
+    constant FfnGateProductParams& params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= params.element_count) {
+        return;
+    }
+
+    float summed = input[gid] + dt_bias[gid];
+    float softplus = summed > 20.0f ? summed : log(1.0f + exp(summed));
+    output[gid] = exp(-exp(a_log[gid]) * softplus);
+}
+
 kernel void apply_rope_f32(
     device float* query [[buffer(0)]],
     device float* key [[buffer(1)]],
@@ -897,11 +1066,13 @@ kernel void apply_rope_f32(
     constant RopeDispatchParams& params [[buffer(4)]],
     uint gid [[thread_position_in_grid]]
 ) {
-    if (gid != 0 || params.head_dim == 0 || (params.head_dim % 2) != 0) {
+    if (gid != 0 || params.head_dim == 0 || (params.head_dim % 2) != 0
+        || params.rotary_dim == 0 || params.rotary_dim > params.head_dim
+        || (params.rotary_dim % 2) != 0) {
         return;
     }
 
-    uint half_dim = params.head_dim / 2;
+    uint half_dim = params.rotary_dim / 2;
     for (uint head = 0; head < params.query_head_count; head++) {
         uint head_base = head * params.head_dim;
         for (uint index = 0; index < half_dim; index++) {
@@ -954,7 +1125,9 @@ kernel void apply_rope_batched_f32(
     constant BatchedRopeDispatchParams& params [[buffer(3)]],
     uint gid [[thread_position_in_grid]]
 ) {
-    if (gid >= params.token_count || params.head_dim == 0 || (params.head_dim % 2) != 0) {
+    if (gid >= params.token_count || params.head_dim == 0 || (params.head_dim % 2) != 0
+        || params.rotary_dim == 0 || params.rotary_dim > params.head_dim
+        || (params.rotary_dim % 2) != 0) {
         return;
     }
 
@@ -963,9 +1136,9 @@ kernel void apply_rope_batched_f32(
         return;
     }
 
-    uint half_dim = params.head_dim / 2;
+    uint half_dim = params.rotary_dim / 2;
     float neg_log_base = -log(params.freq_base);
-    float dim_inv = 2.0f / float(params.head_dim);
+    float dim_inv = 2.0f / float(params.rotary_dim);
     uint query_token_base = gid * params.query_head_count * params.head_dim;
     uint key_token_base = gid * params.key_head_count * params.head_dim;
 

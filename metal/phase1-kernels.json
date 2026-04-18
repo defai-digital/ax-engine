@@ -186,6 +186,21 @@
       "purpose": "single-step depthwise conv1d over bf16 linear-attention QKV staging"
     },
     {
+      "name": "linear_attention_gate_silu_f32",
+      "tier": "optional",
+      "purpose": "batched SiLU gating over AX-native linear-attention recurrent outputs"
+    },
+    {
+      "name": "linear_attention_beta_sigmoid_f32",
+      "tier": "optional",
+      "purpose": "batched sigmoid beta precompute over AX-native linear-attention heads"
+    },
+    {
+      "name": "linear_attention_decay_f32",
+      "tier": "optional",
+      "purpose": "batched decay precompute over AX-native linear-attention heads"
+    },
+    {
       "name": "linear_gated_delta_step_f32",
       "tier": "optional",
       "purpose": "single-step recurrent linear-attention update over AX-native dense states"

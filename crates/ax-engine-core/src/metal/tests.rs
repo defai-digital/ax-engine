@@ -69,6 +69,12 @@ fn optional_kernel_dispatch_plan_tracks_available_hot_path_kernels() {
         "apply_rope_batched_f32".to_string(),
         "expand_grouped_kv_heads_f32".to_string(),
         "ffn_gate_gelu_approx_product_f32".to_string(),
+        "linear_attention_conv1d_f32".to_string(),
+        "linear_attention_conv1d_f16".to_string(),
+        "linear_attention_conv1d_bf16".to_string(),
+        "linear_attention_gate_silu_f32".to_string(),
+        "linear_attention_beta_sigmoid_f32".to_string(),
+        "linear_attention_decay_f32".to_string(),
     ]);
 
     let plan = build_optional_kernel_dispatch_plan(&lookup);
@@ -115,6 +121,33 @@ fn optional_kernel_dispatch_plan_tracks_available_hot_path_kernels() {
             .map(|(name, _)| name),
         Some("ffn_gate_gelu_approx_product_f32")
     );
+    assert_eq!(
+        plan.linear_attention_conv1d_kernel(NativeTensorDataType::F32)
+            .map(|(name, _)| name),
+        Some("linear_attention_conv1d_f32")
+    );
+    assert_eq!(
+        plan.linear_attention_conv1d_kernel(NativeTensorDataType::F16)
+            .map(|(name, _)| name),
+        Some("linear_attention_conv1d_f16")
+    );
+    assert_eq!(
+        plan.linear_attention_conv1d_kernel(NativeTensorDataType::Bf16)
+            .map(|(name, _)| name),
+        Some("linear_attention_conv1d_bf16")
+    );
+    assert_eq!(
+        plan.linear_attention_gate_kernel().map(|(name, _)| name),
+        Some("linear_attention_gate_silu_f32")
+    );
+    assert_eq!(
+        plan.linear_attention_beta_kernel().map(|(name, _)| name),
+        Some("linear_attention_beta_sigmoid_f32")
+    );
+    assert_eq!(
+        plan.linear_attention_decay_kernel().map(|(name, _)| name),
+        Some("linear_attention_decay_f32")
+    );
     assert_eq!(plan.ffn_gate_product_kernel(ModelFfnActivation::Silu), None);
 }
 
@@ -141,6 +174,83 @@ fn batched_linear_attention_decode_candidate_indices_only_include_single_token_i
         batched_linear_attention_decode_candidate_indices(&items),
         vec![0, 2]
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn batched_linear_attention_decode_projected_candidate_indices_only_include_single_token_items() {
+    let make_item = |request_id: u64, token_count: usize| ProjectedLinearAttentionItem {
+        request_id: RequestId(request_id),
+        token_count,
+        qkv_rows: vec![vec![0.1, 0.2, 0.3, 0.4]; token_count],
+        z_rows: vec![vec![0.5, 0.6]; token_count],
+        a_rows: vec![vec![0.7]; token_count],
+        b_rows: vec![vec![0.8]; token_count],
+        residual_rows: vec![vec![0.0, 0.0]; token_count],
+        state_before: vec![0.0, 0.0],
+        pre_recurrent_tally: PrefixAttentionExecutionTally::default(),
+    };
+
+    let items = vec![make_item(1, 1), make_item(2, 3), make_item(3, 1)];
+
+    assert_eq!(
+        batched_linear_attention_decode_projected_candidate_indices(&items),
+        vec![0, 2]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn linear_attention_decode_candidate_partition_skips_disabled_batched_shape() {
+    let candidate_indices = vec![0, 1, 2, 3];
+    let dims = ResolvedLinearAttentionDims {
+        hidden_dim: 16,
+        num_value_heads: 4,
+        num_key_heads: 2,
+        key_head_dim: 8,
+        value_head_dim: 4,
+        conv_kernel_dim: 3,
+        key_dim: 16,
+        value_dim: 16,
+        conv_dim: 48,
+        repeat_factor: 2,
+    };
+    let mut feedback = MetalOptionalKernelFeedbackState::default();
+    let failing_key = linear_gated_delta_feedback_key(candidate_indices.len(), dims);
+    for _ in 0..PHASE1_OPTIONAL_KERNEL_DISABLE_FAILURE_THRESHOLD {
+        record_optional_kernel_feedback_state(&mut feedback, &failing_key, false);
+    }
+
+    let mut group_allowed = |candidate: &[usize]| {
+        let key = linear_gated_delta_feedback_key(candidate.len(), dims);
+        optional_kernel_allowed_in_feedback_state(&feedback, &key)
+    };
+    let partitions = partition_linear_attention_decode_candidate_indices_by_batched_viability(
+        candidate_indices,
+        &mut group_allowed,
+    );
+
+    assert_eq!(partitions, vec![vec![0, 1], vec![2, 3]]);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn linear_attention_decode_candidate_partition_keeps_allowed_or_singleton_shapes() {
+    let mut always_allowed = |_: &[usize]| true;
+    let allowed_partitions =
+        partition_linear_attention_decode_candidate_indices_by_batched_viability(
+            vec![0, 1],
+            &mut always_allowed,
+        );
+    assert_eq!(allowed_partitions, vec![vec![0, 1]]);
+
+    let mut never_allowed = |_: &[usize]| false;
+    let singleton_partitions =
+        partition_linear_attention_decode_candidate_indices_by_batched_viability(
+            vec![3],
+            &mut never_allowed,
+        );
+    assert_eq!(singleton_partitions, vec![vec![3]]);
 }
 
 #[cfg(target_os = "macos")]
@@ -174,6 +284,55 @@ fn linear_gated_delta_feedback_key_distinguishes_batch_and_head_shape() {
                 ..dims
             }
         )
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn linear_attention_conv_feedback_key_distinguishes_conv_shape() {
+    let dims = ResolvedLinearAttentionDims {
+        hidden_dim: 16,
+        num_value_heads: 4,
+        num_key_heads: 2,
+        key_head_dim: 8,
+        value_head_dim: 4,
+        conv_kernel_dim: 3,
+        key_dim: 16,
+        value_dim: 16,
+        conv_dim: 48,
+        repeat_factor: 2,
+    };
+
+    assert_ne!(
+        linear_attention_conv_feedback_key(1, NativeTensorDataType::F32, dims),
+        linear_attention_conv_feedback_key(2, NativeTensorDataType::F32, dims)
+    );
+    assert_ne!(
+        linear_attention_conv_feedback_key(1, NativeTensorDataType::F32, dims),
+        linear_attention_conv_feedback_key(
+            1,
+            NativeTensorDataType::F32,
+            ResolvedLinearAttentionDims {
+                conv_kernel_dim: 5,
+                ..dims
+            }
+        )
+    );
+    assert_ne!(
+        linear_attention_conv_feedback_key(1, NativeTensorDataType::F32, dims),
+        linear_attention_conv_feedback_key(
+            1,
+            NativeTensorDataType::F32,
+            ResolvedLinearAttentionDims {
+                conv_dim: 64,
+                value_dim: 32,
+                ..dims
+            }
+        )
+    );
+    assert_ne!(
+        linear_attention_conv_feedback_key(1, NativeTensorDataType::F32, dims),
+        linear_attention_conv_feedback_key(1, NativeTensorDataType::Bf16, dims)
     );
 }
 
@@ -377,6 +536,191 @@ fn prefix_attention_group_split_policy_only_splits_when_batch_salvage_is_possibl
     assert!(!prefix_attention_group_should_split(1, true, true, true));
     assert!(!prefix_attention_group_should_split(4, false, false, false));
     assert!(!prefix_attention_group_should_split(4, false, true, true));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn direct_decode_batched_group_partition_skips_shapes_disabled_by_feedback() {
+    let dims = ModelBoundDecodeDims {
+        input_width: 128,
+        hidden_dim: 256,
+        intermediate_dim: 512,
+        vocab_rows: 1024,
+    };
+    let make_item = |request_id: u64| PreparedDirectDecodeItem {
+        request_id: RequestId(request_id),
+        dims,
+        hidden: vec![0.0; dims.hidden_dim],
+        attention_input: vec![0.0; dims.input_width],
+    };
+    let group = vec![make_item(1), make_item(2), make_item(3), make_item(4)];
+    let mut feedback = MetalOptionalKernelFeedbackState::default();
+    let failing_key = direct_decode_batched_group_feedback_key(group.len(), dims);
+    for _ in 0..PHASE1_OPTIONAL_KERNEL_DISABLE_FAILURE_THRESHOLD {
+        record_optional_kernel_feedback_state(&mut feedback, &failing_key, false);
+    }
+
+    let mut group_allowed = |candidate: &[PreparedDirectDecodeItem]| {
+        let key = direct_decode_batched_group_feedback_key(candidate.len(), dims);
+        optional_kernel_allowed_in_feedback_state(&feedback, &key)
+    };
+    let partitions =
+        partition_prepared_direct_decode_group_by_batched_viability(group, &mut group_allowed);
+
+    assert_eq!(partitions.len(), 2);
+    assert_eq!(partitions[0].len(), 2);
+    assert_eq!(partitions[1].len(), 2);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn direct_decode_batched_group_partition_keeps_allowed_or_singleton_shapes() {
+    let dims = ModelBoundDecodeDims {
+        input_width: 64,
+        hidden_dim: 64,
+        intermediate_dim: 128,
+        vocab_rows: 256,
+    };
+    let make_item = |request_id: u64| PreparedDirectDecodeItem {
+        request_id: RequestId(request_id),
+        dims,
+        hidden: vec![0.0; dims.hidden_dim],
+        attention_input: vec![0.0; dims.input_width],
+    };
+
+    let allowed_group = vec![make_item(1), make_item(2)];
+    let mut always_allowed = |_: &[PreparedDirectDecodeItem]| true;
+    let allowed_partitions = partition_prepared_direct_decode_group_by_batched_viability(
+        allowed_group,
+        &mut always_allowed,
+    );
+    assert_eq!(allowed_partitions.len(), 1);
+    assert_eq!(allowed_partitions[0].len(), 2);
+
+    let mut never_allowed = |_: &[PreparedDirectDecodeItem]| false;
+    let singleton_partitions = partition_prepared_direct_decode_group_by_batched_viability(
+        vec![make_item(3)],
+        &mut never_allowed,
+    );
+    assert_eq!(singleton_partitions.len(), 1);
+    assert_eq!(singleton_partitions[0].len(), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn prefix_attention_viability_partition_separates_mixed_prefill_and_decode_items() {
+    let input = sample_runner_input();
+    let mut group_allowed = |candidate_range: std::ops::Range<usize>| {
+        let group_items = input.execution_batch.items.get(candidate_range.clone())?;
+        let all_prefill = group_items
+            .iter()
+            .all(|item| item.mode == ExecutionMode::Prefill);
+        Some(all_prefill)
+    };
+
+    let partitions = partition_prefix_attention_item_range_by_group_predicate(
+        0..input.execution_batch.items.len(),
+        &mut group_allowed,
+    )
+    .expect("mixed batch should partition into native-viable and non-viable subranges");
+
+    assert_eq!(partitions, vec![0..1, 1..2]);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn prefix_attention_viability_partition_is_absent_for_uniform_native_viability() {
+    let prefill_input = sample_prefill_only_runner_input();
+    let decode_input = sample_decode_continuation_runner_input();
+    let mut always_allowed = |_| Some(true);
+    let mut never_allowed = |_| Some(false);
+
+    assert_eq!(
+        partition_prefix_attention_item_range_by_group_predicate(
+            0..prefill_input.execution_batch.items.len(),
+            &mut always_allowed,
+        ),
+        None
+    );
+    assert_eq!(
+        partition_prefix_attention_item_range_by_group_predicate(
+            0..decode_input.execution_batch.items.len(),
+            &mut never_allowed,
+        ),
+        None
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn prefix_attention_group_predicate_partitions_disabled_batch_shape_before_retry() {
+    let input = RunnerInput {
+        block_size_tokens: 16,
+        execution_batch: ExecutionBatch {
+            step_id: StepId(12),
+            model_id: "qwen3_dense".into(),
+            execution_plan_ref: Some("phase1.qwen3_dense.prefill_pair".into()),
+            items: vec![
+                ExecutionItem {
+                    request_id: RequestId(31),
+                    mode: ExecutionMode::Prefill,
+                    input_token_slice: vec![1, 2],
+                    reused_prefix_token_slice: Vec::new(),
+                    position_range: PositionRange {
+                        start: 0,
+                        end_exclusive: 2,
+                    },
+                    scheduled_token_count: 2,
+                    block_table_ref: RequestId(31),
+                    prefix_tokens_reused: 0,
+                    prefix_blocks_reused: 0,
+                },
+                ExecutionItem {
+                    request_id: RequestId(33),
+                    mode: ExecutionMode::Prefill,
+                    input_token_slice: vec![3, 4],
+                    reused_prefix_token_slice: Vec::new(),
+                    position_range: PositionRange {
+                        start: 0,
+                        end_exclusive: 2,
+                    },
+                    scheduled_token_count: 2,
+                    block_table_ref: RequestId(33),
+                    prefix_tokens_reused: 0,
+                    prefix_blocks_reused: 0,
+                },
+            ],
+            total_scheduled_tokens: 4,
+            route_metadata: RouteMetadata::empty(),
+        },
+        block_tables: vec![
+            crate::runner::ResolvedBlockTable {
+                request_id: RequestId(31),
+                block_table: BlockTableView {
+                    cache_group_id: CacheGroupId(1),
+                    block_ids: vec![BlockId(0)],
+                },
+            },
+            crate::runner::ResolvedBlockTable {
+                request_id: RequestId(33),
+                block_table: BlockTableView {
+                    cache_group_id: CacheGroupId(1),
+                    block_ids: vec![BlockId(1)],
+                },
+            },
+        ],
+    };
+    let mut only_singletons_allowed = |candidate_range: std::ops::Range<usize>| {
+        Some(candidate_range.end - candidate_range.start <= 1)
+    };
+
+    let partitions = partition_prefix_attention_item_range_by_group_predicate(
+        0..input.execution_batch.items.len(),
+        &mut only_singletons_allowed,
+    )
+    .expect("disabled two-item shape should split into singleton ranges");
+
+    assert_eq!(partitions, vec![0..1, 1..2]);
 }
 
 #[cfg(target_os = "macos")]
@@ -588,6 +932,7 @@ fn batched_rope_feedback_keys_disable_only_the_failing_shape() {
         8,
         2,
         128,
+        64,
         ModelStageRopeStyle::Neox,
     );
     let different_token_count = batched_rope_feedback_key(
@@ -596,6 +941,16 @@ fn batched_rope_feedback_keys_disable_only_the_failing_shape() {
         8,
         2,
         128,
+        64,
+        ModelStageRopeStyle::Neox,
+    );
+    let different_rotary_dim = batched_rope_feedback_key(
+        "apply_rope_batched_f32",
+        8,
+        8,
+        2,
+        128,
+        32,
         ModelStageRopeStyle::Neox,
     );
     let different_rope_style = batched_rope_feedback_key(
@@ -604,6 +959,7 @@ fn batched_rope_feedback_keys_disable_only_the_failing_shape() {
         8,
         2,
         128,
+        64,
         ModelStageRopeStyle::Interleaved,
     );
 
@@ -618,6 +974,10 @@ fn batched_rope_feedback_keys_disable_only_the_failing_shape() {
     assert!(optional_kernel_allowed_in_feedback_state(
         &feedback,
         &different_token_count
+    ));
+    assert!(optional_kernel_allowed_in_feedback_state(
+        &feedback,
+        &different_rotary_dim
     ));
     assert!(optional_kernel_allowed_in_feedback_state(
         &feedback,
@@ -728,14 +1088,18 @@ fn logits_argmax_feedback_keys_disable_only_the_failing_shape() {
 #[test]
 fn rope_feedback_keys_disable_only_the_failing_shape() {
     let mut feedback = MetalOptionalKernelFeedbackState::default();
-    let failing_shape = rope_feedback_key("apply_rope_f32", 8, 2, 128, ModelStageRopeStyle::Neox);
+    let failing_shape =
+        rope_feedback_key("apply_rope_f32", 8, 2, 128, 64, ModelStageRopeStyle::Neox);
     let different_head_dim =
-        rope_feedback_key("apply_rope_f32", 8, 2, 64, ModelStageRopeStyle::Neox);
+        rope_feedback_key("apply_rope_f32", 8, 2, 64, 64, ModelStageRopeStyle::Neox);
+    let different_rotary_dim =
+        rope_feedback_key("apply_rope_f32", 8, 2, 128, 32, ModelStageRopeStyle::Neox);
     let different_rope_style = rope_feedback_key(
         "apply_rope_f32",
         8,
         2,
         128,
+        64,
         ModelStageRopeStyle::Interleaved,
     );
 
@@ -750,6 +1114,10 @@ fn rope_feedback_keys_disable_only_the_failing_shape() {
     assert!(optional_kernel_allowed_in_feedback_state(
         &feedback,
         &different_head_dim
+    ));
+    assert!(optional_kernel_allowed_in_feedback_state(
+        &feedback,
+        &different_rotary_dim
     ));
     assert!(optional_kernel_allowed_in_feedback_state(
         &feedback,
@@ -953,6 +1321,8 @@ fn write_valid_native_model_fixture() -> PathBuf {
         rope_theta: None,
         query_pre_attn_scalar: None,
         attention_logit_softcap: None,
+        attn_output_gate: false,
+        partial_rotary_factor: None,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
@@ -1124,6 +1494,8 @@ fn write_projection_native_model_fixture() -> PathBuf {
         rope_theta: None,
         query_pre_attn_scalar: None,
         attention_logit_softcap: None,
+        attn_output_gate: false,
+        partial_rotary_factor: None,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
@@ -1318,6 +1690,23 @@ fn write_projection_custom_rope_native_model_fixture(rope_theta: u32) -> PathBuf
 }
 
 #[cfg(target_os = "macos")]
+fn write_projection_partial_rotary_native_model_fixture(partial_rotary_factor: f32) -> PathBuf {
+    let root_dir = write_projection_native_model_fixture();
+    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
+    let manifest_bytes = fs::read(&manifest_path).expect("projection manifest should read");
+    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
+        .expect("projection manifest should parse");
+    manifest.partial_rotary_factor = Some(partial_rotary_factor);
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("projection manifest should serialize"),
+    )
+    .expect("projection manifest should rewrite");
+
+    root_dir
+}
+
+#[cfg(target_os = "macos")]
 fn write_gemma_projection_native_model_fixture() -> PathBuf {
     let root_dir = write_projection_native_model_fixture();
     let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
@@ -1445,6 +1834,8 @@ fn write_grouped_projection_native_model_fixture() -> PathBuf {
         rope_theta: None,
         query_pre_attn_scalar: None,
         attention_logit_softcap: None,
+        attn_output_gate: false,
+        partial_rotary_factor: None,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
@@ -1728,6 +2119,8 @@ fn write_wide_projection_native_model_fixture() -> PathBuf {
         rope_theta: None,
         query_pre_attn_scalar: None,
         attention_logit_softcap: None,
+        attn_output_gate: false,
+        partial_rotary_factor: None,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
@@ -1898,6 +2291,8 @@ fn write_wide_direct_decode_native_model_fixture() -> PathBuf {
         rope_theta: None,
         query_pre_attn_scalar: None,
         attention_logit_softcap: None,
+        attn_output_gate: false,
+        partial_rotary_factor: None,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
@@ -2243,6 +2638,8 @@ fn write_direct_decode_native_model_fixture_with_variant(
         rope_theta: None,
         query_pre_attn_scalar: None,
         attention_logit_softcap: None,
+        attn_output_gate: false,
+        partial_rotary_factor: None,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
@@ -4377,7 +4774,8 @@ fn resolve_runtime_staged_inputs_fails_closed_when_model_projection_is_invalid()
     let crate::model::NativeModelError::InvalidManifest { message } = error else {
         panic!("expected invalid manifest");
     };
-    assert!(message.contains("attention_q rows 8 must be divisible by head_dim 3"));
+    assert!(message.contains("attention_q rows 8"));
+    assert!(message.contains("head_dim 3"));
 
     let _ = fs::remove_dir_all(model_dir);
 }
@@ -8945,6 +9343,50 @@ fn apply_rope_f32_gpu_output_matches_cpu_reference_gemma() {
 
     assert_f32_slice_close(&gpu_query, &cpu_query, 1e-4);
     assert_f32_slice_close(&gpu_key, &cpu_key, 1e-4);
+
+    let _ = fs::remove_dir_all(&model_dir);
+    let _ = fs::remove_dir_all(output_dir);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn apply_rope_f32_gpu_output_matches_cpu_reference_qwen_partial_rotary() {
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        return;
+    };
+    let model_dir = write_projection_partial_rotary_native_model_fixture(0.5);
+    let artifacts = NativeModelArtifacts::from_dir(&model_dir).expect("qwen artifacts should load");
+    let stage_dims = ModelStageDims {
+        input_dim: 8,
+        q_heads: 2,
+        kv_heads: 2,
+        head_dim: 4,
+    };
+    assert_eq!(artifacts.rotary_dim(), 2);
+    let input_query = vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let input_key = vec![0.5_f32, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5];
+
+    let mut cpu_query = input_query.clone();
+    let mut cpu_key = input_key.clone();
+    apply_model_stage_rope_cpu(&artifacts, &mut cpu_query, &mut cpu_key, 3.0, stage_dims);
+
+    let mut gpu_query = input_query.clone();
+    let mut gpu_key = input_key.clone();
+    apply_model_stage_rope_with_path(
+        &artifacts,
+        &mut gpu_query,
+        &mut gpu_key,
+        3.0,
+        stage_dims,
+        Some(&bringup),
+    );
+
+    assert_f32_slice_close(&gpu_query, &cpu_query, 1e-4);
+    assert_f32_slice_close(&gpu_key, &cpu_key, 1e-4);
+    assert_eq!(gpu_query[2], input_query[2]);
+    assert_eq!(gpu_query[3], input_query[3]);
+    assert_eq!(gpu_key[2], input_key[2]);
+    assert_eq!(gpu_key[3], input_key[3]);
 
     let _ = fs::remove_dir_all(&model_dir);
     let _ = fs::remove_dir_all(output_dir);

@@ -99,6 +99,18 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         rope_theta,
         query_pre_attn_scalar,
         attention_logit_softcap,
+        attn_output_gate: arch_bool(&config, &model_type, "attn_output_gate").unwrap_or(false),
+        partial_rotary_factor: arch_f64(&config, &model_type, "partial_rotary_factor")
+            .or_else(|| {
+                // Qwen3.5+ nests partial_rotary_factor inside rope_parameters
+                let text_config = config.get("text_config")?;
+                text_config
+                    .get("rope_parameters")
+                    .and_then(|rp| rp.get("partial_rotary_factor"))
+                    .and_then(|v| v.as_f64())
+            })
+            .map(|v| v as f32)
+            .filter(|v| *v < 1.0),
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention,
@@ -368,6 +380,19 @@ fn arch_u64(config: &serde_json::Value, model_type: &str, field: &str) -> Option
                 .get("text_config")
                 .and_then(|tc| tc.get(field))
                 .and_then(|v| v.as_u64())
+        } else {
+            None
+        }
+    })
+}
+
+fn arch_bool(config: &serde_json::Value, model_type: &str, field: &str) -> Option<bool> {
+    config.get(field).and_then(|v| v.as_bool()).or_else(|| {
+        if uses_text_config(model_type) {
+            config
+                .get("text_config")
+                .and_then(|tc| tc.get(field))
+                .and_then(|v| v.as_bool())
         } else {
             None
         }
@@ -1240,10 +1265,9 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
-    /// Real model integration test — requires `.internal/models/Qwen3.5-2B-bf16`.
-    /// Run with: cargo test -p ax-engine-core -- convert::tests::converts_real_qwen3_5 --ignored
+    /// Real model integration test — uses `.internal/models/Qwen3.5-2B-bf16` when available.
+    /// If the model is absent locally, the test exits early without failing.
     #[test]
-    #[ignore]
     fn converts_real_qwen3_5_bf16_model() {
         let model_dir =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.internal/models/Qwen3.5-2B-bf16");

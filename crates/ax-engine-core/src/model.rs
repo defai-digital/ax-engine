@@ -127,7 +127,7 @@ pub struct NativeTensorSpec {
     pub length_bytes: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct NativeModelManifest {
     pub schema_version: String,
     pub model_family: String,
@@ -146,6 +146,10 @@ pub struct NativeModelManifest {
     pub query_pre_attn_scalar: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_logit_softcap: Option<u32>,
+    #[serde(default)]
+    pub attn_output_gate: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_rotary_factor: Option<f32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attention_value_from_key_layers: Vec<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -158,7 +162,7 @@ pub struct NativeModelManifest {
     pub tensors: Vec<NativeTensorSpec>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NativeModelArtifacts {
     root_dir: PathBuf,
     manifest: NativeModelManifest,
@@ -245,6 +249,19 @@ impl NativeModelArtifacts {
             .linear_attention
             .is_enabled()
             .then_some(&self.manifest.linear_attention)
+    }
+
+    /// Returns the number of head dimensions that receive rotary embedding.
+    /// When `partial_rotary_factor` is set, only a fraction of head_dim is rotated.
+    pub fn rotary_dim(&self) -> usize {
+        let head_dim = self.manifest.attention_head_dim as usize;
+        if let Some(factor) = self.manifest.partial_rotary_factor {
+            let dim = (head_dim as f32 * factor) as usize;
+            // Rotary dim must be even; round down to nearest even
+            dim & !1
+        } else {
+            head_dim
+        }
     }
 }
 
@@ -337,6 +354,21 @@ fn validate_native_model_manifest(
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
                     "attention_logit_softcap must be > 0, got {attention_logit_softcap}"
+                ),
+            });
+        }
+    }
+    if let Some(factor) = manifest.partial_rotary_factor {
+        if factor <= 0.0 || factor > 1.0 {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!("partial_rotary_factor must be in (0.0, 1.0], got {factor}"),
+            });
+        }
+        let rotary_dim = (manifest.attention_head_dim as f32 * factor) as u32;
+        if rotary_dim == 0 || rotary_dim % 2 != 0 {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "partial_rotary_factor {factor} yields rotary_dim {rotary_dim} which must be even and > 0"
                 ),
             });
         }
@@ -1159,11 +1191,18 @@ fn resolved_split_attention_dims(
             ),
         });
     }
-    if !q_rows.is_multiple_of(head_dim) {
+    // When attn_output_gate is enabled, q_proj encodes both queries and gate
+    // values, so the effective row count for head derivation is halved.
+    let effective_q_rows = if manifest.attn_output_gate {
+        q_rows / 2
+    } else {
+        q_rows
+    };
+    if !effective_q_rows.is_multiple_of(head_dim) {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
-                "layer {} attention_q rows {} must be divisible by head_dim {}",
-                layer_index, q_rows, head_dim
+                "layer {} attention_q rows {} (effective {}) must be divisible by head_dim {}",
+                layer_index, q_rows, effective_q_rows, head_dim
             ),
         });
     }
@@ -1175,7 +1214,7 @@ fn resolved_split_attention_dims(
             ),
         });
     }
-    let q_heads = q_rows / head_dim;
+    let q_heads = effective_q_rows / head_dim;
     let kv_heads = k_rows / head_dim;
     if q_heads == 0 || kv_heads == 0 || q_heads < kv_heads || !q_heads.is_multiple_of(kv_heads) {
         return Err(NativeModelError::InvalidManifest {
@@ -1499,6 +1538,8 @@ mod tests {
             rope_theta: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
+            attn_output_gate: false,
+            partial_rotary_factor: None,
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
             linear_attention: NativeLinearAttentionConfig::default(),
