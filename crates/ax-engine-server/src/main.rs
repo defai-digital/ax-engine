@@ -1471,8 +1471,11 @@ prompt = args[args.index("--prompt") + 1]
 assert args[args.index("--max-tokens") + 1] == "2"
 assert args[args.index("--temp") + 1] == "0"
 assert args[args.index("--top-p") + 1] == "1"
+assert args[args.index("--top-k") + 1] == "0"
 assert args[args.index("--seed") + 1] == "0"
+assert args[args.index("--repetition-penalty") + 1] == "1"
 assert args[args.index("--verbose") + 1] == "false"
+assert "--ignore-chat-template" in args
 sys.stdout.write(f"mlx::{model}::{prompt}")
 "#;
 
