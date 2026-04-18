@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -67,7 +67,16 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let rope_theta = arch_f64(&config, &model_type, "rope_theta").map(|v| v as u32);
+    let rope_theta = arch_f64(&config, &model_type, "rope_theta")
+        .or_else(|| {
+            // Qwen3.5+ nests rope_theta inside rope_parameters
+            let text_config = config.get("text_config")?;
+            text_config
+                .get("rope_parameters")
+                .and_then(|rp| rp.get("rope_theta"))
+                .and_then(|v| v.as_f64())
+        })
+        .map(|v| v as u32);
 
     let query_pre_attn_scalar =
         arch_f64(&config, &model_type, "query_pre_attn_scalar").map(|v| v as u32);
@@ -96,7 +105,10 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
 }
 
 /// Write a `model-manifest.json` file in the given directory.
-pub fn write_manifest(model_dir: &Path, manifest: &NativeModelManifest) -> Result<(), ConvertError> {
+pub fn write_manifest(
+    model_dir: &Path,
+    manifest: &NativeModelManifest,
+) -> Result<(), ConvertError> {
     let manifest_path = model_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
     let json = serde_json::to_vec_pretty(manifest).map_err(|source| ConvertError::ParseJson {
         path: manifest_path.clone(),
@@ -115,6 +127,7 @@ pub fn write_manifest(model_dir: &Path, manifest: &NativeModelManifest) -> Resul
 struct ModelFamily {
     family_name: &'static str,
     tensor_map: &'static [(&'static str, TensorMapping)],
+    uses_language_model_prefix: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -144,36 +157,94 @@ enum TensorMapping {
 /// MLX sanitises the `model.` prefix differently per family, but the
 /// safetensors on disk use the HuggingFace names above.
 const HF_STANDARD_TENSOR_MAP: &[(&str, TensorMapping)] = &[
-    ("model.embed_tokens.weight", TensorMapping::Global(NativeTensorRole::TokenEmbedding)),
-    ("model.norm.weight", TensorMapping::Global(NativeTensorRole::FinalNorm)),
-    ("lm_head.weight", TensorMapping::Global(NativeTensorRole::LmHead)),
+    (
+        "model.embed_tokens.weight",
+        TensorMapping::Global(NativeTensorRole::TokenEmbedding),
+    ),
+    (
+        "model.norm.weight",
+        TensorMapping::Global(NativeTensorRole::FinalNorm),
+    ),
+    (
+        "lm_head.weight",
+        TensorMapping::Global(NativeTensorRole::LmHead),
+    ),
     // per-layer attention
-    ("self_attn.q_proj.weight", TensorMapping::PerLayer(NativeTensorRole::AttentionQ)),
-    ("self_attn.k_proj.weight", TensorMapping::PerLayer(NativeTensorRole::AttentionK)),
-    ("self_attn.v_proj.weight", TensorMapping::PerLayer(NativeTensorRole::AttentionV)),
-    ("self_attn.o_proj.weight", TensorMapping::PerLayer(NativeTensorRole::AttentionO)),
-    ("self_attn.q_norm.weight", TensorMapping::PerLayer(NativeTensorRole::AttentionQNorm)),
-    ("self_attn.k_norm.weight", TensorMapping::PerLayer(NativeTensorRole::AttentionKNorm)),
+    (
+        "self_attn.q_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionQ),
+    ),
+    (
+        "self_attn.k_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionK),
+    ),
+    (
+        "self_attn.v_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionV),
+    ),
+    (
+        "self_attn.o_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionO),
+    ),
+    (
+        "self_attn.q_norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionQNorm),
+    ),
+    (
+        "self_attn.k_norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionKNorm),
+    ),
     // per-layer attention (packed QKV variant)
-    ("self_attn.qkv_proj.weight", TensorMapping::PerLayer(NativeTensorRole::AttentionQkvPacked)),
+    (
+        "self_attn.qkv_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionQkvPacked),
+    ),
     // per-layer norms
-    ("input_layernorm.weight", TensorMapping::PerLayer(NativeTensorRole::AttentionNorm)),
-    ("post_attention_layernorm.weight", TensorMapping::PerLayer(NativeTensorRole::FfnNorm)),
+    (
+        "input_layernorm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionNorm),
+    ),
+    (
+        "post_attention_layernorm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnNorm),
+    ),
     // per-layer FFN
-    ("mlp.gate_proj.weight", TensorMapping::PerLayer(NativeTensorRole::FfnGate)),
-    ("mlp.up_proj.weight", TensorMapping::PerLayer(NativeTensorRole::FfnUp)),
-    ("mlp.down_proj.weight", TensorMapping::PerLayer(NativeTensorRole::FfnDown)),
+    (
+        "mlp.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGate),
+    ),
+    (
+        "mlp.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUp),
+    ),
+    (
+        "mlp.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDown),
+    ),
     // packed gate+up
-    ("mlp.gate_up_proj.weight", TensorMapping::PerLayer(NativeTensorRole::FfnGateUpPacked)),
+    (
+        "mlp.gate_up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateUpPacked),
+    ),
 ];
 
-/// Gemma4 wraps the text model under `language_model.model.`, so tensor names
-/// in safetensors may appear as `language_model.model.layers.0.self_attn.q_proj.weight`.
+/// Gemma4 and Qwen3.5+ wrap the text model under `language_model.model.`, so
+/// tensor names in safetensors appear as
+/// `language_model.model.layers.0.self_attn.q_proj.weight`.
 /// We also accept `model.layers.…` for already-sanitised weights.
-const GEMMA4_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
-    ("language_model.model.embed_tokens.weight", TensorMapping::Global(NativeTensorRole::TokenEmbedding)),
-    ("language_model.model.norm.weight", TensorMapping::Global(NativeTensorRole::FinalNorm)),
-    ("language_model.lm_head.weight", TensorMapping::Global(NativeTensorRole::LmHead)),
+const LANGUAGE_MODEL_PREFIX_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "language_model.model.embed_tokens.weight",
+        TensorMapping::Global(NativeTensorRole::TokenEmbedding),
+    ),
+    (
+        "language_model.model.norm.weight",
+        TensorMapping::Global(NativeTensorRole::FinalNorm),
+    ),
+    (
+        "language_model.lm_head.weight",
+        TensorMapping::Global(NativeTensorRole::LmHead),
+    ),
 ];
 
 fn model_family_for_type(model_type: &str) -> Result<ModelFamily, ConvertError> {
@@ -181,18 +252,22 @@ fn model_family_for_type(model_type: &str) -> Result<ModelFamily, ConvertError> 
         "qwen3" => Ok(ModelFamily {
             family_name: "qwen3",
             tensor_map: HF_STANDARD_TENSOR_MAP,
+            uses_language_model_prefix: false,
         }),
-        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" => Ok(ModelFamily {
+        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_text" => Ok(ModelFamily {
             family_name: "qwen3_5",
             tensor_map: HF_STANDARD_TENSOR_MAP,
+            uses_language_model_prefix: true,
         }),
         "qwen3_next" | "qwen3.6" | "qwen3_6" => Ok(ModelFamily {
             family_name: "qwen3_next",
             tensor_map: HF_STANDARD_TENSOR_MAP,
+            uses_language_model_prefix: true,
         }),
         "gemma4" => Ok(ModelFamily {
             family_name: "gemma4",
             tensor_map: HF_STANDARD_TENSOR_MAP,
+            uses_language_model_prefix: true,
         }),
         other => Err(ConvertError::UnsupportedModelType {
             model_type: other.to_string(),
@@ -235,38 +310,40 @@ struct ArchitectureParams {
     vocab_size: u32,
 }
 
+/// Whether this model type nests architecture params under `text_config`.
+fn uses_text_config(model_type: &str) -> bool {
+    matches!(
+        model_type,
+        "gemma4" | "qwen3_5" | "qwen3_next" | "qwen3_6" | "qwen3.5" | "qwen3.6"
+    )
+}
+
 /// Get a u64 field, checking both the top-level config and a nested `text_config`
-/// (Gemma4 nests architecture params under `text_config`).
+/// (Gemma4 and Qwen3.5+ nest architecture params under `text_config`).
 fn arch_u64(config: &serde_json::Value, model_type: &str, field: &str) -> Option<u64> {
-    config
-        .get(field)
-        .and_then(|v| v.as_u64())
-        .or_else(|| {
-            if model_type == "gemma4" {
-                config
-                    .get("text_config")
-                    .and_then(|tc| tc.get(field))
-                    .and_then(|v| v.as_u64())
-            } else {
-                None
-            }
-        })
+    config.get(field).and_then(|v| v.as_u64()).or_else(|| {
+        if uses_text_config(model_type) {
+            config
+                .get("text_config")
+                .and_then(|tc| tc.get(field))
+                .and_then(|v| v.as_u64())
+        } else {
+            None
+        }
+    })
 }
 
 fn arch_f64(config: &serde_json::Value, model_type: &str, field: &str) -> Option<f64> {
-    config
-        .get(field)
-        .and_then(|v| v.as_f64())
-        .or_else(|| {
-            if model_type == "gemma4" {
-                config
-                    .get("text_config")
-                    .and_then(|tc| tc.get(field))
-                    .and_then(|v| v.as_f64())
-            } else {
-                None
-            }
-        })
+    config.get(field).and_then(|v| v.as_f64()).or_else(|| {
+        if uses_text_config(model_type) {
+            config
+                .get("text_config")
+                .and_then(|tc| tc.get(field))
+                .and_then(|v| v.as_f64())
+        } else {
+            None
+        }
+    })
 }
 
 fn require_arch_u64(
@@ -282,8 +359,7 @@ fn resolve_architecture(
     model_type: &str,
 ) -> Result<ArchitectureParams, ConvertError> {
     let hidden_size = require_arch_u64(config, model_type, "hidden_size")? as u32;
-    let attention_head_count =
-        require_arch_u64(config, model_type, "num_attention_heads")? as u32;
+    let attention_head_count = require_arch_u64(config, model_type, "num_attention_heads")? as u32;
     let kv_head_count = arch_u64(config, model_type, "num_key_value_heads")
         .map(|v| v as u32)
         .unwrap_or(attention_head_count);
@@ -377,8 +453,8 @@ fn parse_safetensors_header(path: &Path) -> Result<Vec<SafetensorEntry>, Convert
             source,
         })?;
 
-    let header: BTreeMap<String, serde_json::Value> =
-        serde_json::from_slice(&header_bytes).map_err(|source| ConvertError::ParseJson {
+    let header: BTreeMap<String, serde_json::Value> = serde_json::from_slice(&header_bytes)
+        .map_err(|source| ConvertError::ParseJson {
             path: path.to_path_buf(),
             source,
         })?;
@@ -394,13 +470,12 @@ fn parse_safetensors_header(path: &Path) -> Result<Vec<SafetensorEntry>, Convert
         if name == "__metadata__" {
             continue;
         }
-        let entry: SafetensorHeaderEntry =
-            serde_json::from_value(value.clone()).map_err(|_| {
-                ConvertError::InvalidSafetensorsHeader {
-                    path: path.to_path_buf(),
-                    message: format!("invalid tensor entry for {name}"),
-                }
-            })?;
+        let entry: SafetensorHeaderEntry = serde_json::from_value(value.clone()).map_err(|_| {
+            ConvertError::InvalidSafetensorsHeader {
+                path: path.to_path_buf(),
+                message: format!("invalid tensor entry for {name}"),
+            }
+        })?;
 
         entries.push(SafetensorEntry {
             name: name.clone(),
@@ -444,33 +519,21 @@ fn convert_dtype(dtype: &str, name: &str) -> Result<NativeTensorDataType, Conver
 // Tensor name → role mapping
 // ---------------------------------------------------------------------------
 
-/// Extract layer index from a tensor name like `model.layers.5.self_attn.q_proj.weight`.
-fn extract_layer_index(name: &str) -> Option<u32> {
-    // Look for ".layers.{N}." pattern
-    let layers_prefix = ".layers.";
-    let start = name.find(layers_prefix)? + layers_prefix.len();
-    let rest = &name[start..];
-    let end = rest.find('.')?;
-    rest[..end].parse().ok()
-}
-
 /// Try to match a tensor name against the family's mapping table.
-fn match_tensor(
-    name: &str,
-    family: &ModelFamily,
-) -> Option<(NativeTensorRole, Option<u32>)> {
-    // Try standard map
+fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, Option<u32>)> {
+    // Try standard map (model.embed_tokens, model.layers.N.…)
     if let Some(result) = match_tensor_in_map(name, family.tensor_map) {
         return Some(result);
     }
 
-    // Try Gemma4 extra prefixes
-    if family.family_name == "gemma4" {
-        if let Some(result) = match_tensor_in_map(name, GEMMA4_EXTRA_TENSOR_MAP) {
+    // Try language_model.model.… prefix (Gemma4, Qwen3.5, Qwen3.6)
+    if family.uses_language_model_prefix {
+        if let Some(result) = match_tensor_in_map(name, LANGUAGE_MODEL_PREFIX_TENSOR_MAP) {
             return Some(result);
         }
-        // Gemma4 per-layer: language_model.model.layers.{i}.suffix
-        if let Some(result) = match_gemma4_per_layer(name, family.tensor_map) {
+        if let Some(result) =
+            match_prefixed_per_layer(name, "language_model.model.layers.", family.tensor_map)
+        {
             return Some(result);
         }
     }
@@ -500,15 +563,14 @@ fn match_tensor_in_map(
     None
 }
 
-fn match_gemma4_per_layer(
+fn match_prefixed_per_layer(
     name: &str,
+    prefix: &str,
     tensor_map: &[(&str, TensorMapping)],
 ) -> Option<(NativeTensorRole, Option<u32>)> {
     for (pattern, mapping) in tensor_map {
         if let TensorMapping::PerLayer(role) = mapping {
-            if let Some(layer_index) =
-                match_per_layer_pattern(name, "language_model.model.layers.", pattern)
-            {
+            if let Some(layer_index) = match_per_layer_pattern(name, prefix, pattern) {
                 return Some((*role, Some(layer_index)));
             }
         }
@@ -611,10 +673,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "ax-convert-{label}-{}-{nanos}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("ax-convert-{label}-{}-{nanos}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -642,24 +702,64 @@ mod tests {
                 ("model.embed_tokens.weight", "F16", &[151936, 4096]),
                 ("model.norm.weight", "F16", &[4096]),
                 ("model.layers.0.input_layernorm.weight", "F16", &[4096]),
-                ("model.layers.0.self_attn.q_proj.weight", "F16", &[4096, 4096]),
-                ("model.layers.0.self_attn.k_proj.weight", "F16", &[1024, 4096]),
-                ("model.layers.0.self_attn.v_proj.weight", "F16", &[1024, 4096]),
-                ("model.layers.0.self_attn.o_proj.weight", "F16", &[4096, 4096]),
+                (
+                    "model.layers.0.self_attn.q_proj.weight",
+                    "F16",
+                    &[4096, 4096],
+                ),
+                (
+                    "model.layers.0.self_attn.k_proj.weight",
+                    "F16",
+                    &[1024, 4096],
+                ),
+                (
+                    "model.layers.0.self_attn.v_proj.weight",
+                    "F16",
+                    &[1024, 4096],
+                ),
+                (
+                    "model.layers.0.self_attn.o_proj.weight",
+                    "F16",
+                    &[4096, 4096],
+                ),
                 ("model.layers.0.self_attn.q_norm.weight", "F16", &[128]),
                 ("model.layers.0.self_attn.k_norm.weight", "F16", &[128]),
-                ("model.layers.0.post_attention_layernorm.weight", "F16", &[4096]),
+                (
+                    "model.layers.0.post_attention_layernorm.weight",
+                    "F16",
+                    &[4096],
+                ),
                 ("model.layers.0.mlp.gate_proj.weight", "F16", &[12288, 4096]),
                 ("model.layers.0.mlp.up_proj.weight", "F16", &[12288, 4096]),
                 ("model.layers.0.mlp.down_proj.weight", "F16", &[4096, 12288]),
                 ("model.layers.1.input_layernorm.weight", "F16", &[4096]),
-                ("model.layers.1.self_attn.q_proj.weight", "F16", &[4096, 4096]),
-                ("model.layers.1.self_attn.k_proj.weight", "F16", &[1024, 4096]),
-                ("model.layers.1.self_attn.v_proj.weight", "F16", &[1024, 4096]),
-                ("model.layers.1.self_attn.o_proj.weight", "F16", &[4096, 4096]),
+                (
+                    "model.layers.1.self_attn.q_proj.weight",
+                    "F16",
+                    &[4096, 4096],
+                ),
+                (
+                    "model.layers.1.self_attn.k_proj.weight",
+                    "F16",
+                    &[1024, 4096],
+                ),
+                (
+                    "model.layers.1.self_attn.v_proj.weight",
+                    "F16",
+                    &[1024, 4096],
+                ),
+                (
+                    "model.layers.1.self_attn.o_proj.weight",
+                    "F16",
+                    &[4096, 4096],
+                ),
                 ("model.layers.1.self_attn.q_norm.weight", "F16", &[128]),
                 ("model.layers.1.self_attn.k_norm.weight", "F16", &[128]),
-                ("model.layers.1.post_attention_layernorm.weight", "F16", &[4096]),
+                (
+                    "model.layers.1.post_attention_layernorm.weight",
+                    "F16",
+                    &[4096],
+                ),
                 ("model.layers.1.mlp.gate_proj.weight", "F16", &[12288, 4096]),
                 ("model.layers.1.mlp.up_proj.weight", "F16", &[12288, 4096]),
                 ("model.layers.1.mlp.down_proj.weight", "F16", &[4096, 12288]),
@@ -736,27 +836,83 @@ mod tests {
                 ("model.norm.weight", "BF16", &[3072]),
                 ("lm_head.weight", "BF16", &[262144, 3072]),
                 ("model.layers.0.input_layernorm.weight", "BF16", &[3072]),
-                ("model.layers.0.self_attn.q_proj.weight", "BF16", &[4096, 3072]),
-                ("model.layers.0.self_attn.k_proj.weight", "BF16", &[1024, 3072]),
-                ("model.layers.0.self_attn.v_proj.weight", "BF16", &[1024, 3072]),
-                ("model.layers.0.self_attn.o_proj.weight", "BF16", &[3072, 4096]),
+                (
+                    "model.layers.0.self_attn.q_proj.weight",
+                    "BF16",
+                    &[4096, 3072],
+                ),
+                (
+                    "model.layers.0.self_attn.k_proj.weight",
+                    "BF16",
+                    &[1024, 3072],
+                ),
+                (
+                    "model.layers.0.self_attn.v_proj.weight",
+                    "BF16",
+                    &[1024, 3072],
+                ),
+                (
+                    "model.layers.0.self_attn.o_proj.weight",
+                    "BF16",
+                    &[3072, 4096],
+                ),
                 ("model.layers.0.self_attn.q_norm.weight", "BF16", &[128]),
                 ("model.layers.0.self_attn.k_norm.weight", "BF16", &[128]),
-                ("model.layers.0.post_attention_layernorm.weight", "BF16", &[3072]),
-                ("model.layers.0.mlp.gate_proj.weight", "BF16", &[12288, 3072]),
+                (
+                    "model.layers.0.post_attention_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "model.layers.0.mlp.gate_proj.weight",
+                    "BF16",
+                    &[12288, 3072],
+                ),
                 ("model.layers.0.mlp.up_proj.weight", "BF16", &[12288, 3072]),
-                ("model.layers.0.mlp.down_proj.weight", "BF16", &[3072, 12288]),
+                (
+                    "model.layers.0.mlp.down_proj.weight",
+                    "BF16",
+                    &[3072, 12288],
+                ),
                 ("model.layers.1.input_layernorm.weight", "BF16", &[3072]),
-                ("model.layers.1.self_attn.q_proj.weight", "BF16", &[4096, 3072]),
-                ("model.layers.1.self_attn.k_proj.weight", "BF16", &[1024, 3072]),
-                ("model.layers.1.self_attn.v_proj.weight", "BF16", &[1024, 3072]),
-                ("model.layers.1.self_attn.o_proj.weight", "BF16", &[3072, 4096]),
+                (
+                    "model.layers.1.self_attn.q_proj.weight",
+                    "BF16",
+                    &[4096, 3072],
+                ),
+                (
+                    "model.layers.1.self_attn.k_proj.weight",
+                    "BF16",
+                    &[1024, 3072],
+                ),
+                (
+                    "model.layers.1.self_attn.v_proj.weight",
+                    "BF16",
+                    &[1024, 3072],
+                ),
+                (
+                    "model.layers.1.self_attn.o_proj.weight",
+                    "BF16",
+                    &[3072, 4096],
+                ),
                 ("model.layers.1.self_attn.q_norm.weight", "BF16", &[128]),
                 ("model.layers.1.self_attn.k_norm.weight", "BF16", &[128]),
-                ("model.layers.1.post_attention_layernorm.weight", "BF16", &[3072]),
-                ("model.layers.1.mlp.gate_proj.weight", "BF16", &[12288, 3072]),
+                (
+                    "model.layers.1.post_attention_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "model.layers.1.mlp.gate_proj.weight",
+                    "BF16",
+                    &[12288, 3072],
+                ),
                 ("model.layers.1.mlp.up_proj.weight", "BF16", &[12288, 3072]),
-                ("model.layers.1.mlp.down_proj.weight", "BF16", &[3072, 12288]),
+                (
+                    "model.layers.1.mlp.down_proj.weight",
+                    "BF16",
+                    &[3072, 12288],
+                ),
             ],
         );
 
@@ -818,9 +974,7 @@ mod tests {
         write_fake_safetensors(
             &dir,
             "model.safetensors",
-            &[
-                ("model.embed_tokens.weight", "I32", &[151936, 4096]),
-            ],
+            &[("model.embed_tokens.weight", "I32", &[151936, 4096])],
         );
 
         let error = convert_hf_model_dir(&dir).expect_err("I32 dtype should fail");
@@ -854,7 +1008,11 @@ mod tests {
                 ("model.layers.0.self_attn.k_proj.weight", "F32", &[8, 8]),
                 ("model.layers.0.self_attn.v_proj.weight", "F32", &[8, 8]),
                 ("model.layers.0.self_attn.o_proj.weight", "F32", &[8, 8]),
-                ("model.layers.0.post_attention_layernorm.weight", "F32", &[8]),
+                (
+                    "model.layers.0.post_attention_layernorm.weight",
+                    "F32",
+                    &[8],
+                ),
                 ("model.layers.0.mlp.gate_proj.weight", "F32", &[16, 8]),
                 ("model.layers.0.mlp.up_proj.weight", "F32", &[16, 8]),
                 ("model.layers.0.mlp.down_proj.weight", "F32", &[8, 16]),
@@ -872,5 +1030,87 @@ mod tests {
         assert!(!names.contains(&"some.unknown.tensor"));
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Real model integration test — requires `.internal/models/Qwen3.5-2B-bf16`.
+    /// Run with: cargo test -p ax-engine-core -- convert::tests::converts_real_qwen3_5 --ignored
+    #[test]
+    #[ignore]
+    fn converts_real_qwen3_5_bf16_model() {
+        let model_dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.internal/models/Qwen3.5-2B-bf16");
+        if !model_dir.join("config.json").exists() {
+            eprintln!("skipping: model not downloaded at {}", model_dir.display());
+            return;
+        }
+
+        let manifest = convert_hf_model_dir(&model_dir)
+            .expect("real Qwen3.5-2B-bf16 conversion should succeed");
+
+        assert_eq!(manifest.model_family, "qwen3_5");
+        assert_eq!(manifest.layer_count, 24);
+        assert_eq!(manifest.hidden_size, 2048);
+        assert_eq!(manifest.attention_head_count, 8);
+        assert_eq!(manifest.attention_head_dim, 256);
+        assert_eq!(manifest.kv_head_count, 2);
+        assert_eq!(manifest.vocab_size, 248320);
+        assert!(manifest.tie_word_embeddings);
+        assert_eq!(manifest.rope_theta, Some(10000000));
+
+        // Qwen3.5 has mixed layers: only full_attention layers (3,7,11,15,19,23)
+        // have self_attn tensors. All 24 layers have FFN + norms.
+        let attn_q_layers: Vec<u32> = manifest
+            .tensors
+            .iter()
+            .filter(|t| t.role == NativeTensorRole::AttentionQ)
+            .filter_map(|t| t.layer_index)
+            .collect();
+        assert_eq!(attn_q_layers, vec![3, 7, 11, 15, 19, 23]);
+
+        let ffn_gate_count = manifest
+            .tensors
+            .iter()
+            .filter(|t| t.role == NativeTensorRole::FfnGate)
+            .count();
+        assert_eq!(ffn_gate_count, 24, "all 24 layers should have FFN gate");
+
+        let norm_count = manifest
+            .tensors
+            .iter()
+            .filter(|t| t.role == NativeTensorRole::AttentionNorm)
+            .count();
+        assert_eq!(norm_count, 24, "all 24 layers should have attention norm");
+
+        // All tensors should be BF16
+        assert!(
+            manifest
+                .tensors
+                .iter()
+                .all(|t| t.dtype == NativeTensorDataType::Bf16
+                    || t.dtype == NativeTensorDataType::F32)
+        );
+
+        // Write manifest and verify it round-trips as JSON
+        write_manifest(&model_dir, &manifest).expect("write manifest should succeed");
+        let manifest_path = model_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
+        let reloaded: NativeModelManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(reloaded.layer_count, 24);
+        assert_eq!(reloaded.tensors.len(), manifest.tensors.len());
+
+        // Note: NativeModelArtifacts::from_dir validation currently requires
+        // all layers to have attention_o, which fails for Qwen3.5's mixed
+        // linear_attention / full_attention architecture. Supporting mixed
+        // layer types in the native model validator is a separate task.
+
+        eprintln!(
+            "✓ converted {} tensors, {} layers, family={}",
+            manifest.tensors.len(),
+            manifest.layer_count,
+            manifest.model_family
+        );
+
+        // Clean up the generated manifest
+        let _ = fs::remove_file(model_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE));
     }
 }

@@ -1108,7 +1108,9 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
         ),
         EngineSessionError::RequestReportInvariantViolation { .. }
         | EngineSessionError::Core(_)
-        | EngineSessionError::MetalRuntime(_) => error_response(
+        | EngineSessionError::MetalRuntime(_)
+        | EngineSessionError::NativeModelGgufExportLaunch { .. }
+        | EngineSessionError::NativeModelGgufExportFailed { .. } => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "engine_error",
             error.to_string(),
