@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -31,7 +32,7 @@ use crate::sampling::{
     sample_argmax_with_logprob, SampledToken, SamplerInput, SamplerRequest, StopReason,
     TokenSampler,
 };
-use crate::scheduler::{ExecutionMode, RouteMetadata};
+use crate::scheduler::{ExecutionItem, ExecutionMode, RouteMetadata};
 
 pub(crate) mod build;
 pub use build::*;
@@ -4167,13 +4168,11 @@ fn derive_model_bound_direct_decode_result(
     let Ok(workload) = MetalDispatchWorkload::from_runner_input(input) else {
         return ModelBoundDirectDecodeResult::default();
     };
-    // When linear attention layers are present, the hidden state cache shortcut
-    // must be bypassed because each decode token needs to run through all layers
-    // to update the recurrent state (conv + SSM).
-    let has_linear_attention = artifacts.linear_attention_config().is_some();
-    let (hidden_states, final_layer_index) = if let Some(cache) =
-        final_layer_hidden_state_cache.filter(|_| !has_linear_attention)
-    {
+    // Hybrid linear-attention models still need a fresh per-step forward pass,
+    // but if the caller already staged that exact pass for the current step we
+    // should reuse it here rather than recomputing and double-advancing the
+    // recurrent state.
+    let (hidden_states, final_layer_index) = if let Some(cache) = final_layer_hidden_state_cache {
         (cache.hidden_states.as_slice(), cache.final_layer_index)
     } else {
         let Some((hidden_states, final_layer_index, _)) = model_hidden_states_before_final_layer(
@@ -9035,14 +9034,94 @@ fn advance_hidden_states_through_linear_attention_layer(
     let mut request_states = request_states
         .lock()
         .expect("linear attention request state mutex should not be poisoned");
-    let mut projected_items = Vec::with_capacity(input.execution_batch.items.len());
+    let mut next_hidden_states = Vec::with_capacity(hidden_states.len());
+    let mut tally = PrefixAttentionExecutionTally::default();
+    for segment in linear_attention_unique_request_segments(&input.execution_batch.items) {
+        let (mut segment_hidden_states, segment_tally) =
+            advance_hidden_states_through_linear_attention_segment(
+                artifacts,
+                layer,
+                buffers,
+                hidden_states,
+                bringup,
+                &mut request_states,
+                &input.execution_batch.items[segment.clone()],
+                layer_index,
+                &item_token_ranges[segment],
+                dims,
+                attention_norm,
+                ffn_norm,
+                ffn_down,
+                in_proj_qkv,
+                in_proj_z,
+                in_proj_a,
+                in_proj_b,
+                conv1d,
+                &dt_bias,
+                &a_log,
+                linear_norm,
+                out_proj,
+            )?;
+        tally = tally.merge(segment_tally);
+        next_hidden_states.append(&mut segment_hidden_states);
+    }
 
-    for (item, token_range) in input
-        .execution_batch
-        .items
-        .iter()
-        .zip(item_token_ranges.iter())
-    {
+    Some((next_hidden_states, tally))
+}
+
+#[cfg(target_os = "macos")]
+fn linear_attention_unique_request_segments(items: &[ExecutionItem]) -> Vec<Range<usize>> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    let mut segments = Vec::new();
+    let mut segment_start = 0_usize;
+    let mut seen = BTreeSet::new();
+    for (index, item) in items.iter().enumerate() {
+        if !seen.insert(item.request_id) {
+            segments.push(segment_start..index);
+            segment_start = index;
+            seen.clear();
+            seen.insert(item.request_id);
+        }
+    }
+    segments.push(segment_start..items.len());
+    segments
+}
+
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn advance_hidden_states_through_linear_attention_segment(
+    artifacts: &NativeModelArtifacts,
+    layer: &MetalNativeLayerBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    hidden_states: &[Vec<f32>],
+    bringup: Option<&MetalRuntimeBringup>,
+    request_states: &mut BTreeMap<crate::ids::RequestId, MetalLinearRequestState>,
+    items: &[ExecutionItem],
+    layer_index: u32,
+    item_token_ranges: &[Range<usize>],
+    dims: ResolvedLinearAttentionDims,
+    attention_norm: &MetalNativeTensorBufferBinding,
+    ffn_norm: &MetalNativeTensorBufferBinding,
+    ffn_down: &MetalNativeTensorBufferBinding,
+    in_proj_qkv: &MetalNativeTensorBufferBinding,
+    in_proj_z: &MetalNativeTensorBufferBinding,
+    in_proj_a: &MetalNativeTensorBufferBinding,
+    in_proj_b: &MetalNativeTensorBufferBinding,
+    conv1d: &MetalNativeTensorBufferBinding,
+    dt_bias: &[f32],
+    a_log: &[f32],
+    linear_norm: &MetalNativeTensorBufferBinding,
+    out_proj: &MetalNativeTensorBufferBinding,
+) -> Option<(Vec<Vec<f32>>, PrefixAttentionExecutionTally)> {
+    if items.len() != item_token_ranges.len() {
+        return None;
+    }
+
+    let mut projected_items = Vec::with_capacity(items.len());
+    for (item, token_range) in items.iter().zip(item_token_ranges.iter()) {
         let item_hidden_states = hidden_states.get(token_range.clone())?;
         let request_state = request_states.entry(item.request_id).or_default();
         let layer_state = request_state.layers.entry(layer_index).or_default();
@@ -9065,7 +9144,7 @@ fn advance_hidden_states_through_linear_attention_layer(
 
     let batched_conv_outputs = apply_batched_linear_attention_decode_conv_with_optional_native_path(
         &projected_items,
-        &request_states,
+        request_states,
         layer_index,
         conv1d,
         dims,
@@ -9096,8 +9175,8 @@ fn advance_hidden_states_through_linear_attention_layer(
             projected_item,
             conv_output_rows,
             conv_tally,
-            &dt_bias,
-            &a_log,
+            dt_bias,
+            a_log,
             dims,
             bringup,
         )?;
@@ -12204,6 +12283,19 @@ fn apply_batched_model_stage_rope_with_optional_native_path(
     {
         return None;
     }
+    if token_count == 1 {
+        let (native_query, native_key) = apply_model_stage_rope_with_optional_native_path(
+            Some(bringup),
+            query_rows.first()?,
+            key_rows.first()?,
+            *positions.first()? as f32,
+            stage_dims,
+            rope_style,
+            freq_base,
+            rotary_dim,
+        )?;
+        return Some((vec![native_query], vec![native_key]));
+    }
     let Some(pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
@@ -12659,6 +12751,16 @@ fn expand_batched_grouped_kv_heads_with_path(
     let input_row_width = kv_heads.checked_mul(head_dim)?;
     if rows.iter().any(|row| row.len() != input_row_width) {
         return None;
+    }
+    if rows.len() == 1 {
+        return expand_grouped_kv_heads_with_path(
+            rows.first()?,
+            q_heads,
+            kv_heads,
+            head_dim,
+            bringup,
+        )
+        .map(|row| vec![row]);
     }
 
     if let Some(expanded) = expand_batched_grouped_kv_heads_with_optional_native_path(
@@ -13330,6 +13432,25 @@ fn apply_batched_row_rms_norm_with_binding_in_place_with_tally(
         return None;
     }
 
+    let single_native_bringup =
+        single_rms_norm_retry_worthwhile(bringup, weight_binding, row_width)
+            .then_some(bringup)
+            .flatten();
+    if rows.len() == 1 && single_native_bringup.is_some() {
+        let row = rows.first_mut()?.get_mut(..row_width)?;
+        let used_native = apply_rms_norm_with_binding_in_place_with_path(
+            row,
+            weight_binding,
+            epsilon,
+            weight_offset,
+            single_native_bringup,
+        )?;
+        return Some(
+            PrefixAttentionExecutionTally::default()
+                .record_rms_norm_elements(row_width, used_native),
+        );
+    }
+
     let row_count = rows.len();
     let flattened_element_count = row_count.checked_mul(row_width)?;
     if let Some(bringup) = bringup {
@@ -13385,10 +13506,6 @@ fn apply_batched_row_rms_norm_with_binding_in_place_with_tally(
     }
 
     let mut tally = PrefixAttentionExecutionTally::default();
-    let single_native_bringup =
-        single_rms_norm_retry_worthwhile(bringup, weight_binding, row_width)
-            .then_some(bringup)
-            .flatten();
     for row in rows.iter_mut() {
         let used_native = apply_rms_norm_with_binding_in_place_with_path(
             row.get_mut(..row_width)?,
@@ -13504,6 +13621,30 @@ fn apply_batched_row_rms_norm_without_weights_in_place_with_tally(
         return None;
     }
 
+    let single_native_bringup =
+        single_rms_norm_without_weights_retry_worthwhile(bringup, row_width)
+            .then_some(bringup)
+            .flatten();
+    if rows.len() == 1 && single_native_bringup.is_some() {
+        let row = rows.first_mut()?.get_mut(..row_width)?;
+        let used_native = if let Some(output) =
+            apply_rms_norm_without_weights_with_optional_native_path(
+                single_native_bringup,
+                row,
+                epsilon,
+            ) {
+            row.copy_from_slice(&output);
+            true
+        } else {
+            apply_rms_norm_without_weights_in_place(row, epsilon)?;
+            false
+        };
+        return Some(
+            PrefixAttentionExecutionTally::default()
+                .record_rms_norm_elements(row_width, used_native),
+        );
+    }
+
     let row_count = rows.len();
     let flattened_element_count = row_count.checked_mul(row_width)?;
     if let Some(bringup) = bringup {
@@ -13549,10 +13690,6 @@ fn apply_batched_row_rms_norm_without_weights_in_place_with_tally(
     }
 
     let mut tally = PrefixAttentionExecutionTally::default();
-    let single_native_bringup =
-        single_rms_norm_without_weights_retry_worthwhile(bringup, row_width)
-            .then_some(bringup)
-            .flatten();
     for row in rows.iter_mut() {
         let used_native = if let Some(output) =
             apply_rms_norm_without_weights_with_optional_native_path(
@@ -13939,6 +14076,21 @@ fn add_batched_rows_in_place_with_prefix_tally(
         return None;
     }
 
+    let single_native_bringup = single_vector_add_retry_worthwhile(bringup, row_width)
+        .then_some(bringup)
+        .flatten();
+    if rows.len() == 1 && single_native_bringup.is_some() {
+        let used_native = add_in_place_with_path(
+            rows.first_mut()?.get_mut(..row_width)?,
+            delta_rows.first()?.get(..row_width)?,
+            single_native_bringup,
+        )?;
+        return Some(
+            PrefixAttentionExecutionTally::default()
+                .record_residual_add_elements(row_width, used_native),
+        );
+    }
+
     let row_count = rows.len();
     let element_count = row_count.checked_mul(row_width)?;
     let mut flattened_rows = Vec::with_capacity(element_count);
@@ -13979,9 +14131,6 @@ fn add_batched_rows_in_place_with_prefix_tally(
     }
 
     let mut tally = PrefixAttentionExecutionTally::default();
-    let single_native_bringup = single_vector_add_retry_worthwhile(bringup, row_width)
-        .then_some(bringup)
-        .flatten();
     for (row, delta_row) in rows.iter_mut().zip(delta_rows.iter()) {
         let used_native = add_in_place_with_path(
             row.get_mut(..row_width)?,
@@ -14009,6 +14158,22 @@ fn add_batched_rows_in_place_with_prefix_tally_and_result_dtype(
         || delta_rows.iter().any(|row| row.len() < row_width)
     {
         return None;
+    }
+
+    let single_native_bringup = single_vector_add_retry_worthwhile(bringup, row_width)
+        .then_some(bringup)
+        .flatten();
+    if rows.len() == 1 && single_native_bringup.is_some() {
+        let used_native = add_in_place_with_path_and_result_dtype(
+            rows.first_mut()?.get_mut(..row_width)?,
+            delta_rows.first()?.get(..row_width)?,
+            result_dtype,
+            single_native_bringup,
+        )?;
+        return Some(
+            PrefixAttentionExecutionTally::default()
+                .record_residual_add_elements(row_width, used_native),
+        );
     }
 
     let row_count = rows.len();
@@ -14053,9 +14218,6 @@ fn add_batched_rows_in_place_with_prefix_tally_and_result_dtype(
     }
 
     let mut tally = PrefixAttentionExecutionTally::default();
-    let single_native_bringup = single_vector_add_retry_worthwhile(bringup, row_width)
-        .then_some(bringup)
-        .flatten();
     for (row, delta_row) in rows.iter_mut().zip(delta_rows.iter()) {
         let used_native = add_in_place_with_path_and_result_dtype(
             row.get_mut(..row_width)?,
@@ -14120,6 +14282,23 @@ fn apply_batched_model_gate_up_product_in_place_with_tally(
     let row_count = gate_rows.len();
     let flattened_len = row_count.checked_mul(row_width)?;
     let activation = native_model_ffn_activation(artifacts);
+    let single_native_bringup =
+        single_ffn_gate_product_retry_worthwhile(bringup, activation, row_width)
+            .then_some(bringup)
+            .flatten();
+    if gate_rows.len() == 1 && single_native_bringup.is_some() {
+        let used_native = apply_model_gate_up_product_with_path(
+            artifacts,
+            gate_rows.first_mut()?.get_mut(..row_width)?,
+            up_rows.first()?.get(..row_width)?,
+            single_native_bringup,
+        )?;
+        return Some(
+            DirectDecodeNativeDenseTally::default()
+                .record_ffn_activation_elements(row_width, used_native),
+        );
+    }
+
     if let Some(bringup) = bringup {
         let allow_batched_native =
             ffn_gate_product_feedback_binding(bringup, activation, row_count, row_width)
@@ -14175,10 +14354,6 @@ fn apply_batched_model_gate_up_product_in_place_with_tally(
     }
 
     let mut tally = DirectDecodeNativeDenseTally::default();
-    let single_native_bringup =
-        single_ffn_gate_product_retry_worthwhile(bringup, activation, row_width)
-            .then_some(bringup)
-            .flatten();
     for (gate_row, up_row) in gate_rows.iter_mut().zip(up_rows.iter()) {
         let used_native = apply_model_gate_up_product_with_path(
             artifacts,
@@ -14345,6 +14520,24 @@ fn project_batched_matrix_rows_with_tally(
         return None;
     }
 
+    let single_native_bringup =
+        single_projection_retry_worthwhile(bringup, binding, output_dim, input_width)
+            .then_some(bringup)
+            .flatten();
+    if input_rows.len() == 1 && single_native_bringup.is_some() {
+        let (projected, used_native) = project_matrix_rows_with_path(
+            binding,
+            row_offset,
+            output_dim,
+            input_rows.first()?.get(..input_width)?,
+            single_native_bringup,
+        )?;
+        return Some((
+            vec![projected],
+            DirectDecodeNativeDenseTally::default().record_projection_rows(output_dim, used_native),
+        ));
+    }
+
     if let Some(output_rows) = project_batched_matrix_rows_with_optional_native_path(
         bringup,
         binding,
@@ -14384,10 +14577,6 @@ fn project_batched_matrix_rows_with_tally(
 
     let mut projected_rows = Vec::with_capacity(input_rows.len());
     let mut tally = DirectDecodeNativeDenseTally::default();
-    let single_native_bringup =
-        single_projection_retry_worthwhile(bringup, binding, output_dim, input_width)
-            .then_some(bringup)
-            .flatten();
     for row in input_rows {
         let (projected, used_native) = project_matrix_rows_with_path(
             binding,
