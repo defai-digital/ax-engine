@@ -4150,6 +4150,24 @@ fn decode_token_from_attention_bits(bits: &[u32]) -> u32 {
 }
 
 #[cfg(target_os = "macos")]
+fn prefill_completion_request_ids(input: &RunnerInput) -> BTreeSet<crate::ids::RequestId> {
+    input
+        .execution_batch
+        .items
+        .iter()
+        .filter(|item| item.mode == ExecutionMode::Prefill)
+        .filter_map(|item| {
+            let context = input.request_context(item.request_id)?;
+            let completes_prompt = context
+                .processed_prompt_tokens
+                .checked_add(item.scheduled_token_count)
+                .is_some_and(|next| next == context.prompt_len);
+            (completes_prompt && context.generated_len == 0).then_some(item.request_id)
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
 #[allow(clippy::too_many_arguments)]
 fn derive_model_bound_direct_decode_result(
     input: &RunnerInput,
@@ -4168,10 +4186,12 @@ fn derive_model_bound_direct_decode_result(
     let Ok(workload) = MetalDispatchWorkload::from_runner_input(input) else {
         return ModelBoundDirectDecodeResult::default();
     };
+    let prefill_completion_request_ids = prefill_completion_request_ids(input);
     // Hybrid linear-attention models still need a fresh per-step forward pass,
     // but if the caller already staged that exact pass for the current step we
     // should reuse it here rather than recomputing and double-advancing the
     // recurrent state.
+    let owned_hidden_states;
     let (hidden_states, final_layer_index) = if let Some(cache) = final_layer_hidden_state_cache {
         (cache.hidden_states.as_slice(), cache.final_layer_index)
     } else {
@@ -4187,19 +4207,74 @@ fn derive_model_bound_direct_decode_result(
         ) else {
             return ModelBoundDirectDecodeResult::default();
         };
-        return derive_model_bound_direct_decode_result_from_hidden_states(
-            input,
-            attention_output_bits,
-            artifacts,
-            bindings,
-            buffers,
-            &workload,
-            &hidden_states,
-            final_layer_index,
-            bringup,
-        );
+        owned_hidden_states = hidden_states;
+        (owned_hidden_states.as_slice(), final_layer_index)
     };
-    derive_model_bound_direct_decode_result_from_hidden_states(
+
+    // For hybrid linear-attention models the final layer must also run through
+    // the CPU reference path because the Metal paged attention kernel may not
+    // handle the model's head_dim / GQA configuration correctly. We advance
+    // hidden states through the final layer on CPU, then project logits from
+    // the resulting post-final-layer hidden states.
+    let has_linear_attention = artifacts.linear_attention_config().is_some();
+    // For hybrid linear-attention models, the Metal paged attention may not
+    // produce correct attention output for the final layer (e.g. head_dim=256
+    // or GQA with kv_heads < query_heads). Run the complete forward pass on
+    // CPU instead, reusing the prefix layer caches from the staged inputs path
+    // (which already ran layers 0..final_layer_index).
+    if has_linear_attention {
+        let Some(result) = (|| -> Option<ModelBoundDirectDecodeResult> {
+            let final_layer = bindings.layers.get(final_layer_index)?;
+            let final_norm = buffers.binding_for(&bindings.final_norm)?;
+            let decode_projection =
+                resolved_decode_projection_binding(artifacts, bindings, buffers)?;
+            let (post_hidden, _) = advance_hidden_states_through_model_layer(
+                artifacts,
+                final_layer,
+                buffers,
+                input,
+                &workload,
+                hidden_states,
+                bringup,
+                prefix_layer_caches.and_then(|c| c.get(final_layer_index)),
+                linear_request_states,
+                final_layer_index as u32,
+            )?;
+            let mut result = derive_model_bound_direct_decode_from_post_layer_hidden_states(
+                input,
+                artifacts,
+                &post_hidden,
+                final_norm,
+                decode_projection,
+                bringup,
+            )?;
+            if !prefill_completion_request_ids.is_empty() {
+                let bridge_result =
+                    derive_model_bound_prefill_completion_from_post_layer_hidden_states(
+                        input,
+                        artifacts,
+                        &post_hidden,
+                        final_norm,
+                        decode_projection,
+                        bringup,
+                        &prefill_completion_request_ids,
+                    )?;
+                result.logits_outputs.extend(bridge_result.logits_outputs);
+                result.model_bound_ffn_decode |= bridge_result.model_bound_ffn_decode;
+                result.native_logits_projection_decode |=
+                    bridge_result.native_logits_projection_decode;
+                result.execution_tally = result.execution_tally.merge(bridge_result.execution_tally);
+                result.native_dense_tally =
+                    result.native_dense_tally.merge(bridge_result.native_dense_tally);
+            }
+            Some(result)
+        })() else {
+            return ModelBoundDirectDecodeResult::default();
+        };
+        return result;
+    }
+
+    let mut result = derive_model_bound_direct_decode_result_from_hidden_states(
         input,
         attention_output_bits,
         artifacts,
@@ -4209,7 +4284,281 @@ fn derive_model_bound_direct_decode_result(
         hidden_states,
         final_layer_index,
         bringup,
-    )
+    );
+    if !prefill_completion_request_ids.is_empty() {
+        let bridge_result = derive_model_bound_prefill_completion_result_from_hidden_states(
+            input,
+            attention_output_bits,
+            artifacts,
+            bindings,
+            buffers,
+            &workload,
+            hidden_states,
+            final_layer_index,
+            bringup,
+            &prefill_completion_request_ids,
+        );
+        result.logits_outputs.extend(bridge_result.logits_outputs);
+        result.model_bound_ffn_decode |= bridge_result.model_bound_ffn_decode;
+        result.native_logits_projection_decode |= bridge_result.native_logits_projection_decode;
+        result.execution_tally = result.execution_tally.merge(bridge_result.execution_tally);
+        result.native_dense_tally =
+            result.native_dense_tally.merge(bridge_result.native_dense_tally);
+    }
+    result
+}
+
+#[cfg(target_os = "macos")]
+/// Produce decode tokens from post-final-layer hidden states by applying
+/// the final RMS norm and lm_head logits projection on CPU.
+#[cfg(target_os = "macos")]
+fn derive_model_bound_direct_decode_from_post_layer_hidden_states(
+    input: &RunnerInput,
+    artifacts: &NativeModelArtifacts,
+    post_hidden: &[Vec<f32>],
+    final_norm: &MetalNativeTensorBufferBinding,
+    decode_projection: &MetalNativeTensorBufferBinding,
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<ModelBoundDirectDecodeResult> {
+    let hidden_dim = artifacts.manifest().hidden_size as usize;
+    let mut tokens = Vec::new();
+    let mut logits_outputs = Vec::new();
+    let mut execution_tally = PrefixAttentionExecutionTally::default();
+    let mut native_dense_tally = DirectDecodeNativeDenseTally::default();
+    let mut native_logits_projection_decode = false;
+    let mut token_cursor = 0_usize;
+
+    for item in &input.execution_batch.items {
+        let item_end = token_cursor + item.scheduled_token_count as usize;
+        if item.mode == ExecutionMode::Decode {
+            let hidden_index = item_end.saturating_sub(1);
+            let hidden = post_hidden.get(hidden_index)?;
+            let mut normed = hidden.get(..hidden_dim)?.to_vec();
+            apply_rms_norm_with_binding_in_place(
+                &mut normed,
+                final_norm,
+                native_model_rms_norm_epsilon(artifacts),
+                native_model_rms_norm_weight_offset(artifacts),
+                bringup,
+            )?;
+            let (logits, token_id, used_native) =
+                if let Some((logits, token_id)) = project_decode_logits_with_optional_native_path(
+                    bringup,
+                    decode_projection,
+                    &normed,
+                ) {
+                    (logits, token_id, true)
+                } else {
+                    let (logits, token_id) =
+                        project_decode_logits_cpu(decode_projection, hidden_dim, &normed)?;
+                    (logits, token_id, false)
+                };
+            native_dense_tally = native_dense_tally
+                .record_projection_rows(artifacts.manifest().vocab_size as usize, used_native);
+            native_logits_projection_decode |= used_native;
+            execution_tally = execution_tally
+                .record_layer_continuation_tokens(1)
+                .record_logits_projection(
+                    1,
+                    u32::try_from(artifacts.manifest().vocab_size).unwrap_or(u32::MAX),
+                );
+            tokens.push((item.request_id, token_id));
+            logits_outputs.push(RequestLogitsOutput {
+                request_id: item.request_id,
+                logits,
+            });
+        }
+        token_cursor = item_end;
+    }
+
+    let model_bound_ffn_decode = !logits_outputs.is_empty();
+    Some(ModelBoundDirectDecodeResult {
+        tokens,
+        logits_outputs,
+        model_bound_ffn_decode,
+        native_logits_projection_decode,
+        execution_tally,
+        native_dense_tally,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn derive_model_bound_prefill_completion_from_post_layer_hidden_states(
+    input: &RunnerInput,
+    artifacts: &NativeModelArtifacts,
+    post_hidden: &[Vec<f32>],
+    final_norm: &MetalNativeTensorBufferBinding,
+    decode_projection: &MetalNativeTensorBufferBinding,
+    bringup: Option<&MetalRuntimeBringup>,
+    prefill_request_ids: &BTreeSet<crate::ids::RequestId>,
+) -> Option<ModelBoundDirectDecodeResult> {
+    let hidden_dim = artifacts.manifest().hidden_size as usize;
+    let mut logits_outputs = Vec::new();
+    let mut execution_tally = PrefixAttentionExecutionTally::default();
+    let mut native_dense_tally = DirectDecodeNativeDenseTally::default();
+    let mut native_logits_projection_decode = false;
+    let mut token_cursor = 0_usize;
+
+    for item in &input.execution_batch.items {
+        let item_end = token_cursor + item.scheduled_token_count as usize;
+        if prefill_request_ids.contains(&item.request_id) {
+            let hidden_index = item_end.saturating_sub(1);
+            let hidden = post_hidden.get(hidden_index)?;
+            let mut normed = hidden.get(..hidden_dim)?.to_vec();
+            apply_rms_norm_with_binding_in_place(
+                &mut normed,
+                final_norm,
+                native_model_rms_norm_epsilon(artifacts),
+                native_model_rms_norm_weight_offset(artifacts),
+                bringup,
+            )?;
+            let (logits, _, used_native) =
+                if let Some((logits, token_id)) = project_decode_logits_with_optional_native_path(
+                    bringup,
+                    decode_projection,
+                    &normed,
+                ) {
+                    (logits, token_id, true)
+                } else {
+                    let (logits, token_id) =
+                        project_decode_logits_cpu(decode_projection, hidden_dim, &normed)?;
+                    (logits, token_id, false)
+                };
+            native_dense_tally = native_dense_tally
+                .record_projection_rows(artifacts.manifest().vocab_size as usize, used_native);
+            native_logits_projection_decode |= used_native;
+            execution_tally = execution_tally
+                .record_layer_continuation_tokens(1)
+                .record_logits_projection(
+                    1,
+                    u32::try_from(artifacts.manifest().vocab_size).unwrap_or(u32::MAX),
+                );
+            logits_outputs.push(RequestLogitsOutput {
+                request_id: item.request_id,
+                logits,
+            });
+        }
+        token_cursor = item_end;
+    }
+
+    let model_bound_ffn_decode = !logits_outputs.is_empty();
+    Some(ModelBoundDirectDecodeResult {
+        tokens: Vec::new(),
+        model_bound_ffn_decode,
+        logits_outputs,
+        native_logits_projection_decode,
+        execution_tally,
+        native_dense_tally,
+    })
+}
+
+/// Run all layers (including the final one) on CPU and produce decode tokens
+/// directly from the resulting hidden states. This is needed for hybrid
+/// linear-attention models where the Metal paged attention may not handle the
+/// model's head_dim / GQA configuration correctly.
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn derive_model_bound_direct_decode_via_full_cpu_forward(
+    input: &RunnerInput,
+    artifacts: &NativeModelArtifacts,
+    bindings: &MetalNativeModelBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    bringup: Option<&MetalRuntimeBringup>,
+    prefix_layer_caches: Option<&[Mutex<MetalPersistentLayerKvCache>]>,
+    linear_request_states: Option<&Mutex<BTreeMap<crate::ids::RequestId, MetalLinearRequestState>>>,
+) -> Option<ModelBoundDirectDecodeResult> {
+    let workload = MetalDispatchWorkload::from_runner_input(input).ok()?;
+    let token_embedding = buffers.binding_for(&bindings.token_embedding)?;
+    let hidden_dim = artifacts.manifest().hidden_size as usize;
+    let final_norm = buffers.binding_for(&bindings.final_norm)?;
+    let decode_projection = resolved_decode_projection_binding(artifacts, bindings, buffers)?;
+
+    // Run ALL layers (0 through last) on the CPU path.
+    let num_layers = bindings.layers.len();
+    let mut hidden_states = initial_model_hidden_states(
+        token_embedding,
+        &workload,
+        hidden_dim,
+        native_model_embedding_scale(artifacts),
+        bringup,
+    )?;
+
+    for layer_index in 0..num_layers {
+        let layer = bindings.layers.get(layer_index)?;
+        let (next, _) = advance_hidden_states_through_model_layer(
+            artifacts,
+            layer,
+            buffers,
+            input,
+            &workload,
+            &hidden_states,
+            bringup,
+            prefix_layer_caches.and_then(|c| c.get(layer_index)),
+            linear_request_states,
+            layer_index as u32,
+        )?;
+        hidden_states = next;
+    }
+
+    // Now project logits for decode items.
+    let mut tokens = Vec::new();
+    let mut logits_outputs = Vec::new();
+    let mut execution_tally = PrefixAttentionExecutionTally::default();
+    let mut native_dense_tally = DirectDecodeNativeDenseTally::default();
+    let mut native_logits_projection_decode = false;
+
+    let mut token_cursor = 0_usize;
+    for item in &input.execution_batch.items {
+        let item_end = token_cursor + item.scheduled_token_count as usize;
+        if item.mode == ExecutionMode::Decode {
+            let hidden_index = item_end.saturating_sub(1);
+            let hidden = hidden_states.get(hidden_index)?;
+            let mut normed = hidden.get(..hidden_dim)?.to_vec();
+            apply_rms_norm_with_binding_in_place(
+                &mut normed,
+                final_norm,
+                native_model_rms_norm_epsilon(artifacts),
+                native_model_rms_norm_weight_offset(artifacts),
+                bringup,
+            )?;
+            let (logits, token_id, used_native) =
+                if let Some((logits, token_id)) = project_decode_logits_with_optional_native_path(
+                    bringup,
+                    decode_projection,
+                    &normed,
+                ) {
+                    (logits, token_id, true)
+                } else {
+                    let (logits, token_id) =
+                        project_decode_logits_cpu(decode_projection, hidden_dim, &normed)?;
+                    (logits, token_id, false)
+                };
+            native_dense_tally = native_dense_tally
+                .record_projection_rows(artifacts.manifest().vocab_size as usize, used_native);
+            native_logits_projection_decode |= used_native;
+            execution_tally = execution_tally
+                .record_layer_continuation_tokens(1)
+                .record_logits_projection(
+                    1,
+                    u32::try_from(artifacts.manifest().vocab_size).unwrap_or(u32::MAX),
+                );
+            tokens.push((item.request_id, token_id));
+            logits_outputs.push(RequestLogitsOutput {
+                request_id: item.request_id,
+                logits,
+            });
+        }
+        token_cursor = item_end;
+    }
+
+    Some(ModelBoundDirectDecodeResult {
+        tokens,
+        logits_outputs,
+        model_bound_ffn_decode: true,
+        native_logits_projection_decode,
+        execution_tally,
+        native_dense_tally,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -4301,6 +4650,88 @@ fn derive_model_bound_direct_decode_result_from_hidden_states(
 
     ModelBoundDirectDecodeResult {
         tokens: direct_decode_tokens,
+        logits_outputs,
+        model_bound_ffn_decode,
+        native_logits_projection_decode,
+        execution_tally,
+        native_dense_tally,
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn derive_model_bound_prefill_completion_result_from_hidden_states(
+    input: &RunnerInput,
+    attention_output_bits: &[u32],
+    artifacts: &NativeModelArtifacts,
+    bindings: &MetalNativeModelBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    workload: &MetalDispatchWorkload,
+    hidden_states: &[Vec<f32>],
+    final_layer_index: usize,
+    bringup: Option<&MetalRuntimeBringup>,
+    prefill_request_ids: &BTreeSet<crate::ids::RequestId>,
+) -> ModelBoundDirectDecodeResult {
+    let Some(final_layer) = bindings.layers.get(final_layer_index) else {
+        return ModelBoundDirectDecodeResult::default();
+    };
+    let Some(token_width) =
+        attention_output_token_width(attention_output_bits.len(), workload.scheduled_tokens)
+    else {
+        return ModelBoundDirectDecodeResult::default();
+    };
+
+    let mut attention_index = 0_usize;
+    let mut logits_outputs = Vec::new();
+    let mut model_bound_ffn_decode = false;
+    let mut native_logits_projection_decode = false;
+    let mut execution_tally = PrefixAttentionExecutionTally::default();
+    let mut native_dense_tally = DirectDecodeNativeDenseTally::default();
+
+    for item in &input.execution_batch.items {
+        let token_base = attention_index.saturating_mul(token_width);
+        if prefill_request_ids.contains(&item.request_id) {
+            let token_end = token_base.saturating_add(token_width);
+            let hidden_index = attention_index
+                .saturating_add(item.scheduled_token_count as usize)
+                .saturating_sub(1);
+            if let Some(bits) = attention_output_bits.get(token_base..token_end) {
+                if let Some((
+                    logits,
+                    _token_id,
+                    used_model_bound_ffn,
+                    vocab_rows_scanned,
+                    used_native_logits_projection,
+                    decode_native_dense_tally,
+                )) = hidden_states.get(hidden_index).and_then(|hidden_state| {
+                    decode_logits_from_model_attention_output_with_metadata(
+                        artifacts,
+                        bindings,
+                        buffers,
+                        final_layer,
+                        hidden_state,
+                        bits,
+                        bringup,
+                    )
+                }) {
+                    logits_outputs.push(RequestLogitsOutput {
+                        request_id: item.request_id,
+                        logits,
+                    });
+                    execution_tally = execution_tally
+                        .record_layer_continuation_tokens(1)
+                        .record_logits_projection(1, vocab_rows_scanned);
+                    model_bound_ffn_decode |= used_model_bound_ffn;
+                    native_logits_projection_decode |= used_native_logits_projection;
+                    native_dense_tally = native_dense_tally.merge(decode_native_dense_tally);
+                }
+            }
+        }
+        attention_index = attention_index.saturating_add(item.scheduled_token_count as usize);
+    }
+
+    ModelBoundDirectDecodeResult {
+        tokens: Vec::new(),
         logits_outputs,
         model_bound_ffn_decode,
         native_logits_projection_decode,
@@ -11986,6 +12417,8 @@ fn runner_input_for_execution_items(
     })?;
     let mut seen_block_table_refs = BTreeSet::new();
     let mut block_tables = Vec::new();
+    let mut seen_request_ids = BTreeSet::new();
+    let mut request_contexts = Vec::new();
     for item in items {
         if seen_block_table_refs.insert(item.block_table_ref) {
             block_tables.push(
@@ -11995,6 +12428,9 @@ fn runner_input_for_execution_items(
                     .find(|resolved| resolved.request_id == item.block_table_ref)?
                     .clone(),
             );
+        }
+        if seen_request_ids.insert(item.request_id) {
+            request_contexts.push(*input.request_context(item.request_id)?);
         }
     }
 
@@ -12009,6 +12445,7 @@ fn runner_input_for_execution_items(
             route_metadata: input.execution_batch.route_metadata.clone(),
         },
         block_tables,
+        request_contexts,
     })
 }
 
