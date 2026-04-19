@@ -3248,15 +3248,37 @@ impl MetalBringupRunner {
         input: &RunnerInput,
         attention_output_bits: &[u32],
         staged_inputs: &MetalDispatchStagedInputs,
+        workload: &MetalDispatchWorkload,
         runtime: &MetalDispatchRuntimeInfo,
     ) -> ModelBoundDirectDecodeResult {
         if !runtime.real_model_tensor_inputs {
             return ModelBoundDirectDecodeResult::default();
         }
 
+        // For hybrid linear-attention models, compute attention on CPU instead
+        // of using Metal paged attention bits, which may not handle head_dim=256
+        // or GQA correctly. Uses the staged Q/K/V with the final layer's prefix
+        // cache as KV context.
+        let cpu_attention_bits;
+        let effective_bits = if self.model_artifacts.as_ref().and_then(|a| a.linear_attention_config()).is_some() {
+            let final_layer_index = self.model_bindings.as_ref().map(|b| b.layers.len().saturating_sub(1)).unwrap_or(0);
+            if let Some(bits) = self.compute_cpu_reference_attention_bits(
+                staged_inputs,
+                workload,
+                final_layer_index,
+            ) {
+                cpu_attention_bits = bits;
+                &cpu_attention_bits
+            } else {
+                attention_output_bits
+            }
+        } else {
+            attention_output_bits
+        };
+
         derive_model_bound_direct_decode_result(
             input,
-            attention_output_bits,
+            effective_bits,
             self.model_artifacts.as_ref(),
             self.model_bindings.as_ref(),
             self.model_buffers.as_ref(),
@@ -3267,12 +3289,56 @@ impl MetalBringupRunner {
         )
     }
 
+    #[cfg(target_os = "macos")]
+    fn compute_cpu_reference_attention_bits(
+        &self,
+        staged_inputs: &MetalDispatchStagedInputs,
+        workload: &MetalDispatchWorkload,
+        final_layer_index: usize,
+    ) -> Option<Vec<u32>> {
+        let artifacts = self.model_artifacts.as_ref()?;
+        let attention_config = native_model_reference_attention_config(
+            artifacts,
+            staged_inputs.layout.head_dim as usize,
+        );
+        let numeric_workload = workload.with_numeric_layout(staged_inputs.layout);
+        let final_layer_cache = self.prefix_layer_caches()?.get(final_layer_index)?;
+        let cache_data = {
+            let mut cache = final_layer_cache.lock().ok()?;
+            cache.ensure_capacity(&numeric_workload);
+            let cap = numeric_workload.slot_numeric_capacity() as usize;
+            (cache.key_cache.get(..cap)?.to_vec(), cache.value_cache.get(..cap)?.to_vec())
+        };
+        let seed = MetalDispatchKvCacheSeed {
+            key_cache: &cache_data.0,
+            value_cache: &cache_data.1,
+        };
+        let reference = reference_numeric_path_with_inputs_and_cache_seed_and_attention_config(
+            &numeric_workload,
+            staged_inputs,
+            Some(seed),
+            Some(attention_config),
+        );
+        // Commit KV writes back to the final layer's prefix cache.
+        if let Ok(mut cache) = final_layer_cache.lock() {
+            cache.apply_snapshot(
+                &numeric_workload,
+                &MetalDispatchKvCacheSnapshot::from_reference_for_workload(
+                    &numeric_workload,
+                    &reference,
+                ),
+            );
+        }
+        Some(reference.attention_output.iter().map(|v| v.to_bits()).collect())
+    }
+
     #[cfg(not(target_os = "macos"))]
     fn try_model_bound_direct_decode_tokens(
         &self,
         _input: &RunnerInput,
         _attention_output_bits: &[u32],
         _staged_inputs: &MetalDispatchStagedInputs,
+        _workload: &MetalDispatchWorkload,
         _runtime: &MetalDispatchRuntimeInfo,
     ) -> ModelBoundDirectDecodeResult {
         ModelBoundDirectDecodeResult::default()
@@ -3347,6 +3413,7 @@ impl ExecutionRunner for MetalBringupRunner {
                     &input,
                     &trace.numeric.attention_output_bits,
                     &staged_inputs,
+                    &workload,
                     &trace.runtime,
                 );
                 let mut output = successful_runner_output_from_input(&input);
