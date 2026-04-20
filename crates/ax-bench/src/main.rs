@@ -1877,11 +1877,13 @@ struct AutotuneTrialMetrics {
     prefix_cpu_rms_norm_element_count: u32,
     prefix_cpu_ffn_activation_element_count: u32,
     prefix_cpu_residual_add_element_count: u32,
+    prefix_cpu_scale_element_count: u32,
     direct_decode_batched_group_fallback_count: u32,
     direct_decode_cpu_projection_row_count: u32,
     direct_decode_cpu_rms_norm_element_count: u32,
     direct_decode_cpu_ffn_activation_element_count: u32,
     direct_decode_cpu_residual_add_element_count: u32,
+    direct_decode_cpu_scale_element_count: u32,
     native_hot_path_cpu_fallback_free: bool,
     real_model_forward: bool,
     model_bound_ffn_decode: bool,
@@ -2272,7 +2274,8 @@ fn autotune_probe_skip_reason(
     }
     if metrics.prefix_cpu_reference_dispatch_count > 0
         && (metrics.direct_decode_batched_group_fallback_count > 0
-            || metrics.direct_decode_cpu_projection_row_count > 0)
+            || metrics.direct_decode_cpu_projection_row_count > 0
+            || metrics.direct_decode_cpu_scale_element_count > 0)
     {
         return Some("probe hit CPU fallback in both prefix and decode hot paths".to_string());
     }
@@ -2296,7 +2299,8 @@ fn autotune_probe_skip_reason(
             && probe_score < floor * 0.7
             && (metrics.prefix_cpu_reference_dispatch_count > 0
                 || metrics.direct_decode_batched_group_fallback_count > 0
-                || metrics.direct_decode_cpu_projection_row_count > 0)
+                || metrics.direct_decode_cpu_projection_row_count > 0
+                || metrics.direct_decode_cpu_scale_element_count > 0)
     }) {
         return Some(format!(
             "probe score {:.3} stayed below adaptive floor {:.3}",
@@ -2333,7 +2337,8 @@ fn autotune_probe_skip_reason(
         score > 0.0
             && probe_score < score * 0.55
             && (metrics.prefix_cpu_reference_dispatch_count > 0
-                || metrics.direct_decode_batched_group_fallback_count > 0)
+                || metrics.direct_decode_batched_group_fallback_count > 0
+                || metrics.direct_decode_cpu_scale_element_count > 0)
     }) {
         return Some(format!(
             "probe score {:.3} stayed far below incumbent {:.3}",
@@ -3121,6 +3126,10 @@ fn autotune_metrics_from_history_json(
             .get("prefix_cpu_residual_add_element_count")
             .and_then(Value::as_u64)
             .unwrap_or_default() as u32,
+        prefix_cpu_scale_element_count: metrics_json
+            .get("prefix_cpu_scale_element_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default() as u32,
         direct_decode_batched_group_fallback_count: metrics_json
             .get("direct_decode_batched_group_fallback_count")
             .and_then(Value::as_u64)? as u32,
@@ -3138,6 +3147,10 @@ fn autotune_metrics_from_history_json(
             .unwrap_or_default() as u32,
         direct_decode_cpu_residual_add_element_count: metrics_json
             .get("direct_decode_cpu_residual_add_element_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default() as u32,
+        direct_decode_cpu_scale_element_count: metrics_json
+            .get("direct_decode_cpu_scale_element_count")
             .and_then(Value::as_u64)
             .unwrap_or_default() as u32,
         native_hot_path_cpu_fallback_free: metrics_json
@@ -3195,6 +3208,10 @@ fn autotune_trial_metrics(execution: &RuntimeResult) -> AutotuneTrialMetrics {
             route,
             "metal_dispatch_prefix_cpu_residual_add_element_count",
         ),
+        prefix_cpu_scale_element_count: route_decision_value(
+            route,
+            "metal_dispatch_prefix_cpu_scale_element_count",
+        ),
         direct_decode_batched_group_fallback_count: route_decision_value(
             route,
             "metal_dispatch_direct_decode_batched_group_fallback_count",
@@ -3215,6 +3232,10 @@ fn autotune_trial_metrics(execution: &RuntimeResult) -> AutotuneTrialMetrics {
             route,
             "metal_dispatch_direct_decode_cpu_residual_add_element_count",
         ),
+        direct_decode_cpu_scale_element_count: route_decision_value(
+            route,
+            "metal_dispatch_direct_decode_cpu_scale_element_count",
+        ),
         native_hot_path_cpu_fallback_free: route_prefix_cpu_reference_dispatch_count(route) == 0
             && route_decision_value(route, "metal_dispatch_prefix_cpu_projection_row_count") == 0
             && route_decision_value(route, "metal_dispatch_prefix_cpu_rms_norm_element_count") == 0
@@ -3226,6 +3247,7 @@ fn autotune_trial_metrics(execution: &RuntimeResult) -> AutotuneTrialMetrics {
                 route,
                 "metal_dispatch_prefix_cpu_residual_add_element_count",
             ) == 0
+            && route_decision_value(route, "metal_dispatch_prefix_cpu_scale_element_count") == 0
             && route_decision_value(
                 route,
                 "metal_dispatch_direct_decode_cpu_projection_row_count",
@@ -3241,6 +3263,10 @@ fn autotune_trial_metrics(execution: &RuntimeResult) -> AutotuneTrialMetrics {
             && route_decision_value(
                 route,
                 "metal_dispatch_direct_decode_cpu_residual_add_element_count",
+            ) == 0
+            && route_decision_value(
+                route,
+                "metal_dispatch_direct_decode_cpu_scale_element_count",
             ) == 0,
         real_model_forward: route_decision_flag(route, "metal_dispatch_real_model_forward"),
         model_bound_ffn_decode: route_decision_flag(
@@ -3261,10 +3287,12 @@ fn autotune_score(execution: &RuntimeResult, metrics: &AutotuneTrialMetrics) -> 
         + f64::from(metrics.prefix_cpu_rms_norm_element_count) * 0.001
         + f64::from(metrics.prefix_cpu_ffn_activation_element_count) * 0.001
         + f64::from(metrics.prefix_cpu_residual_add_element_count) * 0.001
+        + f64::from(metrics.prefix_cpu_scale_element_count) * 0.001
         + f64::from(metrics.direct_decode_cpu_projection_row_count) * 0.05
         + f64::from(metrics.direct_decode_cpu_rms_norm_element_count) * 0.001
         + f64::from(metrics.direct_decode_cpu_ffn_activation_element_count) * 0.001
-        + f64::from(metrics.direct_decode_cpu_residual_add_element_count) * 0.001;
+        + f64::from(metrics.direct_decode_cpu_residual_add_element_count) * 0.001
+        + f64::from(metrics.direct_decode_cpu_scale_element_count) * 0.001;
     let readiness_reward = if metrics.native_hot_path_cpu_fallback_free {
         500.0
     } else {
@@ -3452,11 +3480,13 @@ fn build_autotune_result_json(
                 "prefix_cpu_rms_norm_element_count": metrics.prefix_cpu_rms_norm_element_count,
                 "prefix_cpu_ffn_activation_element_count": metrics.prefix_cpu_ffn_activation_element_count,
                 "prefix_cpu_residual_add_element_count": metrics.prefix_cpu_residual_add_element_count,
+                "prefix_cpu_scale_element_count": metrics.prefix_cpu_scale_element_count,
                 "direct_decode_batched_group_fallback_count": metrics.direct_decode_batched_group_fallback_count,
                 "direct_decode_cpu_projection_row_count": metrics.direct_decode_cpu_projection_row_count,
                 "direct_decode_cpu_rms_norm_element_count": metrics.direct_decode_cpu_rms_norm_element_count,
                 "direct_decode_cpu_ffn_activation_element_count": metrics.direct_decode_cpu_ffn_activation_element_count,
                 "direct_decode_cpu_residual_add_element_count": metrics.direct_decode_cpu_residual_add_element_count,
+                "direct_decode_cpu_scale_element_count": metrics.direct_decode_cpu_scale_element_count,
                 "native_hot_path_cpu_fallback_free": metrics.native_hot_path_cpu_fallback_free,
                 "real_model_forward": metrics.real_model_forward,
                 "model_bound_ffn_decode": metrics.model_bound_ffn_decode,
@@ -5848,6 +5878,12 @@ fn build_trusted_baseline_summary_markdown(trusted_baseline: &Value) -> String {
     )
     .and_then(Value::as_u64)
     .unwrap_or(0);
+    let metal_direct_decode_batching_opportunity_observed = nested_value(
+        trusted_baseline,
+        &["route", "metal_direct_decode_batching_opportunity_observed"],
+    )
+    .map(json_value_label)
+    .unwrap_or_else(|| "unknown".to_string());
     let backend_reported_cached_prompt_tokens = nested_value(
         trusted_baseline,
         &["route", "backend_reported_cached_prompt_tokens"],
@@ -5868,7 +5904,7 @@ fn build_trusted_baseline_summary_markdown(trusted_baseline: &Value) -> String {
         .unwrap_or(0.0);
 
     format!(
-        "# Trusted Benchmark Baseline\n\n- name: `{name}`\n- source_run_id: `{source_run_id}`\n- source_result_dir: `{source_result_dir}`\n- manifest_id: `{manifest_id}`\n- manifest_class: `{manifest_class}`\n- scenario: `{scenario}`\n- model_family: `{model_family}`\n- tool_mode: `{tool_mode}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- execution_semantics: `{execution_semantics}`\n- native_placeholder_execution: `{native_placeholder_execution}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- metal_prefix_layers_native_attention: `{metal_prefix_layers_native_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- metal_prefix_native_dispatch_count: `{metal_prefix_native_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- metal_native_projection_f32_binding_count: `{metal_native_projection_f32_binding_count}`\n- metal_native_projection_f16_binding_count: `{metal_native_projection_f16_binding_count}`\n- metal_native_projection_bf16_binding_count: `{metal_native_projection_bf16_binding_count}`\n- metal_native_projection_unsupported_binding_count: `{metal_native_projection_unsupported_binding_count}`\n- metal_native_rms_norm_f32_binding_count: `{metal_native_rms_norm_f32_binding_count}`\n- metal_native_rms_norm_f16_binding_count: `{metal_native_rms_norm_f16_binding_count}`\n- metal_native_rms_norm_bf16_binding_count: `{metal_native_rms_norm_bf16_binding_count}`\n- metal_native_rms_norm_unsupported_binding_count: `{metal_native_rms_norm_unsupported_binding_count}`\n- prefix_cache_path: `{prefix_cache_path}`\n- prefix_cache_evidence: `{prefix_cache_evidence}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- ttft_ms: `{ttft_ms:.2}`\n- decode_tok_s: `{decode_tok_s:.2}`\n- memory_peak_mb: `{memory_peak_mb:.2}`\n- prefix_hit_rate: `{prefix_hit_rate:.2}`\n\nThis directory is a named trusted baseline snapshot. Compare future benchmark runs against this directory instead of overwriting it in place.\n"
+        "# Trusted Benchmark Baseline\n\n- name: `{name}`\n- source_run_id: `{source_run_id}`\n- source_result_dir: `{source_result_dir}`\n- manifest_id: `{manifest_id}`\n- manifest_class: `{manifest_class}`\n- scenario: `{scenario}`\n- model_family: `{model_family}`\n- tool_mode: `{tool_mode}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- execution_semantics: `{execution_semantics}`\n- native_placeholder_execution: `{native_placeholder_execution}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- metal_prefix_layers_native_attention: `{metal_prefix_layers_native_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- metal_prefix_native_dispatch_count: `{metal_prefix_native_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- metal_native_projection_f32_binding_count: `{metal_native_projection_f32_binding_count}`\n- metal_native_projection_f16_binding_count: `{metal_native_projection_f16_binding_count}`\n- metal_native_projection_bf16_binding_count: `{metal_native_projection_bf16_binding_count}`\n- metal_native_projection_unsupported_binding_count: `{metal_native_projection_unsupported_binding_count}`\n- metal_native_rms_norm_f32_binding_count: `{metal_native_rms_norm_f32_binding_count}`\n- metal_native_rms_norm_f16_binding_count: `{metal_native_rms_norm_f16_binding_count}`\n- metal_native_rms_norm_bf16_binding_count: `{metal_native_rms_norm_bf16_binding_count}`\n- metal_native_rms_norm_unsupported_binding_count: `{metal_native_rms_norm_unsupported_binding_count}`\n- prefix_cache_path: `{prefix_cache_path}`\n- prefix_cache_evidence: `{prefix_cache_evidence}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- ttft_ms: `{ttft_ms:.2}`\n- decode_tok_s: `{decode_tok_s:.2}`\n- memory_peak_mb: `{memory_peak_mb:.2}`\n- prefix_hit_rate: `{prefix_hit_rate:.2}`\n\nThis directory is a named trusted baseline snapshot. Compare future benchmark runs against this directory instead of overwriting it in place.\n"
     )
 }
 
@@ -6422,6 +6458,11 @@ fn build_environment_json(
     } else {
         hostname.clone()
     };
+    let mut route_json = serialize_route_metadata(&execution.observation.route_metadata);
+    annotate_route_json_with_decode_batching_opportunity(
+        &mut route_json,
+        &execution.observation.step_trace,
+    );
 
     Ok(json!({
         "schema_version": "ax.bench.environment.v1",
@@ -6450,7 +6491,7 @@ fn build_environment_json(
             &execution.runtime,
             execution.observation.runtime_report.as_ref(),
         ),
-        "route": serialize_route_metadata(&execution.observation.route_metadata),
+        "route": route_json,
         "benchmark": {
             "started_at": format!("unix:{started_at_unix_s}"),
             "started_at_unix_s": started_at_unix_s,
@@ -6597,6 +6638,11 @@ fn build_metrics_json(run_id: &str, execution: &RuntimeResult) -> Value {
 }
 
 fn build_routes_json(run_id: &str, execution: &RuntimeResult) -> Value {
+    let mut route_json = serialize_route_metadata(&execution.observation.route_metadata);
+    annotate_route_json_with_decode_batching_opportunity(
+        &mut route_json,
+        &execution.observation.step_trace,
+    );
     json!({
         "schema_version": "ax.bench.routes.v1",
         "run_id": run_id,
@@ -6604,7 +6650,7 @@ fn build_routes_json(run_id: &str, execution: &RuntimeResult) -> Value {
             &execution.runtime,
             execution.observation.runtime_report.as_ref(),
         ),
-        "route": serialize_route_metadata(&execution.observation.route_metadata),
+        "route": route_json,
         "mode": execution.tool_mode
     })
 }
@@ -6737,6 +6783,14 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_cpu_residual_add_element_count",
     );
+    let metal_prefix_native_scale_element_count = route_decision_value(
+        &execution.observation.route_metadata,
+        "metal_dispatch_prefix_native_scale_element_count",
+    );
+    let metal_prefix_cpu_scale_element_count = route_decision_value(
+        &execution.observation.route_metadata,
+        "metal_dispatch_prefix_cpu_scale_element_count",
+    );
     let metal_direct_decode_tokens = route_decision_flag(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_tokens",
@@ -6824,6 +6878,14 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_cpu_residual_add_element_count",
     );
+    let metal_direct_decode_native_scale_element_count = route_decision_value(
+        &execution.observation.route_metadata,
+        "metal_dispatch_direct_decode_native_scale_element_count",
+    );
+    let metal_direct_decode_cpu_scale_element_count = route_decision_value(
+        &execution.observation.route_metadata,
+        "metal_dispatch_direct_decode_cpu_scale_element_count",
+    );
     let metal_direct_decode_batched_logits_group_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_batched_logits_group_count",
@@ -6868,6 +6930,12 @@ fn build_execution_summary_markdown(
     )
     .map(|value| format!("{:.2}%", value * 100.0))
     .unwrap_or_else(|| "n/a".to_string());
+    let prefix_scale_native_share = native_coverage_ratio(
+        metal_prefix_native_scale_element_count,
+        metal_prefix_cpu_scale_element_count,
+    )
+    .map(|value| format!("{:.2}%", value * 100.0))
+    .unwrap_or_else(|| "n/a".to_string());
     let direct_decode_projection_native_share = native_coverage_ratio(
         metal_direct_decode_native_projection_row_count,
         metal_direct_decode_cpu_projection_row_count,
@@ -6892,10 +6960,20 @@ fn build_execution_summary_markdown(
     )
     .map(|value| format!("{:.2}%", value * 100.0))
     .unwrap_or_else(|| "n/a".to_string());
+    let direct_decode_scale_native_share = native_coverage_ratio(
+        metal_direct_decode_native_scale_element_count,
+        metal_direct_decode_cpu_scale_element_count,
+    )
+    .map(|value| format!("{:.2}%", value * 100.0))
+    .unwrap_or_else(|| "n/a".to_string());
+    let metal_direct_decode_batching_opportunity_observed =
+        direct_decode_batching_opportunity_observed(&execution.observation.step_trace);
     let native_benchmark_readiness = native_benchmark_readiness(NativeBenchmarkReadinessInputs {
         tool_mode: execution.tool_mode,
         selected_backend: &selected_backend,
         native_placeholder_execution,
+        direct_decode_batching_opportunity_observed:
+            metal_direct_decode_batching_opportunity_observed,
         metal_complete_model_forward_supported,
         metal_real_model_forward,
         metal_model_artifacts_validated,
@@ -6910,6 +6988,8 @@ fn build_execution_summary_markdown(
         metal_prefix_cpu_ffn_activation_element_count,
         metal_prefix_native_residual_add_element_count,
         metal_prefix_cpu_residual_add_element_count,
+        metal_prefix_native_scale_element_count,
+        metal_prefix_cpu_scale_element_count,
         metal_direct_decode_tokens,
         metal_direct_decode_model_bound_ffn,
         metal_direct_decode_batched_logits_group_count,
@@ -6924,6 +7004,8 @@ fn build_execution_summary_markdown(
         metal_direct_decode_cpu_ffn_activation_element_count,
         metal_direct_decode_native_residual_add_element_count,
         metal_direct_decode_cpu_residual_add_element_count,
+        metal_direct_decode_native_scale_element_count,
+        metal_direct_decode_cpu_scale_element_count,
     });
     let native_benchmark_readiness_status = native_benchmark_readiness.status;
     let native_hot_path_cpu_fallback_free = native_benchmark_readiness.hot_path_cpu_fallback_free;
@@ -6961,7 +7043,7 @@ fn build_execution_summary_markdown(
     };
 
     format!(
-        "# Benchmark Run\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `{}`\n- tool_mode: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- fallback_reason: `{fallback_reason}`\n- execution_semantics: `{execution_semantics}`\n- native_placeholder_execution: `{native_placeholder_execution}`\n- native_benchmark_readiness: `{native_benchmark_readiness_status}`\n- native_hot_path_cpu_fallback_free: `{native_hot_path_cpu_fallback_free}`\n- native_batched_direct_decode_logits_ready: `{native_batched_direct_decode_logits_ready}`\n- native_prefix_min_native_share: `{native_prefix_min_native_share}`\n- native_direct_decode_min_native_share: `{native_direct_decode_min_native_share}`\n- native_readiness_blockers: `{native_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- metal_prefix_layers_native_attention: `{metal_prefix_layers_native_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- metal_prefix_native_dispatch_count: `{metal_prefix_native_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_prefix_native_projection_row_count: `{metal_prefix_native_projection_row_count}`\n- metal_prefix_cpu_projection_row_count: `{metal_prefix_cpu_projection_row_count}`\n- metal_prefix_projection_native_share: `{prefix_projection_native_share}`\n- metal_prefix_native_rms_norm_element_count: `{metal_prefix_native_rms_norm_element_count}`\n- metal_prefix_cpu_rms_norm_element_count: `{metal_prefix_cpu_rms_norm_element_count}`\n- metal_prefix_rms_norm_native_share: `{prefix_rms_norm_native_share}`\n- metal_prefix_native_ffn_activation_element_count: `{metal_prefix_native_ffn_activation_element_count}`\n- metal_prefix_cpu_ffn_activation_element_count: `{metal_prefix_cpu_ffn_activation_element_count}`\n- metal_prefix_ffn_activation_native_share: `{prefix_ffn_activation_native_share}`\n- metal_prefix_native_residual_add_element_count: `{metal_prefix_native_residual_add_element_count}`\n- metal_prefix_cpu_residual_add_element_count: `{metal_prefix_cpu_residual_add_element_count}`\n- metal_prefix_residual_add_native_share: `{prefix_residual_add_native_share}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- metal_native_projection_f32_binding_count: `{metal_native_projection_f32_binding_count}`\n- metal_native_projection_f16_binding_count: `{metal_native_projection_f16_binding_count}`\n- metal_native_projection_bf16_binding_count: `{metal_native_projection_bf16_binding_count}`\n- metal_native_projection_unsupported_binding_count: `{metal_native_projection_unsupported_binding_count}`\n- metal_native_rms_norm_f32_binding_count: `{metal_native_rms_norm_f32_binding_count}`\n- metal_native_rms_norm_f16_binding_count: `{metal_native_rms_norm_f16_binding_count}`\n- metal_native_rms_norm_bf16_binding_count: `{metal_native_rms_norm_bf16_binding_count}`\n- metal_native_rms_norm_unsupported_binding_count: `{metal_native_rms_norm_unsupported_binding_count}`\n- metal_direct_decode_native_projection_row_count: `{metal_direct_decode_native_projection_row_count}`\n- metal_direct_decode_cpu_projection_row_count: `{metal_direct_decode_cpu_projection_row_count}`\n- metal_direct_decode_projection_native_share: `{direct_decode_projection_native_share}`\n- metal_direct_decode_native_rms_norm_element_count: `{metal_direct_decode_native_rms_norm_element_count}`\n- metal_direct_decode_cpu_rms_norm_element_count: `{metal_direct_decode_cpu_rms_norm_element_count}`\n- metal_direct_decode_rms_norm_native_share: `{direct_decode_rms_norm_native_share}`\n- metal_direct_decode_native_ffn_activation_element_count: `{metal_direct_decode_native_ffn_activation_element_count}`\n- metal_direct_decode_cpu_ffn_activation_element_count: `{metal_direct_decode_cpu_ffn_activation_element_count}`\n- metal_direct_decode_ffn_activation_native_share: `{direct_decode_ffn_activation_native_share}`\n- metal_direct_decode_native_residual_add_element_count: `{metal_direct_decode_native_residual_add_element_count}`\n- metal_direct_decode_cpu_residual_add_element_count: `{metal_direct_decode_cpu_residual_add_element_count}`\n- metal_direct_decode_residual_add_native_share: `{direct_decode_residual_add_native_share}`\n- correctness: `{}`\n- determinism: `{}`\n- ttft_ms: `{:.2}`\n- prefill_tok_s: `{:.2}`\n- decode_tok_s: `{:.2}`\n- e2e_latency_ms: `{:.2}`\n- cpu_time_per_token_us: `{:.2}`\n- runner_time_per_token_us: `{:.2}`\n- runner_time_share_pct: `{:.2}`\n- prefix_hit_rate: `{:.2}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- kv_peak_blocks: `{}`\n{}",
+        "# Benchmark Run\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `{}`\n- tool_mode: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- fallback_reason: `{fallback_reason}`\n- execution_semantics: `{execution_semantics}`\n- native_placeholder_execution: `{native_placeholder_execution}`\n- native_benchmark_readiness: `{native_benchmark_readiness_status}`\n- native_hot_path_cpu_fallback_free: `{native_hot_path_cpu_fallback_free}`\n- native_batched_direct_decode_logits_ready: `{native_batched_direct_decode_logits_ready}`\n- native_prefix_min_native_share: `{native_prefix_min_native_share}`\n- native_direct_decode_min_native_share: `{native_direct_decode_min_native_share}`\n- native_readiness_blockers: `{native_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- metal_prefix_layers_native_attention: `{metal_prefix_layers_native_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- metal_prefix_native_dispatch_count: `{metal_prefix_native_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_prefix_native_projection_row_count: `{metal_prefix_native_projection_row_count}`\n- metal_prefix_cpu_projection_row_count: `{metal_prefix_cpu_projection_row_count}`\n- metal_prefix_projection_native_share: `{prefix_projection_native_share}`\n- metal_prefix_native_rms_norm_element_count: `{metal_prefix_native_rms_norm_element_count}`\n- metal_prefix_cpu_rms_norm_element_count: `{metal_prefix_cpu_rms_norm_element_count}`\n- metal_prefix_rms_norm_native_share: `{prefix_rms_norm_native_share}`\n- metal_prefix_native_ffn_activation_element_count: `{metal_prefix_native_ffn_activation_element_count}`\n- metal_prefix_cpu_ffn_activation_element_count: `{metal_prefix_cpu_ffn_activation_element_count}`\n- metal_prefix_ffn_activation_native_share: `{prefix_ffn_activation_native_share}`\n- metal_prefix_native_residual_add_element_count: `{metal_prefix_native_residual_add_element_count}`\n- metal_prefix_cpu_residual_add_element_count: `{metal_prefix_cpu_residual_add_element_count}`\n- metal_prefix_residual_add_native_share: `{prefix_residual_add_native_share}`\n- metal_prefix_native_scale_element_count: `{metal_prefix_native_scale_element_count}`\n- metal_prefix_cpu_scale_element_count: `{metal_prefix_cpu_scale_element_count}`\n- metal_prefix_scale_native_share: `{prefix_scale_native_share}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- metal_native_projection_f32_binding_count: `{metal_native_projection_f32_binding_count}`\n- metal_native_projection_f16_binding_count: `{metal_native_projection_f16_binding_count}`\n- metal_native_projection_bf16_binding_count: `{metal_native_projection_bf16_binding_count}`\n- metal_native_projection_unsupported_binding_count: `{metal_native_projection_unsupported_binding_count}`\n- metal_native_rms_norm_f32_binding_count: `{metal_native_rms_norm_f32_binding_count}`\n- metal_native_rms_norm_f16_binding_count: `{metal_native_rms_norm_f16_binding_count}`\n- metal_native_rms_norm_bf16_binding_count: `{metal_native_rms_norm_bf16_binding_count}`\n- metal_native_rms_norm_unsupported_binding_count: `{metal_native_rms_norm_unsupported_binding_count}`\n- metal_direct_decode_native_projection_row_count: `{metal_direct_decode_native_projection_row_count}`\n- metal_direct_decode_cpu_projection_row_count: `{metal_direct_decode_cpu_projection_row_count}`\n- metal_direct_decode_projection_native_share: `{direct_decode_projection_native_share}`\n- metal_direct_decode_native_rms_norm_element_count: `{metal_direct_decode_native_rms_norm_element_count}`\n- metal_direct_decode_cpu_rms_norm_element_count: `{metal_direct_decode_cpu_rms_norm_element_count}`\n- metal_direct_decode_rms_norm_native_share: `{direct_decode_rms_norm_native_share}`\n- metal_direct_decode_native_ffn_activation_element_count: `{metal_direct_decode_native_ffn_activation_element_count}`\n- metal_direct_decode_cpu_ffn_activation_element_count: `{metal_direct_decode_cpu_ffn_activation_element_count}`\n- metal_direct_decode_ffn_activation_native_share: `{direct_decode_ffn_activation_native_share}`\n- metal_direct_decode_native_residual_add_element_count: `{metal_direct_decode_native_residual_add_element_count}`\n- metal_direct_decode_cpu_residual_add_element_count: `{metal_direct_decode_cpu_residual_add_element_count}`\n- metal_direct_decode_residual_add_native_share: `{direct_decode_residual_add_native_share}`\n- metal_direct_decode_native_scale_element_count: `{metal_direct_decode_native_scale_element_count}`\n- metal_direct_decode_cpu_scale_element_count: `{metal_direct_decode_cpu_scale_element_count}`\n- metal_direct_decode_scale_native_share: `{direct_decode_scale_native_share}`\n- correctness: `{}`\n- determinism: `{}`\n- ttft_ms: `{:.2}`\n- prefill_tok_s: `{:.2}`\n- decode_tok_s: `{:.2}`\n- e2e_latency_ms: `{:.2}`\n- cpu_time_per_token_us: `{:.2}`\n- runner_time_per_token_us: `{:.2}`\n- runner_time_share_pct: `{:.2}`\n- prefix_hit_rate: `{:.2}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- kv_peak_blocks: `{}`\n{}",
         manifest_path.display(),
         execution.status_label(),
         execution.tool_mode,
@@ -7466,6 +7548,16 @@ fn build_regression_json(
         "metal_direct_decode_tokens",
         &["metal_dispatch_direct_decode_tokens"],
     );
+    let baseline_metal_direct_decode_batching_opportunity_observed = route_flag_from_json(
+        &baseline_route,
+        "metal_direct_decode_batching_opportunity_observed",
+        &["metal_direct_decode_batching_opportunity_observed"],
+    );
+    let candidate_metal_direct_decode_batching_opportunity_observed = route_flag_from_json(
+        &candidate_route,
+        "metal_direct_decode_batching_opportunity_observed",
+        &["metal_direct_decode_batching_opportunity_observed"],
+    );
     let baseline_metal_direct_decode_model_bound_ffn = route_flag_from_json(
         &baseline_route,
         "metal_direct_decode_model_bound_ffn",
@@ -7661,6 +7753,7 @@ fn build_regression_json(
             "metal_native_projection_bf16_binding_count": baseline_metal_native_projection_bf16_binding_count,
             "metal_native_projection_unsupported_binding_count": baseline_metal_native_projection_unsupported_binding_count,
             "metal_direct_decode_tokens": baseline_metal_direct_decode_tokens,
+            "metal_direct_decode_batching_opportunity_observed": baseline_metal_direct_decode_batching_opportunity_observed,
             "metal_direct_decode_model_bound_ffn": baseline_metal_direct_decode_model_bound_ffn,
             "metal_direct_decode_batched_logits_group_count": baseline_metal_direct_decode_batched_logits_group_count,
             "metal_direct_decode_batched_logits_token_count": baseline_metal_direct_decode_batched_logits_token_count,
@@ -7747,6 +7840,10 @@ fn build_regression_json(
             "metal_direct_decode_tokens": {
                 "baseline": baseline_metal_direct_decode_tokens,
                 "candidate": candidate_metal_direct_decode_tokens
+            },
+            "metal_direct_decode_batching_opportunity_observed": {
+                "baseline": baseline_metal_direct_decode_batching_opportunity_observed,
+                "candidate": candidate_metal_direct_decode_batching_opportunity_observed
             },
             "metal_direct_decode_model_bound_ffn": {
                 "baseline": baseline_metal_direct_decode_model_bound_ffn,
@@ -7994,6 +8091,11 @@ fn build_compare_summary_markdown(
         .and_then(|summary| summary.get("metal_direct_decode_tokens"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let metal_direct_decode_batching_opportunity_observed = regression_json
+        .get("summary")
+        .and_then(|summary| summary.get("metal_direct_decode_batching_opportunity_observed"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let metal_direct_decode_model_bound_ffn = regression_json
         .get("summary")
         .and_then(|summary| summary.get("metal_direct_decode_model_bound_ffn"))
@@ -8164,7 +8266,7 @@ fn build_compare_summary_markdown(
         native_share_label(candidate_native_direct_decode_min_native_share);
 
     format!(
-        "# Benchmark Compare\n\n- baseline: `{baseline_id}`\n{trusted_baseline_line}- candidate: `{candidate_id}`\n- mode: `{compare_mode}`\n- tool_mode: `{tool_mode}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- execution_semantics: `{execution_semantics}`\n- native_placeholder_execution: `{native_placeholder_execution}`\n- baseline_native_benchmark_readiness: `{baseline_native_benchmark_readiness}`\n- baseline_hot_path_cpu_fallback_free: `{baseline_native_hot_path_cpu_fallback_free}`\n- baseline_batched_direct_decode_logits_ready: `{baseline_native_batched_direct_decode_logits_ready}`\n- baseline_prefix_min_native_share: `{baseline_native_prefix_min_native_share}`\n- baseline_direct_decode_min_native_share: `{baseline_native_direct_decode_min_native_share}`\n- baseline_readiness_blockers: `{baseline_native_readiness_blockers}`\n- candidate_native_benchmark_readiness: `{candidate_native_benchmark_readiness}`\n- candidate_hot_path_cpu_fallback_free: `{candidate_native_hot_path_cpu_fallback_free}`\n- candidate_batched_direct_decode_logits_ready: `{candidate_native_batched_direct_decode_logits_ready}`\n- candidate_prefix_min_native_share: `{candidate_native_prefix_min_native_share}`\n- candidate_direct_decode_min_native_share: `{candidate_native_direct_decode_min_native_share}`\n- candidate_readiness_blockers: `{candidate_native_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- metal_prefix_layers_native_attention: `{metal_prefix_layers_native_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- metal_prefix_native_dispatch_count: `{metal_prefix_native_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_native_projection_f32_binding_count: `{metal_native_projection_f32_binding_count}`\n- metal_native_projection_f16_binding_count: `{metal_native_projection_f16_binding_count}`\n- metal_native_projection_bf16_binding_count: `{metal_native_projection_bf16_binding_count}`\n- metal_native_projection_unsupported_binding_count: `{metal_native_projection_unsupported_binding_count}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- metal_native_rms_norm_f32_binding_count: `{metal_native_rms_norm_f32_binding_count}`\n- metal_native_rms_norm_f16_binding_count: `{metal_native_rms_norm_f16_binding_count}`\n- metal_native_rms_norm_bf16_binding_count: `{metal_native_rms_norm_bf16_binding_count}`\n- metal_native_rms_norm_unsupported_binding_count: `{metal_native_rms_norm_unsupported_binding_count}`\n- prefix_cache_path: `{prefix_cache_path}`\n- prefix_cache_evidence: `{prefix_cache_evidence}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n\n| Metric | Delta % |\n| --- | ---: |\n| TTFT | {ttft:.2} |\n| Decode tok/s | {decode:.2} |\n| Memory peak MB | {memory:.2} |\n| Prefix hit rate | {prefix:.2} |\n{}"
+        "# Benchmark Compare\n\n- baseline: `{baseline_id}`\n{trusted_baseline_line}- candidate: `{candidate_id}`\n- mode: `{compare_mode}`\n- tool_mode: `{tool_mode}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- execution_semantics: `{execution_semantics}`\n- native_placeholder_execution: `{native_placeholder_execution}`\n- baseline_native_benchmark_readiness: `{baseline_native_benchmark_readiness}`\n- baseline_hot_path_cpu_fallback_free: `{baseline_native_hot_path_cpu_fallback_free}`\n- baseline_batched_direct_decode_logits_ready: `{baseline_native_batched_direct_decode_logits_ready}`\n- baseline_prefix_min_native_share: `{baseline_native_prefix_min_native_share}`\n- baseline_direct_decode_min_native_share: `{baseline_native_direct_decode_min_native_share}`\n- baseline_readiness_blockers: `{baseline_native_readiness_blockers}`\n- candidate_native_benchmark_readiness: `{candidate_native_benchmark_readiness}`\n- candidate_hot_path_cpu_fallback_free: `{candidate_native_hot_path_cpu_fallback_free}`\n- candidate_batched_direct_decode_logits_ready: `{candidate_native_batched_direct_decode_logits_ready}`\n- candidate_prefix_min_native_share: `{candidate_native_prefix_min_native_share}`\n- candidate_direct_decode_min_native_share: `{candidate_native_direct_decode_min_native_share}`\n- candidate_readiness_blockers: `{candidate_native_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- metal_prefix_layers_native_attention: `{metal_prefix_layers_native_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- metal_prefix_native_dispatch_count: `{metal_prefix_native_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_native_projection_f32_binding_count: `{metal_native_projection_f32_binding_count}`\n- metal_native_projection_f16_binding_count: `{metal_native_projection_f16_binding_count}`\n- metal_native_projection_bf16_binding_count: `{metal_native_projection_bf16_binding_count}`\n- metal_native_projection_unsupported_binding_count: `{metal_native_projection_unsupported_binding_count}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- metal_native_rms_norm_f32_binding_count: `{metal_native_rms_norm_f32_binding_count}`\n- metal_native_rms_norm_f16_binding_count: `{metal_native_rms_norm_f16_binding_count}`\n- metal_native_rms_norm_bf16_binding_count: `{metal_native_rms_norm_bf16_binding_count}`\n- metal_native_rms_norm_unsupported_binding_count: `{metal_native_rms_norm_unsupported_binding_count}`\n- prefix_cache_path: `{prefix_cache_path}`\n- prefix_cache_evidence: `{prefix_cache_evidence}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n\n| Metric | Delta % |\n| --- | ---: |\n| TTFT | {ttft:.2} |\n| Decode tok/s | {decode:.2} |\n| Memory peak MB | {memory:.2} |\n| Prefix hit rate | {prefix:.2} |\n{}"
         ,
         summary_note
     )
@@ -8379,6 +8481,7 @@ struct NativeBenchmarkReadinessInputs<'a> {
     tool_mode: &'a str,
     selected_backend: &'a str,
     native_placeholder_execution: bool,
+    direct_decode_batching_opportunity_observed: bool,
     metal_complete_model_forward_supported: bool,
     metal_real_model_forward: bool,
     metal_model_artifacts_validated: bool,
@@ -8393,6 +8496,8 @@ struct NativeBenchmarkReadinessInputs<'a> {
     metal_prefix_cpu_ffn_activation_element_count: u32,
     metal_prefix_native_residual_add_element_count: u32,
     metal_prefix_cpu_residual_add_element_count: u32,
+    metal_prefix_native_scale_element_count: u32,
+    metal_prefix_cpu_scale_element_count: u32,
     metal_direct_decode_tokens: bool,
     metal_direct_decode_model_bound_ffn: bool,
     metal_direct_decode_batched_logits_group_count: u32,
@@ -8407,6 +8512,8 @@ struct NativeBenchmarkReadinessInputs<'a> {
     metal_direct_decode_cpu_ffn_activation_element_count: u32,
     metal_direct_decode_native_residual_add_element_count: u32,
     metal_direct_decode_cpu_residual_add_element_count: u32,
+    metal_direct_decode_native_scale_element_count: u32,
+    metal_direct_decode_cpu_scale_element_count: u32,
 }
 
 fn min_native_share(shares: &[Option<f64>]) -> Option<f64> {
@@ -8454,6 +8561,10 @@ fn native_benchmark_readiness(
         inputs.metal_prefix_native_residual_add_element_count,
         inputs.metal_prefix_cpu_residual_add_element_count,
     );
+    let prefix_scale_native_share = native_coverage_ratio(
+        inputs.metal_prefix_native_scale_element_count,
+        inputs.metal_prefix_cpu_scale_element_count,
+    );
     let direct_decode_projection_native_share = native_coverage_ratio(
         inputs.metal_direct_decode_native_projection_row_count,
         inputs.metal_direct_decode_cpu_projection_row_count,
@@ -8470,32 +8581,41 @@ fn native_benchmark_readiness(
         inputs.metal_direct_decode_native_residual_add_element_count,
         inputs.metal_direct_decode_cpu_residual_add_element_count,
     );
+    let direct_decode_scale_native_share = native_coverage_ratio(
+        inputs.metal_direct_decode_native_scale_element_count,
+        inputs.metal_direct_decode_cpu_scale_element_count,
+    );
     let prefix_min_native_share = min_native_share(&[
         prefix_projection_native_share,
         prefix_rms_norm_native_share,
         prefix_ffn_activation_native_share,
         prefix_residual_add_native_share,
+        prefix_scale_native_share,
     ]);
     let direct_decode_min_native_share = min_native_share(&[
         direct_decode_projection_native_share,
         direct_decode_rms_norm_native_share,
         direct_decode_ffn_activation_native_share,
         direct_decode_residual_add_native_share,
+        direct_decode_scale_native_share,
     ]);
     let hot_path_cpu_fallback_free = inputs.metal_prefix_cpu_reference_dispatch_count == 0
         && inputs.metal_prefix_cpu_projection_row_count == 0
         && inputs.metal_prefix_cpu_rms_norm_element_count == 0
         && inputs.metal_prefix_cpu_ffn_activation_element_count == 0
         && inputs.metal_prefix_cpu_residual_add_element_count == 0
+        && inputs.metal_prefix_cpu_scale_element_count == 0
         && inputs.metal_direct_decode_cpu_projection_row_count == 0
         && inputs.metal_direct_decode_cpu_rms_norm_element_count == 0
         && inputs.metal_direct_decode_cpu_ffn_activation_element_count == 0
-        && inputs.metal_direct_decode_cpu_residual_add_element_count == 0;
-    let batched_direct_decode_logits_ready = inputs.metal_direct_decode_tokens
-        && inputs.metal_direct_decode_batched_logits_group_count > 0
-        && inputs.metal_direct_decode_batched_logits_token_count > 0
-        && inputs.metal_direct_decode_batched_group_fallback_count == 0
-        && inputs.metal_direct_decode_batched_group_fallback_token_count == 0;
+        && inputs.metal_direct_decode_cpu_residual_add_element_count == 0
+        && inputs.metal_direct_decode_cpu_scale_element_count == 0;
+    let batched_direct_decode_logits_ready = !inputs.direct_decode_batching_opportunity_observed
+        || (inputs.metal_direct_decode_tokens
+            && inputs.metal_direct_decode_batched_logits_group_count > 0
+            && inputs.metal_direct_decode_batched_logits_token_count > 0
+            && inputs.metal_direct_decode_batched_group_fallback_count == 0
+            && inputs.metal_direct_decode_batched_group_fallback_token_count == 0);
 
     let mut blockers = Vec::new();
     if !inputs.metal_model_artifacts_validated {
@@ -8527,13 +8647,17 @@ fn native_benchmark_readiness(
     if inputs.metal_prefix_cpu_residual_add_element_count > 0 {
         blockers.push("prefix_residual_add_cpu_fallback_remaining");
     }
+    if inputs.metal_prefix_cpu_scale_element_count > 0 {
+        blockers.push("prefix_scale_cpu_fallback_remaining");
+    }
     if !inputs.metal_direct_decode_tokens {
         blockers.push("direct_decode_tokens_not_observed");
     } else {
         if !inputs.metal_direct_decode_model_bound_ffn {
             blockers.push("direct_decode_model_bound_ffn_not_reported");
         }
-        if !batched_direct_decode_logits_ready {
+        if inputs.direct_decode_batching_opportunity_observed && !batched_direct_decode_logits_ready
+        {
             blockers.push("batched_direct_decode_logits_not_observed");
         }
         if inputs.metal_direct_decode_batched_group_fallback_count > 0
@@ -8552,6 +8676,9 @@ fn native_benchmark_readiness(
         }
         if inputs.metal_direct_decode_cpu_residual_add_element_count > 0 {
             blockers.push("direct_decode_residual_add_cpu_fallback_remaining");
+        }
+        if inputs.metal_direct_decode_cpu_scale_element_count > 0 {
+            blockers.push("direct_decode_scale_cpu_fallback_remaining");
         }
     }
 
@@ -8582,6 +8709,20 @@ fn native_benchmark_readiness_from_route_json(
             "native_placeholder_execution",
             &["native_placeholder_execution"],
         ),
+        direct_decode_batching_opportunity_observed: route_flag_from_json(
+            route_json,
+            "metal_direct_decode_batching_opportunity_observed",
+            &["metal_direct_decode_batching_opportunity_observed"],
+        ) || route_count_from_json(
+            route_json,
+            "metal_direct_decode_batched_logits_group_count",
+            &["metal_dispatch_direct_decode_batched_logits_group_count"],
+        ) > 0
+            || route_count_from_json(
+                route_json,
+                "metal_direct_decode_batched_group_fallback_count",
+                &["metal_dispatch_direct_decode_batched_group_fallback_count"],
+            ) > 0,
         metal_complete_model_forward_supported: route_flag_from_json(
             route_json,
             "metal_complete_model_forward_supported",
@@ -8655,6 +8796,16 @@ fn native_benchmark_readiness_from_route_json(
             "metal_prefix_cpu_residual_add_element_count",
             &["metal_dispatch_prefix_cpu_residual_add_element_count"],
         ),
+        metal_prefix_native_scale_element_count: route_count_from_json(
+            route_json,
+            "metal_prefix_native_scale_element_count",
+            &["metal_dispatch_prefix_native_scale_element_count"],
+        ),
+        metal_prefix_cpu_scale_element_count: route_count_from_json(
+            route_json,
+            "metal_prefix_cpu_scale_element_count",
+            &["metal_dispatch_prefix_cpu_scale_element_count"],
+        ),
         metal_direct_decode_tokens: route_flag_from_json(
             route_json,
             "metal_direct_decode_tokens",
@@ -8724,6 +8875,16 @@ fn native_benchmark_readiness_from_route_json(
             route_json,
             "metal_direct_decode_cpu_residual_add_element_count",
             &["metal_dispatch_direct_decode_cpu_residual_add_element_count"],
+        ),
+        metal_direct_decode_native_scale_element_count: route_count_from_json(
+            route_json,
+            "metal_direct_decode_native_scale_element_count",
+            &["metal_dispatch_direct_decode_native_scale_element_count"],
+        ),
+        metal_direct_decode_cpu_scale_element_count: route_count_from_json(
+            route_json,
+            "metal_direct_decode_cpu_scale_element_count",
+            &["metal_dispatch_direct_decode_cpu_scale_element_count"],
         ),
     })
 }
@@ -9135,6 +9296,20 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
+        "metal_prefix_native_scale_element_count".to_string(),
+        json!(route_decision_value(
+            route,
+            "metal_dispatch_prefix_native_scale_element_count"
+        )),
+    );
+    route_json.insert(
+        "metal_prefix_cpu_scale_element_count".to_string(),
+        json!(route_decision_value(
+            route,
+            "metal_dispatch_prefix_cpu_scale_element_count"
+        )),
+    );
+    route_json.insert(
         "metal_prefix_projection_native_share".to_string(),
         native_coverage_ratio(
             route_decision_value(route, "metal_dispatch_prefix_native_projection_row_count"),
@@ -9175,6 +9350,14 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
                 route,
                 "metal_dispatch_prefix_cpu_residual_add_element_count",
             ),
+        )
+        .map_or(Value::Null, Value::from),
+    );
+    route_json.insert(
+        "metal_prefix_scale_native_share".to_string(),
+        native_coverage_ratio(
+            route_decision_value(route, "metal_dispatch_prefix_native_scale_element_count"),
+            route_decision_value(route, "metal_dispatch_prefix_cpu_scale_element_count"),
         )
         .map_or(Value::Null, Value::from),
     );
@@ -9326,6 +9509,20 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
+        "metal_direct_decode_native_scale_element_count".to_string(),
+        json!(route_decision_value(
+            route,
+            "metal_dispatch_direct_decode_native_scale_element_count"
+        )),
+    );
+    route_json.insert(
+        "metal_direct_decode_cpu_scale_element_count".to_string(),
+        json!(route_decision_value(
+            route,
+            "metal_dispatch_direct_decode_cpu_scale_element_count"
+        )),
+    );
+    route_json.insert(
         "metal_direct_decode_batched_logits_group_count".to_string(),
         json!(route_decision_value(
             route,
@@ -9410,6 +9607,20 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         .map_or(Value::Null, Value::from),
     );
     route_json.insert(
+        "metal_direct_decode_scale_native_share".to_string(),
+        native_coverage_ratio(
+            route_decision_value(
+                route,
+                "metal_dispatch_direct_decode_native_scale_element_count",
+            ),
+            route_decision_value(
+                route,
+                "metal_dispatch_direct_decode_cpu_scale_element_count",
+            ),
+        )
+        .map_or(Value::Null, Value::from),
+    );
+    route_json.insert(
         "crossover_decisions".to_string(),
         Value::Object(crossover_decisions),
     );
@@ -9422,6 +9633,30 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
     }
 
     Value::Object(route_json)
+}
+
+fn direct_decode_batching_opportunity_observed(step_trace: &[StepTraceEntry]) -> bool {
+    step_trace.iter().any(|step| {
+        step.items
+            .iter()
+            .filter(|item| item.mode == ax_engine_core::ExecutionMode::Decode)
+            .take(2)
+            .count()
+            > 1
+    })
+}
+
+fn annotate_route_json_with_decode_batching_opportunity(
+    route_json: &mut Value,
+    step_trace: &[StepTraceEntry],
+) {
+    let Some(route_object) = route_json.as_object_mut() else {
+        return;
+    };
+    route_object.insert(
+        "metal_direct_decode_batching_opportunity_observed".to_string(),
+        json!(direct_decode_batching_opportunity_observed(step_trace)),
+    );
 }
 
 fn prefix_cache_evidence_label(route: &RouteMetadata) -> String {
@@ -10264,9 +10499,21 @@ struct NativeGgufBridgeSupportReport {
     #[serde(default)]
     vocab_size: Option<u32>,
     fixed_attention_dims: bool,
+    #[serde(default)]
+    has_moe: bool,
+    #[serde(default)]
+    expert_count: Option<u32>,
+    #[serde(default)]
+    experts_per_token: Option<u32>,
+    #[serde(default)]
+    expert_intermediate_size: Option<u32>,
     supports_export: bool,
+    #[serde(default = "default_true")]
+    runtime_ready: bool,
     #[serde(default)]
     blockers: Vec<String>,
+    #[serde(default)]
+    runtime_blockers: Vec<String>,
     #[serde(default)]
     notes: Vec<String>,
 }
@@ -10422,7 +10669,15 @@ fn probe_native_gguf_bridge_with_config(
             let parsed = parse_native_gguf_bridge_probe_result(&output.stdout, &output.stderr);
             if let Some(parsed) = parsed {
                 let bridge_status = if parsed.status == "ok" {
-                    "ready"
+                    if parsed
+                        .report
+                        .as_ref()
+                        .is_some_and(|support_report| !support_report.runtime_ready)
+                    {
+                        "runtime_blocked"
+                    } else {
+                        "ready"
+                    }
                 } else if parsed.status == "unsupported" {
                     "unsupported"
                 } else {
@@ -10454,7 +10709,37 @@ fn probe_native_gguf_bridge_with_config(
                         "supports_export".to_string(),
                         json!(support_report.supports_export),
                     );
-                    report.insert("blockers".to_string(), json!(support_report.blockers));
+                    report.insert("has_moe".to_string(), json!(support_report.has_moe));
+                    report.insert(
+                        "expert_count".to_string(),
+                        support_report.expert_count.map_or(Value::Null, Value::from),
+                    );
+                    report.insert(
+                        "experts_per_token".to_string(),
+                        support_report
+                            .experts_per_token
+                            .map_or(Value::Null, Value::from),
+                    );
+                    report.insert(
+                        "expert_intermediate_size".to_string(),
+                        support_report
+                            .expert_intermediate_size
+                            .map_or(Value::Null, Value::from),
+                    );
+                    report.insert(
+                        "runtime_ready".to_string(),
+                        json!(support_report.runtime_ready),
+                    );
+                    let export_blockers = support_report.blockers;
+                    let runtime_blockers = support_report.runtime_blockers;
+                    let blockers = if export_blockers.is_empty() && !runtime_blockers.is_empty() {
+                        runtime_blockers.clone()
+                    } else {
+                        export_blockers.clone()
+                    };
+                    report.insert("blockers".to_string(), json!(blockers));
+                    report.insert("export_blockers".to_string(), json!(export_blockers));
+                    report.insert("runtime_blockers".to_string(), json!(runtime_blockers));
                     report.insert("notes".to_string(), json!(support_report.notes));
                 }
             } else {
@@ -11244,6 +11529,8 @@ struct MetalDispatchStepTrace {
     execution_prefix_cpu_ffn_activation_element_count: u32,
     execution_prefix_native_residual_add_element_count: u32,
     execution_prefix_cpu_residual_add_element_count: u32,
+    execution_prefix_native_scale_element_count: u32,
+    execution_prefix_cpu_scale_element_count: u32,
     execution_direct_decode_native_projection_row_count: u32,
     execution_direct_decode_cpu_projection_row_count: u32,
     execution_direct_decode_native_rms_norm_element_count: u32,
@@ -11252,6 +11539,8 @@ struct MetalDispatchStepTrace {
     execution_direct_decode_cpu_ffn_activation_element_count: u32,
     execution_direct_decode_native_residual_add_element_count: u32,
     execution_direct_decode_cpu_residual_add_element_count: u32,
+    execution_direct_decode_native_scale_element_count: u32,
+    execution_direct_decode_cpu_scale_element_count: u32,
     execution_direct_decode_batched_logits_group_count: u32,
     execution_direct_decode_batched_logits_token_count: u32,
     execution_direct_decode_batched_group_fallback_count: u32,
@@ -11335,6 +11624,12 @@ impl MetalDispatchStepTrace {
             execution_prefix_cpu_residual_add_element_count: trace
                 .execution
                 .prefix_cpu_residual_add_element_count,
+            execution_prefix_native_scale_element_count: trace
+                .execution
+                .prefix_native_scale_element_count,
+            execution_prefix_cpu_scale_element_count: trace
+                .execution
+                .prefix_cpu_scale_element_count,
             execution_direct_decode_native_projection_row_count: trace
                 .execution
                 .direct_decode_native_projection_row_count,
@@ -11359,6 +11654,12 @@ impl MetalDispatchStepTrace {
             execution_direct_decode_cpu_residual_add_element_count: trace
                 .execution
                 .direct_decode_cpu_residual_add_element_count,
+            execution_direct_decode_native_scale_element_count: trace
+                .execution
+                .direct_decode_native_scale_element_count,
+            execution_direct_decode_cpu_scale_element_count: trace
+                .execution
+                .direct_decode_cpu_scale_element_count,
             execution_direct_decode_batched_logits_group_count: trace
                 .execution
                 .direct_decode_batched_logits_group_count,
@@ -11757,6 +12058,8 @@ mod tests {
                 prefix_cpu_ffn_activation_element_count: 64,
                 prefix_native_residual_add_element_count: 4096,
                 prefix_cpu_residual_add_element_count: 0,
+                prefix_native_scale_element_count: 2048,
+                prefix_cpu_scale_element_count: 0,
                 direct_decode_native_projection_row_count: 151936,
                 direct_decode_cpu_projection_row_count: 3072,
                 direct_decode_native_rms_norm_element_count: 6144,
@@ -11765,6 +12068,8 @@ mod tests {
                 direct_decode_cpu_ffn_activation_element_count: 0,
                 direct_decode_native_residual_add_element_count: 3072,
                 direct_decode_cpu_residual_add_element_count: 0,
+                direct_decode_native_scale_element_count: 1536,
+                direct_decode_cpu_scale_element_count: 0,
                 direct_decode_batched_logits_group_count: 1,
                 direct_decode_batched_logits_token_count: 2,
                 direct_decode_batched_group_fallback_count: 0,
@@ -11952,6 +12257,18 @@ mod tests {
         );
         assert_eq!(
             json.get("metal_dispatch")
+                .and_then(|trace| trace.get("execution_prefix_native_scale_element_count"))
+                .and_then(Value::as_u64),
+            Some(2048)
+        );
+        assert_eq!(
+            json.get("metal_dispatch")
+                .and_then(|trace| trace.get("execution_prefix_cpu_scale_element_count"))
+                .and_then(Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            json.get("metal_dispatch")
                 .and_then(|trace| trace.get("execution_direct_decode_native_projection_row_count"))
                 .and_then(Value::as_u64),
             Some(151936)
@@ -11989,6 +12306,20 @@ mod tests {
                 .and_then(|trace| {
                     trace.get("execution_direct_decode_cpu_residual_add_element_count")
                 })
+                .and_then(Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            json.get("metal_dispatch")
+                .and_then(|trace| {
+                    trace.get("execution_direct_decode_native_scale_element_count")
+                })
+                .and_then(Value::as_u64),
+            Some(1536)
+        );
+        assert_eq!(
+            json.get("metal_dispatch")
+                .and_then(|trace| { trace.get("execution_direct_decode_cpu_scale_element_count") })
                 .and_then(Value::as_u64),
             Some(0)
         );
@@ -12135,6 +12466,7 @@ mod tests {
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
             linear_attention: ax_engine_core::NativeLinearAttentionConfig::default(),
+            moe: ax_engine_core::NativeMoeConfig::default(),
             tensors: vec![
                 native_model_tensor(
                     "model.embed_tokens.weight",
@@ -12294,6 +12626,7 @@ mod tests {
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
             linear_attention: ax_engine_core::NativeLinearAttentionConfig::default(),
+            moe: ax_engine_core::NativeMoeConfig::default(),
             tensors: vec![
                 native_model_tensor_with_file(
                     "model.embed_tokens.weight",
@@ -13444,6 +13777,77 @@ print(json.dumps({
     }
 
     #[test]
+    fn probe_native_gguf_bridge_with_config_reports_runtime_blocked_support() {
+        let gguf_path = unique_test_dir("gguf-bridge-runtime-blocked-input").with_extension("gguf");
+        fs::write(&gguf_path, b"fake-gguf").expect("gguf input should write");
+        let script = fake_gguf_bridge_probe_script(
+            r#"#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+
+print(json.dumps({
+    "status": "ok",
+    "report": {
+        "architecture": "gemma4",
+        "layer_count": 62,
+        "hidden_size": 2816,
+        "vocab_size": 256000,
+        "fixed_attention_dims": False,
+        "has_moe": True,
+        "expert_count": 128,
+        "experts_per_token": 8,
+        "expert_intermediate_size": 704,
+        "supports_export": True,
+        "runtime_ready": False,
+        "blockers": [],
+        "runtime_blockers": ["moe_execution_not_implemented"],
+        "notes": ["moe_manifest_export_supported_runtime_pending"]
+    }
+}))
+"#,
+            "gguf-bridge-runtime-blocked-script",
+        );
+
+        let report = probe_native_gguf_bridge_with_config(
+            &gguf_path,
+            &NativeGgufBridgeProbeConfig {
+                python_bin: PathBuf::from("python3"),
+                script_path: script.clone(),
+                output_dtype: "f16".to_string(),
+            },
+        );
+
+        assert_eq!(
+            report.get("status").and_then(Value::as_str),
+            Some("runtime_blocked")
+        );
+        assert_eq!(report.get("has_moe").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            report.get("expert_count").and_then(Value::as_u64),
+            Some(128)
+        );
+        assert_eq!(
+            report
+                .get("blockers")
+                .and_then(Value::as_array)
+                .and_then(|blockers| blockers.first())
+                .and_then(Value::as_str),
+            Some("moe_execution_not_implemented")
+        );
+        assert_eq!(
+            report
+                .get("runtime_blockers")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+
+        let _ = fs::remove_file(script);
+        let _ = fs::remove_file(gguf_path);
+    }
+
+    #[test]
     fn serialize_runtime_metadata_with_native_model_bridge_override_includes_bridge_report() {
         let runtime = RuntimeConfig {
             deterministic: false,
@@ -13779,6 +14183,37 @@ print(json.dumps({
             .notes
             .iter()
             .any(|note| note.contains("native GGUF bridge probe status=unsupported")));
+    }
+
+    #[test]
+    fn doctor_report_marks_runtime_blocked_gguf_bridge_not_ready() {
+        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+        let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+        let report = build_doctor_report_with_native_model_bridge(
+            host,
+            toolchain,
+            Some(json!({
+                "status": "runtime_blocked",
+                "source_path": "/tmp/google_gemma-4-26b-a4b-it-q4_k_m.gguf",
+                "blockers": ["moe_execution_not_implemented"],
+                "runtime_blockers": ["moe_execution_not_implemented"],
+                "supports_export": true
+            })),
+        );
+
+        assert_eq!(report.status, DoctorStatus::NotReady);
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.contains("status=runtime_blocked")));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.contains("moe_execution_not_implemented")));
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("native GGUF bridge probe status=runtime_blocked")));
     }
 
     #[test]
@@ -16733,7 +17168,8 @@ print(json.dumps({
         );
         // With chunked prefill, single-output requests may complete during the
         // prefill step. Decode-specific assertions are conditional.
-        let has_decode_tokens = route_decision(&observation, "metal_dispatch_direct_decode_tokens") > 0;
+        let has_decode_tokens =
+            route_decision(&observation, "metal_dispatch_direct_decode_tokens") > 0;
         if has_decode_tokens {
             assert!(
                 route_decision(
@@ -16857,7 +17293,8 @@ print(json.dumps({
         );
         // With chunked prefill, single-output requests may complete during the
         // prefill step. Decode-specific assertions are conditional.
-        let has_decode_tokens = route_decision(&observation, "metal_dispatch_direct_decode_tokens") > 0;
+        let has_decode_tokens =
+            route_decision(&observation, "metal_dispatch_direct_decode_tokens") > 0;
         if has_decode_tokens {
             assert!(
                 route_decision(
@@ -17822,6 +18259,7 @@ print(json.dumps({
             "route": {
                 "execution_semantics": "metal_real_model_forward",
                 "native_placeholder_execution": false,
+                "metal_direct_decode_batching_opportunity_observed": true,
                 "metal_complete_model_forward_supported": true,
                 "metal_real_model_forward": true,
                 "metal_model_artifacts_validated": true,
@@ -17859,6 +18297,7 @@ print(json.dumps({
             "route": {
                 "execution_semantics": "metal_real_model_forward",
                 "native_placeholder_execution": false,
+                "metal_direct_decode_batching_opportunity_observed": true,
                 "metal_complete_model_forward_supported": true,
                 "metal_real_model_forward": true,
                 "metal_model_artifacts_validated": true,
@@ -17898,6 +18337,13 @@ print(json.dumps({
         )
         .expect("regression artifact should build");
 
+        assert_eq!(
+            regression
+                .get("summary")
+                .and_then(|summary| summary.get("metal_direct_decode_batching_opportunity_observed"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
         assert_eq!(
             regression
                 .get("summary")
@@ -17946,6 +18392,112 @@ print(json.dumps({
                 "batched_direct_decode_logits_not_observed",
                 "batched_direct_decode_group_fallback_remaining"
             ])
+        );
+
+        let summary = build_compare_summary_markdown(
+            &baseline_metrics,
+            &candidate_metrics,
+            &regression,
+            None,
+        );
+        assert!(summary.contains("metal_direct_decode_batching_opportunity_observed: `true`"));
+    }
+
+    #[test]
+    fn native_benchmark_readiness_allows_single_request_decode_without_batching_opportunity() {
+        let readiness = native_benchmark_readiness(NativeBenchmarkReadinessInputs {
+            tool_mode: "engine_bringup_runtime",
+            selected_backend: "ax_native",
+            native_placeholder_execution: false,
+            direct_decode_batching_opportunity_observed: false,
+            metal_complete_model_forward_supported: true,
+            metal_real_model_forward: true,
+            metal_model_artifacts_validated: true,
+            metal_prefix_layers_native_attention: true,
+            metal_prefix_layers_cpu_reference: false,
+            metal_prefix_cpu_reference_dispatch_count: 0,
+            metal_prefix_native_projection_row_count: 2048,
+            metal_prefix_cpu_projection_row_count: 0,
+            metal_prefix_native_rms_norm_element_count: 1024,
+            metal_prefix_cpu_rms_norm_element_count: 0,
+            metal_prefix_native_ffn_activation_element_count: 1024,
+            metal_prefix_cpu_ffn_activation_element_count: 0,
+            metal_prefix_native_residual_add_element_count: 1024,
+            metal_prefix_cpu_residual_add_element_count: 0,
+            metal_prefix_native_scale_element_count: 1024,
+            metal_prefix_cpu_scale_element_count: 0,
+            metal_direct_decode_tokens: true,
+            metal_direct_decode_model_bound_ffn: true,
+            metal_direct_decode_batched_logits_group_count: 0,
+            metal_direct_decode_batched_logits_token_count: 0,
+            metal_direct_decode_batched_group_fallback_count: 0,
+            metal_direct_decode_batched_group_fallback_token_count: 0,
+            metal_direct_decode_native_projection_row_count: 4096,
+            metal_direct_decode_cpu_projection_row_count: 0,
+            metal_direct_decode_native_rms_norm_element_count: 1024,
+            metal_direct_decode_cpu_rms_norm_element_count: 0,
+            metal_direct_decode_native_ffn_activation_element_count: 1024,
+            metal_direct_decode_cpu_ffn_activation_element_count: 0,
+            metal_direct_decode_native_residual_add_element_count: 1024,
+            metal_direct_decode_cpu_residual_add_element_count: 0,
+            metal_direct_decode_native_scale_element_count: 1024,
+            metal_direct_decode_cpu_scale_element_count: 0,
+        });
+
+        assert_eq!(readiness.status, "ready");
+        assert!(readiness.hot_path_cpu_fallback_free);
+        assert!(readiness.batched_direct_decode_logits_ready);
+        assert!(readiness.blockers.is_empty());
+    }
+
+    #[test]
+    fn annotate_route_json_with_decode_batching_opportunity_marks_multi_decode_steps() {
+        let mut route_json = serialize_route_metadata(&RouteMetadata::empty());
+        let step_trace = vec![StepTraceEntry {
+            t_ms: 0,
+            step_id: Some(StepId(1)),
+            admitted_request_ids: Vec::new(),
+            selected_request_ids: vec![RequestId(1), RequestId(2)],
+            deferred_request_ids: Vec::new(),
+            memory_blocked_request_ids: Vec::new(),
+            cleanup_request_ids: Vec::new(),
+            scheduled_tokens: 2,
+            prefix_hits: 0,
+            cpu_time_us: 0,
+            runner_time_us: 0,
+            kv_usage_blocks: 0,
+            runner_executed: true,
+            route_metadata: RouteMetadata::empty(),
+            metal_dispatch: None,
+            items: vec![
+                StepTraceItem {
+                    request_id: RequestId(1),
+                    mode: ax_engine_core::ExecutionMode::Decode,
+                    position_start: 0,
+                    position_end_exclusive: 1,
+                    scheduled_token_count: 1,
+                    input_token_count: 1,
+                    prefix_tokens_reused: 0,
+                    prefix_blocks_reused: 0,
+                },
+                StepTraceItem {
+                    request_id: RequestId(2),
+                    mode: ax_engine_core::ExecutionMode::Decode,
+                    position_start: 0,
+                    position_end_exclusive: 1,
+                    scheduled_token_count: 1,
+                    input_token_count: 1,
+                    prefix_tokens_reused: 0,
+                    prefix_blocks_reused: 0,
+                },
+            ],
+        }];
+
+        annotate_route_json_with_decode_batching_opportunity(&mut route_json, &step_trace);
+
+        assert_eq!(
+            route_json.get("metal_direct_decode_batching_opportunity_observed"),
+            Some(&Value::Bool(true))
         );
     }
 

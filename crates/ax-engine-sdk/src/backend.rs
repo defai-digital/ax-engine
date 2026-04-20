@@ -255,6 +255,7 @@ pub enum NativeRuntimeArtifactsSource {
 pub enum NativeModelArtifactsSource {
     ExplicitConfig,
     ExplicitEnv,
+    GeneratedFromGguf,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

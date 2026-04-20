@@ -114,6 +114,16 @@ struct VectorAddParams {
     uint element_count;
 };
 
+struct RowScaleParams {
+    uint row_count;
+    uint row_width;
+};
+
+struct RowVectorScaleParams {
+    uint row_count;
+    uint row_width;
+};
+
 struct LinearGatedDeltaParams {
     uint batch_size;
     uint num_key_heads;
@@ -552,6 +562,38 @@ kernel void vector_add_f32(
     }
 
     output[gid] = input[gid] + delta[gid];
+}
+
+kernel void row_scale_f32(
+    device const float* input [[buffer(0)]],
+    device const float* row_scales [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant RowScaleParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    uint element_count = params.row_count * params.row_width;
+    if (gid >= element_count || params.row_width == 0) {
+        return;
+    }
+
+    uint row_index = gid / params.row_width;
+    output[gid] = input[gid] * row_scales[row_index];
+}
+
+kernel void row_vector_scale_f32(
+    device const float* input [[buffer(0)]],
+    device const float* scales [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant RowVectorScaleParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    uint element_count = params.row_count * params.row_width;
+    if (gid >= element_count || params.row_width == 0) {
+        return;
+    }
+
+    uint lane_index = gid % params.row_width;
+    output[gid] = input[gid] * scales[lane_index];
 }
 
 kernel void decode_logits_projection_f32(
@@ -1024,6 +1066,22 @@ kernel void linear_attention_gate_silu_f32(
 
     float gate_value = gate[gid];
     float activated = gate_value / (1.0f + exp(-gate_value));
+    output[gid] = activated * input[gid];
+}
+
+kernel void attention_output_gate_sigmoid_product_f32(
+    device const float* gate [[buffer(0)]],
+    device const float* input [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant FfnGateProductParams& params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= params.element_count) {
+        return;
+    }
+
+    float gate_value = gate[gid];
+    float activated = 1.0f / (1.0f + exp(-gate_value));
     output[gid] = activated * input[gid];
 }
 

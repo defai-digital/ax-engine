@@ -36,8 +36,8 @@ pub use metal::{
 };
 pub use model::{
     NativeLinearAttentionConfig, NativeModelArtifacts, NativeModelArtifactsSummary,
-    NativeModelError, NativeModelManifest, NativeTensorDataType, NativeTensorFormat,
-    NativeTensorRole, NativeTensorSpec, AX_NATIVE_MODEL_MANIFEST_FILE,
+    NativeModelError, NativeModelManifest, NativeMoeConfig, NativeTensorDataType,
+    NativeTensorFormat, NativeTensorRole, NativeTensorSpec, AX_NATIVE_MODEL_MANIFEST_FILE,
     AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
 };
 pub use request::{

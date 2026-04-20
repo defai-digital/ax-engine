@@ -191,6 +191,11 @@
       "purpose": "batched SiLU gating over AX-native linear-attention recurrent outputs"
     },
     {
+      "name": "attention_output_gate_sigmoid_product_f32",
+      "tier": "optional",
+      "purpose": "batched sigmoid gating over AX-native dense attention outputs before o_proj"
+    },
+    {
       "name": "linear_attention_beta_sigmoid_f32",
       "tier": "optional",
       "purpose": "batched sigmoid beta precompute over AX-native linear-attention heads"

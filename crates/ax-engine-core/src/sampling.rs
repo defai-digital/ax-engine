@@ -26,6 +26,16 @@ impl Default for SamplingParams {
     }
 }
 
+pub(crate) fn sampling_params_allow_deterministic_argmax_fast_path(
+    params: &SamplingParams,
+) -> bool {
+    params.deterministic
+        && params.temperature <= 0.0
+        && params.top_k == 0
+        && params.top_p >= 1.0
+        && params.repetition_penalty == 1.0
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
@@ -179,5 +189,18 @@ mod tests {
         assert!(sampled[0]
             .logprob
             .is_some_and(|logprob| logprob.is_finite() && logprob < 0.0));
+    }
+
+    #[test]
+    fn deterministic_argmax_fast_path_only_allows_default_greedy_sampling() {
+        assert!(sampling_params_allow_deterministic_argmax_fast_path(
+            &SamplingParams::default()
+        ));
+
+        let mut params = SamplingParams::default();
+        params.temperature = 0.7;
+        assert!(!sampling_params_allow_deterministic_argmax_fast_path(
+            &params
+        ));
     }
 }

@@ -208,7 +208,7 @@ impl RequestManager {
         &mut self,
         runner_output: &RunnerOutput,
         sampled_tokens: &[SampledToken],
-        decode_request_ids: &[RequestId],
+        sampled_request_ids: &[RequestId],
     ) -> Result<RunnerApplySummary, RequestManagerError> {
         let mut sampled_by_request = BTreeMap::new();
         for sampled_token in sampled_tokens {
@@ -222,7 +222,7 @@ impl RequestManager {
             }
         }
 
-        let decode_requests = decode_request_ids.iter().copied().collect::<BTreeSet<_>>();
+        let sampled_requests = sampled_request_ids.iter().copied().collect::<BTreeSet<_>>();
 
         let mut seen = BTreeSet::new();
         let mut summary = RunnerApplySummary::default();
@@ -266,15 +266,37 @@ impl RequestManager {
                 continue;
             }
 
-            let is_decode = decode_requests.contains(&update.request_id);
-
-            let sampled_stop_reason = if is_decode {
+            let sampled_stop_reason = if sampled_requests.contains(&update.request_id) {
                 let sampled_token = sampled_by_request.remove(&update.request_id).ok_or(
                     RequestManagerError::ProgressInvariantViolation {
                         request_id: update.request_id,
-                        message: "decode update missing sampled token",
+                        message: "sampleable update missing sampled token",
                     },
                 )?;
+
+                if record.processed_prompt_tokens < record.prompt_tokens.len() as u32 {
+                    let next_processed_prompt_tokens = record
+                        .processed_prompt_tokens
+                        .checked_add(update.tokens_executed)
+                        .ok_or(RequestManagerError::ProgressInvariantViolation {
+                            request_id: update.request_id,
+                            message: "processed prompt token counter overflowed",
+                        })?;
+                    if next_processed_prompt_tokens > record.prompt_tokens.len() as u32 {
+                        return Err(RequestManagerError::ProgressInvariantViolation {
+                            request_id: update.request_id,
+                            message: "runner advanced prompt past available prompt tokens",
+                        });
+                    }
+                    if next_processed_prompt_tokens != record.prompt_tokens.len() as u32 {
+                        return Err(RequestManagerError::ProgressInvariantViolation {
+                            request_id: update.request_id,
+                            message:
+                                "prefill request may only sample when the scheduled step completes the prompt",
+                        });
+                    }
+                    record.processed_prompt_tokens = next_processed_prompt_tokens;
+                }
 
                 if record.generated_tokens.is_empty() {
                     summary.ttft_events += 1;

@@ -15,9 +15,11 @@ use crate::request_manager::{RequestManager, RequestManagerError, RunnerApplySum
 use crate::runner::RequestLogitsOutput;
 use crate::runner::{
     DeterministicRunner, ExecutionRunner, ResolvedBlockTable, RunnerInput, RunnerOutput,
+    RunnerRequestContext,
 };
 use crate::sampling::{
-    DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, TokenSampler,
+    sampling_params_allow_deterministic_argmax_fast_path, DeterministicSampler, SampledToken,
+    SamplerInput, SamplerRequest, TokenSampler,
 };
 use crate::scheduler::{
     ExecutionBatch, ExecutionItem, ExecutionMode, SchedulePlan, Scheduler, SchedulerInput,
@@ -462,10 +464,14 @@ impl EngineCore {
         let runner_time_us = runner_started.elapsed().as_micros() as u64;
         self.validate_runner_output(schedule_plan, &runner_output)?;
         let sampled_tokens = self.sample_runner_output(schedule_plan, &runner_output)?;
+        let sampled_request_ids = sampled_tokens
+            .iter()
+            .map(|sampled| sampled.request_id)
+            .collect::<Vec<_>>();
         let runner_summary = self.request_manager.apply_execution_results(
             &runner_output,
             &sampled_tokens,
-            &decode_request_ids(schedule_plan),
+            &sampled_request_ids,
         )?;
 
         if let Some(batch) = schedule_plan.execution_batch.as_mut() {
@@ -493,18 +499,38 @@ impl EngineCore {
         execution_batch: ExecutionBatch,
     ) -> Result<RunnerInput, EngineCoreError> {
         let mut block_tables = Vec::with_capacity(execution_batch.items.len());
+        let mut seen_request_ids = BTreeSet::new();
+        let mut request_contexts = Vec::with_capacity(execution_batch.items.len());
 
         for item in &execution_batch.items {
             block_tables.push(ResolvedBlockTable {
                 request_id: item.request_id,
                 block_table: self.kv_manager.block_table(item.request_id)?,
             });
+            if seen_request_ids.insert(item.request_id) {
+                let record = self
+                    .request_manager
+                    .record(item.request_id)
+                    .ok_or(RequestManagerError::UnknownRequest(item.request_id))?;
+                request_contexts.push(RunnerRequestContext {
+                    request_id: item.request_id,
+                    prompt_len: record.prompt_tokens.len() as u32,
+                    processed_prompt_tokens: record.processed_prompt_tokens,
+                    generated_len: record.generated_tokens.len() as u32,
+                    max_output_tokens: record.max_output_tokens,
+                    deterministic_argmax_sampling:
+                        sampling_params_allow_deterministic_argmax_fast_path(
+                            &record.sampling_params,
+                        ),
+                });
+            }
         }
 
         Ok(RunnerInput {
             block_size_tokens: self.kv_manager.config().block_size_tokens,
             execution_batch,
             block_tables,
+            request_contexts,
         })
     }
 
@@ -516,6 +542,7 @@ impl EngineCore {
         let Some(execution_batch) = &schedule_plan.execution_batch else {
             return Ok(Vec::new());
         };
+        let sample_request_ids = self.sample_request_ids(execution_batch)?;
 
         let mut runner_tokens = Vec::new();
         let mut requests = Vec::new();
@@ -535,11 +562,11 @@ impl EngineCore {
             .copied()
             .collect::<BTreeSet<_>>();
 
-        for request_id in decode_request_ids(schedule_plan) {
+        for request_id in sample_request_ids {
             let update = update_by_request.get(&request_id).ok_or(
                 EngineCoreError::RunnerContractViolation {
                     step_id: runner_output.step_id,
-                    message: "runner omitted update for decode request",
+                    message: "runner omitted update for sampleable request",
                 },
             )?;
             if update.error.is_some()
@@ -561,14 +588,6 @@ impl EngineCore {
             let logits = logits_output_by_request
                 .get(&request_id)
                 .map(|values| (*values).clone());
-            if logits.is_none() && !logits_handles.contains(&request_id) {
-                return Err(EngineCoreError::RunnerContractViolation {
-                    step_id: runner_output.step_id,
-                    message:
-                        "decode request requires logits payload, logits handle, or output token",
-                });
-            }
-
             let item = execution_batch
                 .items
                 .iter()
@@ -577,6 +596,18 @@ impl EngineCore {
                     step_id: runner_output.step_id,
                     message: "runner logits handle missing from execution batch",
                 })?;
+            let decode_request = item.mode == ExecutionMode::Decode;
+            if logits.is_none() && !logits_handles.contains(&request_id) {
+                if !decode_request {
+                    continue;
+                }
+                return Err(EngineCoreError::RunnerContractViolation {
+                    step_id: runner_output.step_id,
+                    message:
+                        "decode request requires logits payload, logits handle, or output token",
+                });
+            }
+
             let record = self
                 .request_manager
                 .record(request_id)
@@ -625,6 +656,8 @@ impl EngineCore {
                 message: "runner output step_id does not match scheduled batch",
             });
         }
+        let prefill_completion_request_ids =
+            self.prefill_completion_request_ids(execution_batch)?;
 
         let batch_request_ids = execution_batch
             .items
@@ -658,10 +691,14 @@ impl EngineCore {
                 .find(|item| item.request_id == update.request_id)
                 .expect("validated request_id should exist in execution batch");
 
-            if item.mode == ExecutionMode::Prefill && update.output_token.is_some() {
+            if item.mode == ExecutionMode::Prefill
+                && update.output_token.is_some()
+                && !prefill_completion_request_ids.contains(&update.request_id)
+            {
                 return Err(EngineCoreError::RunnerContractViolation {
                     step_id: execution_batch.step_id,
-                    message: "prefill updates must not emit output tokens",
+                    message:
+                        "prefill updates may only emit output tokens when completing the prompt",
                 });
             }
 
@@ -701,10 +738,12 @@ impl EngineCore {
         }
         let mut seen_logits_outputs = BTreeSet::new();
         for output in &runner_output.logits_outputs {
-            if !decode_request_ids.contains(&output.request_id) {
+            if !decode_request_ids.contains(&output.request_id)
+                && !prefill_completion_request_ids.contains(&output.request_id)
+            {
                 return Err(EngineCoreError::RunnerContractViolation {
                     step_id: execution_batch.step_id,
-                    message: "runner emitted logits payload for non-decode request",
+                    message: "runner emitted logits payload for non-sampleable request",
                 });
             }
             if output.logits.is_empty() || output.logits.iter().any(|value| !value.is_finite()) {
@@ -787,6 +826,48 @@ impl EngineCore {
         }
 
         Ok(())
+    }
+
+    fn prefill_completion_request_ids(
+        &self,
+        execution_batch: &ExecutionBatch,
+    ) -> Result<BTreeSet<RequestId>, EngineCoreError> {
+        let mut request_ids = BTreeSet::new();
+        for item in &execution_batch.items {
+            if item.mode != ExecutionMode::Prefill {
+                continue;
+            }
+            let record = self
+                .request_manager
+                .record(item.request_id)
+                .ok_or(RequestManagerError::UnknownRequest(item.request_id))?;
+            let prompt_len = record.prompt_tokens.len() as u32;
+            let completes_prompt = record
+                .processed_prompt_tokens
+                .checked_add(item.scheduled_token_count)
+                .is_some_and(|next| next == prompt_len);
+            if completes_prompt && record.generated_tokens.is_empty() {
+                request_ids.insert(item.request_id);
+            }
+        }
+        Ok(request_ids)
+    }
+
+    fn sample_request_ids(
+        &self,
+        execution_batch: &ExecutionBatch,
+    ) -> Result<Vec<RequestId>, EngineCoreError> {
+        let prefill_completion_request_ids =
+            self.prefill_completion_request_ids(execution_batch)?;
+        Ok(execution_batch
+            .items
+            .iter()
+            .filter(|item| {
+                item.mode == ExecutionMode::Decode
+                    || prefill_completion_request_ids.contains(&item.request_id)
+            })
+            .map(|item| item.request_id)
+            .collect())
     }
 
     fn lookup_prefix(&self, request_id: RequestId) -> Result<PrefixLookupResult, EngineCoreError> {
@@ -1002,21 +1083,6 @@ pub enum EngineCoreError {
         step_id: StepId,
         message: &'static str,
     },
-}
-
-fn decode_request_ids(schedule_plan: &SchedulePlan) -> Vec<RequestId> {
-    schedule_plan
-        .execution_batch
-        .as_ref()
-        .map(|batch| {
-            batch
-                .items
-                .iter()
-                .filter(|item| item.mode == ExecutionMode::Decode)
-                .map(|item| item.request_id)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -2035,7 +2101,7 @@ mod tests {
     }
 
     #[test]
-    fn step_rejects_prefill_update_with_output_token() {
+    fn step_rejects_non_completing_prefill_update_with_output_token() {
         let mut engine = EngineCore::with_runtime_components(
             KvManagerConfig::new(CacheGroupId(2), 4, 8),
             PrefillWithOutputTokenRunner,
@@ -2045,13 +2111,41 @@ mod tests {
         engine.submit(make_submission(1, 1, 1)).unwrap();
 
         let error = engine
-            .step(4, true)
+            .step(2, true)
             .expect_err("prefill with output_token should fail closed");
 
         let EngineCoreError::RunnerContractViolation { message, .. } = error else {
             panic!("expected runner contract violation");
         };
-        assert_eq!(message, "prefill updates must not emit output tokens");
+        assert_eq!(
+            message,
+            "prefill updates may only emit output tokens when completing the prompt"
+        );
+    }
+
+    #[test]
+    fn step_accepts_prefill_completion_update_with_output_token() {
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::new(CacheGroupId(2), 4, 8),
+            PrefillWithOutputTokenRunner,
+            DeterministicSampler,
+        );
+
+        engine.submit(make_submission(1, 1, 1)).unwrap();
+
+        let outcome = engine
+            .step(4, true)
+            .expect("prefill-completion output_token should be accepted");
+        let snapshot = engine
+            .request_manager()
+            .snapshot(RequestId(1))
+            .expect("request should remain queryable after first sampled token");
+
+        assert_eq!(outcome.sampled_tokens.len(), 1);
+        assert_eq!(outcome.sampled_tokens[0].request_id, RequestId(1));
+        assert_eq!(outcome.sampled_tokens[0].token_id, 42);
+        assert_eq!(snapshot.processed_prompt_tokens, 4);
+        assert_eq!(snapshot.generated_tokens, vec![42]);
     }
 
     #[test]

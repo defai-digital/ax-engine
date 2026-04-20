@@ -474,4 +474,37 @@ mod tests {
             Some(ax_engine_sdk::NativeModelArtifactsSource::ExplicitConfig)
         );
     }
+
+    #[test]
+    fn session_config_marks_explicit_gguf_model_path_as_generated_bridge() {
+        let native_model_artifacts_dir = PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf");
+        let args = ServerArgs {
+            host: "127.0.0.1".to_string(),
+            port: 8081,
+            model_id: "qwen3_dense".to_string(),
+            deterministic: true,
+            max_batch_tokens: 1024,
+            cache_group_id: 9,
+            block_size_tokens: 16,
+            total_blocks: 512,
+            support_tier: PreviewSupportTier::NativePreview,
+            compat_backend: PreviewCompatibilityBackend::LlamaCpp,
+            compat_cli_path: "llama-cli".to_string(),
+            compat_model_path: None,
+            compat_server_url: None,
+            native_runtime_artifacts_dir: None,
+            native_model_artifacts_dir: Some(native_model_artifacts_dir.clone()),
+        };
+
+        let actual = args.session_config().expect("session config should build");
+
+        assert_eq!(
+            actual.native_model_artifacts_dir.as_deref(),
+            Some(native_model_artifacts_dir.as_path())
+        );
+        assert_eq!(
+            actual.native_model_artifacts_source,
+            Some(ax_engine_sdk::NativeModelArtifactsSource::GeneratedFromGguf)
+        );
+    }
 }

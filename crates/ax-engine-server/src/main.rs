@@ -5,9 +5,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ax_engine_sdk::{
-    CompatibilityBackendError, EngineSession, EngineSessionConfig, EngineSessionError,
-    EngineStepReport, GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateSampling,
-    GenerateStreamEvent, GenerateStreamState, RuntimeReport, SelectedBackend, SessionRequestReport,
+    classify_native_gguf_export_failure_message, CompatibilityBackendError, EngineSession,
+    EngineSessionConfig, EngineSessionError, EngineStepReport, GenerateFinishReason,
+    GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent, GenerateStreamState,
+    NativeGgufExportFailureKind, RuntimeReport, SelectedBackend, SessionRequestReport,
 };
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
@@ -1106,15 +1107,29 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
             "unsupported_host",
             error.to_string(),
         ),
+        EngineSessionError::NativeModelGgufExportFailed { message, .. } => {
+            map_native_gguf_export_failed_response(message)
+        }
         EngineSessionError::RequestReportInvariantViolation { .. }
         | EngineSessionError::Core(_)
         | EngineSessionError::MetalRuntime(_)
-        | EngineSessionError::NativeModelGgufExportLaunch { .. }
-        | EngineSessionError::NativeModelGgufExportFailed { .. } => error_response(
+        | EngineSessionError::NativeModelGgufExportLaunch { .. } => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "engine_error",
             error.to_string(),
         ),
+    }
+}
+
+fn map_native_gguf_export_failed_response(message: String) -> (StatusCode, Json<ErrorResponse>) {
+    match classify_native_gguf_export_failure_message(&message) {
+        NativeGgufExportFailureKind::UnsupportedModel => {
+            error_response(StatusCode::BAD_REQUEST, "invalid_request", message)
+        }
+        NativeGgufExportFailureKind::MissingPythonDependency
+        | NativeGgufExportFailureKind::ExportFailed => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "engine_error", message)
+        }
     }
 }
 
@@ -1194,6 +1209,35 @@ mod tests {
             "max_tokens": max_tokens,
             "stream": stream
         })
+    }
+
+    #[test]
+    fn map_session_error_treats_unsupported_native_gguf_export_as_bad_request() {
+        let (status, Json(response)) =
+            map_session_error(EngineSessionError::NativeModelGgufExportFailed {
+                gguf_path: "/tmp/model.gguf".into(),
+                message: "status=unsupported blockers=moe_expert_tensors_present".to_string(),
+            });
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(response.error.code, "invalid_request");
+        assert!(response
+            .error
+            .message
+            .contains("moe_expert_tensors_present"));
+    }
+
+    #[test]
+    fn map_session_error_treats_missing_gguf_python_dependency_as_engine_error() {
+        let (status, Json(response)) =
+            map_session_error(EngineSessionError::NativeModelGgufExportFailed {
+                gguf_path: "/tmp/model.gguf".into(),
+                message: "status=error reason=missing_python_dependency".to_string(),
+            });
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.error.code, "engine_error");
+        assert!(response.error.message.contains("missing_python_dependency"));
     }
 
     fn sample_openai_chat_request(message: &str, max_tokens: u32, stream: bool) -> Value {

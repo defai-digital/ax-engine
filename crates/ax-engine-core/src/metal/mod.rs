@@ -60,6 +60,8 @@ pub const PHASE1_DEFERRED_METAL_KERNELS: &[&str] = &["swap_blocks"];
 pub const PHASE1_OPTIONAL_METAL_KERNELS: &[&str] = &[
     "kv_scale_update",
     "vector_add_f32",
+    "row_scale_f32",
+    "row_vector_scale_f32",
     "gather_embedding_rows_f32",
     "gather_embedding_rows_f16",
     "gather_embedding_rows_bf16",
@@ -224,6 +226,44 @@ struct MetalRuntimeState {
     optional_kernel_dispatch_plan: MetalOptionalKernelDispatchPlan,
     optional_kernel_feedback: Mutex<MetalOptionalKernelFeedbackState>,
     dispatch_arena: Mutex<Option<MetalDispatchArena>>,
+    fused_layer_arena: Mutex<Option<FusedLayerArena>>,
+}
+
+/// Pre-allocated GPU buffers for a single-token fused layer forward pass.
+/// Reused across layers since only one layer is processed at a time.
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+struct FusedLayerArena {
+    hidden: Buffer,
+    normed: Buffer,
+    gate: Buffer,
+    up: Buffer,
+    down: Buffer,
+    residual: Buffer,
+    attn_projected: Buffer,
+    hidden_dim: u32,
+    intermediate_dim: u32,
+}
+
+#[cfg(target_os = "macos")]
+impl FusedLayerArena {
+    fn new(device: &Device, hidden_dim: u32, intermediate_dim: u32) -> Self {
+        Self {
+            hidden: new_zeroed_shared_buffer::<f32>(device, hidden_dim),
+            normed: new_zeroed_shared_buffer::<f32>(device, hidden_dim),
+            gate: new_zeroed_shared_buffer::<f32>(device, intermediate_dim),
+            up: new_zeroed_shared_buffer::<f32>(device, intermediate_dim),
+            down: new_zeroed_shared_buffer::<f32>(device, hidden_dim),
+            residual: new_zeroed_shared_buffer::<f32>(device, hidden_dim),
+            attn_projected: new_zeroed_shared_buffer::<f32>(device, hidden_dim),
+            hidden_dim,
+            intermediate_dim,
+        }
+    }
+
+    fn fits(&self, hidden_dim: u32, intermediate_dim: u32) -> bool {
+        self.hidden_dim >= hidden_dim && self.intermediate_dim >= intermediate_dim
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -236,6 +276,8 @@ struct MetalPipelineHandle {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct MetalOptionalKernelDispatchPlan {
     vector_add_f32: Option<usize>,
+    row_scale_f32: Option<usize>,
+    row_vector_scale_f32: Option<usize>,
     projection_f32: Option<usize>,
     projection_f16: Option<usize>,
     projection_bf16: Option<usize>,
@@ -273,14 +315,162 @@ struct MetalOptionalKernelDispatchPlan {
 #[cfg(target_os = "macos")]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct MetalOptionalKernelFeedbackState {
-    consecutive_failures_by_kernel: BTreeMap<String, u32>,
-    disabled_kernels: BTreeSet<String>,
+    consecutive_failures_by_kernel: BTreeMap<MetalOptionalKernelFeedbackKey, u32>,
+    disabled_kernels: BTreeSet<MetalOptionalKernelFeedbackKey>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum MetalOptionalKernelFeedbackKey {
+    Kernel(&'static str),
+    SamplerBatchedGroup {
+        group_size: usize,
+        logits_width: usize,
+    },
+    BatchedProjection {
+        kernel_name: &'static str,
+        row_count: usize,
+        output_dim: usize,
+        input_width: usize,
+        hidden_stride: usize,
+        matrix_cols: usize,
+    },
+    Projection {
+        kernel_name: &'static str,
+        output_dim: usize,
+        input_width: usize,
+        matrix_cols: usize,
+    },
+    Sampler {
+        kernel_name: &'static str,
+        logits_width: usize,
+    },
+    BatchedLogitsArgmax {
+        kernel_name: &'static str,
+        row_count: usize,
+        vocab_rows: usize,
+    },
+    BatchedSampler {
+        kernel_name: &'static str,
+        row_count: usize,
+        logits_width: usize,
+    },
+    LogitsArgmax {
+        kernel_name: &'static str,
+        vocab_rows: usize,
+    },
+    BatchedFfnGateProduct {
+        kernel_name: &'static str,
+        row_count: usize,
+        row_width: usize,
+    },
+    FfnGateProduct {
+        kernel_name: &'static str,
+        value_count: usize,
+    },
+    Rope {
+        kernel_name: &'static str,
+        q_heads: usize,
+        kv_heads: usize,
+        head_dim: usize,
+        rotary_dim: usize,
+        rope_style: ModelStageRopeStyle,
+    },
+    EmbeddingGather {
+        kernel_name: &'static str,
+        token_count: usize,
+        embedding_rows: usize,
+        hidden_dim: usize,
+    },
+    BatchedGroupedKvExpand {
+        kernel_name: &'static str,
+        token_count: usize,
+        q_heads: usize,
+        kv_heads: usize,
+        head_dim: usize,
+    },
+    GroupedKvExpand {
+        kernel_name: &'static str,
+        q_heads: usize,
+        kv_heads: usize,
+        head_dim: usize,
+    },
+    VectorAdd {
+        kernel_name: &'static str,
+        element_count: usize,
+    },
+    BatchedRowScale {
+        kernel_name: &'static str,
+        row_count: usize,
+        row_width: usize,
+    },
+    BatchedRowVectorScale {
+        kernel_name: &'static str,
+        row_count: usize,
+        row_width: usize,
+    },
+    BatchedRope {
+        kernel_name: &'static str,
+        token_count: usize,
+        q_heads: usize,
+        kv_heads: usize,
+        head_dim: usize,
+        rotary_dim: usize,
+        rope_style: ModelStageRopeStyle,
+    },
+    RmsNorm {
+        kernel_name: &'static str,
+        value_count: usize,
+    },
+    BatchedRmsNorm {
+        kernel_name: &'static str,
+        row_count: usize,
+        row_width: usize,
+    },
+    DirectDecodeBatchedGroup {
+        group_size: usize,
+        dims: ModelBoundDecodeDims,
+    },
+    PrefixAttentionBatchedGroup {
+        scheduled_requests: u32,
+        prefill_requests: u32,
+        decode_requests: u32,
+        scheduled_tokens: u32,
+        gather_tokens: u32,
+        block_size_tokens: u32,
+        head_count: u32,
+        head_dim: u32,
+    },
+    LinearAttentionConv1d {
+        batch_size: usize,
+        dtype: NativeTensorDataType,
+        dims: ResolvedLinearAttentionDims,
+    },
+    LinearGatedDelta {
+        batch_size: usize,
+        dims: ResolvedLinearAttentionDims,
+    },
+}
+
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+fn optional_kernel_name_feedback_key(kernel_name: &'static str) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::Kernel(kernel_name)
 }
 
 #[cfg(target_os = "macos")]
 impl MetalOptionalKernelDispatchPlan {
     fn vector_add_kernel(self) -> Option<(&'static str, usize)> {
         self.vector_add_f32.map(|index| ("vector_add_f32", index))
+    }
+
+    fn row_scale_kernel(self) -> Option<(&'static str, usize)> {
+        self.row_scale_f32.map(|index| ("row_scale_f32", index))
+    }
+
+    fn row_vector_scale_kernel(self) -> Option<(&'static str, usize)> {
+        self.row_vector_scale_f32
+            .map(|index| ("row_vector_scale_f32", index))
     }
 
     fn projection_kernel(self, dtype: NativeTensorDataType) -> Option<(&'static str, usize)> {
@@ -996,151 +1186,268 @@ fn collect_grouped_sampler_results_with_item_fallback<T>(
 }
 
 #[cfg(target_os = "macos")]
-fn sampler_batched_group_feedback_key(group_size: usize, logits_width: usize) -> String {
-    format!("batched_group:sampler_argmax_logprob:{group_size}:{logits_width}")
+fn sampler_batched_group_feedback_key(
+    group_size: usize,
+    logits_width: usize,
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::SamplerBatchedGroup {
+        group_size,
+        logits_width,
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn batched_projection_feedback_key(
-    kernel_name: &str,
+    kernel_name: &'static str,
     row_count: usize,
     output_dim: usize,
     input_width: usize,
     hidden_stride: usize,
     matrix_cols: usize,
-) -> String {
-    format!(
-        "batched_projection:{kernel_name}:{row_count}:{output_dim}:{input_width}:{hidden_stride}:{matrix_cols}"
-    )
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::BatchedProjection {
+        kernel_name,
+        row_count,
+        output_dim,
+        input_width,
+        hidden_stride,
+        matrix_cols,
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn projection_feedback_key(
-    kernel_name: &str,
+    kernel_name: &'static str,
     output_dim: usize,
     input_width: usize,
     matrix_cols: usize,
-) -> String {
-    format!("projection:{kernel_name}:{output_dim}:{input_width}:{matrix_cols}")
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::Projection {
+        kernel_name,
+        output_dim,
+        input_width,
+        matrix_cols,
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn sampler_feedback_key(kernel_name: &str, logits_width: usize) -> String {
-    format!("sampler:{kernel_name}:{logits_width}")
+fn sampler_feedback_key(
+    kernel_name: &'static str,
+    logits_width: usize,
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::Sampler {
+        kernel_name,
+        logits_width,
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn batched_logits_argmax_feedback_key(
-    kernel_name: &str,
+    kernel_name: &'static str,
     row_count: usize,
     vocab_rows: usize,
-) -> String {
-    format!("batched_logits_argmax:{kernel_name}:{row_count}:{vocab_rows}")
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::BatchedLogitsArgmax {
+        kernel_name,
+        row_count,
+        vocab_rows,
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn batched_sampler_feedback_key(
-    kernel_name: &str,
+    kernel_name: &'static str,
     row_count: usize,
     logits_width: usize,
-) -> String {
-    format!("batched_sampler:{kernel_name}:{row_count}:{logits_width}")
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::BatchedSampler {
+        kernel_name,
+        row_count,
+        logits_width,
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn logits_argmax_feedback_key(kernel_name: &str, vocab_rows: usize) -> String {
-    format!("logits_argmax:{kernel_name}:{vocab_rows}")
+fn logits_argmax_feedback_key(
+    kernel_name: &'static str,
+    vocab_rows: usize,
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::LogitsArgmax {
+        kernel_name,
+        vocab_rows,
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn batched_ffn_gate_product_feedback_key(
-    kernel_name: &str,
+    kernel_name: &'static str,
     row_count: usize,
     row_width: usize,
-) -> String {
-    format!("batched_ffn_gate_product:{kernel_name}:{row_count}:{row_width}")
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::BatchedFfnGateProduct {
+        kernel_name,
+        row_count,
+        row_width,
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn ffn_gate_product_feedback_key(kernel_name: &str, value_count: usize) -> String {
-    format!("ffn_gate_product:{kernel_name}:{value_count}")
+fn ffn_gate_product_feedback_key(
+    kernel_name: &'static str,
+    value_count: usize,
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::FfnGateProduct {
+        kernel_name,
+        value_count,
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn rope_feedback_key(
-    kernel_name: &str,
+    kernel_name: &'static str,
     q_heads: usize,
     kv_heads: usize,
     head_dim: usize,
     rotary_dim: usize,
     rope_style: ModelStageRopeStyle,
-) -> String {
-    format!(
-        "rope:{kernel_name}:{q_heads}:{kv_heads}:{head_dim}:{rotary_dim}:{}",
-        rope_style_dispatch_value(rope_style)
-    )
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::Rope {
+        kernel_name,
+        q_heads,
+        kv_heads,
+        head_dim,
+        rotary_dim,
+        rope_style,
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn embedding_gather_feedback_key(
-    kernel_name: &str,
+    kernel_name: &'static str,
     token_count: usize,
     embedding_rows: usize,
     hidden_dim: usize,
-) -> String {
-    format!("embedding_gather:{kernel_name}:{token_count}:{embedding_rows}:{hidden_dim}")
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::EmbeddingGather {
+        kernel_name,
+        token_count,
+        embedding_rows,
+        hidden_dim,
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn batched_grouped_kv_expand_feedback_key(
-    kernel_name: &str,
+    kernel_name: &'static str,
     token_count: usize,
     q_heads: usize,
     kv_heads: usize,
     head_dim: usize,
-) -> String {
-    format!("batched_grouped_kv_expand:{kernel_name}:{token_count}:{q_heads}:{kv_heads}:{head_dim}")
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::BatchedGroupedKvExpand {
+        kernel_name,
+        token_count,
+        q_heads,
+        kv_heads,
+        head_dim,
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn grouped_kv_expand_feedback_key(
-    kernel_name: &str,
+    kernel_name: &'static str,
     q_heads: usize,
     kv_heads: usize,
     head_dim: usize,
-) -> String {
-    format!("grouped_kv_expand:{kernel_name}:{q_heads}:{kv_heads}:{head_dim}")
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::GroupedKvExpand {
+        kernel_name,
+        q_heads,
+        kv_heads,
+        head_dim,
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn vector_add_feedback_key(kernel_name: &str, element_count: usize) -> String {
-    format!("vector_add:{kernel_name}:{element_count}")
+fn vector_add_feedback_key(
+    kernel_name: &'static str,
+    element_count: usize,
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::VectorAdd {
+        kernel_name,
+        element_count,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn batched_row_scale_feedback_key(
+    kernel_name: &'static str,
+    row_count: usize,
+    row_width: usize,
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::BatchedRowScale {
+        kernel_name,
+        row_count,
+        row_width,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn batched_row_vector_scale_feedback_key(
+    kernel_name: &'static str,
+    row_count: usize,
+    row_width: usize,
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::BatchedRowVectorScale {
+        kernel_name,
+        row_count,
+        row_width,
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn batched_rope_feedback_key(
-    kernel_name: &str,
+    kernel_name: &'static str,
     token_count: usize,
     q_heads: usize,
     kv_heads: usize,
     head_dim: usize,
     rotary_dim: usize,
     rope_style: ModelStageRopeStyle,
-) -> String {
-    format!(
-        "batched_rope:{kernel_name}:{token_count}:{q_heads}:{kv_heads}:{head_dim}:{rotary_dim}:{}",
-        rope_style_dispatch_value(rope_style)
-    )
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::BatchedRope {
+        kernel_name,
+        token_count,
+        q_heads,
+        kv_heads,
+        head_dim,
+        rotary_dim,
+        rope_style,
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn rms_norm_feedback_key(kernel_name: &str, value_count: usize) -> String {
-    format!("rms_norm:{kernel_name}:{value_count}")
+fn rms_norm_feedback_key(
+    kernel_name: &'static str,
+    value_count: usize,
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::RmsNorm {
+        kernel_name,
+        value_count,
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn batched_rms_norm_feedback_key(kernel_name: &str, row_count: usize, row_width: usize) -> String {
-    format!("batched_rms_norm:{kernel_name}:{row_count}:{row_width}")
+fn batched_rms_norm_feedback_key(
+    kernel_name: &'static str,
+    row_count: usize,
+    row_width: usize,
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::BatchedRmsNorm {
+        kernel_name,
+        row_count,
+        row_width,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1149,7 +1456,7 @@ fn batched_rms_norm_feedback_binding(
     weight_binding: &MetalNativeTensorBufferBinding,
     row_count: usize,
     row_width: usize,
-) -> Option<(&'static str, usize, String)> {
+) -> Option<(&'static str, usize, MetalOptionalKernelFeedbackKey)> {
     let (kernel_name, pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
@@ -1514,12 +1821,14 @@ fn single_attention_output_gate_retry_worthwhile(
 
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Default)]
+#[allow(dead_code)]
 struct SingleFfnGateUpProjectionNativeRetryPolicy<'a> {
     gate_projection: Option<&'a MetalRuntimeBringup>,
     up_projection: Option<&'a MetalRuntimeBringup>,
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn single_ffn_gate_up_projection_retry_policy<'a>(
     ffn_gate_up: &MetalFfnGateUpBindings,
     buffers: &MetalNativeModelBufferBindings,
@@ -1571,24 +1880,14 @@ struct DirectDecodeSingleNativeRetryPolicy<'a> {
     attention_output_gate: Option<&'a MetalRuntimeBringup>,
     attention_o_projection: Option<&'a MetalRuntimeBringup>,
     attention_residual_add: Option<&'a MetalRuntimeBringup>,
-    ffn_norm: Option<&'a MetalRuntimeBringup>,
-    ffn_gate_up: SingleFfnGateUpProjectionNativeRetryPolicy<'a>,
-    ffn_gate_product: Option<&'a MetalRuntimeBringup>,
-    ffn_down_projection: Option<&'a MetalRuntimeBringup>,
-    ffn_residual_add: Option<&'a MetalRuntimeBringup>,
     final_norm: Option<&'a MetalRuntimeBringup>,
     logits_projection: Option<&'a MetalRuntimeBringup>,
 }
 
 #[cfg(target_os = "macos")]
-#[allow(clippy::too_many_arguments)]
 fn direct_decode_single_native_retry_policy<'a>(
     artifacts: &NativeModelArtifacts,
-    layer: &MetalNativeLayerBindings,
-    buffers: &MetalNativeModelBufferBindings,
     attention_o: &MetalNativeTensorBufferBinding,
-    ffn_norm: &MetalNativeTensorBufferBinding,
-    ffn_down: &MetalNativeTensorBufferBinding,
     final_norm: &MetalNativeTensorBufferBinding,
     decode_projection: &MetalNativeTensorBufferBinding,
     dims: ModelBoundDecodeDims,
@@ -1616,32 +1915,6 @@ fn direct_decode_single_native_retry_policy<'a>(
         .then_some(bringup)
         .flatten(),
         attention_residual_add: hidden_vector_add,
-        ffn_norm: single_rms_norm_retry_worthwhile(bringup, ffn_norm, dims.hidden_dim)
-            .then_some(bringup)
-            .flatten(),
-        ffn_gate_up: single_ffn_gate_up_projection_retry_policy(
-            &layer.ffn_gate_up,
-            buffers,
-            dims.intermediate_dim,
-            dims.hidden_dim,
-            bringup,
-        )?,
-        ffn_gate_product: single_ffn_gate_product_retry_worthwhile(
-            bringup,
-            native_model_ffn_activation(artifacts),
-            dims.intermediate_dim,
-        )
-        .then_some(bringup)
-        .flatten(),
-        ffn_down_projection: single_projection_retry_worthwhile(
-            bringup,
-            ffn_down,
-            dims.hidden_dim,
-            dims.intermediate_dim,
-        )
-        .then_some(bringup)
-        .flatten(),
-        ffn_residual_add: hidden_vector_add,
         final_norm: single_rms_norm_retry_worthwhile(bringup, final_norm, dims.hidden_dim)
             .then_some(bringup)
             .flatten(),
@@ -1661,7 +1934,7 @@ fn ffn_gate_product_feedback_binding(
     activation: ModelFfnActivation,
     row_count: usize,
     row_width: usize,
-) -> Option<(&'static str, usize, String)> {
+) -> Option<(&'static str, usize, MetalOptionalKernelFeedbackKey)> {
     let (kernel_name, pipeline_index) = bringup
         .state
         .optional_kernel_dispatch_plan
@@ -1706,10 +1979,12 @@ fn validate_model_bound_direct_decode_group_output(
         .iter()
         .map(|output| output.request_id)
         .collect::<BTreeSet<_>>();
+    let has_complete_logits_payload = result.logits_outputs.is_empty()
+        || (result.logits_outputs.len() == expected_request_ids.len()
+            && logits_request_ids == expected_ids);
     let success = result.tokens.len() == expected_request_ids.len()
-        && result.logits_outputs.len() == expected_request_ids.len()
         && token_ids == expected_ids
-        && logits_request_ids == expected_ids;
+        && has_complete_logits_payload;
     if success {
         (Some(result), true)
     } else {
@@ -2000,6 +2275,10 @@ pub struct MetalDispatchExecutionInfo {
     #[serde(default)]
     pub prefix_cpu_residual_add_element_count: u32,
     #[serde(default)]
+    pub prefix_native_scale_element_count: u32,
+    #[serde(default)]
+    pub prefix_cpu_scale_element_count: u32,
+    #[serde(default)]
     pub direct_decode_native_projection_row_count: u32,
     #[serde(default)]
     pub direct_decode_cpu_projection_row_count: u32,
@@ -2015,6 +2294,10 @@ pub struct MetalDispatchExecutionInfo {
     pub direct_decode_native_residual_add_element_count: u32,
     #[serde(default)]
     pub direct_decode_cpu_residual_add_element_count: u32,
+    #[serde(default)]
+    pub direct_decode_native_scale_element_count: u32,
+    #[serde(default)]
+    pub direct_decode_cpu_scale_element_count: u32,
     #[serde(default)]
     pub direct_decode_batched_logits_group_count: u32,
     #[serde(default)]
@@ -2154,6 +2437,24 @@ enum MetalFfnGateUpBindings {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+enum MetalMoeExpertGateUpBindings {
+    Packed(MetalNativeTensorBinding),
+    Split {
+        gate: MetalNativeTensorBinding,
+        up: MetalNativeTensorBinding,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MetalMoeBindings {
+    router: MetalNativeTensorBinding,
+    router_scale: Option<MetalNativeTensorBinding>,
+    expert_gate_up: MetalMoeExpertGateUpBindings,
+    expert_down: MetalNativeTensorBinding,
+    expert_down_scale: Option<MetalNativeTensorBinding>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct MetalLinearAttentionBindings {
     in_proj_qkv: MetalNativeTensorBinding,
     in_proj_z: MetalNativeTensorBinding,
@@ -2169,6 +2470,7 @@ struct MetalLinearAttentionBindings {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MetalNativeLayerBindings {
     attention_norm: MetalNativeTensorBinding,
+    attention_post_norm: Option<MetalNativeTensorBinding>,
     attention_q_norm: Option<MetalNativeTensorBinding>,
     attention_k_norm: Option<MetalNativeTensorBinding>,
     attention_v_norm_no_scale: bool,
@@ -2176,8 +2478,13 @@ struct MetalNativeLayerBindings {
     attention_o: Option<MetalNativeTensorBinding>,
     linear_attention: Option<MetalLinearAttentionBindings>,
     ffn_norm: MetalNativeTensorBinding,
+    ffn_norm_2: Option<MetalNativeTensorBinding>,
+    ffn_post_norm: Option<MetalNativeTensorBinding>,
+    ffn_post_norm_1: Option<MetalNativeTensorBinding>,
+    ffn_post_norm_2: Option<MetalNativeTensorBinding>,
     ffn_gate_up: MetalFfnGateUpBindings,
     ffn_down: MetalNativeTensorBinding,
+    moe: Option<MetalMoeBindings>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2251,6 +2558,9 @@ fn native_dense_kernel_coverage_for_model_bindings(
 
     for layer in &bindings.layers {
         record_rms_norm_binding_coverage(&mut coverage, &layer.attention_norm);
+        if let Some(binding) = &layer.attention_post_norm {
+            record_rms_norm_binding_coverage(&mut coverage, binding);
+        }
         if let Some(binding) = &layer.attention_q_norm {
             record_rms_norm_binding_coverage(&mut coverage, binding);
         }
@@ -2283,6 +2593,18 @@ fn native_dense_kernel_coverage_for_model_bindings(
             record_projection_binding_coverage(&mut coverage, &linear_attention.out_proj);
         }
         record_rms_norm_binding_coverage(&mut coverage, &layer.ffn_norm);
+        if let Some(binding) = &layer.ffn_norm_2 {
+            record_rms_norm_binding_coverage(&mut coverage, binding);
+        }
+        if let Some(binding) = &layer.ffn_post_norm {
+            record_rms_norm_binding_coverage(&mut coverage, binding);
+        }
+        if let Some(binding) = &layer.ffn_post_norm_1 {
+            record_rms_norm_binding_coverage(&mut coverage, binding);
+        }
+        if let Some(binding) = &layer.ffn_post_norm_2 {
+            record_rms_norm_binding_coverage(&mut coverage, binding);
+        }
         match &layer.ffn_gate_up {
             MetalFfnGateUpBindings::Packed(binding) => {
                 record_projection_binding_coverage(&mut coverage, binding);
@@ -2293,6 +2615,22 @@ fn native_dense_kernel_coverage_for_model_bindings(
             }
         }
         record_projection_binding_coverage(&mut coverage, &layer.ffn_down);
+        if let Some(moe) = &layer.moe {
+            record_projection_binding_coverage(&mut coverage, &moe.router);
+            if let Some(binding) = &moe.router_scale {
+                record_rms_norm_binding_coverage(&mut coverage, binding);
+            }
+            match &moe.expert_gate_up {
+                MetalMoeExpertGateUpBindings::Packed(binding) => {
+                    record_projection_binding_coverage(&mut coverage, binding);
+                }
+                MetalMoeExpertGateUpBindings::Split { gate, up } => {
+                    record_projection_binding_coverage(&mut coverage, gate);
+                    record_projection_binding_coverage(&mut coverage, up);
+                }
+            }
+            record_projection_binding_coverage(&mut coverage, &moe.expert_down);
+        }
     }
 
     coverage
@@ -2320,6 +2658,9 @@ impl MetalNativeModelBindings {
                     NativeTensorRole::AttentionNorm,
                     "attention_norm",
                 )?,
+                attention_post_norm: artifacts
+                    .layer_tensor(layer_index, NativeTensorRole::AttentionPostNorm)
+                    .map(|spec| MetalNativeTensorBinding::from_spec(artifacts, spec)),
                 attention_q_norm: artifacts
                     .layer_tensor(layer_index, NativeTensorRole::AttentionQNorm)
                     .map(|spec| MetalNativeTensorBinding::from_spec(artifacts, spec)),
@@ -2333,12 +2674,30 @@ impl MetalNativeModelBindings {
                     .layer_tensor(layer_index, NativeTensorRole::AttentionO)
                     .map(|spec| MetalNativeTensorBinding::from_spec(artifacts, spec)),
                 linear_attention: linear_attention_bindings(artifacts, layer_index)?,
-                ffn_norm: required_layer_tensor_binding(
-                    artifacts,
-                    layer_index,
-                    NativeTensorRole::FfnNorm,
-                    "ffn_norm",
-                )?,
+                ffn_norm: artifacts
+                    .layer_tensor(layer_index, NativeTensorRole::FfnNorm)
+                    .or_else(|| {
+                        artifacts.layer_tensor(layer_index, NativeTensorRole::AttentionPostNorm)
+                    })
+                    .map(|spec| MetalNativeTensorBinding::from_spec(artifacts, spec))
+                    .ok_or_else(|| NativeModelError::InvalidManifest {
+                        message: format!(
+                            "layer {} is missing ffn_norm or attention_post_norm",
+                            layer_index
+                        ),
+                    })?,
+                ffn_norm_2: artifacts
+                    .layer_tensor(layer_index, NativeTensorRole::FfnNorm2)
+                    .map(|spec| MetalNativeTensorBinding::from_spec(artifacts, spec)),
+                ffn_post_norm: artifacts
+                    .layer_tensor(layer_index, NativeTensorRole::FfnPostNorm)
+                    .map(|spec| MetalNativeTensorBinding::from_spec(artifacts, spec)),
+                ffn_post_norm_1: artifacts
+                    .layer_tensor(layer_index, NativeTensorRole::FfnPostNorm1)
+                    .map(|spec| MetalNativeTensorBinding::from_spec(artifacts, spec)),
+                ffn_post_norm_2: artifacts
+                    .layer_tensor(layer_index, NativeTensorRole::FfnPostNorm2)
+                    .map(|spec| MetalNativeTensorBinding::from_spec(artifacts, spec)),
                 ffn_gate_up: ffn_gate_up_bindings(artifacts, layer_index)?,
                 ffn_down: required_layer_tensor_binding(
                     artifacts,
@@ -2346,6 +2705,7 @@ impl MetalNativeModelBindings {
                     NativeTensorRole::FfnDown,
                     "ffn_down",
                 )?,
+                moe: moe_bindings(artifacts, layer_index)?,
             });
         }
 
@@ -2367,6 +2727,9 @@ impl MetalNativeModelBindings {
 
         for layer in &self.layers {
             bindings.push(layer.attention_norm.clone());
+            if let Some(attention_post_norm) = &layer.attention_post_norm {
+                bindings.push(attention_post_norm.clone());
+            }
             if let Some(q_norm) = &layer.attention_q_norm {
                 bindings.push(q_norm.clone());
             }
@@ -2400,6 +2763,18 @@ impl MetalNativeModelBindings {
                 bindings.push(linear_attention.out_proj.clone());
             }
             bindings.push(layer.ffn_norm.clone());
+            if let Some(ffn_norm_2) = &layer.ffn_norm_2 {
+                bindings.push(ffn_norm_2.clone());
+            }
+            if let Some(ffn_post_norm) = &layer.ffn_post_norm {
+                bindings.push(ffn_post_norm.clone());
+            }
+            if let Some(ffn_post_norm_1) = &layer.ffn_post_norm_1 {
+                bindings.push(ffn_post_norm_1.clone());
+            }
+            if let Some(ffn_post_norm_2) = &layer.ffn_post_norm_2 {
+                bindings.push(ffn_post_norm_2.clone());
+            }
             match &layer.ffn_gate_up {
                 MetalFfnGateUpBindings::Packed(binding) => bindings.push(binding.clone()),
                 MetalFfnGateUpBindings::Split { gate, up } => {
@@ -2408,6 +2783,23 @@ impl MetalNativeModelBindings {
                 }
             }
             bindings.push(layer.ffn_down.clone());
+            if let Some(moe) = &layer.moe {
+                bindings.push(moe.router.clone());
+                if let Some(router_scale) = &moe.router_scale {
+                    bindings.push(router_scale.clone());
+                }
+                match &moe.expert_gate_up {
+                    MetalMoeExpertGateUpBindings::Packed(binding) => bindings.push(binding.clone()),
+                    MetalMoeExpertGateUpBindings::Split { gate, up } => {
+                        bindings.push(gate.clone());
+                        bindings.push(up.clone());
+                    }
+                }
+                bindings.push(moe.expert_down.clone());
+                if let Some(expert_down_scale) = &moe.expert_down_scale {
+                    bindings.push(expert_down_scale.clone());
+                }
+            }
         }
 
         bindings
@@ -2604,6 +2996,52 @@ fn ffn_gate_up_bindings(
     })
 }
 
+fn moe_bindings(
+    artifacts: &NativeModelArtifacts,
+    layer_index: u32,
+) -> Result<Option<MetalMoeBindings>, NativeModelError> {
+    let Some(router_spec) = artifacts.layer_tensor(layer_index, NativeTensorRole::FfnGateInp)
+    else {
+        return Ok(None);
+    };
+    let expert_gate_up = if let Some(spec) =
+        artifacts.layer_tensor(layer_index, NativeTensorRole::FfnGateUpExpsPacked)
+    {
+        MetalMoeExpertGateUpBindings::Packed(MetalNativeTensorBinding::from_spec(artifacts, spec))
+    } else {
+        MetalMoeExpertGateUpBindings::Split {
+            gate: required_layer_tensor_binding(
+                artifacts,
+                layer_index,
+                NativeTensorRole::FfnGateExps,
+                "ffn_gate_exps",
+            )?,
+            up: required_layer_tensor_binding(
+                artifacts,
+                layer_index,
+                NativeTensorRole::FfnUpExps,
+                "ffn_up_exps",
+            )?,
+        }
+    };
+    Ok(Some(MetalMoeBindings {
+        router: MetalNativeTensorBinding::from_spec(artifacts, router_spec),
+        router_scale: artifacts
+            .layer_tensor(layer_index, NativeTensorRole::FfnGateInpScale)
+            .map(|spec| MetalNativeTensorBinding::from_spec(artifacts, spec)),
+        expert_gate_up,
+        expert_down: required_layer_tensor_binding(
+            artifacts,
+            layer_index,
+            NativeTensorRole::FfnDownExps,
+            "ffn_down_exps",
+        )?,
+        expert_down_scale: artifacts
+            .layer_tensor(layer_index, NativeTensorRole::FfnDownExpsScale)
+            .map(|spec| MetalNativeTensorBinding::from_spec(artifacts, spec)),
+    }))
+}
+
 fn linear_attention_bindings(
     artifacts: &NativeModelArtifacts,
     layer_index: u32,
@@ -2771,6 +3209,8 @@ struct DirectDecodeNativeDenseTally {
     cpu_ffn_activation_elements: u32,
     native_residual_add_elements: u32,
     cpu_residual_add_elements: u32,
+    native_scale_elements: u32,
+    cpu_scale_elements: u32,
     native_batched_logits_group_count: u32,
     native_batched_logits_token_count: u32,
     batched_group_fallback_count: u32,
@@ -2804,6 +3244,12 @@ impl DirectDecodeNativeDenseTally {
         self.cpu_residual_add_elements = self
             .cpu_residual_add_elements
             .saturating_add(other.cpu_residual_add_elements);
+        self.native_scale_elements = self
+            .native_scale_elements
+            .saturating_add(other.native_scale_elements);
+        self.cpu_scale_elements = self
+            .cpu_scale_elements
+            .saturating_add(other.cpu_scale_elements);
         self.native_batched_logits_group_count = self
             .native_batched_logits_group_count
             .saturating_add(other.native_batched_logits_group_count);
@@ -2867,6 +3313,16 @@ impl DirectDecodeNativeDenseTally {
         self
     }
 
+    fn record_scale_elements(mut self, element_count: usize, used_native: bool) -> Self {
+        let element_count = saturating_usize_to_u32(element_count);
+        if used_native {
+            self.native_scale_elements = self.native_scale_elements.saturating_add(element_count);
+        } else {
+            self.cpu_scale_elements = self.cpu_scale_elements.saturating_add(element_count);
+        }
+        self
+    }
+
     fn record_batched_logits_group(mut self, token_count: usize) -> Self {
         if token_count > 1 {
             self.native_batched_logits_group_count =
@@ -2887,6 +3343,54 @@ impl DirectDecodeNativeDenseTally {
         }
         self
     }
+
+    fn scale_for_selected_items(self, selected_count: usize, total_count: usize) -> Self {
+        if selected_count == 0 || total_count == 0 {
+            return Self::default();
+        }
+        if selected_count >= total_count {
+            return self;
+        }
+
+        let scale = |value: u32| -> u32 {
+            ((u64::from(value) * selected_count as u64) / total_count as u64)
+                .try_into()
+                .unwrap_or(u32::MAX)
+        };
+
+        Self {
+            native_projection_rows: scale(self.native_projection_rows),
+            cpu_projection_rows: scale(self.cpu_projection_rows),
+            native_rms_norm_elements: scale(self.native_rms_norm_elements),
+            cpu_rms_norm_elements: scale(self.cpu_rms_norm_elements),
+            native_ffn_activation_elements: scale(self.native_ffn_activation_elements),
+            cpu_ffn_activation_elements: scale(self.cpu_ffn_activation_elements),
+            native_residual_add_elements: scale(self.native_residual_add_elements),
+            cpu_residual_add_elements: scale(self.cpu_residual_add_elements),
+            native_scale_elements: scale(self.native_scale_elements),
+            cpu_scale_elements: scale(self.cpu_scale_elements),
+            native_batched_logits_group_count: u32::from(
+                self.native_batched_logits_group_count > 0 && selected_count > 1,
+            ),
+            native_batched_logits_token_count: if self.native_batched_logits_group_count > 0
+                && selected_count > 1
+            {
+                saturating_usize_to_u32(selected_count)
+            } else {
+                0
+            },
+            batched_group_fallback_count: u32::from(
+                self.batched_group_fallback_count > 0 && selected_count > 1,
+            ),
+            batched_group_fallback_token_count: if self.batched_group_fallback_count > 0
+                && selected_count > 1
+            {
+                saturating_usize_to_u32(selected_count)
+            } else {
+                0
+            },
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2902,6 +3406,8 @@ fn prefix_attention_tally_from_native_dense_tally(
         .record_ffn_activation_elements(tally.cpu_ffn_activation_elements as usize, false)
         .record_residual_add_elements(tally.native_residual_add_elements as usize, true)
         .record_residual_add_elements(tally.cpu_residual_add_elements as usize, false)
+        .record_scale_elements(tally.native_scale_elements as usize, true)
+        .record_scale_elements(tally.cpu_scale_elements as usize, false)
 }
 
 #[cfg(target_os = "macos")]
@@ -2917,6 +3423,8 @@ fn direct_decode_native_dense_tally_from_prefix_attention_tally(
         .record_ffn_activation_elements(tally.cpu_ffn_activation_element_count() as usize, false)
         .record_residual_add_elements(tally.native_residual_add_element_count() as usize, true)
         .record_residual_add_elements(tally.cpu_residual_add_element_count() as usize, false)
+        .record_scale_elements(tally.native_scale_element_count() as usize, true)
+        .record_scale_elements(tally.cpu_scale_element_count() as usize, false)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -3248,37 +3756,16 @@ impl MetalBringupRunner {
         input: &RunnerInput,
         attention_output_bits: &[u32],
         staged_inputs: &MetalDispatchStagedInputs,
-        workload: &MetalDispatchWorkload,
+        _workload: &MetalDispatchWorkload,
         runtime: &MetalDispatchRuntimeInfo,
     ) -> ModelBoundDirectDecodeResult {
         if !runtime.real_model_tensor_inputs {
             return ModelBoundDirectDecodeResult::default();
         }
 
-        // For hybrid linear-attention models, compute attention on CPU instead
-        // of using Metal paged attention bits, which may not handle head_dim=256
-        // or GQA correctly. Uses the staged Q/K/V with the final layer's prefix
-        // cache as KV context.
-        let cpu_attention_bits;
-        let effective_bits = if self.model_artifacts.as_ref().and_then(|a| a.linear_attention_config()).is_some() {
-            let final_layer_index = self.model_bindings.as_ref().map(|b| b.layers.len().saturating_sub(1)).unwrap_or(0);
-            if let Some(bits) = self.compute_cpu_reference_attention_bits(
-                staged_inputs,
-                workload,
-                final_layer_index,
-            ) {
-                cpu_attention_bits = bits;
-                &cpu_attention_bits
-            } else {
-                attention_output_bits
-            }
-        } else {
-            attention_output_bits
-        };
-
         derive_model_bound_direct_decode_result(
             input,
-            effective_bits,
+            attention_output_bits,
             self.model_artifacts.as_ref(),
             self.model_bindings.as_ref(),
             self.model_buffers.as_ref(),
@@ -3287,49 +3774,6 @@ impl MetalBringupRunner {
             Some(&self.linear_request_states),
             Some(&self.bringup),
         )
-    }
-
-    #[cfg(target_os = "macos")]
-    fn compute_cpu_reference_attention_bits(
-        &self,
-        staged_inputs: &MetalDispatchStagedInputs,
-        workload: &MetalDispatchWorkload,
-        final_layer_index: usize,
-    ) -> Option<Vec<u32>> {
-        let artifacts = self.model_artifacts.as_ref()?;
-        let attention_config = native_model_reference_attention_config(
-            artifacts,
-            staged_inputs.layout.head_dim as usize,
-        );
-        let numeric_workload = workload.with_numeric_layout(staged_inputs.layout);
-        let final_layer_cache = self.prefix_layer_caches()?.get(final_layer_index)?;
-        let cache_data = {
-            let mut cache = final_layer_cache.lock().ok()?;
-            cache.ensure_capacity(&numeric_workload);
-            let cap = numeric_workload.slot_numeric_capacity() as usize;
-            (cache.key_cache.get(..cap)?.to_vec(), cache.value_cache.get(..cap)?.to_vec())
-        };
-        let seed = MetalDispatchKvCacheSeed {
-            key_cache: &cache_data.0,
-            value_cache: &cache_data.1,
-        };
-        let reference = reference_numeric_path_with_inputs_and_cache_seed_and_attention_config(
-            &numeric_workload,
-            staged_inputs,
-            Some(seed),
-            Some(attention_config),
-        );
-        // Commit KV writes back to the final layer's prefix cache.
-        if let Ok(mut cache) = final_layer_cache.lock() {
-            cache.apply_snapshot(
-                &numeric_workload,
-                &MetalDispatchKvCacheSnapshot::from_reference_for_workload(
-                    &numeric_workload,
-                    &reference,
-                ),
-            );
-        }
-        Some(reference.attention_output.iter().map(|v| v.to_bits()).collect())
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -3407,6 +3851,7 @@ impl ExecutionRunner for MetalBringupRunner {
                 trace.runtime.model_buffers_bound = runtime.model_buffers_bound;
                 trace.runtime.model_buffer_count = runtime.model_buffer_count;
                 trace.runtime.model_buffer_bytes = runtime.model_buffer_bytes;
+                trace.runtime.native_dense_kernel_coverage = runtime.native_dense_kernel_coverage;
                 trace.runtime.model = runtime.model;
 
                 let direct_decode_result = self.try_model_bound_direct_decode_tokens(
@@ -3417,9 +3862,25 @@ impl ExecutionRunner for MetalBringupRunner {
                     &trace.runtime,
                 );
                 let mut output = successful_runner_output_from_input(&input);
-                apply_direct_decode_logits_to_runner_output(
+                let resolved_sample_request_ids =
+                    apply_deterministic_sample_tokens_to_runner_output(
+                        &input,
+                        &mut output,
+                        &direct_decode_result.tokens,
+                    );
+                let direct_decode_logits_outputs = direct_decode_result
+                    .logits_outputs
+                    .into_iter()
+                    .filter(|output| !resolved_sample_request_ids.contains(&output.request_id))
+                    .collect::<Vec<_>>();
+                let direct_decode_tokens = filter_model_bound_tokens_by_mode(
+                    &input,
+                    &direct_decode_result.tokens,
+                    ExecutionMode::Decode,
+                );
+                apply_owned_direct_decode_logits_to_runner_output(
                     &mut output,
-                    &direct_decode_result.logits_outputs,
+                    direct_decode_logits_outputs,
                 );
                 let complete_model_forward_supported =
                     runtime_reports_complete_model_forward(&trace.runtime);
@@ -3427,14 +3888,14 @@ impl ExecutionRunner for MetalBringupRunner {
                     &input,
                     &output,
                     &trace.runtime,
-                    &direct_decode_result.tokens,
+                    &direct_decode_tokens,
                 );
                 let execution_tally = staged_inputs
                     .prefix_attention_tally
                     .merge(direct_decode_result.execution_tally);
                 trace.execution = metal_dispatch_execution_info(
                     &output,
-                    &direct_decode_result.tokens,
+                    &direct_decode_tokens,
                     direct_decode_result.model_bound_ffn_decode,
                     real_model_forward,
                     execution_tally,
@@ -3449,7 +3910,7 @@ impl ExecutionRunner for MetalBringupRunner {
                 annotate_bringup_execution_flags(
                     &mut output.route_metadata,
                     &trace.runtime,
-                    &direct_decode_result.tokens,
+                    &direct_decode_tokens,
                     MetalBringupExecutionFlags {
                         model_bound_ffn_decode: direct_decode_result.model_bound_ffn_decode,
                         native_logits_projection_decode: direct_decode_result
@@ -4235,6 +4696,19 @@ fn prefill_completion_request_ids(input: &RunnerInput) -> BTreeSet<crate::ids::R
 }
 
 #[cfg(target_os = "macos")]
+fn sampleable_request_ids(input: &RunnerInput) -> BTreeSet<crate::ids::RequestId> {
+    let mut request_ids = input
+        .execution_batch
+        .items
+        .iter()
+        .filter(|item| item.mode == ExecutionMode::Decode)
+        .map(|item| item.request_id)
+        .collect::<BTreeSet<_>>();
+    request_ids.extend(prefill_completion_request_ids(input));
+    request_ids
+}
+
+#[cfg(target_os = "macos")]
 #[allow(clippy::too_many_arguments)]
 fn derive_model_bound_direct_decode_result(
     input: &RunnerInput,
@@ -4253,7 +4727,7 @@ fn derive_model_bound_direct_decode_result(
     let Ok(workload) = MetalDispatchWorkload::from_runner_input(input) else {
         return ModelBoundDirectDecodeResult::default();
     };
-    let prefill_completion_request_ids = prefill_completion_request_ids(input);
+    let sampleable_request_ids = sampleable_request_ids(input);
     // Hybrid linear-attention models still need a fresh per-step forward pass,
     // but if the caller already staged that exact pass for the current step we
     // should reuse it here rather than recomputing and double-advancing the
@@ -4278,354 +4752,18 @@ fn derive_model_bound_direct_decode_result(
         (owned_hidden_states.as_slice(), final_layer_index)
     };
 
-    // For hybrid linear-attention models the final layer must also run through
-    // the CPU reference path because the Metal paged attention kernel may not
-    // handle the model's head_dim / GQA configuration correctly. We advance
-    // hidden states through the final layer on CPU, then project logits from
-    // the resulting post-final-layer hidden states.
-    let has_linear_attention = artifacts.linear_attention_config().is_some();
-    // For hybrid linear-attention models, the Metal paged attention may not
-    // produce correct attention output for the final layer (e.g. head_dim=256
-    // or GQA with kv_heads < query_heads). Run the complete forward pass on
-    // CPU instead, reusing the prefix layer caches from the staged inputs path
-    // (which already ran layers 0..final_layer_index).
-    if has_linear_attention {
-        let Some(result) = (|| -> Option<ModelBoundDirectDecodeResult> {
-            let final_layer = bindings.layers.get(final_layer_index)?;
-            let final_norm = buffers.binding_for(&bindings.final_norm)?;
-            let decode_projection =
-                resolved_decode_projection_binding(artifacts, bindings, buffers)?;
-            let (post_hidden, _) = advance_hidden_states_through_model_layer(
-                artifacts,
-                final_layer,
-                buffers,
-                input,
-                &workload,
-                hidden_states,
-                bringup,
-                prefix_layer_caches.and_then(|c| c.get(final_layer_index)),
-                linear_request_states,
-                final_layer_index as u32,
-            )?;
-            let mut result = derive_model_bound_direct_decode_from_post_layer_hidden_states(
-                input,
-                artifacts,
-                &post_hidden,
-                final_norm,
-                decode_projection,
-                bringup,
-            )?;
-            if !prefill_completion_request_ids.is_empty() {
-                let bridge_result =
-                    derive_model_bound_prefill_completion_from_post_layer_hidden_states(
-                        input,
-                        artifacts,
-                        &post_hidden,
-                        final_norm,
-                        decode_projection,
-                        bringup,
-                        &prefill_completion_request_ids,
-                    )?;
-                result.logits_outputs.extend(bridge_result.logits_outputs);
-                result.model_bound_ffn_decode |= bridge_result.model_bound_ffn_decode;
-                result.native_logits_projection_decode |=
-                    bridge_result.native_logits_projection_decode;
-                result.execution_tally = result.execution_tally.merge(bridge_result.execution_tally);
-                result.native_dense_tally =
-                    result.native_dense_tally.merge(bridge_result.native_dense_tally);
-            }
-            Some(result)
-        })() else {
-            return ModelBoundDirectDecodeResult::default();
-        };
-        return result;
-    }
-
-    let mut result = derive_model_bound_direct_decode_result_from_hidden_states(
+    derive_model_bound_direct_decode_result_from_hidden_states(
         input,
         attention_output_bits,
         artifacts,
         bindings,
         buffers,
+        &sampleable_request_ids,
         &workload,
         hidden_states,
         final_layer_index,
         bringup,
-    );
-    if !prefill_completion_request_ids.is_empty() {
-        let bridge_result = derive_model_bound_prefill_completion_result_from_hidden_states(
-            input,
-            attention_output_bits,
-            artifacts,
-            bindings,
-            buffers,
-            &workload,
-            hidden_states,
-            final_layer_index,
-            bringup,
-            &prefill_completion_request_ids,
-        );
-        result.logits_outputs.extend(bridge_result.logits_outputs);
-        result.model_bound_ffn_decode |= bridge_result.model_bound_ffn_decode;
-        result.native_logits_projection_decode |= bridge_result.native_logits_projection_decode;
-        result.execution_tally = result.execution_tally.merge(bridge_result.execution_tally);
-        result.native_dense_tally =
-            result.native_dense_tally.merge(bridge_result.native_dense_tally);
-    }
-    result
-}
-
-#[cfg(target_os = "macos")]
-/// Produce decode tokens from post-final-layer hidden states by applying
-/// the final RMS norm and lm_head logits projection on CPU.
-#[cfg(target_os = "macos")]
-fn derive_model_bound_direct_decode_from_post_layer_hidden_states(
-    input: &RunnerInput,
-    artifacts: &NativeModelArtifacts,
-    post_hidden: &[Vec<f32>],
-    final_norm: &MetalNativeTensorBufferBinding,
-    decode_projection: &MetalNativeTensorBufferBinding,
-    bringup: Option<&MetalRuntimeBringup>,
-) -> Option<ModelBoundDirectDecodeResult> {
-    let hidden_dim = artifacts.manifest().hidden_size as usize;
-    let mut tokens = Vec::new();
-    let mut logits_outputs = Vec::new();
-    let mut execution_tally = PrefixAttentionExecutionTally::default();
-    let mut native_dense_tally = DirectDecodeNativeDenseTally::default();
-    let mut native_logits_projection_decode = false;
-    let mut token_cursor = 0_usize;
-
-    for item in &input.execution_batch.items {
-        let item_end = token_cursor + item.scheduled_token_count as usize;
-        if item.mode == ExecutionMode::Decode {
-            let hidden_index = item_end.saturating_sub(1);
-            let hidden = post_hidden.get(hidden_index)?;
-            let mut normed = hidden.get(..hidden_dim)?.to_vec();
-            apply_rms_norm_with_binding_in_place(
-                &mut normed,
-                final_norm,
-                native_model_rms_norm_epsilon(artifacts),
-                native_model_rms_norm_weight_offset(artifacts),
-                bringup,
-            )?;
-            let (logits, token_id, used_native) =
-                if let Some((logits, token_id)) = project_decode_logits_with_optional_native_path(
-                    bringup,
-                    decode_projection,
-                    &normed,
-                ) {
-                    (logits, token_id, true)
-                } else {
-                    let (logits, token_id) =
-                        project_decode_logits_cpu(decode_projection, hidden_dim, &normed)?;
-                    (logits, token_id, false)
-                };
-            native_dense_tally = native_dense_tally
-                .record_projection_rows(artifacts.manifest().vocab_size as usize, used_native);
-            native_logits_projection_decode |= used_native;
-            execution_tally = execution_tally
-                .record_layer_continuation_tokens(1)
-                .record_logits_projection(
-                    1,
-                    u32::try_from(artifacts.manifest().vocab_size).unwrap_or(u32::MAX),
-                );
-            tokens.push((item.request_id, token_id));
-            logits_outputs.push(RequestLogitsOutput {
-                request_id: item.request_id,
-                logits,
-            });
-        }
-        token_cursor = item_end;
-    }
-
-    let model_bound_ffn_decode = !logits_outputs.is_empty();
-    Some(ModelBoundDirectDecodeResult {
-        tokens,
-        logits_outputs,
-        model_bound_ffn_decode,
-        native_logits_projection_decode,
-        execution_tally,
-        native_dense_tally,
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn derive_model_bound_prefill_completion_from_post_layer_hidden_states(
-    input: &RunnerInput,
-    artifacts: &NativeModelArtifacts,
-    post_hidden: &[Vec<f32>],
-    final_norm: &MetalNativeTensorBufferBinding,
-    decode_projection: &MetalNativeTensorBufferBinding,
-    bringup: Option<&MetalRuntimeBringup>,
-    prefill_request_ids: &BTreeSet<crate::ids::RequestId>,
-) -> Option<ModelBoundDirectDecodeResult> {
-    let hidden_dim = artifacts.manifest().hidden_size as usize;
-    let mut logits_outputs = Vec::new();
-    let mut execution_tally = PrefixAttentionExecutionTally::default();
-    let mut native_dense_tally = DirectDecodeNativeDenseTally::default();
-    let mut native_logits_projection_decode = false;
-    let mut token_cursor = 0_usize;
-
-    for item in &input.execution_batch.items {
-        let item_end = token_cursor + item.scheduled_token_count as usize;
-        if prefill_request_ids.contains(&item.request_id) {
-            let hidden_index = item_end.saturating_sub(1);
-            let hidden = post_hidden.get(hidden_index)?;
-            let mut normed = hidden.get(..hidden_dim)?.to_vec();
-            apply_rms_norm_with_binding_in_place(
-                &mut normed,
-                final_norm,
-                native_model_rms_norm_epsilon(artifacts),
-                native_model_rms_norm_weight_offset(artifacts),
-                bringup,
-            )?;
-            let (logits, _, used_native) =
-                if let Some((logits, token_id)) = project_decode_logits_with_optional_native_path(
-                    bringup,
-                    decode_projection,
-                    &normed,
-                ) {
-                    (logits, token_id, true)
-                } else {
-                    let (logits, token_id) =
-                        project_decode_logits_cpu(decode_projection, hidden_dim, &normed)?;
-                    (logits, token_id, false)
-                };
-            native_dense_tally = native_dense_tally
-                .record_projection_rows(artifacts.manifest().vocab_size as usize, used_native);
-            native_logits_projection_decode |= used_native;
-            execution_tally = execution_tally
-                .record_layer_continuation_tokens(1)
-                .record_logits_projection(
-                    1,
-                    u32::try_from(artifacts.manifest().vocab_size).unwrap_or(u32::MAX),
-                );
-            logits_outputs.push(RequestLogitsOutput {
-                request_id: item.request_id,
-                logits,
-            });
-        }
-        token_cursor = item_end;
-    }
-
-    let model_bound_ffn_decode = !logits_outputs.is_empty();
-    Some(ModelBoundDirectDecodeResult {
-        tokens: Vec::new(),
-        model_bound_ffn_decode,
-        logits_outputs,
-        native_logits_projection_decode,
-        execution_tally,
-        native_dense_tally,
-    })
-}
-
-/// Run all layers (including the final one) on CPU and produce decode tokens
-/// directly from the resulting hidden states. This is needed for hybrid
-/// linear-attention models where the Metal paged attention may not handle the
-/// model's head_dim / GQA configuration correctly.
-#[cfg(target_os = "macos")]
-#[allow(clippy::too_many_arguments)]
-fn derive_model_bound_direct_decode_via_full_cpu_forward(
-    input: &RunnerInput,
-    artifacts: &NativeModelArtifacts,
-    bindings: &MetalNativeModelBindings,
-    buffers: &MetalNativeModelBufferBindings,
-    bringup: Option<&MetalRuntimeBringup>,
-    prefix_layer_caches: Option<&[Mutex<MetalPersistentLayerKvCache>]>,
-    linear_request_states: Option<&Mutex<BTreeMap<crate::ids::RequestId, MetalLinearRequestState>>>,
-) -> Option<ModelBoundDirectDecodeResult> {
-    let workload = MetalDispatchWorkload::from_runner_input(input).ok()?;
-    let token_embedding = buffers.binding_for(&bindings.token_embedding)?;
-    let hidden_dim = artifacts.manifest().hidden_size as usize;
-    let final_norm = buffers.binding_for(&bindings.final_norm)?;
-    let decode_projection = resolved_decode_projection_binding(artifacts, bindings, buffers)?;
-
-    // Run ALL layers (0 through last) on the CPU path.
-    let num_layers = bindings.layers.len();
-    let mut hidden_states = initial_model_hidden_states(
-        token_embedding,
-        &workload,
-        hidden_dim,
-        native_model_embedding_scale(artifacts),
-        bringup,
-    )?;
-
-    for layer_index in 0..num_layers {
-        let layer = bindings.layers.get(layer_index)?;
-        let (next, _) = advance_hidden_states_through_model_layer(
-            artifacts,
-            layer,
-            buffers,
-            input,
-            &workload,
-            &hidden_states,
-            bringup,
-            prefix_layer_caches.and_then(|c| c.get(layer_index)),
-            linear_request_states,
-            layer_index as u32,
-        )?;
-        hidden_states = next;
-    }
-
-    // Now project logits for decode items.
-    let mut tokens = Vec::new();
-    let mut logits_outputs = Vec::new();
-    let mut execution_tally = PrefixAttentionExecutionTally::default();
-    let mut native_dense_tally = DirectDecodeNativeDenseTally::default();
-    let mut native_logits_projection_decode = false;
-
-    let mut token_cursor = 0_usize;
-    for item in &input.execution_batch.items {
-        let item_end = token_cursor + item.scheduled_token_count as usize;
-        if item.mode == ExecutionMode::Decode {
-            let hidden_index = item_end.saturating_sub(1);
-            let hidden = hidden_states.get(hidden_index)?;
-            let mut normed = hidden.get(..hidden_dim)?.to_vec();
-            apply_rms_norm_with_binding_in_place(
-                &mut normed,
-                final_norm,
-                native_model_rms_norm_epsilon(artifacts),
-                native_model_rms_norm_weight_offset(artifacts),
-                bringup,
-            )?;
-            let (logits, token_id, used_native) =
-                if let Some((logits, token_id)) = project_decode_logits_with_optional_native_path(
-                    bringup,
-                    decode_projection,
-                    &normed,
-                ) {
-                    (logits, token_id, true)
-                } else {
-                    let (logits, token_id) =
-                        project_decode_logits_cpu(decode_projection, hidden_dim, &normed)?;
-                    (logits, token_id, false)
-                };
-            native_dense_tally = native_dense_tally
-                .record_projection_rows(artifacts.manifest().vocab_size as usize, used_native);
-            native_logits_projection_decode |= used_native;
-            execution_tally = execution_tally
-                .record_layer_continuation_tokens(1)
-                .record_logits_projection(
-                    1,
-                    u32::try_from(artifacts.manifest().vocab_size).unwrap_or(u32::MAX),
-                );
-            tokens.push((item.request_id, token_id));
-            logits_outputs.push(RequestLogitsOutput {
-                request_id: item.request_id,
-                logits,
-            });
-        }
-        token_cursor = item_end;
-    }
-
-    Some(ModelBoundDirectDecodeResult {
-        tokens,
-        logits_outputs,
-        model_bound_ffn_decode: true,
-        native_logits_projection_decode,
-        execution_tally,
-        native_dense_tally,
-    })
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -4636,6 +4774,7 @@ fn derive_model_bound_direct_decode_result_from_hidden_states(
     artifacts: &NativeModelArtifacts,
     bindings: &MetalNativeModelBindings,
     buffers: &MetalNativeModelBufferBindings,
+    sampleable_request_ids: &BTreeSet<crate::ids::RequestId>,
     workload: &MetalDispatchWorkload,
     hidden_states: &[Vec<f32>],
     final_layer_index: usize,
@@ -4647,6 +4786,7 @@ fn derive_model_bound_direct_decode_result_from_hidden_states(
         artifacts,
         bindings,
         buffers,
+        sampleable_request_ids,
         workload,
         hidden_states,
         final_layer_index,
@@ -4674,13 +4814,43 @@ fn derive_model_bound_direct_decode_result_from_hidden_states(
 
     for item in &input.execution_batch.items {
         let token_base = attention_index.saturating_mul(token_width);
-        if item.mode == ExecutionMode::Decode {
+        if sampleable_request_ids.contains(&item.request_id) {
+            let decode_item = item.mode == ExecutionMode::Decode;
             let token_end = token_base.saturating_add(token_width);
             let hidden_index = attention_index
                 .saturating_add(item.scheduled_token_count as usize)
                 .saturating_sub(1);
             if let Some(bits) = attention_output_bits.get(token_base..token_end) {
-                if let Some((
+                if request_uses_deterministic_argmax_sampling(input, item.request_id) {
+                    if let Some((
+                        token_id,
+                        used_model_bound_ffn,
+                        vocab_rows_scanned,
+                        used_native_logits_projection,
+                        decode_native_dense_tally,
+                    )) = hidden_states.get(hidden_index).and_then(|hidden_state| {
+                        decode_token_from_model_attention_output_with_metadata(
+                            artifacts,
+                            bindings,
+                            buffers,
+                            final_layer,
+                            hidden_state,
+                            bits,
+                            bringup,
+                        )
+                    }) {
+                        direct_decode_tokens.push((item.request_id, token_id));
+                        execution_tally = execution_tally
+                            .record_layer_continuation_tokens(1)
+                            .record_logits_projection(1, vocab_rows_scanned);
+                        if decode_item {
+                            model_bound_ffn_decode |= used_model_bound_ffn;
+                            native_logits_projection_decode |= used_native_logits_projection;
+                            native_dense_tally =
+                                native_dense_tally.merge(decode_native_dense_tally);
+                        }
+                    }
+                } else if let Some((
                     logits,
                     token_id,
                     used_model_bound_ffn,
@@ -4706,9 +4876,11 @@ fn derive_model_bound_direct_decode_result_from_hidden_states(
                     execution_tally = execution_tally
                         .record_layer_continuation_tokens(1)
                         .record_logits_projection(1, vocab_rows_scanned);
-                    model_bound_ffn_decode |= used_model_bound_ffn;
-                    native_logits_projection_decode |= used_native_logits_projection;
-                    native_dense_tally = native_dense_tally.merge(decode_native_dense_tally);
+                    if decode_item {
+                        model_bound_ffn_decode |= used_model_bound_ffn;
+                        native_logits_projection_decode |= used_native_logits_projection;
+                        native_dense_tally = native_dense_tally.merge(decode_native_dense_tally);
+                    }
                 }
             }
         }
@@ -4726,94 +4898,32 @@ fn derive_model_bound_direct_decode_result_from_hidden_states(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(clippy::too_many_arguments)]
-fn derive_model_bound_prefill_completion_result_from_hidden_states(
-    input: &RunnerInput,
-    attention_output_bits: &[u32],
-    artifacts: &NativeModelArtifacts,
-    bindings: &MetalNativeModelBindings,
-    buffers: &MetalNativeModelBufferBindings,
-    workload: &MetalDispatchWorkload,
-    hidden_states: &[Vec<f32>],
-    final_layer_index: usize,
-    bringup: Option<&MetalRuntimeBringup>,
-    prefill_request_ids: &BTreeSet<crate::ids::RequestId>,
-) -> ModelBoundDirectDecodeResult {
-    let Some(final_layer) = bindings.layers.get(final_layer_index) else {
-        return ModelBoundDirectDecodeResult::default();
-    };
-    let Some(token_width) =
-        attention_output_token_width(attention_output_bits.len(), workload.scheduled_tokens)
-    else {
-        return ModelBoundDirectDecodeResult::default();
-    };
-
-    let mut attention_index = 0_usize;
-    let mut logits_outputs = Vec::new();
-    let mut model_bound_ffn_decode = false;
-    let mut native_logits_projection_decode = false;
-    let mut execution_tally = PrefixAttentionExecutionTally::default();
-    let mut native_dense_tally = DirectDecodeNativeDenseTally::default();
-
-    for item in &input.execution_batch.items {
-        let token_base = attention_index.saturating_mul(token_width);
-        if prefill_request_ids.contains(&item.request_id) {
-            let token_end = token_base.saturating_add(token_width);
-            let hidden_index = attention_index
-                .saturating_add(item.scheduled_token_count as usize)
-                .saturating_sub(1);
-            if let Some(bits) = attention_output_bits.get(token_base..token_end) {
-                if let Some((
-                    logits,
-                    _token_id,
-                    used_model_bound_ffn,
-                    vocab_rows_scanned,
-                    used_native_logits_projection,
-                    decode_native_dense_tally,
-                )) = hidden_states.get(hidden_index).and_then(|hidden_state| {
-                    decode_logits_from_model_attention_output_with_metadata(
-                        artifacts,
-                        bindings,
-                        buffers,
-                        final_layer,
-                        hidden_state,
-                        bits,
-                        bringup,
-                    )
-                }) {
-                    logits_outputs.push(RequestLogitsOutput {
-                        request_id: item.request_id,
-                        logits,
-                    });
-                    execution_tally = execution_tally
-                        .record_layer_continuation_tokens(1)
-                        .record_logits_projection(1, vocab_rows_scanned);
-                    model_bound_ffn_decode |= used_model_bound_ffn;
-                    native_logits_projection_decode |= used_native_logits_projection;
-                    native_dense_tally = native_dense_tally.merge(decode_native_dense_tally);
-                }
-            }
-        }
-        attention_index = attention_index.saturating_add(item.scheduled_token_count as usize);
-    }
-
-    ModelBoundDirectDecodeResult {
-        tokens: Vec::new(),
-        logits_outputs,
-        model_bound_ffn_decode,
-        native_logits_projection_decode,
-        execution_tally,
-        native_dense_tally,
-    }
-}
-
-#[cfg(target_os = "macos")]
 #[derive(Clone)]
 struct PreparedDirectDecodeItem {
     request_id: crate::ids::RequestId,
+    mode: ExecutionMode,
     dims: ModelBoundDecodeDims,
     hidden: Vec<f32>,
     attention_input: Vec<f32>,
+    deterministic_argmax_sampling: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn request_uses_deterministic_argmax_sampling(
+    input: &RunnerInput,
+    request_id: crate::ids::RequestId,
+) -> bool {
+    input
+        .request_context(request_id)
+        .is_some_and(|context| context.deterministic_argmax_sampling)
+}
+
+#[cfg(target_os = "macos")]
+fn decode_prepared_item_count(prepared: &[PreparedDirectDecodeItem]) -> usize {
+    prepared
+        .iter()
+        .filter(|item| item.mode == ExecutionMode::Decode)
+        .count()
 }
 
 #[cfg(target_os = "macos")]
@@ -4824,6 +4934,7 @@ fn derive_model_bound_direct_decode_result_from_hidden_states_batched(
     artifacts: &NativeModelArtifacts,
     bindings: &MetalNativeModelBindings,
     buffers: &MetalNativeModelBufferBindings,
+    sampleable_request_ids: &BTreeSet<crate::ids::RequestId>,
     workload: &MetalDispatchWorkload,
     hidden_states: &[Vec<f32>],
     final_layer_index: usize,
@@ -4843,7 +4954,7 @@ fn derive_model_bound_direct_decode_result_from_hidden_states_batched(
 
     for item in &input.execution_batch.items {
         let token_base = attention_index.checked_mul(token_width)?;
-        if item.mode == ExecutionMode::Decode {
+        if sampleable_request_ids.contains(&item.request_id) {
             let token_end = token_base.checked_add(token_width)?;
             let hidden_index = attention_index
                 .checked_add(item.scheduled_token_count as usize)?
@@ -4866,9 +4977,14 @@ fn derive_model_bound_direct_decode_result_from_hidden_states_batched(
             let residual = final_layer_hidden_state.get(..dims.hidden_dim)?.to_vec();
             prepared.push(PreparedDirectDecodeItem {
                 request_id: item.request_id,
+                mode: item.mode,
                 dims,
                 hidden: residual,
                 attention_input: attention_output.get(..dims.input_width)?.to_vec(),
+                deterministic_argmax_sampling: request_uses_deterministic_argmax_sampling(
+                    input,
+                    item.request_id,
+                ),
             });
         }
         attention_index = attention_index.checked_add(item.scheduled_token_count as usize)?;
@@ -4877,15 +4993,21 @@ fn derive_model_bound_direct_decode_result_from_hidden_states_batched(
     if prepared.is_empty() {
         return Some(ModelBoundDirectDecodeResult::default());
     }
+    if prepared.len() <= 1 {
+        return None;
+    }
 
     let prepared_request_order = prepared
         .iter()
         .map(|item| item.request_id)
         .collect::<Vec<_>>();
     let mut grouped_prepared =
-        BTreeMap::<ModelBoundDecodeDims, Vec<PreparedDirectDecodeItem>>::new();
+        BTreeMap::<(ModelBoundDecodeDims, bool), Vec<PreparedDirectDecodeItem>>::new();
     for item in prepared {
-        grouped_prepared.entry(item.dims).or_default().push(item);
+        grouped_prepared
+            .entry((item.dims, item.deterministic_argmax_sampling))
+            .or_default()
+            .push(item);
     }
     let mut partitioned_groups = Vec::new();
     for group in grouped_prepared.into_values() {
@@ -4933,8 +5055,6 @@ fn derive_model_bound_direct_decode_result_from_hidden_states_batched(
                 final_layer,
                 buffers,
                 attention_o,
-                ffn_norm,
-                ffn_down,
                 final_norm,
                 decode_projection,
                 group,
@@ -5032,8 +5152,8 @@ fn collect_model_bound_direct_decode_group_results_recursive(
         return None;
     }
 
-    let fallback_tally =
-        DirectDecodeNativeDenseTally::default().record_batched_group_fallback(group.len());
+    let fallback_tally = DirectDecodeNativeDenseTally::default()
+        .record_batched_group_fallback(decode_prepared_item_count(&group));
     let split_index = group.len() / 2;
     let mut left_group = group;
     let right_group = left_group.split_off(split_index);
@@ -5058,8 +5178,6 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
     final_layer: &MetalNativeLayerBindings,
     buffers: &MetalNativeModelBufferBindings,
     attention_o: &MetalNativeTensorBufferBinding,
-    ffn_norm: &MetalNativeTensorBufferBinding,
-    ffn_down: &MetalNativeTensorBufferBinding,
     final_norm: &MetalNativeTensorBufferBinding,
     decode_projection: &MetalNativeTensorBufferBinding,
     mut prepared: Vec<PreparedDirectDecodeItem>,
@@ -5070,6 +5188,11 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
     }
 
     let dims = prepared.first()?.dims;
+    let decode_item_count = decode_prepared_item_count(&prepared);
+    let prepared_item_count = prepared.len();
+    let direct_decode_group_tally = |tally: DirectDecodeNativeDenseTally| {
+        tally.scale_for_selected_items(decode_item_count, prepared_item_count)
+    };
     if prepared.iter().any(|item| {
         item.dims != dims
             || item.hidden.len() < dims.hidden_dim
@@ -5090,7 +5213,7 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
             .collect::<Vec<_>>();
         let gate =
             compute_attn_output_gate(artifacts, final_layer, buffers, &hidden_rows, bringup)?;
-        native_dense_tally = native_dense_tally.merge(
+        native_dense_tally = native_dense_tally.merge(direct_decode_group_tally(
             direct_decode_native_dense_tally_from_prefix_attention_tally(
                 apply_attention_output_gate_in_place_with_tally(
                     &mut attention_input_rows,
@@ -5099,7 +5222,7 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
                     bringup,
                 )?,
             ),
-        );
+        ));
     }
     let (attention_hidden_rows, attention_o_tally) = project_batched_matrix_rows_with_tally(
         attention_o,
@@ -5109,7 +5232,7 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
         dims.input_width,
         bringup,
     )?;
-    native_dense_tally = native_dense_tally.merge(attention_o_tally);
+    native_dense_tally = native_dense_tally.merge(direct_decode_group_tally(attention_o_tally));
     let attention_hidden_rows_len = attention_hidden_rows.len();
     let mut hidden_rows = prepared
         .iter()
@@ -5126,77 +5249,30 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
             attention_o.native_dtype,
             bringup,
         )?;
-    native_dense_tally = native_dense_tally.merge(attention_residual_add_tally);
+    native_dense_tally =
+        native_dense_tally.merge(direct_decode_group_tally(attention_residual_add_tally));
     for (item, hidden) in prepared.iter_mut().zip(hidden_rows.into_iter()) {
         item.hidden = hidden;
     }
 
-    let mut ffn_hidden_rows = prepared
+    let hidden_rows = prepared
         .iter()
         .map(|item| item.hidden.clone())
         .collect::<Vec<_>>();
-    native_dense_tally = native_dense_tally.merge(
-        direct_decode_native_dense_tally_from_prefix_attention_tally(
-            apply_batched_row_rms_norm_with_binding_in_place_with_tally(
-                &mut ffn_hidden_rows,
-                dims.hidden_dim,
-                ffn_norm,
-                native_model_rms_norm_epsilon(artifacts),
-                native_model_rms_norm_weight_offset(artifacts),
-                bringup,
-            )?,
-        ),
-    );
-
-    let mut model_bound_ffn_decode = false;
-    let (mut gate_rows, up_rows, ffn_gate_up_tally) = project_batched_ffn_gate_up_with_tally(
-        &final_layer.ffn_gate_up,
-        buffers,
-        dims.intermediate_dim,
-        &ffn_hidden_rows,
-        dims.hidden_dim,
-        bringup,
-    )?;
-    native_dense_tally = native_dense_tally.merge(ffn_gate_up_tally);
-    native_dense_tally =
-        native_dense_tally.merge(apply_batched_model_gate_up_product_in_place_with_tally(
+    let (continued_hidden_rows, continued_tally, continued_nontrivial) =
+        apply_ffn_continuation_rows_with_tally(
             artifacts,
-            &mut gate_rows,
-            &up_rows,
-            dims.intermediate_dim,
-            bringup,
-        )?);
-    let (ffn_output_rows, ffn_down_tally) = project_batched_matrix_rows_with_tally(
-        ffn_down,
-        0,
-        dims.hidden_dim,
-        &gate_rows,
-        dims.intermediate_dim,
-        bringup,
-    )?;
-    native_dense_tally = native_dense_tally.merge(ffn_down_tally);
-    let ffn_output_rows_len = ffn_output_rows.len();
-    let ffn_output_rows_nontrivial = ffn_output_rows
-        .iter()
-        .any(|ffn_output| has_nontrivial_ffn_contribution(ffn_output));
-    let mut hidden_rows = prepared
-        .iter()
-        .map(|item| item.hidden.clone())
-        .collect::<Vec<_>>();
-    if hidden_rows.len() != ffn_output_rows_len {
-        return None;
-    }
-    let ffn_residual_add_tally =
-        add_batched_rows_in_place_with_direct_decode_tally_and_result_dtype(
-            &mut hidden_rows,
-            &ffn_output_rows,
-            dims.hidden_dim,
-            ffn_down.native_dtype,
+            final_layer,
+            buffers,
+            &hidden_rows,
             bringup,
         )?;
-    native_dense_tally = native_dense_tally.merge(ffn_residual_add_tally);
-    model_bound_ffn_decode |= ffn_output_rows_nontrivial;
-    for (item, hidden) in prepared.iter_mut().zip(hidden_rows.into_iter()) {
+    native_dense_tally = native_dense_tally.merge(direct_decode_group_tally(continued_tally));
+    let model_bound_ffn_decode = prepared
+        .iter()
+        .zip(continued_hidden_rows.iter())
+        .any(|(item, _)| item.mode == ExecutionMode::Decode && continued_nontrivial);
+    for (item, hidden) in prepared.iter_mut().zip(continued_hidden_rows.into_iter()) {
         item.hidden = hidden;
     }
 
@@ -5204,7 +5280,7 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
         .iter()
         .map(|item| item.hidden.clone())
         .collect::<Vec<_>>();
-    native_dense_tally = native_dense_tally.merge(
+    native_dense_tally = native_dense_tally.merge(direct_decode_group_tally(
         direct_decode_native_dense_tally_from_prefix_attention_tally(
             apply_batched_row_rms_norm_with_binding_in_place_with_tally(
                 &mut final_hidden_rows,
@@ -5215,10 +5291,15 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
                 bringup,
             )?,
         ),
-    );
+    ));
 
     let token_count = final_hidden_rows.len();
-    let mut batched_logits_results = if token_count > 1 {
+    let deterministic_argmax_only = prepared
+        .iter()
+        .all(|item| item.deterministic_argmax_sampling);
+    let mut batched_logits_results = if deterministic_argmax_only {
+        None
+    } else if token_count > 1 {
         project_batched_decode_logits_with_optional_native_path(
             bringup,
             decode_projection,
@@ -5229,8 +5310,19 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
     } else {
         None
     };
-    if batched_logits_results.is_some() {
-        native_dense_tally = native_dense_tally.record_batched_logits_group(token_count);
+    let mut batched_token_results = if deterministic_argmax_only && token_count > 1 {
+        project_batched_decode_tokens_with_optional_native_path(
+            bringup,
+            decode_projection,
+            &final_hidden_rows,
+            dims.hidden_dim,
+        )
+        .map(|results| results.into_iter())
+    } else {
+        None
+    };
+    if batched_logits_results.is_some() || batched_token_results.is_some() {
+        native_dense_tally = native_dense_tally.record_batched_logits_group(decode_item_count);
     }
     let single_logits_bringup =
         single_decode_logits_retry_worthwhile(bringup, decode_projection, dims.hidden_dim)
@@ -5242,35 +5334,73 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
     let mut execution_tally = PrefixAttentionExecutionTally::default();
 
     for (item, hidden) in prepared.into_iter().zip(final_hidden_rows.into_iter()) {
-        let (logits, token_id, used_native_logits_projection) = if let Some(
-            batched_logits_results,
-        ) =
-            batched_logits_results.as_mut()
-        {
-            let (logits, token_id) = batched_logits_results.next()?;
-            (logits, token_id, true)
-        } else if let Some((logits, token_id)) = project_decode_logits_with_optional_native_path(
-            single_logits_bringup,
-            decode_projection,
-            &hidden,
-        ) {
-            (logits, token_id, true)
+        if deterministic_argmax_only {
+            let (token_id, used_native_logits_projection) =
+                if let Some(batched_token_results) = batched_token_results.as_mut() {
+                    let token_id = batched_token_results.next()?;
+                    (token_id, true)
+                } else if let Some(token_id) = project_decode_token_with_optional_native_path(
+                    single_logits_bringup,
+                    decode_projection,
+                    &hidden,
+                ) {
+                    (token_id, true)
+                } else {
+                    (
+                        project_decode_token_cpu(decode_projection, item.dims.hidden_dim, &hidden)?,
+                        false,
+                    )
+                };
+            if item.mode == ExecutionMode::Decode {
+                native_dense_tally = native_dense_tally
+                    .record_projection_rows(item.dims.vocab_rows, used_native_logits_projection);
+                native_logits_projection_decode |= used_native_logits_projection;
+            }
+            execution_tally = execution_tally
+                .record_layer_continuation_tokens(1)
+                .record_logits_projection(
+                    1,
+                    u32::try_from(item.dims.vocab_rows).unwrap_or(u32::MAX),
+                );
+            tokens.push((item.request_id, token_id));
         } else {
-            let (logits, token_id) =
-                project_decode_logits_cpu(decode_projection, item.dims.hidden_dim, &hidden)?;
-            (logits, token_id, false)
-        };
-        native_dense_tally = native_dense_tally
-            .record_projection_rows(item.dims.vocab_rows, used_native_logits_projection);
-        native_logits_projection_decode |= used_native_logits_projection;
-        execution_tally = execution_tally
-            .record_layer_continuation_tokens(1)
-            .record_logits_projection(1, u32::try_from(item.dims.vocab_rows).unwrap_or(u32::MAX));
-        tokens.push((item.request_id, token_id));
-        logits_outputs.push(RequestLogitsOutput {
-            request_id: item.request_id,
-            logits,
-        });
+            let (logits, token_id, used_native_logits_projection) =
+                if let Some(batched_logits_results) = batched_logits_results.as_mut() {
+                    let (logits, token_id) = batched_logits_results.next()?;
+                    (logits, token_id, true)
+                } else if let Some((logits, token_id)) =
+                    project_decode_logits_with_optional_native_path(
+                        single_logits_bringup,
+                        decode_projection,
+                        &hidden,
+                    )
+                {
+                    (logits, token_id, true)
+                } else {
+                    let (logits, token_id) = project_decode_logits_cpu(
+                        decode_projection,
+                        item.dims.hidden_dim,
+                        &hidden,
+                    )?;
+                    (logits, token_id, false)
+                };
+            if item.mode == ExecutionMode::Decode {
+                native_dense_tally = native_dense_tally
+                    .record_projection_rows(item.dims.vocab_rows, used_native_logits_projection);
+                native_logits_projection_decode |= used_native_logits_projection;
+            }
+            execution_tally = execution_tally
+                .record_layer_continuation_tokens(1)
+                .record_logits_projection(
+                    1,
+                    u32::try_from(item.dims.vocab_rows).unwrap_or(u32::MAX),
+                );
+            tokens.push((item.request_id, token_id));
+            logits_outputs.push(RequestLogitsOutput {
+                request_id: item.request_id,
+                logits,
+            });
+        }
     }
 
     Some(ModelBoundDirectDecodeResult {
@@ -5308,6 +5438,15 @@ fn derive_model_bound_decode_tokens(
         bringup,
     )
     .tokens
+    .into_iter()
+    .filter(|(request_id, _)| {
+        input
+            .execution_batch
+            .items
+            .iter()
+            .any(|item| item.request_id == *request_id && item.mode == ExecutionMode::Decode)
+    })
+    .collect()
 }
 
 fn attention_output_token_width(
@@ -5350,11 +5489,7 @@ fn decode_logits_from_model_attention_output_with_metadata(
     )?;
     let retry_policy = direct_decode_single_native_retry_policy(
         artifacts,
-        layer,
-        buffers,
         attention_o,
-        ffn_norm,
-        ffn_down,
         final_norm,
         decode_projection,
         dims,
@@ -5396,51 +5531,16 @@ fn decode_logits_from_model_attention_output_with_metadata(
     )?;
     native_dense_tally = native_dense_tally
         .record_residual_add_elements(hidden.len(), used_native_attention_residual_add);
-
-    let mut ffn_hidden = hidden.clone();
-    let used_native_ffn_norm = apply_rms_norm_with_binding_in_place_with_path(
-        &mut ffn_hidden,
-        ffn_norm,
-        native_model_rms_norm_epsilon(artifacts),
-        native_model_rms_norm_weight_offset(artifacts),
-        retry_policy.ffn_norm,
-    )?;
-    native_dense_tally =
-        native_dense_tally.record_rms_norm_elements(ffn_hidden.len(), used_native_ffn_norm);
-    let (mut gate, up, ffn_gate_up_tally) = project_ffn_gate_up_with_coverage_and_retry_policy(
-        &layer.ffn_gate_up,
-        buffers,
-        dims.intermediate_dim,
-        &ffn_hidden,
-        retry_policy.ffn_gate_up,
-    )?;
-    native_dense_tally = native_dense_tally.merge(ffn_gate_up_tally);
-    let used_native_gate_up_product = apply_model_gate_up_product_with_path(
-        artifacts,
-        &mut gate,
-        &up,
-        retry_policy.ffn_gate_product,
-    )?;
-    native_dense_tally =
-        native_dense_tally.record_ffn_activation_elements(gate.len(), used_native_gate_up_product);
-    let (ffn_output, used_native_ffn_down_projection) = project_matrix_rows_with_path(
-        ffn_down,
-        0,
-        dims.hidden_dim,
-        &gate,
-        retry_policy.ffn_down_projection,
-    )?;
-    native_dense_tally =
-        native_dense_tally.record_projection_rows(dims.hidden_dim, used_native_ffn_down_projection);
-    let used_model_bound_ffn = has_nontrivial_ffn_contribution(&ffn_output);
-    let used_native_ffn_residual_add = add_in_place_with_path_and_result_dtype(
-        &mut hidden,
-        &ffn_output,
-        ffn_down.native_dtype,
-        retry_policy.ffn_residual_add,
-    )?;
-    native_dense_tally =
-        native_dense_tally.record_residual_add_elements(hidden.len(), used_native_ffn_residual_add);
+    let (mut continued_hidden_rows, continued_tally, used_model_bound_ffn) =
+        apply_ffn_continuation_rows_with_tally(
+            artifacts,
+            layer,
+            buffers,
+            &[hidden.clone()],
+            bringup,
+        )?;
+    hidden = continued_hidden_rows.pop()?;
+    native_dense_tally = native_dense_tally.merge(continued_tally);
 
     let used_native_final_norm = apply_rms_norm_with_binding_in_place_with_path(
         &mut hidden,
@@ -5478,6 +5578,124 @@ fn decode_logits_from_model_attention_output_with_metadata(
 }
 
 #[cfg(target_os = "macos")]
+fn decode_token_from_model_attention_output_with_metadata(
+    artifacts: &NativeModelArtifacts,
+    bindings: &MetalNativeModelBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    layer: &MetalNativeLayerBindings,
+    final_layer_hidden_state: &[f32],
+    attention_output_bits: &[u32],
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<(u32, bool, u32, bool, DirectDecodeNativeDenseTally)> {
+    let attention_o = buffers.binding_for(layer.attention_o.as_ref()?)?;
+    let ffn_norm = buffers.binding_for(&layer.ffn_norm)?;
+    let ffn_down = buffers.binding_for(&layer.ffn_down)?;
+    let final_norm = buffers.binding_for(&bindings.final_norm)?;
+    let decode_projection = resolved_decode_projection_binding(artifacts, bindings, buffers)?;
+    let attention_output = decode_attention_output_values(attention_output_bits)?;
+    let dims = resolved_model_decode_dims(
+        artifacts,
+        final_layer_hidden_state.len(),
+        attention_o,
+        ffn_norm,
+        &layer.ffn_gate_up,
+        buffers,
+        ffn_down,
+        final_norm,
+        decode_projection,
+        attention_output.len(),
+    )?;
+    let retry_policy = direct_decode_single_native_retry_policy(
+        artifacts,
+        attention_o,
+        final_norm,
+        decode_projection,
+        dims,
+        bringup,
+    )?;
+    let mut native_dense_tally = DirectDecodeNativeDenseTally::default();
+    let residual = final_layer_hidden_state.get(..dims.hidden_dim)?.to_vec();
+    let mut attention_input = attention_output.get(..dims.input_width)?.to_vec();
+    if artifacts.manifest().attn_output_gate {
+        let gate =
+            compute_attn_output_gate(artifacts, layer, buffers, &[residual.clone()], bringup)?;
+        let mut attention_input_rows = vec![attention_input];
+        native_dense_tally = native_dense_tally.merge(
+            direct_decode_native_dense_tally_from_prefix_attention_tally(
+                apply_attention_output_gate_in_place_with_tally(
+                    &mut attention_input_rows,
+                    &gate,
+                    dims.input_width,
+                    retry_policy.attention_output_gate,
+                )?,
+            ),
+        );
+        attention_input = attention_input_rows.pop()?;
+    }
+    let (mut hidden, used_native_attention_o_projection) = project_matrix_rows_with_path(
+        attention_o,
+        0,
+        dims.hidden_dim,
+        &attention_input,
+        retry_policy.attention_o_projection,
+    )?;
+    native_dense_tally = native_dense_tally
+        .record_projection_rows(dims.hidden_dim, used_native_attention_o_projection);
+    let used_native_attention_residual_add = add_in_place_with_path_and_result_dtype(
+        &mut hidden,
+        &residual,
+        attention_o.native_dtype,
+        retry_policy.attention_residual_add,
+    )?;
+    native_dense_tally = native_dense_tally
+        .record_residual_add_elements(hidden.len(), used_native_attention_residual_add);
+    let (mut continued_hidden_rows, continued_tally, used_model_bound_ffn) =
+        apply_ffn_continuation_rows_with_tally(
+            artifacts,
+            layer,
+            buffers,
+            &[hidden.clone()],
+            bringup,
+        )?;
+    hidden = continued_hidden_rows.pop()?;
+    native_dense_tally = native_dense_tally.merge(continued_tally);
+
+    let used_native_final_norm = apply_rms_norm_with_binding_in_place_with_path(
+        &mut hidden,
+        final_norm,
+        native_model_rms_norm_epsilon(artifacts),
+        native_model_rms_norm_weight_offset(artifacts),
+        retry_policy.final_norm,
+    )?;
+    native_dense_tally =
+        native_dense_tally.record_rms_norm_elements(hidden.len(), used_native_final_norm);
+
+    let (token_id, used_native_logits_projection) = if let Some(token_id) =
+        project_decode_token_with_optional_native_path(
+            retry_policy.logits_projection,
+            decode_projection,
+            &hidden,
+        ) {
+        (token_id, true)
+    } else {
+        (
+            project_decode_token_cpu(decode_projection, dims.hidden_dim, &hidden)?,
+            false,
+        )
+    };
+    native_dense_tally =
+        native_dense_tally.record_projection_rows(dims.vocab_rows, used_native_logits_projection);
+
+    Some((
+        token_id,
+        used_model_bound_ffn,
+        u32::try_from(dims.vocab_rows).unwrap_or(u32::MAX),
+        used_native_logits_projection,
+        native_dense_tally,
+    ))
+}
+
+#[cfg(target_os = "macos")]
 fn project_decode_logits_cpu(
     decode_projection: &MetalNativeTensorBufferBinding,
     hidden_dim: usize,
@@ -5501,6 +5719,148 @@ fn project_decode_logits_cpu(
     }
 
     best_token.map(|token_id| (logits, token_id))
+}
+
+#[cfg(target_os = "macos")]
+fn project_decode_token_cpu(
+    decode_projection: &MetalNativeTensorBufferBinding,
+    hidden_dim: usize,
+    hidden: &[f32],
+) -> Option<u32> {
+    let (vocab_rows, _) = tensor_matrix_dimensions(&decode_projection.meta.spec)?;
+    let mut best_token = None;
+    let mut best_score = f32::NEG_INFINITY;
+    for token_row in 0..vocab_rows {
+        let weights = tensor_matrix_row_prefix_f32(decode_projection, token_row, hidden_dim)?;
+        let score = dot_product(&weights, hidden.get(..hidden_dim)?);
+        if !score.is_finite() {
+            return None;
+        }
+        if score > best_score || best_token.is_none() {
+            best_score = score;
+            best_token = Some(token_row as u32);
+        }
+    }
+
+    best_token
+}
+
+#[cfg(target_os = "macos")]
+fn project_decode_token_with_optional_native_path(
+    bringup: Option<&MetalRuntimeBringup>,
+    decode_projection: &MetalNativeTensorBufferBinding,
+    hidden: &[f32],
+) -> Option<u32> {
+    let bringup = bringup?;
+    let (projection_kernel_name, projection_pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .projection_kernel(decode_projection.native_dtype)?;
+    let argmax_kernel_name = "logits_argmax_f32";
+    let Some(argmax_pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .logits_argmax_f32
+    else {
+        return None;
+    };
+    let (vocab_rows, projection_cols) = tensor_matrix_dimensions(&decode_projection.meta.spec)?;
+    let input_width = hidden.len().min(projection_cols);
+    if vocab_rows == 0 || input_width == 0 {
+        return None;
+    }
+    let projection_feedback_key = projection_feedback_key(
+        projection_kernel_name,
+        vocab_rows,
+        input_width,
+        projection_cols,
+    );
+    let argmax_feedback_key = logits_argmax_feedback_key(argmax_kernel_name, vocab_rows);
+    if !optional_kernel_allowed(bringup, &projection_feedback_key)
+        || !optional_kernel_allowed(bringup, &argmax_feedback_key)
+    {
+        return None;
+    }
+
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        projection_kernel_name,
+        projection_pipeline_index,
+    )
+    .ok()
+    .zip(
+        find_optional_pipeline_handle_by_index(
+            &bringup.state,
+            &bringup.metallib.path,
+            argmax_kernel_name,
+            argmax_pipeline_index,
+        )
+        .ok(),
+    )
+    .and_then(|(projection_pipeline, argmax_pipeline)| {
+        autoreleasepool(|| {
+            let hidden_buffer =
+                new_shared_buffer_with_data(&bringup.state.device, &hidden[..input_width]);
+            let logits_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(vocab_rows),
+            );
+            let argmax_buffer = new_zeroed_shared_buffer::<u32>(&bringup.state.device, 1);
+
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.decode_logits_argmax");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.decode_logits_argmax.compute");
+
+            encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
+            encoder.set_buffer(0, Some(&hidden_buffer), 0);
+            encoder.set_buffer(1, Some(&decode_projection.native_buffer), 0);
+            encoder.set_buffer(2, Some(&logits_buffer), 0);
+            set_logits_projection_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(vocab_rows),
+                saturating_usize_to_u32(projection_cols),
+                saturating_usize_to_u32(input_width),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(vocab_rows.max(1) as u64, 1, 1),
+                MTLSize::new(
+                    projection_pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(vocab_rows.max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
+
+            encoder.set_compute_pipeline_state(&argmax_pipeline.pipeline);
+            encoder.set_buffer(0, Some(&logits_buffer), 0);
+            encoder.set_buffer(1, Some(&argmax_buffer), 0);
+            set_logits_argmax_dispatch_params(encoder, 2, saturating_usize_to_u32(vocab_rows));
+            encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+
+            if command_buffer_status(command_buffer.status()) != MetalCommandBufferStatus::Completed
+            {
+                return None;
+            }
+
+            read_shared_u32_buffer_prefix(&argmax_buffer, 1)
+                .into_iter()
+                .next()
+        })
+    });
+    let success = output.is_some();
+    record_optional_kernel_result(bringup, &projection_feedback_key, success);
+    record_optional_kernel_result(bringup, &argmax_feedback_key, success);
+    output
 }
 
 #[cfg(target_os = "macos")]
@@ -5806,6 +6166,166 @@ fn project_batched_decode_logits_with_optional_native_path(
 }
 
 #[cfg(target_os = "macos")]
+fn project_batched_decode_tokens_with_optional_native_path(
+    bringup: Option<&MetalRuntimeBringup>,
+    decode_projection: &MetalNativeTensorBufferBinding,
+    hidden_rows: &[Vec<f32>],
+    hidden_width: usize,
+) -> Option<Vec<u32>> {
+    let bringup = bringup?;
+    if hidden_rows.is_empty() || hidden_width == 0 {
+        return None;
+    }
+    if hidden_rows.iter().any(|row| row.len() < hidden_width) {
+        return None;
+    }
+
+    let (projection_kernel_name, projection_pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .batched_projection_kernel(decode_projection.native_dtype)?;
+    let argmax_kernel_name = "logits_argmax_batched_f32";
+    let Some(argmax_pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .logits_argmax_batched_f32
+    else {
+        return None;
+    };
+    let (vocab_rows, projection_cols) = tensor_matrix_dimensions(&decode_projection.meta.spec)?;
+    let input_width = hidden_width.min(projection_cols);
+    if vocab_rows == 0 || input_width == 0 {
+        return None;
+    }
+
+    let token_count = hidden_rows.len();
+    let serialized_hidden_stride = input_width;
+    let projection_feedback_key = batched_projection_feedback_key(
+        projection_kernel_name,
+        token_count,
+        vocab_rows,
+        input_width,
+        serialized_hidden_stride,
+        projection_cols,
+    );
+    let argmax_feedback_key =
+        batched_logits_argmax_feedback_key(argmax_kernel_name, token_count, vocab_rows);
+    if !optional_kernel_allowed(bringup, &projection_feedback_key)
+        || !optional_kernel_allowed(bringup, &argmax_feedback_key)
+    {
+        return None;
+    }
+
+    let logits_element_count = token_count.checked_mul(vocab_rows)?;
+    let mut flattened_hidden =
+        Vec::with_capacity(token_count.checked_mul(serialized_hidden_stride)?);
+    for row in hidden_rows {
+        flattened_hidden.extend_from_slice(row.get(..serialized_hidden_stride)?);
+    }
+
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        projection_kernel_name,
+        projection_pipeline_index,
+    )
+    .ok()
+    .zip(
+        find_optional_pipeline_handle_by_index(
+            &bringup.state,
+            &bringup.metallib.path,
+            argmax_kernel_name,
+            argmax_pipeline_index,
+        )
+        .ok(),
+    )
+    .and_then(|(projection_pipeline, argmax_pipeline)| {
+        autoreleasepool(|| {
+            let hidden_buffer =
+                new_shared_buffer_with_data(&bringup.state.device, &flattened_hidden);
+            let logits_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(logits_element_count),
+            );
+            let argmax_buffer = new_zeroed_shared_buffer::<u32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(token_count),
+            );
+
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.decode_logits_argmax_batched");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.decode_logits_argmax_batched.compute");
+
+            encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
+            encoder.set_buffer(0, Some(&hidden_buffer), 0);
+            encoder.set_buffer(1, Some(&decode_projection.native_buffer), 0);
+            encoder.set_buffer(2, Some(&logits_buffer), 0);
+            set_batched_logits_projection_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(token_count),
+                saturating_usize_to_u32(vocab_rows),
+                saturating_usize_to_u32(projection_cols),
+                saturating_usize_to_u32(input_width),
+                saturating_usize_to_u32(serialized_hidden_stride),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(logits_element_count.max(1) as u64, 1, 1),
+                MTLSize::new(
+                    projection_pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(logits_element_count.max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
+
+            encoder.set_compute_pipeline_state(&argmax_pipeline.pipeline);
+            encoder.set_buffer(0, Some(&logits_buffer), 0);
+            encoder.set_buffer(1, Some(&argmax_buffer), 0);
+            set_batched_logits_argmax_dispatch_params(
+                encoder,
+                2,
+                saturating_usize_to_u32(token_count),
+                saturating_usize_to_u32(vocab_rows),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(token_count.max(1) as u64, 1, 1),
+                MTLSize::new(
+                    argmax_pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(token_count.max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
+
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+
+            if command_buffer_status(command_buffer.status()) != MetalCommandBufferStatus::Completed
+            {
+                return None;
+            }
+
+            let best_tokens =
+                read_shared_u32_buffer_prefix(&argmax_buffer, saturating_usize_to_u32(token_count));
+            (best_tokens.len() == token_count).then_some(best_tokens)
+        })
+    });
+    let success = output.is_some();
+    record_optional_kernel_result(bringup, &projection_feedback_key, success);
+    record_optional_kernel_result(bringup, &argmax_feedback_key, success);
+    output
+}
+
+#[cfg(target_os = "macos")]
 fn has_nontrivial_ffn_contribution(values: &[f32]) -> bool {
     values.iter().any(|value| value.abs() > 1e-6)
 }
@@ -5823,41 +6343,39 @@ struct ModelBoundDecodeDims {
 fn direct_decode_batched_group_feedback_key(
     group_size: usize,
     dims: ModelBoundDecodeDims,
-) -> String {
-    format!(
-        "batched_group:direct_decode:{group_size}:{}:{}:{}:{}",
-        dims.input_width, dims.hidden_dim, dims.intermediate_dim, dims.vocab_rows
-    )
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::DirectDecodeBatchedGroup { group_size, dims }
 }
 
 #[cfg(target_os = "macos")]
 fn direct_decode_group_feedback_key_for_group(
     group_size: usize,
     dims: ModelBoundDecodeDims,
-) -> Option<String> {
+) -> Option<MetalOptionalKernelFeedbackKey> {
     (group_size > 1).then(|| direct_decode_batched_group_feedback_key(group_size, dims))
 }
 
 #[cfg(target_os = "macos")]
-fn prefix_attention_group_feedback_key(workload: &MetalDispatchWorkload) -> String {
-    format!(
-        "batched_group:prefix_attention:{}:{}:{}:{}:{}:{}:{}:{}",
-        workload.scheduled_requests,
-        workload.prefill_requests,
-        workload.decode_requests,
-        workload.scheduled_tokens,
-        workload.kv_metadata.gather_token_count(),
-        workload.kv_metadata.block_size_tokens,
-        workload.numeric_layout.head_count,
-        workload.numeric_layout.head_dim,
-    )
+fn prefix_attention_group_feedback_key(
+    workload: &MetalDispatchWorkload,
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::PrefixAttentionBatchedGroup {
+        scheduled_requests: workload.scheduled_requests,
+        prefill_requests: workload.prefill_requests,
+        decode_requests: workload.decode_requests,
+        scheduled_tokens: workload.scheduled_tokens,
+        gather_tokens: workload.kv_metadata.gather_token_count(),
+        block_size_tokens: workload.kv_metadata.block_size_tokens,
+        head_count: workload.numeric_layout.head_count,
+        head_dim: workload.numeric_layout.head_dim,
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn prefix_attention_group_feedback_key_for_item_count(
     item_count: usize,
     workload: &MetalDispatchWorkload,
-) -> Option<String> {
+) -> Option<MetalOptionalKernelFeedbackKey> {
     (item_count > 1).then(|| prefix_attention_group_feedback_key(workload))
 }
 
@@ -6030,6 +6548,7 @@ fn project_ffn_gate_up_with_coverage(
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn project_ffn_gate_up_with_coverage_and_retry_policy(
     ffn_gate_up: &MetalFfnGateUpBindings,
     buffers: &MetalNativeModelBufferBindings,
@@ -6107,6 +6626,20 @@ fn project_batched_ffn_gate_up_with_tally(
         return None;
     }
 
+    // Try multi-projection batch: gate + up in a single command buffer.
+    #[cfg(target_os = "macos")]
+    if let Some(result) = project_batched_ffn_gate_up_multi_dispatch(
+        ffn_gate_up,
+        buffers,
+        intermediate_dim,
+        input_rows,
+        input_width,
+        bringup,
+    ) {
+        return Some(result);
+    }
+
+    // Fallback: individual dispatches per projection.
     match ffn_gate_up {
         MetalFfnGateUpBindings::Packed(binding) => {
             let packed = buffers.binding_for(binding)?;
@@ -6152,9 +6685,1247 @@ fn project_batched_ffn_gate_up_with_tally(
     }
 }
 
+/// Attempts to dispatch FFN gate and up projections in a single Metal command buffer.
+/// Returns `None` to signal the caller should fall back to individual dispatches.
+#[cfg(target_os = "macos")]
+fn project_batched_ffn_gate_up_multi_dispatch(
+    ffn_gate_up: &MetalFfnGateUpBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    intermediate_dim: usize,
+    input_rows: &[Vec<f32>],
+    input_width: usize,
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<BatchedFfnGateUpProjection> {
+    let bringup = bringup?;
+
+    let (gate_binding, gate_row_offset, up_binding, up_row_offset) = match ffn_gate_up {
+        MetalFfnGateUpBindings::Packed(binding) => {
+            let packed = buffers.binding_for(binding)?;
+            (packed, 0_usize, packed, intermediate_dim)
+        }
+        MetalFfnGateUpBindings::Split { gate, up } => {
+            let gate_b = buffers.binding_for(gate)?;
+            let up_b = buffers.binding_for(up)?;
+            (gate_b, 0_usize, up_b, 0_usize)
+        }
+    };
+
+    let tasks = [
+        MultiProjectionTask {
+            binding: gate_binding,
+            row_offset: gate_row_offset,
+            output_dim: intermediate_dim,
+        },
+        MultiProjectionTask {
+            binding: up_binding,
+            row_offset: up_row_offset,
+            output_dim: intermediate_dim,
+        },
+    ];
+
+    let total_projection_rows = intermediate_dim.checked_mul(2)?;
+
+    if input_rows.len() == 1 {
+        let input = input_rows.first()?.get(..input_width)?;
+        let outputs = project_multi_matrix_rows_with_optional_native_path(
+            bringup,
+            &tasks,
+            input,
+            input_width,
+        )?;
+        if outputs.len() != 2 {
+            return None;
+        }
+        let mut iter = outputs.into_iter();
+        let gate_rows = vec![iter.next()?];
+        let up_rows = vec![iter.next()?];
+        let tally = DirectDecodeNativeDenseTally::default()
+            .record_projection_rows(total_projection_rows, true);
+        Some((gate_rows, up_rows, tally))
+    } else {
+        let outputs = project_multi_batched_matrix_rows_with_optional_native_path(
+            bringup,
+            &tasks,
+            input_rows,
+            input_width,
+        )?;
+        if outputs.len() != 2 {
+            return None;
+        }
+        let mut iter = outputs.into_iter();
+        let gate_rows = iter.next()?;
+        let up_rows = iter.next()?;
+        let total_rows = input_rows.len().checked_mul(total_projection_rows)?;
+        let tally =
+            DirectDecodeNativeDenseTally::default().record_projection_rows(total_rows, true);
+        Some((gate_rows, up_rows, tally))
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ResolvedLayerMoeDims {
+    hidden_dim: usize,
+    expert_count: usize,
+    experts_per_token: usize,
+    expert_intermediate_dim: usize,
+}
+
+#[cfg(target_os = "macos")]
+fn resolved_layer_moe_dims(
+    artifacts: &NativeModelArtifacts,
+    layer: &MetalNativeLayerBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    hidden_width: usize,
+) -> Option<ResolvedLayerMoeDims> {
+    let moe = layer.moe.as_ref()?;
+    let router = buffers.binding_for(&moe.router)?;
+    let (router_expert_count, router_hidden_dim) = tensor_matrix_dimensions(&router.meta.spec)?;
+    let expert_count = artifacts
+        .moe_config()?
+        .expert_count
+        .map(|count| count as usize)
+        .unwrap_or(router_expert_count)
+        .min(router_expert_count);
+    let experts_per_token = artifacts
+        .moe_config()?
+        .experts_per_token
+        .map(|count| count as usize)
+        .unwrap_or(1)
+        .min(expert_count);
+    if expert_count == 0 || experts_per_token == 0 {
+        return None;
+    }
+
+    let (expert_gate_up_count, expert_rows, expert_input_dim) = match &moe.expert_gate_up {
+        MetalMoeExpertGateUpBindings::Packed(binding) => {
+            let packed = buffers.binding_for(binding)?;
+            let (count, rows, cols) = tensor_3d_dimensions(&packed.meta.spec)?;
+            (count, rows / 2, cols)
+        }
+        MetalMoeExpertGateUpBindings::Split { gate, up } => {
+            let gate_binding = buffers.binding_for(gate)?;
+            let up_binding = buffers.binding_for(up)?;
+            let (gate_count, gate_rows, gate_cols) = tensor_3d_dimensions(&gate_binding.meta.spec)?;
+            let (up_count, up_rows, up_cols) = tensor_3d_dimensions(&up_binding.meta.spec)?;
+            (
+                gate_count.min(up_count),
+                gate_rows.min(up_rows),
+                gate_cols.min(up_cols),
+            )
+        }
+    };
+    let expert_down = buffers.binding_for(&moe.expert_down)?;
+    let (expert_down_count, expert_down_hidden_dim, expert_down_cols) =
+        tensor_3d_dimensions(&expert_down.meta.spec)?;
+    let norm2_len = match &layer.ffn_norm_2 {
+        Some(binding) => tensor_element_count(&buffers.binding_for(binding)?.meta.spec)?,
+        None => tensor_element_count(&layer.ffn_norm.spec)?,
+    };
+    let hidden_dim = hidden_width
+        .min(artifacts.manifest().hidden_size as usize)
+        .min(router_hidden_dim)
+        .min(expert_input_dim)
+        .min(expert_down_hidden_dim)
+        .min(norm2_len);
+    let expert_intermediate_dim = artifacts
+        .moe_config()?
+        .expert_intermediate_size
+        .map(|size| size as usize)
+        .unwrap_or(expert_rows)
+        .min(expert_rows)
+        .min(expert_down_cols);
+    let resolved_expert_count = expert_count
+        .min(expert_gate_up_count)
+        .min(expert_down_count);
+
+    (hidden_dim > 0
+        && expert_intermediate_dim > 0
+        && resolved_expert_count > 0
+        && experts_per_token > 0)
+        .then_some(ResolvedLayerMoeDims {
+            hidden_dim,
+            expert_count: resolved_expert_count,
+            experts_per_token: experts_per_token.min(resolved_expert_count),
+            expert_intermediate_dim,
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn apply_dense_ffn_branch_rows_with_tally(
+    artifacts: &NativeModelArtifacts,
+    layer: &MetalNativeLayerBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    input_rows: &[Vec<f32>],
+    hidden_dim: usize,
+    bringup: Option<&MetalRuntimeBringup>,
+    post_norm: Option<&MetalNativeTensorBufferBinding>,
+) -> Option<(Vec<Vec<f32>>, DirectDecodeNativeDenseTally, bool)> {
+    let ffn_norm = buffers.binding_for(&layer.ffn_norm)?;
+    let ffn_down = buffers.binding_for(&layer.ffn_down)?;
+    let intermediate_dim = resolved_ffn_intermediate_dim(
+        &layer.ffn_gate_up,
+        buffers,
+        tensor_matrix_dimensions(&ffn_down.meta.spec)?.1,
+    )?;
+    let mut ffn_hidden_rows = input_rows
+        .iter()
+        .map(|row| row.get(..hidden_dim).map(|slice| slice.to_vec()))
+        .collect::<Option<Vec<_>>>()?;
+    let mut tally = direct_decode_native_dense_tally_from_prefix_attention_tally(
+        apply_batched_row_rms_norm_with_binding_in_place_with_tally(
+            &mut ffn_hidden_rows,
+            hidden_dim,
+            ffn_norm,
+            native_model_rms_norm_epsilon(artifacts),
+            native_model_rms_norm_weight_offset(artifacts),
+            bringup,
+        )?,
+    );
+    let (mut gate_rows, up_rows, gate_up_tally) = project_batched_ffn_gate_up_with_tally(
+        &layer.ffn_gate_up,
+        buffers,
+        intermediate_dim,
+        &ffn_hidden_rows,
+        hidden_dim,
+        bringup,
+    )?;
+    tally = tally.merge(gate_up_tally);
+    tally = tally.merge(apply_batched_model_gate_up_product_in_place_with_tally(
+        artifacts,
+        &mut gate_rows,
+        &up_rows,
+        intermediate_dim,
+        bringup,
+    )?);
+    let (mut ffn_output_rows, ffn_down_tally) = project_batched_matrix_rows_with_tally(
+        ffn_down,
+        0,
+        hidden_dim,
+        &gate_rows,
+        intermediate_dim,
+        bringup,
+    )?;
+    tally = tally.merge(ffn_down_tally);
+    if let Some(post_norm) = post_norm {
+        tally = tally.merge(
+            direct_decode_native_dense_tally_from_prefix_attention_tally(
+                apply_batched_row_rms_norm_with_binding_in_place_with_tally(
+                    &mut ffn_output_rows,
+                    hidden_dim,
+                    post_norm,
+                    native_model_rms_norm_epsilon(artifacts),
+                    native_model_rms_norm_weight_offset(artifacts),
+                    bringup,
+                )?,
+            ),
+        );
+    }
+    let nontrivial = ffn_output_rows
+        .iter()
+        .any(|row| has_nontrivial_ffn_contribution(row));
+    Some((ffn_output_rows, tally, nontrivial))
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_moe_router_inputs_with_tally(
+    artifacts: &NativeModelArtifacts,
+    input_rows: &[Vec<f32>],
+    hidden_dim: usize,
+    router_scale: Option<&MetalNativeTensorBufferBinding>,
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<(Vec<Vec<f32>>, DirectDecodeNativeDenseTally)> {
+    let mut router_inputs = input_rows
+        .iter()
+        .map(|row| row.get(..hidden_dim).map(|slice| slice.to_vec()))
+        .collect::<Option<Vec<_>>>()?;
+    let tally = direct_decode_native_dense_tally_from_prefix_attention_tally(
+        apply_batched_row_rms_norm_without_weights_in_place_with_tally(
+            &mut router_inputs,
+            hidden_dim,
+            native_model_rms_norm_epsilon(artifacts),
+            bringup,
+        )?,
+    );
+    let root_size = (hidden_dim as f32).sqrt().recip();
+    if !root_size.is_finite() {
+        return None;
+    }
+    let column_scales = match router_scale {
+        Some(binding) => tensor_prefix_f32(binding, hidden_dim)?
+            .into_iter()
+            .map(|value| value * root_size)
+            .collect::<Vec<_>>(),
+        None => vec![root_size; hidden_dim],
+    };
+    let used_native_scale = apply_batched_row_vector_scale_in_place_with_path(
+        &mut router_inputs,
+        hidden_dim,
+        &column_scales,
+        bringup,
+    )?;
+    let scale_element_count = router_inputs.len().checked_mul(hidden_dim)?;
+    Some((
+        router_inputs,
+        tally.record_scale_elements(scale_element_count, used_native_scale),
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn select_top_k_moe_experts(logits: &[f32], selection_count: usize) -> Option<Vec<(usize, f32)>> {
+    if logits.is_empty() || selection_count == 0 {
+        return None;
+    }
+    let selection_count = selection_count.min(logits.len());
+    let mut ranked = logits.iter().copied().enumerate().collect::<Vec<_>>();
+    if ranked.iter().any(|(_, value)| !value.is_finite()) {
+        return None;
+    }
+    ranked.sort_unstable_by(|(_, left), (_, right)| left.total_cmp(right));
+    let top = ranked.split_off(ranked.len().saturating_sub(selection_count));
+    let max_logit = top
+        .iter()
+        .map(|(_, value)| *value)
+        .fold(f32::NEG_INFINITY, f32::max);
+    if !max_logit.is_finite() {
+        return None;
+    }
+    let normalizer = top
+        .iter()
+        .map(|(_, value)| (*value - max_logit).exp())
+        .sum::<f32>();
+    if !normalizer.is_finite() || normalizer <= 0.0 {
+        return None;
+    }
+    Some(
+        top.into_iter()
+            .map(|(expert_index, value)| (expert_index, (value - max_logit).exp() / normalizer))
+            .collect(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn project_moe_expert_matrix_rows_cpu(
+    binding: &MetalNativeTensorBufferBinding,
+    expert_index: usize,
+    row_offset: usize,
+    output_dim: usize,
+    input: &[f32],
+) -> Option<Vec<f32>> {
+    let (expert_count, rows, cols) = tensor_3d_dimensions(&binding.meta.spec)?;
+    if expert_index >= expert_count
+        || row_offset.checked_add(output_dim)? > rows
+        || input.len() > cols
+    {
+        return None;
+    }
+
+    let mut output = Vec::with_capacity(output_dim);
+    for row in row_offset..row_offset + output_dim {
+        let weights = tensor_3d_matrix_row_prefix_f32(binding, expert_index, row, input.len())?;
+        output.push(dot_product(&weights, input));
+    }
+    round_slice_to_native_dtype(&mut output, binding.native_dtype);
+    Some(output)
+}
+
+#[cfg(target_os = "macos")]
+fn project_moe_expert_matrix_rows_with_optional_native_path(
+    bringup: Option<&MetalRuntimeBringup>,
+    binding: &MetalNativeTensorBufferBinding,
+    expert_index: usize,
+    row_offset: usize,
+    output_dim: usize,
+    input: &[f32],
+) -> Option<Vec<f32>> {
+    let bringup = bringup?;
+    let (expert_count, rows_per_expert, cols) = tensor_3d_dimensions(&binding.meta.spec)?;
+    if expert_index >= expert_count
+        || row_offset.checked_add(output_dim)? > rows_per_expert
+        || input.len() > cols
+    {
+        return None;
+    }
+    if output_dim == 0 {
+        return Some(Vec::new());
+    }
+
+    let (projection_kernel_name, projection_pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .projection_kernel(binding.native_dtype)?;
+    let feedback_key =
+        projection_feedback_key(projection_kernel_name, output_dim, input.len(), cols);
+    if !optional_kernel_allowed(bringup, &feedback_key) {
+        return None;
+    }
+
+    let row_byte_offset = expert_index
+        .checked_mul(rows_per_expert)?
+        .checked_add(row_offset)?
+        .checked_mul(cols)?
+        .checked_mul(native_dtype_size_bytes(binding.native_dtype))?;
+
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        projection_kernel_name,
+        projection_pipeline_index,
+    )
+    .ok()
+    .and_then(|projection_pipeline| {
+        autoreleasepool(|| {
+            let hidden_buffer = new_shared_buffer_with_data(&bringup.state.device, input);
+            let output_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(output_dim),
+            );
+
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.project_moe_expert_rows");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.project_moe_expert_rows.compute");
+
+            encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
+            encoder.set_buffer(0, Some(&hidden_buffer), 0);
+            encoder.set_buffer(1, Some(&binding.native_buffer), row_byte_offset as u64);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            set_logits_projection_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(output_dim),
+                saturating_usize_to_u32(cols),
+                saturating_usize_to_u32(input.len()),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(output_dim.max(1) as u64, 1, 1),
+                MTLSize::new(
+                    projection_pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(output_dim.max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
+
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+
+            let command_buffer_status = command_buffer_status(command_buffer.status());
+            if command_buffer_status != MetalCommandBufferStatus::Completed {
+                return None;
+            }
+
+            let output =
+                read_shared_buffer_prefix(&output_buffer, saturating_usize_to_u32(output_dim));
+            (output.len() == output_dim && output.iter().all(|value| value.is_finite()))
+                .then_some(output)
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
+    output
+}
+
+#[cfg(target_os = "macos")]
+fn project_moe_expert_matrix_rows_with_path(
+    binding: &MetalNativeTensorBufferBinding,
+    expert_index: usize,
+    row_offset: usize,
+    output_dim: usize,
+    input: &[f32],
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<(Vec<f32>, bool)> {
+    let (expert_count, rows_per_expert, cols) = tensor_3d_dimensions(&binding.meta.spec)?;
+    if expert_index >= expert_count
+        || row_offset.checked_add(output_dim)? > rows_per_expert
+        || input.len() > cols
+    {
+        return None;
+    }
+
+    if let Some(output) = project_moe_expert_matrix_rows_with_optional_native_path(
+        bringup,
+        binding,
+        expert_index,
+        row_offset,
+        output_dim,
+        input,
+    ) {
+        return Some((output, true));
+    }
+
+    let output =
+        project_moe_expert_matrix_rows_cpu(binding, expert_index, row_offset, output_dim, input)?;
+    Some((output, false))
+}
+
+#[cfg(target_os = "macos")]
+fn project_batched_moe_expert_matrix_rows_with_tally(
+    binding: &MetalNativeTensorBufferBinding,
+    expert_index: usize,
+    row_offset: usize,
+    output_dim: usize,
+    input_rows: &[Vec<f32>],
+    input_width: usize,
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<(Vec<Vec<f32>>, DirectDecodeNativeDenseTally)> {
+    if input_rows.is_empty() {
+        return Some((Vec::new(), DirectDecodeNativeDenseTally::default()));
+    }
+    let (expert_count, rows_per_expert, cols) = tensor_3d_dimensions(&binding.meta.spec)?;
+    if expert_index >= expert_count
+        || row_offset.checked_add(output_dim)? > rows_per_expert
+        || input_width > cols
+        || input_rows.iter().any(|row| row.len() < input_width)
+    {
+        return None;
+    }
+
+    let single_native_bringup = bringup.filter(|bringup| {
+        bringup
+            .state
+            .optional_kernel_dispatch_plan
+            .projection_kernel(binding.native_dtype)
+            .is_some()
+    });
+    if input_rows.len() == 1 && single_native_bringup.is_some() {
+        let (projected, used_native) = project_moe_expert_matrix_rows_with_path(
+            binding,
+            expert_index,
+            row_offset,
+            output_dim,
+            input_rows.first()?.get(..input_width)?,
+            single_native_bringup,
+        )?;
+        return Some((
+            vec![projected],
+            DirectDecodeNativeDenseTally::default().record_projection_rows(output_dim, used_native),
+        ));
+    }
+
+    if let Some(bringup) = bringup {
+        let (projection_kernel_name, projection_pipeline_index) = bringup
+            .state
+            .optional_kernel_dispatch_plan
+            .batched_projection_kernel(binding.native_dtype)?;
+        let row_count = input_rows.len();
+        let feedback_key = batched_projection_feedback_key(
+            projection_kernel_name,
+            row_count,
+            output_dim,
+            input_width,
+            input_width,
+            cols,
+        );
+        if optional_kernel_allowed(bringup, &feedback_key) {
+            let flattened_row_offset = expert_index
+                .checked_mul(rows_per_expert)?
+                .checked_add(row_offset)?;
+            let row_byte_offset = flattened_row_offset
+                .checked_mul(cols)?
+                .checked_mul(native_dtype_size_bytes(binding.native_dtype))?;
+            let output_element_count = row_count.checked_mul(output_dim)?;
+            let mut flattened_input = Vec::with_capacity(row_count.checked_mul(input_width)?);
+            for row in input_rows {
+                flattened_input.extend_from_slice(row.get(..input_width)?);
+            }
+
+            let output = find_optional_pipeline_handle_by_index(
+                &bringup.state,
+                &bringup.metallib.path,
+                projection_kernel_name,
+                projection_pipeline_index,
+            )
+            .ok()
+            .and_then(|projection_pipeline| {
+                autoreleasepool(|| {
+                    let hidden_buffer =
+                        new_shared_buffer_with_data(&bringup.state.device, &flattened_input);
+                    let output_buffer = new_zeroed_shared_buffer::<f32>(
+                        &bringup.state.device,
+                        saturating_usize_to_u32(output_element_count),
+                    );
+
+                    let command_buffer = bringup.state.command_queue.new_command_buffer();
+                    command_buffer.set_label("ax.phase1.project_moe_expert_rows_batched");
+                    let encoder = command_buffer.new_compute_command_encoder();
+                    encoder.set_label("ax.phase1.project_moe_expert_rows_batched.compute");
+
+                    encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
+                    encoder.set_buffer(0, Some(&hidden_buffer), 0);
+                    encoder.set_buffer(1, Some(&binding.native_buffer), row_byte_offset as u64);
+                    encoder.set_buffer(2, Some(&output_buffer), 0);
+                    set_batched_logits_projection_dispatch_params(
+                        encoder,
+                        3,
+                        saturating_usize_to_u32(row_count),
+                        saturating_usize_to_u32(output_dim),
+                        saturating_usize_to_u32(cols),
+                        saturating_usize_to_u32(input_width),
+                        saturating_usize_to_u32(input_width),
+                    );
+                    encoder.dispatch_threads(
+                        MTLSize::new(output_element_count.max(1) as u64, 1, 1),
+                        MTLSize::new(
+                            projection_pipeline
+                                .pipeline
+                                .thread_execution_width()
+                                .max(1)
+                                .min(output_element_count.max(1) as u64),
+                            1,
+                            1,
+                        ),
+                    );
+
+                    encoder.end_encoding();
+                    command_buffer.commit();
+                    command_buffer.wait_until_completed();
+
+                    let command_buffer_status = command_buffer_status(command_buffer.status());
+                    if command_buffer_status != MetalCommandBufferStatus::Completed {
+                        return None;
+                    }
+
+                    let output = read_shared_buffer_prefix(
+                        &output_buffer,
+                        saturating_usize_to_u32(output_element_count),
+                    );
+                    if output.len() != output_element_count
+                        || output.iter().any(|value| !value.is_finite())
+                    {
+                        return None;
+                    }
+                    Some(
+                        output
+                            .chunks_exact(output_dim)
+                            .map(|chunk| chunk.to_vec())
+                            .collect::<Vec<_>>(),
+                    )
+                })
+            });
+            record_optional_kernel_result(bringup, &feedback_key, output.is_some());
+            if let Some(output_rows) = output {
+                return Some((
+                    output_rows,
+                    DirectDecodeNativeDenseTally::default()
+                        .record_projection_rows(input_rows.len().checked_mul(output_dim)?, true),
+                ));
+            }
+        }
+    }
+
+    if input_rows.len() > 1 && batched_projection_split_retry_worthwhile(bringup, binding) {
+        let split_index = input_rows.len() / 2;
+        let (left_rows, right_rows) = input_rows.split_at(split_index);
+        let (mut left_projected_rows, left_tally) =
+            project_batched_moe_expert_matrix_rows_with_tally(
+                binding,
+                expert_index,
+                row_offset,
+                output_dim,
+                left_rows,
+                input_width,
+                bringup,
+            )?;
+        let (right_projected_rows, right_tally) =
+            project_batched_moe_expert_matrix_rows_with_tally(
+                binding,
+                expert_index,
+                row_offset,
+                output_dim,
+                right_rows,
+                input_width,
+                bringup,
+            )?;
+        left_projected_rows.extend(right_projected_rows);
+        return Some((left_projected_rows, left_tally.merge(right_tally)));
+    }
+
+    let mut projected_rows = Vec::with_capacity(input_rows.len());
+    let mut tally = DirectDecodeNativeDenseTally::default();
+    for row in input_rows {
+        let (projected, used_native) = project_moe_expert_matrix_rows_with_path(
+            binding,
+            expert_index,
+            row_offset,
+            output_dim,
+            row.get(..input_width)?,
+            single_native_bringup,
+        )?;
+        tally = tally.record_projection_rows(output_dim, used_native);
+        projected_rows.push(projected);
+    }
+    Some((projected_rows, tally))
+}
+
+#[cfg(target_os = "macos")]
+struct MoeExpertMultiProjectionTask<'a> {
+    binding: &'a MetalNativeTensorBufferBinding,
+    expert_index: usize,
+    row_offset: usize,
+    output_dim: usize,
+}
+
+#[cfg(target_os = "macos")]
+fn project_batched_moe_expert_gate_up_multi_dispatch(
+    expert_gate_up: &MetalMoeExpertGateUpBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    expert_index: usize,
+    intermediate_dim: usize,
+    input_rows: &[Vec<f32>],
+    input_width: usize,
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<BatchedFfnGateUpProjection> {
+    let bringup = bringup?;
+    let (gate_binding, gate_row_offset, up_binding, up_row_offset) = match expert_gate_up {
+        MetalMoeExpertGateUpBindings::Packed(binding) => {
+            let packed = buffers.binding_for(binding)?;
+            (packed, 0_usize, packed, intermediate_dim)
+        }
+        MetalMoeExpertGateUpBindings::Split { gate, up } => {
+            let gate_b = buffers.binding_for(gate)?;
+            let up_b = buffers.binding_for(up)?;
+            (gate_b, 0_usize, up_b, 0_usize)
+        }
+    };
+    let tasks = [
+        MoeExpertMultiProjectionTask {
+            binding: gate_binding,
+            expert_index,
+            row_offset: gate_row_offset,
+            output_dim: intermediate_dim,
+        },
+        MoeExpertMultiProjectionTask {
+            binding: up_binding,
+            expert_index,
+            row_offset: up_row_offset,
+            output_dim: intermediate_dim,
+        },
+    ];
+
+    let row_count = input_rows.len();
+    let first_dtype = tasks[0].binding.native_dtype;
+    if row_count == 0 || input_rows.iter().any(|row| row.len() < input_width) {
+        return None;
+    }
+    if tasks
+        .iter()
+        .any(|task| task.binding.native_dtype != first_dtype)
+    {
+        return None;
+    }
+
+    let (projection_kernel_name, projection_pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .batched_projection_kernel(first_dtype)?;
+    for task in &tasks {
+        let (expert_count, rows_per_expert, cols) = tensor_3d_dimensions(&task.binding.meta.spec)?;
+        if task.expert_index >= expert_count
+            || task.row_offset.checked_add(task.output_dim)? > rows_per_expert
+            || input_width > cols
+        {
+            return None;
+        }
+        let feedback_key = batched_projection_feedback_key(
+            projection_kernel_name,
+            row_count,
+            task.output_dim,
+            input_width,
+            input_width,
+            cols,
+        );
+        if !optional_kernel_allowed(bringup, &feedback_key) {
+            return None;
+        }
+    }
+
+    let projection_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        projection_kernel_name,
+        projection_pipeline_index,
+    )
+    .ok()?;
+    let mut flattened_input = Vec::with_capacity(row_count.checked_mul(input_width)?);
+    for row in input_rows {
+        flattened_input.extend_from_slice(row.get(..input_width)?);
+    }
+
+    autoreleasepool(|| {
+        let hidden_buffer = new_shared_buffer_with_data(&bringup.state.device, &flattened_input);
+        let output_buffers: Vec<_> = tasks
+            .iter()
+            .map(|task| {
+                let output_element_count = row_count.checked_mul(task.output_dim).unwrap_or(0);
+                new_zeroed_shared_buffer::<f32>(
+                    &bringup.state.device,
+                    saturating_usize_to_u32(output_element_count),
+                )
+            })
+            .collect();
+
+        let command_buffer = bringup.state.command_queue.new_command_buffer();
+        command_buffer.set_label("ax.phase1.project_moe_expert_gate_up_batched.multi");
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_label("ax.phase1.project_moe_expert_gate_up_batched.multi.compute");
+
+        for (task, output_buffer) in tasks.iter().zip(output_buffers.iter()) {
+            let (_, rows_per_expert, cols) = tensor_3d_dimensions(&task.binding.meta.spec)?;
+            let flattened_row_offset = task
+                .expert_index
+                .checked_mul(rows_per_expert)?
+                .checked_add(task.row_offset)?;
+            let row_byte_offset = flattened_row_offset
+                .checked_mul(cols)?
+                .checked_mul(native_dtype_size_bytes(task.binding.native_dtype))?;
+            let output_element_count = row_count.checked_mul(task.output_dim)?;
+
+            encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
+            encoder.set_buffer(0, Some(&hidden_buffer), 0);
+            encoder.set_buffer(1, Some(&task.binding.native_buffer), row_byte_offset as u64);
+            encoder.set_buffer(2, Some(output_buffer), 0);
+            set_batched_logits_projection_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(row_count),
+                saturating_usize_to_u32(task.output_dim),
+                saturating_usize_to_u32(cols),
+                saturating_usize_to_u32(input_width),
+                saturating_usize_to_u32(input_width),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(output_element_count.max(1) as u64, 1, 1),
+                MTLSize::new(
+                    projection_pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(output_element_count.max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
+        }
+
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let status = command_buffer_status(command_buffer.status());
+        if status != MetalCommandBufferStatus::Completed {
+            return None;
+        }
+
+        let mut outputs = Vec::with_capacity(tasks.len());
+        for (task, output_buffer) in tasks.iter().zip(output_buffers.iter()) {
+            let output_element_count = row_count.checked_mul(task.output_dim)?;
+            let output = read_shared_buffer_prefix(
+                output_buffer,
+                saturating_usize_to_u32(output_element_count),
+            );
+            if output.len() != output_element_count || output.iter().any(|value| !value.is_finite())
+            {
+                return None;
+            }
+            outputs.push(
+                output
+                    .chunks_exact(task.output_dim)
+                    .map(|chunk| chunk.to_vec())
+                    .collect::<Vec<_>>(),
+            );
+        }
+
+        let total_rows = row_count.checked_mul(intermediate_dim.checked_mul(2)?)?;
+        let mut iter = outputs.into_iter();
+        Some((
+            iter.next()?,
+            iter.next()?,
+            DirectDecodeNativeDenseTally::default().record_projection_rows(total_rows, true),
+        ))
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn project_batched_moe_expert_gate_up_with_tally(
+    expert_gate_up: &MetalMoeExpertGateUpBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    expert_index: usize,
+    intermediate_dim: usize,
+    input_rows: &[Vec<f32>],
+    input_width: usize,
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<BatchedFfnGateUpProjection> {
+    if intermediate_dim == 0 {
+        return Some((
+            vec![Vec::new(); input_rows.len()],
+            vec![Vec::new(); input_rows.len()],
+            DirectDecodeNativeDenseTally::default(),
+        ));
+    }
+    if input_rows.is_empty() || input_rows.iter().any(|row| row.len() < input_width) {
+        return None;
+    }
+
+    if let Some(result) = project_batched_moe_expert_gate_up_multi_dispatch(
+        expert_gate_up,
+        buffers,
+        expert_index,
+        intermediate_dim,
+        input_rows,
+        input_width,
+        bringup,
+    ) {
+        return Some(result);
+    }
+
+    match expert_gate_up {
+        MetalMoeExpertGateUpBindings::Packed(binding) => {
+            let packed = buffers.binding_for(binding)?;
+            let (gate_rows, gate_tally) = project_batched_moe_expert_matrix_rows_with_tally(
+                packed,
+                expert_index,
+                0,
+                intermediate_dim,
+                input_rows,
+                input_width,
+                bringup,
+            )?;
+            let (up_rows, up_tally) = project_batched_moe_expert_matrix_rows_with_tally(
+                packed,
+                expert_index,
+                intermediate_dim,
+                intermediate_dim,
+                input_rows,
+                input_width,
+                bringup,
+            )?;
+            Some((gate_rows, up_rows, gate_tally.merge(up_tally)))
+        }
+        MetalMoeExpertGateUpBindings::Split { gate, up } => {
+            let gate_binding = buffers.binding_for(gate)?;
+            let up_binding = buffers.binding_for(up)?;
+            let (gate_rows, gate_tally) = project_batched_moe_expert_matrix_rows_with_tally(
+                gate_binding,
+                expert_index,
+                0,
+                intermediate_dim,
+                input_rows,
+                input_width,
+                bringup,
+            )?;
+            let (up_rows, up_tally) = project_batched_moe_expert_matrix_rows_with_tally(
+                up_binding,
+                expert_index,
+                0,
+                intermediate_dim,
+                input_rows,
+                input_width,
+                bringup,
+            )?;
+            Some((gate_rows, up_rows, gate_tally.merge(up_tally)))
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_moe_ffn_branch_rows_with_tally(
+    artifacts: &NativeModelArtifacts,
+    layer: &MetalNativeLayerBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    input_rows: &[Vec<f32>],
+    hidden_width: usize,
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<(Vec<Vec<f32>>, DirectDecodeNativeDenseTally, bool)> {
+    let moe = layer.moe.as_ref()?;
+    let dims = resolved_layer_moe_dims(artifacts, layer, buffers, hidden_width)?;
+    let router = buffers.binding_for(&moe.router)?;
+    let router_scale = match &moe.router_scale {
+        Some(binding) => Some(buffers.binding_for(binding)?),
+        None => None,
+    };
+    let expert_down = buffers.binding_for(&moe.expert_down)?;
+    let expert_down_scale = match &moe.expert_down_scale {
+        Some(binding) => Some(buffers.binding_for(binding)?),
+        None => None,
+    };
+    let expert_norm = match &layer.ffn_norm_2 {
+        Some(binding) => buffers.binding_for(binding)?,
+        None => buffers.binding_for(&layer.ffn_norm)?,
+    };
+    let expert_post_norm = match &layer.ffn_post_norm_2 {
+        Some(binding) => Some(buffers.binding_for(binding)?),
+        None => None,
+    };
+
+    let (router_inputs, mut tally) = prepare_moe_router_inputs_with_tally(
+        artifacts,
+        input_rows,
+        dims.hidden_dim,
+        router_scale,
+        bringup,
+    )?;
+    let (router_logits_rows, router_tally) = project_batched_matrix_rows_with_tally(
+        router,
+        0,
+        dims.expert_count,
+        &router_inputs,
+        dims.hidden_dim,
+        bringup,
+    )?;
+    tally = tally.merge(router_tally);
+
+    let mut expert_inputs = input_rows
+        .iter()
+        .map(|row| row.get(..dims.hidden_dim).map(|slice| slice.to_vec()))
+        .collect::<Option<Vec<_>>>()?;
+    tally = tally.merge(
+        direct_decode_native_dense_tally_from_prefix_attention_tally(
+            apply_batched_row_rms_norm_with_binding_in_place_with_tally(
+                &mut expert_inputs,
+                dims.hidden_dim,
+                expert_norm,
+                native_model_rms_norm_epsilon(artifacts),
+                native_model_rms_norm_weight_offset(artifacts),
+                bringup,
+            )?,
+        ),
+    );
+
+    let mut output_rows = vec![vec![0.0_f32; dims.hidden_dim]; input_rows.len()];
+    let mut nontrivial = false;
+
+    let mut assignments_by_expert = BTreeMap::<usize, Vec<(usize, f32)>>::new();
+    for (token_index, logits) in router_logits_rows.iter().enumerate() {
+        let selections = select_top_k_moe_experts(logits, dims.experts_per_token)?;
+        for (expert_index, expert_weight) in selections {
+            assignments_by_expert
+                .entry(expert_index)
+                .or_default()
+                .push((token_index, expert_weight));
+        }
+    }
+
+    for (expert_index, assignments) in assignments_by_expert {
+        let grouped_inputs = assignments
+            .iter()
+            .map(|(token_index, _)| {
+                expert_inputs
+                    .get(*token_index)?
+                    .get(..dims.hidden_dim)
+                    .map(|slice| slice.to_vec())
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let (mut gate_rows, up_rows, expert_gate_up_tally) =
+            project_batched_moe_expert_gate_up_with_tally(
+                &moe.expert_gate_up,
+                buffers,
+                expert_index,
+                dims.expert_intermediate_dim,
+                &grouped_inputs,
+                dims.hidden_dim,
+                bringup,
+            )?;
+        tally = tally.merge(expert_gate_up_tally);
+        tally = tally.merge(apply_batched_model_gate_up_product_in_place_with_tally(
+            artifacts,
+            &mut gate_rows,
+            &up_rows,
+            dims.expert_intermediate_dim,
+            bringup,
+        )?);
+        let (expert_output_rows, expert_down_tally) =
+            project_batched_moe_expert_matrix_rows_with_tally(
+                expert_down,
+                expert_index,
+                0,
+                dims.hidden_dim,
+                &gate_rows,
+                dims.expert_intermediate_dim,
+                bringup,
+            )?;
+        tally = tally.merge(expert_down_tally);
+        let expert_scale = match expert_down_scale {
+            Some(scale_binding) => Some(tensor_scalar_f32(scale_binding, expert_index)?),
+            None => None,
+        };
+        let mut selected_output_rows = assignments
+            .iter()
+            .map(|(token_index, _)| {
+                output_rows
+                    .get(*token_index)?
+                    .get(..dims.hidden_dim)
+                    .map(|slice| slice.to_vec())
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let combined_scales = assignments
+            .iter()
+            .map(|(_, expert_weight)| expert_scale.unwrap_or(1.0) * *expert_weight)
+            .collect::<Vec<_>>();
+        let mut scaled_delta_rows = expert_output_rows;
+        let used_native_row_scale = apply_batched_row_scale_in_place_with_path(
+            &mut scaled_delta_rows,
+            dims.hidden_dim,
+            &combined_scales,
+            bringup,
+        )?;
+        tally = tally.record_scale_elements(
+            scaled_delta_rows.len().checked_mul(dims.hidden_dim)?,
+            used_native_row_scale,
+        );
+        for expert_output in &scaled_delta_rows {
+            nontrivial |= has_nontrivial_ffn_contribution(expert_output);
+        }
+        tally = tally.merge(
+            add_batched_rows_in_place_with_direct_decode_tally_and_result_dtype(
+                &mut selected_output_rows,
+                &scaled_delta_rows,
+                dims.hidden_dim,
+                expert_down.native_dtype,
+                bringup,
+            )?,
+        );
+        for ((token_index, _), updated_row) in assignments.into_iter().zip(selected_output_rows) {
+            output_rows
+                .get_mut(token_index)?
+                .get_mut(..dims.hidden_dim)?
+                .copy_from_slice(&updated_row);
+        }
+    }
+
+    if let Some(post_norm) = expert_post_norm {
+        tally = tally.merge(
+            direct_decode_native_dense_tally_from_prefix_attention_tally(
+                apply_batched_row_rms_norm_with_binding_in_place_with_tally(
+                    &mut output_rows,
+                    dims.hidden_dim,
+                    post_norm,
+                    native_model_rms_norm_epsilon(artifacts),
+                    native_model_rms_norm_weight_offset(artifacts),
+                    bringup,
+                )?,
+            ),
+        );
+    }
+
+    Some((output_rows, tally, nontrivial))
+}
+
+#[cfg(target_os = "macos")]
+fn apply_ffn_continuation_rows_with_tally(
+    artifacts: &NativeModelArtifacts,
+    layer: &MetalNativeLayerBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    input_rows: &[Vec<f32>],
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<(Vec<Vec<f32>>, DirectDecodeNativeDenseTally, bool)> {
+    if input_rows.is_empty() {
+        return Some((Vec::new(), DirectDecodeNativeDenseTally::default(), false));
+    }
+
+    let ffn_norm = buffers.binding_for(&layer.ffn_norm)?;
+    let ffn_down = buffers.binding_for(&layer.ffn_down)?;
+    let hidden_width = input_rows.iter().map(Vec::len).min()?;
+    let ffn_norm_len = tensor_element_count(&ffn_norm.meta.spec)?;
+    let dense_input_cols = ffn_gate_up_input_cols(&layer.ffn_gate_up, buffers)?;
+    let dense_output_rows = tensor_matrix_dimensions(&ffn_down.meta.spec)?.0;
+    let mut hidden_dim = hidden_width
+        .min(artifacts.manifest().hidden_size as usize)
+        .min(ffn_norm_len)
+        .min(dense_input_cols)
+        .min(dense_output_rows);
+    if let Some(moe_dims) = resolved_layer_moe_dims(artifacts, layer, buffers, hidden_width) {
+        hidden_dim = hidden_dim.min(moe_dims.hidden_dim);
+    }
+    if hidden_dim == 0 {
+        return None;
+    }
+
+    let dense_post_norm = if layer.moe.is_some() {
+        match &layer.ffn_post_norm_1 {
+            Some(binding) => Some(buffers.binding_for(binding)?),
+            None => None,
+        }
+    } else {
+        None
+    };
+    let (mut branch_rows, mut tally, mut any_nontrivial) = apply_dense_ffn_branch_rows_with_tally(
+        artifacts,
+        layer,
+        buffers,
+        input_rows,
+        hidden_dim,
+        bringup,
+        dense_post_norm,
+    )?;
+
+    if layer.moe.is_some() {
+        let (moe_rows, moe_tally, moe_nontrivial) = apply_moe_ffn_branch_rows_with_tally(
+            artifacts, layer, buffers, input_rows, hidden_dim, bringup,
+        )?;
+        tally = tally.merge(moe_tally);
+        tally = tally.merge(
+            add_batched_rows_in_place_with_direct_decode_tally_and_result_dtype(
+                &mut branch_rows,
+                &moe_rows,
+                hidden_dim,
+                ffn_down.native_dtype,
+                bringup,
+            )?,
+        );
+        any_nontrivial |= moe_nontrivial;
+    }
+
+    if let Some(post_norm) = &layer.ffn_post_norm {
+        let post_norm = buffers.binding_for(post_norm)?;
+        tally = tally.merge(
+            direct_decode_native_dense_tally_from_prefix_attention_tally(
+                apply_batched_row_rms_norm_with_binding_in_place_with_tally(
+                    &mut branch_rows,
+                    hidden_dim,
+                    post_norm,
+                    native_model_rms_norm_epsilon(artifacts),
+                    native_model_rms_norm_weight_offset(artifacts),
+                    bringup,
+                )?,
+            ),
+        );
+    }
+
+    any_nontrivial |= branch_rows
+        .iter()
+        .any(|row| has_nontrivial_ffn_contribution(row));
+    let mut next_hidden_rows = input_rows
+        .iter()
+        .map(|row| row.get(..hidden_dim).map(|slice| slice.to_vec()))
+        .collect::<Option<Vec<_>>>()?;
+    tally = tally.merge(
+        add_batched_rows_in_place_with_direct_decode_tally_and_result_dtype(
+            &mut next_hidden_rows,
+            &branch_rows,
+            hidden_dim,
+            ffn_down.native_dtype,
+            bringup,
+        )?,
+    );
+
+    Some((next_hidden_rows, tally, any_nontrivial))
+}
+
+#[allow(dead_code)]
 fn apply_direct_decode_logits_to_runner_output(
     output: &mut RunnerOutput,
     logits_outputs: &[RequestLogitsOutput],
+) {
+    apply_owned_direct_decode_logits_to_runner_output(output, logits_outputs.to_vec());
+}
+
+fn apply_owned_direct_decode_logits_to_runner_output(
+    output: &mut RunnerOutput,
+    logits_outputs: Vec<RequestLogitsOutput>,
 ) {
     if logits_outputs.is_empty() {
         return;
@@ -6170,7 +7941,72 @@ fn apply_direct_decode_logits_to_runner_output(
     output
         .logits_outputs
         .retain(|output| !direct_decode_request_ids.contains(&output.request_id));
-    output.logits_outputs.extend(logits_outputs.iter().cloned());
+    output.logits_outputs.extend(logits_outputs);
+}
+
+fn apply_deterministic_sample_tokens_to_runner_output(
+    input: &RunnerInput,
+    output: &mut RunnerOutput,
+    sample_tokens: &[(crate::ids::RequestId, u32)],
+) -> BTreeSet<crate::ids::RequestId> {
+    if sample_tokens.is_empty() {
+        return BTreeSet::new();
+    }
+
+    let mut resolved_request_ids = BTreeSet::new();
+    for (request_id, token_id) in sample_tokens {
+        let Some(context) = input.request_context(*request_id) else {
+            continue;
+        };
+        if !context.deterministic_argmax_sampling {
+            continue;
+        }
+        let Some(update) = output
+            .request_updates
+            .iter_mut()
+            .find(|update| update.request_id == *request_id)
+        else {
+            continue;
+        };
+
+        update.output_token = Some(*token_id);
+        update.stop_reason = if context.generated_len.saturating_add(1) >= context.max_output_tokens
+        {
+            Some(StopReason::MaxOutputTokens)
+        } else {
+            None
+        };
+        resolved_request_ids.insert(*request_id);
+    }
+
+    if !resolved_request_ids.is_empty() {
+        output
+            .logits_handles
+            .retain(|request_id| !resolved_request_ids.contains(request_id));
+        output
+            .logits_outputs
+            .retain(|output| !resolved_request_ids.contains(&output.request_id));
+    }
+
+    resolved_request_ids
+}
+
+fn filter_model_bound_tokens_by_mode(
+    input: &RunnerInput,
+    tokens: &[(crate::ids::RequestId, u32)],
+    mode: ExecutionMode,
+) -> Vec<(crate::ids::RequestId, u32)> {
+    let request_modes = input
+        .execution_batch
+        .items
+        .iter()
+        .map(|item| (item.request_id, item.mode))
+        .collect::<BTreeMap<_, _>>();
+    tokens
+        .iter()
+        .copied()
+        .filter(|(request_id, _)| request_modes.get(request_id).copied() == Some(mode))
+        .collect()
 }
 
 fn completed_real_model_forward_step(
@@ -6200,6 +8036,7 @@ fn completed_real_model_forward_step(
         .filter(|item| item.mode != ExecutionMode::Decode)
         .map(|item| item.request_id)
         .collect::<BTreeSet<_>>();
+    let prefill_completion_request_ids = prefill_completion_request_ids(input);
     let updates_by_request_id = output
         .request_updates
         .iter()
@@ -6212,10 +8049,11 @@ fn completed_real_model_forward_step(
         .collect::<BTreeSet<_>>();
 
     if prefill_request_ids.iter().any(|request_id| {
-        updates_by_request_id
-            .get(request_id)
-            .and_then(|update| update.output_token)
-            .is_some()
+        !prefill_completion_request_ids.contains(request_id)
+            && updates_by_request_id
+                .get(request_id)
+                .and_then(|update| update.output_token)
+                .is_some()
     }) {
         return false;
     }
@@ -6232,9 +8070,16 @@ fn completed_real_model_forward_step(
     }
 
     decode_request_ids.iter().all(|request_id| {
-        updates_by_request_id.get(request_id).is_some_and(|update| {
-            update.output_token.is_some() || logits_output_request_ids.contains(request_id)
-        })
+        updates_by_request_id
+            .get(request_id)
+            .and_then(|update| update.output_token)
+            .is_some()
+            || logits_output_request_ids.contains(request_id)
+    }) && prefill_completion_request_ids.iter().all(|request_id| {
+        updates_by_request_id
+            .get(request_id)
+            .is_some_and(|update| update.output_token.is_some())
+            || logits_output_request_ids.contains(request_id)
     })
 }
 
@@ -6359,6 +8204,14 @@ fn annotate_bringup_execution_flags(
             .cpu_residual_add_element_count(),
     ));
     route_metadata.crossover_decisions.push((
+        "metal_dispatch_prefix_native_scale_element_count".to_string(),
+        flags.prefix_attention_tally.native_scale_element_count(),
+    ));
+    route_metadata.crossover_decisions.push((
+        "metal_dispatch_prefix_cpu_scale_element_count".to_string(),
+        flags.prefix_attention_tally.cpu_scale_element_count(),
+    ));
+    route_metadata.crossover_decisions.push((
         "metal_dispatch_direct_decode_native_logits_projection".to_string(),
         u32::from(flags.native_logits_projection_decode),
     ));
@@ -6452,6 +8305,14 @@ fn annotate_direct_decode_tokens(
         direct_decode_native_dense_tally.cpu_residual_add_elements,
     ));
     route_metadata.crossover_decisions.push((
+        "metal_dispatch_direct_decode_native_scale_element_count".to_string(),
+        direct_decode_native_dense_tally.native_scale_elements,
+    ));
+    route_metadata.crossover_decisions.push((
+        "metal_dispatch_direct_decode_cpu_scale_element_count".to_string(),
+        direct_decode_native_dense_tally.cpu_scale_elements,
+    ));
+    route_metadata.crossover_decisions.push((
         "metal_dispatch_direct_decode_batched_logits_group_count".to_string(),
         direct_decode_native_dense_tally.native_batched_logits_group_count,
     ));
@@ -6519,6 +8380,8 @@ fn metal_dispatch_execution_info(
             .native_residual_add_element_count(),
         prefix_cpu_residual_add_element_count: prefix_attention_tally
             .cpu_residual_add_element_count(),
+        prefix_native_scale_element_count: prefix_attention_tally.native_scale_element_count(),
+        prefix_cpu_scale_element_count: prefix_attention_tally.cpu_scale_element_count(),
         direct_decode_native_projection_row_count: direct_decode_native_dense_tally
             .native_projection_rows,
         direct_decode_cpu_projection_row_count: direct_decode_native_dense_tally
@@ -6535,6 +8398,9 @@ fn metal_dispatch_execution_info(
             .native_residual_add_elements,
         direct_decode_cpu_residual_add_element_count: direct_decode_native_dense_tally
             .cpu_residual_add_elements,
+        direct_decode_native_scale_element_count: direct_decode_native_dense_tally
+            .native_scale_elements,
+        direct_decode_cpu_scale_element_count: direct_decode_native_dense_tally.cpu_scale_elements,
         direct_decode_batched_logits_group_count: direct_decode_native_dense_tally
             .native_batched_logits_group_count,
         direct_decode_batched_logits_token_count: direct_decode_native_dense_tally
@@ -6638,6 +8504,7 @@ fn load_macos_runtime_bringup(
             optional_kernel_dispatch_plan,
             optional_kernel_feedback: Mutex::new(MetalOptionalKernelFeedbackState::default()),
             dispatch_arena: Mutex::new(None),
+            fused_layer_arena: Mutex::new(None),
         },
     })
 }
@@ -7411,6 +9278,8 @@ fn build_optional_kernel_dispatch_plan(
     let index = |name: &str| optional_pipeline_lookup.get(name).copied();
     MetalOptionalKernelDispatchPlan {
         vector_add_f32: index("vector_add_f32"),
+        row_scale_f32: index("row_scale_f32"),
+        row_vector_scale_f32: index("row_vector_scale_f32"),
         projection_f32: index("decode_logits_projection_f32"),
         projection_f16: index("decode_logits_projection_f16"),
         projection_bf16: index("decode_logits_projection_bf16"),
@@ -7449,47 +9318,54 @@ fn build_optional_kernel_dispatch_plan(
 }
 
 #[cfg(target_os = "macos")]
-fn optional_kernel_allowed(bringup: &MetalRuntimeBringup, kernel_name: &str) -> bool {
+fn optional_kernel_allowed(
+    bringup: &MetalRuntimeBringup,
+    kernel_key: &MetalOptionalKernelFeedbackKey,
+) -> bool {
     let Ok(feedback) = bringup.state.optional_kernel_feedback.lock() else {
         return true;
     };
-    optional_kernel_allowed_in_feedback_state(&feedback, kernel_name)
+    optional_kernel_allowed_in_feedback_state(&feedback, kernel_key)
 }
 
 #[cfg(target_os = "macos")]
 fn optional_kernel_allowed_in_feedback_state(
     feedback: &MetalOptionalKernelFeedbackState,
-    kernel_name: &str,
+    kernel_key: &MetalOptionalKernelFeedbackKey,
 ) -> bool {
-    !feedback.disabled_kernels.contains(kernel_name)
+    !feedback.disabled_kernels.contains(kernel_key)
 }
 
 #[cfg(target_os = "macos")]
-fn record_optional_kernel_result(bringup: &MetalRuntimeBringup, kernel_name: &str, success: bool) {
+fn record_optional_kernel_result(
+    bringup: &MetalRuntimeBringup,
+    kernel_key: &MetalOptionalKernelFeedbackKey,
+    success: bool,
+) {
     let Ok(mut feedback) = bringup.state.optional_kernel_feedback.lock() else {
         return;
     };
-    record_optional_kernel_feedback_state(&mut feedback, kernel_name, success);
+    record_optional_kernel_feedback_state(&mut feedback, kernel_key, success);
 }
 
 #[cfg(target_os = "macos")]
 fn record_optional_kernel_feedback_state(
     feedback: &mut MetalOptionalKernelFeedbackState,
-    kernel_name: &str,
+    kernel_key: &MetalOptionalKernelFeedbackKey,
     success: bool,
 ) {
     if success {
-        feedback.consecutive_failures_by_kernel.remove(kernel_name);
-        feedback.disabled_kernels.remove(kernel_name);
+        feedback.consecutive_failures_by_kernel.remove(kernel_key);
+        feedback.disabled_kernels.remove(kernel_key);
         return;
     }
     let consecutive_failures = feedback
         .consecutive_failures_by_kernel
-        .entry(kernel_name.to_string())
+        .entry(*kernel_key)
         .or_insert(0);
     *consecutive_failures = consecutive_failures.saturating_add(1);
     if *consecutive_failures >= PHASE1_OPTIONAL_KERNEL_DISABLE_FAILURE_THRESHOLD {
-        feedback.disabled_kernels.insert(kernel_name.to_string());
+        feedback.disabled_kernels.insert(*kernel_key);
     }
 }
 
@@ -7610,6 +9486,22 @@ struct FfnGateProductDispatchParams {
 #[repr(C)]
 struct VectorAddDispatchParams {
     element_count: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct BatchedRowScaleDispatchParams {
+    row_count: u32,
+    row_width: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct BatchedRowVectorScaleDispatchParams {
+    row_count: u32,
+    row_width: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -8058,7 +9950,7 @@ struct ModelStageDims {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ModelStageRopeStyle {
     None,
     Neox,
@@ -8424,7 +10316,9 @@ fn warm_prefix_reuse_layer_caches_before_final_layer(
     final_layer_index: usize,
     bringup: Option<&MetalRuntimeBringup>,
     prefix_layer_caches: Option<&[Mutex<MetalPersistentLayerKvCache>]>,
-    linear_request_states: Option<&Mutex<BTreeMap<crate::ids::RequestId, MetalLinearRequestState>>>,
+    _linear_request_states: Option<
+        &Mutex<BTreeMap<crate::ids::RequestId, MetalLinearRequestState>>,
+    >,
 ) -> Option<PrefixAttentionExecutionTally> {
     if bringup.is_none() || final_layer_index == 0 {
         return Some(PrefixAttentionExecutionTally::default());
@@ -8469,7 +10363,7 @@ fn warm_prefix_reuse_layer_caches_before_final_layer(
                 &warmup_hidden_states,
                 bringup,
                 prefix_layer_caches.get(layer_index),
-                linear_request_states,
+                None,
                 layer_index as u32,
             )?;
             warmup_hidden_states = advanced_hidden_states;
@@ -8811,6 +10705,8 @@ struct PrefixAttentionExecutionTally {
     cpu_ffn_activation_elements: u32,
     native_residual_add_elements: u32,
     cpu_residual_add_elements: u32,
+    native_scale_elements: u32,
+    cpu_scale_elements: u32,
 }
 
 impl PrefixAttentionExecutionTally {
@@ -8866,6 +10762,12 @@ impl PrefixAttentionExecutionTally {
         self.cpu_residual_add_elements = self
             .cpu_residual_add_elements
             .saturating_add(other.cpu_residual_add_elements);
+        self.native_scale_elements = self
+            .native_scale_elements
+            .saturating_add(other.native_scale_elements);
+        self.cpu_scale_elements = self
+            .cpu_scale_elements
+            .saturating_add(other.cpu_scale_elements);
         self
     }
 
@@ -8933,6 +10835,16 @@ impl PrefixAttentionExecutionTally {
         self
     }
 
+    fn record_scale_elements(mut self, element_count: usize, used_native: bool) -> Self {
+        let element_count = saturating_usize_to_u32(element_count);
+        if used_native {
+            self.native_scale_elements = self.native_scale_elements.saturating_add(element_count);
+        } else {
+            self.cpu_scale_elements = self.cpu_scale_elements.saturating_add(element_count);
+        }
+        self
+    }
+
     fn native_dispatch_count(self) -> u32 {
         self.native_dispatches
     }
@@ -8987,6 +10899,14 @@ impl PrefixAttentionExecutionTally {
 
     fn cpu_residual_add_element_count(self) -> u32 {
         self.cpu_residual_add_elements
+    }
+
+    fn native_scale_element_count(self) -> u32 {
+        self.native_scale_elements
+    }
+
+    fn cpu_scale_element_count(self) -> u32 {
+        self.cpu_scale_elements
     }
 
     fn staged_input_source(self) -> MetalStagedInputSource {
@@ -9074,8 +10994,6 @@ fn advance_hidden_states_through_model_layer(
     let ephemeral_layer_cache = Mutex::new(MetalPersistentLayerKvCache::default());
     let shared_layer_cache = layer_cache.or(Some(&ephemeral_layer_cache));
     let attention_o = buffers.binding_for(layer.attention_o.as_ref()?)?;
-    let ffn_norm = buffers.binding_for(&layer.ffn_norm)?;
-    let ffn_down = buffers.binding_for(&layer.ffn_down)?;
     let staged_inputs =
         stage_model_layer_qkv_inputs(artifacts, layer, buffers, workload, hidden_states, bringup)?;
     let item_token_ranges = execution_item_token_ranges(input)?;
@@ -9114,8 +11032,6 @@ fn advance_hidden_states_through_model_layer(
             layer,
             buffers,
             attention_o,
-            ffn_norm,
-            ffn_down,
             hidden_states,
             &attention_output,
             attention_head_size,
@@ -9290,88 +11206,17 @@ fn advance_hidden_states_ffn_only(
     hidden_states: &[Vec<f32>],
     bringup: Option<&MetalRuntimeBringup>,
 ) -> Option<(Vec<Vec<f32>>, PrefixAttentionExecutionTally)> {
-    let ffn_norm = buffers.binding_for(&layer.ffn_norm)?;
-    let ffn_down = buffers.binding_for(&layer.ffn_down)?;
-    let hidden_width = hidden_states.iter().map(Vec::len).min()?;
-    let (hidden_dim, intermediate_dim) = resolved_ffn_only_layer_dims(
-        ffn_norm,
-        &layer.ffn_gate_up,
-        buffers,
-        ffn_down,
-        hidden_width,
-    )?;
-
-    let mut ffn_hidden_states = hidden_states
-        .iter()
-        .map(|h| h.get(..hidden_dim).map(|s| s.to_vec()))
-        .collect::<Option<Vec<_>>>()?;
-
-    let mut tally = PrefixAttentionExecutionTally::default();
-
-    tally = tally.merge(apply_batched_row_rms_norm_with_binding_in_place_with_tally(
-        &mut ffn_hidden_states,
-        hidden_dim,
-        ffn_norm,
-        native_model_rms_norm_epsilon(artifacts),
-        native_model_rms_norm_weight_offset(artifacts),
-        bringup,
-    )?);
-
-    let (mut gate_rows, up_rows, gate_up_tally) = project_batched_ffn_gate_up_with_tally(
-        &layer.ffn_gate_up,
-        buffers,
-        intermediate_dim,
-        &ffn_hidden_states,
-        hidden_dim,
-        bringup,
-    )?;
-    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
-        gate_up_tally,
-    ));
-    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
-        apply_batched_model_gate_up_product_in_place_with_tally(
-            artifacts,
-            &mut gate_rows,
-            &up_rows,
-            intermediate_dim,
-            bringup,
-        )?,
-    ));
-
-    let (ffn_output_rows, ffn_down_tally) = project_batched_matrix_rows_with_tally(
-        ffn_down,
-        0,
-        hidden_dim,
-        &gate_rows,
-        intermediate_dim,
-        bringup,
-    )?;
-    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
-        ffn_down_tally,
-    ));
-
-    let mut next_hidden_states = hidden_states
-        .iter()
-        .map(|h| h.get(..hidden_dim).map(|s| s.to_vec()))
-        .collect::<Option<Vec<_>>>()?;
-    tally = tally.merge(
-        add_batched_rows_in_place_with_prefix_tally_and_result_dtype(
-            &mut next_hidden_states,
-            &ffn_output_rows,
-            hidden_dim,
-            ffn_down.native_dtype,
-            bringup,
-        )?,
-    );
-
+    let (next_hidden_states, dense_tally, _) =
+        apply_ffn_continuation_rows_with_tally(artifacts, layer, buffers, hidden_states, bringup)?;
+    let mut tally = prefix_attention_tally_from_native_dense_tally(dense_tally);
     let continuation_tokens = u32::try_from(next_hidden_states.len()).unwrap_or(u32::MAX);
     tally = tally.record_layer_continuation_tokens(continuation_tokens);
-
     Some((next_hidden_states, tally))
 }
 
 /// Resolve FFN dimensions without requiring attention_o binding.
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn resolved_ffn_only_layer_dims(
     ffn_norm: &MetalNativeTensorBufferBinding,
     ffn_gate_up: &MetalFfnGateUpBindings,
@@ -9391,7 +11236,7 @@ fn resolved_ffn_only_layer_dims(
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct ResolvedLinearAttentionDims {
     hidden_dim: usize,
     num_value_heads: usize,
@@ -9507,8 +11352,6 @@ fn advance_hidden_states_through_linear_attention_layer(
     }
 
     let attention_norm = buffers.binding_for(&layer.attention_norm)?;
-    let ffn_norm = buffers.binding_for(&layer.ffn_norm)?;
-    let ffn_down = buffers.binding_for(&layer.ffn_down)?;
     let in_proj_qkv = buffers.binding_for(&linear_attention.in_proj_qkv)?;
     let in_proj_z = buffers.binding_for(&linear_attention.in_proj_z)?;
     let in_proj_a = buffers.binding_for(&linear_attention.in_proj_a)?;
@@ -9548,8 +11391,6 @@ fn advance_hidden_states_through_linear_attention_layer(
                 &item_token_ranges[segment],
                 dims,
                 attention_norm,
-                ffn_norm,
-                ffn_down,
                 in_proj_qkv,
                 in_proj_z,
                 in_proj_a,
@@ -9602,8 +11443,6 @@ fn advance_hidden_states_through_linear_attention_segment(
     item_token_ranges: &[Range<usize>],
     dims: ResolvedLinearAttentionDims,
     attention_norm: &MetalNativeTensorBufferBinding,
-    ffn_norm: &MetalNativeTensorBufferBinding,
-    ffn_down: &MetalNativeTensorBufferBinding,
     in_proj_qkv: &MetalNativeTensorBufferBinding,
     in_proj_z: &MetalNativeTensorBufferBinding,
     in_proj_a: &MetalNativeTensorBufferBinding,
@@ -9623,7 +11462,7 @@ fn advance_hidden_states_through_linear_attention_segment(
         let item_hidden_states = hidden_states.get(token_range.clone())?;
         let request_state = request_states.entry(item.request_id).or_default();
         let layer_state = request_state.layers.entry(layer_index).or_default();
-        let projected_item = project_linear_attention_item(
+        let projected_item = match project_linear_attention_item(
             artifacts,
             item.request_id,
             item.position_range.start as usize,
@@ -9636,7 +11475,22 @@ fn advance_hidden_states_through_linear_attention_segment(
             in_proj_b,
             dims,
             bringup,
-        )?;
+        ) {
+            Some(projected_item) => projected_item,
+            None => {
+                tracing::debug!(
+                    request_id = item.request_id.0,
+                    layer_index,
+                    position_start = item.position_range.start,
+                    position_end = item.position_range.end_exclusive,
+                    item_token_count = item.scheduled_token_count,
+                    hidden_state_rows = item_hidden_states.len(),
+                    processed_tokens = layer_state.processed_tokens,
+                    "linear attention staged projection failed"
+                );
+                return None;
+            }
+        };
         projected_items.push(projected_item);
     }
 
@@ -9666,6 +11520,16 @@ fn advance_hidden_states_through_linear_attention_segment(
                     bringup,
                 )
                 .map(|(rows, tally)| (rows, layer_state.conv_state.clone(), tally))
+            })
+            .or_else(|| {
+                tracing::debug!(
+                    request_id = projected_item.request_id.0,
+                    layer_index,
+                    token_count = projected_item.token_count,
+                    conv_dim = dims.conv_dim,
+                    "linear attention conv path failed"
+                );
+                None
             })?;
         layer_state.conv_state = next_conv_state;
         let prepared_item = finalize_projected_linear_attention_item(
@@ -9710,6 +11574,17 @@ fn advance_hidden_states_through_linear_attention_segment(
                     bringup,
                 )
                 .map(|(outputs, tally)| (outputs, layer_state.ssm_state.clone(), tally))
+            })
+            .or_else(|| {
+                tracing::debug!(
+                    request_id = prepared_item.request_id.0,
+                    layer_index,
+                    token_count = prepared_item.token_count,
+                    key_head_dim = dims.key_head_dim,
+                    value_head_dim = dims.value_head_dim,
+                    "linear attention recurrent path failed"
+                );
+                None
             })?;
         layer_state.ssm_state = next_state;
         let (mut item_hidden_rows, item_tally) = finish_linear_attention_item(
@@ -9719,8 +11594,6 @@ fn advance_hidden_states_through_linear_attention_segment(
             recurrent_tally,
             linear_norm,
             out_proj,
-            ffn_norm,
-            ffn_down,
             layer,
             buffers,
             layer_state,
@@ -9781,42 +11654,59 @@ fn project_linear_attention_item(
         bringup,
     )?;
 
-    let (qkv_rows, qkv_tally) = project_batched_matrix_rows_with_tally(
-        in_proj_qkv,
-        0,
-        dims.conv_dim,
-        &normalized_hidden_states,
-        dims.hidden_dim,
-        bringup,
-    )?;
-    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(qkv_tally));
-    let (z_rows, z_tally) = project_batched_matrix_rows_with_tally(
-        in_proj_z,
-        0,
-        dims.value_dim,
-        &normalized_hidden_states,
-        dims.hidden_dim,
-        bringup,
-    )?;
-    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(z_tally));
-    let (a_rows, a_tally) = project_batched_matrix_rows_with_tally(
-        in_proj_a,
-        0,
-        dims.num_value_heads,
-        &normalized_hidden_states,
-        dims.hidden_dim,
-        bringup,
-    )?;
-    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(a_tally));
-    let (b_rows, b_tally) = project_batched_matrix_rows_with_tally(
-        in_proj_b,
-        0,
-        dims.num_value_heads,
-        &normalized_hidden_states,
-        dims.hidden_dim,
-        bringup,
-    )?;
-    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(b_tally));
+    // Try multi-projection batch: qkv, z, a, b in a single command buffer.
+    let (qkv_rows, z_rows, a_rows, b_rows, multi_tally) = if let Some(result) =
+        project_linear_attention_item_multi_dispatch(
+            in_proj_qkv,
+            in_proj_z,
+            in_proj_a,
+            in_proj_b,
+            &normalized_hidden_states,
+            dims,
+            bringup,
+        ) {
+        result
+    } else {
+        // Fallback: individual dispatches.
+        let (qkv_rows, qkv_tally) = project_batched_matrix_rows_with_tally(
+            in_proj_qkv,
+            0,
+            dims.conv_dim,
+            &normalized_hidden_states,
+            dims.hidden_dim,
+            bringup,
+        )?;
+        let (z_rows, z_tally) = project_batched_matrix_rows_with_tally(
+            in_proj_z,
+            0,
+            dims.value_dim,
+            &normalized_hidden_states,
+            dims.hidden_dim,
+            bringup,
+        )?;
+        let (a_rows, a_tally) = project_batched_matrix_rows_with_tally(
+            in_proj_a,
+            0,
+            dims.num_value_heads,
+            &normalized_hidden_states,
+            dims.hidden_dim,
+            bringup,
+        )?;
+        let (b_rows, b_tally) = project_batched_matrix_rows_with_tally(
+            in_proj_b,
+            0,
+            dims.num_value_heads,
+            &normalized_hidden_states,
+            dims.hidden_dim,
+            bringup,
+        )?;
+        let combined_tally = prefix_attention_tally_from_native_dense_tally(qkv_tally)
+            .merge(prefix_attention_tally_from_native_dense_tally(z_tally))
+            .merge(prefix_attention_tally_from_native_dense_tally(a_tally))
+            .merge(prefix_attention_tally_from_native_dense_tally(b_tally));
+        (qkv_rows, z_rows, a_rows, b_rows, combined_tally)
+    };
+    tally = tally.merge(multi_tally);
 
     let residual_rows = hidden_states
         .iter()
@@ -9837,6 +11727,95 @@ fn project_linear_attention_item(
         state_before: layer_state.ssm_state.clone(),
         pre_recurrent_tally: tally,
     })
+}
+
+/// Attempts to dispatch linear attention projections (qkv, z, a, b) in a single
+/// Metal command buffer. Returns `None` to signal the caller should fall back to
+/// individual dispatches.
+#[cfg(target_os = "macos")]
+#[allow(clippy::type_complexity)]
+fn project_linear_attention_item_multi_dispatch(
+    in_proj_qkv: &MetalNativeTensorBufferBinding,
+    in_proj_z: &MetalNativeTensorBufferBinding,
+    in_proj_a: &MetalNativeTensorBufferBinding,
+    in_proj_b: &MetalNativeTensorBufferBinding,
+    normalized_hidden_states: &[Vec<f32>],
+    dims: ResolvedLinearAttentionDims,
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<(
+    Vec<Vec<f32>>,
+    Vec<Vec<f32>>,
+    Vec<Vec<f32>>,
+    Vec<Vec<f32>>,
+    PrefixAttentionExecutionTally,
+)> {
+    let bringup = bringup?;
+    let tasks = [
+        MultiProjectionTask {
+            binding: in_proj_qkv,
+            row_offset: 0,
+            output_dim: dims.conv_dim,
+        },
+        MultiProjectionTask {
+            binding: in_proj_z,
+            row_offset: 0,
+            output_dim: dims.value_dim,
+        },
+        MultiProjectionTask {
+            binding: in_proj_a,
+            row_offset: 0,
+            output_dim: dims.num_value_heads,
+        },
+        MultiProjectionTask {
+            binding: in_proj_b,
+            row_offset: 0,
+            output_dim: dims.num_value_heads,
+        },
+    ];
+
+    let total_projection_rows = dims
+        .conv_dim
+        .checked_add(dims.value_dim)?
+        .checked_add(dims.num_value_heads)?
+        .checked_add(dims.num_value_heads)?;
+
+    let outputs = if normalized_hidden_states.len() == 1 {
+        let input = normalized_hidden_states.first()?.get(..dims.hidden_dim)?;
+        let single_outputs = project_multi_matrix_rows_with_optional_native_path(
+            bringup,
+            &tasks,
+            input,
+            dims.hidden_dim,
+        )?;
+        single_outputs
+            .into_iter()
+            .map(|v| vec![v])
+            .collect::<Vec<_>>()
+    } else {
+        project_multi_batched_matrix_rows_with_optional_native_path(
+            bringup,
+            &tasks,
+            normalized_hidden_states,
+            dims.hidden_dim,
+        )?
+    };
+
+    if outputs.len() != 4 {
+        return None;
+    }
+    let mut iter = outputs.into_iter();
+    let qkv_rows = iter.next()?;
+    let z_rows = iter.next()?;
+    let a_rows = iter.next()?;
+    let b_rows = iter.next()?;
+
+    let total_rows = normalized_hidden_states
+        .len()
+        .checked_mul(total_projection_rows)?;
+    let tally = prefix_attention_tally_from_native_dense_tally(
+        DirectDecodeNativeDenseTally::default().record_projection_rows(total_rows, true),
+    );
+    Some((qkv_rows, z_rows, a_rows, b_rows, tally))
 }
 
 #[cfg(target_os = "macos")]
@@ -9965,8 +11944,6 @@ fn finish_linear_attention_item(
     recurrent_tally: PrefixAttentionExecutionTally,
     linear_norm: &MetalNativeTensorBufferBinding,
     out_proj: &MetalNativeTensorBufferBinding,
-    ffn_norm: &MetalNativeTensorBufferBinding,
-    ffn_down: &MetalNativeTensorBufferBinding,
     layer: &MetalNativeLayerBindings,
     buffers: &MetalNativeModelBufferBindings,
     layer_state: &mut MetalLinearLayerState,
@@ -10012,62 +11989,14 @@ fn finish_linear_attention_item(
         bringup,
     )?;
     tally = tally.merge(attention_residual_tally);
-
-    let mut ffn_hidden_states = hidden_after_attention.clone();
-    tally = tally.merge(apply_batched_row_rms_norm_with_binding_in_place_with_tally(
-        &mut ffn_hidden_states,
-        dims.hidden_dim,
-        ffn_norm,
-        native_model_rms_norm_epsilon(artifacts),
-        native_model_rms_norm_weight_offset(artifacts),
-        bringup,
-    )?);
-    let (mut gate_rows, up_rows, gate_up_tally) = project_batched_ffn_gate_up_with_tally(
-        &layer.ffn_gate_up,
+    let (next_hidden_states, ffn_tally, _) = apply_ffn_continuation_rows_with_tally(
+        artifacts,
+        layer,
         buffers,
-        resolved_ffn_intermediate_dim(
-            &layer.ffn_gate_up,
-            buffers,
-            tensor_matrix_dimensions(&ffn_down.meta.spec)?.1,
-        )?,
-        &ffn_hidden_states,
-        dims.hidden_dim,
+        &hidden_after_attention,
         bringup,
     )?;
-    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
-        gate_up_tally,
-    ));
-    let intermediate_dim = gate_rows.first().map(Vec::len)?;
-    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
-        apply_batched_model_gate_up_product_in_place_with_tally(
-            artifacts,
-            &mut gate_rows,
-            &up_rows,
-            intermediate_dim,
-            bringup,
-        )?,
-    ));
-    let (ffn_output_rows, ffn_down_tally) = project_batched_matrix_rows_with_tally(
-        ffn_down,
-        0,
-        dims.hidden_dim,
-        &gate_rows,
-        intermediate_dim,
-        bringup,
-    )?;
-    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
-        ffn_down_tally,
-    ));
-
-    let mut next_hidden_states = hidden_after_attention;
-    let ffn_residual_tally = add_batched_rows_in_place_with_prefix_tally_and_result_dtype(
-        &mut next_hidden_states,
-        &ffn_output_rows,
-        dims.hidden_dim,
-        ffn_down.native_dtype,
-        bringup,
-    )?;
-    tally = tally.merge(ffn_residual_tally);
+    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(ffn_tally));
     layer_state.processed_tokens = layer_state
         .processed_tokens
         .checked_add(prepared_item.token_count)?;
@@ -10224,18 +12153,12 @@ fn linear_attention_conv_feedback_key(
     batch_size: usize,
     dtype: NativeTensorDataType,
     dims: ResolvedLinearAttentionDims,
-) -> String {
-    let dtype_label = match dtype {
-        NativeTensorDataType::F32 => "f32",
-        NativeTensorDataType::F16 => "f16",
-        NativeTensorDataType::Bf16 => "bf16",
-        NativeTensorDataType::I8 => "i8",
-        NativeTensorDataType::U8 => "u8",
-    };
-    format!(
-        "linear_attention_conv1d:{dtype_label}:{batch_size}:{}:{}:{}:{}",
-        dims.conv_dim, dims.conv_kernel_dim, dims.key_dim, dims.value_dim
-    )
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::LinearAttentionConv1d {
+        batch_size,
+        dtype,
+        dims,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -10775,11 +12698,11 @@ fn collect_batched_linear_attention_decode_recurrent_partition_results(
 }
 
 #[cfg(target_os = "macos")]
-fn linear_gated_delta_feedback_key(batch_size: usize, dims: ResolvedLinearAttentionDims) -> String {
-    format!(
-        "linear_gated_delta_step_f32:{batch_size}:{}:{}:{}:{}",
-        dims.num_key_heads, dims.num_value_heads, dims.key_head_dim, dims.value_head_dim
-    )
+fn linear_gated_delta_feedback_key(
+    batch_size: usize,
+    dims: ResolvedLinearAttentionDims,
+) -> MetalOptionalKernelFeedbackKey {
+    MetalOptionalKernelFeedbackKey::LinearGatedDelta { batch_size, dims }
 }
 
 #[cfg(target_os = "macos")]
@@ -12149,8 +14072,6 @@ fn project_hidden_states_from_layer_attention_output(
     layer: &MetalNativeLayerBindings,
     buffers: &MetalNativeModelBufferBindings,
     attention_o: &MetalNativeTensorBufferBinding,
-    ffn_norm: &MetalNativeTensorBufferBinding,
-    ffn_down: &MetalNativeTensorBufferBinding,
     hidden_states: &[Vec<f32>],
     attention_output: &[f32],
     attention_head_size: usize,
@@ -12158,6 +14079,8 @@ fn project_hidden_states_from_layer_attention_output(
     bringup: Option<&MetalRuntimeBringup>,
 ) -> Option<(Vec<Vec<f32>>, PrefixAttentionExecutionTally)> {
     let hidden_width = hidden_states.iter().map(Vec::len).min()?;
+    let ffn_norm = buffers.binding_for(&layer.ffn_norm)?;
+    let ffn_down = buffers.binding_for(&layer.ffn_down)?;
     let dims = resolved_model_reference_layer_dims(
         attention_o,
         ffn_norm,
@@ -12190,6 +14113,32 @@ fn project_hidden_states_from_layer_attention_output(
         )?);
     }
 
+    // Fused single-token path: encode O-proj through FFN residual in one command buffer.
+    // Only for bf16 weights (real model inference). Gate is already applied above.
+    if hidden_states.len() == 1
+        && layer.attention_post_norm.is_none()
+        && layer.ffn_post_norm.is_none()
+        && layer.moe.is_none()
+        && attention_o.native_dtype == NativeTensorDataType::Bf16
+    {
+        if let Some(bringup) = bringup {
+            let attention_input = attention_input_rows.first()?.get(..dims.input_width)?;
+            let residual_input = hidden_states.first()?.get(..dims.hidden_dim)?;
+            if let Some((result, fused_tally)) = fused_layer_continuation_on_gpu(
+                bringup,
+                artifacts,
+                layer,
+                buffers,
+                attention_o,
+                attention_input,
+                residual_input,
+                dims,
+            ) {
+                return Some((vec![result], tally.merge(fused_tally)));
+            }
+        }
+    }
+
     let (attention_hidden_rows, attention_projection_tally) =
         project_batched_matrix_rows_with_tally(
             attention_o,
@@ -12212,6 +14161,17 @@ fn project_hidden_states_from_layer_attention_output(
         })
         .collect::<Option<Vec<_>>>()?;
     let mut hidden_after_attention = attention_hidden_rows;
+    if let Some(attention_post_norm) = &layer.attention_post_norm {
+        let attention_post_norm = buffers.binding_for(attention_post_norm)?;
+        tally = tally.merge(apply_batched_row_rms_norm_with_binding_in_place_with_tally(
+            &mut hidden_after_attention,
+            dims.hidden_dim,
+            attention_post_norm,
+            native_model_rms_norm_epsilon(artifacts),
+            native_model_rms_norm_weight_offset(artifacts),
+            bringup,
+        )?);
+    }
     let attention_residual_tally = add_batched_rows_in_place_with_prefix_tally_and_result_dtype(
         &mut hidden_after_attention,
         &residual_rows,
@@ -12220,60 +14180,330 @@ fn project_hidden_states_from_layer_attention_output(
         bringup,
     )?;
     tally = tally.merge(attention_residual_tally);
-
-    let mut ffn_hidden_states = hidden_after_attention.clone();
-    tally = tally.merge(apply_batched_row_rms_norm_with_binding_in_place_with_tally(
-        &mut ffn_hidden_states,
-        dims.hidden_dim,
-        ffn_norm,
-        native_model_rms_norm_epsilon(artifacts),
-        native_model_rms_norm_weight_offset(artifacts),
-        bringup,
-    )?);
-
-    let (mut gate_rows, up_rows, gate_up_tally) = project_batched_ffn_gate_up_with_tally(
-        &layer.ffn_gate_up,
+    let (next_hidden_states, ffn_tally, _) = apply_ffn_continuation_rows_with_tally(
+        artifacts,
+        layer,
         buffers,
-        dims.intermediate_dim,
-        &ffn_hidden_states,
-        dims.hidden_dim,
+        &hidden_after_attention,
         bringup,
     )?;
-    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
-        gate_up_tally,
-    ));
-    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
-        apply_batched_model_gate_up_product_in_place_with_tally(
-            artifacts,
-            &mut gate_rows,
-            &up_rows,
-            dims.intermediate_dim,
-            bringup,
-        )?,
-    ));
-    let (ffn_output_rows, ffn_down_tally) = project_batched_matrix_rows_with_tally(
-        ffn_down,
-        0,
-        dims.hidden_dim,
-        &gate_rows,
-        dims.intermediate_dim,
-        bringup,
-    )?;
-    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(
-        ffn_down_tally,
-    ));
-
-    let mut next_hidden_states = hidden_after_attention;
-    let ffn_residual_tally = add_batched_rows_in_place_with_prefix_tally_and_result_dtype(
-        &mut next_hidden_states,
-        &ffn_output_rows,
-        dims.hidden_dim,
-        ffn_down.native_dtype,
-        bringup,
-    )?;
-    tally = tally.merge(ffn_residual_tally);
-
+    tally = tally.merge(prefix_attention_tally_from_native_dense_tally(ffn_tally));
     Some((next_hidden_states, tally))
+}
+
+/// Fused single-token layer continuation: encodes O-projection through FFN residual
+/// into a single Metal command buffer with pre-allocated arena buffers.
+/// Returns `None` to fall back to per-operation dispatch.
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn fused_layer_continuation_on_gpu(
+    bringup: &MetalRuntimeBringup,
+    artifacts: &NativeModelArtifacts,
+    layer: &MetalNativeLayerBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    attention_o: &MetalNativeTensorBufferBinding,
+    attention_input: &[f32],
+    residual_input: &[f32],
+    dims: ModelReferenceLayerDims,
+) -> Option<(Vec<f32>, PrefixAttentionExecutionTally)> {
+    let hidden_dim = dims.hidden_dim;
+    let intermediate_dim = dims.intermediate_dim;
+    if hidden_dim == 0 || intermediate_dim == 0 || attention_input.len() < dims.input_width {
+        return None;
+    }
+    if residual_input.len() < hidden_dim {
+        return None;
+    }
+
+    let ffn_norm = buffers.binding_for(&layer.ffn_norm)?;
+    let ffn_down = buffers.binding_for(&layer.ffn_down)?;
+
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+
+    // Resolve all pipelines needed for the fused dispatch.
+    let weight_dtype = attention_o.native_dtype;
+    let (proj_kernel_name, proj_pipeline_index) = plan.projection_kernel(weight_dtype)?;
+    let (norm_kernel_name, norm_pipeline_index) = plan.rms_norm_kernel(weight_dtype)?;
+    let (add_kernel_name, add_pipeline_index) = plan.vector_add_kernel()?;
+    let activation = native_model_ffn_activation(artifacts);
+    let (gate_kernel_name, gate_pipeline_index) = plan.ffn_gate_product_kernel(activation)?;
+
+    // Check feedback for the fused layer dispatch.
+    let fused_feedback_key = MetalOptionalKernelFeedbackKey::Kernel("fused_layer_continuation");
+    if !optional_kernel_allowed(bringup, &fused_feedback_key) {
+        return None;
+    }
+
+    let proj_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        proj_kernel_name,
+        proj_pipeline_index,
+    )
+    .ok()?;
+    let norm_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        norm_kernel_name,
+        norm_pipeline_index,
+    )
+    .ok()?;
+    let add_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        add_kernel_name,
+        add_pipeline_index,
+    )
+    .ok()?;
+    let gate_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        gate_kernel_name,
+        gate_pipeline_index,
+    )
+    .ok()?;
+
+    // Resolve FFN gate/up weight bindings.
+    let (gate_weight, gate_row_offset, up_weight, up_row_offset) = match &layer.ffn_gate_up {
+        MetalFfnGateUpBindings::Packed(binding) => {
+            let packed = buffers.binding_for(binding)?;
+            (packed, 0_usize, packed, intermediate_dim)
+        }
+        MetalFfnGateUpBindings::Split { gate, up } => (
+            buffers.binding_for(gate)?,
+            0_usize,
+            buffers.binding_for(up)?,
+            0_usize,
+        ),
+    };
+
+    let hidden_dim_u32 = saturating_usize_to_u32(hidden_dim);
+    let intermediate_dim_u32 = saturating_usize_to_u32(intermediate_dim);
+    let epsilon = native_model_rms_norm_epsilon(artifacts);
+    let weight_offset = native_model_rms_norm_weight_offset(artifacts);
+
+    // Weight matrix dimensions for projection dispatch params.
+    let (attn_o_rows, attn_o_cols) = tensor_matrix_dimensions(&attention_o.meta.spec)?;
+    if dims.input_width > attn_o_cols || hidden_dim > attn_o_rows {
+        return None;
+    }
+    let (_, gate_cols) = tensor_matrix_dimensions(&gate_weight.meta.spec)?;
+    if hidden_dim > gate_cols {
+        return None;
+    }
+    let (_, up_cols) = tensor_matrix_dimensions(&up_weight.meta.spec)?;
+    if hidden_dim > up_cols {
+        return None;
+    }
+    let (_, down_cols) = tensor_matrix_dimensions(&ffn_down.meta.spec)?;
+    if intermediate_dim > down_cols {
+        return None;
+    }
+
+    let dtype_bytes = native_dtype_size_bytes(weight_dtype);
+    let gate_row_byte_offset = gate_row_offset
+        .checked_mul(gate_cols)?
+        .checked_mul(dtype_bytes)?;
+    let up_row_byte_offset = up_row_offset
+        .checked_mul(up_cols)?
+        .checked_mul(dtype_bytes)?;
+
+    let thread_width = proj_pipeline.pipeline.thread_execution_width().max(1);
+
+    // Ensure arena is allocated and large enough.
+    let mut arena_guard = bringup
+        .state
+        .fused_layer_arena
+        .lock()
+        .expect("fused layer arena mutex should not be poisoned");
+    if arena_guard
+        .as_ref()
+        .map_or(true, |a| !a.fits(hidden_dim_u32, intermediate_dim_u32))
+    {
+        *arena_guard = Some(FusedLayerArena::new(
+            &bringup.state.device,
+            hidden_dim_u32,
+            intermediate_dim_u32,
+        ));
+    }
+    let arena = arena_guard.as_ref()?;
+
+    let result = autoreleasepool(|| {
+        // Create input buffers from CPU data (StorageModeShared = unified memory).
+        let attn_input_buffer = new_shared_buffer_with_data(
+            &bringup.state.device,
+            &attention_input[..dims.input_width],
+        );
+        let residual_buffer =
+            new_shared_buffer_with_data(&bringup.state.device, &residual_input[..hidden_dim]);
+
+        let command_buffer = bringup.state.command_queue.new_command_buffer();
+        command_buffer.set_label("ax.phase1.fused_layer_continuation");
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_label("ax.phase1.fused_layer_continuation.compute");
+
+        // 1. O projection: attn_input → hidden
+        encoder.set_compute_pipeline_state(&proj_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&attn_input_buffer), 0);
+        encoder.set_buffer(1, Some(&attention_o.native_buffer), 0);
+        encoder.set_buffer(2, Some(&arena.hidden), 0);
+        set_logits_projection_dispatch_params(
+            encoder,
+            3,
+            hidden_dim_u32,
+            saturating_usize_to_u32(attn_o_cols),
+            saturating_usize_to_u32(dims.input_width),
+        );
+        encoder.dispatch_threads(
+            MTLSize::new(hidden_dim as u64, 1, 1),
+            MTLSize::new(thread_width.min(hidden_dim as u64), 1, 1),
+        );
+
+        // 2. Attention residual add: hidden += residual → hidden
+        encoder.set_compute_pipeline_state(&add_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&arena.hidden), 0);
+        encoder.set_buffer(1, Some(&residual_buffer), 0);
+        encoder.set_buffer(2, Some(&arena.hidden), 0);
+        set_vector_add_dispatch_params(encoder, 3, hidden_dim_u32);
+        encoder.dispatch_threads(
+            MTLSize::new(hidden_dim as u64, 1, 1),
+            MTLSize::new(
+                add_pipeline
+                    .pipeline
+                    .thread_execution_width()
+                    .max(1)
+                    .min(hidden_dim as u64),
+                1,
+                1,
+            ),
+        );
+
+        // 3. FFN RMS norm: hidden → normed
+        encoder.set_compute_pipeline_state(&norm_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&arena.hidden), 0);
+        encoder.set_buffer(1, Some(&ffn_norm.native_buffer), 0);
+        encoder.set_buffer(2, Some(&arena.normed), 0);
+        set_rms_norm_dispatch_params(encoder, 3, hidden_dim_u32, epsilon, weight_offset);
+        encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+
+        // 4. Gate projection: normed → gate
+        encoder.set_compute_pipeline_state(&proj_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&arena.normed), 0);
+        encoder.set_buffer(
+            1,
+            Some(&gate_weight.native_buffer),
+            gate_row_byte_offset as u64,
+        );
+        encoder.set_buffer(2, Some(&arena.gate), 0);
+        set_logits_projection_dispatch_params(
+            encoder,
+            3,
+            intermediate_dim_u32,
+            saturating_usize_to_u32(gate_cols),
+            hidden_dim_u32,
+        );
+        encoder.dispatch_threads(
+            MTLSize::new(intermediate_dim as u64, 1, 1),
+            MTLSize::new(thread_width.min(intermediate_dim as u64), 1, 1),
+        );
+
+        // 5. Up projection: normed → up
+        encoder.set_buffer(0, Some(&arena.normed), 0);
+        encoder.set_buffer(1, Some(&up_weight.native_buffer), up_row_byte_offset as u64);
+        encoder.set_buffer(2, Some(&arena.up), 0);
+        set_logits_projection_dispatch_params(
+            encoder,
+            3,
+            intermediate_dim_u32,
+            saturating_usize_to_u32(up_cols),
+            hidden_dim_u32,
+        );
+        encoder.dispatch_threads(
+            MTLSize::new(intermediate_dim as u64, 1, 1),
+            MTLSize::new(thread_width.min(intermediate_dim as u64), 1, 1),
+        );
+
+        // 6. SiLU activation: gate_silu_product(gate, up) → gate (in-place)
+        encoder.set_compute_pipeline_state(&gate_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&arena.gate), 0);
+        encoder.set_buffer(1, Some(&arena.up), 0);
+        encoder.set_buffer(2, Some(&arena.gate), 0);
+        set_ffn_gate_product_dispatch_params(encoder, 3, intermediate_dim_u32);
+        encoder.dispatch_threads(
+            MTLSize::new(intermediate_dim as u64, 1, 1),
+            MTLSize::new(
+                gate_pipeline
+                    .pipeline
+                    .thread_execution_width()
+                    .max(1)
+                    .min(intermediate_dim as u64),
+                1,
+                1,
+            ),
+        );
+
+        // 7. Down projection: gate → down
+        encoder.set_compute_pipeline_state(&proj_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&arena.gate), 0);
+        encoder.set_buffer(1, Some(&ffn_down.native_buffer), 0);
+        encoder.set_buffer(2, Some(&arena.down), 0);
+        set_logits_projection_dispatch_params(
+            encoder,
+            3,
+            hidden_dim_u32,
+            saturating_usize_to_u32(down_cols),
+            intermediate_dim_u32,
+        );
+        encoder.dispatch_threads(
+            MTLSize::new(hidden_dim as u64, 1, 1),
+            MTLSize::new(thread_width.min(hidden_dim as u64), 1, 1),
+        );
+
+        // 8. FFN residual add: hidden + down → hidden
+        encoder.set_compute_pipeline_state(&add_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&arena.hidden), 0);
+        encoder.set_buffer(1, Some(&arena.down), 0);
+        encoder.set_buffer(2, Some(&arena.hidden), 0);
+        set_vector_add_dispatch_params(encoder, 3, hidden_dim_u32);
+        encoder.dispatch_threads(
+            MTLSize::new(hidden_dim as u64, 1, 1),
+            MTLSize::new(
+                add_pipeline
+                    .pipeline
+                    .thread_execution_width()
+                    .max(1)
+                    .min(hidden_dim as u64),
+                1,
+                1,
+            ),
+        );
+
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let status = command_buffer_status(command_buffer.status());
+        if status != MetalCommandBufferStatus::Completed {
+            return None;
+        }
+
+        let output = read_shared_buffer_prefix(&arena.hidden, hidden_dim_u32);
+        if output.len() != hidden_dim || output.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
+        Some(output)
+    });
+
+    record_optional_kernel_result(bringup, &fused_feedback_key, result.is_some());
+
+    let output = result?;
+    let total_projection_rows = hidden_dim + intermediate_dim * 2 + hidden_dim;
+    let tally = PrefixAttentionExecutionTally::default()
+        .record_projection_rows(total_projection_rows, true)
+        .record_rms_norm_elements(hidden_dim, true)
+        .record_ffn_activation_elements(intermediate_dim, true)
+        .record_residual_add_elements(hidden_dim * 2, true);
+    Some((output, tally))
 }
 
 #[cfg(target_os = "macos")]
@@ -14490,20 +16720,271 @@ fn apply_vector_add_with_optional_native_path(
 }
 
 #[cfg(target_os = "macos")]
-#[cfg_attr(not(test), allow(dead_code))]
-fn add_in_place_with_path(
-    values: &mut [f32],
-    delta: &[f32],
+fn apply_batched_row_scale_with_optional_native_path(
     bringup: Option<&MetalRuntimeBringup>,
-) -> Option<bool> {
-    if values.len() != delta.len() {
+    rows: &[Vec<f32>],
+    row_width: usize,
+    row_scales: &[f32],
+) -> Option<Vec<Vec<f32>>> {
+    let bringup = bringup?;
+    if row_width == 0 {
+        return Some(vec![Vec::new(); rows.len()]);
+    }
+    if rows.is_empty()
+        || rows.len() != row_scales.len()
+        || rows.iter().any(|row| row.len() < row_width)
+    {
         return None;
     }
-    if let Some(output) = apply_vector_add_with_optional_native_path(bringup, values, delta) {
-        values.copy_from_slice(&output);
+
+    let (kernel_name, pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .row_scale_kernel()?;
+    let feedback_key = batched_row_scale_feedback_key(kernel_name, rows.len(), row_width);
+    if !optional_kernel_allowed(bringup, &feedback_key) {
+        return None;
+    }
+
+    let element_count = rows.len().checked_mul(row_width)?;
+    let mut flattened_rows = Vec::with_capacity(element_count);
+    for row in rows {
+        flattened_rows.extend_from_slice(row.get(..row_width)?);
+    }
+
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let input_buffer = new_shared_buffer_with_data(&bringup.state.device, &flattened_rows);
+            let scale_buffer = new_shared_buffer_with_data(&bringup.state.device, row_scales);
+            let output_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(element_count),
+            );
+
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.row_scale");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.row_scale.compute");
+
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&input_buffer), 0);
+            encoder.set_buffer(1, Some(&scale_buffer), 0);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            set_batched_row_scale_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(rows.len()),
+                saturating_usize_to_u32(row_width),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(element_count.max(1) as u64, 1, 1),
+                MTLSize::new(
+                    pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(element_count.max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
+
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+
+            let command_buffer_status = command_buffer_status(command_buffer.status());
+            if command_buffer_status != MetalCommandBufferStatus::Completed {
+                return None;
+            }
+
+            let output =
+                read_shared_buffer_prefix(&output_buffer, saturating_usize_to_u32(element_count));
+            if output.len() != element_count || output.iter().any(|value| !value.is_finite()) {
+                return None;
+            }
+            Some(
+                output
+                    .chunks_exact(row_width)
+                    .map(|chunk| chunk.to_vec())
+                    .collect::<Vec<_>>(),
+            )
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
+    output
+}
+
+#[cfg(target_os = "macos")]
+fn apply_batched_row_vector_scale_with_optional_native_path(
+    bringup: Option<&MetalRuntimeBringup>,
+    rows: &[Vec<f32>],
+    row_width: usize,
+    scales: &[f32],
+) -> Option<Vec<Vec<f32>>> {
+    let bringup = bringup?;
+    if row_width == 0 {
+        return Some(vec![Vec::new(); rows.len()]);
+    }
+    if rows.is_empty() || scales.len() < row_width || rows.iter().any(|row| row.len() < row_width) {
+        return None;
+    }
+
+    let (kernel_name, pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .row_vector_scale_kernel()?;
+    let feedback_key = batched_row_vector_scale_feedback_key(kernel_name, rows.len(), row_width);
+    if !optional_kernel_allowed(bringup, &feedback_key) {
+        return None;
+    }
+
+    let element_count = rows.len().checked_mul(row_width)?;
+    let mut flattened_rows = Vec::with_capacity(element_count);
+    for row in rows {
+        flattened_rows.extend_from_slice(row.get(..row_width)?);
+    }
+
+    let output = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_index,
+    )
+    .ok()
+    .and_then(|pipeline| {
+        autoreleasepool(|| {
+            let input_buffer = new_shared_buffer_with_data(&bringup.state.device, &flattened_rows);
+            let scale_buffer =
+                new_shared_buffer_with_data(&bringup.state.device, &scales[..row_width]);
+            let output_buffer = new_zeroed_shared_buffer::<f32>(
+                &bringup.state.device,
+                saturating_usize_to_u32(element_count),
+            );
+
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            command_buffer.set_label("ax.phase1.row_vector_scale");
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_label("ax.phase1.row_vector_scale.compute");
+
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&input_buffer), 0);
+            encoder.set_buffer(1, Some(&scale_buffer), 0);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            set_batched_row_vector_scale_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(rows.len()),
+                saturating_usize_to_u32(row_width),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(element_count.max(1) as u64, 1, 1),
+                MTLSize::new(
+                    pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(element_count.max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
+
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+
+            let command_buffer_status = command_buffer_status(command_buffer.status());
+            if command_buffer_status != MetalCommandBufferStatus::Completed {
+                return None;
+            }
+
+            let output =
+                read_shared_buffer_prefix(&output_buffer, saturating_usize_to_u32(element_count));
+            if output.len() != element_count || output.iter().any(|value| !value.is_finite()) {
+                return None;
+            }
+            Some(
+                output
+                    .chunks_exact(row_width)
+                    .map(|chunk| chunk.to_vec())
+                    .collect::<Vec<_>>(),
+            )
+        })
+    });
+    record_optional_kernel_result(bringup, &feedback_key, output.is_some());
+    output
+}
+
+#[cfg(target_os = "macos")]
+fn apply_batched_row_vector_scale_in_place_with_path(
+    rows: &mut [Vec<f32>],
+    row_width: usize,
+    scales: &[f32],
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<bool> {
+    if row_width == 0 {
+        return Some(false);
+    }
+    if rows.is_empty() || scales.len() < row_width || rows.iter().any(|row| row.len() < row_width) {
+        return None;
+    }
+
+    if let Some(output_rows) =
+        apply_batched_row_vector_scale_with_optional_native_path(bringup, rows, row_width, scales)
+    {
+        for (row, output_row) in rows.iter_mut().zip(output_rows.into_iter()) {
+            row.get_mut(..row_width)?.copy_from_slice(&output_row);
+        }
         return Some(true);
     }
-    add_in_place(values, delta);
+
+    for row in rows {
+        for (value, scale) in row.get_mut(..row_width)?.iter_mut().zip(scales.iter()) {
+            *value *= *scale;
+        }
+    }
+    Some(false)
+}
+
+#[cfg(target_os = "macos")]
+fn apply_batched_row_scale_in_place_with_path(
+    rows: &mut [Vec<f32>],
+    row_width: usize,
+    row_scales: &[f32],
+    bringup: Option<&MetalRuntimeBringup>,
+) -> Option<bool> {
+    if row_width == 0 {
+        return Some(false);
+    }
+    if rows.is_empty()
+        || rows.len() != row_scales.len()
+        || rows.iter().any(|row| row.len() < row_width)
+    {
+        return None;
+    }
+
+    if let Some(output_rows) =
+        apply_batched_row_scale_with_optional_native_path(bringup, rows, row_width, row_scales)
+    {
+        for (row, output_row) in rows.iter_mut().zip(output_rows.into_iter()) {
+            row.get_mut(..row_width)?.copy_from_slice(&output_row);
+        }
+        return Some(true);
+    }
+
+    for (row, scale) in rows.iter_mut().zip(row_scales.iter().copied()) {
+        for value in row.get_mut(..row_width)? {
+            *value *= scale;
+        }
+    }
     Some(false)
 }
 
@@ -14527,21 +17008,6 @@ fn add_in_place_with_path_and_result_dtype(
 }
 
 #[cfg(target_os = "macos")]
-#[cfg_attr(not(test), allow(dead_code))]
-fn add_batched_rows_in_place_with_direct_decode_tally(
-    rows: &mut [Vec<f32>],
-    delta_rows: &[Vec<f32>],
-    row_width: usize,
-    bringup: Option<&MetalRuntimeBringup>,
-) -> Option<DirectDecodeNativeDenseTally> {
-    Some(
-        direct_decode_native_dense_tally_from_prefix_attention_tally(
-            add_batched_rows_in_place_with_prefix_tally(rows, delta_rows, row_width, bringup)?,
-        ),
-    )
-}
-
-#[cfg(target_os = "macos")]
 fn add_batched_rows_in_place_with_direct_decode_tally_and_result_dtype(
     rows: &mut [Vec<f32>],
     delta_rows: &[Vec<f32>],
@@ -14560,90 +17026,6 @@ fn add_batched_rows_in_place_with_direct_decode_tally_and_result_dtype(
             )?,
         ),
     )
-}
-
-#[cfg(target_os = "macos")]
-#[cfg_attr(not(test), allow(dead_code))]
-fn add_batched_rows_in_place_with_prefix_tally(
-    rows: &mut [Vec<f32>],
-    delta_rows: &[Vec<f32>],
-    row_width: usize,
-    bringup: Option<&MetalRuntimeBringup>,
-) -> Option<PrefixAttentionExecutionTally> {
-    if row_width == 0 {
-        return Some(PrefixAttentionExecutionTally::default());
-    }
-    if rows.len() != delta_rows.len()
-        || rows.iter().any(|row| row.len() < row_width)
-        || delta_rows.iter().any(|row| row.len() < row_width)
-    {
-        return None;
-    }
-
-    let single_native_bringup = single_vector_add_retry_worthwhile(bringup, row_width)
-        .then_some(bringup)
-        .flatten();
-    if rows.len() == 1 && single_native_bringup.is_some() {
-        let used_native = add_in_place_with_path(
-            rows.first_mut()?.get_mut(..row_width)?,
-            delta_rows.first()?.get(..row_width)?,
-            single_native_bringup,
-        )?;
-        return Some(
-            PrefixAttentionExecutionTally::default()
-                .record_residual_add_elements(row_width, used_native),
-        );
-    }
-
-    let row_count = rows.len();
-    let element_count = row_count.checked_mul(row_width)?;
-    let mut flattened_rows = Vec::with_capacity(element_count);
-    let mut flattened_deltas = Vec::with_capacity(element_count);
-    for (row, delta_row) in rows.iter().zip(delta_rows.iter()) {
-        flattened_rows.extend_from_slice(row.get(..row_width)?);
-        flattened_deltas.extend_from_slice(delta_row.get(..row_width)?);
-    }
-
-    if let Some(output) =
-        apply_vector_add_with_optional_native_path(bringup, &flattened_rows, &flattened_deltas)
-    {
-        for (row, output_row) in rows.iter_mut().zip(output.chunks_exact(row_width)) {
-            row.get_mut(..row_width)?.copy_from_slice(output_row);
-        }
-        return Some(
-            PrefixAttentionExecutionTally::default()
-                .record_residual_add_elements(element_count, true),
-        );
-    }
-    if rows.len() > 1 && batched_vector_add_split_retry_worthwhile(bringup) {
-        let split_index = rows.len() / 2;
-        let (left_rows, right_rows) = rows.split_at_mut(split_index);
-        let (left_delta_rows, right_delta_rows) = delta_rows.split_at(split_index);
-        let left_tally = add_batched_rows_in_place_with_prefix_tally(
-            left_rows,
-            left_delta_rows,
-            row_width,
-            bringup,
-        )?;
-        let right_tally = add_batched_rows_in_place_with_prefix_tally(
-            right_rows,
-            right_delta_rows,
-            row_width,
-            bringup,
-        )?;
-        return Some(left_tally.merge(right_tally));
-    }
-
-    let mut tally = PrefixAttentionExecutionTally::default();
-    for (row, delta_row) in rows.iter_mut().zip(delta_rows.iter()) {
-        let used_native = add_in_place_with_path(
-            row.get_mut(..row_width)?,
-            delta_row.get(..row_width)?,
-            single_native_bringup,
-        )?;
-        tally = tally.record_residual_add_elements(row_width, used_native);
-    }
-    Some(tally)
 }
 
 #[cfg(target_os = "macos")]
@@ -15208,6 +17590,61 @@ fn project_batched_matrix_head_prefix_with_tally(
 
     let row_count = input_rows.len();
     let output_width = head_count.checked_mul(projected_head_dim)?;
+
+    // Build multi-projection tasks for all heads.
+    let mut head_tasks = Vec::with_capacity(head_count);
+    for head in 0..head_count {
+        let head_row_offset = row_offset.checked_add(head.checked_mul(full_head_dim)?)?;
+        if head_row_offset.checked_add(projected_head_dim)? > rows {
+            return None;
+        }
+        head_tasks.push(MultiProjectionTask {
+            binding,
+            row_offset: head_row_offset,
+            output_dim: projected_head_dim,
+        });
+    }
+
+    // Try multi-projection batch: all heads in a single command buffer.
+    if let Some(bringup) = bringup {
+        let multi_result = if row_count == 1 {
+            let input = input_rows.first()?.get(..input_width)?;
+            project_multi_matrix_rows_with_optional_native_path(
+                bringup,
+                &head_tasks,
+                input,
+                input_width,
+            )
+            .map(|outputs| outputs.into_iter().map(|v| vec![v]).collect::<Vec<_>>())
+        } else {
+            project_multi_batched_matrix_rows_with_optional_native_path(
+                bringup,
+                &head_tasks,
+                input_rows,
+                input_width,
+            )
+        };
+
+        if let Some(head_outputs) = multi_result {
+            if head_outputs.len() == head_count {
+                let total_rows = row_count.checked_mul(output_width)?;
+                let tally = prefix_attention_tally_from_native_dense_tally(
+                    DirectDecodeNativeDenseTally::default()
+                        .record_projection_rows(total_rows, true),
+                );
+                let mut output_rows = vec![Vec::with_capacity(output_width); row_count];
+                for head_rows in head_outputs {
+                    for (output_row, head_row) in output_rows.iter_mut().zip(head_rows.into_iter())
+                    {
+                        output_row.extend(head_row);
+                    }
+                }
+                return Some((output_rows, tally));
+            }
+        }
+    }
+
+    // Fallback: individual dispatches per head.
     let mut output_rows = vec![Vec::with_capacity(output_width); row_count];
     let mut tally = PrefixAttentionExecutionTally::default();
     for head in 0..head_count {
@@ -15353,6 +17790,295 @@ fn project_batched_matrix_rows_with_optional_native_path(
     output
 }
 
+/// A single projection task within a multi-projection batch dispatch.
+/// All tasks share the same input buffer but project through different weight matrices.
+#[cfg(target_os = "macos")]
+struct MultiProjectionTask<'a> {
+    binding: &'a MetalNativeTensorBufferBinding,
+    row_offset: usize,
+    output_dim: usize,
+}
+
+/// Dispatches multiple independent matrix projections in a single Metal command buffer.
+///
+/// Each task reads from the same input row(s) but uses a different weight matrix and
+/// produces an independent output. This eliminates per-projection command buffer
+/// overhead when projections are data-independent (e.g. Q/K/V or FFN gate/up).
+///
+/// Returns `None` if any task cannot be dispatched natively (caller falls back to
+/// individual dispatches). Follows the engine's feedback-key pattern: each task's
+/// kernel is checked against the feedback state before attempting dispatch.
+#[cfg(target_os = "macos")]
+fn project_multi_matrix_rows_with_optional_native_path(
+    bringup: &MetalRuntimeBringup,
+    tasks: &[MultiProjectionTask<'_>],
+    input: &[f32],
+    input_width: usize,
+) -> Option<Vec<Vec<f32>>> {
+    if tasks.is_empty() {
+        return Some(Vec::new());
+    }
+
+    // All tasks must use the same dtype (same projection kernel).
+    let first_dtype = tasks[0].binding.native_dtype;
+    if tasks.iter().any(|t| t.binding.native_dtype != first_dtype) {
+        return None;
+    }
+
+    let (projection_kernel_name, projection_pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .projection_kernel(first_dtype)?;
+
+    // Validate every task and check feedback before creating any Metal resources.
+    for task in tasks {
+        let (_, cols) = tensor_matrix_dimensions(&task.binding.meta.spec)?;
+        if input_width > cols || task.output_dim == 0 {
+            return None;
+        }
+        if task.row_offset.checked_add(task.output_dim)?
+            > tensor_matrix_dimensions(&task.binding.meta.spec)?.0
+        {
+            return None;
+        }
+        let feedback_key =
+            projection_feedback_key(projection_kernel_name, task.output_dim, input_width, cols);
+        if !optional_kernel_allowed(bringup, &feedback_key) {
+            return None;
+        }
+    }
+
+    let projection_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        projection_kernel_name,
+        projection_pipeline_index,
+    )
+    .ok()?;
+
+    autoreleasepool(|| {
+        let hidden_buffer = new_shared_buffer_with_data(&bringup.state.device, input);
+
+        // Pre-allocate one output buffer per task.
+        let output_buffers: Vec<_> = tasks
+            .iter()
+            .map(|task| {
+                new_zeroed_shared_buffer::<f32>(
+                    &bringup.state.device,
+                    saturating_usize_to_u32(task.output_dim),
+                )
+            })
+            .collect();
+
+        let command_buffer = bringup.state.command_queue.new_command_buffer();
+        command_buffer.set_label("ax.phase1.project_matrix_rows.multi");
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_label("ax.phase1.project_matrix_rows.multi.compute");
+
+        for (task, output_buffer) in tasks.iter().zip(output_buffers.iter()) {
+            let (_, cols) = tensor_matrix_dimensions(&task.binding.meta.spec)?;
+            let row_byte_offset = task
+                .row_offset
+                .checked_mul(cols)?
+                .checked_mul(native_dtype_size_bytes(task.binding.native_dtype))?;
+
+            encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
+            encoder.set_buffer(0, Some(&hidden_buffer), 0);
+            encoder.set_buffer(1, Some(&task.binding.native_buffer), row_byte_offset as u64);
+            encoder.set_buffer(2, Some(output_buffer), 0);
+            set_logits_projection_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(task.output_dim),
+                saturating_usize_to_u32(cols),
+                saturating_usize_to_u32(input_width),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(task.output_dim.max(1) as u64, 1, 1),
+                MTLSize::new(
+                    projection_pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(task.output_dim.max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
+        }
+
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let status = command_buffer_status(command_buffer.status());
+        if status != MetalCommandBufferStatus::Completed {
+            return None;
+        }
+
+        let mut outputs = Vec::with_capacity(tasks.len());
+        for (task, output_buffer) in tasks.iter().zip(output_buffers.iter()) {
+            let output =
+                read_shared_buffer_prefix(output_buffer, saturating_usize_to_u32(task.output_dim));
+            if output.len() != task.output_dim || output.iter().any(|v| !v.is_finite()) {
+                return None;
+            }
+            outputs.push(output);
+        }
+
+        Some(outputs)
+    })
+}
+
+/// Batched variant of `project_multi_matrix_rows_with_optional_native_path` for
+/// multiple input rows (e.g. prefill with N tokens). Each task projects all input
+/// rows through its weight matrix in a single command buffer dispatch.
+#[cfg(target_os = "macos")]
+fn project_multi_batched_matrix_rows_with_optional_native_path(
+    bringup: &MetalRuntimeBringup,
+    tasks: &[MultiProjectionTask<'_>],
+    input_rows: &[Vec<f32>],
+    input_width: usize,
+) -> Option<Vec<Vec<Vec<f32>>>> {
+    if tasks.is_empty() {
+        return Some(Vec::new());
+    }
+    if input_rows.is_empty() {
+        return Some(tasks.iter().map(|_| Vec::new()).collect());
+    }
+
+    let row_count = input_rows.len();
+    let first_dtype = tasks[0].binding.native_dtype;
+    if tasks.iter().any(|t| t.binding.native_dtype != first_dtype) {
+        return None;
+    }
+
+    let (projection_kernel_name, projection_pipeline_index) = bringup
+        .state
+        .optional_kernel_dispatch_plan
+        .batched_projection_kernel(first_dtype)?;
+
+    for task in tasks {
+        let (_, cols) = tensor_matrix_dimensions(&task.binding.meta.spec)?;
+        if input_width > cols || task.output_dim == 0 {
+            return None;
+        }
+        if task.row_offset.checked_add(task.output_dim)?
+            > tensor_matrix_dimensions(&task.binding.meta.spec)?.0
+        {
+            return None;
+        }
+        let feedback_key = batched_projection_feedback_key(
+            projection_kernel_name,
+            row_count,
+            task.output_dim,
+            input_width,
+            input_width,
+            cols,
+        );
+        if !optional_kernel_allowed(bringup, &feedback_key) {
+            return None;
+        }
+    }
+
+    let projection_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        projection_kernel_name,
+        projection_pipeline_index,
+    )
+    .ok()?;
+
+    let hidden_stride = input_width;
+    let mut flattened_input = Vec::with_capacity(row_count.checked_mul(hidden_stride)?);
+    for row in input_rows {
+        flattened_input.extend_from_slice(row.get(..input_width)?);
+    }
+
+    autoreleasepool(|| {
+        let hidden_buffer = new_shared_buffer_with_data(&bringup.state.device, &flattened_input);
+
+        let output_buffers: Vec<_> = tasks
+            .iter()
+            .map(|task| {
+                let element_count = row_count.checked_mul(task.output_dim).unwrap_or(0);
+                new_zeroed_shared_buffer::<f32>(
+                    &bringup.state.device,
+                    saturating_usize_to_u32(element_count),
+                )
+            })
+            .collect();
+
+        let command_buffer = bringup.state.command_queue.new_command_buffer();
+        command_buffer.set_label("ax.phase1.project_matrix_rows_batched.multi");
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_label("ax.phase1.project_matrix_rows_batched.multi.compute");
+
+        for (task, output_buffer) in tasks.iter().zip(output_buffers.iter()) {
+            let (_, cols) = tensor_matrix_dimensions(&task.binding.meta.spec)?;
+            let row_byte_offset = task
+                .row_offset
+                .checked_mul(cols)?
+                .checked_mul(native_dtype_size_bytes(task.binding.native_dtype))?;
+            let output_element_count = row_count.checked_mul(task.output_dim)?;
+
+            encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
+            encoder.set_buffer(0, Some(&hidden_buffer), 0);
+            encoder.set_buffer(1, Some(&task.binding.native_buffer), row_byte_offset as u64);
+            encoder.set_buffer(2, Some(output_buffer), 0);
+            set_batched_logits_projection_dispatch_params(
+                encoder,
+                3,
+                saturating_usize_to_u32(row_count),
+                saturating_usize_to_u32(task.output_dim),
+                saturating_usize_to_u32(cols),
+                saturating_usize_to_u32(input_width),
+                saturating_usize_to_u32(hidden_stride),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(output_element_count.max(1) as u64, 1, 1),
+                MTLSize::new(
+                    projection_pipeline
+                        .pipeline
+                        .thread_execution_width()
+                        .max(1)
+                        .min(output_element_count.max(1) as u64),
+                    1,
+                    1,
+                ),
+            );
+        }
+
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let status = command_buffer_status(command_buffer.status());
+        if status != MetalCommandBufferStatus::Completed {
+            return None;
+        }
+
+        let mut outputs = Vec::with_capacity(tasks.len());
+        for (task, output_buffer) in tasks.iter().zip(output_buffers.iter()) {
+            let output_element_count = row_count.checked_mul(task.output_dim)?;
+            let output = read_shared_buffer_prefix(
+                output_buffer,
+                saturating_usize_to_u32(output_element_count),
+            );
+            if output.len() != output_element_count || output.iter().any(|v| !v.is_finite()) {
+                return None;
+            }
+            let chunked: Vec<Vec<f32>> = output
+                .chunks_exact(task.output_dim)
+                .map(|chunk| chunk.to_vec())
+                .collect();
+            outputs.push(chunked);
+        }
+
+        Some(outputs)
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn project_matrix_rows_with_optional_native_path(
     bringup: Option<&MetalRuntimeBringup>,
@@ -15467,6 +18193,29 @@ fn tensor_matrix_row_prefix_f32(
 }
 
 #[cfg(target_os = "macos")]
+fn tensor_3d_matrix_row_prefix_f32(
+    binding: &MetalNativeTensorBufferBinding,
+    outer_index: usize,
+    row: usize,
+    width: usize,
+) -> Option<Vec<f32>> {
+    let (outer_dim, row_count, col_count) = tensor_3d_dimensions(&binding.meta.spec)?;
+    if outer_index >= outer_dim || row >= row_count || width > col_count {
+        return None;
+    }
+
+    let base = outer_index
+        .checked_mul(row_count)?
+        .checked_add(row)?
+        .checked_mul(col_count)?;
+    let mut values = Vec::with_capacity(width);
+    for column in 0..width {
+        values.push(tensor_scalar_f32(binding, base + column)?);
+    }
+    Some(values)
+}
+
+#[cfg(target_os = "macos")]
 fn tensor_prefix_f32(binding: &MetalNativeTensorBufferBinding, width: usize) -> Option<Vec<f32>> {
     if width > tensor_element_count(&binding.meta.spec)? {
         return None;
@@ -15506,6 +18255,19 @@ fn tensor_matrix_dimensions(spec: &NativeTensorSpec) -> Option<(usize, usize)> {
     Some((
         usize::try_from(*spec.shape.first()?).ok()?,
         usize::try_from(*spec.shape.get(1)?).ok()?,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn tensor_3d_dimensions(spec: &NativeTensorSpec) -> Option<(usize, usize, usize)> {
+    if spec.shape.len() != 3 {
+        return None;
+    }
+
+    Some((
+        usize::try_from(*spec.shape.first()?).ok()?,
+        usize::try_from(*spec.shape.get(1)?).ok()?,
+        usize::try_from(*spec.shape.get(2)?).ok()?,
     ))
 }
 
@@ -16691,6 +19453,42 @@ fn set_vector_add_dispatch_params(
         buffer_index,
         size_of::<VectorAddDispatchParams>() as u64,
         (&params as *const VectorAddDispatchParams).cast(),
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn set_batched_row_scale_dispatch_params(
+    encoder: &metal::ComputeCommandEncoderRef,
+    buffer_index: u64,
+    row_count: u32,
+    row_width: u32,
+) {
+    let params = BatchedRowScaleDispatchParams {
+        row_count,
+        row_width,
+    };
+    encoder.set_bytes(
+        buffer_index,
+        size_of::<BatchedRowScaleDispatchParams>() as u64,
+        (&params as *const BatchedRowScaleDispatchParams).cast(),
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn set_batched_row_vector_scale_dispatch_params(
+    encoder: &metal::ComputeCommandEncoderRef,
+    buffer_index: u64,
+    row_count: u32,
+    row_width: u32,
+) {
+    let params = BatchedRowVectorScaleDispatchParams {
+        row_count,
+        row_width,
+    };
+    encoder.set_bytes(
+        buffer_index,
+        size_of::<BatchedRowVectorScaleDispatchParams>() as u64,
+        (&params as *const BatchedRowVectorScaleDispatchParams).cast(),
     );
 }
 

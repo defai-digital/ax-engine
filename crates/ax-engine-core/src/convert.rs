@@ -13,8 +13,9 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::model::{
-    NativeLinearAttentionConfig, NativeModelManifest, NativeTensorDataType, NativeTensorFormat,
-    NativeTensorRole, NativeTensorSpec, AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+    NativeLinearAttentionConfig, NativeModelManifest, NativeMoeConfig, NativeTensorDataType,
+    NativeTensorFormat, NativeTensorRole, NativeTensorSpec,
+    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -114,6 +115,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention,
+        moe: moe_config(&config, &model_type),
         tensors: mapped_tensors,
     })
 }
@@ -132,6 +134,29 @@ pub fn write_manifest(
         path: manifest_path,
         source,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn with_real_model_manifest_lock<T>(body: impl FnOnce() -> T) -> T {
+    use std::sync::{Mutex, OnceLock};
+
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("real-model manifest lock should not be poisoned");
+    body()
+}
+
+#[cfg(test)]
+pub(crate) fn ensure_manifest_for_hf_model_dir(model_dir: &Path) -> Result<(), ConvertError> {
+    let manifest_path = model_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
+    if manifest_path.exists() {
+        return Ok(());
+    }
+
+    let manifest = convert_hf_model_dir(model_dir)?;
+    write_manifest(model_dir, &manifest)
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +187,11 @@ enum TensorMapping {
 ///   model.layers.{i}.self_attn.k_norm.weight        (Qwen3, Gemma4)
 ///   model.layers.{i}.input_layernorm.weight
 ///   model.layers.{i}.post_attention_layernorm.weight
+///   model.layers.{i}.pre_feedforward_layernorm.weight
+///   model.layers.{i}.post_feedforward_layernorm.weight
+///   model.layers.{i}.pre_feedforward_layernorm_2.weight   (Gemma4 MoE)
+///   model.layers.{i}.post_feedforward_layernorm_1.weight  (Gemma4 MoE)
+///   model.layers.{i}.post_feedforward_layernorm_2.weight  (Gemma4 MoE)
 ///   model.layers.{i}.mlp.gate_proj.weight
 ///   model.layers.{i}.mlp.up_proj.weight
 ///   model.layers.{i}.mlp.down_proj.weight
@@ -220,12 +250,40 @@ const HF_STANDARD_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
     (
         "post_attention_layernorm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttentionPostNorm),
+    ),
+    (
+        "pre_feedforward_layernorm.weight",
         TensorMapping::PerLayer(NativeTensorRole::FfnNorm),
+    ),
+    (
+        "pre_feedforward_layernorm_2.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnNorm2),
+    ),
+    (
+        "post_feedforward_layernorm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnPostNorm),
+    ),
+    (
+        "post_feedforward_layernorm_1.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnPostNorm1),
+    ),
+    (
+        "post_feedforward_layernorm_2.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnPostNorm2),
     ),
     // per-layer FFN
     (
         "mlp.gate_proj.weight",
         TensorMapping::PerLayer(NativeTensorRole::FfnGate),
+    ),
+    (
+        "router.proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
+    ),
+    (
+        "router.scale",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInpScale),
     ),
     (
         "mlp.up_proj.weight",
@@ -239,6 +297,26 @@ const HF_STANDARD_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     (
         "mlp.gate_up_proj.weight",
         TensorMapping::PerLayer(NativeTensorRole::FfnGateUpPacked),
+    ),
+    (
+        "experts.gate_up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateUpExpsPacked),
+    ),
+    (
+        "experts.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+    (
+        "experts.switch_glu.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateExps),
+    ),
+    (
+        "experts.switch_glu.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUpExps),
+    ),
+    (
+        "experts.switch_glu.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
     ),
 ];
 
@@ -429,6 +507,19 @@ fn linear_attention_config(
         key_head_dim: arch_u64(config, model_type, "linear_key_head_dim").map(|v| v as u32),
         value_head_dim: arch_u64(config, model_type, "linear_value_head_dim").map(|v| v as u32),
         conv_kernel_dim: arch_u64(config, model_type, "linear_conv_kernel_dim").map(|v| v as u32),
+    }
+}
+
+fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
+    if !arch_bool(config, model_type, "enable_moe_block").unwrap_or(false) {
+        return NativeMoeConfig::default();
+    }
+
+    NativeMoeConfig {
+        expert_count: arch_u64(config, model_type, "num_experts").map(|v| v as u32),
+        experts_per_token: arch_u64(config, model_type, "top_k_experts").map(|v| v as u32),
+        expert_intermediate_size: arch_u64(config, model_type, "moe_intermediate_size")
+            .map(|v| v as u32),
     }
 }
 
@@ -965,6 +1056,16 @@ mod tests {
                     &[3072],
                 ),
                 (
+                    "model.layers.0.pre_feedforward_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "model.layers.0.post_feedforward_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
                     "model.layers.0.mlp.gate_proj.weight",
                     "BF16",
                     &[12288, 3072],
@@ -1000,6 +1101,16 @@ mod tests {
                 ("model.layers.1.self_attn.k_norm.weight", "BF16", &[128]),
                 (
                     "model.layers.1.post_attention_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "model.layers.1.pre_feedforward_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "model.layers.1.post_feedforward_layernorm.weight",
                     "BF16",
                     &[3072],
                 ),
@@ -1122,6 +1233,11 @@ mod tests {
                     &[8],
                 ),
                 (
+                    "language_model.model.layers.0.pre_feedforward_layernorm.weight",
+                    "BF16",
+                    &[8],
+                ),
+                (
                     "language_model.model.layers.0.mlp.gate_proj.weight",
                     "BF16",
                     &[16, 8],
@@ -1164,6 +1280,192 @@ mod tests {
         write_manifest(&dir, &manifest).expect("write should succeed");
         crate::model::NativeModelArtifacts::from_dir(&dir)
             .expect("linear-attention manifest should validate");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn converts_gemma4_moe_model_directory() {
+        let dir = unique_test_dir("gemma4_moe");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "gemma4",
+                "vocab_size": 262144,
+                "tie_word_embeddings": true,
+                "text_config": {
+                    "hidden_size": 2816,
+                    "num_attention_heads": 8,
+                    "num_key_value_heads": 2,
+                    "head_dim": 256,
+                    "num_hidden_layers": 1,
+                    "vocab_size": 262144,
+                    "enable_moe_block": true,
+                    "num_experts": 128,
+                    "top_k_experts": 8,
+                    "moe_intermediate_size": 704
+                }
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                (
+                    "language_model.model.embed_tokens.weight",
+                    "BF16",
+                    &[262144, 2816],
+                ),
+                ("language_model.model.norm.weight", "BF16", &[2816]),
+                (
+                    "language_model.model.layers.0.input_layernorm.weight",
+                    "BF16",
+                    &[2816],
+                ),
+                (
+                    "language_model.model.layers.0.self_attn.q_proj.weight",
+                    "BF16",
+                    &[2048, 2816],
+                ),
+                (
+                    "language_model.model.layers.0.self_attn.k_proj.weight",
+                    "BF16",
+                    &[512, 2816],
+                ),
+                (
+                    "language_model.model.layers.0.self_attn.v_proj.weight",
+                    "BF16",
+                    &[512, 2816],
+                ),
+                (
+                    "language_model.model.layers.0.self_attn.o_proj.weight",
+                    "BF16",
+                    &[2816, 2048],
+                ),
+                (
+                    "language_model.model.layers.0.self_attn.q_norm.weight",
+                    "BF16",
+                    &[256],
+                ),
+                (
+                    "language_model.model.layers.0.self_attn.k_norm.weight",
+                    "BF16",
+                    &[256],
+                ),
+                (
+                    "language_model.model.layers.0.post_attention_layernorm.weight",
+                    "BF16",
+                    &[2816],
+                ),
+                (
+                    "language_model.model.layers.0.pre_feedforward_layernorm.weight",
+                    "BF16",
+                    &[2816],
+                ),
+                (
+                    "language_model.model.layers.0.post_feedforward_layernorm.weight",
+                    "BF16",
+                    &[2816],
+                ),
+                (
+                    "language_model.model.layers.0.pre_feedforward_layernorm_2.weight",
+                    "BF16",
+                    &[2816],
+                ),
+                (
+                    "language_model.model.layers.0.post_feedforward_layernorm_1.weight",
+                    "BF16",
+                    &[2816],
+                ),
+                (
+                    "language_model.model.layers.0.post_feedforward_layernorm_2.weight",
+                    "BF16",
+                    &[2816],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.gate_proj.weight",
+                    "BF16",
+                    &[2112, 2816],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.up_proj.weight",
+                    "BF16",
+                    &[2112, 2816],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.down_proj.weight",
+                    "BF16",
+                    &[2816, 2112],
+                ),
+                (
+                    "language_model.model.layers.0.router.proj.weight",
+                    "BF16",
+                    &[128, 2816],
+                ),
+                (
+                    "language_model.model.layers.0.router.scale",
+                    "BF16",
+                    &[2816],
+                ),
+                (
+                    "language_model.model.layers.0.experts.switch_glu.gate_proj.weight",
+                    "BF16",
+                    &[128, 704, 2816],
+                ),
+                (
+                    "language_model.model.layers.0.experts.switch_glu.up_proj.weight",
+                    "BF16",
+                    &[128, 704, 2816],
+                ),
+                (
+                    "language_model.model.layers.0.experts.switch_glu.down_proj.weight",
+                    "BF16",
+                    &[128, 2816, 704],
+                ),
+            ],
+        );
+
+        let manifest = convert_hf_model_dir(&dir).expect("gemma4 moe conversion should succeed");
+
+        assert_eq!(manifest.model_family, "gemma4");
+        assert_eq!(manifest.moe.expert_count, Some(128));
+        assert_eq!(manifest.moe.experts_per_token, Some(8));
+        assert_eq!(manifest.moe.expert_intermediate_size, Some(704));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::FfnGateInp));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::AttentionPostNorm));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::FfnNorm2));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::FfnPostNorm));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::FfnPostNorm1));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::FfnPostNorm2));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::FfnGateExps));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::FfnDownExps));
+
+        write_manifest(&dir, &manifest).expect("write should succeed");
+        crate::model::NativeModelArtifacts::from_dir(&dir).expect("moe manifest should validate");
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -1246,6 +1548,11 @@ mod tests {
                     "F32",
                     &[8],
                 ),
+                (
+                    "model.layers.0.pre_feedforward_layernorm.weight",
+                    "F32",
+                    &[8],
+                ),
                 ("model.layers.0.mlp.gate_proj.weight", "F32", &[16, 8]),
                 ("model.layers.0.mlp.up_proj.weight", "F32", &[16, 8]),
                 ("model.layers.0.mlp.down_proj.weight", "F32", &[8, 16]),
@@ -1256,7 +1563,7 @@ mod tests {
         );
 
         let manifest = convert_hf_model_dir(&dir).expect("conversion should succeed");
-        assert_eq!(manifest.tensors.len(), 11);
+        assert_eq!(manifest.tensors.len(), 12);
 
         let names: Vec<_> = manifest.tensors.iter().map(|t| t.name.as_str()).collect();
         assert!(!names.contains(&"model.layers.0.self_attn.rotary_emb.inv_freq"));
@@ -1276,70 +1583,72 @@ mod tests {
             return;
         }
 
-        let manifest = convert_hf_model_dir(&model_dir)
-            .expect("real Qwen3.5-2B-bf16 conversion should succeed");
+        with_real_model_manifest_lock(|| {
+            let manifest = convert_hf_model_dir(&model_dir)
+                .expect("real Qwen3.5-2B-bf16 conversion should succeed");
 
-        assert_eq!(manifest.model_family, "qwen3_5");
-        assert_eq!(manifest.layer_count, 24);
-        assert_eq!(manifest.hidden_size, 2048);
-        assert_eq!(manifest.attention_head_count, 8);
-        assert_eq!(manifest.attention_head_dim, 256);
-        assert_eq!(manifest.kv_head_count, 2);
-        assert_eq!(manifest.vocab_size, 248320);
-        assert!(manifest.tie_word_embeddings);
-        assert_eq!(manifest.rope_theta, Some(10000000));
+            assert_eq!(manifest.model_family, "qwen3_5");
+            assert_eq!(manifest.layer_count, 24);
+            assert_eq!(manifest.hidden_size, 2048);
+            assert_eq!(manifest.attention_head_count, 8);
+            assert_eq!(manifest.attention_head_dim, 256);
+            assert_eq!(manifest.kv_head_count, 2);
+            assert_eq!(manifest.vocab_size, 248320);
+            assert!(manifest.tie_word_embeddings);
+            assert_eq!(manifest.rope_theta, Some(10000000));
 
-        // Qwen3.5 has mixed layers: only full_attention layers (3,7,11,15,19,23)
-        // have self_attn tensors. All 24 layers have FFN + norms.
-        let attn_q_layers: Vec<u32> = manifest
-            .tensors
-            .iter()
-            .filter(|t| t.role == NativeTensorRole::AttentionQ)
-            .filter_map(|t| t.layer_index)
-            .collect();
-        assert_eq!(attn_q_layers, vec![3, 7, 11, 15, 19, 23]);
+            // Qwen3.5 has mixed layers: only full_attention layers (3,7,11,15,19,23)
+            // have self_attn tensors. All 24 layers have FFN + norms.
+            let attn_q_layers: Vec<u32> = manifest
+                .tensors
+                .iter()
+                .filter(|t| t.role == NativeTensorRole::AttentionQ)
+                .filter_map(|t| t.layer_index)
+                .collect();
+            assert_eq!(attn_q_layers, vec![3, 7, 11, 15, 19, 23]);
 
-        let ffn_gate_count = manifest
-            .tensors
-            .iter()
-            .filter(|t| t.role == NativeTensorRole::FfnGate)
-            .count();
-        assert_eq!(ffn_gate_count, 24, "all 24 layers should have FFN gate");
+            let ffn_gate_count = manifest
+                .tensors
+                .iter()
+                .filter(|t| t.role == NativeTensorRole::FfnGate)
+                .count();
+            assert_eq!(ffn_gate_count, 24, "all 24 layers should have FFN gate");
 
-        let norm_count = manifest
-            .tensors
-            .iter()
-            .filter(|t| t.role == NativeTensorRole::AttentionNorm)
-            .count();
-        assert_eq!(norm_count, 24, "all 24 layers should have attention norm");
+            let norm_count = manifest
+                .tensors
+                .iter()
+                .filter(|t| t.role == NativeTensorRole::AttentionNorm)
+                .count();
+            assert_eq!(norm_count, 24, "all 24 layers should have attention norm");
 
-        // All tensors should be BF16
-        assert!(
-            manifest
+            // All tensors should be BF16
+            assert!(manifest
                 .tensors
                 .iter()
                 .all(|t| t.dtype == NativeTensorDataType::Bf16
-                    || t.dtype == NativeTensorDataType::F32)
-        );
+                    || t.dtype == NativeTensorDataType::F32));
 
-        // Write manifest, then validate the full NativeModelArtifacts pipeline
-        write_manifest(&model_dir, &manifest).expect("write manifest should succeed");
-        let artifacts = crate::model::NativeModelArtifacts::from_dir(&model_dir)
-            .expect("NativeModelArtifacts should validate the real Qwen3.5 model");
-        assert_eq!(artifacts.manifest().layer_count, 24);
-        assert_eq!(
-            artifacts.summary().tensor_count,
-            manifest.tensors.len() as u32
-        );
+            // Write manifest, then validate the full NativeModelArtifacts pipeline.
+            // Hold the shared lock for the whole duration so parallel metal tests
+            // never observe the temporary cleanup window.
+            write_manifest(&model_dir, &manifest).expect("write manifest should succeed");
+            let artifacts = crate::model::NativeModelArtifacts::from_dir(&model_dir)
+                .expect("NativeModelArtifacts should validate the real Qwen3.5 model");
+            assert_eq!(artifacts.manifest().layer_count, 24);
+            assert_eq!(
+                artifacts.summary().tensor_count,
+                manifest.tensors.len() as u32
+            );
 
-        eprintln!(
-            "✓ converted {} tensors, {} layers, family={}",
-            manifest.tensors.len(),
-            manifest.layer_count,
-            manifest.model_family
-        );
+            eprintln!(
+                "✓ converted {} tensors, {} layers, family={}",
+                manifest.tensors.len(),
+                manifest.layer_count,
+                manifest.model_family
+            );
 
-        // Clean up the generated manifest
-        let _ = fs::remove_file(model_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE));
+            // Clean up the generated manifest before releasing the shared lock.
+            let _ = fs::remove_file(model_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE));
+        });
     }
 }

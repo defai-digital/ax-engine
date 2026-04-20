@@ -244,9 +244,9 @@
     "air": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.air",
     "metalar": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.metalar",
     "metallib": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.metallib",
-    "air_sha256": "f6c6224366a335b1b19067aaef263c3901dccd89488d618c985c11e24873edd4",
-    "metalar_sha256": "0cd504bc4fbe44760d1948c6815d81eaf2b462c98b490bd120892f0cab4e8f36",
-    "metallib_sha256": "dcbf3a5bd0eaf6a5593c2417f0d34f6241ae28d4d3c50514f7bd9266e5a5d1b6"
+    "air_sha256": "b8683e7509092baa67aad3f643543339b2f40d031f0bccd494995e8deb187fa4",
+    "metalar_sha256": "74703116699ab02782578164cdf02a838637631faf0f0fc7f7418977c0f8fff3",
+    "metallib_sha256": "606987206e486a1dd460e0a2fa2bc00ce3aabec5926c3752c1b84ba99ca73215"
   },
   "compile_commands": [
     [

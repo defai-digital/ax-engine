@@ -240,7 +240,10 @@ impl Scheduler {
             .last()
             .copied()
             .or_else(|| snapshot.prompt_tokens.last().copied())?;
-        let position_start = snapshot.prompt_len.saturating_add(snapshot.generated_len);
+        let position_start = snapshot
+            .prompt_len
+            .saturating_sub(1)
+            .saturating_add(snapshot.generated_len);
 
         Some(ExecutionItem {
             request_id: snapshot.request_id,
@@ -372,8 +375,31 @@ mod tests {
         assert_eq!(
             execution_batch.items[0].position_range,
             PositionRange {
-                start: 4,
-                end_exclusive: 5,
+                start: 3,
+                end_exclusive: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn builds_decode_item_from_last_prompt_token_without_generated_history() {
+        let scheduler = Scheduler::new();
+        let schedule_plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(9),
+            request_snapshots: vec![make_snapshot(10, 1, "qwen3", &[1, 2, 3], 3, &[], 16)],
+            memory_pressure: None,
+            global_token_budget: 1,
+        });
+
+        let execution_batch = schedule_plan.execution_batch.unwrap();
+        assert_eq!(execution_batch.items.len(), 1);
+        assert_eq!(execution_batch.items[0].mode, ExecutionMode::Decode);
+        assert_eq!(execution_batch.items[0].input_token_slice, vec![3]);
+        assert_eq!(
+            execution_batch.items[0].position_range,
+            PositionRange {
+                start: 2,
+                end_exclusive: 3,
             }
         );
     }

@@ -14,7 +14,7 @@ pub enum NativeTensorFormat {
     Safetensors,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeTensorDataType {
     F16,
@@ -29,6 +29,7 @@ pub enum NativeTensorDataType {
 pub enum NativeTensorRole {
     TokenEmbedding,
     AttentionNorm,
+    AttentionPostNorm,
     AttentionQNorm,
     AttentionKNorm,
     AttentionQ,
@@ -46,10 +47,21 @@ pub enum NativeTensorRole {
     LinearAttentionNorm,
     LinearAttentionOutProj,
     FfnNorm,
+    FfnNorm2,
+    FfnPostNorm,
+    FfnPostNorm1,
+    FfnPostNorm2,
+    FfnGateInp,
+    FfnGateInpScale,
     FfnGate,
     FfnUp,
     FfnGateUpPacked,
+    FfnGateExps,
+    FfnUpExps,
+    FfnGateUpExpsPacked,
     FfnDown,
+    FfnDownExps,
+    FfnDownExpsScale,
     FinalNorm,
     LmHead,
     RopeFreqs,
@@ -61,6 +73,7 @@ impl NativeTensorRole {
         matches!(
             self,
             Self::AttentionNorm
+                | Self::AttentionPostNorm
                 | Self::AttentionQNorm
                 | Self::AttentionKNorm
                 | Self::AttentionQ
@@ -78,10 +91,21 @@ impl NativeTensorRole {
                 | Self::LinearAttentionNorm
                 | Self::LinearAttentionOutProj
                 | Self::FfnNorm
+                | Self::FfnNorm2
+                | Self::FfnPostNorm
+                | Self::FfnPostNorm1
+                | Self::FfnPostNorm2
+                | Self::FfnGateInp
+                | Self::FfnGateInpScale
                 | Self::FfnGate
                 | Self::FfnUp
                 | Self::FfnGateUpPacked
+                | Self::FfnGateExps
+                | Self::FfnUpExps
+                | Self::FfnGateUpExpsPacked
                 | Self::FfnDown
+                | Self::FfnDownExps
+                | Self::FfnDownExpsScale
         )
     }
 }
@@ -107,6 +131,28 @@ impl NativeLinearAttentionConfig {
             || self.key_head_dim.is_some()
             || self.value_head_dim.is_some()
             || self.conv_kernel_dim.is_some()
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        !self.is_enabled()
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NativeMoeConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expert_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub experts_per_token: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expert_intermediate_size: Option<u32>,
+}
+
+impl NativeMoeConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.expert_count.is_some()
+            || self.experts_per_token.is_some()
+            || self.expert_intermediate_size.is_some()
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -159,6 +205,8 @@ pub struct NativeModelManifest {
         skip_serializing_if = "NativeLinearAttentionConfig::is_disabled"
     )]
     pub linear_attention: NativeLinearAttentionConfig,
+    #[serde(default, skip_serializing_if = "NativeMoeConfig::is_disabled")]
+    pub moe: NativeMoeConfig,
     pub tensors: Vec<NativeTensorSpec>,
 }
 
@@ -249,6 +297,10 @@ impl NativeModelArtifacts {
             .linear_attention
             .is_enabled()
             .then_some(&self.manifest.linear_attention)
+    }
+
+    pub fn moe_config(&self) -> Option<&NativeMoeConfig> {
+        self.manifest.moe.is_enabled().then_some(&self.manifest.moe)
     }
 
     /// Returns the number of head dimensions that receive rotary embedding.
@@ -408,6 +460,26 @@ fn validate_native_model_manifest(
             }
         }
     }
+    if manifest.moe.is_enabled() {
+        validate_positive_optional_field(manifest.moe.expert_count, "moe.expert_count")?;
+        validate_positive_optional_field(manifest.moe.experts_per_token, "moe.experts_per_token")?;
+        validate_positive_optional_field(
+            manifest.moe.expert_intermediate_size,
+            "moe.expert_intermediate_size",
+        )?;
+        if let (Some(expert_count), Some(experts_per_token)) =
+            (manifest.moe.expert_count, manifest.moe.experts_per_token)
+        {
+            if experts_per_token > expert_count {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "moe.experts_per_token {} must be <= moe.expert_count {}",
+                        experts_per_token, expert_count
+                    ),
+                });
+            }
+        }
+    }
 
     let mut tensor_names = BTreeMap::new();
     let mut layer_roles = BTreeMap::<u32, Vec<NativeTensorRole>>::new();
@@ -487,7 +559,18 @@ fn validate_native_model_manifest(
             layer_index,
             "attention_norm",
         )?;
-        require_layer_role(roles, NativeTensorRole::FfnNorm, layer_index, "ffn_norm")?;
+        // ffn_norm is optional when attention_post_norm serves as the FFN norm
+        // (e.g. Qwen3.5 linear attention layers).
+        if !roles.contains(&NativeTensorRole::FfnNorm)
+            && !roles.contains(&NativeTensorRole::AttentionPostNorm)
+        {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "layer {} is missing required tensor role ffn_norm or attention_post_norm",
+                    layer_index
+                ),
+            });
+        }
         require_layer_role(roles, NativeTensorRole::FfnDown, layer_index, "ffn_down")?;
 
         let has_packed_gate_up = roles.contains(&NativeTensorRole::FfnGateUpPacked);
@@ -517,6 +600,16 @@ fn validate_native_model_manifest(
             || roles.contains(&NativeTensorRole::LinearAttentionALog)
             || roles.contains(&NativeTensorRole::LinearAttentionNorm)
             || roles.contains(&NativeTensorRole::LinearAttentionOutProj);
+        let has_any_moe = roles.contains(&NativeTensorRole::FfnGateInp)
+            || roles.contains(&NativeTensorRole::FfnGateInpScale)
+            || roles.contains(&NativeTensorRole::FfnNorm2)
+            || roles.contains(&NativeTensorRole::FfnPostNorm1)
+            || roles.contains(&NativeTensorRole::FfnPostNorm2)
+            || roles.contains(&NativeTensorRole::FfnGateExps)
+            || roles.contains(&NativeTensorRole::FfnUpExps)
+            || roles.contains(&NativeTensorRole::FfnGateUpExpsPacked)
+            || roles.contains(&NativeTensorRole::FfnDownExps)
+            || roles.contains(&NativeTensorRole::FfnDownExpsScale);
         if has_any_attention {
             require_layer_role(
                 roles,
@@ -604,6 +697,39 @@ fn validate_native_model_manifest(
                 "linear_attention_out_proj",
             )?;
         }
+        if has_any_moe {
+            if !manifest.moe.is_enabled() {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer {} provides MoE tensors but manifest.moe is not configured",
+                        layer_index
+                    ),
+                });
+            }
+            require_layer_role(
+                roles,
+                NativeTensorRole::FfnGateInp,
+                layer_index,
+                "ffn_gate_inp",
+            )?;
+            require_layer_role(
+                roles,
+                NativeTensorRole::FfnDownExps,
+                layer_index,
+                "ffn_down_exps",
+            )?;
+            let has_packed_moe = roles.contains(&NativeTensorRole::FfnGateUpExpsPacked);
+            let has_split_moe = roles.contains(&NativeTensorRole::FfnGateExps)
+                && roles.contains(&NativeTensorRole::FfnUpExps);
+            if !(has_packed_moe || has_split_moe) {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer {} must provide ffn_gate_up_exps_packed or ffn_gate_exps/ffn_up_exps",
+                        layer_index
+                    ),
+                });
+            }
+        }
     }
 
     validate_native_model_tensor_shapes(manifest)?;
@@ -652,6 +778,13 @@ fn validate_native_model_tensor_shapes(
             "attention_norm",
         )?;
         expect_vector_shape(attention_norm, hidden_size, "attention_norm")?;
+        if let Some(attention_post_norm) = manifest_tensor(
+            manifest,
+            NativeTensorRole::AttentionPostNorm,
+            Some(layer_index),
+        ) {
+            expect_vector_shape(attention_post_norm, hidden_size, "attention_post_norm")?;
+        }
         if let Some(attention_q_norm) = manifest_tensor(
             manifest,
             NativeTensorRole::AttentionQNorm,
@@ -699,13 +832,37 @@ fn validate_native_model_tensor_shapes(
             }
         }
 
-        let ffn_norm = required_layer_tensor_spec(
-            manifest,
-            layer_index,
-            NativeTensorRole::FfnNorm,
-            "ffn_norm",
-        )?;
-        expect_vector_shape(ffn_norm, hidden_size, "ffn_norm")?;
+        let ffn_norm = manifest_tensor(manifest, NativeTensorRole::FfnNorm, Some(layer_index))
+            .or_else(|| {
+                manifest_tensor(
+                    manifest,
+                    NativeTensorRole::AttentionPostNorm,
+                    Some(layer_index),
+                )
+            });
+        if let Some(ffn_norm) = ffn_norm {
+            expect_vector_shape(ffn_norm, hidden_size, "ffn_norm")?;
+        }
+        if let Some(ffn_norm_2) =
+            manifest_tensor(manifest, NativeTensorRole::FfnNorm2, Some(layer_index))
+        {
+            expect_vector_shape(ffn_norm_2, hidden_size, "ffn_norm_2")?;
+        }
+        if let Some(ffn_post_norm) =
+            manifest_tensor(manifest, NativeTensorRole::FfnPostNorm, Some(layer_index))
+        {
+            expect_vector_shape(ffn_post_norm, hidden_size, "ffn_post_norm")?;
+        }
+        if let Some(ffn_post_norm_1) =
+            manifest_tensor(manifest, NativeTensorRole::FfnPostNorm1, Some(layer_index))
+        {
+            expect_vector_shape(ffn_post_norm_1, hidden_size, "ffn_post_norm_1")?;
+        }
+        if let Some(ffn_post_norm_2) =
+            manifest_tensor(manifest, NativeTensorRole::FfnPostNorm2, Some(layer_index))
+        {
+            expect_vector_shape(ffn_post_norm_2, hidden_size, "ffn_post_norm_2")?;
+        }
 
         let ffn_down = required_layer_tensor_spec(
             manifest,
@@ -879,6 +1036,95 @@ fn validate_native_model_tensor_shapes(
                 linear_dims.conv_kernel_dim,
             )?;
         }
+        if manifest_tensor(manifest, NativeTensorRole::FfnGateInp, Some(layer_index)).is_some() {
+            let moe_dims = resolved_moe_dims(manifest)?;
+            let gate_inp = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::FfnGateInp,
+                "ffn_gate_inp",
+            )?;
+            expect_matrix_shape(gate_inp, moe_dims.expert_count, hidden_size, "ffn_gate_inp")?;
+            if let Some(gate_inp_scale) = manifest_tensor(
+                manifest,
+                NativeTensorRole::FfnGateInpScale,
+                Some(layer_index),
+            ) {
+                expect_vector_shape(gate_inp_scale, hidden_size, "ffn_gate_inp_scale")?;
+            }
+            if let Some(ffn_gate_up_exps_packed) = manifest_tensor(
+                manifest,
+                NativeTensorRole::FfnGateUpExpsPacked,
+                Some(layer_index),
+            ) {
+                expect_tensor_shape(
+                    ffn_gate_up_exps_packed,
+                    &[
+                        moe_dims.expert_count,
+                        moe_dims.expert_intermediate_size.saturating_mul(2),
+                        hidden_size,
+                    ],
+                    "ffn_gate_up_exps_packed",
+                )?;
+            } else {
+                let ffn_gate_exps = required_layer_tensor_spec(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::FfnGateExps,
+                    "ffn_gate_exps",
+                )?;
+                let ffn_up_exps = required_layer_tensor_spec(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::FfnUpExps,
+                    "ffn_up_exps",
+                )?;
+                expect_tensor_shape(
+                    ffn_gate_exps,
+                    &[
+                        moe_dims.expert_count,
+                        moe_dims.expert_intermediate_size,
+                        hidden_size,
+                    ],
+                    "ffn_gate_exps",
+                )?;
+                expect_tensor_shape(
+                    ffn_up_exps,
+                    &[
+                        moe_dims.expert_count,
+                        moe_dims.expert_intermediate_size,
+                        hidden_size,
+                    ],
+                    "ffn_up_exps",
+                )?;
+            }
+            let ffn_down_exps = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::FfnDownExps,
+                "ffn_down_exps",
+            )?;
+            expect_tensor_shape(
+                ffn_down_exps,
+                &[
+                    moe_dims.expert_count,
+                    hidden_size,
+                    moe_dims.expert_intermediate_size,
+                ],
+                "ffn_down_exps",
+            )?;
+            if let Some(ffn_down_exps_scale) = manifest_tensor(
+                manifest,
+                NativeTensorRole::FfnDownExpsScale,
+                Some(layer_index),
+            ) {
+                expect_vector_shape(
+                    ffn_down_exps_scale,
+                    moe_dims.expert_count,
+                    "ffn_down_exps_scale",
+                )?;
+            }
+        }
 
         let intermediate_dim = if let Some(ffn_gate_up_packed) = manifest_tensor(
             manifest,
@@ -1026,6 +1272,13 @@ struct NativeLinearAttentionDims {
     conv_dim: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeMoeDims {
+    expert_count: u64,
+    experts_per_token: u64,
+    expert_intermediate_size: u64,
+}
+
 fn resolved_linear_attention_dims(
     manifest: &NativeModelManifest,
 ) -> Result<NativeLinearAttentionDims, NativeModelError> {
@@ -1096,6 +1349,27 @@ fn resolved_linear_attention_dims(
         key_dim,
         value_dim,
         conv_dim,
+    })
+}
+
+fn resolved_moe_dims(manifest: &NativeModelManifest) -> Result<NativeMoeDims, NativeModelError> {
+    let config = &manifest.moe;
+    Ok(NativeMoeDims {
+        expert_count: u64::from(config.expert_count.ok_or_else(|| {
+            NativeModelError::InvalidManifest {
+                message: "moe.expert_count must be configured".to_string(),
+            }
+        })?),
+        experts_per_token: u64::from(config.experts_per_token.ok_or_else(|| {
+            NativeModelError::InvalidManifest {
+                message: "moe.experts_per_token must be configured".to_string(),
+            }
+        })?),
+        expert_intermediate_size: u64::from(config.expert_intermediate_size.ok_or_else(|| {
+            NativeModelError::InvalidManifest {
+                message: "moe.expert_intermediate_size must be configured".to_string(),
+            }
+        })?),
     })
 }
 
@@ -1361,6 +1635,23 @@ fn expect_matrix_shape(
     }
 }
 
+fn expect_tensor_shape(
+    tensor: &NativeTensorSpec,
+    expected_shape: &[u64],
+    label: &str,
+) -> Result<(), NativeModelError> {
+    if tensor.shape == expected_shape {
+        Ok(())
+    } else {
+        Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} must have shape {:?}, got {:?}",
+                label, expected_shape, tensor.shape
+            ),
+        })
+    }
+}
+
 fn validate_linear_attention_conv_tensor(
     tensor: &NativeTensorSpec,
     expected_channels: u64,
@@ -1548,6 +1839,7 @@ mod tests {
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
             linear_attention: NativeLinearAttentionConfig::default(),
+            moe: NativeMoeConfig::default(),
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",
@@ -1666,6 +1958,102 @@ mod tests {
         manifest
     }
 
+    fn moe_layer_manifest() -> NativeModelManifest {
+        let mut manifest = packed_layer_manifest();
+        manifest.model_family = "gemma4".to_string();
+        manifest.hidden_size = 2816;
+        manifest.attention_head_count = 8;
+        manifest.attention_head_dim = 256;
+        manifest.kv_head_count = 2;
+        manifest.vocab_size = 262144;
+        manifest.tie_word_embeddings = true;
+        manifest
+            .tensors
+            .retain(|tensor| tensor.role != NativeTensorRole::LmHead);
+        for tensor in &mut manifest.tensors {
+            match tensor.role {
+                NativeTensorRole::TokenEmbedding => tensor.shape = vec![262144, 2816],
+                NativeTensorRole::FinalNorm => tensor.shape = vec![2816],
+                NativeTensorRole::AttentionNorm | NativeTensorRole::FfnNorm => {
+                    tensor.shape = vec![2816]
+                }
+                NativeTensorRole::AttentionQkvPacked => tensor.shape = vec![3072, 2816],
+                NativeTensorRole::AttentionO => tensor.shape = vec![2816, 2048],
+                NativeTensorRole::FfnGateUpPacked => tensor.shape = vec![4224, 2816],
+                NativeTensorRole::FfnDown => tensor.shape = vec![2816, 2112],
+                _ => {}
+            }
+        }
+        manifest.moe = NativeMoeConfig {
+            expert_count: Some(128),
+            experts_per_token: Some(8),
+            expert_intermediate_size: Some(704),
+        };
+        manifest.tensors.extend([
+            tensor(
+                "model.layers.0.router.proj.weight",
+                NativeTensorRole::FfnGateInp,
+                Some(0),
+                vec![128, 2816],
+            ),
+            tensor(
+                "model.layers.0.router.scale",
+                NativeTensorRole::FfnGateInpScale,
+                Some(0),
+                vec![2816],
+            ),
+            tensor(
+                "model.layers.0.experts.gate_up_proj.weight",
+                NativeTensorRole::FfnGateUpExpsPacked,
+                Some(0),
+                vec![128, 1408, 2816],
+            ),
+            tensor(
+                "model.layers.0.experts.down_proj.weight",
+                NativeTensorRole::FfnDownExps,
+                Some(0),
+                vec![128, 2816, 704],
+            ),
+            tensor(
+                "model.layers.0.experts.down_proj.scale",
+                NativeTensorRole::FfnDownExpsScale,
+                Some(0),
+                vec![128],
+            ),
+            tensor(
+                "model.layers.1.router.proj.weight",
+                NativeTensorRole::FfnGateInp,
+                Some(1),
+                vec![128, 2816],
+            ),
+            tensor(
+                "model.layers.1.router.scale",
+                NativeTensorRole::FfnGateInpScale,
+                Some(1),
+                vec![2816],
+            ),
+            tensor(
+                "model.layers.1.experts.gate_proj.weight",
+                NativeTensorRole::FfnGateExps,
+                Some(1),
+                vec![128, 704, 2816],
+            ),
+            tensor(
+                "model.layers.1.experts.up_proj.weight",
+                NativeTensorRole::FfnUpExps,
+                Some(1),
+                vec![128, 704, 2816],
+            ),
+            tensor(
+                "model.layers.1.experts.down_proj.weight",
+                NativeTensorRole::FfnDownExps,
+                Some(1),
+                vec![128, 2816, 704],
+            ),
+        ]);
+        manifest
+    }
+
     fn tensor(
         name: &str,
         role: NativeTensorRole,
@@ -1770,6 +2158,39 @@ mod tests {
 
         NativeModelArtifacts::from_dir(&dir)
             .expect("tied embeddings should allow lm_head omission");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_load_valid_moe_manifest() {
+        let manifest = moe_layer_manifest();
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let artifacts = NativeModelArtifacts::from_dir(&dir).expect("moe manifest should validate");
+
+        assert_eq!(
+            artifacts
+                .moe_config()
+                .and_then(|config| config.expert_count),
+            Some(128)
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_moe_tensors_without_manifest_config() {
+        let mut manifest = moe_layer_manifest();
+        manifest.moe = NativeMoeConfig::default();
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("missing moe config should fail closed");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(message.contains("manifest.moe"));
 
         let _ = fs::remove_dir_all(dir);
     }

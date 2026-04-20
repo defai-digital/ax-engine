@@ -42,6 +42,70 @@ fn simulated_numeric_trace(reference: &SimulatedNumericPath) -> MetalDispatchNum
     }
 }
 
+fn staged_numeric_values_for_layout(
+    token_ids: &[u32],
+    layout: MetalDispatchNumericLayout,
+    token_scale: f32,
+    head_scale: f32,
+    lane_scale: f32,
+    base_offset: f32,
+) -> Vec<f32> {
+    let mut staged =
+        Vec::with_capacity(token_ids.len().saturating_mul(layout.head_size() as usize));
+
+    for token_id in token_ids {
+        for head in 0..layout.head_count {
+            for lane in 0..layout.head_dim {
+                staged.push(
+                    *token_id as f32 * token_scale
+                        + head as f32 * head_scale
+                        + lane as f32 * lane_scale
+                        + base_offset,
+                );
+            }
+        }
+    }
+
+    staged
+}
+
+fn synthetic_staged_inputs_for_layout(
+    workload: &MetalDispatchWorkload,
+    layout: MetalDispatchNumericLayout,
+) -> MetalDispatchStagedInputs {
+    MetalDispatchStagedInputs {
+        key: staged_numeric_values_for_layout(
+            &workload.scheduled_token_ids,
+            layout,
+            0.5,
+            0.25,
+            0.03125,
+            0.0,
+        ),
+        value: staged_numeric_values_for_layout(
+            &workload.scheduled_token_ids,
+            layout,
+            1.0,
+            0.0625,
+            0.015625,
+            0.0,
+        ),
+        query: staged_numeric_values_for_layout(
+            &workload.scheduled_token_ids,
+            layout,
+            0.5,
+            0.25,
+            0.03125,
+            0.015625,
+        ),
+        layout,
+        source: MetalStagedInputSource::SyntheticTokenIds,
+        prefix_attention_tally: PrefixAttentionExecutionTally::default(),
+        #[cfg(target_os = "macos")]
+        final_layer_hidden_state_cache: None,
+    }
+}
+
 #[test]
 fn pipeline_lookup_index_preserves_first_position_for_duplicate_kernel_names() {
     let lookup = pipeline_lookup_index(&[
@@ -59,6 +123,8 @@ fn pipeline_lookup_index_preserves_first_position_for_duplicate_kernel_names() {
 fn optional_kernel_dispatch_plan_tracks_available_hot_path_kernels() {
     let lookup = pipeline_lookup_index(&[
         "vector_add_f32".to_string(),
+        "row_scale_f32".to_string(),
+        "row_vector_scale_f32".to_string(),
         "decode_logits_projection_f32".to_string(),
         "decode_logits_projection_batched_f16".to_string(),
         "gather_embedding_rows_bf16".to_string(),
@@ -82,6 +148,14 @@ fn optional_kernel_dispatch_plan_tracks_available_hot_path_kernels() {
     assert_eq!(
         plan.vector_add_kernel().map(|(name, _)| name),
         Some("vector_add_f32")
+    );
+    assert_eq!(
+        plan.row_scale_kernel().map(|(name, _)| name),
+        Some("row_scale_f32")
+    );
+    assert_eq!(
+        plan.row_vector_scale_kernel().map(|(name, _)| name),
+        Some("row_vector_scale_f32")
     );
     assert_eq!(
         plan.projection_kernel(NativeTensorDataType::F32)
@@ -340,52 +414,52 @@ fn linear_attention_conv_feedback_key_distinguishes_conv_shape() {
 #[test]
 fn optional_kernel_feedback_disables_kernel_after_threshold_failures() {
     let mut feedback = MetalOptionalKernelFeedbackState::default();
-    let kernel_name = "decode_logits_projection_f32";
+    let kernel_name = optional_kernel_name_feedback_key("decode_logits_projection_f32");
 
     for attempt in 0..PHASE1_OPTIONAL_KERNEL_DISABLE_FAILURE_THRESHOLD {
         assert!(optional_kernel_allowed_in_feedback_state(
             &feedback,
-            kernel_name
+            &kernel_name
         ));
-        record_optional_kernel_feedback_state(&mut feedback, kernel_name, false);
+        record_optional_kernel_feedback_state(&mut feedback, &kernel_name, false);
         let expected_failures = attempt + 1;
         assert_eq!(
-            feedback.consecutive_failures_by_kernel.get(kernel_name),
+            feedback.consecutive_failures_by_kernel.get(&kernel_name),
             Some(&expected_failures)
         );
     }
 
     assert!(!optional_kernel_allowed_in_feedback_state(
         &feedback,
-        kernel_name
+        &kernel_name
     ));
-    assert!(feedback.disabled_kernels.contains(kernel_name));
+    assert!(feedback.disabled_kernels.contains(&kernel_name));
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn optional_kernel_feedback_success_resets_consecutive_failures() {
     let mut feedback = MetalOptionalKernelFeedbackState::default();
-    let kernel_name = "rms_norm_f32";
+    let kernel_name = optional_kernel_name_feedback_key("rms_norm_f32");
 
     for _ in 0..PHASE1_OPTIONAL_KERNEL_DISABLE_FAILURE_THRESHOLD {
-        record_optional_kernel_feedback_state(&mut feedback, kernel_name, false);
+        record_optional_kernel_feedback_state(&mut feedback, &kernel_name, false);
     }
     assert!(!optional_kernel_allowed_in_feedback_state(
         &feedback,
-        kernel_name
+        &kernel_name
     ));
 
-    record_optional_kernel_feedback_state(&mut feedback, kernel_name, true);
+    record_optional_kernel_feedback_state(&mut feedback, &kernel_name, true);
 
     assert!(optional_kernel_allowed_in_feedback_state(
         &feedback,
-        kernel_name
+        &kernel_name
     ));
     assert!(!feedback
         .consecutive_failures_by_kernel
-        .contains_key(kernel_name));
-    assert!(!feedback.disabled_kernels.contains(kernel_name));
+        .contains_key(&kernel_name));
+    assert!(!feedback.disabled_kernels.contains(&kernel_name));
 }
 
 #[cfg(target_os = "macos")]
@@ -507,6 +581,21 @@ fn direct_decode_group_output_validation_requires_complete_request_coverage() {
     assert_eq!(valid_output, Some(valid_result));
     assert!(valid_success);
 
+    let token_only_result = ModelBoundDirectDecodeResult {
+        tokens: vec![(RequestId(3), 3), (RequestId(5), 5)],
+        logits_outputs: Vec::new(),
+        model_bound_ffn_decode: true,
+        native_logits_projection_decode: true,
+        execution_tally: PrefixAttentionExecutionTally::default(),
+        native_dense_tally: DirectDecodeNativeDenseTally::default(),
+    };
+    let (token_only_output, token_only_success) = validate_model_bound_direct_decode_group_output(
+        Some(token_only_result.clone()),
+        &expected_request_ids,
+    );
+    assert_eq!(token_only_output, Some(token_only_result));
+    assert!(token_only_success);
+
     let incomplete_result = ModelBoundDirectDecodeResult {
         tokens: vec![(RequestId(3), 3)],
         logits_outputs: vec![RequestLogitsOutput {
@@ -549,9 +638,11 @@ fn direct_decode_batched_group_partition_skips_shapes_disabled_by_feedback() {
     };
     let make_item = |request_id: u64| PreparedDirectDecodeItem {
         request_id: RequestId(request_id),
+        mode: ExecutionMode::Decode,
         dims,
         hidden: vec![0.0; dims.hidden_dim],
         attention_input: vec![0.0; dims.input_width],
+        deterministic_argmax_sampling: false,
     };
     let group = vec![make_item(1), make_item(2), make_item(3), make_item(4)];
     let mut feedback = MetalOptionalKernelFeedbackState::default();
@@ -583,9 +674,11 @@ fn direct_decode_batched_group_partition_keeps_allowed_or_singleton_shapes() {
     };
     let make_item = |request_id: u64| PreparedDirectDecodeItem {
         request_id: RequestId(request_id),
+        mode: ExecutionMode::Decode,
         dims,
         hidden: vec![0.0; dims.hidden_dim],
         attention_input: vec![0.0; dims.input_width],
+        deterministic_argmax_sampling: false,
     };
 
     let allowed_group = vec![make_item(1), make_item(2)];
@@ -709,6 +802,14 @@ fn prefix_attention_group_predicate_partitions_disabled_batch_shape_before_retry
                 },
             },
         ],
+        request_contexts: vec![crate::runner::RunnerRequestContext {
+            request_id: RequestId(17),
+            prompt_len: 4,
+            processed_prompt_tokens: 0,
+            generated_len: 0,
+            max_output_tokens: 32,
+            deterministic_argmax_sampling: true,
+        }],
     };
     let mut only_singletons_allowed = |candidate_range: std::ops::Range<usize>| {
         Some(candidate_range.end - candidate_range.start <= 1)
@@ -1326,6 +1427,7 @@ fn write_valid_native_model_fixture() -> PathBuf {
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
+        moe: crate::model::NativeMoeConfig::default(),
         tensors: vec![
             native_model_tensor(
                 "model.embed_tokens.weight",
@@ -1499,6 +1601,7 @@ fn write_projection_native_model_fixture() -> PathBuf {
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
+        moe: crate::model::NativeMoeConfig::default(),
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -1642,6 +1745,85 @@ fn write_projection_qk_norm_native_model_fixture() -> PathBuf {
         serde_json::to_vec_pretty(&manifest).expect("projection manifest should serialize"),
     )
     .expect("projection manifest should rewrite");
+
+    root_dir
+}
+
+#[cfg(target_os = "macos")]
+fn write_projection_moe_native_model_fixture() -> PathBuf {
+    let root_dir = write_projection_native_model_fixture();
+    let router = vec![
+        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ];
+    let packed_gate_up = vec![
+        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
+        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ];
+    let down_experts = vec![
+        1.0, //
+        0.0, //
+        0.0, //
+        0.0, //
+        0.0, //
+        0.0, //
+        0.0, //
+        0.0, //
+        0.0, //
+        1.0, //
+        0.0, //
+        0.0, //
+        0.0, //
+        0.0, //
+        0.0, //
+        0.0,
+    ];
+    write_f32_tensor_file(&root_dir, "ffn_gate_inp.bin", &router);
+    write_f32_tensor_file(&root_dir, "ffn_gate_up_exps.bin", &packed_gate_up);
+    write_f32_tensor_file(&root_dir, "ffn_down_exps.bin", &down_experts);
+
+    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
+    let manifest_bytes = fs::read(&manifest_path).expect("projection manifest should read");
+    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
+        .expect("projection manifest should deserialize");
+    manifest.moe = crate::model::NativeMoeConfig {
+        expert_count: Some(2),
+        experts_per_token: Some(1),
+        expert_intermediate_size: Some(1),
+    };
+    manifest.tensors.extend([
+        native_model_tensor_with_file(
+            "model.layers.0.mlp.router.weight",
+            NativeTensorRole::FfnGateInp,
+            Some(0),
+            &[2, 8],
+            "ffn_gate_inp.bin",
+            (router.len() * size_of::<f32>()) as u64,
+        ),
+        native_model_tensor_with_file(
+            "model.layers.0.mlp.experts.gate_up_proj.weight",
+            NativeTensorRole::FfnGateUpExpsPacked,
+            Some(0),
+            &[2, 2, 8],
+            "ffn_gate_up_exps.bin",
+            (packed_gate_up.len() * size_of::<f32>()) as u64,
+        ),
+        native_model_tensor_with_file(
+            "model.layers.0.mlp.experts.down_proj.weight",
+            NativeTensorRole::FfnDownExps,
+            Some(0),
+            &[2, 8, 1],
+            "ffn_down_exps.bin",
+            (down_experts.len() * size_of::<f32>()) as u64,
+        ),
+    ]);
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("projection manifest should serialize"),
+    )
+    .expect("projection manifest should write");
 
     root_dir
 }
@@ -1839,6 +2021,7 @@ fn write_grouped_projection_native_model_fixture() -> PathBuf {
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
+        moe: crate::model::NativeMoeConfig::default(),
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -2124,6 +2307,7 @@ fn write_wide_projection_native_model_fixture() -> PathBuf {
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
+        moe: crate::model::NativeMoeConfig::default(),
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -2296,6 +2480,7 @@ fn write_wide_direct_decode_native_model_fixture() -> PathBuf {
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
+        moe: crate::model::NativeMoeConfig::default(),
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -2643,6 +2828,7 @@ fn write_direct_decode_native_model_fixture_with_variant(
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
+        moe: crate::model::NativeMoeConfig::default(),
         tensors,
     };
 
@@ -3051,6 +3237,177 @@ fn native_model_bindings_cover_all_manifest_tensors() {
     let _ = fs::remove_dir_all(model_dir);
 }
 
+#[test]
+fn native_model_bindings_accept_moe_manifest_and_materialize_layer_moe_bindings() {
+    let model_dir = write_valid_native_model_fixture();
+    let manifest_path = model_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
+    let mut manifest: crate::model::NativeModelManifest = serde_json::from_slice(
+        &fs::read(&manifest_path).expect("native model manifest should read"),
+    )
+    .expect("native model manifest should deserialize");
+    manifest.moe = crate::model::NativeMoeConfig {
+        expert_count: Some(2),
+        experts_per_token: Some(1),
+        expert_intermediate_size: Some(2),
+    };
+    manifest.tensors.extend([
+        native_model_tensor(
+            "model.layers.0.mlp.router.weight",
+            NativeTensorRole::FfnGateInp,
+            Some(0),
+            vec![2, 2],
+        ),
+        native_model_tensor(
+            "model.layers.0.mlp.experts.gate_up_proj.weight",
+            NativeTensorRole::FfnGateUpExpsPacked,
+            Some(0),
+            vec![2, 4, 2],
+        ),
+        native_model_tensor(
+            "model.layers.0.mlp.experts.down_proj.weight",
+            NativeTensorRole::FfnDownExps,
+            Some(0),
+            vec![2, 2, 2],
+        ),
+    ]);
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("native model manifest should serialize"),
+    )
+    .expect("native model manifest should write");
+
+    let artifacts =
+        NativeModelArtifacts::from_dir(&model_dir).expect("native model artifacts should load");
+    let bindings = MetalNativeModelBindings::from_artifacts(&artifacts)
+        .expect("moe manifests should now bind once required tensors are present");
+    let layer = bindings
+        .layers
+        .first()
+        .expect("fixture should expose the first layer");
+    let moe = layer
+        .moe
+        .as_ref()
+        .expect("moe tensors should materialize layer-level bindings");
+
+    assert_eq!(moe.router.spec.role, NativeTensorRole::FfnGateInp);
+    assert_eq!(moe.expert_down.spec.role, NativeTensorRole::FfnDownExps);
+    assert!(matches!(
+        moe.expert_gate_up,
+        MetalMoeExpertGateUpBindings::Packed(_)
+    ));
+
+    let _ = fs::remove_dir_all(model_dir);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn moe_ffn_continuation_routes_tokens_into_selected_experts() {
+    let model_dir = write_projection_moe_native_model_fixture();
+    let artifacts =
+        NativeModelArtifacts::from_dir(&model_dir).expect("native model artifacts should load");
+    let bindings =
+        MetalNativeModelBindings::from_artifacts(&artifacts).expect("bindings should load");
+    let device = Device::system_default().expect("Metal device should exist on macOS");
+    let buffers = MetalNativeModelBufferBindings::from_model_bindings(&device, &bindings)
+        .expect("native model buffers should bind");
+    let layer = bindings
+        .layers
+        .first()
+        .expect("fixture should expose the first layer");
+    assert!(
+        layer.moe.is_some(),
+        "fixture should materialize MoE bindings"
+    );
+
+    let input_rows = vec![
+        vec![1.0_f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        vec![0.0_f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ];
+    let (next_hidden_rows, tally, nontrivial) =
+        apply_ffn_continuation_rows_with_tally(&artifacts, layer, &buffers, &input_rows, None)
+            .expect("moe continuation should resolve");
+
+    assert!(
+        nontrivial,
+        "selected experts should contribute non-trivial output"
+    );
+    assert_eq!(next_hidden_rows.len(), input_rows.len());
+    assert!(
+        next_hidden_rows[0][0] > input_rows[0][0],
+        "expert 0 should amplify the first token on dimension 0: {:?}",
+        next_hidden_rows[0]
+    );
+    assert!(
+        next_hidden_rows[1][1] > input_rows[1][1],
+        "expert 1 should amplify the second token on dimension 1: {:?}",
+        next_hidden_rows[1]
+    );
+    assert!(
+        next_hidden_rows[0][1].abs() < 1e-5 && next_hidden_rows[1][0].abs() < 1e-5,
+        "each token should stay routed to its intended expert dimensions; got {:?}",
+        next_hidden_rows
+    );
+    assert!(
+        tally.cpu_projection_rows > 0,
+        "MoE expert projections should currently be accounted as CPU reference work"
+    );
+
+    let _ = fs::remove_dir_all(model_dir);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn moe_ffn_continuation_uses_native_expert_projection_when_metal_available() {
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        return;
+    };
+    let model_dir = write_projection_moe_native_model_fixture();
+    let artifacts =
+        NativeModelArtifacts::from_dir(&model_dir).expect("native model artifacts should load");
+    let bindings =
+        MetalNativeModelBindings::from_artifacts(&artifacts).expect("bindings should load");
+    let device = Device::system_default().expect("Metal device should exist on macOS");
+    let buffers = MetalNativeModelBufferBindings::from_model_bindings(&device, &bindings)
+        .expect("native model buffers should bind");
+    let layer = bindings
+        .layers
+        .first()
+        .expect("fixture should expose the first layer");
+
+    let input_rows = vec![
+        vec![1.0_f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        vec![2.0_f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ];
+    let (_next_hidden_rows, tally, nontrivial) = apply_ffn_continuation_rows_with_tally(
+        &artifacts,
+        layer,
+        &buffers,
+        &input_rows,
+        Some(&bringup),
+    )
+    .expect("moe continuation should resolve under Metal bringup");
+
+    assert!(
+        nontrivial,
+        "Metal MoE continuation should still produce output"
+    );
+    assert!(
+        tally.native_projection_rows > 0,
+        "MoE expert projections should contribute native rows under Metal bringup; tally={tally:?}"
+    );
+    assert_eq!(
+        tally.cpu_projection_rows, 0,
+        "MoE expert projections should no longer fall back to CPU in this fixture; tally={tally:?}"
+    );
+    assert!(
+        tally.native_residual_add_elements > 0,
+        "MoE accumulation should contribute native residual-add work under Metal bringup; tally={tally:?}"
+    );
+
+    let _ = fs::remove_dir_all(model_dir);
+    let _ = fs::remove_dir_all(output_dir);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn native_model_buffers_bind_real_tensor_bytes_into_metal_shared_buffers() {
@@ -3134,6 +3491,38 @@ fn metal_bringup_runner_executes_single_layer_fixture_with_real_build_artifacts(
             |(key, value)| key == "metal_dispatch_direct_decode_native_projection_row_count"
                 && *value > 0
         ));
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_native_projection_f32_binding_count"
+                && *value > 0
+        ));
+    assert!(output
+        .route_metadata
+        .crossover_decisions
+        .iter()
+        .any(
+            |(key, value)| key == "metal_dispatch_native_rms_norm_f32_binding_count" && *value > 0
+        ));
+    let dispatch = runner
+        .last_dispatch()
+        .expect("successful real-build run should retain last dispatch");
+    assert!(
+        dispatch
+            .runtime
+            .native_dense_kernel_coverage
+            .projection_f32_binding_count
+            > 0
+    );
+    assert!(
+        dispatch
+            .runtime
+            .native_dense_kernel_coverage
+            .rms_norm_f32_binding_count
+            > 0
+    );
     assert!(output
         .route_metadata
         .crossover_decisions
@@ -4196,12 +4585,6 @@ fn batched_layer_continuation_matches_per_item_continuation_for_mixed_batch() {
                 .expect("attention_o should exist"),
         )
         .expect("attention_o binding should resolve");
-    let ffn_norm = buffers
-        .binding_for(&layer.ffn_norm)
-        .expect("ffn_norm binding should resolve");
-    let ffn_down = buffers
-        .binding_for(&layer.ffn_down)
-        .expect("ffn_down binding should resolve");
     let staged =
         stage_model_layer_qkv_inputs(&artifacts, layer, &buffers, &workload, &hidden_states, None)
             .expect("full staged inputs should resolve");
@@ -4214,11 +4597,10 @@ fn batched_layer_continuation_matches_per_item_continuation_for_mixed_batch() {
         layer,
         &buffers,
         attention_o,
-        ffn_norm,
-        ffn_down,
         &hidden_states,
         &attention_output,
         head_size,
+        None,
         None,
     )
     .expect("batched continuation should resolve");
@@ -4242,11 +4624,10 @@ fn batched_layer_continuation_matches_per_item_continuation_for_mixed_batch() {
                 layer,
                 &buffers,
                 attention_o,
-                ffn_norm,
-                ffn_down,
                 item_hidden_states,
                 item_attention_output,
                 head_size,
+                None,
                 None,
             )
             .expect("per-item continuation should resolve");
@@ -4405,6 +4786,7 @@ fn model_bound_direct_decode_reuses_cached_multilayer_hidden_states() {
         None,
         None,
         None,
+        None,
     );
     let reused = derive_model_bound_direct_decode_result(
         &input,
@@ -4413,6 +4795,7 @@ fn model_bound_direct_decode_reuses_cached_multilayer_hidden_states() {
         Some(&bindings),
         Some(&buffers),
         Some(hidden_state_cache),
+        None,
         None,
         None,
     );
@@ -4478,6 +4861,7 @@ fn model_bound_direct_decode_batches_multiple_decode_items_without_changing_outp
         None,
         None,
         None,
+        None,
     );
 
     let mut expected_tokens = Vec::new();
@@ -4529,9 +4913,6 @@ fn model_bound_direct_decode_batches_multiple_decode_items_without_changing_outp
     if expected_native_logits_projection_decode {
         expected_native_dense_tally =
             expected_native_dense_tally.record_batched_logits_group(expected_tokens.len());
-    } else if expected_tokens.len() > 1 {
-        expected_native_dense_tally =
-            expected_native_dense_tally.record_batched_group_fallback(expected_tokens.len());
     }
 
     assert_eq!(batched.tokens, expected_tokens);
@@ -4562,15 +4943,19 @@ fn grouped_direct_decode_results_fall_back_to_singletons_when_group_processing_f
     let groups = vec![vec![
         PreparedDirectDecodeItem {
             request_id: RequestId(9),
+            mode: ExecutionMode::Decode,
             dims,
             hidden: vec![0.0; dims.hidden_dim],
             attention_input: vec![0.0; dims.input_width],
+            deterministic_argmax_sampling: false,
         },
         PreparedDirectDecodeItem {
             request_id: RequestId(11),
+            mode: ExecutionMode::Decode,
             dims,
             hidden: vec![0.0; dims.hidden_dim],
             attention_input: vec![0.0; dims.input_width],
+            deterministic_argmax_sampling: false,
         },
     ]];
     let mut attempted_group_sizes = Vec::new();
@@ -4629,27 +5014,35 @@ fn grouped_direct_decode_results_recursively_preserve_batched_subgroups() {
     let groups = vec![vec![
         PreparedDirectDecodeItem {
             request_id: RequestId(3),
+            mode: ExecutionMode::Decode,
             dims,
             hidden: vec![0.0; dims.hidden_dim],
             attention_input: vec![0.0; dims.input_width],
+            deterministic_argmax_sampling: false,
         },
         PreparedDirectDecodeItem {
             request_id: RequestId(5),
+            mode: ExecutionMode::Decode,
             dims,
             hidden: vec![0.0; dims.hidden_dim],
             attention_input: vec![0.0; dims.input_width],
+            deterministic_argmax_sampling: false,
         },
         PreparedDirectDecodeItem {
             request_id: RequestId(7),
+            mode: ExecutionMode::Decode,
             dims,
             hidden: vec![0.0; dims.hidden_dim],
             attention_input: vec![0.0; dims.input_width],
+            deterministic_argmax_sampling: false,
         },
         PreparedDirectDecodeItem {
             request_id: RequestId(9),
+            mode: ExecutionMode::Decode,
             dims,
             hidden: vec![0.0; dims.hidden_dim],
             attention_input: vec![0.0; dims.input_width],
+            deterministic_argmax_sampling: false,
         },
     ]];
     let mut attempted_group_sizes = Vec::new();
@@ -4847,13 +5240,35 @@ fn model_bound_decode_tokens_use_lm_head_projection_for_decode_items() {
         None,
         None,
         None,
+        None,
     );
 
-    assert_eq!(direct_decode.tokens, vec![(RequestId(9), 4)]);
-    assert_eq!(direct_decode.logits_outputs.len(), 1);
-    assert_eq!(direct_decode.logits_outputs[0].request_id, RequestId(9));
+    let expected_prefill_token = direct_decode
+        .logits_outputs
+        .iter()
+        .find(|output| output.request_id == RequestId(7))
+        .and_then(|output| {
+            output
+                .logits
+                .iter()
+                .enumerate()
+                .max_by(|(_, left), (_, right)| left.total_cmp(right))
+                .map(|(index, _)| index as u32)
+        })
+        .expect("prefill-completion logits should remain sampleable");
+    assert!(direct_decode
+        .tokens
+        .contains(&(RequestId(7), expected_prefill_token)));
+    assert!(direct_decode.tokens.contains(&(RequestId(9), 4)));
+    assert_eq!(direct_decode.logits_outputs.len(), 2);
+    let decode_logits = direct_decode
+        .logits_outputs
+        .iter()
+        .find(|output| output.request_id == RequestId(9))
+        .expect("decode logits output should remain present");
+    assert_eq!(decode_logits.request_id, RequestId(9));
     assert_eq!(
-        direct_decode.logits_outputs[0]
+        decode_logits
             .logits
             .iter()
             .enumerate()
@@ -4862,6 +5277,250 @@ fn model_bound_decode_tokens_use_lm_head_projection_for_decode_items() {
         Some(4)
     );
     assert!(!direct_decode.model_bound_ffn_decode);
+
+    let _ = fs::remove_dir_all(model_dir);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn deterministic_model_bound_direct_decode_omits_decode_logits_payload() {
+    let model_dir = write_direct_decode_native_model_fixture(false);
+    let artifacts =
+        NativeModelArtifacts::from_dir(&model_dir).expect("native model artifacts should load");
+    let bindings =
+        MetalNativeModelBindings::from_artifacts(&artifacts).expect("bindings should load");
+    let device = Device::system_default().expect("Metal device should exist on macOS");
+    let buffers = MetalNativeModelBufferBindings::from_model_bindings(&device, &bindings)
+        .expect("native model buffers should bind");
+    let mut input = sample_runner_input();
+    input.request_contexts[1].deterministic_argmax_sampling = true;
+    let mut attention_output_bits =
+        vec![0_u32; input.execution_batch.total_scheduled_tokens as usize * 8];
+    let decode_base = 3 * PHASE1_NUMERIC_HEAD_SIZE as usize;
+    for (index, value) in [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+        .iter()
+        .enumerate()
+    {
+        attention_output_bits[decode_base + index] = value.to_bits();
+    }
+
+    let direct_decode = derive_model_bound_direct_decode_result(
+        &input,
+        &attention_output_bits,
+        Some(&artifacts),
+        Some(&bindings),
+        Some(&buffers),
+        None,
+        None,
+        None,
+        None,
+    );
+
+    assert!(direct_decode
+        .tokens
+        .iter()
+        .any(|(request_id, token_id)| { *request_id == RequestId(9) && *token_id == 4 }));
+    assert_eq!(direct_decode.logits_outputs.len(), 1);
+    assert!(direct_decode
+        .logits_outputs
+        .iter()
+        .all(|output| output.request_id != RequestId(9)));
+
+    let _ = fs::remove_dir_all(model_dir);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn deterministic_model_bound_prefill_completion_omits_bridge_logits_payload() {
+    let model_dir = write_direct_decode_native_model_fixture(false);
+    let artifacts =
+        NativeModelArtifacts::from_dir(&model_dir).expect("native model artifacts should load");
+    let bindings =
+        MetalNativeModelBindings::from_artifacts(&artifacts).expect("bindings should load");
+    let device = Device::system_default().expect("Metal device should exist on macOS");
+    let buffers = MetalNativeModelBufferBindings::from_model_bindings(&device, &bindings)
+        .expect("native model buffers should bind");
+    let mut input = sample_runner_input();
+    let mut attention_output_bits =
+        vec![0_u32; input.execution_batch.total_scheduled_tokens as usize * 8];
+    let decode_base = 3 * PHASE1_NUMERIC_HEAD_SIZE as usize;
+    for (index, value) in [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+        .iter()
+        .enumerate()
+    {
+        attention_output_bits[decode_base + index] = value.to_bits();
+    }
+
+    let baseline = derive_model_bound_direct_decode_result(
+        &input,
+        &attention_output_bits,
+        Some(&artifacts),
+        Some(&bindings),
+        Some(&buffers),
+        None,
+        None,
+        None,
+        None,
+    );
+    let expected_bridge_token = baseline
+        .logits_outputs
+        .iter()
+        .find(|output| output.request_id == RequestId(7))
+        .and_then(|output| {
+            output
+                .logits
+                .iter()
+                .enumerate()
+                .max_by(|(_, left), (_, right)| left.total_cmp(right))
+                .map(|(token_id, _)| token_id as u32)
+        })
+        .expect("baseline prefill-completion bridge logits should remain sampleable");
+
+    input.request_contexts[0].deterministic_argmax_sampling = true;
+    let direct_decode = derive_model_bound_direct_decode_result(
+        &input,
+        &attention_output_bits,
+        Some(&artifacts),
+        Some(&bindings),
+        Some(&buffers),
+        None,
+        None,
+        None,
+        None,
+    );
+
+    assert!(direct_decode
+        .tokens
+        .contains(&(RequestId(7), expected_bridge_token)));
+    assert!(direct_decode
+        .logits_outputs
+        .iter()
+        .all(|output| output.request_id != RequestId(7)));
+
+    let _ = fs::remove_dir_all(model_dir);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn deterministic_model_bound_sampleable_items_omit_all_logits_payloads() {
+    let model_dir = write_direct_decode_native_model_fixture(false);
+    let artifacts =
+        NativeModelArtifacts::from_dir(&model_dir).expect("native model artifacts should load");
+    let bindings =
+        MetalNativeModelBindings::from_artifacts(&artifacts).expect("bindings should load");
+    let device = Device::system_default().expect("Metal device should exist on macOS");
+    let buffers = MetalNativeModelBufferBindings::from_model_bindings(&device, &bindings)
+        .expect("native model buffers should bind");
+    let mut input = sample_runner_input();
+    let mut attention_output_bits =
+        vec![0_u32; input.execution_batch.total_scheduled_tokens as usize * 8];
+    let decode_base = 3 * PHASE1_NUMERIC_HEAD_SIZE as usize;
+    for (index, value) in [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+        .iter()
+        .enumerate()
+    {
+        attention_output_bits[decode_base + index] = value.to_bits();
+    }
+
+    let baseline = derive_model_bound_direct_decode_result(
+        &input,
+        &attention_output_bits,
+        Some(&artifacts),
+        Some(&bindings),
+        Some(&buffers),
+        None,
+        None,
+        None,
+        None,
+    );
+    let expected_prefill_token = baseline
+        .logits_outputs
+        .iter()
+        .find(|output| output.request_id == RequestId(7))
+        .and_then(|output| {
+            output
+                .logits
+                .iter()
+                .enumerate()
+                .max_by(|(_, left), (_, right)| left.total_cmp(right))
+                .map(|(token_id, _)| token_id as u32)
+        })
+        .expect("baseline prefill-completion logits should remain sampleable");
+
+    input
+        .request_contexts
+        .iter_mut()
+        .for_each(|context| context.deterministic_argmax_sampling = true);
+    let mut decode_only_input = input.clone();
+    decode_only_input.execution_batch.execution_plan_ref =
+        Some("phase1.qwen3_dense.decode_only".into());
+    decode_only_input
+        .execution_batch
+        .items
+        .retain(|item| item.request_id == RequestId(9));
+    decode_only_input.execution_batch.total_scheduled_tokens = 1;
+    decode_only_input
+        .block_tables
+        .retain(|resolved| resolved.request_id == RequestId(9));
+    decode_only_input
+        .request_contexts
+        .retain(|context| context.request_id == RequestId(9));
+    let decode_only_attention_output_bits = attention_output_bits
+        .get(decode_base..decode_base + PHASE1_NUMERIC_HEAD_SIZE as usize)
+        .expect("decode attention output should slice to a single token")
+        .to_vec();
+    let decode_only = derive_model_bound_direct_decode_result(
+        &decode_only_input,
+        &decode_only_attention_output_bits,
+        Some(&artifacts),
+        Some(&bindings),
+        Some(&buffers),
+        None,
+        None,
+        None,
+        None,
+    );
+    let direct_decode = derive_model_bound_direct_decode_result(
+        &input,
+        &attention_output_bits,
+        Some(&artifacts),
+        Some(&bindings),
+        Some(&buffers),
+        None,
+        None,
+        None,
+        None,
+    );
+
+    assert!(direct_decode
+        .tokens
+        .contains(&(RequestId(7), expected_prefill_token)));
+    assert!(direct_decode.tokens.contains(&(RequestId(9), 4)));
+    assert!(direct_decode.logits_outputs.is_empty());
+    assert_eq!(
+        direct_decode
+            .native_dense_tally
+            .native_batched_logits_group_count,
+        0
+    );
+    assert_eq!(
+        direct_decode
+            .native_dense_tally
+            .native_batched_logits_token_count,
+        0
+    );
+    assert_eq!(
+        direct_decode.native_dense_tally,
+        decode_only.native_dense_tally
+    );
+    assert_eq!(
+        direct_decode.model_bound_ffn_decode,
+        decode_only.model_bound_ffn_decode
+    );
+    assert_eq!(
+        direct_decode.native_logits_projection_decode,
+        decode_only.native_logits_projection_decode
+    );
 
     let _ = fs::remove_dir_all(model_dir);
 }
@@ -5014,6 +5673,7 @@ fn model_bound_direct_decode_matches_explicit_prefix_cache_for_multilayer_fixtur
         None,
         None,
         None,
+        None,
     );
     let direct_decode_with_cache = derive_model_bound_direct_decode_result(
         &input,
@@ -5023,6 +5683,7 @@ fn model_bound_direct_decode_matches_explicit_prefix_cache_for_multilayer_fixtur
         Some(&buffers),
         None,
         Some(prefix_layer_caches.as_slice()),
+        None,
         None,
     );
 
@@ -5066,10 +5727,15 @@ fn model_bound_decode_tokens_apply_split_ffn_continuation_before_projection() {
         None,
         None,
         None,
+        None,
     );
 
     assert_eq!(direct_decode.tokens, vec![(RequestId(9), 4)]);
-    assert_eq!(direct_decode.logits_outputs.len(), 1);
+    assert_eq!(direct_decode.logits_outputs.len(), 2);
+    assert!(direct_decode
+        .logits_outputs
+        .iter()
+        .any(|output| output.request_id == RequestId(9)));
     assert!(direct_decode.model_bound_ffn_decode);
 
     let _ = fs::remove_dir_all(model_dir);
@@ -5099,10 +5765,15 @@ fn model_bound_decode_tokens_apply_packed_ffn_continuation_before_projection() {
         None,
         None,
         None,
+        None,
     );
 
     assert_eq!(direct_decode.tokens, vec![(RequestId(9), 4)]);
-    assert_eq!(direct_decode.logits_outputs.len(), 1);
+    assert_eq!(direct_decode.logits_outputs.len(), 2);
+    assert!(direct_decode
+        .logits_outputs
+        .iter()
+        .any(|output| output.request_id == RequestId(9)));
     assert!(direct_decode.model_bound_ffn_decode);
 
     let _ = fs::remove_dir_all(model_dir);
@@ -5180,6 +5851,195 @@ fn batched_ffn_gate_up_paths_match_rowwise_reference_for_split_and_packed_layout
 
         let _ = fs::remove_dir_all(model_dir);
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn batched_moe_expert_gate_up_matches_rowwise_reference_for_packed_layout() {
+    let model_dir = write_projection_moe_native_model_fixture();
+    let artifacts =
+        NativeModelArtifacts::from_dir(&model_dir).expect("native model artifacts should load");
+    let bindings =
+        MetalNativeModelBindings::from_artifacts(&artifacts).expect("bindings should load");
+    let device = Device::system_default().expect("Metal device should exist on macOS");
+    let buffers = MetalNativeModelBufferBindings::from_model_bindings(&device, &bindings)
+        .expect("native model buffers should bind");
+    let layer = bindings
+        .layers
+        .first()
+        .expect("fixture should contain one layer");
+    let moe = layer
+        .moe
+        .as_ref()
+        .expect("fixture should contain MoE bindings");
+    let input_rows = vec![
+        vec![1.0_f32, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        vec![0.5_f32, 0.75, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ];
+    let expert_index = 0_usize;
+    let intermediate_dim = 1_usize;
+
+    let packed = match &moe.expert_gate_up {
+        MetalMoeExpertGateUpBindings::Packed(binding) => buffers
+            .binding_for(binding)
+            .expect("packed expert gate/up binding should resolve"),
+        MetalMoeExpertGateUpBindings::Split { .. } => {
+            panic!("fixture should use packed expert gate/up")
+        }
+    };
+    let mut expected_gate_rows = Vec::new();
+    let mut expected_up_rows = Vec::new();
+    let mut expected_tally = DirectDecodeNativeDenseTally::default();
+    for input in &input_rows {
+        expected_gate_rows.push(
+            project_moe_expert_matrix_rows_cpu(packed, expert_index, 0, intermediate_dim, input)
+                .expect("rowwise expert gate projection should succeed"),
+        );
+        expected_up_rows.push(
+            project_moe_expert_matrix_rows_cpu(
+                packed,
+                expert_index,
+                intermediate_dim,
+                intermediate_dim,
+                input,
+            )
+            .expect("rowwise expert up projection should succeed"),
+        );
+        expected_tally = expected_tally
+            .record_projection_rows(intermediate_dim, false)
+            .record_projection_rows(intermediate_dim, false);
+    }
+
+    let (actual_gate_rows, actual_up_rows, actual_tally) =
+        project_batched_moe_expert_gate_up_with_tally(
+            &moe.expert_gate_up,
+            &buffers,
+            expert_index,
+            intermediate_dim,
+            &input_rows,
+            8,
+            None,
+        )
+        .expect("batched expert gate/up projection should succeed");
+
+    assert_eq!(actual_tally, expected_tally);
+    for (actual, expected) in actual_gate_rows.iter().zip(expected_gate_rows.iter()) {
+        assert_f32_slice_close(actual, expected, 1e-6);
+    }
+    for (actual, expected) in actual_up_rows.iter().zip(expected_up_rows.iter()) {
+        assert_f32_slice_close(actual, expected, 1e-6);
+    }
+
+    let _ = fs::remove_dir_all(model_dir);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn batched_moe_expert_gate_up_uses_native_projection_when_metal_available() {
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        return;
+    };
+    let model_dir = write_projection_moe_native_model_fixture();
+    let artifacts =
+        NativeModelArtifacts::from_dir(&model_dir).expect("native model artifacts should load");
+    let bindings =
+        MetalNativeModelBindings::from_artifacts(&artifacts).expect("bindings should load");
+    let device = Device::system_default().expect("Metal device should exist on macOS");
+    let buffers = MetalNativeModelBufferBindings::from_model_bindings(&device, &bindings)
+        .expect("native model buffers should bind");
+    let layer = bindings
+        .layers
+        .first()
+        .expect("fixture should contain one layer");
+    let moe = layer
+        .moe
+        .as_ref()
+        .expect("fixture should contain MoE bindings");
+    let input_rows = vec![
+        vec![1.0_f32, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        vec![0.5_f32, 0.75, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ];
+
+    let (_gate_rows, _up_rows, tally) = project_batched_moe_expert_gate_up_with_tally(
+        &moe.expert_gate_up,
+        &buffers,
+        0,
+        1,
+        &input_rows,
+        8,
+        Some(&bringup),
+    )
+    .expect("Metal expert gate/up projection should succeed");
+
+    assert!(
+        tally.native_projection_rows > 0,
+        "expert gate/up batched projection should contribute native rows under Metal bringup; tally={tally:?}"
+    );
+    assert_eq!(
+        tally.cpu_projection_rows, 0,
+        "expert gate/up batched projection should stay off the CPU in this fixture; tally={tally:?}"
+    );
+
+    let _ = fs::remove_dir_all(model_dir);
+    let _ = fs::remove_dir_all(output_dir);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn batched_row_scale_f32_gpu_output_matches_cpu_reference() {
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        return;
+    };
+    let mut rows = vec![vec![1.0_f32, 2.0, 3.0, 4.0], vec![5.0_f32, 6.0, 7.0, 8.0]];
+    let scales = vec![0.5_f32, 2.0];
+    let mut expected = rows.clone();
+    for (row, scale) in expected.iter_mut().zip(scales.iter().copied()) {
+        for value in row {
+            *value *= scale;
+        }
+    }
+
+    let used_native =
+        apply_batched_row_scale_in_place_with_path(&mut rows, 4, &scales, Some(&bringup))
+            .expect("row scale should succeed");
+    assert!(
+        used_native,
+        "row scale should use the native kernel under Metal bringup"
+    );
+    for (actual, expected_row) in rows.iter().zip(expected.iter()) {
+        assert_f32_slice_close(actual, expected_row, 1e-6);
+    }
+
+    let _ = fs::remove_dir_all(output_dir);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn batched_row_vector_scale_f32_gpu_output_matches_cpu_reference() {
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        return;
+    };
+    let mut rows = vec![vec![1.0_f32, 2.0, 3.0, 4.0], vec![5.0_f32, 6.0, 7.0, 8.0]];
+    let scales = vec![0.5_f32, 1.0, 1.5, 2.0];
+    let mut expected = rows.clone();
+    for row in &mut expected {
+        for (value, scale) in row.iter_mut().zip(scales.iter()) {
+            *value *= *scale;
+        }
+    }
+
+    let used_native =
+        apply_batched_row_vector_scale_in_place_with_path(&mut rows, 4, &scales, Some(&bringup))
+            .expect("row vector scale should succeed");
+    assert!(
+        used_native,
+        "row vector scale should use the native kernel under Metal bringup"
+    );
+    for (actual, expected_row) in rows.iter().zip(expected.iter()) {
+        assert_f32_slice_close(actual, expected_row, 1e-6);
+    }
+
+    let _ = fs::remove_dir_all(output_dir);
 }
 
 #[cfg(target_os = "macos")]
@@ -5686,6 +6546,14 @@ fn copied_prefix_blocks_persist_into_layer_cache_for_future_native_decode() {
                 block_ids: vec![BlockId(1)],
             },
         }],
+        request_contexts: vec![crate::runner::RunnerRequestContext {
+            request_id: RequestId(29),
+            prompt_len: 4,
+            processed_prompt_tokens: 4,
+            generated_len: 0,
+            max_output_tokens: 32,
+            deterministic_argmax_sampling: true,
+        }],
     };
     let decode_workload = MetalDispatchWorkload::from_runner_input(&decode_input)
         .expect("decode workload should resolve");
@@ -6090,6 +6958,8 @@ fn annotate_bringup_execution_flags_clears_numeric_scaffold_when_runtime_uses_mo
                 cpu_ffn_activation_elements: 53,
                 native_residual_add_elements: 59,
                 cpu_residual_add_elements: 61,
+                native_scale_elements: 67,
+                cpu_scale_elements: 71,
             },
             direct_decode_native_dense_tally: DirectDecodeNativeDenseTally {
                 native_projection_rows: 17,
@@ -6100,6 +6970,8 @@ fn annotate_bringup_execution_flags_clears_numeric_scaffold_when_runtime_uses_mo
                 cpu_ffn_activation_elements: 37,
                 native_residual_add_elements: 41,
                 cpu_residual_add_elements: 43,
+                native_scale_elements: 47,
+                cpu_scale_elements: 53,
                 native_batched_logits_group_count: 1,
                 native_batched_logits_token_count: 2,
                 batched_group_fallback_count: 0,
@@ -6320,6 +7192,8 @@ fn completed_real_model_forward_step_marks_pure_decode_batch_with_no_remaining_l
                 cpu_ffn_activation_elements: 29,
                 native_residual_add_elements: 31,
                 cpu_residual_add_elements: 37,
+                native_scale_elements: 41,
+                cpu_scale_elements: 43,
             },
             direct_decode_native_dense_tally: DirectDecodeNativeDenseTally::default(),
         },
@@ -6330,9 +7204,10 @@ fn completed_real_model_forward_step_marks_pure_decode_batch_with_no_remaining_l
 }
 
 #[test]
-fn completed_real_model_forward_step_accepts_mixed_prefill_decode_batches_when_decode_items_resolve(
+fn completed_real_model_forward_step_accepts_mixed_prefill_decode_batches_when_prefill_completion_and_decode_items_resolve(
 ) {
-    let input = sample_runner_input();
+    let mut input = sample_runner_input();
+    input.request_contexts[0].deterministic_argmax_sampling = true;
     let runtime = MetalDispatchRuntimeInfo {
         device_name: "Apple M4 Max".to_string(),
         required_pipeline_count: 4,
@@ -6363,6 +7238,7 @@ fn completed_real_model_forward_step_accepts_mixed_prefill_decode_batches_when_d
     };
     let mut output = successful_runner_output_from_input(&input);
     let direct_decode_tokens = vec![(RequestId(9), 17)];
+    let prefill_completion_tokens = vec![(RequestId(7), 13)];
 
     let direct_logits_outputs = direct_decode_tokens
         .iter()
@@ -6373,6 +7249,13 @@ fn completed_real_model_forward_step_accepts_mixed_prefill_decode_batches_when_d
         .collect::<Vec<_>>();
 
     apply_direct_decode_logits_to_runner_output(&mut output, &direct_logits_outputs);
+    let resolved_request_ids = apply_deterministic_sample_tokens_to_runner_output(
+        &input,
+        &mut output,
+        &prefill_completion_tokens,
+    );
+
+    assert_eq!(resolved_request_ids, BTreeSet::from([RequestId(7)]));
 
     assert!(completed_real_model_forward_step(
         &input,
@@ -6383,7 +7266,7 @@ fn completed_real_model_forward_step_accepts_mixed_prefill_decode_batches_when_d
 }
 
 #[test]
-fn completed_real_model_forward_step_marks_prefill_only_batch_without_remaining_logits() {
+fn completed_real_model_forward_step_rejects_prefill_only_completion_without_sample_output() {
     let input = sample_prefill_only_runner_input();
     let runtime = MetalDispatchRuntimeInfo {
         device_name: "Apple M4 Max".to_string(),
@@ -6415,6 +7298,54 @@ fn completed_real_model_forward_step_marks_prefill_only_batch_without_remaining_
     };
     let output = successful_runner_output_from_input(&input);
 
+    assert!(!completed_real_model_forward_step(
+        &input,
+        &output,
+        &runtime,
+        &[],
+    ));
+}
+
+#[test]
+fn completed_real_model_forward_step_accepts_prefill_only_completion_with_output_token() {
+    let mut input = sample_prefill_only_runner_input();
+    input.request_contexts[0].deterministic_argmax_sampling = true;
+    let runtime = MetalDispatchRuntimeInfo {
+        device_name: "Apple M4 Max".to_string(),
+        required_pipeline_count: 4,
+        max_thread_execution_width: 64,
+        binary_archive: MetalBinaryArchiveInfo {
+            path: PathBuf::from("/tmp/ax-phase1.binary_archive.metallib"),
+            state: MetalBinaryArchiveState::Loaded,
+            attached_pipeline_count: 4,
+            serialized: true,
+            note: None,
+        },
+        command_queue_ready: true,
+        model_conditioned_inputs: true,
+        real_model_tensor_inputs: true,
+        complete_model_forward_supported: true,
+        model_bindings_prepared: true,
+        model_buffers_bound: true,
+        model_buffer_count: 4,
+        model_buffer_bytes: 4096,
+        native_dense_kernel_coverage: MetalNativeDenseKernelCoverage::default(),
+        model: Some(NativeModelArtifactsSummary {
+            model_family: "qwen3_dense".to_string(),
+            tensor_format: crate::model::NativeTensorFormat::Safetensors,
+            layer_count: 1,
+            tensor_count: 9,
+            tie_word_embeddings: false,
+        }),
+    };
+    let mut output = successful_runner_output_from_input(&input);
+    let resolved_request_ids = apply_deterministic_sample_tokens_to_runner_output(
+        &input,
+        &mut output,
+        &[(RequestId(17), 42)],
+    );
+
+    assert_eq!(resolved_request_ids, BTreeSet::from([RequestId(17)]));
     assert!(completed_real_model_forward_step(
         &input,
         &output,
@@ -7044,6 +7975,62 @@ fn apply_direct_decode_logits_clears_logits_handles_for_resolved_requests() {
 }
 
 #[test]
+fn deterministic_direct_decode_tokens_promote_runner_updates_without_sampler_logits() {
+    let mut input = sample_decode_continuation_runner_input();
+    input.request_contexts[0].deterministic_argmax_sampling = true;
+    let mut output = successful_runner_output_from_input(&input);
+
+    let resolved_request_ids = apply_deterministic_sample_tokens_to_runner_output(
+        &input,
+        &mut output,
+        &[(RequestId(17), 3015)],
+    );
+
+    assert_eq!(resolved_request_ids, BTreeSet::from([RequestId(17)]));
+    assert!(output.logits_handles.is_empty());
+    assert_eq!(
+        output
+            .request_updates
+            .iter()
+            .find(|update| update.request_id == RequestId(17))
+            .and_then(|update| update.output_token),
+        Some(3015)
+    );
+    assert_eq!(
+        output
+            .request_updates
+            .iter()
+            .find(|update| update.request_id == RequestId(17))
+            .and_then(|update| update.stop_reason),
+        None
+    );
+}
+
+#[test]
+fn non_deterministic_direct_decode_requests_keep_sampler_path() {
+    let mut input = sample_decode_continuation_runner_input();
+    input.request_contexts[0].deterministic_argmax_sampling = false;
+    let mut output = successful_runner_output_from_input(&input);
+
+    let resolved_request_ids = apply_deterministic_sample_tokens_to_runner_output(
+        &input,
+        &mut output,
+        &[(RequestId(17), 3015)],
+    );
+
+    assert!(resolved_request_ids.is_empty());
+    assert_eq!(output.logits_handles, vec![RequestId(17)]);
+    assert_eq!(
+        output
+            .request_updates
+            .iter()
+            .find(|update| update.request_id == RequestId(17))
+            .and_then(|update| update.output_token),
+        None
+    );
+}
+
+#[test]
 fn metal_dispatch_execution_info_tracks_direct_decode_resolution() {
     let input = sample_runner_input();
     let mut output = successful_runner_output_from_input(&input);
@@ -7077,6 +8064,8 @@ fn metal_dispatch_execution_info_tracks_direct_decode_resolution() {
             cpu_ffn_activation_elements: 43,
             native_residual_add_elements: 47,
             cpu_residual_add_elements: 53,
+            native_scale_elements: 59,
+            cpu_scale_elements: 61,
         },
         DirectDecodeNativeDenseTally {
             native_projection_rows: 13,
@@ -7087,6 +8076,8 @@ fn metal_dispatch_execution_info_tracks_direct_decode_resolution() {
             cpu_ffn_activation_elements: 31,
             native_residual_add_elements: 37,
             cpu_residual_add_elements: 41,
+            native_scale_elements: 43,
+            cpu_scale_elements: 47,
             native_batched_logits_group_count: 1,
             native_batched_logits_token_count: 2,
             batched_group_fallback_count: 0,
@@ -7746,6 +8737,8 @@ kernel void kv_scale_update() {}
 kernel void gather_embedding_rows_f32() {}
 kernel void gather_embedding_rows_f16() {}
 kernel void gather_embedding_rows_bf16() {}
+kernel void row_scale_f32() {}
+kernel void row_vector_scale_f32() {}
 kernel void decode_logits_projection_f32() {}
 kernel void decode_logits_projection_f16() {}
 kernel void decode_logits_projection_bf16() {}
@@ -7800,6 +8793,17 @@ fn phase1_kernel_specs() -> Vec<MetalKernelSpec> {
             name: "kv_scale_update".to_string(),
             tier: MetalKernelTier::Optional,
             purpose: "quantized KV scaling".to_string(),
+        },
+        MetalKernelSpec {
+            name: "row_scale_f32".to_string(),
+            tier: MetalKernelTier::Optional,
+            purpose: "native per-row scalar multiplication".to_string(),
+        },
+        MetalKernelSpec {
+            name: "row_vector_scale_f32".to_string(),
+            tier: MetalKernelTier::Optional,
+            purpose: "native per-row elementwise multiplication by a shared scale vector"
+                .to_string(),
         },
         MetalKernelSpec {
             name: "gather_embedding_rows_f32".to_string(),
@@ -7982,6 +8986,24 @@ fn sample_runner_input() -> RunnerInput {
                 },
             },
         ],
+        request_contexts: vec![
+            crate::runner::RunnerRequestContext {
+                request_id: RequestId(7),
+                prompt_len: 3,
+                processed_prompt_tokens: 0,
+                generated_len: 0,
+                max_output_tokens: 32,
+                deterministic_argmax_sampling: false,
+            },
+            crate::runner::RunnerRequestContext {
+                request_id: RequestId(9),
+                prompt_len: 3,
+                processed_prompt_tokens: 3,
+                generated_len: 0,
+                max_output_tokens: 32,
+                deterministic_argmax_sampling: false,
+            },
+        ],
     }
 }
 
@@ -8048,6 +9070,24 @@ fn sample_decode_only_runner_input() -> RunnerInput {
                 },
             },
         ],
+        request_contexts: vec![
+            crate::runner::RunnerRequestContext {
+                request_id: RequestId(9),
+                prompt_len: 3,
+                processed_prompt_tokens: 3,
+                generated_len: 0,
+                max_output_tokens: 32,
+                deterministic_argmax_sampling: false,
+            },
+            crate::runner::RunnerRequestContext {
+                request_id: RequestId(11),
+                prompt_len: 5,
+                processed_prompt_tokens: 5,
+                generated_len: 0,
+                max_output_tokens: 32,
+                deterministic_argmax_sampling: false,
+            },
+        ],
     }
 }
 
@@ -8100,6 +9140,14 @@ fn sample_prefill_only_runner_input() -> RunnerInput {
                 block_ids: vec![BlockId(0)],
             },
         }],
+        request_contexts: vec![crate::runner::RunnerRequestContext {
+            request_id: RequestId(17),
+            prompt_len: 4,
+            processed_prompt_tokens: 0,
+            generated_len: 0,
+            max_output_tokens: 32,
+            deterministic_argmax_sampling: false,
+        }],
     }
 }
 
@@ -8140,6 +9188,14 @@ fn sample_decode_continuation_runner_input() -> RunnerInput {
                 cache_group_id: CacheGroupId(1),
                 block_ids: vec![BlockId(0)],
             },
+        }],
+        request_contexts: vec![crate::runner::RunnerRequestContext {
+            request_id: RequestId(17),
+            prompt_len: 4,
+            processed_prompt_tokens: 4,
+            generated_len: 0,
+            max_output_tokens: 32,
+            deterministic_argmax_sampling: false,
         }],
     }
 }
@@ -9182,6 +10238,585 @@ fn try_compile_real_bringup() -> Option<(MetalRuntimeBringup, PathBuf)> {
     Some((bringup, output_dir))
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
+    let model_dir =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.internal/models/Qwen3.5-2B-bf16");
+    if !model_dir.join("config.json").exists() {
+        eprintln!("skipping: model not downloaded at {}", model_dir.display());
+        return;
+    }
+    crate::convert::with_real_model_manifest_lock(|| {
+        crate::convert::ensure_manifest_for_hf_model_dir(&model_dir)
+            .expect("real Qwen3.5 manifest write should succeed for regression coverage");
+
+        let Some(build_dir) = compiled_repo_metal_build_dir() else {
+            eprintln!("skipping: compiled repo Metal build dir unavailable");
+            return;
+        };
+        let runner =
+            MetalBringupRunner::from_build_dir_and_model_artifacts(&build_dir, Some(&model_dir))
+                .expect("real Qwen3.5 runner should initialize");
+        let request_id = RequestId(1);
+        let prompt_tokens = vec![
+            248045, 846, 198, 4199, 513, 488, 30, 248046, 198, 248045, 74455, 198, 248068, 271,
+            248069, 271,
+        ];
+        let prompt_len = prompt_tokens.len() as u32;
+
+        let prefill_input = RunnerInput {
+            block_size_tokens: 16,
+            execution_batch: ExecutionBatch {
+                step_id: StepId(1),
+                model_id: "qwen3_dense".into(),
+                execution_plan_ref: Some("phase1.qwen3_dense.dense_prefill".into()),
+                items: vec![ExecutionItem {
+                    request_id,
+                    mode: ExecutionMode::Prefill,
+                    input_token_slice: prompt_tokens.clone(),
+                    reused_prefix_token_slice: Vec::new(),
+                    position_range: PositionRange {
+                        start: 0,
+                        end_exclusive: prompt_len,
+                    },
+                    scheduled_token_count: prompt_len,
+                    block_table_ref: request_id,
+                    prefix_tokens_reused: 0,
+                    prefix_blocks_reused: 0,
+                }],
+                total_scheduled_tokens: prompt_len,
+                route_metadata: RouteMetadata::empty(),
+            },
+            block_tables: vec![crate::runner::ResolvedBlockTable {
+                request_id,
+                block_table: BlockTableView {
+                    cache_group_id: CacheGroupId(0),
+                    block_ids: vec![BlockId(0)],
+                },
+            }],
+            request_contexts: vec![crate::runner::RunnerRequestContext {
+                request_id,
+                prompt_len,
+                processed_prompt_tokens: 0,
+                generated_len: 0,
+                max_output_tokens: 32,
+                deterministic_argmax_sampling: true,
+            }],
+        };
+
+        let prefill_output = runner.run(prefill_input);
+        let prefill_error = prefill_output
+            .request_updates
+            .iter()
+            .find_map(|update| update.error.clone());
+        assert!(
+            prefill_error.is_none(),
+            "real Qwen3.5 prefill should succeed, got {prefill_error:?}"
+        );
+        let bridge_token = sampled_token_from_runner_output(&prefill_output, request_id);
+
+        let linear_state = runner
+            .linear_request_states
+            .lock()
+            .expect("linear request states mutex should not be poisoned")
+            .get(&request_id)
+            .cloned()
+            .expect("prefill should seed linear attention state");
+        assert!(
+            !linear_state.layers.is_empty(),
+            "hybrid Qwen3.5 request should materialize linear layer state during prefill"
+        );
+        assert!(
+            linear_state
+                .layers
+                .values()
+                .all(|layer_state| layer_state.processed_tokens == prompt_len as usize),
+            "all linear layers should advance to the prompt length after prefill; got {linear_state:?}"
+        );
+        let debug_linear_request_states = Mutex::new(
+            runner
+                .linear_request_states
+                .lock()
+                .expect("linear request states mutex should not be poisoned")
+                .clone(),
+        );
+        let debug_prefix_layer_caches = runner.prefix_layer_caches().map(|caches| {
+            caches
+                .iter()
+                .map(|cache| {
+                    Mutex::new(
+                        cache
+                            .lock()
+                            .expect("prefix layer cache mutex should not be poisoned")
+                            .clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+
+        let decode_input = RunnerInput {
+            block_size_tokens: 16,
+            execution_batch: ExecutionBatch {
+                step_id: StepId(2),
+                model_id: "qwen3_dense".into(),
+                execution_plan_ref: Some("phase1.qwen3_dense.paged_decode".into()),
+                items: vec![ExecutionItem {
+                    request_id,
+                    mode: ExecutionMode::Decode,
+                    input_token_slice: vec![bridge_token],
+                    reused_prefix_token_slice: {
+                        let mut warmup_tokens = prompt_tokens.clone();
+                        warmup_tokens.push(bridge_token);
+                        warmup_tokens
+                    },
+                    position_range: PositionRange {
+                        start: prompt_len,
+                        end_exclusive: prompt_len + 1,
+                    },
+                    scheduled_token_count: 1,
+                    block_table_ref: request_id,
+                    prefix_tokens_reused: 0,
+                    prefix_blocks_reused: 0,
+                }],
+                total_scheduled_tokens: 1,
+                route_metadata: RouteMetadata::empty(),
+            },
+            block_tables: vec![crate::runner::ResolvedBlockTable {
+                request_id,
+                block_table: BlockTableView {
+                    cache_group_id: CacheGroupId(0),
+                    block_ids: vec![BlockId(0), BlockId(1)],
+                },
+            }],
+            request_contexts: vec![crate::runner::RunnerRequestContext {
+                request_id,
+                prompt_len,
+                processed_prompt_tokens: prompt_len,
+                generated_len: 1,
+                max_output_tokens: 32,
+                deterministic_argmax_sampling: true,
+            }],
+        };
+        let decode_workload = MetalDispatchWorkload::from_runner_input(&decode_input)
+            .expect("decode workload should resolve");
+
+        let artifacts = runner
+            .model_artifacts
+            .as_ref()
+            .expect("real model artifacts should remain bound");
+        let bindings = runner
+            .model_bindings
+            .as_ref()
+            .expect("real model bindings should remain prepared");
+        let buffers = runner
+            .model_buffers
+            .as_ref()
+            .expect("real model buffers should remain bound");
+        let final_layer_index = bindings
+            .layers
+            .len()
+            .checked_sub(1)
+            .expect("real model should have at least one layer");
+        let token_embedding = buffers
+            .binding_for(&bindings.token_embedding)
+            .expect("token embedding should resolve");
+        let (_, embedding_cols) = tensor_matrix_dimensions(&token_embedding.meta.spec)
+            .expect("token embedding should be a matrix");
+        let hidden_dim = (artifacts.manifest().hidden_size as usize).min(embedding_cols);
+        let direct_staged_linear_request_states = Mutex::new(
+            runner
+                .linear_request_states
+                .lock()
+                .expect("linear request states mutex should not be poisoned")
+                .clone(),
+        );
+        let direct_staged_prefix_layer_caches = runner.prefix_layer_caches().map(|caches| {
+            caches
+                .iter()
+                .map(|cache| {
+                    Mutex::new(
+                        cache
+                            .lock()
+                            .expect("prefix layer cache mutex should not be poisoned")
+                            .clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        let direct_staged = model_conditioned_staged_inputs(
+            artifacts,
+            bindings,
+            buffers,
+            &decode_input,
+            &decode_workload,
+            direct_staged_prefix_layer_caches.as_deref(),
+            Some(&direct_staged_linear_request_states),
+            Some(&runner.bringup),
+        );
+        assert!(
+            direct_staged.is_some(),
+            "direct model-conditioned staged input construction should succeed for decode bridge"
+        );
+        let mut hidden_states = initial_model_hidden_states(
+            token_embedding,
+            &decode_workload,
+            hidden_dim,
+            native_model_embedding_scale(artifacts),
+            Some(&runner.bringup),
+        )
+        .expect("decode hidden state bootstrap should succeed");
+
+        for (layer_index, layer) in bindings.layers[..final_layer_index].iter().enumerate() {
+            let advanced = advance_hidden_states_through_model_layer(
+                artifacts,
+                layer,
+                buffers,
+                &decode_input,
+                &decode_workload,
+                &hidden_states,
+                Some(&runner.bringup),
+                debug_prefix_layer_caches
+                    .as_deref()
+                    .and_then(|caches| caches.get(layer_index)),
+                Some(&debug_linear_request_states),
+                layer_index as u32,
+            );
+            assert!(
+                advanced.is_some(),
+                "decode hidden-state continuation failed at layer {layer_index}; linear_state={:?}",
+                debug_linear_request_states
+                    .lock()
+                    .expect("debug linear request states mutex should not be poisoned")
+                    .get(&request_id)
+            );
+            hidden_states = advanced.expect("checked above").0;
+        }
+
+        let final_layer = bindings
+            .layers
+            .get(final_layer_index)
+            .expect("final layer should resolve");
+        let attention_norm = buffers
+            .binding_for(&final_layer.attention_norm)
+            .expect("final attention norm should resolve");
+        let hidden_width = hidden_states
+            .iter()
+            .map(Vec::len)
+            .min()
+            .expect("decode hidden states should be non-empty");
+        let stage_dims = resolved_model_stage_dims_for_input_width(
+            artifacts,
+            final_layer,
+            attention_norm,
+            buffers,
+            hidden_width,
+        );
+        assert!(
+            stage_dims.is_some(),
+            "final layer stage dims should resolve for decode bridge; hidden_width={hidden_width}"
+        );
+        let stage_dims = stage_dims.expect("checked above");
+
+        let mut normalized_hidden_states = hidden_states
+            .iter()
+            .map(|hidden_state| {
+                hidden_state
+                    .get(..stage_dims.input_dim)
+                    .map(|slice| slice.to_vec())
+            })
+            .collect::<Option<Vec<_>>>()
+            .expect("hidden states should slice to final-layer input dim");
+        let norm_tally = apply_batched_row_rms_norm_with_binding_in_place_with_tally(
+            &mut normalized_hidden_states,
+            stage_dims.input_dim,
+            attention_norm,
+            native_model_rms_norm_epsilon(artifacts),
+            native_model_rms_norm_weight_offset(artifacts),
+            Some(&runner.bringup),
+        );
+        assert!(
+            norm_tally.is_some(),
+            "final layer attention norm should succeed for decode bridge"
+        );
+
+        let (mut projected_queries, mut projected_keys, projected_values, _qkv_tally) =
+            project_batched_attention_qkv_with_dims_and_tally(
+                artifacts,
+                final_layer
+                    .attention_qkv
+                    .as_ref()
+                    .expect("final layer should expose attention_qkv"),
+                buffers,
+                &normalized_hidden_states,
+                stage_dims.input_dim,
+                stage_dims,
+                Some(&runner.bringup),
+            )
+            .expect("final layer QKV projection should succeed for decode bridge");
+
+        apply_batched_model_stage_rope_with_path(
+            artifacts,
+            &mut projected_queries,
+            &mut projected_keys,
+            &decode_workload.scheduled_positions,
+            stage_dims,
+            Some(&runner.bringup),
+        )
+        .expect("final layer RoPE should succeed for decode bridge");
+        let expanded_keys = expand_batched_grouped_kv_heads_with_path(
+            &projected_keys,
+            stage_dims.q_heads,
+            stage_dims.kv_heads,
+            stage_dims.head_dim,
+            Some(&runner.bringup),
+        );
+        assert!(
+            expanded_keys.is_some(),
+            "final layer grouped-KV key expansion should succeed for decode bridge; stage_dims={stage_dims:?}"
+        );
+        let expanded_values = expand_batched_grouped_kv_heads_with_path(
+            &projected_values,
+            stage_dims.q_heads,
+            stage_dims.kv_heads,
+            stage_dims.head_dim,
+            Some(&runner.bringup),
+        );
+        assert!(
+            expanded_values.is_some(),
+            "final layer grouped-KV value expansion should succeed for decode bridge; stage_dims={stage_dims:?}"
+        );
+
+        let staged = runner.staged_inputs_for_workload(&decode_input, &decode_workload);
+        assert!(
+            staged.is_ok(),
+            "first decode staged input should survive prefill bridge for real Qwen3.5; got {staged:?}"
+        );
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn sampled_token_from_runner_output(output: &RunnerOutput, request_id: RequestId) -> u32 {
+    if let Some(token_id) = output
+        .request_updates
+        .iter()
+        .find(|update| update.request_id == request_id)
+        .and_then(|update| update.output_token)
+    {
+        return token_id;
+    }
+
+    output
+        .logits_outputs
+        .iter()
+        .find(|output| output.request_id == request_id)
+        .and_then(|output| {
+            output
+                .logits
+                .iter()
+                .enumerate()
+                .max_by(|left, right| left.1.total_cmp(right.1))
+                .map(|(token_id, _)| token_id as u32)
+        })
+        .expect("runner output should expose either a sampled token or logits")
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
+    let model_dir =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.internal/models/Qwen3.5-2B-bf16");
+    if !model_dir.join("config.json").exists() {
+        eprintln!("skipping: model not downloaded at {}", model_dir.display());
+        return;
+    }
+    crate::convert::with_real_model_manifest_lock(|| {
+        crate::convert::ensure_manifest_for_hf_model_dir(&model_dir)
+            .expect("real Qwen3.5 manifest write should succeed for regression coverage");
+
+        let Some(build_dir) = compiled_repo_metal_build_dir() else {
+            eprintln!("skipping: compiled repo Metal build dir unavailable");
+            return;
+        };
+        let runner =
+            MetalBringupRunner::from_build_dir_and_model_artifacts(&build_dir, Some(&model_dir))
+                .expect("real Qwen3.5 runner should initialize");
+        let request_id = RequestId(1);
+        let prompt_tokens = vec![
+            248045, 846, 198, 4199, 513, 488, 30, 248046, 198, 248045, 74455, 198, 248068, 271,
+            248069, 271,
+        ];
+        let prompt_len = prompt_tokens.len() as u32;
+        let block_size_tokens = 16_u32;
+        let target_output_tokens = 11_usize;
+
+        let prefill_input = RunnerInput {
+            block_size_tokens,
+            execution_batch: ExecutionBatch {
+                step_id: StepId(1),
+                model_id: "qwen3_dense".into(),
+                execution_plan_ref: Some("phase1.qwen3_dense.dense_prefill".into()),
+                items: vec![ExecutionItem {
+                    request_id,
+                    mode: ExecutionMode::Prefill,
+                    input_token_slice: prompt_tokens.clone(),
+                    reused_prefix_token_slice: Vec::new(),
+                    position_range: PositionRange {
+                        start: 0,
+                        end_exclusive: prompt_len,
+                    },
+                    scheduled_token_count: prompt_len,
+                    block_table_ref: request_id,
+                    prefix_tokens_reused: 0,
+                    prefix_blocks_reused: 0,
+                }],
+                total_scheduled_tokens: prompt_len,
+                route_metadata: RouteMetadata::empty(),
+            },
+            block_tables: vec![crate::runner::ResolvedBlockTable {
+                request_id,
+                block_table: BlockTableView {
+                    cache_group_id: CacheGroupId(0),
+                    block_ids: vec![BlockId(0)],
+                },
+            }],
+            request_contexts: vec![crate::runner::RunnerRequestContext {
+                request_id,
+                prompt_len,
+                processed_prompt_tokens: 0,
+                generated_len: 0,
+                max_output_tokens: 32,
+                deterministic_argmax_sampling: true,
+            }],
+        };
+
+        let prefill_output = runner.run(prefill_input);
+        let prefill_error = prefill_output
+            .request_updates
+            .iter()
+            .find_map(|update| update.error.clone());
+        assert!(
+            prefill_error.is_none(),
+            "real Qwen3.5 prefill should succeed, got {prefill_error:?}"
+        );
+
+        let mut generated_tokens = vec![sampled_token_from_runner_output(
+            &prefill_output,
+            request_id,
+        )];
+        let linear_state = runner
+            .linear_request_states
+            .lock()
+            .expect("linear request states mutex should not be poisoned")
+            .get(&request_id)
+            .cloned()
+            .expect("prefill should seed linear attention state");
+        assert!(
+            linear_state
+                .layers
+                .values()
+                .all(|layer_state| layer_state.processed_tokens == prompt_len as usize),
+            "all linear layers should advance to the prompt length after prefill; got {linear_state:?}"
+        );
+
+        while generated_tokens.len() < target_output_tokens {
+            let generated_len = u32::try_from(generated_tokens.len())
+                .expect("generated token count should fit into u32");
+            let decode_position = prompt_len
+                .checked_add(generated_len)
+                .and_then(|value| value.checked_sub(1))
+                .expect("decode position should resolve");
+            let total_tokens_after_schedule = usize::try_from(decode_position)
+                .expect("decode position should fit into usize")
+                .saturating_add(1);
+            let required_block_count = total_tokens_after_schedule
+                .div_ceil(block_size_tokens as usize)
+                .max(1);
+            let warmup_tokens = prompt_tokens
+                .iter()
+                .copied()
+                .chain(generated_tokens.iter().copied())
+                .collect::<Vec<_>>();
+            let decode_input = RunnerInput {
+                block_size_tokens,
+                execution_batch: ExecutionBatch {
+                    step_id: StepId(u64::from(generated_len.saturating_add(1))),
+                    model_id: "qwen3_dense".into(),
+                    execution_plan_ref: Some("phase1.qwen3_dense.paged_decode".into()),
+                    items: vec![ExecutionItem {
+                        request_id,
+                        mode: ExecutionMode::Decode,
+                        input_token_slice: vec![*generated_tokens
+                            .last()
+                            .expect("generated tokens should contain the previous token")],
+                        reused_prefix_token_slice: warmup_tokens,
+                        position_range: PositionRange {
+                            start: decode_position,
+                            end_exclusive: decode_position + 1,
+                        },
+                        scheduled_token_count: 1,
+                        block_table_ref: request_id,
+                        prefix_tokens_reused: 0,
+                        prefix_blocks_reused: 0,
+                    }],
+                    total_scheduled_tokens: 1,
+                    route_metadata: RouteMetadata::empty(),
+                },
+                block_tables: vec![crate::runner::ResolvedBlockTable {
+                    request_id,
+                    block_table: BlockTableView {
+                        cache_group_id: CacheGroupId(0),
+                        block_ids: (0..required_block_count)
+                            .map(|index| BlockId(index as u32))
+                            .collect(),
+                    },
+                }],
+                request_contexts: vec![crate::runner::RunnerRequestContext {
+                    request_id,
+                    prompt_len,
+                    processed_prompt_tokens: prompt_len,
+                    generated_len,
+                    max_output_tokens: 32,
+                    deterministic_argmax_sampling: true,
+                }],
+            };
+
+            let decode_output = runner.run(decode_input);
+            let decode_error = decode_output
+                .request_updates
+                .iter()
+                .find_map(|update| update.error.clone());
+            assert!(
+                decode_error.is_none(),
+                "real Qwen3.5 decode step {} should succeed, got {decode_error:?}",
+                generated_tokens.len()
+            );
+
+            generated_tokens.push(sampled_token_from_runner_output(&decode_output, request_id));
+            let expected_processed_tokens = prompt_len as usize + generated_tokens.len() - 1;
+            let linear_state = runner
+                .linear_request_states
+                .lock()
+                .expect("linear request states mutex should not be poisoned")
+                .get(&request_id)
+                .cloned()
+                .expect("decode should retain linear attention state");
+            assert!(
+                linear_state.layers.values().all(|layer_state| layer_state.processed_tokens
+                    == expected_processed_tokens),
+                "all linear layers should advance to {expected_processed_tokens} tokens after {} decode outputs; got {linear_state:?}",
+                generated_tokens.len()
+            );
+        }
+
+        assert!(
+            generated_tokens.len() > 10,
+            "decode should continue past the historical early-stop point; got {:?}",
+            generated_tokens
+        );
+    });
+}
+
 // --- GPU test: expand_grouped_kv_heads_f32 --------------------------------
 
 #[cfg(target_os = "macos")]
@@ -9498,6 +11133,37 @@ fn reshape_and_cache_gpu_writes_kv_to_correct_cache_slots() {
     let _ = fs::remove_dir_all(output_dir);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn expand_grouped_kv_heads_f32_gpu_output_matches_cpu_reference_for_qwen3_5_shape() {
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        return; // xcrun / Metal toolchain unavailable — skip
+    };
+
+    let q_heads = 8_usize;
+    let kv_heads = 2_usize;
+    let head_dim = 256_usize;
+    let kv_len = kv_heads * head_dim;
+    let kv = (0..kv_len)
+        .map(|index| index as f32 * 0.00390625 - 1.0)
+        .collect::<Vec<_>>();
+
+    let gpu = expand_grouped_kv_heads_with_optional_native_path(
+        Some(&bringup),
+        &kv,
+        q_heads,
+        kv_heads,
+        head_dim,
+    )
+    .expect("wide grouped-kv GPU expand should succeed");
+    let cpu = expand_grouped_kv_heads_cpu(&kv, q_heads, kv_heads, head_dim)
+        .expect("wide grouped-kv CPU expand should succeed");
+
+    assert_f32_slice_close(&gpu, &cpu, 1e-5);
+
+    let _ = fs::remove_dir_all(output_dir);
+}
+
 // --- GPU test: paged_decode_attention (required kernel) -------------------
 
 /// Runs the full required-kernel dispatch and verifies that `paged_decode_attention`
@@ -9523,6 +11189,41 @@ fn paged_decode_attention_gpu_output_matches_cpu_softmax_reference() {
         .expect(
             "paged_decode_attention: GPU attention output should match CPU softmax \
                  reference (numeric validation stage: attention_output)",
+        );
+
+    let reference = reference_numeric_path_with_inputs(&workload, &staged_inputs);
+    let gpu_attn: Vec<f32> = trace
+        .numeric
+        .attention_output_bits
+        .iter()
+        .map(|&bits| f32::from_bits(bits))
+        .collect();
+    assert_f32_slice_close(&gpu_attn, &reference.attention_output, 1e-4);
+
+    let _ = fs::remove_dir_all(output_dir);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn paged_decode_attention_gpu_output_matches_cpu_softmax_reference_for_head_dim_256() {
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        return;
+    };
+    let layout = MetalDispatchNumericLayout::new(8, 256);
+    let workload = MetalDispatchWorkload::from_runner_input(&sample_runner_input())
+        .expect("workload should resolve")
+        .with_numeric_layout(layout);
+    let staged_inputs = synthetic_staged_inputs_for_layout(&workload, layout);
+
+    let (trace, _cache_snapshot) = bringup
+        .dispatch_numeric_workload_ephemeral_with_cache_snapshot_and_attention_config(
+            &workload,
+            &staged_inputs,
+            None,
+        )
+        .expect(
+            "paged_decode_attention: GPU attention output should match CPU softmax \
+                 reference for head_dim=256",
         );
 
     let reference = reference_numeric_path_with_inputs(&workload, &staged_inputs);

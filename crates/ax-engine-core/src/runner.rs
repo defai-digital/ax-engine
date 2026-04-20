@@ -18,6 +18,25 @@ pub struct RunnerInput {
     pub block_size_tokens: u32,
     pub execution_batch: ExecutionBatch,
     pub block_tables: Vec<ResolvedBlockTable>,
+    pub request_contexts: Vec<RunnerRequestContext>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RunnerRequestContext {
+    pub request_id: RequestId,
+    pub prompt_len: u32,
+    pub processed_prompt_tokens: u32,
+    pub generated_len: u32,
+    pub max_output_tokens: u32,
+    pub deterministic_argmax_sampling: bool,
+}
+
+impl RunnerInput {
+    pub fn request_context(&self, request_id: RequestId) -> Option<&RunnerRequestContext> {
+        self.request_contexts
+            .iter()
+            .find(|context| context.request_id == request_id)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -210,6 +229,24 @@ mod tests {
                     },
                 },
             ],
+            request_contexts: vec![
+                RunnerRequestContext {
+                    request_id: RequestId(1),
+                    prompt_len: 3,
+                    processed_prompt_tokens: 0,
+                    generated_len: 0,
+                    max_output_tokens: 4,
+                    deterministic_argmax_sampling: true,
+                },
+                RunnerRequestContext {
+                    request_id: RequestId(2),
+                    prompt_len: 4,
+                    processed_prompt_tokens: 4,
+                    generated_len: 0,
+                    max_output_tokens: 4,
+                    deterministic_argmax_sampling: true,
+                },
+            ],
         });
 
         assert_eq!(output.execution_status, ExecutionStatus::Success);
@@ -255,6 +292,14 @@ mod tests {
                     cache_group_id: crate::ids::CacheGroupId(1),
                     block_ids: vec![crate::ids::BlockId(0)],
                 },
+            }],
+            request_contexts: vec![RunnerRequestContext {
+                request_id: RequestId(1),
+                prompt_len: 2,
+                processed_prompt_tokens: 0,
+                generated_len: 0,
+                max_output_tokens: 2,
+                deterministic_argmax_sampling: true,
             }],
         });
 

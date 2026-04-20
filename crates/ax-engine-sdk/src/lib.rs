@@ -31,6 +31,7 @@ pub use request::{
     SessionRequestState,
 };
 pub use session::{
-    EngineSession, EngineSessionConfig, EngineSessionError, GenerateStream, GenerateStreamState,
+    classify_native_gguf_export_failure_message, EngineSession, EngineSessionConfig,
+    EngineSessionError, GenerateStream, GenerateStreamState, NativeGgufExportFailureKind,
     PreviewSessionConfigError, PreviewSessionConfigRequest, ResolvedSessionConfigRequest,
 };
