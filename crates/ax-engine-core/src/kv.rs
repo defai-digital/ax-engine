@@ -247,6 +247,42 @@ impl KvManager {
         request_id: RequestId,
         lookup: &PrefixLookupResult,
     ) -> Result<(), KvManagerError> {
+        self.validate_prefix_share(request_id, lookup)?;
+
+        for block_id in &lookup.matched_blocks {
+            let ref_count = self.block_ref_counts.get_mut(block_id).ok_or(
+                KvManagerError::InvariantViolation("shared prefix block missing refcount"),
+            )?;
+            *ref_count += 1;
+        }
+        for cache_key in &lookup.cached_block_keys {
+            let touch_tick = self.allocate_touch_tick();
+            let entry =
+                self.cached_blocks
+                    .get_mut(cache_key)
+                    .ok_or(KvManagerError::InvariantViolation(
+                        "prefix lookup cache key missing during share",
+                    ))?;
+            entry.last_touch_tick = touch_tick;
+        }
+
+        let matched_block_count = lookup.matched_blocks.len() as u32;
+        let table = self
+            .block_tables
+            .get_mut(&request_id)
+            .ok_or(KvManagerError::UnknownRequest(request_id))?;
+        table.block_ids = lookup.matched_blocks.clone();
+        table.logical_token_count = lookup.matched_token_count;
+        table.full_block_count = matched_block_count;
+        table.partial_block_tokens = 0;
+        Ok(())
+    }
+
+    pub fn validate_prefix_share(
+        &self,
+        request_id: RequestId,
+        lookup: &PrefixLookupResult,
+    ) -> Result<(), KvManagerError> {
         let matched_block_count = lookup.matched_blocks.len() as u32;
         let expected_token_count = matched_block_count * self.config.block_size_tokens;
         if lookup.matched_token_count != expected_token_count {
@@ -266,30 +302,19 @@ impl KvManager {
         }
 
         for block_id in &lookup.matched_blocks {
-            let ref_count = self.block_ref_counts.get_mut(block_id).ok_or(
-                KvManagerError::InvariantViolation("shared prefix block missing refcount"),
-            )?;
-            *ref_count += 1;
+            if !self.block_ref_counts.contains_key(block_id) {
+                return Err(KvManagerError::InvariantViolation(
+                    "shared prefix block missing refcount",
+                ));
+            }
         }
         for cache_key in &lookup.cached_block_keys {
-            let touch_tick = self.allocate_touch_tick();
-            let entry =
-                self.cached_blocks
-                    .get_mut(cache_key)
-                    .ok_or(KvManagerError::InvariantViolation(
-                        "prefix lookup cache key missing during share",
-                    ))?;
-            entry.last_touch_tick = touch_tick;
+            if !self.cached_blocks.contains_key(cache_key) {
+                return Err(KvManagerError::InvariantViolation(
+                    "prefix lookup cache key missing during share",
+                ));
+            }
         }
-
-        let table = self
-            .block_tables
-            .get_mut(&request_id)
-            .ok_or(KvManagerError::UnknownRequest(request_id))?;
-        table.block_ids = lookup.matched_blocks.clone();
-        table.logical_token_count = lookup.matched_token_count;
-        table.full_block_count = matched_block_count;
-        table.partial_block_tokens = 0;
         Ok(())
     }
 
@@ -891,6 +916,38 @@ mod tests {
         assert_eq!(lookup.matched_token_count, 8);
         assert!(lookup.uses_retained_cache());
         assert_eq!(lookup.cached_block_keys.len(), 2);
+    }
+
+    #[test]
+    fn share_prefix_missing_cached_key_does_not_partially_increment_refcounts() {
+        let mut manager = make_manager(8, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        manager
+            .register_request(RequestId(2), vec![1, 2, 3, 4, 5, 6, 7, 8, 99])
+            .unwrap();
+        manager.allocate(RequestId(1), 8).unwrap();
+        manager.free(RequestId(1)).unwrap();
+
+        let lookup = manager
+            .lookup_prefix(RequestId(2), &[1, 2, 3, 4, 5, 6, 7, 8, 99])
+            .unwrap();
+        let missing_key = lookup.cached_block_keys[0];
+        manager.cached_blocks.remove(&missing_key);
+        let before_ref_counts = manager.block_ref_counts.clone();
+
+        let error = manager.share_prefix(RequestId(2), &lookup).unwrap_err();
+
+        assert_eq!(
+            error,
+            KvManagerError::InvariantViolation("prefix lookup cache key missing during share")
+        );
+        assert_eq!(manager.block_ref_counts, before_ref_counts);
+        assert_eq!(
+            manager.block_table(RequestId(2)).unwrap().block_ids,
+            Vec::<BlockId>::new()
+        );
     }
 
     #[test]

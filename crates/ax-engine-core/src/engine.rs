@@ -392,7 +392,7 @@ impl EngineCore {
             return Ok((BTreeMap::new(), schedule_plan));
         };
 
-        let mut prefix_reuse = BTreeMap::new();
+        let mut pending_prefix_reuse = Vec::new();
         for item in &execution_batch.items {
             if item.mode != ExecutionMode::Prefill {
                 continue;
@@ -412,11 +412,18 @@ impl EngineCore {
             );
             self.request_manager
                 .validate_prefix_reuse(item.request_id, lookup.matched_token_count)?;
-            self.kv_manager.share_prefix(item.request_id, &lookup)?;
-            self.sync_request_block_table(item.request_id)?;
+            self.kv_manager
+                .validate_prefix_share(item.request_id, &lookup)?;
+            pending_prefix_reuse.push((item.request_id, lookup));
+        }
+
+        let mut prefix_reuse = BTreeMap::new();
+        for (request_id, lookup) in pending_prefix_reuse {
+            self.kv_manager.share_prefix(request_id, &lookup)?;
+            self.sync_request_block_table(request_id)?;
             self.request_manager
-                .apply_prefix_reuse(item.request_id, lookup.matched_token_count)?;
-            prefix_reuse.insert(item.request_id, lookup);
+                .apply_prefix_reuse(request_id, lookup.matched_token_count)?;
+            prefix_reuse.insert(request_id, lookup);
         }
 
         if prefix_reuse.is_empty() {

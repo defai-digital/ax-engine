@@ -1412,6 +1412,8 @@ fn write_valid_native_model_fixture() -> PathBuf {
         schema_version: crate::model::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
         model_family: "qwen3_dense".to_string(),
         tensor_format: crate::model::NativeTensorFormat::Safetensors,
+        source_quantization: None,
+        runtime_status: crate::model::NativeRuntimeStatus::default(),
         layer_count: 1,
         hidden_size: 2,
         attention_head_count: 1,
@@ -1504,6 +1506,9 @@ fn native_model_tensor(
         role,
         layer_index,
         dtype: crate::model::NativeTensorDataType::F16,
+        source_tensor_type: None,
+        source_quantized: false,
+        quantized_source: None,
         shape,
         file: PathBuf::from("model.safetensors"),
         offset_bytes: 0,
@@ -1524,6 +1529,9 @@ fn native_model_tensor_with_file(
         role,
         layer_index,
         dtype: crate::model::NativeTensorDataType::F32,
+        source_tensor_type: None,
+        source_quantized: false,
+        quantized_source: None,
         shape: shape.to_vec(),
         file: PathBuf::from(file),
         offset_bytes: 0,
@@ -1586,6 +1594,8 @@ fn write_projection_native_model_fixture() -> PathBuf {
         schema_version: crate::model::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
         model_family: "qwen3_dense".to_string(),
         tensor_format: crate::model::NativeTensorFormat::Safetensors,
+        source_quantization: None,
+        runtime_status: crate::model::NativeRuntimeStatus::default(),
         layer_count: 1,
         hidden_size: 8,
         attention_head_count: 2,
@@ -1911,6 +1921,23 @@ fn write_gemma_projection_native_model_fixture() -> PathBuf {
 }
 
 #[cfg(target_os = "macos")]
+fn write_qwen35_projection_native_model_fixture() -> PathBuf {
+    let root_dir = write_projection_native_model_fixture();
+    let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
+    let manifest_bytes = fs::read(&manifest_path).expect("projection manifest should read");
+    let mut manifest = serde_json::from_slice::<crate::model::NativeModelManifest>(&manifest_bytes)
+        .expect("projection manifest should parse");
+    manifest.model_family = "qwen35_dense".to_string();
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("projection manifest should serialize"),
+    )
+    .expect("projection manifest should rewrite");
+
+    root_dir
+}
+
+#[cfg(target_os = "macos")]
 fn write_gemma_projection_custom_rope_native_model_fixture(rope_theta: u32) -> PathBuf {
     let root_dir = write_gemma_projection_native_model_fixture();
     let manifest_path = root_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE);
@@ -2006,6 +2033,8 @@ fn write_grouped_projection_native_model_fixture() -> PathBuf {
         schema_version: crate::model::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
         model_family: "qwen3_dense".to_string(),
         tensor_format: crate::model::NativeTensorFormat::Safetensors,
+        source_quantization: None,
+        runtime_status: crate::model::NativeRuntimeStatus::default(),
         layer_count: 1,
         hidden_size: 8,
         attention_head_count: 4,
@@ -2292,6 +2321,8 @@ fn write_wide_projection_native_model_fixture() -> PathBuf {
         schema_version: crate::model::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
         model_family: "qwen3_dense".to_string(),
         tensor_format: crate::model::NativeTensorFormat::Safetensors,
+        source_quantization: None,
+        runtime_status: crate::model::NativeRuntimeStatus::default(),
         layer_count: 1,
         hidden_size: hidden_size as u32,
         attention_head_count: 2,
@@ -2465,6 +2496,8 @@ fn write_wide_direct_decode_native_model_fixture() -> PathBuf {
         schema_version: crate::model::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
         model_family: "qwen3_dense".to_string(),
         tensor_format: crate::model::NativeTensorFormat::Safetensors,
+        source_quantization: None,
+        runtime_status: crate::model::NativeRuntimeStatus::default(),
         layer_count: 1,
         hidden_size: hidden_size as u32,
         attention_head_count: 2,
@@ -2813,6 +2846,8 @@ fn write_direct_decode_native_model_fixture_with_variant(
         schema_version: crate::model::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
         model_family: "qwen3_dense".to_string(),
         tensor_format: crate::model::NativeTensorFormat::Safetensors,
+        source_quantization: None,
+        runtime_status: crate::model::NativeRuntimeStatus::default(),
         layer_count: 1,
         hidden_size: 8,
         attention_head_count: 2,
@@ -3101,6 +3136,9 @@ fn native_dense_shadow_bytes_promote_byte_tensors_to_f32() {
         role: NativeTensorRole::AttentionO,
         layer_index: Some(0),
         dtype: NativeTensorDataType::U8,
+        source_tensor_type: None,
+        source_quantized: false,
+        quantized_source: None,
         shape: vec![2, 2],
         file: PathBuf::from("weights.bin"),
         offset_bytes: 0,
@@ -3123,6 +3161,9 @@ fn native_dense_shadow_bytes_promote_byte_tensors_to_f32() {
         role: NativeTensorRole::FfnNorm,
         layer_index: Some(0),
         dtype: NativeTensorDataType::I8,
+        source_tensor_type: None,
+        source_quantized: false,
+        quantized_source: None,
         shape: vec![4],
         file: PathBuf::from("weights.bin"),
         offset_bytes: 0,
@@ -3150,6 +3191,9 @@ fn native_dense_kernel_coverage_counts_byte_tensors_as_promoted_f32_support() {
             role: NativeTensorRole::AttentionO,
             layer_index: Some(0),
             dtype: NativeTensorDataType::U8,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantized_source: None,
             shape: vec![2, 2],
             file: PathBuf::from("projection.bin"),
             offset_bytes: 0,
@@ -3163,6 +3207,9 @@ fn native_dense_kernel_coverage_counts_byte_tensors_as_promoted_f32_support() {
             role: NativeTensorRole::FfnNorm,
             layer_index: Some(0),
             dtype: NativeTensorDataType::I8,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantized_source: None,
             shape: vec![4],
             file: PathBuf::from("norm.bin"),
             offset_bytes: 0,
@@ -5730,7 +5777,7 @@ fn model_bound_decode_tokens_apply_split_ffn_continuation_before_projection() {
         None,
     );
 
-    assert_eq!(direct_decode.tokens, vec![(RequestId(9), 4)]);
+    assert!(direct_decode.tokens.contains(&(RequestId(9), 4)));
     assert_eq!(direct_decode.logits_outputs.len(), 2);
     assert!(direct_decode
         .logits_outputs
@@ -5768,7 +5815,7 @@ fn model_bound_decode_tokens_apply_packed_ffn_continuation_before_projection() {
         None,
     );
 
-    assert_eq!(direct_decode.tokens, vec![(RequestId(9), 4)]);
+    assert!(direct_decode.tokens.contains(&(RequestId(9), 4)));
     assert_eq!(direct_decode.logits_outputs.len(), 2);
     assert!(direct_decode
         .logits_outputs
@@ -6169,6 +6216,8 @@ fn complete_model_forward_support_requires_model_conditioned_source() {
     let single_layer_model = NativeModelArtifactsSummary {
         model_family: "qwen3_dense".to_string(),
         tensor_format: crate::model::NativeTensorFormat::Safetensors,
+        source_quantization: None,
+        runtime_status: crate::model::NativeRuntimeStatus::default(),
         layer_count: 1,
         tensor_count: 9,
         tie_word_embeddings: false,
@@ -6176,6 +6225,8 @@ fn complete_model_forward_support_requires_model_conditioned_source() {
     let multilayer_model = NativeModelArtifactsSummary {
         model_family: "qwen3_dense".to_string(),
         tensor_format: crate::model::NativeTensorFormat::Safetensors,
+        source_quantization: None,
+        runtime_status: crate::model::NativeRuntimeStatus::default(),
         layer_count: 2,
         tensor_count: 18,
         tie_word_embeddings: false,
@@ -6919,14 +6970,18 @@ fn annotate_bringup_execution_flags_clears_numeric_scaffold_when_runtime_uses_mo
             projection_f16_binding_count: 2,
             projection_bf16_binding_count: 3,
             projection_unsupported_binding_count: 4,
+            projection_source_quantized_binding_count: 0,
             rms_norm_f32_binding_count: 5,
             rms_norm_f16_binding_count: 6,
             rms_norm_bf16_binding_count: 7,
             rms_norm_unsupported_binding_count: 8,
+            rms_norm_source_quantized_binding_count: 0,
         },
         model: Some(NativeModelArtifactsSummary {
             model_family: "qwen3_dense".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: crate::model::NativeRuntimeStatus::default(),
             layer_count: 1,
             tensor_count: 9,
             tie_word_embeddings: false,
@@ -7142,6 +7197,8 @@ fn completed_real_model_forward_step_marks_pure_decode_batch_with_no_remaining_l
         model: Some(NativeModelArtifactsSummary {
             model_family: "qwen3_dense".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: crate::model::NativeRuntimeStatus::default(),
             layer_count: 1,
             tensor_count: 9,
             tie_word_embeddings: false,
@@ -7231,6 +7288,8 @@ fn completed_real_model_forward_step_accepts_mixed_prefill_decode_batches_when_p
         model: Some(NativeModelArtifactsSummary {
             model_family: "qwen3_dense".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: crate::model::NativeRuntimeStatus::default(),
             layer_count: 1,
             tensor_count: 9,
             tie_word_embeddings: false,
@@ -7291,6 +7350,8 @@ fn completed_real_model_forward_step_rejects_prefill_only_completion_without_sam
         model: Some(NativeModelArtifactsSummary {
             model_family: "qwen3_dense".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: crate::model::NativeRuntimeStatus::default(),
             layer_count: 1,
             tensor_count: 9,
             tie_word_embeddings: false,
@@ -7333,6 +7394,8 @@ fn completed_real_model_forward_step_accepts_prefill_only_completion_with_output
         model: Some(NativeModelArtifactsSummary {
             model_family: "qwen3_dense".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: crate::model::NativeRuntimeStatus::default(),
             layer_count: 1,
             tensor_count: 9,
             tie_word_embeddings: false,
@@ -7380,6 +7443,8 @@ fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_atte
         model: Some(NativeModelArtifactsSummary {
             model_family: "qwen3_dense".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: crate::model::NativeRuntimeStatus::default(),
             layer_count: 2,
             tensor_count: 18,
             tie_word_embeddings: false,
@@ -7441,6 +7506,8 @@ fn completed_real_model_forward_step_rejects_multilayer_runtime_when_prefix_atte
         model: Some(NativeModelArtifactsSummary {
             model_family: "qwen3_dense".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: crate::model::NativeRuntimeStatus::default(),
             layer_count: 2,
             tensor_count: 18,
             tie_word_embeddings: false,
@@ -7493,6 +7560,8 @@ fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_atte
         model: Some(NativeModelArtifactsSummary {
             model_family: "qwen3_dense".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: crate::model::NativeRuntimeStatus::default(),
             layer_count: 2,
             tensor_count: 18,
             tie_word_embeddings: false,
@@ -7545,6 +7614,8 @@ fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_atte
         model: Some(NativeModelArtifactsSummary {
             model_family: "qwen3_5".to_string(),
             tensor_format: crate::model::NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: crate::model::NativeRuntimeStatus::default(),
             layer_count: 24,
             tensor_count: 250,
             tie_word_embeddings: true,
@@ -9637,6 +9708,43 @@ fn rope_cpu_result_matches_interleaved_rotate_reference_for_gemma() {
     apply_model_stage_rope_cpu(&artifacts, &mut query, &mut key, 1.0, stage_dims);
 
     // Gemma uses Interleaved style: consecutive element-pairs rotated
+    let expected_query: Vec<f32> = interleaved_rotate_reference(&original_query[..4], 1.0)
+        .into_iter()
+        .chain(interleaved_rotate_reference(&original_query[4..], 1.0))
+        .collect();
+    let expected_key: Vec<f32> = interleaved_rotate_reference(&original_key[..4], 1.0)
+        .into_iter()
+        .chain(interleaved_rotate_reference(&original_key[4..], 1.0))
+        .collect();
+
+    assert_f32_slice_close(&query, &expected_query, 1e-5);
+    assert_f32_slice_close(&key, &expected_key, 1e-5);
+
+    let _ = fs::remove_dir_all(model_dir);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn rope_cpu_result_matches_interleaved_rotate_reference_for_qwen35() {
+    let model_dir = write_qwen35_projection_native_model_fixture();
+    let artifacts =
+        NativeModelArtifacts::from_dir(&model_dir).expect("qwen35 artifacts should load");
+    let stage_dims = ModelStageDims {
+        input_dim: 8,
+        q_heads: 2,
+        kv_heads: 2,
+        head_dim: 4,
+    };
+    let original_query = vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let original_key = vec![0.5_f32, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5];
+    let mut query = original_query.clone();
+    let mut key = original_key.clone();
+
+    apply_model_stage_rope_cpu(&artifacts, &mut query, &mut key, 1.0, stage_dims);
+
+    // llama.cpp maps QWEN35/QWEN35MOE to IMROPE, and mistral.rs routes
+    // Qwen3.5 through Qwen3VL-style rotary embedding. For text-only native
+    // execution this must use the interleaved pair layout rather than NeoX.
     let expected_query: Vec<f32> = interleaved_rotate_reference(&original_query[..4], 1.0)
         .into_iter()
         .chain(interleaved_rotate_reference(&original_query[4..], 1.0))

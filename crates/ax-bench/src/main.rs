@@ -4,8 +4,8 @@ use ax_engine_core::{
     build_phase1_kernel_artifacts, CacheGroupId, EngineCore, ExecutionRunner, MetalBringupRunner,
     MetalBuildDoctorReport, MetalBuildHostReport, MetalBuildStatus, MetalBuildToolStatus,
     MetalBuildToolchainReport, MetalDispatchTrace, MetalKernelBuildRequest, NativeModelArtifacts,
-    NativeModelBindingSummary, RequestId, RequestSubmission, RouteMetadata, SamplingParams,
-    SequenceNo, StepId, StopReason,
+    NativeModelBindingSummary, RequestId, RequestSnapshot, RequestSubmission, RouteMetadata,
+    SamplingParams, SequenceNo, StepId, StopReason,
 };
 use ax_engine_sdk::{
     classify_native_gguf_export_failure_message, current_host_report,
@@ -35,6 +35,10 @@ use tracing_subscriber::EnvFilter;
 const NATIVE_GGUF_EXPORTER_ENV: &str = "AX_ENGINE_NATIVE_GGUF_EXPORTER";
 const NATIVE_GGUF_PYTHON_ENV: &str = "AX_ENGINE_NATIVE_GGUF_PYTHON";
 const NATIVE_GGUF_EXPORT_DTYPE_ENV: &str = "AX_ENGINE_NATIVE_GGUF_EXPORT_DTYPE";
+const NATIVE_DENSE_DEQUANTIZED_EXPORT_NOTE: &str =
+    "source_quantization_dequantized_for_dense_native_export";
+const NATIVE_DENSE_DEQUANTIZED_SOURCE_BLOCKER: &str =
+    "source_quantization_dequantized_dense_native_artifact";
 
 fn main() -> ExitCode {
     init_tracing();
@@ -619,11 +623,16 @@ struct InferenceArgs {
     sampling: GenerateSampling,
     metadata: Option<String>,
     deterministic: bool,
+    native_mode: bool,
+    mlx: bool,
     support_tier: SupportTier,
     compat_backend: CompatibilityBackendKind,
     compat_cli_path: PathBuf,
     compat_model_path: Option<PathBuf>,
     compat_server_url: Option<String>,
+    llama_fallback_cli_path: PathBuf,
+    llama_fallback_model_path: Option<PathBuf>,
+    llama_fallback_server_url: Option<String>,
     native_runtime_artifacts_dir: Option<PathBuf>,
     native_model_artifacts_dir: Option<PathBuf>,
     json: bool,
@@ -639,11 +648,16 @@ impl Default for InferenceArgs {
             sampling: GenerateSampling::default(),
             metadata: None,
             deterministic: true,
-            support_tier: SupportTier::NativePreview,
+            native_mode: false,
+            mlx: false,
+            support_tier: SupportTier::Compatibility,
             compat_backend: CompatibilityBackendKind::LlamaCpp,
             compat_cli_path: PathBuf::from("llama-cli"),
             compat_model_path: None,
             compat_server_url: None,
+            llama_fallback_cli_path: PathBuf::from("llama-cli"),
+            llama_fallback_model_path: None,
+            llama_fallback_server_url: None,
             native_runtime_artifacts_dir: None,
             native_model_artifacts_dir: None,
             json: false,
@@ -666,7 +680,7 @@ impl InferenceArgs {
 
 fn parse_inference_args(args: &[String], command: &str) -> Result<InferenceArgs, CliError> {
     let mut parsed = InferenceArgs::default();
-    let mut support_tier_label = "native_preview".to_string();
+    let mut support_tier_label = "compatibility".to_string();
     let mut compat_backend_label = "llama_cpp".to_string();
 
     let mut iter = args.iter();
@@ -718,6 +732,8 @@ fn parse_inference_args(args: &[String], command: &str) -> Result<InferenceArgs,
                     "--deterministic",
                 )?
             }
+            "--native-mode" => parsed.native_mode = true,
+            "--mlx" => parsed.mlx = true,
             "--support-tier" => {
                 support_tier_label = next_flag_value(&mut iter, "--support-tier")?.to_string()
             }
@@ -737,6 +753,20 @@ fn parse_inference_args(args: &[String], command: &str) -> Result<InferenceArgs,
             "--compat-server-url" => {
                 parsed.compat_server_url =
                     Some(next_flag_value(&mut iter, "--compat-server-url")?.to_string())
+            }
+            "--llama-fallback-cli-path" => {
+                parsed.llama_fallback_cli_path =
+                    PathBuf::from(next_flag_value(&mut iter, "--llama-fallback-cli-path")?)
+            }
+            "--llama-fallback-model-path" => {
+                parsed.llama_fallback_model_path = Some(PathBuf::from(next_flag_value(
+                    &mut iter,
+                    "--llama-fallback-model-path",
+                )?))
+            }
+            "--llama-fallback-server-url" => {
+                parsed.llama_fallback_server_url =
+                    Some(next_flag_value(&mut iter, "--llama-fallback-server-url")?.to_string())
             }
             "--native-runtime-artifacts-dir" => {
                 parsed.native_runtime_artifacts_dir = Some(PathBuf::from(next_flag_value(
@@ -770,6 +800,12 @@ fn parse_inference_args(args: &[String], command: &str) -> Result<InferenceArgs,
         return Err(CliError::Usage(format!(
             "{command} requires either --prompt or --tokens"
         )));
+    }
+
+    if parsed.native_mode && parsed.mlx {
+        return Err(CliError::Usage(
+            "--native-mode and --mlx cannot be used together".to_string(),
+        ));
     }
 
     parsed.support_tier = preview_support_tier_from_label(&support_tier_label)
@@ -886,6 +922,42 @@ fn compatibility_backend_kind_from_label(value: &str) -> Result<CompatibilityBac
 }
 
 fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliError> {
+    let backend_request = if args.native_mode {
+        let (llama_fallback_cli_path, llama_fallback_model_path, llama_fallback_server_url) =
+            inference_native_mode_llama_fallback_target(args);
+        PreviewBackendRequest::shipping_native_with_llama_fallback(
+            llama_fallback_cli_path,
+            llama_fallback_model_path,
+            llama_fallback_server_url,
+        )
+    } else if args.mlx {
+        PreviewBackendRequest::shipping_mlx_with_llama_fallback(
+            args.compat_cli_path.clone(),
+            args.compat_model_path.clone(),
+            args.compat_server_url.clone(),
+            args.llama_fallback_cli_path.clone(),
+            args.llama_fallback_model_path.clone(),
+            args.llama_fallback_server_url.clone(),
+        )
+    } else if args.support_tier == SupportTier::Compatibility
+        && args.compat_backend == CompatibilityBackendKind::LlamaCpp
+    {
+        PreviewBackendRequest::shipping_default_llama_cpp(
+            args.compat_cli_path.clone(),
+            args.compat_model_path.clone(),
+            args.compat_server_url.clone(),
+        )
+    } else {
+        PreviewBackendRequest {
+            support_tier: args.support_tier,
+            compat_backend: args.compat_backend,
+            compat_cli_path: args.compat_cli_path.clone(),
+            compat_model_path: args.compat_model_path.clone(),
+            compat_server_url: args.compat_server_url.clone(),
+            ..PreviewBackendRequest::default()
+        }
+    };
+
     let config =
         EngineSessionConfig::from_preview_request(ax_engine_sdk::PreviewSessionConfigRequest {
             cache_group_id: CacheGroupId(0),
@@ -894,13 +966,7 @@ fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliErr
             deterministic: args.deterministic,
             allow_deterministic_native_fallback: false,
             max_batch_tokens: 2048,
-            backend_request: PreviewBackendRequest {
-                support_tier: args.support_tier,
-                compat_backend: args.compat_backend,
-                compat_cli_path: args.compat_cli_path.clone(),
-                compat_model_path: args.compat_model_path.clone(),
-                compat_server_url: args.compat_server_url.clone(),
-            },
+            backend_request,
             native_runtime_artifacts_dir: args.native_runtime_artifacts_dir.clone(),
             native_model_artifacts_dir: args.native_model_artifacts_dir.clone(),
         })
@@ -908,6 +974,24 @@ fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliErr
 
     EngineSession::new(config)
         .map_err(|error| CliError::Runtime(format!("failed to start AX Engine session: {error}")))
+}
+
+fn inference_native_mode_llama_fallback_target(
+    args: &InferenceArgs,
+) -> (PathBuf, Option<PathBuf>, Option<String>) {
+    if args.llama_fallback_model_path.is_some() || args.llama_fallback_server_url.is_some() {
+        (
+            args.llama_fallback_cli_path.clone(),
+            args.llama_fallback_model_path.clone(),
+            args.llama_fallback_server_url.clone(),
+        )
+    } else {
+        (
+            args.compat_cli_path.clone(),
+            args.compat_model_path.clone(),
+            args.compat_server_url.clone(),
+        )
+    }
 }
 
 fn run_inference_generate(args: &InferenceArgs) -> Result<GenerateResponse, CliError> {
@@ -4123,10 +4207,15 @@ fn execute_replay_once(
     run_replay_workload(runtime, replay_events_from_manifest(manifest)?)
 }
 
+fn elapsed_ms_since(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64 + 1
+}
+
 fn run_scenario_workload(
     runtime: RuntimeConfig,
     specs: Vec<SyntheticRequestSpec>,
 ) -> Result<RuntimeObservation, CliError> {
+    let started = Instant::now();
     let max_steps = specs
         .iter()
         .map(|spec| u64::from(spec.max_output_tokens).saturating_add(256))
@@ -4169,10 +4258,10 @@ fn run_scenario_workload(
         let outcome = session
             .step()
             .map_err(|error| CliError::Runtime(format!("engine session step failed: {error}")))?;
-        current_time_ms += 1;
+        current_time_ms = elapsed_ms_since(started);
         observation.observe_step(session.core(), &outcome, current_time_ms);
 
-        if current_time_ms > max_steps {
+        if observation.step_count > max_steps {
             return Err(CliError::Runtime(
                 "scenario workload exceeded engine step guard".to_string(),
             ));
@@ -4193,7 +4282,7 @@ fn run_scenario_workload(
         session.core(),
         &submitted_request_ids,
         external_ids,
-        current_time_ms,
+        elapsed_ms_since(started),
         runtime.block_size_tokens,
     )?;
     Ok(observation)
@@ -4330,6 +4419,25 @@ fn session_config_from_runtime(
         .kv_total_blocks
         .unwrap_or_else(|| estimated_total_blocks.saturating_add(8));
 
+    let compatibility_backend =
+        if runtime.resolved_backend.selected_backend == SelectedBackend::AxNative {
+            None
+        } else {
+            runtime
+                .backend_adapter
+                .as_ref()
+                .map(BackendAdapterManifest::to_sdk_config)
+        };
+    let fallback_compatibility_backend =
+        if runtime.resolved_backend.selected_backend == SelectedBackend::AxNative {
+            runtime
+                .backend_adapter
+                .as_ref()
+                .map(BackendAdapterManifest::to_sdk_config)
+        } else {
+            None
+        };
+
     EngineSessionConfig::from_resolved_request(ResolvedSessionConfigRequest {
         cache_group_id: CacheGroupId(0),
         block_size_tokens: runtime.block_size_tokens,
@@ -4339,10 +4447,8 @@ fn session_config_from_runtime(
         max_batch_tokens: runtime.max_batch_tokens,
         backend_policy: runtime.backend_policy,
         resolved_backend: runtime.resolved_backend.clone(),
-        compatibility_backend: runtime
-            .backend_adapter
-            .as_ref()
-            .map(BackendAdapterManifest::to_sdk_config),
+        compatibility_backend,
+        fallback_compatibility_backend,
         native_runtime_artifacts_dir: runtime.native_runtime_artifacts_dir.clone(),
         native_runtime_artifacts_source: runtime.native_runtime_artifacts_source,
         native_model_artifacts_dir: runtime.native_model_artifacts_dir.clone(),
@@ -5549,6 +5655,11 @@ fn build_trusted_baseline_json(
         "metal_native_projection_unsupported_binding_count",
         &["metal_dispatch_native_projection_unsupported_binding_count"],
     );
+    let metal_native_projection_source_quantized_binding_count = route_count_from_json(
+        &route_json,
+        "metal_native_projection_source_quantized_binding_count",
+        &["metal_dispatch_native_projection_source_quantized_binding_count"],
+    );
     let metal_native_rms_norm_f32_binding_count = route_count_from_json(
         &route_json,
         "metal_native_rms_norm_f32_binding_count",
@@ -5568,6 +5679,11 @@ fn build_trusted_baseline_json(
         &route_json,
         "metal_native_rms_norm_unsupported_binding_count",
         &["metal_dispatch_native_rms_norm_unsupported_binding_count"],
+    );
+    let metal_native_rms_norm_source_quantized_binding_count = route_count_from_json(
+        &route_json,
+        "metal_native_rms_norm_source_quantized_binding_count",
+        &["metal_dispatch_native_rms_norm_source_quantized_binding_count"],
     );
     let backend_reported_cached_prompt_tokens = nested_value(
         environment,
@@ -5623,10 +5739,12 @@ fn build_trusted_baseline_json(
             "metal_native_projection_f16_binding_count": metal_native_projection_f16_binding_count,
             "metal_native_projection_bf16_binding_count": metal_native_projection_bf16_binding_count,
             "metal_native_projection_unsupported_binding_count": metal_native_projection_unsupported_binding_count,
+            "metal_native_projection_source_quantized_binding_count": metal_native_projection_source_quantized_binding_count,
             "metal_native_rms_norm_f32_binding_count": metal_native_rms_norm_f32_binding_count,
             "metal_native_rms_norm_f16_binding_count": metal_native_rms_norm_f16_binding_count,
             "metal_native_rms_norm_bf16_binding_count": metal_native_rms_norm_bf16_binding_count,
-            "metal_native_rms_norm_unsupported_binding_count": metal_native_rms_norm_unsupported_binding_count
+            "metal_native_rms_norm_unsupported_binding_count": metal_native_rms_norm_unsupported_binding_count,
+            "metal_native_rms_norm_source_quantized_binding_count": metal_native_rms_norm_source_quantized_binding_count
         },
         "machine": machine,
         "software": software,
@@ -6830,6 +6948,10 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_native_projection_unsupported_binding_count",
     );
+    let metal_native_projection_source_quantized_binding_count = route_decision_value(
+        &execution.observation.route_metadata,
+        "metal_dispatch_native_projection_source_quantized_binding_count",
+    );
     let metal_native_rms_norm_f32_binding_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_native_rms_norm_f32_binding_count",
@@ -6845,6 +6967,10 @@ fn build_execution_summary_markdown(
     let metal_native_rms_norm_unsupported_binding_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_native_rms_norm_unsupported_binding_count",
+    );
+    let metal_native_rms_norm_source_quantized_binding_count = route_decision_value(
+        &execution.observation.route_metadata,
+        "metal_dispatch_native_rms_norm_source_quantized_binding_count",
     );
     let metal_direct_decode_native_projection_row_count = route_decision_value(
         &execution.observation.route_metadata,
@@ -6968,10 +7094,17 @@ fn build_execution_summary_markdown(
     .unwrap_or_else(|| "n/a".to_string());
     let metal_direct_decode_batching_opportunity_observed =
         direct_decode_batching_opportunity_observed(&execution.observation.step_trace);
+    let native_dense_dequantized_source = execution
+        .runtime
+        .native_model_report()
+        .is_some_and(|report| native_model_report_has_dense_dequantized_source(&report));
     let native_benchmark_readiness = native_benchmark_readiness(NativeBenchmarkReadinessInputs {
         tool_mode: execution.tool_mode,
         selected_backend: &selected_backend,
         native_placeholder_execution,
+        native_dense_dequantized_source,
+        native_quantized_projection_binding_count:
+            metal_native_projection_source_quantized_binding_count,
         direct_decode_batching_opportunity_observed:
             metal_direct_decode_batching_opportunity_observed,
         metal_complete_model_forward_supported,
@@ -7043,7 +7176,7 @@ fn build_execution_summary_markdown(
     };
 
     format!(
-        "# Benchmark Run\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `{}`\n- tool_mode: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- fallback_reason: `{fallback_reason}`\n- execution_semantics: `{execution_semantics}`\n- native_placeholder_execution: `{native_placeholder_execution}`\n- native_benchmark_readiness: `{native_benchmark_readiness_status}`\n- native_hot_path_cpu_fallback_free: `{native_hot_path_cpu_fallback_free}`\n- native_batched_direct_decode_logits_ready: `{native_batched_direct_decode_logits_ready}`\n- native_prefix_min_native_share: `{native_prefix_min_native_share}`\n- native_direct_decode_min_native_share: `{native_direct_decode_min_native_share}`\n- native_readiness_blockers: `{native_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- metal_prefix_layers_native_attention: `{metal_prefix_layers_native_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- metal_prefix_native_dispatch_count: `{metal_prefix_native_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_prefix_native_projection_row_count: `{metal_prefix_native_projection_row_count}`\n- metal_prefix_cpu_projection_row_count: `{metal_prefix_cpu_projection_row_count}`\n- metal_prefix_projection_native_share: `{prefix_projection_native_share}`\n- metal_prefix_native_rms_norm_element_count: `{metal_prefix_native_rms_norm_element_count}`\n- metal_prefix_cpu_rms_norm_element_count: `{metal_prefix_cpu_rms_norm_element_count}`\n- metal_prefix_rms_norm_native_share: `{prefix_rms_norm_native_share}`\n- metal_prefix_native_ffn_activation_element_count: `{metal_prefix_native_ffn_activation_element_count}`\n- metal_prefix_cpu_ffn_activation_element_count: `{metal_prefix_cpu_ffn_activation_element_count}`\n- metal_prefix_ffn_activation_native_share: `{prefix_ffn_activation_native_share}`\n- metal_prefix_native_residual_add_element_count: `{metal_prefix_native_residual_add_element_count}`\n- metal_prefix_cpu_residual_add_element_count: `{metal_prefix_cpu_residual_add_element_count}`\n- metal_prefix_residual_add_native_share: `{prefix_residual_add_native_share}`\n- metal_prefix_native_scale_element_count: `{metal_prefix_native_scale_element_count}`\n- metal_prefix_cpu_scale_element_count: `{metal_prefix_cpu_scale_element_count}`\n- metal_prefix_scale_native_share: `{prefix_scale_native_share}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- metal_native_projection_f32_binding_count: `{metal_native_projection_f32_binding_count}`\n- metal_native_projection_f16_binding_count: `{metal_native_projection_f16_binding_count}`\n- metal_native_projection_bf16_binding_count: `{metal_native_projection_bf16_binding_count}`\n- metal_native_projection_unsupported_binding_count: `{metal_native_projection_unsupported_binding_count}`\n- metal_native_rms_norm_f32_binding_count: `{metal_native_rms_norm_f32_binding_count}`\n- metal_native_rms_norm_f16_binding_count: `{metal_native_rms_norm_f16_binding_count}`\n- metal_native_rms_norm_bf16_binding_count: `{metal_native_rms_norm_bf16_binding_count}`\n- metal_native_rms_norm_unsupported_binding_count: `{metal_native_rms_norm_unsupported_binding_count}`\n- metal_direct_decode_native_projection_row_count: `{metal_direct_decode_native_projection_row_count}`\n- metal_direct_decode_cpu_projection_row_count: `{metal_direct_decode_cpu_projection_row_count}`\n- metal_direct_decode_projection_native_share: `{direct_decode_projection_native_share}`\n- metal_direct_decode_native_rms_norm_element_count: `{metal_direct_decode_native_rms_norm_element_count}`\n- metal_direct_decode_cpu_rms_norm_element_count: `{metal_direct_decode_cpu_rms_norm_element_count}`\n- metal_direct_decode_rms_norm_native_share: `{direct_decode_rms_norm_native_share}`\n- metal_direct_decode_native_ffn_activation_element_count: `{metal_direct_decode_native_ffn_activation_element_count}`\n- metal_direct_decode_cpu_ffn_activation_element_count: `{metal_direct_decode_cpu_ffn_activation_element_count}`\n- metal_direct_decode_ffn_activation_native_share: `{direct_decode_ffn_activation_native_share}`\n- metal_direct_decode_native_residual_add_element_count: `{metal_direct_decode_native_residual_add_element_count}`\n- metal_direct_decode_cpu_residual_add_element_count: `{metal_direct_decode_cpu_residual_add_element_count}`\n- metal_direct_decode_residual_add_native_share: `{direct_decode_residual_add_native_share}`\n- metal_direct_decode_native_scale_element_count: `{metal_direct_decode_native_scale_element_count}`\n- metal_direct_decode_cpu_scale_element_count: `{metal_direct_decode_cpu_scale_element_count}`\n- metal_direct_decode_scale_native_share: `{direct_decode_scale_native_share}`\n- correctness: `{}`\n- determinism: `{}`\n- ttft_ms: `{:.2}`\n- prefill_tok_s: `{:.2}`\n- decode_tok_s: `{:.2}`\n- e2e_latency_ms: `{:.2}`\n- cpu_time_per_token_us: `{:.2}`\n- runner_time_per_token_us: `{:.2}`\n- runner_time_share_pct: `{:.2}`\n- prefix_hit_rate: `{:.2}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- kv_peak_blocks: `{}`\n{}",
+        "# Benchmark Run\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `{}`\n- tool_mode: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- fallback_reason: `{fallback_reason}`\n- execution_semantics: `{execution_semantics}`\n- native_placeholder_execution: `{native_placeholder_execution}`\n- native_benchmark_readiness: `{native_benchmark_readiness_status}`\n- native_hot_path_cpu_fallback_free: `{native_hot_path_cpu_fallback_free}`\n- native_batched_direct_decode_logits_ready: `{native_batched_direct_decode_logits_ready}`\n- native_prefix_min_native_share: `{native_prefix_min_native_share}`\n- native_direct_decode_min_native_share: `{native_direct_decode_min_native_share}`\n- native_readiness_blockers: `{native_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- metal_prefix_layers_native_attention: `{metal_prefix_layers_native_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- metal_prefix_native_dispatch_count: `{metal_prefix_native_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_prefix_native_projection_row_count: `{metal_prefix_native_projection_row_count}`\n- metal_prefix_cpu_projection_row_count: `{metal_prefix_cpu_projection_row_count}`\n- metal_prefix_projection_native_share: `{prefix_projection_native_share}`\n- metal_prefix_native_rms_norm_element_count: `{metal_prefix_native_rms_norm_element_count}`\n- metal_prefix_cpu_rms_norm_element_count: `{metal_prefix_cpu_rms_norm_element_count}`\n- metal_prefix_rms_norm_native_share: `{prefix_rms_norm_native_share}`\n- metal_prefix_native_ffn_activation_element_count: `{metal_prefix_native_ffn_activation_element_count}`\n- metal_prefix_cpu_ffn_activation_element_count: `{metal_prefix_cpu_ffn_activation_element_count}`\n- metal_prefix_ffn_activation_native_share: `{prefix_ffn_activation_native_share}`\n- metal_prefix_native_residual_add_element_count: `{metal_prefix_native_residual_add_element_count}`\n- metal_prefix_cpu_residual_add_element_count: `{metal_prefix_cpu_residual_add_element_count}`\n- metal_prefix_residual_add_native_share: `{prefix_residual_add_native_share}`\n- metal_prefix_native_scale_element_count: `{metal_prefix_native_scale_element_count}`\n- metal_prefix_cpu_scale_element_count: `{metal_prefix_cpu_scale_element_count}`\n- metal_prefix_scale_native_share: `{prefix_scale_native_share}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- metal_native_projection_f32_binding_count: `{metal_native_projection_f32_binding_count}`\n- metal_native_projection_f16_binding_count: `{metal_native_projection_f16_binding_count}`\n- metal_native_projection_bf16_binding_count: `{metal_native_projection_bf16_binding_count}`\n- metal_native_projection_unsupported_binding_count: `{metal_native_projection_unsupported_binding_count}`\n- metal_native_projection_source_quantized_binding_count: `{metal_native_projection_source_quantized_binding_count}`\n- metal_native_rms_norm_f32_binding_count: `{metal_native_rms_norm_f32_binding_count}`\n- metal_native_rms_norm_f16_binding_count: `{metal_native_rms_norm_f16_binding_count}`\n- metal_native_rms_norm_bf16_binding_count: `{metal_native_rms_norm_bf16_binding_count}`\n- metal_native_rms_norm_unsupported_binding_count: `{metal_native_rms_norm_unsupported_binding_count}`\n- metal_native_rms_norm_source_quantized_binding_count: `{metal_native_rms_norm_source_quantized_binding_count}`\n- metal_direct_decode_native_projection_row_count: `{metal_direct_decode_native_projection_row_count}`\n- metal_direct_decode_cpu_projection_row_count: `{metal_direct_decode_cpu_projection_row_count}`\n- metal_direct_decode_projection_native_share: `{direct_decode_projection_native_share}`\n- metal_direct_decode_native_rms_norm_element_count: `{metal_direct_decode_native_rms_norm_element_count}`\n- metal_direct_decode_cpu_rms_norm_element_count: `{metal_direct_decode_cpu_rms_norm_element_count}`\n- metal_direct_decode_rms_norm_native_share: `{direct_decode_rms_norm_native_share}`\n- metal_direct_decode_native_ffn_activation_element_count: `{metal_direct_decode_native_ffn_activation_element_count}`\n- metal_direct_decode_cpu_ffn_activation_element_count: `{metal_direct_decode_cpu_ffn_activation_element_count}`\n- metal_direct_decode_ffn_activation_native_share: `{direct_decode_ffn_activation_native_share}`\n- metal_direct_decode_native_residual_add_element_count: `{metal_direct_decode_native_residual_add_element_count}`\n- metal_direct_decode_cpu_residual_add_element_count: `{metal_direct_decode_cpu_residual_add_element_count}`\n- metal_direct_decode_residual_add_native_share: `{direct_decode_residual_add_native_share}`\n- metal_direct_decode_native_scale_element_count: `{metal_direct_decode_native_scale_element_count}`\n- metal_direct_decode_cpu_scale_element_count: `{metal_direct_decode_cpu_scale_element_count}`\n- metal_direct_decode_scale_native_share: `{direct_decode_scale_native_share}`\n- correctness: `{}`\n- determinism: `{}`\n- ttft_ms: `{:.2}`\n- prefill_tok_s: `{:.2}`\n- decode_tok_s: `{:.2}`\n- e2e_latency_ms: `{:.2}`\n- cpu_time_per_token_us: `{:.2}`\n- runner_time_per_token_us: `{:.2}`\n- runner_time_share_pct: `{:.2}`\n- prefix_hit_rate: `{:.2}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- kv_peak_blocks: `{}`\n{}",
         manifest_path.display(),
         execution.status_label(),
         execution.tool_mode,
@@ -7664,15 +7797,22 @@ fn build_regression_json(
         nested_value(baseline_environment, &["runtime", "backend_adapter"]).cloned();
     let candidate_backend_adapter =
         nested_value(candidate_environment, &["runtime", "backend_adapter"]).cloned();
+    let baseline_native_dense_dequantized_source = nested_value(baseline_environment, &["runtime"])
+        .is_some_and(native_dense_dequantized_source_from_runtime_json);
+    let candidate_native_dense_dequantized_source =
+        nested_value(candidate_environment, &["runtime"])
+            .is_some_and(native_dense_dequantized_source_from_runtime_json);
     let baseline_native_benchmark_readiness = native_benchmark_readiness_from_route_json(
         &baseline_tool_mode,
         &baseline_selected_backend,
         &baseline_route,
+        baseline_native_dense_dequantized_source,
     );
     let candidate_native_benchmark_readiness = native_benchmark_readiness_from_route_json(
         &candidate_tool_mode,
         &candidate_selected_backend,
         &candidate_route,
+        candidate_native_dense_dequantized_source,
     );
     let compare_result = compare_result_label(&baseline_tool_mode, &baseline_execution_semantics);
     let mut runtime = json!({
@@ -8288,11 +8428,15 @@ fn runtime_config_from_manifest(manifest: &BenchmarkManifest) -> Result<RuntimeC
         })?;
 
     if resolved_backend.selected_backend == SelectedBackend::AxNative {
-        if manifest.runtime.backend_adapter.is_some() {
-            return Err(CliError::Contract(
-                "runtime.backend_adapter must be omitted when selected_backend is ax_native"
-                    .to_string(),
-            ));
+        if let Some(backend_adapter) = manifest.runtime.backend_adapter.as_ref() {
+            if backend_policy.resolution_policy != ResolutionPolicy::PreferNative
+                || backend_adapter.selected_backend() != SelectedBackend::LlamaCpp
+            {
+                return Err(CliError::Contract(
+                    "runtime.backend_adapter must be omitted when selected_backend is ax_native unless it declares a llama.cpp fallback for prefer_native"
+                        .to_string(),
+                ));
+            }
         }
     } else {
         let backend_adapter = manifest.runtime.backend_adapter.as_ref().ok_or_else(|| {
@@ -8481,6 +8625,8 @@ struct NativeBenchmarkReadinessInputs<'a> {
     tool_mode: &'a str,
     selected_backend: &'a str,
     native_placeholder_execution: bool,
+    native_dense_dequantized_source: bool,
+    native_quantized_projection_binding_count: u32,
     direct_decode_batching_opportunity_observed: bool,
     metal_complete_model_forward_supported: bool,
     metal_real_model_forward: bool,
@@ -8621,6 +8767,12 @@ fn native_benchmark_readiness(
     if !inputs.metal_model_artifacts_validated {
         blockers.push("model_artifacts_unvalidated");
     }
+    if inputs.native_dense_dequantized_source {
+        blockers.push(NATIVE_DENSE_DEQUANTIZED_SOURCE_BLOCKER);
+    }
+    if inputs.native_quantized_projection_binding_count > 0 {
+        blockers.push("native_quantized_projection_kernel_missing");
+    }
     if !inputs.metal_complete_model_forward_supported {
         blockers.push("complete_model_forward_not_reported");
     }
@@ -8700,6 +8852,7 @@ fn native_benchmark_readiness_from_route_json(
     tool_mode: &str,
     selected_backend: &str,
     route_json: &Value,
+    native_dense_dequantized_source: bool,
 ) -> NativeBenchmarkReadiness {
     native_benchmark_readiness(NativeBenchmarkReadinessInputs {
         tool_mode,
@@ -8708,6 +8861,12 @@ fn native_benchmark_readiness_from_route_json(
             route_json,
             "native_placeholder_execution",
             &["native_placeholder_execution"],
+        ),
+        native_dense_dequantized_source,
+        native_quantized_projection_binding_count: route_count_from_json(
+            route_json,
+            "metal_native_projection_source_quantized_binding_count",
+            &["metal_dispatch_native_projection_source_quantized_binding_count"],
         ),
         direct_decode_batching_opportunity_observed: route_flag_from_json(
             route_json,
@@ -8887,6 +9046,37 @@ fn native_benchmark_readiness_from_route_json(
             &["metal_dispatch_direct_decode_cpu_scale_element_count"],
         ),
     })
+}
+
+fn native_model_report_has_dense_dequantized_source(report: &NativeModelReport) -> bool {
+    serde_json::to_value(report)
+        .ok()
+        .is_some_and(|native_model| {
+            native_dense_dequantized_source_from_native_model_json(&native_model)
+        })
+}
+
+fn native_dense_dequantized_source_from_runtime_json(runtime_json: &Value) -> bool {
+    nested_value(runtime_json, &["native_model"])
+        .is_some_and(native_dense_dequantized_source_from_native_model_json)
+}
+
+fn native_dense_dequantized_source_from_native_model_json(native_model: &Value) -> bool {
+    let contains_quantized_tensors = nested_value(
+        native_model,
+        &["source_quantization", "contains_quantized_tensors"],
+    )
+    .and_then(Value::as_bool)
+    .unwrap_or(false);
+    let has_dense_dequantized_note = nested_value(native_model, &["runtime_status", "notes"])
+        .and_then(Value::as_array)
+        .is_some_and(|notes| {
+            notes
+                .iter()
+                .any(|note| note.as_str() == Some(NATIVE_DENSE_DEQUANTIZED_EXPORT_NOTE))
+        });
+
+    contains_quantized_tensors && has_dense_dequantized_note
 }
 
 fn native_share_label(share: Option<f64>) -> String {
@@ -9785,7 +9975,7 @@ fn serialize_runtime_metadata_with_native_model_bridge(
             .insert("kv_total_blocks".to_string(), json!(kv_total_blocks));
     }
 
-    if let Some(backend_adapter) = runtime.backend_adapter.as_ref() {
+    if let Some(backend_adapter) = runtime_backend_adapter_for_report(runtime, actual_runtime) {
         runtime_json
             .as_object_mut()
             .expect("runtime metadata should serialize as object")
@@ -9836,6 +10026,23 @@ fn serialize_runtime_metadata_with_native_model_bridge(
     }
 
     runtime_json
+}
+
+fn runtime_backend_adapter_for_report<'a>(
+    runtime: &'a RuntimeConfig,
+    actual_runtime: Option<&RuntimeReport>,
+) -> Option<&'a BackendAdapterManifest> {
+    let selected_backend = actual_runtime
+        .map(|report| report.selected_backend)
+        .unwrap_or(runtime.resolved_backend.selected_backend);
+    if selected_backend == SelectedBackend::AxNative {
+        return None;
+    }
+
+    runtime
+        .backend_adapter
+        .as_ref()
+        .filter(|adapter| adapter.selected_backend() == selected_backend)
 }
 
 fn json_string_label<T: Serialize>(value: T) -> String {
@@ -10050,13 +10257,20 @@ fn stable_hash32(input: &str) -> u32 {
     hash
 }
 
+fn request_snapshot_for_bench(
+    engine: &EngineCore,
+    request_id: RequestId,
+) -> Result<RequestSnapshot, CliError> {
+    engine
+        .request_manager()
+        .snapshot(request_id)
+        .ok_or_else(|| CliError::Runtime(format!("missing request snapshot {:?}", request_id)))
+}
+
 fn has_live_requests(engine: &EngineCore, request_ids: &[RequestId]) -> Result<bool, CliError> {
     for request_id in request_ids {
-        let record = engine
-            .request_manager()
-            .record(*request_id)
-            .ok_or_else(|| CliError::Runtime(format!("missing request record {:?}", request_id)))?;
-        if !record.state.is_terminal() {
+        let snapshot = request_snapshot_for_bench(engine, *request_id)?;
+        if !snapshot.state.is_terminal() {
             return Ok(true);
         }
     }
@@ -10188,8 +10402,8 @@ fn usage() -> String {
     let text = r#"AX Engine v4 benchmark CLI
 
 Usage:
-  ax-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--support-tier <tier>] [--compat-backend <backend>] [--compat-cli-path <path>] [--compat-model-path <path>] [--compat-server-url <url>] [--native-runtime-artifacts-dir <path>] [--native-model-artifacts-dir <path>] [--json]
-  ax-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--support-tier <tier>] [--compat-backend <backend>] [--compat-cli-path <path>] [--compat-model-path <path>] [--compat-server-url <url>] [--native-runtime-artifacts-dir <path>] [--native-model-artifacts-dir <path>] [--json]
+  ax-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--native-mode | --mlx] [--support-tier <tier>] [--compat-backend <backend>] [--compat-cli-path <path>] [--compat-model-path <path>] [--compat-server-url <url>] [--llama-fallback-cli-path <path>] [--llama-fallback-model-path <path>] [--llama-fallback-server-url <url>] [--native-runtime-artifacts-dir <path>] [--native-model-artifacts-dir <path>] [--json]
+  ax-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--native-mode | --mlx] [--support-tier <tier>] [--compat-backend <backend>] [--compat-cli-path <path>] [--compat-model-path <path>] [--compat-server-url <url>] [--llama-fallback-cli-path <path>] [--llama-fallback-model-path <path>] [--llama-fallback-server-url <url>] [--native-runtime-artifacts-dir <path>] [--native-model-artifacts-dir <path>] [--json]
   ax-bench scenario --manifest <path> --output-root <path>
   ax-bench replay --manifest <path> --output-root <path>
   ax-bench autotune --manifest <path> --output-root <path> [--iterations <n>] [--exploration-weight <value>] [--max-batch-token-options <list>] [--kv-total-block-options <list>] [--prefix-cache-options <list>] [--disable-history]
@@ -10903,6 +11117,8 @@ struct RuntimeObservation {
     memory_blocked_request_events: u64,
     total_cpu_time_us: u64,
     total_runner_time_us: u64,
+    total_prefill_runner_time_us: u64,
+    total_decode_runner_time_us: u64,
     kv_peak_blocks: u32,
     memory_peak_mb: f64,
     evictions: u64,
@@ -10917,6 +11133,24 @@ struct RuntimeObservation {
     kv_modes_seen: BTreeSet<String>,
     barrier_modes_seen: BTreeSet<String>,
     runtime_report: Option<RuntimeReport>,
+}
+
+fn proportional_time_us(total_us: u64, part_tokens: u64, total_tokens: u64) -> u64 {
+    if total_us == 0 || part_tokens == 0 || total_tokens == 0 {
+        return 0;
+    }
+    let value = u128::from(total_us)
+        .saturating_mul(u128::from(part_tokens))
+        / u128::from(total_tokens);
+    value.min(u128::from(u64::MAX)) as u64
+}
+
+fn tokens_per_second_from_micros(tokens: u64, elapsed_us: u64) -> f64 {
+    if tokens == 0 || elapsed_us == 0 {
+        0.0
+    } else {
+        (tokens as f64 * 1_000_000.0) / elapsed_us as f64
+    }
 }
 
 impl RuntimeObservation {
@@ -10949,17 +11183,40 @@ impl RuntimeObservation {
         if let Some(batch) = &outcome.schedule_plan.execution_batch {
             let mut saw_prefill = false;
             let mut saw_decode = false;
+            let mut step_prefill_tokens = 0u64;
+            let mut step_decode_tokens = 0u64;
             for item in &batch.items {
                 match item.mode {
                     ax_engine_core::ExecutionMode::Prefill => {
-                        self.prefill_tokens += u64::from(item.scheduled_token_count);
+                        let scheduled_tokens = u64::from(item.scheduled_token_count);
+                        self.prefill_tokens += scheduled_tokens;
+                        step_prefill_tokens += scheduled_tokens;
                         saw_prefill = true;
                     }
                     ax_engine_core::ExecutionMode::Decode => {
-                        self.decode_tokens += u64::from(item.scheduled_token_count);
+                        let scheduled_tokens = u64::from(item.scheduled_token_count);
+                        self.decode_tokens += scheduled_tokens;
+                        step_decode_tokens += scheduled_tokens;
                         saw_decode = true;
                     }
                 }
+            }
+            let step_phase_tokens = step_prefill_tokens.saturating_add(step_decode_tokens);
+            if step_phase_tokens > 0 {
+                self.total_prefill_runner_time_us = self.total_prefill_runner_time_us.saturating_add(
+                    proportional_time_us(
+                        outcome.metrics.runner_time_us,
+                        step_prefill_tokens,
+                        step_phase_tokens,
+                    ),
+                );
+                self.total_decode_runner_time_us = self.total_decode_runner_time_us.saturating_add(
+                    proportional_time_us(
+                        outcome.metrics.runner_time_us,
+                        step_decode_tokens,
+                        step_phase_tokens,
+                    ),
+                );
             }
             if saw_prefill {
                 self.prefill_steps += 1;
@@ -11069,29 +11326,24 @@ impl RuntimeObservation {
 
         let mut final_requests = Vec::new();
         for request_id in request_ids {
-            let record = engine
-                .request_manager()
-                .record(*request_id)
-                .ok_or_else(|| {
-                    CliError::Runtime(format!("missing request record {:?}", request_id))
-                })?;
+            let snapshot = request_snapshot_for_bench(engine, *request_id)?;
             final_requests.push(FinalRequestState {
                 external_id: external_ids
                     .get(request_id)
                     .cloned()
                     .unwrap_or_else(|| format!("req-{}", request_id.0)),
                 request_id: *request_id,
-                state: format!("{:?}", record.state),
-                processed_prompt_tokens: record.processed_prompt_tokens,
-                generated_tokens: record.generated_tokens.clone(),
-                cancel_requested: record.cancel_requested,
-                last_error: record.last_error.clone(),
+                state: format!("{:?}", snapshot.state),
+                processed_prompt_tokens: snapshot.processed_prompt_tokens,
+                generated_tokens: snapshot.generated_tokens,
+                cancel_requested: snapshot.cancel_requested,
+                last_error: snapshot.last_error,
             });
         }
         final_requests.sort_by_key(|request| request.request_id);
         self.digest = json!({
             "step_count": self.step_count,
-            "ttft_ms": self.ttft_ms,
+            "ttft_ms": Value::Null,
             "prefill_tokens": self.prefill_tokens,
             "decode_tokens": self.decode_tokens,
             "prefix_hits": self.prefix_hits,
@@ -11166,20 +11418,28 @@ impl RuntimeObservation {
         }
     }
 
-    /// Prefill throughput estimate: tokens per step, scaled by 1000.
-    /// This is a bring-up proxy metric, not a real wall-clock tok/s measurement.
+    /// Prefill throughput from runner execution time when available.
+    /// Legacy synthetic/compatibility paths fall back to the old step proxy.
     fn prefill_tok_s(&self) -> f64 {
-        if self.prefill_steps == 0 {
+        if self.prefill_tokens == 0 {
+            0.0
+        } else if self.total_prefill_runner_time_us > 0 {
+            tokens_per_second_from_micros(self.prefill_tokens, self.total_prefill_runner_time_us)
+        } else if self.prefill_steps == 0 {
             0.0
         } else {
             (self.prefill_tokens as f64 * 1000.0) / self.prefill_steps as f64
         }
     }
 
-    /// Decode throughput estimate: tokens per step, scaled by 1000.
-    /// This is a bring-up proxy metric, not a real wall-clock tok/s measurement.
+    /// Decode throughput from runner execution time when available.
+    /// Legacy synthetic/compatibility paths fall back to the old step proxy.
     fn decode_tok_s(&self) -> f64 {
-        if self.decode_steps == 0 {
+        if self.decode_tokens == 0 {
+            0.0
+        } else if self.total_decode_runner_time_us > 0 {
+            tokens_per_second_from_micros(self.decode_tokens, self.total_decode_runner_time_us)
+        } else if self.decode_steps == 0 {
             0.0
         } else {
             (self.decode_tokens as f64 * 1000.0) / self.decode_steps as f64
@@ -11369,6 +11629,8 @@ impl Default for RuntimeObservation {
             memory_blocked_request_events: 0,
             total_cpu_time_us: 0,
             total_runner_time_us: 0,
+            total_prefill_runner_time_us: 0,
+            total_decode_runner_time_us: 0,
             kv_peak_blocks: 0,
             memory_peak_mb: 0.0,
             evictions: 0,
@@ -12434,6 +12696,8 @@ mod tests {
             role,
             layer_index,
             dtype: ax_engine_core::NativeTensorDataType::F16,
+            source_tensor_type: None,
+            source_quantized: false,
             shape,
             file: PathBuf::from("model.safetensors"),
             offset_bytes: 0,
@@ -12451,6 +12715,8 @@ mod tests {
             schema_version: ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
             model_family: "qwen3_dense".to_string(),
             tensor_format: ax_engine_core::NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: ax_engine_core::model::NativeRuntimeStatus::default(),
             layer_count: 1,
             hidden_size: 2048,
             attention_head_count: 16,
@@ -12548,6 +12814,9 @@ mod tests {
             role,
             layer_index,
             dtype: ax_engine_core::NativeTensorDataType::F32,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantized_source: None,
             shape: shape.to_vec(),
             file: PathBuf::from(file),
             offset_bytes: 0,
@@ -12611,6 +12880,8 @@ mod tests {
             schema_version: ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
             model_family: "qwen3_dense".to_string(),
             tensor_format: ax_engine_core::NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: ax_engine_core::model::NativeRuntimeStatus::default(),
             layer_count: 1,
             hidden_size: 8,
             attention_head_count: 2,
@@ -13931,6 +14202,61 @@ print(json.dumps({
     }
 
     #[test]
+    fn serialize_runtime_metadata_only_reports_native_fallback_adapter_when_active() {
+        let runtime = RuntimeConfig {
+            deterministic: true,
+            allow_deterministic_native_fallback: false,
+            max_batch_tokens: 128,
+            block_size_tokens: 16,
+            kv_total_blocks: Some(32),
+            flags: RuntimeFlags::default(),
+            backend_policy: BackendPolicy::new(ResolutionPolicy::PreferNative),
+            resolved_backend: ResolvedBackend::new(
+                SelectedBackend::AxNative,
+                SupportTier::NativePreview,
+                None,
+            ),
+            backend_adapter: Some(BackendAdapterManifest::LlamaCppServerCompletion {
+                server_url: "http://127.0.0.1:8081".to_string(),
+            }),
+            native_runtime_artifacts_dir: Some(PathBuf::from("/tmp/native-runtime")),
+            native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
+            native_model_artifacts_dir: None,
+            native_model_artifacts_source: None,
+        };
+
+        let native_runtime_json = serialize_runtime_metadata(&runtime, None);
+        assert_eq!(native_runtime_json.get("backend_adapter"), None);
+
+        let actual_runtime = RuntimeReport::from_resolution(
+            &BackendPolicy::new(ResolutionPolicy::PreferNative),
+            &ResolvedBackend::compatibility(
+                SelectedBackend::LlamaCpp,
+                "native startup failed; fell back to llama.cpp bypass",
+            ),
+        );
+        let fallback_runtime_json = serialize_runtime_metadata(&runtime, Some(&actual_runtime));
+
+        assert_eq!(
+            fallback_runtime_json
+                .get("selected_backend")
+                .and_then(Value::as_str),
+            Some("llama_cpp")
+        );
+        assert_eq!(
+            fallback_runtime_json
+                .get("backend_adapter")
+                .and_then(|adapter| adapter.get("kind"))
+                .and_then(Value::as_str),
+            Some("llama_cpp_server_completion")
+        );
+        assert!(fallback_runtime_json
+            .get("fallback_reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.contains("fell back to llama.cpp bypass")));
+    }
+
+    #[test]
     fn serialize_runtime_metadata_prefers_actual_runtime_report_over_config_side_metadata() {
         let model_dir = write_valid_native_model_fixture();
         let runtime = RuntimeConfig {
@@ -13985,6 +14311,8 @@ print(json.dumps({
                 artifacts_source: NativeModelArtifactsSource::ExplicitEnv,
                 model_family: "actual_bound_model".to_string(),
                 tensor_format: ax_engine_core::NativeTensorFormat::Safetensors,
+                source_quantization: None,
+                runtime_status: ax_engine_core::model::NativeRuntimeStatus::default(),
                 layer_count: 42,
                 tensor_count: 420,
                 tie_word_embeddings: true,
@@ -13992,6 +14320,11 @@ print(json.dumps({
                 buffers_bound: true,
                 buffer_count: 12,
                 buffer_bytes: 4096,
+                source_quantized_binding_count: 0,
+                source_q4_k_binding_count: 0,
+                source_q5_k_binding_count: 0,
+                source_q6_k_binding_count: 0,
+                source_q8_0_binding_count: 0,
             }),
         };
 
@@ -16725,6 +17058,32 @@ print(json.dumps({
                 .as_ref()
                 .map(BackendAdapterManifest::to_sdk_config)
         );
+        assert_eq!(config.fallback_compatibility_backend, None);
+    }
+
+    #[test]
+    fn build_session_maps_native_prefer_llama_adapter_to_startup_fallback() {
+        let mut manifest = load_test_manifest(
+            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+        );
+        manifest.runtime.resolution_policy = ResolutionPolicy::PreferNative;
+        manifest.runtime.backend_adapter = Some(BackendAdapterManifest::LlamaCppServerCompletion {
+            server_url: "http://127.0.0.1:8081".to_string(),
+        });
+
+        let runtime =
+            runtime_config_from_manifest(&manifest).expect("native prefer fallback should load");
+        let specs = scenario_specs_from_manifest(&manifest).expect("scenario specs should build");
+        let config = session_config_from_runtime(&runtime, &specs);
+
+        assert_eq!(config.compatibility_backend, None);
+        assert_eq!(
+            config
+                .fallback_compatibility_backend
+                .as_ref()
+                .map(CompatibilityBackendConfig::selected_backend),
+            Some(SelectedBackend::LlamaCpp)
+        );
     }
 
     #[test]
@@ -17393,19 +17752,23 @@ print(json.dumps({
             route_decision(&observation, "metal_dispatch_model_conditioned_inputs") > 0
                 || route_decision(&observation, "metal_dispatch_real_model_forward") > 0
         );
-        assert!(
-            route_decision(
-                &observation,
-                "metal_dispatch_direct_decode_native_projection_row_count"
-            ) > 0
-        );
-        assert_eq!(
-            route_decision(
-                &observation,
-                "metal_dispatch_direct_decode_cpu_projection_row_count"
-            ),
-            0
-        );
+        let has_decode_tokens =
+            route_decision(&observation, "metal_dispatch_direct_decode_tokens") > 0;
+        if has_decode_tokens {
+            assert!(
+                route_decision(
+                    &observation,
+                    "metal_dispatch_direct_decode_native_projection_row_count"
+                ) > 0
+            );
+            assert_eq!(
+                route_decision(
+                    &observation,
+                    "metal_dispatch_direct_decode_cpu_projection_row_count"
+                ),
+                0
+            );
+        }
         assert_eq!(observation.final_requests.len(), 2);
         assert!(observation
             .final_requests
@@ -18405,10 +18768,12 @@ print(json.dumps({
 
     #[test]
     fn native_benchmark_readiness_allows_single_request_decode_without_batching_opportunity() {
-        let readiness = native_benchmark_readiness(NativeBenchmarkReadinessInputs {
+        let inputs = NativeBenchmarkReadinessInputs {
             tool_mode: "engine_bringup_runtime",
             selected_backend: "ax_native",
             native_placeholder_execution: false,
+            native_dense_dequantized_source: false,
+            native_quantized_projection_binding_count: 0,
             direct_decode_batching_opportunity_observed: false,
             metal_complete_model_forward_supported: true,
             metal_real_model_forward: true,
@@ -18442,12 +18807,34 @@ print(json.dumps({
             metal_direct_decode_cpu_residual_add_element_count: 0,
             metal_direct_decode_native_scale_element_count: 1024,
             metal_direct_decode_cpu_scale_element_count: 0,
-        });
+        };
+        let readiness = native_benchmark_readiness(inputs);
 
         assert_eq!(readiness.status, "ready");
         assert!(readiness.hot_path_cpu_fallback_free);
         assert!(readiness.batched_direct_decode_logits_ready);
         assert!(readiness.blockers.is_empty());
+
+        let dequantized_readiness = native_benchmark_readiness(NativeBenchmarkReadinessInputs {
+            native_dense_dequantized_source: true,
+            ..inputs
+        });
+        assert_eq!(dequantized_readiness.status, "coverage_gap");
+        assert_eq!(
+            dequantized_readiness.blockers,
+            vec![NATIVE_DENSE_DEQUANTIZED_SOURCE_BLOCKER]
+        );
+
+        let quantized_projection_readiness =
+            native_benchmark_readiness(NativeBenchmarkReadinessInputs {
+                native_quantized_projection_binding_count: 1,
+                ..inputs
+            });
+        assert_eq!(quantized_projection_readiness.status, "coverage_gap");
+        assert_eq!(
+            quantized_projection_readiness.blockers,
+            vec!["native_quantized_projection_kernel_missing"]
+        );
     }
 
     #[test]
