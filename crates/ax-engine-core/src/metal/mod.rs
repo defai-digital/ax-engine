@@ -6931,8 +6931,6 @@ fn apply_dense_ffn_branch_rows_with_tally(
         .iter()
         .map(|row| row.get(..hidden_dim).map(|slice| slice.to_vec()))
         .collect::<Option<Vec<_>>>()?;
-    // FFN norm and gate×up activation are tiny per-token ops — Metal command
-    // buffer overhead exceeds compute cost, so always use CPU for these.
     let mut tally = direct_decode_native_dense_tally_from_prefix_attention_tally(
         apply_batched_row_rms_norm_with_binding_in_place_with_tally(
             &mut ffn_hidden_rows,
@@ -6940,10 +6938,9 @@ fn apply_dense_ffn_branch_rows_with_tally(
             ffn_norm,
             native_model_rms_norm_epsilon(artifacts),
             native_model_rms_norm_weight_offset(artifacts),
-            None,
+            bringup,
         )?,
     );
-    // Gate/up and down projections are large matrix multiplies — keep on GPU.
     let (mut gate_rows, up_rows, gate_up_tally) = project_batched_ffn_gate_up_with_tally(
         &layer.ffn_gate_up,
         buffers,
@@ -6958,7 +6955,7 @@ fn apply_dense_ffn_branch_rows_with_tally(
         &mut gate_rows,
         &up_rows,
         intermediate_dim,
-        None,
+        bringup,
     )?);
     let (mut ffn_output_rows, ffn_down_tally) = project_batched_matrix_rows_with_tally(
         ffn_down,
@@ -6978,7 +6975,7 @@ fn apply_dense_ffn_branch_rows_with_tally(
                     post_norm,
                     native_model_rms_norm_epsilon(artifacts),
                     native_model_rms_norm_weight_offset(artifacts),
-                    None,
+                    bringup,
                 )?,
             ),
         );
@@ -7906,6 +7903,24 @@ fn apply_ffn_continuation_rows_with_tally(
         return None;
     }
 
+    // Fused single-token path: fuses norm → gate_proj → up_proj → activation →
+    // down_proj → residual_add in ONE command buffer. Only for non-MoE, non-post_norm
+    // layers (the same gates used by fused_layer_continuation_on_gpu).
+    if input_rows.len() == 1 && layer.moe.is_none() && layer.ffn_post_norm.is_none() {
+        if let Some(bringup) = bringup {
+            let intermediate_dim =
+                resolved_ffn_intermediate_dim(&layer.ffn_gate_up, buffers, tensor_matrix_dimensions(&ffn_down.meta.spec)?.1)?;
+            if let Some(hidden_input) = input_rows.first().and_then(|r| r.get(..hidden_dim)) {
+                if let Some((result, fused_tally)) =
+                    fused_ffn_only_on_gpu(bringup, artifacts, layer, buffers, hidden_input, hidden_dim, intermediate_dim)
+                {
+                    let nontrivial = result.iter().any(|v| v.abs() > f32::EPSILON);
+                    return Some((vec![result], fused_tally, nontrivial));
+                }
+            }
+        }
+    }
+
     let dense_post_norm = if layer.moe.is_some() {
         match &layer.ffn_post_norm_1 {
             Some(binding) => Some(buffers.binding_for(binding)?),
@@ -7929,14 +7944,13 @@ fn apply_ffn_continuation_rows_with_tally(
             artifacts, layer, buffers, input_rows, hidden_dim, bringup,
         )?;
         tally = tally.merge(moe_tally);
-        // MoE branch merge is a small element-wise add — use CPU.
         tally = tally.merge(
             add_batched_rows_in_place_with_direct_decode_tally_and_result_dtype(
                 &mut branch_rows,
                 &moe_rows,
                 hidden_dim,
                 ffn_down.native_dtype,
-                None,
+                bringup,
             )?,
         );
         any_nontrivial |= moe_nontrivial;
@@ -7944,7 +7958,6 @@ fn apply_ffn_continuation_rows_with_tally(
 
     if let Some(post_norm) = &layer.ffn_post_norm {
         let post_norm = buffers.binding_for(post_norm)?;
-        // Post-norm is a tiny vector op — use CPU.
         tally = tally.merge(
             direct_decode_native_dense_tally_from_prefix_attention_tally(
                 apply_batched_row_rms_norm_with_binding_in_place_with_tally(
@@ -7953,7 +7966,7 @@ fn apply_ffn_continuation_rows_with_tally(
                     post_norm,
                     native_model_rms_norm_epsilon(artifacts),
                     native_model_rms_norm_weight_offset(artifacts),
-                    None,
+                    bringup,
                 )?,
             ),
         );
@@ -7966,14 +7979,13 @@ fn apply_ffn_continuation_rows_with_tally(
         .iter()
         .map(|row| row.get(..hidden_dim).map(|slice| slice.to_vec()))
         .collect::<Option<Vec<_>>>()?;
-    // FFN residual add is a single vector op — use CPU.
     tally = tally.merge(
         add_batched_rows_in_place_with_direct_decode_tally_and_result_dtype(
             &mut next_hidden_rows,
             &branch_rows,
             hidden_dim,
             ffn_down.native_dtype,
-            None,
+            bringup,
         )?,
     );
 
@@ -10652,16 +10664,14 @@ fn stage_model_layer_qkv_inputs(
                 .map(|slice| slice.to_vec())
         })
         .collect::<Option<Vec<_>>>()?;
-    // Attention norm and Q/K/V head norms are tiny per-token ops — use CPU.
     let mut prefix_attention_tally = apply_batched_row_rms_norm_with_binding_in_place_with_tally(
         &mut normalized_hidden_states,
         stage_dims.input_dim,
         attention_norm,
         native_model_rms_norm_epsilon(artifacts),
         native_model_rms_norm_weight_offset(artifacts),
-        None,
+        bringup,
     )?;
-    // QKV projections are large matrix multiplies — keep on GPU.
     let (mut projected_queries, mut projected_keys, mut projected_values, qkv_tally) =
         project_batched_attention_qkv_with_dims_and_tally(
             artifacts,
@@ -10682,7 +10692,7 @@ fn stage_model_layer_qkv_inputs(
                 binding,
                 native_model_rms_norm_epsilon(artifacts),
                 native_model_rms_norm_weight_offset(artifacts),
-                None,
+                bringup,
             )?);
     }
     if let Some(binding) = attention_k_norm {
@@ -10694,7 +10704,7 @@ fn stage_model_layer_qkv_inputs(
                 binding,
                 native_model_rms_norm_epsilon(artifacts),
                 native_model_rms_norm_weight_offset(artifacts),
-                None,
+                bringup,
             )?);
     }
     if layer.attention_v_norm_no_scale {
@@ -10704,7 +10714,7 @@ fn stage_model_layer_qkv_inputs(
                 stage_dims.kv_heads,
                 stage_dims.head_dim,
                 native_model_rms_norm_epsilon(artifacts),
-                None,
+                bringup,
             )?,
         );
     }
@@ -11584,14 +11594,12 @@ fn advance_hidden_states_through_linear_attention_segment(
             .cloned()
             .flatten()
             .or_else(|| {
-                // Per-item fallback: conv dispatch for a single request is smaller
-                // than the Metal command buffer overhead, so always use CPU here.
                 apply_linear_attention_conv_rows_with_path(
                     conv1d,
                     &projected_item.qkv_rows,
                     &mut layer_state.conv_state,
                     dims,
-                    None,
+                    bringup,
                 )
                 .map(|(rows, tally)| (rows, layer_state.conv_state.clone(), tally))
             })
@@ -11637,8 +11645,6 @@ fn advance_hidden_states_through_linear_attention_segment(
             .cloned()
             .flatten()
             .or_else(|| {
-                // Per-item fallback: single-request recurrent step has far fewer
-                // elements than the Metal dispatch overhead warrants, so use CPU.
                 apply_linear_attention_recurrent_with_state(
                     &prepared_item.q_rows,
                     &prepared_item.k_rows,
@@ -11647,7 +11653,7 @@ fn advance_hidden_states_through_linear_attention_segment(
                     &prepared_item.beta_rows,
                     &mut layer_state.ssm_state,
                     dims,
-                    None,
+                    bringup,
                 )
                 .map(|(outputs, tally)| (outputs, layer_state.ssm_state.clone(), tally))
             })
@@ -11721,15 +11727,13 @@ fn project_linear_attention_item(
                 .map(|slice| slice.to_vec())
         })
         .collect::<Option<Vec<_>>>()?;
-    // RMSNorm is tiny (1 row × hidden_dim) — GPU command buffer overhead exceeds
-    // compute cost, so always use CPU here.
     let mut tally = apply_batched_row_rms_norm_with_binding_in_place_with_tally(
         &mut normalized_hidden_states,
         dims.hidden_dim,
         attention_norm,
         native_model_rms_norm_epsilon(artifacts),
         native_model_rms_norm_weight_offset(artifacts),
-        None,
+        bringup,
     )?;
 
     // Try multi-projection batch: qkv, z, a, b in a single command buffer.
@@ -11906,7 +11910,7 @@ fn finalize_projected_linear_attention_item(
     dt_bias: &[f32],
     a_log: &[f32],
     dims: ResolvedLinearAttentionDims,
-    _bringup: Option<&MetalRuntimeBringup>,
+    bringup: Option<&MetalRuntimeBringup>,
 ) -> Option<PreparedLinearAttentionItem> {
     if conv_output_rows.len() != projected_item.token_count
         || conv_output_rows
@@ -11934,16 +11938,13 @@ fn finalize_projected_linear_attention_item(
                 .map(|slice| slice.to_vec())
         })
         .collect::<Option<Vec<_>>>()?;
-    // Head-level rms_norm, decay, and beta are all tiny per-token element-wise
-    // ops (num_heads × head_dim elements). GPU command buffer overhead dominates,
-    // so use CPU for all of them.
     tally = tally.merge(
         apply_batched_per_head_rms_norm_rows_without_weights_with_tally(
             &mut q_rows,
             dims.num_key_heads,
             dims.key_head_dim,
             native_model_rms_norm_epsilon(artifacts),
-            None,
+            bringup,
         )?,
     );
     tally = tally.merge(
@@ -11952,7 +11953,7 @@ fn finalize_projected_linear_attention_item(
             dims.num_key_heads,
             dims.key_head_dim,
             native_model_rms_norm_epsilon(artifacts),
-            None,
+            bringup,
         )?,
     );
     apply_linear_attention_query_key_scaling(&mut q_rows, &mut k_rows, dims)?;
@@ -11960,11 +11961,11 @@ fn finalize_projected_linear_attention_item(
         &projected_item.a_rows,
         a_log,
         dt_bias,
-        None,
+        bringup,
     )?;
     tally = tally.merge(decay_tally);
     let (beta_rows, beta_tally) =
-        compute_linear_attention_beta_rows_with_tally(&projected_item.b_rows, None)?;
+        compute_linear_attention_beta_rows_with_tally(&projected_item.b_rows, bringup)?;
     tally = tally.merge(beta_tally);
     Some(PreparedLinearAttentionItem {
         request_id: projected_item.request_id,
@@ -12026,8 +12027,6 @@ fn finish_linear_attention_item(
     bringup: Option<&MetalRuntimeBringup>,
 ) -> Option<(Vec<Vec<f32>>, PrefixAttentionExecutionTally)> {
     let mut tally = prepared_item.pre_recurrent_tally.merge(recurrent_tally);
-    // linear_norm, gate, and residual add are tiny per-token element-wise ops —
-    // use CPU to avoid Metal command buffer overhead per layer per token.
     tally = tally.merge(apply_batched_per_head_rms_norm_rows_with_tally(
         &mut linear_outputs,
         dims.num_value_heads,
@@ -12035,17 +12034,16 @@ fn finish_linear_attention_item(
         linear_norm,
         native_model_rms_norm_epsilon(artifacts),
         native_model_rms_norm_weight_offset(artifacts),
-        None,
+        bringup,
     )?);
     let linear_gate_tally = apply_linear_attention_gate_in_place_with_tally(
         &mut linear_outputs,
         &prepared_item.z_rows,
         dims,
-        None,
+        bringup,
     )?;
     tally = tally.merge(linear_gate_tally);
 
-    // out_proj is a large matrix multiply — keep on GPU.
     let (attention_hidden_rows, attention_tally) = project_batched_matrix_rows_with_tally(
         out_proj,
         0,
@@ -12059,13 +12057,12 @@ fn finish_linear_attention_item(
     ));
 
     let mut hidden_after_attention = attention_hidden_rows;
-    // Residual add is a single vector operation — use CPU.
     let attention_residual_tally = add_batched_rows_in_place_with_prefix_tally_and_result_dtype(
         &mut hidden_after_attention,
         &prepared_item.residual_rows,
         dims.hidden_dim,
         out_proj.native_dtype,
-        None,
+        bringup,
     )?;
     tally = tally.merge(attention_residual_tally);
     let (next_hidden_states, ffn_tally, _) = apply_ffn_continuation_rows_with_tally(
@@ -14193,12 +14190,15 @@ fn project_hidden_states_from_layer_attention_output(
     }
 
     // Fused single-token path: encode O-proj through FFN residual in one command buffer.
-    // Only for bf16 weights (real model inference). Gate is already applied above.
+    // Supports both bf16 and f16 weight dtypes. Gate is already applied above.
     if hidden_states.len() == 1
         && layer.attention_post_norm.is_none()
         && layer.ffn_post_norm.is_none()
         && layer.moe.is_none()
-        && attention_o.native_dtype == NativeTensorDataType::Bf16
+        && matches!(
+            attention_o.native_dtype,
+            NativeTensorDataType::Bf16 | NativeTensorDataType::F16
+        )
     {
         if let Some(bringup) = bringup {
             let attention_input = attention_input_rows.first()?.get(..dims.input_width)?;
@@ -14242,23 +14242,21 @@ fn project_hidden_states_from_layer_attention_output(
     let mut hidden_after_attention = attention_hidden_rows;
     if let Some(attention_post_norm) = &layer.attention_post_norm {
         let attention_post_norm = buffers.binding_for(attention_post_norm)?;
-        // Post-norm is a tiny per-token vector op — use CPU.
         tally = tally.merge(apply_batched_row_rms_norm_with_binding_in_place_with_tally(
             &mut hidden_after_attention,
             dims.hidden_dim,
             attention_post_norm,
             native_model_rms_norm_epsilon(artifacts),
             native_model_rms_norm_weight_offset(artifacts),
-            None,
+            bringup,
         )?);
     }
-    // Attention residual add is a single vector op — use CPU.
     let attention_residual_tally = add_batched_rows_in_place_with_prefix_tally_and_result_dtype(
         &mut hidden_after_attention,
         &residual_rows,
         dims.hidden_dim,
         attention_o.native_dtype,
-        None,
+        bringup,
     )?;
     tally = tally.merge(attention_residual_tally);
     let (next_hidden_states, ffn_tally, _) = apply_ffn_continuation_rows_with_tally(
@@ -14584,6 +14582,263 @@ fn fused_layer_continuation_on_gpu(
         .record_rms_norm_elements(hidden_dim, true)
         .record_ffn_activation_elements(intermediate_dim, true)
         .record_residual_add_elements(hidden_dim * 2, true);
+    Some((output, tally))
+}
+
+/// Fused single-token FFN-only continuation: norm → gate_proj → up_proj →
+/// gate×up_activation → down_proj → residual_add, all in one command buffer.
+/// Used by linear-attention layers whose post-recurrent output goes directly
+/// into the FFN without an O-projection step.
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn fused_ffn_only_on_gpu(
+    bringup: &MetalRuntimeBringup,
+    artifacts: &NativeModelArtifacts,
+    layer: &MetalNativeLayerBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    hidden_input: &[f32],
+    hidden_dim: usize,
+    intermediate_dim: usize,
+) -> Option<(Vec<f32>, DirectDecodeNativeDenseTally)> {
+    if hidden_dim == 0 || intermediate_dim == 0 || hidden_input.len() < hidden_dim {
+        return None;
+    }
+
+    let ffn_norm = buffers.binding_for(&layer.ffn_norm)?;
+    let ffn_down = buffers.binding_for(&layer.ffn_down)?;
+
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+    let weight_dtype = ffn_down.native_dtype;
+    let (proj_kernel_name, proj_pipeline_index) = plan.projection_kernel(weight_dtype)?;
+    let (norm_kernel_name, norm_pipeline_index) = plan.rms_norm_kernel(weight_dtype)?;
+    let (add_kernel_name, add_pipeline_index) = plan.vector_add_kernel()?;
+    let activation = native_model_ffn_activation(artifacts);
+    let (gate_kernel_name, gate_pipeline_index) = plan.ffn_gate_product_kernel(activation)?;
+
+    let fused_feedback_key = MetalOptionalKernelFeedbackKey::Kernel("fused_ffn_only");
+    if !optional_kernel_allowed(bringup, &fused_feedback_key) {
+        return None;
+    }
+
+    let proj_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        proj_kernel_name,
+        proj_pipeline_index,
+    )
+    .ok()?;
+    let norm_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        norm_kernel_name,
+        norm_pipeline_index,
+    )
+    .ok()?;
+    let add_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        add_kernel_name,
+        add_pipeline_index,
+    )
+    .ok()?;
+    let gate_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        gate_kernel_name,
+        gate_pipeline_index,
+    )
+    .ok()?;
+
+    let (gate_weight, gate_row_offset, up_weight, up_row_offset) = match &layer.ffn_gate_up {
+        MetalFfnGateUpBindings::Packed(binding) => {
+            let packed = buffers.binding_for(binding)?;
+            (packed, 0_usize, packed, intermediate_dim)
+        }
+        MetalFfnGateUpBindings::Split { gate, up } => (
+            buffers.binding_for(gate)?,
+            0_usize,
+            buffers.binding_for(up)?,
+            0_usize,
+        ),
+    };
+
+    let hidden_dim_u32 = saturating_usize_to_u32(hidden_dim);
+    let intermediate_dim_u32 = saturating_usize_to_u32(intermediate_dim);
+    let epsilon = native_model_rms_norm_epsilon(artifacts);
+    let weight_offset = native_model_rms_norm_weight_offset(artifacts);
+
+    let (_, gate_cols) = tensor_matrix_dimensions(&gate_weight.meta.spec)?;
+    if hidden_dim > gate_cols {
+        return None;
+    }
+    let (_, up_cols) = tensor_matrix_dimensions(&up_weight.meta.spec)?;
+    if hidden_dim > up_cols {
+        return None;
+    }
+    let (_, down_cols) = tensor_matrix_dimensions(&ffn_down.meta.spec)?;
+    if intermediate_dim > down_cols {
+        return None;
+    }
+
+    let dtype_bytes = native_dtype_size_bytes(weight_dtype);
+    let gate_row_byte_offset = gate_row_offset
+        .checked_mul(gate_cols)?
+        .checked_mul(dtype_bytes)?;
+    let up_row_byte_offset = up_row_offset
+        .checked_mul(up_cols)?
+        .checked_mul(dtype_bytes)?;
+
+    let thread_width = proj_pipeline.pipeline.thread_execution_width().max(1);
+
+    let mut arena_guard = bringup
+        .state
+        .fused_layer_arena
+        .lock()
+        .expect("fused layer arena mutex should not be poisoned");
+    if arena_guard
+        .as_ref()
+        .is_none_or(|a| !a.fits(hidden_dim_u32, intermediate_dim_u32))
+    {
+        *arena_guard = Some(FusedLayerArena::new(
+            &bringup.state.device,
+            hidden_dim_u32,
+            intermediate_dim_u32,
+        ));
+    }
+    let arena = arena_guard.as_ref()?;
+
+    let result = autoreleasepool(|| {
+        let hidden_buffer =
+            new_shared_buffer_with_data(&bringup.state.device, &hidden_input[..hidden_dim]);
+
+        let command_buffer = bringup.state.command_queue.new_command_buffer();
+        command_buffer.set_label("ax.phase1.fused_ffn_only");
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_label("ax.phase1.fused_ffn_only.compute");
+
+        // 1. FFN RMS norm: hidden → normed
+        encoder.set_compute_pipeline_state(&norm_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&hidden_buffer), 0);
+        encoder.set_buffer(1, Some(&ffn_norm.native_buffer), 0);
+        encoder.set_buffer(2, Some(&arena.normed), 0);
+        set_rms_norm_dispatch_params(encoder, 3, hidden_dim_u32, epsilon, weight_offset);
+        encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+
+        // 2. Gate projection: normed → gate
+        encoder.set_compute_pipeline_state(&proj_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&arena.normed), 0);
+        encoder.set_buffer(
+            1,
+            Some(&gate_weight.native_buffer),
+            gate_row_byte_offset as u64,
+        );
+        encoder.set_buffer(2, Some(&arena.gate), 0);
+        set_logits_projection_dispatch_params(
+            encoder,
+            3,
+            intermediate_dim_u32,
+            saturating_usize_to_u32(gate_cols),
+            hidden_dim_u32,
+        );
+        encoder.dispatch_threads(
+            MTLSize::new(intermediate_dim as u64, 1, 1),
+            MTLSize::new(thread_width.min(intermediate_dim as u64), 1, 1),
+        );
+
+        // 3. Up projection: normed → up
+        encoder.set_buffer(0, Some(&arena.normed), 0);
+        encoder.set_buffer(1, Some(&up_weight.native_buffer), up_row_byte_offset as u64);
+        encoder.set_buffer(2, Some(&arena.up), 0);
+        set_logits_projection_dispatch_params(
+            encoder,
+            3,
+            intermediate_dim_u32,
+            saturating_usize_to_u32(up_cols),
+            hidden_dim_u32,
+        );
+        encoder.dispatch_threads(
+            MTLSize::new(intermediate_dim as u64, 1, 1),
+            MTLSize::new(thread_width.min(intermediate_dim as u64), 1, 1),
+        );
+
+        // 4. SiLU/GELU gate×up activation: gate × act(up) → gate (in-place)
+        encoder.set_compute_pipeline_state(&gate_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&arena.gate), 0);
+        encoder.set_buffer(1, Some(&arena.up), 0);
+        encoder.set_buffer(2, Some(&arena.gate), 0);
+        set_ffn_gate_product_dispatch_params(encoder, 3, intermediate_dim_u32);
+        encoder.dispatch_threads(
+            MTLSize::new(intermediate_dim as u64, 1, 1),
+            MTLSize::new(
+                gate_pipeline
+                    .pipeline
+                    .thread_execution_width()
+                    .max(1)
+                    .min(intermediate_dim as u64),
+                1,
+                1,
+            ),
+        );
+
+        // 5. Down projection: gate → down
+        encoder.set_compute_pipeline_state(&proj_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&arena.gate), 0);
+        encoder.set_buffer(1, Some(&ffn_down.native_buffer), 0);
+        encoder.set_buffer(2, Some(&arena.down), 0);
+        set_logits_projection_dispatch_params(
+            encoder,
+            3,
+            hidden_dim_u32,
+            saturating_usize_to_u32(down_cols),
+            intermediate_dim_u32,
+        );
+        encoder.dispatch_threads(
+            MTLSize::new(hidden_dim as u64, 1, 1),
+            MTLSize::new(thread_width.min(hidden_dim as u64), 1, 1),
+        );
+
+        // 6. FFN residual add: hidden + down → hidden
+        encoder.set_compute_pipeline_state(&add_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&hidden_buffer), 0);
+        encoder.set_buffer(1, Some(&arena.down), 0);
+        encoder.set_buffer(2, Some(&hidden_buffer), 0);
+        set_vector_add_dispatch_params(encoder, 3, hidden_dim_u32);
+        encoder.dispatch_threads(
+            MTLSize::new(hidden_dim as u64, 1, 1),
+            MTLSize::new(
+                add_pipeline
+                    .pipeline
+                    .thread_execution_width()
+                    .max(1)
+                    .min(hidden_dim as u64),
+                1,
+                1,
+            ),
+        );
+
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        if command_buffer_status(command_buffer.status()) != MetalCommandBufferStatus::Completed {
+            return None;
+        }
+
+        let output = read_shared_buffer_prefix(&hidden_buffer, hidden_dim_u32);
+        if output.len() != hidden_dim || output.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
+        Some(output)
+    });
+
+    record_optional_kernel_result(bringup, &fused_feedback_key, result.is_some());
+
+    let output = result?;
+    let tally = DirectDecodeNativeDenseTally::default()
+        .record_projection_rows(intermediate_dim.saturating_mul(2).saturating_add(hidden_dim), true)
+        .record_rms_norm_elements(hidden_dim, true)
+        .record_ffn_activation_elements(intermediate_dim, true)
+        .record_residual_add_elements(hidden_dim, true);
     Some((output, tally))
 }
 
