@@ -70,6 +70,7 @@ pub const PHASE1_OPTIONAL_METAL_KERNELS: &[&str] = &[
     "gather_embedding_rows_f32",
     "gather_embedding_rows_f16",
     "gather_embedding_rows_bf16",
+    "decode_projection_q4km",
     "decode_logits_projection_f32",
     "decode_logits_projection_f16",
     "decode_logits_projection_bf16",
@@ -283,6 +284,7 @@ struct MetalOptionalKernelDispatchPlan {
     vector_add_f32: Option<usize>,
     row_scale_f32: Option<usize>,
     row_vector_scale_f32: Option<usize>,
+    projection_q4km: Option<usize>,
     projection_f32: Option<usize>,
     projection_f16: Option<usize>,
     projection_bf16: Option<usize>,
@@ -480,6 +482,9 @@ impl MetalOptionalKernelDispatchPlan {
 
     fn projection_kernel(self, dtype: NativeTensorDataType) -> Option<(&'static str, usize)> {
         match dtype {
+            NativeTensorDataType::Q4Km => self
+                .projection_q4km
+                .map(|index| ("decode_projection_q4km", index)),
             NativeTensorDataType::F32 => self
                 .projection_f32
                 .map(|index| ("decode_logits_projection_f32", index)),
@@ -896,7 +901,10 @@ impl MetalBringupSampler {
                     3,
                     saturating_usize_to_u32(logits.len()),
                 );
-                encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+                encoder.dispatch_threads(
+                    MTLSize::new(ARGMAX_TG_SIZE, 1, 1),
+                    MTLSize::new(ARGMAX_TG_SIZE, 1, 1),
+                );
 
                 encoder.end_encoding();
                 command_buffer.commit();
@@ -986,16 +994,11 @@ impl MetalBringupSampler {
                     saturating_usize_to_u32(vocab_rows),
                 );
                 encoder.dispatch_threads(
-                    MTLSize::new(token_count.max(1) as u64, 1, 1),
                     MTLSize::new(
-                        pipeline
-                            .pipeline
-                            .thread_execution_width()
-                            .max(1)
-                            .min(token_count.max(1) as u64),
-                        1,
-                        1,
+                        ARGMAX_TG_SIZE.saturating_mul(u64::from(saturating_usize_to_u32(token_count))),
+                        1, 1,
                     ),
+                    MTLSize::new(ARGMAX_TG_SIZE, 1, 1),
                 );
 
                 encoder.end_encoding();
@@ -2529,6 +2532,15 @@ fn record_projection_binding_coverage(
             coverage.projection_bf16_binding_count =
                 coverage.projection_bf16_binding_count.saturating_add(1);
         }
+        NativeTensorDataType::Q4Km
+        | NativeTensorDataType::Q5Km
+        | NativeTensorDataType::Q6Km
+        | NativeTensorDataType::Q8Zero
+        | NativeTensorDataType::U32 => {
+            // Quantized/integer projections counted under f16 bucket for coverage reporting.
+            coverage.projection_f16_binding_count =
+                coverage.projection_f16_binding_count.saturating_add(1);
+        }
         NativeTensorDataType::I8 | NativeTensorDataType::U8 => unreachable!(),
     }
 }
@@ -2555,6 +2567,12 @@ fn record_rms_norm_binding_coverage(
             coverage.rms_norm_bf16_binding_count =
                 coverage.rms_norm_bf16_binding_count.saturating_add(1);
         }
+        // Quantized/integer types are never used for norms; ignore if somehow present.
+        NativeTensorDataType::Q4Km
+        | NativeTensorDataType::Q5Km
+        | NativeTensorDataType::Q6Km
+        | NativeTensorDataType::Q8Zero
+        | NativeTensorDataType::U32 => {}
         NativeTensorDataType::I8 | NativeTensorDataType::U8 => unreachable!(),
     }
 }
@@ -2872,13 +2890,34 @@ impl MetalNativeModelBufferBindings {
 
         for binding in flattened {
             let bytes = read_native_tensor_bytes(&binding)?;
-            let (native_dtype, native_bytes) = native_dense_shadow_bytes(&binding.spec, &bytes)
-                .ok_or_else(|| MetalRuntimeError::InvalidDispatchInput {
-                    message: format!(
-                        "native tensor {} could not be promoted into a GPU-dense buffer",
-                        binding.spec.name
-                    ),
-                })?;
+
+            // Dequantize at load time:
+            // - Q4Km token embeddings → F16 (gather kernel needs dense float)
+            // - Q5Km, Q6Km, Q8Zero → F16 (no dedicated Metal kernels for these yet)
+            let (native_dtype, native_bytes) = match binding.spec.dtype {
+                NativeTensorDataType::Q4Km
+                    if binding.spec.role == NativeTensorRole::TokenEmbedding =>
+                {
+                    dequantize_q4km_tensor_to_f16(&binding.spec, &bytes)
+                }
+                NativeTensorDataType::Q5Km => {
+                    dequantize_q5km_tensor_to_f16(&binding.spec, &bytes)
+                }
+                NativeTensorDataType::Q6Km => {
+                    dequantize_q6km_tensor_to_f16(&binding.spec, &bytes)
+                }
+                NativeTensorDataType::Q8Zero => {
+                    dequantize_q8zero_tensor_to_f16(&binding.spec, &bytes)
+                }
+                _ => native_dense_shadow_bytes(&binding.spec, &bytes),
+            }
+            .ok_or_else(|| MetalRuntimeError::InvalidDispatchInput {
+                message: format!(
+                    "native tensor {} could not be promoted into a GPU-dense buffer",
+                    binding.spec.name
+                ),
+            })?;
+
             total_bytes = total_bytes.saturating_add(bytes.len() as u64);
             tensors.push(MetalNativeTensorBufferBinding {
                 meta: binding,
@@ -3613,7 +3652,18 @@ impl MetalBringupRunner {
         model_artifacts_dir: Option<&Path>,
     ) -> Result<Self, MetalRuntimeError> {
         let model_artifacts = model_artifacts_dir
-            .map(NativeModelArtifacts::from_dir)
+            .map(|p| {
+                if p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
+                {
+                    crate::gguf::load_gguf(p).map_err(|e| NativeModelError::InvalidManifest {
+                        message: e.to_string(),
+                    })
+                } else {
+                    NativeModelArtifacts::from_dir(p)
+                }
+            })
             .transpose()?;
         Self::from_assets_and_model_artifacts(
             MetalKernelAssets::from_build_dir(path)?,
@@ -4061,6 +4111,8 @@ impl MetalAssetValidator {
 pub enum MetalRuntimeError {
     #[error(transparent)]
     NativeModel(#[from] NativeModelError),
+    #[error("runtime error: {0}")]
+    Generic(String),
     #[error("failed to read JSON file {path}: {source}")]
     ReadJson {
         path: PathBuf,
@@ -5893,23 +5945,18 @@ fn project_decode_token_with_optional_native_path(
                 saturating_usize_to_u32(input_width),
             );
             encoder.dispatch_threads(
-                MTLSize::new(vocab_rows.max(1) as u64, 1, 1),
-                MTLSize::new(
-                    projection_pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(vocab_rows.max(1) as u64),
-                    1,
-                    1,
-                ),
+                MTLSize::new(projection_dispatch_threads(vocab_rows.max(1)), 1, 1),
+                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
             );
 
             encoder.set_compute_pipeline_state(&argmax_pipeline.pipeline);
             encoder.set_buffer(0, Some(&logits_buffer), 0);
             encoder.set_buffer(1, Some(&argmax_buffer), 0);
             set_logits_argmax_dispatch_params(encoder, 2, saturating_usize_to_u32(vocab_rows));
-            encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+            encoder.dispatch_threads(
+                MTLSize::new(ARGMAX_TG_SIZE, 1, 1),
+                MTLSize::new(ARGMAX_TG_SIZE, 1, 1),
+            );
 
             encoder.end_encoding();
             command_buffer.commit();
@@ -6008,23 +6055,18 @@ fn project_decode_logits_with_optional_native_path(
                 saturating_usize_to_u32(input_width),
             );
             encoder.dispatch_threads(
-                MTLSize::new(vocab_rows.max(1) as u64, 1, 1),
-                MTLSize::new(
-                    projection_pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(vocab_rows.max(1) as u64),
-                    1,
-                    1,
-                ),
+                MTLSize::new(projection_dispatch_threads(vocab_rows.max(1)), 1, 1),
+                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
             );
 
             encoder.set_compute_pipeline_state(&argmax_pipeline.pipeline);
             encoder.set_buffer(0, Some(&logits_buffer), 0);
             encoder.set_buffer(1, Some(&argmax_buffer), 0);
             set_logits_argmax_dispatch_params(encoder, 2, saturating_usize_to_u32(vocab_rows));
-            encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+            encoder.dispatch_threads(
+                MTLSize::new(ARGMAX_TG_SIZE, 1, 1),
+                MTLSize::new(ARGMAX_TG_SIZE, 1, 1),
+            );
 
             encoder.end_encoding();
             command_buffer.commit();
@@ -6155,16 +6197,8 @@ fn project_batched_decode_logits_with_optional_native_path(
                 saturating_usize_to_u32(serialized_hidden_stride),
             );
             encoder.dispatch_threads(
-                MTLSize::new(logits_element_count.max(1) as u64, 1, 1),
-                MTLSize::new(
-                    projection_pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(logits_element_count.max(1) as u64),
-                    1,
-                    1,
-                ),
+                MTLSize::new(projection_dispatch_threads(logits_element_count.max(1)), 1, 1),
+                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
             );
 
             encoder.set_compute_pipeline_state(&argmax_pipeline.pipeline);
@@ -6177,16 +6211,11 @@ fn project_batched_decode_logits_with_optional_native_path(
                 saturating_usize_to_u32(vocab_rows),
             );
             encoder.dispatch_threads(
-                MTLSize::new(token_count.max(1) as u64, 1, 1),
                 MTLSize::new(
-                    argmax_pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(token_count.max(1) as u64),
-                    1,
-                    1,
+                    ARGMAX_TG_SIZE.saturating_mul(u64::from(saturating_usize_to_u32(token_count))),
+                    1, 1,
                 ),
+                MTLSize::new(ARGMAX_TG_SIZE, 1, 1),
             );
 
             encoder.end_encoding();
@@ -6330,16 +6359,8 @@ fn project_batched_decode_tokens_with_optional_native_path(
                 saturating_usize_to_u32(serialized_hidden_stride),
             );
             encoder.dispatch_threads(
-                MTLSize::new(logits_element_count.max(1) as u64, 1, 1),
-                MTLSize::new(
-                    projection_pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(logits_element_count.max(1) as u64),
-                    1,
-                    1,
-                ),
+                MTLSize::new(projection_dispatch_threads(logits_element_count.max(1)), 1, 1),
+                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
             );
 
             encoder.set_compute_pipeline_state(&argmax_pipeline.pipeline);
@@ -6352,16 +6373,11 @@ fn project_batched_decode_tokens_with_optional_native_path(
                 saturating_usize_to_u32(vocab_rows),
             );
             encoder.dispatch_threads(
-                MTLSize::new(token_count.max(1) as u64, 1, 1),
                 MTLSize::new(
-                    argmax_pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(token_count.max(1) as u64),
-                    1,
-                    1,
+                    ARGMAX_TG_SIZE.saturating_mul(u64::from(saturating_usize_to_u32(token_count))),
+                    1, 1,
                 ),
+                MTLSize::new(ARGMAX_TG_SIZE, 1, 1),
             );
 
             encoder.end_encoding();
@@ -7157,16 +7173,8 @@ fn project_moe_expert_matrix_rows_with_optional_native_path(
                 saturating_usize_to_u32(input.len()),
             );
             encoder.dispatch_threads(
-                MTLSize::new(output_dim.max(1) as u64, 1, 1),
-                MTLSize::new(
-                    projection_pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(output_dim.max(1) as u64),
-                    1,
-                    1,
-                ),
+                MTLSize::new(projection_dispatch_threads(output_dim.max(1)), 1, 1),
+                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
             );
 
             encoder.end_encoding();
@@ -7327,16 +7335,8 @@ fn project_batched_moe_expert_matrix_rows_with_tally(
                         saturating_usize_to_u32(input_width),
                     );
                     encoder.dispatch_threads(
-                        MTLSize::new(output_element_count.max(1) as u64, 1, 1),
-                        MTLSize::new(
-                            projection_pipeline
-                                .pipeline
-                                .thread_execution_width()
-                                .max(1)
-                                .min(output_element_count.max(1) as u64),
-                            1,
-                            1,
-                        ),
+                        MTLSize::new(projection_dispatch_threads(output_element_count.max(1)), 1, 1),
+                        MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
                     );
 
                     encoder.end_encoding();
@@ -7557,16 +7557,8 @@ fn project_batched_moe_expert_gate_up_multi_dispatch(
                 saturating_usize_to_u32(input_width),
             );
             encoder.dispatch_threads(
-                MTLSize::new(output_element_count.max(1) as u64, 1, 1),
-                MTLSize::new(
-                    projection_pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(output_element_count.max(1) as u64),
-                    1,
-                    1,
-                ),
+                MTLSize::new(projection_dispatch_threads(output_element_count.max(1)), 1, 1),
+                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
             );
         }
 
@@ -8781,6 +8773,39 @@ fn build_dispatch_trace(
     pipeline: &MetalComputePipelineInfo,
 ) -> MetalDispatchKernelTrace {
     let element_count = dispatch_element_count_for_kernel(&pipeline.function_name, workload);
+
+    // paged_decode_attention: 1 threadgroup per (token, head), threadgroup_size = head_dim
+    // rounded up to a SIMD multiple.  Grid = n_tokens * head_count * tg_size so that Metal
+    // creates exactly n_tokens * head_count threadgroups even when head_dim < SIMD width.
+    if pipeline.function_name == "paged_decode_attention" {
+        let head_dim = u64::from(workload.numeric_layout.head_dim);
+        let head_count = u64::from(workload.numeric_layout.head_count);
+        let simd_w = pipeline.thread_execution_width.max(1);
+        let tg = ((head_dim + simd_w - 1) / simd_w * simd_w).max(simd_w);
+        let clamped_tg = tg
+            .min(pipeline.max_total_threads_per_threadgroup.max(1));
+        let head_size = head_count.saturating_mul(head_dim).max(1);
+        let n_tokens = u64::from(element_count) / head_size;
+        let threads_per_grid = n_tokens
+            .saturating_mul(head_count)
+            .saturating_mul(clamped_tg)
+            .max(1);
+        return MetalDispatchKernelTrace {
+            function_name: pipeline.function_name.clone(),
+            element_count,
+            threads_per_grid: MetalThreadgroupSize {
+                width: threads_per_grid,
+                height: 1,
+                depth: 1,
+            },
+            threads_per_threadgroup: MetalThreadgroupSize {
+                width: clamped_tg,
+                height: 1,
+                depth: 1,
+            },
+        };
+    }
+
     let threads_per_threadgroup_width = pipeline
         .thread_execution_width
         .max(1)
@@ -9357,6 +9382,7 @@ fn build_optional_kernel_dispatch_plan(
         vector_add_f32: index("vector_add_f32"),
         row_scale_f32: index("row_scale_f32"),
         row_vector_scale_f32: index("row_vector_scale_f32"),
+        projection_q4km: index("decode_projection_q4km"),
         projection_f32: index("decode_logits_projection_f32"),
         projection_f16: index("decode_logits_projection_f16"),
         projection_bf16: index("decode_logits_projection_bf16"),
@@ -14190,14 +14216,14 @@ fn project_hidden_states_from_layer_attention_output(
     }
 
     // Fused single-token path: encode O-proj through FFN residual in one command buffer.
-    // Supports both bf16 and f16 weight dtypes. Gate is already applied above.
+    // Supports f16, bf16, and q4km weight dtypes. Gate is already applied above.
     if hidden_states.len() == 1
         && layer.attention_post_norm.is_none()
         && layer.ffn_post_norm.is_none()
         && layer.moe.is_none()
         && matches!(
             attention_o.native_dtype,
-            NativeTensorDataType::Bf16 | NativeTensorDataType::F16
+            NativeTensorDataType::Bf16 | NativeTensorDataType::F16 | NativeTensorDataType::Q4Km
         )
     {
         if let Some(bringup) = bringup {
@@ -14301,8 +14327,10 @@ fn fused_layer_continuation_on_gpu(
 
     // Resolve all pipelines needed for the fused dispatch.
     let weight_dtype = attention_o.native_dtype;
+
     let (proj_kernel_name, proj_pipeline_index) = plan.projection_kernel(weight_dtype)?;
-    let (norm_kernel_name, norm_pipeline_index) = plan.rms_norm_kernel(weight_dtype)?;
+    // Norm weights are always a dense float type (F32/F16/BF16), not quantized.
+    let (norm_kernel_name, norm_pipeline_index) = plan.rms_norm_kernel(ffn_norm.native_dtype)?;
     let (add_kernel_name, add_pipeline_index) = plan.vector_add_kernel()?;
     let activation = native_model_ffn_activation(artifacts);
     let (gate_kernel_name, gate_pipeline_index) = plan.ffn_gate_product_kernel(activation)?;
@@ -14379,15 +14407,8 @@ fn fused_layer_continuation_on_gpu(
         return None;
     }
 
-    let dtype_bytes = native_dtype_size_bytes(weight_dtype);
-    let gate_row_byte_offset = gate_row_offset
-        .checked_mul(gate_cols)?
-        .checked_mul(dtype_bytes)?;
-    let up_row_byte_offset = up_row_offset
-        .checked_mul(up_cols)?
-        .checked_mul(dtype_bytes)?;
-
-    let thread_width = proj_pipeline.pipeline.thread_execution_width().max(1);
+    let gate_row_byte_offset = fused_weight_byte_offset(gate_row_offset, gate_cols, weight_dtype)?;
+    let up_row_byte_offset = fused_weight_byte_offset(up_row_offset, up_cols, weight_dtype)?;
 
     // Ensure arena is allocated and large enough.
     let mut arena_guard = bringup
@@ -14422,20 +14443,17 @@ fn fused_layer_continuation_on_gpu(
         encoder.set_label("ax.phase1.fused_layer_continuation.compute");
 
         // 1. O projection: attn_input → hidden
-        encoder.set_compute_pipeline_state(&proj_pipeline.pipeline);
-        encoder.set_buffer(0, Some(&attn_input_buffer), 0);
-        encoder.set_buffer(1, Some(&attention_o.native_buffer), 0);
-        encoder.set_buffer(2, Some(&arena.hidden), 0);
-        set_logits_projection_dispatch_params(
+        encode_fused_projection(
             encoder,
-            3,
+            &proj_pipeline,
+            &attn_input_buffer,
+            &attention_o.native_buffer,
+            0,
+            &arena.hidden,
+            weight_dtype,
             hidden_dim_u32,
             saturating_usize_to_u32(attn_o_cols),
             saturating_usize_to_u32(dims.input_width),
-        );
-        encoder.dispatch_threads(
-            MTLSize::new(hidden_dim as u64, 1, 1),
-            MTLSize::new(thread_width.min(hidden_dim as u64), 1, 1),
         );
 
         // 2. Attention residual add: hidden += residual → hidden
@@ -14463,43 +14481,37 @@ fn fused_layer_continuation_on_gpu(
         encoder.set_buffer(1, Some(&ffn_norm.native_buffer), 0);
         encoder.set_buffer(2, Some(&arena.normed), 0);
         set_rms_norm_dispatch_params(encoder, 3, hidden_dim_u32, epsilon, weight_offset);
-        encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+        encoder.dispatch_threads(
+            MTLSize::new(NORM_TG_SIZE, 1, 1),
+            MTLSize::new(NORM_TG_SIZE, 1, 1),
+        );
 
         // 4. Gate projection: normed → gate
-        encoder.set_compute_pipeline_state(&proj_pipeline.pipeline);
-        encoder.set_buffer(0, Some(&arena.normed), 0);
-        encoder.set_buffer(
-            1,
-            Some(&gate_weight.native_buffer),
-            gate_row_byte_offset as u64,
-        );
-        encoder.set_buffer(2, Some(&arena.gate), 0);
-        set_logits_projection_dispatch_params(
+        encode_fused_projection(
             encoder,
-            3,
+            &proj_pipeline,
+            &arena.normed,
+            &gate_weight.native_buffer,
+            gate_row_byte_offset as u64,
+            &arena.gate,
+            weight_dtype,
             intermediate_dim_u32,
             saturating_usize_to_u32(gate_cols),
             hidden_dim_u32,
         );
-        encoder.dispatch_threads(
-            MTLSize::new(intermediate_dim as u64, 1, 1),
-            MTLSize::new(thread_width.min(intermediate_dim as u64), 1, 1),
-        );
 
         // 5. Up projection: normed → up
-        encoder.set_buffer(0, Some(&arena.normed), 0);
-        encoder.set_buffer(1, Some(&up_weight.native_buffer), up_row_byte_offset as u64);
-        encoder.set_buffer(2, Some(&arena.up), 0);
-        set_logits_projection_dispatch_params(
+        encode_fused_projection(
             encoder,
-            3,
+            &proj_pipeline,
+            &arena.normed,
+            &up_weight.native_buffer,
+            up_row_byte_offset as u64,
+            &arena.up,
+            weight_dtype,
             intermediate_dim_u32,
             saturating_usize_to_u32(up_cols),
             hidden_dim_u32,
-        );
-        encoder.dispatch_threads(
-            MTLSize::new(intermediate_dim as u64, 1, 1),
-            MTLSize::new(thread_width.min(intermediate_dim as u64), 1, 1),
         );
 
         // 6. SiLU activation: gate_silu_product(gate, up) → gate (in-place)
@@ -14522,20 +14534,17 @@ fn fused_layer_continuation_on_gpu(
         );
 
         // 7. Down projection: gate → down
-        encoder.set_compute_pipeline_state(&proj_pipeline.pipeline);
-        encoder.set_buffer(0, Some(&arena.gate), 0);
-        encoder.set_buffer(1, Some(&ffn_down.native_buffer), 0);
-        encoder.set_buffer(2, Some(&arena.down), 0);
-        set_logits_projection_dispatch_params(
+        encode_fused_projection(
             encoder,
-            3,
+            &proj_pipeline,
+            &arena.gate,
+            &ffn_down.native_buffer,
+            0,
+            &arena.down,
+            weight_dtype,
             hidden_dim_u32,
             saturating_usize_to_u32(down_cols),
             intermediate_dim_u32,
-        );
-        encoder.dispatch_threads(
-            MTLSize::new(hidden_dim as u64, 1, 1),
-            MTLSize::new(thread_width.min(hidden_dim as u64), 1, 1),
         );
 
         // 8. FFN residual add: hidden + down → hidden
@@ -14609,8 +14618,10 @@ fn fused_ffn_only_on_gpu(
 
     let plan = bringup.state.optional_kernel_dispatch_plan;
     let weight_dtype = ffn_down.native_dtype;
+
     let (proj_kernel_name, proj_pipeline_index) = plan.projection_kernel(weight_dtype)?;
-    let (norm_kernel_name, norm_pipeline_index) = plan.rms_norm_kernel(weight_dtype)?;
+    // Norm weights are always a dense float type (F32/F16/BF16), not quantized.
+    let (norm_kernel_name, norm_pipeline_index) = plan.rms_norm_kernel(ffn_norm.native_dtype)?;
     let (add_kernel_name, add_pipeline_index) = plan.vector_add_kernel()?;
     let activation = native_model_ffn_activation(artifacts);
     let (gate_kernel_name, gate_pipeline_index) = plan.ffn_gate_product_kernel(activation)?;
@@ -14680,15 +14691,8 @@ fn fused_ffn_only_on_gpu(
         return None;
     }
 
-    let dtype_bytes = native_dtype_size_bytes(weight_dtype);
-    let gate_row_byte_offset = gate_row_offset
-        .checked_mul(gate_cols)?
-        .checked_mul(dtype_bytes)?;
-    let up_row_byte_offset = up_row_offset
-        .checked_mul(up_cols)?
-        .checked_mul(dtype_bytes)?;
-
-    let thread_width = proj_pipeline.pipeline.thread_execution_width().max(1);
+    let gate_row_byte_offset = fused_weight_byte_offset(gate_row_offset, gate_cols, weight_dtype)?;
+    let up_row_byte_offset = fused_weight_byte_offset(up_row_offset, up_cols, weight_dtype)?;
 
     let mut arena_guard = bringup
         .state
@@ -14722,43 +14726,37 @@ fn fused_ffn_only_on_gpu(
         encoder.set_buffer(1, Some(&ffn_norm.native_buffer), 0);
         encoder.set_buffer(2, Some(&arena.normed), 0);
         set_rms_norm_dispatch_params(encoder, 3, hidden_dim_u32, epsilon, weight_offset);
-        encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+        encoder.dispatch_threads(
+            MTLSize::new(NORM_TG_SIZE, 1, 1),
+            MTLSize::new(NORM_TG_SIZE, 1, 1),
+        );
 
         // 2. Gate projection: normed → gate
-        encoder.set_compute_pipeline_state(&proj_pipeline.pipeline);
-        encoder.set_buffer(0, Some(&arena.normed), 0);
-        encoder.set_buffer(
-            1,
-            Some(&gate_weight.native_buffer),
-            gate_row_byte_offset as u64,
-        );
-        encoder.set_buffer(2, Some(&arena.gate), 0);
-        set_logits_projection_dispatch_params(
+        encode_fused_projection(
             encoder,
-            3,
+            &proj_pipeline,
+            &arena.normed,
+            &gate_weight.native_buffer,
+            gate_row_byte_offset as u64,
+            &arena.gate,
+            weight_dtype,
             intermediate_dim_u32,
             saturating_usize_to_u32(gate_cols),
             hidden_dim_u32,
         );
-        encoder.dispatch_threads(
-            MTLSize::new(intermediate_dim as u64, 1, 1),
-            MTLSize::new(thread_width.min(intermediate_dim as u64), 1, 1),
-        );
 
         // 3. Up projection: normed → up
-        encoder.set_buffer(0, Some(&arena.normed), 0);
-        encoder.set_buffer(1, Some(&up_weight.native_buffer), up_row_byte_offset as u64);
-        encoder.set_buffer(2, Some(&arena.up), 0);
-        set_logits_projection_dispatch_params(
+        encode_fused_projection(
             encoder,
-            3,
+            &proj_pipeline,
+            &arena.normed,
+            &up_weight.native_buffer,
+            up_row_byte_offset as u64,
+            &arena.up,
+            weight_dtype,
             intermediate_dim_u32,
             saturating_usize_to_u32(up_cols),
             hidden_dim_u32,
-        );
-        encoder.dispatch_threads(
-            MTLSize::new(intermediate_dim as u64, 1, 1),
-            MTLSize::new(thread_width.min(intermediate_dim as u64), 1, 1),
         );
 
         // 4. SiLU/GELU gate×up activation: gate × act(up) → gate (in-place)
@@ -14781,20 +14779,17 @@ fn fused_ffn_only_on_gpu(
         );
 
         // 5. Down projection: gate → down
-        encoder.set_compute_pipeline_state(&proj_pipeline.pipeline);
-        encoder.set_buffer(0, Some(&arena.gate), 0);
-        encoder.set_buffer(1, Some(&ffn_down.native_buffer), 0);
-        encoder.set_buffer(2, Some(&arena.down), 0);
-        set_logits_projection_dispatch_params(
+        encode_fused_projection(
             encoder,
-            3,
+            &proj_pipeline,
+            &arena.gate,
+            &ffn_down.native_buffer,
+            0,
+            &arena.down,
+            weight_dtype,
             hidden_dim_u32,
             saturating_usize_to_u32(down_cols),
             intermediate_dim_u32,
-        );
-        encoder.dispatch_threads(
-            MTLSize::new(hidden_dim as u64, 1, 1),
-            MTLSize::new(thread_width.min(hidden_dim as u64), 1, 1),
         );
 
         // 6. FFN residual add: hidden + down → hidden
@@ -15281,7 +15276,15 @@ fn apply_model_stage_rope_with_optional_native_path(
                 rope_style_dispatch_value(rope_style),
                 saturating_usize_to_u32(rotary_dim),
             );
-            encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+            let rope_threads = {
+                let half_dim = rotary_dim / 2;
+                let total = (stage_dims.q_heads + stage_dims.kv_heads) * half_dim;
+                (total as u64).max(1)
+            };
+            encoder.dispatch_threads(
+                MTLSize::new(rope_threads, 1, 1),
+                MTLSize::new(32, 1, 1),
+            );
 
             encoder.end_encoding();
             command_buffer.commit();
@@ -16262,7 +16265,10 @@ fn apply_rms_norm_without_weights_with_optional_native_path(
                 epsilon,
                 1.0,
             );
-            encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+            encoder.dispatch_threads(
+                MTLSize::new(NORM_TG_SIZE, 1, 1),
+                MTLSize::new(NORM_TG_SIZE, 1, 1),
+            );
 
             encoder.end_encoding();
             command_buffer.commit();
@@ -16384,7 +16390,10 @@ fn apply_rms_norm_with_optional_native_path(
                 epsilon,
                 weight_offset,
             );
-            encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+            encoder.dispatch_threads(
+                MTLSize::new(NORM_TG_SIZE, 1, 1),
+                MTLSize::new(NORM_TG_SIZE, 1, 1),
+            );
 
             encoder.end_encoding();
             command_buffer.commit();
@@ -16829,16 +16838,11 @@ fn apply_batched_per_head_rms_norm_without_weights_with_optional_native_path(
                 1.0,
             );
             encoder.dispatch_threads(
-                MTLSize::new(u64::from(element_count.max(1)), 1, 1),
                 MTLSize::new(
-                    pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(u64::from(element_count.max(1))),
-                    1,
-                    1,
+                    NORM_TG_SIZE.saturating_mul(u64::from(saturating_usize_to_u32(head_count))),
+                    1, 1,
                 ),
+                MTLSize::new(NORM_TG_SIZE, 1, 1),
             );
 
             encoder.end_encoding();
@@ -16922,16 +16926,11 @@ fn apply_batched_per_head_rms_norm_with_optional_native_path(
                 weight_offset,
             );
             encoder.dispatch_threads(
-                MTLSize::new(u64::from(element_count.max(1)), 1, 1),
                 MTLSize::new(
-                    pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(u64::from(element_count.max(1))),
-                    1,
-                    1,
+                    NORM_TG_SIZE.saturating_mul(u64::from(saturating_usize_to_u32(head_count))),
+                    1, 1,
                 ),
+                MTLSize::new(NORM_TG_SIZE, 1, 1),
             );
 
             encoder.end_encoding();
@@ -18073,16 +18072,8 @@ fn project_batched_matrix_rows_with_optional_native_path(
                 saturating_usize_to_u32(hidden_stride),
             );
             encoder.dispatch_threads(
-                MTLSize::new(output_element_count.max(1) as u64, 1, 1),
-                MTLSize::new(
-                    projection_pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(output_element_count.max(1) as u64),
-                    1,
-                    1,
-                ),
+                MTLSize::new(projection_dispatch_threads(output_element_count.max(1)), 1, 1),
+                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
             );
 
             encoder.end_encoding();
@@ -18201,33 +18192,37 @@ fn project_multi_matrix_rows_with_optional_native_path(
 
         for (task, output_buffer) in tasks.iter().zip(output_buffers.iter()) {
             let (_, cols) = tensor_matrix_dimensions(&task.binding.meta.spec)?;
-            let row_byte_offset = task
-                .row_offset
-                .checked_mul(cols)?
-                .checked_mul(native_dtype_size_bytes(task.binding.native_dtype))?;
+            let row_byte_offset = if task.binding.native_dtype == NativeTensorDataType::Q4Km {
+                q4km_row_byte_offset(task.row_offset, cols)?
+            } else {
+                task.row_offset
+                    .checked_mul(cols)?
+                    .checked_mul(native_dtype_size_bytes(task.binding.native_dtype))?
+            };
 
             encoder.set_compute_pipeline_state(&projection_pipeline.pipeline);
             encoder.set_buffer(0, Some(&hidden_buffer), 0);
             encoder.set_buffer(1, Some(&task.binding.native_buffer), row_byte_offset as u64);
             encoder.set_buffer(2, Some(output_buffer), 0);
-            set_logits_projection_dispatch_params(
-                encoder,
-                3,
-                saturating_usize_to_u32(task.output_dim),
-                saturating_usize_to_u32(cols),
-                saturating_usize_to_u32(input_width),
-            );
+            if task.binding.native_dtype == NativeTensorDataType::Q4Km {
+                set_q4km_projection_dispatch_params(
+                    encoder,
+                    3,
+                    saturating_usize_to_u32(task.output_dim),
+                    saturating_usize_to_u32(input_width),
+                );
+            } else {
+                set_logits_projection_dispatch_params(
+                    encoder,
+                    3,
+                    saturating_usize_to_u32(task.output_dim),
+                    saturating_usize_to_u32(cols),
+                    saturating_usize_to_u32(input_width),
+                );
+            }
             encoder.dispatch_threads(
-                MTLSize::new(task.output_dim.max(1) as u64, 1, 1),
-                MTLSize::new(
-                    projection_pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(task.output_dim.max(1) as u64),
-                    1,
-                    1,
-                ),
+                MTLSize::new(projection_dispatch_threads(task.output_dim.max(1)), 1, 1),
+                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
             );
         }
 
@@ -18360,16 +18355,8 @@ fn project_multi_batched_matrix_rows_with_optional_native_path(
                 saturating_usize_to_u32(hidden_stride),
             );
             encoder.dispatch_threads(
-                MTLSize::new(output_element_count.max(1) as u64, 1, 1),
-                MTLSize::new(
-                    projection_pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(output_element_count.max(1) as u64),
-                    1,
-                    1,
-                ),
+                MTLSize::new(projection_dispatch_threads(output_element_count.max(1)), 1, 1),
+                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
             );
         }
 
@@ -18430,9 +18417,14 @@ fn project_matrix_rows_with_optional_native_path(
         return None;
     }
 
-    let row_byte_offset = row_offset
-        .checked_mul(cols)?
-        .checked_mul(native_dtype_size_bytes(binding.native_dtype))?;
+    // Compute byte offset for the row_offset-th row in the weight matrix.
+    let row_byte_offset = if binding.native_dtype == NativeTensorDataType::Q4Km {
+        q4km_row_byte_offset(row_offset, cols)?
+    } else {
+        row_offset
+            .checked_mul(cols)?
+            .checked_mul(native_dtype_size_bytes(binding.native_dtype))?
+    };
 
     let output = find_optional_pipeline_handle_by_index(
         &bringup.state,
@@ -18458,24 +18450,26 @@ fn project_matrix_rows_with_optional_native_path(
             encoder.set_buffer(0, Some(&hidden_buffer), 0);
             encoder.set_buffer(1, Some(&binding.native_buffer), row_byte_offset as u64);
             encoder.set_buffer(2, Some(&output_buffer), 0);
-            set_logits_projection_dispatch_params(
-                encoder,
-                3,
-                saturating_usize_to_u32(output_dim),
-                saturating_usize_to_u32(cols),
-                saturating_usize_to_u32(input.len()),
-            );
+
+            if binding.native_dtype == NativeTensorDataType::Q4Km {
+                set_q4km_projection_dispatch_params(
+                    encoder,
+                    3,
+                    saturating_usize_to_u32(output_dim),
+                    saturating_usize_to_u32(input.len()),
+                );
+            } else {
+                set_logits_projection_dispatch_params(
+                    encoder,
+                    3,
+                    saturating_usize_to_u32(output_dim),
+                    saturating_usize_to_u32(cols),
+                    saturating_usize_to_u32(input.len()),
+                );
+            }
             encoder.dispatch_threads(
-                MTLSize::new(output_dim.max(1) as u64, 1, 1),
-                MTLSize::new(
-                    projection_pipeline
-                        .pipeline
-                        .thread_execution_width()
-                        .max(1)
-                        .min(output_dim.max(1) as u64),
-                    1,
-                    1,
-                ),
+                MTLSize::new(projection_dispatch_threads(output_dim.max(1)), 1, 1),
+                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
             );
 
             encoder.end_encoding();
@@ -18608,6 +18602,13 @@ fn native_dtype_size_bytes(dtype: NativeTensorDataType) -> usize {
         NativeTensorDataType::F16 | NativeTensorDataType::Bf16 => 2,
         NativeTensorDataType::F32 => 4,
         NativeTensorDataType::I8 | NativeTensorDataType::U8 => 1,
+        // Quantized block types have no simple per-element byte size.
+        // Callers must handle row offsets via q4km_row_byte_offset() or dequantize at load time.
+        NativeTensorDataType::U32 => 4,
+        NativeTensorDataType::Q4Km
+        | NativeTensorDataType::Q5Km
+        | NativeTensorDataType::Q6Km
+        | NativeTensorDataType::Q8Zero => 0,
     }
 }
 
@@ -18617,6 +18618,200 @@ fn native_dense_effective_dtype(dtype: NativeTensorDataType) -> NativeTensorData
         NativeTensorDataType::I8 | NativeTensorDataType::U8 => NativeTensorDataType::F32,
         _ => dtype,
     }
+}
+
+/// Byte offset into a Q4Km weight buffer for a given row offset and row width.
+/// row_width must be a multiple of 256 (QK_K).
+#[cfg(target_os = "macos")]
+fn q4km_row_byte_offset(row_offset: usize, row_width: usize) -> Option<usize> {
+    let n_blocks = row_width / 256;
+    row_offset.checked_mul(n_blocks)?.checked_mul(144)
+}
+
+/// Exact Rust port of llama.cpp get_scale_min_k4.
+#[cfg(target_os = "macos")]
+fn q4km_get_scale_min(j: usize, scales: &[u8]) -> (u8, u8) {
+    if j < 4 {
+        (scales[j] & 63, scales[j + 4] & 63)
+    } else {
+        let sc = (scales[j + 4] & 0x0F) | ((scales[j - 4] >> 6) << 4);
+        let mn = (scales[j + 4] >> 4) | ((scales[j] >> 6) << 4);
+        (sc, mn)
+    }
+}
+
+/// Dequantize one 144-byte block_q4_K block → 256 F16 values (512 bytes).
+/// Exact port of llama.cpp dequantize_row_q4_K.
+#[cfg(target_os = "macos")]
+fn dequantize_q4km_block_to_f16(block: &[u8]) -> [u16; 256] {
+    let d    = decode_f16_to_f32(u16::from_le_bytes([block[0], block[1]]));
+    let dmin = decode_f16_to_f32(u16::from_le_bytes([block[2], block[3]]));
+    let scales = &block[4..16];
+    let qs = &block[16..144];
+    let mut out = [0u16; 256];
+    let mut q_ptr = 0_usize;
+    let mut elem = 0_usize;
+    let mut is = 0_usize;
+    for _ in 0..4 {
+        let (sc0, m0) = q4km_get_scale_min(is, scales);
+        let (sc1, m1) = q4km_get_scale_min(is + 1, scales);
+        let d1 = d * sc0 as f32;  let dm1 = dmin * m0 as f32;
+        let d2 = d * sc1 as f32;  let dm2 = dmin * m1 as f32;
+        for l in 0..32 {
+            out[elem] = encode_f32_to_f16_bits(d1 * (qs[q_ptr + l] & 0x0F) as f32 - dm1);
+            elem += 1;
+        }
+        for l in 0..32 {
+            out[elem] = encode_f32_to_f16_bits(d2 * (qs[q_ptr + l] >> 4) as f32 - dm2);
+            elem += 1;
+        }
+        q_ptr += 32;
+        is += 2;
+    }
+    out
+}
+
+/// Dequantize Q8_0 tensor to F16. Block = 2 bytes (F16 scale) + 32 int8 values = 34 bytes.
+/// Matches llama.cpp dequantize_row_q8_0.
+#[cfg(target_os = "macos")]
+fn dequantize_q8zero_tensor_to_f16(
+    spec: &NativeTensorSpec,
+    bytes: &[u8],
+) -> Option<(NativeTensorDataType, Vec<u8>)> {
+    let n = tensor_element_count(spec)?;
+    if n % 32 != 0 { return None; }
+    let n_blocks = n / 32;
+    if bytes.len() < n_blocks * 34 { return None; }
+    let mut f16: Vec<u8> = Vec::with_capacity(n * 2);
+    for b in 0..n_blocks {
+        let blk = &bytes[b * 34..];
+        let d = decode_f16_to_f32(u16::from_le_bytes([blk[0], blk[1]]));
+        for i in 0..32 {
+            let q = blk[2 + i] as i8;
+            f16.extend_from_slice(&encode_f32_to_f16_bits(d * q as f32).to_le_bytes());
+        }
+    }
+    Some((NativeTensorDataType::F16, f16))
+}
+
+/// Dequantize Q5_K tensor to F16.
+/// Block = 4 (d+dmin F16) + 12 (scales) + 32 (qh 5th bits) + 128 (qs low 4 bits) = 176 bytes.
+/// Matches llama.cpp dequantize_row_q5_K + get_scale_min_k4.
+#[cfg(target_os = "macos")]
+fn dequantize_q5km_tensor_to_f16(
+    spec: &NativeTensorSpec,
+    bytes: &[u8],
+) -> Option<(NativeTensorDataType, Vec<u8>)> {
+    let n = tensor_element_count(spec)?;
+    if n % 256 != 0 { return None; }
+    let n_blocks = n / 256;
+    if bytes.len() < n_blocks * 176 { return None; }
+    let mut f16: Vec<u8> = Vec::with_capacity(n * 2);
+    for b in 0..n_blocks {
+        let blk = &bytes[b * 176..];
+        let d    = decode_f16_to_f32(u16::from_le_bytes([blk[0], blk[1]]));
+        let dmin = decode_f16_to_f32(u16::from_le_bytes([blk[2], blk[3]]));
+        let scales = &blk[4..16];
+        let qh = &blk[16..48];   // 32 bytes, bit masks for 5th bit
+        let qs = &blk[48..176];  // 128 bytes, 4 low bits
+        let mut ql_ptr = 0_usize;
+        let mut is = 0_usize;
+        let mut u1: u8 = 1;
+        let mut u2: u8 = 2;
+        for _ in 0..4 {
+            let (sc0, m0) = q4km_get_scale_min(is, scales);
+            let (sc1, m1) = q4km_get_scale_min(is + 1, scales);
+            let d1 = d * sc0 as f32; let dm1 = dmin * m0 as f32;
+            let d2 = d * sc1 as f32; let dm2 = dmin * m1 as f32;
+            for l in 0..32_usize {
+                let lo = qs[ql_ptr + l] & 0xF;
+                let hi: u8 = if (qh[l] & u1) != 0 { 16 } else { 0 };
+                f16.extend_from_slice(&encode_f32_to_f16_bits(d1 * (lo + hi) as f32 - dm1).to_le_bytes());
+            }
+            for l in 0..32_usize {
+                let lo = qs[ql_ptr + l] >> 4;
+                let hi: u8 = if (qh[l] & u2) != 0 { 16 } else { 0 };
+                f16.extend_from_slice(&encode_f32_to_f16_bits(d2 * (lo + hi) as f32 - dm2).to_le_bytes());
+            }
+            ql_ptr += 32;
+            is += 2;
+            u1 = u1.wrapping_shl(2);
+            u2 = u2.wrapping_shl(2);
+        }
+    }
+    Some((NativeTensorDataType::F16, f16))
+}
+
+/// Dequantize Q6_K tensor to F16.
+/// Block = 128 (ql) + 64 (qh) + 16 (scales int8) + 2 (d F16) = 210 bytes per 256 elements.
+/// Matches llama.cpp dequantize_row_q6_K.
+#[cfg(target_os = "macos")]
+fn dequantize_q6km_tensor_to_f16(
+    spec: &NativeTensorSpec,
+    bytes: &[u8],
+) -> Option<(NativeTensorDataType, Vec<u8>)> {
+    let n = tensor_element_count(spec)?;
+    if n % 256 != 0 { return None; }
+    let n_blocks = n / 256;
+    if bytes.len() < n_blocks * 210 { return None; }
+    let mut f16: Vec<u8> = Vec::with_capacity(n * 2);
+    for b in 0..n_blocks {
+        let blk = &bytes[b * 210..];
+        let ql = &blk[0..128];
+        let qh = &blk[128..192];
+        let sc = &blk[192..208];  // int8 sub-block scales
+        let d = decode_f16_to_f32(u16::from_le_bytes([blk[208], blk[209]]));
+        // Two outer passes of 128 elements each
+        let mut ql_off = 0_usize;
+        let mut qh_off = 0_usize;
+        let mut sc_off = 0_usize;
+        for _ in 0..2 {
+            let mut result = [0f32; 128];
+            for l in 0..32_usize {
+                let is = l / 16;
+                let q1 = (((ql[ql_off + l     ] & 0xF) | (((qh[qh_off + l] >> 0) & 3) << 4)) as i8).wrapping_sub(32);
+                let q2 = (((ql[ql_off + l + 32] & 0xF) | (((qh[qh_off + l] >> 2) & 3) << 4)) as i8).wrapping_sub(32);
+                let q3 = (((ql[ql_off + l     ] >>  4) | (((qh[qh_off + l] >> 4) & 3) << 4)) as i8).wrapping_sub(32);
+                let q4 = (((ql[ql_off + l + 32] >>  4) | (((qh[qh_off + l] >> 6) & 3) << 4)) as i8).wrapping_sub(32);
+                result[l     ] = d * sc[sc_off + is    ] as i8 as f32 * q1 as f32;
+                result[l + 32] = d * sc[sc_off + is + 2] as i8 as f32 * q2 as f32;
+                result[l + 64] = d * sc[sc_off + is + 4] as i8 as f32 * q3 as f32;
+                result[l + 96] = d * sc[sc_off + is + 6] as i8 as f32 * q4 as f32;
+            }
+            for &w in &result {
+                f16.extend_from_slice(&encode_f32_to_f16_bits(w).to_le_bytes());
+            }
+            ql_off += 64;
+            qh_off += 32;
+            sc_off += 8;
+        }
+    }
+    Some((NativeTensorDataType::F16, f16))
+}
+
+/// Dequantize an entire Q4Km tensor to F16 bytes.
+/// Used at model-load time for token embedding tensors.
+#[cfg(target_os = "macos")]
+fn dequantize_q4km_tensor_to_f16(
+    spec: &NativeTensorSpec,
+    bytes: &[u8],
+) -> Option<(NativeTensorDataType, Vec<u8>)> {
+    let n_elements = tensor_element_count(spec)?;
+    if n_elements % 256 != 0 {
+        return None;
+    }
+    let n_blocks = (n_elements / 256) as usize;
+    if bytes.len() < n_blocks * 144 {
+        return None;
+    }
+    let mut f16_bytes: Vec<u8> = Vec::with_capacity(n_elements as usize * 2);
+    for b in 0..n_blocks {
+        let block = &bytes[b * 144..(b + 1) * 144];
+        for f16_bits in dequantize_q4km_block_to_f16(block) {
+            f16_bytes.extend_from_slice(&f16_bits.to_le_bytes());
+        }
+    }
+    Some((NativeTensorDataType::F16, f16_bytes))
 }
 
 #[cfg(target_os = "macos")]
@@ -18656,6 +18851,15 @@ fn decode_native_tensor_scalar(dtype: NativeTensorDataType, bytes: &[u8]) -> Opt
         NativeTensorDataType::F32 => Some(f32::from_le_bytes(bytes.try_into().ok()?)),
         NativeTensorDataType::I8 => Some(i8::from_le_bytes([*bytes.first()?]) as f32),
         NativeTensorDataType::U8 => Some(*bytes.first()? as f32),
+        NativeTensorDataType::U32 => {
+            let raw = u32::from_le_bytes(bytes.try_into().ok()?);
+            Some(raw as f32)
+        }
+        // Quantized types are not decoded element-by-element; dequantization is at load time.
+        NativeTensorDataType::Q4Km
+        | NativeTensorDataType::Q5Km
+        | NativeTensorDataType::Q6Km
+        | NativeTensorDataType::Q8Zero => None,
     }
 }
 
@@ -18698,7 +18902,14 @@ fn round_slice_to_native_dtype(values: &mut [f32], dtype: NativeTensorDataType) 
 #[cfg(target_os = "macos")]
 fn round_f32_to_native_dtype(value: f32, dtype: NativeTensorDataType) -> f32 {
     match dtype {
-        NativeTensorDataType::F32 | NativeTensorDataType::I8 | NativeTensorDataType::U8 => value,
+        NativeTensorDataType::F32
+        | NativeTensorDataType::I8
+        | NativeTensorDataType::U8
+        | NativeTensorDataType::U32
+        | NativeTensorDataType::Q4Km
+        | NativeTensorDataType::Q5Km
+        | NativeTensorDataType::Q6Km
+        | NativeTensorDataType::Q8Zero => value,
         NativeTensorDataType::Bf16 => round_f32_to_bf16(value),
         NativeTensorDataType::F16 => decode_f16_to_f32(encode_f32_to_f16_bits(value)),
     }
@@ -19631,6 +19842,89 @@ fn set_copy_block_dispatch_params(
         buffer_index,
         size_of::<CopyBlockDispatchParams>() as u64,
         (&params as *const CopyBlockDispatchParams).cast(),
+    );
+}
+
+#[cfg(target_os = "macos")]
+/// Each output row is handled by one simd-group (32 threads) that cooperates
+/// via simd_sum. Callers multiply output_rows by this constant for the total
+/// thread count and use 32 as the threadgroup size.
+const PROJECTION_SIMD_WIDTH: u64 = 32;
+/// Threadgroup size for parallel rms_norm kernels (1 TG dispatched per call or per head).
+const NORM_TG_SIZE: u64 = 256;
+/// Threadgroup size for parallel argmax/sample_argmax kernels (1 TG dispatched per vocab scan).
+const ARGMAX_TG_SIZE: u64 = 1024;
+
+#[cfg(target_os = "macos")]
+fn projection_dispatch_threads(output_rows: usize) -> u64 {
+    (output_rows as u64).saturating_mul(PROJECTION_SIMD_WIDTH).max(PROJECTION_SIMD_WIDTH)
+}
+
+/// Byte offset for a weight row, handling the non-linear Q4Km block layout.
+#[cfg(target_os = "macos")]
+fn fused_weight_byte_offset(
+    row_offset: usize,
+    cols: usize,
+    dtype: NativeTensorDataType,
+) -> Option<usize> {
+    if dtype == NativeTensorDataType::Q4Km {
+        q4km_row_byte_offset(row_offset, cols)
+    } else {
+        row_offset
+            .checked_mul(cols)?
+            .checked_mul(native_dtype_size_bytes(dtype))
+    }
+}
+
+/// Encode a single GEMV projection dispatch into an already-open encoder.
+/// Handles both float (F16/BF16/F32) and Q4Km weight dtypes.
+#[cfg(target_os = "macos")]
+fn encode_fused_projection(
+    encoder: &metal::ComputeCommandEncoderRef,
+    pipeline: &MetalPipelineHandle,
+    input_buf: &metal::Buffer,
+    weight_buf: &metal::Buffer,
+    weight_byte_offset: u64,
+    output_buf: &metal::Buffer,
+    weight_dtype: NativeTensorDataType,
+    n_rows: u32,
+    cols: u32,
+    input_width: u32,
+) {
+    encoder.set_compute_pipeline_state(&pipeline.pipeline);
+    encoder.set_buffer(0, Some(input_buf), 0);
+    encoder.set_buffer(1, Some(weight_buf), weight_byte_offset);
+    encoder.set_buffer(2, Some(output_buf), 0);
+    if weight_dtype == NativeTensorDataType::Q4Km {
+        set_q4km_projection_dispatch_params(encoder, 3, n_rows, input_width);
+    } else {
+        set_logits_projection_dispatch_params(encoder, 3, n_rows, cols, input_width);
+    }
+    encoder.dispatch_threads(
+        MTLSize::new(projection_dispatch_threads(n_rows as usize), 1, 1),
+        MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct Q4KMProjectionDispatchParams {
+    n_rows: u32,
+    input_width: u32,
+}
+
+#[cfg(target_os = "macos")]
+fn set_q4km_projection_dispatch_params(
+    encoder: &metal::ComputeCommandEncoderRef,
+    buffer_index: u64,
+    n_rows: u32,
+    input_width: u32,
+) {
+    let params = Q4KMProjectionDispatchParams { n_rows, input_width };
+    encoder.set_bytes(
+        buffer_index,
+        size_of::<Q4KMProjectionDispatchParams>() as u64,
+        (&params as *const Q4KMProjectionDispatchParams).cast(),
     );
 }
 
