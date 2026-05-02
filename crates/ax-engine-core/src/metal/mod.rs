@@ -12053,6 +12053,50 @@ fn finish_linear_attention_item(
     bringup: Option<&MetalRuntimeBringup>,
 ) -> Option<(Vec<Vec<f32>>, PrefixAttentionExecutionTally)> {
     let mut tally = prepared_item.pre_recurrent_tally.merge(recurrent_tally);
+
+    // Single-token decode: fuse linear_norm + gate + out_proj + residual in ONE command buffer,
+    // saving 3 GPU round-trips per linear-attention layer (72 fewer CBs for 18-layer Qwen3.5).
+    if linear_outputs.len() == 1
+        && prepared_item.z_rows.len() == 1
+        && prepared_item.residual_rows.len() == 1
+    {
+        if let Some(bringup) = bringup {
+            let recurrent_output = linear_outputs.first()?;
+            let z_input = prepared_item.z_rows.first()?;
+            let residual = prepared_item.residual_rows.first()?;
+            if let Some(hidden) = fused_linear_attn_tail_on_gpu(
+                bringup,
+                artifacts,
+                recurrent_output,
+                z_input,
+                residual,
+                linear_norm,
+                out_proj,
+                dims,
+            ) {
+                let tail_tally = PrefixAttentionExecutionTally::default()
+                    .record_rms_norm_elements(dims.value_dim, true)
+                    .record_ffn_activation_elements(dims.value_dim, true)
+                    .record_projection_rows(dims.hidden_dim, true)
+                    .record_residual_add_elements(dims.hidden_dim, true);
+                tally = tally.merge(tail_tally);
+                let hidden_rows = [hidden];
+                let (next_hidden_states, ffn_tally, _) = apply_ffn_continuation_rows_with_tally(
+                    artifacts,
+                    layer,
+                    buffers,
+                    &hidden_rows,
+                    Some(bringup),
+                )?;
+                tally = tally.merge(prefix_attention_tally_from_native_dense_tally(ffn_tally));
+                layer_state.processed_tokens = layer_state
+                    .processed_tokens
+                    .checked_add(prepared_item.token_count)?;
+                return Some((next_hidden_states, tally));
+            }
+        }
+    }
+
     tally = tally.merge(apply_batched_per_head_rms_norm_rows_with_tally(
         &mut linear_outputs,
         dims.num_value_heads,
@@ -14294,6 +14338,202 @@ fn project_hidden_states_from_layer_attention_output(
     )?;
     tally = tally.merge(prefix_attention_tally_from_native_dense_tally(ffn_tally));
     Some((next_hidden_states, tally))
+}
+
+/// Fused single-token linear-attention tail: encodes per-head RMS norm → linear gate
+/// → out-projection → residual add into a single Metal command buffer.
+/// Replaces 4 individual CBs per linear-attention layer for single-token decode.
+/// Returns `None` to fall back to per-operation dispatch.
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn fused_linear_attn_tail_on_gpu(
+    bringup: &MetalRuntimeBringup,
+    artifacts: &NativeModelArtifacts,
+    recurrent_output: &[f32],
+    z_input: &[f32],
+    residual: &[f32],
+    linear_norm: &MetalNativeTensorBufferBinding,
+    out_proj: &MetalNativeTensorBufferBinding,
+    dims: ResolvedLinearAttentionDims,
+) -> Option<Vec<f32>> {
+    let value_dim = dims.value_dim;
+    let hidden_dim = dims.hidden_dim;
+    if value_dim == 0
+        || hidden_dim == 0
+        || dims.num_value_heads == 0
+        || dims.value_head_dim == 0
+        || recurrent_output.len() < value_dim
+        || z_input.len() < value_dim
+        || residual.len() < hidden_dim
+    {
+        return None;
+    }
+
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+    let weight_dtype = out_proj.native_dtype;
+
+    let (norm_kernel_name, norm_pipeline_index) =
+        plan.batched_rms_norm_kernel(linear_norm.native_dtype)?;
+    let (gate_kernel_name, gate_pipeline_index) = plan.linear_attention_gate_kernel()?;
+    let (proj_kernel_name, proj_pipeline_index) = plan.projection_kernel(weight_dtype)?;
+    let (add_kernel_name, add_pipeline_index) = plan.vector_add_kernel()?;
+
+    let fused_feedback_key =
+        MetalOptionalKernelFeedbackKey::Kernel("fused_linear_attn_tail");
+    if !optional_kernel_allowed(bringup, &fused_feedback_key) {
+        return None;
+    }
+
+    let norm_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        norm_kernel_name,
+        norm_pipeline_index,
+    )
+    .ok()?;
+    let gate_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        gate_kernel_name,
+        gate_pipeline_index,
+    )
+    .ok()?;
+    let proj_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        proj_kernel_name,
+        proj_pipeline_index,
+    )
+    .ok()?;
+    let add_pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        add_kernel_name,
+        add_pipeline_index,
+    )
+    .ok()?;
+
+    let (_, out_proj_cols) = tensor_matrix_dimensions(&out_proj.meta.spec)?;
+    if value_dim > out_proj_cols {
+        return None;
+    }
+
+    let epsilon = native_model_rms_norm_epsilon(artifacts);
+    let weight_offset = native_model_rms_norm_weight_offset(artifacts);
+    let hidden_dim_u32 = saturating_usize_to_u32(hidden_dim);
+    let value_dim_u32 = saturating_usize_to_u32(value_dim);
+    let num_heads_u32 = saturating_usize_to_u32(dims.num_value_heads);
+    let head_dim_u32 = saturating_usize_to_u32(dims.value_head_dim);
+
+    let result = autoreleasepool(|| {
+        let recurrent_buf =
+            new_shared_buffer_with_data(&bringup.state.device, &recurrent_output[..value_dim]);
+        let z_buf = new_shared_buffer_with_data(&bringup.state.device, &z_input[..value_dim]);
+        let residual_buf =
+            new_shared_buffer_with_data(&bringup.state.device, &residual[..hidden_dim]);
+        let normed_buf =
+            new_zeroed_shared_buffer::<f32>(&bringup.state.device, value_dim_u32);
+        let gated_buf =
+            new_zeroed_shared_buffer::<f32>(&bringup.state.device, value_dim_u32);
+        let hidden_buf =
+            new_zeroed_shared_buffer::<f32>(&bringup.state.device, hidden_dim_u32);
+
+        let command_buffer = bringup.state.command_queue.new_command_buffer();
+        command_buffer.set_label("ax.phase1.fused_linear_attn_tail");
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_label("ax.phase1.fused_linear_attn_tail.compute");
+
+        // 1. Per-head RMS norm: recurrent_output → normed
+        encoder.set_compute_pipeline_state(&norm_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&recurrent_buf), 0);
+        encoder.set_buffer(1, Some(&linear_norm.native_buffer), 0);
+        encoder.set_buffer(2, Some(&normed_buf), 0);
+        set_batched_rms_norm_dispatch_params(
+            encoder,
+            3,
+            num_heads_u32,
+            head_dim_u32,
+            epsilon,
+            weight_offset,
+        );
+        encoder.dispatch_threads(
+            MTLSize::new(
+                NORM_TG_SIZE.saturating_mul(u64::from(num_heads_u32)),
+                1,
+                1,
+            ),
+            MTLSize::new(NORM_TG_SIZE, 1, 1),
+        );
+
+        // 2. Linear gate: normed × silu(z) → gated
+        encoder.set_compute_pipeline_state(&gate_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&z_buf), 0);
+        encoder.set_buffer(1, Some(&normed_buf), 0);
+        encoder.set_buffer(2, Some(&gated_buf), 0);
+        set_ffn_gate_product_dispatch_params(encoder, 3, value_dim_u32);
+        encoder.dispatch_threads(
+            MTLSize::new(value_dim as u64, 1, 1),
+            MTLSize::new(
+                gate_pipeline
+                    .pipeline
+                    .thread_execution_width()
+                    .max(1)
+                    .min(value_dim as u64),
+                1,
+                1,
+            ),
+        );
+
+        // 3. Out projection: gated → hidden
+        encode_fused_projection(
+            encoder,
+            &proj_pipeline,
+            &gated_buf,
+            &out_proj.native_buffer,
+            0,
+            &hidden_buf,
+            weight_dtype,
+            hidden_dim_u32,
+            saturating_usize_to_u32(out_proj_cols),
+            value_dim_u32,
+        );
+
+        // 4. Residual add: hidden + residual → hidden
+        encoder.set_compute_pipeline_state(&add_pipeline.pipeline);
+        encoder.set_buffer(0, Some(&hidden_buf), 0);
+        encoder.set_buffer(1, Some(&residual_buf), 0);
+        encoder.set_buffer(2, Some(&hidden_buf), 0);
+        set_vector_add_dispatch_params(encoder, 3, hidden_dim_u32);
+        encoder.dispatch_threads(
+            MTLSize::new(hidden_dim as u64, 1, 1),
+            MTLSize::new(
+                add_pipeline
+                    .pipeline
+                    .thread_execution_width()
+                    .max(1)
+                    .min(hidden_dim as u64),
+                1,
+                1,
+            ),
+        );
+
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        if command_buffer_status(command_buffer.status()) != MetalCommandBufferStatus::Completed {
+            return None;
+        }
+
+        let output = read_shared_buffer_prefix(&hidden_buf, hidden_dim_u32);
+        if output.len() != hidden_dim || output.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
+        Some(output)
+    });
+
+    record_optional_kernel_result(bringup, &fused_feedback_key, result.is_some());
+    result
 }
 
 /// Fused single-token layer continuation: encodes O-projection through FFN residual
