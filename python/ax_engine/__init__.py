@@ -21,7 +21,7 @@ class HostInfo:
     os: str = ""
     arch: str = ""
     detected_soc: str | None = None
-    supported_native_runtime: bool = False
+    supported_mlx_runtime: bool = False
     unsupported_host_override_active: bool = False
 
 
@@ -40,13 +40,13 @@ class MetalToolchainInfo:
 
 
 @dataclass(frozen=True)
-class NativeRuntimeInfo:
+class MlxRuntimeInfo:
     runner: str = ""
     artifacts_source: str | None = None
 
 
 @dataclass(frozen=True)
-class NativeModelInfo:
+class MlxModelInfo:
     artifacts_source: str | None = None
     model_family: str = ""
     tensor_format: str = ""
@@ -68,8 +68,8 @@ class RuntimeInfo:
     fallback_reason: str | None = None
     host: HostInfo = field(default_factory=HostInfo)
     metal_toolchain: MetalToolchainInfo = field(default_factory=MetalToolchainInfo)
-    native_runtime: NativeRuntimeInfo | None = None
-    native_model: NativeModelInfo | None = None
+    mlx_runtime: MlxRuntimeInfo | None = None
+    mlx_model: MlxModelInfo | None = None
 
 
 @dataclass(frozen=True)
@@ -231,18 +231,12 @@ class Session:
         cache_group_id: int = 0,
         block_size_tokens: int = 16,
         total_blocks: int = 1024,
-        native_mode: bool = False,
         mlx: bool = False,
-        support_tier: str = "compatibility",
-        compat_backend: str = "llama_cpp",
-        compat_cli_path: str = "llama-cli",
-        compat_model_path: str | None = None,
-        compat_server_url: str | None = None,
-        llama_fallback_cli_path: str = "llama-cli",
-        llama_fallback_model_path: str | None = None,
-        llama_fallback_server_url: str | None = None,
-        native_runtime_artifacts_dir: str | None = None,
-        native_model_artifacts_dir: str | None = None,
+        support_tier: str = "llama_cpp",
+        llama_cli_path: str = "llama-cli",
+        llama_model_path: str | None = None,
+        llama_server_url: str | None = None,
+        mlx_model_artifacts_dir: str | None = None,
     ) -> None:
         self._inner = _Session(
             model_id,
@@ -251,18 +245,12 @@ class Session:
             cache_group_id=cache_group_id,
             block_size_tokens=block_size_tokens,
             total_blocks=total_blocks,
-            native_mode=native_mode,
             mlx=mlx,
             support_tier=support_tier,
-            compat_backend=compat_backend,
-            compat_cli_path=compat_cli_path,
-            compat_model_path=compat_model_path,
-            compat_server_url=compat_server_url,
-            llama_fallback_cli_path=llama_fallback_cli_path,
-            llama_fallback_model_path=llama_fallback_model_path,
-            llama_fallback_server_url=llama_fallback_server_url,
-            native_runtime_artifacts_dir=native_runtime_artifacts_dir,
-            native_model_artifacts_dir=native_model_artifacts_dir,
+            llama_cli_path=llama_cli_path,
+            llama_model_path=llama_model_path,
+            llama_server_url=llama_server_url,
+            mlx_model_artifacts_dir=mlx_model_artifacts_dir,
         )
 
     @property
@@ -545,14 +533,14 @@ def _runtime_from_dict(value: dict[str, Any]) -> RuntimeInfo:
         fallback_reason=value.get("fallback_reason"),
         host=_host_from_dict(value.get("host", {})),
         metal_toolchain=_metal_toolchain_from_dict(value.get("metal_toolchain", {})),
-        native_runtime=(
-            _native_runtime_from_dict(value["native_runtime"])
-            if value.get("native_runtime") is not None
+        mlx_runtime=(
+            _mlx_runtime_from_dict(value["mlx_runtime"])
+            if value.get("mlx_runtime") is not None
             else None
         ),
-        native_model=(
-            _native_model_from_dict(value["native_model"])
-            if value.get("native_model") is not None
+        mlx_model=(
+            _mlx_model_from_dict(value["mlx_model"])
+            if value.get("mlx_model") is not None
             else None
         ),
     )
@@ -563,7 +551,7 @@ def _host_from_dict(value: dict[str, Any]) -> HostInfo:
         os=str(value.get("os", "")),
         arch=str(value.get("arch", "")),
         detected_soc=value.get("detected_soc"),
-        supported_native_runtime=bool(value.get("supported_native_runtime", False)),
+        supported_mlx_runtime=bool(value.get("supported_mlx_runtime", False)),
         unsupported_host_override_active=bool(
             value.get("unsupported_host_override_active", False)
         ),
@@ -586,15 +574,15 @@ def _metal_toolchain_from_dict(value: dict[str, Any]) -> MetalToolchainInfo:
     )
 
 
-def _native_runtime_from_dict(value: dict[str, Any]) -> NativeRuntimeInfo:
-    return NativeRuntimeInfo(
+def _mlx_runtime_from_dict(value: dict[str, Any]) -> MlxRuntimeInfo:
+    return MlxRuntimeInfo(
         runner=str(value.get("runner", "")),
         artifacts_source=value.get("artifacts_source"),
     )
 
 
-def _native_model_from_dict(value: dict[str, Any]) -> NativeModelInfo:
-    return NativeModelInfo(
+def _mlx_model_from_dict(value: dict[str, Any]) -> MlxModelInfo:
+    return MlxModelInfo(
         artifacts_source=value.get("artifacts_source"),
         model_family=str(value.get("model_family", "")),
         tensor_format=str(value.get("tensor_format", "")),
@@ -858,8 +846,8 @@ __all__ = [
     "MetalDispatchKernelInfo",
     "MetalDispatchNumericInfo",
     "MetalDispatchValidationInfo",
-    "NativeModelInfo",
-    "NativeRuntimeInfo",
+    "MlxModelInfo",
+    "MlxRuntimeInfo",
     "RequestReport",
     "RuntimeInfo",
     "Session",

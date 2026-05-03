@@ -13,9 +13,9 @@ The current preview server is intentionally narrow:
 - explicit backend and support-tier reporting
 - preview generation endpoint for bring-up and integration testing
 - preview OpenAI-compatible `/v1/completions` and `/v1/chat/completions`
-  endpoints for compatibility-backed integration
+  endpoints for llama.cpp-backed integration
 - stepwise request lifecycle endpoints that mirror the SDK preview contract for
-  native runtime sessions plus the server-backed compatibility preview path
+  MLX-mode sessions plus the llama.cpp bypass path
 
 It is not yet:
 
@@ -47,28 +47,22 @@ Start the server:
 ```text
 cargo run -p ax-engine-server -- \
   --model-id qwen3_dense \
-  --compat-server-url http://127.0.0.1:8081 \
+  --llama-server-url http://127.0.0.1:8081 \
   --port 8080
 ```
 
-`ax-engine-server` now ships with MLX-backed compatibility as the default local
-route. Provide either `--compat-server-url` or `--compat-model-path` as the
-primary target for that default path. Local `.gguf` paths are routed to
-`llama.cpp` bypass.
+`ax-engine-server` now ships with two inference routes:
 
-If you want to opt into native preview, enable `--native-mode`.
-Native startup will try AX-native first and fall back to `llama.cpp` bypass if
-native startup fails and a valid llama fallback target is configured. Native
-mode is currently allowlisted only for `qwen3_5_9b_q4`; other models should run
-through compatibility until they are promoted deliberately.
+- `--mlx` selects the repo-owned MLX runtime
+- non-MLX inference routes to `llama.cpp`
+
+Retired AX native mode is not a supported user-facing server mode.
 
 ```text
 cargo run -p ax-engine-server -- \
-  --model-id qwen3_5_9b_q4 \
-  --native-mode \
-  --native-runtime-artifacts-dir /absolute/path/to/build/metal \
-  --native-model-artifacts-dir /absolute/path/to/native-model-artifacts \
-  --llama-fallback-model-path /absolute/path/to/model.gguf \
+  --model-id qwen3_dense \
+  --mlx \
+  --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts \
   --port 8080
 ```
 
@@ -76,13 +70,13 @@ The preview server requires a local Apple M4-or-newer host.
 On M3 and older Macs, startup now fails closed instead of exposing an
 unsupported partial runtime.
 
-Start the preferred compatibility preview path against a local MLX model:
+Start the repo-owned MLX path against local MLX model artifacts:
 
 ```text
 cargo run -p ax-engine-server -- \
   --model-id qwen3_dense \
-  --compat-cli-path python3 \
-  --compat-model-path /absolute/path/to/mlx-model \
+  --mlx \
+  --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts \
   --port 8080
 ```
 
@@ -91,67 +85,51 @@ Or use the default bypass mode against a local GGUF model:
 ```text
 cargo run -p ax-engine-server -- \
   --model-id qwen3_dense \
-  --compat-cli-path llama-cli \
-  --compat-model-path /absolute/path/to/model.gguf \
+  --llama-cli-path llama-cli \
+  --llama-model-path /absolute/path/to/model.gguf \
   --port 8080
 ```
 
-To prefer MLX while keeping `llama.cpp` as the required fallback:
+To run the non-MLX bypass route, configure a `llama.cpp` target:
 
 ```text
 cargo run -p ax-engine-server -- \
   --model-id qwen3_dense \
-  --mlx \
-  --compat-cli-path python3 \
-  --compat-model-path /absolute/path/to/mlx-model \
-  --llama-fallback-cli-path llama-cli \
-  --llama-fallback-model-path /absolute/path/to/model.gguf \
+  --llama-cli-path llama-cli \
+  --llama-model-path /absolute/path/to/model.gguf \
   --port 8080
 ```
 
-For explicit compatibility routing against a documented OpenAI-compatible server
-such as `vLLM` or `mistral.rs`, keep using `--support-tier compatibility` plus
-`--compat-backend`:
+OpenAI-compatible delegated routes such as `vLLM`, `mistral.rs`, and MLX
+llama.cpp adapters are no longer part of the shipping inference contract.
+Use the `llama.cpp` server route for non-MLX server-backed inference:
 
 ```text
 cargo run -p ax-engine-server -- \
   --model-id qwen3_dense \
-  --support-tier compatibility \
-  --compat-backend vllm \
-  --compat-server-url http://127.0.0.1:8000 \
+  --support-tier llama_cpp \
+  --llama-server-url http://127.0.0.1:8081 \
   --port 8080
 ```
 
-For the default route and the explicit compatibility route, choose exactly one
+For the default route and the explicit llama.cpp route, choose exactly one
 primary target:
 
-- `--compat-server-url` for the server-backed adapter
-  `llama.cpp` uses `/completion`, while `vLLM` and `mistral.rs` use
-  OpenAI-compatible `/v1/completions`
-- `--compat-model-path` plus `--compat-cli-path` for the local CLI fallback
+- `--llama-server-url` for the server-backed `llama.cpp` `/completion` adapter
+- `--llama-model-path` plus `--llama-cli-path` for the local CLI fallback
   adapter
 
-Local compatibility model paths default to `mlx` unless the path ends in
-`.gguf`, in which case AX routes to `llama.cpp`. Use `--compat-backend vllm`,
-`--compat-backend mistral-rs`, or `--compat-backend mlx` when you want an
-explicit server-backed compatibility route.
-The CLI fallback supports `llama.cpp` and a direct `mlx-lm` path; `.gguf`
-model paths are routed to `llama.cpp`.
-For `mlx`, `--compat-cli-path` should usually be `python3` so AX can invoke
-`python3 -m mlx_lm.generate`.
-AX passes the request text as a raw prompt and disables the tokenizer chat
-template on that CLI fallback so compatibility requests preserve AX prompt
-semantics. The direct MLX CLI route remains blocking and does not support
-streaming, so `--mlx` keeps `llama.cpp` fallback mandatory.
+Local non-MLX model paths are treated as `llama.cpp` targets. Use `--mlx` when
+you want AX-owned MLX inference.
 
 The preview server now also exposes thin OpenAI-compatible endpoints over that
-same compatibility-backed path:
+same llama.cpp-backed path:
 
 - `POST /v1/completions`
 - `POST /v1/chat/completions`
 
-Those routes are intentionally compatibility-only in this repository.
-AX-native preview remains token-based and therefore fails closed on those text
+Those routes are intentionally llama.cpp-only in this repository.
+AX-owned MLX mode remains token-based and therefore fails closed on those text
 or chat-oriented endpoints instead of inventing tokenizer or chat-template
 behavior inside the server.
 
@@ -172,7 +150,7 @@ To enable server or core diagnostics, set `AX_ENGINE_SERVER_LOG` or `RUST_LOG`
 before starting the server. For example:
 
 ```text
-AX_ENGINE_SERVER_LOG=ax_engine_server=info,ax_engine_core=debug cargo run -p ax-engine-server -- --model-id qwen3_5_9b_q4 --native-mode --port 8080
+AX_ENGINE_SERVER_LOG=ax_engine_server=info,ax_engine_core=debug cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts --port 8080
 ```
 
 For throughput or latency measurements, prefer leaving tracing disabled, or use
@@ -203,7 +181,7 @@ curl http://127.0.0.1:8080/v1/generate \
 ```
 
 When the server is running on the default MLX path, the `.gguf` llama.cpp
-bypass path, or an explicit compatibility path, the same blocking endpoint
+bypass path, or an explicit llama.cpp path, the same blocking endpoint
 accepts `input_text`:
 
 ```text
@@ -211,12 +189,12 @@ curl http://127.0.0.1:8080/v1/generate \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3_dense",
-    "input_text": "Hello from compatibility",
+    "input_text": "Hello from llama.cpp",
     "max_output_tokens": 32
   }'
 ```
 
-When compatibility is backed by `--compat-server-url`, the blocking endpoint
+When llama.cpp is backed by `--llama-server-url`, the blocking endpoint
 also accepts pre-tokenized `input_tokens` and forwards them to
 `llama.cpp /completion` as token-array prompts:
 
@@ -230,7 +208,7 @@ curl http://127.0.0.1:8080/v1/generate \
   }'
 ```
 
-The same `--compat-server-url` path also supports the stateless streaming
+The same `--llama-server-url` path also supports the stateless streaming
 endpoint and maps `llama.cpp /completion` SSE chunks back into the SDK-owned
 `request` / `step` / `response` event shape:
 
@@ -256,7 +234,7 @@ curl -N http://127.0.0.1:8080/v1/generate/stream \
   }'
 ```
 
-To call the same compatibility-backed path through the preview
+To call the same llama.cpp-backed path through the preview
 OpenAI-compatible completions endpoint:
 
 ```text
@@ -283,7 +261,7 @@ curl -N http://127.0.0.1:8080/v1/completions \
 ```
 
 To use the preview chat-completions bridge, send text-only chat messages and
-let AX flatten them into the same compatibility-backed request contract:
+let AX flatten them into the same llama.cpp-backed request contract:
 
 ```text
 curl http://127.0.0.1:8080/v1/chat/completions \
@@ -334,8 +312,8 @@ The response includes:
 - request-state snapshots and step metrics for the stepwise lifecycle endpoints
 - SSE lifecycle events for the preview streaming endpoint
 - route metadata observed during execution
-- native `/v1/step` responses now also surface a compact `metal_dispatch`
-  summary when the shared session is running the AX-native Metal bring-up
+- MLX-mode `/v1/step` responses now also surface a compact `metal_dispatch`
+  summary when the shared session is running the MLX Metal bring-up
   runner, so transport clients can inspect command-buffer completion,
   pipeline/archive state, arena sizing, checksum/validation evidence, and
   whether the step actually ran with model-conditioned / real-model tensor
@@ -347,9 +325,8 @@ The response includes:
   vocab-scan counts
   without reopening benchmark artifacts
 - backend resolution metadata such as `selected_backend`, `support_tier`,
-  `resolution_policy`, capability reporting, host diagnostics, Metal
-  toolchain availability, and native-runner provenance through the optional
-  `native_runtime` section when AX native is active
+  `resolution_policy`, capability reporting, host diagnostics, and Metal
+  toolchain availability
 
 `POST /v1/generate` remains a stateless convenience endpoint that creates a
 fresh SDK session for one blocking request.
@@ -358,7 +335,7 @@ it creates fresh SDK sessions internally.
 `POST /v1/generate/stream` uses the same stateless request shape but streams
 preview SSE events named `request`, `step`, `response`, and `error`.
 `POST /v1/completions` and `POST /v1/chat/completions` are thin response-shape
-adapters over that same stateless compatibility-backed request flow; their
+adapters over that same stateless llama.cpp-backed request flow; their
 streaming mode emits unnamed SSE `data:` chunks plus `[DONE]` in the familiar
 OpenAI-style envelope instead of AX-specific lifecycle event names.
 The `/v1/requests` and `/v1/step` endpoints instead operate on one shared
@@ -367,22 +344,15 @@ lifecycle contract as the SDK.
 The server allocates request ids from one process-local sequence across both
 paths so transport logs and client correlation do not collide when clients mix
 blocking and stepwise APIs.
-For Phase 1, compatibility backends support blocking `/v1/generate`,
+For Phase 1, the llama.cpp backend supports blocking `/v1/generate`,
 OpenAI-compatible `/v1/completions`, and OpenAI-compatible
 `/v1/chat/completions`.
-The server-backed adapters for `llama.cpp`, `vLLM`, `mistral.rs`, and explicit
-OpenAI-compatible MLX servers also
-support stateless SSE `/v1/generate/stream` plus streamed OpenAI-compatible
-`/v1/completions` and `/v1/chat/completions` through the same SDK-owned
-compatibility flow. The same server-backed compatibility path now also
-supports preview stepwise `/v1/requests`, `/v1/step`, and
-`/v1/requests/:id/cancel` through the SDK-owned lifecycle contract. That
-shared session can now hold multiple active compatibility requests at once,
-and each `/v1/step` aggregates one delegated step across all currently active
-compatibility requests. The local `llama.cpp` and direct `mlx-lm` CLI
-fallbacks remain blocking-only bring-up paths for streaming and lifecycle
-control. For OpenAI-compatible HTTP responses, AX now omits `usage` when a
-text-only backend did not report authoritative token counts rather than
+The server-backed llama.cpp adapter also supports stateless SSE
+`/v1/generate/stream` plus streamed OpenAI-compatible `/v1/completions` and
+`/v1/chat/completions` through the same SDK-owned llama.cpp flow. The local
+`llama.cpp` CLI fallback remains a blocking-only bring-up path for streaming and
+lifecycle control. For OpenAI-compatible HTTP responses, AX now omits `usage`
+when a text-only backend did not report authoritative token counts rather than
 inventing zero-valued token accounting.
 
 ## Design Rule

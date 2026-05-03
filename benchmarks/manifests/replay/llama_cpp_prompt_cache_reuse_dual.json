@@ -1,19 +1,19 @@
 {
   "schema_version": "ax.bench.manifest.v1",
-  "id": "compatibility_prompt_cache_reuse_dual",
+  "id": "llama_cpp_prompt_cache_reuse_dual",
   "class": "replay",
   "scenario": "replay",
   "model": {
     "family": "qwen3_dense",
-    "revision": "phase1-compat",
+    "revision": "phase1-llama-cpp",
     "quant": "q4_k_m",
     "tokenizer_revision": "qwen-tokenizer-v1",
     "chat_template_revision": "chatml-v1"
   },
   "runtime": {
     "selected_backend": "llama_cpp",
-    "support_tier": "compatibility",
-    "resolution_policy": "allow_compat",
+    "support_tier": "llama_cpp",
+    "resolution_policy": "allow_llama_cpp",
     "fallback_reason": "benchmark requested delegated runtime",
     "backend_adapter": {
       "kind": "llama_cpp_server_completion",
@@ -26,8 +26,8 @@
     }
   },
   "sampling": {
-    "temperature": 0.0,
-    "top_p": 1.0,
+    "temperature": 0,
+    "top_p": 1,
     "top_k": 0,
     "seed": 1234
   },
@@ -53,5 +53,5 @@
     "expect_deterministic": true,
     "require_prefix_reuse": true
   },
-  "notes": "Compatibility replay example for delegated llama.cpp /completion prompt-cache reuse. Update runtime.backend_adapter.server_url before running directly. Treat any reported reuse as delegated backend evidence, not AX-native scheduler or retained-block reuse."
+  "notes": "LlamaCpp replay example for delegated llama.cpp /completion prompt-cache reuse. Update runtime.backend_adapter.server_url before running directly. Treat any reported reuse as delegated backend evidence, not AX Engine scheduler or retained-block reuse."
 }

@@ -22,32 +22,20 @@ class FakeNativeSession:
         cache_group_id: int = 0,
         block_size_tokens: int = 16,
         total_blocks: int = 1024,
-        native_mode: bool = False,
         mlx: bool = False,
-        support_tier: str = "compatibility",
-        compat_backend: str = "llama_cpp",
-        compat_cli_path: str = "llama-cli",
-        compat_model_path: str | None = None,
-        compat_server_url: str | None = None,
-        llama_fallback_cli_path: str = "llama-cli",
-        llama_fallback_model_path: str | None = None,
-        llama_fallback_server_url: str | None = None,
-        native_runtime_artifacts_dir: str | None = None,
-        native_model_artifacts_dir: str | None = None,
+        support_tier: str = "llama_cpp",
+        llama_cli_path: str = "llama-cli",
+        llama_model_path: str | None = None,
+        llama_server_url: str | None = None,
+        mlx_model_artifacts_dir: str | None = None,
     ) -> None:
         self.model_id = model_id
-        self.native_mode = native_mode
         self.mlx = mlx
-        self.support_tier = "native_preview" if native_mode else support_tier
-        self.compat_backend = "mlx" if mlx else compat_backend
-        self.compat_cli_path = compat_cli_path
-        self.compat_model_path = compat_model_path
-        self.compat_server_url = compat_server_url
-        self.llama_fallback_cli_path = llama_fallback_cli_path
-        self.llama_fallback_model_path = llama_fallback_model_path
-        self.llama_fallback_server_url = llama_fallback_server_url
-        self.native_runtime_artifacts_dir = native_runtime_artifacts_dir
-        self.native_model_artifacts_dir = native_model_artifacts_dir
+        self.support_tier = "mlx_preview" if mlx else support_tier
+        self.llama_cli_path = llama_cli_path
+        self.llama_model_path = llama_model_path
+        self.llama_server_url = llama_server_url
+        self.mlx_model_artifacts_dir = mlx_model_artifacts_dir
         self.closed = False
         self.cancelled: list[int] = []
         self.generate_calls: list[tuple[list[int], dict[str, object]]] = []
@@ -119,10 +107,10 @@ class FakeNativeSession:
 
     def runtime(self) -> dict[str, object]:
         selected_backend = (
-            self.compat_backend if self.support_tier == "compatibility" else "ax_native"
+            "llama_cpp" if self.support_tier == "llama_cpp" else "mlx"
         )
         resolution_policy = (
-            "allow_compat" if self.support_tier == "compatibility" else "strict_native"
+            "allow_llama_cpp" if self.support_tier == "llama_cpp" else "mlx_only"
         )
         runtime = {
             "selected_backend": selected_backend,
@@ -137,12 +125,12 @@ class FakeNativeSession:
                 "benchmark_metrics": "preview",
             },
         }
-        if self.support_tier != "compatibility":
-            runtime["native_runtime"] = {
-                "runner": "deterministic",
+        if self.support_tier != "llama_cpp":
+            runtime["mlx_runtime"] = {
+                "runner": "metal_bringup",
                 "artifacts_source": "repo_auto_detect",
             }
-            runtime["native_model"] = {
+            runtime["mlx_model"] = {
                 "artifacts_source": "explicit_config",
                 "model_family": "qwen3_dense",
                 "tensor_format": "safetensors",
@@ -180,7 +168,7 @@ class FakeNativeSession:
         }
         if isinstance(prompt_text, str):
             result["prompt_text"] = prompt_text
-            result["output_text"] = f"compat::{prompt_text}"
+            result["output_text"] = f"llama::{prompt_text}"
             result["output_tokens"] = []
         return result
 
@@ -189,15 +177,10 @@ class FakeNativeSession:
     ) -> list[dict[str, object]]:
         tokens = list(input_tokens or [])
         self.generate_calls.append((tokens, kwargs))
-        if self.support_tier == "compatibility":
-            if self.compat_server_url is None:
-                backend_label = {
-                    "llama_cpp": "LlamaCpp",
-                    "vllm": "Vllm",
-                    "mistral_rs": "MistralRs",
-                }.get(self.compat_backend, self.compat_backend)
+        if self.support_tier == "llama_cpp":
+            if self.llama_server_url is None:
                 raise RuntimeError(
-                    f"compatibility backend {backend_label} does not support stream_generate in this preview contract"
+                    f"llama.cpp backend LlamaCpp does not support stream_generate in this preview contract"
                 )
 
             prompt_text = kwargs.get("input_text")
@@ -217,9 +200,9 @@ class FakeNativeSession:
                         "output_len": 0,
                         "max_output_tokens": 2,
                         "cancel_requested": False,
-                        "execution_plan_ref": "compatibility.llama_cpp.server_completion_stream",
+                        "execution_plan_ref": "llama_cpp.server_completion_stream",
                         "route": {
-                            "execution_plan": "compatibility.llama_cpp.server_completion_stream",
+                            "execution_plan": "llama_cpp.server_completion_stream",
                         },
                     },
                 },
@@ -237,9 +220,9 @@ class FakeNativeSession:
                         "output_len": 1,
                         "max_output_tokens": 2,
                         "cancel_requested": False,
-                        "execution_plan_ref": "compatibility.llama_cpp.server_completion_stream",
+                        "execution_plan_ref": "llama_cpp.server_completion_stream",
                         "route": {
-                            "execution_plan": "compatibility.llama_cpp.server_completion_stream",
+                            "execution_plan": "llama_cpp.server_completion_stream",
                         },
                     },
                     "step": {
@@ -255,7 +238,7 @@ class FakeNativeSession:
                     },
                     "delta_tokens": [4],
                     "delta_token_logprobs": [None],
-                    "delta_text": "compat",
+                    "delta_text": "llama",
                 },
                 {
                     "event": "step",
@@ -271,11 +254,11 @@ class FakeNativeSession:
                         "output_len": 2,
                         "max_output_tokens": 2,
                         "cancel_requested": False,
-                        "execution_plan_ref": "compatibility.llama_cpp.server_completion_stream",
+                        "execution_plan_ref": "llama_cpp.server_completion_stream",
                         "finish_reason": "max_output_tokens",
                         "terminal_stop_reason": "max_output_tokens",
                         "route": {
-                            "execution_plan": "compatibility.llama_cpp.server_completion_stream",
+                            "execution_plan": "llama_cpp.server_completion_stream",
                         },
                     },
                     "step": {
@@ -303,14 +286,14 @@ class FakeNativeSession:
                         "output_tokens": [4, 5],
                         "output_token_logprobs": [None, None],
                         "output_text": (
-                            f"compat::{prompt_text}" if isinstance(prompt_text, str) else "compat::stream"
+                            f"llama::{prompt_text}" if isinstance(prompt_text, str) else "llama::stream"
                         ),
                         "status": "finished",
                         "finish_reason": "max_output_tokens",
                         "step_count": 2,
                         "ttft_step": 1,
                         "route": {
-                            "execution_plan": "compatibility.llama_cpp.server_completion_stream",
+                            "execution_plan": "llama_cpp.server_completion_stream",
                         },
                         "runtime": self.runtime(),
                     },
@@ -661,23 +644,23 @@ class WrapperContractTests(unittest.TestCase):
         if str(SOURCE_ROOT) in sys.path:
             sys.path.remove(str(SOURCE_ROOT))
 
-    def test_generate_converts_native_payload_to_dataclass(self) -> None:
-        with self.ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True) as session:
+    def test_generate_converts_mlx_payload_to_dataclass(self) -> None:
+        with self.ax_engine.Session(model_id="qwen3_dense", mlx=True) as session:
             result = session.generate([1, 2, 3], max_output_tokens=2)
 
         self.assertEqual(result.request_id, 1)
-        self.assertEqual(result.model_id, "qwen3_5_9b_q4")
+        self.assertEqual(result.model_id, "qwen3_dense")
         self.assertEqual(result.prompt_tokens, [1, 2, 3])
         self.assertEqual(result.output_tokens, [4, 5])
         self.assertEqual(result.output_token_logprobs, [-0.25, -0.5])
         self.assertEqual(result.status, "finished")
         self.assertEqual(result.finish_reason, "max_output_tokens")
-        self.assertEqual(result.runtime.support_tier, "native_preview")
+        self.assertEqual(result.runtime.support_tier, "mlx_preview")
         self.assertEqual(result.runtime.host.os, "")
         self.assertFalse(result.runtime.metal_toolchain.fully_available)
-        self.assertEqual(result.runtime.native_runtime.runner, "deterministic")
-        self.assertEqual(result.runtime.native_model.model_family, "qwen3_dense")
-        self.assertTrue(result.runtime.native_model.bindings_prepared)
+        self.assertEqual(result.runtime.mlx_runtime.runner, "metal_bringup")
+        self.assertEqual(result.runtime.mlx_model.model_family, "qwen3_dense")
+        self.assertTrue(result.runtime.mlx_model.bindings_prepared)
         self.assertEqual(result.route.execution_plan, "phase1.qwen3_dense.paged_decode")
 
         native = FakeNativeSession.instances[-1]
@@ -685,68 +668,66 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(native.generate_calls[0][1]["max_output_tokens"], 2)
         self.assertTrue(native.closed)
 
-    def test_generate_supports_text_requests_for_compatibility_surface(self) -> None:
+    def test_generate_supports_text_requests_for_llama_cpp_surface(self) -> None:
         with self.ax_engine.Session(
             model_id="qwen3_dense",
-            support_tier="compatibility",
-            compat_cli_path="/tmp/llama-cli",
-            compat_model_path="/tmp/model.gguf",
+            support_tier="llama_cpp",
+            llama_cli_path="/tmp/llama-cli",
+            llama_model_path="/tmp/model.gguf",
         ) as session:
             result = session.generate(input_text="hello wrapper", max_output_tokens=2)
 
         native = FakeNativeSession.instances[-1]
-        self.assertEqual(native.support_tier, "compatibility")
-        self.assertEqual(native.compat_cli_path, "/tmp/llama-cli")
-        self.assertEqual(native.compat_model_path, "/tmp/model.gguf")
+        self.assertEqual(native.support_tier, "llama_cpp")
+        self.assertEqual(native.llama_cli_path, "/tmp/llama-cli")
+        self.assertEqual(native.llama_model_path, "/tmp/model.gguf")
         self.assertEqual(native.generate_calls[0][0], [])
         self.assertEqual(native.generate_calls[0][1]["input_text"], "hello wrapper")
         self.assertEqual(result.prompt_text, "hello wrapper")
-        self.assertEqual(result.output_text, "compat::hello wrapper")
+        self.assertEqual(result.output_text, "llama::hello wrapper")
         self.assertEqual(result.runtime.selected_backend, "llama_cpp")
-        self.assertEqual(result.runtime.support_tier, "compatibility")
+        self.assertEqual(result.runtime.support_tier, "llama_cpp")
 
-    def test_generate_supports_server_backed_compatibility_surface(self) -> None:
+    def test_generate_supports_server_backed_llama_cpp_surface(self) -> None:
         with self.ax_engine.Session(
             model_id="qwen3_dense",
-            support_tier="compatibility",
-            compat_server_url="http://127.0.0.1:8081",
+            support_tier="llama_cpp",
+            llama_server_url="http://127.0.0.1:8081",
         ) as session:
             result = session.generate([1, 2, 3], max_output_tokens=2)
 
         native = FakeNativeSession.instances[-1]
-        self.assertEqual(native.support_tier, "compatibility")
-        self.assertEqual(native.compat_server_url, "http://127.0.0.1:8081")
+        self.assertEqual(native.support_tier, "llama_cpp")
+        self.assertEqual(native.llama_server_url, "http://127.0.0.1:8081")
         self.assertEqual(native.generate_calls[0][0], [1, 2, 3])
         self.assertEqual(result.output_tokens, [4, 5])
         self.assertEqual(result.runtime.selected_backend, "llama_cpp")
 
-    def test_session_forwards_explicit_native_artifact_dirs(self) -> None:
+    def test_session_forwards_explicit_mlx_artifact_dirs(self) -> None:
         with self.ax_engine.Session(
-            model_id="qwen3_5_9b_q4",
-            native_mode=True,
-            native_runtime_artifacts_dir="/tmp/ax-metal",
-            native_model_artifacts_dir="/tmp/ax-model",
+            model_id="qwen3_dense",
+            mlx=True,
+            mlx_model_artifacts_dir="/tmp/mlx-model",
         ) as session:
             runtime = session.runtime()
 
         native = FakeNativeSession.instances[-1]
-        self.assertEqual(native.native_runtime_artifacts_dir, "/tmp/ax-metal")
-        self.assertEqual(native.native_model_artifacts_dir, "/tmp/ax-model")
-        self.assertEqual(runtime.selected_backend, "ax_native")
+        self.assertEqual(native.mlx_model_artifacts_dir, "/tmp/mlx-model")
+        self.assertEqual(runtime.selected_backend, "mlx")
 
     def test_generate_text_convenience_uses_input_text_contract(self) -> None:
         with self.ax_engine.Session(
             model_id="qwen3_dense",
-            support_tier="compatibility",
-            compat_cli_path="/tmp/llama-cli",
-            compat_model_path="/tmp/model.gguf",
+            support_tier="llama_cpp",
+            llama_cli_path="/tmp/llama-cli",
+            llama_model_path="/tmp/model.gguf",
         ) as session:
             result = session.generate_text("hello text helper", max_output_tokens=2)
 
         native = FakeNativeSession.instances[-1]
         self.assertEqual(native.generate_calls[0][0], [])
         self.assertEqual(native.generate_calls[0][1]["input_text"], "hello text helper")
-        self.assertEqual(result.output_text, "compat::hello text helper")
+        self.assertEqual(result.output_text, "llama::hello text helper")
 
     def test_chat_convenience_flattens_messages_to_prompt(self) -> None:
         messages = [
@@ -756,9 +737,9 @@ class WrapperContractTests(unittest.TestCase):
 
         with self.ax_engine.Session(
             model_id="qwen3_dense",
-            support_tier="compatibility",
-            compat_cli_path="/tmp/llama-cli",
-            compat_model_path="/tmp/model.gguf",
+            support_tier="llama_cpp",
+            llama_cli_path="/tmp/llama-cli",
+            llama_model_path="/tmp/model.gguf",
         ) as session:
             result = session.chat(messages, max_output_tokens=2)
 
@@ -775,8 +756,8 @@ class WrapperContractTests(unittest.TestCase):
     def test_submit_chat_convenience_reuses_text_prompt_path(self) -> None:
         with self.ax_engine.Session(
             model_id="qwen3_dense",
-            support_tier="compatibility",
-            compat_server_url="http://127.0.0.1:8081",
+            support_tier="llama_cpp",
+            llama_server_url="http://127.0.0.1:8081",
         ) as session:
             request_id = session.submit_chat(
                 [{"role": "user", "content": "queue this"}],
@@ -791,7 +772,7 @@ class WrapperContractTests(unittest.TestCase):
         )
 
     def test_stepwise_controls_convert_native_payloads(self) -> None:
-        session = self.ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True)
+        session = self.ax_engine.Session(model_id="qwen3_dense", mlx=True)
 
         request_id = session.submit([1, 2, 3], max_output_tokens=2)
         initial = session.snapshot(request_id)
@@ -832,7 +813,7 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(native.cancelled, [11])
 
     def test_stream_generate_emits_request_step_and_response_events(self) -> None:
-        with self.ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True) as session:
+        with self.ax_engine.Session(model_id="qwen3_dense", mlx=True) as session:
             events = list(session.stream_generate([1, 2, 3], max_output_tokens=2))
 
         self.assertEqual(
@@ -840,7 +821,7 @@ class WrapperContractTests(unittest.TestCase):
             ["request", "step", "step", "step", "response"],
         )
         self.assertEqual(events[0].request.state, "waiting")
-        self.assertEqual(events[0].runtime.support_tier, "native_preview")
+        self.assertEqual(events[0].runtime.support_tier, "mlx_preview")
         self.assertEqual(events[1].delta_tokens, [])
         self.assertEqual(events[1].delta_token_logprobs, [])
         self.assertEqual(events[1].step.ttft_events, 0)
@@ -885,18 +866,18 @@ class WrapperContractTests(unittest.TestCase):
     def test_stream_generate_raises_when_request_never_terminates(self) -> None:
         self.ax_engine = import_wrapper_module(HungNativeSession)
 
-        with self.ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True) as session:
+        with self.ax_engine.Session(model_id="qwen3_dense", mlx=True) as session:
             with self.assertRaisesRegex(
                 RuntimeError,
                 r"request 11 did not terminate within 258 steps",
             ):
                 list(session.stream_generate([9], max_output_tokens=1))
 
-    def test_stream_generate_supports_server_backed_compatibility_surface(self) -> None:
+    def test_stream_generate_supports_server_backed_llama_cpp_surface(self) -> None:
         with self.ax_engine.Session(
             model_id="qwen3_dense",
-            support_tier="compatibility",
-            compat_server_url="http://127.0.0.1:8081",
+            support_tier="llama_cpp",
+            llama_server_url="http://127.0.0.1:8081",
         ) as session:
             events = list(session.stream_generate([1, 2, 3], max_output_tokens=2))
 
@@ -904,11 +885,11 @@ class WrapperContractTests(unittest.TestCase):
             [event.event for event in events],
             ["request", "step", "step", "response"],
         )
-        self.assertEqual(events[0].runtime.support_tier, "compatibility")
+        self.assertEqual(events[0].runtime.support_tier, "llama_cpp")
         self.assertEqual(events[1].request.state, "running")
         self.assertEqual(events[1].delta_tokens, [4])
         self.assertEqual(events[1].delta_token_logprobs, [None])
-        self.assertEqual(events[1].delta_text, "compat")
+        self.assertEqual(events[1].delta_text, "llama")
         self.assertEqual(events[2].request.state, "finished")
         self.assertEqual(events[2].request.finish_reason, "max_output_tokens")
         self.assertEqual(events[2].request.terminal_stop_reason, "max_output_tokens")
@@ -918,18 +899,18 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(events[3].response.output_token_logprobs, [None, None])
         self.assertEqual(
             events[3].response.route.execution_plan,
-            "compatibility.llama_cpp.server_completion_stream",
+            "llama_cpp.server_completion_stream",
         )
 
         native = FakeNativeSession.instances[-1]
-        self.assertEqual(native.compat_server_url, "http://127.0.0.1:8081")
+        self.assertEqual(native.llama_server_url, "http://127.0.0.1:8081")
         self.assertEqual(native.generate_calls[0][0], [1, 2, 3])
 
     def test_stream_text_convenience_uses_input_text_contract(self) -> None:
         with self.ax_engine.Session(
             model_id="qwen3_dense",
-            support_tier="compatibility",
-            compat_server_url="http://127.0.0.1:8081",
+            support_tier="llama_cpp",
+            llama_server_url="http://127.0.0.1:8081",
         ) as session:
             events = list(session.stream_text("hello streamed text", max_output_tokens=2))
 
@@ -943,8 +924,8 @@ class WrapperContractTests(unittest.TestCase):
     def test_stream_chat_convenience_flattens_messages_to_prompt(self) -> None:
         with self.ax_engine.Session(
             model_id="qwen3_dense",
-            support_tier="compatibility",
-            compat_server_url="http://127.0.0.1:8081",
+            support_tier="llama_cpp",
+            llama_server_url="http://127.0.0.1:8081",
         ) as session:
             events = list(
                 session.stream_chat(

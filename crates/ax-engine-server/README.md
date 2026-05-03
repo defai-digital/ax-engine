@@ -11,9 +11,9 @@ Current scope:
   `support_tier`, and `resolution_policy`
 - preview generation API for bring-up and integration testing
 - stepwise request lifecycle endpoints over a shared preview session for native
-  runtime paths plus server-backed compatibility adapters
+  runtime paths plus server-backed llama.cpp adapters
 - thin OpenAI-compatible `/v1/completions` and `/v1/chat/completions`
-  translation over compatibility-backed preview requests
+  translation over llama.cpp-backed preview requests
 
 Current preview endpoints:
 
@@ -75,8 +75,8 @@ curl http://127.0.0.1:8080/v1/generate \
 
 cargo run -p ax-engine-server -- \
   --model-id qwen3_dense \
-  --support-tier compatibility \
-  --compat-server-url http://127.0.0.1:8081 \
+  --support-tier llama_cpp \
+  --llama-server-url http://127.0.0.1:8081 \
   --port 8080
 
 curl http://127.0.0.1:8080/v1/generate \
@@ -89,16 +89,16 @@ curl http://127.0.0.1:8080/v1/generate \
 
 cargo run -p ax-engine-server -- \
   --model-id qwen3_dense \
-  --support-tier compatibility \
-  --compat-cli-path llama-cli \
-  --compat-model-path /absolute/path/to/model.gguf \
+  --support-tier llama_cpp \
+  --llama-cli-path llama-cli \
+  --llama-model-path /absolute/path/to/model.gguf \
   --port 8080
 
 curl http://127.0.0.1:8080/v1/generate \
   -H 'content-type: application/json' \
   -d '{
     "model": "qwen3_dense",
-    "input_text": "Hello from compatibility",
+    "input_text": "Hello from llama.cpp",
     "max_output_tokens": 32
   }'
 ```
@@ -110,7 +110,7 @@ full remote orchestration surface during Phase 1 bring-up.
 `/v1/step` expose the shared preview request lifecycle contract from the SDK.
 `/v1/generate/stream` adds a minimal SSE transport over the same SDK-backed
 request lifecycle rather than inventing a second streaming runtime.
-For Phase 1, compatibility backends support blocking `/v1/generate`, plus thin
+For Phase 1, llama.cpp backends support blocking `/v1/generate`, plus thin
 OpenAI-compatible `/v1/completions` and `/v1/chat/completions`. The
 server-backed `llama.cpp`, `vLLM`, `mistral.rs`, and explicit MLX server paths
 also support stateless SSE `/v1/generate/stream`, streamed OpenAI-compatible

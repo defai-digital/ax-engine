@@ -1,7 +1,9 @@
+#![allow(clippy::collapsible_if)]
+
 pub mod convert;
 pub mod engine;
-pub mod gguf;
 pub mod execution_plan;
+pub mod gguf;
 pub mod ids;
 pub mod kv;
 pub mod metal;
@@ -22,24 +24,23 @@ pub use kv::{
     KvManager, KvManagerConfig, KvManagerError, PrefixLookupResult,
 };
 pub use metal::{
-    build_phase1_kernel_artifacts, MetalAssetValidator, MetalBinaryArchiveInfo,
-    MetalBinaryArchiveState, MetalBringupRunner, MetalBringupSampler, MetalBuildDoctorReport,
-    MetalBuildHostReport, MetalBuildReport, MetalBuildStatus, MetalBuildToolStatus,
-    MetalBuildToolchainReport, MetalCommandBufferStatus, MetalComputePipelineInfo, MetalDeviceInfo,
-    MetalDispatchArenaInfo, MetalDispatchKernelTrace, MetalDispatchNumericLayout,
-    MetalDispatchTrace, MetalDispatchWorkload, MetalKernelAssets, MetalKernelBinary,
-    MetalKernelBuildArtifacts, MetalKernelBuildRequest, MetalKernelManifest, MetalKernelSpec,
-    MetalKernelTier, MetalRuntimeBringup, MetalRuntimeBringupReport, MetalRuntimeError,
-    MetalThreadgroupSize, PHASE1_METAL_BUILD_GATE, PHASE1_METAL_BUILD_REPORT_SCHEMA_VERSION,
-    PHASE1_METAL_KERNEL_MANIFEST_SCHEMA_VERSION, PHASE1_METAL_LANGUAGE_STANDARD,
-    PHASE1_METAL_LIBRARY_NAME, PHASE1_METAL_NATIVE_TARGET, PHASE1_OPTIONAL_METAL_KERNELS,
-    PHASE1_REQUIRED_METAL_KERNELS,
+    MetalAssetValidator, MetalBinaryArchiveInfo, MetalBinaryArchiveState, MetalBringupRunner,
+    MetalBringupSampler, MetalBuildDoctorReport, MetalBuildHostReport, MetalBuildReport,
+    MetalBuildStatus, MetalBuildToolStatus, MetalBuildToolchainReport, MetalCommandBufferStatus,
+    MetalComputePipelineInfo, MetalDeviceInfo, MetalDispatchArenaInfo, MetalDispatchKernelTrace,
+    MetalDispatchNumericLayout, MetalDispatchTrace, MetalDispatchWorkload, MetalKernelAssets,
+    MetalKernelBinary, MetalKernelBuildArtifacts, MetalKernelBuildRequest, MetalKernelManifest,
+    MetalKernelSpec, MetalKernelTier, MetalRuntimeBringup, MetalRuntimeBringupReport,
+    MetalRuntimeError, MetalThreadgroupSize, PHASE1_METAL_BUILD_GATE,
+    PHASE1_METAL_BUILD_REPORT_SCHEMA_VERSION, PHASE1_METAL_KERNEL_MANIFEST_SCHEMA_VERSION,
+    PHASE1_METAL_LANGUAGE_STANDARD, PHASE1_METAL_LIBRARY_NAME, PHASE1_MLX_METAL_TARGET,
+    PHASE1_OPTIONAL_METAL_KERNELS, PHASE1_REQUIRED_METAL_KERNELS, build_phase1_kernel_artifacts,
 };
 pub use model::{
+    AX_NATIVE_MODEL_MANIFEST_FILE, AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
     NativeLinearAttentionConfig, NativeModelArtifacts, NativeModelArtifactsSummary,
     NativeModelError, NativeModelManifest, NativeMoeConfig, NativeTensorDataType,
-    NativeTensorFormat, NativeTensorRole, NativeTensorSpec, AX_NATIVE_MODEL_MANIFEST_FILE,
-    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+    NativeTensorFormat, NativeTensorRole, NativeTensorSpec,
 };
 pub use request::{
     RequestRecord, RequestSnapshot, RequestState, RequestSubmission, StateTransitionError,

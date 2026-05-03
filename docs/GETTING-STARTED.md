@@ -7,7 +7,7 @@ The repository provides:
 - a working inference engine core (request lifecycle, scheduler, KV cache, runner integration)
 - a benchmark CLI with scenario, replay, compare, and doctor commands
 - a preview SDK, local HTTP server, Python bindings, and a JavaScript preview client
-- compatibility backend support (`llama.cpp`, `vLLM`, `mistral.rs`, and MLX-backed paths) for evaluation
+- repo-owned MLX inference plus `llama.cpp` bypass support for non-MLX inference
 
 ## Current Scope
 
@@ -46,7 +46,7 @@ What is not yet present in this repository:
 - fully migrated Rust SDK facade
 - broad JavaScript bindings beyond the thin preview HTTP client
 - broad transport-level Python ergonomics beyond the current local preview layer
-- full production Metal runtime execution path
+- broad MLX Metal mode as a supported user-facing runtime
 
 Do not assume that user-facing surfaces from the earlier AX repo have already
 migrated into v4.
@@ -83,7 +83,7 @@ Current development assumes:
 The benchmark CLI and core workspace compile on a normal Rust setup, but the
 full Metal runtime is not implemented yet.
 
-AX Engine v4 no longer targets M3 Macs for native runtime support.
+AX Engine v4 MLX mode depends on the available Apple Silicon MLX runtime; non-MLX inference uses llama.cpp.
 Runtime surfaces fail closed on pre-M4 hosts instead of pretending degraded
 support exists.
 
@@ -108,14 +108,13 @@ To run one thin direct inference request through the SDK-owned session surface:
 cargo run -p ax-bench -- generate --tokens 1,2,3 --max-output-tokens 4
 ```
 
-To run a compatibility-backed text request through a delegated server:
+To run a llama.cpp-backed text request through a delegated server:
 
 ```text
 cargo run -p ax-bench -- generate \
   --prompt "Hello from AX" \
-  --support-tier compatibility \
-  --compat-backend vllm \
-  --compat-server-url http://127.0.0.1:8000
+  --support-tier llama_cpp \
+  --llama-server-url http://127.0.0.1:8081
 ```
 
 To run a checked-in scenario manifest through the current bring-up path:
@@ -124,23 +123,21 @@ To run a checked-in scenario manifest through the current bring-up path:
 cargo run -p ax-bench -- scenario --manifest benchmarks/manifests/scenario/chat_qwen_short.json --output-root benchmarks/results
 ```
 
-To benchmark one delegated server-backed compatibility scenario through the
-blocking compatibility runtime:
+To benchmark one delegated server-backed llama.cpp scenario through the
+blocking llama.cpp runtime:
 
 ```text
-cargo run -p ax-bench -- scenario --manifest benchmarks/manifests/scenario/compatibility_chat_qwen_short_vllm.json --output-root benchmarks/results
 ```
 
-The checked-in `vLLM`, `mistral.rs`, and MLX compatibility manifests are
-currently scenario-only examples for the blocking compatibility benchmark path.
-Replay, multi-request, and delegated prompt-cache benchmark coverage still
-belongs to the stepwise `llama.cpp /completion` manifests.
+The checked-in delegated llama.cpp manifests are historical examples. New
+non-MLX benchmark coverage should use the stepwise
+`llama.cpp /completion` manifests.
 
-To validate the checked-in native dense Qwen and Gemma scenario manifests
+To validate checked-in MLX dense Qwen and Gemma scenario manifests
 through one repo-owned smoke command:
 
 ```text
-bash scripts/check-bench-native.sh
+bash scripts/check-bench-mlx.sh
 ```
 
 That smoke path now emits the repo-owned Metal build report into the default
@@ -156,7 +153,7 @@ bash scripts/check-bench-doctor.sh
 ```
 
 To emit the checked-in Phase 1 Metal kernel build report and compile the
-placeholder Metal artifacts (`.air`, `.metalar`, and `.metallib`) when the
+compiled Metal preview artifacts (`.air`, `.metalar`, and `.metallib`) when the
 local toolchain is actually ready:
 
 ```text
@@ -171,7 +168,7 @@ When the same output directory already holds validated compiled assets for the
 current checked-in contract, that build command now reuses them instead of
 rerunning the full toolchain pipeline.
 That checked-in build graph keeps the explicit `metal-ar` archive stage as part
-of AX's own artifact contract, and the current native Metal bring-up contract
+of AX's own artifact contract, and the current MLX Metal bring-up contract
 stays intentionally narrow by validating only `block_size_tokens=16`.
 
 To validate the checked-in Metal kernel inventory, manifest, and gated build
@@ -200,7 +197,7 @@ reuse, mixed-path, full-prefix decode, and memory-blocked recovery behavior:
 bash scripts/check-bench-replay.sh
 ```
 
-To run the repo-owned compatibility benchmark smoke path for the checked-in
+To run the repo-owned llama.cpp benchmark smoke path for the checked-in
 scenario and replay example manifests:
 
 ```text
@@ -210,7 +207,7 @@ bash scripts/check-bench-preview.sh
 To start the preview local server:
 
 ```text
-cargo run -p ax-engine-server -- --model-id qwen3_dense --compat-cli-path python3 --compat-model-path /absolute/path/to/mlx-model --port 8080
+cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts --port 8080
 ```
 
 To install the checked-in JavaScript preview client from this repository:
@@ -237,9 +234,7 @@ curl http://127.0.0.1:8080/v1/runtime
 ```
 
 That runtime payload now includes backend-resolution metadata plus host and
-Metal-toolchain diagnostics, and native AX sessions now also surface a
-`native_runtime` section so bring-up checks can tell the difference between a
-deterministic fallback path and a Metal bring-up runner path.
+Metal-toolchain diagnostics.
 
 To submit and inspect a request through the shared preview server session:
 

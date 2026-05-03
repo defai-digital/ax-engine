@@ -14,7 +14,7 @@ AX Engine welcomes contributions from the community.
 
 ## Build Requirements
 
-- Rust stable toolchain
+- Rust stable toolchain with Rust 1.85 or newer
 - Python 3.10+ (for Python bindings, optional)
 - macOS with Apple M4-or-newer Silicon (for full runtime testing)
 

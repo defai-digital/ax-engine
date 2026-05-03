@@ -11,9 +11,9 @@
     "chat_template_revision": "chatml-v1"
   },
   "runtime": {
-    "selected_backend": "ax_native",
-    "support_tier": "native_preview",
-    "resolution_policy": "strict_native",
+    "selected_backend": "mlx",
+    "support_tier": "mlx_preview",
+    "resolution_policy": "mlx_only",
     "deterministic": true,
     "max_batch_tokens": 2048,
     "kv_total_blocks": 17,
@@ -22,8 +22,8 @@
     }
   },
   "sampling": {
-    "temperature": 0.0,
-    "top_p": 1.0,
+    "temperature": 0,
+    "top_p": 1,
     "top_k": 0,
     "seed": 1234
   },
@@ -52,5 +52,5 @@
     "require_prefix_reuse": true,
     "require_no_allocator_churn_failure": true
   },
-  "notes": "Deterministic native replay that forces one request to block on KV capacity after full live-prefix reuse, then recover predictably once capacity is freed."
+  "notes": "Deterministic MLX-mode replay that forces one request to block on KV capacity after full live-prefix reuse, then recover predictably once capacity is freed."
 }

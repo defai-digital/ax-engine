@@ -27,28 +27,23 @@ the Phase 1 dense-path goals:
 
 The manifest schema direction is documented internally.
 
-The checked-in native scenario manifests now include one dense Qwen target and
+The checked-in MLX scenario manifests now include one dense Qwen target and
 one dense Gemma target for bring-up route evidence:
 
 - `benchmarks/manifests/scenario/chat_qwen_short.json`
 - `benchmarks/manifests/scenario/chat_gemma_short.json`
 
-You can validate both native dense families through the repo-owned smoke path:
+You can validate both MLX dense families through the repo-owned smoke path:
 
 ```text
-bash scripts/check-bench-native.sh
+bash scripts/check-bench-mlx.sh
 ```
 
-For real-model native benchmarking, scenario manifests can now carry:
-
-- `runtime.native_runtime_artifacts_dir`
-- `runtime.native_model_artifacts_dir`
-
-Those paths support both manifest-relative values such as `../../../build/metal`
-and environment-backed values such as `$AX_ENGINE_NATIVE_MODEL_DIR`.
+For real-model MLX-mode benchmarking, scenario manifests can carry `runtime.mlx_model_artifacts_dir`.
+Manifest-relative values such as `../../../models/qwen-mlx` are supported.
 If the fields are omitted, `ax-bench` still falls back to the SDK defaults,
-including repo-owned Metal build detection and the `AX_ENGINE_NATIVE_MODEL_DIR`
-environment variable.
+including repo-owned Metal build detection and the
+`AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR` environment variable.
 
 The checked-in native replay set now covers:
 
@@ -64,18 +59,14 @@ You can validate those replay workloads through the repo-owned smoke path:
 bash scripts/check-bench-replay.sh
 ```
 
-Compatibility examples also live alongside the native bring-up manifests:
+llama.cpp examples also live alongside the MLX bring-up manifests:
 
-- `benchmarks/manifests/scenario/compatibility_chat_qwen_short.json`
-- `benchmarks/manifests/scenario/compatibility_chat_qwen_short_vllm.json`
-- `benchmarks/manifests/scenario/compatibility_chat_qwen_short_mistral_rs.json`
-- `benchmarks/manifests/scenario/compatibility_chat_qwen_short_mlx.json`
-- `benchmarks/manifests/replay/compatibility_submit_cancel_dual.json`
-- `benchmarks/manifests/replay/compatibility_prompt_cache_reuse_dual.json`
+- `benchmarks/manifests/scenario/llama_cpp_chat_qwen_short.json`
+- `benchmarks/manifests/replay/llama_cpp_submit_cancel_dual.json`
+- `benchmarks/manifests/replay/llama_cpp_prompt_cache_reuse_dual.json`
 
 The `llama.cpp /completion` manifests still carry the broader stepwise replay
-and prompt-cache coverage. The checked-in `vLLM`, `mistral.rs`, and MLX
-scenario manifests are single-request blocking compatibility examples. Update
+and prompt-cache coverage. Scenario manifests are single-request blocking llama.cpp examples. Update
 their `runtime.backend_adapter.server_url` before running them directly, or use
 the repo-owned smoke script for the `llama.cpp`-backed path:
 
@@ -85,7 +76,7 @@ bash scripts/check-bench-preview.sh
 
 The checked-in frozen native Tier 2 scenario matrix lives at:
 
-- `benchmarks/manifests/matrix/frozen_native_dense_phase7.json`
+- `benchmarks/manifests/matrix/mlx_dense_phase7.json`
 
 You can validate the full matrix roll-up through:
 

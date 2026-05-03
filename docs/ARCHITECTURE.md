@@ -13,7 +13,7 @@ consistent across the workspace.
 - `ax-engine-core`: request lifecycle, scheduler, KV cache, runner integration,
   and deterministic bring-up loop
 - `ax-engine-sdk`: backend resolution, session management, request lifecycle
-  contract, and compatibility backend bridge
+  contract, and llama.cpp backend bridge
 - `ax-engine-server`: local HTTP and SSE adapter over the SDK
 - `ax-engine-py`: Python binding surface over the SDK contract
 - `ax-bench`: benchmark CLI, replay harness, reporting, and bring-up checks
@@ -57,7 +57,7 @@ The SDK is the runtime-facing contract layer. It is a good place for:
 
 - `serde` and `serde_json`
 - typed error boundaries
-- backend metadata and compatibility payload translation
+- backend metadata and llama.cpp payload translation
 - session-level request and response types
 
 If future work introduces a more explicit "runtime" naming convention, the
@@ -94,7 +94,7 @@ That keeps it possible to distinguish:
 - request validation failures
 - state transition violations
 - unsupported host or backend conditions
-- compatibility backend failures
+- llama.cpp backend failures
 - transport-level failures
 
 `anyhow` can still be useful in one-off tooling or local utilities, but it

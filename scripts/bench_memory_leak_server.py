@@ -60,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=("native", "compat", "both"),
+        choices=("mlx", "native", "llama", "both"),
         default="both",
         help="Which server mode to benchmark.",
     )
@@ -105,6 +105,16 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("target/debug/ax-engine-server"),
         help="Path to the ax-engine-server binary.",
+    )
+    parser.add_argument(
+        "--mlx-model-artifacts-dir",
+        type=Path,
+        default=(
+            Path(os.environ["AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR"])
+            if os.environ.get("AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR")
+            else None
+        ),
+        help="MLX model artifacts directory for --mode mlx.",
     )
     return parser.parse_args()
 
@@ -328,28 +338,39 @@ def run_mode(
     sample_every: int,
     prompt_token_count: int,
     max_output_tokens: int,
+    mlx_model_artifacts_dir: Path | None,
 ) -> ModeResult:
-    if mode == "native":
+    if mode in {"mlx", "native"}:
+        if mlx_model_artifacts_dir is None:
+            raise ValueError(
+                "MLX mode requires --mlx-model-artifacts-dir or AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR"
+            )
         upstream = None
-        model_id = "qwen3_5_9b_q4"
+        model_id = "qwen3_dense"
         server = RunningServer(
             repo_root,
             binary,
-            ["--model-id", model_id, "--native-mode"],
-            "native",
+            [
+                "--model-id",
+                model_id,
+                "--mlx",
+                "--mlx-model-artifacts-dir",
+                str(mlx_model_artifacts_dir),
+            ],
+            "mlx",
         )
-        description = "native mode"
-    elif mode == "compat":
+        description = "MLX mode"
+    elif mode == "llama":
         upstream = FakeLlamaCppUpstream()
         upstream.start()
         model_id = "qwen3_dense"
         server = RunningServer(
             repo_root,
             binary,
-            ["--compat-server-url", upstream.base_url],
-            "compatibility",
+            ["--llama-server-url", upstream.base_url],
+            "llama_cpp",
         )
-        description = "default compatibility llama.cpp bypass"
+        description = "default llama.cpp bypass"
     else:
         raise ValueError(f"unsupported mode: {mode}")
 
@@ -405,7 +426,7 @@ def run_mode(
             selected_backend=runtime["selected_backend"],
             support_tier=runtime["support_tier"],
             resolution_policy=runtime["resolution_policy"],
-            native_runner=runtime.get("native_runtime", {}).get("runner"),
+            mlx_runner=runtime.get("mlx_runtime", {}).get("runner"),
             requests=requests_total,
             warmup_requests=warmup_requests,
             prompt_tokens=prompt_token_count,
@@ -425,7 +446,7 @@ def run_mode(
         )
     finally:
         server.stop()
-        if mode == "compat" and upstream is not None:
+        if mode == "llama" and upstream is not None:
             upstream.stop()
 
 
@@ -469,7 +490,7 @@ def main() -> int:
     if not binary.exists():
         raise FileNotFoundError(f"server binary not found: {binary}")
 
-    modes = [args.mode] if args.mode != "both" else ["native", "compat"]
+    modes = [args.mode] if args.mode != "both" else ["mlx", "llama"]
     results = [
         run_mode(
             repo_root=repo_root,
@@ -480,6 +501,7 @@ def main() -> int:
             sample_every=args.sample_every,
             prompt_token_count=args.prompt_tokens,
             max_output_tokens=args.max_output_tokens,
+            mlx_model_artifacts_dir=args.mlx_model_artifacts_dir,
         )
         for mode in modes
     ]

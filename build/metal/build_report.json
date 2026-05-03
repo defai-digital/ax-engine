@@ -30,7 +30,7 @@
       "fully_available": true,
       "metal": {
         "available": true,
-        "version": "Apple metal version 32023.883 (metalfe-32023.883)\nTarget: air64-apple-darwin25.4.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.5.188.0.WExZfq/Metal.xctoolchain/usr/metal/current/bin"
+        "version": "Apple metal version 32023.883 (metalfe-32023.883)\nTarget: air64-apple-darwin25.4.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.5.188.0.f4nJJ1/Metal.xctoolchain/usr/metal/current/bin"
       },
       "metallib": {
         "available": true,
@@ -79,6 +79,16 @@
       "purpose": "native residual or elementwise add over f32 activation vectors"
     },
     {
+      "name": "row_scale_f32",
+      "tier": "optional",
+      "purpose": "native per-row scalar multiply over f32 activation vectors"
+    },
+    {
+      "name": "row_vector_scale_f32",
+      "tier": "optional",
+      "purpose": "native elementwise row scaling over f32 activation vectors"
+    },
+    {
       "name": "gather_embedding_rows_f32",
       "tier": "optional",
       "purpose": "native embedding row gather for f32 token embeddings"
@@ -92,6 +102,11 @@
       "name": "gather_embedding_rows_bf16",
       "tier": "optional",
       "purpose": "native embedding row gather for bf16 token embeddings"
+    },
+    {
+      "name": "decode_projection_q4km",
+      "tier": "optional",
+      "purpose": "GEMV over Q4_K_M quantized weight matrix with on-the-fly dequantization"
     },
     {
       "name": "decode_logits_projection_f32",
@@ -239,14 +254,14 @@
       "purpose": "single-step recurrent linear-attention update over AX-native dense states"
     }
   ],
-  "source_sha256": "f0d128db1d24e7ee660ab49aeca8f99d9bc49240d9faf0b4dd6ea8d0382da5bd",
+  "source_sha256": "7bb1971f4fc88dd79d9db8cf87144c3c414d72887ac15f621ad833b0c117d7e0",
   "outputs": {
     "air": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.air",
     "metalar": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.metalar",
     "metallib": "/Users/akiralam/code/ax-engine-v4/build/metal/ax_phase1_dense_path.metallib",
-    "air_sha256": "b8683e7509092baa67aad3f643543339b2f40d031f0bccd494995e8deb187fa4",
-    "metalar_sha256": "74703116699ab02782578164cdf02a838637631faf0f0fc7f7418977c0f8fff3",
-    "metallib_sha256": "606987206e486a1dd460e0a2fa2bc00ce3aabec5926c3752c1b84ba99ca73215"
+    "air_sha256": "799b63f60ce2c8e140fd95c925d044fa6da8ae98ed591815a33ce68c136bcb56",
+    "metalar_sha256": "688ada990bad47be3eae965d832de9b631b14839386d115c941a989eb92a20ee",
+    "metallib_sha256": "05c3e9398f15e7ef9c2867f7ad3615128589a3f906f71fc68d0445cac3eaaa2e"
   },
   "compile_commands": [
     [

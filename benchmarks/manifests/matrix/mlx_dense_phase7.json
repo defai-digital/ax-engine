@@ -1,6 +1,6 @@
 {
   "schema_version": "ax.bench.matrix.v1",
-  "id": "frozen_native_dense_phase7",
+  "id": "mlx_dense_phase7",
   "class": "scenario_matrix",
   "members": [
     {
@@ -28,5 +28,5 @@
       "label": "Shared Prefix Qwen Enterprise"
     }
   ],
-  "notes": "Frozen native dense Tier 2 scenario matrix for Phase 7 performance hardening on the supported M4-or-newer AX-native target baseline."
+  "notes": "Frozen MLX dense Tier 2 scenario matrix for Phase 7 performance hardening on the supported MLX target baseline."
 }

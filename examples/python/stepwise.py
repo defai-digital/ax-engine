@@ -1,8 +1,22 @@
+import os
+
 import ax_engine
 
 
 def main() -> None:
-    with ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True) as session:
+    model_artifacts_dir = os.environ.get("AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR")
+    if not model_artifacts_dir:
+        print(
+            "skipping MLX stepwise example: "
+            "set AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR to run it"
+        )
+        return
+
+    with ax_engine.Session(
+        model_id="qwen3_dense",
+        mlx=True,
+        mlx_model_artifacts_dir=model_artifacts_dir,
+    ) as session:
         request_id = session.submit([1, 2, 3], max_output_tokens=2)
 
         while True:

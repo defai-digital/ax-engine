@@ -181,9 +181,11 @@ mod tests {
 
         assert_eq!(sampled[0].token_id, 1);
         assert_eq!(sampled[0].stop_reason, None);
-        assert!(sampled[0]
-            .logprob
-            .is_some_and(|logprob| logprob.is_finite() && logprob < 0.0));
+        assert!(
+            sampled[0]
+                .logprob
+                .is_some_and(|logprob| logprob.is_finite() && logprob < 0.0)
+        );
     }
 
     #[test]

@@ -1,7 +1,9 @@
 # Supported Models
 
-AX Engine v4 is compatibility-first by default while native mode is brought up
-one model at a time.
+AX Engine v4 routes inference through two supported shipping paths:
+
+- repo-owned MLX mode for MLX inference
+- `llama.cpp` bypass for non-MLX inference
 
 ## Support Strategy
 
@@ -15,67 +17,59 @@ Instead, support should be understood through:
 
 This matters because a future model may be:
 
-- allowed on AX native runtime
-- still in native bring-up
-- available only through a compatibility path
+- available through AX-owned MLX mode
+- available through the `llama.cpp` bypass path
 - not supported yet
 
 The current default route is:
 
-- local non-GGUF model paths use the MLX-backed compatibility path
-- local `.gguf` model paths bypass to `llama.cpp`
-- `native_mode` is opt-in and currently allowlisted only for
-  `qwen3_5_9b_q4`
+- explicit MLX mode routes to `mlx`
+- all non-MLX inference routes to `llama.cpp`
+- local `.gguf` model paths route to `llama.cpp`
+- AX native mode is no longer a supported user-facing inference mode
 
-The native-mode promotion contract is recorded in
-`.internal/adr/0011-model-promotion-and-default-routing.md`.
+The current routing decision is recorded in
+`.internal/adr/0012-retire-ax-native-and-route-mlx-or-llama.md`.
 
-## Native Platform Baseline
+## MLX Platform Baseline
 
-AX Engine v4 native scope targets Macs with Apple M4-or-newer CPU and GPU.
+AX Engine v4 MLX mode targets Apple Silicon Macs where the MLX runtime and AX's
+MLX integration are available.
 
 This means:
 
-- M4-family and later Macs are the intended native platform
-- M3 and older Macs are out of scope for v4 native support
-- support-tier language should not be read as implying native support on
-  pre-M4 hardware
-- runtime surfaces should fail closed on pre-M4 hosts rather than attempting
-  degraded execution
+- MLX mode is the repo-owned local Mac inference path
+- non-MLX local inference should use `llama.cpp`
+- support-tier language should not be read as implying broad MLX Metal model support
+- retired AX native mode should not be exposed as a shipping runtime
 
 ## Support Tiers
 
-### `native_certified`
+### `mlx_certified`
 
 Meaning:
 
-- runs on AX native runtime
-- assumes the supported M4-or-newer native hardware baseline
-- benchmark and replay claims map directly to AX engine behavior
+- reserved for a future certified repo-owned runtime
+- not currently used for AX MLX Metal mode
+- must not be assigned without benchmark and correctness evidence
 
-### `native_preview`
-
-Meaning:
-
-- intended native target
-- intended for the supported M4-or-newer native hardware baseline
-- same-family or same-lineage bring-up is in progress
-- not yet fully certified for release-grade claims
-- currently limited to `qwen3_5_9b_q4` while the native path is expanded one
-  model at a time
-
-### `compatibility`
+### `mlx_preview`
 
 Meaning:
 
-- request is handled through a delegated compatibility backend
-- this should not be read as equivalent to AX native feature coverage or
+- repo-owned MLX mode is selected
+- MLX runtime behavior is still preview-grade unless explicitly certified
+- not a claim that AX MLX Metal mode is supported
+
+### `llama_cpp`
+
+Meaning:
+
+- request is handled through `llama.cpp`
+- this should not be read as equivalent to AX-owned MLX-mode feature coverage or
   performance
-- Phase 1 delegated execution currently covers `llama.cpp`, `vLLM`,
-  `mistral.rs`, and MLX-backed paths through the SDK-owned contract
-- the current `mlx` path now supports both an explicit server-backed MLX route
-  and a blocking direct `mlx_lm.generate` CLI route
-- a deeper repo-owned in-process MLX runtime remains future work
+- `vLLM`, `mistral.rs`, and MLX adapters are not part of the
+  current shipping inference route
 
 ### `unsupported`
 
@@ -83,19 +77,13 @@ Meaning:
 
 - AX does not currently have a credible path for that model request
 
-## Current Native Target Direction
+## Current Runtime Direction
 
-The current Phase 1 native target is:
+The current runtime direction is:
 
-- `qwen3_5_9b_q4`
-
-Current native target direction should be read as:
-
-- where AX native bring-up is focused
-- not as a promise that every Qwen, Gemma, or future family variant is already
-  native-capable
-- the next model should be added deliberately after benchmark and correctness
-  evidence
+- use `mlx` for explicit MLX mode
+- use `llama_cpp` for all non-MLX inference
+- do not promote models into AX MLX Metal mode
 
 ## Future Model Generations
 
@@ -104,13 +92,13 @@ generation, AX should not force an all-or-nothing answer.
 
 Depending on readiness, that model may resolve to:
 
-- `native_preview`
-- `compatibility`
+- `mlx_preview`
+- `llama_cpp`
 - `unsupported`
 
-before it ever becomes `native_certified`.
+where `mlx_preview` means repo-owned MLX mode, not AX MLX Metal mode.
 
-## Not a Broad Compatibility Matrix
+## Not a Broad LlamaCpp Matrix
 
 The v4 rewrite is not trying to support every architecture early.
 
@@ -119,11 +107,11 @@ Deferred from the main path:
 - multimodal models
 - hybrid-only architectures
 - MoE-first support
-- broad compatibility exceptions during core bring-up
+- broad llama.cpp exceptions during core bring-up
 
 ## Important Note
 
 This document describes product direction and support strategy, not a final
-compatibility guarantee.
+llama.cpp guarantee.
 The implementation is still in progress, and support claims must be earned by
 actual benchmark and validation evidence.

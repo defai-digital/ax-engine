@@ -32,7 +32,7 @@ pub(crate) fn validate_local_host() -> Result<(), String> {
 
 pub(crate) fn runtime_host_report() -> HostReport {
     let detected_soc = detected_soc_cached().clone();
-    let supported_native_runtime = matches!(
+    let supported_mlx_runtime = matches!(
         classify_host(env::consts::OS, env::consts::ARCH, detected_soc.as_deref()),
         HostSupport::Supported { .. }
     );
@@ -41,7 +41,7 @@ pub(crate) fn runtime_host_report() -> HostReport {
         os: env::consts::OS.to_string(),
         arch: env::consts::ARCH.to_string(),
         detected_soc,
-        supported_native_runtime,
+        supported_mlx_runtime,
         unsupported_host_override_active: unsupported_host_override_enabled(),
     }
 }
@@ -218,8 +218,8 @@ fn unsupported_host_override_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_host, parse_apple_m_series_generation, runtime_host_report,
-        runtime_metal_toolchain_report, HostSupport,
+        HostSupport, classify_host, parse_apple_m_series_generation, runtime_host_report,
+        runtime_metal_toolchain_report,
     };
 
     #[test]

@@ -14,7 +14,7 @@
     "fully_available": true,
     "metal": {
       "available": true,
-      "version": "Apple metal version 32023.883 (metalfe-32023.883)\nTarget: air64-apple-darwin25.4.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.5.188.0.WExZfq/Metal.xctoolchain/usr/metal/current/bin"
+      "version": "Apple metal version 32023.883 (metalfe-32023.883)\nTarget: air64-apple-darwin25.4.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.5.188.0.f4nJJ1/Metal.xctoolchain/usr/metal/current/bin"
     },
     "metallib": {
       "available": true,

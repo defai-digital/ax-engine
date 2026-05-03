@@ -53,9 +53,7 @@ pub fn load_safetensors(
             if rc != 0 || key.is_null() {
                 break;
             }
-            let name = std::ffi::CStr::from_ptr(key)
-                .to_string_lossy()
-                .into_owned();
+            let name = std::ffi::CStr::from_ptr(key).to_string_lossy().into_owned();
             result.insert(name, val);
         }
         ffi::mlx_map_string_to_array_iterator_free(it);

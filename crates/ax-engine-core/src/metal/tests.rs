@@ -6,8 +6,8 @@ use crate::scheduler::{
 };
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 struct Phase1Fixture {
@@ -25,6 +25,23 @@ type SimulatedNumericPath = ReferenceNumericPath;
 
 fn simulated_numeric_path(workload: &MetalDispatchWorkload) -> SimulatedNumericPath {
     reference_numeric_path(workload)
+}
+
+fn metal_heavy_tests_enabled() -> bool {
+    matches!(
+        std::env::var("AX_ENGINE_RUN_METAL_HEAVY_TESTS").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+    )
+}
+
+fn skip_metal_heavy_test_unless_opted_in(test_name: &str) -> bool {
+    if metal_heavy_tests_enabled() {
+        return false;
+    }
+    eprintln!(
+        "skipping {test_name}: set AX_ENGINE_RUN_METAL_HEAVY_TESTS=1 to run real GGUF/Metal-heavy tests"
+    );
+    true
 }
 
 fn simulated_numeric_trace(reference: &SimulatedNumericPath) -> MetalDispatchNumericTrace {
@@ -456,9 +473,11 @@ fn optional_kernel_feedback_success_resets_consecutive_failures() {
         &feedback,
         &kernel_name
     ));
-    assert!(!feedback
-        .consecutive_failures_by_kernel
-        .contains_key(&kernel_name));
+    assert!(
+        !feedback
+            .consecutive_failures_by_kernel
+            .contains_key(&kernel_name)
+    );
     assert!(!feedback.disabled_kernels.contains(&kernel_name));
 }
 
@@ -3272,10 +3291,12 @@ fn metal_assets_load_compiled_build_and_resolve_required_kernels() {
         Some(MetalKernelTier::Deferred)
     );
     assert!(assets.compiled_metallib_path().is_some());
-    assert!(!assets
-        .compiled_metallib_bytes()
-        .expect("compiled metallib should load")
-        .is_empty());
+    assert!(
+        !assets
+            .compiled_metallib_bytes()
+            .expect("compiled metallib should load")
+            .is_empty()
+    );
 
     fixture.cleanup();
 }
@@ -3514,57 +3535,73 @@ fn metal_bringup_runner_executes_single_layer_fixture_with_real_build_artifacts(
         ExecutionStatus::Success,
         "{output:?}"
     );
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_runtime_real_model_tensor_inputs" && *value > 0
-        ));
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_runtime_complete_model_forward_supported"
-                && *value > 0
-        ));
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(|(key, value)| key == "metal_dispatch_real_model_forward" && *value > 0));
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_direct_decode_native_logits_projection"
-                && *value > 0
-        ));
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_direct_decode_native_projection_row_count"
-                && *value > 0
-        ));
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_native_projection_f32_binding_count"
-                && *value > 0
-        ));
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_native_rms_norm_f32_binding_count" && *value > 0
-        ));
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_runtime_real_model_tensor_inputs"
+                    && *value > 0
+            )
+    );
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_runtime_complete_model_forward_supported"
+                    && *value > 0
+            )
+    );
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(|(key, value)| key == "metal_dispatch_real_model_forward" && *value > 0)
+    );
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_direct_decode_native_logits_projection"
+                    && *value > 0
+            )
+    );
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_direct_decode_native_projection_row_count"
+                    && *value > 0
+            )
+    );
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_native_projection_f32_binding_count"
+                    && *value > 0
+            )
+    );
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_native_rms_norm_f32_binding_count"
+                    && *value > 0
+            )
+    );
     let dispatch = runner
         .last_dispatch()
         .expect("successful real-build run should retain last dispatch");
@@ -3582,14 +3619,16 @@ fn metal_bringup_runner_executes_single_layer_fixture_with_real_build_artifacts(
             .rms_norm_f32_binding_count
             > 0
     );
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_direct_decode_cpu_projection_row_count"
-                && *value == 0
-        ));
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_direct_decode_cpu_projection_row_count"
+                    && *value == 0
+            )
+    );
 
     let _ = fs::remove_dir_all(model_dir);
 }
@@ -3612,27 +3651,35 @@ fn metal_bringup_runner_reuses_multilayer_prefix_cache_for_native_decode_continu
         ExecutionStatus::Success,
         "{prefill_output:?}"
     );
-    assert!(prefill_output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(|(key, value)| key == "metal_dispatch_prefix_layers_native_attention" && *value > 0));
-    assert!(prefill_output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_prefix_cpu_reference_dispatch_count"
-                && *value == 0
-        ));
-    assert!(prefill_output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_runtime_complete_model_forward_supported"
-                && *value > 0
-        ));
+    assert!(
+        prefill_output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_prefix_layers_native_attention" && *value > 0
+            )
+    );
+    assert!(
+        prefill_output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_prefix_cpu_reference_dispatch_count"
+                    && *value == 0
+            )
+    );
+    assert!(
+        prefill_output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_runtime_complete_model_forward_supported"
+                    && *value > 0
+            )
+    );
 
     let continuation_output = runner.run(sample_decode_continuation_runner_input());
 
@@ -3641,52 +3688,68 @@ fn metal_bringup_runner_reuses_multilayer_prefix_cache_for_native_decode_continu
         ExecutionStatus::Success,
         "{continuation_output:?}"
     );
-    assert!(continuation_output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(|(key, value)| key == "metal_dispatch_prefix_layers_native_attention" && *value > 0));
-    assert!(continuation_output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_prefix_cpu_reference_dispatch_count"
-                && *value == 0
-        ));
-    assert!(continuation_output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_runtime_complete_model_forward_supported"
-                && *value > 0
-        ));
-    assert!(continuation_output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(|(key, value)| key == "metal_dispatch_real_model_forward" && *value > 0));
-    assert!(continuation_output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_direct_decode_native_logits_projection"
-                && *value > 0
-        ));
-    assert!(continuation_output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_direct_decode_cpu_projection_row_count"
-                && *value == 0
-        ));
-    assert!(continuation_output
-        .logits_outputs
-        .iter()
-        .any(|output| output.request_id == RequestId(17) && !output.logits.is_empty()));
+    assert!(
+        continuation_output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_prefix_layers_native_attention" && *value > 0
+            )
+    );
+    assert!(
+        continuation_output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_prefix_cpu_reference_dispatch_count"
+                    && *value == 0
+            )
+    );
+    assert!(
+        continuation_output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_runtime_complete_model_forward_supported"
+                    && *value > 0
+            )
+    );
+    assert!(
+        continuation_output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(|(key, value)| key == "metal_dispatch_real_model_forward" && *value > 0)
+    );
+    assert!(
+        continuation_output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_direct_decode_native_logits_projection"
+                    && *value > 0
+            )
+    );
+    assert!(
+        continuation_output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_direct_decode_cpu_projection_row_count"
+                    && *value == 0
+            )
+    );
+    assert!(
+        continuation_output
+            .logits_outputs
+            .iter()
+            .any(|output| output.request_id == RequestId(17) && !output.logits.is_empty())
+    );
 
     let _ = fs::remove_dir_all(model_dir);
 }
@@ -3709,35 +3772,43 @@ fn metal_bringup_runner_batches_direct_decode_logits_for_multiple_requests() {
         ExecutionStatus::Success,
         "{output:?}"
     );
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(|(key, value)| key == "metal_dispatch_real_model_forward" && *value > 0));
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_direct_decode_batched_logits_group_count"
-                && *value > 0
-        ));
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_direct_decode_batched_logits_token_count"
-                && *value >= 2
-        ));
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .iter()
-        .any(
-            |(key, value)| key == "metal_dispatch_direct_decode_cpu_projection_row_count"
-                && *value == 0
-        ));
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(|(key, value)| key == "metal_dispatch_real_model_forward" && *value > 0)
+    );
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_direct_decode_batched_logits_group_count"
+                    && *value > 0
+            )
+    );
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_direct_decode_batched_logits_token_count"
+                    && *value >= 2
+            )
+    );
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .any(
+                |(key, value)| key == "metal_dispatch_direct_decode_cpu_projection_row_count"
+                    && *value == 0
+            )
+    );
     assert_eq!(output.logits_outputs.len(), 2);
 
     let _ = fs::remove_dir_all(model_dir);
@@ -5056,9 +5127,11 @@ fn grouped_direct_decode_results_fall_back_to_singletons_when_group_processing_f
         });
     assert_eq!(merged_tally.batched_group_fallback_count, 1);
     assert_eq!(merged_tally.batched_group_fallback_token_count, 2);
-    assert!(collected
-        .iter()
-        .all(|result| result.native_logits_projection_decode));
+    assert!(
+        collected
+            .iter()
+            .all(|result| result.native_logits_projection_decode)
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -5315,9 +5388,11 @@ fn model_bound_decode_tokens_use_lm_head_projection_for_decode_items() {
                 .map(|(index, _)| index as u32)
         })
         .expect("prefill-completion logits should remain sampleable");
-    assert!(direct_decode
-        .tokens
-        .contains(&(RequestId(7), expected_prefill_token)));
+    assert!(
+        direct_decode
+            .tokens
+            .contains(&(RequestId(7), expected_prefill_token))
+    );
     assert!(direct_decode.tokens.contains(&(RequestId(9), 4)));
     assert_eq!(direct_decode.logits_outputs.len(), 2);
     let decode_logits = direct_decode
@@ -5375,15 +5450,19 @@ fn deterministic_model_bound_direct_decode_omits_decode_logits_payload() {
         None,
     );
 
-    assert!(direct_decode
-        .tokens
-        .iter()
-        .any(|(request_id, token_id)| { *request_id == RequestId(9) && *token_id == 4 }));
+    assert!(
+        direct_decode
+            .tokens
+            .iter()
+            .any(|(request_id, token_id)| { *request_id == RequestId(9) && *token_id == 4 })
+    );
     assert_eq!(direct_decode.logits_outputs.len(), 1);
-    assert!(direct_decode
-        .logits_outputs
-        .iter()
-        .all(|output| output.request_id != RequestId(9)));
+    assert!(
+        direct_decode
+            .logits_outputs
+            .iter()
+            .all(|output| output.request_id != RequestId(9))
+    );
 
     let _ = fs::remove_dir_all(model_dir);
 }
@@ -5448,13 +5527,17 @@ fn deterministic_model_bound_prefill_completion_omits_bridge_logits_payload() {
         None,
     );
 
-    assert!(direct_decode
-        .tokens
-        .contains(&(RequestId(7), expected_bridge_token)));
-    assert!(direct_decode
-        .logits_outputs
-        .iter()
-        .all(|output| output.request_id != RequestId(7)));
+    assert!(
+        direct_decode
+            .tokens
+            .contains(&(RequestId(7), expected_bridge_token))
+    );
+    assert!(
+        direct_decode
+            .logits_outputs
+            .iter()
+            .all(|output| output.request_id != RequestId(7))
+    );
 
     let _ = fs::remove_dir_all(model_dir);
 }
@@ -5551,9 +5634,11 @@ fn deterministic_model_bound_sampleable_items_omit_all_logits_payloads() {
         None,
     );
 
-    assert!(direct_decode
-        .tokens
-        .contains(&(RequestId(7), expected_prefill_token)));
+    assert!(
+        direct_decode
+            .tokens
+            .contains(&(RequestId(7), expected_prefill_token))
+    );
     assert!(direct_decode.tokens.contains(&(RequestId(9), 4)));
     assert!(direct_decode.logits_outputs.is_empty());
     assert_eq!(
@@ -5791,10 +5876,12 @@ fn model_bound_decode_tokens_apply_split_ffn_continuation_before_projection() {
 
     assert!(direct_decode.tokens.contains(&(RequestId(9), 4)));
     assert_eq!(direct_decode.logits_outputs.len(), 2);
-    assert!(direct_decode
-        .logits_outputs
-        .iter()
-        .any(|output| output.request_id == RequestId(9)));
+    assert!(
+        direct_decode
+            .logits_outputs
+            .iter()
+            .any(|output| output.request_id == RequestId(9))
+    );
     assert!(direct_decode.model_bound_ffn_decode);
 
     let _ = fs::remove_dir_all(model_dir);
@@ -5829,10 +5916,12 @@ fn model_bound_decode_tokens_apply_packed_ffn_continuation_before_projection() {
 
     assert!(direct_decode.tokens.contains(&(RequestId(9), 4)));
     assert_eq!(direct_decode.logits_outputs.len(), 2);
-    assert!(direct_decode
-        .logits_outputs
-        .iter()
-        .any(|output| output.request_id == RequestId(9)));
+    assert!(
+        direct_decode
+            .logits_outputs
+            .iter()
+            .any(|output| output.request_id == RequestId(9))
+    );
     assert!(direct_decode.model_bound_ffn_decode);
 
     let _ = fs::remove_dir_all(model_dir);
@@ -6141,23 +6230,31 @@ fn annotate_staged_input_source_marks_model_conditioned_inputs() {
         MetalStagedInputSource::ModelConditionedMiniProjection,
     );
 
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,)));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_token_only_inputs".to_string(), 0,)));
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,))
+    );
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_token_only_inputs".to_string(), 0,))
+    );
     assert!(route_metadata.crossover_decisions.contains(&(
         "metal_dispatch_prefix_layers_native_attention".to_string(),
         0,
     )));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 0,)));
-    assert!(!route_metadata
-        .crossover_decisions
-        .iter()
-        .any(|(key, _)| key == "metal_dispatch_real_model_tensor_inputs"));
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 0,))
+    );
+    assert!(
+        !route_metadata
+            .crossover_decisions
+            .iter()
+            .any(|(key, _)| key == "metal_dispatch_real_model_tensor_inputs")
+    );
 }
 
 #[test]
@@ -6173,12 +6270,16 @@ fn annotate_staged_input_source_marks_cpu_prefix_attention() {
         "metal_dispatch_prefix_layers_native_attention".to_string(),
         0,
     )));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 1,)));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,)));
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 1,))
+    );
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,))
+    );
 }
 
 #[test]
@@ -6194,12 +6295,16 @@ fn annotate_staged_input_source_marks_native_prefix_attention() {
         "metal_dispatch_prefix_layers_native_attention".to_string(),
         1,
     )));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 0,)));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,)));
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 0,))
+    );
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,))
+    );
 }
 
 #[test]
@@ -6215,12 +6320,16 @@ fn annotate_staged_input_source_marks_mixed_prefix_attention() {
         "metal_dispatch_prefix_layers_native_attention".to_string(),
         1,
     )));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 1,)));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,)));
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_prefix_layers_cpu_reference".to_string(), 1,))
+    );
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_model_conditioned_inputs".to_string(), 1,))
+    );
 }
 
 #[test]
@@ -7047,37 +7156,51 @@ fn annotate_bringup_execution_flags_clears_numeric_scaffold_when_runtime_uses_mo
         },
     );
 
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_numeric_scaffold_only".to_string(), 0,)));
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_numeric_scaffold_only".to_string(), 0,))
+    );
     assert!(route_metadata.crossover_decisions.contains(&(
         "metal_dispatch_complete_model_forward_supported".to_string(),
         1,
     )));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_real_model_forward".to_string(), 0,)));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_direct_decode_tokens".to_string(), 1,)));
-    assert!(route_metadata
-        .crossover_decisions
-        .iter()
-        .any(|(key, value)| { key == "metal_dispatch_direct_decode_checksum_lo" && *value > 0 }));
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_real_model_forward".to_string(), 0,))
+    );
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_direct_decode_tokens".to_string(), 1,))
+    );
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .iter()
+            .any(|(key, value)| {
+                key == "metal_dispatch_direct_decode_checksum_lo" && *value > 0
+            })
+    );
     assert!(route_metadata.crossover_decisions.contains(&(
         "metal_dispatch_direct_decode_model_bound_ffn".to_string(),
         0,
     )));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_prefix_native_dispatch_count".to_string(), 1,)));
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_prefix_native_dispatch_count".to_string(), 1,))
+    );
     assert!(route_metadata.crossover_decisions.contains(&(
         "metal_dispatch_prefix_cpu_reference_dispatch_count".to_string(),
         0,
     )));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_qkv_projection_token_count".to_string(), 3,)));
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_qkv_projection_token_count".to_string(), 3,))
+    );
     assert!(route_metadata.crossover_decisions.contains(&(
         "metal_dispatch_layer_continuation_token_count".to_string(),
         2,
@@ -7086,9 +7209,11 @@ fn annotate_bringup_execution_flags_clears_numeric_scaffold_when_runtime_uses_mo
         "metal_dispatch_logits_projection_token_count".to_string(),
         1,
     )));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_logits_vocab_scan_row_count".to_string(), 5,)));
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_logits_vocab_scan_row_count".to_string(), 5,))
+    );
     assert!(route_metadata.crossover_decisions.contains(&(
         "metal_dispatch_prefix_native_projection_row_count".to_string(),
         31,
@@ -7267,14 +7392,16 @@ fn completed_real_model_forward_step_marks_pure_decode_batch_with_no_remaining_l
             direct_decode_native_dense_tally: DirectDecodeNativeDenseTally::default(),
         },
     );
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_real_model_forward".to_string(), 1,)));
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_real_model_forward".to_string(), 1,))
+    );
 }
 
 #[test]
-fn completed_real_model_forward_step_accepts_mixed_prefill_decode_batches_when_prefill_completion_and_decode_items_resolve(
-) {
+fn completed_real_model_forward_step_accepts_mixed_prefill_decode_batches_when_prefill_completion_and_decode_items_resolve()
+ {
     let mut input = sample_runner_input();
     input.request_contexts[0].deterministic_argmax_sampling = true;
     let runtime = MetalDispatchRuntimeInfo {
@@ -7430,7 +7557,7 @@ fn completed_real_model_forward_step_accepts_prefill_only_completion_with_output
 }
 
 #[test]
-fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_attention_is_native() {
+fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_attention_is_metal() {
     let input = sample_decode_only_runner_input();
     let runtime = MetalDispatchRuntimeInfo {
         device_name: "Apple M4 Max".to_string(),
@@ -7492,8 +7619,8 @@ fn completed_real_model_forward_step_accepts_multilayer_runtime_when_prefix_atte
 }
 
 #[test]
-fn completed_real_model_forward_step_rejects_multilayer_runtime_when_prefix_attention_is_cpu_reference(
-) {
+fn completed_real_model_forward_step_rejects_multilayer_runtime_when_prefix_attention_is_cpu_reference()
+ {
     let input = sample_decode_only_runner_input();
     let runtime = MetalDispatchRuntimeInfo {
         device_name: "Apple M4 Max".to_string(),
@@ -7968,24 +8095,32 @@ fn failed_metal_runner_output_marks_all_requests_as_errors() {
     assert!(output.logits_outputs.is_empty());
     assert_eq!(output.kv_write_summary.tokens_written, 0);
     assert_eq!(output.kv_write_summary.blocks_touched, 0);
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_failed".to_string(), 1)));
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_runtime_required_pipelines".to_string(), 4)));
-    assert!(output
-        .route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_binary_archive_state".to_string(), 2)));
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_failed".to_string(), 1))
+    );
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_runtime_required_pipelines".to_string(), 4))
+    );
+    assert!(
+        output
+            .route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_binary_archive_state".to_string(), 2))
+    );
     assert_eq!(output.request_updates.len(), 2);
-    assert!(output
-        .request_updates
-        .iter()
-        .all(|update| update.stop_reason == Some(StopReason::Error)
-            && update.error.as_deref() == Some("metal dispatch exploded")));
+    assert!(
+        output
+            .request_updates
+            .iter()
+            .all(|update| update.stop_reason == Some(StopReason::Error)
+                && update.error.as_deref() == Some("metal dispatch exploded"))
+    );
 }
 
 #[test]
@@ -8225,15 +8360,21 @@ fn staged_numeric_values_follow_scheduled_token_ids() {
     assert_eq!(staged_query.len(), 32);
     assert_eq!(
         &staged_key[..8],
-        &[0.5, 0.53125, 0.5625, 0.59375, 0.75, 0.78125, 0.8125, 0.84375]
+        &[
+            0.5, 0.53125, 0.5625, 0.59375, 0.75, 0.78125, 0.8125, 0.84375
+        ]
     );
     assert_eq!(
         &staged_value[8..16],
-        &[2.0, 2.015625, 2.03125, 2.046875, 2.0625, 2.078125, 2.09375, 2.109375,]
+        &[
+            2.0, 2.015625, 2.03125, 2.046875, 2.0625, 2.078125, 2.09375, 2.109375,
+        ]
     );
     assert_eq!(
         &staged_query[24..32],
-        &[2.015625, 2.046875, 2.078125, 2.109375, 2.265625, 2.296875, 2.328125, 2.359375,]
+        &[
+            2.015625, 2.046875, 2.078125, 2.109375, 2.265625, 2.296875, 2.328125, 2.359375,
+        ]
     );
 }
 
@@ -8246,15 +8387,19 @@ fn simulated_numeric_path_keeps_vectorized_kv_and_decode_contract() {
     let decode_slot_base = 35 * PHASE1_NUMERIC_HEAD_SIZE as usize;
     assert_eq!(
         &simulated.key_cache[decode_slot_base..decode_slot_base + 8],
-        &[2.0, 2.03125, 2.0625, 2.09375, 2.25, 2.28125, 2.3125, 2.34375]
+        &[
+            2.0, 2.03125, 2.0625, 2.09375, 2.25, 2.28125, 2.3125, 2.34375
+        ]
     );
     assert_eq!(simulated.gather_key.len(), 56);
     assert_eq!(simulated.gather_value.len(), 56);
     assert_eq!(simulated.attention_output.len(), 32);
-    assert!(simulated
-        .attention_output
-        .iter()
-        .all(|value| value.is_finite() && *value >= 0.0));
+    assert!(
+        simulated
+            .attention_output
+            .iter()
+            .all(|value| value.is_finite() && *value >= 0.0)
+    );
     let decode_output_base = 3 * PHASE1_NUMERIC_HEAD_SIZE as usize;
     assert_eq!(
         decode_token_from_attention_bits(
@@ -8278,9 +8423,11 @@ fn simulated_numeric_path_keeps_vectorized_kv_and_decode_contract() {
     );
     // Remaining slots in copy buffers should be zero (no other blocks were copied).
     assert!(simulated.copy_key[block_width..].iter().all(|v| *v == 0.0));
-    assert!(simulated.copy_value[block_width..]
-        .iter()
-        .all(|v| *v == 0.0));
+    assert!(
+        simulated.copy_value[block_width..]
+            .iter()
+            .all(|v| *v == 0.0)
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -8408,31 +8555,43 @@ fn annotate_successful_dispatch_surfaces_validation_summary_metrics() {
         },
     );
 
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_numeric_reference_validated".to_string(), 1,)));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_runtime_required_pipelines".to_string(), 4,)));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_binary_archive_state".to_string(), 2,)));
-    assert!(route_metadata
-        .crossover_decisions
-        .contains(&("metal_dispatch_binary_archive_serialized".to_string(), 1,)));
-    assert!(route_metadata
-        .crossover_decisions
-        .iter()
-        .any(|(key, value)| {
-            key == "metal_dispatch_copy_workload_elements"
-                && *value == expected_copy_workload_elements
-        }));
-    assert!(route_metadata
-        .crossover_decisions
-        .iter()
-        .any(|(key, value)| {
-            key == "metal_dispatch_attention_max_abs_diff_microunits" && *value == 0
-        }));
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_numeric_reference_validated".to_string(), 1,))
+    );
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_runtime_required_pipelines".to_string(), 4,))
+    );
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_binary_archive_state".to_string(), 2,))
+    );
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .contains(&("metal_dispatch_binary_archive_serialized".to_string(), 1,))
+    );
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .iter()
+            .any(|(key, value)| {
+                key == "metal_dispatch_copy_workload_elements"
+                    && *value == expected_copy_workload_elements
+            })
+    );
+    assert!(
+        route_metadata
+            .crossover_decisions
+            .iter()
+            .any(|(key, value)| {
+                key == "metal_dispatch_attention_max_abs_diff_microunits" && *value == 0
+            })
+    );
 }
 
 #[test]
@@ -8490,6 +8649,7 @@ fn metal_kernel_builder_skips_when_toolchain_is_unavailable() {
         manifest_path: fixture.root.join("metal/phase1-kernels.json"),
         output_dir: fixture.build_dir.clone(),
         doctor: sample_build_doctor(false, false),
+        toolchain_path_override: None,
     };
 
     let artifacts =
@@ -8532,6 +8692,7 @@ kernel void swap_blocks() {}
         manifest_path: fixture.root.join("metal/phase1-kernels.json"),
         output_dir: fixture.build_dir.clone(),
         doctor: sample_build_doctor(true, true),
+        toolchain_path_override: None,
     };
 
     let artifacts =
@@ -8539,11 +8700,13 @@ kernel void swap_blocks() {}
 
     assert_eq!(artifacts.build_status(), MetalBuildStatus::FailedCompile);
     assert!(artifacts.build_report.compile_commands.is_empty());
-    assert!(artifacts
-        .build_report
-        .reason
-        .as_deref()
-        .is_some_and(|reason| reason.contains("kv_scale_update")));
+    assert!(
+        artifacts
+            .build_report
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("kv_scale_update"))
+    );
     assert!(artifacts.build_report.outputs.metallib.is_none());
 
     fixture.cleanup();
@@ -8562,47 +8725,46 @@ fn metal_kernel_builder_compiles_with_fake_xcrun_toolchain() {
     permissions.set_mode(0o755);
     fs::set_permissions(&fake_xcrun, permissions).expect("fake xcrun should be executable");
 
+    let original_path = std::env::var_os("PATH");
+    let fake_path = prepend_to_path(&bin_dir, original_path.as_ref());
+
     let request = MetalKernelBuildRequest {
         manifest_path: fixture.root.join("metal/phase1-kernels.json"),
         output_dir: fixture.build_dir.clone(),
         doctor: sample_build_doctor(true, true),
+        toolchain_path_override: Some(fake_path),
     };
-
-    let _guard = env_lock().lock().expect("env lock should acquire");
-    let original_path = std::env::var_os("PATH");
-    let fake_path = prepend_to_path(&bin_dir, original_path.as_ref());
-    std::env::set_var("PATH", &fake_path);
 
     let artifacts = build_phase1_kernel_artifacts(&request)
         .expect("builder should compile through fake toolchain");
 
-    if let Some(path) = original_path {
-        std::env::set_var("PATH", path);
-    } else {
-        std::env::remove_var("PATH");
-    }
-
     assert_eq!(artifacts.build_status(), MetalBuildStatus::Compiled);
     assert!(!artifacts.reused_existing_artifacts());
     assert_eq!(artifacts.build_report.compile_commands.len(), 3);
-    assert!(artifacts
-        .build_report
-        .outputs
-        .air
-        .as_deref()
-        .is_some_and(Path::is_file));
-    assert!(artifacts
-        .build_report
-        .outputs
-        .metalar
-        .as_deref()
-        .is_some_and(Path::is_file));
-    assert!(artifacts
-        .build_report
-        .outputs
-        .metallib
-        .as_deref()
-        .is_some_and(Path::is_file));
+    assert!(
+        artifacts
+            .build_report
+            .outputs
+            .air
+            .as_deref()
+            .is_some_and(Path::is_file)
+    );
+    assert!(
+        artifacts
+            .build_report
+            .outputs
+            .metalar
+            .as_deref()
+            .is_some_and(Path::is_file)
+    );
+    assert!(
+        artifacts
+            .build_report
+            .outputs
+            .metallib
+            .as_deref()
+            .is_some_and(Path::is_file)
+    );
     assert_eq!(
         artifacts
             .build_report
@@ -8632,35 +8794,30 @@ fn metal_kernel_builder_reuses_valid_compiled_artifacts_without_recompiling() {
     let mut doctor = sample_build_doctor(true, true);
     doctor.metal_toolchain.metal.version = Some("Apple metal version 99999.1".to_string());
 
+    let original_path = std::env::var_os("PATH");
+    let fake_path = prepend_to_path(&bin_dir, original_path.as_ref());
+
     let request = MetalKernelBuildRequest {
         manifest_path: fixture.root.join("metal/phase1-kernels.json"),
         output_dir: fixture.build_dir.clone(),
         doctor: doctor.clone(),
+        toolchain_path_override: Some(fake_path),
     };
-
-    let _guard = env_lock().lock().expect("env lock should acquire");
-    let original_path = std::env::var_os("PATH");
-    let fake_path = prepend_to_path(&bin_dir, original_path.as_ref());
-    std::env::set_var("PATH", &fake_path);
 
     let artifacts = build_phase1_kernel_artifacts(&request)
         .expect("builder should reuse validated compiled artifacts");
 
-    if let Some(path) = original_path {
-        std::env::set_var("PATH", path);
-    } else {
-        std::env::remove_var("PATH");
-    }
-
     assert_eq!(artifacts.build_status(), MetalBuildStatus::Compiled);
     assert!(artifacts.reused_existing_artifacts());
     assert_eq!(artifacts.build_report.doctor, doctor);
-    assert!(artifacts
-        .build_report
-        .outputs
-        .metallib
-        .as_deref()
-        .is_some_and(Path::is_file));
+    assert!(
+        artifacts
+            .build_report
+            .outputs
+            .metallib
+            .as_deref()
+            .is_some_and(Path::is_file)
+    );
 
     fixture.cleanup();
 }
@@ -8683,7 +8840,7 @@ fn write_phase1_fixture(
     let manifest_path = metal_dir.join("phase1-kernels.json");
     let mut manifest = MetalKernelManifest {
         schema_version: PHASE1_METAL_KERNEL_MANIFEST_SCHEMA_VERSION.to_string(),
-        native_target: PHASE1_METAL_NATIVE_TARGET.to_string(),
+        mlx_target: PHASE1_MLX_METAL_TARGET.to_string(),
         metal_language_standard: PHASE1_METAL_LANGUAGE_STANDARD.to_string(),
         library_name: PHASE1_METAL_LIBRARY_NAME.to_string(),
         default_block_size_tokens: PHASE1_DEFAULT_BLOCK_SIZE_TOKENS,
@@ -8738,7 +8895,7 @@ fn write_phase1_fixture(
         schema_version: PHASE1_METAL_BUILD_REPORT_SCHEMA_VERSION.to_string(),
         manifest_path: manifest_path.clone(),
         source_file: source_path.clone(),
-        native_target: manifest.native_target.clone(),
+        mlx_target: manifest.mlx_target.clone(),
         metal_language_standard: manifest.metal_language_standard.clone(),
         library_name: manifest.library_name.clone(),
         default_block_size_tokens: manifest.default_block_size_tokens,
@@ -8756,7 +8913,7 @@ fn write_phase1_fixture(
                 status,
                 MetalBuildStatus::Compiled | MetalBuildStatus::FailedCompile
             ),
-            native_runtime_ready: status == MetalBuildStatus::Compiled,
+            mlx_runtime_ready: status == MetalBuildStatus::Compiled,
             metal_toolchain_fully_available: !matches!(
                 status,
                 MetalBuildStatus::SkippedToolchainUnavailable
@@ -8765,7 +8922,7 @@ fn write_phase1_fixture(
                 os: "macos".to_string(),
                 arch: "aarch64".to_string(),
                 detected_soc: Some("Apple M4 Max".to_string()),
-                supported_native_runtime: true,
+                supported_mlx_runtime: true,
                 unsupported_host_override_active: false,
             },
             metal_toolchain: MetalBuildToolchainReport {
@@ -9378,13 +9535,13 @@ fn sample_build_doctor(
             "not_ready".to_string()
         },
         bringup_allowed,
-        native_runtime_ready: metal_toolchain_fully_available && bringup_allowed,
+        mlx_runtime_ready: metal_toolchain_fully_available && bringup_allowed,
         metal_toolchain_fully_available,
         host: MetalBuildHostReport {
             os: "macos".to_string(),
             arch: "aarch64".to_string(),
             detected_soc: Some("Apple M4 Max".to_string()),
-            supported_native_runtime: true,
+            supported_mlx_runtime: true,
             unsupported_host_override_active: false,
         },
         metal_toolchain: MetalBuildToolchainReport {
@@ -9494,11 +9651,6 @@ set -eu
 echo "unexpected xcrun invocation" >&2
 exit 99
 "#
-}
-
-fn env_lock() -> &'static Mutex<()> {
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    ENV_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn prepend_to_path(dir: &Path, existing: Option<&OsString>) -> OsString {
@@ -10340,6 +10492,7 @@ fn try_compile_real_bringup() -> Option<(MetalRuntimeBringup, PathBuf)> {
         manifest_path,
         output_dir: output_dir.clone(),
         doctor: sample_build_doctor(true, true),
+        toolchain_path_override: None,
     };
 
     let artifacts = build_phase1_kernel_artifacts(&request).ok()?;
@@ -10361,6 +10514,10 @@ fn try_compile_real_bringup() -> Option<(MetalRuntimeBringup, PathBuf)> {
 #[cfg(target_os = "macos")]
 #[test]
 fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
+    if skip_metal_heavy_test_unless_opted_in("qwen35_2b_bf16_internal_model_artifact_test") {
+        return;
+    }
+
     let model_dir =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.internal/models/Qwen3.5-2B-bf16");
     if !model_dir.join("config.json").exists() {
@@ -10744,6 +10901,10 @@ fn sampled_token_from_runner_output(output: &RunnerOutput, request_id: RequestId
 #[cfg(target_os = "macos")]
 #[test]
 fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
+    if skip_metal_heavy_test_unless_opted_in("qwen35_2b_bf16_internal_model_artifact_test") {
+        return;
+    }
+
     let model_dir =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.internal/models/Qwen3.5-2B-bf16");
     if !model_dir.join("config.json").exists() {
@@ -10866,9 +11027,11 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                     items: vec![ExecutionItem {
                         request_id,
                         mode: ExecutionMode::Decode,
-                        input_token_slice: vec![*generated_tokens
-                            .last()
-                            .expect("generated tokens should contain the previous token")],
+                        input_token_slice: vec![
+                            *generated_tokens
+                                .last()
+                                .expect("generated tokens should contain the previous token"),
+                        ],
                         reused_prefix_token_slice: warmup_tokens,
                         position_range: PositionRange {
                             start: decode_position,
@@ -10922,8 +11085,10 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                 .cloned()
                 .expect("decode should retain linear attention state");
             assert!(
-                linear_state.layers.values().all(|layer_state| layer_state.processed_tokens
-                    == expected_processed_tokens),
+                linear_state
+                    .layers
+                    .values()
+                    .all(|layer_state| layer_state.processed_tokens == expected_processed_tokens),
                 "all linear layers should advance to {expected_processed_tokens} tokens after {} decode outputs; got {linear_state:?}",
                 generated_tokens.len()
             );
@@ -11232,8 +11397,12 @@ fn dequantize_q4k_block_ref(d: f32, dmin: f32, scales: &[u8; 12], qs: &[u8; 128]
         let (sc1, m1v) = get_sc_mn(is + 1, scales);
         let d2 = d * sc1 as f32;
         let m2 = dmin * m1v as f32;
-        for l in 0..32 { out.push(d1 * (qs[q_ptr + l] & 0xF) as f32 - m1); }
-        for l in 0..32 { out.push(d2 * (qs[q_ptr + l] >> 4) as f32 - m2); }
+        for l in 0..32 {
+            out.push(d1 * (qs[q_ptr + l] & 0xF) as f32 - m1);
+        }
+        for l in 0..32 {
+            out.push(d2 * (qs[q_ptr + l] >> 4) as f32 - m2);
+        }
         q_ptr += 32;
         is += 2;
     }
@@ -11242,7 +11411,12 @@ fn dequantize_q4k_block_ref(d: f32, dmin: f32, scales: &[u8; 12], qs: &[u8; 128]
 
 /// Builds a 144-byte block_q4_K from components and returns the raw bytes.
 #[cfg(target_os = "macos")]
-fn make_q4k_block(d_f16_bits: u16, dmin_f16_bits: u16, scales: &[u8; 12], qs: &[u8; 128]) -> Vec<u8> {
+fn make_q4k_block(
+    d_f16_bits: u16,
+    dmin_f16_bits: u16,
+    scales: &[u8; 12],
+    qs: &[u8; 128],
+) -> Vec<u8> {
     let mut block = vec![0u8; 144];
     block[0..2].copy_from_slice(&d_f16_bits.to_le_bytes());
     block[2..4].copy_from_slice(&dmin_f16_bits.to_le_bytes());
@@ -11272,7 +11446,7 @@ fn decode_projection_q4km_gpu_output_matches_reference_dequantizer() {
 
     // --- Build weight data (2 rows, 1 block each = 2 × 144 = 288 bytes) ---
     // Row 0: d=1.0(0x3C00), dmin=0.0(0x0000), all sc=1 mn=0, all nibbles=1
-    let scales0 = [1u8, 1, 1, 1,  0, 0, 0, 0,  1, 1, 1, 1];
+    let scales0 = [1u8, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1];
     let qs0 = [0x11u8; 128]; // nibbles = 1
     let block0 = make_q4k_block(0x3C00, 0x0000, &scales0, &qs0);
 
@@ -11281,7 +11455,7 @@ fn decode_projection_q4km_gpu_output_matches_reference_dequantizer() {
     //   j=4: sc=(scales[8]&0xF)|((scales[0]>>6)<<4)=2|(0)=2; mn=(scales[8]>>4)|...=0|(0)=0
     //   Wait, need to be more careful here. Let's just test the j<4 sub-blocks.
     //   scales = [2,2,2,2, 1,1,1,1, 0,0,0,0] → j<4: sc=2,mn=1; j>=4: sc=0,mn=0
-    let scales1 = [2u8, 2, 2, 2,  1, 1, 1, 1,  0, 0, 0, 0];
+    let scales1 = [2u8, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0];
     let qs1 = [0x33u8; 128]; // nibbles = 3
     let block1 = make_q4k_block(0x4000, 0x3C00, &scales1, &qs1);
 
@@ -11337,11 +11511,15 @@ fn decode_projection_q4km_gpu_output_matches_reference_dequantizer() {
 
     assert!(
         (gpu_out[0] - expected0).abs() < 1e-2,
-        "row 0: gpu={} expected={}", gpu_out[0], expected0
+        "row 0: gpu={} expected={}",
+        gpu_out[0],
+        expected0
     );
     assert!(
         (gpu_out[1] - expected1).abs() < 1e-2,
-        "row 1: gpu={} expected={}", gpu_out[1], expected1
+        "row 1: gpu={} expected={}",
+        gpu_out[1],
+        expected1
     );
 
     let _ = std::fs::remove_dir_all(output_dir);
@@ -11590,25 +11768,30 @@ fn unique_test_dir(label: &str) -> PathBuf {
     ))
 }
 
-// --- Integration test: Qwen3.5-9B-Q4_K_M.gguf native load ----------------
+// --- Integration test: Qwen3.5-9B-Q4_K_M.gguf MLX load ----------------
 
-/// Verifies that the real Qwen3.5-9B GGUF loads correctly through the native
-/// Q4_K_M path: GGUF parser → manifest → Metal buffer bindings (all
+/// Verifies that the real Qwen3.5-9B GGUF loads correctly through the MLX
+/// Q4_K_M artifact path: GGUF parser → manifest → Metal buffer bindings (all
 /// dequantization at load time).  Skips gracefully when the model file is
 /// absent so CI boxes without the model still pass.
 #[cfg(target_os = "macos")]
 #[test]
 fn qwen35_9b_q4km_gguf_loads_and_creates_metal_buffers() {
-    let gguf_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.internal/models/Qwen3.5-9B-Q4_K_M.gguf");
+    if skip_metal_heavy_test_unless_opted_in("qwen35_9b_q4km_gguf_loads_and_creates_metal_buffers")
+    {
+        return;
+    }
+
+    let gguf_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.internal/models/Qwen3.5-9B-Q4_K_M.gguf");
     if !gguf_path.is_file() {
         eprintln!("skipping: {} not present", gguf_path.display());
         return;
     }
 
     // --- Step 1: Parse GGUF → NativeModelArtifacts ---
-    let artifacts = crate::gguf::load_gguf(&gguf_path)
-        .expect("Qwen3.5-9B GGUF should parse without error");
+    let artifacts =
+        crate::gguf::load_gguf(&gguf_path).expect("Qwen3.5-9B GGUF should parse without error");
 
     let m = artifacts.manifest();
     assert_eq!(m.layer_count, 32, "layer_count");
@@ -11617,19 +11800,25 @@ fn qwen35_9b_q4km_gguf_loads_and_creates_metal_buffers() {
     assert_eq!(m.kv_head_count, 4, "kv_head_count");
     assert_eq!(m.attention_head_dim, 256, "attention_head_dim");
     assert_eq!(m.vocab_size, 248320, "vocab_size");
-    assert!(m.tensors.len() > 400, "should have > 400 tensors, got {}", m.tensors.len());
-    eprintln!("manifest OK: {} tensors, {} layers", m.tensors.len(), m.layer_count);
+    assert!(
+        m.tensors.len() > 400,
+        "should have > 400 tensors, got {}",
+        m.tensors.len()
+    );
+    eprintln!(
+        "manifest OK: {} tensors, {} layers",
+        m.tensors.len(),
+        m.layer_count
+    );
 
     // --- Step 2: Create Metal buffers (loads + dequantizes all tensors) ---
     let Some(build_dir) = compiled_repo_metal_build_dir() else {
         eprintln!("skipping buffer binding: compiled repo Metal build dir unavailable");
         return;
     };
-    let runner = MetalBringupRunner::from_build_dir_and_model_artifacts(
-        &build_dir,
-        Some(&gguf_path),
-    )
-    .expect("MetalBringupRunner should initialize from GGUF path");
+    let runner =
+        MetalBringupRunner::from_build_dir_and_model_artifacts(&build_dir, Some(&gguf_path))
+            .expect("MetalBringupRunner should initialize from GGUF path");
 
     // Verify via runner Debug output that buffers were bound
     let runner_debug = format!("{runner:?}");

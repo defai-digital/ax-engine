@@ -11,9 +11,9 @@
     "chat_template_revision": "chatml-v1"
   },
   "runtime": {
-    "selected_backend": "ax_native",
-    "support_tier": "native_preview",
-    "resolution_policy": "strict_native",
+    "selected_backend": "mlx",
+    "support_tier": "mlx_preview",
+    "resolution_policy": "mlx_only",
     "deterministic": true,
     "max_batch_tokens": 12288,
     "flags": {
@@ -21,8 +21,8 @@
     }
   },
   "sampling": {
-    "temperature": 0.0,
-    "top_p": 1.0,
+    "temperature": 0,
+    "top_p": 1,
     "top_k": 0,
     "seed": 1234
   },

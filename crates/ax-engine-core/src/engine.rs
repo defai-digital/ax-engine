@@ -18,8 +18,8 @@ use crate::runner::{
     RunnerRequestContext,
 };
 use crate::sampling::{
-    sampling_params_allow_deterministic_argmax_fast_path, DeterministicSampler, SampledToken,
-    SamplerInput, SamplerRequest, TokenSampler,
+    DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, TokenSampler,
+    sampling_params_allow_deterministic_argmax_fast_path,
 };
 use crate::scheduler::{
     ExecutionBatch, ExecutionItem, ExecutionMode, SchedulePlan, Scheduler, SchedulerInput,
@@ -613,8 +613,7 @@ impl EngineCore {
                 }
                 return Err(EngineCoreError::RunnerContractViolation {
                     step_id: runner_output.step_id,
-                    message:
-                        "decode request requires logits payload, logits handle, or output token",
+                    message: "decode request requires logits payload, logits handle, or output token",
                 });
             }
 
@@ -707,8 +706,7 @@ impl EngineCore {
             {
                 return Err(EngineCoreError::RunnerContractViolation {
                     step_id: execution_batch.step_id,
-                    message:
-                        "prefill updates may only emit output tokens when completing the prompt",
+                    message: "prefill updates may only emit output tokens when completing the prompt",
                 });
             }
 
@@ -718,8 +716,7 @@ impl EngineCore {
             {
                 return Err(EngineCoreError::RunnerContractViolation {
                     step_id: execution_batch.step_id,
-                    message:
-                        "runner tokens_executed must match scheduled_token_count for non-failed updates",
+                    message: "runner tokens_executed must match scheduled_token_count for non-failed updates",
                 });
             }
         }
@@ -795,8 +792,7 @@ impl EngineCore {
                 {
                     return Err(EngineCoreError::RunnerContractViolation {
                         step_id: execution_batch.step_id,
-                        message:
-                            "failed runner output must resolve each scheduled request as failed",
+                        message: "failed runner output must resolve each scheduled request as failed",
                     });
                 }
             }
@@ -823,8 +819,7 @@ impl EngineCore {
             if !failed && decode_result_sources == 0 {
                 return Err(EngineCoreError::RunnerContractViolation {
                     step_id: execution_batch.step_id,
-                    message:
-                        "decode update must provide logits payload, logits handle, or output token",
+                    message: "decode update must provide logits payload, logits handle, or output token",
                 });
             }
             if decode_result_sources > 1 {
@@ -1629,8 +1624,10 @@ mod tests {
         assert_eq!(decode.metrics.ttft_events, 1);
         assert_eq!(snapshot.generated_tokens, vec![2]);
         assert_eq!(snapshot.generated_token_logprobs.len(), 1);
-        assert!(snapshot.generated_token_logprobs[0]
-            .is_some_and(|logprob| logprob.is_finite() && logprob < 0.0));
+        assert!(
+            snapshot.generated_token_logprobs[0]
+                .is_some_and(|logprob| logprob.is_finite() && logprob < 0.0)
+        );
         assert_eq!(snapshot.state, RequestState::Finished);
         assert_eq!(
             decode
@@ -2393,10 +2390,12 @@ mod tests {
 
         // step3: qwen3 request 1 finished and cleaned up, now gemma request 2 gets scheduled
         let step3 = engine.step(8, true).unwrap();
-        assert!(step3
-            .schedule_plan
-            .selected_requests
-            .contains(&RequestId(2)));
+        assert!(
+            step3
+                .schedule_plan
+                .selected_requests
+                .contains(&RequestId(2))
+        );
         assert_eq!(
             step3
                 .schedule_plan

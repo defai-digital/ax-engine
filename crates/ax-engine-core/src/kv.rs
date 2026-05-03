@@ -1060,10 +1060,12 @@ mod tests {
         manager.register_request(RequestId(1), vec![1; 32]).unwrap();
         manager.allocate(RequestId(1), 32).unwrap();
 
-        assert!(manager
-            .memory_pressure()
-            .unwrap()
-            .starts_with("kv_low_free_blocks:"));
+        assert!(
+            manager
+                .memory_pressure()
+                .unwrap()
+                .starts_with("kv_low_free_blocks:")
+        );
     }
 
     #[test]

@@ -30,14 +30,14 @@ ax-bench replay --manifest benchmarks/manifests/replay/shared_prefix_long_churn.
 ax-bench compare --baseline benchmarks/results/<baseline> --candidate benchmarks/results/<candidate> --output-root benchmarks/results
 ax-bench matrix-compare --baseline benchmarks/results/<baseline-matrix> --candidate benchmarks/results/<candidate-matrix> --output-root benchmarks/results
 ax-bench baseline --source benchmarks/results/<run> --name "Dense Qwen Trusted" --output-root benchmarks/baselines
-ax-bench matrix --manifest benchmarks/manifests/matrix/frozen_native_dense_phase7.json --output-root benchmarks/results
+ax-bench matrix --manifest benchmarks/manifests/matrix/mlx_dense_phase7.json --output-root benchmarks/results
 ax-bench generate --tokens 1,2,3 --max-output-tokens 4
-ax-bench generate --prompt "Hello from AX" --support-tier compatibility --compat-backend vllm --compat-server-url http://127.0.0.1:8000
-ax-bench generate --tokens 1,2,3 --native-runtime-artifacts-dir build/metal --native-model-artifacts-dir /tmp/ax-model
-ax-bench stream --tokens 1,2,3 --support-tier compatibility --compat-server-url http://127.0.0.1:8081 --json
+ax-bench generate --prompt "Hello from AX" --support-tier llama_cpp --llama-server-url http://127.0.0.1:8081
+ax-bench generate --tokens 1,2,3 --mlx --mlx-model-artifacts-dir /tmp/mlx-model-artifacts
+ax-bench stream --tokens 1,2,3 --support-tier llama_cpp --llama-server-url http://127.0.0.1:8081 --json
 ax-bench doctor --json
 ax-bench metal-build
-cargo run -p ax-engine-server -- --model-id qwen3_dense --compat-cli-path python3 --compat-model-path /absolute/path/to/mlx-model --port 8080
+cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts --port 8080
 ```
 
 ## Current State
@@ -60,27 +60,24 @@ The CLI currently validates:
   request lifecycle paths
 - preview SSE transport through the SDK-backed lifecycle path
 - direct blocking and streaming inference through the SDK-owned session
-  contract, including compatibility backend resolution
+  contract, including llama.cpp backend resolution
 
 It does not yet perform full production benchmarking.
 The current implementation executes the deterministic engine bring-up path, so
 the artifacts reflect real request progress, route metadata, and synthetic
 runtime observations rather than placeholder files.
-`ax-bench` now also supports delegated compatibility benchmarking through the
-SDK-owned backend contract. Server-backed `vLLM`, `mistral.rs`, and MLX routes
-currently run scenario manifests through a blocking compatibility runtime, with
-the explicit contract that those manifests stay single-request
-(`shape.concurrency=1`) and do not require delegated prefix reuse. The
-stepwise `llama.cpp /completion` adapter still carries the broader delegated
+`ax-bench` now also supports delegated llama.cpp benchmarking through the
+SDK-owned backend contract. The stepwise `llama.cpp /completion` adapter carries
+the broader delegated
 coverage for multi-request scenario and replay manifests, including submit /
-cancel shapes driven through one shared SDK session. Replay and compatibility
+cancel shapes driven through one shared SDK session. Replay and llama.cpp
 `shared_prefix` scenarios still surface backend-managed prompt-cache reuse only
 through that stepwise delegated telemetry. Unsupported delegated shapes still
 emit a `contract_failure.json` artifact plus `summary.md` instead of synthetic
 execution metrics.
 Successful compare runs now also carry the resolved compare runtime identity in
-`regression.json` and `comparison.md`, so compatibility results do not read like
-native bring-up compares; delegated prompt-cache runs also surface the
+`regression.json` and `comparison.md`, so llama.cpp results do not read like
+MLX bring-up compares; delegated prompt-cache runs also surface the
 backend-reported cached-token count directly instead of hiding it only inside
 route crossover metadata.
 `ax-bench baseline` now snapshots one successful benchmark result into a named
@@ -89,7 +86,7 @@ trusted baseline directory, copies the core execution artifacts, emits
 overwriting an existing baseline name. Compare summaries also surface that
 trusted baseline name when present, so later regression reviews can anchor back
 to an intentionally frozen result rather than an arbitrary prior run folder.
-`ax-bench matrix` now executes the checked-in frozen native scenario matrix as
+`ax-bench matrix` now executes the checked-in MLX scenario matrix as
 one Tier 2 roll-up, writes per-member execution artifacts beneath one matrix
 result directory, and emits `matrix.json` plus `summary.md` so dense-path
 performance work can reference a canonical scenario set instead of ad-hoc
@@ -99,22 +96,16 @@ that come from the same frozen manifest fingerprint, reuses the existing
 per-member compare contract for each scenario, and emits a matrix-level
 `matrix_regression.json` plus `summary.md` so frozen-matrix drift can be
 reviewed as one roll-up instead of manually opening each member folder.
-The checked-in compatibility examples live at
-`benchmarks/manifests/scenario/compatibility_chat_qwen_short.json` and
-`benchmarks/manifests/scenario/compatibility_chat_qwen_short_vllm.json`, plus
-`benchmarks/manifests/scenario/compatibility_chat_qwen_short_mistral_rs.json`,
-plus `benchmarks/manifests/scenario/compatibility_chat_qwen_short_mlx.json`,
-plus
-`benchmarks/manifests/scenario/compatibility_shared_prefix_qwen_short.json`,
-plus
-`benchmarks/manifests/replay/compatibility_submit_cancel_dual.json`, plus the
+The checked-in llama.cpp examples live at
+`benchmarks/manifests/scenario/llama_cpp_chat_qwen_short.json` and
+`benchmarks/manifests/scenario/llama_cpp_shared_prefix_qwen_short.json`,
+`benchmarks/manifests/replay/llama_cpp_submit_cancel_dual.json`, plus the
 delegated prompt-cache reuse replay example at
-`benchmarks/manifests/replay/compatibility_prompt_cache_reuse_dual.json`;
-update their `server_url` before running them directly.
+`benchmarks/manifests/replay/llama_cpp_prompt_cache_reuse_dual.json`; update their `server_url` before running them directly.
 `ax-bench doctor` now turns the SDK-owned host and Metal-toolchain diagnostics
 into one human-readable or JSON readiness report. It distinguishes fully
 supported M4-or-newer native hosts from unsupported-host override bring-up, and
-it keeps the rule explicit that compatibility adapters do not widen AX native
+it keeps the rule explicit that llama.cpp adapters do not widen AX native
 host support.
 `ax-bench metal-build` now owns the checked-in Phase 1 Metal build contract in
 Rust, writing `doctor.json`, `build_report.json`, and `summary.md` into the
@@ -126,11 +117,11 @@ unnecessarily.
 That `metal-ar` stage is an AX-owned artifact-contract choice for the checked-in
 bring-up path, not a claim that every reviewed upstream Metal stack uses the
 same intermediate.
-The checked-in Phase 1 native contract also keeps KV block-size support narrow:
-Metal-backed native sessions currently validate only `block_size_tokens=16`
-until more than one native block-size shape is proven by real kernels.
+The checked-in Phase 1 MLX Metal contract also keeps KV block-size support narrow:
+Metal-backed MLX sessions currently validate only `block_size_tokens=16`
+until more than one MLX Metal block-size shape is proven by real kernels.
 The preview server is intentionally narrow and currently exposes token-based
-bring-up endpoints rather than a broad compatibility API surface, including a
+bring-up endpoints rather than a broad llama.cpp API surface, including a
 shared-session stepwise request lifecycle for local integration.
 
 ## Direct Inference
@@ -140,12 +131,10 @@ shared-session stepwise request lifecycle for local integration.
 
 They support:
 
-- native preview requests with `--tokens`
-- compatibility requests with `--prompt` or `--tokens`
-- delegated backend selection via `--compat-backend`
-- delegated targets via `--compat-server-url` or local CLI fallback flags
-- explicit native runtime/model artifact selection via
-  `--native-runtime-artifacts-dir` and `--native-model-artifacts-dir`
+- MLX preview requests with `--mlx --tokens`
+- llama.cpp requests with `--prompt` or `--tokens`
+- llama.cpp targets via `--llama-server-url` or local CLI fallback flags
+- explicit MLX model artifact selection via `--mlx-model-artifacts-dir`
 
 Examples:
 
@@ -156,23 +145,22 @@ ax-bench generate --tokens 1,2,3 --max-output-tokens 4
 ```text
 ax-bench generate \
   --tokens 1,2,3 \
-  --native-runtime-artifacts-dir build/metal \
-  --native-model-artifacts-dir /tmp/ax-model
+  --mlx \
+  --mlx-model-artifacts-dir /tmp/mlx-model-artifacts
 ```
 
 ```text
 ax-bench generate \
   --prompt "Hello from AX" \
-  --support-tier compatibility \
-  --compat-backend mistral-rs \
-  --compat-server-url http://127.0.0.1:8000
+  --support-tier llama_cpp \
+  --llama-server-url http://127.0.0.1:8081
 ```
 
 ```text
 ax-bench stream \
   --tokens 1,2,3 \
-  --support-tier compatibility \
-  --compat-server-url http://127.0.0.1:8081 \
+  --support-tier llama_cpp \
+  --llama-server-url http://127.0.0.1:8081 \
   --json
 ```
 

@@ -1,19 +1,19 @@
 {
   "schema_version": "ax.bench.manifest.v1",
-  "id": "compatibility_submit_cancel_dual",
+  "id": "llama_cpp_submit_cancel_dual",
   "class": "replay",
   "scenario": "replay",
   "model": {
     "family": "qwen3_dense",
-    "revision": "phase1-compat",
+    "revision": "phase1-llama-cpp",
     "quant": "q4_k_m",
     "tokenizer_revision": "qwen-tokenizer-v1",
     "chat_template_revision": "chatml-v1"
   },
   "runtime": {
     "selected_backend": "llama_cpp",
-    "support_tier": "compatibility",
-    "resolution_policy": "allow_compat",
+    "support_tier": "llama_cpp",
+    "resolution_policy": "allow_llama_cpp",
     "fallback_reason": "benchmark requested delegated runtime",
     "backend_adapter": {
       "kind": "llama_cpp_server_completion",
@@ -26,8 +26,8 @@
     }
   },
   "sampling": {
-    "temperature": 0.0,
-    "top_p": 1.0,
+    "temperature": 0,
+    "top_p": 1,
     "top_k": 0,
     "seed": 1234
   },
@@ -56,5 +56,5 @@
     "expect_deterministic": true,
     "require_prefix_reuse": false
   },
-  "notes": "Compatibility example replay manifest for server-backed llama.cpp /completion submit/cancel benchmarking. Update runtime.backend_adapter.server_url before running."
+  "notes": "LlamaCpp example replay manifest for server-backed llama.cpp /completion submit/cancel benchmarking. Update runtime.backend_adapter.server_url before running."
 }

@@ -11,21 +11,16 @@ Current preview scope:
 - SDK-backed `Session`
 - fail-closed host validation for pre-M4 Macs
 - runtime metadata reporting
-- shipped local defaults now use MLX-backed compatibility unless you pass a
-  `.gguf` model path or opt into `native_mode=True`
+- `mlx=True` selects the repo-owned MLX runtime
+- non-MLX inference routes to `llama.cpp`
 - text/chat convenience helpers over the same SDK-backed request contract
 - stepwise request control via `submit(...)`, `step()`, `snapshot(...)`, and
   `cancel(...)`
 - SDK-backed in-process `stream_generate(...)` lifecycle events emitted through
   a native incremental iterator
-- default local compatibility path via `compat_model_path` for MLX model
-  directories, `.gguf` routing to `llama.cpp`, with `compat_backend="vllm"` or
-  `compat_backend="mistral_rs"` or `compat_backend="mlx"` available for
-  explicit server-backed compatibility targets, and `compat_cli_path` /
-  `compat_model_path` retained as CLI fallbacks for blocking `generate(...)`
-  through `llama.cpp` or direct `mlx-lm`; `mlx=True` now means "try MLX first,
-  then fall back to llama.cpp"; the server-backed path also supports
-  iterator-style `stream_generate(...)` plus preview stepwise request control
+- llama.cpp compatibility via `llama_model_path`, `llama_cli_path`, or
+  `llama_server_url`
+- `native_mode=True` is retired and returns an error
 
 Current non-goals:
 
@@ -34,13 +29,10 @@ Current non-goals:
 - transport-level remote streaming
 - broad compatibility lifecycle parity across multiple delegated adapters
 
-For Phase 1, stepwise request-control methods now support native preview plus
-the server-backed `llama.cpp`, `vLLM`, `mistral.rs`, and explicit MLX
-compatibility paths, and one compatibility session can now hold multiple active
-delegated requests while `step()` aggregates progress across them. The `mlx`
-path also supports a blocking direct `mlx_lm.generate` fallback, while the CLI
-paths remain narrower text-prompt bring-up routes rather than full streamed
-runtime integrations.
+For Phase 1, stepwise request-control methods support MLX preview plus the
+server-backed `llama.cpp` compatibility path. One compatibility session can now
+hold multiple active delegated requests while `step()` aggregates progress
+across them.
 
 Build from the repository root with `maturin`:
 

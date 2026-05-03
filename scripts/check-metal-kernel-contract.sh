@@ -34,7 +34,7 @@ manifest = json.loads((root / "metal/phase1-kernels.json").read_text())
 
 assert report["schema_version"] == "ax.metal.build_report.v1"
 assert report["library_name"] == manifest["library_name"]
-assert report["native_target"] == manifest["native_target"]
+assert report["mlx_target"] == manifest["mlx_target"]
 assert report["metal_language_standard"] == "metal3.1"
 assert report["default_block_size_tokens"] == 16
 assert report["supported_block_size_tokens"] == [16]
@@ -44,17 +44,11 @@ assert report["doctor"]["metal_toolchain_fully_available"] == doctor["metal_tool
 assert len(report["source_sha256"]) == 64
 
 kernel_names = [kernel["name"] for kernel in report["kernels"]]
-assert kernel_names == [
-    "reshape_and_cache",
-    "paged_decode_attention",
-    "gather_kv_cache",
-    "copy_blocks",
-    "swap_blocks",
-    "kv_scale_update",
+manifest_kernel_names = [kernel["name"] for kernel in manifest["kernels"]]
+assert kernel_names == manifest_kernel_names
+assert [kernel["tier"] for kernel in report["kernels"]] == [
+    kernel["tier"] for kernel in manifest["kernels"]
 ]
-assert [kernel["tier"] for kernel in report["kernels"][:4]] == ["required"] * 4
-assert report["kernels"][4]["tier"] == "deferred"
-assert report["kernels"][5]["tier"] == "optional"
 
 assert "# AX Metal Kernel Build" in summary
 assert f"- status: `{report['status']}`" in summary

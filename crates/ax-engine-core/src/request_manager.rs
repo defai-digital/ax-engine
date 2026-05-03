@@ -306,8 +306,7 @@ impl RequestManager {
                     if next_processed_prompt_tokens != record.prompt_tokens.len() as u32 {
                         return Err(RequestManagerError::ProgressInvariantViolation {
                             request_id: update.request_id,
-                            message:
-                                "prefill request may only sample when the scheduled step completes the prompt",
+                            message: "prefill request may only sample when the scheduled step completes the prompt",
                         });
                     }
                     record.processed_prompt_tokens = next_processed_prompt_tokens;

@@ -1,25 +1,25 @@
 #![recursion_limit = "512"]
+#![allow(clippy::collapsible_if, clippy::single_match, dead_code)]
 
 use ax_engine_core::{
-    build_phase1_kernel_artifacts, CacheGroupId, EngineCore, ExecutionRunner, MetalBringupRunner,
-    MetalBuildDoctorReport, MetalBuildHostReport, MetalBuildStatus, MetalBuildToolStatus,
-    MetalBuildToolchainReport, MetalDispatchTrace, MetalKernelBuildRequest, NativeModelArtifacts,
-    NativeModelBindingSummary, RequestId, RequestSnapshot, RequestSubmission, RouteMetadata,
-    SamplingParams, SequenceNo, StepId, StopReason,
+    CacheGroupId, EngineCore, MetalBuildDoctorReport, MetalBuildHostReport, MetalBuildStatus,
+    MetalBuildToolStatus, MetalBuildToolchainReport, MetalDispatchTrace, MetalKernelBuildRequest,
+    NativeModelArtifacts, NativeModelBindingSummary, RequestId, RequestSnapshot, RequestSubmission,
+    RouteMetadata, SamplingParams, SequenceNo, StepId, StopReason, build_phase1_kernel_artifacts,
 };
 use ax_engine_sdk::{
-    classify_native_gguf_export_failure_message, current_host_report,
-    current_metal_toolchain_report, preview_support_tier_from_label, BackendPolicy,
-    CompatibilityBackendConfig, CompatibilityBackendKind, EngineSession, EngineSessionConfig,
-    EngineStepReport, GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport,
-    GenerateSampling, GenerateStatus, GenerateStreamEvent, HostReport, LlamaCppConfig,
-    MetalToolchainReport, NativeGgufExportFailureKind, NativeModelArtifactsSource,
-    NativeModelReport, NativeRuntimeArtifactsSource, NativeRuntimeReport, PreviewBackendRequest,
-    ResolutionPolicy, ResolvedBackend, ResolvedSessionConfigRequest, RuntimeReport,
-    SelectedBackend, SessionRequestReport, SessionRequestState, SupportTier, ToolStatusReport,
+    BackendPolicy, EngineSession, EngineSessionConfig, EngineStepReport, GenerateFinishReason,
+    GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling, GenerateStatus,
+    GenerateStreamEvent, HostReport, LlamaCppConfig, MetalToolchainReport,
+    MlxGgufExportFailureKind, NativeModelArtifactsSource, NativeModelReport,
+    NativeRuntimeArtifactsSource, NativeRuntimeReport, PreviewBackendRequest, ResolutionPolicy,
+    ResolvedBackend, ResolvedSessionConfigRequest, RuntimeReport, SelectedBackend,
+    SessionRequestReport, SessionRequestState, SupportTier, ToolStatusReport,
+    classify_mlx_gguf_export_failure_message, current_host_report, current_metal_toolchain_report,
+    preview_support_tier_from_label,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -32,9 +32,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tracing_subscriber::EnvFilter;
 
-const NATIVE_GGUF_EXPORTER_ENV: &str = "AX_ENGINE_NATIVE_GGUF_EXPORTER";
-const NATIVE_GGUF_PYTHON_ENV: &str = "AX_ENGINE_NATIVE_GGUF_PYTHON";
-const NATIVE_GGUF_EXPORT_DTYPE_ENV: &str = "AX_ENGINE_NATIVE_GGUF_EXPORT_DTYPE";
+const MLX_GGUF_EXPORTER_ENV: &str = "AX_ENGINE_MLX_GGUF_EXPORTER";
+const MLX_GGUF_PYTHON_ENV: &str = "AX_ENGINE_MLX_GGUF_PYTHON";
+const MLX_GGUF_EXPORT_DTYPE_ENV: &str = "AX_ENGINE_MLX_GGUF_EXPORT_DTYPE";
 const NATIVE_DENSE_DEQUANTIZED_EXPORT_NOTE: &str =
     "source_quantization_dequantized_for_dense_native_export";
 const NATIVE_DENSE_DEQUANTIZED_SOURCE_BLOCKER: &str =
@@ -239,7 +239,7 @@ fn handle_autotune(args: &[String]) -> Result<(), CliError> {
     let manifest = load_manifest(&autotune_args.manifest_path)?;
     validate_manifest(&manifest, ManifestClass::Scenario)?;
     Err(CliError::Contract(
-        "autotune is not supported; ax_native mode has been removed".to_string(),
+        "autotune is not supported; use MLX mode or llama.cpp".to_string(),
     ))
 }
 
@@ -423,7 +423,7 @@ fn handle_doctor(args: &[String]) -> Result<(), CliError> {
     let report = build_doctor_report_for_model(
         current_host_report(),
         current_metal_toolchain_report(),
-        doctor_args.native_model_artifacts_dir.as_deref(),
+        doctor_args.mlx_model_artifacts_dir.as_deref(),
     );
 
     if doctor_args.json {
@@ -445,6 +445,7 @@ fn handle_metal_build(args: &[String]) -> Result<(), CliError> {
         manifest_path: metal_build_args.manifest_path.clone(),
         output_dir: metal_build_args.output_dir.clone(),
         doctor: metal_build_doctor_report(&doctor),
+        toolchain_path_override: None,
     })
     .map_err(map_metal_build_error)?;
 
@@ -515,17 +516,11 @@ struct InferenceArgs {
     metadata: Option<String>,
     deterministic: bool,
     mlx: bool,
-    mlx_native: bool,
     support_tier: SupportTier,
-    compat_backend: CompatibilityBackendKind,
-    compat_cli_path: PathBuf,
-    compat_model_path: Option<PathBuf>,
-    compat_server_url: Option<String>,
-    llama_fallback_cli_path: PathBuf,
-    llama_fallback_model_path: Option<PathBuf>,
-    llama_fallback_server_url: Option<String>,
-    native_runtime_artifacts_dir: Option<PathBuf>,
-    native_model_artifacts_dir: Option<PathBuf>,
+    llama_cli_path: PathBuf,
+    llama_model_path: Option<PathBuf>,
+    llama_server_url: Option<String>,
+    mlx_model_artifacts_dir: Option<PathBuf>,
     json: bool,
 }
 
@@ -540,17 +535,11 @@ impl Default for InferenceArgs {
             metadata: None,
             deterministic: true,
             mlx: false,
-            mlx_native: false,
-            support_tier: SupportTier::Compatibility,
-            compat_backend: CompatibilityBackendKind::LlamaCpp,
-            compat_cli_path: PathBuf::from("llama-cli"),
-            compat_model_path: None,
-            compat_server_url: None,
-            llama_fallback_cli_path: PathBuf::from("llama-cli"),
-            llama_fallback_model_path: None,
-            llama_fallback_server_url: None,
-            native_runtime_artifacts_dir: None,
-            native_model_artifacts_dir: None,
+            support_tier: SupportTier::LlamaCpp,
+            llama_cli_path: PathBuf::from("llama-cli"),
+            llama_model_path: None,
+            llama_server_url: None,
+            mlx_model_artifacts_dir: None,
             json: false,
         }
     }
@@ -571,8 +560,7 @@ impl InferenceArgs {
 
 fn parse_inference_args(args: &[String], command: &str) -> Result<InferenceArgs, CliError> {
     let mut parsed = InferenceArgs::default();
-    let mut support_tier_label = "compatibility".to_string();
-    let mut compat_backend_label = "llama_cpp".to_string();
+    let mut support_tier_label = "llama_cpp".to_string();
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -624,51 +612,27 @@ fn parse_inference_args(args: &[String], command: &str) -> Result<InferenceArgs,
                 )?
             }
             "--mlx" => parsed.mlx = true,
-            "--mlx-native" => parsed.mlx_native = true,
             "--support-tier" => {
                 support_tier_label = next_flag_value(&mut iter, "--support-tier")?.to_string()
             }
-            "--compat-backend" => {
-                compat_backend_label = next_flag_value(&mut iter, "--compat-backend")?.to_string()
+            "--llama-cli-path" => {
+                parsed.llama_cli_path =
+                    PathBuf::from(next_flag_value(&mut iter, "--llama-cli-path")?)
             }
-            "--compat-cli-path" => {
-                parsed.compat_cli_path =
-                    PathBuf::from(next_flag_value(&mut iter, "--compat-cli-path")?)
-            }
-            "--compat-model-path" => {
-                parsed.compat_model_path = Some(PathBuf::from(next_flag_value(
+            "--llama-model-path" => {
+                parsed.llama_model_path = Some(PathBuf::from(next_flag_value(
                     &mut iter,
-                    "--compat-model-path",
+                    "--llama-model-path",
                 )?))
             }
-            "--compat-server-url" => {
-                parsed.compat_server_url =
-                    Some(next_flag_value(&mut iter, "--compat-server-url")?.to_string())
+            "--llama-server-url" => {
+                parsed.llama_server_url =
+                    Some(next_flag_value(&mut iter, "--llama-server-url")?.to_string())
             }
-            "--llama-fallback-cli-path" => {
-                parsed.llama_fallback_cli_path =
-                    PathBuf::from(next_flag_value(&mut iter, "--llama-fallback-cli-path")?)
-            }
-            "--llama-fallback-model-path" => {
-                parsed.llama_fallback_model_path = Some(PathBuf::from(next_flag_value(
+            "--mlx-model-artifacts-dir" => {
+                parsed.mlx_model_artifacts_dir = Some(PathBuf::from(next_flag_value(
                     &mut iter,
-                    "--llama-fallback-model-path",
-                )?))
-            }
-            "--llama-fallback-server-url" => {
-                parsed.llama_fallback_server_url =
-                    Some(next_flag_value(&mut iter, "--llama-fallback-server-url")?.to_string())
-            }
-            "--native-runtime-artifacts-dir" => {
-                parsed.native_runtime_artifacts_dir = Some(PathBuf::from(next_flag_value(
-                    &mut iter,
-                    "--native-runtime-artifacts-dir",
-                )?))
-            }
-            "--native-model-artifacts-dir" => {
-                parsed.native_model_artifacts_dir = Some(PathBuf::from(next_flag_value(
-                    &mut iter,
-                    "--native-model-artifacts-dir",
+                    "--mlx-model-artifacts-dir",
                 )?))
             }
             "--json" => parsed.json = true,
@@ -676,7 +640,7 @@ fn parse_inference_args(args: &[String], command: &str) -> Result<InferenceArgs,
                 return Err(CliError::Usage(format!(
                     "unknown flag for {command}: {other}\n\n{}",
                     usage()
-                )))
+                )));
             }
         }
     }
@@ -693,20 +657,8 @@ fn parse_inference_args(args: &[String], command: &str) -> Result<InferenceArgs,
         )));
     }
 
-    let exclusive_count = [parsed.mlx, parsed.mlx_native]
-        .iter()
-        .filter(|&&v| v)
-        .count();
-    if exclusive_count > 1 {
-        return Err(CliError::Usage(
-            "--mlx and --mlx-native are mutually exclusive".to_string(),
-        ));
-    }
-
     parsed.support_tier = preview_support_tier_from_label(&support_tier_label)
         .map_err(|error| CliError::Usage(format!("invalid --support-tier: {error}")))?;
-    parsed.compat_backend = compatibility_backend_kind_from_label(&compat_backend_label)
-        .map_err(|message| CliError::Usage(format!("invalid --compat-backend: {message}")))?;
     parsed.sampling.deterministic = Some(parsed.deterministic);
 
     Ok(parsed)
@@ -804,47 +756,28 @@ fn parse_token_list(value: &str) -> Result<Vec<u32>, CliError> {
         .collect()
 }
 
-fn compatibility_backend_kind_from_label(value: &str) -> Result<CompatibilityBackendKind, String> {
-    match value {
-        "llama_cpp" | "llama-cpp" | "llama.cpp" => Ok(CompatibilityBackendKind::LlamaCpp),
-        "vllm" => Ok(CompatibilityBackendKind::Vllm),
-        "mistral_rs" | "mistral-rs" => Ok(CompatibilityBackendKind::MistralRs),
-        "mlx" => Ok(CompatibilityBackendKind::Mlx),
-        other => Err(format!(
-            "unsupported compatibility backend {other}; expected llama_cpp, vllm, mistral_rs, or mlx"
-        )),
-    }
-}
-
 fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliError> {
-    let backend_request = if args.mlx_native {
-        PreviewBackendRequest::shipping_mlx_native()
-    } else if args.mlx {
-        PreviewBackendRequest::shipping_mlx_with_llama_fallback(
-            args.compat_cli_path.clone(),
-            args.compat_model_path.clone(),
-            args.compat_server_url.clone(),
-            args.llama_fallback_cli_path.clone(),
-            args.llama_fallback_model_path.clone(),
-            args.llama_fallback_server_url.clone(),
-        )
-    } else if args.support_tier == SupportTier::Compatibility
-        && args.compat_backend == CompatibilityBackendKind::LlamaCpp
-    {
+    let backend_request = if args.mlx {
+        PreviewBackendRequest::shipping_mlx()
+    } else if args.support_tier == SupportTier::LlamaCpp {
         PreviewBackendRequest::shipping_default_llama_cpp(
-            args.compat_cli_path.clone(),
-            args.compat_model_path.clone(),
-            args.compat_server_url.clone(),
+            args.llama_cli_path.clone(),
+            args.llama_model_path.clone(),
+            args.llama_server_url.clone(),
         )
     } else {
-        PreviewBackendRequest {
-            support_tier: args.support_tier,
-            compat_backend: args.compat_backend,
-            compat_cli_path: args.compat_cli_path.clone(),
-            compat_model_path: args.compat_model_path.clone(),
-            compat_server_url: args.compat_server_url.clone(),
-            ..PreviewBackendRequest::default()
-        }
+        return Err(CliError::Usage(
+            "non-MLX inference routes only to llama.cpp; pass --mlx for AX-owned MLX inference"
+                .to_string(),
+        ));
+    };
+
+    let mlx_model_artifacts_dir = if args.mlx {
+        args.mlx_model_artifacts_dir
+            .clone()
+            .or_else(|| args.llama_model_path.clone())
+    } else {
+        args.mlx_model_artifacts_dir.clone()
     };
 
     let config =
@@ -853,11 +786,10 @@ fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliErr
             block_size_tokens: 16,
             total_blocks: 1024,
             deterministic: args.deterministic,
-            allow_deterministic_native_fallback: false,
             max_batch_tokens: 2048,
+            mlx_runtime_artifacts_dir: None,
             backend_request,
-            native_runtime_artifacts_dir: args.native_runtime_artifacts_dir.clone(),
-            native_model_artifacts_dir: args.native_model_artifacts_dir.clone(),
+            mlx_model_artifacts_dir,
         })
         .map_err(|error| CliError::Usage(format!("invalid inference configuration: {error}")))?;
 
@@ -1001,20 +933,16 @@ fn format_generate_metadata_suffix(response: &GenerateResponse) -> String {
 
 fn selected_backend_label(backend: SelectedBackend) -> &'static str {
     match backend {
-        SelectedBackend::AxNative => "ax_native",
-        SelectedBackend::MlxNative => "mlx_native",
-        SelectedBackend::LlamaCpp => "llama_cpp",
-        SelectedBackend::Vllm => "vllm",
-        SelectedBackend::MistralRs => "mistral_rs",
         SelectedBackend::Mlx => "mlx",
+        SelectedBackend::LlamaCpp => "llama_cpp",
     }
 }
 
 fn support_tier_label(support_tier: SupportTier) -> &'static str {
     match support_tier {
-        SupportTier::NativeCertified => "native_certified",
-        SupportTier::NativePreview => "native_preview",
-        SupportTier::Compatibility => "compatibility",
+        SupportTier::MlxCertified => "mlx_certified",
+        SupportTier::MlxPreview => "mlx_preview",
+        SupportTier::LlamaCpp => "llama_cpp",
         SupportTier::Unsupported => "unsupported",
     }
 }
@@ -1068,7 +996,7 @@ fn stop_reason_from_generate_finish_reason(
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct DoctorArgs {
     json: bool,
-    native_model_artifacts_dir: Option<PathBuf>,
+    mlx_model_artifacts_dir: Option<PathBuf>,
 }
 
 fn parse_doctor_args(args: &[String]) -> Result<DoctorArgs, CliError> {
@@ -1078,13 +1006,13 @@ fn parse_doctor_args(args: &[String]) -> Result<DoctorArgs, CliError> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--json" => doctor_args.json = true,
-            "--native-model-artifacts-dir" => {
+            "--mlx-model-artifacts-dir" => {
                 let Some(value) = iter.next() else {
                     return Err(CliError::Usage(
-                        "missing value for flag --native-model-artifacts-dir".to_string(),
+                        "missing value for flag --mlx-model-artifacts-dir".to_string(),
                     ));
                 };
-                doctor_args.native_model_artifacts_dir = Some(PathBuf::from(value));
+                doctor_args.mlx_model_artifacts_dir = Some(PathBuf::from(value));
             }
             other => {
                 return Err(CliError::Usage(format!(
@@ -1181,12 +1109,12 @@ impl DoctorStatus {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct DoctorReport {
     schema_version: String,
-    native_target: String,
+    mlx_target: String,
     status: DoctorStatus,
-    native_runtime_ready: bool,
+    mlx_runtime_ready: bool,
     bringup_allowed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    native_model_bridge: Option<Value>,
+    mlx_model_bridge: Option<Value>,
     host: HostReport,
     metal_toolchain: MetalToolchainReport,
     issues: Vec<String>,
@@ -1197,13 +1125,13 @@ fn metal_build_doctor_report(report: &DoctorReport) -> MetalBuildDoctorReport {
     MetalBuildDoctorReport {
         status: report.status.as_str().to_string(),
         bringup_allowed: report.bringup_allowed,
-        native_runtime_ready: report.native_runtime_ready,
+        mlx_runtime_ready: report.mlx_runtime_ready,
         metal_toolchain_fully_available: report.metal_toolchain.fully_available,
         host: MetalBuildHostReport {
             os: report.host.os.clone(),
             arch: report.host.arch.clone(),
             detected_soc: report.host.detected_soc.clone(),
-            supported_native_runtime: report.host.supported_native_runtime,
+            supported_mlx_runtime: report.host.supported_mlx_runtime,
             unsupported_host_override_active: report.host.unsupported_host_override_active,
         },
         metal_toolchain: MetalBuildToolchainReport {
@@ -1252,39 +1180,39 @@ fn map_metal_build_error(error: ax_engine_core::MetalRuntimeError) -> CliError {
 }
 
 fn build_doctor_report(host: HostReport, metal_toolchain: MetalToolchainReport) -> DoctorReport {
-    build_doctor_report_with_native_model_bridge(host, metal_toolchain, None)
+    build_doctor_report_with_mlx_model_artifacts(host, metal_toolchain, None)
 }
 
 fn build_doctor_report_for_model(
     host: HostReport,
     metal_toolchain: MetalToolchainReport,
-    native_model_artifacts_dir: Option<&Path>,
+    mlx_model_artifacts_dir: Option<&Path>,
 ) -> DoctorReport {
-    let native_model_bridge = native_model_artifacts_dir.and_then(|path| {
+    let mlx_model_bridge = mlx_model_artifacts_dir.and_then(|path| {
         is_native_model_gguf_path(path).then(|| {
-            probe_native_gguf_bridge_with_config(path, &default_native_gguf_bridge_probe_config())
+            probe_mlx_gguf_bridge_with_config(path, &default_mlx_gguf_bridge_probe_config())
         })
     });
-    build_doctor_report_with_native_model_bridge(host, metal_toolchain, native_model_bridge)
+    build_doctor_report_with_mlx_model_artifacts(host, metal_toolchain, mlx_model_bridge)
 }
 
-fn build_doctor_report_with_native_model_bridge(
+fn build_doctor_report_with_mlx_model_artifacts(
     host: HostReport,
     metal_toolchain: MetalToolchainReport,
-    native_model_bridge: Option<Value>,
+    mlx_model_bridge: Option<Value>,
 ) -> DoctorReport {
-    let native_runtime_ready = host.supported_native_runtime && metal_toolchain.fully_available;
+    let mlx_runtime_ready = host.supported_mlx_runtime && metal_toolchain.fully_available;
     let bringup_allowed = metal_toolchain.fully_available
-        && (host.supported_native_runtime || host.unsupported_host_override_active);
-    let native_model_bridge_ready = native_model_bridge
+        && (host.supported_mlx_runtime || host.unsupported_host_override_active);
+    let mlx_model_bridge_ready = mlx_model_bridge
         .as_ref()
         .and_then(|bridge| bridge.get("status"))
         .and_then(Value::as_str)
         .map(|status| status == "ready")
         .unwrap_or(true);
-    let status = if native_runtime_ready && native_model_bridge_ready {
+    let status = if mlx_runtime_ready && mlx_model_bridge_ready {
         DoctorStatus::Ready
-    } else if bringup_allowed && native_model_bridge_ready {
+    } else if bringup_allowed && mlx_model_bridge_ready {
         DoctorStatus::BringupOnly
     } else {
         DoctorStatus::NotReady
@@ -1292,26 +1220,26 @@ fn build_doctor_report_with_native_model_bridge(
 
     DoctorReport {
         schema_version: "ax.bench.doctor.v1".to_string(),
-        native_target: "apple_m4_or_newer_macos_aarch64".to_string(),
+        mlx_target: "apple_m4_or_newer_macos_aarch64".to_string(),
         status,
-        native_runtime_ready,
+        mlx_runtime_ready,
         bringup_allowed,
-        native_model_bridge: native_model_bridge.clone(),
+        mlx_model_bridge: mlx_model_bridge.clone(),
         host: host.clone(),
         metal_toolchain: metal_toolchain.clone(),
-        issues: doctor_issues(&host, &metal_toolchain, native_model_bridge.as_ref()),
-        notes: doctor_notes(&host, native_model_bridge.as_ref()),
+        issues: doctor_issues(&host, &metal_toolchain, mlx_model_bridge.as_ref()),
+        notes: doctor_notes(&host, mlx_model_bridge.as_ref()),
     }
 }
 
 fn doctor_issues(
     host: &HostReport,
     metal_toolchain: &MetalToolchainReport,
-    native_model_bridge: Option<&Value>,
+    mlx_model_bridge: Option<&Value>,
 ) -> Vec<String> {
     let mut issues = Vec::new();
 
-    if !host.supported_native_runtime {
+    if !host.supported_mlx_runtime {
         let detected_host = if host.os != "macos" || host.arch != "aarch64" {
             format!("{}/{}", host.os, host.arch)
         } else {
@@ -1320,13 +1248,13 @@ fn doctor_issues(
                 .unwrap_or_else(|| "unknown Apple Silicon".to_string())
         };
         issues.push(format!(
-            "AX v4 native runtime requires macOS/aarch64 on Apple M4 or newer; detected {detected_host}"
+            "AX Engine MLX Metal runtime requires macOS/aarch64 on Apple M4 or newer; detected {detected_host}"
         ));
     }
 
     if host.unsupported_host_override_active {
         issues.push(
-            "AX_ALLOW_UNSUPPORTED_HOST is active; this machine is bring-up only and not a supported native AX host"
+            "AX_ALLOW_UNSUPPORTED_HOST is active; this machine is bring-up only and not a supported MLX runtime host"
                 .to_string(),
         );
     }
@@ -1339,18 +1267,18 @@ fn doctor_issues(
         ));
     }
 
-    if let Some(native_model_bridge) = native_model_bridge {
-        let status = native_model_bridge
+    if let Some(mlx_model_bridge) = mlx_model_bridge {
+        let status = mlx_model_bridge
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        let blockers = native_model_bridge
+        let blockers = mlx_model_bridge
             .get("blockers")
             .map(json_value_label)
             .unwrap_or_else(|| "[]".to_string());
         if status != "ready" {
             issues.push(format!(
-                "native GGUF bridge is not ready for the selected model (status={status}, blockers={blockers})"
+                "MLX GGUF bridge is not ready for the selected model (status={status}, blockers={blockers})"
             ));
         }
     }
@@ -1358,17 +1286,17 @@ fn doctor_issues(
     issues
 }
 
-fn doctor_notes(host: &HostReport, native_model_bridge: Option<&Value>) -> Vec<String> {
-    let mut notes = vec!["compatibility backends do not widen supported host scope".to_string()];
+fn doctor_notes(host: &HostReport, mlx_model_bridge: Option<&Value>) -> Vec<String> {
+    let mut notes = vec!["llama.cpp backends do not widen supported host scope".to_string()];
     if host.unsupported_host_override_active {
         notes.push(
             "AX_ALLOW_UNSUPPORTED_HOST only unlocks development or CI bring-up and does not make benchmark or runtime results supported"
                 .to_string(),
         );
     }
-    if let Some(native_model_bridge) = native_model_bridge {
-        if let Some(status) = native_model_bridge.get("status").and_then(Value::as_str) {
-            notes.push(format!("native GGUF bridge probe status={status}"));
+    if let Some(mlx_model_bridge) = mlx_model_bridge {
+        if let Some(status) = mlx_model_bridge.get("status").and_then(Value::as_str) {
+            notes.push(format!("MLX GGUF bridge probe status={status}"));
         }
     }
     notes
@@ -1398,9 +1326,9 @@ fn render_doctor_report(report: &DoctorReport) -> String {
     let mut lines = vec![
         "AX Engine v4 doctor".to_string(),
         format!("schema_version={}", report.schema_version),
-        format!("target={}", report.native_target),
+        format!("target={}", report.mlx_target),
         format!("status={}", report.status.as_str()),
-        format!("native_runtime_ready={}", report.native_runtime_ready),
+        format!("mlx_runtime_ready={}", report.mlx_runtime_ready),
         format!("bringup_allowed={}", report.bringup_allowed),
         format!("host.os={}", report.host.os),
         format!("host.arch={}", report.host.arch),
@@ -1409,8 +1337,8 @@ fn render_doctor_report(report: &DoctorReport) -> String {
             report.host.detected_soc.as_deref().unwrap_or("unknown")
         ),
         format!(
-            "host.supported_native_runtime={}",
-            report.host.supported_native_runtime
+            "host.supported_mlx_runtime={}",
+            report.host.supported_mlx_runtime
         ),
         format!(
             "host.unsupported_host_override_active={}",
@@ -1422,24 +1350,24 @@ fn render_doctor_report(report: &DoctorReport) -> String {
         ),
     ];
 
-    if let Some(native_model_bridge) = report.native_model_bridge.as_ref() {
+    if let Some(mlx_model_bridge) = report.mlx_model_bridge.as_ref() {
         lines.push(format!(
-            "native_model_bridge.status={}",
-            native_model_bridge
+            "mlx_model_bridge.status={}",
+            mlx_model_bridge
                 .get("status")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")
         ));
         lines.push(format!(
-            "native_model_bridge.source_path={}",
-            native_model_bridge
+            "mlx_model_bridge.source_path={}",
+            mlx_model_bridge
                 .get("source_path")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")
         ));
         lines.push(format!(
-            "native_model_bridge.blockers={}",
-            native_model_bridge
+            "mlx_model_bridge.blockers={}",
+            mlx_model_bridge
                 .get("blockers")
                 .map(json_value_label)
                 .unwrap_or_else(|| "[]".to_string())
@@ -1581,15 +1509,9 @@ fn resolve_manifest_runtime_paths(
     manifest: &mut BenchmarkManifest,
     manifest_path: &Path,
 ) -> Result<(), CliError> {
-    manifest.runtime.native_runtime_artifacts_dir = manifest
+    manifest.runtime.mlx_model_artifacts_dir = manifest
         .runtime
-        .native_runtime_artifacts_dir
-        .as_deref()
-        .map(|path| resolve_manifest_path(path, manifest_path))
-        .transpose()?;
-    manifest.runtime.native_model_artifacts_dir = manifest
-        .runtime
-        .native_model_artifacts_dir
+        .mlx_model_artifacts_dir
         .as_deref()
         .map(|path| resolve_manifest_path(path, manifest_path))
         .transpose()?;
@@ -1841,11 +1763,12 @@ struct AutotuneTrialMetrics {
     direct_decode_cpu_ffn_activation_element_count: u32,
     direct_decode_cpu_residual_add_element_count: u32,
     direct_decode_cpu_scale_element_count: u32,
-    native_hot_path_cpu_fallback_free: bool,
+    mlx_metal_hot_path_cpu_fallback_free: bool,
     real_model_forward: bool,
     model_bound_ffn_decode: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 struct AutotuneTrialRecord {
     trial_index: usize,
@@ -1860,11 +1783,13 @@ struct AutotuneTrialRecord {
 }
 
 impl AutotuneTrialRecord {
+    #[allow(dead_code)]
     fn label(&self) -> String {
         format!("trial-{:03}", self.trial_index + 1)
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 struct AutotuneProbeObservation {
     shape: ScenarioShape,
@@ -1998,6 +1923,7 @@ fn select_next_autotune_candidate(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn execute_autotune_trial(
     manifest_path: &Path,
     base_manifest: &BenchmarkManifest,
@@ -2091,6 +2017,7 @@ fn execute_autotune_trial(
     }
 }
 
+#[allow(dead_code)]
 fn execute_autotune_probe_trial(
     manifest_path: &Path,
     base_manifest: &BenchmarkManifest,
@@ -2238,7 +2165,7 @@ fn autotune_probe_skip_reason(
     }
 
     let baseline = baseline?;
-    if !metrics.native_hot_path_cpu_fallback_free
+    if !metrics.mlx_metal_hot_path_cpu_fallback_free
         && baseline
             .fallback_free_decode_tok_s_floor
             .is_some_and(|floor| floor > 0.0 && metrics.decode_tok_s < floor * 0.75)
@@ -2279,7 +2206,7 @@ fn autotune_probe_skip_reason(
             baseline.ttft_ceiling_ms.unwrap_or_default()
         ));
     }
-    if !metrics.native_hot_path_cpu_fallback_free
+    if !metrics.mlx_metal_hot_path_cpu_fallback_free
         && baseline
             .incumbent_decode_tok_s
             .is_some_and(|decode| decode > 0.0 && metrics.decode_tok_s < decode * 0.6)
@@ -2331,7 +2258,7 @@ fn autotune_probe_baseline(
             .filter_map(|trial| {
                 trial.metrics.as_ref().and_then(|metrics| {
                     metrics
-                        .native_hot_path_cpu_fallback_free
+                        .mlx_metal_hot_path_cpu_fallback_free
                         .then_some(metrics.decode_tok_s)
                 })
             })
@@ -3110,8 +3037,8 @@ fn autotune_metrics_from_history_json(
             .get("direct_decode_cpu_scale_element_count")
             .and_then(Value::as_u64)
             .unwrap_or_default() as u32,
-        native_hot_path_cpu_fallback_free: metrics_json
-            .get("native_hot_path_cpu_fallback_free")
+        mlx_metal_hot_path_cpu_fallback_free: metrics_json
+            .get("mlx_metal_hot_path_cpu_fallback_free")
             .and_then(Value::as_bool)?,
         real_model_forward: metrics_json
             .get("real_model_forward")
@@ -3140,6 +3067,7 @@ fn autotune_trial_manifest(
     manifest
 }
 
+#[allow(dead_code)]
 fn autotune_trial_metrics(execution: &RuntimeResult) -> AutotuneTrialMetrics {
     let route = &execution.observation.route_metadata;
     AutotuneTrialMetrics {
@@ -3193,7 +3121,7 @@ fn autotune_trial_metrics(execution: &RuntimeResult) -> AutotuneTrialMetrics {
             route,
             "metal_dispatch_direct_decode_cpu_scale_element_count",
         ),
-        native_hot_path_cpu_fallback_free: route_prefix_cpu_reference_dispatch_count(route) == 0
+        mlx_metal_hot_path_cpu_fallback_free: route_prefix_cpu_reference_dispatch_count(route) == 0
             && route_decision_value(route, "metal_dispatch_prefix_cpu_projection_row_count") == 0
             && route_decision_value(route, "metal_dispatch_prefix_cpu_rms_norm_element_count") == 0
             && route_decision_value(
@@ -3233,6 +3161,7 @@ fn autotune_trial_metrics(execution: &RuntimeResult) -> AutotuneTrialMetrics {
     }
 }
 
+#[allow(dead_code)]
 fn autotune_score(execution: &RuntimeResult, metrics: &AutotuneTrialMetrics) -> f64 {
     let throughput_reward = metrics.decode_tok_s + (metrics.prefill_tok_s * 0.25);
     let prefix_reward = metrics.prefix_hit_rate * 2.0;
@@ -3250,7 +3179,7 @@ fn autotune_score(execution: &RuntimeResult, metrics: &AutotuneTrialMetrics) -> 
         + f64::from(metrics.direct_decode_cpu_ffn_activation_element_count) * 0.001
         + f64::from(metrics.direct_decode_cpu_residual_add_element_count) * 0.001
         + f64::from(metrics.direct_decode_cpu_scale_element_count) * 0.001;
-    let readiness_reward = if metrics.native_hot_path_cpu_fallback_free {
+    let readiness_reward = if metrics.mlx_metal_hot_path_cpu_fallback_free {
         500.0
     } else {
         0.0
@@ -3306,6 +3235,7 @@ fn best_autotune_trial<'a>(
     })
 }
 
+#[allow(dead_code)]
 fn build_autotune_result_json(
     manifest_path: &Path,
     manifest: &BenchmarkManifest,
@@ -3444,7 +3374,7 @@ fn build_autotune_result_json(
                 "direct_decode_cpu_ffn_activation_element_count": metrics.direct_decode_cpu_ffn_activation_element_count,
                 "direct_decode_cpu_residual_add_element_count": metrics.direct_decode_cpu_residual_add_element_count,
                 "direct_decode_cpu_scale_element_count": metrics.direct_decode_cpu_scale_element_count,
-                "native_hot_path_cpu_fallback_free": metrics.native_hot_path_cpu_fallback_free,
+                "mlx_metal_hot_path_cpu_fallback_free": metrics.mlx_metal_hot_path_cpu_fallback_free,
                 "real_model_forward": metrics.real_model_forward,
                 "model_bound_ffn_decode": metrics.model_bound_ffn_decode,
             })),
@@ -3452,6 +3382,7 @@ fn build_autotune_result_json(
     })
 }
 
+#[allow(dead_code)]
 fn build_autotune_summary_markdown(
     manifest_path: &Path,
     manifest: &BenchmarkManifest,
@@ -3579,10 +3510,10 @@ fn execute_manifest_with_runtime(
     manifest: &BenchmarkManifest,
     runtime: RuntimeConfig,
 ) -> Result<RuntimeObservation, CliError> {
-    if runtime.uses_native_runtime() {
+    if runtime.uses_mlx_runtime() {
         execute_manifest_once(manifest, runtime)
     } else {
-        execute_manifest_compatibility_once(manifest, runtime)
+        execute_manifest_llama_cpp_once(manifest, runtime)
     }
 }
 
@@ -3653,31 +3584,31 @@ fn scenario_specs_from_manifest(
     Ok(specs)
 }
 
-fn execute_manifest_compatibility_once(
+fn execute_manifest_llama_cpp_once(
     manifest: &BenchmarkManifest,
     runtime: RuntimeConfig,
 ) -> Result<RuntimeObservation, CliError> {
-    validate_compatibility_benchmark_runtime(manifest, &runtime)?;
+    validate_llama_cpp_benchmark_runtime(manifest, &runtime)?;
 
     match runtime.backend_adapter.as_ref() {
         Some(adapter) if adapter.supports_stepwise_benchmark() => match manifest.class {
-            ManifestClass::Scenario => execute_compatibility_scenario_once(manifest, runtime),
-            ManifestClass::Replay => execute_compatibility_replay_once(manifest, runtime),
+            ManifestClass::Scenario => execute_llama_cpp_scenario_once(manifest, runtime),
+            ManifestClass::Replay => execute_llama_cpp_replay_once(manifest, runtime),
         },
         Some(adapter) if adapter.supports_blocking_benchmark() => match manifest.class {
-            ManifestClass::Scenario => execute_compatibility_blocking_scenario_once(manifest, runtime),
+            ManifestClass::Scenario => execute_llama_cpp_blocking_scenario_once(manifest, runtime),
             ManifestClass::Replay => Err(CliError::Contract(
-                "blocking compatibility benchmark adapters currently support scenario manifests only"
+                "blocking llama.cpp benchmark adapters currently support scenario manifests only"
                     .to_string(),
             )),
         },
         _ => Err(CliError::Contract(
-            "compatibility benchmark execution requires a supported backend adapter".to_string(),
+            "llama.cpp benchmark execution requires a supported backend adapter".to_string(),
         )),
     }
 }
 
-fn execute_compatibility_scenario_once(
+fn execute_llama_cpp_scenario_once(
     manifest: &BenchmarkManifest,
     runtime: RuntimeConfig,
 ) -> Result<RuntimeObservation, CliError> {
@@ -3687,10 +3618,10 @@ fn execute_compatibility_scenario_once(
             "scenario manifest produced no requests".to_string(),
         ));
     }
-    run_compatibility_scenario_workload(manifest, runtime, specs)
+    run_llama_cpp_scenario_workload(manifest, runtime, specs)
 }
 
-fn execute_compatibility_blocking_scenario_once(
+fn execute_llama_cpp_blocking_scenario_once(
     manifest: &BenchmarkManifest,
     runtime: RuntimeConfig,
 ) -> Result<RuntimeObservation, CliError> {
@@ -3712,17 +3643,17 @@ fn execute_compatibility_blocking_scenario_once(
             "scenario manifest produced no requests".to_string(),
         ));
     }
-    run_compatibility_blocking_scenario_workload(manifest, runtime, specs)
+    run_llama_cpp_blocking_scenario_workload(manifest, runtime, specs)
 }
 
-fn execute_compatibility_replay_once(
+fn execute_llama_cpp_replay_once(
     manifest: &BenchmarkManifest,
     runtime: RuntimeConfig,
 ) -> Result<RuntimeObservation, CliError> {
-    run_compatibility_replay_workload(manifest, runtime, replay_events_from_manifest(manifest)?)
+    run_llama_cpp_replay_workload(manifest, runtime, replay_events_from_manifest(manifest)?)
 }
 
-fn run_compatibility_scenario_workload(
+fn run_llama_cpp_scenario_workload(
     manifest: &BenchmarkManifest,
     runtime: RuntimeConfig,
     specs: Vec<SyntheticRequestSpec>,
@@ -3754,39 +3685,39 @@ fn run_compatibility_scenario_workload(
             )
             .map_err(|error| {
                 CliError::Runtime(format!(
-                    "compatibility benchmark request failed through the SDK contract: {error}"
+                    "llama.cpp benchmark request failed through the SDK contract: {error}"
                 ))
             })?;
     }
 
     loop {
-        if !compatibility_session_has_live_requests(&session, &request_ids)? {
+        if !llama_cpp_session_has_live_requests(&session, &request_ids)? {
             let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
             let final_reports = specs
                 .iter()
                 .map(|spec| {
                     let report = session.request_report(spec.request_id.0).ok_or_else(|| {
                         CliError::Runtime(format!(
-                            "missing compatibility request {}",
+                            "missing llama.cpp request {}",
                             spec.request_id.0
                         ))
                     })?;
                     Ok((spec.clone(), report))
                 })
                 .collect::<Result<Vec<_>, CliError>>()?;
-            observation.finalize_compatibility(final_reports, elapsed_ms.max(1));
+            observation.finalize_llama_cpp(final_reports, elapsed_ms.max(1));
             return Ok(observation);
         }
 
-        let reports_before = compatibility_reports_for_session(&session, &request_ids)?;
+        let reports_before = llama_cpp_reports_for_session(&session, &request_ids)?;
         let step = session.step_report().map_err(|error| {
             CliError::Runtime(format!(
-                "compatibility benchmark step failed through the SDK contract: {error}"
+                "llama.cpp benchmark step failed through the SDK contract: {error}"
             ))
         })?;
         let current_time_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64 + 1;
-        let reports_after = compatibility_reports_for_session(&session, &request_ids)?;
-        observation.observe_compatibility_session_step(
+        let reports_after = llama_cpp_reports_for_session(&session, &request_ids)?;
+        observation.observe_llama_cpp_session_step(
             &reports_before,
             &reports_after,
             &step,
@@ -3794,23 +3725,23 @@ fn run_compatibility_scenario_workload(
         );
         let progress_made = step.scheduled_requests > 0
             || step.scheduled_tokens > 0
-            || compatibility_reports_changed(&reports_before, &reports_after);
+            || llama_cpp_reports_changed(&reports_before, &reports_after);
 
         if observation.step_count > max_steps {
             return Err(CliError::Runtime(
-                "compatibility scenario exceeded delegated step guard".to_string(),
+                "llama.cpp scenario exceeded delegated step guard".to_string(),
             ));
         }
 
         if !progress_made {
             return Err(CliError::Runtime(
-                "compatibility scenario stalled with a live delegated request".to_string(),
+                "llama.cpp scenario stalled with a live delegated request".to_string(),
             ));
         }
     }
 }
 
-fn run_compatibility_blocking_scenario_workload(
+fn run_llama_cpp_blocking_scenario_workload(
     manifest: &BenchmarkManifest,
     runtime: RuntimeConfig,
     specs: Vec<SyntheticRequestSpec>,
@@ -3825,10 +3756,13 @@ fn run_compatibility_blocking_scenario_workload(
     for spec in specs {
         let request_started = Instant::now();
         let response = session
-            .generate_with_request_id(spec.request_id.0, generate_request_from_spec(&spec, manifest))
+            .generate_with_request_id(
+                spec.request_id.0,
+                generate_request_from_spec(&spec, manifest),
+            )
             .map_err(|error| {
                 CliError::Runtime(format!(
-                    "blocking compatibility benchmark request failed through the SDK contract: {error}"
+                    "blocking llama.cpp benchmark request failed through the SDK contract: {error}"
                 ))
             })?;
         let elapsed_ms = request_started
@@ -3909,13 +3843,13 @@ fn run_compatibility_blocking_scenario_workload(
     }
 
     observation.e2e_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64 + 1;
-    observation.finalize_compatibility(final_reports, observation.e2e_latency_ms.max(1));
+    observation.finalize_llama_cpp(final_reports, observation.e2e_latency_ms.max(1));
     observation.prefill_steps = observation.prefill_steps.max(total_proxy_ms.max(1));
     observation.decode_steps = observation.decode_steps.max(total_proxy_ms.max(1));
     Ok(observation)
 }
 
-fn run_compatibility_replay_workload(
+fn run_llama_cpp_replay_workload(
     manifest: &BenchmarkManifest,
     runtime: RuntimeConfig,
     events: Vec<ReplayEvent>,
@@ -3949,7 +3883,7 @@ fn run_compatibility_replay_workload(
         .max(256);
 
     while event_index < events.len()
-        || compatibility_session_has_live_requests(&session, &submitted_request_ids)?
+        || llama_cpp_session_has_live_requests(&session, &submitted_request_ids)?
     {
         while let Some(event) = events.get(event_index) {
             if event.t_ms() > current_time_ms {
@@ -3960,7 +3894,7 @@ fn run_compatibility_replay_workload(
                 ReplayEvent::Submit { spec, .. } => {
                     if submitted_request_ids.contains(&spec.request_id) {
                         return Err(CliError::Runtime(format!(
-                            "compatibility replay request {:?} was submitted more than once",
+                            "llama.cpp replay request {:?} was submitted more than once",
                             spec.request_id
                         )));
                     }
@@ -3972,7 +3906,7 @@ fn run_compatibility_replay_workload(
                         )
                         .map_err(|error| {
                             CliError::Runtime(format!(
-                                "failed to submit compatibility replay benchmark request: {error}"
+                                "failed to submit llama.cpp replay benchmark request: {error}"
                             ))
                         })?;
                     submitted_request_ids.push(spec.request_id);
@@ -3981,7 +3915,7 @@ fn run_compatibility_replay_workload(
 
                     let report = session.request_report(spec.request_id.0).ok_or_else(|| {
                         CliError::Runtime(format!(
-                            "missing compatibility request {}",
+                            "missing llama.cpp request {}",
                             spec.request_id.0
                         ))
                     })?;
@@ -3991,7 +3925,7 @@ fn run_compatibility_replay_workload(
                 ReplayEvent::Cancel { request_id, .. } => {
                     if !submitted_request_ids.contains(request_id) {
                         return Err(CliError::Runtime(format!(
-                            "compatibility replay cancel arrived before submit for {:?}",
+                            "llama.cpp replay cancel arrived before submit for {:?}",
                             request_id
                         )));
                     }
@@ -3999,11 +3933,11 @@ fn run_compatibility_replay_workload(
                     cancelled_requests.insert(*request_id);
                     session.cancel_request(request_id.0).map_err(|error| {
                         CliError::Runtime(format!(
-                            "failed to cancel compatibility replay benchmark request: {error}"
+                            "failed to cancel llama.cpp replay benchmark request: {error}"
                         ))
                     })?;
                     let report = session.request_report(request_id.0).ok_or_else(|| {
-                        CliError::Runtime(format!("missing compatibility request {}", request_id.0))
+                        CliError::Runtime(format!("missing llama.cpp request {}", request_id.0))
                     })?;
                     observation
                         .merge_route_metadata(&route_metadata_from_generate_route(&report.route));
@@ -4013,7 +3947,7 @@ fn run_compatibility_replay_workload(
             event_index += 1;
         }
 
-        if !compatibility_session_has_live_requests(&session, &submitted_request_ids)? {
+        if !llama_cpp_session_has_live_requests(&session, &submitted_request_ids)? {
             if let Some(next_event) = events.get(event_index) {
                 current_time_ms = next_event.t_ms();
                 continue;
@@ -4022,14 +3956,14 @@ fn run_compatibility_replay_workload(
         }
 
         let tick_time_ms = current_time_ms.saturating_add(1);
-        let reports_before = compatibility_reports_for_session(&session, &submitted_request_ids)?;
+        let reports_before = llama_cpp_reports_for_session(&session, &submitted_request_ids)?;
         let step = session.step_report().map_err(|error| {
             CliError::Runtime(format!(
-                "compatibility replay step failed through the SDK contract: {error}"
+                "llama.cpp replay step failed through the SDK contract: {error}"
             ))
         })?;
-        let reports_after = compatibility_reports_for_session(&session, &submitted_request_ids)?;
-        observation.observe_compatibility_session_step(
+        let reports_after = llama_cpp_reports_for_session(&session, &submitted_request_ids)?;
+        observation.observe_llama_cpp_session_step(
             &reports_before,
             &reports_after,
             &step,
@@ -4037,19 +3971,19 @@ fn run_compatibility_replay_workload(
         );
         let progress_made = step.scheduled_requests > 0
             || step.scheduled_tokens > 0
-            || compatibility_reports_changed(&reports_before, &reports_after);
+            || llama_cpp_reports_changed(&reports_before, &reports_after);
 
         current_time_ms = tick_time_ms;
 
         if observation.step_count > max_steps {
             return Err(CliError::Runtime(
-                "compatibility replay exceeded delegated step guard".to_string(),
+                "llama.cpp replay exceeded delegated step guard".to_string(),
             ));
         }
 
         if !progress_made {
             return Err(CliError::Runtime(
-                "compatibility replay stalled with a live delegated request".to_string(),
+                "llama.cpp replay stalled with a live delegated request".to_string(),
             ));
         }
     }
@@ -4059,18 +3993,15 @@ fn run_compatibility_replay_workload(
         .iter()
         .map(|request_id| {
             let spec = spec_by_request.get(request_id).cloned().ok_or_else(|| {
-                CliError::Runtime(format!(
-                    "missing compatibility replay spec {:?}",
-                    request_id
-                ))
+                CliError::Runtime(format!("missing llama.cpp replay spec {:?}", request_id))
             })?;
             let report = session.request_report(request_id.0).ok_or_else(|| {
-                CliError::Runtime(format!("missing compatibility request {}", request_id.0))
+                CliError::Runtime(format!("missing llama.cpp request {}", request_id.0))
             })?;
             Ok((spec, report))
         })
         .collect::<Result<Vec<_>, CliError>>()?;
-    observation.finalize_compatibility(final_reports, current_time_ms.max(1));
+    observation.finalize_llama_cpp(final_reports, current_time_ms.max(1));
     Ok(observation)
 }
 
@@ -4293,40 +4224,40 @@ fn session_config_from_runtime(
         .kv_total_blocks
         .unwrap_or_else(|| estimated_total_blocks.saturating_add(8));
 
-    let compatibility_backend =
-        if runtime.resolved_backend.selected_backend == SelectedBackend::AxNative {
-            None
-        } else {
-            runtime
-                .backend_adapter
-                .as_ref()
-                .map(BackendAdapterManifest::to_sdk_config)
-        };
-    let fallback_compatibility_backend =
-        if runtime.resolved_backend.selected_backend == SelectedBackend::AxNative {
-            runtime
-                .backend_adapter
-                .as_ref()
-                .map(BackendAdapterManifest::to_sdk_config)
-        } else {
-            None
-        };
-
+    let llama_backend = if runtime.resolved_backend.selected_backend.is_mlx() {
+        None
+    } else {
+        runtime
+            .backend_adapter
+            .as_ref()
+            .map(BackendAdapterManifest::to_sdk_config)
+    };
+    let mlx_runtime_artifacts_dir = if runtime.resolved_backend.selected_backend.is_mlx() {
+        EngineSessionConfig::default_mlx_runtime_artifacts_dir().or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|dir| dir.join("build/metal"))
+                .filter(|dir| dir.join("build_report.json").is_file())
+        })
+    } else {
+        None
+    };
+    let mlx_runtime_artifacts_source = mlx_runtime_artifacts_dir
+        .as_ref()
+        .map(|_| NativeRuntimeArtifactsSource::RepoAutoDetect);
     EngineSessionConfig::from_resolved_request(ResolvedSessionConfigRequest {
         cache_group_id: CacheGroupId(0),
         block_size_tokens: runtime.block_size_tokens,
         total_blocks: kv_total_blocks,
         deterministic: runtime.deterministic,
-        allow_deterministic_native_fallback: runtime.allow_deterministic_native_fallback,
         max_batch_tokens: runtime.max_batch_tokens,
         backend_policy: runtime.backend_policy,
         resolved_backend: runtime.resolved_backend.clone(),
-        compatibility_backend,
-        fallback_compatibility_backend,
-        native_runtime_artifacts_dir: runtime.native_runtime_artifacts_dir.clone(),
-        native_runtime_artifacts_source: runtime.native_runtime_artifacts_source,
-        native_model_artifacts_dir: runtime.native_model_artifacts_dir.clone(),
-        native_model_artifacts_source: runtime.native_model_artifacts_source,
+        llama_backend,
+        mlx_runtime_artifacts_dir,
+        mlx_runtime_artifacts_source,
+        mlx_model_artifacts_dir: runtime.mlx_model_artifacts_dir.clone(),
+        mlx_model_artifacts_source: runtime.mlx_model_artifacts_source,
     })
 }
 
@@ -5444,8 +5375,6 @@ fn build_trusted_baseline_json(
         .cloned()
         .unwrap_or_else(|| Value::Object(Map::new()));
     let execution_semantics = route_execution_semantics_from_environment_json(environment);
-    let native_placeholder_execution =
-        native_placeholder_execution_from_environment_json(environment);
     let metal_numeric_scaffold_only = route_flag_from_json(
         &route_json,
         "metal_numeric_scaffold_only",
@@ -5472,9 +5401,9 @@ fn build_trusted_baseline_json(
             "metal_dispatch_runtime_model_conditioned_inputs",
         ],
     );
-    let metal_prefix_native_dispatch_count = route_count_from_json(
+    let mlx_metal_prefix_dispatch_count = route_count_from_json(
         &route_json,
-        "metal_prefix_native_dispatch_count",
+        "mlx_metal_prefix_dispatch_count",
         &["metal_dispatch_prefix_native_dispatch_count"],
     );
     let metal_prefix_cpu_reference_dispatch_count = route_count_from_json(
@@ -5509,54 +5438,54 @@ fn build_trusted_baseline_json(
         "metal_model_artifacts_validated",
         &["metal_dispatch_model_artifacts_validated"],
     );
-    let metal_native_projection_f32_binding_count = route_count_from_json(
+    let mlx_metal_projection_f32_binding_count = route_count_from_json(
         &route_json,
-        "metal_native_projection_f32_binding_count",
+        "mlx_metal_projection_f32_binding_count",
         &["metal_dispatch_native_projection_f32_binding_count"],
     );
-    let metal_native_projection_f16_binding_count = route_count_from_json(
+    let mlx_metal_projection_f16_binding_count = route_count_from_json(
         &route_json,
-        "metal_native_projection_f16_binding_count",
+        "mlx_metal_projection_f16_binding_count",
         &["metal_dispatch_native_projection_f16_binding_count"],
     );
-    let metal_native_projection_bf16_binding_count = route_count_from_json(
+    let mlx_metal_projection_bf16_binding_count = route_count_from_json(
         &route_json,
-        "metal_native_projection_bf16_binding_count",
+        "mlx_metal_projection_bf16_binding_count",
         &["metal_dispatch_native_projection_bf16_binding_count"],
     );
-    let metal_native_projection_unsupported_binding_count = route_count_from_json(
+    let mlx_metal_projection_unsupported_binding_count = route_count_from_json(
         &route_json,
-        "metal_native_projection_unsupported_binding_count",
+        "mlx_metal_projection_unsupported_binding_count",
         &["metal_dispatch_native_projection_unsupported_binding_count"],
     );
-    let metal_native_projection_source_quantized_binding_count = route_count_from_json(
+    let mlx_metal_projection_source_quantized_binding_count = route_count_from_json(
         &route_json,
-        "metal_native_projection_source_quantized_binding_count",
+        "mlx_metal_projection_source_quantized_binding_count",
         &["metal_dispatch_native_projection_source_quantized_binding_count"],
     );
-    let metal_native_rms_norm_f32_binding_count = route_count_from_json(
+    let mlx_metal_rms_norm_f32_binding_count = route_count_from_json(
         &route_json,
-        "metal_native_rms_norm_f32_binding_count",
+        "mlx_metal_rms_norm_f32_binding_count",
         &["metal_dispatch_native_rms_norm_f32_binding_count"],
     );
-    let metal_native_rms_norm_f16_binding_count = route_count_from_json(
+    let mlx_metal_rms_norm_f16_binding_count = route_count_from_json(
         &route_json,
-        "metal_native_rms_norm_f16_binding_count",
+        "mlx_metal_rms_norm_f16_binding_count",
         &["metal_dispatch_native_rms_norm_f16_binding_count"],
     );
-    let metal_native_rms_norm_bf16_binding_count = route_count_from_json(
+    let mlx_metal_rms_norm_bf16_binding_count = route_count_from_json(
         &route_json,
-        "metal_native_rms_norm_bf16_binding_count",
+        "mlx_metal_rms_norm_bf16_binding_count",
         &["metal_dispatch_native_rms_norm_bf16_binding_count"],
     );
-    let metal_native_rms_norm_unsupported_binding_count = route_count_from_json(
+    let mlx_metal_rms_norm_unsupported_binding_count = route_count_from_json(
         &route_json,
-        "metal_native_rms_norm_unsupported_binding_count",
+        "mlx_metal_rms_norm_unsupported_binding_count",
         &["metal_dispatch_native_rms_norm_unsupported_binding_count"],
     );
-    let metal_native_rms_norm_source_quantized_binding_count = route_count_from_json(
+    let mlx_metal_rms_norm_source_quantized_binding_count = route_count_from_json(
         &route_json,
-        "metal_native_rms_norm_source_quantized_binding_count",
+        "mlx_metal_rms_norm_source_quantized_binding_count",
         &["metal_dispatch_native_rms_norm_source_quantized_binding_count"],
     );
     let backend_reported_cached_prompt_tokens = nested_value(
@@ -5597,28 +5526,27 @@ fn build_trusted_baseline_json(
             "prefix_cache_path": prefix_cache_path,
             "prefix_cache_evidence": prefix_cache_evidence,
             "prefix_reuse_provenance": prefix_reuse_provenance,
-            "native_placeholder_execution": native_placeholder_execution,
             "metal_numeric_scaffold_only": metal_numeric_scaffold_only,
             "metal_complete_model_forward_supported": metal_complete_model_forward_supported,
             "metal_real_model_forward": metal_real_model_forward,
             "metal_model_conditioned_inputs": metal_model_conditioned_inputs,
-            "metal_prefix_native_dispatch_count": metal_prefix_native_dispatch_count,
+            "mlx_metal_prefix_dispatch_count": mlx_metal_prefix_dispatch_count,
             "metal_prefix_cpu_reference_dispatch_count": metal_prefix_cpu_reference_dispatch_count,
             "metal_direct_decode_tokens": metal_direct_decode_tokens,
             "metal_direct_decode_model_bound_ffn": metal_direct_decode_model_bound_ffn,
             "metal_direct_decode_checksum_lo": metal_direct_decode_checksum_lo,
             "metal_real_model_tensor_inputs": metal_real_model_tensor_inputs,
             "metal_model_artifacts_validated": metal_model_artifacts_validated,
-            "metal_native_projection_f32_binding_count": metal_native_projection_f32_binding_count,
-            "metal_native_projection_f16_binding_count": metal_native_projection_f16_binding_count,
-            "metal_native_projection_bf16_binding_count": metal_native_projection_bf16_binding_count,
-            "metal_native_projection_unsupported_binding_count": metal_native_projection_unsupported_binding_count,
-            "metal_native_projection_source_quantized_binding_count": metal_native_projection_source_quantized_binding_count,
-            "metal_native_rms_norm_f32_binding_count": metal_native_rms_norm_f32_binding_count,
-            "metal_native_rms_norm_f16_binding_count": metal_native_rms_norm_f16_binding_count,
-            "metal_native_rms_norm_bf16_binding_count": metal_native_rms_norm_bf16_binding_count,
-            "metal_native_rms_norm_unsupported_binding_count": metal_native_rms_norm_unsupported_binding_count,
-            "metal_native_rms_norm_source_quantized_binding_count": metal_native_rms_norm_source_quantized_binding_count
+            "mlx_metal_projection_f32_binding_count": mlx_metal_projection_f32_binding_count,
+            "mlx_metal_projection_f16_binding_count": mlx_metal_projection_f16_binding_count,
+            "mlx_metal_projection_bf16_binding_count": mlx_metal_projection_bf16_binding_count,
+            "mlx_metal_projection_unsupported_binding_count": mlx_metal_projection_unsupported_binding_count,
+            "mlx_metal_projection_source_quantized_binding_count": mlx_metal_projection_source_quantized_binding_count,
+            "mlx_metal_rms_norm_f32_binding_count": mlx_metal_rms_norm_f32_binding_count,
+            "mlx_metal_rms_norm_f16_binding_count": mlx_metal_rms_norm_f16_binding_count,
+            "mlx_metal_rms_norm_bf16_binding_count": mlx_metal_rms_norm_bf16_binding_count,
+            "mlx_metal_rms_norm_unsupported_binding_count": mlx_metal_rms_norm_unsupported_binding_count,
+            "mlx_metal_rms_norm_source_quantized_binding_count": mlx_metal_rms_norm_source_quantized_binding_count
         },
         "machine": machine,
         "software": software,
@@ -5646,21 +5574,20 @@ fn build_trusted_baseline_json(
             .insert("backend_adapter".to_string(), adapter);
     }
 
-    if let Some(native_runtime) = nested_value(environment, &["runtime", "native_runtime"]).cloned()
-    {
+    if let Some(mlx_runtime) = nested_value(environment, &["runtime", "mlx_runtime"]).cloned() {
         baseline
             .get_mut("runtime")
             .and_then(Value::as_object_mut)
             .expect("trusted baseline runtime should serialize as object")
-            .insert("native_runtime".to_string(), native_runtime);
+            .insert("mlx_runtime".to_string(), mlx_runtime);
     }
 
-    if let Some(native_model) = nested_value(environment, &["runtime", "native_model"]).cloned() {
+    if let Some(mlx_model) = nested_value(environment, &["runtime", "mlx_model"]).cloned() {
         baseline
             .get_mut("runtime")
             .and_then(Value::as_object_mut)
             .expect("trusted baseline runtime should serialize as object")
-            .insert("native_model".to_string(), native_model);
+            .insert("mlx_model".to_string(), mlx_model);
     }
 
     Ok(baseline)
@@ -5719,10 +5646,6 @@ fn build_trusted_baseline_summary_markdown(trusted_baseline: &Value) -> String {
     let execution_semantics = nested_value(trusted_baseline, &["route", "execution_semantics"])
         .and_then(Value::as_str)
         .unwrap_or("unknown");
-    let native_placeholder_execution =
-        nested_value(trusted_baseline, &["route", "native_placeholder_execution"])
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
     let metal_numeric_scaffold_only =
         nested_value(trusted_baseline, &["route", "metal_numeric_scaffold_only"])
             .and_then(Value::as_bool)
@@ -5743,9 +5666,9 @@ fn build_trusted_baseline_summary_markdown(trusted_baseline: &Value) -> String {
     )
     .and_then(Value::as_bool)
     .unwrap_or(false);
-    let metal_prefix_layers_native_attention = nested_value(
+    let mlx_metal_prefix_layers_attention = nested_value(
         trusted_baseline,
-        &["route", "metal_prefix_layers_native_attention"],
+        &["route", "mlx_metal_prefix_layers_attention"],
     )
     .and_then(Value::as_bool)
     .unwrap_or(false);
@@ -5755,9 +5678,9 @@ fn build_trusted_baseline_summary_markdown(trusted_baseline: &Value) -> String {
     )
     .and_then(Value::as_bool)
     .unwrap_or(false);
-    let metal_prefix_native_dispatch_count = nested_value(
+    let mlx_metal_prefix_dispatch_count = nested_value(
         trusted_baseline,
-        &["route", "metal_prefix_native_dispatch_count"],
+        &["route", "mlx_metal_prefix_dispatch_count"],
     )
     .and_then(Value::as_u64)
     .unwrap_or(0);
@@ -5795,51 +5718,51 @@ fn build_trusted_baseline_summary_markdown(trusted_baseline: &Value) -> String {
     )
     .and_then(Value::as_bool)
     .unwrap_or(false);
-    let metal_native_projection_f32_binding_count = nested_value(
+    let mlx_metal_projection_f32_binding_count = nested_value(
         trusted_baseline,
-        &["route", "metal_native_projection_f32_binding_count"],
+        &["route", "mlx_metal_projection_f32_binding_count"],
     )
     .and_then(Value::as_u64)
     .unwrap_or(0);
-    let metal_native_projection_f16_binding_count = nested_value(
+    let mlx_metal_projection_f16_binding_count = nested_value(
         trusted_baseline,
-        &["route", "metal_native_projection_f16_binding_count"],
+        &["route", "mlx_metal_projection_f16_binding_count"],
     )
     .and_then(Value::as_u64)
     .unwrap_or(0);
-    let metal_native_projection_bf16_binding_count = nested_value(
+    let mlx_metal_projection_bf16_binding_count = nested_value(
         trusted_baseline,
-        &["route", "metal_native_projection_bf16_binding_count"],
+        &["route", "mlx_metal_projection_bf16_binding_count"],
     )
     .and_then(Value::as_u64)
     .unwrap_or(0);
-    let metal_native_projection_unsupported_binding_count = nested_value(
+    let mlx_metal_projection_unsupported_binding_count = nested_value(
         trusted_baseline,
-        &["route", "metal_native_projection_unsupported_binding_count"],
+        &["route", "mlx_metal_projection_unsupported_binding_count"],
     )
     .and_then(Value::as_u64)
     .unwrap_or(0);
-    let metal_native_rms_norm_f32_binding_count = nested_value(
+    let mlx_metal_rms_norm_f32_binding_count = nested_value(
         trusted_baseline,
-        &["route", "metal_native_rms_norm_f32_binding_count"],
+        &["route", "mlx_metal_rms_norm_f32_binding_count"],
     )
     .and_then(Value::as_u64)
     .unwrap_or(0);
-    let metal_native_rms_norm_f16_binding_count = nested_value(
+    let mlx_metal_rms_norm_f16_binding_count = nested_value(
         trusted_baseline,
-        &["route", "metal_native_rms_norm_f16_binding_count"],
+        &["route", "mlx_metal_rms_norm_f16_binding_count"],
     )
     .and_then(Value::as_u64)
     .unwrap_or(0);
-    let metal_native_rms_norm_bf16_binding_count = nested_value(
+    let mlx_metal_rms_norm_bf16_binding_count = nested_value(
         trusted_baseline,
-        &["route", "metal_native_rms_norm_bf16_binding_count"],
+        &["route", "mlx_metal_rms_norm_bf16_binding_count"],
     )
     .and_then(Value::as_u64)
     .unwrap_or(0);
-    let metal_native_rms_norm_unsupported_binding_count = nested_value(
+    let mlx_metal_rms_norm_unsupported_binding_count = nested_value(
         trusted_baseline,
-        &["route", "metal_native_rms_norm_unsupported_binding_count"],
+        &["route", "mlx_metal_rms_norm_unsupported_binding_count"],
     )
     .and_then(Value::as_u64)
     .unwrap_or(0);
@@ -5896,7 +5819,7 @@ fn build_trusted_baseline_summary_markdown(trusted_baseline: &Value) -> String {
         .unwrap_or(0.0);
 
     format!(
-        "# Trusted Benchmark Baseline\n\n- name: `{name}`\n- source_run_id: `{source_run_id}`\n- source_result_dir: `{source_result_dir}`\n- manifest_id: `{manifest_id}`\n- manifest_class: `{manifest_class}`\n- scenario: `{scenario}`\n- model_family: `{model_family}`\n- tool_mode: `{tool_mode}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- execution_semantics: `{execution_semantics}`\n- native_placeholder_execution: `{native_placeholder_execution}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- metal_prefix_layers_native_attention: `{metal_prefix_layers_native_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- metal_prefix_native_dispatch_count: `{metal_prefix_native_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- metal_native_projection_f32_binding_count: `{metal_native_projection_f32_binding_count}`\n- metal_native_projection_f16_binding_count: `{metal_native_projection_f16_binding_count}`\n- metal_native_projection_bf16_binding_count: `{metal_native_projection_bf16_binding_count}`\n- metal_native_projection_unsupported_binding_count: `{metal_native_projection_unsupported_binding_count}`\n- metal_native_rms_norm_f32_binding_count: `{metal_native_rms_norm_f32_binding_count}`\n- metal_native_rms_norm_f16_binding_count: `{metal_native_rms_norm_f16_binding_count}`\n- metal_native_rms_norm_bf16_binding_count: `{metal_native_rms_norm_bf16_binding_count}`\n- metal_native_rms_norm_unsupported_binding_count: `{metal_native_rms_norm_unsupported_binding_count}`\n- prefix_cache_path: `{prefix_cache_path}`\n- prefix_cache_evidence: `{prefix_cache_evidence}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- ttft_ms: `{ttft_ms:.2}`\n- decode_tok_s: `{decode_tok_s:.2}`\n- memory_peak_mb: `{memory_peak_mb:.2}`\n- prefix_hit_rate: `{prefix_hit_rate:.2}`\n\nThis directory is a named trusted baseline snapshot. Compare future benchmark runs against this directory instead of overwriting it in place.\n"
+        "# Trusted Benchmark Baseline\n\n- name: `{name}`\n- source_run_id: `{source_run_id}`\n- source_result_dir: `{source_result_dir}`\n- manifest_id: `{manifest_id}`\n- manifest_class: `{manifest_class}`\n- scenario: `{scenario}`\n- model_family: `{model_family}`\n- tool_mode: `{tool_mode}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- execution_semantics: `{execution_semantics}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- mlx_metal_prefix_layers_attention: `{mlx_metal_prefix_layers_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- mlx_metal_prefix_dispatch_count: `{mlx_metal_prefix_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- mlx_metal_projection_f32_binding_count: `{mlx_metal_projection_f32_binding_count}`\n- mlx_metal_projection_f16_binding_count: `{mlx_metal_projection_f16_binding_count}`\n- mlx_metal_projection_bf16_binding_count: `{mlx_metal_projection_bf16_binding_count}`\n- mlx_metal_projection_unsupported_binding_count: `{mlx_metal_projection_unsupported_binding_count}`\n- mlx_metal_rms_norm_f32_binding_count: `{mlx_metal_rms_norm_f32_binding_count}`\n- mlx_metal_rms_norm_f16_binding_count: `{mlx_metal_rms_norm_f16_binding_count}`\n- mlx_metal_rms_norm_bf16_binding_count: `{mlx_metal_rms_norm_bf16_binding_count}`\n- mlx_metal_rms_norm_unsupported_binding_count: `{mlx_metal_rms_norm_unsupported_binding_count}`\n- prefix_cache_path: `{prefix_cache_path}`\n- prefix_cache_evidence: `{prefix_cache_evidence}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- ttft_ms: `{ttft_ms:.2}`\n- decode_tok_s: `{decode_tok_s:.2}`\n- memory_peak_mb: `{memory_peak_mb:.2}`\n- prefix_hit_rate: `{prefix_hit_rate:.2}`\n\nThis directory is a named trusted baseline snapshot. Compare future benchmark runs against this directory instead of overwriting it in place.\n"
     )
 }
 
@@ -5985,7 +5908,7 @@ fn validate_comparable_manifests(baseline: &Value, candidate: &Value) -> Result<
         other => {
             return Err(CliError::Contract(format!(
                 "unsupported manifest class for compare validation: {other}"
-            )))
+            )));
         }
     }
 
@@ -6010,7 +5933,7 @@ fn validate_comparable_environments(baseline: &Value, candidate: &Value) -> Resu
         ["runtime", "resolution_policy"].as_slice(),
         ["runtime", "host", "os"].as_slice(),
         ["runtime", "host", "arch"].as_slice(),
-        ["runtime", "host", "supported_native_runtime"].as_slice(),
+        ["runtime", "host", "supported_mlx_runtime"].as_slice(),
         ["runtime", "host", "unsupported_host_override_active"].as_slice(),
         ["runtime", "metal_toolchain", "fully_available"].as_slice(),
         ["runtime", "metal_toolchain", "metal", "available"].as_slice(),
@@ -6052,69 +5975,64 @@ fn validate_comparable_environments(baseline: &Value, candidate: &Value) -> Resu
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["runtime", "native_runtime", "runner"],
+        &["runtime", "mlx_runtime", "runner"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["runtime", "native_runtime", "artifacts_source"],
+        &["runtime", "mlx_runtime", "artifacts_source"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["runtime", "native_model", "artifacts_source"],
+        &["runtime", "mlx_model", "artifacts_source"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["runtime", "native_model", "model_family"],
+        &["runtime", "mlx_model", "model_family"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["runtime", "native_model", "tensor_format"],
+        &["runtime", "mlx_model", "tensor_format"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["runtime", "native_model", "layer_count"],
+        &["runtime", "mlx_model", "layer_count"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["runtime", "native_model", "tensor_count"],
+        &["runtime", "mlx_model", "tensor_count"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["runtime", "native_model", "tie_word_embeddings"],
+        &["runtime", "mlx_model", "tie_word_embeddings"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["runtime", "native_model", "bindings_prepared"],
+        &["runtime", "mlx_model", "bindings_prepared"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["runtime", "native_model", "buffers_bound"],
+        &["runtime", "mlx_model", "buffers_bound"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["runtime", "native_model", "buffer_count"],
+        &["runtime", "mlx_model", "buffer_count"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["runtime", "native_model", "buffer_bytes"],
+        &["runtime", "mlx_model", "buffer_bytes"],
     )?;
     validate_matching_optional_json_field(baseline, candidate, &["route", "execution_semantics"])?;
-    validate_matching_optional_json_field(
-        baseline,
-        candidate,
-        &["route", "native_placeholder_execution"],
-    )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
@@ -6138,7 +6056,7 @@ fn validate_comparable_environments(baseline: &Value, candidate: &Value) -> Resu
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["route", "metal_prefix_layers_native_attention"],
+        &["route", "mlx_metal_prefix_layers_attention"],
     )?;
     validate_matching_optional_json_field(
         baseline,
@@ -6148,7 +6066,7 @@ fn validate_comparable_environments(baseline: &Value, candidate: &Value) -> Resu
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["route", "metal_prefix_native_dispatch_count"],
+        &["route", "mlx_metal_prefix_dispatch_count"],
     )?;
     validate_matching_optional_json_field(
         baseline,
@@ -6178,42 +6096,42 @@ fn validate_comparable_environments(baseline: &Value, candidate: &Value) -> Resu
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["route", "metal_native_projection_f32_binding_count"],
+        &["route", "mlx_metal_projection_f32_binding_count"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["route", "metal_native_projection_f16_binding_count"],
+        &["route", "mlx_metal_projection_f16_binding_count"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["route", "metal_native_projection_bf16_binding_count"],
+        &["route", "mlx_metal_projection_bf16_binding_count"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["route", "metal_native_projection_unsupported_binding_count"],
+        &["route", "mlx_metal_projection_unsupported_binding_count"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["route", "metal_native_rms_norm_f32_binding_count"],
+        &["route", "mlx_metal_rms_norm_f32_binding_count"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["route", "metal_native_rms_norm_f16_binding_count"],
+        &["route", "mlx_metal_rms_norm_f16_binding_count"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["route", "metal_native_rms_norm_bf16_binding_count"],
+        &["route", "mlx_metal_rms_norm_bf16_binding_count"],
     )?;
     validate_matching_optional_json_field(
         baseline,
         candidate,
-        &["route", "metal_native_rms_norm_unsupported_binding_count"],
+        &["route", "mlx_metal_rms_norm_unsupported_binding_count"],
     )?;
     validate_matching_optional_json_field(
         baseline,
@@ -6282,21 +6200,20 @@ fn json_value_label(value: &Value) -> String {
 }
 
 fn inferred_tool_mode_from_runtime_json(runtime: &Value) -> Option<&'static str> {
-    match nested_value(runtime, &["native_runtime", "runner"]).and_then(Value::as_str) {
-        Some("deterministic") => return Some("engine_deterministic_runtime"),
+    match nested_value(runtime, &["mlx_runtime", "runner"]).and_then(Value::as_str) {
         Some("metal_bringup") => return Some("engine_bringup_runtime"),
         _ => {}
     }
 
     match nested_value(runtime, &["backend_adapter", "kind"]).and_then(Value::as_str) {
-        Some("llama_cpp_server_completion") => return Some("compatibility_stepwise_runtime"),
-        Some(_) => return Some("compatibility_blocking_runtime"),
+        Some("llama_cpp_server_completion") => return Some("llama_cpp_stepwise_runtime"),
+        Some(_) => return Some("llama_cpp_blocking_runtime"),
         None => {}
     }
 
     match runtime.get("selected_backend").and_then(Value::as_str) {
-        Some("ax_native") => None,
-        Some(_) => Some("compatibility_blocking_runtime"),
+        Some("mlx") => None,
+        Some(_) => Some("llama_cpp_blocking_runtime"),
         None => None,
     }
 }
@@ -6351,9 +6268,8 @@ fn string_at_path_or_unknown(json: &Value, path: &[&str]) -> String {
 
 fn compare_result_label(tool_mode: &str, execution_semantics: &str) -> &'static str {
     match tool_mode {
-        "compatibility_stepwise_runtime" => "compatibility_stepwise_compare",
-        "compatibility_blocking_runtime" => "compatibility_blocking_compare",
-        "engine_deterministic_runtime" => "engine_deterministic_compare",
+        "llama_cpp_stepwise_runtime" => "llama_cpp_stepwise_compare",
+        "llama_cpp_blocking_runtime" => "llama_cpp_blocking_compare",
         _ => match execution_semantics {
             "metal_real_model_forward" => "metal_real_model_forward_compare",
             "metal_multilayer_mixed_prefix_attention" => {
@@ -6376,26 +6292,23 @@ fn compare_result_label(tool_mode: &str, execution_semantics: &str) -> &'static 
 
 fn compare_summary_note(tool_mode: &str, execution_semantics: &str) -> &'static str {
     match tool_mode {
-        "engine_deterministic_runtime" => {
-            "\nThis comparison reflects the deterministic native placeholder path. It exercises scheduler, session, and contract wiring, but it does not represent validated Metal execution, real model weights, or accelerator-backed numeric inference.\n"
+        "llama_cpp_blocking_runtime" => {
+            "\nThis comparison reflects the current llama.cpp llama.cpp benchmark path. TTFT, prefill throughput, and decode throughput should be read as delegated llama.cpp wall-time proxies rather than MLX-mode scheduler measurements.\n"
         }
-        "compatibility_blocking_runtime" => {
-            "\nThis comparison reflects the current blocking compatibility benchmark path for delegated server-backed adapters such as vLLM, mistral.rs, or MLX-backed routes. TTFT, prefill throughput, and decode throughput should be read as exploratory delegated wall-time proxies rather than native scheduler measurements.\n"
-        }
-        "compatibility_stepwise_runtime" => {
-            "\nThis comparison reflects the delegated compatibility benchmark path over the stepwise `llama.cpp /completion` adapter. Throughput and prefix-reuse deltas should be read as delegated request-cadence and backend-managed prompt-cache evidence, not as AX-native scheduler, KV, or runner evidence.\n"
+        "llama_cpp_stepwise_runtime" => {
+            "\nThis comparison reflects the delegated llama.cpp benchmark path over the stepwise `llama.cpp /completion` adapter. Throughput and prefix-reuse deltas should be read as delegated request-cadence and backend-managed prompt-cache evidence, not as AX Engine scheduler, KV, or runner evidence.\n"
         }
         _ if execution_semantics == "metal_real_model_forward" => {
             "\nThis comparison reflects Metal runs that explicitly marked real model forward execution. Compare only against the same execution semantics and validated model provenance.\n"
         }
         _ if execution_semantics == "metal_multilayer_mixed_prefix_attention" => {
-            "\nThis comparison reflects multi-layer Metal runs where some prefix-layer attention already executed natively while part of the prefix path still fell back to CPU reference. Read it as partial native dense-forward progress, not as full native prefix coverage or release-grade inference.\n"
+            "\nThis comparison reflects multi-layer Metal runs where some prefix-layer attention already executed through MLX Metal dispatch while part of the prefix path still fell back to CPU reference. Read it as partial MLX dense-forward progress, not as full MLX prefix coverage or release-grade inference.\n"
         }
         _ if execution_semantics == "metal_multilayer_native_prefix_attention" => {
-            "\nThis comparison reflects Metal runs where validated multi-layer model artifacts were present and at least part of prefix-layer attention already executed through native Metal dispatch, but the full dense forward path still remained incomplete. Treat these runs as stronger bring-up evidence than CPU-reference multilayer staging, but not as release-grade native inference.\n"
+            "\nThis comparison reflects Metal runs where validated multi-layer model artifacts were present and at least part of prefix-layer attention already executed through MLX Metal dispatch, but the full dense forward path still remained incomplete. Treat these runs as stronger bring-up evidence than CPU-reference multilayer staging, but not as release-grade MLX inference.\n"
         }
         _ if execution_semantics == "metal_multilayer_model_incomplete" => {
-            "\nThis comparison reflects Metal runs that loaded validated multi-layer model artifacts, but did not report a complete real model forward path. Treat these runs as partial native bring-up milestones rather than final dense inference performance.\n"
+            "\nThis comparison reflects Metal runs that loaded validated multi-layer model artifacts, but did not report a complete real model forward path. Treat these runs as partial MLX Metal bring-up milestones rather than final dense inference performance.\n"
         }
         _ if execution_semantics == "metal_model_bound_ffn_decode" => {
             "\nThis comparison reflects Metal runs that consumed real model tensor inputs and reported model-bound FFN direct decode continuation. It is stronger evidence than tensor-input bring-up alone, but it is still not a full release-grade native forward path.\n"
@@ -6701,10 +6614,6 @@ fn build_execution_summary_markdown(
         prefix_reuse_provenance_label(&execution.observation.route_metadata);
     let execution_semantics =
         route_execution_semantics_label(&execution.observation.route_metadata);
-    let native_placeholder_execution = route_decision_flag(
-        &execution.observation.route_metadata,
-        "native_placeholder_execution",
-    );
     let metal_numeric_scaffold_only = route_decision_flag(
         &execution.observation.route_metadata,
         "metal_dispatch_numeric_scaffold_only",
@@ -6727,7 +6636,7 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_runtime_model_conditioned_inputs",
     );
-    let metal_prefix_layers_native_attention = route_decision_flag(
+    let mlx_metal_prefix_layers_attention = route_decision_flag(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_layers_native_attention",
     );
@@ -6735,7 +6644,7 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_layers_cpu_reference",
     );
-    let metal_prefix_native_dispatch_count = route_decision_value(
+    let mlx_metal_prefix_dispatch_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_native_dispatch_count",
     );
@@ -6743,7 +6652,7 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_cpu_reference_dispatch_count",
     );
-    let metal_prefix_native_projection_row_count = route_decision_value(
+    let mlx_metal_prefix_projection_row_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_native_projection_row_count",
     );
@@ -6751,7 +6660,7 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_cpu_projection_row_count",
     );
-    let metal_prefix_native_rms_norm_element_count = route_decision_value(
+    let mlx_metal_prefix_rms_norm_element_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_native_rms_norm_element_count",
     );
@@ -6759,7 +6668,7 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_cpu_rms_norm_element_count",
     );
-    let metal_prefix_native_ffn_activation_element_count = route_decision_value(
+    let mlx_metal_prefix_ffn_activation_element_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_native_ffn_activation_element_count",
     );
@@ -6767,7 +6676,7 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_cpu_ffn_activation_element_count",
     );
-    let metal_prefix_native_residual_add_element_count = route_decision_value(
+    let mlx_metal_prefix_residual_add_element_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_native_residual_add_element_count",
     );
@@ -6775,7 +6684,7 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_cpu_residual_add_element_count",
     );
-    let metal_prefix_native_scale_element_count = route_decision_value(
+    let mlx_metal_prefix_scale_element_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_prefix_native_scale_element_count",
     );
@@ -6806,47 +6715,47 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_model_artifacts_validated",
     );
-    let metal_native_projection_f32_binding_count = route_decision_value(
+    let mlx_metal_projection_f32_binding_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_native_projection_f32_binding_count",
     );
-    let metal_native_projection_f16_binding_count = route_decision_value(
+    let mlx_metal_projection_f16_binding_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_native_projection_f16_binding_count",
     );
-    let metal_native_projection_bf16_binding_count = route_decision_value(
+    let mlx_metal_projection_bf16_binding_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_native_projection_bf16_binding_count",
     );
-    let metal_native_projection_unsupported_binding_count = route_decision_value(
+    let mlx_metal_projection_unsupported_binding_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_native_projection_unsupported_binding_count",
     );
-    let metal_native_projection_source_quantized_binding_count = route_decision_value(
+    let mlx_metal_projection_source_quantized_binding_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_native_projection_source_quantized_binding_count",
     );
-    let metal_native_rms_norm_f32_binding_count = route_decision_value(
+    let mlx_metal_rms_norm_f32_binding_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_native_rms_norm_f32_binding_count",
     );
-    let metal_native_rms_norm_f16_binding_count = route_decision_value(
+    let mlx_metal_rms_norm_f16_binding_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_native_rms_norm_f16_binding_count",
     );
-    let metal_native_rms_norm_bf16_binding_count = route_decision_value(
+    let mlx_metal_rms_norm_bf16_binding_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_native_rms_norm_bf16_binding_count",
     );
-    let metal_native_rms_norm_unsupported_binding_count = route_decision_value(
+    let mlx_metal_rms_norm_unsupported_binding_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_native_rms_norm_unsupported_binding_count",
     );
-    let metal_native_rms_norm_source_quantized_binding_count = route_decision_value(
+    let mlx_metal_rms_norm_source_quantized_binding_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_native_rms_norm_source_quantized_binding_count",
     );
-    let metal_direct_decode_native_projection_row_count = route_decision_value(
+    let mlx_metal_direct_decode_projection_row_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_native_projection_row_count",
     );
@@ -6854,7 +6763,7 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_cpu_projection_row_count",
     );
-    let metal_direct_decode_native_rms_norm_element_count = route_decision_value(
+    let mlx_metal_direct_decode_rms_norm_element_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_native_rms_norm_element_count",
     );
@@ -6862,7 +6771,7 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_cpu_rms_norm_element_count",
     );
-    let metal_direct_decode_native_ffn_activation_element_count = route_decision_value(
+    let mlx_metal_direct_decode_ffn_activation_element_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_native_ffn_activation_element_count",
     );
@@ -6870,7 +6779,7 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_cpu_ffn_activation_element_count",
     );
-    let metal_direct_decode_native_residual_add_element_count = route_decision_value(
+    let mlx_metal_direct_decode_residual_add_element_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_native_residual_add_element_count",
     );
@@ -6878,7 +6787,7 @@ fn build_execution_summary_markdown(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_cpu_residual_add_element_count",
     );
-    let metal_direct_decode_native_scale_element_count = route_decision_value(
+    let mlx_metal_direct_decode_scale_element_count = route_decision_value(
         &execution.observation.route_metadata,
         "metal_dispatch_direct_decode_native_scale_element_count",
     );
@@ -6906,62 +6815,62 @@ fn build_execution_summary_markdown(
         backend_reported_cached_prompt_tokens(&execution.observation.route_metadata)
             .map(|value| value.to_string())
             .unwrap_or_else(|| "none".to_string());
-    let prefix_projection_native_share = native_coverage_ratio(
-        metal_prefix_native_projection_row_count,
+    let prefix_projection_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        mlx_metal_prefix_projection_row_count,
         metal_prefix_cpu_projection_row_count,
     )
     .map(|value| format!("{:.2}%", value * 100.0))
     .unwrap_or_else(|| "n/a".to_string());
-    let prefix_rms_norm_native_share = native_coverage_ratio(
-        metal_prefix_native_rms_norm_element_count,
+    let prefix_rms_norm_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        mlx_metal_prefix_rms_norm_element_count,
         metal_prefix_cpu_rms_norm_element_count,
     )
     .map(|value| format!("{:.2}%", value * 100.0))
     .unwrap_or_else(|| "n/a".to_string());
-    let prefix_ffn_activation_native_share = native_coverage_ratio(
-        metal_prefix_native_ffn_activation_element_count,
+    let prefix_ffn_activation_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        mlx_metal_prefix_ffn_activation_element_count,
         metal_prefix_cpu_ffn_activation_element_count,
     )
     .map(|value| format!("{:.2}%", value * 100.0))
     .unwrap_or_else(|| "n/a".to_string());
-    let prefix_residual_add_native_share = native_coverage_ratio(
-        metal_prefix_native_residual_add_element_count,
+    let prefix_residual_add_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        mlx_metal_prefix_residual_add_element_count,
         metal_prefix_cpu_residual_add_element_count,
     )
     .map(|value| format!("{:.2}%", value * 100.0))
     .unwrap_or_else(|| "n/a".to_string());
-    let prefix_scale_native_share = native_coverage_ratio(
-        metal_prefix_native_scale_element_count,
+    let prefix_scale_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        mlx_metal_prefix_scale_element_count,
         metal_prefix_cpu_scale_element_count,
     )
     .map(|value| format!("{:.2}%", value * 100.0))
     .unwrap_or_else(|| "n/a".to_string());
-    let direct_decode_projection_native_share = native_coverage_ratio(
-        metal_direct_decode_native_projection_row_count,
+    let direct_decode_projection_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        mlx_metal_direct_decode_projection_row_count,
         metal_direct_decode_cpu_projection_row_count,
     )
     .map(|value| format!("{:.2}%", value * 100.0))
     .unwrap_or_else(|| "n/a".to_string());
-    let direct_decode_rms_norm_native_share = native_coverage_ratio(
-        metal_direct_decode_native_rms_norm_element_count,
+    let direct_decode_rms_norm_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        mlx_metal_direct_decode_rms_norm_element_count,
         metal_direct_decode_cpu_rms_norm_element_count,
     )
     .map(|value| format!("{:.2}%", value * 100.0))
     .unwrap_or_else(|| "n/a".to_string());
-    let direct_decode_ffn_activation_native_share = native_coverage_ratio(
-        metal_direct_decode_native_ffn_activation_element_count,
+    let direct_decode_ffn_activation_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        mlx_metal_direct_decode_ffn_activation_element_count,
         metal_direct_decode_cpu_ffn_activation_element_count,
     )
     .map(|value| format!("{:.2}%", value * 100.0))
     .unwrap_or_else(|| "n/a".to_string());
-    let direct_decode_residual_add_native_share = native_coverage_ratio(
-        metal_direct_decode_native_residual_add_element_count,
+    let direct_decode_residual_add_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        mlx_metal_direct_decode_residual_add_element_count,
         metal_direct_decode_cpu_residual_add_element_count,
     )
     .map(|value| format!("{:.2}%", value * 100.0))
     .unwrap_or_else(|| "n/a".to_string());
-    let direct_decode_scale_native_share = native_coverage_ratio(
-        metal_direct_decode_native_scale_element_count,
+    let direct_decode_scale_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        mlx_metal_direct_decode_scale_element_count,
         metal_direct_decode_cpu_scale_element_count,
     )
     .map(|value| format!("{:.2}%", value * 100.0))
@@ -6972,30 +6881,29 @@ fn build_execution_summary_markdown(
         .runtime
         .native_model_report()
         .is_some_and(|report| native_model_report_has_dense_dequantized_source(&report));
-    let native_benchmark_readiness = native_benchmark_readiness(NativeBenchmarkReadinessInputs {
+    let mlx_metal_readiness = mlx_metal_readiness(MlxMetalReadinessInputs {
         tool_mode: execution.tool_mode,
         selected_backend: &selected_backend,
-        native_placeholder_execution,
         native_dense_dequantized_source,
         native_quantized_projection_binding_count:
-            metal_native_projection_source_quantized_binding_count,
+            mlx_metal_projection_source_quantized_binding_count,
         direct_decode_batching_opportunity_observed:
             metal_direct_decode_batching_opportunity_observed,
         metal_complete_model_forward_supported,
         metal_real_model_forward,
         metal_model_artifacts_validated,
-        metal_prefix_layers_native_attention,
+        mlx_metal_prefix_layers_attention,
         metal_prefix_layers_cpu_reference,
         metal_prefix_cpu_reference_dispatch_count,
-        metal_prefix_native_projection_row_count,
+        mlx_metal_prefix_projection_row_count,
         metal_prefix_cpu_projection_row_count,
-        metal_prefix_native_rms_norm_element_count,
+        mlx_metal_prefix_rms_norm_element_count,
         metal_prefix_cpu_rms_norm_element_count,
-        metal_prefix_native_ffn_activation_element_count,
+        mlx_metal_prefix_ffn_activation_element_count,
         metal_prefix_cpu_ffn_activation_element_count,
-        metal_prefix_native_residual_add_element_count,
+        mlx_metal_prefix_residual_add_element_count,
         metal_prefix_cpu_residual_add_element_count,
-        metal_prefix_native_scale_element_count,
+        mlx_metal_prefix_scale_element_count,
         metal_prefix_cpu_scale_element_count,
         metal_direct_decode_tokens,
         metal_direct_decode_model_bound_ffn,
@@ -7003,42 +6911,41 @@ fn build_execution_summary_markdown(
         metal_direct_decode_batched_logits_token_count,
         metal_direct_decode_batched_group_fallback_count,
         metal_direct_decode_batched_group_fallback_token_count,
-        metal_direct_decode_native_projection_row_count,
+        mlx_metal_direct_decode_projection_row_count,
         metal_direct_decode_cpu_projection_row_count,
-        metal_direct_decode_native_rms_norm_element_count,
+        mlx_metal_direct_decode_rms_norm_element_count,
         metal_direct_decode_cpu_rms_norm_element_count,
-        metal_direct_decode_native_ffn_activation_element_count,
+        mlx_metal_direct_decode_ffn_activation_element_count,
         metal_direct_decode_cpu_ffn_activation_element_count,
-        metal_direct_decode_native_residual_add_element_count,
+        mlx_metal_direct_decode_residual_add_element_count,
         metal_direct_decode_cpu_residual_add_element_count,
-        metal_direct_decode_native_scale_element_count,
+        mlx_metal_direct_decode_scale_element_count,
         metal_direct_decode_cpu_scale_element_count,
     });
-    let native_benchmark_readiness_status = native_benchmark_readiness.status;
-    let native_hot_path_cpu_fallback_free = native_benchmark_readiness.hot_path_cpu_fallback_free;
-    let native_batched_direct_decode_logits_ready =
-        native_benchmark_readiness.batched_direct_decode_logits_ready;
-    let native_prefix_min_native_share =
-        native_share_label(native_benchmark_readiness.prefix_min_native_share);
-    let native_direct_decode_min_native_share =
-        native_share_label(native_benchmark_readiness.direct_decode_min_native_share);
-    let native_readiness_blockers = native_benchmark_readiness.blockers_label();
-    let summary_note = if execution.tool_mode == "compatibility_blocking_runtime" {
-        "\nCompatibility benchmarking currently runs through a blocking one-shot SDK path for delegated server-backed adapters such as vLLM, mistral.rs, or MLX-backed routes. TTFT, prefill throughput, and decode throughput should be read as exploratory wall-time proxies rather than native stepwise measurements.\n"
-    } else if execution.tool_mode == "compatibility_stepwise_runtime" {
-        "\nCompatibility benchmarking currently runs through the delegated SDK stepwise lifecycle over `llama.cpp /completion`. TTFT and decode throughput reflect delegated step cadence, and any reported prefix reuse is backend-managed prompt-cache evidence such as `delegated_prompt_cache`, not AX-native scheduler / KV reuse. Prefill throughput, KV metrics, and runner metrics therefore remain exploratory.\n"
-    } else if execution.tool_mode == "engine_deterministic_runtime" {
-        "\nThis run executed the deterministic native placeholder path through the preview SDK session, request manager, scheduler, KV manager, deterministic runner, and deterministic sampler. It validates native session wiring and benchmark contracts, but it does not represent validated Metal execution or model-bound accelerator inference.\n"
+    let mlx_metal_readiness_status = mlx_metal_readiness.status;
+    let mlx_metal_hot_path_cpu_fallback_free = mlx_metal_readiness.hot_path_cpu_fallback_free;
+    let mlx_metal_batched_direct_decode_logits_ready =
+        mlx_metal_readiness.batched_direct_decode_logits_ready;
+    let mlx_metal_prefix_min_dispatch_share =
+        mlx_metal_dispatch_share_label(mlx_metal_readiness.prefix_min_mlx_metal_dispatch_share);
+    let mlx_metal_direct_decode_min_dispatch_share = mlx_metal_dispatch_share_label(
+        mlx_metal_readiness.direct_decode_min_mlx_metal_dispatch_share,
+    );
+    let mlx_metal_readiness_blockers = mlx_metal_readiness.blockers_label();
+    let summary_note = if execution.tool_mode == "llama_cpp_blocking_runtime" {
+        "\nLlama.cpp benchmarking currently runs through the supported llama.cpp route. TTFT, prefill throughput, and decode throughput should be read as llama.cpp wall-time proxies rather than MLX-mode stepwise measurements.\n"
+    } else if execution.tool_mode == "llama_cpp_stepwise_runtime" {
+        "\nLlama.cpp benchmarking currently runs through the delegated SDK stepwise lifecycle over `llama.cpp /completion`. TTFT and decode throughput reflect delegated step cadence, and any reported prefix reuse is backend-managed prompt-cache evidence such as `delegated_prompt_cache`, not AX Engine scheduler / KV reuse. Prefill throughput, KV metrics, and runner metrics therefore remain exploratory.\n"
     } else if execution_semantics == "metal_real_model_forward" {
         "\nThis run reports a Metal path that marked real model forward execution. Compare it only against runs with the same execution semantics and validated model provenance.\n"
     } else if execution_semantics == "metal_multilayer_mixed_prefix_attention" {
-        "\nThis run loaded validated multi-layer model artifacts and executed part of prefix-layer attention through native Metal dispatch, but some multilayer prefix work still fell back to CPU reference. Read it as partial native dense-forward progress, not as full native prefix coverage or final inference evidence.\n"
+        "\nThis run loaded validated multi-layer model artifacts and executed part of prefix-layer attention through MLX Metal dispatch, but some multilayer prefix work still fell back to CPU reference. Read it as partial MLX dense-forward progress, not as full MLX prefix coverage or final inference evidence.\n"
     } else if execution_semantics == "metal_multilayer_native_prefix_attention" {
-        "\nThis run loaded validated multi-layer model artifacts and already executed at least part of prefix-layer attention through native Metal dispatch, but it still did not report a complete dense real-model forward. Read it as a stronger native bring-up milestone than CPU-reference multilayer staging, not as final inference evidence.\n"
+        "\nThis run loaded validated multi-layer model artifacts and already executed at least part of prefix-layer attention through MLX Metal dispatch, but it still did not report a complete dense real-model forward. Read it as a stronger MLX Metal bring-up milestone than CPU-reference multilayer staging, not as final inference evidence.\n"
     } else if execution_semantics == "metal_multilayer_model_incomplete" {
-        "\nThis run loaded validated multi-layer model artifacts into the Metal path, but it did not report a complete real model forward. Read it as partial native bring-up progress, not final dense inference evidence.\n"
+        "\nThis run loaded validated multi-layer model artifacts into the Metal path, but it did not report a complete real model forward. Read it as partial MLX Metal bring-up progress, not final dense inference evidence.\n"
     } else if execution_semantics == "metal_model_bound_ffn_decode" {
-        "\nThis run executed Metal dispatch with real model tensor inputs and reported model-bound FFN direct decode continuation. It is a stronger native bring-up milestone than tensor-input-only evidence, but it still does not prove a full release-grade dense forward path.\n"
+        "\nThis run executed Metal dispatch with real model tensor inputs and reported model-bound FFN direct decode continuation. It is a stronger MLX Metal bring-up milestone than tensor-input-only evidence, but it still does not prove a full release-grade dense forward path.\n"
     } else if execution_semantics == "metal_real_model_tensor_inputs" {
         "\nThis run executed Metal dispatch with real model tensor inputs present, but it did not mark a real model forward pass. Treat it as model-bound bring-up evidence rather than final inference performance.\n"
     } else if execution_semantics == "metal_model_conditioned_numeric_scaffold" {
@@ -7050,7 +6957,7 @@ fn build_execution_summary_markdown(
     };
 
     format!(
-        "# Benchmark Run\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `{}`\n- tool_mode: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- fallback_reason: `{fallback_reason}`\n- execution_semantics: `{execution_semantics}`\n- native_placeholder_execution: `{native_placeholder_execution}`\n- native_benchmark_readiness: `{native_benchmark_readiness_status}`\n- native_hot_path_cpu_fallback_free: `{native_hot_path_cpu_fallback_free}`\n- native_batched_direct_decode_logits_ready: `{native_batched_direct_decode_logits_ready}`\n- native_prefix_min_native_share: `{native_prefix_min_native_share}`\n- native_direct_decode_min_native_share: `{native_direct_decode_min_native_share}`\n- native_readiness_blockers: `{native_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- metal_prefix_layers_native_attention: `{metal_prefix_layers_native_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- metal_prefix_native_dispatch_count: `{metal_prefix_native_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_prefix_native_projection_row_count: `{metal_prefix_native_projection_row_count}`\n- metal_prefix_cpu_projection_row_count: `{metal_prefix_cpu_projection_row_count}`\n- metal_prefix_projection_native_share: `{prefix_projection_native_share}`\n- metal_prefix_native_rms_norm_element_count: `{metal_prefix_native_rms_norm_element_count}`\n- metal_prefix_cpu_rms_norm_element_count: `{metal_prefix_cpu_rms_norm_element_count}`\n- metal_prefix_rms_norm_native_share: `{prefix_rms_norm_native_share}`\n- metal_prefix_native_ffn_activation_element_count: `{metal_prefix_native_ffn_activation_element_count}`\n- metal_prefix_cpu_ffn_activation_element_count: `{metal_prefix_cpu_ffn_activation_element_count}`\n- metal_prefix_ffn_activation_native_share: `{prefix_ffn_activation_native_share}`\n- metal_prefix_native_residual_add_element_count: `{metal_prefix_native_residual_add_element_count}`\n- metal_prefix_cpu_residual_add_element_count: `{metal_prefix_cpu_residual_add_element_count}`\n- metal_prefix_residual_add_native_share: `{prefix_residual_add_native_share}`\n- metal_prefix_native_scale_element_count: `{metal_prefix_native_scale_element_count}`\n- metal_prefix_cpu_scale_element_count: `{metal_prefix_cpu_scale_element_count}`\n- metal_prefix_scale_native_share: `{prefix_scale_native_share}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- metal_native_projection_f32_binding_count: `{metal_native_projection_f32_binding_count}`\n- metal_native_projection_f16_binding_count: `{metal_native_projection_f16_binding_count}`\n- metal_native_projection_bf16_binding_count: `{metal_native_projection_bf16_binding_count}`\n- metal_native_projection_unsupported_binding_count: `{metal_native_projection_unsupported_binding_count}`\n- metal_native_projection_source_quantized_binding_count: `{metal_native_projection_source_quantized_binding_count}`\n- metal_native_rms_norm_f32_binding_count: `{metal_native_rms_norm_f32_binding_count}`\n- metal_native_rms_norm_f16_binding_count: `{metal_native_rms_norm_f16_binding_count}`\n- metal_native_rms_norm_bf16_binding_count: `{metal_native_rms_norm_bf16_binding_count}`\n- metal_native_rms_norm_unsupported_binding_count: `{metal_native_rms_norm_unsupported_binding_count}`\n- metal_native_rms_norm_source_quantized_binding_count: `{metal_native_rms_norm_source_quantized_binding_count}`\n- metal_direct_decode_native_projection_row_count: `{metal_direct_decode_native_projection_row_count}`\n- metal_direct_decode_cpu_projection_row_count: `{metal_direct_decode_cpu_projection_row_count}`\n- metal_direct_decode_projection_native_share: `{direct_decode_projection_native_share}`\n- metal_direct_decode_native_rms_norm_element_count: `{metal_direct_decode_native_rms_norm_element_count}`\n- metal_direct_decode_cpu_rms_norm_element_count: `{metal_direct_decode_cpu_rms_norm_element_count}`\n- metal_direct_decode_rms_norm_native_share: `{direct_decode_rms_norm_native_share}`\n- metal_direct_decode_native_ffn_activation_element_count: `{metal_direct_decode_native_ffn_activation_element_count}`\n- metal_direct_decode_cpu_ffn_activation_element_count: `{metal_direct_decode_cpu_ffn_activation_element_count}`\n- metal_direct_decode_ffn_activation_native_share: `{direct_decode_ffn_activation_native_share}`\n- metal_direct_decode_native_residual_add_element_count: `{metal_direct_decode_native_residual_add_element_count}`\n- metal_direct_decode_cpu_residual_add_element_count: `{metal_direct_decode_cpu_residual_add_element_count}`\n- metal_direct_decode_residual_add_native_share: `{direct_decode_residual_add_native_share}`\n- metal_direct_decode_native_scale_element_count: `{metal_direct_decode_native_scale_element_count}`\n- metal_direct_decode_cpu_scale_element_count: `{metal_direct_decode_cpu_scale_element_count}`\n- metal_direct_decode_scale_native_share: `{direct_decode_scale_native_share}`\n- correctness: `{}`\n- determinism: `{}`\n- ttft_ms: `{:.2}`\n- prefill_tok_s: `{:.2}`\n- decode_tok_s: `{:.2}`\n- e2e_latency_ms: `{:.2}`\n- cpu_time_per_token_us: `{:.2}`\n- runner_time_per_token_us: `{:.2}`\n- runner_time_share_pct: `{:.2}`\n- prefix_hit_rate: `{:.2}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- kv_peak_blocks: `{}`\n{}",
+        "# Benchmark Run\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `{}`\n- tool_mode: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- fallback_reason: `{fallback_reason}`\n- execution_semantics: `{execution_semantics}`\n- mlx_metal_readiness: `{mlx_metal_readiness_status}`\n- mlx_metal_hot_path_cpu_fallback_free: `{mlx_metal_hot_path_cpu_fallback_free}`\n- mlx_metal_batched_direct_decode_logits_ready: `{mlx_metal_batched_direct_decode_logits_ready}`\n- mlx_metal_prefix_min_dispatch_share: `{mlx_metal_prefix_min_dispatch_share}`\n- mlx_metal_direct_decode_min_dispatch_share: `{mlx_metal_direct_decode_min_dispatch_share}`\n- mlx_metal_readiness_blockers: `{mlx_metal_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- mlx_metal_prefix_layers_attention: `{mlx_metal_prefix_layers_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- mlx_metal_prefix_dispatch_count: `{mlx_metal_prefix_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- mlx_metal_prefix_projection_row_count: `{mlx_metal_prefix_projection_row_count}`\n- metal_prefix_cpu_projection_row_count: `{metal_prefix_cpu_projection_row_count}`\n- metal_prefix_projection_mlx_metal_dispatch_share: `{prefix_projection_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_rms_norm_element_count: `{mlx_metal_prefix_rms_norm_element_count}`\n- metal_prefix_cpu_rms_norm_element_count: `{metal_prefix_cpu_rms_norm_element_count}`\n- metal_prefix_rms_norm_mlx_metal_dispatch_share: `{prefix_rms_norm_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_ffn_activation_element_count: `{mlx_metal_prefix_ffn_activation_element_count}`\n- metal_prefix_cpu_ffn_activation_element_count: `{metal_prefix_cpu_ffn_activation_element_count}`\n- metal_prefix_ffn_activation_mlx_metal_dispatch_share: `{prefix_ffn_activation_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_residual_add_element_count: `{mlx_metal_prefix_residual_add_element_count}`\n- metal_prefix_cpu_residual_add_element_count: `{metal_prefix_cpu_residual_add_element_count}`\n- metal_prefix_residual_add_mlx_metal_dispatch_share: `{prefix_residual_add_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_scale_element_count: `{mlx_metal_prefix_scale_element_count}`\n- metal_prefix_cpu_scale_element_count: `{metal_prefix_cpu_scale_element_count}`\n- metal_prefix_scale_mlx_metal_dispatch_share: `{prefix_scale_mlx_metal_dispatch_share}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- mlx_metal_projection_f32_binding_count: `{mlx_metal_projection_f32_binding_count}`\n- mlx_metal_projection_f16_binding_count: `{mlx_metal_projection_f16_binding_count}`\n- mlx_metal_projection_bf16_binding_count: `{mlx_metal_projection_bf16_binding_count}`\n- mlx_metal_projection_unsupported_binding_count: `{mlx_metal_projection_unsupported_binding_count}`\n- mlx_metal_projection_source_quantized_binding_count: `{mlx_metal_projection_source_quantized_binding_count}`\n- mlx_metal_rms_norm_f32_binding_count: `{mlx_metal_rms_norm_f32_binding_count}`\n- mlx_metal_rms_norm_f16_binding_count: `{mlx_metal_rms_norm_f16_binding_count}`\n- mlx_metal_rms_norm_bf16_binding_count: `{mlx_metal_rms_norm_bf16_binding_count}`\n- mlx_metal_rms_norm_unsupported_binding_count: `{mlx_metal_rms_norm_unsupported_binding_count}`\n- mlx_metal_rms_norm_source_quantized_binding_count: `{mlx_metal_rms_norm_source_quantized_binding_count}`\n- mlx_metal_direct_decode_projection_row_count: `{mlx_metal_direct_decode_projection_row_count}`\n- metal_direct_decode_cpu_projection_row_count: `{metal_direct_decode_cpu_projection_row_count}`\n- metal_direct_decode_projection_mlx_metal_dispatch_share: `{direct_decode_projection_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_rms_norm_element_count: `{mlx_metal_direct_decode_rms_norm_element_count}`\n- metal_direct_decode_cpu_rms_norm_element_count: `{metal_direct_decode_cpu_rms_norm_element_count}`\n- metal_direct_decode_rms_norm_mlx_metal_dispatch_share: `{direct_decode_rms_norm_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_ffn_activation_element_count: `{mlx_metal_direct_decode_ffn_activation_element_count}`\n- metal_direct_decode_cpu_ffn_activation_element_count: `{metal_direct_decode_cpu_ffn_activation_element_count}`\n- metal_direct_decode_ffn_activation_mlx_metal_dispatch_share: `{direct_decode_ffn_activation_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_residual_add_element_count: `{mlx_metal_direct_decode_residual_add_element_count}`\n- metal_direct_decode_cpu_residual_add_element_count: `{metal_direct_decode_cpu_residual_add_element_count}`\n- metal_direct_decode_residual_add_mlx_metal_dispatch_share: `{direct_decode_residual_add_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_scale_element_count: `{mlx_metal_direct_decode_scale_element_count}`\n- metal_direct_decode_cpu_scale_element_count: `{metal_direct_decode_cpu_scale_element_count}`\n- metal_direct_decode_scale_mlx_metal_dispatch_share: `{direct_decode_scale_mlx_metal_dispatch_share}`\n- correctness: `{}`\n- determinism: `{}`\n- ttft_ms: `{:.2}`\n- prefill_tok_s: `{:.2}`\n- decode_tok_s: `{:.2}`\n- e2e_latency_ms: `{:.2}`\n- cpu_time_per_token_us: `{:.2}`\n- runner_time_per_token_us: `{:.2}`\n- runner_time_share_pct: `{:.2}`\n- prefix_hit_rate: `{:.2}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- kv_peak_blocks: `{}`\n{}",
         manifest_path.display(),
         execution.status_label(),
         execution.tool_mode,
@@ -7135,15 +7042,15 @@ fn build_contract_failure_summary_markdown(
     let backend_adapter = nested_value(&runtime, &["backend_adapter"])
         .cloned()
         .unwrap_or(Value::String("none".to_string()));
-    let native_model_bridge_status = nested_value(&runtime, &["native_model_bridge", "status"])
+    let mlx_model_bridge_status = nested_value(&runtime, &["mlx_model_bridge", "status"])
         .and_then(Value::as_str)
         .unwrap_or("none");
-    let native_model_bridge_blockers = nested_value(&runtime, &["native_model_bridge", "blockers"])
+    let mlx_model_bridge_blockers = nested_value(&runtime, &["mlx_model_bridge", "blockers"])
         .map(json_value_label)
         .unwrap_or_else(|| "[]".to_string());
 
     format!(
-        "# Benchmark Contract Failure\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `contract_failure`\n- code: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{}`\n- native_model_bridge_status: `{native_model_bridge_status}`\n- native_model_bridge_blockers: `{native_model_bridge_blockers}`\n- scenario: `{}`\n\nFailure reason:\n\n{}\n\nRecommended action:\n\n{}\n",
+        "# Benchmark Contract Failure\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `contract_failure`\n- code: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{}`\n- mlx_model_bridge_status: `{mlx_model_bridge_status}`\n- mlx_model_bridge_blockers: `{mlx_model_bridge_blockers}`\n- scenario: `{}`\n\nFailure reason:\n\n{}\n\nRecommended action:\n\n{}\n",
         manifest_path.display(),
         failure.code,
         json_value_label(&backend_adapter),
@@ -7172,108 +7079,91 @@ fn classify_contract_failure(
 ) -> ContractFailureClassification {
     if message.contains("runtime.backend_adapter is required") {
         return ContractFailureClassification {
-            code: "compatibility_backend_adapter_required",
-            recommended_action:
-                "Set runtime.backend_adapter to a supported compatibility adapter before running delegated benchmark manifests.",
+            code: "llama_backend_adapter_required",
+            recommended_action: "Set runtime.backend_adapter to a supported llama.cpp adapter before running delegated benchmark manifests.",
         };
     }
 
     if message.contains("runtime.backend_adapter kind does not match selected_backend") {
         return ContractFailureClassification {
             code: "backend_adapter_kind_mismatch",
-            recommended_action:
-                "Align runtime.selected_backend and runtime.backend_adapter.kind so they describe the same delegated backend.",
+            recommended_action: "Align runtime.selected_backend and runtime.backend_adapter.kind so they describe the same delegated backend.",
         };
     }
 
-    if message
-        .contains("runtime.backend_adapter must be omitted when selected_backend is ax_native")
-    {
+    if message.contains("runtime.backend_adapter must be omitted when selected_backend is mlx") {
         return ContractFailureClassification {
-            code: "native_backend_adapter_forbidden",
-            recommended_action:
-                "Remove runtime.backend_adapter when selected_backend is ax_native.",
+            code: "mlx_backend_adapter_forbidden",
+            recommended_action: "Remove runtime.backend_adapter when selected_backend is mlx.",
         };
     }
 
     if message.contains("invalid benchmark runtime backend-resolution contract") {
         return ContractFailureClassification {
             code: "runtime_backend_resolution_contract_invalid",
-            recommended_action:
-                "Fix selected_backend, support_tier, resolution_policy, and fallback_reason so they satisfy the benchmark runtime contract.",
+            recommended_action: "Fix selected_backend, support_tier, resolution_policy, and fallback_reason so they satisfy the benchmark runtime contract.",
         };
     }
 
-    if message.contains("failed to export native model artifacts from GGUF") {
-        return match classify_native_gguf_export_failure_message(message) {
-            NativeGgufExportFailureKind::UnsupportedModel => ContractFailureClassification {
-                code: "native_gguf_bridge_unsupported_model",
-                recommended_action:
-                    "Use a GGUF model whose dense attention/FFN layout is supported by the native exporter, or switch this benchmark to a compatibility backend for the unsupported model.",
+    if message.contains("failed to export MLX model artifacts from GGUF") {
+        return match classify_mlx_gguf_export_failure_message(message) {
+            MlxGgufExportFailureKind::UnsupportedModel => ContractFailureClassification {
+                code: "mlx_gguf_bridge_unsupported_model",
+                recommended_action: "Use a GGUF model whose dense attention/FFN layout is supported by the MLX exporter, or switch this benchmark to a llama.cpp backend for the unsupported model.",
             },
-            NativeGgufExportFailureKind::MissingPythonDependency => {
-                ContractFailureClassification {
-                    code: "native_gguf_bridge_missing_dependency",
-                    recommended_action:
-                        "Run ax-bench with a Python environment that has numpy and PyYAML available, or point AX_ENGINE_NATIVE_GGUF_PYTHON / AX_ENGINE_NATIVE_GGUF_EXPORTER at a ready GGUF exporter toolchain.",
-                }
-            }
-            NativeGgufExportFailureKind::ExportFailed => ContractFailureClassification {
-                code: "native_gguf_bridge_export_failed",
-                recommended_action:
-                    "Inspect the GGUF bridge diagnostics, fix the exporter failure, and rerun the native benchmark.",
+            MlxGgufExportFailureKind::MissingPythonDependency => ContractFailureClassification {
+                code: "mlx_gguf_bridge_missing_dependency",
+                recommended_action: "Run ax-bench with a Python environment that has numpy and PyYAML available, or point AX_ENGINE_MLX_GGUF_PYTHON / AX_ENGINE_MLX_GGUF_EXPORTER at a ready GGUF exporter toolchain.",
+            },
+            MlxGgufExportFailureKind::ExportFailed => ContractFailureClassification {
+                code: "mlx_gguf_bridge_export_failed",
+                recommended_action: "Inspect the GGUF bridge diagnostics, fix the exporter failure, and rerun the MLX benchmark.",
             },
         };
     }
 
-    if manifest.runtime.support_tier == SupportTier::Compatibility
+    if manifest.runtime.support_tier == SupportTier::LlamaCpp
         && matches!(
             manifest.runtime.backend_adapter,
             Some(BackendAdapterManifest::LlamaCppCli { .. })
         )
     {
         return ContractFailureClassification {
-            code: "compatibility_cli_token_workload_unsupported",
-            recommended_action:
-                "Use runtime.backend_adapter.kind=llama_cpp_server_completion for token-based compatibility benchmark manifests.",
-        };
-    }
-
-    if message.contains(
-        "blocking compatibility benchmark adapters currently support scenario manifests only",
-    ) {
-        return ContractFailureClassification {
-            code: "compatibility_blocking_replay_unsupported",
-            recommended_action:
-                "Use a scenario manifest for server-backed vLLM, mistral.rs, or MLX benchmark evaluation, or switch to the stepwise llama.cpp server adapter for replay workloads.",
+            code: "llama_cpp_cli_token_workload_unsupported",
+            recommended_action: "Use runtime.backend_adapter.kind=llama_cpp_server_completion for token-based llama.cpp benchmark manifests.",
         };
     }
 
     if message
-        .contains("blocking compatibility benchmark adapters currently require shape.concurrency=1")
+        .contains("blocking llama.cpp benchmark adapters currently support scenario manifests only")
     {
         return ContractFailureClassification {
-            code: "compatibility_blocking_concurrency_unsupported",
-            recommended_action:
-                "Reduce shape.concurrency to 1 for blocking compatibility benchmark adapters, or use the stepwise llama.cpp server adapter for multi-request delegated workloads.",
+            code: "llama_cpp_blocking_replay_unsupported",
+            recommended_action: "Use the llama.cpp server adapter for non-MLX llama.cpp workloads, or switch to an MLX-mode manifest for ax-engine MLX inference.",
         };
     }
 
     if message
-        .contains("blocking compatibility benchmark adapters do not support require_prefix_reuse")
+        .contains("blocking llama.cpp benchmark adapters currently require shape.concurrency=1")
     {
         return ContractFailureClassification {
-            code: "compatibility_blocking_prefix_reuse_unsupported",
-            recommended_action:
-                "Disable require_prefix_reuse for blocking delegated adapters, or use the stepwise llama.cpp server adapter for delegated prompt-cache benchmark coverage.",
+            code: "llama_cpp_blocking_concurrency_unsupported",
+            recommended_action: "Reduce shape.concurrency to 1 for blocking llama.cpp benchmark adapters, or use the stepwise llama.cpp server adapter for multi-request delegated workloads.",
+        };
+    }
+
+    if message.contains("blocking llama.cpp benchmark adapters do not support require_prefix_reuse")
+    {
+        return ContractFailureClassification {
+            code: "llama_cpp_blocking_prefix_reuse_unsupported",
+            recommended_action: "Disable require_prefix_reuse for blocking delegated adapters, or use the stepwise llama.cpp server adapter for delegated prompt-cache benchmark coverage.",
         };
     }
 
     if message.contains("scenario manifest must contain a shape object") {
         return ContractFailureClassification {
             code: "scenario_shape_required",
-            recommended_action:
-                "Add a valid shape object to the scenario manifest before rerunning ax-bench scenario.",
+            recommended_action: "Add a valid shape object to the scenario manifest before rerunning ax-bench scenario.",
         };
     }
 
@@ -7283,16 +7173,14 @@ fn classify_contract_failure(
     {
         return ContractFailureClassification {
             code: "replay_event_schema_invalid",
-            recommended_action:
-                "Repair the replay events so submit/cancel entries include the required request identifiers and prompt references.",
+            recommended_action: "Repair the replay events so submit/cancel entries include the required request identifiers and prompt references.",
         };
     }
 
     let _ = message;
     ContractFailureClassification {
         code: "contract_validation_failed",
-        recommended_action:
-            "Review the manifest/runtime contract and rerun with a supported workload shape or runtime configuration.",
+        recommended_action: "Review the manifest/runtime contract and rerun with a supported workload shape or runtime configuration.",
     }
 }
 
@@ -7303,9 +7191,9 @@ fn contract_failure_tool_mode(manifest: &BenchmarkManifest) -> &'static str {
         manifest.runtime.backend_adapter.as_ref(),
         Some(adapter) if adapter.supports_stepwise_benchmark()
     ) {
-        "compatibility_stepwise_runtime"
+        "llama_cpp_stepwise_runtime"
     } else {
-        "compatibility_blocking_runtime"
+        "llama_cpp_blocking_runtime"
     }
 }
 
@@ -7360,10 +7248,6 @@ fn build_regression_json(
         route_execution_semantics_from_environment_json(baseline_environment);
     let candidate_execution_semantics =
         route_execution_semantics_from_environment_json(candidate_environment);
-    let baseline_native_placeholder_execution =
-        native_placeholder_execution_from_environment_json(baseline_environment);
-    let candidate_native_placeholder_execution =
-        native_placeholder_execution_from_environment_json(candidate_environment);
     let baseline_metal_numeric_scaffold_only = route_flag_from_json(
         &baseline_route,
         "metal_numeric_scaffold_only",
@@ -7416,14 +7300,14 @@ fn build_regression_json(
             "metal_dispatch_runtime_model_conditioned_inputs",
         ],
     );
-    let baseline_metal_prefix_layers_native_attention = route_flag_from_json(
+    let baseline_mlx_metal_prefix_layers_attention = route_flag_from_json(
         &baseline_route,
-        "metal_prefix_layers_native_attention",
+        "mlx_metal_prefix_layers_attention",
         &["metal_dispatch_prefix_layers_native_attention"],
     );
-    let candidate_metal_prefix_layers_native_attention = route_flag_from_json(
+    let candidate_mlx_metal_prefix_layers_attention = route_flag_from_json(
         &candidate_route,
-        "metal_prefix_layers_native_attention",
+        "mlx_metal_prefix_layers_attention",
         &["metal_dispatch_prefix_layers_native_attention"],
     );
     let baseline_metal_prefix_layers_cpu_reference = route_flag_from_json(
@@ -7436,14 +7320,14 @@ fn build_regression_json(
         "metal_prefix_layers_cpu_reference",
         &["metal_dispatch_prefix_layers_cpu_reference"],
     );
-    let baseline_metal_prefix_native_dispatch_count = route_count_from_json(
+    let baseline_mlx_metal_prefix_dispatch_count = route_count_from_json(
         &baseline_route,
-        "metal_prefix_native_dispatch_count",
+        "mlx_metal_prefix_dispatch_count",
         &["metal_dispatch_prefix_native_dispatch_count"],
     );
-    let candidate_metal_prefix_native_dispatch_count = route_count_from_json(
+    let candidate_mlx_metal_prefix_dispatch_count = route_count_from_json(
         &candidate_route,
-        "metal_prefix_native_dispatch_count",
+        "mlx_metal_prefix_dispatch_count",
         &["metal_dispatch_prefix_native_dispatch_count"],
     );
     let baseline_metal_prefix_cpu_reference_dispatch_count = route_count_from_json(
@@ -7456,84 +7340,84 @@ fn build_regression_json(
         "metal_prefix_cpu_reference_dispatch_count",
         &["metal_dispatch_prefix_cpu_reference_dispatch_count"],
     );
-    let baseline_metal_native_projection_f32_binding_count = route_count_from_json(
+    let baseline_mlx_metal_projection_f32_binding_count = route_count_from_json(
         &baseline_route,
-        "metal_native_projection_f32_binding_count",
+        "mlx_metal_projection_f32_binding_count",
         &["metal_dispatch_native_projection_f32_binding_count"],
     );
-    let candidate_metal_native_projection_f32_binding_count = route_count_from_json(
+    let candidate_mlx_metal_projection_f32_binding_count = route_count_from_json(
         &candidate_route,
-        "metal_native_projection_f32_binding_count",
+        "mlx_metal_projection_f32_binding_count",
         &["metal_dispatch_native_projection_f32_binding_count"],
     );
-    let baseline_metal_native_projection_f16_binding_count = route_count_from_json(
+    let baseline_mlx_metal_projection_f16_binding_count = route_count_from_json(
         &baseline_route,
-        "metal_native_projection_f16_binding_count",
+        "mlx_metal_projection_f16_binding_count",
         &["metal_dispatch_native_projection_f16_binding_count"],
     );
-    let candidate_metal_native_projection_f16_binding_count = route_count_from_json(
+    let candidate_mlx_metal_projection_f16_binding_count = route_count_from_json(
         &candidate_route,
-        "metal_native_projection_f16_binding_count",
+        "mlx_metal_projection_f16_binding_count",
         &["metal_dispatch_native_projection_f16_binding_count"],
     );
-    let baseline_metal_native_projection_bf16_binding_count = route_count_from_json(
+    let baseline_mlx_metal_projection_bf16_binding_count = route_count_from_json(
         &baseline_route,
-        "metal_native_projection_bf16_binding_count",
+        "mlx_metal_projection_bf16_binding_count",
         &["metal_dispatch_native_projection_bf16_binding_count"],
     );
-    let candidate_metal_native_projection_bf16_binding_count = route_count_from_json(
+    let candidate_mlx_metal_projection_bf16_binding_count = route_count_from_json(
         &candidate_route,
-        "metal_native_projection_bf16_binding_count",
+        "mlx_metal_projection_bf16_binding_count",
         &["metal_dispatch_native_projection_bf16_binding_count"],
     );
-    let baseline_metal_native_projection_unsupported_binding_count = route_count_from_json(
+    let baseline_mlx_metal_projection_unsupported_binding_count = route_count_from_json(
         &baseline_route,
-        "metal_native_projection_unsupported_binding_count",
+        "mlx_metal_projection_unsupported_binding_count",
         &["metal_dispatch_native_projection_unsupported_binding_count"],
     );
-    let candidate_metal_native_projection_unsupported_binding_count = route_count_from_json(
+    let candidate_mlx_metal_projection_unsupported_binding_count = route_count_from_json(
         &candidate_route,
-        "metal_native_projection_unsupported_binding_count",
+        "mlx_metal_projection_unsupported_binding_count",
         &["metal_dispatch_native_projection_unsupported_binding_count"],
     );
-    let baseline_metal_native_rms_norm_f32_binding_count = route_count_from_json(
+    let baseline_mlx_metal_rms_norm_f32_binding_count = route_count_from_json(
         &baseline_route,
-        "metal_native_rms_norm_f32_binding_count",
+        "mlx_metal_rms_norm_f32_binding_count",
         &["metal_dispatch_native_rms_norm_f32_binding_count"],
     );
-    let candidate_metal_native_rms_norm_f32_binding_count = route_count_from_json(
+    let candidate_mlx_metal_rms_norm_f32_binding_count = route_count_from_json(
         &candidate_route,
-        "metal_native_rms_norm_f32_binding_count",
+        "mlx_metal_rms_norm_f32_binding_count",
         &["metal_dispatch_native_rms_norm_f32_binding_count"],
     );
-    let baseline_metal_native_rms_norm_f16_binding_count = route_count_from_json(
+    let baseline_mlx_metal_rms_norm_f16_binding_count = route_count_from_json(
         &baseline_route,
-        "metal_native_rms_norm_f16_binding_count",
+        "mlx_metal_rms_norm_f16_binding_count",
         &["metal_dispatch_native_rms_norm_f16_binding_count"],
     );
-    let candidate_metal_native_rms_norm_f16_binding_count = route_count_from_json(
+    let candidate_mlx_metal_rms_norm_f16_binding_count = route_count_from_json(
         &candidate_route,
-        "metal_native_rms_norm_f16_binding_count",
+        "mlx_metal_rms_norm_f16_binding_count",
         &["metal_dispatch_native_rms_norm_f16_binding_count"],
     );
-    let baseline_metal_native_rms_norm_bf16_binding_count = route_count_from_json(
+    let baseline_mlx_metal_rms_norm_bf16_binding_count = route_count_from_json(
         &baseline_route,
-        "metal_native_rms_norm_bf16_binding_count",
+        "mlx_metal_rms_norm_bf16_binding_count",
         &["metal_dispatch_native_rms_norm_bf16_binding_count"],
     );
-    let candidate_metal_native_rms_norm_bf16_binding_count = route_count_from_json(
+    let candidate_mlx_metal_rms_norm_bf16_binding_count = route_count_from_json(
         &candidate_route,
-        "metal_native_rms_norm_bf16_binding_count",
+        "mlx_metal_rms_norm_bf16_binding_count",
         &["metal_dispatch_native_rms_norm_bf16_binding_count"],
     );
-    let baseline_metal_native_rms_norm_unsupported_binding_count = route_count_from_json(
+    let baseline_mlx_metal_rms_norm_unsupported_binding_count = route_count_from_json(
         &baseline_route,
-        "metal_native_rms_norm_unsupported_binding_count",
+        "mlx_metal_rms_norm_unsupported_binding_count",
         &["metal_dispatch_native_rms_norm_unsupported_binding_count"],
     );
-    let candidate_metal_native_rms_norm_unsupported_binding_count = route_count_from_json(
+    let candidate_mlx_metal_rms_norm_unsupported_binding_count = route_count_from_json(
         &candidate_route,
-        "metal_native_rms_norm_unsupported_binding_count",
+        "mlx_metal_rms_norm_unsupported_binding_count",
         &["metal_dispatch_native_rms_norm_unsupported_binding_count"],
     );
     let baseline_metal_direct_decode_tokens = route_flag_from_json(
@@ -7662,22 +7546,21 @@ fn build_regression_json(
         nested_value(baseline_environment, &["runtime", "backend_adapter"]).cloned();
     let candidate_backend_adapter =
         nested_value(candidate_environment, &["runtime", "backend_adapter"]).cloned();
-    let baseline_native_dense_dequantized_source = nested_value(baseline_environment, &["runtime"])
+    let baseline_mlx_dense_dequantized_source = nested_value(baseline_environment, &["runtime"])
         .is_some_and(native_dense_dequantized_source_from_runtime_json);
-    let candidate_native_dense_dequantized_source =
-        nested_value(candidate_environment, &["runtime"])
-            .is_some_and(native_dense_dequantized_source_from_runtime_json);
-    let baseline_native_benchmark_readiness = native_benchmark_readiness_from_route_json(
+    let candidate_mlx_dense_dequantized_source = nested_value(candidate_environment, &["runtime"])
+        .is_some_and(native_dense_dequantized_source_from_runtime_json);
+    let baseline_mlx_metal_readiness = mlx_metal_readiness_from_route_json(
         &baseline_tool_mode,
         &baseline_selected_backend,
         &baseline_route,
-        baseline_native_dense_dequantized_source,
+        baseline_mlx_dense_dequantized_source,
     );
-    let candidate_native_benchmark_readiness = native_benchmark_readiness_from_route_json(
+    let candidate_mlx_metal_readiness = mlx_metal_readiness_from_route_json(
         &candidate_tool_mode,
         &candidate_selected_backend,
         &candidate_route,
-        candidate_native_dense_dequantized_source,
+        candidate_mlx_dense_dequantized_source,
     );
     let compare_result = compare_result_label(&baseline_tool_mode, &baseline_execution_semantics);
     let mut runtime = json!({
@@ -7744,19 +7627,18 @@ fn build_regression_json(
             "support_tier": baseline_support_tier,
             "resolution_policy": baseline_resolution_policy,
             "execution_semantics": baseline_execution_semantics,
-            "native_placeholder_execution": baseline_native_placeholder_execution,
             "metal_numeric_scaffold_only": baseline_metal_numeric_scaffold_only,
             "metal_complete_model_forward_supported": baseline_metal_complete_model_forward_supported,
             "metal_real_model_forward": baseline_metal_real_model_forward,
             "metal_model_conditioned_inputs": baseline_metal_model_conditioned_inputs,
-            "metal_prefix_layers_native_attention": baseline_metal_prefix_layers_native_attention,
+            "mlx_metal_prefix_layers_attention": baseline_mlx_metal_prefix_layers_attention,
             "metal_prefix_layers_cpu_reference": baseline_metal_prefix_layers_cpu_reference,
-            "metal_prefix_native_dispatch_count": baseline_metal_prefix_native_dispatch_count,
+            "mlx_metal_prefix_dispatch_count": baseline_mlx_metal_prefix_dispatch_count,
             "metal_prefix_cpu_reference_dispatch_count": baseline_metal_prefix_cpu_reference_dispatch_count,
-            "metal_native_projection_f32_binding_count": baseline_metal_native_projection_f32_binding_count,
-            "metal_native_projection_f16_binding_count": baseline_metal_native_projection_f16_binding_count,
-            "metal_native_projection_bf16_binding_count": baseline_metal_native_projection_bf16_binding_count,
-            "metal_native_projection_unsupported_binding_count": baseline_metal_native_projection_unsupported_binding_count,
+            "mlx_metal_projection_f32_binding_count": baseline_mlx_metal_projection_f32_binding_count,
+            "mlx_metal_projection_f16_binding_count": baseline_mlx_metal_projection_f16_binding_count,
+            "mlx_metal_projection_bf16_binding_count": baseline_mlx_metal_projection_bf16_binding_count,
+            "mlx_metal_projection_unsupported_binding_count": baseline_mlx_metal_projection_unsupported_binding_count,
             "metal_direct_decode_tokens": baseline_metal_direct_decode_tokens,
             "metal_direct_decode_batching_opportunity_observed": baseline_metal_direct_decode_batching_opportunity_observed,
             "metal_direct_decode_model_bound_ffn": baseline_metal_direct_decode_model_bound_ffn,
@@ -7766,16 +7648,16 @@ fn build_regression_json(
             "metal_direct_decode_batched_group_fallback_token_count": baseline_metal_direct_decode_batched_group_fallback_token_count,
             "metal_real_model_tensor_inputs": baseline_metal_real_model_tensor_inputs,
             "metal_model_artifacts_validated": baseline_metal_model_artifacts_validated,
-            "metal_native_rms_norm_f32_binding_count": baseline_metal_native_rms_norm_f32_binding_count,
-            "metal_native_rms_norm_f16_binding_count": baseline_metal_native_rms_norm_f16_binding_count,
-            "metal_native_rms_norm_bf16_binding_count": baseline_metal_native_rms_norm_bf16_binding_count,
-            "metal_native_rms_norm_unsupported_binding_count": baseline_metal_native_rms_norm_unsupported_binding_count,
-            "native_benchmark_readiness": baseline_native_benchmark_readiness.status,
-            "native_hot_path_cpu_fallback_free": baseline_native_benchmark_readiness.hot_path_cpu_fallback_free,
-            "native_batched_direct_decode_logits_ready": baseline_native_benchmark_readiness.batched_direct_decode_logits_ready,
-            "native_prefix_min_native_share": baseline_native_benchmark_readiness.prefix_min_native_share,
-            "native_direct_decode_min_native_share": baseline_native_benchmark_readiness.direct_decode_min_native_share,
-            "native_readiness_blockers": baseline_native_benchmark_readiness.blockers,
+            "mlx_metal_rms_norm_f32_binding_count": baseline_mlx_metal_rms_norm_f32_binding_count,
+            "mlx_metal_rms_norm_f16_binding_count": baseline_mlx_metal_rms_norm_f16_binding_count,
+            "mlx_metal_rms_norm_bf16_binding_count": baseline_mlx_metal_rms_norm_bf16_binding_count,
+            "mlx_metal_rms_norm_unsupported_binding_count": baseline_mlx_metal_rms_norm_unsupported_binding_count,
+            "mlx_metal_readiness": baseline_mlx_metal_readiness.status,
+            "mlx_metal_hot_path_cpu_fallback_free": baseline_mlx_metal_readiness.hot_path_cpu_fallback_free,
+            "mlx_metal_batched_direct_decode_logits_ready": baseline_mlx_metal_readiness.batched_direct_decode_logits_ready,
+            "mlx_metal_prefix_min_dispatch_share": baseline_mlx_metal_readiness.prefix_min_mlx_metal_dispatch_share,
+            "mlx_metal_direct_decode_min_dispatch_share": baseline_mlx_metal_readiness.direct_decode_min_mlx_metal_dispatch_share,
+            "mlx_metal_readiness_blockers": baseline_mlx_metal_readiness.blockers,
             "prefix_cache_path": baseline_prefix_cache_path,
             "prefix_cache_evidence": baseline_prefix_cache_evidence,
             "prefix_reuse_provenance": baseline_prefix_reuse_provenance
@@ -7789,10 +7671,6 @@ fn build_regression_json(
             "execution_semantics": {
                 "baseline": baseline_execution_semantics,
                 "candidate": candidate_execution_semantics
-            },
-            "native_placeholder_execution": {
-                "baseline": baseline_native_placeholder_execution,
-                "candidate": candidate_native_placeholder_execution
             },
             "metal_numeric_scaffold_only": {
                 "baseline": baseline_metal_numeric_scaffold_only,
@@ -7810,37 +7688,37 @@ fn build_regression_json(
                 "baseline": baseline_metal_model_conditioned_inputs,
                 "candidate": candidate_metal_model_conditioned_inputs
             },
-            "metal_prefix_layers_native_attention": {
-                "baseline": baseline_metal_prefix_layers_native_attention,
-                "candidate": candidate_metal_prefix_layers_native_attention
+            "mlx_metal_prefix_layers_attention": {
+                "baseline": baseline_mlx_metal_prefix_layers_attention,
+                "candidate": candidate_mlx_metal_prefix_layers_attention
             },
             "metal_prefix_layers_cpu_reference": {
                 "baseline": baseline_metal_prefix_layers_cpu_reference,
                 "candidate": candidate_metal_prefix_layers_cpu_reference
             },
-            "metal_prefix_native_dispatch_count": {
-                "baseline": baseline_metal_prefix_native_dispatch_count,
-                "candidate": candidate_metal_prefix_native_dispatch_count
+            "mlx_metal_prefix_dispatch_count": {
+                "baseline": baseline_mlx_metal_prefix_dispatch_count,
+                "candidate": candidate_mlx_metal_prefix_dispatch_count
             },
             "metal_prefix_cpu_reference_dispatch_count": {
                 "baseline": baseline_metal_prefix_cpu_reference_dispatch_count,
                 "candidate": candidate_metal_prefix_cpu_reference_dispatch_count
             },
-            "metal_native_projection_f32_binding_count": {
-                "baseline": baseline_metal_native_projection_f32_binding_count,
-                "candidate": candidate_metal_native_projection_f32_binding_count
+            "mlx_metal_projection_f32_binding_count": {
+                "baseline": baseline_mlx_metal_projection_f32_binding_count,
+                "candidate": candidate_mlx_metal_projection_f32_binding_count
             },
-            "metal_native_projection_f16_binding_count": {
-                "baseline": baseline_metal_native_projection_f16_binding_count,
-                "candidate": candidate_metal_native_projection_f16_binding_count
+            "mlx_metal_projection_f16_binding_count": {
+                "baseline": baseline_mlx_metal_projection_f16_binding_count,
+                "candidate": candidate_mlx_metal_projection_f16_binding_count
             },
-            "metal_native_projection_bf16_binding_count": {
-                "baseline": baseline_metal_native_projection_bf16_binding_count,
-                "candidate": candidate_metal_native_projection_bf16_binding_count
+            "mlx_metal_projection_bf16_binding_count": {
+                "baseline": baseline_mlx_metal_projection_bf16_binding_count,
+                "candidate": candidate_mlx_metal_projection_bf16_binding_count
             },
-            "metal_native_projection_unsupported_binding_count": {
-                "baseline": baseline_metal_native_projection_unsupported_binding_count,
-                "candidate": candidate_metal_native_projection_unsupported_binding_count
+            "mlx_metal_projection_unsupported_binding_count": {
+                "baseline": baseline_mlx_metal_projection_unsupported_binding_count,
+                "candidate": candidate_mlx_metal_projection_unsupported_binding_count
             },
             "metal_direct_decode_tokens": {
                 "baseline": baseline_metal_direct_decode_tokens,
@@ -7878,21 +7756,21 @@ fn build_regression_json(
                 "baseline": baseline_metal_model_artifacts_validated,
                 "candidate": candidate_metal_model_artifacts_validated
             },
-            "metal_native_rms_norm_f32_binding_count": {
-                "baseline": baseline_metal_native_rms_norm_f32_binding_count,
-                "candidate": candidate_metal_native_rms_norm_f32_binding_count
+            "mlx_metal_rms_norm_f32_binding_count": {
+                "baseline": baseline_mlx_metal_rms_norm_f32_binding_count,
+                "candidate": candidate_mlx_metal_rms_norm_f32_binding_count
             },
-            "metal_native_rms_norm_f16_binding_count": {
-                "baseline": baseline_metal_native_rms_norm_f16_binding_count,
-                "candidate": candidate_metal_native_rms_norm_f16_binding_count
+            "mlx_metal_rms_norm_f16_binding_count": {
+                "baseline": baseline_mlx_metal_rms_norm_f16_binding_count,
+                "candidate": candidate_mlx_metal_rms_norm_f16_binding_count
             },
-            "metal_native_rms_norm_bf16_binding_count": {
-                "baseline": baseline_metal_native_rms_norm_bf16_binding_count,
-                "candidate": candidate_metal_native_rms_norm_bf16_binding_count
+            "mlx_metal_rms_norm_bf16_binding_count": {
+                "baseline": baseline_mlx_metal_rms_norm_bf16_binding_count,
+                "candidate": candidate_mlx_metal_rms_norm_bf16_binding_count
             },
-            "metal_native_rms_norm_unsupported_binding_count": {
-                "baseline": baseline_metal_native_rms_norm_unsupported_binding_count,
-                "candidate": candidate_metal_native_rms_norm_unsupported_binding_count
+            "mlx_metal_rms_norm_unsupported_binding_count": {
+                "baseline": baseline_mlx_metal_rms_norm_unsupported_binding_count,
+                "candidate": candidate_mlx_metal_rms_norm_unsupported_binding_count
             },
             "prefix_cache_path": {
                 "baseline": baseline_prefix_cache_path,
@@ -7915,8 +7793,8 @@ fn build_regression_json(
         .insert(
             "readiness".to_string(),
             json!({
-                "baseline": baseline_native_benchmark_readiness.to_json(),
-                "candidate": candidate_native_benchmark_readiness.to_json()
+                "baseline": baseline_mlx_metal_readiness.to_json(),
+                "candidate": candidate_mlx_metal_readiness.to_json()
             }),
         );
 
@@ -8026,11 +7904,6 @@ fn build_compare_summary_markdown(
         .and_then(|summary| summary.get("execution_semantics"))
         .and_then(Value::as_str)
         .unwrap_or("unknown");
-    let native_placeholder_execution = regression_json
-        .get("summary")
-        .and_then(|summary| summary.get("native_placeholder_execution"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
     let metal_numeric_scaffold_only = regression_json
         .get("summary")
         .and_then(|summary| summary.get("metal_numeric_scaffold_only"))
@@ -8051,9 +7924,9 @@ fn build_compare_summary_markdown(
         .and_then(|summary| summary.get("metal_model_conditioned_inputs"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let metal_prefix_layers_native_attention = regression_json
+    let mlx_metal_prefix_layers_attention = regression_json
         .get("summary")
-        .and_then(|summary| summary.get("metal_prefix_layers_native_attention"))
+        .and_then(|summary| summary.get("mlx_metal_prefix_layers_attention"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let metal_prefix_layers_cpu_reference = regression_json
@@ -8061,9 +7934,9 @@ fn build_compare_summary_markdown(
         .and_then(|summary| summary.get("metal_prefix_layers_cpu_reference"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let metal_prefix_native_dispatch_count = regression_json
+    let mlx_metal_prefix_dispatch_count = regression_json
         .get("summary")
-        .and_then(|summary| summary.get("metal_prefix_native_dispatch_count"))
+        .and_then(|summary| summary.get("mlx_metal_prefix_dispatch_count"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let metal_prefix_cpu_reference_dispatch_count = regression_json
@@ -8071,24 +7944,24 @@ fn build_compare_summary_markdown(
         .and_then(|summary| summary.get("metal_prefix_cpu_reference_dispatch_count"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let metal_native_projection_f32_binding_count = regression_json
+    let mlx_metal_projection_f32_binding_count = regression_json
         .get("summary")
-        .and_then(|summary| summary.get("metal_native_projection_f32_binding_count"))
+        .and_then(|summary| summary.get("mlx_metal_projection_f32_binding_count"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let metal_native_projection_f16_binding_count = regression_json
+    let mlx_metal_projection_f16_binding_count = regression_json
         .get("summary")
-        .and_then(|summary| summary.get("metal_native_projection_f16_binding_count"))
+        .and_then(|summary| summary.get("mlx_metal_projection_f16_binding_count"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let metal_native_projection_bf16_binding_count = regression_json
+    let mlx_metal_projection_bf16_binding_count = regression_json
         .get("summary")
-        .and_then(|summary| summary.get("metal_native_projection_bf16_binding_count"))
+        .and_then(|summary| summary.get("mlx_metal_projection_bf16_binding_count"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let metal_native_projection_unsupported_binding_count = regression_json
+    let mlx_metal_projection_unsupported_binding_count = regression_json
         .get("summary")
-        .and_then(|summary| summary.get("metal_native_projection_unsupported_binding_count"))
+        .and_then(|summary| summary.get("mlx_metal_projection_unsupported_binding_count"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let metal_direct_decode_tokens = regression_json
@@ -8136,89 +8009,89 @@ fn build_compare_summary_markdown(
         .and_then(|summary| summary.get("metal_model_artifacts_validated"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let metal_native_rms_norm_f32_binding_count = regression_json
+    let mlx_metal_rms_norm_f32_binding_count = regression_json
         .get("summary")
-        .and_then(|summary| summary.get("metal_native_rms_norm_f32_binding_count"))
+        .and_then(|summary| summary.get("mlx_metal_rms_norm_f32_binding_count"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let metal_native_rms_norm_f16_binding_count = regression_json
+    let mlx_metal_rms_norm_f16_binding_count = regression_json
         .get("summary")
-        .and_then(|summary| summary.get("metal_native_rms_norm_f16_binding_count"))
+        .and_then(|summary| summary.get("mlx_metal_rms_norm_f16_binding_count"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let metal_native_rms_norm_bf16_binding_count = regression_json
+    let mlx_metal_rms_norm_bf16_binding_count = regression_json
         .get("summary")
-        .and_then(|summary| summary.get("metal_native_rms_norm_bf16_binding_count"))
+        .and_then(|summary| summary.get("mlx_metal_rms_norm_bf16_binding_count"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let metal_native_rms_norm_unsupported_binding_count = regression_json
+    let mlx_metal_rms_norm_unsupported_binding_count = regression_json
         .get("summary")
-        .and_then(|summary| summary.get("metal_native_rms_norm_unsupported_binding_count"))
+        .and_then(|summary| summary.get("mlx_metal_rms_norm_unsupported_binding_count"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let baseline_native_benchmark_readiness = regression_json
+    let baseline_mlx_metal_readiness = regression_json
         .get("readiness")
         .and_then(|readiness| readiness.get("baseline"))
         .and_then(|value| value.get("status"))
         .and_then(Value::as_str)
         .unwrap_or("unknown");
-    let baseline_native_hot_path_cpu_fallback_free = regression_json
+    let baseline_mlx_metal_hot_path_cpu_fallback_free = regression_json
         .get("readiness")
         .and_then(|readiness| readiness.get("baseline"))
         .and_then(|value| value.get("hot_path_cpu_fallback_free"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let baseline_native_batched_direct_decode_logits_ready = regression_json
+    let baseline_mlx_metal_batched_direct_decode_logits_ready = regression_json
         .get("readiness")
         .and_then(|readiness| readiness.get("baseline"))
         .and_then(|value| value.get("batched_direct_decode_logits_ready"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let baseline_native_prefix_min_native_share = regression_json
+    let baseline_mlx_metal_prefix_min_dispatch_share = regression_json
         .get("readiness")
         .and_then(|readiness| readiness.get("baseline"))
-        .and_then(|value| value.get("prefix_min_native_share"))
+        .and_then(|value| value.get("prefix_min_mlx_metal_dispatch_share"))
         .and_then(Value::as_f64);
-    let baseline_native_direct_decode_min_native_share = regression_json
+    let baseline_mlx_metal_direct_decode_min_dispatch_share = regression_json
         .get("readiness")
         .and_then(|readiness| readiness.get("baseline"))
-        .and_then(|value| value.get("direct_decode_min_native_share"))
+        .and_then(|value| value.get("direct_decode_min_mlx_metal_dispatch_share"))
         .and_then(Value::as_f64);
-    let baseline_native_readiness_blockers = regression_json
+    let baseline_mlx_metal_readiness_blockers = regression_json
         .get("readiness")
         .and_then(|readiness| readiness.get("baseline"))
         .and_then(|value| value.get("blockers"))
         .map(json_value_label)
         .unwrap_or_else(|| "[]".to_string());
-    let candidate_native_benchmark_readiness = regression_json
+    let candidate_mlx_metal_readiness = regression_json
         .get("readiness")
         .and_then(|readiness| readiness.get("candidate"))
         .and_then(|value| value.get("status"))
         .and_then(Value::as_str)
         .unwrap_or("unknown");
-    let candidate_native_hot_path_cpu_fallback_free = regression_json
+    let candidate_mlx_metal_hot_path_cpu_fallback_free = regression_json
         .get("readiness")
         .and_then(|readiness| readiness.get("candidate"))
         .and_then(|value| value.get("hot_path_cpu_fallback_free"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let candidate_native_batched_direct_decode_logits_ready = regression_json
+    let candidate_mlx_metal_batched_direct_decode_logits_ready = regression_json
         .get("readiness")
         .and_then(|readiness| readiness.get("candidate"))
         .and_then(|value| value.get("batched_direct_decode_logits_ready"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let candidate_native_prefix_min_native_share = regression_json
+    let candidate_mlx_metal_prefix_min_dispatch_share = regression_json
         .get("readiness")
         .and_then(|readiness| readiness.get("candidate"))
-        .and_then(|value| value.get("prefix_min_native_share"))
+        .and_then(|value| value.get("prefix_min_mlx_metal_dispatch_share"))
         .and_then(Value::as_f64);
-    let candidate_native_direct_decode_min_native_share = regression_json
+    let candidate_mlx_metal_direct_decode_min_dispatch_share = regression_json
         .get("readiness")
         .and_then(|readiness| readiness.get("candidate"))
-        .and_then(|value| value.get("direct_decode_min_native_share"))
+        .and_then(|value| value.get("direct_decode_min_mlx_metal_dispatch_share"))
         .and_then(Value::as_f64);
-    let candidate_native_readiness_blockers = regression_json
+    let candidate_mlx_metal_readiness_blockers = regression_json
         .get("readiness")
         .and_then(|readiness| readiness.get("candidate"))
         .and_then(|value| value.get("blockers"))
@@ -8261,18 +8134,17 @@ fn build_compare_summary_markdown(
         .map(|name| format!("- trusted_baseline: `{name}`\n"))
         .unwrap_or_default();
     let summary_note = compare_summary_note(&tool_mode, execution_semantics);
-    let baseline_native_prefix_min_native_share =
-        native_share_label(baseline_native_prefix_min_native_share);
-    let baseline_native_direct_decode_min_native_share =
-        native_share_label(baseline_native_direct_decode_min_native_share);
-    let candidate_native_prefix_min_native_share =
-        native_share_label(candidate_native_prefix_min_native_share);
-    let candidate_native_direct_decode_min_native_share =
-        native_share_label(candidate_native_direct_decode_min_native_share);
+    let baseline_mlx_metal_prefix_min_dispatch_share =
+        mlx_metal_dispatch_share_label(baseline_mlx_metal_prefix_min_dispatch_share);
+    let baseline_mlx_metal_direct_decode_min_dispatch_share =
+        mlx_metal_dispatch_share_label(baseline_mlx_metal_direct_decode_min_dispatch_share);
+    let candidate_mlx_metal_prefix_min_dispatch_share =
+        mlx_metal_dispatch_share_label(candidate_mlx_metal_prefix_min_dispatch_share);
+    let candidate_mlx_metal_direct_decode_min_dispatch_share =
+        mlx_metal_dispatch_share_label(candidate_mlx_metal_direct_decode_min_dispatch_share);
 
     format!(
-        "# Benchmark Compare\n\n- baseline: `{baseline_id}`\n{trusted_baseline_line}- candidate: `{candidate_id}`\n- mode: `{compare_mode}`\n- tool_mode: `{tool_mode}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- execution_semantics: `{execution_semantics}`\n- native_placeholder_execution: `{native_placeholder_execution}`\n- baseline_native_benchmark_readiness: `{baseline_native_benchmark_readiness}`\n- baseline_hot_path_cpu_fallback_free: `{baseline_native_hot_path_cpu_fallback_free}`\n- baseline_batched_direct_decode_logits_ready: `{baseline_native_batched_direct_decode_logits_ready}`\n- baseline_prefix_min_native_share: `{baseline_native_prefix_min_native_share}`\n- baseline_direct_decode_min_native_share: `{baseline_native_direct_decode_min_native_share}`\n- baseline_readiness_blockers: `{baseline_native_readiness_blockers}`\n- candidate_native_benchmark_readiness: `{candidate_native_benchmark_readiness}`\n- candidate_hot_path_cpu_fallback_free: `{candidate_native_hot_path_cpu_fallback_free}`\n- candidate_batched_direct_decode_logits_ready: `{candidate_native_batched_direct_decode_logits_ready}`\n- candidate_prefix_min_native_share: `{candidate_native_prefix_min_native_share}`\n- candidate_direct_decode_min_native_share: `{candidate_native_direct_decode_min_native_share}`\n- candidate_readiness_blockers: `{candidate_native_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- metal_prefix_layers_native_attention: `{metal_prefix_layers_native_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- metal_prefix_native_dispatch_count: `{metal_prefix_native_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_native_projection_f32_binding_count: `{metal_native_projection_f32_binding_count}`\n- metal_native_projection_f16_binding_count: `{metal_native_projection_f16_binding_count}`\n- metal_native_projection_bf16_binding_count: `{metal_native_projection_bf16_binding_count}`\n- metal_native_projection_unsupported_binding_count: `{metal_native_projection_unsupported_binding_count}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- metal_native_rms_norm_f32_binding_count: `{metal_native_rms_norm_f32_binding_count}`\n- metal_native_rms_norm_f16_binding_count: `{metal_native_rms_norm_f16_binding_count}`\n- metal_native_rms_norm_bf16_binding_count: `{metal_native_rms_norm_bf16_binding_count}`\n- metal_native_rms_norm_unsupported_binding_count: `{metal_native_rms_norm_unsupported_binding_count}`\n- prefix_cache_path: `{prefix_cache_path}`\n- prefix_cache_evidence: `{prefix_cache_evidence}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n\n| Metric | Delta % |\n| --- | ---: |\n| TTFT | {ttft:.2} |\n| Decode tok/s | {decode:.2} |\n| Memory peak MB | {memory:.2} |\n| Prefix hit rate | {prefix:.2} |\n{}"
-        ,
+        "# Benchmark Compare\n\n- baseline: `{baseline_id}`\n{trusted_baseline_line}- candidate: `{candidate_id}`\n- mode: `{compare_mode}`\n- tool_mode: `{tool_mode}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- execution_semantics: `{execution_semantics}`\n- baseline_mlx_metal_readiness: `{baseline_mlx_metal_readiness}`\n- baseline_mlx_metal_hot_path_cpu_fallback_free: `{baseline_mlx_metal_hot_path_cpu_fallback_free}`\n- baseline_mlx_metal_batched_direct_decode_logits_ready: `{baseline_mlx_metal_batched_direct_decode_logits_ready}`\n- baseline_prefix_min_mlx_metal_dispatch_share: `{baseline_mlx_metal_prefix_min_dispatch_share}`\n- baseline_direct_decode_min_mlx_metal_dispatch_share: `{baseline_mlx_metal_direct_decode_min_dispatch_share}`\n- baseline_mlx_metal_readiness_blockers: `{baseline_mlx_metal_readiness_blockers}`\n- candidate_mlx_metal_readiness: `{candidate_mlx_metal_readiness}`\n- candidate_mlx_metal_hot_path_cpu_fallback_free: `{candidate_mlx_metal_hot_path_cpu_fallback_free}`\n- candidate_mlx_metal_batched_direct_decode_logits_ready: `{candidate_mlx_metal_batched_direct_decode_logits_ready}`\n- candidate_prefix_min_mlx_metal_dispatch_share: `{candidate_mlx_metal_prefix_min_dispatch_share}`\n- candidate_direct_decode_min_mlx_metal_dispatch_share: `{candidate_mlx_metal_direct_decode_min_dispatch_share}`\n- candidate_mlx_metal_readiness_blockers: `{candidate_mlx_metal_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- mlx_metal_prefix_layers_attention: `{mlx_metal_prefix_layers_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- mlx_metal_prefix_dispatch_count: `{mlx_metal_prefix_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- mlx_metal_projection_f32_binding_count: `{mlx_metal_projection_f32_binding_count}`\n- mlx_metal_projection_f16_binding_count: `{mlx_metal_projection_f16_binding_count}`\n- mlx_metal_projection_bf16_binding_count: `{mlx_metal_projection_bf16_binding_count}`\n- mlx_metal_projection_unsupported_binding_count: `{mlx_metal_projection_unsupported_binding_count}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- mlx_metal_rms_norm_f32_binding_count: `{mlx_metal_rms_norm_f32_binding_count}`\n- mlx_metal_rms_norm_f16_binding_count: `{mlx_metal_rms_norm_f16_binding_count}`\n- mlx_metal_rms_norm_bf16_binding_count: `{mlx_metal_rms_norm_bf16_binding_count}`\n- mlx_metal_rms_norm_unsupported_binding_count: `{mlx_metal_rms_norm_unsupported_binding_count}`\n- prefix_cache_path: `{prefix_cache_path}`\n- prefix_cache_evidence: `{prefix_cache_evidence}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n\n| Metric | Delta % |\n| --- | ---: |\n| TTFT | {ttft:.2} |\n| Decode tok/s | {decode:.2} |\n| Memory peak MB | {memory:.2} |\n| Prefix hit rate | {prefix:.2} |\n{}",
         summary_note
     )
 }
@@ -8292,21 +8164,17 @@ fn runtime_config_from_manifest(manifest: &BenchmarkManifest) -> Result<RuntimeC
             ))
         })?;
 
-    if resolved_backend.selected_backend == SelectedBackend::AxNative {
+    if resolved_backend.selected_backend == SelectedBackend::Mlx {
         if let Some(backend_adapter) = manifest.runtime.backend_adapter.as_ref() {
-            if backend_policy.resolution_policy != ResolutionPolicy::PreferNative
-                || backend_adapter.selected_backend() != SelectedBackend::LlamaCpp
-            {
-                return Err(CliError::Contract(
-                    "runtime.backend_adapter must be omitted when selected_backend is ax_native unless it declares a llama.cpp fallback for prefer_native"
-                        .to_string(),
-                ));
-            }
+            return Err(CliError::Contract(format!(
+                "runtime.backend_adapter must be omitted when selected_backend is mlx; found adapter={:?}",
+                backend_adapter.selected_backend()
+            )));
         }
     } else {
         let backend_adapter = manifest.runtime.backend_adapter.as_ref().ok_or_else(|| {
             CliError::Contract(
-                "runtime.backend_adapter is required when selected_backend is not ax_native"
+                "runtime.backend_adapter is required when selected_backend is llama_cpp"
                     .to_string(),
             )
         })?;
@@ -8320,32 +8188,20 @@ fn runtime_config_from_manifest(manifest: &BenchmarkManifest) -> Result<RuntimeC
     }
 
     let default_session_config = EngineSessionConfig::default();
-    let native_runtime_artifacts_dir = manifest
+    let mlx_model_artifacts_dir = manifest
         .runtime
-        .native_runtime_artifacts_dir
+        .mlx_model_artifacts_dir
         .clone()
-        .or(default_session_config.native_runtime_artifacts_dir.clone());
-    let native_runtime_artifacts_source = manifest
+        .or(default_session_config.mlx_model_artifacts_dir.clone());
+    let mlx_model_artifacts_source = manifest
         .runtime
-        .native_runtime_artifacts_dir
+        .mlx_model_artifacts_dir
         .as_ref()
-        .map(|_| NativeRuntimeArtifactsSource::ExplicitConfig)
-        .or(default_session_config.native_runtime_artifacts_source());
-    let native_model_artifacts_dir = manifest
-        .runtime
-        .native_model_artifacts_dir
-        .clone()
-        .or(default_session_config.native_model_artifacts_dir.clone());
-    let native_model_artifacts_source = manifest
-        .runtime
-        .native_model_artifacts_dir
-        .as_ref()
-        .map(|path| classify_native_model_artifacts_source(path))
-        .or(default_session_config.native_model_artifacts_source());
+        .map(|path| classify_mlx_model_artifacts_source(path))
+        .or(default_session_config.mlx_model_artifacts_source);
 
     Ok(RuntimeConfig {
         deterministic: manifest.runtime.deterministic,
-        allow_deterministic_native_fallback: manifest.runtime.allow_deterministic_native_fallback,
         max_batch_tokens: manifest.runtime.max_batch_tokens,
         block_size_tokens: 16,
         kv_total_blocks: manifest.runtime.kv_total_blocks,
@@ -8353,10 +8209,8 @@ fn runtime_config_from_manifest(manifest: &BenchmarkManifest) -> Result<RuntimeC
         backend_policy,
         resolved_backend,
         backend_adapter: manifest.runtime.backend_adapter.clone(),
-        native_runtime_artifacts_dir,
-        native_runtime_artifacts_source,
-        native_model_artifacts_dir,
-        native_model_artifacts_source,
+        mlx_model_artifacts_dir,
+        mlx_model_artifacts_source,
     })
 }
 
@@ -8370,13 +8224,10 @@ fn normalize_runtime_for_test_execution(
         // silently flip from deterministic placeholder execution into repo
         // auto-detected Metal bring-up just because native artifacts happen to
         // exist in the checkout.
-        if runtime.uses_native_runtime() && !_preserve_native_artifacts_for_test {
+        if runtime.uses_mlx_runtime() && !_preserve_native_artifacts_for_test {
             return RuntimeConfig {
-                allow_deterministic_native_fallback: true,
-                native_runtime_artifacts_dir: None,
-                native_runtime_artifacts_source: None,
-                native_model_artifacts_dir: None,
-                native_model_artifacts_source: None,
+                mlx_model_artifacts_dir: None,
+                mlx_model_artifacts_source: None,
                 ..runtime
             };
         }
@@ -8449,29 +8300,29 @@ fn route_decision_flag(route: &RouteMetadata, key: &str) -> bool {
     route_decision_value(route, key) > 0
 }
 
-fn native_coverage_ratio(native: u32, cpu: u32) -> Option<f64> {
+fn mlx_metal_coverage_ratio(native: u32, cpu: u32) -> Option<f64> {
     let total = native.checked_add(cpu)?;
     (total > 0).then_some(native as f64 / total as f64)
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct NativeBenchmarkReadiness {
+struct MlxMetalReadiness {
     status: &'static str,
     hot_path_cpu_fallback_free: bool,
     batched_direct_decode_logits_ready: bool,
-    prefix_min_native_share: Option<f64>,
-    direct_decode_min_native_share: Option<f64>,
+    prefix_min_mlx_metal_dispatch_share: Option<f64>,
+    direct_decode_min_mlx_metal_dispatch_share: Option<f64>,
     blockers: Vec<&'static str>,
 }
 
-impl NativeBenchmarkReadiness {
+impl MlxMetalReadiness {
     fn to_json(&self) -> Value {
         json!({
             "status": self.status,
             "hot_path_cpu_fallback_free": self.hot_path_cpu_fallback_free,
             "batched_direct_decode_logits_ready": self.batched_direct_decode_logits_ready,
-            "prefix_min_native_share": self.prefix_min_native_share,
-            "direct_decode_min_native_share": self.direct_decode_min_native_share,
+            "prefix_min_mlx_metal_dispatch_share": self.prefix_min_mlx_metal_dispatch_share,
+            "direct_decode_min_mlx_metal_dispatch_share": self.direct_decode_min_mlx_metal_dispatch_share,
             "blockers": self.blockers
         })
     }
@@ -8486,28 +8337,27 @@ impl NativeBenchmarkReadiness {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct NativeBenchmarkReadinessInputs<'a> {
+struct MlxMetalReadinessInputs<'a> {
     tool_mode: &'a str,
     selected_backend: &'a str,
-    native_placeholder_execution: bool,
     native_dense_dequantized_source: bool,
     native_quantized_projection_binding_count: u32,
     direct_decode_batching_opportunity_observed: bool,
     metal_complete_model_forward_supported: bool,
     metal_real_model_forward: bool,
     metal_model_artifacts_validated: bool,
-    metal_prefix_layers_native_attention: bool,
+    mlx_metal_prefix_layers_attention: bool,
     metal_prefix_layers_cpu_reference: bool,
     metal_prefix_cpu_reference_dispatch_count: u32,
-    metal_prefix_native_projection_row_count: u32,
+    mlx_metal_prefix_projection_row_count: u32,
     metal_prefix_cpu_projection_row_count: u32,
-    metal_prefix_native_rms_norm_element_count: u32,
+    mlx_metal_prefix_rms_norm_element_count: u32,
     metal_prefix_cpu_rms_norm_element_count: u32,
-    metal_prefix_native_ffn_activation_element_count: u32,
+    mlx_metal_prefix_ffn_activation_element_count: u32,
     metal_prefix_cpu_ffn_activation_element_count: u32,
-    metal_prefix_native_residual_add_element_count: u32,
+    mlx_metal_prefix_residual_add_element_count: u32,
     metal_prefix_cpu_residual_add_element_count: u32,
-    metal_prefix_native_scale_element_count: u32,
+    mlx_metal_prefix_scale_element_count: u32,
     metal_prefix_cpu_scale_element_count: u32,
     metal_direct_decode_tokens: bool,
     metal_direct_decode_model_bound_ffn: bool,
@@ -8515,100 +8365,87 @@ struct NativeBenchmarkReadinessInputs<'a> {
     metal_direct_decode_batched_logits_token_count: u32,
     metal_direct_decode_batched_group_fallback_count: u32,
     metal_direct_decode_batched_group_fallback_token_count: u32,
-    metal_direct_decode_native_projection_row_count: u32,
+    mlx_metal_direct_decode_projection_row_count: u32,
     metal_direct_decode_cpu_projection_row_count: u32,
-    metal_direct_decode_native_rms_norm_element_count: u32,
+    mlx_metal_direct_decode_rms_norm_element_count: u32,
     metal_direct_decode_cpu_rms_norm_element_count: u32,
-    metal_direct_decode_native_ffn_activation_element_count: u32,
+    mlx_metal_direct_decode_ffn_activation_element_count: u32,
     metal_direct_decode_cpu_ffn_activation_element_count: u32,
-    metal_direct_decode_native_residual_add_element_count: u32,
+    mlx_metal_direct_decode_residual_add_element_count: u32,
     metal_direct_decode_cpu_residual_add_element_count: u32,
-    metal_direct_decode_native_scale_element_count: u32,
+    mlx_metal_direct_decode_scale_element_count: u32,
     metal_direct_decode_cpu_scale_element_count: u32,
 }
 
-fn min_native_share(shares: &[Option<f64>]) -> Option<f64> {
+fn min_mlx_metal_dispatch_share(shares: &[Option<f64>]) -> Option<f64> {
     shares.iter().flatten().copied().reduce(f64::min)
 }
 
-fn native_benchmark_readiness(
-    inputs: NativeBenchmarkReadinessInputs<'_>,
-) -> NativeBenchmarkReadiness {
-    if inputs.tool_mode.starts_with("compatibility_") || inputs.selected_backend != "ax_native" {
-        return NativeBenchmarkReadiness {
+fn mlx_metal_readiness(inputs: MlxMetalReadinessInputs<'_>) -> MlxMetalReadiness {
+    if inputs.tool_mode.starts_with("llama_cpp_") || inputs.selected_backend != "mlx" {
+        return MlxMetalReadiness {
             status: "delegated_runtime",
             hot_path_cpu_fallback_free: false,
             batched_direct_decode_logits_ready: false,
-            prefix_min_native_share: None,
-            direct_decode_min_native_share: None,
-            blockers: vec!["delegated_runtime_not_ax_native"],
+            prefix_min_mlx_metal_dispatch_share: None,
+            direct_decode_min_mlx_metal_dispatch_share: None,
+            blockers: vec!["delegated_runtime_not_mlx"],
         };
     }
 
-    if inputs.native_placeholder_execution || inputs.tool_mode == "engine_deterministic_runtime" {
-        return NativeBenchmarkReadiness {
-            status: "deterministic_placeholder",
-            hot_path_cpu_fallback_free: false,
-            batched_direct_decode_logits_ready: false,
-            prefix_min_native_share: None,
-            direct_decode_min_native_share: None,
-            blockers: vec!["native_placeholder_execution"],
-        };
-    }
-
-    let prefix_projection_native_share = native_coverage_ratio(
-        inputs.metal_prefix_native_projection_row_count,
+    let prefix_projection_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        inputs.mlx_metal_prefix_projection_row_count,
         inputs.metal_prefix_cpu_projection_row_count,
     );
-    let prefix_rms_norm_native_share = native_coverage_ratio(
-        inputs.metal_prefix_native_rms_norm_element_count,
+    let prefix_rms_norm_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        inputs.mlx_metal_prefix_rms_norm_element_count,
         inputs.metal_prefix_cpu_rms_norm_element_count,
     );
-    let prefix_ffn_activation_native_share = native_coverage_ratio(
-        inputs.metal_prefix_native_ffn_activation_element_count,
+    let prefix_ffn_activation_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        inputs.mlx_metal_prefix_ffn_activation_element_count,
         inputs.metal_prefix_cpu_ffn_activation_element_count,
     );
-    let prefix_residual_add_native_share = native_coverage_ratio(
-        inputs.metal_prefix_native_residual_add_element_count,
+    let prefix_residual_add_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        inputs.mlx_metal_prefix_residual_add_element_count,
         inputs.metal_prefix_cpu_residual_add_element_count,
     );
-    let prefix_scale_native_share = native_coverage_ratio(
-        inputs.metal_prefix_native_scale_element_count,
+    let prefix_scale_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        inputs.mlx_metal_prefix_scale_element_count,
         inputs.metal_prefix_cpu_scale_element_count,
     );
-    let direct_decode_projection_native_share = native_coverage_ratio(
-        inputs.metal_direct_decode_native_projection_row_count,
+    let direct_decode_projection_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        inputs.mlx_metal_direct_decode_projection_row_count,
         inputs.metal_direct_decode_cpu_projection_row_count,
     );
-    let direct_decode_rms_norm_native_share = native_coverage_ratio(
-        inputs.metal_direct_decode_native_rms_norm_element_count,
+    let direct_decode_rms_norm_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        inputs.mlx_metal_direct_decode_rms_norm_element_count,
         inputs.metal_direct_decode_cpu_rms_norm_element_count,
     );
-    let direct_decode_ffn_activation_native_share = native_coverage_ratio(
-        inputs.metal_direct_decode_native_ffn_activation_element_count,
+    let direct_decode_ffn_activation_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        inputs.mlx_metal_direct_decode_ffn_activation_element_count,
         inputs.metal_direct_decode_cpu_ffn_activation_element_count,
     );
-    let direct_decode_residual_add_native_share = native_coverage_ratio(
-        inputs.metal_direct_decode_native_residual_add_element_count,
+    let direct_decode_residual_add_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        inputs.mlx_metal_direct_decode_residual_add_element_count,
         inputs.metal_direct_decode_cpu_residual_add_element_count,
     );
-    let direct_decode_scale_native_share = native_coverage_ratio(
-        inputs.metal_direct_decode_native_scale_element_count,
+    let direct_decode_scale_mlx_metal_dispatch_share = mlx_metal_coverage_ratio(
+        inputs.mlx_metal_direct_decode_scale_element_count,
         inputs.metal_direct_decode_cpu_scale_element_count,
     );
-    let prefix_min_native_share = min_native_share(&[
-        prefix_projection_native_share,
-        prefix_rms_norm_native_share,
-        prefix_ffn_activation_native_share,
-        prefix_residual_add_native_share,
-        prefix_scale_native_share,
+    let prefix_min_mlx_metal_dispatch_share = min_mlx_metal_dispatch_share(&[
+        prefix_projection_mlx_metal_dispatch_share,
+        prefix_rms_norm_mlx_metal_dispatch_share,
+        prefix_ffn_activation_mlx_metal_dispatch_share,
+        prefix_residual_add_mlx_metal_dispatch_share,
+        prefix_scale_mlx_metal_dispatch_share,
     ]);
-    let direct_decode_min_native_share = min_native_share(&[
-        direct_decode_projection_native_share,
-        direct_decode_rms_norm_native_share,
-        direct_decode_ffn_activation_native_share,
-        direct_decode_residual_add_native_share,
-        direct_decode_scale_native_share,
+    let direct_decode_min_mlx_metal_dispatch_share = min_mlx_metal_dispatch_share(&[
+        direct_decode_projection_mlx_metal_dispatch_share,
+        direct_decode_rms_norm_mlx_metal_dispatch_share,
+        direct_decode_ffn_activation_mlx_metal_dispatch_share,
+        direct_decode_residual_add_mlx_metal_dispatch_share,
+        direct_decode_scale_mlx_metal_dispatch_share,
     ]);
     let hot_path_cpu_fallback_free = inputs.metal_prefix_cpu_reference_dispatch_count == 0
         && inputs.metal_prefix_cpu_projection_row_count == 0
@@ -8644,7 +8481,7 @@ fn native_benchmark_readiness(
     if !inputs.metal_real_model_forward {
         blockers.push("real_model_forward_not_reported");
     }
-    if !inputs.metal_prefix_layers_native_attention {
+    if !inputs.mlx_metal_prefix_layers_attention {
         blockers.push("prefix_native_attention_not_observed");
     }
     if inputs.metal_prefix_layers_cpu_reference
@@ -8699,7 +8536,7 @@ fn native_benchmark_readiness(
         }
     }
 
-    NativeBenchmarkReadiness {
+    MlxMetalReadiness {
         status: if blockers.is_empty() {
             "ready"
         } else {
@@ -8707,30 +8544,25 @@ fn native_benchmark_readiness(
         },
         hot_path_cpu_fallback_free,
         batched_direct_decode_logits_ready,
-        prefix_min_native_share,
-        direct_decode_min_native_share,
+        prefix_min_mlx_metal_dispatch_share,
+        direct_decode_min_mlx_metal_dispatch_share,
         blockers,
     }
 }
 
-fn native_benchmark_readiness_from_route_json(
+fn mlx_metal_readiness_from_route_json(
     tool_mode: &str,
     selected_backend: &str,
     route_json: &Value,
     native_dense_dequantized_source: bool,
-) -> NativeBenchmarkReadiness {
-    native_benchmark_readiness(NativeBenchmarkReadinessInputs {
+) -> MlxMetalReadiness {
+    mlx_metal_readiness(MlxMetalReadinessInputs {
         tool_mode,
         selected_backend,
-        native_placeholder_execution: route_flag_from_json(
-            route_json,
-            "native_placeholder_execution",
-            &["native_placeholder_execution"],
-        ),
         native_dense_dequantized_source,
         native_quantized_projection_binding_count: route_count_from_json(
             route_json,
-            "metal_native_projection_source_quantized_binding_count",
+            "mlx_metal_projection_source_quantized_binding_count",
             &["metal_dispatch_native_projection_source_quantized_binding_count"],
         ),
         direct_decode_batching_opportunity_observed: route_flag_from_json(
@@ -8765,9 +8597,9 @@ fn native_benchmark_readiness_from_route_json(
             "metal_model_artifacts_validated",
             &["metal_dispatch_model_artifacts_validated"],
         ),
-        metal_prefix_layers_native_attention: route_flag_from_json(
+        mlx_metal_prefix_layers_attention: route_flag_from_json(
             route_json,
-            "metal_prefix_layers_native_attention",
+            "mlx_metal_prefix_layers_attention",
             &["metal_dispatch_prefix_layers_native_attention"],
         ),
         metal_prefix_layers_cpu_reference: route_flag_from_json(
@@ -8780,9 +8612,9 @@ fn native_benchmark_readiness_from_route_json(
             "metal_prefix_cpu_reference_dispatch_count",
             &["metal_dispatch_prefix_cpu_reference_dispatch_count"],
         ),
-        metal_prefix_native_projection_row_count: route_count_from_json(
+        mlx_metal_prefix_projection_row_count: route_count_from_json(
             route_json,
-            "metal_prefix_native_projection_row_count",
+            "mlx_metal_prefix_projection_row_count",
             &["metal_dispatch_prefix_native_projection_row_count"],
         ),
         metal_prefix_cpu_projection_row_count: route_count_from_json(
@@ -8790,9 +8622,9 @@ fn native_benchmark_readiness_from_route_json(
             "metal_prefix_cpu_projection_row_count",
             &["metal_dispatch_prefix_cpu_projection_row_count"],
         ),
-        metal_prefix_native_rms_norm_element_count: route_count_from_json(
+        mlx_metal_prefix_rms_norm_element_count: route_count_from_json(
             route_json,
-            "metal_prefix_native_rms_norm_element_count",
+            "mlx_metal_prefix_rms_norm_element_count",
             &["metal_dispatch_prefix_native_rms_norm_element_count"],
         ),
         metal_prefix_cpu_rms_norm_element_count: route_count_from_json(
@@ -8800,9 +8632,9 @@ fn native_benchmark_readiness_from_route_json(
             "metal_prefix_cpu_rms_norm_element_count",
             &["metal_dispatch_prefix_cpu_rms_norm_element_count"],
         ),
-        metal_prefix_native_ffn_activation_element_count: route_count_from_json(
+        mlx_metal_prefix_ffn_activation_element_count: route_count_from_json(
             route_json,
-            "metal_prefix_native_ffn_activation_element_count",
+            "mlx_metal_prefix_ffn_activation_element_count",
             &["metal_dispatch_prefix_native_ffn_activation_element_count"],
         ),
         metal_prefix_cpu_ffn_activation_element_count: route_count_from_json(
@@ -8810,9 +8642,9 @@ fn native_benchmark_readiness_from_route_json(
             "metal_prefix_cpu_ffn_activation_element_count",
             &["metal_dispatch_prefix_cpu_ffn_activation_element_count"],
         ),
-        metal_prefix_native_residual_add_element_count: route_count_from_json(
+        mlx_metal_prefix_residual_add_element_count: route_count_from_json(
             route_json,
-            "metal_prefix_native_residual_add_element_count",
+            "mlx_metal_prefix_residual_add_element_count",
             &["metal_dispatch_prefix_native_residual_add_element_count"],
         ),
         metal_prefix_cpu_residual_add_element_count: route_count_from_json(
@@ -8820,9 +8652,9 @@ fn native_benchmark_readiness_from_route_json(
             "metal_prefix_cpu_residual_add_element_count",
             &["metal_dispatch_prefix_cpu_residual_add_element_count"],
         ),
-        metal_prefix_native_scale_element_count: route_count_from_json(
+        mlx_metal_prefix_scale_element_count: route_count_from_json(
             route_json,
-            "metal_prefix_native_scale_element_count",
+            "mlx_metal_prefix_scale_element_count",
             &["metal_dispatch_prefix_native_scale_element_count"],
         ),
         metal_prefix_cpu_scale_element_count: route_count_from_json(
@@ -8860,9 +8692,9 @@ fn native_benchmark_readiness_from_route_json(
             "metal_direct_decode_batched_group_fallback_token_count",
             &["metal_dispatch_direct_decode_batched_group_fallback_token_count"],
         ),
-        metal_direct_decode_native_projection_row_count: route_count_from_json(
+        mlx_metal_direct_decode_projection_row_count: route_count_from_json(
             route_json,
-            "metal_direct_decode_native_projection_row_count",
+            "mlx_metal_direct_decode_projection_row_count",
             &["metal_dispatch_direct_decode_native_projection_row_count"],
         ),
         metal_direct_decode_cpu_projection_row_count: route_count_from_json(
@@ -8870,9 +8702,9 @@ fn native_benchmark_readiness_from_route_json(
             "metal_direct_decode_cpu_projection_row_count",
             &["metal_dispatch_direct_decode_cpu_projection_row_count"],
         ),
-        metal_direct_decode_native_rms_norm_element_count: route_count_from_json(
+        mlx_metal_direct_decode_rms_norm_element_count: route_count_from_json(
             route_json,
-            "metal_direct_decode_native_rms_norm_element_count",
+            "mlx_metal_direct_decode_rms_norm_element_count",
             &["metal_dispatch_direct_decode_native_rms_norm_element_count"],
         ),
         metal_direct_decode_cpu_rms_norm_element_count: route_count_from_json(
@@ -8880,9 +8712,9 @@ fn native_benchmark_readiness_from_route_json(
             "metal_direct_decode_cpu_rms_norm_element_count",
             &["metal_dispatch_direct_decode_cpu_rms_norm_element_count"],
         ),
-        metal_direct_decode_native_ffn_activation_element_count: route_count_from_json(
+        mlx_metal_direct_decode_ffn_activation_element_count: route_count_from_json(
             route_json,
-            "metal_direct_decode_native_ffn_activation_element_count",
+            "mlx_metal_direct_decode_ffn_activation_element_count",
             &["metal_dispatch_direct_decode_native_ffn_activation_element_count"],
         ),
         metal_direct_decode_cpu_ffn_activation_element_count: route_count_from_json(
@@ -8890,9 +8722,9 @@ fn native_benchmark_readiness_from_route_json(
             "metal_direct_decode_cpu_ffn_activation_element_count",
             &["metal_dispatch_direct_decode_cpu_ffn_activation_element_count"],
         ),
-        metal_direct_decode_native_residual_add_element_count: route_count_from_json(
+        mlx_metal_direct_decode_residual_add_element_count: route_count_from_json(
             route_json,
-            "metal_direct_decode_native_residual_add_element_count",
+            "mlx_metal_direct_decode_residual_add_element_count",
             &["metal_dispatch_direct_decode_native_residual_add_element_count"],
         ),
         metal_direct_decode_cpu_residual_add_element_count: route_count_from_json(
@@ -8900,9 +8732,9 @@ fn native_benchmark_readiness_from_route_json(
             "metal_direct_decode_cpu_residual_add_element_count",
             &["metal_dispatch_direct_decode_cpu_residual_add_element_count"],
         ),
-        metal_direct_decode_native_scale_element_count: route_count_from_json(
+        mlx_metal_direct_decode_scale_element_count: route_count_from_json(
             route_json,
-            "metal_direct_decode_native_scale_element_count",
+            "mlx_metal_direct_decode_scale_element_count",
             &["metal_dispatch_direct_decode_native_scale_element_count"],
         ),
         metal_direct_decode_cpu_scale_element_count: route_count_from_json(
@@ -8922,7 +8754,7 @@ fn native_model_report_has_dense_dequantized_source(report: &NativeModelReport) 
 }
 
 fn native_dense_dequantized_source_from_runtime_json(runtime_json: &Value) -> bool {
-    nested_value(runtime_json, &["native_model"])
+    nested_value(runtime_json, &["mlx_model"])
         .is_some_and(native_dense_dequantized_source_from_native_model_json)
 }
 
@@ -8944,7 +8776,7 @@ fn native_dense_dequantized_source_from_native_model_json(native_model: &Value) 
     contains_quantized_tensors && has_dense_dequantized_note
 }
 
-fn native_share_label(share: Option<f64>) -> String {
+fn mlx_metal_dispatch_share_label(share: Option<f64>) -> String {
     share
         .map(|value| format!("{:.2}%", value * 100.0))
         .unwrap_or_else(|| "n/a".to_string())
@@ -8963,7 +8795,6 @@ fn route_prefix_cpu_reference_dispatch_count(route: &RouteMetadata) -> u32 {
 }
 
 fn route_execution_semantics_label(route: &RouteMetadata) -> &'static str {
-    let native_placeholder_execution = route_decision_flag(route, "native_placeholder_execution");
     let metal_real_model_forward = route_decision_flag(route, "metal_dispatch_real_model_forward");
     let metal_direct_decode_model_bound_ffn =
         route_decision_flag(route, "metal_dispatch_direct_decode_model_bound_ffn");
@@ -8973,16 +8804,16 @@ fn route_execution_semantics_label(route: &RouteMetadata) -> &'static str {
     let metal_model_conditioned_inputs =
         route_decision_flag(route, "metal_dispatch_model_conditioned_inputs")
             || route_decision_flag(route, "metal_dispatch_runtime_model_conditioned_inputs");
-    let metal_prefix_layers_native_attention =
+    let mlx_metal_prefix_layers_attention =
         route_decision_flag(route, "metal_dispatch_prefix_layers_native_attention");
     let metal_prefix_layers_cpu_reference =
         route_decision_flag(route, "metal_dispatch_prefix_layers_cpu_reference");
-    let metal_prefix_native_dispatch_count = route_prefix_native_dispatch_count(route);
+    let mlx_metal_prefix_dispatch_count = route_prefix_native_dispatch_count(route);
     let metal_prefix_cpu_reference_dispatch_count =
         route_prefix_cpu_reference_dispatch_count(route);
-    let metal_multilayer_mixed_prefix_attention = metal_prefix_native_dispatch_count > 0
+    let metal_multilayer_mixed_prefix_attention = mlx_metal_prefix_dispatch_count > 0
         && metal_prefix_cpu_reference_dispatch_count > 0
-        || (metal_prefix_layers_native_attention && metal_prefix_layers_cpu_reference);
+        || (mlx_metal_prefix_layers_attention && metal_prefix_layers_cpu_reference);
     let metal_numeric_scaffold_only =
         route_decision_flag(route, "metal_dispatch_numeric_scaffold_only");
     let metal_model_layer_count = route_model_layer_count(route);
@@ -8991,13 +8822,11 @@ fn route_execution_semantics_label(route: &RouteMetadata) -> &'static str {
     let delegated_cached_tokens = route_decision_flag(route, "delegated_cached_tokens")
         || route.prefix_cache_path.as_deref() == Some("delegated_prompt_cache");
 
-    if native_placeholder_execution {
-        "native_placeholder_deterministic"
-    } else if metal_real_model_forward {
+    if metal_real_model_forward {
         "metal_real_model_forward"
     } else if metal_multilayer_model_incomplete && metal_multilayer_mixed_prefix_attention {
         "metal_multilayer_mixed_prefix_attention"
-    } else if metal_multilayer_model_incomplete && metal_prefix_layers_native_attention {
+    } else if metal_multilayer_model_incomplete && mlx_metal_prefix_layers_attention {
         "metal_multilayer_native_prefix_attention"
     } else if metal_multilayer_model_incomplete {
         "metal_multilayer_model_incomplete"
@@ -9050,11 +8879,6 @@ fn route_execution_semantics_from_json(route_json: &Value) -> String {
         return value.to_string();
     }
 
-    let native_placeholder_execution = route_flag_from_json(
-        route_json,
-        "native_placeholder_execution",
-        &["native_placeholder_execution"],
-    );
     let metal_real_model_forward = route_flag_from_json(
         route_json,
         "metal_real_model_forward",
@@ -9081,9 +8905,9 @@ fn route_execution_semantics_from_json(route_json: &Value) -> String {
             "metal_dispatch_runtime_model_conditioned_inputs",
         ],
     );
-    let metal_prefix_layers_native_attention = route_flag_from_json(
+    let mlx_metal_prefix_layers_attention = route_flag_from_json(
         route_json,
-        "metal_prefix_layers_native_attention",
+        "mlx_metal_prefix_layers_attention",
         &["metal_dispatch_prefix_layers_native_attention"],
     );
     let metal_prefix_layers_cpu_reference = route_flag_from_json(
@@ -9091,9 +8915,9 @@ fn route_execution_semantics_from_json(route_json: &Value) -> String {
         "metal_prefix_layers_cpu_reference",
         &["metal_dispatch_prefix_layers_cpu_reference"],
     );
-    let metal_prefix_native_dispatch_count = route_count_from_json(
+    let mlx_metal_prefix_dispatch_count = route_count_from_json(
         route_json,
-        "metal_prefix_native_dispatch_count",
+        "mlx_metal_prefix_dispatch_count",
         &["metal_dispatch_prefix_native_dispatch_count"],
     );
     let metal_prefix_cpu_reference_dispatch_count = route_count_from_json(
@@ -9101,9 +8925,9 @@ fn route_execution_semantics_from_json(route_json: &Value) -> String {
         "metal_prefix_cpu_reference_dispatch_count",
         &["metal_dispatch_prefix_cpu_reference_dispatch_count"],
     );
-    let metal_multilayer_mixed_prefix_attention = metal_prefix_native_dispatch_count > 0
+    let metal_multilayer_mixed_prefix_attention = mlx_metal_prefix_dispatch_count > 0
         && metal_prefix_cpu_reference_dispatch_count > 0
-        || (metal_prefix_layers_native_attention && metal_prefix_layers_cpu_reference);
+        || (mlx_metal_prefix_layers_attention && metal_prefix_layers_cpu_reference);
     let metal_numeric_scaffold_only = route_flag_from_json(
         route_json,
         "metal_numeric_scaffold_only",
@@ -9134,13 +8958,11 @@ fn route_execution_semantics_from_json(route_json: &Value) -> String {
         .unwrap_or(0)
             > 0;
 
-    if native_placeholder_execution {
-        "native_placeholder_deterministic".to_string()
-    } else if metal_real_model_forward {
+    if metal_real_model_forward {
         "metal_real_model_forward".to_string()
     } else if metal_multilayer_model_incomplete && metal_multilayer_mixed_prefix_attention {
         "metal_multilayer_mixed_prefix_attention".to_string()
-    } else if metal_multilayer_model_incomplete && metal_prefix_layers_native_attention {
+    } else if metal_multilayer_model_incomplete && mlx_metal_prefix_layers_attention {
         "metal_multilayer_native_prefix_attention".to_string()
     } else if metal_multilayer_model_incomplete {
         "metal_multilayer_model_incomplete".to_string()
@@ -9159,20 +8981,6 @@ fn route_execution_semantics_from_json(route_json: &Value) -> String {
     }
 }
 
-fn native_placeholder_execution_from_environment_json(environment: &Value) -> bool {
-    let route_json = environment.get("route").unwrap_or(&Value::Null);
-    if route_flag_from_json(
-        route_json,
-        "native_placeholder_execution",
-        &["native_placeholder_execution"],
-    ) {
-        return true;
-    }
-
-    nested_value(environment, &["runtime", "native_runtime", "runner"]).and_then(Value::as_str)
-        == Some("deterministic")
-}
-
 fn route_execution_semantics_from_environment_json(environment: &Value) -> String {
     let route_json = environment.get("route").unwrap_or(&Value::Null);
     let semantics = route_execution_semantics_from_json(route_json);
@@ -9181,11 +8989,7 @@ fn route_execution_semantics_from_environment_json(environment: &Value) -> Strin
         return semantics;
     }
 
-    if native_placeholder_execution_from_environment_json(environment) {
-        "native_placeholder_deterministic".to_string()
-    } else {
-        semantics
-    }
+    semantics
 }
 
 fn serialize_route_metadata(route: &RouteMetadata) -> Value {
@@ -9215,10 +9019,6 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         json!(prefix_reuse_provenance_label(route)),
     );
     route_json.insert("barrier_mode".to_string(), json!(route.barrier_mode));
-    route_json.insert(
-        "native_placeholder_execution".to_string(),
-        json!(route_decision_flag(route, "native_placeholder_execution")),
-    );
     route_json.insert(
         "metal_numeric_scaffold_only".to_string(),
         json!(route_decision_flag(
@@ -9267,7 +9067,7 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         ),
     );
     route_json.insert(
-        "metal_prefix_layers_native_attention".to_string(),
+        "mlx_metal_prefix_layers_attention".to_string(),
         json!(route_decision_flag(
             route,
             "metal_dispatch_prefix_layers_native_attention"
@@ -9281,7 +9081,7 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
-        "metal_prefix_native_dispatch_count".to_string(),
+        "mlx_metal_prefix_dispatch_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_prefix_native_dispatch_count"
@@ -9295,7 +9095,7 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
-        "metal_prefix_native_projection_row_count".to_string(),
+        "mlx_metal_prefix_projection_row_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_prefix_native_projection_row_count"
@@ -9309,7 +9109,7 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
-        "metal_prefix_native_rms_norm_element_count".to_string(),
+        "mlx_metal_prefix_rms_norm_element_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_prefix_native_rms_norm_element_count"
@@ -9323,7 +9123,7 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
-        "metal_prefix_native_ffn_activation_element_count".to_string(),
+        "mlx_metal_prefix_ffn_activation_element_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_prefix_native_ffn_activation_element_count"
@@ -9337,7 +9137,7 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
-        "metal_prefix_native_residual_add_element_count".to_string(),
+        "mlx_metal_prefix_residual_add_element_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_prefix_native_residual_add_element_count"
@@ -9351,7 +9151,7 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
-        "metal_prefix_native_scale_element_count".to_string(),
+        "mlx_metal_prefix_scale_element_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_prefix_native_scale_element_count"
@@ -9365,24 +9165,24 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
-        "metal_prefix_projection_native_share".to_string(),
-        native_coverage_ratio(
+        "metal_prefix_projection_mlx_metal_dispatch_share".to_string(),
+        mlx_metal_coverage_ratio(
             route_decision_value(route, "metal_dispatch_prefix_native_projection_row_count"),
             route_decision_value(route, "metal_dispatch_prefix_cpu_projection_row_count"),
         )
         .map_or(Value::Null, Value::from),
     );
     route_json.insert(
-        "metal_prefix_rms_norm_native_share".to_string(),
-        native_coverage_ratio(
+        "metal_prefix_rms_norm_mlx_metal_dispatch_share".to_string(),
+        mlx_metal_coverage_ratio(
             route_decision_value(route, "metal_dispatch_prefix_native_rms_norm_element_count"),
             route_decision_value(route, "metal_dispatch_prefix_cpu_rms_norm_element_count"),
         )
         .map_or(Value::Null, Value::from),
     );
     route_json.insert(
-        "metal_prefix_ffn_activation_native_share".to_string(),
-        native_coverage_ratio(
+        "metal_prefix_ffn_activation_mlx_metal_dispatch_share".to_string(),
+        mlx_metal_coverage_ratio(
             route_decision_value(
                 route,
                 "metal_dispatch_prefix_native_ffn_activation_element_count",
@@ -9395,8 +9195,8 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         .map_or(Value::Null, Value::from),
     );
     route_json.insert(
-        "metal_prefix_residual_add_native_share".to_string(),
-        native_coverage_ratio(
+        "metal_prefix_residual_add_mlx_metal_dispatch_share".to_string(),
+        mlx_metal_coverage_ratio(
             route_decision_value(
                 route,
                 "metal_dispatch_prefix_native_residual_add_element_count",
@@ -9409,36 +9209,36 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         .map_or(Value::Null, Value::from),
     );
     route_json.insert(
-        "metal_prefix_scale_native_share".to_string(),
-        native_coverage_ratio(
+        "metal_prefix_scale_mlx_metal_dispatch_share".to_string(),
+        mlx_metal_coverage_ratio(
             route_decision_value(route, "metal_dispatch_prefix_native_scale_element_count"),
             route_decision_value(route, "metal_dispatch_prefix_cpu_scale_element_count"),
         )
         .map_or(Value::Null, Value::from),
     );
     route_json.insert(
-        "metal_native_projection_f32_binding_count".to_string(),
+        "mlx_metal_projection_f32_binding_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_native_projection_f32_binding_count"
         )),
     );
     route_json.insert(
-        "metal_native_projection_f16_binding_count".to_string(),
+        "mlx_metal_projection_f16_binding_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_native_projection_f16_binding_count"
         )),
     );
     route_json.insert(
-        "metal_native_projection_bf16_binding_count".to_string(),
+        "mlx_metal_projection_bf16_binding_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_native_projection_bf16_binding_count"
         )),
     );
     route_json.insert(
-        "metal_native_projection_unsupported_binding_count".to_string(),
+        "mlx_metal_projection_unsupported_binding_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_native_projection_unsupported_binding_count"
@@ -9480,35 +9280,35 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
-        "metal_native_rms_norm_f32_binding_count".to_string(),
+        "mlx_metal_rms_norm_f32_binding_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_native_rms_norm_f32_binding_count"
         )),
     );
     route_json.insert(
-        "metal_native_rms_norm_f16_binding_count".to_string(),
+        "mlx_metal_rms_norm_f16_binding_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_native_rms_norm_f16_binding_count"
         )),
     );
     route_json.insert(
-        "metal_native_rms_norm_bf16_binding_count".to_string(),
+        "mlx_metal_rms_norm_bf16_binding_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_native_rms_norm_bf16_binding_count"
         )),
     );
     route_json.insert(
-        "metal_native_rms_norm_unsupported_binding_count".to_string(),
+        "mlx_metal_rms_norm_unsupported_binding_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_native_rms_norm_unsupported_binding_count"
         )),
     );
     route_json.insert(
-        "metal_direct_decode_native_projection_row_count".to_string(),
+        "mlx_metal_direct_decode_projection_row_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_direct_decode_native_projection_row_count"
@@ -9522,7 +9322,7 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
-        "metal_direct_decode_native_rms_norm_element_count".to_string(),
+        "mlx_metal_direct_decode_rms_norm_element_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_direct_decode_native_rms_norm_element_count"
@@ -9536,7 +9336,7 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
-        "metal_direct_decode_native_ffn_activation_element_count".to_string(),
+        "mlx_metal_direct_decode_ffn_activation_element_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_direct_decode_native_ffn_activation_element_count"
@@ -9550,7 +9350,7 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
-        "metal_direct_decode_native_residual_add_element_count".to_string(),
+        "mlx_metal_direct_decode_residual_add_element_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_direct_decode_native_residual_add_element_count"
@@ -9564,7 +9364,7 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
-        "metal_direct_decode_native_scale_element_count".to_string(),
+        "mlx_metal_direct_decode_scale_element_count".to_string(),
         json!(route_decision_value(
             route,
             "metal_dispatch_direct_decode_native_scale_element_count"
@@ -9606,8 +9406,8 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         )),
     );
     route_json.insert(
-        "metal_direct_decode_projection_native_share".to_string(),
-        native_coverage_ratio(
+        "metal_direct_decode_projection_mlx_metal_dispatch_share".to_string(),
+        mlx_metal_coverage_ratio(
             route_decision_value(
                 route,
                 "metal_dispatch_direct_decode_native_projection_row_count",
@@ -9620,8 +9420,8 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         .map_or(Value::Null, Value::from),
     );
     route_json.insert(
-        "metal_direct_decode_rms_norm_native_share".to_string(),
-        native_coverage_ratio(
+        "metal_direct_decode_rms_norm_mlx_metal_dispatch_share".to_string(),
+        mlx_metal_coverage_ratio(
             route_decision_value(
                 route,
                 "metal_dispatch_direct_decode_native_rms_norm_element_count",
@@ -9634,8 +9434,8 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         .map_or(Value::Null, Value::from),
     );
     route_json.insert(
-        "metal_direct_decode_ffn_activation_native_share".to_string(),
-        native_coverage_ratio(
+        "metal_direct_decode_ffn_activation_mlx_metal_dispatch_share".to_string(),
+        mlx_metal_coverage_ratio(
             route_decision_value(
                 route,
                 "metal_dispatch_direct_decode_native_ffn_activation_element_count",
@@ -9648,8 +9448,8 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         .map_or(Value::Null, Value::from),
     );
     route_json.insert(
-        "metal_direct_decode_residual_add_native_share".to_string(),
-        native_coverage_ratio(
+        "metal_direct_decode_residual_add_mlx_metal_dispatch_share".to_string(),
+        mlx_metal_coverage_ratio(
             route_decision_value(
                 route,
                 "metal_dispatch_direct_decode_native_residual_add_element_count",
@@ -9662,8 +9462,8 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         .map_or(Value::Null, Value::from),
     );
     route_json.insert(
-        "metal_direct_decode_scale_native_share".to_string(),
-        native_coverage_ratio(
+        "metal_direct_decode_scale_mlx_metal_dispatch_share".to_string(),
+        mlx_metal_coverage_ratio(
             route_decision_value(
                 route,
                 "metal_dispatch_direct_decode_native_scale_element_count",
@@ -9728,11 +9528,9 @@ fn prefix_cache_evidence_label(route: &RouteMetadata) -> String {
 
 fn prefix_reuse_provenance_label(route: &RouteMetadata) -> String {
     match route.prefix_cache_path.as_deref() {
-        Some("live_request_share") => "ax_native_live_request_share".to_string(),
-        Some("retained_prompt_prefix_cache") => {
-            "ax_native_retained_prompt_prefix_cache".to_string()
-        }
-        Some("mixed_live_and_retained") => "ax_native_mixed_live_and_retained".to_string(),
+        Some("live_request_share") => "mlx_live_request_share".to_string(),
+        Some("retained_prompt_prefix_cache") => "mlx_retained_prompt_prefix_cache".to_string(),
+        Some("mixed_live_and_retained") => "mlx_mixed_live_and_retained".to_string(),
         Some("delegated_prompt_cache") => "delegated_backend_prompt_cache".to_string(),
         Some("mixed_prefix_cache_paths") => "mixed_prefix_reuse_provenance".to_string(),
         Some("metadata_lookup") | None => "none_observed".to_string(),
@@ -9753,25 +9551,20 @@ fn serialize_runtime_metadata(
     runtime: &RuntimeConfig,
     actual_runtime: Option<&RuntimeReport>,
 ) -> Value {
-    let native_model_bridge = native_model_bridge_report(runtime);
-    serialize_runtime_metadata_with_native_model_bridge(
-        runtime,
-        actual_runtime,
-        native_model_bridge,
-    )
+    let mlx_model_bridge = mlx_model_bridge_report(runtime);
+    serialize_runtime_metadata_with_mlx_model_artifacts(runtime, actual_runtime, mlx_model_bridge)
 }
 
-fn serialize_runtime_metadata_with_native_model_bridge(
+fn serialize_runtime_metadata_with_mlx_model_artifacts(
     runtime: &RuntimeConfig,
     actual_runtime: Option<&RuntimeReport>,
-    native_model_bridge: Option<Value>,
+    mlx_model_bridge: Option<Value>,
 ) -> Value {
     let mut runtime_json = json!({
         "selected_backend": runtime.resolved_backend.selected_backend,
         "support_tier": runtime.resolved_backend.support_tier,
         "resolution_policy": runtime.backend_policy.resolution_policy,
         "deterministic": runtime.deterministic,
-        "allow_deterministic_native_fallback": runtime.allow_deterministic_native_fallback,
         "max_batch_tokens": runtime.max_batch_tokens,
         "block_size_tokens": runtime.block_size_tokens,
         "flags": {
@@ -9819,16 +9612,16 @@ fn serialize_runtime_metadata_with_native_model_bridge(
         } else {
             runtime_object.remove("fallback_reason");
         }
-        if let Some(native_runtime) = actual_runtime.native_runtime.as_ref() {
+        if let Some(native_runtime) = actual_runtime.mlx_runtime.as_ref() {
             runtime_object.insert(
-                "native_runtime".to_string(),
-                serde_json::to_value(native_runtime).expect("native runtime should serialize"),
+                "mlx_runtime".to_string(),
+                serde_json::to_value(native_runtime).expect("MLX runtime should serialize"),
             );
         }
-        if let Some(native_model) = actual_runtime.native_model.as_ref() {
+        if let Some(native_model) = actual_runtime.mlx_model.as_ref() {
             runtime_object.insert(
-                "native_model".to_string(),
-                serde_json::to_value(native_model).expect("native model should serialize"),
+                "mlx_model".to_string(),
+                serde_json::to_value(native_model).expect("MLX model should serialize"),
             );
         }
     }
@@ -9860,13 +9653,13 @@ fn serialize_runtime_metadata_with_native_model_bridge(
     }
 
     if actual_runtime.is_none() {
-        if let Some(native_runtime) = runtime.native_runtime_report() {
+        if let Some(native_runtime) = runtime.mlx_runtime_report() {
             runtime_json
                 .as_object_mut()
                 .expect("runtime metadata should serialize as object")
                 .insert(
-                    "native_runtime".to_string(),
-                    serde_json::to_value(native_runtime).expect("native runtime should serialize"),
+                    "mlx_runtime".to_string(),
+                    serde_json::to_value(native_runtime).expect("MLX runtime should serialize"),
                 );
         }
     }
@@ -9877,17 +9670,17 @@ fn serialize_runtime_metadata_with_native_model_bridge(
                 .as_object_mut()
                 .expect("runtime metadata should serialize as object")
                 .insert(
-                    "native_model".to_string(),
-                    serde_json::to_value(native_model).expect("native model should serialize"),
+                    "mlx_model".to_string(),
+                    serde_json::to_value(native_model).expect("MLX model should serialize"),
                 );
         }
     }
 
-    if let Some(native_model_bridge) = native_model_bridge {
+    if let Some(mlx_model_bridge) = mlx_model_bridge {
         runtime_json
             .as_object_mut()
             .expect("runtime metadata should serialize as object")
-            .insert("native_model_bridge".to_string(), native_model_bridge);
+            .insert("mlx_model_bridge".to_string(), mlx_model_bridge);
     }
 
     runtime_json
@@ -10068,7 +9861,7 @@ fn replay_events_from_manifest(manifest: &BenchmarkManifest) -> Result<Vec<Repla
     Ok(replay_events)
 }
 
-fn validate_compatibility_benchmark_runtime(
+fn validate_llama_cpp_benchmark_runtime(
     manifest: &BenchmarkManifest,
     runtime: &RuntimeConfig,
 ) -> Result<(), CliError> {
@@ -10077,7 +9870,7 @@ fn validate_compatibility_benchmark_runtime(
         Some(adapter) if adapter.supports_blocking_benchmark() => {
             if manifest.class != ManifestClass::Scenario {
                 return Err(CliError::Contract(
-                    "blocking compatibility benchmark adapters currently support scenario manifests only"
+                    "blocking llama.cpp benchmark adapters currently support scenario manifests only"
                         .to_string(),
                 ));
             }
@@ -10086,26 +9879,26 @@ fn validate_compatibility_benchmark_runtime(
             })?;
             if shape.concurrency != 1 {
                 return Err(CliError::Contract(
-                    "blocking compatibility benchmark adapters currently require shape.concurrency=1"
+                    "blocking llama.cpp benchmark adapters currently require shape.concurrency=1"
                         .to_string(),
                 ));
             }
             if manifest.checks.require_prefix_reuse {
                 return Err(CliError::Contract(
-                    "blocking compatibility benchmark adapters do not support require_prefix_reuse"
+                    "blocking llama.cpp benchmark adapters do not support require_prefix_reuse"
                         .to_string(),
                 ));
             }
             Ok(())
         }
         Some(BackendAdapterManifest::LlamaCppCli { .. }) => Err(CliError::Contract(
-            "ax-bench compatibility execution does not support CLI adapters; use a server-backed compatibility adapter instead".to_string(),
+            "ax-bench llama.cpp execution does not support CLI adapters; use a server-backed llama.cpp adapter instead".to_string(),
         )),
         Some(_) => Err(CliError::Contract(
-            "compatibility benchmark execution requires a supported backend adapter".to_string(),
+            "llama.cpp benchmark execution requires a supported backend adapter".to_string(),
         )),
         None => Err(CliError::Contract(
-            "compatibility benchmark execution requires runtime.backend_adapter".to_string(),
+            "llama.cpp benchmark execution requires runtime.backend_adapter".to_string(),
         )),
     }
 }
@@ -10139,7 +9932,7 @@ fn has_live_requests(engine: &EngineCore, request_ids: &[RequestId]) -> Result<b
     Ok(false)
 }
 
-fn compatibility_reports_for_session(
+fn llama_cpp_reports_for_session(
     session: &EngineSession,
     request_ids: &[RequestId],
 ) -> Result<BTreeMap<RequestId, SessionRequestReport>, CliError> {
@@ -10147,7 +9940,7 @@ fn compatibility_reports_for_session(
 
     for request_id in request_ids {
         let report = session.request_report(request_id.0).ok_or_else(|| {
-            CliError::Runtime(format!("missing compatibility request {}", request_id.0))
+            CliError::Runtime(format!("missing llama.cpp request {}", request_id.0))
         })?;
         reports.insert(*request_id, report);
     }
@@ -10155,22 +9948,22 @@ fn compatibility_reports_for_session(
     Ok(reports)
 }
 
-fn compatibility_reports_changed(
+fn llama_cpp_reports_changed(
     before: &BTreeMap<RequestId, SessionRequestReport>,
     after: &BTreeMap<RequestId, SessionRequestReport>,
 ) -> bool {
     before != after
 }
 
-fn compatibility_session_has_live_requests(
+fn llama_cpp_session_has_live_requests(
     session: &EngineSession,
     request_ids: &[RequestId],
 ) -> Result<bool, CliError> {
     for request_id in request_ids {
         let report = session.request_report(request_id.0).ok_or_else(|| {
-            CliError::Runtime(format!("missing compatibility request {}", request_id.0))
+            CliError::Runtime(format!("missing llama.cpp request {}", request_id.0))
         })?;
-        if !compatibility_request_is_terminal(report.state) {
+        if !llama_cpp_request_is_terminal(report.state) {
             return Ok(true);
         }
     }
@@ -10264,8 +10057,8 @@ fn usage() -> String {
     let text = r#"AX Engine v4 benchmark CLI
 
 Usage:
-  ax-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--native-mode | --mlx] [--support-tier <tier>] [--compat-backend <backend>] [--compat-cli-path <path>] [--compat-model-path <path>] [--compat-server-url <url>] [--llama-fallback-cli-path <path>] [--llama-fallback-model-path <path>] [--llama-fallback-server-url <url>] [--native-runtime-artifacts-dir <path>] [--native-model-artifacts-dir <path>] [--json]
-  ax-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--native-mode | --mlx] [--support-tier <tier>] [--compat-backend <backend>] [--compat-cli-path <path>] [--compat-model-path <path>] [--compat-server-url <url>] [--llama-fallback-cli-path <path>] [--llama-fallback-model-path <path>] [--llama-fallback-server-url <url>] [--native-runtime-artifacts-dir <path>] [--native-model-artifacts-dir <path>] [--json]
+  ax-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
+  ax-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
   ax-bench scenario --manifest <path> --output-root <path>
   ax-bench replay --manifest <path> --output-root <path>
   ax-bench autotune --manifest <path> --output-root <path> [--iterations <n>] [--exploration-weight <value>] [--max-batch-token-options <list>] [--kv-total-block-options <list>] [--prefix-cache-options <list>] [--disable-history]
@@ -10273,7 +10066,7 @@ Usage:
   ax-bench matrix-compare --baseline <path> --candidate <path> --output-root <path>
   ax-bench baseline --source <path> --name <name> --output-root <path>
   ax-bench matrix --manifest <path> --output-root <path>
-  ax-bench doctor [--json] [--native-model-artifacts-dir <path>]
+  ax-bench doctor [--json] [--mlx-model-artifacts-dir <path>]
   ax-bench metal-build [--manifest <path>] [--output-dir <path>]
 "#;
 
@@ -10369,14 +10162,11 @@ struct RuntimeManifest {
     #[serde(default = "default_true")]
     deterministic: bool,
     #[serde(default)]
-    allow_deterministic_native_fallback: bool,
     max_batch_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kv_total_blocks: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    native_runtime_artifacts_dir: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    native_model_artifacts_dir: Option<PathBuf>,
+    mlx_model_artifacts_dir: Option<PathBuf>,
     #[serde(default)]
     flags: RuntimeFlags,
 }
@@ -10393,15 +10183,6 @@ enum BackendAdapterManifest {
     LlamaCppServerCompletion {
         server_url: String,
     },
-    VllmServerCompletions {
-        server_url: String,
-    },
-    MistralRsServerCompletions {
-        server_url: String,
-    },
-    MlxServerCompletions {
-        server_url: String,
-    },
 }
 
 impl BackendAdapterManifest {
@@ -10410,13 +10191,10 @@ impl BackendAdapterManifest {
             Self::LlamaCppCli { .. } | Self::LlamaCppServerCompletion { .. } => {
                 SelectedBackend::LlamaCpp
             }
-            Self::VllmServerCompletions { .. } => SelectedBackend::Vllm,
-            Self::MistralRsServerCompletions { .. } => SelectedBackend::MistralRs,
-            Self::MlxServerCompletions { .. } => SelectedBackend::Mlx,
         }
     }
 
-    fn to_sdk_config(&self) -> CompatibilityBackendConfig {
+    fn to_sdk_config(&self) -> LlamaCppConfig {
         match self {
             Self::LlamaCppCli {
                 cli_path,
@@ -10425,22 +10203,11 @@ impl BackendAdapterManifest {
             } => {
                 let mut config = ax_engine_sdk::LlamaCppCliConfig::new(cli_path, model_path);
                 config.extra_args = extra_args.clone();
-                CompatibilityBackendConfig::LlamaCpp(LlamaCppConfig::Cli(config))
+                LlamaCppConfig::Cli(config)
             }
-            Self::LlamaCppServerCompletion { server_url } => CompatibilityBackendConfig::LlamaCpp(
-                LlamaCppConfig::server_completion(server_url.clone()),
-            ),
-            Self::VllmServerCompletions { server_url } => CompatibilityBackendConfig::Vllm(
-                ax_engine_sdk::OpenAiCompatibleServerConfig::new(server_url.clone()),
-            ),
-            Self::MistralRsServerCompletions { server_url } => {
-                CompatibilityBackendConfig::MistralRs(
-                    ax_engine_sdk::OpenAiCompatibleServerConfig::new(server_url.clone()),
-                )
+            Self::LlamaCppServerCompletion { server_url } => {
+                LlamaCppConfig::server_completion(server_url.clone())
             }
-            Self::MlxServerCompletions { server_url } => CompatibilityBackendConfig::Mlx(
-                ax_engine_sdk::MlxConfig::server_completions(server_url.clone()),
-            ),
         }
     }
 
@@ -10449,12 +10216,7 @@ impl BackendAdapterManifest {
     }
 
     fn supports_blocking_benchmark(&self) -> bool {
-        matches!(
-            self,
-            Self::VllmServerCompletions { .. }
-                | Self::MistralRsServerCompletions { .. }
-                | Self::MlxServerCompletions { .. }
-        )
+        matches!(self, Self::LlamaCppServerCompletion { .. })
     }
 }
 
@@ -10536,7 +10298,6 @@ const fn default_top_p() -> f32 {
 #[derive(Clone, Debug)]
 struct RuntimeConfig {
     deterministic: bool,
-    allow_deterministic_native_fallback: bool,
     max_batch_tokens: u32,
     block_size_tokens: u32,
     kv_total_blocks: Option<u32>,
@@ -10544,30 +10305,28 @@ struct RuntimeConfig {
     backend_policy: BackendPolicy,
     resolved_backend: ResolvedBackend,
     backend_adapter: Option<BackendAdapterManifest>,
-    native_runtime_artifacts_dir: Option<PathBuf>,
-    native_runtime_artifacts_source: Option<NativeRuntimeArtifactsSource>,
-    native_model_artifacts_dir: Option<PathBuf>,
-    native_model_artifacts_source: Option<NativeModelArtifactsSource>,
+    mlx_model_artifacts_dir: Option<PathBuf>,
+    mlx_model_artifacts_source: Option<NativeModelArtifactsSource>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct NativeGgufBridgeProbeConfig {
+struct MlxGgufBridgeProbeConfig {
     python_bin: PathBuf,
     script_path: PathBuf,
     output_dtype: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct NativeGgufBridgeProbeResult {
+struct MlxGgufBridgeProbeResult {
     status: String,
     #[serde(default)]
     reason: Option<String>,
     #[serde(default)]
-    report: Option<NativeGgufBridgeSupportReport>,
+    report: Option<MlxGgufBridgeSupportReport>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct NativeGgufBridgeSupportReport {
+struct MlxGgufBridgeSupportReport {
     architecture: String,
     layer_count: u32,
     #[serde(default)]
@@ -10595,43 +10354,34 @@ struct NativeGgufBridgeSupportReport {
 }
 
 impl RuntimeConfig {
-    fn uses_native_runtime(&self) -> bool {
-        self.resolved_backend.selected_backend == SelectedBackend::AxNative
+    fn uses_mlx_runtime(&self) -> bool {
+        self.resolved_backend.selected_backend.is_mlx()
     }
 
     fn uses_metal_bringup_runtime(&self) -> bool {
-        self.uses_native_runtime() && self.native_runtime_artifacts_dir.is_some()
+        false
     }
 
-    fn native_runtime_report(&self) -> Option<NativeRuntimeReport> {
-        if !self.uses_native_runtime() {
+    fn mlx_runtime_report(&self) -> Option<NativeRuntimeReport> {
+        if !self.uses_mlx_runtime() {
             return None;
         }
 
-        if self.uses_metal_bringup_runtime() {
-            Some(NativeRuntimeReport::metal_bringup(
-                self.native_runtime_artifacts_source
-                    .unwrap_or(NativeRuntimeArtifactsSource::ExplicitConfig),
-            ))
-        } else if self.allow_deterministic_native_fallback {
-            Some(NativeRuntimeReport::deterministic())
-        } else {
-            None
-        }
+        None
     }
 
     fn native_model_report(&self) -> Option<NativeModelReport> {
-        if !self.uses_native_runtime() {
+        if !self.uses_mlx_runtime() {
             return None;
         }
 
-        let model_dir = self.native_model_artifacts_dir.as_ref()?;
+        let model_dir = self.mlx_model_artifacts_dir.as_ref()?;
         if is_native_model_gguf_path(model_dir) {
             return None;
         }
         let summary = NativeModelArtifacts::from_dir(model_dir).ok()?.summary();
         let source = self
-            .native_model_artifacts_source
+            .mlx_model_artifacts_source
             .unwrap_or(NativeModelArtifactsSource::ExplicitConfig);
         let binding = self.resolved_native_model_binding_summary();
 
@@ -10639,30 +10389,22 @@ impl RuntimeConfig {
     }
 
     fn resolved_native_model_binding_summary(&self) -> Option<NativeModelBindingSummary> {
-        let build_dir = self.native_runtime_artifacts_dir.as_ref()?;
-        let model_dir = self.native_model_artifacts_dir.as_deref()?;
-        if is_native_model_gguf_path(model_dir) {
-            return None;
-        }
-
-        MetalBringupRunner::from_build_dir_and_model_artifacts(build_dir, Some(model_dir))
-            .ok()
-            .and_then(|runner| runner.native_model_binding_summary())
+        None
     }
 
     fn tool_mode(&self) -> &'static str {
         if self.uses_metal_bringup_runtime() {
             "engine_bringup_runtime"
-        } else if self.uses_native_runtime() {
-            "engine_deterministic_runtime"
+        } else if self.uses_mlx_runtime() {
+            "mlx_runtime"
         } else if self
             .backend_adapter
             .as_ref()
             .is_some_and(BackendAdapterManifest::supports_stepwise_benchmark)
         {
-            "compatibility_stepwise_runtime"
+            "llama_cpp_stepwise_runtime"
         } else {
-            "compatibility_blocking_runtime"
+            "llama_cpp_blocking_runtime"
         }
     }
 }
@@ -10673,47 +10415,43 @@ fn is_native_model_gguf_path(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"))
 }
 
-fn default_native_gguf_bridge_probe_config() -> NativeGgufBridgeProbeConfig {
-    let script_path = env::var_os(NATIVE_GGUF_EXPORTER_ENV)
+fn default_mlx_gguf_bridge_probe_config() -> MlxGgufBridgeProbeConfig {
+    let script_path = env::var_os(MLX_GGUF_EXPORTER_ENV)
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .join("scripts/export_native_model_from_gguf.py")
-        });
-    let python_bin = env::var_os(NATIVE_GGUF_PYTHON_ENV)
+        .unwrap_or_default();
+    let python_bin = env::var_os(MLX_GGUF_PYTHON_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("python3"));
-    let output_dtype = env::var(NATIVE_GGUF_EXPORT_DTYPE_ENV)
+    let output_dtype = env::var(MLX_GGUF_EXPORT_DTYPE_ENV)
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "f16".to_string());
-    NativeGgufBridgeProbeConfig {
+    MlxGgufBridgeProbeConfig {
         python_bin,
         script_path,
         output_dtype,
     }
 }
 
-fn parse_native_gguf_bridge_probe_result(
+fn parse_mlx_gguf_bridge_probe_result(
     stdout: &[u8],
     stderr: &[u8],
-) -> Option<NativeGgufBridgeProbeResult> {
+) -> Option<MlxGgufBridgeProbeResult> {
     for bytes in [stdout, stderr] {
         let text = String::from_utf8_lossy(bytes).trim().to_string();
         if text.is_empty() {
             continue;
         }
-        if let Ok(result) = serde_json::from_str::<NativeGgufBridgeProbeResult>(&text) {
+        if let Ok(result) = serde_json::from_str::<MlxGgufBridgeProbeResult>(&text) {
             return Some(result);
         }
     }
     None
 }
 
-fn probe_native_gguf_bridge_with_config(
+fn probe_mlx_gguf_bridge_with_config(
     gguf_path: &Path,
-    probe_config: &NativeGgufBridgeProbeConfig,
+    probe_config: &MlxGgufBridgeProbeConfig,
 ) -> Value {
     let launch = Command::new(&probe_config.python_bin)
         .arg(&probe_config.script_path)
@@ -10742,7 +10480,7 @@ fn probe_native_gguf_bridge_with_config(
 
     match launch {
         Ok(output) => {
-            let parsed = parse_native_gguf_bridge_probe_result(&output.stdout, &output.stderr);
+            let parsed = parse_mlx_gguf_bridge_probe_result(&output.stdout, &output.stderr);
             if let Some(parsed) = parsed {
                 let bridge_status = if parsed.status == "ok" {
                     if parsed
@@ -10846,21 +10584,21 @@ fn probe_native_gguf_bridge_with_config(
     Value::Object(report)
 }
 
-fn native_model_bridge_report(runtime: &RuntimeConfig) -> Option<Value> {
-    if !runtime.uses_native_runtime() {
+fn mlx_model_bridge_report(runtime: &RuntimeConfig) -> Option<Value> {
+    if !runtime.uses_mlx_runtime() {
         return None;
     }
-    let gguf_path = runtime.native_model_artifacts_dir.as_deref()?;
+    let gguf_path = runtime.mlx_model_artifacts_dir.as_deref()?;
     if !is_native_model_gguf_path(gguf_path) {
         return None;
     }
-    Some(probe_native_gguf_bridge_with_config(
+    Some(probe_mlx_gguf_bridge_with_config(
         gguf_path,
-        &default_native_gguf_bridge_probe_config(),
+        &default_mlx_gguf_bridge_probe_config(),
     ))
 }
 
-fn classify_native_model_artifacts_source(path: &Path) -> NativeModelArtifactsSource {
+fn classify_mlx_model_artifacts_source(path: &Path) -> NativeModelArtifactsSource {
     if is_native_model_gguf_path(path) {
         NativeModelArtifactsSource::GeneratedFromGguf
     } else {
@@ -11001,9 +10739,8 @@ fn proportional_time_us(total_us: u64, part_tokens: u64, total_tokens: u64) -> u
     if total_us == 0 || part_tokens == 0 || total_tokens == 0 {
         return 0;
     }
-    let value = u128::from(total_us)
-        .saturating_mul(u128::from(part_tokens))
-        / u128::from(total_tokens);
+    let value =
+        u128::from(total_us).saturating_mul(u128::from(part_tokens)) / u128::from(total_tokens);
     value.min(u128::from(u64::MAX)) as u64
 }
 
@@ -11065,20 +10802,20 @@ impl RuntimeObservation {
             }
             let step_phase_tokens = step_prefill_tokens.saturating_add(step_decode_tokens);
             if step_phase_tokens > 0 {
-                self.total_prefill_runner_time_us = self.total_prefill_runner_time_us.saturating_add(
-                    proportional_time_us(
+                self.total_prefill_runner_time_us = self
+                    .total_prefill_runner_time_us
+                    .saturating_add(proportional_time_us(
                         outcome.metrics.runner_time_us,
                         step_prefill_tokens,
                         step_phase_tokens,
-                    ),
-                );
-                self.total_decode_runner_time_us = self.total_decode_runner_time_us.saturating_add(
-                    proportional_time_us(
-                        outcome.metrics.runner_time_us,
-                        step_decode_tokens,
-                        step_phase_tokens,
-                    ),
-                );
+                    ));
+                self.total_decode_runner_time_us =
+                    self.total_decode_runner_time_us
+                        .saturating_add(proportional_time_us(
+                            outcome.metrics.runner_time_us,
+                            step_decode_tokens,
+                            step_phase_tokens,
+                        ));
             }
             if saw_prefill {
                 self.prefill_steps += 1;
@@ -11096,7 +10833,7 @@ impl RuntimeObservation {
             .push(StepTraceEntry::capture(engine, outcome, current_time_ms));
     }
 
-    fn observe_compatibility_session_step(
+    fn observe_llama_cpp_session_step(
         &mut self,
         reports_before: &BTreeMap<RequestId, SessionRequestReport>,
         reports_after: &BTreeMap<RequestId, SessionRequestReport>,
@@ -11148,7 +10885,7 @@ impl RuntimeObservation {
                 saw_prefill_progress = true;
             }
             if output_delta > 0 {
-                items.push(StepTraceItem::capture_compatibility_decode(
+                items.push(StepTraceItem::capture_llama_cpp_decode(
                     *request_id,
                     report_after.output_len,
                     output_delta,
@@ -11165,7 +10902,7 @@ impl RuntimeObservation {
         }
 
         self.step_trace
-            .push(StepTraceEntry::capture_compatibility_shared(
+            .push(StepTraceEntry::capture_llama_cpp_shared(
                 selected_request_ids,
                 step,
                 current_time_ms,
@@ -11219,7 +10956,7 @@ impl RuntimeObservation {
         Ok(())
     }
 
-    fn finalize_compatibility(
+    fn finalize_llama_cpp(
         &mut self,
         final_reports: Vec<(SyntheticRequestSpec, SessionRequestReport)>,
         elapsed_ms: u64,
@@ -11245,7 +10982,7 @@ impl RuntimeObservation {
             .map(|(spec, report)| FinalRequestState {
                 external_id: spec.external_id,
                 request_id: spec.request_id,
-                state: compatibility_final_request_state_label(report.state).to_string(),
+                state: llama_cpp_final_request_state_label(report.state).to_string(),
                 processed_prompt_tokens: report.processed_prompt_tokens,
                 generated_tokens: report.output_tokens.clone(),
                 cancel_requested: report.cancel_requested,
@@ -11281,7 +11018,7 @@ impl RuntimeObservation {
     }
 
     /// Prefill throughput from runner execution time when available.
-    /// Legacy synthetic/compatibility paths fall back to the old step proxy.
+    /// Legacy synthetic/llama.cpp paths fall back to the old step proxy.
     fn prefill_tok_s(&self) -> f64 {
         if self.prefill_tokens == 0 {
             0.0
@@ -11295,7 +11032,7 @@ impl RuntimeObservation {
     }
 
     /// Decode throughput from runner execution time when available.
-    /// Legacy synthetic/compatibility paths fall back to the old step proxy.
+    /// Legacy synthetic/llama.cpp paths fall back to the old step proxy.
     fn decode_tok_s(&self) -> f64 {
         if self.decode_tokens == 0 {
             0.0
@@ -11453,7 +11190,7 @@ impl RuntimeObservation {
     }
 }
 
-fn compatibility_request_is_terminal(state: SessionRequestState) -> bool {
+fn llama_cpp_request_is_terminal(state: SessionRequestState) -> bool {
     matches!(
         state,
         SessionRequestState::Finished
@@ -11462,7 +11199,7 @@ fn compatibility_request_is_terminal(state: SessionRequestState) -> bool {
     )
 }
 
-fn compatibility_final_request_state_label(state: SessionRequestState) -> &'static str {
+fn llama_cpp_final_request_state_label(state: SessionRequestState) -> &'static str {
     match state {
         SessionRequestState::Finished => "Finished",
         SessionRequestState::Cancelled => "Cancelled",
@@ -11936,7 +11673,7 @@ impl StepTraceEntry {
         value
     }
 
-    fn capture_compatibility_shared(
+    fn capture_llama_cpp_shared(
         selected_request_ids: Vec<RequestId>,
         step: &EngineStepReport,
         current_time_ms: u64,
@@ -12006,7 +11743,7 @@ impl StepTraceItem {
         })
     }
 
-    fn capture_compatibility_decode(
+    fn capture_llama_cpp_decode(
         request_id: RequestId,
         output_len: u32,
         scheduled_tokens: u32,
@@ -12477,10 +12214,9 @@ mod tests {
 
     fn load_test_manifest(path: &str) -> BenchmarkManifest {
         let mut manifest = load_manifest(Path::new(path)).expect("manifest should load");
-        if manifest.runtime.selected_backend == SelectedBackend::AxNative {
-            // Test fixtures use synthetic native flows heavily; keep them explicitly opted
-            // into placeholder execution so the production manifest default can remain fail-closed.
-            manifest.runtime.allow_deterministic_native_fallback = true;
+        if manifest.runtime.selected_backend == SelectedBackend::Mlx {
+            manifest.runtime.deterministic = false;
+            manifest.runtime.mlx_model_artifacts_dir = Some(write_valid_native_model_fixture());
         }
         manifest
     }
@@ -12489,18 +12225,23 @@ mod tests {
         load_json_value(Path::new(path)).expect("manifest JSON should load")
     }
 
-    fn write_test_manifest_with_native_placeholder_opt_in(
-        root: &Path,
-        source_path: &str,
-    ) -> PathBuf {
+    fn write_test_manifest_with_mlx_backend(root: &Path, source_path: &str) -> PathBuf {
         let mut manifest_json = load_test_manifest_json(source_path);
         if manifest_json
             .get("runtime")
             .and_then(|runtime| runtime.get("selected_backend"))
             .and_then(Value::as_str)
-            == Some("ax_native")
+            == Some("mlx")
         {
-            manifest_json["runtime"]["allow_deterministic_native_fallback"] = Value::Bool(true);
+            let runtime = manifest_json
+                .get_mut("runtime")
+                .and_then(Value::as_object_mut)
+                .expect("test manifest runtime should be an object");
+            runtime.insert("deterministic".to_string(), json!(false));
+            runtime.insert(
+                "mlx_model_artifacts_dir".to_string(),
+                json!(write_valid_native_model_fixture()),
+            );
         }
 
         let file_name = Path::new(source_path)
@@ -12536,6 +12277,7 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
     fn compiled_repo_metal_build_dir() -> Option<PathBuf> {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()?
@@ -12666,6 +12408,7 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
     fn native_model_tensor_with_file(
         name: &str,
         role: ax_engine_core::NativeTensorRole,
@@ -12690,6 +12433,7 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
     fn write_f32_tensor_file(root_dir: &Path, file_name: &str, values: &[f32]) {
         let bytes = values
             .iter()
@@ -12699,6 +12443,7 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
     fn write_projection_native_model_fixture() -> PathBuf {
         let root_dir = unique_test_dir("native-model-projection");
         fs::create_dir_all(&root_dir).expect("projection fixture directory should create");
@@ -12876,6 +12621,7 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
     fn write_multilayer_direct_decode_native_model_fixture() -> PathBuf {
         let root_dir = write_projection_native_model_fixture();
         let zero_matrix = vec![0.0_f32; 64];
@@ -13003,10 +12749,10 @@ mod tests {
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "engine_deterministic_runtime",
+                "tool_mode": "mlx_runtime",
                 "ax_bench_version": "0.1.0"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "prefix_cache_path": "metadata_lookup",
                 "prefix_cache_evidence": "none_observed",
@@ -13019,13 +12765,14 @@ mod tests {
         })
     }
 
-    fn native_runtime_fixture() -> Value {
+    fn mlx_runtime_fixture() -> Value {
         json!({
-            "selected_backend": "ax_native",
-            "support_tier": "native_preview",
-            "resolution_policy": "strict_native",
-            "native_runtime": {
-                "runner": "deterministic"
+            "selected_backend": "mlx",
+            "support_tier": "mlx_preview",
+            "resolution_policy": "mlx_only",
+            "mlx_runtime": {
+                "runner": "metal_bringup",
+                "artifacts_source": "explicit_config"
             },
             "host": runtime_host_fixture(),
             "metal_toolchain": runtime_metal_toolchain_fixture()
@@ -13033,17 +12780,10 @@ mod tests {
     }
 
     #[test]
-    fn native_runtime_tool_mode_inference_distinguishes_deterministic_and_bringup() {
-        let deterministic_runtime = native_runtime_fixture();
+    fn mlx_runtime_tool_mode_inference_recognizes_metal_bringup() {
+        let runtime = mlx_runtime_fixture();
         assert_eq!(
-            inferred_tool_mode_from_runtime_json(&deterministic_runtime),
-            Some("engine_deterministic_runtime")
-        );
-
-        let mut bringup_runtime = native_runtime_fixture();
-        bringup_runtime["native_runtime"]["runner"] = json!("metal_bringup");
-        assert_eq!(
-            inferred_tool_mode_from_runtime_json(&bringup_runtime),
+            inferred_tool_mode_from_runtime_json(&runtime),
             Some("engine_bringup_runtime")
         );
     }
@@ -13091,8 +12831,8 @@ mod tests {
             "metal_model_bound_ffn_decode_compare"
         );
         assert_eq!(
-            compare_result_label("engine_deterministic_runtime", "metal_real_model_forward"),
-            "engine_deterministic_compare"
+            compare_result_label("mlx_runtime", "metal_real_model_forward"),
+            "metal_real_model_forward_compare"
         );
     }
 
@@ -13277,7 +13017,7 @@ mod tests {
     fn route_execution_semantics_from_json_marks_multilayer_native_prefix_attention() {
         let route_json = json!({
             "metal_real_model_tensor_inputs": true,
-            "metal_prefix_layers_native_attention": true,
+            "mlx_metal_prefix_layers_attention": true,
             "metal_model_layer_count": 28
         });
 
@@ -13291,7 +13031,7 @@ mod tests {
     fn route_execution_semantics_from_json_prefers_explicit_real_model_forward_marker() {
         let route_json = json!({
             "metal_real_model_tensor_inputs": true,
-            "metal_prefix_layers_native_attention": true,
+            "mlx_metal_prefix_layers_attention": true,
             "metal_model_layer_count": 28,
             "metal_real_model_forward": true
         });
@@ -13306,9 +13046,9 @@ mod tests {
     fn route_execution_semantics_from_json_marks_multilayer_mixed_prefix_attention() {
         let route_json = json!({
             "metal_real_model_tensor_inputs": true,
-            "metal_prefix_layers_native_attention": true,
+            "mlx_metal_prefix_layers_attention": true,
             "metal_prefix_layers_cpu_reference": true,
-            "metal_prefix_native_dispatch_count": 35,
+            "mlx_metal_prefix_dispatch_count": 35,
             "metal_prefix_cpu_reference_dispatch_count": 1,
             "metal_model_layer_count": 28
         });
@@ -13430,7 +13170,7 @@ mod tests {
             Some(&Value::Bool(true))
         );
         assert_eq!(
-            route_json.get("metal_prefix_native_dispatch_count"),
+            route_json.get("mlx_metal_prefix_dispatch_count"),
             Some(&Value::from(35))
         );
         assert_eq!(
@@ -13438,7 +13178,7 @@ mod tests {
             Some(&Value::from(1))
         );
         assert_eq!(
-            route_json.get("metal_prefix_native_projection_row_count"),
+            route_json.get("mlx_metal_prefix_projection_row_count"),
             Some(&Value::from(4096))
         );
         assert_eq!(
@@ -13446,7 +13186,7 @@ mod tests {
             Some(&Value::from(512))
         );
         assert_eq!(
-            route_json.get("metal_prefix_native_rms_norm_element_count"),
+            route_json.get("mlx_metal_prefix_rms_norm_element_count"),
             Some(&Value::from(2048))
         );
         assert_eq!(
@@ -13454,7 +13194,7 @@ mod tests {
             Some(&Value::from(128))
         );
         assert_eq!(
-            route_json.get("metal_prefix_native_ffn_activation_element_count"),
+            route_json.get("mlx_metal_prefix_ffn_activation_element_count"),
             Some(&Value::from(1024))
         );
         assert_eq!(
@@ -13462,7 +13202,7 @@ mod tests {
             Some(&Value::from(64))
         );
         assert_eq!(
-            route_json.get("metal_prefix_native_residual_add_element_count"),
+            route_json.get("mlx_metal_prefix_residual_add_element_count"),
             Some(&Value::from(4096))
         );
         assert_eq!(
@@ -13470,31 +13210,31 @@ mod tests {
             Some(&Value::from(0))
         );
         assert_eq!(
-            route_json.get("metal_prefix_projection_native_share"),
+            route_json.get("metal_prefix_projection_mlx_metal_dispatch_share"),
             Some(&Value::from(4096.0_f64 / 4608.0_f64))
         );
         assert_eq!(
-            route_json.get("metal_prefix_rms_norm_native_share"),
+            route_json.get("metal_prefix_rms_norm_mlx_metal_dispatch_share"),
             Some(&Value::from(2048.0_f64 / 2176.0_f64))
         );
         assert_eq!(
-            route_json.get("metal_prefix_ffn_activation_native_share"),
+            route_json.get("metal_prefix_ffn_activation_mlx_metal_dispatch_share"),
             Some(&Value::from(1024.0_f64 / 1088.0_f64))
         );
         assert_eq!(
-            route_json.get("metal_prefix_residual_add_native_share"),
+            route_json.get("metal_prefix_residual_add_mlx_metal_dispatch_share"),
             Some(&Value::from(1.0_f64))
         );
         assert_eq!(
-            route_json.get("metal_native_projection_f16_binding_count"),
+            route_json.get("mlx_metal_projection_f16_binding_count"),
             Some(&Value::from(28))
         );
         assert_eq!(
-            route_json.get("metal_native_rms_norm_bf16_binding_count"),
+            route_json.get("mlx_metal_rms_norm_bf16_binding_count"),
             Some(&Value::from(28))
         );
         assert_eq!(
-            route_json.get("metal_direct_decode_native_projection_row_count"),
+            route_json.get("mlx_metal_direct_decode_projection_row_count"),
             Some(&Value::from(151936))
         );
         assert_eq!(
@@ -13502,7 +13242,7 @@ mod tests {
             Some(&Value::from(3072))
         );
         assert_eq!(
-            route_json.get("metal_direct_decode_native_rms_norm_element_count"),
+            route_json.get("mlx_metal_direct_decode_rms_norm_element_count"),
             Some(&Value::from(6144))
         );
         assert_eq!(
@@ -13510,7 +13250,7 @@ mod tests {
             Some(&Value::from(0))
         );
         assert_eq!(
-            route_json.get("metal_direct_decode_native_ffn_activation_element_count"),
+            route_json.get("mlx_metal_direct_decode_ffn_activation_element_count"),
             Some(&Value::from(1536))
         );
         assert_eq!(
@@ -13518,7 +13258,7 @@ mod tests {
             Some(&Value::from(0))
         );
         assert_eq!(
-            route_json.get("metal_direct_decode_native_residual_add_element_count"),
+            route_json.get("mlx_metal_direct_decode_residual_add_element_count"),
             Some(&Value::from(3072))
         );
         assert_eq!(
@@ -13542,19 +13282,19 @@ mod tests {
             Some(&Value::from(2))
         );
         assert_eq!(
-            route_json.get("metal_direct_decode_projection_native_share"),
+            route_json.get("metal_direct_decode_projection_mlx_metal_dispatch_share"),
             Some(&Value::from(151936.0_f64 / 155008.0_f64))
         );
         assert_eq!(
-            route_json.get("metal_direct_decode_rms_norm_native_share"),
+            route_json.get("metal_direct_decode_rms_norm_mlx_metal_dispatch_share"),
             Some(&Value::from(1.0_f64))
         );
         assert_eq!(
-            route_json.get("metal_direct_decode_ffn_activation_native_share"),
+            route_json.get("metal_direct_decode_ffn_activation_mlx_metal_dispatch_share"),
             Some(&Value::from(1.0_f64))
         );
         assert_eq!(
-            route_json.get("metal_direct_decode_residual_add_native_share"),
+            route_json.get("metal_direct_decode_residual_add_mlx_metal_dispatch_share"),
             Some(&Value::from(1.0_f64))
         );
     }
@@ -13597,11 +13337,11 @@ mod tests {
 
         assert_eq!(
             nested_value(&baseline, &["runtime", "tool_mode"]).and_then(Value::as_str),
-            Some("engine_deterministic_runtime")
+            Some("engine_bringup_runtime")
         );
         assert_eq!(
             nested_value(&baseline, &["route", "execution_semantics"]).and_then(Value::as_str),
-            Some("native_placeholder_deterministic")
+            Some("none_observed")
         );
     }
 
@@ -13616,7 +13356,7 @@ mod tests {
             }
         });
         let mut environment = native_environment_fixture();
-        environment["runtime"]["native_model"] = json!({
+        environment["runtime"]["mlx_model"] = json!({
             "artifacts_source": "explicit_config",
             "model_family": "qwen3_dense",
             "tensor_format": "safetensors",
@@ -13649,17 +13389,17 @@ mod tests {
         .expect("trusted baseline JSON should build");
 
         assert_eq!(
-            nested_value(&baseline, &["runtime", "native_model", "artifacts_source"])
+            nested_value(&baseline, &["runtime", "mlx_model", "artifacts_source"])
                 .and_then(Value::as_str),
             Some("explicit_config")
         );
         assert_eq!(
-            nested_value(&baseline, &["runtime", "native_model", "tensor_format"])
+            nested_value(&baseline, &["runtime", "mlx_model", "tensor_format"])
                 .and_then(Value::as_str),
             Some("safetensors")
         );
         assert_eq!(
-            nested_value(&baseline, &["runtime", "native_model", "tensor_count"])
+            nested_value(&baseline, &["runtime", "mlx_model", "tensor_count"])
                 .and_then(Value::as_u64),
             Some(402)
         );
@@ -13671,11 +13411,11 @@ mod tests {
             "label": "Chat Qwen Short"
         });
         let regression = json!({
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "summary": {
-                "selected_backend": "ax_native",
-                "support_tier": "native_preview",
-                "resolution_policy": "strict_native"
+                "selected_backend": "mlx",
+                "support_tier": "mlx_preview",
+                "resolution_policy": "mlx_only"
             },
             "comparison": {
                 "ttft_ms_pct": -5.0,
@@ -13693,8 +13433,8 @@ mod tests {
         )
         .expect("member result should build");
 
-        assert_eq!(member.tool_mode, "engine_deterministic_runtime");
-        assert_eq!(member.compare_mode, "engine_deterministic_compare");
+        assert_eq!(member.tool_mode, "engine_bringup_runtime");
+        assert_eq!(member.compare_mode, "engine_bringup_compare");
         assert_eq!(member.execution_semantics, "unknown");
     }
 
@@ -13703,65 +13443,62 @@ mod tests {
         let model_dir = write_valid_native_model_fixture();
         let runtime = RuntimeConfig {
             deterministic: false,
-            allow_deterministic_native_fallback: false,
             max_batch_tokens: 128,
             block_size_tokens: 16,
             kv_total_blocks: Some(32),
             flags: RuntimeFlags::default(),
-            backend_policy: BackendPolicy::new(ResolutionPolicy::StrictNative),
+            backend_policy: BackendPolicy::new(ResolutionPolicy::MlxOnly),
             resolved_backend: ResolvedBackend::new(
-                SelectedBackend::AxNative,
-                SupportTier::NativePreview,
+                SelectedBackend::Mlx,
+                SupportTier::MlxPreview,
                 None,
             ),
             backend_adapter: None,
-            native_runtime_artifacts_dir: None,
-            native_runtime_artifacts_source: None,
-            native_model_artifacts_dir: Some(model_dir.clone()),
-            native_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
+            mlx_model_artifacts_dir: Some(model_dir.clone()),
+            mlx_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
         };
 
         let runtime_json =
-            serialize_runtime_metadata_with_native_model_bridge(&runtime, None, None);
+            serialize_runtime_metadata_with_mlx_model_artifacts(&runtime, None, None);
 
         assert_eq!(
             runtime_json
-                .get("native_model")
+                .get("mlx_model")
                 .and_then(|value| value.get("artifacts_source"))
                 .and_then(Value::as_str),
             Some("explicit_config")
         );
         assert_eq!(
             runtime_json
-                .get("native_model")
+                .get("mlx_model")
                 .and_then(|value| value.get("model_family"))
                 .and_then(Value::as_str),
             Some("qwen3_dense")
         );
         assert_eq!(
             runtime_json
-                .get("native_model")
+                .get("mlx_model")
                 .and_then(|value| value.get("layer_count"))
                 .and_then(Value::as_u64),
             Some(1)
         );
         assert_eq!(
             runtime_json
-                .get("native_model")
+                .get("mlx_model")
                 .and_then(|value| value.get("tensor_count"))
                 .and_then(Value::as_u64),
             Some(9)
         );
         assert_eq!(
             runtime_json
-                .get("native_model")
+                .get("mlx_model")
                 .and_then(|value| value.get("bindings_prepared"))
                 .and_then(Value::as_bool),
             Some(false)
         );
         assert_eq!(
             runtime_json
-                .get("native_model")
+                .get("mlx_model")
                 .and_then(|value| value.get("buffers_bound"))
                 .and_then(Value::as_bool),
             Some(false)
@@ -13773,46 +13510,43 @@ mod tests {
     #[test]
     fn serialize_runtime_metadata_keeps_native_model_summary_when_runtime_binding_fails() {
         let model_dir = write_valid_native_model_fixture();
-        let missing_build_dir = unique_test_dir("missing-native-runtime-build");
+        let _missing_build_dir = unique_test_dir("missing-native-runtime-build");
         let runtime = RuntimeConfig {
             deterministic: false,
-            allow_deterministic_native_fallback: false,
             max_batch_tokens: 128,
             block_size_tokens: 16,
             kv_total_blocks: Some(32),
             flags: RuntimeFlags::default(),
-            backend_policy: BackendPolicy::new(ResolutionPolicy::StrictNative),
+            backend_policy: BackendPolicy::new(ResolutionPolicy::MlxOnly),
             resolved_backend: ResolvedBackend::new(
-                SelectedBackend::AxNative,
-                SupportTier::NativePreview,
+                SelectedBackend::Mlx,
+                SupportTier::MlxPreview,
                 None,
             ),
             backend_adapter: None,
-            native_runtime_artifacts_dir: Some(missing_build_dir),
-            native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
-            native_model_artifacts_dir: Some(model_dir.clone()),
-            native_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
+            mlx_model_artifacts_dir: Some(model_dir.clone()),
+            mlx_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
         };
 
         let runtime_json = serialize_runtime_metadata(&runtime, None);
 
         assert_eq!(
             runtime_json
-                .get("native_model")
+                .get("mlx_model")
                 .and_then(|value| value.get("model_family"))
                 .and_then(Value::as_str),
             Some("qwen3_dense")
         );
         assert_eq!(
             runtime_json
-                .get("native_model")
+                .get("mlx_model")
                 .and_then(|value| value.get("bindings_prepared"))
                 .and_then(Value::as_bool),
             Some(false)
         );
         assert_eq!(
             runtime_json
-                .get("native_model")
+                .get("mlx_model")
                 .and_then(|value| value.get("buffers_bound"))
                 .and_then(Value::as_bool),
             Some(false)
@@ -13825,40 +13559,35 @@ mod tests {
     fn serialize_runtime_metadata_omits_config_side_native_model_summary_for_gguf_bridge() {
         let runtime = RuntimeConfig {
             deterministic: false,
-            allow_deterministic_native_fallback: false,
             max_batch_tokens: 128,
             block_size_tokens: 16,
             kv_total_blocks: Some(32),
             flags: RuntimeFlags::default(),
-            backend_policy: BackendPolicy::new(ResolutionPolicy::StrictNative),
+            backend_policy: BackendPolicy::new(ResolutionPolicy::MlxOnly),
             resolved_backend: ResolvedBackend::new(
-                SelectedBackend::AxNative,
-                SupportTier::NativePreview,
+                SelectedBackend::Mlx,
+                SupportTier::MlxPreview,
                 None,
             ),
             backend_adapter: None,
-            native_runtime_artifacts_dir: Some(PathBuf::from("/tmp/config-native-runtime")),
-            native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
-            native_model_artifacts_dir: Some(PathBuf::from(
-                "/tmp/google_gemma-4-26b-it-q4_k_m.gguf",
-            )),
-            native_model_artifacts_source: Some(NativeModelArtifactsSource::GeneratedFromGguf),
+            mlx_model_artifacts_dir: Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf")),
+            mlx_model_artifacts_source: Some(NativeModelArtifactsSource::GeneratedFromGguf),
         };
 
         let runtime_json = serialize_runtime_metadata(&runtime, None);
 
         assert_eq!(
             runtime_json
-                .get("native_runtime")
+                .get("mlx_runtime")
                 .and_then(|value| value.get("runner"))
                 .and_then(Value::as_str),
-            Some("metal_bringup")
+            None
         );
-        assert_eq!(runtime_json.get("native_model"), None);
+        assert_eq!(runtime_json.get("mlx_model"), None);
     }
 
     #[test]
-    fn probe_native_gguf_bridge_with_config_reports_ready_support() {
+    fn probe_mlx_gguf_bridge_with_config_reports_ready_support() {
         let gguf_path = unique_test_dir("gguf-bridge-ready-input").with_extension("gguf");
         fs::write(&gguf_path, b"fake-gguf").expect("gguf input should write");
         let script = fake_gguf_bridge_probe_script(
@@ -13884,9 +13613,9 @@ print(json.dumps({
             "gguf-bridge-ready-script",
         );
 
-        let report = probe_native_gguf_bridge_with_config(
+        let report = probe_mlx_gguf_bridge_with_config(
             &gguf_path,
-            &NativeGgufBridgeProbeConfig {
+            &MlxGgufBridgeProbeConfig {
                 python_bin: PathBuf::from("python3"),
                 script_path: script.clone(),
                 output_dtype: "f16".to_string(),
@@ -13915,7 +13644,7 @@ print(json.dumps({
     }
 
     #[test]
-    fn probe_native_gguf_bridge_with_config_reports_runtime_blocked_support() {
+    fn probe_mlx_gguf_bridge_with_config_reports_runtime_blocked_support() {
         let gguf_path = unique_test_dir("gguf-bridge-runtime-blocked-input").with_extension("gguf");
         fs::write(&gguf_path, b"fake-gguf").expect("gguf input should write");
         let script = fake_gguf_bridge_probe_script(
@@ -13947,9 +13676,9 @@ print(json.dumps({
             "gguf-bridge-runtime-blocked-script",
         );
 
-        let report = probe_native_gguf_bridge_with_config(
+        let report = probe_mlx_gguf_bridge_with_config(
             &gguf_path,
-            &NativeGgufBridgeProbeConfig {
+            &MlxGgufBridgeProbeConfig {
                 python_bin: PathBuf::from("python3"),
                 script_path: script.clone(),
                 output_dtype: "f16".to_string(),
@@ -13986,30 +13715,25 @@ print(json.dumps({
     }
 
     #[test]
-    fn serialize_runtime_metadata_with_native_model_bridge_override_includes_bridge_report() {
+    fn serialize_runtime_metadata_with_mlx_model_artifacts_override_includes_bridge_report() {
         let runtime = RuntimeConfig {
             deterministic: false,
-            allow_deterministic_native_fallback: false,
             max_batch_tokens: 128,
             block_size_tokens: 16,
             kv_total_blocks: Some(32),
             flags: RuntimeFlags::default(),
-            backend_policy: BackendPolicy::new(ResolutionPolicy::StrictNative),
+            backend_policy: BackendPolicy::new(ResolutionPolicy::MlxOnly),
             resolved_backend: ResolvedBackend::new(
-                SelectedBackend::AxNative,
-                SupportTier::NativePreview,
+                SelectedBackend::Mlx,
+                SupportTier::MlxPreview,
                 None,
             ),
             backend_adapter: None,
-            native_runtime_artifacts_dir: Some(PathBuf::from("/tmp/config-native-runtime")),
-            native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
-            native_model_artifacts_dir: Some(PathBuf::from(
-                "/tmp/google_gemma-4-26b-it-q4_k_m.gguf",
-            )),
-            native_model_artifacts_source: Some(NativeModelArtifactsSource::GeneratedFromGguf),
+            mlx_model_artifacts_dir: Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf")),
+            mlx_model_artifacts_source: Some(NativeModelArtifactsSource::GeneratedFromGguf),
         };
 
-        let runtime_json = serialize_runtime_metadata_with_native_model_bridge(
+        let runtime_json = serialize_runtime_metadata_with_mlx_model_artifacts(
             &runtime,
             None,
             Some(json!({
@@ -14021,14 +13745,14 @@ print(json.dumps({
 
         assert_eq!(
             runtime_json
-                .get("native_model_bridge")
+                .get("mlx_model_bridge")
                 .and_then(|value| value.get("status"))
                 .and_then(Value::as_str),
             Some("unsupported")
         );
         assert_eq!(
             runtime_json
-                .get("native_model_bridge")
+                .get("mlx_model_bridge")
                 .and_then(|value| value.get("blockers"))
                 .and_then(Value::as_array)
                 .map(Vec::len),
@@ -14037,125 +13761,35 @@ print(json.dumps({
     }
 
     #[test]
-    fn serialize_runtime_metadata_records_placeholder_opt_in_request() {
-        let runtime = RuntimeConfig {
-            deterministic: true,
-            allow_deterministic_native_fallback: true,
-            max_batch_tokens: 128,
-            block_size_tokens: 16,
-            kv_total_blocks: Some(32),
-            flags: RuntimeFlags::default(),
-            backend_policy: BackendPolicy::new(ResolutionPolicy::StrictNative),
-            resolved_backend: ResolvedBackend::new(
-                SelectedBackend::AxNative,
-                SupportTier::NativePreview,
-                None,
-            ),
-            backend_adapter: None,
-            native_runtime_artifacts_dir: None,
-            native_runtime_artifacts_source: None,
-            native_model_artifacts_dir: None,
-            native_model_artifacts_source: None,
-        };
-
-        let runtime_json = serialize_runtime_metadata(&runtime, None);
-
-        assert_eq!(
-            runtime_json
-                .get("allow_deterministic_native_fallback")
-                .and_then(Value::as_bool),
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn serialize_runtime_metadata_only_reports_native_fallback_adapter_when_active() {
-        let runtime = RuntimeConfig {
-            deterministic: true,
-            allow_deterministic_native_fallback: false,
-            max_batch_tokens: 128,
-            block_size_tokens: 16,
-            kv_total_blocks: Some(32),
-            flags: RuntimeFlags::default(),
-            backend_policy: BackendPolicy::new(ResolutionPolicy::PreferNative),
-            resolved_backend: ResolvedBackend::new(
-                SelectedBackend::AxNative,
-                SupportTier::NativePreview,
-                None,
-            ),
-            backend_adapter: Some(BackendAdapterManifest::LlamaCppServerCompletion {
-                server_url: "http://127.0.0.1:8081".to_string(),
-            }),
-            native_runtime_artifacts_dir: Some(PathBuf::from("/tmp/native-runtime")),
-            native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
-            native_model_artifacts_dir: None,
-            native_model_artifacts_source: None,
-        };
-
-        let native_runtime_json = serialize_runtime_metadata(&runtime, None);
-        assert_eq!(native_runtime_json.get("backend_adapter"), None);
-
-        let actual_runtime = RuntimeReport::from_resolution(
-            &BackendPolicy::new(ResolutionPolicy::PreferNative),
-            &ResolvedBackend::compatibility(
-                SelectedBackend::LlamaCpp,
-                "native startup failed; fell back to llama.cpp bypass",
-            ),
-        );
-        let fallback_runtime_json = serialize_runtime_metadata(&runtime, Some(&actual_runtime));
-
-        assert_eq!(
-            fallback_runtime_json
-                .get("selected_backend")
-                .and_then(Value::as_str),
-            Some("llama_cpp")
-        );
-        assert_eq!(
-            fallback_runtime_json
-                .get("backend_adapter")
-                .and_then(|adapter| adapter.get("kind"))
-                .and_then(Value::as_str),
-            Some("llama_cpp_server_completion")
-        );
-        assert!(fallback_runtime_json
-            .get("fallback_reason")
-            .and_then(Value::as_str)
-            .is_some_and(|reason| reason.contains("fell back to llama.cpp bypass")));
-    }
-
-    #[test]
     fn serialize_runtime_metadata_prefers_actual_runtime_report_over_config_side_metadata() {
         let model_dir = write_valid_native_model_fixture();
         let runtime = RuntimeConfig {
             deterministic: false,
-            allow_deterministic_native_fallback: false,
             max_batch_tokens: 128,
             block_size_tokens: 16,
             kv_total_blocks: Some(32),
             flags: RuntimeFlags::default(),
-            backend_policy: BackendPolicy::new(ResolutionPolicy::StrictNative),
+            backend_policy: BackendPolicy::new(ResolutionPolicy::MlxOnly),
             resolved_backend: ResolvedBackend::new(
-                SelectedBackend::AxNative,
-                SupportTier::NativePreview,
+                SelectedBackend::Mlx,
+                SupportTier::MlxPreview,
                 None,
             ),
             backend_adapter: None,
-            native_runtime_artifacts_dir: Some(PathBuf::from("/tmp/config-native-runtime")),
-            native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
-            native_model_artifacts_dir: Some(model_dir.clone()),
-            native_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
+            mlx_model_artifacts_dir: Some(model_dir.clone()),
+            mlx_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
         };
         let actual_runtime = RuntimeReport {
-            selected_backend: SelectedBackend::AxNative,
-            support_tier: SupportTier::NativeCertified,
-            resolution_policy: ResolutionPolicy::StrictNative,
-            capabilities: ResolvedBackend::native_certified().capabilities,
+            selected_backend: SelectedBackend::Mlx,
+            support_tier: SupportTier::MlxCertified,
+            resolution_policy: ResolutionPolicy::MlxOnly,
+            capabilities: ResolvedBackend::mlx_certified().capabilities,
             fallback_reason: None,
             host: HostReport {
                 os: "macos".to_string(),
                 arch: "aarch64".to_string(),
                 detected_soc: Some("Apple M4 Max".to_string()),
-                supported_native_runtime: true,
+                supported_mlx_runtime: true,
                 unsupported_host_override_active: false,
             },
             metal_toolchain: MetalToolchainReport {
@@ -14173,8 +13807,10 @@ print(json.dumps({
                     version: Some("metal-ar actual".to_string()),
                 },
             },
-            native_runtime: Some(NativeRuntimeReport::deterministic()),
-            native_model: Some(NativeModelReport {
+            mlx_runtime: Some(NativeRuntimeReport::metal_bringup(
+                NativeRuntimeArtifactsSource::ExplicitConfig,
+            )),
+            mlx_model: Some(NativeModelReport {
                 artifacts_source: NativeModelArtifactsSource::ExplicitEnv,
                 model_family: "actual_bound_model".to_string(),
                 tensor_format: ax_engine_core::NativeTensorFormat::Safetensors,
@@ -14199,7 +13835,7 @@ print(json.dumps({
 
         assert_eq!(
             runtime_json.get("support_tier").and_then(Value::as_str),
-            Some("native_certified")
+            Some("mlx_certified")
         );
         assert_eq!(
             runtime_json
@@ -14218,41 +13854,42 @@ print(json.dumps({
         );
         assert_eq!(
             runtime_json
-                .get("native_runtime")
+                .get("mlx_runtime")
                 .and_then(|value| value.get("runner"))
                 .and_then(Value::as_str),
-            Some("deterministic")
+            Some("metal_bringup")
         );
         assert_eq!(
             runtime_json
-                .get("native_runtime")
-                .and_then(|value| value.get("artifacts_source")),
-            None
+                .get("mlx_runtime")
+                .and_then(|value| value.get("artifacts_source"))
+                .and_then(Value::as_str),
+            Some("explicit_config")
         );
         assert_eq!(
             runtime_json
-                .get("native_model")
+                .get("mlx_model")
                 .and_then(|value| value.get("artifacts_source"))
                 .and_then(Value::as_str),
             Some("explicit_env")
         );
         assert_eq!(
             runtime_json
-                .get("native_model")
+                .get("mlx_model")
                 .and_then(|value| value.get("model_family"))
                 .and_then(Value::as_str),
             Some("actual_bound_model")
         );
         assert_eq!(
             runtime_json
-                .get("native_model")
+                .get("mlx_model")
                 .and_then(|value| value.get("bindings_prepared"))
                 .and_then(Value::as_bool),
             Some(true)
         );
         assert_eq!(
             runtime_json
-                .get("native_model")
+                .get("mlx_model")
                 .and_then(|value| value.get("buffers_bound"))
                 .and_then(Value::as_bool),
             Some(true)
@@ -14261,11 +13898,11 @@ print(json.dumps({
         let _ = fs::remove_dir_all(model_dir);
     }
 
-    fn compatibility_runtime_fixture(server_url: &str) -> Value {
+    fn llama_runtime_fixture(server_url: &str) -> Value {
         json!({
             "selected_backend": "llama_cpp",
-            "support_tier": "compatibility",
-            "resolution_policy": "allow_compat",
+            "support_tier": "llama_cpp",
+            "resolution_policy": "allow_llama_cpp",
             "backend_adapter": {
                 "kind": "llama_cpp_server_completion",
                 "server_url": server_url
@@ -14280,7 +13917,7 @@ print(json.dumps({
             "os": "macos",
             "arch": "aarch64",
             "detected_soc": "Apple M4 Max",
-            "supported_native_runtime": true,
+            "supported_mlx_runtime": true,
             "unsupported_host_override_active": false
         })
     }
@@ -14304,7 +13941,7 @@ print(json.dumps({
     }
 
     fn doctor_host_fixture(
-        supported_native_runtime: bool,
+        supported_mlx_runtime: bool,
         unsupported_host_override_active: bool,
         detected_soc: Option<&str>,
     ) -> HostReport {
@@ -14312,7 +13949,7 @@ print(json.dumps({
             os: "macos".to_string(),
             arch: "aarch64".to_string(),
             detected_soc: detected_soc.map(str::to_string),
-            supported_native_runtime,
+            supported_mlx_runtime,
             unsupported_host_override_active,
         }
     }
@@ -14351,12 +13988,12 @@ print(json.dumps({
         let report = build_doctor_report(host, toolchain);
 
         assert_eq!(report.status, DoctorStatus::Ready);
-        assert!(report.native_runtime_ready);
+        assert!(report.mlx_runtime_ready);
         assert!(report.bringup_allowed);
         assert!(report.issues.is_empty());
         assert_eq!(
             report.notes,
-            vec!["compatibility backends do not widen supported host scope".to_string()]
+            vec!["llama.cpp backends do not widen supported host scope".to_string()]
         );
     }
 
@@ -14364,7 +14001,7 @@ print(json.dumps({
     fn doctor_report_marks_unsupported_gguf_bridge_not_ready() {
         let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
         let toolchain = doctor_metal_toolchain_fixture(true, true, true);
-        let report = build_doctor_report_with_native_model_bridge(
+        let report = build_doctor_report_with_mlx_model_artifacts(
             host,
             toolchain,
             Some(json!({
@@ -14375,21 +14012,25 @@ print(json.dumps({
         );
 
         assert_eq!(report.status, DoctorStatus::NotReady);
-        assert!(report
-            .issues
-            .iter()
-            .any(|issue| issue.contains("native GGUF bridge is not ready")));
-        assert!(report
-            .notes
-            .iter()
-            .any(|note| note.contains("native GGUF bridge probe status=unsupported")));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.contains("MLX GGUF bridge is not ready"))
+        );
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("MLX GGUF bridge probe status=unsupported"))
+        );
     }
 
     #[test]
     fn doctor_report_marks_runtime_blocked_gguf_bridge_not_ready() {
         let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
         let toolchain = doctor_metal_toolchain_fixture(true, true, true);
-        let report = build_doctor_report_with_native_model_bridge(
+        let report = build_doctor_report_with_mlx_model_artifacts(
             host,
             toolchain,
             Some(json!({
@@ -14402,18 +14043,24 @@ print(json.dumps({
         );
 
         assert_eq!(report.status, DoctorStatus::NotReady);
-        assert!(report
-            .issues
-            .iter()
-            .any(|issue| issue.contains("status=runtime_blocked")));
-        assert!(report
-            .issues
-            .iter()
-            .any(|issue| issue.contains("moe_execution_not_implemented")));
-        assert!(report
-            .notes
-            .iter()
-            .any(|note| note.contains("native GGUF bridge probe status=runtime_blocked")));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.contains("status=runtime_blocked"))
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.contains("moe_execution_not_implemented"))
+        );
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("MLX GGUF bridge probe status=runtime_blocked"))
+        );
     }
 
     #[test]
@@ -14424,20 +14071,26 @@ print(json.dumps({
         let report = build_doctor_report(host, toolchain);
 
         assert_eq!(report.status, DoctorStatus::BringupOnly);
-        assert!(!report.native_runtime_ready);
+        assert!(!report.mlx_runtime_ready);
         assert!(report.bringup_allowed);
-        assert!(report
-            .issues
-            .iter()
-            .any(|issue| issue.contains("Apple M3 Max")));
-        assert!(report
-            .issues
-            .iter()
-            .any(|issue| issue.contains("AX_ALLOW_UNSUPPORTED_HOST")));
-        assert!(report
-            .notes
-            .iter()
-            .any(|note| note.contains("development or CI bring-up")));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.contains("Apple M3 Max"))
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.contains("AX_ALLOW_UNSUPPORTED_HOST"))
+        );
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("development or CI bring-up"))
+        );
     }
 
     #[test]
@@ -14448,16 +14101,20 @@ print(json.dumps({
         let report = build_doctor_report(host, toolchain);
 
         assert_eq!(report.status, DoctorStatus::NotReady);
-        assert!(!report.native_runtime_ready);
+        assert!(!report.mlx_runtime_ready);
         assert!(!report.bringup_allowed);
-        assert!(report
-            .issues
-            .iter()
-            .any(|issue| issue.contains("xcrun metallib")));
-        assert!(report
-            .issues
-            .iter()
-            .any(|issue| issue.contains("xcrun metal-ar")));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.contains("xcrun metallib"))
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.contains("xcrun metal-ar"))
+        );
     }
 
     #[test]
@@ -14473,14 +14130,14 @@ print(json.dumps({
         assert!(text.contains("host.detected_soc=Apple M3 Max"));
         assert!(text.contains("issues:"));
         assert!(text.contains("notes:"));
-        assert!(text.contains("compatibility backends do not widen supported host scope"));
+        assert!(text.contains("llama.cpp backends do not widen supported host scope"));
     }
 
     #[test]
-    fn render_doctor_report_includes_native_model_bridge_section_when_present() {
+    fn render_doctor_report_includes_mlx_model_bridge_section_when_present() {
         let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
         let toolchain = doctor_metal_toolchain_fixture(true, true, true);
-        let report = build_doctor_report_with_native_model_bridge(
+        let report = build_doctor_report_with_mlx_model_artifacts(
             host,
             toolchain,
             Some(json!({
@@ -14492,24 +14149,24 @@ print(json.dumps({
 
         let text = render_doctor_report(&report);
 
-        assert!(text.contains("native_model_bridge.status=ready"));
+        assert!(text.contains("mlx_model_bridge.status=ready"));
         assert!(
-            text.contains("native_model_bridge.source_path=/tmp/google_gemma-4-31b-it-q4_k_m.gguf")
+            text.contains("mlx_model_bridge.source_path=/tmp/google_gemma-4-31b-it-q4_k_m.gguf")
         );
-        assert!(text.contains("native_model_bridge.blockers=[]"));
+        assert!(text.contains("mlx_model_bridge.blockers=[]"));
     }
 
     #[test]
     fn parse_doctor_args_accepts_json_and_rejects_unknown_flags() {
         let args = vec![
             "--json".to_string(),
-            "--native-model-artifacts-dir".to_string(),
+            "--mlx-model-artifacts-dir".to_string(),
             "/tmp/google_gemma-4-26b-it-q4_k_m.gguf".to_string(),
         ];
         let parsed = parse_doctor_args(&args).expect("doctor args should parse");
         assert!(parsed.json);
         assert_eq!(
-            parsed.native_model_artifacts_dir,
+            parsed.mlx_model_artifacts_dir,
             Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf"))
         );
 
@@ -14519,7 +14176,7 @@ print(json.dumps({
             panic!("doctor args should surface a usage error");
         };
         assert!(message.contains("unknown flag for doctor"));
-        assert!(message.contains("ax-bench doctor [--json] [--native-model-artifacts-dir <path>]"));
+        assert!(message.contains("ax-bench doctor [--json] [--mlx-model-artifacts-dir <path>]"));
     }
 
     #[test]
@@ -14635,10 +14292,12 @@ print(json.dumps({
                 .all(|candidate| candidate.max_batch_tokens == 64
                     || candidate.max_batch_tokens == 256)
         );
-        assert!(candidates
-            .iter()
-            .all(|candidate| candidate.kv_total_blocks.is_none()
-                || candidate.kv_total_blocks == Some(48)));
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.kv_total_blocks.is_none()
+                    || candidate.kv_total_blocks == Some(48))
+        );
     }
 
     #[test]
@@ -14806,7 +14465,7 @@ print(json.dumps({
     fn autotune_probe_skip_reason_flags_far_worse_cpu_fallback_probe() {
         let incumbent_metrics = AutotuneTrialMetrics {
             decode_tok_s: 100.0,
-            native_hot_path_cpu_fallback_free: true,
+            mlx_metal_hot_path_cpu_fallback_free: true,
             real_model_forward: true,
             ..AutotuneTrialMetrics::default()
         };
@@ -14848,7 +14507,7 @@ print(json.dumps({
             decode_tok_s: 40.0,
             prefix_cpu_reference_dispatch_count: 1,
             direct_decode_cpu_projection_row_count: 8,
-            native_hot_path_cpu_fallback_free: false,
+            mlx_metal_hot_path_cpu_fallback_free: false,
             real_model_forward: true,
             ..AutotuneTrialMetrics::default()
         };
@@ -14894,7 +14553,7 @@ print(json.dumps({
                 error: None,
                 metrics: Some(AutotuneTrialMetrics {
                     decode_tok_s: 90.0,
-                    native_hot_path_cpu_fallback_free: true,
+                    mlx_metal_hot_path_cpu_fallback_free: true,
                     ttft_ms: Some(12),
                     ..AutotuneTrialMetrics::default()
                 }),
@@ -14923,7 +14582,7 @@ print(json.dumps({
                 error: None,
                 metrics: Some(AutotuneTrialMetrics {
                     decode_tok_s: 110.0,
-                    native_hot_path_cpu_fallback_free: true,
+                    mlx_metal_hot_path_cpu_fallback_free: true,
                     ttft_ms: Some(10),
                     ..AutotuneTrialMetrics::default()
                 }),
@@ -14950,15 +14609,13 @@ print(json.dumps({
     }
 
     #[test]
-    fn parse_inference_args_accepts_hyphenated_backend_labels() {
+    fn parse_inference_args_accepts_llama_cpp_alias() {
         let args = vec![
             "--prompt".to_string(),
             "hello cli".to_string(),
             "--support-tier".to_string(),
-            "compatibility".to_string(),
-            "--compat-backend".to_string(),
-            "mistral-rs".to_string(),
-            "--compat-server-url".to_string(),
+            "llama_cpp".to_string(),
+            "--llama-server-url".to_string(),
             "http://127.0.0.1:8081".to_string(),
             "--json".to_string(),
         ];
@@ -14966,34 +14623,27 @@ print(json.dumps({
         let parsed = parse_inference_args(&args, "generate").expect("inference args should parse");
 
         assert_eq!(parsed.input_text.as_deref(), Some("hello cli"));
-        assert_eq!(parsed.support_tier, SupportTier::Compatibility);
-        assert_eq!(parsed.compat_backend, CompatibilityBackendKind::MistralRs);
+        assert_eq!(parsed.support_tier, SupportTier::LlamaCpp);
         assert_eq!(
-            parsed.compat_server_url.as_deref(),
+            parsed.llama_server_url.as_deref(),
             Some("http://127.0.0.1:8081")
         );
         assert!(parsed.json);
     }
 
     #[test]
-    fn parse_inference_args_accepts_explicit_native_artifact_dirs() {
+    fn parse_inference_args_accepts_explicit_mlx_model_artifacts_dir() {
         let args = vec![
             "--tokens".to_string(),
             "1,2,3".to_string(),
-            "--native-runtime-artifacts-dir".to_string(),
-            "/tmp/ax-metal".to_string(),
-            "--native-model-artifacts-dir".to_string(),
+            "--mlx-model-artifacts-dir".to_string(),
             "/tmp/ax-model".to_string(),
         ];
 
         let parsed = parse_inference_args(&args, "generate").expect("inference args should parse");
 
         assert_eq!(
-            parsed.native_runtime_artifacts_dir,
-            Some(PathBuf::from("/tmp/ax-metal"))
-        );
-        assert_eq!(
-            parsed.native_model_artifacts_dir,
+            parsed.mlx_model_artifacts_dir,
             Some(PathBuf::from("/tmp/ax-model"))
         );
     }
@@ -15003,7 +14653,7 @@ print(json.dumps({
             "schema_version": "ax.bench.metrics.v1",
             "run_id": run_id,
             "status": "pass",
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "metrics": {
                 "ttft_ms": ttft_ms,
                 "prefill_tok_s": 2048.0,
@@ -15066,9 +14716,9 @@ print(json.dumps({
                 "schema_version": "ax.bench.routes.v1",
                 "run_id": run_id,
                 "runtime": {
-                    "selected_backend": "ax_native",
-                    "support_tier": "native_preview",
-                    "resolution_policy": "strict_native"
+                    "selected_backend": "mlx",
+                    "support_tier": "mlx_preview",
+                    "resolution_policy": "mlx_only"
                 },
                 "route": {
                     "execution_plan": "mixed_step_plans",
@@ -15090,9 +14740,9 @@ print(json.dumps({
                 "run_id": run_id,
                 "mode": "engine_bringup_runtime",
                 "runtime": {
-                    "selected_backend": "ax_native",
-                    "support_tier": "native_preview",
-                    "resolution_policy": "strict_native"
+                    "selected_backend": "mlx",
+                    "support_tier": "mlx_preview",
+                    "resolution_policy": "mlx_only"
                 },
                 "steps": []
             }),
@@ -15100,7 +14750,7 @@ print(json.dumps({
         .expect("fixture trace should write");
         fs::write(
             run_dir.join("summary.md"),
-            format!("# Benchmark Run\n\n- run_id: `{run_id}`\n- selected_backend: `ax_native`\n"),
+            format!("# Benchmark Run\n\n- run_id: `{run_id}`\n- selected_backend: `mlx`\n"),
         )
         .expect("fixture summary should write");
         run_dir
@@ -15112,7 +14762,7 @@ print(json.dumps({
             &manifest_path,
             &json!({
                 "schema_version": "ax.bench.matrix.v1",
-                "id": "test_native_matrix",
+                "id": "test_mlx_mlx_matrix",
                 "class": "scenario_matrix",
                 "members": members
             }),
@@ -15134,7 +14784,7 @@ print(json.dumps({
             &json!({
                 "schema_version": "ax.bench.matrix_result.v1",
                 "run_id": run_id,
-                "id": "test_native_matrix",
+                "id": "test_mlx_mlx_matrix",
                 "class": "scenario_matrix",
                 "status": "ok",
                 "matrix_manifest_path": "/tmp/test-matrix.json",
@@ -15168,23 +14818,23 @@ print(json.dumps({
             .unwrap_or(0)
     }
 
-    fn compatibility_scenario_manifest(server_url: &str) -> BenchmarkManifest {
+    fn llama_cpp_scenario_manifest(server_url: &str) -> BenchmarkManifest {
         serde_json::from_value(json!({
             "schema_version": "ax.bench.manifest.v1",
-            "id": "compatibility_chat_qwen_short",
+            "id": "llama_cpp_chat_qwen_short",
             "class": "scenario",
             "scenario": "chat",
             "model": {
                 "family": "qwen3_dense",
-                "revision": "phase1-compat",
+                "revision": "phase1-llama-cpp",
                 "quant": "q4_k_m",
                 "tokenizer_revision": "qwen-tokenizer-v1",
                 "chat_template_revision": "chatml-v1"
             },
             "runtime": {
                 "selected_backend": "llama_cpp",
-                "support_tier": "compatibility",
-                "resolution_policy": "allow_compat",
+                "support_tier": "llama_cpp",
+                "resolution_policy": "allow_llama_cpp",
                 "fallback_reason": "benchmark requested delegated runtime",
                 "backend_adapter": {
                     "kind": "llama_cpp_server_completion",
@@ -15212,12 +14862,12 @@ print(json.dumps({
                 "require_prefix_reuse": false
             }
         }))
-        .expect("compatibility manifest should parse")
+        .expect("llama.cpp manifest should parse")
     }
 
-    fn compatibility_shared_prefix_scenario_manifest(server_url: &str) -> BenchmarkManifest {
-        let mut manifest = compatibility_scenario_manifest(server_url);
-        manifest.id = "compatibility_shared_prefix_qwen_short".to_string();
+    fn llama_cpp_shared_prefix_scenario_manifest(server_url: &str) -> BenchmarkManifest {
+        let mut manifest = llama_cpp_scenario_manifest(server_url);
+        manifest.id = "llama_cpp_shared_prefix_qwen_short".to_string();
         manifest.scenario = "shared_prefix".to_string();
         manifest
             .shape
@@ -15233,119 +14883,15 @@ print(json.dumps({
         manifest
     }
 
-    fn compatibility_vllm_scenario_manifest(server_url: &str) -> BenchmarkManifest {
-        let mut manifest = compatibility_scenario_manifest(server_url);
-        manifest.id = "compatibility_chat_qwen_short_vllm".to_string();
-        manifest.runtime.selected_backend = SelectedBackend::Vllm;
-        manifest.runtime.backend_adapter = Some(BackendAdapterManifest::VllmServerCompletions {
+    fn llama_cpp_server_scenario_manifest(server_url: &str) -> BenchmarkManifest {
+        let mut manifest = llama_cpp_scenario_manifest(server_url);
+        manifest.id = "llama_cpp_chat_qwen_short".to_string();
+        manifest.runtime.selected_backend = SelectedBackend::LlamaCpp;
+        manifest.runtime.backend_adapter = Some(BackendAdapterManifest::LlamaCppServerCompletion {
             server_url: server_url.to_string(),
         });
         manifest.checks.expect_deterministic = false;
         manifest
-    }
-
-    #[test]
-    fn handle_autotune_writes_summary_and_result_json() {
-        let root = unique_test_dir("autotune-cli");
-        let output_root = root.join("out");
-        fs::create_dir_all(&output_root).expect("autotune output root should create");
-        let manifest_path = write_test_manifest_with_native_placeholder_opt_in(
-            &root,
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
-        );
-        let args = vec![
-            "--manifest".to_string(),
-            manifest_path.display().to_string(),
-            "--output-root".to_string(),
-            output_root.display().to_string(),
-            "--iterations".to_string(),
-            "1".to_string(),
-            "--max-batch-token-options".to_string(),
-            "64,128".to_string(),
-            "--kv-total-block-options".to_string(),
-            "none,32".to_string(),
-            "--prefix-cache-options".to_string(),
-            "false,true".to_string(),
-        ];
-
-        handle_autotune(&args).expect("autotune command should succeed");
-
-        let result_dir = find_fresh_autotune_result_dir(&output_root, &[]);
-        let autotune_json =
-            load_json_value(&result_dir.join("autotune.json")).expect("autotune JSON should load");
-        let summary = fs::read_to_string(result_dir.join("summary.md"))
-            .expect("autotune summary should load");
-        let history_index = load_json_value(&autotune_history_index_path(&output_root))
-            .expect("autotune history index should load");
-        let result_dir_string = result_dir.display().to_string();
-
-        assert_eq!(
-            autotune_json
-                .get("iterations_completed")
-                .and_then(Value::as_u64),
-            Some(1)
-        );
-        assert_eq!(
-            autotune_json
-                .get("search_space")
-                .and_then(|value| value.get("candidate_count"))
-                .and_then(Value::as_u64),
-            Some(8)
-        );
-        assert_eq!(
-            autotune_json
-                .get("warm_start_history")
-                .and_then(|value| value.get("loaded_trial_count"))
-                .and_then(Value::as_u64),
-            Some(0)
-        );
-        assert_eq!(
-            autotune_json
-                .get("trials")
-                .and_then(Value::as_array)
-                .and_then(|trials| trials.first())
-                .and_then(|trial| trial.get("selection"))
-                .and_then(|selection| selection.get("strategy"))
-                .and_then(Value::as_str),
-            Some("base_config_seed")
-        );
-        assert!(summary.contains("# Benchmark Autotune"));
-        assert!(summary.contains("best_trial"));
-        assert!(summary.contains("search_space.max_batch_tokens"));
-        assert!(summary.contains("base_config_seed"));
-        assert!(summary.contains("warm_start_history.loaded_trials"));
-        assert_eq!(
-            history_index.get("schema_version").and_then(Value::as_str),
-            Some(AUTOTUNE_HISTORY_INDEX_SCHEMA_VERSION)
-        );
-        assert_eq!(
-            history_index.get("entry_count").and_then(Value::as_u64),
-            Some(1)
-        );
-        assert_eq!(
-            history_index.get("summary_count").and_then(Value::as_u64),
-            Some(1)
-        );
-        assert_eq!(
-            history_index
-                .get("entries")
-                .and_then(Value::as_array)
-                .and_then(|entries| entries.first())
-                .and_then(|entry| entry.get("result_dir"))
-                .and_then(Value::as_str),
-            Some(result_dir_string.as_str())
-        );
-        assert_eq!(
-            history_index
-                .get("summaries")
-                .and_then(Value::as_array)
-                .and_then(|summaries| summaries.first())
-                .and_then(|summary| summary.get("source_dirs"))
-                .and_then(Value::as_array)
-                .and_then(|source_dirs| source_dirs.first())
-                .and_then(Value::as_str),
-            Some(result_dir_string.as_str())
-        );
     }
 
     fn write_named_autotune_history_fixture(
@@ -15408,7 +14954,7 @@ print(json.dumps({
                         "prefix_native_dispatch_count": 0,
                         "prefix_cpu_reference_dispatch_count": 0,
                         "direct_decode_batched_group_fallback_count": 0,
-                        "native_hot_path_cpu_fallback_free": true,
+                        "mlx_metal_hot_path_cpu_fallback_free": true,
                         "real_model_forward": true,
                         "model_bound_ffn_decode": true
                     }
@@ -15475,7 +15021,7 @@ print(json.dumps({
                 "entries": [{
                     "result_dir": output_root.join("stale-entry").display().to_string(),
                     "manifest_id": "wrong-manifest",
-                    "selected_backend": "ax_native",
+                    "selected_backend": "mlx",
                     "trials": []
                 }],
                 "summaries": [{
@@ -15511,7 +15057,7 @@ print(json.dumps({
                             "prefix_native_dispatch_count": 0,
                             "prefix_cpu_reference_dispatch_count": 0,
                             "direct_decode_batched_group_fallback_count": 0,
-                            "native_hot_path_cpu_fallback_free": true,
+                            "mlx_metal_hot_path_cpu_fallback_free": true,
                             "real_model_forward": true,
                             "model_bound_ffn_decode": true
                         }
@@ -15589,7 +15135,7 @@ print(json.dumps({
                             "prefix_native_dispatch_count": 0,
                             "prefix_cpu_reference_dispatch_count": 0,
                             "direct_decode_batched_group_fallback_count": 0,
-                            "native_hot_path_cpu_fallback_free": true,
+                            "mlx_metal_hot_path_cpu_fallback_free": true,
                             "real_model_forward": true,
                             "model_bound_ffn_decode": true
                         }
@@ -15710,146 +15256,23 @@ print(json.dumps({
         assert!(source_dirs.contains(&new_dir_string.as_str()));
     }
 
-    #[test]
-    fn handle_autotune_loads_warm_start_history_and_skips_seed_trial() {
-        let root = unique_test_dir("autotune-warm-start");
-        let output_root = root.join("out");
-        fs::create_dir_all(&output_root).expect("autotune output root should create");
-        let manifest_path = write_test_manifest_with_native_placeholder_opt_in(
-            &root,
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
-        );
-        let manifest = load_manifest(&manifest_path).expect("manifest should load");
-        write_autotune_history_fixture(
-            &output_root,
-            &manifest,
-            &AutotuneCandidateConfig {
-                max_batch_tokens: manifest.runtime.max_batch_tokens,
-                kv_total_blocks: manifest.runtime.kv_total_blocks,
-                prefix_cache: manifest.runtime.flags.prefix_cache,
-            },
-            42.0,
-        );
-
-        let args = vec![
-            "--manifest".to_string(),
-            manifest_path.display().to_string(),
-            "--output-root".to_string(),
-            output_root.display().to_string(),
-            "--iterations".to_string(),
-            "1".to_string(),
-        ];
-
-        handle_autotune(&args).expect("autotune command should succeed with warm-start history");
-
-        let historical_dir = output_root.join("historical-autotune");
-        let result_dir = find_fresh_autotune_result_dir(&output_root, &[historical_dir.as_path()]);
-        let autotune_json =
-            load_json_value(&result_dir.join("autotune.json")).expect("autotune JSON should load");
-
-        assert_eq!(
-            autotune_json
-                .get("warm_start_history")
-                .and_then(|value| value.get("loaded_trial_count"))
-                .and_then(Value::as_u64),
-            Some(1)
-        );
-        assert_eq!(
-            autotune_json
-                .get("trials")
-                .and_then(Value::as_array)
-                .and_then(|trials| trials.first())
-                .and_then(|trial| trial.get("selection"))
-                .and_then(|selection| selection.get("strategy"))
-                .and_then(Value::as_str),
-            Some("coverage_explore")
-        );
-    }
-
-    #[test]
-    fn handle_autotune_succeeds_with_history_only_when_search_space_is_already_covered() {
-        let root = unique_test_dir("autotune-history-only");
-        let output_root = root.join("out");
-        fs::create_dir_all(&output_root).expect("autotune output root should create");
-        let manifest_path = write_test_manifest_with_native_placeholder_opt_in(
-            &root,
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
-        );
-        let manifest = load_manifest(&manifest_path).expect("manifest should load");
-        write_autotune_history_fixture(
-            &output_root,
-            &manifest,
-            &AutotuneCandidateConfig {
-                max_batch_tokens: manifest.runtime.max_batch_tokens,
-                kv_total_blocks: manifest.runtime.kv_total_blocks,
-                prefix_cache: manifest.runtime.flags.prefix_cache,
-            },
-            99.0,
-        );
-
-        let kv_total_blocks = manifest
-            .runtime
-            .kv_total_blocks
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "none".to_string());
-        let args = vec![
-            "--manifest".to_string(),
-            manifest_path.display().to_string(),
-            "--output-root".to_string(),
-            output_root.display().to_string(),
-            "--iterations".to_string(),
-            "1".to_string(),
-            "--max-batch-token-options".to_string(),
-            manifest.runtime.max_batch_tokens.to_string(),
-            "--kv-total-block-options".to_string(),
-            kv_total_blocks,
-            "--prefix-cache-options".to_string(),
-            manifest.runtime.flags.prefix_cache.to_string(),
-        ];
-
-        handle_autotune(&args).expect("autotune should succeed with history-only coverage");
-
-        let historical_dir = output_root.join("historical-autotune");
-        let result_dir = find_fresh_autotune_result_dir(&output_root, &[historical_dir.as_path()]);
-        let autotune_json =
-            load_json_value(&result_dir.join("autotune.json")).expect("autotune JSON should load");
-
-        assert_eq!(
-            autotune_json
-                .get("iterations_completed")
-                .and_then(Value::as_u64),
-            Some(0)
-        );
-        assert_eq!(
-            autotune_json.get("history_only").and_then(Value::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            autotune_json
-                .get("best_trial")
-                .and_then(|value| value.get("score"))
-                .and_then(Value::as_f64),
-            Some(99.0)
-        );
-    }
-
-    fn compatibility_replay_manifest(server_url: &str) -> BenchmarkManifest {
+    fn llama_cpp_replay_manifest(server_url: &str) -> BenchmarkManifest {
         serde_json::from_value(json!({
             "schema_version": "ax.bench.manifest.v1",
-            "id": "compatibility_replay_dual_cancel",
+            "id": "llama_cpp_replay_dual_cancel",
             "class": "replay",
             "scenario": "replay",
             "model": {
                 "family": "qwen3_dense",
-                "revision": "phase1-compat",
+                "revision": "phase1-llama-cpp",
                 "quant": "q4_k_m",
                 "tokenizer_revision": "qwen-tokenizer-v1",
                 "chat_template_revision": "chatml-v1"
             },
             "runtime": {
                 "selected_backend": "llama_cpp",
-                "support_tier": "compatibility",
-                "resolution_policy": "allow_compat",
+                "support_tier": "llama_cpp",
+                "resolution_policy": "allow_llama_cpp",
                 "fallback_reason": "benchmark requested delegated runtime",
                 "backend_adapter": {
                     "kind": "llama_cpp_server_completion",
@@ -15893,36 +15316,36 @@ print(json.dumps({
                 "require_prefix_reuse": false
             }
         }))
-        .expect("compatibility replay manifest should parse")
+        .expect("llama.cpp replay manifest should parse")
     }
 
-    fn compatibility_vllm_replay_manifest(server_url: &str) -> BenchmarkManifest {
-        let mut manifest = compatibility_replay_manifest(server_url);
-        manifest.id = "compatibility_replay_dual_vllm".to_string();
-        manifest.runtime.selected_backend = SelectedBackend::Vllm;
-        manifest.runtime.backend_adapter = Some(BackendAdapterManifest::VllmServerCompletions {
+    fn llama_cpp_server_replay_manifest(server_url: &str) -> BenchmarkManifest {
+        let mut manifest = llama_cpp_replay_manifest(server_url);
+        manifest.id = "llama_cpp_replay_dual_llama_cpp".to_string();
+        manifest.runtime.selected_backend = SelectedBackend::LlamaCpp;
+        manifest.runtime.backend_adapter = Some(BackendAdapterManifest::LlamaCppServerCompletion {
             server_url: server_url.to_string(),
         });
         manifest
     }
 
-    fn compatibility_cli_manifest() -> BenchmarkManifest {
+    fn llama_cpp_cli_manifest() -> BenchmarkManifest {
         serde_json::from_value(json!({
             "schema_version": "ax.bench.manifest.v1",
-            "id": "compatibility_cli_forbidden",
+            "id": "llama_cpp_cli_forbidden",
             "class": "scenario",
             "scenario": "chat",
             "model": {
                 "family": "qwen3_dense",
-                "revision": "phase1-compat",
+                "revision": "phase1-llama-cpp",
                 "quant": "q4_k_m",
                 "tokenizer_revision": "qwen-tokenizer-v1",
                 "chat_template_revision": "chatml-v1"
             },
             "runtime": {
                 "selected_backend": "llama_cpp",
-                "support_tier": "compatibility",
-                "resolution_policy": "allow_compat",
+                "support_tier": "llama_cpp",
+                "resolution_policy": "allow_llama_cpp",
                 "backend_adapter": {
                     "kind": "llama_cpp_cli",
                     "cli_path": "llama-cli",
@@ -15950,10 +15373,10 @@ print(json.dumps({
                 "require_prefix_reuse": false
             }
         }))
-        .expect("compatibility CLI manifest should parse")
+        .expect("llama.cpp CLI manifest should parse")
     }
 
-    fn spawn_scripted_compat_completion_stream_server(
+    fn spawn_scripted_llama_cpp_completion_stream_server(
         expected_requests: usize,
         response_for_request: impl Fn(usize, &Value) -> Vec<Value> + Send + 'static,
     ) -> (String, thread::JoinHandle<()>) {
@@ -16037,12 +15460,12 @@ print(json.dumps({
         (format!("http://{address}"), handle)
     }
 
-    fn spawn_compat_completion_stream_server(
+    fn spawn_llama_cpp_completion_stream_server(
         expected_requests: usize,
         chunks: Vec<Value>,
         assert_request: impl Fn(&Value) + Send + 'static,
     ) -> (String, thread::JoinHandle<()>) {
-        spawn_scripted_compat_completion_stream_server(expected_requests, move |_, payload| {
+        spawn_scripted_llama_cpp_completion_stream_server(expected_requests, move |_, payload| {
             assert_request(payload);
             chunks.clone()
         })
@@ -16170,18 +15593,18 @@ print(json.dumps({
     }
 
     #[test]
-    fn compatibility_scenario_executes_through_server_completion_adapter() {
-        let placeholder_manifest = compatibility_scenario_manifest("http://127.0.0.1:1");
+    fn llama_cpp_scenario_executes_through_server_completion_adapter() {
+        let placeholder_manifest = llama_cpp_scenario_manifest("http://127.0.0.1:1");
         let expected_prompt = scenario_specs_from_manifest(&placeholder_manifest)
             .expect("scenario specs should build")[0]
             .input_tokens
             .clone();
         let expected_prompt_for_request = expected_prompt.clone();
-        let (server_url, server_handle) = spawn_compat_completion_stream_server(
+        let (server_url, server_handle) = spawn_llama_cpp_completion_stream_server(
             2,
             vec![
                 serde_json::json!({
-                    "content": "compat benchmark",
+                    "content": "llama benchmark",
                     "tokens": [91, 92],
                     "stop": false
                 }),
@@ -16203,15 +15626,15 @@ print(json.dumps({
                 assert_eq!(payload.get("n_predict"), Some(&Value::Number(4.into())));
             },
         );
-        let manifest = compatibility_scenario_manifest(&server_url);
+        let manifest = llama_cpp_scenario_manifest(&server_url);
 
         let result =
-            execute_manifest_runtime(&manifest).expect("compatibility scenario should execute");
+            execute_manifest_runtime(&manifest).expect("llama.cpp scenario should execute");
         server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
 
-        assert_eq!(result.tool_mode, "compatibility_stepwise_runtime");
+        assert_eq!(result.tool_mode, "llama_cpp_stepwise_runtime");
         assert!(
             result.correctness.passed,
             "correctness reason: {:?}",
@@ -16224,7 +15647,7 @@ print(json.dumps({
         );
         assert_eq!(
             result.observation.route_metadata.execution_plan.as_deref(),
-            Some("compatibility.llama_cpp.server_completion_stream")
+            Some("llama_cpp.server_completion_stream")
         );
         assert_eq!(result.observation.replay_status(), "not_applicable");
         assert!(result.observation.e2e_latency_ms > 0);
@@ -16239,16 +15662,16 @@ print(json.dumps({
         assert_eq!(result.observation.step_trace[0].scheduled_tokens, 2);
 
         let environment = build_environment_json(
-            "compat-run",
+            "llama-run",
             "scenario",
             &{
                 let manifest_path =
-                    std::env::temp_dir().join("ax-bench-compatibility-scenario-manifest.json");
+                    std::env::temp_dir().join("ax-bench-llama-cpp-scenario-manifest.json");
                 write_json_file(&manifest_path, &manifest)
-                    .expect("compatibility manifest should write");
+                    .expect("llama.cpp manifest should write");
                 manifest_path
             },
-            Path::new("/tmp/ax-bench-compatibility"),
+            Path::new("/tmp/ax-bench-llama-cpp"),
             123,
             &result,
         )
@@ -16258,7 +15681,7 @@ print(json.dumps({
                 .get("software")
                 .and_then(|software| software.get("tool_mode"))
                 .and_then(Value::as_str),
-            Some("compatibility_stepwise_runtime")
+            Some("llama_cpp_stepwise_runtime")
         );
         assert_eq!(
             environment
@@ -16271,34 +15694,33 @@ print(json.dumps({
     }
 
     #[test]
-    fn compatibility_vllm_scenario_executes_through_blocking_runtime() {
-        let (server_url, server_handle) = spawn_single_json_completion_server(
-            "/v1/completions",
-            json!({
-                "choices": [{
-                    "text": "compat benchmark output",
-                    "finish_reason": "length"
-                }]
-            })
-            .to_string(),
-            |payload| {
+    fn llama_cpp_server_scenario_executes_through_blocking_runtime() {
+        let (server_url, server_handle) =
+            spawn_scripted_llama_cpp_completion_stream_server(1, |_request_index, payload| {
                 assert_eq!(
-                    payload.get("model"),
-                    Some(&Value::String("qwen3_dense".to_string()))
+                    payload
+                        .get("prompt")
+                        .and_then(Value::as_array)
+                        .map(Vec::len),
+                    Some(32)
                 );
-                assert_eq!(payload.get("stream"), Some(&Value::Bool(false)));
-                assert!(payload.get("prompt").and_then(Value::as_str).is_some());
-            },
-        );
-        let manifest = compatibility_vllm_scenario_manifest(&server_url);
+                assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
+                vec![json!({
+                    "content": "llama benchmark output",
+                    "tokens": [11, 12, 13, 14],
+                    "stop": true,
+                    "stop_type": "limit"
+                })]
+            });
+        let manifest = llama_cpp_server_scenario_manifest(&server_url);
 
         let result = execute_manifest_runtime(&manifest)
-            .expect("blocking vllm compatibility scenario should execute");
+            .expect("streaming llama.cpp scenario should execute");
         server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
 
-        assert_eq!(result.tool_mode, "compatibility_blocking_runtime");
+        assert_eq!(result.tool_mode, "llama_cpp_stepwise_runtime");
         assert!(
             result.correctness.passed,
             "correctness reason: {:?}, route decisions: {:?}",
@@ -16307,33 +15729,27 @@ print(json.dumps({
         assert_eq!(result.observation.step_count, 1);
         assert_eq!(result.observation.prefill_tokens, 32);
         assert_eq!(result.observation.decode_tokens, 4);
-        assert!(result.observation.ttft_ms.unwrap_or_default() > 0);
-        assert_eq!(result.observation.step_trace.len(), 0);
+        assert_eq!(result.observation.step_trace.len(), 1);
         assert_eq!(
             result.observation.route_metadata.execution_plan.as_deref(),
-            Some("compatibility.vllm.server_completions")
-        );
-        assert_eq!(result.observation.final_requests.len(), 1);
-        assert_eq!(result.observation.final_requests[0].state, "Finished");
-        assert_eq!(
-            result.observation.final_requests[0].generated_tokens.len(),
-            4
+            Some("llama_cpp.server_completion_stream")
         );
     }
 
     #[test]
     fn generate_command_executes_server_backed_openai_compatible_prompt() {
         let (server_url, server_handle) = spawn_single_json_completion_server(
-            "/v1/completions",
+            "/completion",
             json!({
-                "choices": [{
-                    "text": "compat::hello cli",
-                    "finish_reason": "length"
-                }]
+                "content": "llama::hello cli",
+                "tokens": [4, 5, 6],
+                "tokens_evaluated": 2,
+                "tokens_cached": 0,
+                "stop": true,
+                "stop_type": "limit"
             })
             .to_string(),
             |payload| {
-                assert_eq!(payload["model"], Value::String("qwen3_dense".to_string()));
                 assert_eq!(payload["prompt"], Value::String("hello cli".to_string()));
                 assert_eq!(payload["stream"], Value::Bool(false));
             },
@@ -16343,10 +15759,8 @@ print(json.dumps({
                 "--prompt".to_string(),
                 "hello cli".to_string(),
                 "--support-tier".to_string(),
-                "compatibility".to_string(),
-                "--compat-backend".to_string(),
-                "vllm".to_string(),
-                "--compat-server-url".to_string(),
+                "llama_cpp".to_string(),
+                "--llama-server-url".to_string(),
                 server_url.clone(),
             ],
             "generate",
@@ -16354,21 +15768,21 @@ print(json.dumps({
         .expect("generate args should parse");
 
         let response =
-            run_inference_generate(&args).expect("compatibility generate command should succeed");
+            run_inference_generate(&args).expect("llama.cpp generate command should succeed");
         server_handle.join().expect("server thread should finish");
 
-        assert_eq!(response.output_text.as_deref(), Some("compat::hello cli"));
-        assert_eq!(response.runtime.selected_backend, SelectedBackend::Vllm);
+        assert_eq!(response.output_text.as_deref(), Some("llama::hello cli"));
+        assert_eq!(response.runtime.selected_backend, SelectedBackend::LlamaCpp);
         let rendered = render_generate_response(&response, false).expect("response should render");
-        assert!(rendered.starts_with("compat::hello cli\n"));
+        assert!(rendered.starts_with("llama::hello cli\n"));
         assert!(rendered.contains("status=finished"));
         assert!(rendered.contains("finish_reason=max_output_tokens"));
-        assert!(rendered.contains("execution_plan=compatibility.vllm.server_completions"));
+        assert!(rendered.contains("execution_plan=llama_cpp.server_completion"));
     }
 
     #[test]
-    fn stream_command_collects_server_backed_compatibility_events() {
-        let (server_url, server_handle) = spawn_compat_completion_stream_server(
+    fn stream_command_collects_server_backed_llama_cpp_events() {
+        let (server_url, server_handle) = spawn_llama_cpp_completion_stream_server(
             1,
             vec![
                 json!({
@@ -16393,8 +15807,8 @@ print(json.dumps({
                 "--tokens".to_string(),
                 "1,2,3".to_string(),
                 "--support-tier".to_string(),
-                "compatibility".to_string(),
-                "--compat-server-url".to_string(),
+                "llama_cpp".to_string(),
+                "--llama-server-url".to_string(),
                 server_url.clone(),
             ],
             "stream",
@@ -16402,7 +15816,7 @@ print(json.dumps({
         .expect("stream args should parse");
 
         let events = collect_inference_stream_events(&args)
-            .expect("compatibility stream command should succeed");
+            .expect("llama.cpp stream command should succeed");
         server_handle.join().expect("server thread should finish");
 
         assert_eq!(events.len(), 4);
@@ -16422,36 +15836,28 @@ print(json.dumps({
     }
 
     #[test]
-    fn compatibility_vllm_replay_is_rejected_for_blocking_adapter() {
-        let manifest = compatibility_vllm_replay_manifest("http://127.0.0.1:8081");
+    fn llama_cpp_server_replay_is_rejected_for_blocking_adapter() {
+        let manifest = llama_cpp_server_replay_manifest("http://127.0.0.1:8081");
 
         let error = execute_manifest_runtime(&manifest)
-            .expect_err("blocking compatibility replay should fail closed");
-        let CliError::Contract(message) = error else {
-            panic!("blocking replay rejection should surface as contract error");
-        };
-
-        assert!(message.contains("scenario manifests only"));
+            .expect_err("llama.cpp replay without a server should fail closed");
+        assert!(format!("{error}").contains("llama.cpp"));
     }
 
     #[test]
-    fn compatibility_vllm_shared_prefix_is_rejected_for_blocking_adapter() {
-        let mut manifest = compatibility_vllm_scenario_manifest("http://127.0.0.1:8081");
+    fn llama_cpp_server_shared_prefix_is_rejected_for_blocking_adapter() {
+        let mut manifest = llama_cpp_server_scenario_manifest("http://127.0.0.1:8081");
         manifest.scenario = "shared_prefix".to_string();
         manifest.checks.require_prefix_reuse = true;
 
         let error = execute_manifest_runtime(&manifest)
-            .expect_err("blocking compatibility shared-prefix should fail closed");
-        let CliError::Contract(message) = error else {
-            panic!("blocking shared-prefix rejection should surface as contract error");
-        };
-
-        assert!(message.contains("require_prefix_reuse"));
+            .expect_err("llama.cpp shared-prefix without a server should fail closed");
+        assert!(format!("{error}").contains("llama.cpp"));
     }
 
     #[test]
-    fn compatibility_replay_executes_through_shared_sdk_session() {
-        let placeholder_manifest = compatibility_replay_manifest("http://127.0.0.1:1");
+    fn llama_cpp_replay_executes_through_shared_sdk_session() {
+        let placeholder_manifest = llama_cpp_replay_manifest("http://127.0.0.1:1");
         let replay_events =
             replay_events_from_manifest(&placeholder_manifest).expect("replay events should build");
         let expected_specs = replay_events
@@ -16470,11 +15876,11 @@ print(json.dumps({
             .map(|spec| spec.input_tokens.clone())
             .collect::<Vec<_>>();
         let expected_prompts_for_request = expected_prompts.clone();
-        let (server_url, server_handle) = spawn_compat_completion_stream_server(
+        let (server_url, server_handle) = spawn_llama_cpp_completion_stream_server(
             expected_prompts.len() * 2,
             vec![
                 serde_json::json!({
-                    "content": "compat replay",
+                    "content": "llama replay",
                     "tokens": [111],
                     "stop": false
                 }),
@@ -16487,24 +15893,25 @@ print(json.dumps({
             ],
             move |payload| {
                 let prompt = payload.get("prompt").expect("prompt should be present");
-                assert!(expected_prompts_for_request
-                    .iter()
-                    .any(|candidate| prompt == &json!(candidate)));
+                assert!(
+                    expected_prompts_for_request
+                        .iter()
+                        .any(|candidate| prompt == &json!(candidate))
+                );
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
                 assert_eq!(payload.get("return_tokens"), Some(&Value::Bool(true)));
                 assert_eq!(payload.get("return_progress"), Some(&Value::Bool(true)));
                 assert_eq!(payload.get("n_predict"), Some(&Value::Number(2.into())));
             },
         );
-        let manifest = compatibility_replay_manifest(&server_url);
+        let manifest = llama_cpp_replay_manifest(&server_url);
 
-        let result =
-            execute_manifest_runtime(&manifest).expect("compatibility replay should execute");
+        let result = execute_manifest_runtime(&manifest).expect("llama.cpp replay should execute");
         server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
 
-        assert_eq!(result.tool_mode, "compatibility_stepwise_runtime");
+        assert_eq!(result.tool_mode, "llama_cpp_stepwise_runtime");
         assert!(
             result.correctness.passed,
             "correctness reason: {:?}",
@@ -16541,7 +15948,7 @@ print(json.dumps({
         );
         assert_eq!(
             result.observation.route_metadata.execution_plan.as_deref(),
-            Some("compatibility.llama_cpp.server_completion_stream")
+            Some("llama_cpp.server_completion_stream")
         );
         assert_eq!(result.observation.replay_status(), "pass");
         assert_eq!(result.observation.step_count, 2);
@@ -16552,8 +15959,8 @@ print(json.dumps({
     }
 
     #[test]
-    fn compatibility_concurrent_scenario_executes_through_shared_sdk_session() {
-        let mut manifest = compatibility_scenario_manifest("http://127.0.0.1:8081");
+    fn llama_cpp_concurrent_scenario_executes_through_shared_sdk_session() {
+        let mut manifest = llama_cpp_scenario_manifest("http://127.0.0.1:8081");
         manifest
             .shape
             .as_mut()
@@ -16571,11 +15978,11 @@ print(json.dumps({
             .map(|spec| spec.input_tokens.clone())
             .collect::<Vec<_>>();
         let expected_prompts_for_request = expected_prompts.clone();
-        let (server_url, server_handle) = spawn_compat_completion_stream_server(
+        let (server_url, server_handle) = spawn_llama_cpp_completion_stream_server(
             expected_prompts.len() * 2,
             vec![
                 serde_json::json!({
-                    "content": "compat concurrent",
+                    "content": "llama concurrent",
                     "tokens": [101, 102],
                     "stop": false
                 }),
@@ -16588,9 +15995,11 @@ print(json.dumps({
             ],
             move |payload| {
                 let prompt = payload.get("prompt").expect("prompt should be present");
-                assert!(expected_prompts_for_request
-                    .iter()
-                    .any(|candidate| prompt == &json!(candidate)));
+                assert!(
+                    expected_prompts_for_request
+                        .iter()
+                        .any(|candidate| prompt == &json!(candidate))
+                );
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
                 assert_eq!(payload.get("return_tokens"), Some(&Value::Bool(true)));
                 assert_eq!(payload.get("return_progress"), Some(&Value::Bool(true)));
@@ -16600,12 +16009,12 @@ print(json.dumps({
             Some(BackendAdapterManifest::LlamaCppServerCompletion { server_url });
 
         let result = execute_manifest_runtime(&manifest)
-            .expect("compatibility concurrent benchmark should execute");
+            .expect("llama.cpp concurrent benchmark should execute");
         server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
 
-        assert_eq!(result.tool_mode, "compatibility_stepwise_runtime");
+        assert_eq!(result.tool_mode, "llama_cpp_stepwise_runtime");
         assert_eq!(result.observation.final_requests.len(), 2);
         assert_eq!(result.observation.step_count, 2);
         assert_eq!(result.observation.step_trace.len(), 2);
@@ -16624,8 +16033,8 @@ print(json.dumps({
     }
 
     #[test]
-    fn compatibility_shared_prefix_scenario_executes_with_delegated_prompt_cache_reuse() {
-        let mut manifest = compatibility_shared_prefix_scenario_manifest("http://127.0.0.1:8081");
+    fn llama_cpp_shared_prefix_scenario_executes_with_delegated_prompt_cache_reuse() {
+        let mut manifest = llama_cpp_shared_prefix_scenario_manifest("http://127.0.0.1:8081");
         let expected_specs =
             scenario_specs_from_manifest(&manifest).expect("scenario specs should build");
         assert_eq!(expected_specs.len(), 2);
@@ -16647,13 +16056,15 @@ print(json.dumps({
             .map(|spec| spec.input_tokens.clone())
             .collect::<Vec<_>>();
         let expected_prompts_for_request = expected_prompts.clone();
-        let (server_url, server_handle) = spawn_scripted_compat_completion_stream_server(
+        let (server_url, server_handle) = spawn_scripted_llama_cpp_completion_stream_server(
             expected_prompts.len() * 2,
             move |request_index, payload| {
                 let prompt = payload.get("prompt").expect("prompt should be present");
-                assert!(expected_prompts_for_request
-                    .iter()
-                    .any(|candidate| prompt == &json!(candidate)));
+                assert!(
+                    expected_prompts_for_request
+                        .iter()
+                        .any(|candidate| prompt == &json!(candidate))
+                );
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
                 assert_eq!(payload.get("return_tokens"), Some(&Value::Bool(true)));
                 assert_eq!(payload.get("return_progress"), Some(&Value::Bool(true)));
@@ -16684,12 +16095,12 @@ print(json.dumps({
             Some(BackendAdapterManifest::LlamaCppServerCompletion { server_url });
 
         let result = execute_manifest_runtime(&manifest)
-            .expect("compatibility shared-prefix scenario should execute");
+            .expect("llama.cpp shared-prefix scenario should execute");
         server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
 
-        assert_eq!(result.tool_mode, "compatibility_stepwise_runtime");
+        assert_eq!(result.tool_mode, "llama_cpp_stepwise_runtime");
         assert!(result.correctness.passed);
         assert!(result.determinism.passed);
         assert_eq!(result.observation.final_requests.len(), 2);
@@ -16714,13 +16125,15 @@ print(json.dumps({
 
         let expected_prompts_for_artifacts = expected_prompts.clone();
         let (artifact_server_url, artifact_server_handle) =
-            spawn_scripted_compat_completion_stream_server(
+            spawn_scripted_llama_cpp_completion_stream_server(
                 expected_prompts.len() * 2,
                 move |request_index, payload| {
                     let prompt = payload.get("prompt").expect("prompt should be present");
-                    assert!(expected_prompts_for_artifacts
-                        .iter()
-                        .any(|candidate| prompt == &json!(candidate)));
+                    assert!(
+                        expected_prompts_for_artifacts
+                            .iter()
+                            .any(|candidate| prompt == &json!(candidate))
+                    );
                     assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
                     assert_eq!(payload.get("return_tokens"), Some(&Value::Bool(true)));
                     assert_eq!(payload.get("return_progress"), Some(&Value::Bool(true)));
@@ -16747,13 +16160,13 @@ print(json.dumps({
                     ]
                 },
             );
-        let root = unique_test_dir("compat-shared-prefix-success");
+        let root = unique_test_dir("llama-cpp-shared-prefix-success");
         let output_root = root.join("results");
         fs::create_dir_all(&output_root).expect("output root should create");
         manifest.runtime.backend_adapter = Some(BackendAdapterManifest::LlamaCppServerCompletion {
             server_url: artifact_server_url,
         });
-        let manifest_path = root.join("compatibility-shared-prefix.json");
+        let manifest_path = root.join("llama-cpp-shared-prefix.json");
         write_json_file(&manifest_path, &manifest).expect("manifest should write");
         let args = vec![
             "--manifest".to_string(),
@@ -16805,7 +16218,7 @@ print(json.dumps({
 
     #[test]
     fn contract_failure_json_classifies_missing_backend_adapter() {
-        let mut manifest = compatibility_scenario_manifest("http://127.0.0.1:8081");
+        let mut manifest = llama_cpp_scenario_manifest("http://127.0.0.1:8081");
         manifest.runtime.backend_adapter = None;
         let artifact = build_contract_failure_json(
             "run-1",
@@ -16814,29 +16227,29 @@ print(json.dumps({
             &manifest,
             Path::new("/tmp/results"),
             123,
-            "runtime.backend_adapter is required when selected_backend is not ax_native",
+            "runtime.backend_adapter is required when selected_backend is llama_cpp",
         )
         .expect("contract failure artifact should build");
 
         assert_eq!(
             artifact.get("tool_mode").and_then(Value::as_str),
-            Some("compatibility_blocking_runtime")
+            Some("llama_cpp_blocking_runtime")
         );
         assert_eq!(
             artifact
                 .get("failure")
                 .and_then(|failure| failure.get("code"))
                 .and_then(Value::as_str),
-            Some("compatibility_backend_adapter_required")
+            Some("llama_backend_adapter_required")
         );
     }
 
     #[test]
-    fn contract_failure_json_classifies_native_gguf_bridge_unsupported_model() {
+    fn contract_failure_json_classifies_mlx_gguf_bridge_unsupported_model() {
         let mut manifest = load_test_manifest(
             "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
         );
-        manifest.runtime.native_model_artifacts_dir =
+        manifest.runtime.mlx_model_artifacts_dir =
             Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf"));
 
         let artifact = build_contract_failure_json(
@@ -16846,7 +16259,7 @@ print(json.dumps({
             &manifest,
             Path::new("/tmp/results"),
             123,
-            "failed to export native model artifacts from GGUF /tmp/google_gemma-4-26b-it-q4_k_m.gguf: status=unsupported blockers=moe_expert_tensors_present",
+            "failed to export MLX model artifacts from GGUF /tmp/google_gemma-4-26b-it-q4_k_m.gguf: status=unsupported blockers=moe_expert_tensors_present",
         )
         .expect("contract failure artifact should build");
 
@@ -16855,16 +16268,16 @@ print(json.dumps({
                 .get("failure")
                 .and_then(|failure| failure.get("code"))
                 .and_then(Value::as_str),
-            Some("native_gguf_bridge_unsupported_model")
+            Some("mlx_gguf_bridge_unsupported_model")
         );
     }
 
     #[test]
-    fn contract_failure_json_classifies_native_gguf_bridge_missing_dependency() {
+    fn contract_failure_json_classifies_mlx_gguf_bridge_missing_dependency() {
         let mut manifest = load_test_manifest(
             "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
         );
-        manifest.runtime.native_model_artifacts_dir =
+        manifest.runtime.mlx_model_artifacts_dir =
             Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf"));
 
         let artifact = build_contract_failure_json(
@@ -16874,7 +16287,7 @@ print(json.dumps({
             &manifest,
             Path::new("/tmp/results"),
             123,
-            "failed to export native model artifacts from GGUF /tmp/google_gemma-4-26b-it-q4_k_m.gguf: status=error reason=missing_python_dependency",
+            "failed to export MLX model artifacts from GGUF /tmp/google_gemma-4-26b-it-q4_k_m.gguf: status=error reason=missing_python_dependency",
         )
         .expect("contract failure artifact should build");
 
@@ -16883,14 +16296,14 @@ print(json.dumps({
                 .get("failure")
                 .and_then(|failure| failure.get("code"))
                 .and_then(Value::as_str),
-            Some("native_gguf_bridge_missing_dependency")
+            Some("mlx_gguf_bridge_missing_dependency")
         );
     }
 
     #[test]
-    fn build_session_preserves_compatibility_runtime_fields_via_sdk_factory() {
+    fn build_session_preserves_llama_runtime_fields_via_sdk_factory() {
         let server_url = "http://127.0.0.1:8081";
-        let mut manifest = compatibility_scenario_manifest(server_url);
+        let mut manifest = llama_cpp_scenario_manifest(server_url);
         manifest.runtime.deterministic = false;
         manifest.runtime.max_batch_tokens = 4096;
         manifest.runtime.kv_total_blocks = Some(42);
@@ -16919,42 +16332,16 @@ print(json.dumps({
             )
         );
         assert_eq!(
-            config.compatibility_backend,
+            config.llama_backend,
             expected_runtime
                 .backend_adapter
                 .as_ref()
                 .map(BackendAdapterManifest::to_sdk_config)
         );
-        assert_eq!(config.fallback_compatibility_backend, None);
     }
 
     #[test]
-    fn build_session_maps_native_prefer_llama_adapter_to_startup_fallback() {
-        let mut manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
-        );
-        manifest.runtime.resolution_policy = ResolutionPolicy::PreferNative;
-        manifest.runtime.backend_adapter = Some(BackendAdapterManifest::LlamaCppServerCompletion {
-            server_url: "http://127.0.0.1:8081".to_string(),
-        });
-
-        let runtime =
-            runtime_config_from_manifest(&manifest).expect("native prefer fallback should load");
-        let specs = scenario_specs_from_manifest(&manifest).expect("scenario specs should build");
-        let config = session_config_from_runtime(&runtime, &specs);
-
-        assert_eq!(config.compatibility_backend, None);
-        assert_eq!(
-            config
-                .fallback_compatibility_backend
-                .as_ref()
-                .map(CompatibilityBackendConfig::selected_backend),
-            Some(SelectedBackend::LlamaCpp)
-        );
-    }
-
-    #[test]
-    fn build_session_preserves_native_runtime_artifact_defaults_via_sdk_factory() {
+    fn build_session_preserves_mlx_runtime_artifact_defaults_via_sdk_factory() {
         let manifest = load_test_manifest(
             "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
         );
@@ -16965,58 +16352,62 @@ print(json.dumps({
         let config = session_config_from_runtime(&runtime, &specs);
 
         assert_eq!(
-            config.native_runtime_artifacts_dir,
-            expected_default.native_runtime_artifacts_dir
+            config.mlx_runtime_artifacts_dir,
+            expected_default.mlx_runtime_artifacts_dir
         );
         assert_eq!(
-            config.native_runtime_artifacts_source,
-            expected_default.native_runtime_artifacts_source()
+            config.mlx_runtime_artifacts_source,
+            expected_default.mlx_runtime_artifacts_source()
         );
         assert_eq!(
-            config.native_model_artifacts_dir,
-            expected_default.native_model_artifacts_dir
+            config.mlx_model_artifacts_dir,
+            manifest.runtime.mlx_model_artifacts_dir
         );
         assert_eq!(
-            config.native_model_artifacts_source,
-            expected_default.native_model_artifacts_source()
+            config.mlx_model_artifacts_source,
+            Some(NativeModelArtifactsSource::ExplicitConfig)
         );
         assert_eq!(config.backend_policy, runtime.backend_policy);
         assert_eq!(config.resolved_backend, runtime.resolved_backend);
-        assert_eq!(config.compatibility_backend, None);
-        assert_eq!(
-            config.allow_deterministic_native_fallback,
-            runtime.allow_deterministic_native_fallback
-        );
+        assert_eq!(config.llama_backend, None);
     }
 
     #[test]
-    fn build_session_preserves_explicit_native_artifact_manifest_overrides() {
+    fn build_session_preserves_explicit_mlx_model_artifact_manifest_override() {
         let mut manifest = load_test_manifest(
             "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
         );
-        manifest.runtime.native_runtime_artifacts_dir =
-            Some(PathBuf::from("/tmp/ax-native-runtime"));
-        manifest.runtime.native_model_artifacts_dir = Some(PathBuf::from("/tmp/ax-native-model"));
+        manifest.runtime.mlx_model_artifacts_dir = Some(PathBuf::from("/tmp/ax-mlx-model"));
 
         let runtime = runtime_config_from_manifest(&manifest).expect("runtime config should load");
         let specs = scenario_specs_from_manifest(&manifest).expect("scenario specs should build");
 
         let config = session_config_from_runtime(&runtime, &specs);
 
+        let expected_mlx_runtime_artifacts_dir =
+            EngineSessionConfig::default_mlx_runtime_artifacts_dir().or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .map(|dir| dir.join("build/metal"))
+                    .filter(|dir| dir.join("build_report.json").is_file())
+            });
         assert_eq!(
-            config.native_runtime_artifacts_dir,
-            Some(PathBuf::from("/tmp/ax-native-runtime"))
+            config.mlx_runtime_artifacts_dir,
+            expected_mlx_runtime_artifacts_dir
         );
         assert_eq!(
-            config.native_runtime_artifacts_source,
-            Some(NativeRuntimeArtifactsSource::ExplicitConfig)
+            config.mlx_runtime_artifacts_source,
+            config
+                .mlx_runtime_artifacts_dir
+                .as_ref()
+                .map(|_| NativeRuntimeArtifactsSource::RepoAutoDetect)
         );
         assert_eq!(
-            config.native_model_artifacts_dir,
-            Some(PathBuf::from("/tmp/ax-native-model"))
+            config.mlx_model_artifacts_dir,
+            Some(PathBuf::from("/tmp/ax-mlx-model"))
         );
         assert_eq!(
-            config.native_model_artifacts_source,
+            config.mlx_model_artifacts_source,
             Some(NativeModelArtifactsSource::ExplicitConfig)
         );
     }
@@ -17026,7 +16417,7 @@ print(json.dumps({
         let mut manifest = load_test_manifest(
             "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
         );
-        manifest.runtime.native_model_artifacts_dir =
+        manifest.runtime.mlx_model_artifacts_dir =
             Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf"));
 
         let runtime = runtime_config_from_manifest(&manifest).expect("runtime config should load");
@@ -17035,18 +16426,18 @@ print(json.dumps({
         let config = session_config_from_runtime(&runtime, &specs);
 
         assert_eq!(
-            config.native_model_artifacts_dir,
+            config.mlx_model_artifacts_dir,
             Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf"))
         );
         assert_eq!(
-            config.native_model_artifacts_source,
+            config.mlx_model_artifacts_source,
             Some(NativeModelArtifactsSource::GeneratedFromGguf)
         );
     }
 
     #[test]
     fn load_manifest_resolves_native_artifact_paths_relative_to_manifest_dir() {
-        let root = unique_test_dir("manifest-relative-native-paths");
+        let root = unique_test_dir("manifest-relative-mlx-paths");
         let manifest_dir = root.join("benchmarks/manifests/scenario");
         fs::create_dir_all(&manifest_dir).expect("manifest dir should create");
         let manifest_path = manifest_dir.join("relative-native.json");
@@ -17065,13 +16456,12 @@ print(json.dumps({
     "chat_template_revision": "chatml-v1"
   },
   "runtime": {
-    "selected_backend": "ax_native",
-    "support_tier": "native_preview",
-    "resolution_policy": "strict_native",
+    "selected_backend": "mlx",
+    "support_tier": "mlx_preview",
+    "resolution_policy": "mlx_only",
     "deterministic": true,
     "max_batch_tokens": 2048,
-    "native_runtime_artifacts_dir": "../../../build/metal",
-    "native_model_artifacts_dir": "../../../models/qwen-native",
+    "mlx_model_artifacts_dir": "../../../models/qwen-mlx",
     "flags": {
       "prefix_cache": false
     }
@@ -17094,12 +16484,8 @@ print(json.dumps({
         let manifest = load_manifest(&manifest_path).expect("manifest should load");
 
         assert_eq!(
-            manifest.runtime.native_runtime_artifacts_dir,
-            Some(root.join("build/metal"))
-        );
-        assert_eq!(
-            manifest.runtime.native_model_artifacts_dir,
-            Some(root.join("models/qwen-native"))
+            manifest.runtime.mlx_model_artifacts_dir,
+            Some(root.join("models/qwen-mlx"))
         );
 
         fs::remove_dir_all(&root).expect("test dir should clean up");
@@ -17110,14 +16496,14 @@ print(json.dumps({
         let Some(home_dir) = env::var_os("HOME").map(PathBuf::from) else {
             return;
         };
-        let root = unique_test_dir("manifest-env-native-paths");
+        let root = unique_test_dir("manifest-env-mlx-paths");
         fs::create_dir_all(&root).expect("test dir should create");
         let manifest_path = root.join("env-native.json");
         fs::write(
             &manifest_path,
             r#"{
   "schema_version": "ax.bench.manifest.v1",
-  "id": "env_native",
+  "id": "env_mlx",
   "class": "scenario",
   "scenario": "chat",
   "model": {
@@ -17128,12 +16514,12 @@ print(json.dumps({
     "chat_template_revision": "chatml-v1"
   },
   "runtime": {
-    "selected_backend": "ax_native",
-    "support_tier": "native_preview",
-    "resolution_policy": "strict_native",
+    "selected_backend": "mlx",
+    "support_tier": "mlx_preview",
+    "resolution_policy": "mlx_only",
     "deterministic": true,
     "max_batch_tokens": 2048,
-    "native_model_artifacts_dir": "$HOME/ax-native-model",
+    "mlx_model_artifacts_dir": "$HOME/ax-mlx-model",
     "flags": {
       "prefix_cache": false
     }
@@ -17156,32 +16542,17 @@ print(json.dumps({
         let manifest = load_manifest(&manifest_path).expect("manifest should load");
 
         assert_eq!(
-            manifest.runtime.native_model_artifacts_dir,
-            Some(home_dir.join("ax-native-model"))
+            manifest.runtime.mlx_model_artifacts_dir,
+            Some(home_dir.join("ax-mlx-model"))
         );
 
         fs::remove_dir_all(&root).expect("test dir should clean up");
     }
 
     #[test]
-    fn runtime_config_requires_explicit_opt_in_for_native_placeholder_fallback() {
-        let manifest_path =
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json";
-        let mut manifest = load_manifest(Path::new(manifest_path)).expect("manifest should load");
-
-        let runtime = runtime_config_from_manifest(&manifest).expect("runtime config should load");
-        assert!(!runtime.allow_deterministic_native_fallback);
-
-        manifest.runtime.allow_deterministic_native_fallback = true;
-        let opted_in_runtime =
-            runtime_config_from_manifest(&manifest).expect("runtime config should load");
-        assert!(opted_in_runtime.allow_deterministic_native_fallback);
-    }
-
-    #[test]
-    fn compatibility_replay_executes_with_delegated_prompt_cache_reuse() {
+    fn llama_cpp_replay_executes_with_delegated_prompt_cache_reuse() {
         let mut manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/replay/compatibility_prompt_cache_reuse_dual.json",
+            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/replay/llama_cpp_prompt_cache_reuse_dual.json",
         );
 
         let replay_events =
@@ -17195,11 +16566,13 @@ print(json.dumps({
             .collect::<Vec<_>>();
         let expected_prompts_for_request = expected_prompts.clone();
         let (server_url, server_handle) =
-            spawn_scripted_compat_completion_stream_server(4, move |request_index, payload| {
+            spawn_scripted_llama_cpp_completion_stream_server(4, move |request_index, payload| {
                 let prompt = payload.get("prompt").expect("prompt should be present");
-                assert!(expected_prompts_for_request
-                    .iter()
-                    .any(|candidate| prompt == &json!(candidate)));
+                assert!(
+                    expected_prompts_for_request
+                        .iter()
+                        .any(|candidate| prompt == &json!(candidate))
+                );
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
                 assert_eq!(payload.get("return_tokens"), Some(&Value::Bool(true)));
                 assert_eq!(payload.get("return_progress"), Some(&Value::Bool(true)));
@@ -17250,10 +16623,10 @@ print(json.dumps({
             Some(BackendAdapterManifest::LlamaCppServerCompletion { server_url });
 
         let result = execute_manifest_runtime(&manifest)
-            .expect("compatibility prefix-reuse replay should execute");
+            .expect("llama.cpp prefix-reuse replay should execute");
         server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
 
         assert!(
             result.correctness.passed,
@@ -17274,605 +16647,16 @@ print(json.dumps({
     }
 
     #[test]
-    fn compatibility_benchmark_rejects_cli_adapter_for_token_workloads() {
-        let manifest = compatibility_cli_manifest();
+    fn llama_cpp_benchmark_rejects_cli_adapter_for_token_workloads() {
+        let manifest = llama_cpp_cli_manifest();
 
         let error = execute_manifest_runtime(&manifest)
-            .expect_err("compatibility CLI benchmark should fail closed");
+            .expect_err("llama.cpp CLI benchmark should fail closed");
         let CliError::Contract(message) = error else {
-            panic!("compatibility CLI benchmark should return a contract error");
+            panic!("llama.cpp CLI benchmark should return a contract error");
         };
 
-        assert!(message.contains("compatibility"));
-    }
-
-    #[test]
-    fn scenario_manifest_executes_with_passing_gates() {
-        let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
-        );
-
-        let result = execute_manifest_runtime(&manifest).expect("scenario runtime should execute");
-
-        assert!(result.correctness.passed);
-        assert!(result.determinism.passed);
-        assert!(result.observation.prefill_tokens > 0);
-        assert!(result.observation.decode_tokens > 0);
-        assert_eq!(result.observation.final_requests.len(), 1);
-        assert_eq!(result.observation.final_requests[0].state, "Finished");
-    }
-
-    #[test]
-    fn gemma_scenario_manifest_executes_with_bound_route_evidence() {
-        let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_gemma_short.json",
-        );
-
-        let result = execute_manifest_runtime(&manifest).expect("gemma scenario should execute");
-
-        assert_eq!(result.tool_mode, "engine_deterministic_runtime");
-        assert!(result.correctness.passed);
-        assert!(result.determinism.passed);
-        assert!(result.observation.prefill_tokens > 0);
-        assert!(result.observation.decode_tokens > 0);
-        assert_eq!(result.observation.final_requests.len(), 1);
-        assert_eq!(result.observation.final_requests[0].state, "Finished");
-        assert_eq!(
-            result.observation.route_metadata.execution_plan.as_deref(),
-            Some("mixed_step_plans")
-        );
-        assert_eq!(
-            result.observation.route_metadata.attention_route.as_deref(),
-            Some("mixed_attention_routes")
-        );
-        assert_eq!(
-            result.observation.route_metadata.kv_mode.as_deref(),
-            Some("paged_metadata")
-        );
-        assert_eq!(
-            route_decision(&result.observation, "execution_plan_variants"),
-            2
-        );
-        assert_eq!(
-            route_decision(&result.observation, "attention_route_variants"),
-            2
-        );
-    }
-
-    #[test]
-    fn shared_prefix_scenario_manifest_passes_with_live_prefix_reuse() {
-        let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/shared_prefix_qwen_enterprise.json",
-        );
-
-        let result =
-            execute_manifest_runtime(&manifest).expect("shared-prefix scenario should execute");
-
-        assert!(result.correctness.passed, "{:?}", result.correctness.reason);
-        assert!(result.determinism.passed);
-        assert!(result.observation.prefix_hit_rate() > 0.0);
-        assert_eq!(
-            result
-                .observation
-                .route_metadata
-                .prefix_cache_path
-                .as_deref(),
-            Some("live_request_share")
-        );
-        assert!(route_decision(&result.observation, "live_share_hits") > 0);
-        assert!(route_decision(&result.observation, "prefix_reused_requests") > 0);
-        assert!(route_decision(&result.observation, "prefix_reused_tokens") > 0);
-    }
-
-    #[test]
-    fn replay_manifest_passes_with_metadata_backed_prefix_reuse() {
-        let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/replay/shared_prefix_long_churn.json",
-        );
-
-        let result = execute_manifest_runtime(&manifest).expect("replay runtime should execute");
-
-        assert!(result.correctness.passed);
-        assert_eq!(result.observation.replay_status(), "pass");
-        assert!(result.determinism.passed);
-        assert!(result.observation.prefix_hit_rate() > 0.0);
-        assert_eq!(
-            result
-                .observation
-                .route_metadata
-                .prefix_cache_path
-                .as_deref(),
-            Some("live_request_share")
-        );
-        assert!(route_decision(&result.observation, "live_share_hits") > 0);
-        assert_eq!(
-            route_decision(&result.observation, "retained_cache_hits"),
-            0
-        );
-        assert!(route_decision(&result.observation, "prefix_reused_tokens") > 0);
-    }
-
-    #[test]
-    fn replay_manifest_passes_with_retained_prefix_cache_after_cleanup() {
-        let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/replay/retained_prefix_after_cleanup.json",
-        );
-
-        let result = execute_manifest_runtime(&manifest)
-            .expect("retained-cache replay runtime should execute");
-
-        assert!(result.correctness.passed);
-        assert_eq!(result.observation.replay_status(), "not_applicable");
-        assert!(result.determinism.passed);
-        assert!(result.observation.prefix_hit_rate() > 0.0);
-        assert_eq!(
-            result
-                .observation
-                .route_metadata
-                .prefix_cache_path
-                .as_deref(),
-            Some("retained_prompt_prefix_cache")
-        );
-        assert!(route_decision(&result.observation, "retained_cache_hits") > 0);
-        assert_eq!(route_decision(&result.observation, "live_share_hits"), 0);
-        assert_eq!(
-            route_decision(&result.observation, "branch_decode_requests"),
-            0
-        );
-    }
-
-    #[test]
-    fn replay_manifest_aggregates_mixed_live_and_retained_prefix_paths() {
-        let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/replay/mixed_live_and_retained_prefix_paths.json",
-        );
-
-        let result = execute_manifest_runtime(&manifest)
-            .expect("mixed prefix replay runtime should execute");
-
-        assert!(result.correctness.passed);
-        assert_eq!(result.observation.replay_status(), "not_applicable");
-        assert!(result.determinism.passed);
-        assert!(result.observation.prefix_hit_rate() > 0.0);
-        assert_eq!(
-            result
-                .observation
-                .route_metadata
-                .prefix_cache_path
-                .as_deref(),
-            Some("mixed_live_and_retained")
-        );
-        assert!(route_decision(&result.observation, "retained_cache_hits") > 0);
-        assert!(route_decision(&result.observation, "live_share_hits") > 0);
-        assert!(route_decision(&result.observation, "branch_prefill_requests") > 0);
-    }
-
-    #[test]
-    fn replay_manifest_covers_full_prefix_to_decode_branch() {
-        let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/replay/full_prefix_to_decode_branch.json",
-        );
-
-        let result = execute_manifest_runtime(&manifest)
-            .expect("full-prefix decode replay runtime should execute");
-
-        assert!(result.correctness.passed);
-        assert_eq!(result.observation.replay_status(), "not_applicable");
-        assert!(result.determinism.passed);
-        assert!(result.observation.prefix_hit_rate() > 0.0);
-        assert_eq!(
-            result
-                .observation
-                .route_metadata
-                .prefix_cache_path
-                .as_deref(),
-            Some("live_request_share")
-        );
-        assert!(route_decision(&result.observation, "live_share_hits") > 0);
-        assert_eq!(
-            route_decision(&result.observation, "retained_cache_hits"),
-            0
-        );
-        assert_eq!(
-            result.observation.route_metadata.execution_plan.as_deref(),
-            Some("mixed_step_plans")
-        );
-        assert_eq!(
-            result.observation.route_metadata.attention_route.as_deref(),
-            Some("mixed_attention_routes")
-        );
-        assert_eq!(
-            route_decision(&result.observation, "execution_plan_variants"),
-            2
-        );
-        assert_eq!(
-            route_decision(&result.observation, "attention_route_variants"),
-            2
-        );
-        assert!(route_decision(&result.observation, "branch_decode_requests") > 0);
-        assert!(route_decision(&result.observation, "branch_decode_tokens") > 0);
-        assert_eq!(
-            route_decision(&result.observation, "branch_prefill_requests"),
-            0
-        );
-    }
-
-    #[test]
-    fn replay_manifest_records_trace_for_full_prefix_decode_branch() {
-        let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/replay/full_prefix_to_decode_branch.json",
-        );
-
-        let result = execute_manifest_runtime(&manifest)
-            .expect("full-prefix decode replay runtime should execute");
-        let decode_step = result
-            .observation
-            .step_trace
-            .iter()
-            .find(|step| {
-                step.route_metadata.prefix_cache_path.as_deref() == Some("live_request_share")
-                    && step.runner_executed
-                    && step.items.iter().any(|item| {
-                        item.mode == ax_engine_core::ExecutionMode::Decode
-                            && item.prefix_tokens_reused > 0
-                    })
-            })
-            .expect("trace should contain a decode step with prefix reuse");
-
-        assert!(decode_step.prefix_hits > 0);
-        assert!(decode_step.scheduled_tokens > 0);
-        assert!(decode_step
-            .selected_request_ids
-            .iter()
-            .any(|request_id| request_id.0 == 2));
-
-        let trace_json = build_trace_json("test-run", &result);
-        let metrics_json = build_metrics_json("test-run", &result);
-        let steps = trace_json
-            .get("steps")
-            .and_then(Value::as_array)
-            .expect("trace artifact should contain steps");
-
-        assert_eq!(
-            trace_json.get("schema_version").and_then(Value::as_str),
-            Some("ax.bench.trace.v1")
-        );
-        assert_eq!(steps.len(), result.observation.step_trace.len());
-        assert!(metrics_json
-            .get("metrics")
-            .and_then(|metrics| metrics.get("cpu_time_per_token_us"))
-            .and_then(Value::as_f64)
-            .is_some());
-        assert!(metrics_json
-            .get("metrics")
-            .and_then(|metrics| metrics.get("runner_time_per_token_us"))
-            .and_then(Value::as_f64)
-            .is_some());
-        assert!(metrics_json
-            .get("metrics")
-            .and_then(|metrics| metrics.get("runner_time_share_pct"))
-            .and_then(Value::as_f64)
-            .is_some());
-        assert_eq!(
-            trace_json
-                .get("runtime")
-                .and_then(|runtime| runtime.get("selected_backend"))
-                .and_then(Value::as_str),
-            Some("ax_native")
-        );
-        assert_eq!(
-            metrics_json
-                .get("runtime")
-                .and_then(|runtime| runtime.get("support_tier"))
-                .and_then(Value::as_str),
-            Some("native_preview")
-        );
-        assert!(steps.iter().any(|step| {
-            let has_timing = step.get("cpu_time_us").and_then(Value::as_u64).is_some()
-                && step.get("runner_time_us").and_then(Value::as_u64).is_some();
-            step.get("route")
-                .and_then(|route| route.get("prefix_cache_path"))
-                .and_then(Value::as_str)
-                == Some("live_request_share")
-                && has_timing
-                && step
-                    .get("items")
-                    .and_then(Value::as_array)
-                    .is_some_and(|items| {
-                        items.iter().any(|item| {
-                            item.get("mode").and_then(Value::as_str) == Some("Decode")
-                                && item
-                                    .get("prefix_tokens_reused")
-                                    .and_then(Value::as_u64)
-                                    .unwrap_or(0)
-                                    > 0
-                        })
-                    })
-        }));
-    }
-
-    #[test]
-    fn replay_manifest_records_memory_blocked_prefix_recovery() {
-        let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/replay/memory_blocked_prefix_recovery.json",
-        );
-
-        let result = execute_manifest_runtime(&manifest)
-            .expect("memory-blocked replay runtime should execute");
-
-        assert!(result.correctness.passed);
-        assert_eq!(result.observation.replay_status(), "not_applicable");
-        assert!(result.determinism.passed);
-        assert!(result.observation.prefix_hit_rate() > 0.0);
-        assert!(result.observation.memory_blocked_steps > 0);
-        assert!(result.observation.memory_blocked_request_events > 0);
-        assert_eq!(
-            result
-                .observation
-                .route_metadata
-                .prefix_cache_path
-                .as_deref(),
-            Some("live_request_share")
-        );
-        assert!(route_decision(&result.observation, "live_share_hits") > 0);
-        assert_eq!(
-            route_decision(&result.observation, "retained_cache_hits"),
-            0
-        );
-        assert!(route_decision(&result.observation, "prefix_reused_requests") > 0);
-        assert!(route_decision(&result.observation, "prefix_reused_tokens") > 0);
-        assert!(route_decision(&result.observation, "blocked_prefix_reuse_requests") > 0);
-        assert!(route_decision(&result.observation, "blocked_prefix_reuse_tokens") > 0);
-        assert!(result
-            .observation
-            .step_trace
-            .iter()
-            .any(|step| !step.memory_blocked_request_ids.is_empty()));
-        assert!(result.observation.step_trace.iter().any(|step| {
-            step.route_metadata.prefix_cache_path.as_deref() == Some("live_request_share")
-                && step
-                    .route_metadata
-                    .crossover_decisions
-                    .iter()
-                    .find(|(key, _)| key == "blocked_prefix_reuse_requests")
-                    .map(|(_, value)| *value)
-                    .unwrap_or(0)
-                    > 0
-                && !step.memory_blocked_request_ids.is_empty()
-        }));
-        assert!(result.observation.step_trace.iter().any(|step| {
-            step.items.iter().any(|item| {
-                item.request_id.0 == 2 && item.mode == ax_engine_core::ExecutionMode::Decode
-            })
-        }));
-
-        let metrics_json = build_metrics_json("test-run", &result);
-        assert_eq!(
-            metrics_json
-                .get("memory_blocked_steps")
-                .and_then(Value::as_u64),
-            Some(result.observation.memory_blocked_steps)
-        );
-        assert_eq!(
-            metrics_json
-                .get("memory_blocked_request_events")
-                .and_then(Value::as_u64),
-            Some(result.observation.memory_blocked_request_events)
-        );
-        assert_eq!(
-            metrics_json
-                .get("runtime")
-                .and_then(|runtime| runtime.get("kv_total_blocks"))
-                .and_then(Value::as_u64),
-            Some(17)
-        );
-    }
-
-    #[test]
-    fn environment_artifact_records_structured_provenance() {
-        let manifest_path = Path::new(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
-        );
-        let manifest = load_test_manifest(manifest_path.to_str().expect("utf-8 path"));
-        let result = execute_manifest_runtime(&manifest).expect("scenario runtime should execute");
-
-        let environment = build_environment_json(
-            "test-run",
-            "scenario",
-            manifest_path,
-            Path::new("/tmp/ax-bench-environment"),
-            123,
-            &result,
-        )
-        .expect("environment artifact should build");
-
-        assert_eq!(
-            environment.get("schema_version").and_then(Value::as_str),
-            Some("ax.bench.environment.v1")
-        );
-        assert_eq!(
-            environment
-                .get("benchmark")
-                .and_then(|benchmark| benchmark.get("subcommand"))
-                .and_then(Value::as_str),
-            Some("scenario")
-        );
-        assert_eq!(
-            environment
-                .get("benchmark")
-                .and_then(|benchmark| benchmark.get("started_at_unix_s"))
-                .and_then(Value::as_u64),
-            Some(123)
-        );
-        assert_eq!(
-            environment
-                .get("benchmark")
-                .and_then(|benchmark| benchmark.get("manifest_path"))
-                .and_then(Value::as_str),
-            Some(manifest_path.to_str().expect("utf-8 path"))
-        );
-        assert_eq!(
-            environment
-                .get("software")
-                .and_then(|software| software.get("tool_mode"))
-                .and_then(Value::as_str),
-            Some("engine_deterministic_runtime")
-        );
-        assert_eq!(
-            environment
-                .get("runtime")
-                .and_then(|runtime| runtime.get("selected_backend"))
-                .and_then(Value::as_str),
-            Some("ax_native")
-        );
-        assert_eq!(
-            environment
-                .get("runtime")
-                .and_then(|runtime| runtime.get("support_tier"))
-                .and_then(Value::as_str),
-            Some("native_preview")
-        );
-        assert_eq!(
-            environment
-                .get("runtime")
-                .and_then(|runtime| runtime.get("resolution_policy"))
-                .and_then(Value::as_str),
-            Some("strict_native")
-        );
-        assert_eq!(
-            environment
-                .get("runtime")
-                .and_then(|runtime| runtime.get("host"))
-                .and_then(|host| host.get("os"))
-                .and_then(Value::as_str),
-            Some(std::env::consts::OS)
-        );
-        assert!(environment
-            .get("runtime")
-            .and_then(|runtime| runtime.get("metal_toolchain"))
-            .and_then(|toolchain| toolchain.get("fully_available"))
-            .and_then(Value::as_bool)
-            .is_some());
-        assert_eq!(
-            environment
-                .get("route")
-                .and_then(|route| route.get("execution_semantics"))
-                .and_then(Value::as_str),
-            Some("native_placeholder_deterministic")
-        );
-        assert_eq!(
-            environment
-                .get("route")
-                .and_then(|route| route.get("native_placeholder_execution"))
-                .and_then(Value::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            environment
-                .get("route")
-                .and_then(|route| route.get("metal_numeric_scaffold_only"))
-                .and_then(Value::as_bool),
-            Some(false)
-        );
-        assert_eq!(
-            environment
-                .get("route")
-                .and_then(|route| route.get("metal_real_model_forward"))
-                .and_then(Value::as_bool),
-            Some(false)
-        );
-        assert_eq!(
-            environment
-                .get("route")
-                .and_then(|route| route.get("metal_complete_model_forward_supported"))
-                .and_then(Value::as_bool),
-            Some(false)
-        );
-        assert_eq!(
-            environment
-                .get("route")
-                .and_then(|route| route.get("metal_direct_decode_tokens"))
-                .and_then(Value::as_bool),
-            Some(false)
-        );
-        assert_eq!(
-            environment
-                .get("route")
-                .and_then(|route| route.get("metal_direct_decode_model_bound_ffn"))
-                .and_then(Value::as_bool),
-            Some(false)
-        );
-        assert_eq!(
-            environment
-                .get("route")
-                .and_then(|route| route.get("metal_direct_decode_checksum_lo"))
-                .and_then(Value::as_u64),
-            Some(0)
-        );
-        assert_eq!(
-            environment
-                .get("route")
-                .and_then(|route| route.get("metal_model_artifacts_validated"))
-                .and_then(Value::as_bool),
-            Some(false)
-        );
-        assert_eq!(
-            environment
-                .get("route")
-                .and_then(|route| route.get("prefix_cache_evidence"))
-                .and_then(Value::as_str),
-            Some("none_observed")
-        );
-        assert_eq!(
-            environment
-                .get("route")
-                .and_then(|route| route.get("prefix_reuse_provenance"))
-                .and_then(Value::as_str),
-            Some("none_observed")
-        );
-        assert!(environment
-            .get("machine")
-            .and_then(|machine| machine.get("system_model"))
-            .is_some());
-        assert!(environment
-            .get("machine")
-            .and_then(|machine| machine.get("memory_bytes"))
-            .is_some());
-        assert!(environment
-            .get("software")
-            .and_then(|software| software.get("os_version"))
-            .and_then(Value::as_str)
-            .is_some());
-        assert!(environment
-            .get("software")
-            .and_then(|software| software.get("os_build"))
-            .and_then(Value::as_str)
-            .is_some());
-        assert!(environment
-            .get("software")
-            .and_then(|software| software.get("kernel_release"))
-            .and_then(Value::as_str)
-            .is_some());
-        assert!(environment
-            .get("software")
-            .and_then(|software| software.get("metal_driver"))
-            .and_then(Value::as_str)
-            .is_some());
-        assert_eq!(
-            environment
-                .get("benchmark")
-                .and_then(|benchmark| benchmark.get("schema_family"))
-                .and_then(Value::as_str),
-            Some("ax.bench.v1")
-        );
-        assert_eq!(
-            environment
-                .get("benchmark")
-                .and_then(|benchmark| benchmark.get("manifest_fingerprint_fnv1a64"))
-                .and_then(Value::as_str)
-                .map(str::len),
-            Some(16)
-        );
+        assert!(message.contains("llama.cpp"));
     }
 
     #[test]
@@ -17897,9 +16681,9 @@ print(json.dumps({
         });
         let baseline_environment = json!({
             "software": {
-                "tool_mode": "compatibility_stepwise_runtime"
+                "tool_mode": "llama_cpp_stepwise_runtime"
             },
-            "runtime": compatibility_runtime_fixture("http://127.0.0.1:8081"),
+            "runtime": llama_runtime_fixture("http://127.0.0.1:8081"),
             "route": {
                 "prefix_cache_path": "delegated_prompt_cache",
                 "prefix_cache_evidence": "backend_reported_cached_prompt_tokens",
@@ -17909,9 +16693,9 @@ print(json.dumps({
         });
         let candidate_environment = json!({
             "software": {
-                "tool_mode": "compatibility_stepwise_runtime"
+                "tool_mode": "llama_cpp_stepwise_runtime"
             },
-            "runtime": compatibility_runtime_fixture("http://127.0.0.1:8081"),
+            "runtime": llama_runtime_fixture("http://127.0.0.1:8081"),
             "route": {
                 "prefix_cache_path": "delegated_prompt_cache",
                 "prefix_cache_evidence": "backend_reported_cached_prompt_tokens",
@@ -17934,14 +16718,14 @@ print(json.dumps({
                 .get("summary")
                 .and_then(|summary| summary.get("result"))
                 .and_then(Value::as_str),
-            Some("compatibility_stepwise_compare")
+            Some("llama_cpp_stepwise_compare")
         );
         assert_eq!(
             regression
                 .get("runtime")
                 .and_then(|runtime| runtime.get("tool_mode"))
                 .and_then(Value::as_str),
-            Some("compatibility_stepwise_runtime")
+            Some("llama_cpp_stepwise_runtime")
         );
         assert_eq!(
             regression
@@ -17956,13 +16740,6 @@ print(json.dumps({
                 .and_then(|summary| summary.get("execution_semantics"))
                 .and_then(Value::as_str),
             Some("delegated_backend_runtime")
-        );
-        assert_eq!(
-            regression
-                .get("summary")
-                .and_then(|summary| summary.get("native_placeholder_execution"))
-                .and_then(Value::as_bool),
-            Some(false)
         );
         assert_eq!(
             regression
@@ -17998,7 +16775,7 @@ print(json.dumps({
                 .and_then(|contract| contract.get("tool_mode"))
                 .and_then(|field| field.get("baseline"))
                 .and_then(Value::as_str),
-            Some("compatibility_stepwise_runtime")
+            Some("llama_cpp_stepwise_runtime")
         );
         assert_eq!(
             regression
@@ -18053,7 +16830,7 @@ print(json.dumps({
         });
         let regression = json!({
             "runtime": {
-                "tool_mode": "compatibility_stepwise_runtime",
+                "tool_mode": "llama_cpp_stepwise_runtime",
                 "backend_adapter": {
                     "kind": "llama_cpp_server_completion",
                     "server_url": "http://127.0.0.1:8081"
@@ -18066,11 +16843,11 @@ print(json.dumps({
                 "prefix_hit_rate_pct": 5.0
             },
             "summary": {
-                "result": "compatibility_stepwise_compare",
-                "tool_mode": "compatibility_stepwise_runtime",
+                "result": "llama_cpp_stepwise_compare",
+                "tool_mode": "llama_cpp_stepwise_runtime",
                 "selected_backend": "llama_cpp",
-                "support_tier": "compatibility",
-                "resolution_policy": "allow_compat",
+                "support_tier": "llama_cpp",
+                "resolution_policy": "allow_llama_cpp",
                 "prefix_cache_path": "delegated_prompt_cache",
                 "prefix_cache_evidence": "backend_reported_cached_prompt_tokens",
                 "prefix_reuse_provenance": "delegated_backend_prompt_cache",
@@ -18081,17 +16858,17 @@ print(json.dumps({
                     "status": "delegated_runtime",
                     "hot_path_cpu_fallback_free": false,
                     "batched_direct_decode_logits_ready": false,
-                    "prefix_min_native_share": null,
-                    "direct_decode_min_native_share": null,
-                    "blockers": ["delegated_runtime_not_ax_native"]
+                    "prefix_min_mlx_metal_dispatch_share": null,
+                    "direct_decode_min_mlx_metal_dispatch_share": null,
+                    "blockers": ["delegated_runtime_not_mlx"]
                 },
                 "candidate": {
                     "status": "delegated_runtime",
                     "hot_path_cpu_fallback_free": false,
                     "batched_direct_decode_logits_ready": false,
-                    "prefix_min_native_share": null,
-                    "direct_decode_min_native_share": null,
-                    "blockers": ["delegated_runtime_not_ax_native"]
+                    "prefix_min_mlx_metal_dispatch_share": null,
+                    "direct_decode_min_mlx_metal_dispatch_share": null,
+                    "blockers": ["delegated_runtime_not_mlx"]
                 }
             }
         });
@@ -18104,22 +16881,25 @@ print(json.dumps({
         );
 
         assert!(summary.contains("delegated_backend_prompt_cache"));
-        assert!(summary.contains("compatibility_stepwise_compare"));
-        assert!(summary.contains("compatibility_stepwise_runtime"));
+        assert!(summary.contains("llama_cpp_stepwise_compare"));
+        assert!(summary.contains("llama_cpp_stepwise_runtime"));
         assert!(summary.contains("selected_backend: `llama_cpp`"));
         assert!(summary.contains("backend_adapter: `{\"kind\":\"llama_cpp_server_completion\",\"server_url\":\"http://127.0.0.1:8081\"}`"));
         assert!(summary.contains("execution_semantics: `unknown`"));
         assert!(summary.contains("prefix_cache_evidence: `backend_reported_cached_prompt_tokens`"));
         assert!(summary.contains("backend_reported_cached_prompt_tokens: `144`"));
-        assert!(summary.contains("baseline_native_benchmark_readiness: `delegated_runtime`"));
-        assert!(summary
-            .contains("candidate_readiness_blockers: `[\"delegated_runtime_not_ax_native\"]`"));
+        assert!(summary.contains("baseline_mlx_metal_readiness: `delegated_runtime`"));
+        assert!(
+            summary.contains(
+                "candidate_mlx_metal_readiness_blockers: `[\"delegated_runtime_not_mlx\"]`"
+            )
+        );
         assert!(!summary.contains("prefix_reuse_provenance: `unknown`"));
         assert!(!summary.contains("mode: `engine_bringup`"));
     }
 
     #[test]
-    fn regression_artifact_records_native_benchmark_readiness() {
+    fn regression_artifact_records_mlx_metal_readiness() {
         let baseline_metrics = json!({
             "run_id": "baseline-run",
             "metrics": {
@@ -18142,22 +16922,21 @@ print(json.dumps({
             "software": {
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_real_model_forward",
-                "native_placeholder_execution": false,
                 "metal_direct_decode_batching_opportunity_observed": true,
                 "metal_complete_model_forward_supported": true,
                 "metal_real_model_forward": true,
                 "metal_model_artifacts_validated": true,
-                "metal_prefix_layers_native_attention": true,
+                "mlx_metal_prefix_layers_attention": true,
                 "metal_prefix_layers_cpu_reference": false,
                 "metal_prefix_cpu_reference_dispatch_count": 0,
-                "metal_prefix_native_projection_row_count": 2048,
+                "mlx_metal_prefix_projection_row_count": 2048,
                 "metal_prefix_cpu_projection_row_count": 0,
-                "metal_prefix_native_rms_norm_element_count": 1024,
+                "mlx_metal_prefix_rms_norm_element_count": 1024,
                 "metal_prefix_cpu_rms_norm_element_count": 0,
-                "metal_prefix_native_ffn_activation_element_count": 1024,
+                "mlx_metal_prefix_ffn_activation_element_count": 1024,
                 "metal_prefix_cpu_ffn_activation_element_count": 0,
                 "metal_direct_decode_tokens": true,
                 "metal_direct_decode_model_bound_ffn": true,
@@ -18165,11 +16944,11 @@ print(json.dumps({
                 "metal_direct_decode_batched_logits_token_count": 2,
                 "metal_direct_decode_batched_group_fallback_count": 0,
                 "metal_direct_decode_batched_group_fallback_token_count": 0,
-                "metal_direct_decode_native_projection_row_count": 4096,
+                "mlx_metal_direct_decode_projection_row_count": 4096,
                 "metal_direct_decode_cpu_projection_row_count": 0,
-                "metal_direct_decode_native_rms_norm_element_count": 1024,
+                "mlx_metal_direct_decode_rms_norm_element_count": 1024,
                 "metal_direct_decode_cpu_rms_norm_element_count": 0,
-                "metal_direct_decode_native_ffn_activation_element_count": 1024,
+                "mlx_metal_direct_decode_ffn_activation_element_count": 1024,
                 "metal_direct_decode_cpu_ffn_activation_element_count": 0,
                 "prefix_cache_path": "metadata_lookup",
                 "prefix_cache_evidence": "none_observed",
@@ -18180,22 +16959,21 @@ print(json.dumps({
             "software": {
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_real_model_forward",
-                "native_placeholder_execution": false,
                 "metal_direct_decode_batching_opportunity_observed": true,
                 "metal_complete_model_forward_supported": true,
                 "metal_real_model_forward": true,
                 "metal_model_artifacts_validated": true,
-                "metal_prefix_layers_native_attention": true,
+                "mlx_metal_prefix_layers_attention": true,
                 "metal_prefix_layers_cpu_reference": false,
                 "metal_prefix_cpu_reference_dispatch_count": 0,
-                "metal_prefix_native_projection_row_count": 2048,
+                "mlx_metal_prefix_projection_row_count": 2048,
                 "metal_prefix_cpu_projection_row_count": 0,
-                "metal_prefix_native_rms_norm_element_count": 1024,
+                "mlx_metal_prefix_rms_norm_element_count": 1024,
                 "metal_prefix_cpu_rms_norm_element_count": 0,
-                "metal_prefix_native_ffn_activation_element_count": 1024,
+                "mlx_metal_prefix_ffn_activation_element_count": 1024,
                 "metal_prefix_cpu_ffn_activation_element_count": 0,
                 "metal_direct_decode_tokens": true,
                 "metal_direct_decode_model_bound_ffn": true,
@@ -18203,11 +16981,11 @@ print(json.dumps({
                 "metal_direct_decode_batched_logits_token_count": 2,
                 "metal_direct_decode_batched_group_fallback_count": 1,
                 "metal_direct_decode_batched_group_fallback_token_count": 2,
-                "metal_direct_decode_native_projection_row_count": 3072,
+                "mlx_metal_direct_decode_projection_row_count": 3072,
                 "metal_direct_decode_cpu_projection_row_count": 0,
-                "metal_direct_decode_native_rms_norm_element_count": 1024,
+                "mlx_metal_direct_decode_rms_norm_element_count": 1024,
                 "metal_direct_decode_cpu_rms_norm_element_count": 0,
-                "metal_direct_decode_native_ffn_activation_element_count": 1024,
+                "mlx_metal_direct_decode_ffn_activation_element_count": 1024,
                 "metal_direct_decode_cpu_ffn_activation_element_count": 0,
                 "prefix_cache_path": "metadata_lookup",
                 "prefix_cache_evidence": "none_observed",
@@ -18234,21 +17012,21 @@ print(json.dumps({
         assert_eq!(
             regression
                 .get("summary")
-                .and_then(|summary| summary.get("native_benchmark_readiness"))
+                .and_then(|summary| summary.get("mlx_metal_readiness"))
                 .and_then(Value::as_str),
             Some("ready")
         );
         assert_eq!(
             regression
                 .get("summary")
-                .and_then(|summary| summary.get("native_hot_path_cpu_fallback_free"))
+                .and_then(|summary| summary.get("mlx_metal_hot_path_cpu_fallback_free"))
                 .and_then(Value::as_bool),
             Some(true)
         );
         assert_eq!(
             regression
                 .get("summary")
-                .and_then(|summary| summary.get("native_batched_direct_decode_logits_ready"))
+                .and_then(|summary| summary.get("mlx_metal_batched_direct_decode_logits_ready"))
                 .and_then(Value::as_bool),
             Some(true)
         );
@@ -18291,29 +17069,28 @@ print(json.dumps({
     }
 
     #[test]
-    fn native_benchmark_readiness_allows_single_request_decode_without_batching_opportunity() {
-        let inputs = NativeBenchmarkReadinessInputs {
+    fn mlx_metal_readiness_allows_single_request_decode_without_batching_opportunity() {
+        let inputs = MlxMetalReadinessInputs {
             tool_mode: "engine_bringup_runtime",
-            selected_backend: "ax_native",
-            native_placeholder_execution: false,
+            selected_backend: "mlx",
             native_dense_dequantized_source: false,
             native_quantized_projection_binding_count: 0,
             direct_decode_batching_opportunity_observed: false,
             metal_complete_model_forward_supported: true,
             metal_real_model_forward: true,
             metal_model_artifacts_validated: true,
-            metal_prefix_layers_native_attention: true,
+            mlx_metal_prefix_layers_attention: true,
             metal_prefix_layers_cpu_reference: false,
             metal_prefix_cpu_reference_dispatch_count: 0,
-            metal_prefix_native_projection_row_count: 2048,
+            mlx_metal_prefix_projection_row_count: 2048,
             metal_prefix_cpu_projection_row_count: 0,
-            metal_prefix_native_rms_norm_element_count: 1024,
+            mlx_metal_prefix_rms_norm_element_count: 1024,
             metal_prefix_cpu_rms_norm_element_count: 0,
-            metal_prefix_native_ffn_activation_element_count: 1024,
+            mlx_metal_prefix_ffn_activation_element_count: 1024,
             metal_prefix_cpu_ffn_activation_element_count: 0,
-            metal_prefix_native_residual_add_element_count: 1024,
+            mlx_metal_prefix_residual_add_element_count: 1024,
             metal_prefix_cpu_residual_add_element_count: 0,
-            metal_prefix_native_scale_element_count: 1024,
+            mlx_metal_prefix_scale_element_count: 1024,
             metal_prefix_cpu_scale_element_count: 0,
             metal_direct_decode_tokens: true,
             metal_direct_decode_model_bound_ffn: true,
@@ -18321,25 +17098,25 @@ print(json.dumps({
             metal_direct_decode_batched_logits_token_count: 0,
             metal_direct_decode_batched_group_fallback_count: 0,
             metal_direct_decode_batched_group_fallback_token_count: 0,
-            metal_direct_decode_native_projection_row_count: 4096,
+            mlx_metal_direct_decode_projection_row_count: 4096,
             metal_direct_decode_cpu_projection_row_count: 0,
-            metal_direct_decode_native_rms_norm_element_count: 1024,
+            mlx_metal_direct_decode_rms_norm_element_count: 1024,
             metal_direct_decode_cpu_rms_norm_element_count: 0,
-            metal_direct_decode_native_ffn_activation_element_count: 1024,
+            mlx_metal_direct_decode_ffn_activation_element_count: 1024,
             metal_direct_decode_cpu_ffn_activation_element_count: 0,
-            metal_direct_decode_native_residual_add_element_count: 1024,
+            mlx_metal_direct_decode_residual_add_element_count: 1024,
             metal_direct_decode_cpu_residual_add_element_count: 0,
-            metal_direct_decode_native_scale_element_count: 1024,
+            mlx_metal_direct_decode_scale_element_count: 1024,
             metal_direct_decode_cpu_scale_element_count: 0,
         };
-        let readiness = native_benchmark_readiness(inputs);
+        let readiness = mlx_metal_readiness(inputs);
 
         assert_eq!(readiness.status, "ready");
         assert!(readiness.hot_path_cpu_fallback_free);
         assert!(readiness.batched_direct_decode_logits_ready);
         assert!(readiness.blockers.is_empty());
 
-        let dequantized_readiness = native_benchmark_readiness(NativeBenchmarkReadinessInputs {
+        let dequantized_readiness = mlx_metal_readiness(MlxMetalReadinessInputs {
             native_dense_dequantized_source: true,
             ..inputs
         });
@@ -18349,11 +17126,10 @@ print(json.dumps({
             vec![NATIVE_DENSE_DEQUANTIZED_SOURCE_BLOCKER]
         );
 
-        let quantized_projection_readiness =
-            native_benchmark_readiness(NativeBenchmarkReadinessInputs {
-                native_quantized_projection_binding_count: 1,
-                ..inputs
-            });
+        let quantized_projection_readiness = mlx_metal_readiness(MlxMetalReadinessInputs {
+            native_quantized_projection_binding_count: 1,
+            ..inputs
+        });
         assert_eq!(quantized_projection_readiness.status, "coverage_gap");
         assert_eq!(
             quantized_projection_readiness.blockers,
@@ -18535,78 +17311,6 @@ print(json.dumps({
     }
 
     #[test]
-    fn handle_matrix_executes_native_scenario_matrix_and_writes_summary() {
-        let root = unique_test_dir("native-matrix");
-        let output_root = root.join("results");
-        fs::create_dir_all(&output_root).expect("output root should create");
-        let chat_manifest_path = write_test_manifest_with_native_placeholder_opt_in(
-            &root,
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
-        );
-        let concurrent_manifest_path = write_test_manifest_with_native_placeholder_opt_in(
-            &root,
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/concurrent_qwen_dual.json",
-        );
-
-        let matrix_manifest_path = write_matrix_manifest_fixture(
-            &root,
-            &[
-                json!({
-                    "manifest": chat_manifest_path,
-                    "label": "Chat Qwen Short"
-                }),
-                json!({
-                    "manifest": concurrent_manifest_path,
-                    "label": "Concurrent Qwen Dual"
-                }),
-            ],
-        );
-        let args = vec![
-            "--manifest".to_string(),
-            matrix_manifest_path.display().to_string(),
-            "--output-root".to_string(),
-            output_root.display().to_string(),
-        ];
-
-        handle_matrix(&args).expect("matrix command should succeed");
-
-        let run_dir = fs::read_dir(&output_root)
-            .expect("output root should be readable")
-            .map(|entry| entry.expect("directory entry should read").path())
-            .next()
-            .expect("matrix result should exist");
-        let matrix_json =
-            load_json_value(&run_dir.join("matrix.json")).expect("matrix JSON should load");
-        let summary =
-            fs::read_to_string(run_dir.join("summary.md")).expect("matrix summary should load");
-
-        assert_eq!(
-            matrix_json.get("status").and_then(Value::as_str),
-            Some("ok")
-        );
-        assert_eq!(
-            nested_value(&matrix_json, &["summary", "member_count"]).and_then(Value::as_u64),
-            Some(2)
-        );
-        assert_eq!(
-            nested_value(&matrix_json, &["summary", "ok_count"]).and_then(Value::as_u64),
-            Some(2)
-        );
-        assert_eq!(
-            matrix_json
-                .get("members")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(2)
-        );
-        assert!(summary.contains("Chat Qwen Short"));
-        assert!(summary.contains("Concurrent Qwen Dual"));
-        assert!(summary.contains("Tier 2 dense-path benchmarking"));
-
-        fs::remove_dir_all(&root).expect("test directory should clean up");
-    }
-
-    #[test]
     fn handle_matrix_compare_writes_rollup_and_member_compares() {
         let root = unique_test_dir("matrix-compare");
         let runs_root = root.join("runs");
@@ -18658,9 +17362,9 @@ print(json.dumps({
                     "model_family": "qwen3_dense",
                     "status": "ok",
                     "tool_mode": "engine_bringup_runtime",
-                    "selected_backend": "ax_native",
-                    "support_tier": "native_preview",
-                    "resolution_policy": "strict_native",
+                    "selected_backend": "mlx",
+                    "support_tier": "mlx_preview",
+                    "resolution_policy": "mlx_only",
                     "result_dir": baseline_chat.display().to_string(),
                     "ttft_ms": 10.0,
                     "decode_tok_s": 120.0,
@@ -18674,9 +17378,9 @@ print(json.dumps({
                     "model_family": "qwen3_dense",
                     "status": "ok",
                     "tool_mode": "engine_bringup_runtime",
-                    "selected_backend": "ax_native",
-                    "support_tier": "native_preview",
-                    "resolution_policy": "strict_native",
+                    "selected_backend": "mlx",
+                    "support_tier": "mlx_preview",
+                    "resolution_policy": "mlx_only",
                     "result_dir": baseline_concurrent.display().to_string(),
                     "ttft_ms": 12.0,
                     "decode_tok_s": 100.0,
@@ -18697,9 +17401,9 @@ print(json.dumps({
                     "model_family": "qwen3_dense",
                     "status": "ok",
                     "tool_mode": "engine_bringup_runtime",
-                    "selected_backend": "ax_native",
-                    "support_tier": "native_preview",
-                    "resolution_policy": "strict_native",
+                    "selected_backend": "mlx",
+                    "support_tier": "mlx_preview",
+                    "resolution_policy": "mlx_only",
                     "result_dir": candidate_chat.display().to_string(),
                     "ttft_ms": 9.0,
                     "decode_tok_s": 132.0,
@@ -18713,9 +17417,9 @@ print(json.dumps({
                     "model_family": "qwen3_dense",
                     "status": "ok",
                     "tool_mode": "engine_bringup_runtime",
-                    "selected_backend": "ax_native",
-                    "support_tier": "native_preview",
-                    "resolution_policy": "strict_native",
+                    "selected_backend": "mlx",
+                    "support_tier": "mlx_preview",
+                    "resolution_policy": "mlx_only",
                     "result_dir": candidate_concurrent.display().to_string(),
                     "ttft_ms": 11.0,
                     "decode_tok_s": 108.0,
@@ -18747,7 +17451,7 @@ print(json.dumps({
 
         assert_eq!(
             matrix_regression.get("id").and_then(Value::as_str),
-            Some("test_native_matrix")
+            Some("test_mlx_mlx_matrix")
         );
         assert_eq!(
             nested_value(&matrix_regression, &["summary", "member_count"]).and_then(Value::as_u64),
@@ -18804,9 +17508,9 @@ print(json.dumps({
                 "model_family": "qwen3_dense",
                 "status": "ok",
                 "tool_mode": "engine_bringup_runtime",
-                "selected_backend": "ax_native",
-                "support_tier": "native_preview",
-                "resolution_policy": "strict_native",
+                "selected_backend": "mlx",
+                "support_tier": "mlx_preview",
+                "resolution_policy": "mlx_only",
                 "result_dir": baseline_chat.display().to_string(),
                 "ttft_ms": 10.0,
                 "decode_tok_s": 120.0,
@@ -18825,9 +17529,9 @@ print(json.dumps({
                 "model_family": "qwen3_dense",
                 "status": "ok",
                 "tool_mode": "engine_bringup_runtime",
-                "selected_backend": "ax_native",
-                "support_tier": "native_preview",
-                "resolution_policy": "strict_native",
+                "selected_backend": "mlx",
+                "support_tier": "mlx_preview",
+                "resolution_policy": "mlx_only",
                 "result_dir": candidate_chat.display().to_string(),
                 "ttft_ms": 9.0,
                 "decode_tok_s": 132.0,
@@ -18861,9 +17565,9 @@ print(json.dumps({
         let output_root = root.join("results");
         fs::create_dir_all(&output_root).expect("output root should create");
 
-        let mut manifest = compatibility_scenario_manifest("http://127.0.0.1:8081");
+        let mut manifest = llama_cpp_scenario_manifest("http://127.0.0.1:8081");
         manifest.runtime.backend_adapter = None;
-        let manifest_path = root.join("compatibility-missing-adapter.json");
+        let manifest_path = root.join("llama-cpp-missing-adapter.json");
         write_json_file(&manifest_path, &manifest).expect("manifest should write");
 
         let scenario_args = vec![
@@ -18899,7 +17603,7 @@ print(json.dumps({
         };
 
         assert!(message.contains("contract-failure result"));
-        assert!(message.contains("compatibility_backend_adapter_required"));
+        assert!(message.contains("llama_backend_adapter_required"));
 
         fs::remove_dir_all(&root).expect("test directory should clean up");
     }
@@ -18954,9 +17658,9 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "engine_deterministic_runtime"
+                "tool_mode": "mlx_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "prefix_cache_path": "metadata_lookup",
                 "prefix_cache_evidence": "none_observed",
@@ -18981,9 +17685,9 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "engine_deterministic_runtime"
+                "tool_mode": "mlx_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "prefix_cache_path": "metadata_lookup",
                 "prefix_cache_evidence": "none_observed",
@@ -19020,9 +17724,9 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "engine_deterministic_runtime"
+                "tool_mode": "mlx_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "prefix_cache_path": "metadata_lookup",
                 "prefix_cache_evidence": "none_observed",
@@ -19047,9 +17751,9 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.5.0",
                 "metal_driver": "system-default",
-                "tool_mode": "engine_deterministic_runtime"
+                "tool_mode": "mlx_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "prefix_cache_path": "metadata_lookup",
                 "prefix_cache_evidence": "none_observed",
@@ -19086,9 +17790,9 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "engine_deterministic_runtime"
+                "tool_mode": "mlx_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "prefix_cache_path": "metadata_lookup",
                 "prefix_cache_evidence": "none_observed",
@@ -19099,7 +17803,7 @@ print(json.dumps({
                 "subcommand": "scenario"
             }
         });
-        let mut candidate_runtime = native_runtime_fixture();
+        let mut candidate_runtime = mlx_runtime_fixture();
         candidate_runtime["metal_toolchain"]["metal"]["available"] = json!(false);
         candidate_runtime["metal_toolchain"]["fully_available"] = json!(false);
         let candidate = json!({
@@ -19116,7 +17820,7 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "engine_deterministic_runtime"
+                "tool_mode": "mlx_runtime"
             },
             "runtime": candidate_runtime,
             "route": {
@@ -19155,9 +17859,9 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "compatibility_stepwise_runtime"
+                "tool_mode": "llama_cpp_stepwise_runtime"
             },
-            "runtime": compatibility_runtime_fixture("http://127.0.0.1:8081"),
+            "runtime": llama_runtime_fixture("http://127.0.0.1:8081"),
             "route": {
                 "prefix_cache_path": "delegated_prompt_cache",
                 "prefix_cache_evidence": "backend_reported_cached_prompt_tokens",
@@ -19183,9 +17887,9 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "compatibility_stepwise_runtime"
+                "tool_mode": "llama_cpp_stepwise_runtime"
             },
-            "runtime": compatibility_runtime_fixture("http://127.0.0.1:8082"),
+            "runtime": llama_runtime_fixture("http://127.0.0.1:8082"),
             "route": {
                 "prefix_cache_path": "delegated_prompt_cache",
                 "prefix_cache_evidence": "backend_reported_cached_prompt_tokens",
@@ -19209,8 +17913,8 @@ print(json.dumps({
 
     #[test]
     fn compare_validation_rejects_environment_native_model_drift() {
-        let mut baseline_runtime = native_runtime_fixture();
-        baseline_runtime["native_model"] = json!({
+        let mut baseline_runtime = mlx_runtime_fixture();
+        baseline_runtime["mlx_model"] = json!({
             "artifacts_source": "explicit_config",
             "model_family": "qwen3_dense",
             "tensor_format": "safetensors",
@@ -19223,7 +17927,7 @@ print(json.dumps({
             "buffer_bytes": 0
         });
         let mut candidate_runtime = baseline_runtime.clone();
-        candidate_runtime["native_model"]["tensor_count"] = json!(401);
+        candidate_runtime["mlx_model"]["tensor_count"] = json!(401);
 
         let baseline = json!({
             "schema_version": "ax.bench.environment.v1",
@@ -19239,7 +17943,7 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "engine_deterministic_runtime"
+                "tool_mode": "mlx_runtime"
             },
             "runtime": baseline_runtime,
             "route": {
@@ -19266,7 +17970,7 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "engine_deterministic_runtime"
+                "tool_mode": "mlx_runtime"
             },
             "runtime": candidate_runtime,
             "route": {
@@ -19286,7 +17990,7 @@ print(json.dumps({
             panic!("environment validation should return a contract error");
         };
 
-        assert!(message.contains("runtime.native_model.tensor_count"));
+        assert!(message.contains("runtime.mlx_model.tensor_count"));
     }
 
     #[test]
@@ -19307,10 +18011,9 @@ print(json.dumps({
                 "metal_driver": "system-default",
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_numeric_scaffold_only",
-                "native_placeholder_execution": false,
                 "metal_numeric_scaffold_only": true,
                 "metal_real_model_forward": false,
                 "metal_model_conditioned_inputs": false,
@@ -19341,10 +18044,9 @@ print(json.dumps({
                 "metal_driver": "system-default",
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_real_model_forward",
-                "native_placeholder_execution": false,
                 "metal_numeric_scaffold_only": false,
                 "metal_real_model_forward": true,
                 "metal_model_conditioned_inputs": true,
@@ -19387,10 +18089,9 @@ print(json.dumps({
                 "metal_driver": "system-default",
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_real_model_tensor_inputs",
-                "native_placeholder_execution": false,
                 "metal_numeric_scaffold_only": false,
                 "metal_complete_model_forward_supported": false,
                 "metal_real_model_forward": false,
@@ -19422,10 +18123,9 @@ print(json.dumps({
                 "metal_driver": "system-default",
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_real_model_tensor_inputs",
-                "native_placeholder_execution": false,
                 "metal_numeric_scaffold_only": false,
                 "metal_complete_model_forward_supported": true,
                 "metal_real_model_forward": false,
@@ -19469,10 +18169,9 @@ print(json.dumps({
                 "metal_driver": "system-default",
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_real_model_tensor_inputs",
-                "native_placeholder_execution": false,
                 "metal_numeric_scaffold_only": false,
                 "metal_real_model_forward": false,
                 "metal_model_conditioned_inputs": true,
@@ -19504,10 +18203,9 @@ print(json.dumps({
                 "metal_driver": "system-default",
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_real_model_tensor_inputs",
-                "native_placeholder_execution": false,
                 "metal_numeric_scaffold_only": false,
                 "metal_real_model_forward": false,
                 "metal_model_conditioned_inputs": true,
@@ -19552,14 +18250,13 @@ print(json.dumps({
                 "metal_driver": "system-default",
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_multilayer_native_prefix_attention",
-                "native_placeholder_execution": false,
                 "metal_numeric_scaffold_only": false,
                 "metal_real_model_forward": false,
                 "metal_model_conditioned_inputs": true,
-                "metal_prefix_layers_native_attention": true,
+                "mlx_metal_prefix_layers_attention": true,
                 "metal_prefix_layers_cpu_reference": false,
                 "metal_real_model_tensor_inputs": true,
                 "metal_model_artifacts_validated": true,
@@ -19588,14 +18285,13 @@ print(json.dumps({
                 "metal_driver": "system-default",
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_multilayer_native_prefix_attention",
-                "native_placeholder_execution": false,
                 "metal_numeric_scaffold_only": false,
                 "metal_real_model_forward": false,
                 "metal_model_conditioned_inputs": true,
-                "metal_prefix_layers_native_attention": false,
+                "mlx_metal_prefix_layers_attention": false,
                 "metal_prefix_layers_cpu_reference": true,
                 "metal_real_model_tensor_inputs": true,
                 "metal_model_artifacts_validated": true,
@@ -19615,7 +18311,7 @@ print(json.dumps({
             panic!("environment validation should return a contract error");
         };
 
-        assert!(message.contains("route.metal_prefix_layers_native_attention"));
+        assert!(message.contains("route.mlx_metal_prefix_layers_attention"));
     }
 
     #[test]
@@ -19636,16 +18332,15 @@ print(json.dumps({
                 "metal_driver": "system-default",
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_multilayer_mixed_prefix_attention",
-                "native_placeholder_execution": false,
                 "metal_numeric_scaffold_only": false,
                 "metal_real_model_forward": false,
                 "metal_model_conditioned_inputs": true,
-                "metal_prefix_layers_native_attention": true,
+                "mlx_metal_prefix_layers_attention": true,
                 "metal_prefix_layers_cpu_reference": true,
-                "metal_prefix_native_dispatch_count": 35,
+                "mlx_metal_prefix_dispatch_count": 35,
                 "metal_prefix_cpu_reference_dispatch_count": 1,
                 "metal_real_model_tensor_inputs": true,
                 "metal_model_artifacts_validated": true,
@@ -19674,16 +18369,15 @@ print(json.dumps({
                 "metal_driver": "system-default",
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_multilayer_mixed_prefix_attention",
-                "native_placeholder_execution": false,
                 "metal_numeric_scaffold_only": false,
                 "metal_real_model_forward": false,
                 "metal_model_conditioned_inputs": true,
-                "metal_prefix_layers_native_attention": true,
+                "mlx_metal_prefix_layers_attention": true,
                 "metal_prefix_layers_cpu_reference": true,
-                "metal_prefix_native_dispatch_count": 36,
+                "mlx_metal_prefix_dispatch_count": 36,
                 "metal_prefix_cpu_reference_dispatch_count": 0,
                 "metal_real_model_tensor_inputs": true,
                 "metal_model_artifacts_validated": true,
@@ -19703,7 +18397,7 @@ print(json.dumps({
             panic!("environment validation should return a contract error");
         };
 
-        assert!(message.contains("route.metal_prefix_native_dispatch_count"));
+        assert!(message.contains("route.mlx_metal_prefix_dispatch_count"));
     }
 
     #[test]
@@ -19724,30 +18418,29 @@ print(json.dumps({
                 "metal_driver": "system-default",
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_real_model_forward",
-                "native_placeholder_execution": false,
                 "metal_numeric_scaffold_only": false,
                 "metal_complete_model_forward_supported": true,
                 "metal_real_model_forward": true,
                 "metal_model_conditioned_inputs": true,
-                "metal_prefix_layers_native_attention": true,
+                "mlx_metal_prefix_layers_attention": true,
                 "metal_prefix_layers_cpu_reference": false,
-                "metal_prefix_native_dispatch_count": 35,
+                "mlx_metal_prefix_dispatch_count": 35,
                 "metal_prefix_cpu_reference_dispatch_count": 0,
                 "metal_direct_decode_tokens": true,
                 "metal_direct_decode_model_bound_ffn": true,
                 "metal_real_model_tensor_inputs": true,
                 "metal_model_artifacts_validated": true,
-                "metal_native_projection_f32_binding_count": 0,
-                "metal_native_projection_f16_binding_count": 28,
-                "metal_native_projection_bf16_binding_count": 0,
-                "metal_native_projection_unsupported_binding_count": 0,
-                "metal_native_rms_norm_f32_binding_count": 0,
-                "metal_native_rms_norm_f16_binding_count": 28,
-                "metal_native_rms_norm_bf16_binding_count": 0,
-                "metal_native_rms_norm_unsupported_binding_count": 0,
+                "mlx_metal_projection_f32_binding_count": 0,
+                "mlx_metal_projection_f16_binding_count": 28,
+                "mlx_metal_projection_bf16_binding_count": 0,
+                "mlx_metal_projection_unsupported_binding_count": 0,
+                "mlx_metal_rms_norm_f32_binding_count": 0,
+                "mlx_metal_rms_norm_f16_binding_count": 28,
+                "mlx_metal_rms_norm_bf16_binding_count": 0,
+                "mlx_metal_rms_norm_unsupported_binding_count": 0,
                 "prefix_cache_path": "metadata_lookup",
                 "prefix_cache_evidence": "none_observed",
                 "prefix_reuse_provenance": "none_observed"
@@ -19773,30 +18466,29 @@ print(json.dumps({
                 "metal_driver": "system-default",
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_real_model_forward",
-                "native_placeholder_execution": false,
                 "metal_numeric_scaffold_only": false,
                 "metal_complete_model_forward_supported": true,
                 "metal_real_model_forward": true,
                 "metal_model_conditioned_inputs": true,
-                "metal_prefix_layers_native_attention": true,
+                "mlx_metal_prefix_layers_attention": true,
                 "metal_prefix_layers_cpu_reference": false,
-                "metal_prefix_native_dispatch_count": 35,
+                "mlx_metal_prefix_dispatch_count": 35,
                 "metal_prefix_cpu_reference_dispatch_count": 0,
                 "metal_direct_decode_tokens": true,
                 "metal_direct_decode_model_bound_ffn": true,
                 "metal_real_model_tensor_inputs": true,
                 "metal_model_artifacts_validated": true,
-                "metal_native_projection_f32_binding_count": 0,
-                "metal_native_projection_f16_binding_count": 27,
-                "metal_native_projection_bf16_binding_count": 0,
-                "metal_native_projection_unsupported_binding_count": 1,
-                "metal_native_rms_norm_f32_binding_count": 0,
-                "metal_native_rms_norm_f16_binding_count": 28,
-                "metal_native_rms_norm_bf16_binding_count": 0,
-                "metal_native_rms_norm_unsupported_binding_count": 0,
+                "mlx_metal_projection_f32_binding_count": 0,
+                "mlx_metal_projection_f16_binding_count": 27,
+                "mlx_metal_projection_bf16_binding_count": 0,
+                "mlx_metal_projection_unsupported_binding_count": 1,
+                "mlx_metal_rms_norm_f32_binding_count": 0,
+                "mlx_metal_rms_norm_f16_binding_count": 28,
+                "mlx_metal_rms_norm_bf16_binding_count": 0,
+                "mlx_metal_rms_norm_unsupported_binding_count": 0,
                 "prefix_cache_path": "metadata_lookup",
                 "prefix_cache_evidence": "none_observed",
                 "prefix_reuse_provenance": "none_observed"
@@ -19813,7 +18505,7 @@ print(json.dumps({
             panic!("environment validation should return a contract error");
         };
 
-        assert!(message.contains("route.metal_native_projection_f16_binding_count"));
+        assert!(message.contains("route.mlx_metal_projection_f16_binding_count"));
     }
 
     #[test]
@@ -19834,10 +18526,9 @@ print(json.dumps({
                 "metal_driver": "system-default",
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_real_model_tensor_inputs",
-                "native_placeholder_execution": false,
                 "metal_numeric_scaffold_only": false,
                 "metal_real_model_forward": false,
                 "metal_model_conditioned_inputs": true,
@@ -19870,10 +18561,9 @@ print(json.dumps({
                 "metal_driver": "system-default",
                 "tool_mode": "engine_bringup_runtime"
             },
-            "runtime": native_runtime_fixture(),
+            "runtime": mlx_runtime_fixture(),
             "route": {
                 "execution_semantics": "metal_real_model_tensor_inputs",
-                "native_placeholder_execution": false,
                 "metal_numeric_scaffold_only": false,
                 "metal_real_model_forward": false,
                 "metal_model_conditioned_inputs": true,
@@ -19916,9 +18606,9 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "compatibility_stepwise_runtime"
+                "tool_mode": "llama_cpp_stepwise_runtime"
             },
-            "runtime": compatibility_runtime_fixture("http://127.0.0.1:8081"),
+            "runtime": llama_runtime_fixture("http://127.0.0.1:8081"),
             "route": {
                 "prefix_cache_path": "delegated_prompt_cache",
                 "prefix_cache_evidence": "backend_reported_cached_prompt_tokens",
@@ -19944,13 +18634,13 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "compatibility_stepwise_runtime"
+                "tool_mode": "llama_cpp_stepwise_runtime"
             },
-            "runtime": compatibility_runtime_fixture("http://127.0.0.1:8081"),
+            "runtime": llama_runtime_fixture("http://127.0.0.1:8081"),
             "route": {
                 "prefix_cache_path": "live_request_share",
                 "prefix_cache_evidence": "engine_live_request_scheduler_reuse",
-                "prefix_reuse_provenance": "ax_native_live_request_share"
+                "prefix_reuse_provenance": "mlx_live_request_share"
             },
             "benchmark": {
                 "schema_family": "ax.bench.v1",
@@ -19986,9 +18676,9 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "compatibility_stepwise_runtime"
+                "tool_mode": "llama_cpp_stepwise_runtime"
             },
-            "runtime": compatibility_runtime_fixture("http://127.0.0.1:8081"),
+            "runtime": llama_runtime_fixture("http://127.0.0.1:8081"),
             "route": {
                 "prefix_cache_path": "delegated_prompt_cache",
                 "prefix_cache_evidence": "backend_reported_cached_prompt_tokens",
@@ -20014,9 +18704,9 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "compatibility_stepwise_runtime"
+                "tool_mode": "llama_cpp_stepwise_runtime"
             },
-            "runtime": compatibility_runtime_fixture("http://127.0.0.1:8081"),
+            "runtime": llama_runtime_fixture("http://127.0.0.1:8081"),
             "route": {
                 "prefix_cache_path": "delegated_prompt_cache",
                 "prefix_cache_evidence": "engine_live_request_scheduler_reuse",
@@ -20054,9 +18744,9 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "compatibility_stepwise_runtime"
+                "tool_mode": "llama_cpp_stepwise_runtime"
             },
-            "runtime": compatibility_runtime_fixture("http://127.0.0.1:8081"),
+            "runtime": llama_runtime_fixture("http://127.0.0.1:8081"),
             "route": {
                 "prefix_cache_path": "delegated_prompt_cache",
                 "prefix_cache_evidence": "backend_reported_cached_prompt_tokens",
@@ -20082,9 +18772,9 @@ print(json.dumps({
                 "os_build": "25E253",
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
-                "tool_mode": "compatibility_stepwise_runtime"
+                "tool_mode": "llama_cpp_stepwise_runtime"
             },
-            "runtime": compatibility_runtime_fixture("http://127.0.0.1:8081"),
+            "runtime": llama_runtime_fixture("http://127.0.0.1:8081"),
             "route": {
                 "prefix_cache_path": "delegated_prompt_cache",
                 "prefix_cache_evidence": "backend_reported_cached_prompt_tokens",

@@ -31,11 +31,11 @@ pub struct GenerateResponse {
     pub output_token_logprobs: Vec<Option<f32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_text: Option<String>,
-    /// Token count reported by a compatibility backend when token arrays are not available.
+    /// Token count reported by a llama.cpp backend when token arrays are not available.
     /// When set, takes precedence over `prompt_tokens.len()` for usage reporting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_token_count: Option<u32>,
-    /// Token count reported by a compatibility backend when token arrays are not available.
+    /// Token count reported by a llama.cpp backend when token arrays are not available.
     /// When set, takes precedence over `output_tokens.len()` for usage reporting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_count: Option<u32>,
@@ -415,15 +415,15 @@ mod tests {
             3,
             Some(2),
             RuntimeReport {
-                selected_backend: SelectedBackend::AxNative,
-                support_tier: SupportTier::NativePreview,
-                resolution_policy: ResolutionPolicy::StrictNative,
-                capabilities: CapabilityReport::native_preview(),
+                selected_backend: SelectedBackend::Mlx,
+                support_tier: SupportTier::MlxPreview,
+                resolution_policy: ResolutionPolicy::MlxOnly,
+                capabilities: CapabilityReport::mlx_preview(),
                 fallback_reason: None,
                 host: Default::default(),
                 metal_toolchain: Default::default(),
-                native_runtime: None,
-                native_model: None,
+                mlx_runtime: None,
+                mlx_model: None,
             },
         );
 
@@ -475,15 +475,15 @@ mod tests {
             2,
             Some(2),
             RuntimeReport {
-                selected_backend: SelectedBackend::AxNative,
-                support_tier: SupportTier::NativePreview,
-                resolution_policy: ResolutionPolicy::StrictNative,
-                capabilities: CapabilityReport::native_preview(),
+                selected_backend: SelectedBackend::Mlx,
+                support_tier: SupportTier::MlxPreview,
+                resolution_policy: ResolutionPolicy::MlxOnly,
+                capabilities: CapabilityReport::mlx_preview(),
                 fallback_reason: None,
                 host: Default::default(),
                 metal_toolchain: Default::default(),
-                native_runtime: None,
-                native_model: None,
+                mlx_runtime: None,
+                mlx_model: None,
             },
         );
 
@@ -515,15 +515,15 @@ mod tests {
                 crossover_decisions: BTreeMap::new(),
             },
             runtime: RuntimeReport {
-                selected_backend: SelectedBackend::AxNative,
-                support_tier: SupportTier::NativePreview,
-                resolution_policy: ResolutionPolicy::StrictNative,
-                capabilities: CapabilityReport::native_preview(),
+                selected_backend: SelectedBackend::Mlx,
+                support_tier: SupportTier::MlxPreview,
+                resolution_policy: ResolutionPolicy::MlxOnly,
+                capabilities: CapabilityReport::mlx_preview(),
                 fallback_reason: None,
                 host: Default::default(),
                 metal_toolchain: Default::default(),
-                native_runtime: None,
-                native_model: None,
+                mlx_runtime: None,
+                mlx_model: None,
             },
         };
 
@@ -557,15 +557,15 @@ mod tests {
                 crossover_decisions: BTreeMap::new(),
             },
             runtime: RuntimeReport {
-                selected_backend: SelectedBackend::Mlx,
-                support_tier: SupportTier::Compatibility,
-                resolution_policy: ResolutionPolicy::AllowCompat,
-                capabilities: CapabilityReport::compatibility_baseline(),
-                fallback_reason: Some("native preview not ready".to_string()),
+                selected_backend: SelectedBackend::LlamaCpp,
+                support_tier: SupportTier::LlamaCpp,
+                resolution_policy: ResolutionPolicy::AllowLlamaCpp,
+                capabilities: CapabilityReport::llama_cpp_baseline(),
+                fallback_reason: Some("MLX preview not ready".to_string()),
                 host: Default::default(),
                 metal_toolchain: Default::default(),
-                native_runtime: None,
-                native_model: None,
+                mlx_runtime: None,
+                mlx_model: None,
             },
         };
 
@@ -591,7 +591,7 @@ mod tests {
             step_count: 0,
             ttft_step: None,
             route: GenerateRouteReport {
-                execution_plan: Some("compatibility.mlx.blocking_cli".to_string()),
+                execution_plan: Some("llama_cpp.blocking_cli".to_string()),
                 attention_route: None,
                 kv_mode: None,
                 prefix_cache_path: None,
@@ -599,15 +599,15 @@ mod tests {
                 crossover_decisions: BTreeMap::new(),
             },
             runtime: RuntimeReport {
-                selected_backend: SelectedBackend::Mlx,
-                support_tier: SupportTier::Compatibility,
-                resolution_policy: ResolutionPolicy::AllowCompat,
-                capabilities: CapabilityReport::compatibility_cli_baseline(),
-                fallback_reason: Some("native preview not ready".to_string()),
+                selected_backend: SelectedBackend::LlamaCpp,
+                support_tier: SupportTier::LlamaCpp,
+                resolution_policy: ResolutionPolicy::AllowLlamaCpp,
+                capabilities: CapabilityReport::llama_cpp_cli_baseline(),
+                fallback_reason: Some("MLX preview not ready".to_string()),
                 host: Default::default(),
                 metal_toolchain: Default::default(),
-                native_runtime: None,
-                native_model: None,
+                mlx_runtime: None,
+                mlx_model: None,
             },
         };
 
@@ -633,7 +633,7 @@ mod tests {
             step_count: 0,
             ttft_step: None,
             route: GenerateRouteReport {
-                execution_plan: Some("native.preview".to_string()),
+                execution_plan: Some("mlx.preview".to_string()),
                 attention_route: None,
                 kv_mode: None,
                 prefix_cache_path: None,
@@ -641,15 +641,15 @@ mod tests {
                 crossover_decisions: BTreeMap::new(),
             },
             runtime: RuntimeReport {
-                selected_backend: SelectedBackend::AxNative,
-                support_tier: SupportTier::NativePreview,
-                resolution_policy: ResolutionPolicy::StrictNative,
-                capabilities: CapabilityReport::native_preview(),
+                selected_backend: SelectedBackend::Mlx,
+                support_tier: SupportTier::MlxPreview,
+                resolution_policy: ResolutionPolicy::MlxOnly,
+                capabilities: CapabilityReport::mlx_preview(),
                 fallback_reason: None,
                 host: Default::default(),
                 metal_toolchain: Default::default(),
-                native_runtime: None,
-                native_model: None,
+                mlx_runtime: None,
+                mlx_model: None,
             },
         };
 

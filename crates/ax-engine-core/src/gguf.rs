@@ -45,17 +45,17 @@ const GGUF_TYPE_FLOAT64: u32 = 12;
 // GGML tensor types
 const GGML_TYPE_F32: u32 = 0;
 const GGML_TYPE_F16: u32 = 1;
-const GGML_TYPE_Q8_0: u32 = 8;   // 32 elem/block, 34 bytes/block
-const GGML_TYPE_Q4_K: u32 = 12;  // 256 elem/block, 144 bytes/block
-const GGML_TYPE_Q5_K: u32 = 13;  // 256 elem/block, 176 bytes/block
-const GGML_TYPE_Q6_K: u32 = 14;  // 256 elem/block, 210 bytes/block
-const GGML_TYPE_I32: u32 = 26;  // 4 bytes per element, stored as-is
+const GGML_TYPE_Q8_0: u32 = 8; // 32 elem/block, 34 bytes/block
+const GGML_TYPE_Q4_K: u32 = 12; // 256 elem/block, 144 bytes/block
+const GGML_TYPE_Q5_K: u32 = 13; // 256 elem/block, 176 bytes/block
+const GGML_TYPE_Q6_K: u32 = 14; // 256 elem/block, 210 bytes/block
+const GGML_TYPE_I32: u32 = 26; // 4 bytes per element, stored as-is
 const GGML_TYPE_BF16: u32 = 30;
 
 // Block sizes (bytes per block) — from llama.cpp ggml-quants.h
-const Q8_0_BLOCK_BYTES: u64 = 34;   // 2 (F16 scale) + 32 (int8)
-const Q5_K_BLOCK_BYTES: u64 = 176;  // 4 (d+dmin F16) + 12 (scales) + 32 (qh) + 128 (qs)
-const Q6_K_BLOCK_BYTES: u64 = 210;  // 128 (ql) + 64 (qh) + 16 (scales int8) + 2 (d F16)
+const Q8_0_BLOCK_BYTES: u64 = 34; // 2 (F16 scale) + 32 (int8)
+const Q5_K_BLOCK_BYTES: u64 = 176; // 4 (d+dmin F16) + 12 (scales) + 32 (qh) + 128 (qs)
+const Q6_K_BLOCK_BYTES: u64 = 210; // 128 (ql) + 64 (qh) + 16 (scales int8) + 2 (d F16)
 const QK8_0: u64 = 32; // elements per Q8_0 block
 
 // ---------------------------------------------------------------------------
@@ -65,7 +65,11 @@ const QK8_0: u64 = 32; // elements per Q8_0 block
 #[derive(Debug, Error)]
 pub enum GgufError {
     #[error("I/O error reading {path}: {source}")]
-    Io { path: PathBuf, #[source] source: io::Error },
+    Io {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("not a GGUF file: bad magic bytes")]
     BadMagic,
     #[error("unsupported GGUF version {0} (expected 2 or 3)")]
@@ -247,19 +251,27 @@ impl GgufTensorInfo {
             GGML_TYPE_F16 => Some(n * 2),
             GGML_TYPE_BF16 => Some(n * 2),
             GGML_TYPE_Q8_0 => {
-                if !n.is_multiple_of(QK8_0) { return None; }
+                if !n.is_multiple_of(QK8_0) {
+                    return None;
+                }
                 Some((n / QK8_0) * Q8_0_BLOCK_BYTES)
             }
             GGML_TYPE_Q4_K => {
-                if !n.is_multiple_of(QK_K) { return None; }
+                if !n.is_multiple_of(QK_K) {
+                    return None;
+                }
                 Some((n / QK_K) * Q4_K_BLOCK_BYTES)
             }
             GGML_TYPE_Q5_K => {
-                if !n.is_multiple_of(QK_K) { return None; }
+                if !n.is_multiple_of(QK_K) {
+                    return None;
+                }
                 Some((n / QK_K) * Q5_K_BLOCK_BYTES)
             }
             GGML_TYPE_Q6_K => {
-                if !n.is_multiple_of(QK_K) { return None; }
+                if !n.is_multiple_of(QK_K) {
+                    return None;
+                }
                 Some((n / QK_K) * Q6_K_BLOCK_BYTES)
             }
             _ => None,
@@ -302,62 +314,117 @@ struct GgufHeader {
 }
 
 fn parse_gguf_header(path: &Path) -> Result<GgufHeader, GgufError> {
-    let mut f = fs::File::open(path).map_err(|e| GgufError::Io { path: path.to_owned(), source: e })?;
+    let mut f = fs::File::open(path).map_err(|e| GgufError::Io {
+        path: path.to_owned(),
+        source: e,
+    })?;
 
     // Magic
     let mut magic = [0u8; 4];
-    f.read_exact(&mut magic).map_err(|e| GgufError::Io { path: path.to_owned(), source: e })?;
+    f.read_exact(&mut magic).map_err(|e| GgufError::Io {
+        path: path.to_owned(),
+        source: e,
+    })?;
     if &magic != GGUF_MAGIC {
         return Err(GgufError::BadMagic);
     }
 
     // Version
-    let version = read_u32(&mut f).map_err(|e| GgufError::Io { path: path.to_owned(), source: e })?;
+    let version = read_u32(&mut f).map_err(|e| GgufError::Io {
+        path: path.to_owned(),
+        source: e,
+    })?;
     if !(2..=3).contains(&version) {
         return Err(GgufError::UnsupportedVersion(version));
     }
 
-    let n_tensors = read_u64(&mut f).map_err(|e| GgufError::Io { path: path.to_owned(), source: e })?;
-    let n_kv = read_u64(&mut f).map_err(|e| GgufError::Io { path: path.to_owned(), source: e })?;
+    let n_tensors = read_u64(&mut f).map_err(|e| GgufError::Io {
+        path: path.to_owned(),
+        source: e,
+    })?;
+    let n_kv = read_u64(&mut f).map_err(|e| GgufError::Io {
+        path: path.to_owned(),
+        source: e,
+    })?;
 
     // KV pairs
     let mut kv: HashMap<String, KvValue> = HashMap::new();
     for _ in 0..n_kv {
-        let key = read_gguf_string(&mut f).map_err(|e| GgufError::Io { path: path.to_owned(), source: e })?;
-        let typ = read_u32(&mut f).map_err(|e| GgufError::Io { path: path.to_owned(), source: e })?;
+        let key = read_gguf_string(&mut f).map_err(|e| GgufError::Io {
+            path: path.to_owned(),
+            source: e,
+        })?;
+        let typ = read_u32(&mut f).map_err(|e| GgufError::Io {
+            path: path.to_owned(),
+            source: e,
+        })?;
         match read_kv_value(&mut f, typ) {
-            Ok(Some(val)) => { kv.insert(key, val); }
+            Ok(Some(val)) => {
+                kv.insert(key, val);
+            }
             Ok(None) => {} // array or skipped
             Err(e) if e.kind() == io::ErrorKind::InvalidData => {
                 return Err(GgufError::UnknownKvType(typ));
             }
-            Err(e) => return Err(GgufError::Io { path: path.to_owned(), source: e }),
+            Err(e) => {
+                return Err(GgufError::Io {
+                    path: path.to_owned(),
+                    source: e,
+                });
+            }
         }
     }
 
     // Tensor infos
     let mut tensors = Vec::with_capacity(n_tensors as usize);
     for _ in 0..n_tensors {
-        let name = read_gguf_string(&mut f).map_err(|e| GgufError::Io { path: path.to_owned(), source: e })?;
-        let n_dims = read_u32(&mut f).map_err(|e| GgufError::Io { path: path.to_owned(), source: e })?;
+        let name = read_gguf_string(&mut f).map_err(|e| GgufError::Io {
+            path: path.to_owned(),
+            source: e,
+        })?;
+        let n_dims = read_u32(&mut f).map_err(|e| GgufError::Io {
+            path: path.to_owned(),
+            source: e,
+        })?;
         let mut dims = Vec::with_capacity(n_dims as usize);
         for _ in 0..n_dims {
-            dims.push(read_u64(&mut f).map_err(|e| GgufError::Io { path: path.to_owned(), source: e })?);
+            dims.push(read_u64(&mut f).map_err(|e| GgufError::Io {
+                path: path.to_owned(),
+                source: e,
+            })?);
         }
-        let ggml_type = read_u32(&mut f).map_err(|e| GgufError::Io { path: path.to_owned(), source: e })?;
-        let data_offset = read_u64(&mut f).map_err(|e| GgufError::Io { path: path.to_owned(), source: e })?;
-        tensors.push(GgufTensorInfo { name, dims, ggml_type, data_offset });
+        let ggml_type = read_u32(&mut f).map_err(|e| GgufError::Io {
+            path: path.to_owned(),
+            source: e,
+        })?;
+        let data_offset = read_u64(&mut f).map_err(|e| GgufError::Io {
+            path: path.to_owned(),
+            source: e,
+        })?;
+        tensors.push(GgufTensorInfo {
+            name,
+            dims,
+            ggml_type,
+            data_offset,
+        });
     }
 
     // Data section start = current position aligned up to `alignment`
-    let alignment = kv.get("general.alignment")
+    let alignment = kv
+        .get("general.alignment")
         .and_then(|v| v.as_uint())
         .unwrap_or(GGUF_DEFAULT_ALIGNMENT);
-    let header_end = f.stream_position()
-        .map_err(|e| GgufError::Io { path: path.to_owned(), source: e })?;
+    let header_end = f.stream_position().map_err(|e| GgufError::Io {
+        path: path.to_owned(),
+        source: e,
+    })?;
     let data_section_offset = header_end.div_ceil(alignment) * alignment;
 
-    Ok(GgufHeader { kv, tensors, data_section_offset })
+    Ok(GgufHeader {
+        kv,
+        tensors,
+        data_section_offset,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -376,9 +443,7 @@ fn layer_tensor_role(suffix: &str) -> Option<NativeTensorRole> {
         "attn_v.weight" => Some(NativeTensorRole::AttentionV),
         "attn_output.weight" => Some(NativeTensorRole::AttentionO),
         // FFN (shared between dense and linear attention layers)
-        "ffn_norm.weight" | "post_attention_layernorm.weight" => {
-            Some(NativeTensorRole::FfnNorm)
-        }
+        "ffn_norm.weight" | "post_attention_layernorm.weight" => Some(NativeTensorRole::FfnNorm),
         // post_attention_norm.weight is the post-attn norm in Gemma4 (AttentionPostNorm).
         // For Qwen35 it serves as the pre-FFN norm (no separate ffn_norm.weight); a
         // post-processing step below re-classifies it to FfnNorm in that case.
@@ -455,44 +520,52 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
     };
 
     // --- Metadata keys (arch-prefixed with fallbacks) ---
-    let arch_keys: Vec<String> = vec![
-        arch.clone(),
-        arch.replace('.', "_"),
-        arch.replace('.', ""),
-    ];
+    let arch_keys: Vec<String> = vec![arch.clone(), arch.replace('.', "_"), arch.replace('.', "")];
 
     let get_arch_uint = |suffix: &str| -> Option<u64> {
-        arch_keys.iter().find_map(|a| kv_uint(kv, &format!("{a}.{suffix}")))
+        arch_keys
+            .iter()
+            .find_map(|a| kv_uint(kv, &format!("{a}.{suffix}")))
     };
     let get_arch_float = |suffix: &str| -> Option<f64> {
-        arch_keys.iter().find_map(|a| kv_float(kv, &format!("{a}.{suffix}")))
+        arch_keys
+            .iter()
+            .find_map(|a| kv_float(kv, &format!("{a}.{suffix}")))
     };
 
-    let layer_count = get_arch_uint("block_count")
-        .ok_or(GgufError::MissingMetadata("block_count"))? as u32;
+    let layer_count =
+        get_arch_uint("block_count").ok_or(GgufError::MissingMetadata("block_count"))? as u32;
 
     // vocab_size: prefer explicit metadata, fall back to the token_embd shape.
     // In GGUF, token_embd shape = [hidden_dim, vocab_size] (ggml order), so
     // shape[1] = vocab_size after reversing → use the last dim in GGUF order.
     let vocab_size = get_arch_uint("vocab_size")
         .or_else(|| {
-            header.tensors.iter()
+            header
+                .tensors
+                .iter()
                 .find(|t| t.name == "token_embd.weight")
                 .and_then(|t| t.dims.last().copied())
         })
         .ok_or(GgufError::MissingMetadata("vocab_size"))? as u32;
 
     // hidden_size: prefer metadata, fall back to token_embd shape
-    let hidden_size = get_arch_uint("embedding_length").map(|v| v as u32).or_else(|| {
-        header.tensors.iter()
-            .find(|t| t.name == "token_embd.weight")
-            .and_then(|t| t.logical_shape().get(1).map(|&d| d as u32))
-    }).ok_or(GgufError::MissingMetadata("embedding_length"))?;
+    let hidden_size = get_arch_uint("embedding_length")
+        .map(|v| v as u32)
+        .or_else(|| {
+            header
+                .tensors
+                .iter()
+                .find(|t| t.name == "token_embd.weight")
+                .and_then(|t| t.logical_shape().get(1).map(|&d| d as u32))
+        })
+        .ok_or(GgufError::MissingMetadata("embedding_length"))?;
 
     let attention_head_count = get_arch_uint("attention.head_count")
-        .ok_or(GgufError::MissingMetadata("attention.head_count"))? as u32;
-    let kv_head_count = get_arch_uint("attention.head_count_kv")
-        .unwrap_or(attention_head_count as u64) as u32;
+        .ok_or(GgufError::MissingMetadata("attention.head_count"))?
+        as u32;
+    let kv_head_count =
+        get_arch_uint("attention.head_count_kv").unwrap_or(attention_head_count as u64) as u32;
 
     // head_dim: prefer explicit key, else hidden_size / head_count
     let attention_head_dim = get_arch_uint("attention.key_length")
@@ -509,9 +582,7 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
 
     // --- Tensor mapping ---
     // Use a relative path: just the file name so resolve_tensor_path() works.
-    let file_name = PathBuf::from(
-        path.file_name().expect("GGUF path must be a file"),
-    );
+    let file_name = PathBuf::from(path.file_name().expect("GGUF path must be a file"));
 
     let mut tensors: Vec<NativeTensorSpec> = Vec::new();
     let mut has_lm_head = false;
@@ -521,13 +592,19 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
         let length_bytes = match info.byte_length() {
             Some(l) => l,
             None => {
-                return Err(GgufError::UnsupportedTensorType(info.ggml_type, info.name.clone()));
+                return Err(GgufError::UnsupportedTensorType(
+                    info.ggml_type,
+                    info.name.clone(),
+                ));
             }
         };
         let dtype = match info.to_native_dtype() {
             Some(d) => d,
             None => {
-                return Err(GgufError::UnsupportedTensorType(info.ggml_type, info.name.clone()));
+                return Err(GgufError::UnsupportedTensorType(
+                    info.ggml_type,
+                    info.name.clone(),
+                ));
             }
         };
         if dtype == NativeTensorDataType::Q4Km && info.n_elements() % QK_K != 0 {
@@ -541,14 +618,22 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
 
         // Match global tensors
         if let Some(role) = global_tensor_role(&info.name) {
-            if role == NativeTensorRole::LmHead { has_lm_head = true; }
+            if role == NativeTensorRole::LmHead {
+                has_lm_head = true;
+            }
             tensors.push(NativeTensorSpec {
                 name: info.name.clone(),
                 role,
                 layer_index: None,
                 dtype,
                 source_tensor_type: Some(ggml_type_name(info.ggml_type).to_owned()),
-                source_quantized: matches!(dtype, NativeTensorDataType::Q4Km | NativeTensorDataType::Q5Km | NativeTensorDataType::Q6Km | NativeTensorDataType::Q8Zero),
+                source_quantized: matches!(
+                    dtype,
+                    NativeTensorDataType::Q4Km
+                        | NativeTensorDataType::Q5Km
+                        | NativeTensorDataType::Q6Km
+                        | NativeTensorDataType::Q8Zero
+                ),
                 quantized_source: None,
                 shape: logical_shape,
                 file: file_name.clone(),
@@ -570,7 +655,13 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
                             layer_index: Some(layer_index),
                             dtype,
                             source_tensor_type: Some(ggml_type_name(info.ggml_type).to_owned()),
-                            source_quantized: matches!(dtype, NativeTensorDataType::Q4Km | NativeTensorDataType::Q5Km | NativeTensorDataType::Q6Km | NativeTensorDataType::Q8Zero),
+                            source_quantized: matches!(
+                                dtype,
+                                NativeTensorDataType::Q4Km
+                                    | NativeTensorDataType::Q5Km
+                                    | NativeTensorDataType::Q6Km
+                                    | NativeTensorDataType::Q8Zero
+                            ),
                             quantized_source: None,
                             shape: logical_shape,
                             file: file_name.clone(),
@@ -621,28 +712,41 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
     //   value_head_dim  derived from ssm.inner_size / num_value_heads
     //   conv_kernel_dim = ssm.conv_kernel     (or linear_conv_kernel_dim)
     let linear_attention = {
-        let num_value_heads = kv_uint_multi(kv, &[
-            &format!("{arch}.linear_num_value_heads"),
-            "qwen35.linear_num_value_heads",
-            &format!("{arch}.ssm.time_step_rank"),
-        ]).map(|v| v as u32);
-        let num_key_heads = kv_uint_multi(kv, &[
-            &format!("{arch}.linear_num_key_heads"),
-            "qwen35.linear_num_key_heads",
-            &format!("{arch}.ssm.group_count"),
-        ]).map(|v| v as u32);
-        let key_head_dim = kv_uint_multi(kv, &[
-            &format!("{arch}.linear_key_head_dim"),
-            "qwen35.linear_key_head_dim",
-            &format!("{arch}.ssm.state_size"),
-        ]).map(|v| v as u32);
-        let ssm_inner_size = kv_uint_multi(kv, &[
-            &format!("{arch}.ssm.inner_size"),
-        ]);
-        let value_head_dim = kv_uint_multi(kv, &[
-            &format!("{arch}.linear_value_head_dim"),
-            "qwen35.linear_value_head_dim",
-        ])
+        let num_value_heads = kv_uint_multi(
+            kv,
+            &[
+                &format!("{arch}.linear_num_value_heads"),
+                "qwen35.linear_num_value_heads",
+                &format!("{arch}.ssm.time_step_rank"),
+            ],
+        )
+        .map(|v| v as u32);
+        let num_key_heads = kv_uint_multi(
+            kv,
+            &[
+                &format!("{arch}.linear_num_key_heads"),
+                "qwen35.linear_num_key_heads",
+                &format!("{arch}.ssm.group_count"),
+            ],
+        )
+        .map(|v| v as u32);
+        let key_head_dim = kv_uint_multi(
+            kv,
+            &[
+                &format!("{arch}.linear_key_head_dim"),
+                "qwen35.linear_key_head_dim",
+                &format!("{arch}.ssm.state_size"),
+            ],
+        )
+        .map(|v| v as u32);
+        let ssm_inner_size = kv_uint_multi(kv, &[&format!("{arch}.ssm.inner_size")]);
+        let value_head_dim = kv_uint_multi(
+            kv,
+            &[
+                &format!("{arch}.linear_value_head_dim"),
+                "qwen35.linear_value_head_dim",
+            ],
+        )
         .map(|v| v as u32)
         .or_else(|| {
             // Derive: value_head_dim = ssm_inner_size / num_value_heads
@@ -650,11 +754,15 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
             let nv = num_value_heads? as u64;
             inner.checked_div(nv).map(|value| value as u32)
         });
-        let conv_kernel_dim = kv_uint_multi(kv, &[
-            &format!("{arch}.linear_conv_kernel_dim"),
-            "qwen35.linear_conv_kernel_dim",
-            &format!("{arch}.ssm.conv_kernel"),
-        ]).map(|v| v as u32);
+        let conv_kernel_dim = kv_uint_multi(
+            kv,
+            &[
+                &format!("{arch}.linear_conv_kernel_dim"),
+                "qwen35.linear_conv_kernel_dim",
+                &format!("{arch}.ssm.conv_kernel"),
+            ],
+        )
+        .map(|v| v as u32);
 
         NativeLinearAttentionConfig {
             num_value_heads,

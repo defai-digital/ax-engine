@@ -59,7 +59,7 @@ console.log(runtime.runtime.selected_backend);
 console.log(result.output_tokens);
 ```
 
-For a compatibility-backed text request through the preview
+For a llama.cpp-backed text request through the preview
 OpenAI-compatible surface:
 
 ```js

@@ -88,7 +88,7 @@ assert metadata["name"] == "Dense Qwen Trusted"
 assert metadata["slug"] == "Dense-Qwen-Trusted"
 assert metadata["source_result_dir"] == str(baseline_run)
 assert metadata["manifest"]["id"] == "chat_qwen_short"
-assert metadata["runtime"]["selected_backend"] == "ax_native"
+assert metadata["runtime"]["selected_backend"] == "mlx"
 assert metadata["route"]["prefix_cache_path"] == "metadata_lookup"
 assert (trusted_baseline_dir / "trusted_baseline.md").is_file()
 assert (trusted_baseline_dir / "metrics.json").is_file()

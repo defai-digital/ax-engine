@@ -1,43 +1,22 @@
 use ax_engine_sdk::{
-    is_gguf_path, CompatibilityBackendKind, EngineSessionConfig, PreviewBackendRequest,
-    PreviewSessionConfigRequest, SupportTier,
+    EngineSessionConfig, PreviewBackendRequest, PreviewSessionConfigRequest, SupportTier,
 };
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum PreviewSupportTier {
-    NativeCertified,
-    NativePreview,
-    Compatibility,
+    MlxCertified,
+    MlxPreview,
+    LlamaCpp,
 }
 
 impl PreviewSupportTier {
     pub fn as_sdk_support_tier(self) -> SupportTier {
         match self {
-            Self::NativeCertified => SupportTier::NativeCertified,
-            Self::NativePreview => SupportTier::NativePreview,
-            Self::Compatibility => SupportTier::Compatibility,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
-pub enum PreviewCompatibilityBackend {
-    #[default]
-    LlamaCpp,
-    Vllm,
-    MistralRs,
-    Mlx,
-}
-
-impl PreviewCompatibilityBackend {
-    pub fn as_sdk_backend_kind(self) -> CompatibilityBackendKind {
-        match self {
-            Self::LlamaCpp => CompatibilityBackendKind::LlamaCpp,
-            Self::Vllm => CompatibilityBackendKind::Vllm,
-            Self::MistralRs => CompatibilityBackendKind::MistralRs,
-            Self::Mlx => CompatibilityBackendKind::Mlx,
+            Self::MlxCertified => SupportTier::MlxCertified,
+            Self::MlxPreview => SupportTier::MlxPreview,
+            Self::LlamaCpp => SupportTier::LlamaCpp,
         }
     }
 }
@@ -69,41 +48,22 @@ pub struct ServerArgs {
     #[arg(long = "total-blocks", default_value_t = 1024)]
     pub total_blocks: u32,
 
-    #[arg(long = "mlx", default_value_t = false, conflicts_with_all = ["mlx_native"])]
+    #[arg(long = "mlx", default_value_t = false)]
     pub mlx: bool,
 
-    #[arg(long = "mlx-native", default_value_t = false, conflicts_with_all = ["mlx"])]
-    pub mlx_native: bool,
-
-    #[arg(long = "support-tier", value_enum, default_value_t = PreviewSupportTier::Compatibility)]
+    #[arg(long = "support-tier", value_enum, default_value_t = PreviewSupportTier::LlamaCpp)]
     pub support_tier: PreviewSupportTier,
 
-    #[arg(long = "compat-backend", value_enum, default_value_t = PreviewCompatibilityBackend::LlamaCpp)]
-    pub compat_backend: PreviewCompatibilityBackend,
+    #[arg(long = "llama-cli-path", default_value = "llama-cli")]
+    pub llama_cli_path: String,
 
-    #[arg(long = "compat-cli-path", default_value = "llama-cli")]
-    pub compat_cli_path: String,
+    #[arg(long = "llama-model-path")]
+    pub llama_model_path: Option<PathBuf>,
 
-    #[arg(long = "compat-model-path")]
-    pub compat_model_path: Option<PathBuf>,
-
-    #[arg(long = "compat-server-url")]
-    pub compat_server_url: Option<String>,
-
-    #[arg(long = "llama-fallback-cli-path", default_value = "llama-cli")]
-    pub llama_fallback_cli_path: String,
-
-    #[arg(long = "llama-fallback-model-path")]
-    pub llama_fallback_model_path: Option<PathBuf>,
-
-    #[arg(long = "llama-fallback-server-url")]
-    pub llama_fallback_server_url: Option<String>,
-
-    #[arg(long = "native-runtime-artifacts-dir")]
-    pub native_runtime_artifacts_dir: Option<PathBuf>,
-
-    #[arg(long = "native-model-artifacts-dir")]
-    pub native_model_artifacts_dir: Option<PathBuf>,
+    #[arg(long = "llama-server-url")]
+    pub llama_server_url: Option<String>,
+    #[arg(long = "mlx-model-artifacts-dir")]
+    pub mlx_model_artifacts_dir: Option<PathBuf>,
 }
 
 impl ServerArgs {
@@ -112,44 +72,30 @@ impl ServerArgs {
     }
 
     pub fn session_config(&self) -> Result<EngineSessionConfig, String> {
-        let backend_request = if self.mlx_native {
-            PreviewBackendRequest::shipping_mlx_native()
-        } else if self.mlx {
-            PreviewBackendRequest::shipping_mlx_with_llama_fallback(
-                PathBuf::from(&self.compat_cli_path),
-                self.compat_model_path.clone(),
-                self.compat_server_url.clone(),
-                PathBuf::from(&self.llama_fallback_cli_path),
-                self.llama_fallback_model_path.clone(),
-                self.llama_fallback_server_url.clone(),
+        let backend_request = if self.mlx {
+            PreviewBackendRequest::shipping_mlx()
+        } else if self.support_tier == PreviewSupportTier::LlamaCpp {
+            PreviewBackendRequest::shipping_default_llama_cpp(
+                PathBuf::from(&self.llama_cli_path),
+                self.llama_model_path.clone(),
+                self.llama_server_url.clone(),
             )
-        } else if self.support_tier == PreviewSupportTier::Compatibility {
-            let effective_backend = self.effective_compat_backend();
-            if effective_backend == PreviewCompatibilityBackend::LlamaCpp {
-                PreviewBackendRequest::shipping_default_llama_cpp(
-                    PathBuf::from(&self.compat_cli_path),
-                    self.compat_model_path.clone(),
-                    self.compat_server_url.clone(),
-                )
-            } else {
-                PreviewBackendRequest {
-                    support_tier: SupportTier::Compatibility,
-                    compat_backend: effective_backend.as_sdk_backend_kind(),
-                    compat_cli_path: PathBuf::from(&self.compat_cli_path),
-                    compat_model_path: self.compat_model_path.clone(),
-                    compat_server_url: self.compat_server_url.clone(),
-                    ..PreviewBackendRequest::default()
-                }
-            }
         } else {
             PreviewBackendRequest {
                 support_tier: self.support_tier.as_sdk_support_tier(),
-                compat_backend: self.compat_backend.as_sdk_backend_kind(),
-                compat_cli_path: PathBuf::from(&self.compat_cli_path),
-                compat_model_path: self.compat_model_path.clone(),
-                compat_server_url: self.compat_server_url.clone(),
+                llama_cli_path: PathBuf::from(&self.llama_cli_path),
+                llama_model_path: self.llama_model_path.clone(),
+                llama_server_url: self.llama_server_url.clone(),
                 ..PreviewBackendRequest::default()
             }
+        };
+
+        let mlx_model_artifacts_dir = if self.mlx {
+            self.mlx_model_artifacts_dir
+                .clone()
+                .or_else(|| self.llama_model_path.clone())
+        } else {
+            self.mlx_model_artifacts_dir.clone()
         };
 
         EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
@@ -157,36 +103,19 @@ impl ServerArgs {
             block_size_tokens: self.block_size_tokens,
             total_blocks: self.total_blocks,
             deterministic: self.deterministic,
-            allow_deterministic_native_fallback: false,
             max_batch_tokens: self.max_batch_tokens,
             backend_request,
-            native_runtime_artifacts_dir: self.native_runtime_artifacts_dir.clone(),
-            native_model_artifacts_dir: self.native_model_artifacts_dir.clone(),
+            mlx_runtime_artifacts_dir: None,
+            mlx_model_artifacts_dir,
         })
         .map_err(|error| error.to_string())
-    }
-
-    fn effective_compat_backend(&self) -> PreviewCompatibilityBackend {
-        if let Some(path) = &self.compat_model_path {
-            if self.compat_server_url.is_none() {
-                return if is_gguf_path(path) {
-                    PreviewCompatibilityBackend::LlamaCpp
-                } else {
-                    PreviewCompatibilityBackend::Mlx
-                };
-            }
-        }
-        self.compat_backend
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ax_engine_sdk::{
-        BackendPolicy, CompatibilityBackendConfig, LlamaCppConfig, MlxConfig,
-        OpenAiCompatibleServerConfig, ResolvedBackend, SelectedBackend,
-    };
+    use ax_engine_sdk::{BackendPolicy, LlamaCppConfig, ResolvedBackend, SelectedBackend};
 
     fn base_args() -> ServerArgs {
         ServerArgs {
@@ -199,76 +128,54 @@ mod tests {
             block_size_tokens: 16,
             total_blocks: 1024,
             mlx: false,
-            mlx_native: false,
-            support_tier: PreviewSupportTier::Compatibility,
-            compat_backend: PreviewCompatibilityBackend::LlamaCpp,
-            compat_cli_path: "llama-cli".to_string(),
-            compat_model_path: None,
-            compat_server_url: None,
-            llama_fallback_cli_path: "llama-cli".to_string(),
-            llama_fallback_model_path: None,
-            llama_fallback_server_url: None,
-            native_runtime_artifacts_dir: None,
-            native_model_artifacts_dir: None,
+            support_tier: PreviewSupportTier::LlamaCpp,
+            llama_cli_path: "llama-cli".to_string(),
+            llama_model_path: None,
+            llama_server_url: None,
+            mlx_model_artifacts_dir: None,
         }
     }
 
     fn assert_configs_match(actual: &EngineSessionConfig, expected: &EngineSessionConfig) {
         assert_eq!(actual.kv_config, expected.kv_config);
         assert_eq!(actual.deterministic, expected.deterministic);
-        assert_eq!(
-            actual.allow_deterministic_native_fallback,
-            expected.allow_deterministic_native_fallback
-        );
         assert_eq!(actual.max_batch_tokens, expected.max_batch_tokens);
         assert_eq!(actual.backend_policy, expected.backend_policy);
         assert_eq!(actual.resolved_backend, expected.resolved_backend);
-        assert_eq!(actual.compatibility_backend, expected.compatibility_backend);
+        assert_eq!(actual.llama_backend, expected.llama_backend);
         assert_eq!(
-            actual.fallback_compatibility_backend,
-            expected.fallback_compatibility_backend
+            actual.mlx_model_artifacts_dir,
+            expected.mlx_model_artifacts_dir
         );
         assert_eq!(
-            actual.native_runtime_artifacts_dir,
-            expected.native_runtime_artifacts_dir
-        );
-        assert_eq!(
-            actual.native_runtime_artifacts_source,
-            expected.native_runtime_artifacts_source
-        );
-        assert_eq!(
-            actual.native_model_artifacts_dir,
-            expected.native_model_artifacts_dir
-        );
-        assert_eq!(
-            actual.native_model_artifacts_source,
-            expected.native_model_artifacts_source
+            actual.mlx_model_artifacts_source,
+            expected.mlx_model_artifacts_source
         );
     }
 
     #[test]
     fn preview_support_tier_maps_to_sdk_support_tier() {
         assert_eq!(
-            PreviewSupportTier::NativeCertified.as_sdk_support_tier(),
-            SupportTier::NativeCertified
+            PreviewSupportTier::MlxCertified.as_sdk_support_tier(),
+            SupportTier::MlxCertified
         );
         assert_eq!(
-            PreviewSupportTier::NativePreview.as_sdk_support_tier(),
-            SupportTier::NativePreview
+            PreviewSupportTier::MlxPreview.as_sdk_support_tier(),
+            SupportTier::MlxPreview
         );
         assert_eq!(
-            PreviewSupportTier::Compatibility.as_sdk_support_tier(),
-            SupportTier::Compatibility
+            PreviewSupportTier::LlamaCpp.as_sdk_support_tier(),
+            SupportTier::LlamaCpp
         );
     }
 
     #[test]
-    fn session_config_matches_sdk_preview_factory_for_native_preview() {
+    fn session_config_matches_sdk_preview_factory_for_mlx_preview() {
         let args = ServerArgs {
-            model_id: ax_engine_sdk::INITIAL_NATIVE_MODE_MODEL_ID.to_string(),
+            model_id: "qwen3_dense".to_string(),
             cache_group_id: 3,
             total_blocks: 2048,
-            support_tier: PreviewSupportTier::NativePreview,
+            support_tier: PreviewSupportTier::MlxPreview,
             ..base_args()
         };
 
@@ -278,36 +185,34 @@ mod tests {
             block_size_tokens: 16,
             total_blocks: 2048,
             deterministic: true,
-            allow_deterministic_native_fallback: false,
             max_batch_tokens: 2048,
-            native_runtime_artifacts_dir: None,
-            native_model_artifacts_dir: None,
+            mlx_runtime_artifacts_dir: None,
+            mlx_model_artifacts_dir: None,
             backend_request: PreviewBackendRequest {
-                support_tier: SupportTier::NativePreview,
-                compat_backend: CompatibilityBackendKind::LlamaCpp,
-                compat_cli_path: PathBuf::from("llama-cli"),
-                compat_model_path: None,
-                compat_server_url: None,
+                support_tier: SupportTier::MlxPreview,
+                llama_cli_path: PathBuf::from("llama-cli"),
+                llama_model_path: None,
+                llama_server_url: None,
                 ..PreviewBackendRequest::default()
             },
         })
         .expect("sdk preview config should build");
 
         assert_configs_match(&actual, &expected);
-        assert_eq!(actual.backend_policy, BackendPolicy::strict_native());
-        assert_eq!(actual.resolved_backend, ResolvedBackend::native_preview());
-        assert!(actual.compatibility_backend.is_none());
+        assert_eq!(actual.backend_policy, BackendPolicy::mlx_only());
+        assert_eq!(actual.resolved_backend, ResolvedBackend::mlx_preview());
+        assert!(actual.llama_backend.is_none());
     }
 
     #[test]
-    fn session_config_matches_sdk_preview_factory_for_compatibility_server() {
+    fn session_config_matches_sdk_preview_factory_for_llama_cpp_server() {
         let args = ServerArgs {
             port: 8081,
             deterministic: false,
             max_batch_tokens: 1024,
             cache_group_id: 9,
             total_blocks: 512,
-            compat_server_url: Some("http://127.0.0.1:8088".to_string()),
+            llama_server_url: Some("http://127.0.0.1:8088".to_string()),
             ..base_args()
         };
 
@@ -317,10 +222,9 @@ mod tests {
             block_size_tokens: 16,
             total_blocks: 512,
             deterministic: false,
-            allow_deterministic_native_fallback: false,
             max_batch_tokens: 1024,
-            native_runtime_artifacts_dir: None,
-            native_model_artifacts_dir: None,
+            mlx_runtime_artifacts_dir: None,
+            mlx_model_artifacts_dir: None,
             backend_request: PreviewBackendRequest::shipping_default_llama_cpp(
                 PathBuf::from("llama-cli"),
                 None,
@@ -330,24 +234,22 @@ mod tests {
         .expect("sdk preview config should build");
 
         assert_configs_match(&actual, &expected);
-        assert_eq!(actual.backend_policy, BackendPolicy::allow_compat());
+        assert_eq!(actual.backend_policy, BackendPolicy::allow_llama_cpp());
         assert_eq!(
             actual.resolved_backend.selected_backend,
             SelectedBackend::LlamaCpp
         );
         assert_eq!(
-            actual.compatibility_backend,
-            Some(CompatibilityBackendConfig::LlamaCpp(
-                LlamaCppConfig::server_completion("http://127.0.0.1:8088")
-            ))
+            actual.llama_backend,
+            Some(LlamaCppConfig::server_completion("http://127.0.0.1:8088"))
         );
     }
 
     #[test]
-    fn session_config_routes_default_local_mlx_model_to_mlx_cli() {
-        let mlx_model_path = PathBuf::from("/tmp/qwen3.5-mlx");
+    fn session_config_routes_default_local_model_to_llama_cpp() {
+        let model_path = PathBuf::from("/tmp/qwen3.5-mlx");
         let args = ServerArgs {
-            compat_model_path: Some(mlx_model_path.clone()),
+            llama_model_path: Some(model_path.clone()),
             ..base_args()
         };
 
@@ -355,14 +257,11 @@ mod tests {
 
         assert_eq!(
             actual.resolved_backend.selected_backend,
-            SelectedBackend::Mlx
+            SelectedBackend::LlamaCpp
         );
         assert_eq!(
-            actual.compatibility_backend,
-            Some(CompatibilityBackendConfig::Mlx(MlxConfig::cli(
-                "python3",
-                mlx_model_path,
-            )))
+            actual.llama_backend,
+            Some(LlamaCppConfig::new("llama-cli", model_path))
         );
     }
 
@@ -370,7 +269,7 @@ mod tests {
     fn session_config_routes_default_gguf_model_to_llama_cpp() {
         let gguf_model_path = PathBuf::from("/tmp/qwen3.5-9b-q4.gguf");
         let args = ServerArgs {
-            compat_model_path: Some(gguf_model_path.clone()),
+            llama_model_path: Some(gguf_model_path.clone()),
             ..base_args()
         };
 
@@ -381,218 +280,70 @@ mod tests {
             SelectedBackend::LlamaCpp
         );
         assert_eq!(
-            actual.compatibility_backend,
-            Some(CompatibilityBackendConfig::LlamaCpp(LlamaCppConfig::new(
-                "llama-cli",
-                gguf_model_path,
-            )))
+            actual.llama_backend,
+            Some(LlamaCppConfig::new("llama-cli", gguf_model_path))
         );
     }
 
     #[test]
-    fn session_config_matches_sdk_preview_factory_for_vllm_compatibility_server() {
-        let args = ServerArgs {
-            port: 8081,
-            deterministic: false,
-            max_batch_tokens: 1024,
-            cache_group_id: 9,
-            total_blocks: 512,
-            support_tier: PreviewSupportTier::Compatibility,
-            compat_backend: PreviewCompatibilityBackend::Vllm,
-            compat_server_url: Some("http://127.0.0.1:8000".to_string()),
-            ..base_args()
-        };
-
-        let actual = args.session_config().expect("session config should build");
-        let expected = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
-            cache_group_id: ax_engine_sdk::CacheGroupId(9),
-            block_size_tokens: 16,
-            total_blocks: 512,
-            deterministic: false,
-            allow_deterministic_native_fallback: false,
-            max_batch_tokens: 1024,
-            native_runtime_artifacts_dir: None,
-            native_model_artifacts_dir: None,
-            backend_request: PreviewBackendRequest {
-                support_tier: SupportTier::Compatibility,
-                compat_backend: CompatibilityBackendKind::Vllm,
-                compat_cli_path: PathBuf::from("llama-cli"),
-                compat_model_path: None,
-                compat_server_url: Some("http://127.0.0.1:8000".to_string()),
-                ..PreviewBackendRequest::default()
-            },
-        })
-        .expect("sdk preview config should build");
-
-        assert_configs_match(&actual, &expected);
-        assert_eq!(actual.backend_policy, BackendPolicy::allow_compat());
-        assert_eq!(
-            actual.resolved_backend.selected_backend,
-            SelectedBackend::Vllm
-        );
-        assert_eq!(
-            actual.compatibility_backend,
-            Some(CompatibilityBackendConfig::Vllm(
-                OpenAiCompatibleServerConfig::new("http://127.0.0.1:8000")
-            ))
-        );
-    }
-
-    #[test]
-    fn session_config_matches_sdk_preview_factory_for_mistral_rs_compatibility_server() {
-        let args = ServerArgs {
-            port: 8081,
-            deterministic: false,
-            max_batch_tokens: 1024,
-            cache_group_id: 9,
-            total_blocks: 512,
-            support_tier: PreviewSupportTier::Compatibility,
-            compat_backend: PreviewCompatibilityBackend::MistralRs,
-            compat_server_url: Some("http://127.0.0.1:8001".to_string()),
-            ..base_args()
-        };
-
-        let actual = args.session_config().expect("session config should build");
-        let expected = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
-            cache_group_id: ax_engine_sdk::CacheGroupId(9),
-            block_size_tokens: 16,
-            total_blocks: 512,
-            deterministic: false,
-            allow_deterministic_native_fallback: false,
-            max_batch_tokens: 1024,
-            native_runtime_artifacts_dir: None,
-            native_model_artifacts_dir: None,
-            backend_request: PreviewBackendRequest {
-                support_tier: SupportTier::Compatibility,
-                compat_backend: CompatibilityBackendKind::MistralRs,
-                compat_cli_path: PathBuf::from("llama-cli"),
-                compat_model_path: None,
-                compat_server_url: Some("http://127.0.0.1:8001".to_string()),
-                ..PreviewBackendRequest::default()
-            },
-        })
-        .expect("sdk preview config should build");
-
-        assert_configs_match(&actual, &expected);
-        assert_eq!(actual.backend_policy, BackendPolicy::allow_compat());
-        assert_eq!(
-            actual.resolved_backend.selected_backend,
-            SelectedBackend::MistralRs
-        );
-        assert_eq!(
-            actual.compatibility_backend,
-            Some(CompatibilityBackendConfig::MistralRs(
-                OpenAiCompatibleServerConfig::new("http://127.0.0.1:8001")
-            ))
-        );
-    }
-
-    #[test]
-    fn session_config_matches_sdk_preview_factory_for_mlx_compatibility_server() {
-        let args = ServerArgs {
-            port: 8081,
-            deterministic: false,
-            max_batch_tokens: 1024,
-            cache_group_id: 9,
-            total_blocks: 512,
-            support_tier: PreviewSupportTier::Compatibility,
-            compat_backend: PreviewCompatibilityBackend::Mlx,
-            compat_server_url: Some("http://127.0.0.1:8082".to_string()),
-            ..base_args()
-        };
-
-        let actual = args.session_config().expect("session config should build");
-        let expected = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
-            cache_group_id: ax_engine_sdk::CacheGroupId(9),
-            block_size_tokens: 16,
-            total_blocks: 512,
-            deterministic: false,
-            allow_deterministic_native_fallback: false,
-            max_batch_tokens: 1024,
-            native_runtime_artifacts_dir: None,
-            native_model_artifacts_dir: None,
-            backend_request: PreviewBackendRequest {
-                support_tier: SupportTier::Compatibility,
-                compat_backend: CompatibilityBackendKind::Mlx,
-                compat_cli_path: PathBuf::from("llama-cli"),
-                compat_model_path: None,
-                compat_server_url: Some("http://127.0.0.1:8082".to_string()),
-                ..PreviewBackendRequest::default()
-            },
-        })
-        .expect("sdk preview config should build");
-
-        assert_configs_match(&actual, &expected);
-        assert_eq!(actual.backend_policy, BackendPolicy::allow_compat());
-        assert_eq!(
-            actual.resolved_backend.selected_backend,
-            SelectedBackend::Mlx
-        );
-        assert_eq!(
-            actual.compatibility_backend,
-            Some(CompatibilityBackendConfig::Mlx(
-                MlxConfig::server_completions("http://127.0.0.1:8082")
-            ))
-        );
-    }
-
-    #[test]
-    fn session_config_preserves_explicit_native_artifact_dirs() {
-        let native_runtime_artifacts_dir = PathBuf::from("/tmp/ax-metal");
-        let native_model_artifacts_dir = PathBuf::from("/tmp/ax-model");
+    fn session_config_preserves_explicit_mlx_model_artifacts_dir() {
+        let mlx_model_artifacts_dir = PathBuf::from("/tmp/ax-model");
         let args = ServerArgs {
             port: 8081,
             max_batch_tokens: 1024,
             cache_group_id: 9,
             total_blocks: 512,
-            support_tier: PreviewSupportTier::NativePreview,
-            native_runtime_artifacts_dir: Some(native_runtime_artifacts_dir.clone()),
-            native_model_artifacts_dir: Some(native_model_artifacts_dir.clone()),
+            support_tier: PreviewSupportTier::MlxPreview,
+            mlx_model_artifacts_dir: Some(mlx_model_artifacts_dir.clone()),
             ..base_args()
         };
 
         let actual = args.session_config().expect("session config should build");
 
+        let expected_mlx_runtime_artifacts_dir =
+            EngineSessionConfig::default_mlx_runtime_artifacts_dir();
         assert_eq!(
-            actual.native_runtime_artifacts_dir.as_deref(),
-            Some(native_runtime_artifacts_dir.as_path())
+            actual.mlx_runtime_artifacts_dir,
+            expected_mlx_runtime_artifacts_dir
         );
         assert_eq!(
-            actual.native_runtime_artifacts_source,
-            Some(ax_engine_sdk::NativeRuntimeArtifactsSource::ExplicitConfig)
+            actual.mlx_runtime_artifacts_source,
+            actual
+                .mlx_runtime_artifacts_dir
+                .as_ref()
+                .map(|_| ax_engine_sdk::NativeRuntimeArtifactsSource::RepoAutoDetect)
         );
         assert_eq!(
-            actual.native_model_artifacts_dir.as_deref(),
-            Some(native_model_artifacts_dir.as_path())
+            actual.mlx_model_artifacts_dir.as_deref(),
+            Some(mlx_model_artifacts_dir.as_path())
         );
         assert_eq!(
-            actual.native_model_artifacts_source,
+            actual.mlx_model_artifacts_source,
             Some(ax_engine_sdk::NativeModelArtifactsSource::ExplicitConfig)
         );
     }
 
     #[test]
     fn session_config_marks_explicit_gguf_model_path_as_generated_bridge() {
-        let native_model_artifacts_dir = PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf");
+        let mlx_model_artifacts_dir = PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf");
         let args = ServerArgs {
             port: 8081,
             max_batch_tokens: 1024,
             cache_group_id: 9,
             total_blocks: 512,
-            support_tier: PreviewSupportTier::NativePreview,
-            native_runtime_artifacts_dir: None,
-            native_model_artifacts_dir: Some(native_model_artifacts_dir.clone()),
+            support_tier: PreviewSupportTier::MlxPreview,
+            mlx_model_artifacts_dir: Some(mlx_model_artifacts_dir.clone()),
             ..base_args()
         };
 
         let actual = args.session_config().expect("session config should build");
 
         assert_eq!(
-            actual.native_model_artifacts_dir.as_deref(),
-            Some(native_model_artifacts_dir.as_path())
+            actual.mlx_model_artifacts_dir.as_deref(),
+            Some(mlx_model_artifacts_dir.as_path())
         );
         assert_eq!(
-            actual.native_model_artifacts_source,
+            actual.mlx_model_artifacts_source,
             Some(ax_engine_sdk::NativeModelArtifactsSource::GeneratedFromGguf)
         );
     }

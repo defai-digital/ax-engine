@@ -1357,10 +1357,7 @@ fn validate_manifest_layer_index_list(
     Ok(())
 }
 
-fn require_positive_field(
-    value: Option<u32>,
-    field_name: &str,
-) -> Result<u32, NativeModelError> {
+fn require_positive_field(value: Option<u32>, field_name: &str) -> Result<u32, NativeModelError> {
     match value {
         Some(0) => Err(NativeModelError::InvalidManifest {
             message: format!("{field_name} must be > 0"),

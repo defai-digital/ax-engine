@@ -1,4 +1,4 @@
-//! Prefill + decode rate benchmark for the MLX native runner.
+//! Prefill + decode rate benchmark for the MLX runner.
 //!
 //! Measures both standard greedy decode and n-gram speculative decode so the
 //! acceptance rate and speedup are visible side-by-side.

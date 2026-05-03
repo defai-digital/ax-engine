@@ -26,7 +26,12 @@ impl MlxKVCache {
     /// Append new key/value slices for layer `i` and return the full (k, v).
     ///
     /// `new_k` and `new_v` shape: `[1, n_kv_heads, new_tokens, head_dim]`
-    pub fn append(&mut self, layer: usize, new_k: MlxArray, new_v: MlxArray) -> (&MlxArray, &MlxArray) {
+    pub fn append(
+        &mut self,
+        layer: usize,
+        new_k: MlxArray,
+        new_v: MlxArray,
+    ) -> (&MlxArray, &MlxArray) {
         let entry = &mut self.layers[layer];
         match entry {
             None => {
@@ -53,11 +58,11 @@ impl MlxKVCache {
                 let seq = shape.get(2).copied().unwrap_or(0) as usize;
                 if prefix_len < seq {
                     // Shape: [1, n_kv_heads, seq, head_dim] — slice axis 2.
-                    let n_kv_heads = shape[1] as i32;
-                    let head_dim  = shape[3] as i32;
+                    let n_kv_heads = shape[1];
+                    let head_dim = shape[3];
                     let plen = prefix_len as i32;
-                    let start   = [0i32, 0, 0,    0];
-                    let stop    = [1i32, n_kv_heads, plen, head_dim];
+                    let start = [0i32, 0, 0, 0];
+                    let stop = [1i32, n_kv_heads, plen, head_dim];
                     let strides = [1i32; 4];
                     let k_trimmed = slice(k, &start, &stop, &strides, None);
                     let v_trimmed = slice(v, &start, &stop, &strides, None);

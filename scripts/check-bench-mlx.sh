@@ -4,8 +4,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-bench-native-check.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-bench-mlx-check.XXXXXX")"
 METAL_BUILD_DIR="${AX_ENGINE_METAL_BUILD_DIR:-${AX_METAL_OUTPUT_DIR:-$ROOT_DIR/build/metal}}"
+: "${AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR:?AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required for MLX benchmark smoke}"
 
 cleanup() {
     rm -rf "$TMP_DIR"
@@ -18,8 +19,8 @@ cd "$ROOT_DIR"
 AX_METAL_OUTPUT_DIR="$METAL_BUILD_DIR" \
 bash "$ROOT_DIR/scripts/build-metal-kernels.sh"
 
-AX_BENCH_NATIVE_METAL_BUILD_DIR="$METAL_BUILD_DIR" \
-AX_BENCH_NATIVE_TMP_DIR="$TMP_DIR" \
+AX_BENCH_MLX_METAL_BUILD_DIR="$METAL_BUILD_DIR" \
+AX_BENCH_MLX_TMP_DIR="$TMP_DIR" \
 "$PYTHON_BIN" - <<'PY'
 from __future__ import annotations
 
@@ -29,20 +30,20 @@ import subprocess
 from pathlib import Path
 
 
-root = Path(os.environ["AX_BENCH_NATIVE_TMP_DIR"])
+root = Path(os.environ["AX_BENCH_MLX_TMP_DIR"])
 repo = Path.cwd()
-build_report_path = Path(os.environ["AX_BENCH_NATIVE_METAL_BUILD_DIR"]) / "build_report.json"
-compiled_native_artifacts = False
+build_report_path = Path(os.environ["AX_BENCH_MLX_METAL_BUILD_DIR"]) / "build_report.json"
+compiled_mlx_artifacts = False
 
 if build_report_path.is_file():
     build_report = json.loads(build_report_path.read_text())
-    compiled_native_artifacts = build_report.get("status") == "compiled"
+    compiled_mlx_artifacts = build_report.get("status") == "compiled"
 
 bench_env = os.environ.copy()
 bench_env.pop("AX_ENGINE_METAL_BUILD_DIR", None)
-if compiled_native_artifacts:
+if compiled_mlx_artifacts:
     bench_env["AX_ENGINE_METAL_BUILD_DIR"] = str(build_report_path.parent)
-real_model_expected = bool(bench_env.get("AX_ENGINE_NATIVE_MODEL_DIR"))
+real_model_expected = True
 
 scenarios = [
     {
@@ -103,16 +104,12 @@ for scenario in scenarios:
     trace = artifacts["trace"]
     summary = artifacts["summary"]
 
-    expected_tool_mode = (
-        "engine_bringup_runtime"
-        if compiled_native_artifacts
-        else "engine_deterministic_runtime"
-    )
+    expected_tool_mode = "engine_bringup_runtime"
     assert environment["software"]["tool_mode"] == expected_tool_mode
-    assert environment["runtime"]["selected_backend"] == "ax_native"
-    assert environment["runtime"]["support_tier"] == "native_preview"
-    assert environment["runtime"]["resolution_policy"] == "strict_native"
-    native_runtime = environment["runtime"]["native_runtime"]
+    assert environment["runtime"]["selected_backend"] == "mlx"
+    assert environment["runtime"]["support_tier"] == "mlx_preview"
+    assert environment["runtime"]["resolution_policy"] == "mlx_only"
+    mlx_runtime = environment["runtime"]["mlx_runtime"]
     assert environment["route"]["prefix_cache_path"] == "metadata_lookup"
     assert environment["route"]["prefix_cache_evidence"] == "none_observed"
     assert environment["route"]["prefix_reuse_provenance"] == "none_observed"
@@ -132,8 +129,8 @@ for scenario in scenarios:
     assert route["crossover_decisions"]["barrier_mode_variants"] == 1
     assert route["crossover_decisions"]["prefix_reused_requests"] == 0
 
-    assert metrics["runtime"]["selected_backend"] == "ax_native"
-    assert metrics["runtime"]["support_tier"] == "native_preview"
+    assert metrics["runtime"]["selected_backend"] == "mlx"
+    assert metrics["runtime"]["support_tier"] == "mlx_preview"
     assert metrics["correctness"]["passed"] is True
     assert metrics["determinism"]["passed"] is True
     assert metrics["replay_status"] == "not_applicable"
@@ -154,37 +151,30 @@ for scenario in scenarios:
         and step.get("route", {}).get("attention_route") == scenario["decode_route"]
         for step in steps
     )
-    if compiled_native_artifacts:
-        assert native_runtime["runner"] == "metal_bringup"
-        assert native_runtime["artifacts_source"] == "explicit_env"
-        assert (
-            route["crossover_decisions"].get("metal_dispatch_completed", 0) > 0
-        ), "compiled Metal artifacts should surface aggregate dispatch evidence"
-        assert any(
-            step.get("route", {})
-            .get("crossover_decisions", {})
-            .get("metal_dispatch_completed")
-            == 1
-            for step in steps
-        ), "compiled Metal artifacts should surface per-step dispatch evidence"
-        if real_model_expected:
-            native_model = environment["runtime"].get("native_model")
-            assert native_model is not None
-            assert native_model["artifacts_source"] == "explicit_env"
-            assert route["metal_model_artifacts_validated"] is True
-            assert route["metal_model_conditioned_inputs"] is True
-            assert route["metal_real_model_tensor_inputs"] is True
-            assert route["execution_semantics"] in {
-                "metal_real_model_tensor_inputs",
-                "metal_real_model_forward",
-            }
-        else:
-            assert route["metal_model_artifacts_validated"] is False
-            assert route["metal_model_conditioned_inputs"] is False
-            assert route["metal_real_model_tensor_inputs"] is False
-    else:
-        assert native_runtime["runner"] == "deterministic"
-        assert "artifacts_source" not in native_runtime
+    assert compiled_mlx_artifacts
+    assert mlx_runtime["runner"] == "metal_bringup"
+    assert mlx_runtime["artifacts_source"] == "explicit_env"
+    assert (
+        route["crossover_decisions"].get("metal_dispatch_completed", 0) > 0
+    ), "compiled Metal artifacts should surface aggregate dispatch evidence"
+    assert any(
+        step.get("route", {})
+        .get("crossover_decisions", {})
+        .get("metal_dispatch_completed")
+        == 1
+        for step in steps
+    ), "compiled Metal artifacts should surface per-step dispatch evidence"
+    assert real_model_expected
+    mlx_model = environment["runtime"].get("mlx_model")
+    assert mlx_model is not None
+    assert mlx_model["artifacts_source"] == "explicit_env"
+    assert route["metal_model_artifacts_validated"] is True
+    assert route["metal_model_conditioned_inputs"] is True
+    assert route["metal_real_model_tensor_inputs"] is True
+    assert route["execution_semantics"] in {
+        "metal_real_model_tensor_inputs",
+        "metal_real_model_forward",
+    }
     assert summary.count(expected_tool_mode) == 1
     assert scenario["model_family"] in (run_dir / "manifest.json").read_text()
 PY

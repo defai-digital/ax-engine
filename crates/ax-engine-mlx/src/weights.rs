@@ -48,9 +48,17 @@ pub struct QuantizedWeight {
 
 impl QuantizedWeight {
     pub fn new(weight: MlxArray, scales: Option<MlxArray>, biases: Option<MlxArray>) -> Self {
-        Self { weight, scales, biases, group_size: 64, bits: 4 }
+        Self {
+            weight,
+            scales,
+            biases,
+            group_size: 64,
+            bits: 4,
+        }
     }
-    pub fn is_quantized(&self) -> bool { self.scales.is_some() }
+    pub fn is_quantized(&self) -> bool {
+        self.scales.is_some()
+    }
 }
 
 pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, WeightLoadError> {
@@ -60,8 +68,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         let full = root.join(&spec.file);
         if let Entry::Vacant(entry) = file_cache.entry(full) {
             let path = entry.key().clone();
-            let tensors = load_safetensors(&path, None)
-                .map_err(WeightLoadError::FileMissing)?;
+            let tensors = load_safetensors(&path, None).map_err(WeightLoadError::FileMissing)?;
             if tensors.is_empty() {
                 return Err(WeightLoadError::FileMissing(path.display().to_string()));
             }
@@ -80,9 +87,21 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     let specs = artifacts.tensor_specs();
     let layer_count = artifacts.manifest().layer_count as usize;
 
-    let token_embedding = take_weight(specs, &mut name_map, NativeTensorRole::TokenEmbedding, None, "token_embedding")?;
-    let final_norm = take_weight(specs, &mut name_map, NativeTensorRole::FinalNorm, None, "final_norm")?
-        .weight;
+    let token_embedding = take_weight(
+        specs,
+        &mut name_map,
+        NativeTensorRole::TokenEmbedding,
+        None,
+        "token_embedding",
+    )?;
+    let final_norm = take_weight(
+        specs,
+        &mut name_map,
+        NativeTensorRole::FinalNorm,
+        None,
+        "final_norm",
+    )?
+    .weight;
     let lm_head = if artifacts.manifest().tie_word_embeddings {
         QuantizedWeight::new(
             token_embedding.weight.clone(),
@@ -90,56 +109,151 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             token_embedding.biases.clone(),
         )
     } else {
-        take_weight(specs, &mut name_map, NativeTensorRole::LmHead, None, "lm_head")?
+        take_weight(
+            specs,
+            &mut name_map,
+            NativeTensorRole::LmHead,
+            None,
+            "lm_head",
+        )?
     };
 
     let mut layers = Vec::with_capacity(layer_count);
     for li in 0..layer_count {
         let idx = Some(li as u32);
 
-        let attn_norm = take_weight(specs, &mut name_map, NativeTensorRole::AttentionNorm, idx, "attn_norm")?.weight;
-        let o_proj = take_weight(specs, &mut name_map, NativeTensorRole::AttentionO, idx, "o_proj")?;
+        let attn_norm = take_weight(
+            specs,
+            &mut name_map,
+            NativeTensorRole::AttentionNorm,
+            idx,
+            "attn_norm",
+        )?
+        .weight;
+        let o_proj = take_weight(
+            specs,
+            &mut name_map,
+            NativeTensorRole::AttentionO,
+            idx,
+            "o_proj",
+        )?;
         // Models may use `ffn_norm` OR `attention_post_norm` for the pre-FFN layer norm.
         let ffn_norm = if has_role(specs, NativeTensorRole::FfnNorm, idx) {
-            take_weight(specs, &mut name_map, NativeTensorRole::FfnNorm, idx, "ffn_norm")?.weight
+            take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::FfnNorm,
+                idx,
+                "ffn_norm",
+            )?
+            .weight
         } else {
-            take_weight(specs, &mut name_map, NativeTensorRole::AttentionPostNorm, idx, "attention_post_norm")?.weight
+            take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::AttentionPostNorm,
+                idx,
+                "attention_post_norm",
+            )?
+            .weight
         };
-        let down_proj = take_weight(specs, &mut name_map, NativeTensorRole::FfnDown, idx, "down_proj")?;
+        let down_proj = take_weight(
+            specs,
+            &mut name_map,
+            NativeTensorRole::FfnDown,
+            idx,
+            "down_proj",
+        )?;
 
         let q_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionQNorm, idx)?;
         let k_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionKNorm, idx)?;
 
         let (qkv_packed, q_proj, k_proj, v_proj) =
             if has_role(specs, NativeTensorRole::AttentionQkvPacked, idx) {
-                let p = take_weight(specs, &mut name_map, NativeTensorRole::AttentionQkvPacked, idx, "qkv")?;
+                let p = take_weight(
+                    specs,
+                    &mut name_map,
+                    NativeTensorRole::AttentionQkvPacked,
+                    idx,
+                    "qkv",
+                )?;
                 (Some(p), None, None, None)
             } else {
-                let q = take_weight(specs, &mut name_map, NativeTensorRole::AttentionQ, idx, "q_proj")?;
-                let k = take_weight(specs, &mut name_map, NativeTensorRole::AttentionK, idx, "k_proj")?;
-                let v = take_weight(specs, &mut name_map, NativeTensorRole::AttentionV, idx, "v_proj")?;
+                let q = take_weight(
+                    specs,
+                    &mut name_map,
+                    NativeTensorRole::AttentionQ,
+                    idx,
+                    "q_proj",
+                )?;
+                let k = take_weight(
+                    specs,
+                    &mut name_map,
+                    NativeTensorRole::AttentionK,
+                    idx,
+                    "k_proj",
+                )?;
+                let v = take_weight(
+                    specs,
+                    &mut name_map,
+                    NativeTensorRole::AttentionV,
+                    idx,
+                    "v_proj",
+                )?;
                 (None, Some(q), Some(k), Some(v))
             };
 
         let (gate_up_packed, gate_proj, up_proj) =
             if has_role(specs, NativeTensorRole::FfnGateUpPacked, idx) {
-                let p = take_weight(specs, &mut name_map, NativeTensorRole::FfnGateUpPacked, idx, "gate_up")?;
+                let p = take_weight(
+                    specs,
+                    &mut name_map,
+                    NativeTensorRole::FfnGateUpPacked,
+                    idx,
+                    "gate_up",
+                )?;
                 (Some(p), None, None)
             } else {
-                let g = take_weight(specs, &mut name_map, NativeTensorRole::FfnGate, idx, "gate_proj")?;
-                let u = take_weight(specs, &mut name_map, NativeTensorRole::FfnUp, idx, "up_proj")?;
+                let g = take_weight(
+                    specs,
+                    &mut name_map,
+                    NativeTensorRole::FfnGate,
+                    idx,
+                    "gate_proj",
+                )?;
+                let u = take_weight(
+                    specs,
+                    &mut name_map,
+                    NativeTensorRole::FfnUp,
+                    idx,
+                    "up_proj",
+                )?;
                 (None, Some(g), Some(u))
             };
 
         layers.push(LayerWeights {
-            attn_norm, q_norm, k_norm,
-            q_proj, k_proj, v_proj, qkv_packed,
-            o_proj, ffn_norm,
-            gate_proj, up_proj, gate_up_packed, down_proj,
+            attn_norm,
+            q_norm,
+            k_norm,
+            q_proj,
+            k_proj,
+            v_proj,
+            qkv_packed,
+            o_proj,
+            ffn_norm,
+            gate_proj,
+            up_proj,
+            gate_up_packed,
+            down_proj,
         });
     }
 
-    Ok(ModelWeights { token_embedding, final_norm, lm_head, layers })
+    Ok(ModelWeights {
+        token_embedding,
+        final_norm,
+        lm_head,
+        layers,
+    })
 }
 
 /// Load a weight tensor together with its `.scales` and `.biases` siblings
@@ -180,12 +294,16 @@ fn try_take_plain(
         .iter()
         .find(|s| s.role == role && s.layer_index == layer_index)
         .map(|s| s.name.clone())
-    else { return Ok(None); };
+    else {
+        return Ok(None);
+    };
     Ok(name_map.remove(&name))
 }
 
 fn has_role(specs: &[NativeTensorSpec], role: NativeTensorRole, layer_index: Option<u32>) -> bool {
-    specs.iter().any(|s| s.role == role && s.layer_index == layer_index)
+    specs
+        .iter()
+        .any(|s| s.role == role && s.layer_index == layer_index)
 }
 
 #[derive(Debug, thiserror::Error)]

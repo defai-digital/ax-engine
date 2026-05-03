@@ -18,7 +18,7 @@ def _allocate_port() -> int:
 
 
 @contextlib.contextmanager
-def _compatibility_upstream() -> Iterator[tuple[str, list[dict[str, Any]]]]:
+def _llama_cpp_upstream() -> Iterator[tuple[str, list[dict[str, Any]]]]:
     requests: list[dict[str, Any]] = []
     port = _allocate_port()
 
@@ -42,7 +42,7 @@ def _compatibility_upstream() -> Iterator[tuple[str, list[dict[str, Any]]]]:
 
             if payload.get("stream"):
                 body = (
-                    'data: {"content":"compat","tokens":[41],"stop":false}\n\n'
+                    'data: {"content":"llama","tokens":[41],"stop":false}\n\n'
                     'data: {"content":" stream","tokens":[42],"stop":true,"stop_type":"limit"}\n\n'
                     "data: [DONE]\n\n"
                 ).encode("utf-8")
@@ -55,10 +55,10 @@ def _compatibility_upstream() -> Iterator[tuple[str, list[dict[str, Any]]]]:
 
             prompt = payload.get("prompt")
             if isinstance(prompt, list):
-                content = "compat tokens"
+                content = "llama tokens"
                 tokens = [31, 32]
             else:
-                content = f"compat::{prompt}"
+                content = f"llama::{prompt}"
                 tokens = [21, 22]
 
             body = json.dumps(
@@ -107,82 +107,91 @@ class InstalledPreviewTests(unittest.TestCase):
         cls.ax_engine = module
 
     def test_installed_package_reports_runtime_and_generate_result(self) -> None:
-        with self.ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True) as session:
-            runtime = session.runtime()
-            result = session.generate([1, 2, 3], max_output_tokens=2)
-
-        self.assertEqual(runtime.selected_backend, "ax_native")
-        self.assertEqual(runtime.support_tier, "native_preview")
-        self.assertEqual(runtime.resolution_policy, "strict_native")
-        self.assertTrue(runtime.host.os)
-        self.assertTrue(runtime.host.arch)
-        self.assertIsInstance(runtime.host.supported_native_runtime, bool)
-        self.assertIsInstance(runtime.metal_toolchain.fully_available, bool)
-        self.assertEqual(result.output_tokens, [4, 5])
-        self.assertEqual(len(result.output_token_logprobs), len(result.output_tokens))
-        self.assertEqual(result.finish_reason, "max_output_tokens")
-        self.assertEqual(result.runtime.support_tier, "native_preview")
-
-    def test_installed_package_stream_blocks_reuse_until_iterator_finishes(self) -> None:
-        with self.ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True) as session:
-            stream = session.stream_generate([1, 2, 3], max_output_tokens=2)
-            first_event = next(stream)
-
-            self.assertEqual(first_event.event, "request")
-            with self.assertRaisesRegex(RuntimeError, "active stream"):
-                session.step()
-
-            remaining_events = list(stream)
-            self.assertEqual(
-                [event.event for event in [first_event, *remaining_events]],
-                ["request", "step", "step", "step", "response"],
-            )
-
-            result = session.generate([8, 9], max_output_tokens=1)
-
-        self.assertEqual(result.status, "finished")
-        self.assertEqual(result.output_tokens, [10])
-
-    def test_installed_package_supports_compatibility_server_generate_and_stream(
-        self,
-    ) -> None:
-        with _compatibility_upstream() as (server_url, requests):
+        with _llama_cpp_upstream() as (server_url, _requests):
             with self.ax_engine.Session(
                 model_id="qwen3_dense",
-                support_tier="compatibility",
-                compat_server_url=server_url,
+                support_tier="llama_cpp",
+                llama_server_url=server_url,
+            ) as session:
+                runtime = session.runtime()
+                result = session.generate([1, 2, 3], max_output_tokens=2)
+
+        self.assertEqual(runtime.selected_backend, "llama_cpp")
+        self.assertEqual(runtime.support_tier, "llama_cpp")
+        self.assertEqual(runtime.resolution_policy, "allow_llama_cpp")
+        self.assertTrue(runtime.host.os)
+        self.assertTrue(runtime.host.arch)
+        self.assertIsInstance(runtime.host.supported_mlx_runtime, bool)
+        self.assertIsInstance(runtime.metal_toolchain.fully_available, bool)
+        self.assertEqual(result.output_tokens, [31, 32])
+        self.assertEqual(result.finish_reason, "max_output_tokens")
+        self.assertEqual(result.runtime.support_tier, "llama_cpp")
+
+    def test_installed_package_stream_blocks_reuse_until_iterator_finishes(self) -> None:
+        with _llama_cpp_upstream() as (server_url, _requests):
+            with self.ax_engine.Session(
+                model_id="qwen3_dense",
+                support_tier="llama_cpp",
+                llama_server_url=server_url,
+            ) as session:
+                stream = session.stream_generate([1, 2, 3], max_output_tokens=2)
+                first_event = next(stream)
+
+                self.assertEqual(first_event.event, "request")
+                with self.assertRaisesRegex(RuntimeError, "active stream"):
+                    session.step()
+
+                remaining_events = list(stream)
+                self.assertEqual(
+                    [event.event for event in [first_event, *remaining_events]],
+                    ["request", "step", "step", "response"],
+                )
+
+                result = session.generate([8, 9], max_output_tokens=1)
+
+        self.assertEqual(result.status, "finished")
+        self.assertEqual(result.output_tokens, [31, 32])
+
+    def test_installed_package_supports_llama_cpp_server_generate_and_stream(
+        self,
+    ) -> None:
+        with _llama_cpp_upstream() as (server_url, requests):
+            with self.ax_engine.Session(
+                model_id="qwen3_dense",
+                support_tier="llama_cpp",
+                llama_server_url=server_url,
             ) as session:
                 runtime = session.runtime()
                 text_result = session.generate(
-                    input_text="hello compatibility",
+                    input_text="hello llama.cpp",
                     max_output_tokens=2,
                 )
                 token_result = session.generate([1, 2, 3], max_output_tokens=2)
                 events = list(session.stream_generate([1, 2, 3], max_output_tokens=2))
 
         self.assertEqual(runtime.selected_backend, "llama_cpp")
-        self.assertEqual(runtime.support_tier, "compatibility")
-        self.assertEqual(runtime.resolution_policy, "allow_compat")
+        self.assertEqual(runtime.support_tier, "llama_cpp")
+        self.assertEqual(runtime.resolution_policy, "allow_llama_cpp")
         self.assertTrue(runtime.host.os)
         self.assertIsInstance(runtime.metal_toolchain.fully_available, bool)
 
-        self.assertEqual(text_result.prompt_text, "hello compatibility")
-        self.assertEqual(text_result.output_text, "compat::hello compatibility")
+        self.assertEqual(text_result.prompt_text, "hello llama.cpp")
+        self.assertEqual(text_result.output_text, "llama::hello llama.cpp")
         self.assertEqual(
             text_result.route.execution_plan,
-            "compatibility.llama_cpp.server_completion",
+            "llama_cpp.server_completion",
         )
 
         self.assertEqual(token_result.prompt_tokens, [1, 2, 3])
         self.assertEqual(token_result.output_tokens, [31, 32])
-        self.assertEqual(token_result.output_text, "compat tokens")
-        self.assertEqual(token_result.runtime.support_tier, "compatibility")
+        self.assertEqual(token_result.output_text, "llama tokens")
+        self.assertEqual(token_result.runtime.support_tier, "llama_cpp")
 
         self.assertEqual(
             [event.event for event in events],
             ["request", "step", "step", "response"],
         )
-        self.assertEqual(events[0].runtime.support_tier, "compatibility")
+        self.assertEqual(events[0].runtime.support_tier, "llama_cpp")
         self.assertEqual(events[1].request.state, "running")
         self.assertEqual(events[1].delta_tokens, [41])
         self.assertEqual(events[1].delta_token_logprobs, [None])
@@ -193,14 +202,14 @@ class InstalledPreviewTests(unittest.TestCase):
         self.assertEqual(events[2].delta_token_logprobs, [None])
         self.assertEqual(events[3].response.output_tokens, [41, 42])
         self.assertEqual(events[3].response.output_token_logprobs, [None, None])
-        self.assertEqual(events[3].response.output_text, "compat stream")
+        self.assertEqual(events[3].response.output_text, "llama stream")
         self.assertEqual(
             events[3].response.route.execution_plan,
-            "compatibility.llama_cpp.server_completion_stream",
+            "llama_cpp.server_completion_stream",
         )
 
         self.assertEqual(len(requests), 3)
-        self.assertEqual(requests[0]["prompt"], "hello compatibility")
+        self.assertEqual(requests[0]["prompt"], "hello llama.cpp")
         self.assertIs(requests[0]["stream"], False)
         self.assertEqual(requests[1]["prompt"], [1, 2, 3])
         self.assertIs(requests[1]["stream"], False)
@@ -209,14 +218,14 @@ class InstalledPreviewTests(unittest.TestCase):
         for payload in requests:
             self.assertIs(payload["return_tokens"], True)
 
-    def test_installed_package_supports_compatibility_server_stepwise_lifecycle(
+    def test_installed_package_supports_llama_cpp_server_stepwise_lifecycle(
         self,
     ) -> None:
-        with _compatibility_upstream() as (server_url, requests):
+        with _llama_cpp_upstream() as (server_url, requests):
             with self.ax_engine.Session(
                 model_id="qwen3_dense",
-                support_tier="compatibility",
-                compat_server_url=server_url,
+                support_tier="llama_cpp",
+                llama_server_url=server_url,
             ) as session:
                 request_id = session.submit([1, 2, 3], max_output_tokens=2)
                 initial = session.snapshot(request_id)
@@ -232,7 +241,7 @@ class InstalledPreviewTests(unittest.TestCase):
                 self.assertEqual(first_step.ttft_events, 1)
                 self.assertEqual(
                     first_step.route.execution_plan,
-                    "compatibility.llama_cpp.server_completion_stream",
+                    "llama_cpp.server_completion_stream",
                 )
                 self.assertIsNotNone(running)
                 self.assertEqual(running.state, "running")
@@ -246,7 +255,7 @@ class InstalledPreviewTests(unittest.TestCase):
                 self.assertEqual(second_step.scheduled_tokens, 1)
                 self.assertEqual(
                     second_step.route.execution_plan,
-                    "compatibility.llama_cpp.server_completion_stream",
+                    "llama_cpp.server_completion_stream",
                 )
                 self.assertIsNotNone(terminal)
                 self.assertEqual(terminal.state, "finished")
@@ -256,7 +265,7 @@ class InstalledPreviewTests(unittest.TestCase):
                 self.assertEqual(terminal.terminal_stop_reason, "max_output_tokens")
                 self.assertEqual(
                     terminal.route.execution_plan,
-                    "compatibility.llama_cpp.server_completion_stream",
+                    "llama_cpp.server_completion_stream",
                 )
 
         self.assertEqual(len(requests), 1)
@@ -264,14 +273,14 @@ class InstalledPreviewTests(unittest.TestCase):
         self.assertIs(requests[0]["stream"], True)
         self.assertIs(requests[0]["return_tokens"], True)
 
-    def test_installed_package_supports_multiple_compatibility_stepwise_requests(
+    def test_installed_package_supports_multiple_llama_cpp_stepwise_requests(
         self,
     ) -> None:
-        with _compatibility_upstream() as (server_url, requests):
+        with _llama_cpp_upstream() as (server_url, requests):
             with self.ax_engine.Session(
                 model_id="qwen3_dense",
-                support_tier="compatibility",
-                compat_server_url=server_url,
+                support_tier="llama_cpp",
+                llama_server_url=server_url,
             ) as session:
                 first_request_id = session.submit([1, 2, 3], max_output_tokens=2)
                 second_request_id = session.submit([7, 8, 9], max_output_tokens=2)

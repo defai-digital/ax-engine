@@ -1,6 +1,6 @@
 {
   "schema_version": "ax.metal.kernel_manifest.v1",
-  "native_target": "apple_m4_or_newer_macos_aarch64",
+  "mlx_target": "apple_m4_or_newer_macos_aarch64",
   "metal_language_standard": "metal3.1",
   "library_name": "ax_phase1_dense_path",
   "default_block_size_tokens": 16,

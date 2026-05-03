@@ -1,26 +1,27 @@
-# ax-engine MLX Native Backend
+# ax-engine MLX Backend
 
-## Problem
+## Current Direction
 
-The current MLX compat mode wraps `mlx_lm` via CLI subprocess or HTTP. This means:
-- No streaming on the CLI path
-- No logprob or token-ID access
-- No KV cache control or prefix reuse transparency
-- No custom Metal kernel injection
-- Full Python startup cost per request
+AX Engine v4 uses two user-facing inference paths: MLX mode for repo-owned MLX execution, and llama.cpp for non-MLX inference.
+MLX mode is the repo-owned Mac-local inference path, implemented through
+`ax-engine-mlx` and selected explicitly with `--mlx` or Python `mlx=True`.
 
-## Solution
+Non-MLX inference bypasses AX-owned execution and routes to `llama.cpp`.
+Direct MLX adapters, `mlx_lm` wrapper paths, `vLLM`, and `mistral.rs` are not
+shipping peer inference routes.
 
-Replace the subprocess wrapper with a direct Rust ↔ MLX C++ integration via the official
-`mlx-c` C API (Apple, v0.6+). This mirrors how SwiftLM achieves native performance: Swift
-bindings to MLX C++ for tensor compute, custom Metal kernels injected via
-`mlx_fast_metal_kernel`, and a Rust scheduler layer for batching and prefix reuse.
+## Backend Design
+
+MLX mode uses a direct Rust ↔ MLX C++ integration via the official `mlx-c` C API.
+This mirrors the SwiftLM lesson that high-throughput Mac inference needs direct
+MLX tensor execution, explicit GPU queue control, and an AX-owned scheduler layer
+for batching and prefix reuse rather than a delegated subprocess wrapper.
 
 ## Architecture
 
 ```
 ax-engine-sdk (Rust)
-  └── MlxNativeRunner (ExecutionRunner)
+  └── MlxRunner (ExecutionRunner)
         ├── ax-engine-mlx (Rust)
         │     ├── generate.rs  — chunked prefill (512 tok) + decode loop
         │     ├── model.rs     — Qwen3 transformer (attn + FFN + norm)
@@ -37,7 +38,7 @@ ax-engine-sdk (Rust)
 |---|---|
 | `mlx-sys` | Unsafe FFI + safe RAII wrappers. No logic. |
 | `ax-engine-mlx` | Model graph, inference loop, KV cache. All MLX ops live here. |
-| `ax-engine-sdk` | Session routing: StrictNative → MlxNativeRunner, or llama.cpp fallback. |
+| `ax-engine-sdk` | Session routing: MLX mode → MlxRunner; non-MLX mode → llama.cpp. |
 
 ## Key design decisions learnt from SwiftLM
 
@@ -65,7 +66,7 @@ This is the exact mechanism SwiftLM uses for its DFlash tape-replay kernels.
 Keys and values grow along the sequence dimension with `mlx_concatenate_axis`.
 Prefix reuse: on a cache hit the existing KV arrays are reused for the shared prefix,
 decode resumes from the split point. No block-table indirection needed at the MLX
-layer (paged dispatch remains in the native Metal path for phase1 models).
+layer (paged dispatch remains in the MLX Metal path for phase1 models).
 
 ## Implementation phases
 
@@ -85,13 +86,13 @@ layer (paged dispatch remains in the native Metal path for phase1 models).
 - KV cache: grow-on-append, trim on prefix hit
 - Chunked prefill loop
 - Decode loop (single token, returns f32 logits slice)
-- `MlxNativeRunner` implementing `ExecutionRunner`
+- `MlxRunner` implementing `ExecutionRunner`
 
 ### Phase 3 — integration (this PR)
 - Add both crates to workspace
-- `SelectedBackend::MlxNative` variant in `ax-engine-sdk`
-- `--mlx-native` flag in `ax-engine-server`
-- Python binding: `native_mode=True` routes to MlxNative when model is supported
+- `SelectedBackend::Mlx` variant in `ax-engine-sdk`
+- `--mlx` flag in `ax-engine-server`
+- Python binding: `mlx=True` routes to MLX mode when model artifacts are configured
 
 ### Phase 4 — future
 - Extend model coverage beyond Qwen3 dense (Llama, Mistral, MoE)
@@ -105,7 +106,7 @@ layer (paged dispatch remains in the native Metal path for phase1 models).
 |---|---|
 | Streaming latency | First token < 200 ms for 512-token prompt |
 | Throughput | ≥ mlx_lm baseline tok/s for Qwen3.5 9B Q4 |
-| CLI elimination | Zero subprocess/HTTP overhead on native path |
+| Delegated-wrapper elimination | Zero subprocess/HTTP overhead on MLX mode |
 | logprob access | Returned on every decode step |
 | Prefix reuse | KV cache reused across requests with shared prefix |
 | Custom kernels | phase1 Metal kernels callable from MLX compute graph |
@@ -122,5 +123,5 @@ crates/ax-engine-mlx/
   Cargo.toml
   src/lib.rs, weights.rs, model.rs, kv_cache.rs, generate.rs, runner.rs, sampling.rs
 
-docs/MLX-NATIVE-BACKEND.md  (this file)
+docs/MLX-BACKEND.md  (this file)
 ```

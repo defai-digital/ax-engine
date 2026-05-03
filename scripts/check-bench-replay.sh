@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-bench-replay-check.XXXXXX")"
+METAL_BUILD_DIR="${AX_ENGINE_METAL_BUILD_DIR:-${AX_METAL_OUTPUT_DIR:-$ROOT_DIR/build/metal}}"
+: "${AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR:?AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required for MLX replay smoke}"
 
 cleanup() {
     rm -rf "$TMP_DIR"
@@ -14,6 +16,10 @@ trap cleanup EXIT
 
 cd "$ROOT_DIR"
 
+AX_METAL_OUTPUT_DIR="$METAL_BUILD_DIR" \
+bash "$ROOT_DIR/scripts/build-metal-kernels.sh"
+
+AX_ENGINE_METAL_BUILD_DIR="$METAL_BUILD_DIR" \
 AX_BENCH_REPLAY_TMP_DIR="$TMP_DIR" \
 "$PYTHON_BIN" - <<'PY'
 from __future__ import annotations
@@ -77,13 +83,11 @@ def route_decision(routes: dict, key: str) -> int:
     return int(routes["route"]["crossover_decisions"].get(key, 0))
 
 
-def expected_native_tool_mode(runtime: dict) -> str:
-    runner = runtime.get("native_runtime", {}).get("runner")
+def expected_mlx_tool_mode(runtime: dict) -> str:
+    runner = runtime.get("mlx_runtime", {}).get("runner")
     if runner == "metal_bringup":
         return "engine_bringup_runtime"
-    if runner == "deterministic":
-        return "engine_deterministic_runtime"
-    raise AssertionError(f"unexpected native runner for replay smoke: {runner!r}")
+    raise AssertionError(f"unexpected MLX runner for replay smoke: {runner!r}")
 
 
 for replay in replays:
@@ -110,17 +114,17 @@ for replay in replays:
     trace = artifacts["trace"]
     summary = artifacts["summary"]
 
-    expected_tool_mode = expected_native_tool_mode(environment["runtime"])
+    expected_tool_mode = expected_mlx_tool_mode(environment["runtime"])
 
     assert environment["software"]["tool_mode"] == expected_tool_mode
-    assert environment["runtime"]["selected_backend"] == "ax_native"
-    assert environment["runtime"]["support_tier"] == "native_preview"
-    assert environment["runtime"]["resolution_policy"] == "strict_native"
+    assert environment["runtime"]["selected_backend"] == "mlx"
+    assert environment["runtime"]["support_tier"] == "mlx_preview"
+    assert environment["runtime"]["resolution_policy"] == "mlx_only"
     assert environment["benchmark"]["subcommand"] == "replay"
     assert routes["mode"] == expected_tool_mode
 
-    assert metrics["runtime"]["selected_backend"] == "ax_native"
-    assert metrics["runtime"]["support_tier"] == "native_preview"
+    assert metrics["runtime"]["selected_backend"] == "mlx"
+    assert metrics["runtime"]["support_tier"] == "mlx_preview"
     assert metrics["correctness"]["passed"] is True
     assert metrics["determinism"]["passed"] is True
     assert metrics["replay_status"] == replay["replay_status"]

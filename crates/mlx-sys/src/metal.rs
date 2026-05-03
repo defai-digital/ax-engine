@@ -27,8 +27,10 @@ impl MlxMetalKernel {
     ) -> Self {
         unsafe {
             let c_name = CString::new(name).expect("Metal kernel name must not contain NUL bytes");
-            let c_source = CString::new(source).expect("Metal kernel source must not contain NUL bytes");
-            let c_header = CString::new(header).expect("Metal kernel header must not contain NUL bytes");
+            let c_source =
+                CString::new(source).expect("Metal kernel source must not contain NUL bytes");
+            let c_header =
+                CString::new(header).expect("Metal kernel header must not contain NUL bytes");
 
             let inputs = build_string_vec(input_names);
             let outputs = build_string_vec(output_names);
@@ -91,13 +93,7 @@ impl MlxMetalKernel {
             );
 
             let mut out_vec = ffi::mlx_vector_array_new();
-            ffi::mlx_fast_metal_kernel_apply(
-                &mut out_vec,
-                self.inner,
-                in_vec,
-                config,
-                stream,
-            );
+            ffi::mlx_fast_metal_kernel_apply(&mut out_vec, self.inner, in_vec, config, stream);
 
             ffi::mlx_vector_array_free(in_vec);
             ffi::mlx_fast_metal_kernel_config_free(config);
@@ -135,7 +131,8 @@ fn build_string_vec(strs: &[&str]) -> ffi::mlx_vector_string {
     unsafe {
         let vec = ffi::mlx_vector_string_new();
         for s in strs {
-            let cs = CString::new(*s).expect("Metal kernel argument names must not contain NUL bytes");
+            let cs =
+                CString::new(*s).expect("Metal kernel argument names must not contain NUL bytes");
             ffi::mlx_vector_string_append_value(vec, cs.as_ptr());
         }
         vec

@@ -59,13 +59,7 @@ pub fn reshape(a: &MlxArray, shape: &[i32], s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
         let mut res = MlxArray::empty();
-        ffi::mlx_reshape(
-            &mut res.inner,
-            a.inner,
-            shape.as_ptr(),
-            shape.len(),
-            stream,
-        );
+        ffi::mlx_reshape(&mut res.inner, a.inner, shape.as_ptr(), shape.len(), stream);
         res
     }
 }
@@ -74,13 +68,7 @@ pub fn transpose(a: &MlxArray, axes: &[i32], s: Option<&MlxStream>) -> MlxArray 
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
         let mut res = MlxArray::empty();
-        ffi::mlx_transpose_axes(
-            &mut res.inner,
-            a.inner,
-            axes.as_ptr(),
-            axes.len(),
-            stream,
-        );
+        ffi::mlx_transpose_axes(&mut res.inner, a.inner, axes.as_ptr(), axes.len(), stream);
         res
     }
 }
@@ -144,7 +132,13 @@ pub fn repeat_axis(a: &MlxArray, repeats: i32, axis: i32, s: Option<&MlxStream>)
 /// Slice array along every axis.
 ///
 /// `start`, `stop`, and `strides` must each have length equal to `a.ndim()`.
-pub fn slice(a: &MlxArray, start: &[i32], stop: &[i32], strides: &[i32], s: Option<&MlxStream>) -> MlxArray {
+pub fn slice(
+    a: &MlxArray,
+    start: &[i32],
+    stop: &[i32],
+    strides: &[i32],
+    s: Option<&MlxStream>,
+) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
         let mut res = MlxArray::empty();
@@ -197,7 +191,10 @@ pub fn as_strided(
 /// Slice the last dimension of `a` from index `start` to `end` (exclusive).
 pub fn slice_last_dim(a: &MlxArray, start: i32, end: i32, s: Option<&MlxStream>) -> MlxArray {
     let ndim = a.ndim();
-    assert!(ndim > 0, "slice_last_dim requires at least 1-dimensional array");
+    assert!(
+        ndim > 0,
+        "slice_last_dim requires at least 1-dimensional array"
+    );
     let shape = a.shape();
     let mut start_vec = vec![0i32; ndim];
     let mut stop_vec = shape.clone();
@@ -233,9 +230,9 @@ pub fn dequantize(
 ) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
-        let biases_raw = biases
-            .map(|b| b.inner)
-            .unwrap_or(ffi::mlx_array { ctx: std::ptr::null_mut() });
+        let biases_raw = biases.map(|b| b.inner).unwrap_or(ffi::mlx_array {
+            ctx: std::ptr::null_mut(),
+        });
         let gs = ffi::mlx_optional_int_ {
             has_value: group_size.is_some(),
             value: group_size.unwrap_or(64),
@@ -257,7 +254,9 @@ pub fn dequantize(
             gs,
             bs,
             c"affine".as_ptr(),
-            ffi::mlx_array { ctx: std::ptr::null_mut() },
+            ffi::mlx_array {
+                ctx: std::ptr::null_mut(),
+            },
             no_dtype,
             stream,
         );
@@ -281,9 +280,9 @@ pub fn quantized_matmul(
 ) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
-        let biases_raw = biases
-            .map(|b| b.inner)
-            .unwrap_or(ffi::mlx_array { ctx: std::ptr::null_mut() });
+        let biases_raw = biases.map(|b| b.inner).unwrap_or(ffi::mlx_array {
+            ctx: std::ptr::null_mut(),
+        });
 
         let gs = ffi::mlx_optional_int_ {
             has_value: group_size.is_some(),

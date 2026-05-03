@@ -1,114 +1,46 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use ax_engine_core::model::{NativeRuntimeStatus, NativeSourceQuantization};
 use ax_engine_core::{NativeModelArtifactsSummary, NativeModelBindingSummary, NativeTensorFormat};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::compat::{
-    CompatibilityBackendConfig, LlamaCppConfig, MlxConfig, OpenAiCompatibleServerConfig,
-};
-
-pub const INITIAL_NATIVE_MODE_MODEL_ID: &str = "qwen3_5_9b_q4";
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeModeModelPromotion {
-    pub canonical_model_id: &'static str,
-    pub display_name: &'static str,
-    aliases: &'static [&'static str],
-}
-
-const INITIAL_NATIVE_MODE_MODEL_PROMOTION: NativeModeModelPromotion = NativeModeModelPromotion {
-    canonical_model_id: INITIAL_NATIVE_MODE_MODEL_ID,
-    display_name: "Qwen 3.5 9B Q4",
-    aliases: &[
-        "qwen3_5_9b_q4",
-        "qwen3.5-9b-q4",
-        "qwen3.5-9b-q4_k_m",
-        "qwen/qwen3.5-9b-q4",
-        "qwen/qwen3.5-9b-q4_k_m",
-    ],
-};
-
-pub const NATIVE_MODE_MODEL_PROMOTIONS: &[NativeModeModelPromotion] =
-    &[INITIAL_NATIVE_MODE_MODEL_PROMOTION];
-
-pub fn is_initial_native_mode_model_id(model_id: &str) -> bool {
-    initial_native_mode_model_promotion(model_id).is_some()
-}
-
-pub fn initial_native_mode_model_promotion(
-    model_id: &str,
-) -> Option<&'static NativeModeModelPromotion> {
-    let normalized = normalized_model_id(model_id);
-    NATIVE_MODE_MODEL_PROMOTIONS
-        .iter()
-        .find(|promotion| promotion.matches_normalized(&normalized))
-}
-
-pub fn native_mode_model_requirement_message(requested_model_id: &str) -> String {
-    format!(
-        "native mode currently supports only {} ({}); requested {}",
-        INITIAL_NATIVE_MODE_MODEL_ID,
-        INITIAL_NATIVE_MODE_MODEL_PROMOTION.display_name,
-        requested_model_id
-    )
-}
-
-fn normalized_model_id(model_id: &str) -> String {
-    model_id
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
-impl NativeModeModelPromotion {
-    fn matches_normalized(&self, candidate: &str) -> bool {
-        self.aliases
-            .iter()
-            .any(|alias| normalized_model_id(alias) == candidate)
-    }
-}
+use crate::llama_cpp::LlamaCppConfig;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolutionPolicy {
     #[default]
-    StrictNative,
-    PreferNative,
-    AllowCompat,
+    MlxOnly,
+    PreferMlx,
+    AllowLlamaCpp,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectedBackend {
-    AxNative,
-    MlxNative,
-    LlamaCpp,
-    Vllm,
-    MistralRs,
     Mlx,
+    LlamaCpp,
 }
 
 impl SelectedBackend {
-    pub const fn is_native(self) -> bool {
-        matches!(self, Self::AxNative | Self::MlxNative)
+    pub const fn is_mlx(self) -> bool {
+        matches!(self, Self::Mlx)
     }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SupportTier {
-    NativeCertified,
-    NativePreview,
-    Compatibility,
+    MlxCertified,
+    MlxPreview,
+    LlamaCpp,
     Unsupported,
 }
 
 impl SupportTier {
-    pub const fn is_native(self) -> bool {
-        matches!(self, Self::NativeCertified | Self::NativePreview)
+    pub const fn is_mlx(self) -> bool {
+        matches!(self, Self::MlxCertified | Self::MlxPreview)
     }
 }
 
@@ -123,16 +55,16 @@ impl BackendPolicy {
         Self { resolution_policy }
     }
 
-    pub const fn strict_native() -> Self {
-        Self::new(ResolutionPolicy::StrictNative)
+    pub const fn mlx_only() -> Self {
+        Self::new(ResolutionPolicy::MlxOnly)
     }
 
-    pub const fn prefer_native() -> Self {
-        Self::new(ResolutionPolicy::PreferNative)
+    pub const fn prefer_mlx() -> Self {
+        Self::new(ResolutionPolicy::PreferMlx)
     }
 
-    pub const fn allow_compat() -> Self {
-        Self::new(ResolutionPolicy::AllowCompat)
+    pub const fn allow_llama_cpp() -> Self {
+        Self::new(ResolutionPolicy::AllowLlamaCpp)
     }
 }
 
@@ -147,34 +79,11 @@ pub enum CapabilityLevel {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CompatibilityBackendKind {
-    #[default]
-    LlamaCpp,
-    Vllm,
-    MistralRs,
-    Mlx,
-}
-
-impl CompatibilityBackendKind {
-    pub const fn selected_backend(self) -> SelectedBackend {
-        match self {
-            Self::LlamaCpp => SelectedBackend::LlamaCpp,
-            Self::Vllm => SelectedBackend::Vllm,
-            Self::MistralRs => SelectedBackend::MistralRs,
-            Self::Mlx => SelectedBackend::Mlx,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub enum PreviewBackendMode {
     #[default]
     Explicit,
     ShippingDefaultLlamaCpp,
-    ShippingMlxWithLlamaFallback,
-    ShippingNativeWithLlamaFallback,
-    ShippingMlxNative,
+    ShippingMlx,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -194,7 +103,7 @@ pub struct CapabilityReport {
 }
 
 impl CapabilityReport {
-    pub const fn native_certified() -> Self {
+    pub const fn mlx_certified() -> Self {
         Self {
             text_generation: true,
             token_streaming: true,
@@ -205,7 +114,7 @@ impl CapabilityReport {
         }
     }
 
-    pub const fn native_preview() -> Self {
+    pub const fn mlx_preview() -> Self {
         Self {
             text_generation: true,
             token_streaming: true,
@@ -216,7 +125,7 @@ impl CapabilityReport {
         }
     }
 
-    pub const fn compatibility_baseline() -> Self {
+    pub const fn llama_cpp_baseline() -> Self {
         Self {
             text_generation: true,
             token_streaming: true,
@@ -227,7 +136,7 @@ impl CapabilityReport {
         }
     }
 
-    pub const fn compatibility_cli_baseline() -> Self {
+    pub const fn llama_cpp_cli_baseline() -> Self {
         Self {
             text_generation: true,
             token_streaming: false,
@@ -254,28 +163,18 @@ impl CapabilityReport {
         support_tier: SupportTier,
     ) -> Self {
         match (selected_backend, support_tier) {
-            (SelectedBackend::AxNative, SupportTier::NativeCertified) => Self::native_certified(),
-            (SelectedBackend::AxNative, SupportTier::NativePreview) => Self::native_preview(),
-            (SelectedBackend::MlxNative, SupportTier::NativePreview) => Self::native_preview(),
-            (SelectedBackend::MlxNative, SupportTier::NativeCertified) => Self::native_certified(),
-            (_, SupportTier::Compatibility) => Self::compatibility_baseline(),
+            (SelectedBackend::Mlx, SupportTier::MlxPreview) => Self::mlx_preview(),
+            (SelectedBackend::Mlx, SupportTier::MlxCertified) => Self::mlx_certified(),
+            (_, SupportTier::LlamaCpp) => Self::llama_cpp_baseline(),
             (_, SupportTier::Unsupported) => Self::unsupported(),
             _ => Self::unsupported(),
         }
     }
 
-    pub fn for_compatibility_backend(config: &CompatibilityBackendConfig) -> Self {
+    pub fn for_llama_cpp_backend(config: &LlamaCppConfig) -> Self {
         match config {
-            CompatibilityBackendConfig::LlamaCpp(LlamaCppConfig::Cli(_))
-            | CompatibilityBackendConfig::Mlx(MlxConfig::Cli(_)) => {
-                Self::compatibility_cli_baseline()
-            }
-            CompatibilityBackendConfig::LlamaCpp(LlamaCppConfig::ServerCompletion(_))
-            | CompatibilityBackendConfig::Vllm(_)
-            | CompatibilityBackendConfig::MistralRs(_)
-            | CompatibilityBackendConfig::Mlx(MlxConfig::ServerCompletions(_)) => {
-                Self::compatibility_baseline()
-            }
+            LlamaCppConfig::Cli(_) => Self::llama_cpp_cli_baseline(),
+            LlamaCppConfig::ServerCompletion(_) => Self::llama_cpp_baseline(),
         }
     }
 }
@@ -287,7 +186,7 @@ pub struct HostReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detected_soc: Option<String>,
     #[serde(default)]
-    pub supported_native_runtime: bool,
+    pub supported_mlx_runtime: bool,
     #[serde(default)]
     pub unsupported_host_override_active: bool,
 }
@@ -315,7 +214,6 @@ pub struct MetalToolchainReport {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeRunnerKind {
-    Deterministic,
     MetalBringup,
 }
 
@@ -343,13 +241,6 @@ pub struct NativeRuntimeReport {
 }
 
 impl NativeRuntimeReport {
-    pub const fn deterministic() -> Self {
-        Self {
-            runner: NativeRunnerKind::Deterministic,
-            artifacts_source: None,
-        }
-    }
-
     pub const fn metal_bringup(source: NativeRuntimeArtifactsSource) -> Self {
         Self {
             runner: NativeRunnerKind::MetalBringup,
@@ -446,29 +337,21 @@ impl ResolvedBackend {
         }
     }
 
-    pub fn native_preview() -> Self {
-        Self::new(SelectedBackend::AxNative, SupportTier::NativePreview, None)
+    pub fn mlx_preview() -> Self {
+        Self::new(SelectedBackend::Mlx, SupportTier::MlxPreview, None)
     }
 
-    pub fn native_certified() -> Self {
-        Self::new(
-            SelectedBackend::AxNative,
-            SupportTier::NativeCertified,
-            None,
-        )
+    pub fn mlx_certified() -> Self {
+        Self::new(SelectedBackend::Mlx, SupportTier::MlxCertified, None)
     }
 
-    pub fn mlx_native_preview() -> Self {
-        Self::new(SelectedBackend::MlxNative, SupportTier::NativePreview, None)
-    }
-
-    pub fn compatibility(
+    pub fn llama_cpp(
         selected_backend: SelectedBackend,
         fallback_reason: impl Into<String>,
     ) -> Self {
         Self::new(
             selected_backend,
-            SupportTier::Compatibility,
+            SupportTier::LlamaCpp,
             Some(fallback_reason.into()),
         )
     }
@@ -481,36 +364,29 @@ impl ResolvedBackend {
             return Err(BackendContractError::UnsupportedCannotResolve);
         }
 
-        if self.selected_backend.is_native() {
-            if !self.support_tier.is_native() {
-                return Err(BackendContractError::NativeBackendRequiresNativeTier {
+        if self.selected_backend.is_mlx() {
+            if !self.support_tier.is_mlx() {
+                return Err(BackendContractError::MlxBackendRequiresMlxTier {
                     support_tier: self.support_tier,
                 });
             }
             if self.fallback_reason.is_some() {
-                return Err(BackendContractError::NativeBackendCannotHaveFallbackReason);
+                return Err(BackendContractError::MlxBackendCannotHaveFallbackReason);
             }
             return Ok(());
         }
 
-        if self.support_tier != SupportTier::Compatibility {
-            return Err(
-                BackendContractError::CompatibilityBackendRequiresCompatibilityTier {
-                    selected_backend: self.selected_backend,
-                    support_tier: self.support_tier,
-                },
-            );
+        if self.support_tier != SupportTier::LlamaCpp {
+            return Err(BackendContractError::LlamaCppBackendRequiresLlamaCppTier {
+                selected_backend: self.selected_backend,
+                support_tier: self.support_tier,
+            });
         }
 
-        if matches!(
-            backend_policy.resolution_policy,
-            ResolutionPolicy::StrictNative
-        ) {
-            return Err(
-                BackendContractError::StrictNativePolicyCannotResolveCompatibility {
-                    selected_backend: self.selected_backend,
-                },
-            );
+        if matches!(backend_policy.resolution_policy, ResolutionPolicy::MlxOnly) {
+            return Err(BackendContractError::MlxOnlyPolicyCannotResolveLlamaCpp {
+                selected_backend: self.selected_backend,
+            });
         }
 
         let has_reason = self
@@ -519,7 +395,7 @@ impl ResolvedBackend {
             .is_some_and(|reason| !reason.trim().is_empty());
         if !has_reason {
             return Err(
-                BackendContractError::CompatibilityBackendRequiresFallbackReason {
+                BackendContractError::LlamaCppBackendRequiresFallbackReason {
                     selected_backend: self.selected_backend,
                 },
             );
@@ -533,27 +409,19 @@ impl ResolvedBackend {
 pub struct PreviewBackendRequest {
     pub mode: PreviewBackendMode,
     pub support_tier: SupportTier,
-    pub compat_backend: CompatibilityBackendKind,
-    pub compat_cli_path: PathBuf,
-    pub compat_model_path: Option<PathBuf>,
-    pub compat_server_url: Option<String>,
-    pub llama_fallback_cli_path: PathBuf,
-    pub llama_fallback_model_path: Option<PathBuf>,
-    pub llama_fallback_server_url: Option<String>,
+    pub llama_cli_path: PathBuf,
+    pub llama_model_path: Option<PathBuf>,
+    pub llama_server_url: Option<String>,
 }
 
 impl Default for PreviewBackendRequest {
     fn default() -> Self {
         Self {
             mode: PreviewBackendMode::Explicit,
-            support_tier: SupportTier::NativePreview,
-            compat_backend: CompatibilityBackendKind::LlamaCpp,
-            compat_cli_path: PathBuf::from("llama-cli"),
-            compat_model_path: None,
-            compat_server_url: None,
-            llama_fallback_cli_path: PathBuf::from("llama-cli"),
-            llama_fallback_model_path: None,
-            llama_fallback_server_url: None,
+            support_tier: SupportTier::MlxPreview,
+            llama_cli_path: PathBuf::from("llama-cli"),
+            llama_model_path: None,
+            llama_server_url: None,
         }
     }
 }
@@ -567,64 +435,24 @@ impl PreviewBackendRequest {
     }
 
     pub fn shipping_default_llama_cpp(
-        compat_cli_path: impl Into<PathBuf>,
-        compat_model_path: Option<PathBuf>,
-        compat_server_url: Option<String>,
+        llama_cli_path: impl Into<PathBuf>,
+        llama_model_path: Option<PathBuf>,
+        llama_server_url: Option<String>,
     ) -> Self {
         Self {
             mode: PreviewBackendMode::ShippingDefaultLlamaCpp,
-            support_tier: SupportTier::Compatibility,
-            compat_backend: CompatibilityBackendKind::LlamaCpp,
-            compat_cli_path: compat_cli_path.into(),
-            compat_model_path,
-            compat_server_url,
+            support_tier: SupportTier::LlamaCpp,
+            llama_cli_path: llama_cli_path.into(),
+            llama_model_path,
+            llama_server_url,
             ..Self::default()
         }
     }
 
-    pub fn shipping_mlx_with_llama_fallback(
-        compat_cli_path: impl Into<PathBuf>,
-        compat_model_path: Option<PathBuf>,
-        compat_server_url: Option<String>,
-        llama_fallback_cli_path: impl Into<PathBuf>,
-        llama_fallback_model_path: Option<PathBuf>,
-        llama_fallback_server_url: Option<String>,
-    ) -> Self {
+    pub fn shipping_mlx() -> Self {
         Self {
-            mode: PreviewBackendMode::ShippingMlxWithLlamaFallback,
-            support_tier: SupportTier::Compatibility,
-            compat_backend: CompatibilityBackendKind::Mlx,
-            compat_cli_path: compat_cli_path.into(),
-            compat_model_path,
-            compat_server_url,
-            llama_fallback_cli_path: llama_fallback_cli_path.into(),
-            llama_fallback_model_path,
-            llama_fallback_server_url,
-        }
-    }
-
-    pub fn shipping_native_with_llama_fallback(
-        llama_fallback_cli_path: impl Into<PathBuf>,
-        llama_fallback_model_path: Option<PathBuf>,
-        llama_fallback_server_url: Option<String>,
-    ) -> Self {
-        Self {
-            mode: PreviewBackendMode::ShippingNativeWithLlamaFallback,
-            support_tier: SupportTier::NativePreview,
-            compat_backend: CompatibilityBackendKind::LlamaCpp,
-            compat_cli_path: PathBuf::from("llama-cli"),
-            compat_model_path: None,
-            compat_server_url: None,
-            llama_fallback_cli_path: llama_fallback_cli_path.into(),
-            llama_fallback_model_path,
-            llama_fallback_server_url,
-        }
-    }
-
-    pub fn shipping_mlx_native() -> Self {
-        Self {
-            mode: PreviewBackendMode::ShippingMlxNative,
-            support_tier: SupportTier::NativePreview,
+            mode: PreviewBackendMode::ShippingMlx,
+            support_tier: SupportTier::MlxPreview,
             ..Self::default()
         }
     }
@@ -634,41 +462,26 @@ impl PreviewBackendRequest {
 pub struct PreviewBackendResolution {
     pub backend_policy: BackendPolicy,
     pub resolved_backend: ResolvedBackend,
-    pub compatibility_backend: Option<CompatibilityBackendConfig>,
-    pub fallback_compatibility_backend: Option<CompatibilityBackendConfig>,
+    pub llama_backend: Option<LlamaCppConfig>,
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum PreviewBackendResolutionError {
-    #[error(
-        "unsupported support_tier {value}; expected native_preview, native_certified, or compatibility"
-    )]
+    #[error("unsupported support_tier {value}; expected mlx_preview, mlx_certified, or llama_cpp")]
     UnsupportedSupportTierLabel { value: String },
-    #[error(
-        "support_tier compatibility accepts either compat_server_url or compat_model_path, not both"
-    )]
-    CompatibilityTargetConflict,
-    #[error("support_tier compatibility requires compat_server_url or compat_model_path")]
-    MissingCompatibilityTarget,
-    #[error(
-        "compatibility backend {backend:?} requires compat_server_url; compat_model_path is only supported for llama.cpp or mlx local CLI fallback"
-    )]
-    CompatibilityCliUnsupported { backend: CompatibilityBackendKind },
-    #[error(
-        "llama.cpp fallback accepts either llama_fallback_server_url or llama_fallback_model_path, not both"
-    )]
-    LlamaFallbackTargetConflict,
-    #[error("llama.cpp fallback requires llama_fallback_server_url or llama_fallback_model_path")]
-    MissingLlamaFallbackTarget,
+    #[error("support_tier llama_cpp accepts either llama_server_url or llama_model_path, not both")]
+    LlamaCppTargetConflict,
+    #[error("support_tier llama_cpp requires llama_server_url or llama_model_path")]
+    MissingLlamaCppTarget,
 }
 
 pub fn preview_support_tier_from_label(
     value: &str,
 ) -> Result<SupportTier, PreviewBackendResolutionError> {
     match value {
-        "native_preview" => Ok(SupportTier::NativePreview),
-        "native_certified" => Ok(SupportTier::NativeCertified),
-        "compatibility" => Ok(SupportTier::Compatibility),
+        "mlx_preview" => Ok(SupportTier::MlxPreview),
+        "mlx_certified" => Ok(SupportTier::MlxCertified),
+        "llama_cpp" => Ok(SupportTier::LlamaCpp),
         other => Err(PreviewBackendResolutionError::UnsupportedSupportTierLabel {
             value: other.to_string(),
         }),
@@ -681,67 +494,25 @@ pub fn resolve_preview_backend(
     match request.mode {
         PreviewBackendMode::Explicit => resolve_explicit_preview_backend(request),
         PreviewBackendMode::ShippingDefaultLlamaCpp => {
-            let compatibility_backend = resolve_compatibility_backend_target(
-                CompatibilityBackendKind::LlamaCpp,
-                request.compat_cli_path,
-                request.compat_model_path,
-                request.compat_server_url,
+            let llama_backend = resolve_llama_cpp_target(
+                request.llama_cli_path,
+                request.llama_model_path,
+                request.llama_server_url,
             )?;
 
             Ok(PreviewBackendResolution {
-                backend_policy: BackendPolicy::allow_compat(),
-                resolved_backend: ResolvedBackend::compatibility(
+                backend_policy: BackendPolicy::allow_llama_cpp(),
+                resolved_backend: ResolvedBackend::llama_cpp(
                     SelectedBackend::LlamaCpp,
                     "shipping default route selected llama.cpp bypass",
                 ),
-                compatibility_backend: Some(compatibility_backend),
-                fallback_compatibility_backend: None,
+                llama_backend: Some(llama_backend),
             })
         }
-        PreviewBackendMode::ShippingMlxWithLlamaFallback => {
-            let compatibility_backend = resolve_compatibility_backend_target(
-                CompatibilityBackendKind::Mlx,
-                request.compat_cli_path,
-                request.compat_model_path,
-                request.compat_server_url,
-            )?;
-            let fallback_compatibility_backend = resolve_llama_fallback_backend(
-                request.llama_fallback_cli_path,
-                request.llama_fallback_model_path,
-                request.llama_fallback_server_url,
-            )?;
-
-            Ok(PreviewBackendResolution {
-                backend_policy: BackendPolicy::allow_compat(),
-                resolved_backend: ResolvedBackend::compatibility(
-                    SelectedBackend::Mlx,
-                    "shipping route selected MLX bypass with llama.cpp fallback",
-                ),
-                compatibility_backend: Some(compatibility_backend),
-                fallback_compatibility_backend: Some(fallback_compatibility_backend),
-            })
-        }
-        PreviewBackendMode::ShippingNativeWithLlamaFallback => {
-            let compatibility_backend = resolve_llama_fallback_backend(
-                request.llama_fallback_cli_path,
-                request.llama_fallback_model_path,
-                request.llama_fallback_server_url,
-            )?;
-            Ok(PreviewBackendResolution {
-                backend_policy: BackendPolicy::allow_compat(),
-                resolved_backend: ResolvedBackend::compatibility(
-                    SelectedBackend::LlamaCpp,
-                    "native mode bypassed to llama.cpp",
-                ),
-                compatibility_backend: Some(compatibility_backend),
-                fallback_compatibility_backend: None,
-            })
-        }
-        PreviewBackendMode::ShippingMlxNative => Ok(PreviewBackendResolution {
-            backend_policy: BackendPolicy::strict_native(),
-            resolved_backend: ResolvedBackend::mlx_native_preview(),
-            compatibility_backend: None,
-            fallback_compatibility_backend: None,
+        PreviewBackendMode::ShippingMlx => Ok(PreviewBackendResolution {
+            backend_policy: BackendPolicy::mlx_only(),
+            resolved_backend: ResolvedBackend::mlx_preview(),
+            llama_backend: None,
         }),
     }
 }
@@ -750,34 +521,34 @@ fn resolve_explicit_preview_backend(
     request: PreviewBackendRequest,
 ) -> Result<PreviewBackendResolution, PreviewBackendResolutionError> {
     match request.support_tier {
-        SupportTier::NativePreview => Ok(PreviewBackendResolution {
-            backend_policy: BackendPolicy::strict_native(),
-            resolved_backend: ResolvedBackend::native_preview(),
-            compatibility_backend: None,
-            fallback_compatibility_backend: None,
+        SupportTier::MlxPreview => Ok(PreviewBackendResolution {
+            backend_policy: BackendPolicy::mlx_only(),
+            resolved_backend: ResolvedBackend::mlx_preview(),
+            llama_backend: None,
         }),
-        SupportTier::NativeCertified => Ok(PreviewBackendResolution {
-            backend_policy: BackendPolicy::strict_native(),
-            resolved_backend: ResolvedBackend::native_certified(),
-            compatibility_backend: None,
-            fallback_compatibility_backend: None,
+        SupportTier::MlxCertified => Ok(PreviewBackendResolution {
+            backend_policy: BackendPolicy::mlx_only(),
+            resolved_backend: ResolvedBackend::new(
+                SelectedBackend::Mlx,
+                SupportTier::MlxCertified,
+                None,
+            ),
+            llama_backend: None,
         }),
-        SupportTier::Compatibility => {
-            let compatibility_backend = resolve_compatibility_backend_target(
-                request.compat_backend,
-                request.compat_cli_path,
-                request.compat_model_path,
-                request.compat_server_url,
+        SupportTier::LlamaCpp => {
+            let llama_backend = resolve_llama_cpp_target(
+                request.llama_cli_path,
+                request.llama_model_path,
+                request.llama_server_url,
             )?;
 
             Ok(PreviewBackendResolution {
-                backend_policy: BackendPolicy::allow_compat(),
-                resolved_backend: ResolvedBackend::compatibility(
-                    request.compat_backend.selected_backend(),
-                    "compatibility backend explicitly requested by preview session config",
+                backend_policy: BackendPolicy::allow_llama_cpp(),
+                resolved_backend: ResolvedBackend::llama_cpp(
+                    SelectedBackend::LlamaCpp,
+                    "llama.cpp backend explicitly requested by preview session config",
                 ),
-                compatibility_backend: Some(compatibility_backend),
-                fallback_compatibility_backend: None,
+                llama_backend: Some(llama_backend),
             })
         }
         SupportTier::Unsupported => {
@@ -788,85 +559,23 @@ fn resolve_explicit_preview_backend(
     }
 }
 
-fn resolve_compatibility_backend_target(
-    compat_backend: CompatibilityBackendKind,
-    compat_cli_path: PathBuf,
-    compat_model_path: Option<PathBuf>,
-    compat_server_url: Option<String>,
-) -> Result<CompatibilityBackendConfig, PreviewBackendResolutionError> {
-    if compat_server_url.is_some() && compat_model_path.is_some() {
-        return Err(PreviewBackendResolutionError::CompatibilityTargetConflict);
+fn resolve_llama_cpp_target(
+    llama_cli_path: PathBuf,
+    llama_model_path: Option<PathBuf>,
+    llama_server_url: Option<String>,
+) -> Result<LlamaCppConfig, PreviewBackendResolutionError> {
+    if llama_server_url.is_some() && llama_model_path.is_some() {
+        return Err(PreviewBackendResolutionError::LlamaCppTargetConflict);
     }
 
-    if let Some(server_url) = compat_server_url {
-        return Ok(match compat_backend {
-            CompatibilityBackendKind::LlamaCpp => {
-                CompatibilityBackendConfig::LlamaCpp(LlamaCppConfig::server_completion(server_url))
-            }
-            CompatibilityBackendKind::Vllm => {
-                CompatibilityBackendConfig::Vllm(OpenAiCompatibleServerConfig::new(server_url))
-            }
-            CompatibilityBackendKind::MistralRs => {
-                CompatibilityBackendConfig::MistralRs(OpenAiCompatibleServerConfig::new(server_url))
-            }
-            CompatibilityBackendKind::Mlx => {
-                CompatibilityBackendConfig::Mlx(MlxConfig::server_completions(server_url))
-            }
-        });
-    }
-
-    if !matches!(
-        compat_backend,
-        CompatibilityBackendKind::LlamaCpp | CompatibilityBackendKind::Mlx
-    ) {
-        return Err(PreviewBackendResolutionError::CompatibilityCliUnsupported {
-            backend: compat_backend,
-        });
+    if let Some(server_url) = llama_server_url {
+        return Ok(LlamaCppConfig::server_completion(server_url));
     }
 
     let model_path =
-        compat_model_path.ok_or(PreviewBackendResolutionError::MissingCompatibilityTarget)?;
-    Ok(match compat_backend {
-        CompatibilityBackendKind::LlamaCpp => {
-            CompatibilityBackendConfig::LlamaCpp(LlamaCppConfig::new(compat_cli_path, model_path))
-        }
-        CompatibilityBackendKind::Mlx => {
-            let cli_path = if compat_cli_path == Path::new("llama-cli") {
-                PathBuf::from("python3")
-            } else {
-                compat_cli_path
-            };
-            CompatibilityBackendConfig::Mlx(MlxConfig::cli(cli_path, model_path))
-        }
-        CompatibilityBackendKind::Vllm | CompatibilityBackendKind::MistralRs => {
-            unreachable!("validated compatibility cli target backend")
-        }
-    })
+        llama_model_path.ok_or(PreviewBackendResolutionError::MissingLlamaCppTarget)?;
+    Ok(LlamaCppConfig::new(llama_cli_path, model_path))
 }
-
-fn resolve_llama_fallback_backend(
-    compat_cli_path: PathBuf,
-    compat_model_path: Option<PathBuf>,
-    compat_server_url: Option<String>,
-) -> Result<CompatibilityBackendConfig, PreviewBackendResolutionError> {
-    if compat_server_url.is_some() && compat_model_path.is_some() {
-        return Err(PreviewBackendResolutionError::LlamaFallbackTargetConflict);
-    }
-
-    if let Some(server_url) = compat_server_url {
-        return Ok(CompatibilityBackendConfig::LlamaCpp(
-            LlamaCppConfig::server_completion(server_url),
-        ));
-    }
-
-    let model_path =
-        compat_model_path.ok_or(PreviewBackendResolutionError::MissingLlamaFallbackTarget)?;
-    Ok(CompatibilityBackendConfig::LlamaCpp(LlamaCppConfig::new(
-        compat_cli_path,
-        model_path,
-    )))
-}
-
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RuntimeReport {
@@ -882,9 +591,9 @@ pub struct RuntimeReport {
     #[serde(default)]
     pub metal_toolchain: MetalToolchainReport,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native_runtime: Option<NativeRuntimeReport>,
+    pub mlx_runtime: Option<NativeRuntimeReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native_model: Option<NativeModelReport>,
+    pub mlx_model: Option<NativeModelReport>,
 }
 
 impl RuntimeReport {
@@ -900,18 +609,18 @@ impl RuntimeReport {
             fallback_reason: resolved_backend.fallback_reason.clone(),
             host: crate::host::runtime_host_report(),
             metal_toolchain: crate::host::runtime_metal_toolchain_report(),
-            native_runtime: None,
-            native_model: None,
+            mlx_runtime: None,
+            mlx_model: None,
         }
     }
 
-    pub fn with_native_runtime(mut self, native_runtime: Option<NativeRuntimeReport>) -> Self {
-        self.native_runtime = native_runtime;
+    pub fn with_mlx_runtime(mut self, native_runtime: Option<NativeRuntimeReport>) -> Self {
+        self.mlx_runtime = native_runtime;
         self
     }
 
-    pub fn with_native_model(mut self, native_model: Option<NativeModelReport>) -> Self {
-        self.native_model = native_model;
+    pub fn with_mlx_model(mut self, native_model: Option<NativeModelReport>) -> Self {
+        self.mlx_model = native_model;
         self
     }
 }
@@ -926,9 +635,9 @@ pub fn current_metal_toolchain_report() -> MetalToolchainReport {
 
 fn support_tier_label(support_tier: SupportTier) -> &'static str {
     match support_tier {
-        SupportTier::NativeCertified => "native_certified",
-        SupportTier::NativePreview => "native_preview",
-        SupportTier::Compatibility => "compatibility",
+        SupportTier::MlxCertified => "mlx_certified",
+        SupportTier::MlxPreview => "mlx_preview",
+        SupportTier::LlamaCpp => "llama_cpp",
         SupportTier::Unsupported => "unsupported",
     }
 }
@@ -937,77 +646,78 @@ fn support_tier_label(support_tier: SupportTier) -> &'static str {
 pub enum BackendContractError {
     #[error("unsupported support tier cannot resolve to a runnable backend")]
     UnsupportedCannotResolve,
-    #[error("native backend requires a native support tier, got {support_tier:?}")]
-    NativeBackendRequiresNativeTier { support_tier: SupportTier },
-    #[error("native backend cannot carry a fallback reason")]
-    NativeBackendCannotHaveFallbackReason,
+    #[error("mlx backend requires a MLX support tier, got {support_tier:?}")]
+    MlxBackendRequiresMlxTier { support_tier: SupportTier },
+    #[error("mlx backend cannot carry a fallback reason")]
+    MlxBackendCannotHaveFallbackReason,
     #[error(
-        "compatibility backend {selected_backend:?} requires compatibility support tier, got {support_tier:?}"
+        "llama.cpp backend {selected_backend:?} requires llama.cpp support tier, got {support_tier:?}"
     )]
-    CompatibilityBackendRequiresCompatibilityTier {
+    LlamaCppBackendRequiresLlamaCppTier {
         selected_backend: SelectedBackend,
         support_tier: SupportTier,
     },
-    #[error("strict_native policy cannot resolve to compatibility backend {selected_backend:?}")]
-    StrictNativePolicyCannotResolveCompatibility { selected_backend: SelectedBackend },
-    #[error("compatibility backend {selected_backend:?} requires fallback_reason")]
-    CompatibilityBackendRequiresFallbackReason { selected_backend: SelectedBackend },
+    #[error("mlx_only policy cannot resolve to llama.cpp backend {selected_backend:?}")]
+    MlxOnlyPolicyCannotResolveLlamaCpp { selected_backend: SelectedBackend },
+    #[error("llama.cpp backend {selected_backend:?} requires fallback_reason")]
+    LlamaCppBackendRequiresFallbackReason { selected_backend: SelectedBackend },
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
     #[test]
-    fn rejects_compatibility_backend_under_strict_native_policy() {
-        let resolved = ResolvedBackend::compatibility(
+    fn rejects_llama_backend_under_mlx_only_policy() {
+        let resolved = ResolvedBackend::llama_cpp(
             SelectedBackend::LlamaCpp,
-            "native runtime not available for requested model",
+            "MLX runtime not available for requested model",
         );
 
         let error = resolved
-            .validate_against(&BackendPolicy::strict_native())
-            .expect_err("strict native policy should reject compatibility resolution");
+            .validate_against(&BackendPolicy::mlx_only())
+            .expect_err("MLX-only policy should reject llama.cpp resolution");
 
         assert_eq!(
             error,
-            BackendContractError::StrictNativePolicyCannotResolveCompatibility {
+            BackendContractError::MlxOnlyPolicyCannotResolveLlamaCpp {
                 selected_backend: SelectedBackend::LlamaCpp,
             }
         );
     }
 
     #[test]
-    fn rejects_native_backend_with_fallback_reason() {
+    fn rejects_mlx_backend_with_fallback_reason() {
         let resolved = ResolvedBackend::new(
-            SelectedBackend::AxNative,
-            SupportTier::NativePreview,
+            SelectedBackend::Mlx,
+            SupportTier::MlxPreview,
             Some("should not be present".to_string()),
         );
 
         let error = resolved
-            .validate_against(&BackendPolicy::prefer_native())
-            .expect_err("native backend should not carry fallback_reason");
+            .validate_against(&BackendPolicy::prefer_mlx())
+            .expect_err("mlx backend should not carry fallback_reason");
 
         assert_eq!(
             error,
-            BackendContractError::NativeBackendCannotHaveFallbackReason
+            BackendContractError::MlxBackendCannotHaveFallbackReason
         );
     }
 
     #[test]
     fn preview_support_tier_parser_accepts_preview_labels() {
         assert_eq!(
-            preview_support_tier_from_label("native_preview"),
-            Ok(SupportTier::NativePreview)
+            preview_support_tier_from_label("mlx_preview"),
+            Ok(SupportTier::MlxPreview)
         );
         assert_eq!(
-            preview_support_tier_from_label("native_certified"),
-            Ok(SupportTier::NativeCertified)
+            preview_support_tier_from_label("mlx_certified"),
+            Ok(SupportTier::MlxCertified)
         );
         assert_eq!(
-            preview_support_tier_from_label("compatibility"),
-            Ok(SupportTier::Compatibility)
+            preview_support_tier_from_label("llama_cpp"),
+            Ok(SupportTier::LlamaCpp)
         );
     }
 
@@ -1022,213 +732,38 @@ mod tests {
     }
 
     #[test]
-    fn initial_native_mode_model_id_accepts_canonical_qwen35_9b_q4_aliases() {
-        assert!(is_initial_native_mode_model_id("qwen3_5_9b_q4"));
-        assert!(is_initial_native_mode_model_id("Qwen/Qwen3.5-9B-Q4"));
-        assert!(is_initial_native_mode_model_id("Qwen/Qwen3.5-9B-Q4_K_M"));
-        assert!(!is_initial_native_mode_model_id("qwen3_dense"));
-        assert!(!is_initial_native_mode_model_id("qwen3_5_9b"));
-    }
-
-    #[test]
-    fn native_mode_model_requirement_message_names_canonical_target() {
-        assert_eq!(
-            native_mode_model_requirement_message("qwen3_dense"),
-            "native mode currently supports only qwen3_5_9b_q4 (Qwen 3.5 9B Q4); requested qwen3_dense"
-        );
-    }
-
-    #[test]
-    fn preview_resolution_compatibility_server_url_uses_sdk_contract() {
+    fn preview_resolution_llama_cpp_server_url_uses_sdk_contract() {
         let resolution = resolve_preview_backend(PreviewBackendRequest {
-            support_tier: SupportTier::Compatibility,
-            compat_server_url: Some("http://127.0.0.1:8080".to_string()),
+            support_tier: SupportTier::LlamaCpp,
+            llama_server_url: Some("http://127.0.0.1:8080".to_string()),
             ..PreviewBackendRequest::default()
         })
-        .expect("compatibility resolution should succeed");
+        .expect("llama.cpp resolution should succeed");
 
-        assert_eq!(resolution.backend_policy, BackendPolicy::allow_compat());
+        assert_eq!(resolution.backend_policy, BackendPolicy::allow_llama_cpp());
         assert_eq!(
             resolution.resolved_backend,
-            ResolvedBackend::compatibility(
+            ResolvedBackend::llama_cpp(
                 SelectedBackend::LlamaCpp,
-                "compatibility backend explicitly requested by preview session config",
+                "llama.cpp backend explicitly requested by preview session config",
             )
         );
         assert_eq!(
-            resolution.compatibility_backend,
-            Some(CompatibilityBackendConfig::LlamaCpp(
-                LlamaCppConfig::server_completion("http://127.0.0.1:8080"),
-            ))
+            resolution.llama_backend,
+            Some(LlamaCppConfig::server_completion("http://127.0.0.1:8080"))
         );
     }
 
     #[test]
-    fn preview_resolution_vllm_server_url_uses_openai_compatible_contract() {
-        let resolution = resolve_preview_backend(PreviewBackendRequest {
-            support_tier: SupportTier::Compatibility,
-            compat_backend: CompatibilityBackendKind::Vllm,
-            compat_server_url: Some("http://127.0.0.1:8000".to_string()),
-            ..PreviewBackendRequest::default()
-        })
-        .expect("vllm compatibility resolution should succeed");
-
-        assert_eq!(
-            resolution.resolved_backend,
-            ResolvedBackend::compatibility(
-                SelectedBackend::Vllm,
-                "compatibility backend explicitly requested by preview session config",
-            )
-        );
-        assert_eq!(
-            resolution.compatibility_backend,
-            Some(CompatibilityBackendConfig::Vllm(
-                OpenAiCompatibleServerConfig::new("http://127.0.0.1:8000"),
-            ))
-        );
-    }
-
-    #[test]
-    fn preview_resolution_mistral_rs_server_url_uses_openai_compatible_contract() {
-        let resolution = resolve_preview_backend(PreviewBackendRequest {
-            support_tier: SupportTier::Compatibility,
-            compat_backend: CompatibilityBackendKind::MistralRs,
-            compat_server_url: Some("http://127.0.0.1:1234".to_string()),
-            ..PreviewBackendRequest::default()
-        })
-        .expect("mistral.rs compatibility resolution should succeed");
-
-        assert_eq!(
-            resolution.resolved_backend,
-            ResolvedBackend::compatibility(
-                SelectedBackend::MistralRs,
-                "compatibility backend explicitly requested by preview session config",
-            )
-        );
-        assert_eq!(
-            resolution.compatibility_backend,
-            Some(CompatibilityBackendConfig::MistralRs(
-                OpenAiCompatibleServerConfig::new("http://127.0.0.1:1234"),
-            ))
-        );
-    }
-
-    #[test]
-    fn preview_resolution_mlx_server_url_uses_openai_compatible_contract() {
-        let resolution = resolve_preview_backend(PreviewBackendRequest {
-            support_tier: SupportTier::Compatibility,
-            compat_backend: CompatibilityBackendKind::Mlx,
-            compat_server_url: Some("http://127.0.0.1:8082".to_string()),
-            ..PreviewBackendRequest::default()
-        })
-        .expect("mlx compatibility resolution should succeed");
-
-        assert_eq!(
-            resolution.resolved_backend,
-            ResolvedBackend::compatibility(
-                SelectedBackend::Mlx,
-                "compatibility backend explicitly requested by preview session config",
-            )
-        );
-        assert_eq!(
-            resolution.compatibility_backend,
-            Some(CompatibilityBackendConfig::Mlx(
-                MlxConfig::server_completions("http://127.0.0.1:8082",)
-            ))
-        );
-    }
-
-    #[test]
-    fn preview_resolution_rejects_multiple_compatibility_targets() {
+    fn preview_resolution_rejects_multiple_llama_cpp_targets() {
         let error = resolve_preview_backend(PreviewBackendRequest {
-            support_tier: SupportTier::Compatibility,
-            compat_model_path: Some(PathBuf::from("/tmp/model.gguf")),
-            compat_server_url: Some("http://127.0.0.1:8080".to_string()),
+            support_tier: SupportTier::LlamaCpp,
+            llama_model_path: Some(PathBuf::from("/tmp/model.gguf")),
+            llama_server_url: Some("http://127.0.0.1:8080".to_string()),
             ..PreviewBackendRequest::default()
         })
-        .expect_err("compatibility resolution should reject multiple targets");
+        .expect_err("llama.cpp resolution should reject multiple targets");
 
-        assert_eq!(
-            error,
-            PreviewBackendResolutionError::CompatibilityTargetConflict
-        );
-    }
-
-    #[test]
-    fn preview_resolution_rejects_cli_target_for_non_llama_compat_backend() {
-        let error = resolve_preview_backend(PreviewBackendRequest {
-            support_tier: SupportTier::Compatibility,
-            compat_backend: CompatibilityBackendKind::Vllm,
-            compat_model_path: Some(PathBuf::from("/tmp/model.gguf")),
-            ..PreviewBackendRequest::default()
-        })
-        .expect_err("non-llama compatibility cli target should be rejected");
-
-        assert_eq!(
-            error,
-            PreviewBackendResolutionError::CompatibilityCliUnsupported {
-                backend: CompatibilityBackendKind::Vllm,
-            }
-        );
-    }
-
-    #[test]
-    fn preview_resolution_mlx_cli_target_uses_python3_default_fallback() {
-        let resolution = resolve_preview_backend(PreviewBackendRequest {
-            support_tier: SupportTier::Compatibility,
-            compat_backend: CompatibilityBackendKind::Mlx,
-            compat_model_path: Some(PathBuf::from("/tmp/mlx-model")),
-            ..PreviewBackendRequest::default()
-        })
-        .expect("mlx cli compatibility resolution should succeed");
-
-        assert_eq!(
-            resolution.compatibility_backend,
-            Some(CompatibilityBackendConfig::Mlx(MlxConfig::cli(
-                "python3",
-                "/tmp/mlx-model",
-            )))
-        );
-    }
-
-    #[test]
-    fn shipping_native_resolution_requires_llama_fallback_target() {
-        let error = resolve_preview_backend(
-            PreviewBackendRequest::shipping_native_with_llama_fallback("llama-cli", None, None),
-        )
-        .expect_err("native shipping resolution without fallback target should fail");
-
-        assert_eq!(
-            error,
-            PreviewBackendResolutionError::MissingLlamaFallbackTarget
-        );
-    }
-
-    #[test]
-    fn shipping_native_resolution_bypasses_to_llama_cpp_when_target_is_configured() {
-        let resolution =
-            resolve_preview_backend(PreviewBackendRequest::shipping_native_with_llama_fallback(
-                "llama-cli",
-                Some(PathBuf::from("/tmp/model.gguf")),
-                None,
-            ))
-            .expect("native shipping resolution with fallback target should succeed");
-
-        assert_eq!(resolution.backend_policy, BackendPolicy::allow_compat());
-        assert_eq!(
-            resolution.resolved_backend,
-            ResolvedBackend::compatibility(
-                SelectedBackend::LlamaCpp,
-                "native mode bypassed to llama.cpp",
-            )
-        );
-        assert_eq!(
-            resolution.compatibility_backend,
-            Some(CompatibilityBackendConfig::LlamaCpp(LlamaCppConfig::new(
-                "llama-cli",
-                "/tmp/model.gguf",
-            )))
-        );
-        assert!(resolution.fallback_compatibility_backend.is_none());
+        assert_eq!(error, PreviewBackendResolutionError::LlamaCppTargetConflict);
     }
 }

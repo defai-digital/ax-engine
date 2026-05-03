@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Benchmark ax-engine MLX native mode vs direct mlx_lm.
+"""Benchmark ax-engine MLX mode vs direct mlx_lm.
 
-Compares three paths for Qwen3-4B-4bit:
+Compares two paths for Qwen3-4B-4bit:
   1. mlx_lm direct      — python3 -m mlx_lm generate (baseline)
-  2. ax-bench mlx compat — subprocess via ax-bench CLI (current compat mode)
-  3. ax-engine mlx-native — our new MlxNativeRunner via ax-bench --mlx-native
+  2. ax-engine MLX mode — MlxRunner via ax-bench --mlx
 
 Metrics captured:
   - Wall-clock latency  (end-to-end subprocess time)
@@ -111,19 +110,6 @@ def mlx_lm_cmd(prompt: str, max_tokens: int, verbose: bool) -> list[str]:
     ]
 
 
-def ax_compat_mlx_cmd(prompt: str, max_tokens: int) -> list[str]:
-    return [
-        str(AX_BENCH), "generate",
-        "--prompt", prompt,
-        "--max-output-tokens", str(max_tokens),
-        "--support-tier", "compatibility",
-        "--compat-backend", "mlx",
-        "--compat-cli-path", "python3",
-        "--compat-model-path", MODEL_HF_ID,
-        "--json",
-    ]
-
-
 def tokenize_prompt(prompt: str) -> list[int]:
     """Tokenize using the model's tokenizer via mlx_lm."""
     import mlx_lm
@@ -145,25 +131,25 @@ def get_token_ids(prompt: str) -> str:
     return ",".join(str(t) for t in _cached_tokens[prompt])
 
 
-def ax_mlx_native_cmd(prompt: str, max_tokens: int) -> list[str]:
+def ax_mlx_cmd(prompt: str, max_tokens: int) -> list[str]:
     return [
         str(AX_BENCH), "generate",
         "--tokens", get_token_ids(prompt),
         "--max-output-tokens", str(max_tokens),
-        "--mlx-native",
-        "--native-model-artifacts-dir", str(MODEL_DIR),
+        "--mlx",
+        "--mlx-model-artifacts-dir", str(MODEL_DIR),
         "--json",
     ]
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark ax-engine MLX native vs mlx_lm")
+    parser = argparse.ArgumentParser(description="Benchmark ax-engine MLX mode vs mlx_lm")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS)
     parser.add_argument("--cooldown-seconds", type=float, default=DEFAULT_COOLDOWN)
     parser.add_argument("--output", help="Save JSON results here")
-    parser.add_argument("--skip-native", action="store_true", help="Skip ax-engine native path")
+    parser.add_argument("--skip-ax-engine", action="store_true", help="Skip ax-engine MLX path")
     args = parser.parse_args()
 
     if not AX_BENCH.exists():
@@ -185,19 +171,11 @@ def main() -> None:
         args.cooldown_seconds,
     )
 
-    # 2. ax-bench compat MLX
-    results["ax_compat_mlx"] = bench(
-        ax_compat_mlx_cmd(args.prompt, args.max_tokens),
-        "ax_compat_mlx",
-        args.repetitions,
-        args.cooldown_seconds,
-    )
-
-    # 3. ax-engine MLX native
-    if not args.skip_native:
-        results["ax_mlx_native"] = bench(
-            ax_mlx_native_cmd(args.prompt, args.max_tokens),
-            "ax_mlx_native",
+    # 2. ax-engine MLX mode
+    if not args.skip_ax_engine:
+        results["ax_mlx"] = bench(
+            ax_mlx_cmd(args.prompt, args.max_tokens),
+            "ax_mlx",
             args.repetitions,
             args.cooldown_seconds,
         )

@@ -1,15 +1,16 @@
-use std::path::{Path, PathBuf};
+#![allow(clippy::collapsible_if)]
+
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ax_engine_sdk::{
-    is_gguf_path, is_initial_native_mode_model_id, native_mode_model_requirement_message,
-    preview_support_tier_from_label, CapabilityReport, CompatibilityBackendError,
-    CompatibilityBackendKind, EngineSession, EngineSessionConfig, EngineSessionError,
-    EngineStepReport, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,
+    CapabilityReport, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
+    GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,
     GenerateStreamEvent as SdkGenerateStreamEvent, GenerateStreamState, HostReport,
-    MetalDispatchKernelStepReport, MetalDispatchNumericStepReport, MetalDispatchStepReport,
-    MetalDispatchValidationStepReport, MetalToolchainReport, PreviewBackendRequest,
-    PreviewSessionConfigRequest, RuntimeReport, SessionRequestReport, ToolStatusReport,
+    LlamaCppBackendError, MetalDispatchKernelStepReport, MetalDispatchNumericStepReport,
+    MetalDispatchStepReport, MetalDispatchValidationStepReport, MetalToolchainReport,
+    PreviewBackendRequest, PreviewSessionConfigRequest, RuntimeReport, SessionRequestReport,
+    ToolStatusReport, preview_support_tier_from_label,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -39,7 +40,7 @@ struct GenerateStreamIterator {
 impl Session {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (model_id="qwen3_dense".to_string(), *, deterministic=true, max_batch_tokens=2048, cache_group_id=0, block_size_tokens=16, total_blocks=1024, native_mode=false, mlx=false, support_tier="compatibility", compat_backend="llama_cpp", compat_cli_path="llama-cli".to_string(), compat_model_path=None, compat_server_url=None, llama_fallback_cli_path="llama-cli".to_string(), llama_fallback_model_path=None, llama_fallback_server_url=None, native_runtime_artifacts_dir=None, native_model_artifacts_dir=None))]
+    #[pyo3(signature = (model_id="qwen3_dense".to_string(), *, deterministic=true, max_batch_tokens=2048, cache_group_id=0, block_size_tokens=16, total_blocks=1024, mlx=false, support_tier="llama_cpp", llama_cli_path="llama-cli".to_string(), llama_model_path=None, llama_server_url=None, mlx_model_artifacts_dir=None))]
     fn new(
         model_id: String,
         deterministic: bool,
@@ -47,98 +48,37 @@ impl Session {
         cache_group_id: u16,
         block_size_tokens: u32,
         total_blocks: u32,
-        native_mode: bool,
         mlx: bool,
         support_tier: &str,
-        compat_backend: &str,
-        compat_cli_path: String,
-        compat_model_path: Option<String>,
-        compat_server_url: Option<String>,
-        llama_fallback_cli_path: String,
-        llama_fallback_model_path: Option<String>,
-        llama_fallback_server_url: Option<String>,
-        native_runtime_artifacts_dir: Option<String>,
-        native_model_artifacts_dir: Option<String>,
+        llama_cli_path: String,
+        llama_model_path: Option<String>,
+        llama_server_url: Option<String>,
+        mlx_model_artifacts_dir: Option<String>,
     ) -> PyResult<Self> {
-        if native_mode && mlx {
-            return Err(PyValueError::new_err(
-                "native_mode and mlx cannot both be enabled",
-            ));
-        }
-
         let support_tier = preview_support_tier_from_label(support_tier)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
-        let mut compat_backend =
-            compatibility_backend_kind_from_label(compat_backend).map_err(PyValueError::new_err)?;
-        if !native_mode
-            && support_tier == ax_engine_sdk::SupportTier::Compatibility
-            && compat_model_path.is_some()
-            && compat_server_url.is_none()
-        {
-            compat_backend = if compat_model_path
-                .as_deref()
-                .map(Path::new)
-                .is_some_and(is_gguf_path)
-            {
-                CompatibilityBackendKind::LlamaCpp
-            } else {
-                CompatibilityBackendKind::Mlx
-            };
-        }
-        let backend_request = if native_mode {
-            if !is_initial_native_mode_model_id(&model_id) {
-                return Err(PyValueError::new_err(
-                    native_mode_model_requirement_message(&model_id),
-                ));
-            }
-            let (llama_fallback_cli_path, llama_fallback_model_path, llama_fallback_server_url) =
-                if llama_fallback_model_path.is_some() || llama_fallback_server_url.is_some() {
-                    (
-                        PathBuf::from(llama_fallback_cli_path),
-                        llama_fallback_model_path.map(PathBuf::from),
-                        llama_fallback_server_url,
-                    )
-                } else {
-                    let compat_model_path = compat_model_path
-                        .as_ref()
-                        .map(Path::new)
-                        .filter(|path| is_gguf_path(path))
-                        .map(PathBuf::from);
-                    (
-                        PathBuf::from(&compat_cli_path),
-                        compat_model_path,
-                        compat_server_url.clone(),
-                    )
-                };
-            PreviewBackendRequest::shipping_native_with_llama_fallback(
-                llama_fallback_cli_path,
-                llama_fallback_model_path,
-                llama_fallback_server_url,
-            )
-        } else if mlx {
-            PreviewBackendRequest::shipping_mlx_with_llama_fallback(
-                PathBuf::from(&compat_cli_path),
-                compat_model_path.as_ref().map(PathBuf::from),
-                compat_server_url.clone(),
-                PathBuf::from(llama_fallback_cli_path),
-                llama_fallback_model_path.map(PathBuf::from),
-                llama_fallback_server_url,
-            )
-        } else if support_tier == ax_engine_sdk::SupportTier::Compatibility
-            && compat_backend == CompatibilityBackendKind::LlamaCpp
-        {
+        let effective_mlx_model_artifacts_dir = if mlx {
+            mlx_model_artifacts_dir
+                .clone()
+                .or_else(|| llama_model_path.clone())
+                .map(PathBuf::from)
+        } else {
+            None
+        };
+        let backend_request = if mlx {
+            PreviewBackendRequest::shipping_mlx()
+        } else if support_tier == ax_engine_sdk::SupportTier::LlamaCpp {
             PreviewBackendRequest::shipping_default_llama_cpp(
-                PathBuf::from(&compat_cli_path),
-                compat_model_path.as_ref().map(PathBuf::from),
-                compat_server_url.clone(),
+                PathBuf::from(&llama_cli_path),
+                llama_model_path.as_ref().map(PathBuf::from),
+                llama_server_url.clone(),
             )
         } else {
             PreviewBackendRequest {
                 support_tier,
-                compat_backend,
-                compat_cli_path: PathBuf::from(compat_cli_path),
-                compat_model_path: compat_model_path.map(PathBuf::from),
-                compat_server_url,
+                llama_cli_path: PathBuf::from(llama_cli_path),
+                llama_model_path: llama_model_path.map(PathBuf::from),
+                llama_server_url,
                 ..PreviewBackendRequest::default()
             }
         };
@@ -147,11 +87,10 @@ impl Session {
             block_size_tokens,
             total_blocks,
             deterministic,
-            allow_deterministic_native_fallback: false,
             max_batch_tokens,
             backend_request,
-            native_runtime_artifacts_dir: native_runtime_artifacts_dir.map(PathBuf::from),
-            native_model_artifacts_dir: native_model_artifacts_dir.map(PathBuf::from),
+            mlx_runtime_artifacts_dir: None,
+            mlx_model_artifacts_dir: effective_mlx_model_artifacts_dir,
         })
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let inner = EngineSession::new(config).map_err(to_py_runtime_error)?;
@@ -176,10 +115,9 @@ impl Session {
     }
 
     fn close(&mut self) -> PyResult<()> {
-        let mut slot = self
-            .inner
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("session mutex poisoned; session state is unrecoverable"))?;
+        let mut slot = self.inner.lock().map_err(|_| {
+            PyRuntimeError::new_err("session mutex poisoned; session state is unrecoverable")
+        })?;
         *slot = SessionSlot::Closed;
         Ok(())
     }
@@ -415,19 +353,7 @@ impl Session {
         _exc: Option<&Bound<'_, PyAny>>,
         _traceback: Option<&Bound<'_, PyAny>>,
     ) {
-        self.close();
-    }
-}
-
-fn compatibility_backend_kind_from_label(value: &str) -> Result<CompatibilityBackendKind, String> {
-    match value {
-        "llama_cpp" => Ok(CompatibilityBackendKind::LlamaCpp),
-        "vllm" => Ok(CompatibilityBackendKind::Vllm),
-        "mistral_rs" => Ok(CompatibilityBackendKind::MistralRs),
-        "mlx" => Ok(CompatibilityBackendKind::Mlx),
-        other => Err(format!(
-            "unsupported compat_backend {other}; expected llama_cpp, vllm, mistral_rs, or mlx"
-        )),
+        let _ = self.close();
     }
 }
 
@@ -555,27 +481,27 @@ fn runtime_dict<'py>(py: Python<'py>, runtime: &RuntimeReport) -> Py<PyDict> {
         metal_toolchain_dict(py, &runtime.metal_toolchain),
     )
     .expect("metal_toolchain should serialize");
-    if let Some(native_runtime) = runtime.native_runtime.as_ref() {
-        dict.set_item("native_runtime", native_runtime_dict(py, native_runtime))
-            .expect("native_runtime should serialize");
+    if let Some(native_runtime) = runtime.mlx_runtime.as_ref() {
+        dict.set_item("mlx_runtime", mlx_runtime_dict(py, native_runtime))
+            .expect("mlx_runtime should serialize");
     }
-    if let Some(native_model) = runtime.native_model.as_ref() {
-        dict.set_item("native_model", native_model_dict(py, native_model))
-            .expect("native_model should serialize");
+    if let Some(native_model) = runtime.mlx_model.as_ref() {
+        dict.set_item("mlx_model", native_model_dict(py, native_model))
+            .expect("mlx_model should serialize");
     }
     dict.unbind()
 }
 
-fn native_runtime_dict<'py>(
+fn mlx_runtime_dict<'py>(
     py: Python<'py>,
-    native_runtime: &ax_engine_sdk::NativeRuntimeReport,
+    mlx_runtime: &ax_engine_sdk::NativeRuntimeReport,
 ) -> Py<PyDict> {
     let dict = PyDict::new(py);
-    dict.set_item("runner", enum_label(py, native_runtime.runner))
-        .expect("native_runtime.runner should serialize");
-    if let Some(source) = native_runtime.artifacts_source {
+    dict.set_item("runner", enum_label(py, mlx_runtime.runner))
+        .expect("mlx_runtime.runner should serialize");
+    if let Some(source) = mlx_runtime.artifacts_source {
         dict.set_item("artifacts_source", enum_label(py, source))
-            .expect("native_runtime.artifacts_source should serialize");
+            .expect("mlx_runtime.artifacts_source should serialize");
     }
     dict.unbind()
 }
@@ -644,8 +570,8 @@ fn host_dict<'py>(py: Python<'py>, host: &HostReport) -> Py<PyDict> {
         dict.set_item("detected_soc", detected_soc)
             .expect("host.detected_soc should serialize");
     }
-    dict.set_item("supported_native_runtime", host.supported_native_runtime)
-        .expect("host.supported_native_runtime should serialize");
+    dict.set_item("supported_mlx_runtime", host.supported_mlx_runtime)
+        .expect("host.supported_mlx_runtime should serialize");
     dict.set_item(
         "unsupported_host_override_active",
         host.unsupported_host_override_active,
@@ -1140,65 +1066,38 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
     match error {
         EngineSessionError::EmptyInputTokens
         | EngineSessionError::InvalidMaxOutputTokens
-        | EngineSessionError::NativeBackendRequiresTokenizedInput
+        | EngineSessionError::MlxBackendRequiresTokenizedInput
         | EngineSessionError::InvalidMaxBatchTokens
         | EngineSessionError::InvalidRequestId
         | EngineSessionError::UnsupportedSupportTier
-        | EngineSessionError::CompatibilityBackendDoesNotSupportLifecycle { .. }
-        | EngineSessionError::StatelessStreamRequiresCompatibilityBackend { .. }
-        | EngineSessionError::Compatibility(CompatibilityBackendError::StreamingNotSupported {
-            ..
-        })
+        | EngineSessionError::LlamaCppDoesNotSupportLifecycle { .. }
+        | EngineSessionError::StatelessStreamRequiresLlamaCpp { .. }
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
         | EngineSessionError::RequestDidNotTerminate { .. }
         | EngineSessionError::MissingRequestSnapshot { .. } => {
             PyValueError::new_err(error.to_string())
         }
-        EngineSessionError::Compatibility(CompatibilityBackendError::MissingInputText {
-            ..
-        })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::MissingPromptInput {
-            ..
-        })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::UnsupportedTokenPrompt {
-            ..
-        })
-        | EngineSessionError::Compatibility(
-            CompatibilityBackendError::UnsupportedSamplingOption { .. },
-        )
-        | EngineSessionError::Compatibility(CompatibilityBackendError::AmbiguousPromptInput {
-            ..
-        })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::BackendConfigMismatch {
-            ..
-        }) => PyValueError::new_err(error.to_string()),
+        EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingInputText { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingPromptInput { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::UnsupportedTokenPrompt { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::AmbiguousPromptInput { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::BackendConfigMismatch { .. }) => {
+            PyValueError::new_err(error.to_string())
+        }
         EngineSessionError::BackendContract(_)
-        | EngineSessionError::MissingCompatibilityBackendConfig { .. }
-        | EngineSessionError::CompatibilityBackendConfigMismatch { .. }
-        | EngineSessionError::CompatibilityFallbackMustUseLlamaCpp { .. }
-        | EngineSessionError::CompatibilityFallbackRequiresNonStrictPolicy
-        | EngineSessionError::CompatibilityStreamEndedBeforeStop { .. }
-        | EngineSessionError::CompatibilityFallbackFailed { .. }
-        | EngineSessionError::NativeStartupFallbackFailed { .. }
-        | EngineSessionError::NativeRuntimeArtifactsRequired
-        | EngineSessionError::AxNativeNotSupported
-        | EngineSessionError::Compatibility(CompatibilityBackendError::CommandLaunch { .. })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::CommandFailed { .. })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::CommandTimedOut { .. })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::NonUtf8Output { .. })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::SerializeRequestJson {
-            ..
-        })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::HttpRequest { .. })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::HttpStatus { .. })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::HttpResponseRead {
-            ..
-        })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::InvalidResponseJson {
-            ..
-        })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::EmptyChoicesInResponse {
-            ..
-        })
+        | EngineSessionError::MissingLlamaCppConfig { .. }
+        | EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
+        | EngineSessionError::MlxRuntimeArtifactsRequired
+        | EngineSessionError::MlxRuntimeUnavailable
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandLaunch { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandFailed { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandTimedOut { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::NonUtf8Output { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::SerializeRequestJson { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpRequest { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpStatus { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpResponseRead { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::InvalidResponseJson { .. })
         | EngineSessionError::UnsupportedHostHardware { .. }
         | EngineSessionError::RequestReportInvariantViolation { .. }
         | EngineSessionError::StreamEndedWithoutResponse { .. }
@@ -1222,9 +1121,8 @@ fn _ax_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ax_engine_sdk::INITIAL_NATIVE_MODE_MODEL_ID;
     use pyo3::types::{PyDictMethods, PyList};
-    use serde_json::{json, Map, Value};
+    use serde_json::{Map, Value, json};
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1237,25 +1135,9 @@ mod tests {
         PYTHON_INIT.call_once(pyo3::prepare_freethreaded_python);
     }
 
-    fn native_placeholder_sdk_config() -> EngineSessionConfig {
-        EngineSessionConfig {
-            allow_deterministic_native_fallback: true,
-            ..EngineSessionConfig::default()
-        }
-    }
-
-    fn preview_session() -> Session {
-        let inner =
-            EngineSession::new(native_placeholder_sdk_config()).expect("session should build");
-        Session {
-            model_id: "qwen3_dense".to_string(),
-            inner: Arc::new(Mutex::new(SessionSlot::Ready(Box::new(inner)))),
-        }
-    }
-
-    fn compatibility_session() -> Session {
-        let script_path = fake_compat_script();
-        let model_path = std::env::temp_dir().join("ax-engine-python-compat-model.gguf");
+    fn llama_cpp_session() -> Session {
+        let script_path = fake_llama_cpp_script();
+        let model_path = std::env::temp_dir().join("ax-engine-python-llama-cpp-model.gguf");
         fs::write(&model_path, "fake gguf").expect("fake model should be written");
 
         Session::new(
@@ -1266,22 +1148,16 @@ mod tests {
             16,
             1024,
             false,
-            false,
-            "compatibility",
             "llama_cpp",
             script_path.display().to_string(),
             Some(model_path.display().to_string()),
             None,
-            "llama-cli".to_string(),
-            None,
-            None,
-            None,
             None,
         )
-        .expect("compatibility session should build")
+        .expect("llama.cpp session should build")
     }
 
-    fn compatibility_server_session(server_url: String) -> Session {
+    fn llama_cpp_server_session(server_url: String) -> Session {
         Session::new(
             "qwen3_dense".to_string(),
             true,
@@ -1290,53 +1166,17 @@ mod tests {
             16,
             1024,
             false,
-            false,
-            "compatibility",
             "llama_cpp",
             "llama-cli".to_string(),
             None,
             Some(server_url),
-            "llama-cli".to_string(),
-            None,
-            None,
-            None,
             None,
         )
-        .expect("compatibility session should build")
+        .expect("llama.cpp session should build")
     }
 
     #[test]
-    fn python_session_rejects_native_mode_for_non_initial_model() {
-        init_python();
-        let error = match Session::new(
-            "qwen3_dense".to_string(),
-            true,
-            2048,
-            0,
-            16,
-            1024,
-            true,
-            false,
-            "compatibility",
-            "llama_cpp",
-            "llama-cli".to_string(),
-            None,
-            None,
-            "llama-cli".to_string(),
-            None,
-            None,
-            None,
-            None,
-        ) {
-            Ok(_) => panic!("native mode should be allowlisted"),
-            Err(error) => error,
-        };
-
-        assert!(error.to_string().contains(INITIAL_NATIVE_MODE_MODEL_ID));
-    }
-
-    #[test]
-    fn python_session_routes_default_local_mlx_model_to_mlx_cli() {
+    fn python_session_routes_default_local_model_to_llama_cpp() {
         init_python();
         let session = Session::new(
             "qwen3_dense".to_string(),
@@ -1346,24 +1186,18 @@ mod tests {
             16,
             1024,
             false,
-            false,
-            "compatibility",
             "llama_cpp",
             "llama-cli".to_string(),
             Some("/tmp/qwen3.5-mlx".to_string()),
             None,
-            "llama-cli".to_string(),
-            None,
-            None,
-            None,
             None,
         )
-        .expect("default MLX session should build");
+        .expect("default llama.cpp session should build");
 
         Python::with_gil(|py| {
             let runtime = session.runtime(py).expect("runtime should serialize");
             let runtime = runtime.bind(py);
-            assert_eq!(dict_string(runtime, "selected_backend"), "mlx");
+            assert_eq!(dict_string(runtime, "selected_backend"), "llama_cpp");
         });
     }
 
@@ -1378,15 +1212,9 @@ mod tests {
             16,
             1024,
             false,
-            false,
-            "compatibility",
-            "mlx",
+            "llama_cpp",
             "llama-cli".to_string(),
             Some("/tmp/qwen3.5-9b-q4.gguf".to_string()),
-            None,
-            "llama-cli".to_string(),
-            None,
-            None,
             None,
             None,
         )
@@ -1399,7 +1227,7 @@ mod tests {
         });
     }
 
-    fn sdk_compatibility_server_session(server_url: String) -> EngineSession {
+    fn sdk_llama_cpp_server_session(server_url: String) -> EngineSession {
         let config = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
             backend_request: PreviewBackendRequest::shipping_default_llama_cpp(
                 PathBuf::from("llama-cli"),
@@ -1408,11 +1236,11 @@ mod tests {
             ),
             ..PreviewSessionConfigRequest::default()
         })
-        .expect("sdk compatibility preview resolution should succeed");
-        EngineSession::new(config).expect("sdk compatibility session should build")
+        .expect("sdk llama.cpp preview resolution should succeed");
+        EngineSession::new(config).expect("sdk llama.cpp session should build")
     }
 
-    fn spawn_compat_completion_server(
+    fn spawn_llama_cpp_completion_server(
         response_body: String,
         assert_request: impl FnOnce(Value) + Send + 'static,
     ) -> (String, thread::JoinHandle<()>) {
@@ -1444,7 +1272,7 @@ mod tests {
         (format!("http://{address}"), handle)
     }
 
-    fn spawn_compat_completion_stream_server(
+    fn spawn_llama_cpp_completion_stream_server(
         expected_requests: usize,
         chunks: Vec<Value>,
         assert_request: impl Fn(Value) + Send + Sync + 'static,
@@ -1544,10 +1372,6 @@ mod tests {
             .expect("content-length header should exist")
     }
 
-    fn sdk_session() -> EngineSession {
-        EngineSession::new(native_placeholder_sdk_config()).expect("sdk session should build")
-    }
-
     fn sample_sdk_request(input_tokens: &[u32], max_output_tokens: u32) -> GenerateRequest {
         GenerateRequest {
             model_id: "qwen3_dense".to_string(),
@@ -1559,12 +1383,12 @@ mod tests {
         }
     }
 
-    fn fake_compat_script() -> std::path::PathBuf {
+    fn fake_llama_cpp_script() -> std::path::PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time should be valid")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("ax-engine-python-compat-{unique}.py"));
+        let path = std::env::temp_dir().join(format!("ax-engine-python-llama-cpp-{unique}.py"));
         let script = r#"#!/usr/bin/env python3
 from __future__ import annotations
 
@@ -1594,22 +1418,6 @@ sys.stdout.write(f"python::{prompt}")
             .unwrap()
             .unwrap()
             .extract::<String>()
-            .unwrap()
-    }
-
-    fn dict_u64(dict: &Bound<'_, PyDict>, key: &str) -> u64 {
-        dict.get_item(key)
-            .unwrap()
-            .unwrap()
-            .extract::<u64>()
-            .unwrap()
-    }
-
-    fn dict_u32(dict: &Bound<'_, PyDict>, key: &str) -> u32 {
-        dict.get_item(key)
-            .unwrap()
-            .unwrap()
-            .extract::<u32>()
             .unwrap()
     }
 
@@ -1720,527 +1528,10 @@ sys.stdout.write(f"python::{prompt}")
     }
 
     #[test]
-    fn python_session_runtime_reports_preview_metadata() {
+    fn python_session_llama_cpp_generate_returns_text_fields() {
         init_python();
         Python::with_gil(|py| {
-            let session = preview_session();
-            let runtime = session.runtime(py).expect("runtime should serialize");
-            let runtime = runtime.bind(py);
-            let expected = sdk_session().runtime_report();
-
-            assert_eq!(dict_string(runtime, "selected_backend"), "ax_native");
-            assert_eq!(dict_string(runtime, "support_tier"), "native_preview");
-            assert_eq!(dict_string(runtime, "resolution_policy"), "strict_native");
-            assert_eq!(
-                py_dict_to_json(runtime),
-                serde_json::to_value(&expected).expect("sdk runtime should serialize")
-            );
-            assert_eq!(
-                dict_string(runtime, "selected_backend"),
-                serde_json::to_value(expected.selected_backend)
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-            );
-            assert_eq!(
-                dict_string(runtime, "support_tier"),
-                serde_json::to_value(expected.support_tier)
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-            );
-            assert_eq!(
-                dict_string(runtime, "resolution_policy"),
-                serde_json::to_value(expected.resolution_policy)
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-            );
-        });
-    }
-
-    #[test]
-    fn python_session_generate_returns_terminal_response() {
-        init_python();
-        Python::with_gil(|py| {
-            let mut session = preview_session();
-            let response = session
-                .generate(
-                    py,
-                    Some(vec![1, 2, 3]),
-                    None,
-                    2,
-                    0.0,
-                    1.0,
-                    0,
-                    1.0,
-                    0,
-                    None,
-                    None,
-                )
-                .expect("generate should succeed");
-            let response = response.bind(py);
-            let expected = sdk_session()
-                .generate(sample_sdk_request(&[1, 2, 3], 2))
-                .expect("sdk generate should succeed");
-            let actual_json = py_dict_to_json(response);
-            let expected_json =
-                serde_json::to_value(expected.clone()).expect("sdk response should serialize");
-
-            assert_eq!(dict_u64(response, "request_id"), expected.request_id);
-            assert_eq!(dict_string(response, "model_id"), expected.model_id);
-            assert_eq!(
-                dict_tokens(response, "prompt_tokens"),
-                expected.prompt_tokens
-            );
-            assert_eq!(
-                dict_tokens(response, "output_tokens"),
-                expected.output_tokens
-            );
-            assert_eq!(
-                dict_string(response, "status"),
-                serde_json::to_value(expected.status)
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-            );
-            assert_eq!(dict_u64(response, "step_count"), expected.step_count);
-            assert_eq!(actual_json, expected_json);
-        });
-    }
-
-    #[test]
-    fn python_session_stepwise_request_control_reports_progress() {
-        init_python();
-        Python::with_gil(|py| {
-            let mut session = preview_session();
-            let mut expected_session = sdk_session();
-            let expected_request_id = expected_session
-                .submit_generate(sample_sdk_request(&[1, 2, 3], 2))
-                .expect("sdk submit should succeed");
-            let request_id = session
-                .submit(
-                    Some(vec![1, 2, 3]),
-                    None,
-                    2,
-                    0.0,
-                    1.0,
-                    0,
-                    1.0,
-                    0,
-                    None,
-                    None,
-                )
-                .expect("submit should succeed");
-            assert_eq!(request_id, expected_request_id);
-            let initial = session
-                .snapshot(py, request_id)
-                .expect("snapshot should succeed")
-                .expect("submitted request should exist");
-            let initial = initial.bind(py);
-            let expected_initial = expected_session
-                .request_report(request_id)
-                .expect("sdk snapshot should exist");
-
-            assert_eq!(dict_string(initial, "state"), "waiting");
-            assert_eq!(dict_u64(initial, "request_id"), expected_initial.request_id);
-            assert_eq!(dict_string(initial, "model_id"), expected_initial.model_id);
-            assert_eq!(
-                dict_tokens(initial, "prompt_tokens"),
-                expected_initial.prompt_tokens
-            );
-            assert_eq!(dict_u32(initial, "output_len"), expected_initial.output_len);
-            assert_eq!(
-                py_dict_to_json(initial),
-                serde_json::to_value(expected_initial)
-                    .expect("sdk initial snapshot should serialize")
-            );
-
-            for _ in 0..8 {
-                let expected_snapshot = expected_session
-                    .request_report(request_id)
-                    .expect("sdk snapshot should succeed");
-                let snapshot = session
-                    .snapshot(py, request_id)
-                    .expect("snapshot should succeed")
-                    .expect("request should still exist");
-                let snapshot = snapshot.bind(py);
-                let state = dict_string(snapshot, "state");
-                assert_eq!(
-                    state,
-                    serde_json::to_value(expected_snapshot.state)
-                        .unwrap()
-                        .as_str()
-                        .unwrap()
-                );
-                assert_eq!(
-                    dict_tokens(snapshot, "output_tokens"),
-                    expected_snapshot.output_tokens
-                );
-                assert_eq!(
-                    py_dict_to_json(snapshot),
-                    serde_json::to_value(expected_snapshot.clone())
-                        .expect("sdk snapshot should serialize")
-                );
-                if state == "finished" {
-                    break;
-                }
-
-                let expected_step = expected_session
-                    .step_report()
-                    .expect("sdk step should succeed");
-                let step = session.step(py).expect("step should succeed");
-                let step = step.bind(py);
-                let mut actual_step_json = py_dict_to_json(step);
-                let mut expected_step_json =
-                    serde_json::to_value(expected_step.clone()).expect("sdk step should serialize");
-                assert_eq!(
-                    dict_u32(step, "scheduled_requests"),
-                    expected_step.scheduled_requests
-                );
-                assert_eq!(
-                    dict_u32(step, "scheduled_tokens"),
-                    expected_step.scheduled_tokens
-                );
-                normalize_measurement_fields(&mut actual_step_json);
-                normalize_measurement_fields(&mut expected_step_json);
-                assert_eq!(actual_step_json, expected_step_json);
-            }
-
-            let terminal = session
-                .snapshot(py, request_id)
-                .expect("snapshot should succeed")
-                .expect("terminal request should still exist");
-            let terminal = terminal.bind(py);
-            let expected_terminal = expected_session
-                .request_report(request_id)
-                .expect("sdk terminal snapshot should exist");
-            assert_eq!(
-                dict_string(terminal, "state"),
-                serde_json::to_value(expected_terminal.state)
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-            );
-            assert_eq!(
-                dict_u32(terminal, "output_len"),
-                expected_terminal.output_len
-            );
-            assert_eq!(
-                dict_tokens(terminal, "output_tokens"),
-                expected_terminal.output_tokens
-            );
-            assert_eq!(
-                py_dict_to_json(terminal),
-                serde_json::to_value(expected_terminal)
-                    .expect("sdk terminal snapshot should serialize")
-            );
-        });
-    }
-
-    #[test]
-    fn python_session_cancel_matches_sdk_cancelled_state() {
-        init_python();
-        Python::with_gil(|py| {
-            let mut session = preview_session();
-            let mut expected_session = sdk_session();
-            let request_id = session
-                .submit(
-                    Some(vec![7, 8, 9]),
-                    None,
-                    2,
-                    0.0,
-                    1.0,
-                    0,
-                    1.0,
-                    0,
-                    None,
-                    None,
-                )
-                .expect("submit should succeed");
-            expected_session
-                .submit_generate_with_request_id(request_id, sample_sdk_request(&[7, 8, 9], 2))
-                .expect("sdk submit should succeed");
-
-            session.cancel(request_id).expect("cancel should succeed");
-            expected_session
-                .cancel_request(request_id)
-                .expect("sdk cancel should succeed");
-
-            let snapshot = session
-                .snapshot(py, request_id)
-                .expect("snapshot should succeed")
-                .expect("cancelled request should exist");
-            let snapshot = snapshot.bind(py);
-            let expected_snapshot = expected_session
-                .request_report(request_id)
-                .expect("sdk cancelled snapshot should exist");
-
-            assert_eq!(
-                dict_string(snapshot, "state"),
-                serde_json::to_value(expected_snapshot.state)
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-            );
-            assert_eq!(
-                dict_u64(snapshot, "request_id"),
-                expected_snapshot.request_id
-            );
-            assert_eq!(
-                snapshot
-                    .get_item("cancel_requested")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<bool>()
-                    .unwrap(),
-                expected_snapshot.cancel_requested
-            );
-        });
-    }
-
-    #[test]
-    fn python_session_stream_generate_matches_sdk_lifecycle_shape() {
-        init_python();
-        Python::with_gil(|py| {
-            let mut session = preview_session();
-            let stream = session
-                .stream_generate(
-                    py,
-                    Some(vec![1, 2, 3]),
-                    None,
-                    2,
-                    0.0,
-                    1.0,
-                    0,
-                    1.0,
-                    0,
-                    None,
-                    None,
-                )
-                .expect("stream should succeed");
-            assert!(!session.closed());
-            let active_stream_error = session
-                .step(py)
-                .expect_err("active stream should block reuse");
-            assert!(active_stream_error.to_string().contains("active stream"));
-
-            let mut stream = stream.bind(py).borrow_mut();
-            let request_event = stream
-                .next_event_dict(py)
-                .expect("request event should succeed")
-                .expect("request event should exist");
-            let request_event = request_event.bind(py);
-            assert_eq!(dict_string(request_event, "event"), "request");
-
-            let request_payload = request_event
-                .get_item("request")
-                .unwrap()
-                .unwrap()
-                .downcast_into::<PyDict>()
-                .unwrap();
-            assert_eq!(dict_string(&request_payload, "state"), "waiting");
-
-            let _step_event = stream
-                .next_event_dict(py)
-                .expect("step event should succeed")
-                .expect("step event should exist");
-            let _second_step_event = stream
-                .next_event_dict(py)
-                .expect("second step event should succeed")
-                .expect("second step event should exist");
-            let final_step_event = stream
-                .next_event_dict(py)
-                .expect("final step event should succeed")
-                .expect("final step event should exist");
-            let final_step_event = final_step_event.bind(py);
-            assert_eq!(dict_string(final_step_event, "event"), "step");
-
-            let response_event = stream
-                .next_event_dict(py)
-                .expect("response event should succeed")
-                .expect("response event should exist");
-            let response_event = response_event.bind(py);
-            assert_eq!(dict_string(response_event, "event"), "response");
-            let response_payload = response_event
-                .get_item("response")
-                .unwrap()
-                .unwrap()
-                .downcast_into::<PyDict>()
-                .unwrap();
-            assert_eq!(dict_tokens(&response_payload, "output_tokens"), vec![4, 5]);
-            assert_eq!(dict_string(&response_payload, "status"), "finished");
-            assert!(stream
-                .next_event_dict(py)
-                .expect("stream should finish")
-                .is_none());
-            drop(stream);
-
-            let mut expected_session = sdk_session();
-            let expected_events = expected_session
-                .stream_generate(sample_sdk_request(&[1, 2, 3], 2))
-                .expect("sdk stream should start")
-                .collect::<Result<Vec<_>, _>>()
-                .expect("sdk stream should complete");
-            assert_eq!(expected_events.len(), 5);
-            assert!(!session.closed());
-            let next_response = session
-                .generate(
-                    py,
-                    Some(vec![8, 9]),
-                    None,
-                    1,
-                    0.0,
-                    1.0,
-                    0,
-                    1.0,
-                    0,
-                    None,
-                    None,
-                )
-                .expect("session should be reusable after stream completion");
-            let next_response = next_response.bind(py);
-            assert_eq!(dict_u64(next_response, "step_count"), 2);
-            assert_eq!(dict_string(next_response, "status"), "finished");
-        });
-    }
-
-    #[test]
-    fn python_session_stream_generate_matches_sdk_payloads() {
-        init_python();
-        Python::with_gil(|py| {
-            let mut session = preview_session();
-            let stream = session
-                .stream_generate(
-                    py,
-                    Some(vec![1, 2, 3]),
-                    None,
-                    2,
-                    0.0,
-                    1.0,
-                    0,
-                    1.0,
-                    0,
-                    None,
-                    None,
-                )
-                .expect("stream should succeed");
-            let mut actual = Vec::new();
-            {
-                let mut stream = stream.bind(py).borrow_mut();
-                while let Some(event) = stream
-                    .next_event_dict(py)
-                    .expect("python stream event should succeed")
-                {
-                    actual.push(py_dict_to_json(event.bind(py)));
-                }
-            }
-
-            let mut expected_session = sdk_session();
-            let mut expected = expected_session
-                .stream_generate(sample_sdk_request(&[1, 2, 3], 2))
-                .expect("sdk stream should start")
-                .collect::<Result<Vec<_>, _>>()
-                .expect("sdk stream should complete")
-                .into_iter()
-                .map(|event| sdk_stream_event_json(&event))
-                .collect::<Vec<_>>();
-            for payload in &mut actual {
-                normalize_measurement_fields(payload);
-            }
-            for payload in &mut expected {
-                normalize_measurement_fields(payload);
-            }
-
-            assert_eq!(actual, expected);
-        });
-    }
-
-    #[test]
-    fn dropping_python_stream_iterator_restores_session_before_completion() {
-        init_python();
-        Python::with_gil(|py| {
-            let mut session = preview_session();
-            let stream = session
-                .stream_generate(
-                    py,
-                    Some(vec![1, 2, 3]),
-                    None,
-                    2,
-                    0.0,
-                    1.0,
-                    0,
-                    1.0,
-                    0,
-                    None,
-                    None,
-                )
-                .expect("stream should succeed");
-
-            {
-                let mut stream = stream.bind(py).borrow_mut();
-                let request_event = stream
-                    .next_event_dict(py)
-                    .expect("request event should succeed")
-                    .expect("request event should exist");
-                let request_event = request_event.bind(py);
-                assert_eq!(dict_string(request_event, "event"), "request");
-            }
-
-            let active_stream_error = session
-                .snapshot(py, 1)
-                .expect_err("active stream should block snapshot reuse");
-            assert!(active_stream_error.to_string().contains("active stream"));
-
-            drop(stream);
-
-            let mut expected_session = sdk_session();
-            {
-                let mut expected_stream = expected_session
-                    .stream_generate(sample_sdk_request(&[1, 2, 3], 2))
-                    .expect("sdk stream should start");
-                let _request_event = expected_stream
-                    .next()
-                    .expect("sdk request event should exist")
-                    .expect("sdk request event should succeed");
-                drop(expected_stream);
-            }
-            let expected = expected_session
-                .generate(sample_sdk_request(&[8, 9], 1))
-                .expect("sdk generate should succeed");
-            let response = session
-                .generate(
-                    py,
-                    Some(vec![8, 9]),
-                    None,
-                    1,
-                    0.0,
-                    1.0,
-                    0,
-                    1.0,
-                    0,
-                    None,
-                    None,
-                )
-                .expect("session should be reusable after dropped stream");
-            let response = response.bind(py);
-            assert_eq!(dict_string(response, "status"), "finished");
-            assert_eq!(
-                dict_tokens(response, "output_tokens"),
-                expected.output_tokens
-            );
-            assert_eq!(
-                py_dict_to_json(response),
-                serde_json::to_value(expected).expect("sdk response should serialize")
-            );
-        });
-    }
-
-    #[test]
-    fn python_session_compatibility_generate_returns_text_fields() {
-        init_python();
-        Python::with_gil(|py| {
-            let mut session = compatibility_session();
+            let mut session = llama_cpp_session();
             let response = session
                 .generate(
                     py,
@@ -2255,7 +1546,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     None,
                 )
-                .expect("compatibility generate should succeed");
+                .expect("llama.cpp generate should succeed");
             let response = response.bind(py);
 
             assert_eq!(dict_string(response, "model_id"), "qwen3_dense");
@@ -2284,14 +1575,14 @@ sys.stdout.write(f"python::{prompt}")
                 .downcast_into::<PyDict>()
                 .unwrap();
             assert_eq!(dict_string(&runtime, "selected_backend"), "llama_cpp");
-            assert_eq!(dict_string(&runtime, "support_tier"), "compatibility");
+            assert_eq!(dict_string(&runtime, "support_tier"), "llama_cpp");
         });
     }
 
     #[test]
-    fn python_session_compatibility_server_generate_supports_token_prompts() {
+    fn python_session_llama_cpp_server_generate_supports_token_prompts() {
         init_python();
-        let (server_url, server_handle) = spawn_compat_completion_server(
+        let (server_url, server_handle) = spawn_llama_cpp_completion_server(
             serde_json::json!({
                 "content": "python server tokens",
                 "tokens": [8, 9],
@@ -2307,7 +1598,7 @@ sys.stdout.write(f"python::{prompt}")
         );
 
         Python::with_gil(|py| {
-            let mut session = compatibility_server_session(server_url);
+            let mut session = llama_cpp_server_session(server_url);
             let response = session
                 .generate(
                     py,
@@ -2322,7 +1613,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     None,
                 )
-                .expect("compatibility server generate should succeed");
+                .expect("llama.cpp server generate should succeed");
             let response = response.bind(py);
 
             assert_eq!(dict_tokens(response, "prompt_tokens"), vec![1, 2, 3]);
@@ -2340,13 +1631,13 @@ sys.stdout.write(f"python::{prompt}")
 
         server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
     }
 
     #[test]
-    fn python_session_compatibility_server_stream_generate_matches_sdk_payloads() {
+    fn python_session_llama_cpp_server_stream_generate_matches_sdk_payloads() {
         init_python();
-        let (server_url, server_handle) = spawn_compat_completion_stream_server(
+        let (server_url, server_handle) = spawn_llama_cpp_completion_stream_server(
             2,
             vec![
                 serde_json::json!({
@@ -2369,7 +1660,7 @@ sys.stdout.write(f"python::{prompt}")
         );
 
         Python::with_gil(|py| {
-            let mut session = compatibility_server_session(server_url.clone());
+            let mut session = llama_cpp_server_session(server_url.clone());
             let stream = session
                 .stream_generate(
                     py,
@@ -2384,7 +1675,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     None,
                 )
-                .expect("compatibility stream should succeed");
+                .expect("llama.cpp stream should succeed");
             let mut actual = Vec::new();
             {
                 let mut stream = stream.bind(py).borrow_mut();
@@ -2396,12 +1687,12 @@ sys.stdout.write(f"python::{prompt}")
                 }
             }
 
-            let mut expected_session = sdk_compatibility_server_session(server_url);
+            let mut expected_session = sdk_llama_cpp_server_session(server_url);
             let mut expected = expected_session
                 .stream_generate(sample_sdk_request(&[1, 2, 3], 2))
-                .expect("sdk compatibility stream should start")
+                .expect("sdk llama.cpp stream should start")
                 .collect::<Result<Vec<_>, _>>()
-                .expect("sdk compatibility stream should complete")
+                .expect("sdk llama.cpp stream should complete")
                 .into_iter()
                 .map(|event| sdk_stream_event_json(&event))
                 .collect::<Vec<_>>();
@@ -2417,13 +1708,13 @@ sys.stdout.write(f"python::{prompt}")
 
         server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
     }
 
     #[test]
-    fn python_session_compatibility_stepwise_request_control_matches_sdk() {
+    fn python_session_llama_cpp_stepwise_request_control_matches_sdk() {
         init_python();
-        let (server_url, server_handle) = spawn_compat_completion_stream_server(
+        let (server_url, server_handle) = spawn_llama_cpp_completion_stream_server(
             2,
             vec![
                 serde_json::json!({
@@ -2446,11 +1737,11 @@ sys.stdout.write(f"python::{prompt}")
         );
 
         Python::with_gil(|py| {
-            let mut session = compatibility_server_session(server_url.clone());
-            let mut expected_session = sdk_compatibility_server_session(server_url);
+            let mut session = llama_cpp_server_session(server_url.clone());
+            let mut expected_session = sdk_llama_cpp_server_session(server_url);
             let expected_request_id = expected_session
                 .submit_generate(sample_sdk_request(&[1, 2, 3], 2))
-                .expect("sdk compatibility submit should succeed");
+                .expect("sdk llama.cpp submit should succeed");
             let request_id = session
                 .submit(
                     Some(vec![1, 2, 3]),
@@ -2464,23 +1755,23 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     None,
                 )
-                .expect("compatibility submit should succeed");
+                .expect("llama.cpp submit should succeed");
             assert_eq!(request_id, expected_request_id);
 
             for _ in 0..4 {
                 let expected_snapshot = expected_session
                     .request_report(request_id)
-                    .expect("sdk compatibility snapshot should exist");
+                    .expect("sdk llama.cpp snapshot should exist");
                 let snapshot = session
                     .snapshot(py, request_id)
                     .expect("snapshot should succeed")
-                    .expect("compatibility request should still exist");
+                    .expect("llama.cpp request should still exist");
                 let snapshot = snapshot.bind(py);
                 let state = dict_string(snapshot, "state");
                 assert_eq!(
                     py_dict_to_json(snapshot),
                     serde_json::to_value(expected_snapshot.clone())
-                        .expect("sdk compatibility snapshot should serialize")
+                        .expect("sdk llama.cpp snapshot should serialize")
                 );
                 if state == "finished" {
                     break;
@@ -2488,12 +1779,12 @@ sys.stdout.write(f"python::{prompt}")
 
                 let expected_step = expected_session
                     .step_report()
-                    .expect("sdk compatibility step should succeed");
-                let step = session.step(py).expect("compatibility step should succeed");
+                    .expect("sdk llama.cpp step should succeed");
+                let step = session.step(py).expect("llama.cpp step should succeed");
                 let step = step.bind(py);
                 let mut actual_step_json = py_dict_to_json(step);
                 let mut expected_step_json = serde_json::to_value(expected_step.clone())
-                    .expect("sdk compatibility step should serialize");
+                    .expect("sdk llama.cpp step should serialize");
                 normalize_measurement_fields(&mut actual_step_json);
                 normalize_measurement_fields(&mut expected_step_json);
                 assert_eq!(actual_step_json, expected_step_json);
@@ -2502,29 +1793,29 @@ sys.stdout.write(f"python::{prompt}")
             let terminal = session
                 .snapshot(py, request_id)
                 .expect("snapshot should succeed")
-                .expect("terminal compatibility request should exist");
+                .expect("terminal llama.cpp request should exist");
             let terminal = terminal.bind(py);
             let expected_terminal = expected_session
                 .request_report(request_id)
-                .expect("sdk compatibility terminal snapshot should exist");
+                .expect("sdk llama.cpp terminal snapshot should exist");
             assert_eq!(
                 py_dict_to_json(terminal),
                 serde_json::to_value(expected_terminal)
-                    .expect("sdk compatibility terminal snapshot should serialize")
+                    .expect("sdk llama.cpp terminal snapshot should serialize")
             );
         });
 
         server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
     }
 
     #[test]
-    fn python_session_compatibility_stepwise_multiple_requests_match_sdk() {
+    fn python_session_llama_cpp_stepwise_multiple_requests_match_sdk() {
         init_python();
         let expected_prompts = vec![json!([1, 2, 3]), json!([7, 8, 9])];
         let expected_prompts_for_request = expected_prompts.clone();
-        let (server_url, server_handle) = spawn_compat_completion_stream_server(
+        let (server_url, server_handle) = spawn_llama_cpp_completion_stream_server(
             4,
             vec![
                 serde_json::json!({
@@ -2541,17 +1832,19 @@ sys.stdout.write(f"python::{prompt}")
             ],
             move |payload| {
                 let prompt = payload.get("prompt").expect("prompt should be present");
-                assert!(expected_prompts_for_request
-                    .iter()
-                    .any(|candidate| prompt == candidate));
+                assert!(
+                    expected_prompts_for_request
+                        .iter()
+                        .any(|candidate| prompt == candidate)
+                );
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
                 assert_eq!(payload.get("return_tokens"), Some(&Value::Bool(true)));
             },
         );
 
         Python::with_gil(|py| {
-            let mut session = compatibility_server_session(server_url.clone());
-            let mut expected_session = sdk_compatibility_server_session(server_url);
+            let mut session = llama_cpp_server_session(server_url.clone());
+            let mut expected_session = sdk_llama_cpp_server_session(server_url);
             let first_request_id = session
                 .submit(
                     Some(vec![1, 2, 3]),
@@ -2565,7 +1858,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     None,
                 )
-                .expect("first compatibility submit should succeed");
+                .expect("first llama.cpp submit should succeed");
             let second_request_id = session
                 .submit(
                     Some(vec![7, 8, 9]),
@@ -2579,31 +1872,31 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     None,
                 )
-                .expect("second compatibility submit should succeed");
+                .expect("second llama.cpp submit should succeed");
             expected_session
                 .submit_generate_with_request_id(
                     first_request_id,
                     sample_sdk_request(&[1, 2, 3], 2),
                 )
-                .expect("first sdk compatibility submit should succeed");
+                .expect("first sdk llama.cpp submit should succeed");
             expected_session
                 .submit_generate_with_request_id(
                     second_request_id,
                     sample_sdk_request(&[7, 8, 9], 2),
                 )
-                .expect("second sdk compatibility submit should succeed");
+                .expect("second sdk llama.cpp submit should succeed");
 
             for _ in 0..2 {
                 let expected_step = expected_session
                     .step_report()
-                    .expect("sdk compatibility aggregated step should succeed");
+                    .expect("sdk llama.cpp aggregated step should succeed");
                 let step = session
                     .step(py)
-                    .expect("compatibility aggregated step should succeed");
+                    .expect("llama.cpp aggregated step should succeed");
                 let step = step.bind(py);
                 let mut actual_step_json = py_dict_to_json(step);
                 let mut expected_step_json = serde_json::to_value(expected_step.clone())
-                    .expect("sdk compatibility step should serialize");
+                    .expect("sdk llama.cpp step should serialize");
                 normalize_measurement_fields(&mut actual_step_json);
                 normalize_measurement_fields(&mut expected_step_json);
                 assert_eq!(actual_step_json, expected_step_json);
@@ -2612,15 +1905,15 @@ sys.stdout.write(f"python::{prompt}")
                     let snapshot = session
                         .snapshot(py, request_id)
                         .expect("snapshot should succeed")
-                        .expect("compatibility request should still exist");
+                        .expect("llama.cpp request should still exist");
                     let snapshot = snapshot.bind(py);
                     let expected_snapshot = expected_session
                         .request_report(request_id)
-                        .expect("sdk compatibility snapshot should exist");
+                        .expect("sdk llama.cpp snapshot should exist");
                     assert_eq!(
                         py_dict_to_json(snapshot),
                         serde_json::to_value(expected_snapshot)
-                            .expect("sdk compatibility snapshot should serialize")
+                            .expect("sdk llama.cpp snapshot should serialize")
                     );
                 }
             }
@@ -2628,13 +1921,13 @@ sys.stdout.write(f"python::{prompt}")
 
         server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
     }
 
     #[test]
-    fn python_session_compatibility_cancel_matches_sdk_cancelled_state() {
+    fn python_session_llama_cpp_cancel_matches_sdk_cancelled_state() {
         init_python();
-        let (server_url, server_handle) = spawn_compat_completion_stream_server(
+        let (server_url, server_handle) = spawn_llama_cpp_completion_stream_server(
             2,
             vec![serde_json::json!({
                 "content": "hello",
@@ -2648,8 +1941,8 @@ sys.stdout.write(f"python::{prompt}")
         );
 
         Python::with_gil(|py| {
-            let mut session = compatibility_server_session(server_url.clone());
-            let mut expected_session = sdk_compatibility_server_session(server_url);
+            let mut session = llama_cpp_server_session(server_url.clone());
+            let mut expected_session = sdk_llama_cpp_server_session(server_url);
             let request_id = session
                 .submit(
                     Some(vec![7, 8, 9]),
@@ -2663,63 +1956,36 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     None,
                 )
-                .expect("compatibility submit should succeed");
+                .expect("llama.cpp submit should succeed");
             expected_session
                 .submit_generate_with_request_id(request_id, sample_sdk_request(&[7, 8, 9], 2))
-                .expect("sdk compatibility submit should succeed");
+                .expect("sdk llama.cpp submit should succeed");
 
             session
                 .cancel(request_id)
-                .expect("compatibility cancel should succeed");
+                .expect("llama.cpp cancel should succeed");
             expected_session
                 .cancel_request(request_id)
-                .expect("sdk compatibility cancel should succeed");
+                .expect("sdk llama.cpp cancel should succeed");
 
             let snapshot = session
                 .snapshot(py, request_id)
                 .expect("snapshot should succeed")
-                .expect("cancelled compatibility request should exist");
+                .expect("cancelled llama.cpp request should exist");
             let snapshot = snapshot.bind(py);
             let expected_snapshot = expected_session
                 .request_report(request_id)
-                .expect("sdk compatibility cancelled snapshot should exist");
+                .expect("sdk llama.cpp cancelled snapshot should exist");
 
             assert_eq!(
                 py_dict_to_json(snapshot),
                 serde_json::to_value(expected_snapshot)
-                    .expect("sdk compatibility cancelled snapshot should serialize")
+                    .expect("sdk llama.cpp cancelled snapshot should serialize")
             );
         });
 
         server_handle
             .join()
-            .expect("compatibility server thread should finish");
-    }
-
-    #[test]
-    fn python_session_native_rejects_input_text() {
-        init_python();
-        Python::with_gil(|py| {
-            let mut session = preview_session();
-            let error = session
-                .generate(
-                    py,
-                    None,
-                    Some("native should reject text".to_string()),
-                    2,
-                    0.0,
-                    1.0,
-                    0,
-                    1.0,
-                    0,
-                    None,
-                    None,
-                )
-                .expect_err("native session should reject input_text");
-
-            assert!(error
-                .to_string()
-                .contains("native preview session only accepts pre-tokenized input_tokens"));
-        });
+            .expect("llama.cpp server thread should finish");
     }
 }

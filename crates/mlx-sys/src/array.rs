@@ -23,7 +23,9 @@ impl MlxArray {
     /// Build an empty (null) array. Useful as an out-parameter placeholder.
     pub(crate) fn empty() -> Self {
         Self {
-            inner: ffi::mlx_array { ctx: ptr::null_mut() },
+            inner: ffi::mlx_array {
+                ctx: ptr::null_mut(),
+            },
         }
     }
 
@@ -47,7 +49,10 @@ impl MlxArray {
 
     /// Create a 1-D f16 array from raw bytes (already packed as f16).
     pub fn from_f16_bytes(data: &[u8]) -> Self {
-        assert!(data.len().is_multiple_of(2), "f16 data must have even byte length");
+        assert!(
+            data.len().is_multiple_of(2),
+            "f16 data must have even byte length"
+        );
         let len = data.len() / 2;
         unsafe {
             let shape = [len as i32];
@@ -62,16 +67,13 @@ impl MlxArray {
     }
 
     /// Create an array from a raw data pointer with explicit shape and dtype.
-    pub fn from_raw_data(
-        data: *const u8,
-        byte_len: usize,
-        shape: &[i32],
-        dtype: MlxDtype,
-    ) -> Self {
+    pub fn from_raw_data(data: *const u8, byte_len: usize, shape: &[i32], dtype: MlxDtype) -> Self {
         let element_count = shape
             .iter()
             .try_fold(1usize, |acc, dim| {
-                usize::try_from(*dim).ok().and_then(|dim| acc.checked_mul(dim))
+                usize::try_from(*dim)
+                    .ok()
+                    .and_then(|dim| acc.checked_mul(dim))
             })
             .expect("shape dimensions must be non-negative and fit in usize");
         let required_bytes = element_count
@@ -117,7 +119,11 @@ impl MlxArray {
 
     /// Read data as f32. Array must have been eval'd first.
     pub fn data_f32(&self) -> &[f32] {
-        assert_eq!(self.dtype(), MlxDtype::Float32, "data_f32 requires Float32 dtype");
+        assert_eq!(
+            self.dtype(),
+            MlxDtype::Float32,
+            "data_f32 requires Float32 dtype"
+        );
         unsafe {
             let ptr = ffi::mlx_array_data_float32(self.inner);
             let len = self.nbytes() / 4;
@@ -130,7 +136,11 @@ impl MlxArray {
 
     /// Read data as u32. Array must have been eval'd first.
     pub fn data_u32(&self) -> &[u32] {
-        assert_eq!(self.dtype(), MlxDtype::Uint32, "data_u32 requires Uint32 dtype");
+        assert_eq!(
+            self.dtype(),
+            MlxDtype::Uint32,
+            "data_u32 requires Uint32 dtype"
+        );
         unsafe {
             let ptr = ffi::mlx_array_data_uint32(self.inner);
             let len = self.nbytes() / 4;
@@ -173,7 +183,12 @@ impl MlxArray {
 
 impl fmt::Debug for MlxArray {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MlxArray(shape={:?}, dtype={:?})", self.shape(), self.dtype())
+        write!(
+            f,
+            "MlxArray(shape={:?}, dtype={:?})",
+            self.shape(),
+            self.dtype()
+        )
     }
 }
 

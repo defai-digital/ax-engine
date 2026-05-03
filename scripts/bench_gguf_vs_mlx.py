@@ -3,7 +3,7 @@
 
 This script compares local GGUF models through `llama-bench` against MLX
 models through `mlx_lm`. It is intended for repo-grounded performance checks
-when evaluating compatibility backend tradeoffs.
+when evaluating llama.cpp backend tradeoffs.
 """
 
 from __future__ import annotations
@@ -253,7 +253,7 @@ def main() -> int:
     args = parse_args()
     started_at = time.time()
     results = {
-        "schema_version": "ax.compat.bench.v1",
+        "schema_version": "ax.llama.bench.v1",
         "started_at_unix": started_at,
         "pairs": [],
     }

@@ -10,12 +10,17 @@ fn gpu() -> ffi::mlx_stream {
 }
 
 /// RMS layer normalization.
-pub fn rms_norm(x: &MlxArray, weight: Option<&MlxArray>, eps: f32, s: Option<&MlxStream>) -> MlxArray {
+pub fn rms_norm(
+    x: &MlxArray,
+    weight: Option<&MlxArray>,
+    eps: f32,
+    s: Option<&MlxStream>,
+) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
-        let weight_raw = weight
-            .map(|w| w.inner)
-            .unwrap_or(ffi::mlx_array { ctx: ptr::null_mut() });
+        let weight_raw = weight.map(|w| w.inner).unwrap_or(ffi::mlx_array {
+            ctx: ptr::null_mut(),
+        });
         let mut res = MlxArray::empty();
         ffi::mlx_fast_rms_norm(&mut res.inner, x.inner, weight_raw, eps, stream);
         res
@@ -40,9 +45,9 @@ pub fn rope(
             has_value: base.is_some(),
             value: base.unwrap_or(10000.0),
         };
-        let freqs_raw = freqs
-            .map(|f| f.inner)
-            .unwrap_or(ffi::mlx_array { ctx: ptr::null_mut() });
+        let freqs_raw = freqs.map(|f| f.inner).unwrap_or(ffi::mlx_array {
+            ctx: ptr::null_mut(),
+        });
         let mut res = MlxArray::empty();
         ffi::mlx_fast_rope(
             &mut res.inner,
@@ -78,7 +83,9 @@ pub fn scaled_dot_product_attention(
         } else {
             CString::new("").unwrap()
         };
-        let null_arr = ffi::mlx_array { ctx: ptr::null_mut() };
+        let null_arr = ffi::mlx_array {
+            ctx: ptr::null_mut(),
+        };
         let mut res = MlxArray::empty();
         ffi::mlx_fast_scaled_dot_product_attention(
             &mut res.inner,

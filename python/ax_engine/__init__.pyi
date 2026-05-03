@@ -17,7 +17,7 @@ class HostInfo:
     os: str
     arch: str
     detected_soc: str | None
-    supported_native_runtime: bool
+    supported_mlx_runtime: bool
     unsupported_host_override_active: bool
 
 
@@ -36,13 +36,13 @@ class MetalToolchainInfo:
 
 
 @dataclass(frozen=True)
-class NativeRuntimeInfo:
+class MlxRuntimeInfo:
     runner: str
     artifacts_source: str | None
 
 
 @dataclass(frozen=True)
-class NativeModelInfo:
+class MlxModelInfo:
     artifacts_source: str | None
     model_family: str
     tensor_format: str
@@ -64,8 +64,8 @@ class RuntimeInfo:
     fallback_reason: str | None = None
     host: HostInfo = ...
     metal_toolchain: MetalToolchainInfo = ...
-    native_runtime: NativeRuntimeInfo | None = None
-    native_model: NativeModelInfo | None = None
+    mlx_runtime: MlxRuntimeInfo | None = None
+    mlx_model: MlxModelInfo | None = None
 
 
 @dataclass(frozen=True)
@@ -227,18 +227,12 @@ class Session:
         cache_group_id: int = 0,
         block_size_tokens: int = 16,
         total_blocks: int = 1024,
-        native_mode: bool = False,
         mlx: bool = False,
-        support_tier: str = "compatibility",
-        compat_backend: str = "llama_cpp",
-        compat_cli_path: str = "llama-cli",
-        compat_model_path: str | None = None,
-        compat_server_url: str | None = None,
-        llama_fallback_cli_path: str = "llama-cli",
-        llama_fallback_model_path: str | None = None,
-        llama_fallback_server_url: str | None = None,
-        native_runtime_artifacts_dir: str | None = None,
-        native_model_artifacts_dir: str | None = None,
+        support_tier: str = "llama_cpp",
+        llama_cli_path: str = "llama-cli",
+        llama_model_path: str | None = None,
+        llama_server_url: str | None = None,
+        mlx_model_artifacts_dir: str | None = None,
     ) -> None: ...
     @property
     def model_id(self) -> str: ...

@@ -1,31 +1,34 @@
+#![allow(
+    clippy::collapsible_if,
+    clippy::needless_update,
+    clippy::too_many_arguments,
+    clippy::unnecessary_lazy_evaluations
+)]
+
 pub use ax_engine_core::{CacheGroupId, KvManagerConfig};
 
 pub mod backend;
-pub mod compat;
 pub mod generate;
 mod host;
+pub mod llama_cpp;
 pub mod request;
 pub mod session;
 
 pub use backend::{
-    current_host_report, current_metal_toolchain_report, initial_native_mode_model_promotion,
-    is_initial_native_mode_model_id, native_mode_model_requirement_message,
-    preview_support_tier_from_label, resolve_preview_backend, BackendContractError, BackendPolicy,
-    CapabilityLevel, CapabilityReport, CompatibilityBackendKind, HostReport, MetalToolchainReport,
-    NativeModeModelPromotion, NativeModelArtifactsSource, NativeModelReport, NativeRunnerKind,
+    BackendContractError, BackendPolicy, CapabilityLevel, CapabilityReport, HostReport,
+    MetalToolchainReport, NativeModelArtifactsSource, NativeModelReport, NativeRunnerKind,
     NativeRuntimeArtifactsSource, NativeRuntimeReport, PreviewBackendMode, PreviewBackendRequest,
     PreviewBackendResolution, PreviewBackendResolutionError, ResolutionPolicy, ResolvedBackend,
-    RuntimeReport, SelectedBackend, SupportTier, ToolStatusReport, INITIAL_NATIVE_MODE_MODEL_ID,
-    NATIVE_MODE_MODEL_PROMOTIONS,
-};
-pub use compat::{
-    CompatibilityBackendConfig, CompatibilityBackendError, LlamaCppCliConfig, LlamaCppConfig,
-    LlamaCppServerCompletionConfig, MlxCliConfig, MlxConfig, OpenAiCompatibleServerConfig,
+    RuntimeReport, SelectedBackend, SupportTier, ToolStatusReport, current_host_report,
+    current_metal_toolchain_report, preview_support_tier_from_label, resolve_preview_backend,
 };
 pub use generate::{
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,
     GenerateStatus, GenerateStreamEvent, GenerateStreamRequestEvent, GenerateStreamResponseEvent,
     GenerateStreamStepEvent,
+};
+pub use llama_cpp::{
+    LlamaCppBackendError, LlamaCppCliConfig, LlamaCppConfig, LlamaCppServerCompletionConfig,
 };
 pub use request::{
     EngineStepReport, MetalDispatchKernelStepReport, MetalDispatchNumericStepReport,
@@ -33,8 +36,8 @@ pub use request::{
     SessionRequestState,
 };
 pub use session::{
-    classify_native_gguf_export_failure_message, is_gguf_path, EngineSession, EngineSessionConfig,
-    EngineSessionError, GenerateStream, GenerateStreamState, NativeGgufExportFailureKind,
-    PreviewSessionConfigError, PreviewSessionConfigRequest, ResolvedSessionConfigRequest,
-    StatelessGenerateContext,
+    EngineSession, EngineSessionConfig, EngineSessionError, GenerateStream, GenerateStreamState,
+    MlxGgufExportFailureKind, PreviewSessionConfigError, PreviewSessionConfigRequest,
+    ResolvedSessionConfigRequest, StatelessGenerateContext,
+    classify_mlx_gguf_export_failure_message, is_gguf_path,
 };

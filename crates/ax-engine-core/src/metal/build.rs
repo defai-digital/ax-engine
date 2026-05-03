@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,7 +12,7 @@ use super::{
     PHASE1_DEFERRED_METAL_KERNELS, PHASE1_METAL_BLOCK_SIZE_ALIGNMENT_TOKENS,
     PHASE1_METAL_BUILD_GATE, PHASE1_METAL_BUILD_REPORT_SCHEMA_VERSION,
     PHASE1_METAL_KERNEL_MANIFEST_SCHEMA_VERSION, PHASE1_METAL_LANGUAGE_STANDARD,
-    PHASE1_METAL_LIBRARY_NAME, PHASE1_METAL_NATIVE_TARGET, PHASE1_OPTIONAL_METAL_KERNELS,
+    PHASE1_METAL_LIBRARY_NAME, PHASE1_MLX_METAL_TARGET, PHASE1_OPTIONAL_METAL_KERNELS,
     PHASE1_REQUIRED_METAL_KERNELS, PHASE1_SUPPORTED_BLOCK_SIZE_TOKENS,
     REQUIRED_TOOLCHAIN_REQUIREMENTS,
 };
@@ -19,7 +20,7 @@ use super::{
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MetalKernelManifest {
     pub schema_version: String,
-    pub native_target: String,
+    pub mlx_target: String,
     pub metal_language_standard: String,
     pub library_name: String,
     pub default_block_size_tokens: u32,
@@ -47,7 +48,7 @@ pub struct MetalBuildHostReport {
     #[serde(default)]
     pub detected_soc: Option<String>,
     #[serde(default)]
-    pub supported_native_runtime: bool,
+    pub supported_mlx_runtime: bool,
     #[serde(default)]
     pub unsupported_host_override_active: bool,
 }
@@ -76,7 +77,7 @@ pub struct MetalBuildToolchainReport {
 pub struct MetalBuildDoctorReport {
     pub status: String,
     pub bringup_allowed: bool,
-    pub native_runtime_ready: bool,
+    pub mlx_runtime_ready: bool,
     pub metal_toolchain_fully_available: bool,
     pub host: MetalBuildHostReport,
     pub metal_toolchain: MetalBuildToolchainReport,
@@ -97,7 +98,7 @@ pub struct MetalBuildReport {
     pub schema_version: String,
     pub manifest_path: PathBuf,
     pub source_file: PathBuf,
-    pub native_target: String,
+    pub mlx_target: String,
     pub metal_language_standard: String,
     pub library_name: String,
     pub default_block_size_tokens: u32,
@@ -117,6 +118,7 @@ pub struct MetalKernelBuildRequest {
     pub manifest_path: PathBuf,
     pub output_dir: PathBuf,
     pub doctor: MetalBuildDoctorReport,
+    pub toolchain_path_override: Option<OsString>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -246,7 +248,7 @@ pub fn build_phase1_kernel_artifacts(
         schema_version: PHASE1_METAL_BUILD_REPORT_SCHEMA_VERSION.to_string(),
         manifest_path: request.manifest_path.clone(),
         source_file: resolved_source_file.clone(),
-        native_target: manifest.native_target.clone(),
+        mlx_target: manifest.mlx_target.clone(),
         metal_language_standard: manifest.metal_language_standard.clone(),
         library_name: manifest.library_name.clone(),
         default_block_size_tokens: manifest.default_block_size_tokens,
@@ -287,9 +289,25 @@ pub fn build_phase1_kernel_artifacts(
             compile_metallib_cmd.clone(),
         ];
 
-        let compile_result = run_toolchain_command(&compile_air_cmd, &workspace_root)
-            .and_then(|_| run_toolchain_command(&compile_metalar_cmd, &workspace_root))
-            .and_then(|_| run_toolchain_command(&compile_metallib_cmd, &workspace_root));
+        let compile_result = run_toolchain_command(
+            &compile_air_cmd,
+            &workspace_root,
+            request.toolchain_path_override.as_ref(),
+        )
+        .and_then(|_| {
+            run_toolchain_command(
+                &compile_metalar_cmd,
+                &workspace_root,
+                request.toolchain_path_override.as_ref(),
+            )
+        })
+        .and_then(|_| {
+            run_toolchain_command(
+                &compile_metallib_cmd,
+                &workspace_root,
+                request.toolchain_path_override.as_ref(),
+            )
+        });
 
         match compile_result {
             Ok(()) => {
@@ -620,11 +638,7 @@ fn metal_build_status_label(status: MetalBuildStatus) -> &'static str {
 }
 
 fn bool_label(value: bool) -> &'static str {
-    if value {
-        "true"
-    } else {
-        "false"
-    }
+    if value { "true" } else { "false" }
 }
 
 fn cleanup_partial_build_outputs<'a>(paths: impl IntoIterator<Item = &'a Path>) {
@@ -633,7 +647,11 @@ fn cleanup_partial_build_outputs<'a>(paths: impl IntoIterator<Item = &'a Path>) 
     }
 }
 
-fn run_toolchain_command(command: &[String], cwd: &Path) -> Result<(), String> {
+fn run_toolchain_command(
+    command: &[String],
+    cwd: &Path,
+    path_override: Option<&OsString>,
+) -> Result<(), String> {
     let Some((program, args)) = command.split_first() else {
         return Err("toolchain command must not be empty".to_string());
     };
@@ -642,6 +660,9 @@ fn run_toolchain_command(command: &[String], cwd: &Path) -> Result<(), String> {
     for developer_dir in xcrun_developer_dir_candidates(program) {
         let mut process = Command::new(program);
         process.args(args).current_dir(cwd);
+        if let Some(path) = path_override {
+            process.env("PATH", path);
+        }
         if let Some(developer_dir) = developer_dir.as_deref() {
             process.env("DEVELOPER_DIR", developer_dir);
         }
@@ -778,11 +799,11 @@ fn validate_phase1_manifest(manifest: &MetalKernelManifest) -> Result<(), MetalR
             ),
         });
     }
-    if manifest.native_target != PHASE1_METAL_NATIVE_TARGET {
+    if manifest.mlx_target != PHASE1_MLX_METAL_TARGET {
         return Err(MetalRuntimeError::InvalidManifest {
             message: format!(
-                "native_target must be {PHASE1_METAL_NATIVE_TARGET}, got {}",
-                manifest.native_target
+                "mlx_target must be {PHASE1_MLX_METAL_TARGET}, got {}",
+                manifest.mlx_target
             ),
         });
     }
@@ -928,11 +949,11 @@ fn validate_assets(
             ),
         });
     }
-    if build_report.native_target != manifest.native_target {
+    if build_report.mlx_target != manifest.mlx_target {
         return Err(MetalRuntimeError::InvalidBuildReport {
             message: format!(
-                "native_target mismatch: report={}, manifest={}",
-                build_report.native_target, manifest.native_target
+                "mlx_target mismatch: report={}, manifest={}",
+                build_report.mlx_target, manifest.mlx_target
             ),
         });
     }
