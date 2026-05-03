@@ -1,26 +1,27 @@
+#![allow(clippy::collapsible_if)]
+
 use std::convert::Infallible;
 use std::env;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use ax_engine_sdk::{
-    classify_native_gguf_export_failure_message, CompatibilityBackendError, EngineSession,
-    EngineSessionConfig, EngineSessionError, EngineStepReport, GenerateFinishReason,
+    EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport, GenerateFinishReason,
     GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent, GenerateStreamState,
-    NativeGgufExportFailureKind, RuntimeReport, SessionRequestReport,
-    StatelessGenerateContext,
+    LlamaCppBackendError, MlxGgufExportFailureKind, RuntimeReport, SessionRequestReport,
+    StatelessGenerateContext, classify_mlx_gguf_export_failure_message,
 };
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -421,7 +422,7 @@ async fn openai_completions(
     State(state): State<AppState>,
     Json(request): Json<OpenAiCompletionHttpRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    validate_openai_compatibility_backend(&state)?;
+    validate_openai_llama_backend(&state)?;
     validate_model(&state, request.model.as_deref())?;
     let request = build_openai_completion_request(&state, request)?;
 
@@ -449,7 +450,7 @@ async fn openai_chat_completions(
     State(state): State<AppState>,
     Json(request): Json<OpenAiChatCompletionHttpRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    validate_openai_compatibility_backend(&state)?;
+    validate_openai_llama_backend(&state)?;
     validate_model(&state, request.model.as_deref())?;
     let request = build_openai_chat_request(&state, request)?;
 
@@ -486,7 +487,7 @@ async fn generate_stream(
     let request = build_generate_request(&state, request);
     if state
         .stateless_generate_context
-        .supports_compatibility_streaming()
+        .supports_llama_cpp_streaming()
     {
         let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
         let drive_context = Arc::clone(&stateless_generate_context);
@@ -537,7 +538,7 @@ async fn stream_openai_request(
     let request_id = allocate_request_id(&state);
     if state
         .stateless_generate_context
-        .supports_compatibility_streaming()
+        .supports_llama_cpp_streaming()
     {
         let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
         let drive_context = Arc::clone(&stateless_generate_context);
@@ -1154,14 +1155,14 @@ fn openai_finish_reason(finish_reason: Option<GenerateFinishReason>) -> Option<&
     }
 }
 
-fn validate_openai_compatibility_backend(
+fn validate_openai_llama_backend(
     state: &AppState,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    if state.runtime_report.selected_backend.is_native() {
+    if state.runtime_report.selected_backend.is_mlx() {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
-            "OpenAI-compatible endpoints require a compatibility backend; native backends use tokenized input".to_string(),
+            "OpenAI-compatible endpoints require a llama.cpp backend; native backends use tokenized input".to_string(),
         ));
     }
     Ok(())
@@ -1206,72 +1207,43 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
     match error {
         EngineSessionError::EmptyInputTokens
         | EngineSessionError::InvalidMaxOutputTokens
-        | EngineSessionError::NativeBackendRequiresTokenizedInput
+        | EngineSessionError::MlxBackendRequiresTokenizedInput
         | EngineSessionError::InvalidMaxBatchTokens
         | EngineSessionError::InvalidRequestId
         | EngineSessionError::UnsupportedSupportTier
-        | EngineSessionError::CompatibilityBackendDoesNotSupportLifecycle { .. }
-        | EngineSessionError::StatelessStreamRequiresCompatibilityBackend { .. }
-        | EngineSessionError::Compatibility(CompatibilityBackendError::StreamingNotSupported {
-            ..
-        })
+        | EngineSessionError::LlamaCppDoesNotSupportLifecycle { .. }
+        | EngineSessionError::StatelessStreamRequiresLlamaCpp { .. }
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
         | EngineSessionError::RequestDidNotTerminate { .. }
         | EngineSessionError::MissingRequestSnapshot { .. } => error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             error.to_string(),
         ),
-        EngineSessionError::Compatibility(CompatibilityBackendError::MissingInputText {
-            ..
-        })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::MissingPromptInput {
-            ..
-        })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::UnsupportedTokenPrompt {
-            ..
-        })
-        | EngineSessionError::Compatibility(
-            CompatibilityBackendError::UnsupportedSamplingOption { .. },
-        )
-        | EngineSessionError::Compatibility(CompatibilityBackendError::AmbiguousPromptInput {
-            ..
-        })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::BackendConfigMismatch {
-            ..
-        }) => error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            error.to_string(),
-        ),
+        EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingInputText { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingPromptInput { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::UnsupportedTokenPrompt { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::AmbiguousPromptInput { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::BackendConfigMismatch { .. }) => {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                error.to_string(),
+            )
+        }
         EngineSessionError::BackendContract(_)
-        | EngineSessionError::MissingCompatibilityBackendConfig { .. }
-        | EngineSessionError::CompatibilityBackendConfigMismatch { .. }
-        | EngineSessionError::CompatibilityFallbackMustUseLlamaCpp { .. }
-        | EngineSessionError::CompatibilityFallbackRequiresNonStrictPolicy
-        | EngineSessionError::CompatibilityStreamEndedBeforeStop { .. }
-        | EngineSessionError::CompatibilityFallbackFailed { .. }
-        | EngineSessionError::NativeStartupFallbackFailed { .. }
-        | EngineSessionError::NativeRuntimeArtifactsRequired
-        | EngineSessionError::Compatibility(CompatibilityBackendError::CommandLaunch { .. })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::CommandFailed { .. })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::CommandTimedOut {
-            ..
-        })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::NonUtf8Output { .. })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::SerializeRequestJson {
-            ..
-        })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::HttpRequest { .. })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::HttpStatus { .. })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::HttpResponseRead {
-            ..
-        })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::InvalidResponseJson {
-            ..
-        })
-        | EngineSessionError::Compatibility(CompatibilityBackendError::EmptyChoicesInResponse {
-            ..
-        })
+        | EngineSessionError::MissingLlamaCppConfig { .. }
+        | EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
+        | EngineSessionError::MlxRuntimeArtifactsRequired
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandLaunch { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandFailed { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandTimedOut { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::NonUtf8Output { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::SerializeRequestJson { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpRequest { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpStatus { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpResponseRead { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::InvalidResponseJson { .. })
         | EngineSessionError::UnsupportedHostHardware { .. }
         | EngineSessionError::NativeModelAutoConvert { .. } => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1279,13 +1251,13 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
             error.to_string(),
         ),
         EngineSessionError::NativeModelGgufExportFailed { message, .. } => {
-            map_native_gguf_export_failed_response(message)
+            map_mlx_gguf_export_failed_response(message)
         }
         EngineSessionError::RequestReportInvariantViolation { .. }
         | EngineSessionError::StreamEndedWithoutResponse { .. }
         | EngineSessionError::Core(_)
         | EngineSessionError::MetalRuntime(_)
-        | EngineSessionError::AxNativeNotSupported
+        | EngineSessionError::MlxRuntimeUnavailable
         | EngineSessionError::NativeModelGgufExportLaunch { .. } => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "engine_error",
@@ -1294,13 +1266,13 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
     }
 }
 
-fn map_native_gguf_export_failed_response(message: String) -> (StatusCode, Json<ErrorResponse>) {
-    match classify_native_gguf_export_failure_message(&message) {
-        NativeGgufExportFailureKind::UnsupportedModel => {
+fn map_mlx_gguf_export_failed_response(message: String) -> (StatusCode, Json<ErrorResponse>) {
+    match classify_mlx_gguf_export_failure_message(&message) {
+        MlxGgufExportFailureKind::UnsupportedModel => {
             error_response(StatusCode::BAD_REQUEST, "invalid_request", message)
         }
-        NativeGgufExportFailureKind::MissingPythonDependency
-        | NativeGgufExportFailureKind::ExportFailed => {
+        MlxGgufExportFailureKind::MissingPythonDependency
+        | MlxGgufExportFailureKind::ExportFailed => {
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "engine_error", message)
         }
     }
@@ -1327,6 +1299,7 @@ fn request_not_found_response(request_id: u64) -> (StatusCode, Json<ErrorRespons
     )
 }
 
+#[allow(dead_code)]
 fn missing_request_after_submit(request_id: u64) -> (StatusCode, Json<ErrorResponse>) {
     error_response(
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1339,7 +1312,7 @@ fn missing_request_after_submit(request_id: u64) -> (StatusCode, Json<ErrorRespo
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::{header, Request};
+    use axum::http::{Request, header};
     use serde_json::Value;
     use std::fs;
     use std::io::{Read, Write};
@@ -1385,7 +1358,7 @@ mod tests {
     }
 
     #[test]
-    fn map_session_error_treats_unsupported_native_gguf_export_as_bad_request() {
+    fn map_session_error_treats_unsupported_mlx_gguf_export_as_bad_request() {
         let (status, Json(response)) =
             map_session_error(EngineSessionError::NativeModelGgufExportFailed {
                 gguf_path: "/tmp/model.gguf".into(),
@@ -1394,10 +1367,12 @@ mod tests {
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(response.error.code, "invalid_request");
-        assert!(response
-            .error
-            .message
-            .contains("moe_expert_tensors_present"));
+        assert!(
+            response
+                .error
+                .message
+                .contains("moe_expert_tensors_present")
+        );
     }
 
     #[test]
@@ -1544,37 +1519,20 @@ mod tests {
             block_size_tokens: 16,
             total_blocks: 1024,
             mlx: false,
-            mlx_native: false,
-            support_tier: args::PreviewSupportTier::Compatibility,
-            compat_backend: args::PreviewCompatibilityBackend::LlamaCpp,
-            compat_cli_path: "llama-cli".to_string(),
-            compat_model_path: None,
-            compat_server_url: None,
-            llama_fallback_cli_path: "llama-cli".to_string(),
-            llama_fallback_model_path: None,
-            llama_fallback_server_url: None,
-            native_runtime_artifacts_dir: None,
-            native_model_artifacts_dir: None,
+            support_tier: args::PreviewSupportTier::LlamaCpp,
+            llama_cli_path: "llama-cli".to_string(),
+            llama_model_path: None,
+            llama_server_url: None,
+            mlx_model_artifacts_dir: None,
         }
     }
 
-    fn test_state() -> AppState {
-        let args = ServerArgs {
-            support_tier: args::PreviewSupportTier::NativePreview,
-            ..base_server_args()
-        };
-        let mut session_config = args.session_config().expect("session config should build");
-        session_config.allow_deterministic_native_fallback = true;
-        let session = EngineSession::new(session_config.clone()).expect("session should build");
-        build_app_state(args.model_id.clone(), session).expect("app state should build")
-    }
-
-    fn fake_compat_script() -> std::path::PathBuf {
+    fn fake_llama_cpp_script() -> std::path::PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time should be valid")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("ax-engine-server-compat-{unique}.py"));
+        let path = std::env::temp_dir().join(format!("ax-engine-server-llama-cpp-{unique}.py"));
         let script = r#"#!/usr/bin/env python3
 from __future__ import annotations
 
@@ -1599,13 +1557,13 @@ sys.stdout.write(f"server::{prompt}")
         path
     }
 
-    fn compatibility_state() -> AppState {
-        let script_path = fake_compat_script();
-        let model_path = std::env::temp_dir().join("ax-engine-server-compat-model.gguf");
+    fn llama_cpp_state() -> AppState {
+        let script_path = fake_llama_cpp_script();
+        let model_path = std::env::temp_dir().join("ax-engine-server-llama-cpp-model.gguf");
         fs::write(&model_path, "fake gguf").expect("fake model should be written");
         let args = ServerArgs {
-            compat_cli_path: script_path.display().to_string(),
-            compat_model_path: Some(model_path),
+            llama_cli_path: script_path.display().to_string(),
+            llama_model_path: Some(model_path),
             ..base_server_args()
         };
 
@@ -1614,20 +1572,9 @@ sys.stdout.write(f"server::{prompt}")
         build_app_state(args.model_id.clone(), session).expect("app state should build")
     }
 
-    fn compatibility_server_state(server_url: String) -> AppState {
-        compatibility_server_state_for_backend(
-            args::PreviewCompatibilityBackend::LlamaCpp,
-            server_url,
-        )
-    }
-
-    fn compatibility_server_state_for_backend(
-        compat_backend: args::PreviewCompatibilityBackend,
-        server_url: String,
-    ) -> AppState {
+    fn llama_cpp_server_state(server_url: String) -> AppState {
         let args = ServerArgs {
-            compat_backend,
-            compat_server_url: Some(server_url),
+            llama_server_url: Some(server_url),
             ..base_server_args()
         };
 
@@ -1636,69 +1583,7 @@ sys.stdout.write(f"server::{prompt}")
         build_app_state(args.model_id.clone(), session).expect("app state should build")
     }
 
-    fn fake_python_mlx_cli_script() -> std::path::PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should be valid")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("python3-ax-engine-server-mlx-{unique}.py"));
-        let script = r#"#!/usr/bin/env python3
-from __future__ import annotations
-
-import sys
-
-args = sys.argv[1:]
-assert args[:2] == ["-m", "mlx_lm.generate"], args
-model = args[args.index("--model") + 1]
-prompt = args[args.index("--prompt") + 1]
-assert args[args.index("--max-tokens") + 1] == "2"
-assert args[args.index("--temp") + 1] == "0"
-assert args[args.index("--top-p") + 1] == "1"
-assert args[args.index("--top-k") + 1] == "0"
-assert args[args.index("--seed") + 1] == "0"
-assert args[args.index("--verbose") + 1] == "false"
-assert "--ignore-chat-template" in args
-sys.stdout.write(f"mlx::{model}::{prompt}")
-"#;
-
-        fs::write(&path, script).expect("fake mlx script should be written");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mut permissions = fs::metadata(&path)
-                .expect("script metadata should exist")
-                .permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&path, permissions).expect("script should be executable");
-        }
-        path
-    }
-
-    fn compatibility_mlx_cli_state() -> (AppState, std::path::PathBuf) {
-        let script_path = fake_python_mlx_cli_script();
-        let model_path = std::env::temp_dir().join("ax-engine-server-compat-model-mlx");
-        fs::write(&model_path, "fake mlx model").expect("fake mlx model should be written");
-        let args = ServerArgs {
-            mlx: true,
-            compat_backend: args::PreviewCompatibilityBackend::Mlx,
-            compat_cli_path: script_path.display().to_string(),
-            compat_model_path: Some(model_path.clone()),
-            llama_fallback_model_path: Some(
-                std::env::temp_dir().join("ax-engine-server-compat-fallback.gguf"),
-            ),
-            ..base_server_args()
-        };
-
-        let session_config = args.session_config().expect("session config should build");
-        let session = EngineSession::new(session_config.clone()).expect("session should build");
-        (
-            build_app_state(args.model_id.clone(), session).expect("app state should build"),
-            model_path,
-        )
-    }
-
-    fn spawn_compat_completion_server(
+    fn spawn_llama_cpp_completion_server(
         response_body: String,
         assert_request: impl FnOnce(Value) + Send + 'static,
     ) -> (String, thread::JoinHandle<()>) {
@@ -1730,7 +1615,7 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
         (format!("http://{address}"), handle)
     }
 
-    fn spawn_compat_completion_stream_server(
+    fn spawn_llama_cpp_completion_stream_server(
         expected_requests: usize,
         chunks: Vec<Value>,
         assert_request: impl Fn(Value) + Send + Sync + 'static,
@@ -1746,99 +1631,6 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                     .position(|window| window == b"\r\n\r\n")
                     .map(|index| index + 4)
                     .expect("request should include header terminator");
-                let body =
-                    String::from_utf8(request[header_end..].to_vec()).expect("body should be utf8");
-                let payload: Value =
-                    serde_json::from_str(&body).expect("request body should be json");
-                assert_request(payload);
-
-                let mut body = String::new();
-                for chunk in &chunks {
-                    body.push_str("data: ");
-                    body.push_str(
-                        &serde_json::to_string(chunk).expect("chunk payload should serialize"),
-                    );
-                    body.push_str("\n\n");
-                }
-                body.push_str("data: [DONE]\n\n");
-
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                stream
-                    .write_all(response.as_bytes())
-                    .expect("response should write");
-            }
-        });
-
-        (format!("http://{address}"), handle)
-    }
-
-    fn spawn_single_json_completion_server(
-        endpoint_path: &'static str,
-        response_body: String,
-        assert_request: impl FnOnce(Value) + Send + 'static,
-    ) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let address = listener.local_addr().expect("listener should have address");
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("request should arrive");
-            let request = read_http_request(&mut stream);
-            let header_end = request
-                .windows(4)
-                .position(|window| window == b"\r\n\r\n")
-                .map(|index| index + 4)
-                .expect("request should include header terminator");
-            let headers =
-                String::from_utf8(request[..header_end].to_vec()).expect("headers should be utf8");
-            let request_line = headers.lines().next().expect("request line should exist");
-            assert!(
-                request_line.contains(endpoint_path),
-                "request path should target {endpoint_path}, got {request_line}"
-            );
-            let body =
-                String::from_utf8(request[header_end..].to_vec()).expect("body should be utf8");
-            let payload: Value = serde_json::from_str(&body).expect("request body should be json");
-            assert_request(payload);
-
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                response_body.len(),
-                response_body
-            );
-            stream
-                .write_all(response.as_bytes())
-                .expect("response should write");
-        });
-
-        (format!("http://{address}"), handle)
-    }
-
-    fn spawn_json_completion_stream_server(
-        expected_requests: usize,
-        chunks: Vec<Value>,
-        assert_request: impl Fn(Value) + Send + Sync + 'static,
-    ) -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let address = listener.local_addr().expect("listener should have address");
-        let handle = thread::spawn(move || {
-            for _ in 0..expected_requests {
-                let (mut stream, _) = listener.accept().expect("request should arrive");
-                let request = read_http_request(&mut stream);
-                let header_end = request
-                    .windows(4)
-                    .position(|window| window == b"\r\n\r\n")
-                    .map(|index| index + 4)
-                    .expect("request should include header terminator");
-                let headers = String::from_utf8(request[..header_end].to_vec())
-                    .expect("headers should be utf8");
-                let request_line = headers.lines().next().expect("request line should exist");
-                assert!(
-                    request_line.contains("/v1/completions"),
-                    "request path should target /v1/completions, got {request_line}"
-                );
                 let body =
                     String::from_utf8(request[header_end..].to_vec()).expect("body should be utf8");
                 let payload: Value =
@@ -1958,108 +1750,8 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
     }
 
     #[tokio::test]
-    async fn health_endpoint_reports_preview_runtime() {
-        let app = build_router(test_state());
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/health")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .expect("health request should succeed");
-
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn runtime_endpoint_surfaces_backend_metadata() {
-        let state = test_state();
-        let expected_runtime =
-            serde_json::to_value(state.runtime_report.clone()).expect("runtime should serialize");
-        let app = build_router(state);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/runtime")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .expect("runtime request should succeed");
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body should read");
-        let json: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("runtime response should be json");
-
-        assert_eq!(
-            json.get("model_id").and_then(|v| v.as_str()),
-            Some("qwen3_dense")
-        );
-        assert_eq!(json.get("runtime"), Some(&expected_runtime));
-    }
-
-    #[tokio::test]
-    async fn generate_endpoint_rejects_oversized_request_body() {
-        let app = build_router(test_state());
-        let oversized_body = serde_json::to_vec(&json!({
-            "input_text": "x".repeat(MAX_REQUEST_BODY_BYTES),
-            "max_output_tokens": 1
-        }))
-        .expect("request should serialize");
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/generate")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(oversized_body))
-                    .unwrap(),
-            )
-            .await
-            .expect("oversized request should receive a response");
-
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    }
-
-    #[tokio::test]
-    async fn generate_endpoint_runs_request_through_sdk() {
-        let state = test_state();
-        let app = build_router(state.clone());
-        let request_body = sample_http_request(&[1, 2, 3], 2);
-        let (status, json) = json_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/v1/generate")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&request_body).unwrap()))
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::OK);
-
-        let mut sdk_session = sdk_session_for_state(&state);
-        let request_id = 1;
-        sdk_session
-            .submit_generate_with_request_id(request_id, sample_sdk_request(&[1, 2, 3], 2))
-            .expect("sdk submit should succeed");
-        let expected = serde_json::to_value(
-            sdk_session
-                .run_to_completion(request_id)
-                .expect("sdk generate should complete"),
-        )
-        .expect("sdk response should serialize");
-
-        assert_eq!(json, expected);
-    }
-
-    #[tokio::test]
-    async fn compatibility_generate_endpoint_runs_text_request_through_sdk() {
-        let (compat_server_url, compat_server_handle) = spawn_compat_completion_server(
+    async fn llama_cpp_generate_endpoint_runs_text_request_through_sdk() {
+        let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
             serde_json::json!({
                 "content": "server::hello from server",
                 "tokens": [4, 5],
@@ -2076,7 +1768,7 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 assert_eq!(payload.get("return_tokens"), Some(&Value::Bool(true)));
             },
         );
-        let state = compatibility_server_state(compat_server_url);
+        let state = llama_cpp_server_state(llama_server_url);
         let app = build_router(state.clone());
         let request_body = sample_text_http_request("hello from server", 2);
         let (status, json) = json_response(
@@ -2089,9 +1781,9 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 .unwrap(),
         )
         .await;
-        compat_server_handle
+        llama_cpp_server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
@@ -2111,8 +1803,8 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
     }
 
     #[tokio::test]
-    async fn openai_completions_endpoint_translates_compatibility_response() {
-        let (compat_server_url, compat_server_handle) = spawn_compat_completion_server(
+    async fn openai_completions_endpoint_translates_llama_cpp_response() {
+        let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
             serde_json::json!({
                 "content": "server::hello openai",
                 "tokens": [4, 5],
@@ -2128,7 +1820,7 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(false)));
             },
         );
-        let app = build_router(compatibility_server_state(compat_server_url));
+        let app = build_router(llama_cpp_server_state(llama_server_url));
         let (status, json) = json_response(
             &app,
             Request::builder()
@@ -2142,9 +1834,9 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 .unwrap(),
         )
         .await;
-        compat_server_handle
+        llama_cpp_server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
@@ -2171,7 +1863,7 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
 
     #[tokio::test]
     async fn openai_completions_endpoint_requires_max_tokens() {
-        let app = build_router(compatibility_server_state("http://127.0.0.1:1".to_string()));
+        let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
         let (status, json) = json_response(
             &app,
             Request::builder()
@@ -2197,87 +1889,18 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 .and_then(Value::as_str),
             Some("invalid_request")
         );
-        assert!(json
-            .get("error")
-            .and_then(|error| error.get("message"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .contains("require max_tokens"));
-    }
-
-    #[tokio::test]
-    async fn openai_chat_completions_endpoint_translates_compatibility_response() {
-        let (compat_server_url, compat_server_handle) = spawn_single_json_completion_server(
-            "/v1/completions",
-            serde_json::json!({
-                "choices": [{
-                    "text": "chat::hello openai chat",
-                    "finish_reason": "length"
-                }]
-            })
-            .to_string(),
-            |payload| {
-                assert_eq!(
-                    payload.get("prompt"),
-                    Some(&Value::String(
-                        "user: hello openai chat\nassistant:".to_string()
-                    ))
-                );
-                assert_eq!(payload.get("stream"), Some(&Value::Bool(false)));
-            },
-        );
-        let app = build_router(compatibility_server_state_for_backend(
-            args::PreviewCompatibilityBackend::Vllm,
-            compat_server_url,
-        ));
-        let (status, json) = json_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/v1/chat/completions")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_openai_chat_request("hello openai chat", 2, false))
-                        .unwrap(),
-                ))
-                .unwrap(),
-        )
-        .await;
-        compat_server_handle
-            .join()
-            .expect("compatibility server thread should finish");
-
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(
-            json.get("object").and_then(Value::as_str),
-            Some("chat.completion")
-        );
-        assert_eq!(
-            json.get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("message"))
-                .and_then(|message| message.get("role"))
-                .and_then(Value::as_str),
-            Some("assistant")
-        );
-        assert_eq!(
-            json.get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("message"))
-                .and_then(|message| message.get("content"))
-                .and_then(Value::as_str),
-            Some("chat::hello openai chat")
+        assert!(
+            json.get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("require max_tokens")
         );
     }
 
     #[tokio::test]
     async fn openai_chat_completions_endpoint_requires_max_tokens() {
-        let app = build_router(compatibility_server_state_for_backend(
-            args::PreviewCompatibilityBackend::Vllm,
-            "http://127.0.0.1:1".to_string(),
-        ));
+        let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
         let (status, json) = json_response(
             &app,
             Request::builder()
@@ -2308,143 +1931,18 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 .and_then(Value::as_str),
             Some("invalid_request")
         );
-        assert!(json
-            .get("error")
-            .and_then(|error| error.get("message"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .contains("require max_tokens"));
-    }
-
-    #[tokio::test]
-    async fn openai_completions_endpoint_reports_usage_from_backend_response() {
-        // Verifies that when the upstream OpenAI-compatible backend returns a usage object,
-        // the /v1/completions response carries accurate token counts rather than zeros.
-        let (compat_server_url, compat_server_handle) = spawn_single_json_completion_server(
-            "/v1/completions",
-            serde_json::json!({
-                "choices": [{"text": "hello usage", "finish_reason": "stop"}],
-                "usage": {
-                    "prompt_tokens": 7,
-                    "completion_tokens": 3,
-                    "total_tokens": 10
-                }
-            })
-            .to_string(),
-            |_| {},
-        );
-        let app = build_router(compatibility_server_state_for_backend(
-            args::PreviewCompatibilityBackend::Vllm,
-            compat_server_url,
-        ));
-        let (status, json) = json_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/v1/completions")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_openai_completion_request("prompt text", 4, false))
-                        .unwrap(),
-                ))
-                .unwrap(),
-        )
-        .await;
-        compat_server_handle
-            .join()
-            .expect("compatibility server thread should finish");
-
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(
-            json.get("usage")
-                .and_then(|u| u.get("prompt_tokens"))
-                .and_then(Value::as_u64),
-            Some(7),
-            "prompt_tokens should come from the backend usage object"
-        );
-        assert_eq!(
-            json.get("usage")
-                .and_then(|u| u.get("completion_tokens"))
-                .and_then(Value::as_u64),
-            Some(3),
-            "completion_tokens should come from the backend usage object"
-        );
-        assert_eq!(
-            json.get("usage")
-                .and_then(|u| u.get("total_tokens"))
-                .and_then(Value::as_u64),
-            Some(10),
-            "total_tokens should be the sum"
-        );
-    }
-
-    #[tokio::test]
-    async fn compatibility_mlx_cli_generate_endpoint_runs_text_request_through_sdk() {
-        let (state, model_path) = compatibility_mlx_cli_state();
-        let app = build_router(state);
-        let request_body = sample_text_http_request("hello mlx", 2);
-        let (status, json) = json_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/v1/generate")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&request_body).unwrap()))
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(
-            json.get("prompt_text").and_then(|value| value.as_str()),
-            Some("hello mlx")
-        );
-        assert_eq!(
-            json.get("output_text").and_then(|value| value.as_str()),
-            Some(format!("mlx::{}::hello mlx", model_path.display()).as_str())
-        );
-        assert_eq!(
-            json.get("route")
-                .and_then(|route| route.get("execution_plan"))
-                .and_then(|value| value.as_str()),
-            Some("compatibility.mlx.blocking_cli")
-        );
-        assert_eq!(
-            json.get("runtime")
-                .and_then(|runtime| runtime.get("selected_backend"))
-                .and_then(|value| value.as_str()),
-            Some("mlx")
-        );
-    }
-
-    #[tokio::test]
-    async fn openai_completions_endpoint_omits_usage_when_token_counts_are_unknown() {
-        let (state, _model_path) = compatibility_mlx_cli_state();
-        let app = build_router(state);
-        let (status, json) = json_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/v1/completions")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_openai_completion_request("hello mlx", 2, false))
-                        .unwrap(),
-                ))
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::OK);
         assert!(
-            json.get("usage").is_none(),
-            "usage should be omitted when AX has no authoritative token counts"
+            json.get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("require max_tokens")
         );
     }
 
     #[tokio::test]
-    async fn compatibility_stream_endpoint_runs_server_backed_stream_through_sdk() {
-        let (compat_server_url, compat_server_handle) = spawn_compat_completion_stream_server(
+    async fn llama_cpp_stream_endpoint_runs_server_backed_stream_through_sdk() {
+        let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_stream_server(
             2,
             vec![
                 serde_json::json!({
@@ -2465,7 +1963,7 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 assert_eq!(payload.get("return_tokens"), Some(&Value::Bool(true)));
             },
         );
-        let state = compatibility_server_state(compat_server_url);
+        let state = llama_cpp_server_state(llama_server_url);
         let app = build_router(state.clone());
         let (status, content_type, body) = text_response(
             &app,
@@ -2487,10 +1985,10 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
         let mut sdk_session = sdk_session_for_state(&state);
         let mut expected = sdk_session
             .stream_generate_with_request_id(1, sample_sdk_request(&[1, 2, 3], 2))
-            .expect("sdk compatibility stream should start")
+            .expect("sdk llama.cpp stream should start")
             .map(|event| event.map(sdk_stream_payload))
             .collect::<Result<Vec<_>, _>>()
-            .expect("sdk compatibility stream should complete");
+            .expect("sdk llama.cpp stream should complete");
         for (_, payload) in &mut actual {
             normalize_measurement_fields(payload);
         }
@@ -2498,15 +1996,15 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
             normalize_measurement_fields(payload);
         }
 
-        compat_server_handle
+        llama_cpp_server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
         assert_eq!(actual, expected);
     }
 
     #[tokio::test]
     async fn openai_completions_stream_endpoint_emits_openai_sse_chunks() {
-        let (compat_server_url, compat_server_handle) = spawn_compat_completion_stream_server(
+        let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_stream_server(
             1,
             vec![
                 serde_json::json!({
@@ -2529,7 +2027,7 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
             },
         );
-        let app = build_router(compatibility_server_state(compat_server_url));
+        let app = build_router(llama_cpp_server_state(llama_server_url));
         let (status, content_type, body) = text_response(
             &app,
             Request::builder()
@@ -2543,9 +2041,9 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 .unwrap(),
         )
         .await;
-        compat_server_handle
+        llama_cpp_server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
 
         assert_eq!(status, StatusCode::OK);
         assert!(content_type.starts_with("text/event-stream"));
@@ -2583,7 +2081,7 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
 
     #[tokio::test]
     async fn openai_chat_completions_stream_endpoint_emits_openai_sse_chunks() {
-        let (compat_server_url, compat_server_handle) = spawn_compat_completion_stream_server(
+        let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_stream_server(
             1,
             vec![
                 serde_json::json!({
@@ -2608,7 +2106,7 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
             },
         );
-        let app = build_router(compatibility_server_state(compat_server_url));
+        let app = build_router(llama_cpp_server_state(llama_server_url));
         let (status, content_type, body) = text_response(
             &app,
             Request::builder()
@@ -2622,9 +2120,9 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 .unwrap(),
         )
         .await;
-        compat_server_handle
+        llama_cpp_server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
 
         assert_eq!(status, StatusCode::OK);
         assert!(content_type.starts_with("text/event-stream"));
@@ -2672,34 +2170,8 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
     }
 
     #[tokio::test]
-    async fn openai_chat_completions_fail_closed_on_native_preview() {
-        let app = build_router(test_state());
-        let (status, json) = json_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/v1/chat/completions")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&sample_openai_chat_request("native should fail", 2, false))
-                        .unwrap(),
-                ))
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            json.get("error")
-                .and_then(|value| value.get("message"))
-                .and_then(Value::as_str),
-            Some("OpenAI-compatible endpoints require a compatibility backend; native backends use tokenized input")
-        );
-    }
-
-    #[tokio::test]
-    async fn compatibility_cli_stream_endpoint_fails_closed() {
-        let app = build_router(compatibility_state());
+    async fn llama_cpp_cli_stream_endpoint_fails_closed() {
+        let app = build_router(llama_cpp_state());
         let (status, json) = json_response(
             &app,
             Request::builder()
@@ -2723,216 +2195,8 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
     }
 
     #[tokio::test]
-    async fn server_allocates_unique_request_ids_across_paths() {
-        let app = build_router(test_state());
-        let (submit_status, submit_json) = json_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/v1/requests")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "model": "qwen3_dense",
-                        "input_tokens": [1, 2, 3],
-                        "max_output_tokens": 2
-                    }))
-                    .unwrap(),
-                ))
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(submit_status, StatusCode::CREATED);
-        let submit_id = submit_json
-            .get("request_id")
-            .and_then(|value| value.as_u64())
-            .expect("submit request_id should exist");
-
-        let (stream_status, content_type, stream_body) = text_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/v1/generate/stream")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "model": "qwen3_dense",
-                        "input_tokens": [4, 5, 6],
-                        "max_output_tokens": 2
-                    }))
-                    .unwrap(),
-                ))
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(stream_status, StatusCode::OK);
-        assert!(content_type.starts_with("text/event-stream"));
-        assert!(stream_body.contains("\"request_id\":2"));
-
-        let (generate_status, generate_json) = json_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/v1/generate")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "model": "qwen3_dense",
-                        "input_tokens": [7, 8, 9],
-                        "max_output_tokens": 2
-                    }))
-                    .unwrap(),
-                ))
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(generate_status, StatusCode::OK);
-        let generate_id = generate_json
-            .get("request_id")
-            .and_then(|value| value.as_u64())
-            .expect("generate request_id should exist");
-
-        assert_eq!(submit_id, 1);
-        assert_eq!(generate_id, 3);
-    }
-
-    #[tokio::test]
-    async fn generate_stream_endpoint_emits_sse_lifecycle_events() {
-        let state = test_state();
-        let app = build_router(state.clone());
-        let request_body = sample_http_request(&[1, 2, 3], 2);
-        let (status, content_type, body) = text_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/v1/generate/stream")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&request_body).unwrap()))
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert!(content_type.starts_with("text/event-stream"));
-
-        let actual = parse_sse_events(&body);
-        let mut sdk_session = sdk_session_for_state(&state);
-        let expected = sdk_session
-            .stream_generate_with_request_id(1, sample_sdk_request(&[1, 2, 3], 2))
-            .expect("sdk stream should start")
-            .map(|event| event.map(sdk_stream_payload))
-            .collect::<Result<Vec<_>, _>>()
-            .expect("sdk stream should complete");
-        let mut actual = actual;
-        let mut expected = expected;
-        for (_, payload) in &mut actual {
-            normalize_measurement_fields(payload);
-        }
-        for (_, payload) in &mut expected {
-            normalize_measurement_fields(payload);
-        }
-
-        assert_eq!(actual, expected);
-    }
-
-    #[tokio::test]
-    async fn stepwise_request_endpoints_share_sdk_lifecycle() {
-        let state = test_state();
-        let app = build_router(state.clone());
-        let request_body = sample_http_request(&[1, 2, 3], 2);
-        let (status, submit_json) = json_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/v1/requests")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&request_body).unwrap()))
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::CREATED);
-        let request_id = 1u64;
-
-        let mut sdk_session = sdk_session_for_state(&state);
-        sdk_session
-            .submit_generate_with_request_id(request_id, sample_sdk_request(&[1, 2, 3], 2))
-            .expect("sdk submit should succeed");
-        let expected_submit = serde_json::to_value(
-            sdk_session
-                .request_report(request_id)
-                .expect("sdk report should exist"),
-        )
-        .expect("sdk submit report should serialize");
-        assert_eq!(submit_json, expected_submit);
-
-        for _ in 0..8 {
-            let expected_snapshot = serde_json::to_value(
-                sdk_session
-                    .request_report(request_id)
-                    .expect("sdk request report should still exist"),
-            )
-            .expect("sdk snapshot should serialize");
-            let (snapshot_status, snapshot_json) = json_response(
-                &app,
-                Request::builder()
-                    .uri(format!("/v1/requests/{request_id}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await;
-            assert_eq!(snapshot_status, StatusCode::OK);
-            assert_eq!(snapshot_json, expected_snapshot);
-
-            if expected_snapshot
-                .get("state")
-                .and_then(|value| value.as_str())
-                == Some("finished")
-            {
-                break;
-            }
-
-            let expected_step =
-                serde_json::to_value(sdk_session.step_report().expect("sdk step should succeed"))
-                    .expect("sdk step should serialize");
-            let (step_status, step_json) = json_response(
-                &app,
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/step")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await;
-            assert_eq!(step_status, StatusCode::OK);
-            let mut step_json = step_json;
-            let mut expected_step = expected_step;
-            normalize_measurement_fields(&mut step_json);
-            normalize_measurement_fields(&mut expected_step);
-            assert_eq!(step_json, expected_step);
-        }
-
-        let expected_terminal = serde_json::to_value(
-            sdk_session
-                .request_report(request_id)
-                .expect("sdk terminal request should exist"),
-        )
-        .expect("sdk terminal snapshot should serialize");
-        let (terminal_status, terminal_json) = json_response(
-            &app,
-            Request::builder()
-                .uri(format!("/v1/requests/{request_id}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(terminal_status, StatusCode::OK);
-        assert_eq!(terminal_json, expected_terminal);
-    }
-
-    #[tokio::test]
-    async fn compatibility_stepwise_request_endpoints_share_sdk_lifecycle() {
-        let (compat_server_url, compat_server_handle) = spawn_compat_completion_stream_server(
+    async fn llama_cpp_stepwise_request_endpoints_share_sdk_lifecycle() {
+        let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_stream_server(
             2,
             vec![
                 serde_json::json!({
@@ -2953,7 +2217,7 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 assert_eq!(payload.get("return_tokens"), Some(&Value::Bool(true)));
             },
         );
-        let state = compatibility_server_state(compat_server_url);
+        let state = llama_cpp_server_state(llama_server_url);
         let app = build_router(state.clone());
         let request_body = sample_http_request(&[1, 2, 3], 2);
         let (status, submit_json) = json_response(
@@ -2973,22 +2237,22 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
         let mut sdk_session = sdk_session_for_state(&state);
         sdk_session
             .submit_generate_with_request_id(request_id, sample_sdk_request(&[1, 2, 3], 2))
-            .expect("sdk compatibility submit should succeed");
+            .expect("sdk llama.cpp submit should succeed");
         let expected_submit = serde_json::to_value(
             sdk_session
                 .request_report(request_id)
-                .expect("sdk compatibility report should exist"),
+                .expect("sdk llama.cpp report should exist"),
         )
-        .expect("sdk compatibility submit report should serialize");
+        .expect("sdk llama.cpp submit report should serialize");
         assert_eq!(submit_json, expected_submit);
 
         for _ in 0..4 {
             let expected_snapshot = serde_json::to_value(
                 sdk_session
                     .request_report(request_id)
-                    .expect("sdk compatibility request report should still exist"),
+                    .expect("sdk llama.cpp request report should still exist"),
             )
-            .expect("sdk compatibility snapshot should serialize");
+            .expect("sdk llama.cpp snapshot should serialize");
             let (snapshot_status, snapshot_json) = json_response(
                 &app,
                 Request::builder()
@@ -3011,9 +2275,9 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
             let expected_step = serde_json::to_value(
                 sdk_session
                     .step_report()
-                    .expect("sdk compatibility step should succeed"),
+                    .expect("sdk llama.cpp step should succeed"),
             )
-            .expect("sdk compatibility step should serialize");
+            .expect("sdk llama.cpp step should serialize");
             let (step_status, step_json) = json_response(
                 &app,
                 Request::builder()
@@ -3034,9 +2298,9 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
         let expected_terminal = serde_json::to_value(
             sdk_session
                 .request_report(request_id)
-                .expect("sdk compatibility terminal request should exist"),
+                .expect("sdk llama.cpp terminal request should exist"),
         )
-        .expect("sdk compatibility terminal snapshot should serialize");
+        .expect("sdk llama.cpp terminal snapshot should serialize");
         let (terminal_status, terminal_json) = json_response(
             &app,
             Request::builder()
@@ -3048,155 +2312,9 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
         assert_eq!(terminal_status, StatusCode::OK);
         assert_eq!(terminal_json, expected_terminal);
 
-        compat_server_handle
+        llama_cpp_server_handle
             .join()
-            .expect("compatibility server thread should finish");
-    }
-
-    #[tokio::test]
-    async fn compatibility_openai_server_stepwise_request_endpoints_share_sdk_lifecycle() {
-        let (compat_server_url, compat_server_handle) = spawn_json_completion_stream_server(
-            2,
-            vec![
-                serde_json::json!({
-                    "choices": [{
-                        "text": "compat",
-                        "finish_reason": null
-                    }]
-                }),
-                serde_json::json!({
-                    "choices": [{
-                        "text": " stream",
-                        "finish_reason": "length"
-                    }]
-                }),
-            ],
-            |payload| {
-                assert_eq!(
-                    payload.get("prompt"),
-                    Some(&Value::String("hello compatibility".to_string()))
-                );
-                assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
-            },
-        );
-        let state = compatibility_server_state_for_backend(
-            args::PreviewCompatibilityBackend::Vllm,
-            compat_server_url,
-        );
-        let app = build_router(state.clone());
-        let request_body = sample_text_http_request("hello compatibility", 2);
-        let (status, submit_json) = json_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/v1/requests")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&request_body).unwrap()))
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::CREATED);
-        let request_id = 1u64;
-
-        let mut sdk_session = sdk_session_for_state(&state);
-        sdk_session
-            .submit_generate_with_request_id(
-                request_id,
-                GenerateRequest {
-                    model_id: "qwen3_dense".to_string(),
-                    input_tokens: Vec::new(),
-                    input_text: Some("hello compatibility".to_string()),
-                    max_output_tokens: 2,
-                    sampling: GenerateSampling {
-                        temperature: 0.0,
-                        top_p: 1.0,
-                        top_k: 0,
-                        repetition_penalty: 1.0,
-                        seed: 1234,
-                        deterministic: Some(true),
-                    },
-                    metadata: None,
-                },
-            )
-            .expect("sdk openai-compatible submit should succeed");
-        let expected_submit = serde_json::to_value(
-            sdk_session
-                .request_report(request_id)
-                .expect("sdk compatibility report should exist"),
-        )
-        .expect("sdk compatibility submit report should serialize");
-        assert_eq!(submit_json, expected_submit);
-
-        for _ in 0..4 {
-            let expected_snapshot = serde_json::to_value(
-                sdk_session
-                    .request_report(request_id)
-                    .expect("sdk compatibility request report should still exist"),
-            )
-            .expect("sdk compatibility snapshot should serialize");
-            let (snapshot_status, snapshot_json) = json_response(
-                &app,
-                Request::builder()
-                    .uri(format!("/v1/requests/{request_id}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await;
-            assert_eq!(snapshot_status, StatusCode::OK);
-            assert_eq!(snapshot_json, expected_snapshot);
-
-            if expected_snapshot
-                .get("state")
-                .and_then(|value| value.as_str())
-                == Some("finished")
-            {
-                break;
-            }
-
-            let expected_step = serde_json::to_value(
-                sdk_session
-                    .step_report()
-                    .expect("sdk compatibility step should succeed"),
-            )
-            .expect("sdk compatibility step should serialize");
-            let (step_status, step_json) = json_response(
-                &app,
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/step")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await;
-            assert_eq!(step_status, StatusCode::OK);
-            let mut step_json = step_json;
-            let mut expected_step = expected_step;
-            normalize_measurement_fields(&mut step_json);
-            normalize_measurement_fields(&mut expected_step);
-            assert_eq!(step_json, expected_step);
-        }
-
-        let expected_terminal = serde_json::to_value(
-            sdk_session
-                .request_report(request_id)
-                .expect("sdk compatibility terminal request should exist"),
-        )
-        .expect("sdk compatibility terminal snapshot should serialize");
-        let (terminal_status, terminal_json) = json_response(
-            &app,
-            Request::builder()
-                .uri(format!("/v1/requests/{request_id}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(terminal_status, StatusCode::OK);
-        assert_eq!(terminal_json, expected_terminal);
-
-        compat_server_handle
-            .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
     }
 
     #[test]
@@ -3221,10 +2339,10 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
     }
 
     #[tokio::test]
-    async fn compatibility_stepwise_request_endpoints_aggregate_multiple_active_requests() {
+    async fn llama_cpp_stepwise_request_endpoints_aggregate_multiple_active_requests() {
         let expected_prompts = vec![json!([1, 2, 3]), json!([7, 8, 9])];
         let expected_prompts_for_request = expected_prompts.clone();
-        let (compat_server_url, compat_server_handle) = spawn_compat_completion_stream_server(
+        let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_stream_server(
             4,
             vec![
                 serde_json::json!({
@@ -3241,14 +2359,16 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
             ],
             move |payload| {
                 let prompt = payload.get("prompt").expect("prompt should be present");
-                assert!(expected_prompts_for_request
-                    .iter()
-                    .any(|candidate| prompt == candidate));
+                assert!(
+                    expected_prompts_for_request
+                        .iter()
+                        .any(|candidate| prompt == candidate)
+                );
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
                 assert_eq!(payload.get("return_tokens"), Some(&Value::Bool(true)));
             },
         );
-        let state = compatibility_server_state(compat_server_url);
+        let state = llama_cpp_server_state(llama_server_url);
         let app = build_router(state.clone());
 
         let (first_submit_status, first_submit_json) = json_response(
@@ -3290,18 +2410,18 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
         let mut sdk_session = sdk_session_for_state(&state);
         sdk_session
             .submit_generate_with_request_id(first_request_id, sample_sdk_request(&[1, 2, 3], 2))
-            .expect("first sdk compatibility submit should succeed");
+            .expect("first sdk llama.cpp submit should succeed");
         sdk_session
             .submit_generate_with_request_id(second_request_id, sample_sdk_request(&[7, 8, 9], 2))
-            .expect("second sdk compatibility submit should succeed");
+            .expect("second sdk llama.cpp submit should succeed");
 
         for _ in 0..2 {
             let expected_step = serde_json::to_value(
                 sdk_session
                     .step_report()
-                    .expect("sdk compatibility aggregated step should succeed"),
+                    .expect("sdk llama.cpp aggregated step should succeed"),
             )
-            .expect("sdk compatibility step should serialize");
+            .expect("sdk llama.cpp step should serialize");
             let (step_status, step_json) = json_response(
                 &app,
                 Request::builder()
@@ -3322,9 +2442,9 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 let expected_snapshot = serde_json::to_value(
                     sdk_session
                         .request_report(request_id)
-                        .expect("sdk compatibility snapshot should exist"),
+                        .expect("sdk llama.cpp snapshot should exist"),
                 )
-                .expect("sdk compatibility snapshot should serialize");
+                .expect("sdk llama.cpp snapshot should serialize");
                 let (snapshot_status, snapshot_json) = json_response(
                     &app,
                     Request::builder()
@@ -3338,14 +2458,14 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
             }
         }
 
-        compat_server_handle
+        llama_cpp_server_handle
             .join()
-            .expect("compatibility server thread should finish");
+            .expect("llama.cpp server thread should finish");
     }
 
     #[tokio::test]
-    async fn compatibility_cancel_endpoint_surfaces_cancelled_snapshot() {
-        let (compat_server_url, compat_server_handle) = spawn_compat_completion_stream_server(
+    async fn llama_cpp_cancel_endpoint_surfaces_cancelled_snapshot() {
+        let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_stream_server(
             1,
             vec![serde_json::json!({
                 "content": "hello",
@@ -3357,7 +2477,7 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
             },
         );
-        let app = build_router(compatibility_server_state(compat_server_url));
+        let app = build_router(llama_cpp_server_state(llama_server_url));
         let (_, submit_json) = json_response(
             &app,
             Request::builder()
@@ -3402,77 +2522,8 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
             Some(true)
         );
 
-        compat_server_handle
+        llama_cpp_server_handle
             .join()
-            .expect("compatibility server thread should finish");
-    }
-
-    #[tokio::test]
-    async fn cancel_endpoint_surfaces_cancelled_snapshot() {
-        let app = build_router(test_state());
-        let (_, submit_json) = json_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri("/v1/requests")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "model": "qwen3_dense",
-                        "input_tokens": [7, 8, 9],
-                        "max_output_tokens": 2
-                    }))
-                    .unwrap(),
-                ))
-                .unwrap(),
-        )
-        .await;
-        let request_id = submit_json
-            .get("request_id")
-            .and_then(|value| value.as_u64())
-            .expect("request_id should exist");
-
-        let (status, cancel_json) = json_response(
-            &app,
-            Request::builder()
-                .method("POST")
-                .uri(format!("/v1/requests/{request_id}/cancel"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(
-            cancel_json.get("state").and_then(|value| value.as_str()),
-            Some("cancelled")
-        );
-        assert_eq!(
-            cancel_json
-                .get("cancel_requested")
-                .and_then(|value| value.as_bool()),
-            Some(true)
-        );
-    }
-
-    #[tokio::test]
-    async fn missing_request_snapshot_returns_not_found() {
-        let app = build_router(test_state());
-        let (status, json) = json_response(
-            &app,
-            Request::builder()
-                .uri("/v1/requests/999")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(
-            json.get("error")
-                .and_then(|error| error.get("code"))
-                .and_then(|value| value.as_str()),
-            Some("request_not_found")
-        );
+            .expect("llama.cpp server thread should finish");
     }
 }

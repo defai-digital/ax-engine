@@ -36,13 +36,18 @@ impl MlxStream {
             let dev = ffi::mlx_device_new_type(1, 0);
             let stream = ffi::mlx_stream_new_device(dev);
             ffi::mlx_device_free(dev);
-            Self { inner: stream, owns: true }
+            Self {
+                inner: stream,
+                owns: true,
+            }
         }
     }
 
     /// Set this stream as the process-wide default for all MLX operations.
     pub fn set_as_default(&self) {
-        unsafe { ffi::mlx_set_default_stream(self.inner); }
+        unsafe {
+            ffi::mlx_set_default_stream(self.inner);
+        }
     }
 }
 

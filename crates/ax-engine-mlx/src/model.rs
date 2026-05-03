@@ -1,7 +1,6 @@
 use mlx_sys::{
-    MlxArray, MlxDtype,
-    add, astype, dequantize, matmul, multiply, quantized_matmul,
-    reshape, slice_last_dim, take, transpose, rms_norm, rope, scaled_dot_product_attention,
+    MlxArray, MlxDtype, add, astype, dequantize, matmul, multiply, quantized_matmul, reshape,
+    rms_norm, rope, scaled_dot_product_attention, slice_last_dim, take, transpose,
 };
 
 use ax_engine_core::NativeModelManifest;
@@ -28,10 +27,12 @@ pub struct ModelConfig {
 impl ModelConfig {
     pub fn from_manifest(m: &NativeModelManifest) -> Self {
         let head_dim = m.attention_head_dim as usize;
-        let rope_dims = m.partial_rotary_factor
+        let rope_dims = m
+            .partial_rotary_factor
             .map(|f| ((head_dim as f32 * f) as usize).next_multiple_of(2))
             .unwrap_or(head_dim);
-        let query_scale = m.query_pre_attn_scalar
+        let query_scale = m
+            .query_pre_attn_scalar
             .map(|s| 1.0 / (s as f32).sqrt())
             .unwrap_or_else(|| 1.0 / (head_dim as f32).sqrt());
         let intermediate_size = if m.intermediate_size > 0 {
@@ -61,7 +62,7 @@ impl ModelConfig {
 pub fn layer_forward(
     cfg: &ModelConfig,
     w: &LayerWeights,
-    hidden: &MlxArray,   // [1, seq, hidden]
+    hidden: &MlxArray, // [1, seq, hidden]
     cache: &mut MlxKVCache,
     layer_idx: usize,
     token_offset: usize,
@@ -75,22 +76,50 @@ pub fn layer_forward(
     let seq = hidden.shape()[1] as usize;
 
     // 3. Reshape to BSHD [1, seq, heads, head_dim].
-    let q = reshape(&q_raw, &[1, seq as i32, cfg.n_heads as i32, cfg.head_dim as i32], None);
-    let k = reshape(&k_raw, &[1, seq as i32, cfg.n_kv_heads as i32, cfg.head_dim as i32], None);
-    let v = reshape(&v_raw, &[1, seq as i32, cfg.n_kv_heads as i32, cfg.head_dim as i32], None);
+    let q = reshape(
+        &q_raw,
+        &[1, seq as i32, cfg.n_heads as i32, cfg.head_dim as i32],
+        None,
+    );
+    let k = reshape(
+        &k_raw,
+        &[1, seq as i32, cfg.n_kv_heads as i32, cfg.head_dim as i32],
+        None,
+    );
+    let v = reshape(
+        &v_raw,
+        &[1, seq as i32, cfg.n_kv_heads as i32, cfg.head_dim as i32],
+        None,
+    );
 
     // 4. Optional per-head Q/K norms (Qwen3) applied in BSHD space before transpose.
     let q = if let Some(qn) = &w.q_norm {
         let q_f = reshape(&q, &[(cfg.n_heads * seq) as i32, cfg.head_dim as i32], None);
         let q_n = rms_norm(&q_f, Some(qn), 1e-6, None);
-        reshape(&q_n, &[1, seq as i32, cfg.n_heads as i32, cfg.head_dim as i32], None)
-    } else { q };
+        reshape(
+            &q_n,
+            &[1, seq as i32, cfg.n_heads as i32, cfg.head_dim as i32],
+            None,
+        )
+    } else {
+        q
+    };
 
     let k = if let Some(kn) = &w.k_norm {
-        let k_f = reshape(&k, &[(cfg.n_kv_heads * seq) as i32, cfg.head_dim as i32], None);
+        let k_f = reshape(
+            &k,
+            &[(cfg.n_kv_heads * seq) as i32, cfg.head_dim as i32],
+            None,
+        );
         let k_n = rms_norm(&k_f, Some(kn), 1e-6, None);
-        reshape(&k_n, &[1, seq as i32, cfg.n_kv_heads as i32, cfg.head_dim as i32], None)
-    } else { k };
+        reshape(
+            &k_n,
+            &[1, seq as i32, cfg.n_kv_heads as i32, cfg.head_dim as i32],
+            None,
+        )
+    } else {
+        k
+    };
 
     // 5. Transpose BSHD → BHSD [1, heads, seq, head_dim].
     let q = transpose(&q, &[0, 2, 1, 3], None);
@@ -98,8 +127,26 @@ pub fn layer_forward(
     let v = transpose(&v, &[0, 2, 1, 3], None);
 
     // 6. RoPE on [1, heads, seq, head_dim].
-    let q_rope = rope(&q, cfg.rope_dims as i32, false, Some(cfg.rope_theta), 1.0, token_offset as i32, None, None);
-    let k_rope = rope(&k, cfg.rope_dims as i32, false, Some(cfg.rope_theta), 1.0, token_offset as i32, None, None);
+    let q_rope = rope(
+        &q,
+        cfg.rope_dims as i32,
+        false,
+        Some(cfg.rope_theta),
+        1.0,
+        token_offset as i32,
+        None,
+        None,
+    );
+    let k_rope = rope(
+        &k,
+        cfg.rope_dims as i32,
+        false,
+        Some(cfg.rope_theta),
+        1.0,
+        token_offset as i32,
+        None,
+        None,
+    );
 
     // 7. Update KV cache and get full K/V: [1, n_kv_heads, kv_seq, head_dim].
     let (cached_k, cached_v) = cache.append(layer_idx, k_rope, v);
@@ -107,13 +154,18 @@ pub fn layer_forward(
     // 8. SDPA with native GQA support (n_heads may differ from n_kv_heads).
     //    MLX broadcasts K/V heads internally — no manual expand_kv_heads needed.
     let causal = seq > 1;
-    let attn_sdpa = scaled_dot_product_attention(&q_rope, cached_k, cached_v, cfg.query_scale, causal, None);
+    let attn_sdpa =
+        scaled_dot_product_attention(&q_rope, cached_k, cached_v, cfg.query_scale, causal, None);
 
     // 9. Transpose back: [1, n_heads, seq, head_dim] → [1, seq, n_heads, head_dim].
     let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
 
     // 10. Reshape back to [1, seq, hidden].
-    let attn_flat = reshape(&attn_out, &[1, seq as i32, (cfg.n_heads * cfg.head_dim) as i32], None);
+    let attn_flat = reshape(
+        &attn_out,
+        &[1, seq as i32, (cfg.n_heads * cfg.head_dim) as i32],
+        None,
+    );
 
     // 11. Output projection.
     let attn_proj = qw(&attn_flat, &w.o_proj);
@@ -140,7 +192,11 @@ pub fn layer_forward(
 }
 
 /// Embed token IDs and return hidden states of shape [1, seq_len, hidden].
-pub fn embed_tokens(token_ids: &[u32], embedding: &QuantizedWeight, hidden_size: usize) -> MlxArray {
+pub fn embed_tokens(
+    token_ids: &[u32],
+    embedding: &QuantizedWeight,
+    hidden_size: usize,
+) -> MlxArray {
     let seq = token_ids.len() as i32;
     let ids_shape = [seq];
     let ids_arr = MlxArray::from_raw_data(
@@ -152,10 +208,17 @@ pub fn embed_tokens(token_ids: &[u32], embedding: &QuantizedWeight, hidden_size:
     if let Some(scales) = &embedding.scales {
         let row_w = take(&embedding.weight, &ids_arr, 0, None);
         let row_s = take(scales, &ids_arr, 0, None);
-        let row_b = embedding.biases.as_ref().map(|b| take(b, &ids_arr, 0, None));
+        let row_b = embedding
+            .biases
+            .as_ref()
+            .map(|b| take(b, &ids_arr, 0, None));
         let flat = dequantize(
-            &row_w, &row_s, row_b.as_ref(),
-            Some(embedding.group_size), Some(embedding.bits), None,
+            &row_w,
+            &row_s,
+            row_b.as_ref(),
+            Some(embedding.group_size),
+            Some(embedding.bits),
+            None,
         );
         reshape(&flat, &[1, seq, hidden_size as i32], None)
     } else {
@@ -225,7 +288,11 @@ pub fn forward_all_positions(
 
 // ── private helpers ──────────────────────────────────────────────────────────
 
-fn qkv_project(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> (MlxArray, MlxArray, MlxArray) {
+fn qkv_project(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+) -> (MlxArray, MlxArray, MlxArray) {
     if let Some(packed) = &w.qkv_packed {
         let out = qw(x, packed);
         let q_size = cfg.n_heads * cfg.head_dim;
@@ -233,7 +300,12 @@ fn qkv_project(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> (MlxArray, 
         let seq = x.shape()[1];
         let q = mlx_slice_last_dim(&out, 0, q_size as i32, seq);
         let k = mlx_slice_last_dim(&out, q_size as i32, (q_size + kv_size) as i32, seq);
-        let v = mlx_slice_last_dim(&out, (q_size + kv_size) as i32, (q_size + 2 * kv_size) as i32, seq);
+        let v = mlx_slice_last_dim(
+            &out,
+            (q_size + kv_size) as i32,
+            (q_size + 2 * kv_size) as i32,
+            seq,
+        );
         (q, k, v)
     } else {
         let q = qw(x, w.q_proj.as_ref().unwrap());
@@ -245,7 +317,16 @@ fn qkv_project(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> (MlxArray, 
 
 fn qw(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
     if let Some(scales) = &qw.scales {
-        quantized_matmul(x, &qw.weight, scales, qw.biases.as_ref(), true, Some(qw.group_size), Some(qw.bits), None)
+        quantized_matmul(
+            x,
+            &qw.weight,
+            scales,
+            qw.biases.as_ref(),
+            true,
+            Some(qw.group_size),
+            Some(qw.bits),
+            None,
+        )
     } else {
         let wt = transpose(&qw.weight, &[1, 0], None);
         matmul(x, &wt, None)

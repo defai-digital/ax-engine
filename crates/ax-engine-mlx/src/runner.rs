@@ -4,18 +4,18 @@ use std::sync::{Arc, Mutex};
 
 use mlx_sys::{MlxStream, max_recommended_working_set_size, set_wired_limit};
 
-use ax_engine_core::{
-    ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelArtifacts,
-    NativeModelBindingSummary, RequestExecutionUpdate, RequestId,
-    RouteMetadata, RunnerInput, RunnerOutput, StopReason,
-};
 use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
+use ax_engine_core::{
+    ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelArtifacts,
+    NativeModelBindingSummary, RequestExecutionUpdate, RequestId, RouteMetadata, RunnerInput,
+    RunnerOutput, StopReason,
+};
 
 use crate::generate::{chunked_prefill, decode_step};
 use crate::kv_cache::MlxKVCache;
 use crate::model::ModelConfig;
-use crate::speculative::{NgramTable, speculative_decode_step, single_decode, DEFAULT_DRAFT_LEN};
+use crate::speculative::{DEFAULT_DRAFT_LEN, NgramTable, single_decode, speculative_decode_step};
 use crate::weights::{ModelWeights, load_weights};
 
 const EMA_ALPHA: f32 = 0.1;
@@ -50,8 +50,8 @@ impl RequestState {
     }
 }
 
-/// ExecutionRunner backed by the MLX native inference path.
-pub struct MlxNativeRunner {
+/// ExecutionRunner backed by the MLX inference path.
+pub struct MlxRunner {
     cfg: ModelConfig,
     weights: Arc<ModelWeights>,
     prefill_chunk: usize,
@@ -61,16 +61,16 @@ pub struct MlxNativeRunner {
     _stream: MlxStream,
 }
 
-impl fmt::Debug for MlxNativeRunner {
+impl fmt::Debug for MlxRunner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MlxNativeRunner")
+        f.debug_struct("MlxRunner")
             .field("layers", &self.cfg.layer_count)
             .field("vocab", &self.cfg.vocab_size)
             .finish()
     }
 }
 
-impl MlxNativeRunner {
+impl MlxRunner {
     pub fn from_artifacts(
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
@@ -111,7 +111,13 @@ impl MlxNativeRunner {
             decode_step(&cfg, &weights, 0, &mut dummy_cache);
             dummy_cache.reset();
             let dummy_tokens: Vec<u32> = vec![0u32; 8];
-            chunked_prefill(&cfg, &weights, &dummy_tokens, &mut dummy_cache, prefill_chunk);
+            chunked_prefill(
+                &cfg,
+                &weights,
+                &dummy_tokens,
+                &mut dummy_cache,
+                prefill_chunk,
+            );
         }
 
         Ok(Self {
@@ -125,7 +131,7 @@ impl MlxNativeRunner {
     }
 }
 
-impl ExecutionRunner for MlxNativeRunner {
+impl ExecutionRunner for MlxRunner {
     fn run(&self, input: RunnerInput) -> RunnerOutput {
         let step_id = input.execution_batch.step_id;
         let mut request_updates = Vec::new();
@@ -142,7 +148,10 @@ impl ExecutionRunner for MlxNativeRunner {
             request_updates.push(update);
         }
 
-        let tokens_written: u32 = input.execution_batch.items.iter()
+        let tokens_written: u32 = input
+            .execution_batch
+            .items
+            .iter()
             .map(|i| i.scheduled_token_count)
             .sum();
 
@@ -165,7 +174,7 @@ impl ExecutionRunner for MlxNativeRunner {
     }
 }
 
-impl MlxNativeRunner {
+impl MlxRunner {
     fn run_item(
         &self,
         item: &ax_engine_core::ExecutionItem,
@@ -206,9 +215,7 @@ impl MlxNativeRunner {
                 state.next_model_last_token = None;
                 tok
             }
-            ExecutionMode::Decode => {
-                self.decode_one(state, token_ids)
-            }
+            ExecutionMode::Decode => self.decode_one(state, token_ids),
         };
 
         let stop_reason = if generated_len + 1 >= max_output {
@@ -240,7 +247,8 @@ impl MlxNativeRunner {
             return tok;
         }
 
-        let last_token = state.next_model_last_token
+        let last_token = state
+            .next_model_last_token
             .or_else(|| input_tokens.last().copied())
             .unwrap_or(0);
 
@@ -267,12 +275,24 @@ impl MlxNativeRunner {
         // Speculation disabled: count down and use single decode.
         if state.spec_disabled_steps > 0 {
             state.spec_disabled_steps -= 1;
-            return single_decode(&self.cfg, &self.weights, &mut state.cache, &mut state.ngram, last_token);
+            return single_decode(
+                &self.cfg,
+                &self.weights,
+                &mut state.cache,
+                &mut state.ngram,
+                last_token,
+            );
         }
 
         let draft = state.ngram.predict(DEFAULT_DRAFT_LEN);
         if draft.is_empty() {
-            return single_decode(&self.cfg, &self.weights, &mut state.cache, &mut state.ngram, last_token);
+            return single_decode(
+                &self.cfg,
+                &self.weights,
+                &mut state.cache,
+                &mut state.ngram,
+                last_token,
+            );
         }
 
         let draft_len = draft.len();

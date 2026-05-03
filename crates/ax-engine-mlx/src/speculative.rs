@@ -14,7 +14,7 @@ pub const DEFAULT_DRAFT_LEN: usize = 4;
 /// Tracks bigrams and trigrams observed in the prompt and generated tokens.
 /// `predict()` chains lookups to produce a draft sequence.
 pub struct NgramTable {
-    bigrams:  HashMap<(u32, u32), u32>,
+    bigrams: HashMap<(u32, u32), u32>,
     trigrams: HashMap<(u32, u32, u32), u32>,
     /// Last 3 observed tokens — context window for next prediction.
     tail: VecDeque<u32>,
@@ -23,7 +23,7 @@ pub struct NgramTable {
 impl NgramTable {
     pub fn new() -> Self {
         Self {
-            bigrams:  HashMap::new(),
+            bigrams: HashMap::new(),
             trigrams: HashMap::new(),
             tail: VecDeque::with_capacity(4),
         }
@@ -85,6 +85,12 @@ impl NgramTable {
             }
         }
         draft
+    }
+}
+
+impl Default for NgramTable {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

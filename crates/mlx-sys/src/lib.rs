@@ -34,4 +34,7 @@ pub use ops::{
     quantized_matmul, repeat_axis, reshape, slice, slice_last_dim, softmax, take, transpose,
 };
 pub use stream::MlxStream;
-pub use transforms::{async_eval, clear_cache, enable_compile, eval, max_recommended_working_set_size, set_wired_limit};
+pub use transforms::{
+    async_eval, clear_cache, enable_compile, eval, max_recommended_working_set_size,
+    set_wired_limit,
+};

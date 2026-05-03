@@ -5,4 +5,4 @@ pub mod runner;
 pub mod speculative;
 pub mod weights;
 
-pub use runner::MlxNativeRunner;
+pub use runner::MlxRunner;

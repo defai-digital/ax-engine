@@ -31,7 +31,9 @@ pub fn eval(arrays: &[&MlxArray]) {
 /// with the same shapes, reducing per-step CPU overhead significantly.
 /// Call once at program start or before the first forward pass.
 pub fn enable_compile() {
-    unsafe { ffi::mlx_enable_compile(); }
+    unsafe {
+        ffi::mlx_enable_compile();
+    }
 }
 
 /// Free MLX's internal array/graph computation cache.
@@ -40,7 +42,9 @@ pub fn enable_compile() {
 /// MLX holds for intermediate arrays in the graph cache. SwiftLM does the
 /// same — `MLX.Memory.clearCache()` — immediately after chunked prefill.
 pub fn clear_cache() {
-    unsafe { ffi::mlx_clear_cache(); }
+    unsafe {
+        ffi::mlx_clear_cache();
+    }
 }
 
 /// Enqueue computation without blocking. Use `eval` later to synchronize.
@@ -60,7 +64,9 @@ pub fn async_eval(arrays: &[&MlxArray]) {
 /// Returns the previous wired limit. Mirrors `mx.set_wired_limit()` in mlx_lm.
 pub fn set_wired_limit(limit: usize) -> usize {
     let mut prev = 0usize;
-    unsafe { ffi::mlx_set_wired_limit(&mut prev, limit); }
+    unsafe {
+        ffi::mlx_set_wired_limit(&mut prev, limit);
+    }
     prev
 }
 
