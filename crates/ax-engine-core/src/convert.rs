@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::model::{
-    NativeLinearAttentionConfig, NativeModelManifest, NativeMoeConfig, NativeTensorDataType,
-    NativeTensorFormat, NativeTensorRole, NativeTensorSpec,
+    NativeLinearAttentionConfig, NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus,
+    NativeTensorDataType, NativeTensorFormat, NativeTensorRole, NativeTensorSpec,
     AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
 };
 
@@ -77,21 +77,24 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
                 .and_then(|rp| rp.get("rope_theta"))
                 .and_then(|v| v.as_f64())
         })
-        .map(|v| v as u32);
+        .and_then(f64_to_u32);
 
     let query_pre_attn_scalar =
-        arch_f64(&config, &model_type, "query_pre_attn_scalar").map(|v| v as u32);
+        arch_f64(&config, &model_type, "query_pre_attn_scalar").and_then(f64_to_u32);
 
     let attention_logit_softcap =
-        arch_f64(&config, &model_type, "attn_logit_softcapping").map(|v| v as u32);
+        arch_f64(&config, &model_type, "attn_logit_softcapping").and_then(f64_to_u32);
     let linear_attention = linear_attention_config(&config, &model_type);
 
     Ok(NativeModelManifest {
         schema_version: AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
         model_family: family.family_name.to_string(),
         tensor_format: NativeTensorFormat::Safetensors,
+        source_quantization: None,
+        runtime_status: NativeRuntimeStatus::default(),
         layer_count: arch.layer_count,
         hidden_size: arch.hidden_size,
+        intermediate_size: arch.intermediate_size,
         attention_head_count: arch.attention_head_count,
         attention_head_dim: arch.attention_head_dim,
         kv_head_count: arch.kv_head_count,
@@ -111,7 +114,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
                     .and_then(|v| v.as_f64())
             })
             .map(|v| v as f32)
-            .filter(|v| *v < 1.0),
+            .filter(|v| *v <= 1.0),
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
         linear_attention,
@@ -435,6 +438,7 @@ fn resolve_model_type(config: &serde_json::Value) -> Result<String, ConvertError
 struct ArchitectureParams {
     layer_count: u32,
     hidden_size: u32,
+    intermediate_size: u32,
     attention_head_count: u32,
     attention_head_dim: u32,
     kv_head_count: u32,
@@ -445,7 +449,14 @@ struct ArchitectureParams {
 fn uses_text_config(model_type: &str) -> bool {
     matches!(
         model_type,
-        "gemma4" | "qwen3_5" | "qwen3_next" | "qwen3_6" | "qwen3.5" | "qwen3.6"
+        "gemma4"
+            | "qwen3_5"
+            | "qwen3_5_moe"
+            | "qwen3_5_text"
+            | "qwen3_next"
+            | "qwen3_6"
+            | "qwen3.5"
+            | "qwen3.6"
     )
 }
 
@@ -502,11 +513,11 @@ fn linear_attention_config(
     }
 
     NativeLinearAttentionConfig {
-        num_value_heads: arch_u64(config, model_type, "linear_num_value_heads").map(|v| v as u32),
-        num_key_heads: arch_u64(config, model_type, "linear_num_key_heads").map(|v| v as u32),
-        key_head_dim: arch_u64(config, model_type, "linear_key_head_dim").map(|v| v as u32),
-        value_head_dim: arch_u64(config, model_type, "linear_value_head_dim").map(|v| v as u32),
-        conv_kernel_dim: arch_u64(config, model_type, "linear_conv_kernel_dim").map(|v| v as u32),
+        num_value_heads: arch_u64(config, model_type, "linear_num_value_heads").and_then(u64_to_u32),
+        num_key_heads: arch_u64(config, model_type, "linear_num_key_heads").and_then(u64_to_u32),
+        key_head_dim: arch_u64(config, model_type, "linear_key_head_dim").and_then(u64_to_u32),
+        value_head_dim: arch_u64(config, model_type, "linear_value_head_dim").and_then(u64_to_u32),
+        conv_kernel_dim: arch_u64(config, model_type, "linear_conv_kernel_dim").and_then(u64_to_u32),
     }
 }
 
@@ -516,11 +527,23 @@ fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
     }
 
     NativeMoeConfig {
-        expert_count: arch_u64(config, model_type, "num_experts").map(|v| v as u32),
-        experts_per_token: arch_u64(config, model_type, "top_k_experts").map(|v| v as u32),
+        expert_count: arch_u64(config, model_type, "num_experts").and_then(u64_to_u32),
+        experts_per_token: arch_u64(config, model_type, "top_k_experts").and_then(u64_to_u32),
         expert_intermediate_size: arch_u64(config, model_type, "moe_intermediate_size")
-            .map(|v| v as u32),
+            .and_then(u64_to_u32),
     }
+}
+
+fn f64_to_u32(value: f64) -> Option<u32> {
+    if value.is_finite() && value >= 0.0 && value <= f64::from(u32::MAX) {
+        Some(value as u32)
+    } else {
+        None
+    }
+}
+
+fn u64_to_u32(value: u64) -> Option<u32> {
+    u32::try_from(value).ok()
 }
 
 fn require_arch_u64(
@@ -542,19 +565,17 @@ fn resolve_architecture(
         .unwrap_or(attention_head_count);
     let attention_head_dim = arch_u64(config, model_type, "head_dim")
         .map(|v| v as u32)
-        .unwrap_or_else(|| {
-            if attention_head_count > 0 {
-                hidden_size / attention_head_count
-            } else {
-                0
-            }
-        });
+        .unwrap_or_else(|| hidden_size.checked_div(attention_head_count).unwrap_or(0));
     let layer_count = require_arch_u64(config, model_type, "num_hidden_layers")? as u32;
     let vocab_size = require_arch_u64(config, model_type, "vocab_size")? as u32;
+    let intermediate_size = arch_u64(config, model_type, "intermediate_size")
+        .map(|v| v as u32)
+        .unwrap_or(0);
 
     Ok(ArchitectureParams {
         layer_count,
         hidden_size,
+        intermediate_size,
         attention_head_count,
         attention_head_dim,
         kv_head_count,
@@ -610,6 +631,8 @@ fn find_safetensors_files(model_dir: &Path) -> Result<Vec<PathBuf>, ConvertError
 }
 
 fn parse_safetensors_header(path: &Path) -> Result<Vec<SafetensorEntry>, ConvertError> {
+    const MAX_SAFETENSORS_HEADER_SIZE: usize = 64 * 1024 * 1024;
+
     let mut file = fs::File::open(path).map_err(|source| ConvertError::ReadFile {
         path: path.to_path_buf(),
         source,
@@ -622,6 +645,12 @@ fn parse_safetensors_header(path: &Path) -> Result<Vec<SafetensorEntry>, Convert
             source,
         })?;
     let header_size = u64::from_le_bytes(header_size_bytes) as usize;
+    if header_size == 0 || header_size > MAX_SAFETENSORS_HEADER_SIZE {
+        return Err(ConvertError::InvalidSafetensorsHeader {
+            path: path.to_path_buf(),
+            message: format!("header_size {header_size} is out of valid range"),
+        });
+    }
 
     let mut header_bytes = vec![0u8; header_size];
     file.read_exact(&mut header_bytes)
@@ -639,7 +668,7 @@ fn parse_safetensors_header(path: &Path) -> Result<Vec<SafetensorEntry>, Convert
     let data_base_offset = 8 + header_size as u64;
     let file_name = path
         .file_name()
-        .map(|n| PathBuf::from(n))
+        .map(PathBuf::from)
         .unwrap_or_else(|| path.to_path_buf());
 
     let mut entries = Vec::new();
@@ -660,7 +689,15 @@ fn parse_safetensors_header(path: &Path) -> Result<Vec<SafetensorEntry>, Convert
             shape: entry.shape,
             file: file_name.clone(),
             offset_bytes: data_base_offset + entry.data_offsets[0],
-            length_bytes: entry.data_offsets[1] - entry.data_offsets[0],
+            length_bytes: entry.data_offsets[1].checked_sub(entry.data_offsets[0]).ok_or_else(
+                || ConvertError::InvalidSafetensorsHeader {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "invalid data_offsets for tensor {name}: end ({}) < start ({})",
+                        entry.data_offsets[1], entry.data_offsets[0]
+                    ),
+                },
+            )?,
         });
     }
 
@@ -801,6 +838,9 @@ fn map_tensors(
             role,
             layer_index,
             dtype,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantized_source: None,
             shape: entry.shape.clone(),
             file: entry.file.clone(),
             offset_bytes: entry.offset_bytes,

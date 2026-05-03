@@ -1,7 +1,8 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ax_engine_sdk::{
+    is_gguf_path, is_initial_native_mode_model_id, native_mode_model_requirement_message,
     preview_support_tier_from_label, CapabilityReport, CompatibilityBackendError,
     CompatibilityBackendKind, EngineSession, EngineSessionConfig, EngineSessionError,
     EngineStepReport, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,
@@ -38,7 +39,7 @@ struct GenerateStreamIterator {
 impl Session {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (model_id="qwen3_dense".to_string(), *, deterministic=true, max_batch_tokens=2048, cache_group_id=0, block_size_tokens=16, total_blocks=1024, support_tier="native_preview", compat_backend="llama_cpp", compat_cli_path="llama-cli".to_string(), compat_model_path=None, compat_server_url=None, native_runtime_artifacts_dir=None, native_model_artifacts_dir=None))]
+    #[pyo3(signature = (model_id="qwen3_dense".to_string(), *, deterministic=true, max_batch_tokens=2048, cache_group_id=0, block_size_tokens=16, total_blocks=1024, native_mode=false, mlx=false, support_tier="compatibility", compat_backend="llama_cpp", compat_cli_path="llama-cli".to_string(), compat_model_path=None, compat_server_url=None, llama_fallback_cli_path="llama-cli".to_string(), llama_fallback_model_path=None, llama_fallback_server_url=None, native_runtime_artifacts_dir=None, native_model_artifacts_dir=None))]
     fn new(
         model_id: String,
         deterministic: bool,
@@ -46,18 +47,101 @@ impl Session {
         cache_group_id: u16,
         block_size_tokens: u32,
         total_blocks: u32,
+        native_mode: bool,
+        mlx: bool,
         support_tier: &str,
         compat_backend: &str,
         compat_cli_path: String,
         compat_model_path: Option<String>,
         compat_server_url: Option<String>,
+        llama_fallback_cli_path: String,
+        llama_fallback_model_path: Option<String>,
+        llama_fallback_server_url: Option<String>,
         native_runtime_artifacts_dir: Option<String>,
         native_model_artifacts_dir: Option<String>,
     ) -> PyResult<Self> {
+        if native_mode && mlx {
+            return Err(PyValueError::new_err(
+                "native_mode and mlx cannot both be enabled",
+            ));
+        }
+
         let support_tier = preview_support_tier_from_label(support_tier)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
-        let compat_backend =
+        let mut compat_backend =
             compatibility_backend_kind_from_label(compat_backend).map_err(PyValueError::new_err)?;
+        if !native_mode
+            && support_tier == ax_engine_sdk::SupportTier::Compatibility
+            && compat_model_path.is_some()
+            && compat_server_url.is_none()
+        {
+            compat_backend = if compat_model_path
+                .as_deref()
+                .map(Path::new)
+                .is_some_and(is_gguf_path)
+            {
+                CompatibilityBackendKind::LlamaCpp
+            } else {
+                CompatibilityBackendKind::Mlx
+            };
+        }
+        let backend_request = if native_mode {
+            if !is_initial_native_mode_model_id(&model_id) {
+                return Err(PyValueError::new_err(
+                    native_mode_model_requirement_message(&model_id),
+                ));
+            }
+            let (llama_fallback_cli_path, llama_fallback_model_path, llama_fallback_server_url) =
+                if llama_fallback_model_path.is_some() || llama_fallback_server_url.is_some() {
+                    (
+                        PathBuf::from(llama_fallback_cli_path),
+                        llama_fallback_model_path.map(PathBuf::from),
+                        llama_fallback_server_url,
+                    )
+                } else {
+                    let compat_model_path = compat_model_path
+                        .as_ref()
+                        .map(Path::new)
+                        .filter(|path| is_gguf_path(path))
+                        .map(PathBuf::from);
+                    (
+                        PathBuf::from(&compat_cli_path),
+                        compat_model_path,
+                        compat_server_url.clone(),
+                    )
+                };
+            PreviewBackendRequest::shipping_native_with_llama_fallback(
+                llama_fallback_cli_path,
+                llama_fallback_model_path,
+                llama_fallback_server_url,
+            )
+        } else if mlx {
+            PreviewBackendRequest::shipping_mlx_with_llama_fallback(
+                PathBuf::from(&compat_cli_path),
+                compat_model_path.as_ref().map(PathBuf::from),
+                compat_server_url.clone(),
+                PathBuf::from(llama_fallback_cli_path),
+                llama_fallback_model_path.map(PathBuf::from),
+                llama_fallback_server_url,
+            )
+        } else if support_tier == ax_engine_sdk::SupportTier::Compatibility
+            && compat_backend == CompatibilityBackendKind::LlamaCpp
+        {
+            PreviewBackendRequest::shipping_default_llama_cpp(
+                PathBuf::from(&compat_cli_path),
+                compat_model_path.as_ref().map(PathBuf::from),
+                compat_server_url.clone(),
+            )
+        } else {
+            PreviewBackendRequest {
+                support_tier,
+                compat_backend,
+                compat_cli_path: PathBuf::from(compat_cli_path),
+                compat_model_path: compat_model_path.map(PathBuf::from),
+                compat_server_url,
+                ..PreviewBackendRequest::default()
+            }
+        };
         let config = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
             cache_group_id: ax_engine_sdk::CacheGroupId(cache_group_id),
             block_size_tokens,
@@ -65,13 +149,7 @@ impl Session {
             deterministic,
             allow_deterministic_native_fallback: false,
             max_batch_tokens,
-            backend_request: PreviewBackendRequest {
-                support_tier,
-                compat_backend,
-                compat_cli_path: PathBuf::from(compat_cli_path),
-                compat_model_path: compat_model_path.map(PathBuf::from),
-                compat_server_url,
-            },
+            backend_request,
             native_runtime_artifacts_dir: native_runtime_artifacts_dir.map(PathBuf::from),
             native_model_artifacts_dir: native_model_artifacts_dir.map(PathBuf::from),
         })
@@ -97,10 +175,13 @@ impl Session {
             .unwrap_or(false)
     }
 
-    fn close(&mut self) {
-        if let Ok(mut slot) = self.inner.lock() {
-            *slot = SessionSlot::Closed;
-        }
+    fn close(&mut self) -> PyResult<()> {
+        let mut slot = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("session mutex poisoned; session state is unrecoverable"))?;
+        *slot = SessionSlot::Closed;
+        Ok(())
     }
 
     fn runtime<'py>(&self, py: Python<'py>) -> PyResult<Py<PyDict>> {
@@ -1064,6 +1145,7 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::InvalidRequestId
         | EngineSessionError::UnsupportedSupportTier
         | EngineSessionError::CompatibilityBackendDoesNotSupportLifecycle { .. }
+        | EngineSessionError::StatelessStreamRequiresCompatibilityBackend { .. }
         | EngineSessionError::Compatibility(CompatibilityBackendError::StreamingNotSupported {
             ..
         })
@@ -1080,6 +1162,9 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::Compatibility(CompatibilityBackendError::UnsupportedTokenPrompt {
             ..
         })
+        | EngineSessionError::Compatibility(
+            CompatibilityBackendError::UnsupportedSamplingOption { .. },
+        )
         | EngineSessionError::Compatibility(CompatibilityBackendError::AmbiguousPromptInput {
             ..
         })
@@ -1089,11 +1174,19 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         EngineSessionError::BackendContract(_)
         | EngineSessionError::MissingCompatibilityBackendConfig { .. }
         | EngineSessionError::CompatibilityBackendConfigMismatch { .. }
+        | EngineSessionError::CompatibilityFallbackMustUseLlamaCpp { .. }
+        | EngineSessionError::CompatibilityFallbackRequiresNonStrictPolicy
         | EngineSessionError::CompatibilityStreamEndedBeforeStop { .. }
+        | EngineSessionError::CompatibilityFallbackFailed { .. }
+        | EngineSessionError::NativeStartupFallbackFailed { .. }
         | EngineSessionError::NativeRuntimeArtifactsRequired
         | EngineSessionError::Compatibility(CompatibilityBackendError::CommandLaunch { .. })
         | EngineSessionError::Compatibility(CompatibilityBackendError::CommandFailed { .. })
+        | EngineSessionError::Compatibility(CompatibilityBackendError::CommandTimedOut { .. })
         | EngineSessionError::Compatibility(CompatibilityBackendError::NonUtf8Output { .. })
+        | EngineSessionError::Compatibility(CompatibilityBackendError::SerializeRequestJson {
+            ..
+        })
         | EngineSessionError::Compatibility(CompatibilityBackendError::HttpRequest { .. })
         | EngineSessionError::Compatibility(CompatibilityBackendError::HttpStatus { .. })
         | EngineSessionError::Compatibility(CompatibilityBackendError::HttpResponseRead {
@@ -1126,6 +1219,7 @@ fn _ax_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ax_engine_sdk::INITIAL_NATIVE_MODE_MODEL_ID;
     use pyo3::types::{PyDictMethods, PyList};
     use serde_json::{json, Map, Value};
     use std::fs;
@@ -1168,10 +1262,15 @@ mod tests {
             0,
             16,
             1024,
+            false,
+            false,
             "compatibility",
             "llama_cpp",
             script_path.display().to_string(),
             Some(model_path.display().to_string()),
+            None,
+            "llama-cli".to_string(),
+            None,
             None,
             None,
             None,
@@ -1187,24 +1286,123 @@ mod tests {
             0,
             16,
             1024,
+            false,
+            false,
             "compatibility",
             "llama_cpp",
             "llama-cli".to_string(),
             None,
             Some(server_url),
+            "llama-cli".to_string(),
+            None,
+            None,
             None,
             None,
         )
         .expect("compatibility session should build")
     }
 
+    #[test]
+    fn python_session_rejects_native_mode_for_non_initial_model() {
+        init_python();
+        let error = match Session::new(
+            "qwen3_dense".to_string(),
+            true,
+            2048,
+            0,
+            16,
+            1024,
+            true,
+            false,
+            "compatibility",
+            "llama_cpp",
+            "llama-cli".to_string(),
+            None,
+            None,
+            "llama-cli".to_string(),
+            None,
+            None,
+            None,
+            None,
+        ) {
+            Ok(_) => panic!("native mode should be allowlisted"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains(INITIAL_NATIVE_MODE_MODEL_ID));
+    }
+
+    #[test]
+    fn python_session_routes_default_local_mlx_model_to_mlx_cli() {
+        init_python();
+        let session = Session::new(
+            "qwen3_dense".to_string(),
+            true,
+            2048,
+            0,
+            16,
+            1024,
+            false,
+            false,
+            "compatibility",
+            "llama_cpp",
+            "llama-cli".to_string(),
+            Some("/tmp/qwen3.5-mlx".to_string()),
+            None,
+            "llama-cli".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("default MLX session should build");
+
+        Python::with_gil(|py| {
+            let runtime = session.runtime(py).expect("runtime should serialize");
+            let runtime = runtime.bind(py);
+            assert_eq!(dict_string(runtime, "selected_backend"), "mlx");
+        });
+    }
+
+    #[test]
+    fn python_session_routes_default_gguf_model_to_llama_cpp() {
+        init_python();
+        let session = Session::new(
+            "qwen3_dense".to_string(),
+            true,
+            2048,
+            0,
+            16,
+            1024,
+            false,
+            false,
+            "compatibility",
+            "mlx",
+            "llama-cli".to_string(),
+            Some("/tmp/qwen3.5-9b-q4.gguf".to_string()),
+            None,
+            "llama-cli".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("GGUF session should build");
+
+        Python::with_gil(|py| {
+            let runtime = session.runtime(py).expect("runtime should serialize");
+            let runtime = runtime.bind(py);
+            assert_eq!(dict_string(runtime, "selected_backend"), "llama_cpp");
+        });
+    }
+
     fn sdk_compatibility_server_session(server_url: String) -> EngineSession {
         let config = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
-            backend_request: PreviewBackendRequest {
-                support_tier: ax_engine_sdk::SupportTier::Compatibility,
-                compat_server_url: Some(server_url),
-                ..PreviewBackendRequest::default()
-            },
+            backend_request: PreviewBackendRequest::shipping_default_llama_cpp(
+                PathBuf::from("llama-cli"),
+                None,
+                Some(server_url),
+            ),
             ..PreviewSessionConfigRequest::default()
         })
         .expect("sdk compatibility preview resolution should succeed");

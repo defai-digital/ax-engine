@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use crate::ids::{BlockId, CacheGroupId, RequestId};
 use thiserror::Error;
 
+const KV_LOW_FREE_BLOCKS_DIVISOR: u32 = 5;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BlockTable {
     pub cache_group_id: CacheGroupId,
@@ -107,8 +109,8 @@ pub struct KvManagerConfig {
 impl KvManagerConfig {
     pub fn new(cache_group_id: CacheGroupId, block_size_tokens: u32, total_blocks: u32) -> Self {
         assert!(
-            block_size_tokens > 0 && block_size_tokens <= u16::MAX as u32,
-            "block_size_tokens must be in 1..={} to avoid partial_block_tokens truncation",
+            block_size_tokens > 0 && block_size_tokens <= u16::MAX as u32 && total_blocks > 0,
+            "block_size_tokens must be in 1..={} and total_blocks must be > 0",
             u16::MAX
         );
         Self {
@@ -388,7 +390,12 @@ impl KvManager {
             .get_mut(&request_id)
             .ok_or(KvManagerError::UnknownRequest(request_id))?;
         table.block_ids.extend(new_block_ids.iter().copied());
-        table.logical_token_count += scheduled_tokens;
+        table.logical_token_count = table
+            .logical_token_count
+            .checked_add(scheduled_tokens)
+            .ok_or(KvManagerError::InvariantViolation(
+                "logical_token_count overflow",
+            ))?;
         table.full_block_count = table.logical_token_count / self.config.block_size_tokens;
         table.partial_block_tokens =
             (table.logical_token_count % self.config.block_size_tokens) as u16;
@@ -485,7 +492,9 @@ impl KvManager {
         let free_blocks = self.available_block_count();
         if free_blocks == 0 {
             Some("kv_exhausted".into())
-        } else if free_blocks * 5 <= self.config.total_blocks {
+        } else if u64::from(free_blocks) * u64::from(KV_LOW_FREE_BLOCKS_DIVISOR)
+            <= u64::from(self.config.total_blocks)
+        {
             Some(format!(
                 "kv_low_free_blocks:{}/{}",
                 free_blocks, self.config.total_blocks
@@ -642,7 +651,7 @@ impl KvManager {
 
     fn allocate_touch_tick(&mut self) -> u64 {
         let tick = self.next_cache_tick;
-        self.next_cache_tick += 1;
+        self.next_cache_tick = self.next_cache_tick.wrapping_add(1);
         tick
     }
 

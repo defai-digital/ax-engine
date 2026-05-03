@@ -9,6 +9,7 @@ use ax_engine_sdk::{
     EngineSessionConfig, EngineSessionError, EngineStepReport, GenerateFinishReason,
     GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent, GenerateStreamState,
     NativeGgufExportFailureKind, RuntimeReport, SelectedBackend, SessionRequestReport,
+    StatelessGenerateContext,
 };
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
@@ -33,7 +34,8 @@ const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 #[derive(Clone)]
 struct AppState {
     model_id: Arc<String>,
-    session_config: EngineSessionConfig,
+    session_config: Arc<EngineSessionConfig>,
+    stateless_generate_context: Arc<StatelessGenerateContext>,
     runtime_report: RuntimeReport,
     request_session: Arc<Mutex<EngineSession>>,
     next_request_id: Arc<AtomicU64>,
@@ -264,14 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .session_config()
         .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
     let session = EngineSession::new(session_config.clone())?;
-    let runtime_report = session.runtime_report();
-    let state = AppState {
-        model_id: Arc::new(args.model_id.clone()),
-        session_config: session_config.clone(),
-        runtime_report,
-        request_session: Arc::new(Mutex::new(session)),
-        next_request_id: Arc::new(AtomicU64::new(1)),
-    };
+    let state = build_app_state(args.model_id.clone(), session)?;
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&bind_address).await?;
 
@@ -289,8 +284,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        if let Ok(mut signal) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            signal.recv().await;
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+}
+
+fn build_app_state(
+    model_id: String,
+    session: EngineSession,
+) -> Result<AppState, EngineSessionError> {
+    let session_config = session.config().clone();
+    let stateless_generate_context =
+        StatelessGenerateContext::new(session_config.clone()).map(Arc::new)?;
+    let runtime_report = session.runtime_report();
+
+    Ok(AppState {
+        model_id: Arc::new(model_id),
+        session_config: Arc::new(session_config),
+        stateless_generate_context,
+        runtime_report,
+        request_session: Arc::new(Mutex::new(session)),
+        next_request_id: Arc::new(AtomicU64::new(1)),
+    })
 }
 
 fn init_tracing() -> bool {
@@ -368,11 +407,10 @@ async fn generate(
     validate_model(&state, request.model.as_deref())?;
 
     let request_id = allocate_request_id(&state);
-    let session_config = state.session_config.clone();
+    let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
     let request = build_generate_request(&state, request);
     let response = run_blocking_session_task(move || {
-        let mut session = EngineSession::new(session_config)?;
-        session.generate_with_request_id(request_id, request)
+        stateless_generate_context.generate_with_request_id(request_id, request)
     })
     .await?;
 
@@ -397,10 +435,9 @@ async fn openai_completions(
     }
 
     let request_id = allocate_request_id(&state);
-    let session_config = state.session_config.clone();
+    let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
     let response = run_blocking_session_task(move || {
-        let mut session = EngineSession::new(session_config)?;
-        session.generate_with_request_id(request_id, request.generate_request)
+        stateless_generate_context.generate_with_request_id(request_id, request.generate_request)
     })
     .await?;
     let payload = openai_completion_response(&response, openai_completion_id(request_id));
@@ -426,10 +463,9 @@ async fn openai_chat_completions(
     }
 
     let request_id = allocate_request_id(&state);
-    let session_config = state.session_config.clone();
+    let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
     let response = run_blocking_session_task(move || {
-        let mut session = EngineSession::new(session_config)?;
-        session.generate_with_request_id(request_id, request.generate_request)
+        stateless_generate_context.generate_with_request_id(request_id, request.generate_request)
     })
     .await?;
     let payload = openai_chat_completion_response(&response, openai_chat_completion_id(request_id));
@@ -448,7 +484,30 @@ async fn generate_stream(
 
     let request_id = allocate_request_id(&state);
     let request = build_generate_request(&state, request);
-    let session_config = state.session_config.clone();
+    if state
+        .stateless_generate_context
+        .supports_compatibility_streaming()
+    {
+        let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
+        let drive_context = Arc::clone(&stateless_generate_context);
+        let stream_state = run_blocking_session_task(move || {
+            stateless_generate_context.stream_state_with_request_id(request_id, request)
+        })
+        .await?;
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::task::spawn_blocking(move || {
+            drive_stateless_generate_stream_state(drive_context, stream_state, tx);
+        });
+
+        return Ok(Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(5))
+                .text("keep-alive"),
+        ));
+    }
+
+    let session_config = state.session_config.as_ref().clone();
     let (session, stream_state) = run_blocking_session_task(move || {
         let mut session = EngineSession::new(session_config)?;
         let stream_state = session.stream_generate_state_with_request_id(request_id, request)?;
@@ -476,7 +535,32 @@ async fn stream_openai_request(
     stream_kind: OpenAiStreamKind,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let request_id = allocate_request_id(&state);
-    let session_config = state.session_config.clone();
+    if state
+        .stateless_generate_context
+        .supports_compatibility_streaming()
+    {
+        let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
+        let drive_context = Arc::clone(&stateless_generate_context);
+        let stream_state = run_blocking_session_task(move || {
+            stateless_generate_context.stream_state_with_request_id(request_id, request)
+        })
+        .await?;
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::task::spawn_blocking(move || {
+            drive_stateless_openai_stream_state(drive_context, stream_state, tx, stream_kind);
+        });
+
+        return Ok(Sse::new(UnboundedReceiverStream::new(rx))
+            .keep_alive(
+                KeepAlive::new()
+                    .interval(Duration::from_secs(5))
+                    .text("keep-alive"),
+            )
+            .into_response());
+    }
+
+    let session_config = state.session_config.as_ref().clone();
     let (session, stream_state) = run_blocking_session_task(move || {
         let mut session = EngineSession::new(session_config)?;
         let stream_state = session.stream_generate_state_with_request_id(request_id, request)?;
@@ -508,21 +592,23 @@ async fn submit_request(
     let request_id = allocate_request_id(&state);
     let request = build_generate_request(&state, request);
     let request_session = state.request_session.clone();
-    let request_id = run_blocking_session_task(move || {
+    let report = run_blocking_session_task(move || {
         let mut session = request_session.blocking_lock();
-        session.submit_generate_with_request_id(request_id, request)
+        let request_id = session.submit_generate_with_request_id(request_id, request)?;
+        session.request_report(request_id).ok_or(
+            EngineSessionError::RequestReportInvariantViolation {
+                request_id,
+                message: "request missing immediately after submission",
+            },
+        )
     })
     .await?;
-    let session = state.request_session.lock().await;
-    let report = session
-        .request_report(request_id)
-        .ok_or_else(|| missing_request_after_submit(request_id))?;
 
     Ok((StatusCode::CREATED, Json(report)))
 }
 
 fn allocate_request_id(state: &AppState) -> u64 {
-    state.next_request_id.fetch_add(1, Ordering::Relaxed)
+    state.next_request_id.fetch_add(1, Ordering::AcqRel)
 }
 
 fn drive_generate_stream_state(
@@ -532,6 +618,28 @@ fn drive_generate_stream_state(
 ) {
     loop {
         match session.next_stream_event(&mut state) {
+            Ok(Some(event)) => {
+                if !send_sdk_stream_event(&tx, event) {
+                    return;
+                }
+            }
+            Ok(None) => return,
+            Err(error) => {
+                let (_, Json(error)) = map_session_error(error);
+                send_stream_error(&tx, error);
+                return;
+            }
+        }
+    }
+}
+
+fn drive_stateless_generate_stream_state(
+    context: Arc<StatelessGenerateContext>,
+    mut state: GenerateStreamState,
+    tx: mpsc::UnboundedSender<Result<Event, Infallible>>,
+) {
+    loop {
+        match context.next_stream_event(&mut state) {
             Ok(Some(event)) => {
                 if !send_sdk_stream_event(&tx, event) {
                     return;
@@ -557,6 +665,34 @@ fn drive_openai_stream_state(
 
     loop {
         match session.next_stream_event(&mut state) {
+            Ok(Some(event)) => {
+                if !send_openai_stream_event(&tx, event, stream_kind, &mut chat_role_emitted) {
+                    return;
+                }
+            }
+            Ok(None) => {
+                let _ = tx.send(Ok(Event::default().data("[DONE]")));
+                return;
+            }
+            Err(error) => {
+                let (_, Json(error)) = map_session_error(error);
+                send_openai_stream_error(&tx, error);
+                return;
+            }
+        }
+    }
+}
+
+fn drive_stateless_openai_stream_state(
+    context: Arc<StatelessGenerateContext>,
+    mut state: GenerateStreamState,
+    tx: mpsc::UnboundedSender<Result<Event, Infallible>>,
+    stream_kind: OpenAiStreamKind,
+) {
+    let mut chat_role_emitted = false;
+
+    loop {
+        match context.next_stream_event(&mut state) {
             Ok(Some(event)) => {
                 if !send_openai_stream_event(&tx, event, stream_kind, &mut chat_role_emitted) {
                     return;
@@ -709,6 +845,7 @@ fn send_stream_error(tx: &mpsc::UnboundedSender<Result<Event, Infallible>>, erro
             .to_string()
     });
     let _ = tx.send(Ok(Event::default().event("error").data(payload)));
+    let _ = tx.send(Ok(Event::default().data("[DONE]")));
 }
 
 fn send_openai_stream_chunk<T: Serialize>(
@@ -740,7 +877,7 @@ fn send_openai_stream_error(
         "{\"error\":{\"code\":\"engine_error\",\"message\":\"failed to serialize stream error\"}}"
             .to_string()
     });
-    let _ = tx.send(Ok(Event::default().data(payload)));
+    let _ = tx.send(Ok(Event::default().event("error").data(payload)));
     let _ = tx.send(Ok(Event::default().data("[DONE]")));
 }
 
@@ -833,7 +970,7 @@ fn build_generate_request(state: &AppState, request: GenerateHttpRequest) -> Gen
         model_id: state.model_id.to_string(),
         input_tokens: request.input_tokens,
         input_text: request.input_text,
-        max_output_tokens: request.max_output_tokens.unwrap_or(16),
+        max_output_tokens: request.max_output_tokens.unwrap_or(256),
         sampling: request.sampling.unwrap_or_default(),
         metadata: request.metadata,
     }
@@ -843,6 +980,7 @@ fn build_openai_completion_request(
     state: &AppState,
     request: OpenAiCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
+    let max_output_tokens = require_openai_max_tokens(request.max_tokens)?;
     let (input_tokens, input_text) = match request.prompt {
         OpenAiPromptInput::Text(text) => (Vec::new(), Some(text)),
         OpenAiPromptInput::TextBatch(texts) => (Vec::new(), Some(texts.join("\n"))),
@@ -854,7 +992,7 @@ fn build_openai_completion_request(
             model_id: state.model_id.to_string(),
             input_tokens,
             input_text,
-            max_output_tokens: request.max_tokens.unwrap_or(16),
+            max_output_tokens,
             sampling: GenerateSampling {
                 temperature: request.temperature.unwrap_or(0.0),
                 top_p: request.top_p.unwrap_or(1.0),
@@ -873,6 +1011,7 @@ fn build_openai_chat_request(
     state: &AppState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
+    let max_output_tokens = require_openai_max_tokens(request.max_tokens)?;
     let input_text = render_openai_chat_prompt(&request.messages)?;
 
     Ok(OpenAiBuiltRequest {
@@ -880,7 +1019,7 @@ fn build_openai_chat_request(
             model_id: state.model_id.to_string(),
             input_tokens: Vec::new(),
             input_text: Some(input_text),
-            max_output_tokens: request.max_tokens.unwrap_or(16),
+            max_output_tokens,
             sampling: GenerateSampling {
                 temperature: request.temperature.unwrap_or(0.0),
                 top_p: request.top_p.unwrap_or(1.0),
@@ -892,6 +1031,18 @@ fn build_openai_chat_request(
             metadata: request.metadata,
         },
         stream: request.stream,
+    })
+}
+
+fn require_openai_max_tokens(
+    max_tokens: Option<u32>,
+) -> Result<u32, (StatusCode, Json<ErrorResponse>)> {
+    max_tokens.ok_or_else(|| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "OpenAI-compatible preview endpoints require max_tokens; refusing to apply a hidden default".to_string(),
+        )
     })
 }
 
@@ -936,9 +1087,14 @@ fn render_openai_chat_content(
                         ),
                     ));
                 }
-                if let Some(text) = part.text.as_deref() {
-                    rendered.push_str(text);
-                }
+                let text = part.text.as_deref().ok_or_else(|| {
+                    error_response(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request",
+                        "text chat content parts require a text field",
+                    )
+                })?;
+                rendered.push_str(text);
             }
             Ok(rendered)
         }
@@ -1055,6 +1211,7 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
         | EngineSessionError::InvalidRequestId
         | EngineSessionError::UnsupportedSupportTier
         | EngineSessionError::CompatibilityBackendDoesNotSupportLifecycle { .. }
+        | EngineSessionError::StatelessStreamRequiresCompatibilityBackend { .. }
         | EngineSessionError::Compatibility(CompatibilityBackendError::StreamingNotSupported {
             ..
         })
@@ -1073,6 +1230,9 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
         | EngineSessionError::Compatibility(CompatibilityBackendError::UnsupportedTokenPrompt {
             ..
         })
+        | EngineSessionError::Compatibility(
+            CompatibilityBackendError::UnsupportedSamplingOption { .. },
+        )
         | EngineSessionError::Compatibility(CompatibilityBackendError::AmbiguousPromptInput {
             ..
         })
@@ -1086,11 +1246,21 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
         EngineSessionError::BackendContract(_)
         | EngineSessionError::MissingCompatibilityBackendConfig { .. }
         | EngineSessionError::CompatibilityBackendConfigMismatch { .. }
+        | EngineSessionError::CompatibilityFallbackMustUseLlamaCpp { .. }
+        | EngineSessionError::CompatibilityFallbackRequiresNonStrictPolicy
         | EngineSessionError::CompatibilityStreamEndedBeforeStop { .. }
+        | EngineSessionError::CompatibilityFallbackFailed { .. }
+        | EngineSessionError::NativeStartupFallbackFailed { .. }
         | EngineSessionError::NativeRuntimeArtifactsRequired
         | EngineSessionError::Compatibility(CompatibilityBackendError::CommandLaunch { .. })
         | EngineSessionError::Compatibility(CompatibilityBackendError::CommandFailed { .. })
+        | EngineSessionError::Compatibility(CompatibilityBackendError::CommandTimedOut {
+            ..
+        })
         | EngineSessionError::Compatibility(CompatibilityBackendError::NonUtf8Output { .. })
+        | EngineSessionError::Compatibility(CompatibilityBackendError::SerializeRequestJson {
+            ..
+        })
         | EngineSessionError::Compatibility(CompatibilityBackendError::HttpRequest { .. })
         | EngineSessionError::Compatibility(CompatibilityBackendError::HttpStatus { .. })
         | EngineSessionError::Compatibility(CompatibilityBackendError::HttpResponseRead {
@@ -1255,7 +1425,7 @@ mod tests {
     }
 
     fn sdk_session_for_state(state: &AppState) -> EngineSession {
-        EngineSession::new(state.session_config.clone()).expect("sdk session should build")
+        EngineSession::new(state.session_config.as_ref().clone()).expect("sdk session should build")
     }
 
     fn sdk_stream_payload(event: GenerateStreamEvent) -> (String, Value) {
@@ -1360,8 +1530,8 @@ mod tests {
         }
     }
 
-    fn test_state() -> AppState {
-        let args = ServerArgs {
+    fn base_server_args() -> ServerArgs {
+        ServerArgs {
             host: "127.0.0.1".to_string(),
             port: 8080,
             model_id: "qwen3_dense".to_string(),
@@ -1370,26 +1540,31 @@ mod tests {
             cache_group_id: 0,
             block_size_tokens: 16,
             total_blocks: 1024,
-            support_tier: args::PreviewSupportTier::NativePreview,
+            native_mode: false,
+            mlx: false,
+            mlx_native: false,
+            support_tier: args::PreviewSupportTier::Compatibility,
             compat_backend: args::PreviewCompatibilityBackend::LlamaCpp,
             compat_cli_path: "llama-cli".to_string(),
             compat_model_path: None,
             compat_server_url: None,
+            llama_fallback_cli_path: "llama-cli".to_string(),
+            llama_fallback_model_path: None,
+            llama_fallback_server_url: None,
             native_runtime_artifacts_dir: None,
             native_model_artifacts_dir: None,
+        }
+    }
+
+    fn test_state() -> AppState {
+        let args = ServerArgs {
+            support_tier: args::PreviewSupportTier::NativePreview,
+            ..base_server_args()
         };
         let mut session_config = args.session_config().expect("session config should build");
         session_config.allow_deterministic_native_fallback = true;
         let session = EngineSession::new(session_config.clone()).expect("session should build");
-        let runtime_report = session.runtime_report();
-
-        AppState {
-            model_id: Arc::new(args.model_id.clone()),
-            session_config: session_config.clone(),
-            runtime_report,
-            request_session: Arc::new(Mutex::new(session)),
-            next_request_id: Arc::new(AtomicU64::new(1)),
-        }
+        build_app_state(args.model_id.clone(), session).expect("app state should build")
     }
 
     fn fake_compat_script() -> std::path::PathBuf {
@@ -1427,34 +1602,14 @@ sys.stdout.write(f"server::{prompt}")
         let model_path = std::env::temp_dir().join("ax-engine-server-compat-model.gguf");
         fs::write(&model_path, "fake gguf").expect("fake model should be written");
         let args = ServerArgs {
-            host: "127.0.0.1".to_string(),
-            port: 8080,
-            model_id: "qwen3_dense".to_string(),
-            deterministic: true,
-            max_batch_tokens: 2048,
-            cache_group_id: 0,
-            block_size_tokens: 16,
-            total_blocks: 1024,
-            support_tier: args::PreviewSupportTier::Compatibility,
-            compat_backend: args::PreviewCompatibilityBackend::LlamaCpp,
             compat_cli_path: script_path.display().to_string(),
             compat_model_path: Some(model_path),
-            compat_server_url: None,
-            native_runtime_artifacts_dir: None,
-            native_model_artifacts_dir: None,
+            ..base_server_args()
         };
 
         let session_config = args.session_config().expect("session config should build");
         let session = EngineSession::new(session_config.clone()).expect("session should build");
-        let runtime_report = session.runtime_report();
-
-        AppState {
-            model_id: Arc::new(args.model_id.clone()),
-            session_config,
-            runtime_report,
-            request_session: Arc::new(Mutex::new(session)),
-            next_request_id: Arc::new(AtomicU64::new(1)),
-        }
+        build_app_state(args.model_id.clone(), session).expect("app state should build")
     }
 
     fn compatibility_server_state(server_url: String) -> AppState {
@@ -1469,34 +1624,14 @@ sys.stdout.write(f"server::{prompt}")
         server_url: String,
     ) -> AppState {
         let args = ServerArgs {
-            host: "127.0.0.1".to_string(),
-            port: 8080,
-            model_id: "qwen3_dense".to_string(),
-            deterministic: true,
-            max_batch_tokens: 2048,
-            cache_group_id: 0,
-            block_size_tokens: 16,
-            total_blocks: 1024,
-            support_tier: args::PreviewSupportTier::Compatibility,
             compat_backend,
-            compat_cli_path: "llama-cli".to_string(),
-            compat_model_path: None,
             compat_server_url: Some(server_url),
-            native_runtime_artifacts_dir: None,
-            native_model_artifacts_dir: None,
+            ..base_server_args()
         };
 
         let session_config = args.session_config().expect("session config should build");
         let session = EngineSession::new(session_config.clone()).expect("session should build");
-        let runtime_report = session.runtime_report();
-
-        AppState {
-            model_id: Arc::new(args.model_id.clone()),
-            session_config,
-            runtime_report,
-            request_session: Arc::new(Mutex::new(session)),
-            next_request_id: Arc::new(AtomicU64::new(1)),
-        }
+        build_app_state(args.model_id.clone(), session).expect("app state should build")
     }
 
     fn fake_python_mlx_cli_script() -> std::path::PathBuf {
@@ -1519,7 +1654,6 @@ assert args[args.index("--temp") + 1] == "0"
 assert args[args.index("--top-p") + 1] == "1"
 assert args[args.index("--top-k") + 1] == "0"
 assert args[args.index("--seed") + 1] == "0"
-assert args[args.index("--repetition-penalty") + 1] == "1"
 assert args[args.index("--verbose") + 1] == "false"
 assert "--ignore-chat-template" in args
 sys.stdout.write(f"mlx::{model}::{prompt}")
@@ -1544,35 +1678,20 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
         let model_path = std::env::temp_dir().join("ax-engine-server-compat-model-mlx");
         fs::write(&model_path, "fake mlx model").expect("fake mlx model should be written");
         let args = ServerArgs {
-            host: "127.0.0.1".to_string(),
-            port: 8080,
-            model_id: "qwen3_dense".to_string(),
-            deterministic: true,
-            max_batch_tokens: 2048,
-            cache_group_id: 0,
-            block_size_tokens: 16,
-            total_blocks: 1024,
-            support_tier: args::PreviewSupportTier::Compatibility,
+            mlx: true,
             compat_backend: args::PreviewCompatibilityBackend::Mlx,
             compat_cli_path: script_path.display().to_string(),
             compat_model_path: Some(model_path.clone()),
-            compat_server_url: None,
-            native_runtime_artifacts_dir: None,
-            native_model_artifacts_dir: None,
+            llama_fallback_model_path: Some(
+                std::env::temp_dir().join("ax-engine-server-compat-fallback.gguf"),
+            ),
+            ..base_server_args()
         };
 
         let session_config = args.session_config().expect("session config should build");
         let session = EngineSession::new(session_config.clone()).expect("session should build");
-        let runtime_report = session.runtime_report();
-
         (
-            AppState {
-                model_id: Arc::new(args.model_id.clone()),
-                session_config,
-                runtime_report,
-                request_session: Arc::new(Mutex::new(session)),
-                next_request_id: Arc::new(AtomicU64::new(1)),
-            },
+            build_app_state(args.model_id.clone(), session).expect("app state should build"),
             model_path,
         )
     }
@@ -2049,6 +2168,42 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
     }
 
     #[tokio::test]
+    async fn openai_completions_endpoint_requires_max_tokens() {
+        let app = build_router(compatibility_server_state("http://127.0.0.1:1".to_string()));
+        let (status, json) = json_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "model": "qwen3_dense",
+                        "prompt": "hello openai",
+                        "stream": false
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json.get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str),
+            Some("invalid_request")
+        );
+        assert!(json
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("require max_tokens"));
+    }
+
+    #[tokio::test]
     async fn openai_chat_completions_endpoint_translates_compatibility_response() {
         let (compat_server_url, compat_server_handle) = spawn_single_json_completion_server(
             "/v1/completions",
@@ -2113,6 +2268,50 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
                 .and_then(Value::as_str),
             Some("chat::hello openai chat")
         );
+    }
+
+    #[tokio::test]
+    async fn openai_chat_completions_endpoint_requires_max_tokens() {
+        let app = build_router(compatibility_server_state_for_backend(
+            args::PreviewCompatibilityBackend::Vllm,
+            "http://127.0.0.1:1".to_string(),
+        ));
+        let (status, json) = json_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "model": "qwen3_dense",
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": "hello openai chat"
+                            }
+                        ],
+                        "stream": false
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json.get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str),
+            Some("invalid_request")
+        );
+        assert!(json
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("require max_tokens"));
     }
 
     #[tokio::test]

@@ -12,6 +12,8 @@ pub const AX_NATIVE_MODEL_MANIFEST_FILE: &str = "model-manifest.json";
 #[serde(rename_all = "snake_case")]
 pub enum NativeTensorFormat {
     Safetensors,
+    /// GGUF file, loaded directly without conversion.
+    Gguf,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -22,6 +24,18 @@ pub enum NativeTensorDataType {
     F32,
     I8,
     U8,
+    /// Packed uint32 — used by MLX affine 4-bit quantization for the weight tensor.
+    /// Scales and biases are stored as separate bf16/f32 tensors with the same base name.
+    U32,
+    /// Q4_K_M quantized: 256-element super-blocks, 144 bytes each (4.5 bits/weight).
+    /// Raw block_q4_K bytes stored directly in the Metal buffer; dequant happens in kernel.
+    Q4Km,
+    /// Q5_K quantized: 256-element super-blocks, 176 bytes each. Dequantized to F16 at load.
+    Q5Km,
+    /// Q6_K quantized: 256-element super-blocks, 210 bytes each. Dequantized to F16 at load.
+    Q6Km,
+    /// Q8_0 quantized: 32-element blocks, 34 bytes each. Dequantized to F16 at load.
+    Q8Zero,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -167,10 +181,70 @@ pub struct NativeTensorSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer_index: Option<u32>,
     pub dtype: NativeTensorDataType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_tensor_type: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub source_quantized: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantized_source: Option<NativeQuantizedTensorSource>,
     pub shape: Vec<u64>,
     pub file: PathBuf,
     pub offset_bytes: u64,
     pub length_bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NativeQuantizedTensorSource {
+    pub format: String,
+    pub file: PathBuf,
+    #[serde(default)]
+    pub offset_bytes: u64,
+    pub length_bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NativeSourceQuantization {
+    pub format: String,
+    #[serde(default)]
+    pub tensor_type_counts: BTreeMap<String, u32>,
+    #[serde(default)]
+    pub quantized_tensor_count: u32,
+    #[serde(default)]
+    pub contains_quantized_tensors: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NativeRuntimeStatus {
+    #[serde(default = "default_runtime_ready")]
+    pub ready: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blockers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+impl Default for NativeRuntimeStatus {
+    fn default() -> Self {
+        Self {
+            ready: true,
+            blockers: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+}
+
+impl NativeRuntimeStatus {
+    pub fn ready_without_details(&self) -> bool {
+        self.ready && self.blockers.is_empty() && self.notes.is_empty()
+    }
+}
+
+fn default_runtime_ready() -> bool {
+    true
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -178,8 +252,17 @@ pub struct NativeModelManifest {
     pub schema_version: String,
     pub model_family: String,
     pub tensor_format: NativeTensorFormat,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_quantization: Option<NativeSourceQuantization>,
+    #[serde(
+        default,
+        skip_serializing_if = "NativeRuntimeStatus::ready_without_details"
+    )]
+    pub runtime_status: NativeRuntimeStatus,
     pub layer_count: u32,
     pub hidden_size: u32,
+    #[serde(default)]
+    pub intermediate_size: u32,
     pub attention_head_count: u32,
     pub attention_head_dim: u32,
     pub kv_head_count: u32,
@@ -217,6 +300,16 @@ pub struct NativeModelArtifacts {
 }
 
 impl NativeModelArtifacts {
+    /// Build artifacts directly from a pre-parsed manifest and root directory.
+    /// Used by the GGUF loader to bypass the JSON manifest file.
+    pub fn from_manifest_and_root(
+        root_dir: PathBuf,
+        manifest: NativeModelManifest,
+    ) -> Result<Self, NativeModelError> {
+        validate_native_model_manifest(&root_dir, &manifest)?;
+        Ok(Self { root_dir, manifest })
+    }
+
     pub fn from_dir(path: impl AsRef<Path>) -> Result<Self, NativeModelError> {
         let root_dir = path.as_ref().to_path_buf();
         let manifest_path = root_dir.join(AX_NATIVE_MODEL_MANIFEST_FILE);
@@ -274,6 +367,8 @@ impl NativeModelArtifacts {
         NativeModelArtifactsSummary {
             model_family: self.manifest.model_family.clone(),
             tensor_format: self.manifest.tensor_format,
+            source_quantization: self.manifest.source_quantization.clone(),
+            runtime_status: self.manifest.runtime_status.clone(),
             layer_count: self.manifest.layer_count,
             tensor_count: self.manifest.tensors.len() as u32,
             tie_word_embeddings: self.manifest.tie_word_embeddings,
@@ -321,6 +416,13 @@ impl NativeModelArtifacts {
 pub struct NativeModelArtifactsSummary {
     pub model_family: String,
     pub tensor_format: NativeTensorFormat,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_quantization: Option<NativeSourceQuantization>,
+    #[serde(
+        default,
+        skip_serializing_if = "NativeRuntimeStatus::ready_without_details"
+    )]
+    pub runtime_status: NativeRuntimeStatus,
     pub layer_count: u32,
     pub tensor_count: u32,
     pub tie_word_embeddings: bool,
@@ -359,6 +461,14 @@ fn validate_native_model_manifest(
     if manifest.model_family.trim().is_empty() {
         return Err(NativeModelError::InvalidManifest {
             message: "model_family must not be empty".to_string(),
+        });
+    }
+    if !manifest.runtime_status.ready || !manifest.runtime_status.blockers.is_empty() {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "native model manifest is not runtime ready: ready={} blockers={:?}",
+                manifest.runtime_status.ready, manifest.runtime_status.blockers
+            ),
         });
     }
     if manifest.layer_count == 0
@@ -417,7 +527,7 @@ fn validate_native_model_manifest(
             });
         }
         let rotary_dim = (manifest.attention_head_dim as f32 * factor) as u32;
-        if rotary_dim == 0 || rotary_dim % 2 != 0 {
+        if rotary_dim == 0 || !rotary_dim.is_multiple_of(2) {
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
                     "partial_rotary_factor {factor} yields rotary_dim {rotary_dim} which must be even and > 0"
@@ -426,23 +536,23 @@ fn validate_native_model_manifest(
         }
     }
     if manifest.linear_attention.is_enabled() {
-        validate_positive_optional_field(
+        require_positive_field(
             manifest.linear_attention.num_value_heads,
             "linear_attention.num_value_heads",
         )?;
-        validate_positive_optional_field(
+        require_positive_field(
             manifest.linear_attention.num_key_heads,
             "linear_attention.num_key_heads",
         )?;
-        validate_positive_optional_field(
+        require_positive_field(
             manifest.linear_attention.key_head_dim,
             "linear_attention.key_head_dim",
         )?;
-        validate_positive_optional_field(
+        require_positive_field(
             manifest.linear_attention.value_head_dim,
             "linear_attention.value_head_dim",
         )?;
-        validate_positive_optional_field(
+        require_positive_field(
             manifest.linear_attention.conv_kernel_dim,
             "linear_attention.conv_kernel_dim",
         )?;
@@ -461,9 +571,9 @@ fn validate_native_model_manifest(
         }
     }
     if manifest.moe.is_enabled() {
-        validate_positive_optional_field(manifest.moe.expert_count, "moe.expert_count")?;
-        validate_positive_optional_field(manifest.moe.experts_per_token, "moe.experts_per_token")?;
-        validate_positive_optional_field(
+        require_positive_field(manifest.moe.expert_count, "moe.expert_count")?;
+        require_positive_field(manifest.moe.experts_per_token, "moe.experts_per_token")?;
+        require_positive_field(
             manifest.moe.expert_intermediate_size,
             "moe.expert_intermediate_size",
         )?;
@@ -507,6 +617,7 @@ fn validate_native_model_manifest(
             });
         }
         validate_tensor_path(root_dir, tensor)?;
+        validate_quantized_source_path(root_dir, tensor)?;
 
         if tensor.role.requires_layer_index() {
             let Some(layer_index) = tensor.layer_index else {
@@ -822,7 +933,7 @@ fn validate_native_model_tensor_shapes(
                         layer_index
                     ),
                 })?;
-            if o_shape.0 != hidden_size {
+            if !attention_o.source_quantized && o_shape.0 != hidden_size {
                 return Err(NativeModelError::InvalidManifest {
                     message: format!(
                         "layer {} tensor attention_o must have {} output rows, got {}",
@@ -877,7 +988,7 @@ fn validate_native_model_tensor_shapes(
                     layer_index
                 ),
             })?;
-        if ffn_down_shape.0 != hidden_size {
+        if !ffn_down.source_quantized && ffn_down_shape.0 != hidden_size {
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
                     "layer {} tensor ffn_down must have shape [{}, intermediate_dim], got {:?}",
@@ -1139,7 +1250,7 @@ fn validate_native_model_tensor_shapes(
                     ),
                 }
             })?;
-            if cols != hidden_size {
+            if !ffn_gate_up_packed.source_quantized && cols != hidden_size {
                 return Err(NativeModelError::InvalidManifest {
                     message: format!(
                         "layer {} tensor ffn_gate_up_packed must have hidden_size {} columns, got {:?}",
@@ -1183,7 +1294,7 @@ fn validate_native_model_tensor_shapes(
                         layer_index
                     ),
                 })?;
-            if gate_shape.1 != hidden_size {
+            if !ffn_gate.source_quantized && gate_shape.1 != hidden_size {
                 return Err(NativeModelError::InvalidManifest {
                     message: format!(
                         "layer {} tensor ffn_gate must have hidden_size {} columns, got {:?}",
@@ -1191,7 +1302,7 @@ fn validate_native_model_tensor_shapes(
                     ),
                 });
             }
-            if up_shape.1 != hidden_size {
+            if !ffn_up.source_quantized && up_shape.1 != hidden_size {
                 return Err(NativeModelError::InvalidManifest {
                     message: format!(
                         "layer {} tensor ffn_up must have hidden_size {} columns, got {:?}",
@@ -1210,7 +1321,7 @@ fn validate_native_model_tensor_shapes(
             gate_shape.0
         };
 
-        if ffn_down_shape.1 != intermediate_dim {
+        if !ffn_down.source_quantized && ffn_down_shape.1 != intermediate_dim {
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
                     "layer {} tensor ffn_down must have intermediate_dim {} columns, got {:?}",
@@ -1242,16 +1353,19 @@ fn validate_manifest_layer_index_list(
     Ok(())
 }
 
-fn validate_positive_optional_field(
+fn require_positive_field(
     value: Option<u32>,
     field_name: &str,
-) -> Result<(), NativeModelError> {
-    if matches!(value, Some(0)) {
-        return Err(NativeModelError::InvalidManifest {
+) -> Result<u32, NativeModelError> {
+    match value {
+        Some(0) => Err(NativeModelError::InvalidManifest {
             message: format!("{field_name} must be > 0"),
-        });
+        }),
+        None => Err(NativeModelError::InvalidManifest {
+            message: format!("{field_name} is required when its feature is enabled"),
+        }),
+        Some(value) => Ok(value),
     }
-    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1404,21 +1518,24 @@ fn resolved_split_attention_dims(
             ),
         })?;
     let hidden_size = u64::from(manifest.hidden_size);
-    if q_cols != hidden_size {
-        return Err(NativeModelError::InvalidManifest {
-            message: format!(
-                "layer {} tensor attention_q must have shape [q_rows, {}], got {:?}",
-                layer_index, hidden_size, attention_q.shape
-            ),
-        });
-    }
-    if k_cols != hidden_size {
-        return Err(NativeModelError::InvalidManifest {
-            message: format!(
-                "layer {} tensor attention_k must have shape [kv_rows, {}], got {:?}",
-                layer_index, hidden_size, attention_k.shape
-            ),
-        });
+    // Skip input-dimension checks for quantized tensors (columns are packed).
+    if !attention_q.source_quantized {
+        if q_cols != hidden_size {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "layer {} tensor attention_q must have shape [q_rows, {}], got {:?}",
+                    layer_index, hidden_size, attention_q.shape
+                ),
+            });
+        }
+        if k_cols != hidden_size {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "layer {} tensor attention_k must have shape [kv_rows, {}], got {:?}",
+                    layer_index, hidden_size, attention_k.shape
+                ),
+            });
+        }
     }
 
     let mut head_dim = None;
@@ -1473,6 +1590,14 @@ fn resolved_split_attention_dims(
     // When attn_output_gate is enabled, q_proj encodes both queries and gate
     // values, so the effective row count for head derivation is halved.
     let effective_q_rows = if manifest.attn_output_gate {
+        if !q_rows.is_multiple_of(2) {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "layer {} attention_q rows {} must be even when attn_output_gate is enabled",
+                    layer_index, q_rows
+                ),
+            });
+        }
         q_rows / 2
     } else {
         q_rows
@@ -1514,7 +1639,7 @@ fn resolved_split_attention_dims(
                     layer_index
                 ),
             })?;
-        if v_cols != hidden_size {
+        if !attention_v.source_quantized && v_cols != hidden_size {
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
                     "layer {} tensor attention_v must have shape [kv_rows, {}], got {:?}",
@@ -1623,6 +1748,19 @@ fn expect_matrix_shape(
     expected_cols: u64,
     label: &str,
 ) -> Result<(), NativeModelError> {
+    // Quantized tensors (e.g. MLX affine 4-bit) pack columns: allow any col count
+    // as long as rows match and cols divide expected_cols.
+    if tensor.source_quantized {
+        if tensor.shape.first() == Some(&expected_rows) {
+            return Ok(());
+        }
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} must have {} rows (quantized), got {:?}",
+                label, expected_rows, tensor.shape
+            ),
+        });
+    }
     if tensor.shape == [expected_rows, expected_cols] {
         Ok(())
     } else {
@@ -1640,6 +1778,9 @@ fn expect_tensor_shape(
     expected_shape: &[u64],
     label: &str,
 ) -> Result<(), NativeModelError> {
+    if tensor.source_quantized {
+        return Ok(());
+    }
     if tensor.shape == expected_shape {
         Ok(())
     } else {
@@ -1779,6 +1920,91 @@ fn validate_tensor_path(
     Ok(())
 }
 
+fn validate_quantized_source_path(
+    root_dir: &Path,
+    tensor: &NativeTensorSpec,
+) -> Result<(), NativeModelError> {
+    let Some(source) = &tensor.quantized_source else {
+        return Ok(());
+    };
+    if !tensor.source_quantized {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} declares quantized_source but source_quantized is false",
+                tensor.name
+            ),
+        });
+    }
+    if source.length_bytes == 0 {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} quantized_source must have positive length_bytes",
+                tensor.name
+            ),
+        });
+    }
+    if source.file.is_absolute() {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} quantized_source file path must be relative",
+                tensor.name
+            ),
+        });
+    }
+    if source
+        .file
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} quantized_source file path must not escape root_dir",
+                tensor.name
+            ),
+        });
+    }
+
+    let path = root_dir.join(&source.file);
+    let metadata =
+        fs::metadata(&path).map_err(|source_error| NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} references missing quantized_source file {}: {}",
+                tensor.name,
+                path.display(),
+                source_error
+            ),
+        })?;
+    if !metadata.is_file() {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} quantized_source path {} is not a file",
+                tensor.name,
+                path.display()
+            ),
+        });
+    }
+    let file_len = metadata.len();
+    let end = source
+        .offset_bytes
+        .checked_add(source.length_bytes)
+        .ok_or_else(|| NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} quantized_source byte range overflowed",
+                tensor.name
+            ),
+        })?;
+    if end > file_len {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} quantized_source byte range [{}, {}) exceeds file length {}",
+                tensor.name, source.offset_bytes, end, file_len
+            ),
+        });
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1824,8 +2050,11 @@ mod tests {
             schema_version: AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
             model_family: "qwen3_dense".to_string(),
             tensor_format: NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: NativeRuntimeStatus::default(),
             layer_count: 2,
             hidden_size: 2048,
+            intermediate_size: 11008,
             attention_head_count: 16,
             attention_head_dim: 128,
             kv_head_count: 8,
@@ -2065,6 +2294,9 @@ mod tests {
             role,
             layer_index,
             dtype: NativeTensorDataType::F16,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantized_source: None,
             shape,
             file: PathBuf::from("model.safetensors"),
             offset_bytes: 0,
@@ -2096,11 +2328,32 @@ mod tests {
             NativeModelArtifactsSummary {
                 model_family: "qwen3_dense".to_string(),
                 tensor_format: NativeTensorFormat::Safetensors,
+                source_quantization: None,
+                runtime_status: NativeRuntimeStatus::default(),
                 layer_count: 2,
                 tensor_count: 15,
                 tie_word_embeddings: false,
             }
         );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_runtime_not_ready_manifest() {
+        let mut manifest = packed_layer_manifest();
+        manifest.runtime_status = NativeRuntimeStatus {
+            ready: false,
+            blockers: vec!["qwen35_quantized_gguf_native_runtime_not_implemented".to_string()],
+            notes: Vec::new(),
+        };
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let err = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("runtime-not-ready manifest should fail closed");
+        let message = err.to_string();
+        assert!(message.contains("not runtime ready"));
+        assert!(message.contains("qwen35_quantized_gguf_native_runtime_not_implemented"));
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -2118,6 +2371,58 @@ mod tests {
 
         NativeModelArtifacts::from_dir(&dir)
             .expect("packed attn_output_gate manifest should validate");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_attn_output_gate_with_split_qkv() {
+        let mut manifest = packed_layer_manifest();
+        manifest.attn_output_gate = true;
+        for tensor in &mut manifest.tensors {
+            if tensor.role == NativeTensorRole::AttentionQkvPacked {
+                tensor.shape[0] = 6144;
+            }
+        }
+        manifest.tensors.retain(|tensor| {
+            !(tensor.layer_index == Some(1) && tensor.role == NativeTensorRole::AttentionQkvPacked)
+        });
+        manifest.tensors.extend([
+            tensor(
+                "model.layers.1.self_attn.q_norm.weight",
+                NativeTensorRole::AttentionQNorm,
+                Some(1),
+                vec![128],
+            ),
+            tensor(
+                "model.layers.1.self_attn.k_norm.weight",
+                NativeTensorRole::AttentionKNorm,
+                Some(1),
+                vec![128],
+            ),
+            tensor(
+                "model.layers.1.self_attn.q_proj.weight",
+                NativeTensorRole::AttentionQ,
+                Some(1),
+                vec![4096, 2048],
+            ),
+            tensor(
+                "model.layers.1.self_attn.k_proj.weight",
+                NativeTensorRole::AttentionK,
+                Some(1),
+                vec![1024, 2048],
+            ),
+            tensor(
+                "model.layers.1.self_attn.v_proj.weight",
+                NativeTensorRole::AttentionV,
+                Some(1),
+                vec![1024, 2048],
+            ),
+        ]);
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        NativeModelArtifacts::from_dir(&dir)
+            .expect("split gated-attention manifest should validate");
 
         let _ = fs::remove_dir_all(dir);
     }

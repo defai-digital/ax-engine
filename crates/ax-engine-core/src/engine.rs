@@ -263,7 +263,10 @@ impl EngineCore {
 
     fn allocate_step_id(&mut self) -> StepId {
         let step_id = StepId(self.next_step_id);
-        self.next_step_id += 1;
+        self.next_step_id = self
+            .next_step_id
+            .checked_add(1)
+            .expect("step ID overflow; engine has been running for an unreasonable duration");
         step_id
     }
 

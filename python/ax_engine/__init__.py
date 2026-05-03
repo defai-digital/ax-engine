@@ -231,11 +231,16 @@ class Session:
         cache_group_id: int = 0,
         block_size_tokens: int = 16,
         total_blocks: int = 1024,
-        support_tier: str = "native_preview",
+        native_mode: bool = False,
+        mlx: bool = False,
+        support_tier: str = "compatibility",
         compat_backend: str = "llama_cpp",
         compat_cli_path: str = "llama-cli",
         compat_model_path: str | None = None,
         compat_server_url: str | None = None,
+        llama_fallback_cli_path: str = "llama-cli",
+        llama_fallback_model_path: str | None = None,
+        llama_fallback_server_url: str | None = None,
         native_runtime_artifacts_dir: str | None = None,
         native_model_artifacts_dir: str | None = None,
     ) -> None:
@@ -246,11 +251,16 @@ class Session:
             cache_group_id=cache_group_id,
             block_size_tokens=block_size_tokens,
             total_blocks=total_blocks,
+            native_mode=native_mode,
+            mlx=mlx,
             support_tier=support_tier,
             compat_backend=compat_backend,
             compat_cli_path=compat_cli_path,
             compat_model_path=compat_model_path,
             compat_server_url=compat_server_url,
+            llama_fallback_cli_path=llama_fallback_cli_path,
+            llama_fallback_model_path=llama_fallback_model_path,
+            llama_fallback_server_url=llama_fallback_server_url,
             native_runtime_artifacts_dir=native_runtime_artifacts_dir,
             native_model_artifacts_dir=native_model_artifacts_dir,
         )
@@ -519,7 +529,11 @@ class Session:
         return self
 
     def __exit__(self, exc_type: object | None, exc: object | None, traceback: object | None) -> None:
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            if exc_type is None:
+                raise
 
 
 def _runtime_from_dict(value: dict[str, Any]) -> RuntimeInfo:
@@ -816,7 +830,8 @@ def _render_chat_prompt(messages: list[ChatMessage | dict[str, str]]) -> str:
     lines: list[str] = []
     for message in messages:
         normalized = _normalize_chat_message(message)
-        lines.append(f"{normalized.role.strip()}: {normalized.content}")
+        content = normalized.content.replace("\\", "\\\\").replace("\n", "\\n")
+        lines.append(f"{normalized.role.strip()}: {content}")
     lines.append("assistant:")
     return "\n".join(lines)
 

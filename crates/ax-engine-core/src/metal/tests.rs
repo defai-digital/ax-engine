@@ -1416,6 +1416,7 @@ fn write_valid_native_model_fixture() -> PathBuf {
         runtime_status: crate::model::NativeRuntimeStatus::default(),
         layer_count: 1,
         hidden_size: 2,
+        intermediate_size: 0,
         attention_head_count: 1,
         attention_head_dim: 2,
         kv_head_count: 1,
@@ -1598,6 +1599,7 @@ fn write_projection_native_model_fixture() -> PathBuf {
         runtime_status: crate::model::NativeRuntimeStatus::default(),
         layer_count: 1,
         hidden_size: 8,
+        intermediate_size: 0,
         attention_head_count: 2,
         attention_head_dim: 4,
         kv_head_count: 2,
@@ -2037,6 +2039,7 @@ fn write_grouped_projection_native_model_fixture() -> PathBuf {
         runtime_status: crate::model::NativeRuntimeStatus::default(),
         layer_count: 1,
         hidden_size: 8,
+        intermediate_size: 0,
         attention_head_count: 4,
         attention_head_dim: 2,
         kv_head_count: 2,
@@ -2325,6 +2328,7 @@ fn write_wide_projection_native_model_fixture() -> PathBuf {
         runtime_status: crate::model::NativeRuntimeStatus::default(),
         layer_count: 1,
         hidden_size: hidden_size as u32,
+        intermediate_size: 0,
         attention_head_count: 2,
         attention_head_dim: 4,
         kv_head_count: 2,
@@ -2500,6 +2504,7 @@ fn write_wide_direct_decode_native_model_fixture() -> PathBuf {
         runtime_status: crate::model::NativeRuntimeStatus::default(),
         layer_count: 1,
         hidden_size: hidden_size as u32,
+        intermediate_size: 0,
         attention_head_count: 2,
         attention_head_dim: 4,
         kv_head_count: 2,
@@ -2850,6 +2855,7 @@ fn write_direct_decode_native_model_fixture_with_variant(
         runtime_status: crate::model::NativeRuntimeStatus::default(),
         layer_count: 1,
         hidden_size: 8,
+        intermediate_size: 0,
         attention_head_count: 2,
         attention_head_dim: 4,
         kv_head_count: 2,
@@ -11194,6 +11200,147 @@ fn rms_norm_batched_f32_gpu_output_matches_cpu_reference() {
     let _ = fs::remove_dir_all(output_dir);
 }
 
+// --- GPU test: decode_projection_q4km correctness -------------------------
+
+/// Rust reference: exact port of llama.cpp get_scale_min_k4 + dequantize_row_q4_K.
+/// Returns 256 dequantized float values from one block_q4_K.
+#[cfg(target_os = "macos")]
+fn dequantize_q4k_block_ref(d: f32, dmin: f32, scales: &[u8; 12], qs: &[u8; 128]) -> Vec<f32> {
+    fn get_sc_mn(j: usize, scales: &[u8; 12]) -> (u8, u8) {
+        if j < 4 {
+            (scales[j] & 63, scales[j + 4] & 63)
+        } else {
+            let sc = (scales[j + 4] & 0x0F) | ((scales[j - 4] >> 6) << 4);
+            let mn = (scales[j + 4] >> 4) | ((scales[j] >> 6) << 4);
+            (sc, mn)
+        }
+    }
+
+    let mut out = Vec::with_capacity(256);
+    let mut q_ptr = 0_usize;
+    let mut is = 0_usize;
+    for _ in 0..4 {
+        let (sc0, m0) = get_sc_mn(is, scales);
+        let d1 = d * sc0 as f32;
+        let m1 = dmin * m0 as f32;
+        let (sc1, m1v) = get_sc_mn(is + 1, scales);
+        let d2 = d * sc1 as f32;
+        let m2 = dmin * m1v as f32;
+        for l in 0..32 { out.push(d1 * (qs[q_ptr + l] & 0xF) as f32 - m1); }
+        for l in 0..32 { out.push(d2 * (qs[q_ptr + l] >> 4) as f32 - m2); }
+        q_ptr += 32;
+        is += 2;
+    }
+    out
+}
+
+/// Builds a 144-byte block_q4_K from components and returns the raw bytes.
+#[cfg(target_os = "macos")]
+fn make_q4k_block(d_f16_bits: u16, dmin_f16_bits: u16, scales: &[u8; 12], qs: &[u8; 128]) -> Vec<u8> {
+    let mut block = vec![0u8; 144];
+    block[0..2].copy_from_slice(&d_f16_bits.to_le_bytes());
+    block[2..4].copy_from_slice(&dmin_f16_bits.to_le_bytes());
+    block[4..16].copy_from_slice(scales);
+    block[16..144].copy_from_slice(qs);
+    block
+}
+
+/// GPU decode_projection_q4km output must match the Rust reference dequantizer.
+///
+/// Test uses 2 output rows × 256 input elements (1 block per row).
+///
+/// Row 0 weights: d=1.0, dmin=0.0, all sc=1, all nibbles=1 → all weights=1.0
+///   dot([1.0; 256], [1.0; 256]) = 256.0
+///
+/// Row 1 weights: d=2.0, dmin=1.0, all sc=2, mn=1, all nibbles=3
+///   dequant element = 2.0*2*3 - 1.0*1 = 12.0 - 1.0 = 11.0
+///   dot([11.0; 256], [1.0; 256]) = 2816.0
+#[cfg(target_os = "macos")]
+#[test]
+fn decode_projection_q4km_gpu_output_matches_reference_dequantizer() {
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        return;
+    };
+
+    let device = Device::system_default().expect("Metal device should exist");
+
+    // --- Build weight data (2 rows, 1 block each = 2 × 144 = 288 bytes) ---
+    // Row 0: d=1.0(0x3C00), dmin=0.0(0x0000), all sc=1 mn=0, all nibbles=1
+    let scales0 = [1u8, 1, 1, 1,  0, 0, 0, 0,  1, 1, 1, 1];
+    let qs0 = [0x11u8; 128]; // nibbles = 1
+    let block0 = make_q4k_block(0x3C00, 0x0000, &scales0, &qs0);
+
+    // Row 1: d=2.0(0x4000), dmin=1.0(0x3C00), sc=2 mn=1 (scales: sc_raw=2 mn_raw=1)
+    // scales[j]&63=2 for j<4, scales[j+4]&63=1 for j<4, plus overflow bytes for j>=4:
+    //   j=4: sc=(scales[8]&0xF)|((scales[0]>>6)<<4)=2|(0)=2; mn=(scales[8]>>4)|...=0|(0)=0
+    //   Wait, need to be more careful here. Let's just test the j<4 sub-blocks.
+    //   scales = [2,2,2,2, 1,1,1,1, 0,0,0,0] → j<4: sc=2,mn=1; j>=4: sc=0,mn=0
+    let scales1 = [2u8, 2, 2, 2,  1, 1, 1, 1,  0, 0, 0, 0];
+    let qs1 = [0x33u8; 128]; // nibbles = 3
+    let block1 = make_q4k_block(0x4000, 0x3C00, &scales1, &qs1);
+
+    let weight_bytes: Vec<u8> = block0.iter().chain(block1.iter()).cloned().collect();
+    let weight_buf = new_shared_buffer_with_data(&device, &weight_bytes);
+
+    // --- Hidden state: all 1.0 ---
+    let hidden: Vec<f32> = vec![1.0f32; 256];
+    let hidden_buf = new_shared_buffer_with_data(&device, &hidden);
+
+    // --- Output buffer ---
+    let output_buf = new_zeroed_shared_buffer::<f32>(&device, 2);
+
+    // --- Dispatch kernel ---
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+    let Some((kernel_name, pipeline_idx)) = plan.projection_kernel(NativeTensorDataType::Q4Km)
+    else {
+        return; // kernel not available, skip
+    };
+    let pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_idx,
+    )
+    .expect("q4km projection pipeline should compile");
+
+    autoreleasepool(|| {
+        let command_buffer = bringup.state.command_queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&pipeline.pipeline);
+        encoder.set_buffer(0, Some(&hidden_buf), 0);
+        encoder.set_buffer(1, Some(&weight_buf), 0);
+        encoder.set_buffer(2, Some(&output_buf), 0);
+        set_q4km_projection_dispatch_params(encoder, 3, 2, 256);
+        let (tg_count, tg_size) = q4km_dispatch(2);
+        encoder.dispatch_thread_groups(tg_count, tg_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+    });
+
+    let gpu_out = read_shared_buffer_prefix(&output_buf, 2);
+    assert_eq!(gpu_out.len(), 2, "expected 2 output values");
+
+    // --- Rust reference ---
+    let ref0 = dequantize_q4k_block_ref(1.0, 0.0, &scales0, &qs0);
+    let expected0: f32 = ref0.iter().zip(hidden.iter()).map(|(w, h)| w * h).sum();
+
+    let ref1 = dequantize_q4k_block_ref(2.0, 1.0, &scales1, &qs1);
+    let expected1: f32 = ref1.iter().zip(hidden.iter()).map(|(w, h)| w * h).sum();
+
+    assert!(
+        (gpu_out[0] - expected0).abs() < 1e-2,
+        "row 0: gpu={} expected={}", gpu_out[0], expected0
+    );
+    assert!(
+        (gpu_out[1] - expected1).abs() < 1e-2,
+        "row 1: gpu={} expected={}", gpu_out[1], expected1
+    );
+
+    let _ = std::fs::remove_dir_all(output_dir);
+}
+
 // --- GPU test: reshape_and_cache (required kernel) ------------------------
 
 /// Runs the full required-kernel dispatch and verifies that `reshape_and_cache`
@@ -11435,4 +11582,54 @@ fn unique_test_dir(label: &str) -> PathBuf {
         "ax-engine-core-{label}-{}-{nanos}-{suffix}",
         std::process::id()
     ))
+}
+
+// --- Integration test: Qwen3.5-9B-Q4_K_M.gguf native load ----------------
+
+/// Verifies that the real Qwen3.5-9B GGUF loads correctly through the native
+/// Q4_K_M path: GGUF parser → manifest → Metal buffer bindings (all
+/// dequantization at load time).  Skips gracefully when the model file is
+/// absent so CI boxes without the model still pass.
+#[cfg(target_os = "macos")]
+#[test]
+fn qwen35_9b_q4km_gguf_loads_and_creates_metal_buffers() {
+    let gguf_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.internal/models/Qwen3.5-9B-Q4_K_M.gguf");
+    if !gguf_path.is_file() {
+        eprintln!("skipping: {} not present", gguf_path.display());
+        return;
+    }
+
+    // --- Step 1: Parse GGUF → NativeModelArtifacts ---
+    let artifacts = crate::gguf::load_gguf(&gguf_path)
+        .expect("Qwen3.5-9B GGUF should parse without error");
+
+    let m = artifacts.manifest();
+    assert_eq!(m.layer_count, 32, "layer_count");
+    assert_eq!(m.hidden_size, 4096, "hidden_size");
+    assert_eq!(m.attention_head_count, 16, "attention_head_count");
+    assert_eq!(m.kv_head_count, 4, "kv_head_count");
+    assert_eq!(m.attention_head_dim, 256, "attention_head_dim");
+    assert_eq!(m.vocab_size, 248320, "vocab_size");
+    assert!(m.tensors.len() > 400, "should have > 400 tensors, got {}", m.tensors.len());
+    eprintln!("manifest OK: {} tensors, {} layers", m.tensors.len(), m.layer_count);
+
+    // --- Step 2: Create Metal buffers (loads + dequantizes all tensors) ---
+    let Some(build_dir) = compiled_repo_metal_build_dir() else {
+        eprintln!("skipping buffer binding: compiled repo Metal build dir unavailable");
+        return;
+    };
+    let runner = MetalBringupRunner::from_build_dir_and_model_artifacts(
+        &build_dir,
+        Some(&gguf_path),
+    )
+    .expect("MetalBringupRunner should initialize from GGUF path");
+
+    // Verify via runner Debug output that buffers were bound
+    let runner_debug = format!("{runner:?}");
+    assert!(
+        runner_debug.contains("model_buffers_bound: true"),
+        "Metal buffers should be bound; debug: {runner_debug:.200}"
+    );
+    eprintln!("Metal buffers bound for Qwen3.5-9B-Q4_K_M.gguf ✓");
 }

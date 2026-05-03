@@ -1,3 +1,7 @@
+const DEFAULT_BASE_URL = "http://127.0.0.1:8080";
+const SSE_EVENT_FIELD = "event:";
+const SSE_DATA_FIELD = "data:";
+
 function trimTrailingSlash(value) {
   return value.endsWith("/") ? value.slice(0, -1) : value;
 }
@@ -44,12 +48,12 @@ function parseSseBlock(block) {
     if (!line || line.startsWith(":")) {
       continue;
     }
-    if (line.startsWith("event:")) {
-      event = line.slice(6).trim();
+    if (line.startsWith(SSE_EVENT_FIELD)) {
+      event = line.slice(SSE_EVENT_FIELD.length).trim();
       continue;
     }
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).trimStart());
+    if (line.startsWith(SSE_DATA_FIELD)) {
+      dataLines.push(line.slice(SSE_DATA_FIELD.length).trimStart());
     }
   }
   if (dataLines.length === 0) {
@@ -84,7 +88,7 @@ export class AxEngineHttpError extends Error {
 export class AxEngineClient {
   constructor(options = {}) {
     const {
-      baseUrl = "http://127.0.0.1:8080",
+      baseUrl = DEFAULT_BASE_URL,
       fetch: fetchImpl,
       headers,
     } = options;

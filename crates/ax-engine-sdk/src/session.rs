@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ax_engine_core::{
     CacheGroupId, DeterministicRunner, DeterministicSampler, EngineCore, EngineCoreError,
@@ -39,6 +40,7 @@ const NATIVE_MODEL_DIR_ENV: &str = "AX_ENGINE_NATIVE_MODEL_DIR";
 const NATIVE_GGUF_EXPORTER_ENV: &str = "AX_ENGINE_NATIVE_GGUF_EXPORTER";
 const NATIVE_GGUF_PYTHON_ENV: &str = "AX_ENGINE_NATIVE_GGUF_PYTHON";
 const NATIVE_GGUF_EXPORT_DTYPE_ENV: &str = "AX_ENGINE_NATIVE_GGUF_EXPORT_DTYPE";
+const NATIVE_GGUF_EXPORT_TIMEOUT: Duration = Duration::from_secs(300);
 const NATIVE_PLACEHOLDER_EXECUTION_DECISION: &str = "native_placeholder_execution";
 const NATIVE_PLACEHOLDER_EXPLICIT_OPT_IN_DECISION: &str = "native_placeholder_explicit_opt_in";
 const NATIVE_RUNTIME_RUNNER_DETERMINISTIC_DECISION: &str = "native_runtime_runner_deterministic";
@@ -55,6 +57,7 @@ pub struct EngineSessionConfig {
     pub backend_policy: BackendPolicy,
     pub resolved_backend: ResolvedBackend,
     pub compatibility_backend: Option<CompatibilityBackendConfig>,
+    pub fallback_compatibility_backend: Option<CompatibilityBackendConfig>,
     pub native_runtime_artifacts_dir: Option<PathBuf>,
     pub native_runtime_artifacts_source: Option<NativeRuntimeArtifactsSource>,
     pub native_model_artifacts_dir: Option<PathBuf>,
@@ -101,6 +104,7 @@ pub struct ResolvedSessionConfigRequest {
     pub backend_policy: BackendPolicy,
     pub resolved_backend: ResolvedBackend,
     pub compatibility_backend: Option<CompatibilityBackendConfig>,
+    pub fallback_compatibility_backend: Option<CompatibilityBackendConfig>,
     pub native_runtime_artifacts_dir: Option<PathBuf>,
     pub native_runtime_artifacts_source: Option<NativeRuntimeArtifactsSource>,
     pub native_model_artifacts_dir: Option<PathBuf>,
@@ -120,6 +124,7 @@ impl Default for ResolvedSessionConfigRequest {
             backend_policy: default.backend_policy,
             resolved_backend: default.resolved_backend,
             compatibility_backend: default.compatibility_backend,
+            fallback_compatibility_backend: default.fallback_compatibility_backend,
             native_runtime_artifacts_dir: default.native_runtime_artifacts_dir,
             native_runtime_artifacts_source: default.native_runtime_artifacts_source,
             native_model_artifacts_dir: default.native_model_artifacts_dir,
@@ -146,6 +151,7 @@ impl Default for EngineSessionConfig {
             backend_policy: BackendPolicy::strict_native(),
             resolved_backend: ResolvedBackend::native_preview(),
             compatibility_backend: None,
+            fallback_compatibility_backend: None,
             native_runtime_artifacts_dir: native_runtime_artifacts
                 .as_ref()
                 .map(|selection| selection.dir.clone()),
@@ -195,6 +201,7 @@ impl EngineSessionConfig {
             backend_policy: resolution.backend_policy,
             resolved_backend: resolution.resolved_backend,
             compatibility_backend: resolution.compatibility_backend,
+            fallback_compatibility_backend: resolution.fallback_compatibility_backend,
             native_runtime_artifacts_dir: native_runtime_artifacts
                 .as_ref()
                 .map(|selection| selection.dir.clone())
@@ -241,6 +248,7 @@ impl EngineSessionConfig {
             backend_policy: request.backend_policy,
             resolved_backend: request.resolved_backend,
             compatibility_backend: request.compatibility_backend,
+            fallback_compatibility_backend: request.fallback_compatibility_backend,
             native_runtime_artifacts_dir: request.native_runtime_artifacts_dir,
             native_runtime_artifacts_source: request.native_runtime_artifacts_source,
             native_model_artifacts_dir: request.native_model_artifacts_dir,
@@ -282,14 +290,14 @@ impl EngineSessionConfig {
             return Err(EngineSessionError::UnsupportedHostHardware { detected_host });
         }
 
-        if self.resolved_backend.selected_backend == SelectedBackend::AxNative
+        if self.resolved_backend.selected_backend.is_native()
             && self.native_runtime_artifacts_dir().is_none()
             && !self.allow_deterministic_native_fallback
         {
             return Err(EngineSessionError::NativeRuntimeArtifactsRequired);
         }
 
-        if self.resolved_backend.selected_backend != SelectedBackend::AxNative {
+        if !self.resolved_backend.selected_backend.is_native() {
             let compatibility_backend = self.compatibility_backend.as_ref().ok_or(
                 EngineSessionError::MissingCompatibilityBackendConfig {
                     selected_backend: self.resolved_backend.selected_backend,
@@ -300,6 +308,19 @@ impl EngineSessionConfig {
                     configured_backend: compatibility_backend.selected_backend(),
                     selected_backend: self.resolved_backend.selected_backend,
                 });
+            }
+        }
+
+        if let Some(fallback_compatibility_backend) = self.fallback_compatibility_backend.as_ref() {
+            if fallback_compatibility_backend.selected_backend() != SelectedBackend::LlamaCpp {
+                return Err(EngineSessionError::CompatibilityFallbackMustUseLlamaCpp {
+                    configured_backend: fallback_compatibility_backend.selected_backend(),
+                });
+            }
+            if self.backend_policy.resolution_policy
+                == crate::backend::ResolutionPolicy::StrictNative
+            {
+                return Err(EngineSessionError::CompatibilityFallbackRequiresNonStrictPolicy);
             }
         }
 
@@ -333,6 +354,20 @@ impl EngineSessionConfig {
         self.native_model_artifacts_source
     }
 
+    pub fn compatibility_runtime_report(
+        &self,
+        compatibility_backend: &CompatibilityBackendConfig,
+        fallback_reason: impl Into<String>,
+    ) -> RuntimeReport {
+        let resolved_backend = ResolvedBackend::compatibility(
+            compatibility_backend.selected_backend(),
+            fallback_reason,
+        );
+        let mut runtime = RuntimeReport::from_resolution(&self.backend_policy, &resolved_backend);
+        runtime.capabilities = CapabilityReport::for_compatibility_backend(compatibility_backend);
+        runtime
+    }
+
     pub const fn allow_deterministic_native_fallback(&self) -> bool {
         self.allow_deterministic_native_fallback
     }
@@ -351,6 +386,103 @@ impl EngineSessionConfig {
             Some(NativeRuntimeReport::deterministic())
         } else {
             None
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct StatelessGenerateContext {
+    config: EngineSessionConfig,
+    compatibility_runtime: Option<RuntimeReport>,
+}
+
+impl StatelessGenerateContext {
+    pub fn new(config: EngineSessionConfig) -> Result<Self, EngineSessionError> {
+        let compatibility_runtime =
+            if config.resolved_backend.selected_backend.is_native() {
+                None
+            } else {
+                config.validate()?;
+                Some(config.runtime_report())
+            };
+
+        Ok(Self {
+            config,
+            compatibility_runtime,
+        })
+    }
+
+    pub fn config(&self) -> &EngineSessionConfig {
+        &self.config
+    }
+
+    pub fn supports_compatibility_streaming(&self) -> bool {
+        !self.config.resolved_backend.selected_backend.is_native()
+    }
+
+    pub fn generate_with_request_id(
+        &self,
+        request_id: u64,
+        request: GenerateRequest,
+    ) -> Result<GenerateResponse, EngineSessionError> {
+        if self.config.resolved_backend.selected_backend.is_native() {
+            let mut session = EngineSession::new(self.config.clone())?;
+            return session.generate_with_request_id(request_id, request);
+        }
+
+        EngineSession::validate_generate_request(request_id, &request)?;
+        let runtime = self.compatibility_runtime.as_ref().ok_or(
+            EngineSessionError::MissingCompatibilityBackendConfig {
+                selected_backend: self.config.resolved_backend.selected_backend,
+            },
+        )?;
+        run_compatibility_generate_prevalidated(&self.config, runtime, request_id, &request)
+    }
+
+    pub fn stream_state_with_request_id(
+        &self,
+        request_id: u64,
+        request: GenerateRequest,
+    ) -> Result<GenerateStreamState, EngineSessionError> {
+        if self.config.resolved_backend.selected_backend.is_native() {
+            return Err(
+                EngineSessionError::StatelessStreamRequiresCompatibilityBackend {
+                    selected_backend: self.config.resolved_backend.selected_backend,
+                },
+            );
+        }
+
+        EngineSession::validate_generate_request(request_id, &request)?;
+        let runtime = self.compatibility_runtime.as_ref().ok_or(
+            EngineSessionError::MissingCompatibilityBackendConfig {
+                selected_backend: self.config.resolved_backend.selected_backend,
+            },
+        )?;
+        let (runtime, stream, route_backend) =
+            start_compatibility_stream_prevalidated(&self.config, runtime, request_id, &request)?;
+        Ok(build_compatibility_stream_state(
+            request_id,
+            request,
+            runtime,
+            stream,
+            route_backend,
+        ))
+    }
+
+    pub fn next_stream_event(
+        &self,
+        state: &mut GenerateStreamState,
+    ) -> Result<Option<GenerateStreamEvent>, EngineSessionError> {
+        match state {
+            GenerateStreamState::Compatibility(state) => next_compatibility_stream_event(
+                state.as_mut(),
+                self.config.resolved_backend.selected_backend,
+            ),
+            GenerateStreamState::Native(_) => Err(
+                EngineSessionError::StatelessStreamRequiresCompatibilityBackend {
+                    selected_backend: self.config.resolved_backend.selected_backend,
+                },
+            ),
         }
     }
 }
@@ -478,29 +610,36 @@ fn default_native_gguf_export_config() -> NativeGgufExportConfig {
     }
 }
 
-fn is_gguf_path(path: &Path) -> bool {
+pub fn is_gguf_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"))
+}
+
+/// Returns true when the Metal runner can load GGUF Q4_K_M files natively
+/// without the Python export step.  This is the default on macOS.
+fn native_gguf_loading_enabled() -> bool {
+    #[cfg(target_os = "macos")]
+    { true }
+    #[cfg(not(target_os = "macos"))]
+    { false }
 }
 
 /// If `model_dir` looks like an HF/MLX model directory (has `config.json` and
 /// safetensors files but no `model-manifest.json`), run the native converter
 /// and write the manifest in-place so `NativeModelArtifacts::from_dir` can load
 /// it directly without a separate conversion step.
-fn try_auto_convert_hf_model_dir(model_dir: &Path) {
+fn try_auto_convert_hf_model_dir(model_dir: &Path) -> Result<(), ax_engine_core::convert::ConvertError> {
     let manifest_path = model_dir.join(ax_engine_core::AX_NATIVE_MODEL_MANIFEST_FILE);
     if manifest_path.is_file() {
-        return;
+        return Ok(());
     }
     let config_path = model_dir.join("config.json");
     if !config_path.is_file() {
-        return;
+        return Ok(());
     }
-    let Ok(manifest) = ax_engine_core::convert::convert_hf_model_dir(model_dir) else {
-        return;
-    };
-    let _ = ax_engine_core::convert::write_manifest(model_dir, &manifest);
+    let manifest = ax_engine_core::convert::convert_hf_model_dir(model_dir)?;
+    ax_engine_core::convert::write_manifest(model_dir, &manifest)
 }
 
 fn native_model_artifacts_source_from_path(
@@ -561,20 +700,27 @@ fn export_native_model_artifacts_from_gguf_with_config(
     export_config: &NativeGgufExportConfig,
 ) -> Result<PathBuf, EngineSessionError> {
     let output_dir = unique_native_gguf_export_dir(gguf_path);
-    let command_output = Command::new(&export_config.python_bin)
+    let mut command = Command::new(&export_config.python_bin);
+    command
         .arg(&export_config.script_path)
         .arg("--gguf-path")
         .arg(gguf_path)
         .arg("--output-dir")
         .arg(&output_dir)
         .arg("--dtype")
-        .arg(&export_config.output_dtype)
-        .output()
-        .map_err(|source| EngineSessionError::NativeModelGgufExportLaunch {
-            gguf_path: gguf_path.to_path_buf(),
-            program: export_config.python_bin.clone(),
-            source,
-        })?;
+        .arg(&export_config.output_dtype);
+    let command_output = match run_gguf_export_command_with_timeout(
+        command,
+        &export_config.python_bin,
+        gguf_path,
+        NATIVE_GGUF_EXPORT_TIMEOUT,
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&output_dir);
+            return Err(error);
+        }
+    };
 
     if !command_output.status.success() {
         let message =
@@ -600,6 +746,53 @@ fn export_native_model_artifacts_from_gguf_with_config(
     Ok(output_dir)
 }
 
+fn run_gguf_export_command_with_timeout(
+    mut command: Command,
+    program: &Path,
+    gguf_path: &Path,
+    timeout: Duration,
+) -> Result<Output, EngineSessionError> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|source| EngineSessionError::NativeModelGgufExportLaunch {
+            gguf_path: gguf_path.to_path_buf(),
+            program: program.to_path_buf(),
+            source,
+        })?;
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        match child.try_wait().map_err(|source| {
+            EngineSessionError::NativeModelGgufExportLaunch {
+                gguf_path: gguf_path.to_path_buf(),
+                program: program.to_path_buf(),
+                source,
+            }
+        })? {
+            Some(_) => {
+                return child.wait_with_output().map_err(|source| {
+                    EngineSessionError::NativeModelGgufExportLaunch {
+                        gguf_path: gguf_path.to_path_buf(),
+                        program: program.to_path_buf(),
+                        source,
+                    }
+                });
+            }
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(EngineSessionError::NativeModelGgufExportFailed {
+                    gguf_path: gguf_path.to_path_buf(),
+                    message: format!("exporter timed out after {}s", timeout.as_secs()),
+                });
+            }
+            None => thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
 fn prepare_engine_session_config(
     mut config: EngineSessionConfig,
     export_config: &NativeGgufExportConfig,
@@ -619,7 +812,22 @@ fn prepare_engine_session_config(
     };
 
     if !is_gguf_path(&native_model_artifacts_dir) {
-        try_auto_convert_hf_model_dir(&native_model_artifacts_dir);
+        try_auto_convert_hf_model_dir(&native_model_artifacts_dir).map_err(|source| {
+            EngineSessionError::NativeModelAutoConvert {
+                model_dir: native_model_artifacts_dir.clone(),
+                source,
+            }
+        })?;
+        return Ok(PreparedEngineSessionConfig {
+            config,
+            ephemeral_native_model_artifacts_dir: None,
+        });
+    }
+
+    // Native Q4_K_M path: load the GGUF directly without the Python export step.
+    // The Metal runner detects the .gguf extension and calls gguf::load_gguf() internally.
+    if native_gguf_loading_enabled() {
+        config.native_model_artifacts_source = Some(NativeModelArtifactsSource::GeneratedFromGguf);
         return Ok(PreparedEngineSessionConfig {
             config,
             ephemeral_native_model_artifacts_dir: None,
@@ -794,7 +1002,7 @@ fn upsert_route_decision(decisions: &mut Vec<(String, u32)>, key: &str, value: u
 
 impl EngineSession {
     fn uses_native_runtime(&self) -> bool {
-        self.config.resolved_backend.selected_backend == SelectedBackend::AxNative
+        self.config.resolved_backend.selected_backend.is_native()
     }
 
     fn uses_native_placeholder_runtime(&self) -> bool {
@@ -879,16 +1087,6 @@ impl EngineSession {
         }
     }
 
-    fn compatibility_backend_config(
-        &self,
-    ) -> Result<&CompatibilityBackendConfig, EngineSessionError> {
-        self.config.compatibility_backend.as_ref().ok_or(
-            EngineSessionError::MissingCompatibilityBackendConfig {
-                selected_backend: self.config.resolved_backend.selected_backend,
-            },
-        )
-    }
-
     fn compatibility_generate_with_request_id(
         &mut self,
         request_id: u64,
@@ -896,11 +1094,7 @@ impl EngineSession {
     ) -> Result<GenerateResponse, EngineSessionError> {
         Self::validate_generate_request(request_id, &request)?;
         self.advance_request_id(request_id);
-        let runtime = self.runtime_report();
-        let compatibility_backend = self.compatibility_backend_config()?;
-
-        run_blocking_generate(request_id, &runtime, compatibility_backend, &request)
-            .map_err(EngineSessionError::from)
+        run_compatibility_generate_with_config(&self.config, request_id, &request)
     }
 
     fn compatibility_submit_generate_with_request_id(
@@ -910,11 +1104,9 @@ impl EngineSession {
     ) -> Result<u64, EngineSessionError> {
         Self::validate_generate_request(request_id, &request)?;
         self.advance_request_id(request_id);
-        let runtime = self.runtime_report();
-        let stream =
-            start_streaming_generate(&runtime, self.compatibility_backend_config()?, &request)
-                .map_err(EngineSessionError::from)?;
-        let route = compatibility_stream_route(self.config.resolved_backend.selected_backend);
+        let (_runtime, stream, route_backend) =
+            self.compatibility_stream_start(request_id, &request)?;
+        let route = compatibility_stream_route(route_backend);
         let current_report = SessionRequestReport {
             request_id,
             model_id: request.model_id,
@@ -951,59 +1143,79 @@ impl EngineSession {
         Self::validate_generate_request(request_id, &request)?;
         self.advance_request_id(request_id);
 
-        let runtime = self.runtime_report();
-        let stream =
-            start_streaming_generate(&runtime, self.compatibility_backend_config()?, &request)
-                .map_err(EngineSessionError::from)?;
-        let route = compatibility_stream_route(self.config.resolved_backend.selected_backend);
-        let current_report = SessionRequestReport {
+        let (runtime, stream, route_backend) =
+            self.compatibility_stream_start(request_id, &request)?;
+        Ok(build_compatibility_stream_state(
             request_id,
-            model_id: request.model_id,
-            state: SessionRequestState::Waiting,
-            prompt_tokens: request.input_tokens,
-            processed_prompt_tokens: 0,
-            output_tokens: Vec::new(),
-            output_token_logprobs: Vec::new(),
-            prompt_len: 0,
-            output_len: 0,
-            max_output_tokens: request.max_output_tokens,
-            cancel_requested: false,
-            execution_plan_ref: route.execution_plan.clone(),
-            route,
-            finish_reason: None,
-            terminal_stop_reason: None,
-            last_error: None,
-        };
+            request,
+            runtime,
+            stream,
+            route_backend,
+        ))
+    }
 
-        Ok(GenerateStreamState::Compatibility(Box::new(
-            CompatibilityGenerateStreamState::new(
-                request_id,
-                runtime,
-                current_report,
-                request.input_text,
-                stream,
-            ),
-        )))
+    fn compatibility_stream_start(
+        &self,
+        request_id: u64,
+        request: &GenerateRequest,
+    ) -> Result<(RuntimeReport, CompatibilityStreamHandle, SelectedBackend), EngineSessionError>
+    {
+        let runtime = self.runtime_report();
+        start_compatibility_stream_prevalidated(&self.config, &runtime, request_id, request)
     }
 
     pub fn new(config: EngineSessionConfig) -> Result<Self, EngineSessionError> {
         let PreparedEngineSessionConfig {
-            config,
-            ephemeral_native_model_artifacts_dir,
+            mut config,
+            mut ephemeral_native_model_artifacts_dir,
         } = prepare_engine_session_config(config, &default_native_gguf_export_config())?;
         if let Err(error) = config.validate() {
-            cleanup_ephemeral_native_model_artifacts_dir(
-                ephemeral_native_model_artifacts_dir.as_deref(),
-            );
-            return Err(error);
-        }
-        let core = match build_native_core(&config) {
-            Ok(core) => core,
-            Err(error) => {
+            if let Some(fallback_config) = native_startup_fallback_config(&config, &error) {
+                cleanup_ephemeral_native_model_artifacts_dir(
+                    ephemeral_native_model_artifacts_dir.as_deref(),
+                );
+                ephemeral_native_model_artifacts_dir = None;
+                config = fallback_config;
+                config.validate().map_err(|fallback_error| {
+                    EngineSessionError::NativeStartupFallbackFailed {
+                        primary_error: error.to_string(),
+                        fallback_error: fallback_error.to_string(),
+                    }
+                })?;
+            } else {
                 cleanup_ephemeral_native_model_artifacts_dir(
                     ephemeral_native_model_artifacts_dir.as_deref(),
                 );
                 return Err(error);
+            }
+        }
+        let core = match build_native_core(&config) {
+            Ok(core) => core,
+            Err(error) => {
+                if let Some(fallback_config) = native_startup_fallback_config(&config, &error) {
+                    cleanup_ephemeral_native_model_artifacts_dir(
+                        ephemeral_native_model_artifacts_dir.as_deref(),
+                    );
+                    ephemeral_native_model_artifacts_dir = None;
+                    config = fallback_config;
+                    config.validate().map_err(|fallback_error| {
+                        EngineSessionError::NativeStartupFallbackFailed {
+                            primary_error: error.to_string(),
+                            fallback_error: fallback_error.to_string(),
+                        }
+                    })?;
+                    build_native_core(&config).map_err(|fallback_error| {
+                        EngineSessionError::NativeStartupFallbackFailed {
+                            primary_error: error.to_string(),
+                            fallback_error: fallback_error.to_string(),
+                        }
+                    })?
+                } else {
+                    cleanup_ephemeral_native_model_artifacts_dir(
+                        ephemeral_native_model_artifacts_dir.as_deref(),
+                    );
+                    return Err(error);
+                }
             }
         };
         let runtime = config
@@ -1018,6 +1230,34 @@ impl EngineSession {
             compatibility_requests: BTreeMap::new(),
             compatibility_terminal_request_order: VecDeque::new(),
         })
+    }
+
+    pub fn generate_stateless_with_request_id(
+        config: EngineSessionConfig,
+        request_id: u64,
+        request: GenerateRequest,
+    ) -> Result<GenerateResponse, EngineSessionError> {
+        if config.resolved_backend.selected_backend.is_native() {
+            let mut session = Self::new(config)?;
+            return session.generate_with_request_id(request_id, request);
+        }
+
+        Self::generate_stateless_with_config(&config, request_id, request)
+    }
+
+    pub fn generate_stateless_with_config(
+        config: &EngineSessionConfig,
+        request_id: u64,
+        request: GenerateRequest,
+    ) -> Result<GenerateResponse, EngineSessionError> {
+        if config.resolved_backend.selected_backend.is_native() {
+            let mut session = Self::new(config.clone())?;
+            return session.generate_with_request_id(request_id, request);
+        }
+
+        Self::validate_generate_request(request_id, &request)?;
+        config.validate()?;
+        run_compatibility_generate_with_config(config, request_id, &request)
     }
 
     pub fn config(&self) -> &EngineSessionConfig {
@@ -1291,9 +1531,10 @@ impl EngineSession {
     ) -> Result<Option<GenerateStreamEvent>, EngineSessionError> {
         match state {
             GenerateStreamState::Native(state) => self.next_native_stream_event(state.as_mut()),
-            GenerateStreamState::Compatibility(state) => {
-                self.next_compatibility_stream_event(state.as_mut())
-            }
+            GenerateStreamState::Compatibility(state) => next_compatibility_stream_event(
+                state.as_mut(),
+                self.config.resolved_backend.selected_backend,
+            ),
         }
     }
 
@@ -1333,7 +1574,7 @@ impl EngineSession {
                     state.ttft_step = Some(state.step_count);
                 }
 
-                if state.step_count > state.max_steps {
+                if state.step_count >= state.max_steps {
                     return Err(EngineSessionError::RequestDidNotTerminate {
                         request_id: state.request_id,
                         max_steps: state.max_steps,
@@ -1345,6 +1586,12 @@ impl EngineSession {
                         request_id: state.request_id,
                     },
                 )?;
+                if state.emitted_output_len > next_report.output_tokens.len() {
+                    return Err(EngineSessionError::RequestReportInvariantViolation {
+                        request_id: state.request_id,
+                        message: "output tokens shrunk between stream snapshots",
+                    });
+                }
                 let delta_tokens = next_report.output_tokens[state.emitted_output_len..].to_vec();
                 let delta_token_logprobs = slice_output_token_logprobs(
                     &next_report,
@@ -1365,66 +1612,66 @@ impl EngineSession {
             GenerateStreamPhase::Done => Ok(None),
         }
     }
+}
 
-    fn next_compatibility_stream_event(
-        &mut self,
-        state: &mut CompatibilityGenerateStreamState,
-    ) -> Result<Option<GenerateStreamEvent>, EngineSessionError> {
-        match state.phase {
-            GenerateStreamPhase::Request => {
-                state.phase = GenerateStreamPhase::Step;
-                Ok(Some(GenerateStreamEvent::Request(
-                    GenerateStreamRequestEvent {
-                        request: state.current_report.clone(),
-                        runtime: state.runtime.clone(),
-                    },
-                )))
-            }
-            GenerateStreamPhase::Step => {
-                if state.terminal_chunk_seen {
-                    match state.stream.next_chunk()? {
-                        Some(chunk) => return Ok(Some(state.step_event_from_chunk(chunk))),
-                        None => {
-                            state.phase = GenerateStreamPhase::Done;
-                            return Ok(Some(GenerateStreamEvent::Response(
-                                GenerateStreamResponseEvent {
-                                    response: GenerateResponse {
-                                        request_id: state.request_id,
-                                        model_id: state.current_report.model_id.clone(),
-                                        prompt_tokens: state.current_report.prompt_tokens.clone(),
-                                        prompt_text: state.prompt_text.clone(),
-                                        output_tokens: state.current_report.output_tokens.clone(),
-                                        output_token_logprobs: state
-                                            .current_report
-                                            .output_token_logprobs
-                                            .clone(),
-                                        output_text: Some(state.output_text.clone()),
-                                        prompt_token_count: state.prompt_token_count,
-                                        output_token_count: state.output_token_count,
-                                        status: crate::generate::GenerateStatus::Finished,
-                                        finish_reason: state.current_report.finish_reason,
-                                        step_count: state.step_count,
-                                        ttft_step: state.ttft_step,
-                                        route: state.current_report.route.clone(),
-                                        runtime: state.runtime.clone(),
-                                    },
+fn next_compatibility_stream_event(
+    state: &mut CompatibilityGenerateStreamState,
+    selected_backend: SelectedBackend,
+) -> Result<Option<GenerateStreamEvent>, EngineSessionError> {
+    match state.phase {
+        GenerateStreamPhase::Request => {
+            state.phase = GenerateStreamPhase::Step;
+            Ok(Some(GenerateStreamEvent::Request(
+                GenerateStreamRequestEvent {
+                    request: state.current_report.clone(),
+                    runtime: state.runtime.clone(),
+                },
+            )))
+        }
+        GenerateStreamPhase::Step => {
+            if state.terminal_chunk_seen {
+                match state.stream.next_chunk()? {
+                    Some(chunk) => return Ok(Some(state.step_event_from_chunk(chunk))),
+                    None => {
+                        state.phase = GenerateStreamPhase::Done;
+                        return Ok(Some(GenerateStreamEvent::Response(
+                            GenerateStreamResponseEvent {
+                                response: GenerateResponse {
+                                    request_id: state.request_id,
+                                    model_id: state.current_report.model_id.clone(),
+                                    prompt_tokens: state.current_report.prompt_tokens.clone(),
+                                    prompt_text: state.prompt_text.clone(),
+                                    output_tokens: state.current_report.output_tokens.clone(),
+                                    output_token_logprobs: state
+                                        .current_report
+                                        .output_token_logprobs
+                                        .clone(),
+                                    output_text: Some(state.output_text.clone()),
+                                    prompt_token_count: state.prompt_token_count,
+                                    output_token_count: state.output_token_count,
+                                    status: crate::generate::GenerateStatus::Finished,
+                                    finish_reason: state.current_report.finish_reason,
+                                    step_count: state.step_count,
+                                    ttft_step: state.ttft_step,
+                                    route: state.current_report.route.clone(),
+                                    runtime: state.runtime.clone(),
                                 },
-                            )));
-                        }
+                            },
+                        )));
                     }
                 }
-
-                let chunk = state.stream.next_chunk()?.ok_or(
-                    EngineSessionError::CompatibilityStreamEndedBeforeStop {
-                        request_id: state.request_id,
-                        selected_backend: self.config.resolved_backend.selected_backend,
-                    },
-                )?;
-
-                Ok(Some(state.step_event_from_chunk(chunk)))
             }
-            GenerateStreamPhase::Done => Ok(None),
+
+            let chunk = state.stream.next_chunk()?.ok_or(
+                EngineSessionError::CompatibilityStreamEndedBeforeStop {
+                    request_id: state.request_id,
+                    selected_backend,
+                },
+            )?;
+
+            Ok(Some(state.step_event_from_chunk(chunk)))
         }
+        GenerateStreamPhase::Done => Ok(None),
     }
 }
 
@@ -1438,14 +1685,17 @@ impl<'a> GenerateStream<'a> {
     }
 
     pub fn into_response(mut self) -> Result<GenerateResponse, EngineSessionError> {
+        let mut observed_event_count = 0_u64;
         while let Some(event) = self.next_event()? {
+            observed_event_count = observed_event_count.saturating_add(1);
             if let GenerateStreamEvent::Response(event) = event {
                 return Ok(event.response);
             }
         }
 
-        Err(EngineSessionError::MissingRequestSnapshot {
+        Err(EngineSessionError::StreamEndedWithoutResponse {
             request_id: self.state.request_id(),
+            observed_event_count,
         })
     }
 }
@@ -1511,6 +1761,14 @@ impl CompatibilityLifecycleRequestSlot {
     }
 }
 
+struct CompatibilityChunkApplyResult {
+    step: EngineStepReport,
+    delta_tokens: Vec<u32>,
+    delta_text: String,
+    request: SessionRequestReport,
+    stop: bool,
+}
+
 impl CompatibilityLifecycleRequest {
     fn new(
         request_id: u64,
@@ -1551,24 +1809,19 @@ impl CompatibilityLifecycleRequest {
     /// chunk. Without draining, that usage data is lost when the slot
     /// transitions to Terminal.
     fn drain_trailing_usage(&mut self) {
-        loop {
-            match self.stream.next_chunk() {
-                Ok(Some(chunk)) => {
-                    apply_compatibility_usage_counts(
-                        &mut self.current_report,
-                        &mut self.prompt_token_count,
-                        &mut self.output_token_count,
-                        &chunk,
-                    );
-                    apply_compatibility_prompt_progress(
-                        &mut self.current_report,
-                        chunk.prompt_progress.as_ref(),
-                        &mut self.cached_prompt_tokens_observed,
-                        &mut self.prefix_hit_recorded,
-                    );
-                }
-                Ok(None) | Err(_) => break,
-            }
+        while let Ok(Some(chunk)) = self.stream.next_chunk() {
+            apply_compatibility_usage_counts(
+                &mut self.current_report,
+                &mut self.prompt_token_count,
+                &mut self.output_token_count,
+                &chunk,
+            );
+            apply_compatibility_prompt_progress(
+                &mut self.current_report,
+                chunk.prompt_progress.as_ref(),
+                &mut self.cached_prompt_tokens_observed,
+                &mut self.prefix_hit_recorded,
+            );
         }
     }
 
@@ -1581,72 +1834,17 @@ impl CompatibilityLifecycleRequest {
     }
 
     fn apply_chunk(&mut self, chunk: CompatibilityStreamChunk) -> EngineStepReport {
-        self.step_count += 1;
-        let prefix_hits = apply_compatibility_prompt_progress(
-            &mut self.current_report,
-            chunk.prompt_progress.as_ref(),
-            &mut self.cached_prompt_tokens_observed,
-            &mut self.prefix_hit_recorded,
-        );
-        apply_compatibility_usage_counts(
+        apply_compatibility_stream_chunk(
             &mut self.current_report,
             &mut self.prompt_token_count,
             &mut self.output_token_count,
-            &chunk,
-        );
-
-        let delta_tokens = chunk.tokens;
-        let delta_text = chunk.content;
-        let was_terminal = is_terminal_request_state(self.current_report.state);
-        let request_selected = chunk.prompt_progress.is_some()
-            || !delta_tokens.is_empty()
-            || !delta_text.is_empty()
-            || chunk.stop;
-        let ttft_events =
-            if self.ttft_step.is_none() && (!delta_tokens.is_empty() || !delta_text.is_empty()) {
-                self.ttft_step = Some(self.step_count);
-                1
-            } else {
-                0
-            };
-
-        self.current_report
-            .output_tokens
-            .extend(delta_tokens.iter().copied());
-        self.current_report
-            .output_token_logprobs
-            .extend(std::iter::repeat_n(None, delta_tokens.len()));
-        self.current_report.output_len = self
-            .current_report
-            .output_len
-            .max(self.current_report.output_tokens.len() as u32);
-        let finish_reason = finish_reason_from_stop_type(chunk.stop_type.as_deref());
-        if finish_reason.is_some() {
-            self.current_report.finish_reason = finish_reason;
-            self.current_report.terminal_stop_reason =
-                terminal_stop_reason_from_finish_reason(finish_reason);
-        }
-        self.current_report.state = if chunk.stop || was_terminal {
-            SessionRequestState::Finished
-        } else if request_selected {
-            SessionRequestState::Running
-        } else {
-            self.current_report.state
-        };
-
-        EngineStepReport {
-            step_id: None,
-            scheduled_requests: u32::from(request_selected),
-            scheduled_tokens: delta_tokens.len() as u32,
-            ttft_events,
-            prefix_hits,
-            kv_usage_blocks: 0,
-            evictions: 0,
-            cpu_time_us: 0,
-            runner_time_us: 0,
-            route: None,
-            metal_dispatch: None,
-        }
+            &mut self.cached_prompt_tokens_observed,
+            &mut self.prefix_hit_recorded,
+            &mut self.step_count,
+            &mut self.ttft_step,
+            chunk,
+        )
+        .step
     }
 }
 
@@ -1679,89 +1877,107 @@ impl CompatibilityGenerateStreamState {
     }
 
     fn step_event_from_chunk(&mut self, chunk: CompatibilityStreamChunk) -> GenerateStreamEvent {
-        self.step_count += 1;
-        let prefix_hits = apply_compatibility_prompt_progress(
-            &mut self.current_report,
-            chunk.prompt_progress.as_ref(),
-            &mut self.cached_prompt_tokens_observed,
-            &mut self.prefix_hit_recorded,
-        );
-        apply_compatibility_usage_counts(
+        let applied = apply_compatibility_stream_chunk(
             &mut self.current_report,
             &mut self.prompt_token_count,
             &mut self.output_token_count,
-            &chunk,
+            &mut self.cached_prompt_tokens_observed,
+            &mut self.prefix_hit_recorded,
+            &mut self.step_count,
+            &mut self.ttft_step,
+            chunk,
         );
-
-        let delta_tokens = chunk.tokens;
-        let delta_text = chunk.content;
-        let was_terminal = is_terminal_request_state(self.current_report.state);
-        let request_selected = chunk.prompt_progress.is_some()
-            || !delta_tokens.is_empty()
-            || !delta_text.is_empty()
-            || chunk.stop;
-        let ttft_events =
-            if self.ttft_step.is_none() && (!delta_tokens.is_empty() || !delta_text.is_empty()) {
-                self.ttft_step = Some(self.step_count);
-                1
-            } else {
-                0
-            };
-
-        self.current_report
-            .output_tokens
-            .extend(delta_tokens.iter().copied());
-        self.current_report
-            .output_token_logprobs
-            .extend(std::iter::repeat_n(None, delta_tokens.len()));
-        self.current_report.output_len = self
-            .current_report
-            .output_len
-            .max(self.current_report.output_tokens.len() as u32);
-        self.output_text.push_str(&delta_text);
-        let finish_reason = finish_reason_from_stop_type(chunk.stop_type.as_deref());
-        if finish_reason.is_some() {
-            self.current_report.finish_reason = finish_reason;
-            self.current_report.terminal_stop_reason =
-                terminal_stop_reason_from_finish_reason(finish_reason);
-        }
-        self.current_report.state = if chunk.stop || was_terminal {
-            SessionRequestState::Finished
-        } else if request_selected {
-            SessionRequestState::Running
-        } else {
-            self.current_report.state
-        };
-
-        if chunk.stop {
+        self.output_text.push_str(&applied.delta_text);
+        if applied.stop {
             self.terminal_chunk_seen = true;
         }
 
-        let delta_token_logprobs = vec![None; delta_tokens.len()];
+        let delta_token_logprobs = vec![None; applied.delta_tokens.len()];
 
         GenerateStreamEvent::Step(GenerateStreamStepEvent {
-            request: self.current_report.clone(),
-            step: EngineStepReport {
-                step_id: None,
-                scheduled_requests: u32::from(request_selected),
-                scheduled_tokens: delta_tokens.len() as u32,
-                ttft_events,
-                prefix_hits,
-                kv_usage_blocks: 0,
-                evictions: 0,
-                cpu_time_us: 0,
-                runner_time_us: 0,
-                route: None,
-                metal_dispatch: None,
-            },
-            delta_tokens,
+            request: applied.request,
+            step: applied.step,
+            delta_tokens: applied.delta_tokens,
             delta_token_logprobs,
-            delta_text: if delta_text.is_empty() {
+            delta_text: if applied.delta_text.is_empty() {
                 None
             } else {
-                Some(delta_text)
+                Some(applied.delta_text)
             },
         })
+    }
+}
+
+fn apply_compatibility_stream_chunk(
+    report: &mut SessionRequestReport,
+    prompt_token_count: &mut Option<u32>,
+    output_token_count: &mut Option<u32>,
+    cached_prompt_tokens_observed: &mut u32,
+    prefix_hit_recorded: &mut bool,
+    step_count: &mut u64,
+    ttft_step: &mut Option<u64>,
+    chunk: CompatibilityStreamChunk,
+) -> CompatibilityChunkApplyResult {
+    *step_count += 1;
+    let prefix_hits = apply_compatibility_prompt_progress(
+        report,
+        chunk.prompt_progress.as_ref(),
+        cached_prompt_tokens_observed,
+        prefix_hit_recorded,
+    );
+    apply_compatibility_usage_counts(report, prompt_token_count, output_token_count, &chunk);
+
+    let delta_tokens = chunk.tokens;
+    let delta_text = chunk.content;
+    let was_terminal = is_terminal_request_state(report.state);
+    let request_selected = chunk.prompt_progress.is_some()
+        || !delta_tokens.is_empty()
+        || !delta_text.is_empty()
+        || chunk.stop;
+    let ttft_events = if ttft_step.is_none() && (!delta_tokens.is_empty() || !delta_text.is_empty())
+    {
+        *ttft_step = Some(*step_count);
+        1
+    } else {
+        0
+    };
+
+    report.output_tokens.extend(delta_tokens.iter().copied());
+    report
+        .output_token_logprobs
+        .extend(std::iter::repeat_n(None, delta_tokens.len()));
+    report.output_len = report.output_len.max(report.output_tokens.len() as u32);
+    let finish_reason = finish_reason_from_stop_type(chunk.stop, chunk.stop_type.as_deref());
+    if finish_reason.is_some() {
+        report.finish_reason = finish_reason;
+        report.terminal_stop_reason = terminal_stop_reason_from_finish_reason(finish_reason);
+    }
+    report.state = if chunk.stop || was_terminal {
+        SessionRequestState::Finished
+    } else if request_selected {
+        SessionRequestState::Running
+    } else {
+        report.state
+    };
+
+    CompatibilityChunkApplyResult {
+        step: EngineStepReport {
+            step_id: None,
+            scheduled_requests: u32::from(request_selected),
+            scheduled_tokens: delta_tokens.len() as u32,
+            ttft_events,
+            prefix_hits,
+            kv_usage_blocks: 0,
+            evictions: 0,
+            cpu_time_us: 0,
+            runner_time_us: 0,
+            route: Some(report.route.clone()),
+            metal_dispatch: None,
+        },
+        delta_tokens,
+        delta_text,
+        request: report.clone(),
+        stop: chunk.stop,
     }
 }
 
@@ -1876,8 +2092,12 @@ fn apply_compatibility_usage_counts(
 }
 
 fn finish_reason_from_stop_type(
+    stop: bool,
     stop_type: Option<&str>,
 ) -> Option<crate::generate::GenerateFinishReason> {
+    if !stop {
+        return None;
+    }
     match stop_type {
         // llama.cpp server completion format
         Some("limit") => Some(crate::generate::GenerateFinishReason::MaxOutputTokens),
@@ -1885,7 +2105,7 @@ fn finish_reason_from_stop_type(
         // OpenAI-compatible format (vLLM, mistral.rs, mlx)
         Some("length") => Some(crate::generate::GenerateFinishReason::MaxOutputTokens),
         Some("stop") => Some(crate::generate::GenerateFinishReason::Stop),
-        None => None,
+        None => Some(crate::generate::GenerateFinishReason::MaxOutputTokens),
         // Unknown stop types (e.g. "content_filter"): default to MaxOutputTokens so the
         // request is marked complete with a non-null finish reason.
         Some(_) => Some(crate::generate::GenerateFinishReason::MaxOutputTokens),
@@ -1955,6 +2175,10 @@ pub enum EngineSessionError {
         configured_backend: SelectedBackend,
         selected_backend: SelectedBackend,
     },
+    #[error("compatibility fallback must target llama.cpp, got {configured_backend:?}")]
+    CompatibilityFallbackMustUseLlamaCpp { configured_backend: SelectedBackend },
+    #[error("compatibility fallback requires a non-strict backend policy")]
+    CompatibilityFallbackRequiresNonStrictPolicy,
     #[error("failed to launch native GGUF exporter {program} for model {gguf_path}: {source}")]
     NativeModelGgufExportLaunch {
         gguf_path: PathBuf,
@@ -1964,6 +2188,12 @@ pub enum EngineSessionError {
     },
     #[error("failed to export native model artifacts from GGUF {gguf_path}: {message}")]
     NativeModelGgufExportFailed { gguf_path: PathBuf, message: String },
+    #[error("failed to auto-convert native model artifacts at {model_dir}: {source}")]
+    NativeModelAutoConvert {
+        model_dir: PathBuf,
+        #[source]
+        source: ax_engine_core::convert::ConvertError,
+    },
     #[error(
         "compatibility backend {selected_backend:?} does not support {operation} in the preview SDK session yet"
     )]
@@ -1971,6 +2201,8 @@ pub enum EngineSessionError {
         selected_backend: SelectedBackend,
         operation: &'static str,
     },
+    #[error("stateless streaming requires a compatibility backend, got {selected_backend:?}")]
+    StatelessStreamRequiresCompatibilityBackend { selected_backend: SelectedBackend },
     #[error(
         "compatibility stream for request {request_id} on backend {selected_backend:?} ended before a terminal stop marker"
     )]
@@ -1980,12 +2212,31 @@ pub enum EngineSessionError {
     },
     #[error("request {request_id} is missing from session state")]
     MissingRequestSnapshot { request_id: u64 },
+    #[error("stream for request {request_id} ended after {observed_event_count} events without a final response")]
+    StreamEndedWithoutResponse {
+        request_id: u64,
+        observed_event_count: u64,
+    },
     #[error("request {request_id} did not terminate within {max_steps} steps")]
     RequestDidNotTerminate { request_id: u64, max_steps: u64 },
     #[error("request {request_id} violated session report invariants: {message}")]
     RequestReportInvariantViolation {
         request_id: u64,
         message: &'static str,
+    },
+    #[error(
+        "compatibility fallback from {primary_backend:?} to {fallback_backend:?} failed: primary={primary_error}; fallback={fallback_error}"
+    )]
+    CompatibilityFallbackFailed {
+        primary_backend: SelectedBackend,
+        fallback_backend: SelectedBackend,
+        primary_error: String,
+        fallback_error: String,
+    },
+    #[error("native startup fallback failed: primary={primary_error}; fallback={fallback_error}")]
+    NativeStartupFallbackFailed {
+        primary_error: String,
+        fallback_error: String,
     },
     #[error(transparent)]
     Core(#[from] EngineCoreError),
@@ -1994,7 +2245,12 @@ pub enum EngineSessionError {
 }
 
 fn build_native_core(config: &EngineSessionConfig) -> Result<EngineCore, EngineSessionError> {
-    if config.resolved_backend.selected_backend != SelectedBackend::AxNative {
+    #[cfg(feature = "mlx-native")]
+    if config.resolved_backend.selected_backend == SelectedBackend::MlxNative {
+        return build_mlx_native_core(config);
+    }
+
+    if !config.resolved_backend.selected_backend.is_native() {
         return Ok(EngineCore::with_kv_config(config.kv_config));
     }
 
@@ -2016,6 +2272,204 @@ fn build_native_core(config: &EngineSessionConfig) -> Result<EngineCore, EngineS
     } else {
         Err(EngineSessionError::NativeRuntimeArtifactsRequired)
     }
+}
+
+#[cfg(feature = "mlx-native")]
+fn build_mlx_native_core(config: &EngineSessionConfig) -> Result<EngineCore, EngineSessionError> {
+    use ax_engine_core::{DeterministicSampler, NativeModelArtifacts};
+    use ax_engine_mlx::{MlxNativeRunner, generate::DEFAULT_PREFILL_CHUNK};
+
+    let model_dir = config
+        .native_model_artifacts_dir()
+        .ok_or(EngineSessionError::NativeRuntimeArtifactsRequired)?;
+
+    let artifacts = NativeModelArtifacts::from_dir(model_dir)
+        .map_err(|e| EngineSessionError::MetalRuntime(e.into()))?;
+
+    let runner = MlxNativeRunner::from_artifacts(&artifacts, DEFAULT_PREFILL_CHUNK)
+        .map_err(|e| EngineSessionError::MetalRuntime(
+            ax_engine_core::MetalRuntimeError::Generic(e.to_string()),
+        ))?;
+
+    Ok(EngineCore::with_runtime_components(
+        config.kv_config,
+        runner,
+        DeterministicSampler,
+    ))
+}
+
+fn build_compatibility_stream_state(
+    request_id: u64,
+    request: GenerateRequest,
+    runtime: RuntimeReport,
+    stream: CompatibilityStreamHandle,
+    route_backend: SelectedBackend,
+) -> GenerateStreamState {
+    let route = compatibility_stream_route(route_backend);
+    let current_report = SessionRequestReport {
+        request_id,
+        model_id: request.model_id,
+        state: SessionRequestState::Waiting,
+        prompt_tokens: request.input_tokens,
+        processed_prompt_tokens: 0,
+        output_tokens: Vec::new(),
+        output_token_logprobs: Vec::new(),
+        prompt_len: 0,
+        output_len: 0,
+        max_output_tokens: request.max_output_tokens,
+        cancel_requested: false,
+        execution_plan_ref: route.execution_plan.clone(),
+        route,
+        finish_reason: None,
+        terminal_stop_reason: None,
+        last_error: None,
+    };
+
+    GenerateStreamState::Compatibility(Box::new(CompatibilityGenerateStreamState::new(
+        request_id,
+        runtime,
+        current_report,
+        request.input_text,
+        stream,
+    )))
+}
+
+fn run_compatibility_generate_with_config(
+    config: &EngineSessionConfig,
+    request_id: u64,
+    request: &GenerateRequest,
+) -> Result<GenerateResponse, EngineSessionError> {
+    let runtime = config.runtime_report();
+    run_compatibility_generate_prevalidated(config, &runtime, request_id, request)
+}
+
+fn run_compatibility_generate_prevalidated(
+    config: &EngineSessionConfig,
+    runtime: &RuntimeReport,
+    request_id: u64,
+    request: &GenerateRequest,
+) -> Result<GenerateResponse, EngineSessionError> {
+    let compatibility_backend = config.compatibility_backend.as_ref().ok_or(
+        EngineSessionError::MissingCompatibilityBackendConfig {
+            selected_backend: config.resolved_backend.selected_backend,
+        },
+    )?;
+
+    match run_blocking_generate(request_id, runtime, compatibility_backend, request) {
+        Ok(response) => Ok(response),
+        Err(primary_error) => {
+            let Some(fallback_backend) = compatibility_generate_fallback_backend(
+                config.resolved_backend.selected_backend,
+                config.fallback_compatibility_backend.as_ref(),
+            ) else {
+                return Err(EngineSessionError::from(primary_error));
+            };
+            let fallback_runtime = config.compatibility_runtime_report(
+                fallback_backend,
+                format!(
+                    "primary {:?} compatibility backend failed; fell back to llama.cpp bypass: {primary_error}",
+                    config.resolved_backend.selected_backend
+                ),
+            );
+            run_blocking_generate(request_id, &fallback_runtime, fallback_backend, request).map_err(
+                |fallback_error| EngineSessionError::CompatibilityFallbackFailed {
+                    primary_backend: config.resolved_backend.selected_backend,
+                    fallback_backend: fallback_backend.selected_backend(),
+                    primary_error: primary_error.to_string(),
+                    fallback_error: fallback_error.to_string(),
+                },
+            )
+        }
+    }
+}
+
+fn start_compatibility_stream_prevalidated(
+    config: &EngineSessionConfig,
+    runtime: &RuntimeReport,
+    request_id: u64,
+    request: &GenerateRequest,
+) -> Result<(RuntimeReport, CompatibilityStreamHandle, SelectedBackend), EngineSessionError> {
+    let compatibility_backend = config.compatibility_backend.as_ref().ok_or(
+        EngineSessionError::MissingCompatibilityBackendConfig {
+            selected_backend: config.resolved_backend.selected_backend,
+        },
+    )?;
+
+    match start_streaming_generate(runtime, compatibility_backend, request) {
+        Ok(stream) => Ok((
+            runtime.clone(),
+            stream,
+            config.resolved_backend.selected_backend,
+        )),
+        Err(primary_error) => {
+            let Some(fallback_backend) = compatibility_generate_fallback_backend(
+                config.resolved_backend.selected_backend,
+                config.fallback_compatibility_backend.as_ref(),
+            ) else {
+                return Err(EngineSessionError::from(primary_error));
+            };
+            let fallback_runtime = config.compatibility_runtime_report(
+                fallback_backend,
+                format!(
+                    "stream start for {:?} failed on request {request_id}; fell back to llama.cpp bypass: {primary_error}",
+                    config.resolved_backend.selected_backend
+                ),
+            );
+            start_streaming_generate(&fallback_runtime, fallback_backend, request)
+                .map(|stream| {
+                    (
+                        fallback_runtime,
+                        stream,
+                        fallback_backend.selected_backend(),
+                    )
+                })
+                .map_err(
+                    |fallback_error| EngineSessionError::CompatibilityFallbackFailed {
+                        primary_backend: config.resolved_backend.selected_backend,
+                        fallback_backend: fallback_backend.selected_backend(),
+                        primary_error: primary_error.to_string(),
+                        fallback_error: fallback_error.to_string(),
+                    },
+                )
+        }
+    }
+}
+
+fn compatibility_generate_fallback_backend(
+    selected_backend: SelectedBackend,
+    fallback_backend: Option<&CompatibilityBackendConfig>,
+) -> Option<&CompatibilityBackendConfig> {
+    if selected_backend == SelectedBackend::Mlx {
+        fallback_backend
+    } else {
+        None
+    }
+}
+
+fn native_startup_fallback_config(
+    config: &EngineSessionConfig,
+    primary_error: &EngineSessionError,
+) -> Option<EngineSessionConfig> {
+    // Allow fallback when fallback_compatibility_backend is explicitly configured,
+    // regardless of whether the primary backend is native or compatibility.
+    let fallback_backend = config.fallback_compatibility_backend.as_ref()?.clone();
+    Some(EngineSessionConfig {
+        kv_config: config.kv_config,
+        deterministic: config.deterministic,
+        allow_deterministic_native_fallback: config.allow_deterministic_native_fallback,
+        max_batch_tokens: config.max_batch_tokens,
+        backend_policy: BackendPolicy::prefer_native(),
+        resolved_backend: ResolvedBackend::compatibility(
+            fallback_backend.selected_backend(),
+            format!("native startup failed; fell back to llama.cpp bypass: {primary_error}"),
+        ),
+        compatibility_backend: Some(fallback_backend),
+        fallback_compatibility_backend: None,
+        native_runtime_artifacts_dir: None,
+        native_runtime_artifacts_source: None,
+        native_model_artifacts_dir: None,
+        native_model_artifacts_source: None,
+    })
 }
 
 fn resolve_native_model_report(
@@ -2245,6 +2699,8 @@ mod tests {
                 model: Some(NativeModelArtifactsSummary {
                     model_family: "qwen3_dense".to_string(),
                     tensor_format: NativeTensorFormat::Safetensors,
+                    source_quantization: None,
+                    runtime_status: ax_engine_core::model::NativeRuntimeStatus::default(),
                     layer_count: 36,
                     tensor_count: 512,
                     tie_word_embeddings: false,
@@ -2320,6 +2776,10 @@ mod tests {
                 direct_decode_cpu_residual_add_element_count: 0,
                 prefix_native_residual_add_element_count: 0,
                 prefix_cpu_residual_add_element_count: 0,
+                prefix_native_scale_element_count: 0,
+                prefix_cpu_scale_element_count: 0,
+                direct_decode_native_scale_element_count: 0,
+                direct_decode_cpu_scale_element_count: 0,
             },
             kernels: vec![
                 MetalDispatchKernelTrace {
@@ -2495,8 +2955,11 @@ mod tests {
             schema_version: AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
             model_family: "qwen3_dense".to_string(),
             tensor_format: NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: ax_engine_core::model::NativeRuntimeStatus::default(),
             layer_count: 1,
             hidden_size: 2048,
+            intermediate_size: 11008,
             attention_head_count: 16,
             attention_head_dim: 128,
             kv_head_count: 8,
@@ -2510,6 +2973,7 @@ mod tests {
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
             linear_attention: NativeLinearAttentionConfig::default(),
+            moe: ax_engine_core::NativeMoeConfig::default(),
             tensors: vec![
                 native_model_tensor(
                     "model.embed_tokens.weight",
@@ -2576,6 +3040,22 @@ mod tests {
         root_dir
     }
 
+    fn write_runtime_blocked_native_model_fixture() -> std::path::PathBuf {
+        let root_dir = write_valid_native_model_fixture();
+        let manifest_path = root_dir.join(AX_NATIVE_MODEL_MANIFEST_FILE);
+        let manifest_bytes =
+            fs::read(&manifest_path).expect("native model manifest should be readable");
+        let mut manifest_json: Value = serde_json::from_slice(&manifest_bytes)
+            .expect("native model manifest should parse as JSON");
+        manifest_json["runtime_status"] = serde_json::json!({
+            "ready": false,
+            "blockers": ["qwen35_quantized_gguf_native_runtime_not_implemented"],
+            "notes": ["source_quantized_tensor_count=250"]
+        });
+        write_json_file(&manifest_path, &manifest_json);
+        root_dir
+    }
+
     fn native_model_tensor(
         name: &str,
         role: NativeTensorRole,
@@ -2587,6 +3067,9 @@ mod tests {
             role,
             layer_index,
             dtype: NativeTensorDataType::F16,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantized_source: None,
             shape,
             file: PathBuf::from("model.safetensors"),
             offset_bytes: 0,
@@ -2611,6 +3094,35 @@ sys.stdout.write(f"session::{prompt}")
 "#;
 
         fs::write(&path, script).expect("fake script should be written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = fs::metadata(&path)
+                .expect("script metadata should exist")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).expect("script should be executable");
+        }
+        path
+    }
+
+    fn fake_failing_mlx_script() -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("ax-engine-session-mlx-fail-{unique}.py"));
+        let script = r#"#!/usr/bin/env python3
+from __future__ import annotations
+
+import sys
+
+sys.stderr.write("mlx primary failed\n")
+sys.exit(17)
+"#;
+
+        fs::write(&path, script).expect("fake mlx failure script should be written");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -2971,6 +3483,44 @@ kernel void kv_scale_update() {}
         );
     }
 
+    /// On macOS, native Q4Km GGUF loading is used and the GGUF path is kept as-is.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn prepare_engine_session_config_keeps_gguf_path_for_native_loading() {
+        let gguf_path = unique_test_dir("native-model-gguf-native").with_extension("gguf");
+        fs::write(&gguf_path, b"placeholder").expect("gguf placeholder should write");
+
+        let prepared = prepare_engine_session_config(
+            EngineSessionConfig {
+                native_model_artifacts_dir: Some(gguf_path.clone()),
+                native_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
+                ..EngineSessionConfig::default()
+            },
+            &NativeGgufExportConfig {
+                python_bin: PathBuf::from("python3"),
+                script_path: PathBuf::from("/dev/null"),
+                output_dtype: "f16".to_string(),
+            },
+        )
+        .expect("native GGUF path should prepare without Python export");
+
+        // Path stays as the GGUF file — no Python conversion was run.
+        assert_eq!(
+            prepared.config.native_model_artifacts_dir.as_deref(),
+            Some(gguf_path.as_path())
+        );
+        assert_eq!(
+            prepared.config.native_model_artifacts_source,
+            Some(NativeModelArtifactsSource::GeneratedFromGguf)
+        );
+        // No ephemeral dir: native loading needs no temp directory.
+        assert!(prepared.ephemeral_native_model_artifacts_dir.is_none());
+
+        let _ = fs::remove_file(gguf_path);
+    }
+
+    /// On non-macOS the Python export path is still used.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn prepare_engine_session_config_exports_gguf_to_native_model_artifacts() {
         let fixture_dir = write_valid_native_model_fixture();
@@ -3020,6 +3570,7 @@ kernel void kv_scale_update() {}
                     buffers_bound: true,
                     buffer_count: 9,
                     buffer_bytes: 288,
+                    ..ax_engine_core::NativeModelBindingSummary::default()
                 }),
             },
             DeterministicSampler,
@@ -3036,7 +3587,9 @@ kernel void kv_scale_update() {}
         let _ = fs::remove_file(gguf_path);
         let _ = fs::remove_dir_all(exported_dir);
     }
+    // end of #[cfg(not(target_os = "macos"))] block
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn prepare_engine_session_config_surfaces_gguf_export_blockers() {
         let exporter_script = failing_gguf_exporter_script();
@@ -3112,6 +3665,11 @@ kernel void kv_scale_update() {}
                     buffers_bound: true,
                     buffer_count: 9,
                     buffer_bytes: 288,
+                    source_quantized_binding_count: 3,
+                    source_q4_k_binding_count: 1,
+                    source_q5_k_binding_count: 1,
+                    source_q6_k_binding_count: 1,
+                    source_q8_0_binding_count: 0,
                 }),
             },
             DeterministicSampler,
@@ -3126,6 +3684,8 @@ kernel void kv_scale_update() {}
                 artifacts_source: NativeModelArtifactsSource::ExplicitConfig,
                 model_family: "qwen3_dense".to_string(),
                 tensor_format: NativeTensorFormat::Safetensors,
+                source_quantization: None,
+                runtime_status: ax_engine_core::model::NativeRuntimeStatus::default(),
                 layer_count: 1,
                 tensor_count: 9,
                 tie_word_embeddings: false,
@@ -3133,6 +3693,11 @@ kernel void kv_scale_update() {}
                 buffers_bound: true,
                 buffer_count: 9,
                 buffer_bytes: 288,
+                source_quantized_binding_count: 3,
+                source_q4_k_binding_count: 1,
+                source_q5_k_binding_count: 1,
+                source_q6_k_binding_count: 1,
+                source_q8_0_binding_count: 0,
             }
         );
 
@@ -3286,6 +3851,7 @@ kernel void kv_scale_update() {}
                     "http://127.0.0.1:8080".to_string(),
                 ),
             )),
+            fallback_compatibility_backend: None,
             native_runtime_artifacts_dir: Some(Path::new("/tmp/ax-metal").to_path_buf()),
             native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
             native_model_artifacts_dir: Some(Path::new("/tmp/ax-model").to_path_buf()),
@@ -3566,6 +4132,412 @@ kernel void kv_scale_update() {}
     }
 
     #[test]
+    fn stateless_compatibility_generate_uses_adapter_without_session_core() {
+        let script_path = fake_compat_script();
+        let model_path = std::env::temp_dir().join("ax-engine-session-stateless-compat.gguf");
+        fs::write(&model_path, "fake gguf").expect("fake model should be written");
+
+        let config = EngineSessionConfig {
+            backend_policy: BackendPolicy::allow_compat(),
+            resolved_backend: ResolvedBackend::compatibility(
+                SelectedBackend::LlamaCpp,
+                "native preview not ready for this model",
+            ),
+            compatibility_backend: Some(CompatibilityBackendConfig::LlamaCpp(
+                crate::compat::LlamaCppConfig::new(script_path, &model_path),
+            )),
+            ..EngineSessionConfig::default()
+        };
+
+        let response = EngineSession::generate_stateless_with_request_id(
+            config,
+            77,
+            GenerateRequest {
+                model_id: "qwen3_dense".to_string(),
+                input_tokens: Vec::new(),
+                input_text: Some("hello stateless compatibility".to_string()),
+                max_output_tokens: 2,
+                sampling: Default::default(),
+                metadata: None,
+            },
+        )
+        .expect("stateless compatibility generate should succeed");
+
+        assert_eq!(response.request_id, 77);
+        assert_eq!(response.runtime.selected_backend, SelectedBackend::LlamaCpp);
+        assert_eq!(
+            response.output_text.as_deref(),
+            Some("session::hello stateless compatibility")
+        );
+    }
+
+    #[test]
+    fn stateless_generate_context_uses_prevalidated_compatibility_runtime() {
+        let script_path = fake_compat_script();
+        let model_path = std::env::temp_dir().join("ax-engine-session-context-compat.gguf");
+        fs::write(&model_path, "fake gguf").expect("fake model should be written");
+
+        let config = EngineSessionConfig {
+            backend_policy: BackendPolicy::allow_compat(),
+            resolved_backend: ResolvedBackend::compatibility(
+                SelectedBackend::LlamaCpp,
+                "native preview not ready for this model",
+            ),
+            compatibility_backend: Some(CompatibilityBackendConfig::LlamaCpp(
+                crate::compat::LlamaCppConfig::new(script_path, &model_path),
+            )),
+            ..EngineSessionConfig::default()
+        };
+
+        let context =
+            StatelessGenerateContext::new(config).expect("stateless context should build");
+        let response = context
+            .generate_with_request_id(
+                79,
+                GenerateRequest {
+                    model_id: "qwen3_dense".to_string(),
+                    input_tokens: Vec::new(),
+                    input_text: Some("hello stateless context".to_string()),
+                    max_output_tokens: 2,
+                    sampling: Default::default(),
+                    metadata: None,
+                },
+            )
+            .expect("stateless context generate should succeed");
+
+        assert_eq!(response.request_id, 79);
+        assert_eq!(response.runtime.selected_backend, SelectedBackend::LlamaCpp);
+        assert_eq!(
+            response.output_text.as_deref(),
+            Some("session::hello stateless context")
+        );
+    }
+
+    #[test]
+    fn native_session_startup_falls_back_to_llama_cpp_bypass() {
+        let script_path = fake_compat_script();
+        let model_path = std::env::temp_dir().join("ax-engine-session-native-fallback.gguf");
+        fs::write(&model_path, "fake gguf").expect("fake model should be written");
+
+        let mut session = EngineSession::new(EngineSessionConfig {
+            backend_policy: BackendPolicy::prefer_native(),
+            resolved_backend: ResolvedBackend::native_preview(),
+            fallback_compatibility_backend: Some(CompatibilityBackendConfig::LlamaCpp(
+                crate::compat::LlamaCppConfig::new(script_path, &model_path),
+            )),
+            native_runtime_artifacts_dir: None,
+            native_runtime_artifacts_source: None,
+            native_model_artifacts_dir: None,
+            native_model_artifacts_source: None,
+            ..EngineSessionConfig::default()
+        })
+        .expect("native session should fall back to compatibility");
+
+        assert_eq!(
+            session.runtime_report().selected_backend,
+            SelectedBackend::LlamaCpp
+        );
+        assert!(session
+            .runtime_report()
+            .fallback_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("native startup failed")));
+
+        let response = session
+            .generate(GenerateRequest {
+                model_id: "qwen3_dense".to_string(),
+                input_tokens: Vec::new(),
+                input_text: Some("hello native fallback".to_string()),
+                max_output_tokens: 2,
+                sampling: Default::default(),
+                metadata: None,
+            })
+            .expect("llama fallback generate should succeed");
+
+        assert_eq!(response.runtime.selected_backend, SelectedBackend::LlamaCpp);
+        assert_eq!(
+            response.output_text.as_deref(),
+            Some("session::hello native fallback")
+        );
+    }
+
+    #[test]
+    fn native_runtime_blocked_manifest_falls_back_to_llama_cpp_bypass() {
+        let (_repo_root, build_dir) = write_valid_repo_owned_native_runtime_fixture();
+        let native_model_dir = write_runtime_blocked_native_model_fixture();
+        let script_path = fake_compat_script();
+        let fallback_model_path =
+            std::env::temp_dir().join("ax-engine-session-native-runtime-blocked.gguf");
+        fs::write(&fallback_model_path, "fake gguf").expect("fake model should be written");
+
+        let session = EngineSession::new(EngineSessionConfig {
+            backend_policy: BackendPolicy::prefer_native(),
+            resolved_backend: ResolvedBackend::native_preview(),
+            fallback_compatibility_backend: Some(CompatibilityBackendConfig::LlamaCpp(
+                crate::compat::LlamaCppConfig::new(script_path.clone(), &fallback_model_path),
+            )),
+            native_runtime_artifacts_dir: Some(build_dir.clone()),
+            native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
+            native_model_artifacts_dir: Some(native_model_dir.clone()),
+            native_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
+            ..EngineSessionConfig::default()
+        })
+        .expect("runtime-blocked native model should fall back to compatibility");
+
+        let runtime = session.runtime_report();
+        assert_eq!(runtime.selected_backend, SelectedBackend::LlamaCpp);
+        assert!(runtime.fallback_reason.as_deref().is_some_and(
+            |reason| reason.contains("qwen35_quantized_gguf_native_runtime_not_implemented")
+        ));
+        assert!(runtime.native_model.is_none());
+
+        let _ = fs::remove_dir_all(
+            build_dir
+                .parent()
+                .and_then(Path::parent)
+                .unwrap_or(&build_dir),
+        );
+        let _ = fs::remove_dir_all(native_model_dir);
+        let _ = fs::remove_file(script_path);
+        let _ = fs::remove_file(fallback_model_path);
+    }
+
+    #[test]
+    fn mlx_generate_falls_back_to_llama_cpp_bypass() {
+        let failing_mlx_script = fake_failing_mlx_script();
+        let mlx_model_path = std::env::temp_dir().join("ax-engine-session-mlx-primary-model");
+        fs::write(&mlx_model_path, "fake mlx model").expect("fake mlx model should be written");
+        let fallback_script = fake_compat_script();
+        let fallback_model_path =
+            std::env::temp_dir().join("ax-engine-session-mlx-fallback-model.gguf");
+        fs::write(&fallback_model_path, "fake gguf").expect("fake model should be written");
+
+        let mut session = EngineSession::new(EngineSessionConfig {
+            backend_policy: BackendPolicy::allow_compat(),
+            resolved_backend: ResolvedBackend::compatibility(
+                SelectedBackend::Mlx,
+                "shipping route selected MLX bypass with llama.cpp fallback",
+            ),
+            compatibility_backend: Some(CompatibilityBackendConfig::Mlx(
+                crate::compat::MlxConfig::cli(failing_mlx_script, &mlx_model_path),
+            )),
+            fallback_compatibility_backend: Some(CompatibilityBackendConfig::LlamaCpp(
+                crate::compat::LlamaCppConfig::new(fallback_script, &fallback_model_path),
+            )),
+            ..EngineSessionConfig::default()
+        })
+        .expect("mlx compatibility session should build");
+
+        let response = session
+            .generate(GenerateRequest {
+                model_id: "qwen3_dense".to_string(),
+                input_tokens: Vec::new(),
+                input_text: Some("hello mlx fallback".to_string()),
+                max_output_tokens: 2,
+                sampling: Default::default(),
+                metadata: None,
+            })
+            .expect("llama fallback generate should succeed");
+
+        assert_eq!(response.runtime.selected_backend, SelectedBackend::LlamaCpp);
+        assert!(response
+            .runtime
+            .fallback_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("fell back to llama.cpp bypass")));
+        assert_eq!(
+            response.output_text.as_deref(),
+            Some("session::hello mlx fallback")
+        );
+    }
+
+    #[test]
+    fn stateless_mlx_generate_falls_back_to_llama_cpp_bypass() {
+        let failing_mlx_script = fake_failing_mlx_script();
+        let mlx_model_path = std::env::temp_dir().join("ax-engine-session-stateless-mlx-model");
+        fs::write(&mlx_model_path, "fake mlx model").expect("fake mlx model should be written");
+        let fallback_script = fake_compat_script();
+        let fallback_model_path =
+            std::env::temp_dir().join("ax-engine-session-stateless-mlx-fallback.gguf");
+        fs::write(&fallback_model_path, "fake gguf").expect("fake model should be written");
+
+        let config = EngineSessionConfig {
+            backend_policy: BackendPolicy::allow_compat(),
+            resolved_backend: ResolvedBackend::compatibility(
+                SelectedBackend::Mlx,
+                "shipping route selected MLX bypass with llama.cpp fallback",
+            ),
+            compatibility_backend: Some(CompatibilityBackendConfig::Mlx(
+                crate::compat::MlxConfig::cli(failing_mlx_script, &mlx_model_path),
+            )),
+            fallback_compatibility_backend: Some(CompatibilityBackendConfig::LlamaCpp(
+                crate::compat::LlamaCppConfig::new(fallback_script, &fallback_model_path),
+            )),
+            ..EngineSessionConfig::default()
+        };
+
+        let response = EngineSession::generate_stateless_with_request_id(
+            config,
+            78,
+            GenerateRequest {
+                model_id: "qwen3_dense".to_string(),
+                input_tokens: Vec::new(),
+                input_text: Some("hello stateless fallback".to_string()),
+                max_output_tokens: 2,
+                sampling: Default::default(),
+                metadata: None,
+            },
+        )
+        .expect("stateless llama fallback generate should succeed");
+
+        assert_eq!(response.request_id, 78);
+        assert_eq!(response.runtime.selected_backend, SelectedBackend::LlamaCpp);
+        assert!(response
+            .runtime
+            .fallback_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("fell back to llama.cpp bypass")));
+        assert_eq!(
+            response.output_text.as_deref(),
+            Some("session::hello stateless fallback")
+        );
+    }
+
+    #[test]
+    fn stateless_generate_context_preserves_mlx_to_llama_cpp_fallback() {
+        let failing_mlx_script = fake_failing_mlx_script();
+        let mlx_model_path = std::env::temp_dir().join("ax-engine-session-context-mlx-model");
+        fs::write(&mlx_model_path, "fake mlx model").expect("fake mlx model should be written");
+        let fallback_script = fake_compat_script();
+        let fallback_model_path =
+            std::env::temp_dir().join("ax-engine-session-context-mlx-fallback.gguf");
+        fs::write(&fallback_model_path, "fake gguf").expect("fake model should be written");
+
+        let config = EngineSessionConfig {
+            backend_policy: BackendPolicy::allow_compat(),
+            resolved_backend: ResolvedBackend::compatibility(
+                SelectedBackend::Mlx,
+                "shipping route selected MLX bypass with llama.cpp fallback",
+            ),
+            compatibility_backend: Some(CompatibilityBackendConfig::Mlx(
+                crate::compat::MlxConfig::cli(failing_mlx_script, &mlx_model_path),
+            )),
+            fallback_compatibility_backend: Some(CompatibilityBackendConfig::LlamaCpp(
+                crate::compat::LlamaCppConfig::new(fallback_script, &fallback_model_path),
+            )),
+            ..EngineSessionConfig::default()
+        };
+
+        let context =
+            StatelessGenerateContext::new(config).expect("stateless context should build");
+        let response = context
+            .generate_with_request_id(
+                80,
+                GenerateRequest {
+                    model_id: "qwen3_dense".to_string(),
+                    input_tokens: Vec::new(),
+                    input_text: Some("hello stateless context fallback".to_string()),
+                    max_output_tokens: 2,
+                    sampling: Default::default(),
+                    metadata: None,
+                },
+            )
+            .expect("stateless context fallback generate should succeed");
+
+        assert_eq!(response.request_id, 80);
+        assert_eq!(response.runtime.selected_backend, SelectedBackend::LlamaCpp);
+        assert!(response
+            .runtime
+            .fallback_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("fell back to llama.cpp bypass")));
+        assert_eq!(
+            response.output_text.as_deref(),
+            Some("session::hello stateless context fallback")
+        );
+    }
+
+    #[test]
+    fn stateless_generate_context_streams_server_completion_adapter() {
+        let (server_url, server_handle) = spawn_compat_completion_stream_server(
+            1,
+            vec![
+                serde_json::json!({
+                    "content": "hello",
+                    "tokens": [4],
+                    "stop": false
+                }),
+                serde_json::json!({
+                    "content": " stream",
+                    "tokens": [5],
+                    "stop": true,
+                    "stop_type": "limit"
+                }),
+            ],
+            |payload| {
+                assert_eq!(payload.get("prompt"), Some(&serde_json::json!([1, 2, 3])));
+                assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
+                assert_eq!(payload.get("return_tokens"), Some(&Value::Bool(true)));
+                assert_eq!(payload.get("return_progress"), Some(&Value::Bool(true)));
+            },
+        );
+        let config = EngineSessionConfig {
+            backend_policy: BackendPolicy::allow_compat(),
+            resolved_backend: ResolvedBackend::compatibility(
+                SelectedBackend::LlamaCpp,
+                "native preview not ready for this model",
+            ),
+            compatibility_backend: Some(CompatibilityBackendConfig::LlamaCpp(
+                crate::compat::LlamaCppConfig::server_completion(server_url),
+            )),
+            ..EngineSessionConfig::default()
+        };
+        let context =
+            StatelessGenerateContext::new(config).expect("stateless context should build");
+        assert!(context.supports_compatibility_streaming());
+        let mut stream_state = context
+            .stream_state_with_request_id(
+                81,
+                GenerateRequest {
+                    model_id: "qwen3_dense".to_string(),
+                    input_tokens: vec![1, 2, 3],
+                    input_text: None,
+                    max_output_tokens: 2,
+                    sampling: Default::default(),
+                    metadata: None,
+                },
+            )
+            .expect("stateless compatibility stream should start");
+
+        let mut events = Vec::new();
+        while let Some(event) = context
+            .next_stream_event(&mut stream_state)
+            .expect("stateless compatibility stream should advance")
+        {
+            events.push(event);
+        }
+
+        server_handle
+            .join()
+            .expect("compatibility server thread should finish");
+
+        assert!(matches!(
+            events.first(),
+            Some(GenerateStreamEvent::Request(_))
+        ));
+        assert_eq!(events.len(), 4);
+        let GenerateStreamEvent::Response(final_event) = events.last().expect("final event") else {
+            panic!("final event should be response");
+        };
+        assert_eq!(final_event.response.request_id, 81);
+        assert_eq!(final_event.response.output_tokens, vec![4, 5]);
+        assert_eq!(
+            final_event.response.output_text.as_deref(),
+            Some("hello stream")
+        );
+    }
+
+    #[test]
     fn compatibility_stream_generate_supports_server_completion_adapter() {
         let (server_url, server_handle) = spawn_compat_completion_stream_server(
             1,
@@ -3656,6 +4628,79 @@ kernel void kv_scale_update() {}
         assert_eq!(
             response_event.response.finish_reason,
             Some(crate::generate::GenerateFinishReason::MaxOutputTokens)
+        );
+    }
+
+    #[test]
+    fn mlx_stream_start_falls_back_to_llama_cpp_server_stream() {
+        let failing_mlx_script = fake_failing_mlx_script();
+        let mlx_model_path =
+            std::env::temp_dir().join("ax-engine-session-mlx-stream-primary-model");
+        fs::write(&mlx_model_path, "fake mlx model").expect("fake mlx model should be written");
+        let (server_url, server_handle) = spawn_compat_completion_stream_server(
+            1,
+            vec![
+                serde_json::json!({
+                    "content": "hello",
+                    "tokens": [4],
+                    "stop": false
+                }),
+                serde_json::json!({
+                    "content": " fallback",
+                    "tokens": [5],
+                    "stop": true,
+                    "stop_type": "limit"
+                }),
+            ],
+            |payload| {
+                assert_eq!(payload.get("prompt"), Some(&serde_json::json!([1, 2, 3])));
+                assert_eq!(payload.get("stream"), Some(&Value::Bool(true)));
+            },
+        );
+
+        let mut session = EngineSession::new(EngineSessionConfig {
+            backend_policy: BackendPolicy::allow_compat(),
+            resolved_backend: ResolvedBackend::compatibility(
+                SelectedBackend::Mlx,
+                "shipping route selected MLX bypass with llama.cpp fallback",
+            ),
+            compatibility_backend: Some(CompatibilityBackendConfig::Mlx(
+                crate::compat::MlxConfig::cli(failing_mlx_script, &mlx_model_path),
+            )),
+            fallback_compatibility_backend: Some(CompatibilityBackendConfig::LlamaCpp(
+                crate::compat::LlamaCppConfig::server_completion(server_url),
+            )),
+            ..EngineSessionConfig::default()
+        })
+        .expect("mlx compatibility session should build");
+
+        let events = session
+            .stream_generate(GenerateRequest {
+                model_id: "qwen3_dense".to_string(),
+                input_tokens: vec![1, 2, 3],
+                input_text: None,
+                max_output_tokens: 2,
+                sampling: Default::default(),
+                metadata: None,
+            })
+            .expect("stream fallback should start")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("stream fallback should complete");
+
+        server_handle
+            .join()
+            .expect("compatibility server thread should finish");
+
+        let GenerateStreamEvent::Response(response_event) = events.last().unwrap() else {
+            panic!("last event should be response");
+        };
+        assert_eq!(
+            response_event.response.runtime.selected_backend,
+            SelectedBackend::LlamaCpp
+        );
+        assert_eq!(
+            response_event.response.output_text.as_deref(),
+            Some("hello fallback")
         );
     }
 
@@ -3996,6 +5041,13 @@ kernel void kv_scale_update() {}
         assert_eq!(first_step.scheduled_requests, 1);
         assert_eq!(first_step.scheduled_tokens, 1);
         assert_eq!(first_step.ttft_events, 1);
+        assert_eq!(
+            first_step
+                .route
+                .as_ref()
+                .and_then(|route| route.execution_plan.as_deref()),
+            Some(COMPATIBILITY_STREAM_EXECUTION_PLAN)
+        );
 
         let running = session
             .request_report(request_id)
@@ -4006,6 +5058,13 @@ kernel void kv_scale_update() {}
         let second_step = session.step_report().expect("second step should succeed");
         assert_eq!(second_step.scheduled_requests, 1);
         assert_eq!(second_step.scheduled_tokens, 1);
+        assert_eq!(
+            second_step
+                .route
+                .as_ref()
+                .and_then(|route| route.execution_plan.as_deref()),
+            Some(COMPATIBILITY_STREAM_EXECUTION_PLAN)
+        );
 
         let terminal = session
             .request_report(request_id)

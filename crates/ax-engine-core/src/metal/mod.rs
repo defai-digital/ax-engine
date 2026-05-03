@@ -2438,7 +2438,7 @@ enum MetalFfnGateUpBindings {
     Packed(MetalNativeTensorBinding),
     Split {
         gate: MetalNativeTensorBinding,
-        up: MetalNativeTensorBinding,
+        up: Box<MetalNativeTensorBinding>,
     },
 }
 
@@ -2447,7 +2447,7 @@ enum MetalMoeExpertGateUpBindings {
     Packed(MetalNativeTensorBinding),
     Split {
         gate: MetalNativeTensorBinding,
-        up: MetalNativeTensorBinding,
+        up: Box<MetalNativeTensorBinding>,
     },
 }
 
@@ -2837,7 +2837,7 @@ impl MetalNativeModelBindings {
                 MetalFfnGateUpBindings::Packed(binding) => bindings.push(binding.clone()),
                 MetalFfnGateUpBindings::Split { gate, up } => {
                     bindings.push(gate.clone());
-                    bindings.push(up.clone());
+                    bindings.push(up.as_ref().clone());
                 }
             }
             bindings.push(layer.ffn_down.clone());
@@ -2850,7 +2850,7 @@ impl MetalNativeModelBindings {
                     MetalMoeExpertGateUpBindings::Packed(binding) => bindings.push(binding.clone()),
                     MetalMoeExpertGateUpBindings::Split { gate, up } => {
                         bindings.push(gate.clone());
-                        bindings.push(up.clone());
+                        bindings.push(up.as_ref().clone());
                     }
                 }
                 bindings.push(moe.expert_down.clone());
@@ -3071,12 +3071,12 @@ fn ffn_gate_up_bindings(
             NativeTensorRole::FfnGate,
             "ffn_gate",
         )?,
-        up: required_layer_tensor_binding(
+        up: Box::new(required_layer_tensor_binding(
             artifacts,
             layer_index,
             NativeTensorRole::FfnUp,
             "ffn_up",
-        )?,
+        )?),
     })
 }
 
@@ -3100,12 +3100,12 @@ fn moe_bindings(
                 NativeTensorRole::FfnGateExps,
                 "ffn_gate_exps",
             )?,
-            up: required_layer_tensor_binding(
+            up: Box::new(required_layer_tensor_binding(
                 artifacts,
                 layer_index,
                 NativeTensorRole::FfnUpExps,
                 "ffn_up_exps",
-            )?,
+            )?),
         }
     };
     Ok(Some(MetalMoeBindings {
@@ -8781,7 +8781,7 @@ fn build_dispatch_trace(
         let head_dim = u64::from(workload.numeric_layout.head_dim);
         let head_count = u64::from(workload.numeric_layout.head_count);
         let simd_w = pipeline.thread_execution_width.max(1);
-        let tg = ((head_dim + simd_w - 1) / simd_w * simd_w).max(simd_w);
+        let tg = (head_dim.div_ceil(simd_w) * simd_w).max(simd_w);
         let clamped_tg = tg
             .min(pipeline.max_total_threads_per_threadgroup.max(1));
         let head_size = head_count.saturating_mul(head_dim).max(1);
@@ -10647,6 +10647,327 @@ fn initial_model_hidden_states_with_optional_native_path(
     output
 }
 
+/// Fused single-token QKV staging: attention norm → Q/K/V projections →
+/// optional Q/K per-head norms → RoPE, all in one Metal command buffer.
+/// Returns (query, key, value) as flat f32 vecs (pre-RoPE, pre-GQA-expansion).
+/// Returns None to fall back to individual GPU ops.
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn fused_qkv_staging_on_gpu(
+    bringup: &MetalRuntimeBringup,
+    artifacts: &NativeModelArtifacts,
+    layer: &MetalNativeLayerBindings,
+    buffers: &MetalNativeModelBufferBindings,
+    hidden_state: &[f32],
+    stage_dims: ModelStageDims,
+    position: u32,
+) -> Option<(Vec<f32>, Vec<f32>, Vec<f32>)> {
+    if layer.attention_v_norm_no_scale {
+        return None;
+    }
+    let qkv_packed = match layer.attention_qkv.as_ref() {
+        Some(MetalAttentionQkvBindings::Packed(b)) => buffers.binding_for(b)?,
+        _ => return None,
+    };
+    let weight_dtype = qkv_packed.native_dtype;
+    if !matches!(
+        weight_dtype,
+        NativeTensorDataType::F16 | NativeTensorDataType::Bf16 | NativeTensorDataType::Q4Km
+    ) {
+        return None;
+    }
+
+    let attention_norm = buffers.binding_for(&layer.attention_norm)?;
+    let attention_q_norm = layer.attention_q_norm.as_ref().and_then(|b| buffers.binding_for(b));
+    let attention_k_norm = layer.attention_k_norm.as_ref().and_then(|b| buffers.binding_for(b));
+    if layer.attention_q_norm.is_some() && attention_q_norm.is_none() {
+        return None;
+    }
+    if layer.attention_k_norm.is_some() && attention_k_norm.is_none() {
+        return None;
+    }
+
+    let input_width = stage_dims.input_dim;
+    let query_dim = stage_dims.q_heads.checked_mul(stage_dims.head_dim)?;
+    let kv_dim = stage_dims.kv_heads.checked_mul(stage_dims.head_dim)?;
+    if input_width == 0 || query_dim == 0 || kv_dim == 0 || hidden_state.len() < input_width {
+        return None;
+    }
+
+    let (_, qkv_cols) = tensor_matrix_dimensions(&qkv_packed.meta.spec)?;
+    if input_width > qkv_cols {
+        return None;
+    }
+
+    let q_rows_total = if artifacts.manifest().attn_output_gate {
+        query_dim.checked_mul(2)?
+    } else {
+        query_dim
+    };
+    let q_byte_offset = fused_weight_byte_offset(0, qkv_cols, weight_dtype)? as u64;
+    let k_byte_offset = fused_weight_byte_offset(q_rows_total, qkv_cols, weight_dtype)? as u64;
+    let v_byte_offset =
+        fused_weight_byte_offset(q_rows_total + kv_dim, qkv_cols, weight_dtype)? as u64;
+
+    let rope_style = model_stage_rope_style(artifacts);
+    let has_rope = rope_style != ModelStageRopeStyle::None
+        && artifacts.rotary_dim() != 0
+        && artifacts.rotary_dim().is_multiple_of(2);
+    let rotary_dim = artifacts.rotary_dim();
+    let freq_base = native_model_rope_theta(artifacts);
+
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+    let (norm_kernel, norm_pi) = plan.rms_norm_kernel(attention_norm.native_dtype)?;
+    let (proj_kernel, proj_pi) = plan.projection_kernel(weight_dtype)?;
+    let rope_kpi = has_rope.then_some(plan.apply_rope_f32?);
+    let has_qk_norm = attention_q_norm.is_some() || attention_k_norm.is_some();
+    let qk_norm_kpi = has_qk_norm
+        .then(|| plan.batched_rms_norm_kernel(NativeTensorDataType::F32))
+        .flatten();
+    if has_qk_norm && qk_norm_kpi.is_none() {
+        return None;
+    }
+
+    let feedback_key = MetalOptionalKernelFeedbackKey::Kernel("fused_qkv_staging");
+    if !optional_kernel_allowed(bringup, &feedback_key) {
+        return None;
+    }
+
+    let norm_ph = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        norm_kernel,
+        norm_pi,
+    )
+    .ok()?;
+    let proj_ph = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        proj_kernel,
+        proj_pi,
+    )
+    .ok()?;
+    let rope_ph = if let Some(ri) = rope_kpi {
+        Some(
+            find_optional_pipeline_handle_by_index(
+                &bringup.state,
+                &bringup.metallib.path,
+                "apply_rope_f32",
+                ri,
+            )
+            .ok()?,
+        )
+    } else {
+        None
+    };
+    let qk_norm_ph = if let Some((qknn, qkni)) = qk_norm_kpi {
+        Some(
+            find_optional_pipeline_handle_by_index(
+                &bringup.state,
+                &bringup.metallib.path,
+                qknn,
+                qkni,
+            )
+            .ok()?,
+        )
+    } else {
+        None
+    };
+
+    let epsilon = native_model_rms_norm_epsilon(artifacts);
+    let weight_offset_val = native_model_rms_norm_weight_offset(artifacts);
+    let input_width_u32 = saturating_usize_to_u32(input_width);
+    let query_dim_u32 = saturating_usize_to_u32(query_dim);
+    let kv_dim_u32 = saturating_usize_to_u32(kv_dim);
+    let qkv_cols_u32 = saturating_usize_to_u32(qkv_cols);
+    let q_heads_u32 = saturating_usize_to_u32(stage_dims.q_heads);
+    let kv_heads_u32 = saturating_usize_to_u32(stage_dims.kv_heads);
+    let head_dim_u32 = saturating_usize_to_u32(stage_dims.head_dim);
+
+    let result = autoreleasepool(|| {
+        let hidden_buf =
+            new_shared_buffer_with_data(&bringup.state.device, &hidden_state[..input_width]);
+        let normed_buf = new_zeroed_shared_buffer::<f32>(&bringup.state.device, input_width_u32);
+        let query_buf = new_zeroed_shared_buffer::<f32>(&bringup.state.device, query_dim_u32);
+        let key_buf = new_zeroed_shared_buffer::<f32>(&bringup.state.device, kv_dim_u32);
+        let value_buf = new_zeroed_shared_buffer::<f32>(&bringup.state.device, kv_dim_u32);
+        let q_norm_buf: Option<Buffer> = attention_q_norm
+            .map(|_| new_zeroed_shared_buffer::<f32>(&bringup.state.device, query_dim_u32));
+        let k_norm_buf: Option<Buffer> = attention_k_norm
+            .map(|_| new_zeroed_shared_buffer::<f32>(&bringup.state.device, kv_dim_u32));
+
+        let (cos_buf, sin_buf) = if has_rope && rope_ph.is_some() {
+            let (cos_table, sin_table) =
+                build_model_stage_rope_tables(rotary_dim, position as f32, freq_base);
+            (
+                Some(new_shared_buffer_with_data(&bringup.state.device, &cos_table)),
+                Some(new_shared_buffer_with_data(&bringup.state.device, &sin_table)),
+            )
+        } else {
+            (None, None)
+        };
+
+        let command_buffer = bringup.state.command_queue.new_command_buffer();
+        command_buffer.set_label("ax.phase1.fused_qkv_staging");
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_label("ax.phase1.fused_qkv_staging.compute");
+
+        // 1. Attention RMS norm: hidden → normed.
+        encoder.set_compute_pipeline_state(&norm_ph.pipeline);
+        encoder.set_buffer(0, Some(&hidden_buf), 0);
+        encoder.set_buffer(1, Some(&attention_norm.native_buffer), 0);
+        encoder.set_buffer(2, Some(&normed_buf), 0);
+        set_rms_norm_dispatch_params(encoder, 3, input_width_u32, epsilon, weight_offset_val);
+        encoder.dispatch_threads(
+            MTLSize::new(NORM_TG_SIZE, 1, 1),
+            MTLSize::new(NORM_TG_SIZE, 1, 1),
+        );
+
+        // 2. Q projection: normed → query.
+        encode_fused_projection(
+            encoder,
+            proj_ph,
+            &normed_buf,
+            &qkv_packed.native_buffer,
+            q_byte_offset,
+            &query_buf,
+            weight_dtype,
+            query_dim_u32,
+            qkv_cols_u32,
+            input_width_u32,
+        );
+
+        // 3. K projection: normed → key.
+        encode_fused_projection(
+            encoder,
+            proj_ph,
+            &normed_buf,
+            &qkv_packed.native_buffer,
+            k_byte_offset,
+            &key_buf,
+            weight_dtype,
+            kv_dim_u32,
+            qkv_cols_u32,
+            input_width_u32,
+        );
+
+        // 4. V projection: normed → value.
+        encode_fused_projection(
+            encoder,
+            proj_ph,
+            &normed_buf,
+            &qkv_packed.native_buffer,
+            v_byte_offset,
+            &value_buf,
+            weight_dtype,
+            kv_dim_u32,
+            qkv_cols_u32,
+            input_width_u32,
+        );
+
+        // 5. Optional Q per-head norm: query → q_norm.
+        if let (Some(qnh), Some(qn_binding), Some(qnb)) =
+            (&qk_norm_ph, attention_q_norm, &q_norm_buf)
+        {
+            encoder.set_compute_pipeline_state(&qnh.pipeline);
+            encoder.set_buffer(0, Some(&query_buf), 0);
+            encoder.set_buffer(1, Some(&qn_binding.native_buffer), 0);
+            encoder.set_buffer(2, Some(qnb), 0);
+            set_batched_rms_norm_dispatch_params(
+                encoder,
+                3,
+                q_heads_u32,
+                head_dim_u32,
+                epsilon,
+                weight_offset_val,
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(NORM_TG_SIZE.saturating_mul(u64::from(q_heads_u32)), 1, 1),
+                MTLSize::new(NORM_TG_SIZE, 1, 1),
+            );
+        }
+
+        // 6. Optional K per-head norm: key → k_norm.
+        if let (Some(knh), Some(kn_binding), Some(knb)) =
+            (&qk_norm_ph, attention_k_norm, &k_norm_buf)
+        {
+            encoder.set_compute_pipeline_state(&knh.pipeline);
+            encoder.set_buffer(0, Some(&key_buf), 0);
+            encoder.set_buffer(1, Some(&kn_binding.native_buffer), 0);
+            encoder.set_buffer(2, Some(knb), 0);
+            set_batched_rms_norm_dispatch_params(
+                encoder,
+                3,
+                kv_heads_u32,
+                head_dim_u32,
+                epsilon,
+                weight_offset_val,
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(NORM_TG_SIZE.saturating_mul(u64::from(kv_heads_u32)), 1, 1),
+                MTLSize::new(NORM_TG_SIZE, 1, 1),
+            );
+        }
+
+        // 7. RoPE on Q and K in-place.
+        let q_for_rope = q_norm_buf.as_ref().unwrap_or(&query_buf);
+        let k_for_rope = k_norm_buf.as_ref().unwrap_or(&key_buf);
+        if let (Some(rope_handle), Some(cos_b), Some(sin_b)) = (&rope_ph, &cos_buf, &sin_buf) {
+            let half_dim = rotary_dim / 2;
+            let rope_threads =
+                ((stage_dims.q_heads + stage_dims.kv_heads) * half_dim).max(1) as u64;
+            encoder.set_compute_pipeline_state(&rope_handle.pipeline);
+            encoder.set_buffer(0, Some(q_for_rope), 0);
+            encoder.set_buffer(1, Some(k_for_rope), 0);
+            encoder.set_buffer(2, Some(cos_b), 0);
+            encoder.set_buffer(3, Some(sin_b), 0);
+            set_model_stage_rope_dispatch_params(
+                encoder,
+                4,
+                q_heads_u32,
+                kv_heads_u32,
+                head_dim_u32,
+                rope_style_dispatch_value(rope_style),
+                saturating_usize_to_u32(rotary_dim),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(rope_threads, 1, 1),
+                MTLSize::new(32, 1, 1),
+            );
+        }
+
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let status = command_buffer_status(command_buffer.status());
+        if status != MetalCommandBufferStatus::Completed {
+            return None;
+        }
+
+        let q_for_rope = q_norm_buf.as_ref().unwrap_or(&query_buf);
+        let k_for_rope = k_norm_buf.as_ref().unwrap_or(&key_buf);
+        let query_out = read_shared_buffer_prefix(q_for_rope, query_dim_u32);
+        let key_out = read_shared_buffer_prefix(k_for_rope, kv_dim_u32);
+        let value_out = read_shared_buffer_prefix(&value_buf, kv_dim_u32);
+
+        if query_out.len() != query_dim
+            || key_out.len() != kv_dim
+            || value_out.len() != kv_dim
+            || query_out.iter().any(|v| !v.is_finite())
+            || key_out.iter().any(|v| !v.is_finite())
+            || value_out.iter().any(|v| !v.is_finite())
+        {
+            return None;
+        }
+
+        Some((query_out, key_out, value_out))
+    });
+
+    record_optional_kernel_result(bringup, &feedback_key, result.is_some());
+    result
+}
+
 #[cfg(target_os = "macos")]
 fn stage_model_layer_qkv_inputs(
     artifacts: &NativeModelArtifacts,
@@ -10678,6 +10999,47 @@ fn stage_model_layer_qkv_inputs(
         Some(binding) => Some(buffers.binding_for(binding)?),
         None => None,
     };
+
+    // Fast path for single-token decode: fuse norm + QKV projections + optional per-head
+    // norms + RoPE into one Metal command buffer (1 GPU sync instead of ~5).
+    if hidden_states.len() == 1 {
+        if let Some(br) = bringup {
+            let position = workload.scheduled_positions.first().copied()?;
+            let hidden_state = hidden_states.first()?;
+            if let Some((query_vec, key_vec, value_vec)) = fused_qkv_staging_on_gpu(
+                br, artifacts, layer, buffers, hidden_state, stage_dims, position,
+            ) {
+                let projected_keys = vec![key_vec];
+                let projected_values = vec![value_vec];
+                let expanded_keys = expand_batched_grouped_kv_heads_with_path(
+                    &projected_keys,
+                    stage_dims.q_heads,
+                    stage_dims.kv_heads,
+                    stage_dims.head_dim,
+                    bringup,
+                )?;
+                let expanded_values = expand_batched_grouped_kv_heads_with_path(
+                    &projected_values,
+                    stage_dims.q_heads,
+                    stage_dims.kv_heads,
+                    stage_dims.head_dim,
+                    bringup,
+                )?;
+                let prefix_attention_tally =
+                    PrefixAttentionExecutionTally::default().record(true);
+                return Some(MetalDispatchStagedInputs {
+                    key: expanded_keys.into_iter().flatten().collect(),
+                    value: expanded_values.into_iter().flatten().collect(),
+                    query: query_vec,
+                    layout,
+                    source: MetalStagedInputSource::ModelConditionedMiniProjection,
+                    prefix_attention_tally,
+                    final_layer_hidden_state_cache: None,
+                });
+            }
+        }
+    }
+
     let token_head_size = layout.head_size() as usize;
     let mut key = Vec::with_capacity(hidden_states.len() * token_head_size);
     let mut value = Vec::with_capacity(hidden_states.len() * token_head_size);
@@ -14487,7 +14849,7 @@ fn fused_linear_attn_tail_on_gpu(
         // 3. Out projection: gated → hidden
         encode_fused_projection(
             encoder,
-            &proj_pipeline,
+            proj_pipeline,
             &gated_buf,
             &out_proj.native_buffer,
             0,
@@ -14685,7 +15047,7 @@ fn fused_layer_continuation_on_gpu(
         // 1. O projection: attn_input → hidden
         encode_fused_projection(
             encoder,
-            &proj_pipeline,
+            proj_pipeline,
             &attn_input_buffer,
             &attention_o.native_buffer,
             0,
@@ -14729,7 +15091,7 @@ fn fused_layer_continuation_on_gpu(
         // 4. Gate projection: normed → gate
         encode_fused_projection(
             encoder,
-            &proj_pipeline,
+            proj_pipeline,
             &arena.normed,
             &gate_weight.native_buffer,
             gate_row_byte_offset as u64,
@@ -14743,7 +15105,7 @@ fn fused_layer_continuation_on_gpu(
         // 5. Up projection: normed → up
         encode_fused_projection(
             encoder,
-            &proj_pipeline,
+            proj_pipeline,
             &arena.normed,
             &up_weight.native_buffer,
             up_row_byte_offset as u64,
@@ -14776,7 +15138,7 @@ fn fused_layer_continuation_on_gpu(
         // 7. Down projection: gate → down
         encode_fused_projection(
             encoder,
-            &proj_pipeline,
+            proj_pipeline,
             &arena.gate,
             &ffn_down.native_buffer,
             0,
@@ -14974,7 +15336,7 @@ fn fused_ffn_only_on_gpu(
         // 2. Gate projection: normed → gate
         encode_fused_projection(
             encoder,
-            &proj_pipeline,
+            proj_pipeline,
             &arena.normed,
             &gate_weight.native_buffer,
             gate_row_byte_offset as u64,
@@ -14988,7 +15350,7 @@ fn fused_ffn_only_on_gpu(
         // 3. Up projection: normed → up
         encode_fused_projection(
             encoder,
-            &proj_pipeline,
+            proj_pipeline,
             &arena.normed,
             &up_weight.native_buffer,
             up_row_byte_offset as u64,
@@ -15021,7 +15383,7 @@ fn fused_ffn_only_on_gpu(
         // 5. Down projection: gate → down
         encode_fused_projection(
             encoder,
-            &proj_pipeline,
+            proj_pipeline,
             &arena.gate,
             &ffn_down.native_buffer,
             0,
@@ -18451,6 +18813,8 @@ fn project_multi_matrix_rows_with_optional_native_path(
                     saturating_usize_to_u32(task.output_dim),
                     saturating_usize_to_u32(input_width),
                 );
+                let (tg_count, tg_size) = q4km_dispatch(task.output_dim.max(1));
+                encoder.dispatch_thread_groups(tg_count, tg_size);
             } else {
                 set_logits_projection_dispatch_params(
                     encoder,
@@ -18459,11 +18823,11 @@ fn project_multi_matrix_rows_with_optional_native_path(
                     saturating_usize_to_u32(cols),
                     saturating_usize_to_u32(input_width),
                 );
+                encoder.dispatch_threads(
+                    MTLSize::new(projection_dispatch_threads(task.output_dim.max(1)), 1, 1),
+                    MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                );
             }
-            encoder.dispatch_threads(
-                MTLSize::new(projection_dispatch_threads(task.output_dim.max(1)), 1, 1),
-                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
-            );
         }
 
         encoder.end_encoding();
@@ -18698,6 +19062,8 @@ fn project_matrix_rows_with_optional_native_path(
                     saturating_usize_to_u32(output_dim),
                     saturating_usize_to_u32(input.len()),
                 );
+                let (tg_count, tg_size) = q4km_dispatch(output_dim.max(1));
+                encoder.dispatch_thread_groups(tg_count, tg_size);
             } else {
                 set_logits_projection_dispatch_params(
                     encoder,
@@ -18706,11 +19072,11 @@ fn project_matrix_rows_with_optional_native_path(
                     saturating_usize_to_u32(cols),
                     saturating_usize_to_u32(input.len()),
                 );
+                encoder.dispatch_threads(
+                    MTLSize::new(projection_dispatch_threads(output_dim.max(1)), 1, 1),
+                    MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+                );
             }
-            encoder.dispatch_threads(
-                MTLSize::new(projection_dispatch_threads(output_dim.max(1)), 1, 1),
-                MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
-            );
 
             encoder.end_encoding();
             command_buffer.commit();
@@ -19009,7 +19375,7 @@ fn dequantize_q6km_tensor_to_f16(
             let mut result = [0f32; 128];
             for l in 0..32_usize {
                 let is = l / 16;
-                let q1 = (((ql[ql_off + l     ] & 0xF) | (((qh[qh_off + l] >> 0) & 3) << 4)) as i8).wrapping_sub(32);
+                let q1 = (((ql[ql_off + l     ] & 0xF) | ((qh[qh_off + l] & 3) << 4)) as i8).wrapping_sub(32);
                 let q2 = (((ql[ql_off + l + 32] & 0xF) | (((qh[qh_off + l] >> 2) & 3) << 4)) as i8).wrapping_sub(32);
                 let q3 = (((ql[ql_off + l     ] >>  4) | (((qh[qh_off + l] >> 4) & 3) << 4)) as i8).wrapping_sub(32);
                 let q4 = (((ql[ql_off + l + 32] >>  4) | (((qh[qh_off + l] >> 6) & 3) << 4)) as i8).wrapping_sub(32);
@@ -19040,11 +19406,11 @@ fn dequantize_q4km_tensor_to_f16(
     if n_elements % 256 != 0 {
         return None;
     }
-    let n_blocks = (n_elements / 256) as usize;
+    let n_blocks = n_elements / 256;
     if bytes.len() < n_blocks * 144 {
         return None;
     }
-    let mut f16_bytes: Vec<u8> = Vec::with_capacity(n_elements as usize * 2);
+    let mut f16_bytes: Vec<u8> = Vec::with_capacity(n_elements * 2);
     for b in 0..n_blocks {
         let block = &bytes[b * 144..(b + 1) * 144];
         for f16_bits in dequantize_q4km_block_to_f16(block) {
@@ -20094,10 +20460,20 @@ const PROJECTION_SIMD_WIDTH: u64 = 32;
 const NORM_TG_SIZE: u64 = 256;
 /// Threadgroup size for parallel argmax/sample_argmax kernels (1 TG dispatched per vocab scan).
 const ARGMAX_TG_SIZE: u64 = 1024;
+/// Rows per threadgroup for Q4Km GEMV: 1 row/simdgroup × 2 simdgroups/TG.
+const Q4KM_ROWS_PER_TG: u64 = 2;
 
 #[cfg(target_os = "macos")]
 fn projection_dispatch_threads(output_rows: usize) -> u64 {
     (output_rows as u64).saturating_mul(PROJECTION_SIMD_WIDTH).max(PROJECTION_SIMD_WIDTH)
+}
+
+/// Returns (threadgroup_count, threadgroup_size) for `decode_projection_q4km`.
+/// Threadgroup is (32, 2, 1) = 64 threads, covering 2 output rows per TG.
+#[cfg(target_os = "macos")]
+fn q4km_dispatch(n_rows: usize) -> (MTLSize, MTLSize) {
+    let tg_count = (n_rows as u64).div_ceil(Q4KM_ROWS_PER_TG).max(1);
+    (MTLSize::new(tg_count, 1, 1), MTLSize::new(32, 2, 1))
 }
 
 /// Byte offset for a weight row, handling the non-linear Q4Km block layout.
@@ -20137,13 +20513,15 @@ fn encode_fused_projection(
     encoder.set_buffer(2, Some(output_buf), 0);
     if weight_dtype == NativeTensorDataType::Q4Km {
         set_q4km_projection_dispatch_params(encoder, 3, n_rows, input_width);
+        let (tg_count, tg_size) = q4km_dispatch(n_rows as usize);
+        encoder.dispatch_thread_groups(tg_count, tg_size);
     } else {
         set_logits_projection_dispatch_params(encoder, 3, n_rows, cols, input_width);
+        encoder.dispatch_threads(
+            MTLSize::new(projection_dispatch_threads(n_rows as usize), 1, 1),
+            MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
+        );
     }
-    encoder.dispatch_threads(
-        MTLSize::new(projection_dispatch_threads(n_rows as usize), 1, 1),
-        MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
-    );
 }
 
 #[cfg(target_os = "macos")]

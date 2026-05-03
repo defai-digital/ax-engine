@@ -180,7 +180,7 @@ impl GenerateResponse {
     /// either explicit backend-reported usage or a concrete prompt token array.
     pub fn known_prompt_token_count(&self) -> Option<u32> {
         self.prompt_token_count.or_else(|| {
-            if !self.prompt_tokens.is_empty() || self.prompt_text.is_none() {
+            if !self.prompt_tokens.is_empty() {
                 Some(self.prompt_tokens.len() as u32)
             } else {
                 None
@@ -192,7 +192,7 @@ impl GenerateResponse {
     /// either explicit backend-reported usage or a concrete output token array.
     pub fn known_output_token_count(&self) -> Option<u32> {
         self.output_token_count.or_else(|| {
-            if !self.output_tokens.is_empty() || self.output_text.is_none() {
+            if !self.output_tokens.is_empty() {
                 Some(self.output_tokens.len() as u32)
             } else {
                 None
@@ -611,6 +611,48 @@ mod tests {
         };
 
         assert_eq!(response.known_prompt_token_count(), None);
+        assert_eq!(response.known_output_token_count(), None);
+        assert_eq!(response.known_usage(), None);
+    }
+
+    #[test]
+    fn known_usage_omits_empty_token_native_output_without_reported_count() {
+        let response = GenerateResponse {
+            request_id: 4,
+            model_id: "qwen3_dense".to_string(),
+            prompt_tokens: vec![1, 2, 3],
+            prompt_text: None,
+            output_tokens: Vec::new(),
+            output_token_logprobs: Vec::new(),
+            output_text: None,
+            prompt_token_count: None,
+            output_token_count: None,
+            status: GenerateStatus::Finished,
+            finish_reason: Some(GenerateFinishReason::MaxOutputTokens),
+            step_count: 0,
+            ttft_step: None,
+            route: GenerateRouteReport {
+                execution_plan: Some("native.preview".to_string()),
+                attention_route: None,
+                kv_mode: None,
+                prefix_cache_path: None,
+                barrier_mode: None,
+                crossover_decisions: BTreeMap::new(),
+            },
+            runtime: RuntimeReport {
+                selected_backend: SelectedBackend::AxNative,
+                support_tier: SupportTier::NativeExperimental,
+                resolution_policy: ResolutionPolicy::NativeStrict,
+                capabilities: CapabilityReport::native_preview(),
+                fallback_reason: None,
+                host: Default::default(),
+                metal_toolchain: Default::default(),
+                native_runtime: None,
+                native_model: None,
+            },
+        };
+
+        assert_eq!(response.known_prompt_token_count(), Some(3));
         assert_eq!(response.known_output_token_count(), None);
         assert_eq!(response.known_usage(), None);
     }

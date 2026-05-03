@@ -153,6 +153,12 @@ impl Scheduler {
         let mut items = Vec::new();
 
         for snapshot in runnable {
+            if snapshot.processed_prompt_tokens >= snapshot.prompt_len
+                && snapshot.generated_len >= snapshot.max_output_tokens
+            {
+                continue;
+            }
+
             if snapshot.model_id != batch_model_id || remaining_budget == 0 {
                 deferred_requests.push(snapshot.request_id);
                 continue;
@@ -534,7 +540,7 @@ mod tests {
         });
 
         assert!(schedule_plan.selected_requests.is_empty());
-        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
+        assert!(schedule_plan.deferred_requests.is_empty());
         assert!(schedule_plan.execution_batch.is_none());
     }
 
