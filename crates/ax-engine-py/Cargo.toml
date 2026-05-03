@@ -15,7 +15,7 @@ default = []
 python-extension = ["pyo3/extension-module"]
 
 [dependencies]
-ax-engine-sdk = { path = "../ax-engine-sdk" }
+ax-engine-sdk = { path = "../ax-engine-sdk", features = ["mlx-native"] }
 pyo3 = { version = "0.23", features = ["abi3-py310"] }
 serde.workspace = true
 serde_json.workspace = true

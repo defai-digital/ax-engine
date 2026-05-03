@@ -1,9 +1,11 @@
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
+use std::thread;
+use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::backend::{RuntimeReport, SelectedBackend};
@@ -14,6 +16,8 @@ use crate::generate::{
 
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(300);
+const COMPATIBILITY_CLI_TIMEOUT: Duration = Duration::from_secs(300);
+static COMPATIBILITY_HTTP_AGENT: OnceLock<ureq::Agent> = OnceLock::new();
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CompatibilityBackendConfig {
@@ -292,6 +296,11 @@ pub enum CompatibilityBackendError {
         status: String,
         stderr: String,
     },
+    #[error("compatibility backend command {command} timed out after {timeout_seconds}s")]
+    CommandTimedOut {
+        command: String,
+        timeout_seconds: u64,
+    },
     #[error("compatibility backend command {command} returned non-utf8 output: {source}")]
     NonUtf8Output {
         command: String,
@@ -303,6 +312,12 @@ pub enum CompatibilityBackendError {
         endpoint: String,
         #[source]
         source: Box<ureq::Error>,
+    },
+    #[error("compatibility backend HTTP request to {endpoint} could not be serialized: {source}")]
+    SerializeRequestJson {
+        endpoint: String,
+        #[source]
+        source: serde_json::Error,
     },
     #[error("compatibility backend HTTP request to {endpoint} returned status {status}: {body}")]
     HttpStatus {
@@ -328,6 +343,13 @@ pub enum CompatibilityBackendError {
         "compatibility backend {selected_backend:?} does not support streaming generate in this preview contract"
     )]
     StreamingNotSupported { selected_backend: SelectedBackend },
+    #[error(
+        "compatibility backend {selected_backend:?} does not support sampling option {option} in this preview contract"
+    )]
+    UnsupportedSamplingOption {
+        selected_backend: SelectedBackend,
+        option: &'static str,
+    },
 }
 
 pub fn run_blocking_generate(
@@ -488,6 +510,7 @@ fn run_llama_cpp_cli_generate(
     command
         .arg("--simple-io")
         .arg("--no-display-prompt")
+        .arg("--single-turn")
         .arg("--log-disable")
         .arg("--model")
         .arg(&config.model_path)
@@ -499,12 +522,8 @@ fn run_llama_cpp_cli_generate(
     append_sampling_args(&mut command, &request.sampling);
     command.args(&config.extra_args);
 
-    let output = command
-        .output()
-        .map_err(|source| CompatibilityBackendError::CommandLaunch {
-            command: command_display.clone(),
-            source,
-        })?;
+    let output =
+        run_command_with_timeout(command, command_display.clone(), COMPATIBILITY_CLI_TIMEOUT)?;
 
     if !output.status.success() {
         return Err(CompatibilityBackendError::CommandFailed {
@@ -537,9 +556,9 @@ fn run_llama_cpp_cli_generate(
         prompt_token_count: None,
         output_token_count: None,
         status: GenerateStatus::Finished,
-        // CLI doesn't report whether it stopped at EOS or the token budget; default to
-        // MaxOutputTokens to match the native path's convention for an unknown stop reason.
-        finish_reason: Some(GenerateFinishReason::MaxOutputTokens),
+        // CLI output does not provide a structured stop reason; keep it unknown instead of
+        // falsely reporting a token-budget stop.
+        finish_reason: None,
         step_count: 0,
         ttft_step: None,
         route: GenerateRouteReport {
@@ -575,26 +594,8 @@ fn run_llama_cpp_server_completion_generate(
         return_progress: false,
     };
 
-    let response = send_json_post_request(
-        &endpoint,
-        serde_json::to_value(&payload).expect("payload should serialize"),
-        None,
-    )?;
-
-    let response_body =
-        response
-            .into_string()
-            .map_err(|source| CompatibilityBackendError::HttpResponseRead {
-                endpoint: endpoint.clone(),
-                source,
-            })?;
-    let response: LlamaCppCompletionResponse =
-        serde_json::from_str(&response_body).map_err(|source| {
-            CompatibilityBackendError::InvalidResponseJson {
-                endpoint: endpoint.clone(),
-                source,
-            }
-        })?;
+    let response = send_json_post_request(&endpoint, &payload, None)?;
+    let response: LlamaCppCompletionResponse = parse_json_response(&endpoint, response)?;
 
     let output_tokens = response.tokens;
     let output_token_logprobs = vec![None; output_tokens.len()];
@@ -646,11 +647,7 @@ fn start_llama_cpp_server_completion_stream(
         return_progress: true,
     };
 
-    let response = send_json_post_request(
-        &endpoint,
-        serde_json::to_value(&payload).expect("payload should serialize"),
-        Some("text/event-stream"),
-    )?;
+    let response = send_json_post_request(&endpoint, &payload, Some("text/event-stream"))?;
 
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
     Ok(CompatibilityStreamHandle::new(
@@ -712,6 +709,13 @@ fn run_mlx_cli_generate(
                 selected_backend: SelectedBackend::Mlx,
             })?;
 
+    if (request.sampling.repetition_penalty - 1.0).abs() > f32::EPSILON {
+        return Err(CompatibilityBackendError::UnsupportedSamplingOption {
+            selected_backend: SelectedBackend::Mlx,
+            option: "repetition_penalty",
+        });
+    }
+
     let command_display = config.cli_path.display().to_string();
     let mut command = Command::new(&config.cli_path);
     if config.invoke_as_python_module {
@@ -733,18 +737,12 @@ fn run_mlx_cli_generate(
         .arg(request.sampling.top_k.to_string())
         .arg("--seed")
         .arg(request.sampling.seed.to_string())
-        .arg("--repetition-penalty")
-        .arg(request.sampling.repetition_penalty.to_string())
         .arg("--verbose")
         .arg("false");
     command.args(&config.extra_args);
 
-    let output = command
-        .output()
-        .map_err(|source| CompatibilityBackendError::CommandLaunch {
-            command: command_display.clone(),
-            source,
-        })?;
+    let output =
+        run_command_with_timeout(command, command_display.clone(), COMPATIBILITY_CLI_TIMEOUT)?;
 
     if !output.status.success() {
         return Err(CompatibilityBackendError::CommandFailed {
@@ -777,9 +775,9 @@ fn run_mlx_cli_generate(
         prompt_token_count: None,
         output_token_count: None,
         status: GenerateStatus::Finished,
-        // CLI doesn't report whether it stopped at EOS or the token budget; default to
-        // MaxOutputTokens to match the native path's convention for an unknown stop reason.
-        finish_reason: Some(GenerateFinishReason::MaxOutputTokens),
+        // CLI output does not provide a structured stop reason; keep it unknown instead of
+        // falsely reporting a token-budget stop.
+        finish_reason: None,
         step_count: 0,
         ttft_step: None,
         route: GenerateRouteReport {
@@ -805,22 +803,8 @@ fn run_openai_compatible_generate(
     let endpoint = config.completions_url();
     let payload = openai_compatible_payload(request, prompt, selected_backend, false);
 
-    let response = send_json_post_request(&endpoint, payload, None)?;
-
-    let response_body =
-        response
-            .into_string()
-            .map_err(|source| CompatibilityBackendError::HttpResponseRead {
-                endpoint: endpoint.clone(),
-                source,
-            })?;
-    let response: OpenAiCompletionResponse =
-        serde_json::from_str(&response_body).map_err(|source| {
-            CompatibilityBackendError::InvalidResponseJson {
-                endpoint: endpoint.clone(),
-                source,
-            }
-        })?;
+    let response = send_json_post_request(&endpoint, &payload, None)?;
+    let response: OpenAiCompletionResponse = parse_json_response(&endpoint, response)?;
     let usage = response.usage;
     let choice = response.choices.into_iter().next().ok_or_else(|| {
         CompatibilityBackendError::EmptyChoicesInResponse {
@@ -856,7 +840,7 @@ fn start_openai_compatible_streaming_generate(
     let endpoint = config.completions_url();
     let payload = openai_compatible_payload(request, prompt, selected_backend, true);
 
-    let response = send_json_post_request(&endpoint, payload, Some("text/event-stream"))?;
+    let response = send_json_post_request(&endpoint, &payload, Some("text/event-stream"))?;
 
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
     Ok(CompatibilityStreamHandle::new(
@@ -920,25 +904,38 @@ fn finish_reason_from_stop_type(
     }
 }
 
-fn compatibility_http_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(HTTP_CONNECT_TIMEOUT)
-        .timeout_read(HTTP_IO_TIMEOUT)
-        .timeout_write(HTTP_IO_TIMEOUT)
-        .build()
+fn compatibility_http_agent() -> &'static ureq::Agent {
+    COMPATIBILITY_HTTP_AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(HTTP_CONNECT_TIMEOUT)
+            .timeout_read(HTTP_IO_TIMEOUT)
+            .timeout_write(HTTP_IO_TIMEOUT)
+            .build()
+    })
 }
 
-fn send_json_post_request(
+fn send_json_post_request<T>(
     endpoint: &str,
-    payload: serde_json::Value,
+    payload: &T,
     accept: Option<&str>,
-) -> Result<ureq::Response, CompatibilityBackendError> {
-    let mut request = compatibility_http_agent().post(endpoint);
+) -> Result<ureq::Response, CompatibilityBackendError>
+where
+    T: Serialize + ?Sized,
+{
+    let body = serde_json::to_vec(payload).map_err(|source| {
+        CompatibilityBackendError::SerializeRequestJson {
+            endpoint: endpoint.to_string(),
+            source,
+        }
+    })?;
+    let mut request = compatibility_http_agent()
+        .post(endpoint)
+        .set("Content-Type", "application/json");
     if let Some(accept) = accept {
         request = request.set("Accept", accept);
     }
 
-    match request.send_json(payload) {
+    match request.send_bytes(&body) {
         Ok(response) => Ok(response),
         Err(ureq::Error::Status(status, response)) => {
             let body = response
@@ -955,6 +952,21 @@ fn send_json_post_request(
             source: Box::new(source),
         }),
     }
+}
+
+fn parse_json_response<T>(
+    endpoint: &str,
+    response: ureq::Response,
+) -> Result<T, CompatibilityBackendError>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_reader(response.into_reader()).map_err(|source| {
+        CompatibilityBackendError::InvalidResponseJson {
+            endpoint: endpoint.to_string(),
+            source,
+        }
+    })
 }
 
 fn finish_reason_from_openai(finish_reason: Option<&str>) -> Option<GenerateFinishReason> {
@@ -990,6 +1002,49 @@ fn trim_single_trailing_newline(mut value: String) -> String {
         }
     }
     value
+}
+
+fn run_command_with_timeout(
+    mut command: Command,
+    command_display: String,
+    timeout: Duration,
+) -> Result<Output, CompatibilityBackendError> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|source| CompatibilityBackendError::CommandLaunch {
+            command: command_display.clone(),
+            source,
+        })?;
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        match child
+            .try_wait()
+            .map_err(|source| CompatibilityBackendError::CommandLaunch {
+                command: command_display.clone(),
+                source,
+            })? {
+            Some(_) => {
+                return child.wait_with_output().map_err(|source| {
+                    CompatibilityBackendError::CommandLaunch {
+                        command: command_display,
+                        source,
+                    }
+                });
+            }
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(CompatibilityBackendError::CommandTimedOut {
+                    command: command_display,
+                    timeout_seconds: timeout.as_secs(),
+                });
+            }
+            None => thread::sleep(Duration::from_millis(10)),
+        }
+    }
 }
 
 fn normalize_base_url(mut value: String) -> String {
@@ -1046,15 +1101,27 @@ struct OpenAiCompletionRequest<'a> {
     top_p: f32,
     seed: u64,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_k: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repetition_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<OpenAiStreamOptions>,
 }
 
-fn openai_compatible_payload(
-    request: &GenerateRequest,
-    prompt: &str,
+#[derive(Debug, Serialize)]
+struct OpenAiStreamOptions {
+    include_usage: bool,
+}
+
+fn openai_compatible_payload<'a>(
+    request: &'a GenerateRequest,
+    prompt: &'a str,
     selected_backend: SelectedBackend,
     stream: bool,
-) -> serde_json::Value {
-    let payload = OpenAiCompletionRequest {
+) -> OpenAiCompletionRequest<'a> {
+    let include_mlx_fields = matches!(selected_backend, SelectedBackend::Mlx);
+    OpenAiCompletionRequest {
         model: &request.model_id,
         prompt,
         max_tokens: request.max_output_tokens,
@@ -1062,28 +1129,12 @@ fn openai_compatible_payload(
         top_p: request.sampling.top_p,
         seed: request.sampling.seed,
         stream,
-    };
-    let mut value = serde_json::to_value(payload).expect("payload should serialize");
-    if matches!(selected_backend, SelectedBackend::Mlx) {
-        let object = value
-            .as_object_mut()
-            .expect("serialized payload should be a JSON object");
-        object.insert(
-            "top_k".to_string(),
-            serde_json::Value::from(request.sampling.top_k),
-        );
-        object.insert(
-            "repetition_penalty".to_string(),
-            serde_json::Value::from(request.sampling.repetition_penalty),
-        );
-        if stream {
-            object.insert(
-                "stream_options".to_string(),
-                serde_json::json!({ "include_usage": true }),
-            );
-        }
+        top_k: include_mlx_fields.then_some(request.sampling.top_k),
+        repetition_penalty: include_mlx_fields.then_some(request.sampling.repetition_penalty),
+        stream_options: (include_mlx_fields && stream).then_some(OpenAiStreamOptions {
+            include_usage: true,
+        }),
     }
-    value
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -1246,6 +1297,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn compatibility_http_agent_is_reused_across_requests() {
+        assert!(std::ptr::eq(
+            compatibility_http_agent(),
+            compatibility_http_agent()
+        ));
+    }
+
+    #[test]
+    fn compatibility_cli_command_timeout_kills_hung_process() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("ax-engine-sleep-cli-{unique}.py"));
+        write_executable_script(
+            &path,
+            r#"#!/usr/bin/env python3
+import time
+time.sleep(10)
+"#,
+        );
+        let error = run_command_with_timeout(
+            Command::new(&path),
+            path.display().to_string(),
+            Duration::from_millis(20),
+        )
+        .expect_err("hung CLI command should time out");
+
+        match error {
+            CompatibilityBackendError::CommandTimedOut {
+                command,
+                timeout_seconds,
+            } => {
+                assert_eq!(command, path.display().to_string());
+                assert_eq!(timeout_seconds, 0);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+
+        let _ = fs::remove_file(path);
+    }
+
     fn fake_llama_cli_script() -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1264,6 +1358,7 @@ model = args[args.index("--model") + 1]
 assert pathlib.Path(model).exists(), model
 assert "--simple-io" in args
 assert "--no-display-prompt" in args
+assert "--single-turn" in args
 assert "--log-disable" in args
 assert args[args.index("--n-predict") + 1] == "2"
 assert args[args.index("--seed") + 1] == "7"
@@ -1321,7 +1416,6 @@ assert args[args.index("--temp") + 1] == "0"
 assert args[args.index("--top-p") + 1] == "1"
 assert args[args.index("--top-k") + 1] == "1"
 assert args[args.index("--seed") + 1] == "7"
-assert args[args.index("--repetition-penalty") + 1] == "1"
 assert args[args.index("--verbose") + 1] == "false"
 assert "--ignore-chat-template" in args
 sys.stdout.write(f"mlx::{model}::{prompt}")
@@ -1351,7 +1445,6 @@ assert args[args.index("--temp") + 1] == "0"
 assert args[args.index("--top-p") + 1] == "1"
 assert args[args.index("--top-k") + 1] == "1"
 assert args[args.index("--seed") + 1] == "7"
-assert args[args.index("--repetition-penalty") + 1] == "1"
 assert args[args.index("--verbose") + 1] == "false"
 assert "--ignore-chat-template" in args
 sys.stdout.write(f"mlx::{model}::{prompt}")
@@ -1529,10 +1622,7 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
             response.route.execution_plan.as_deref(),
             Some("compatibility.llama_cpp.blocking_cli")
         );
-        assert_eq!(
-            response.finish_reason,
-            Some(GenerateFinishReason::MaxOutputTokens)
-        );
+        assert_eq!(response.finish_reason, None);
     }
 
     #[test]
@@ -1951,10 +2041,7 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
             response.route.execution_plan.as_deref(),
             Some("compatibility.mlx.blocking_cli")
         );
-        assert_eq!(
-            response.finish_reason,
-            Some(GenerateFinishReason::MaxOutputTokens)
-        );
+        assert_eq!(response.finish_reason, None);
     }
 
     #[test]
@@ -2001,6 +2088,33 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
         match error {
             CompatibilityBackendError::UnsupportedTokenPrompt { selected_backend } => {
                 assert_eq!(selected_backend, SelectedBackend::Mlx);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn mlx_cli_generate_rejects_non_default_repetition_penalty() {
+        let script_path = fake_mlx_cli_script();
+        let model_path = std::env::temp_dir().join("ax-engine-fake-mlx-model-penalty");
+
+        let mut request = sample_request();
+        request.sampling.repetition_penalty = 1.1;
+        let error = run_blocking_generate(
+            23,
+            &sample_runtime(SelectedBackend::Mlx),
+            &CompatibilityBackendConfig::Mlx(MlxConfig::cli(script_path, &model_path)),
+            &request,
+        )
+        .expect_err("mlx cli compatibility generate should reject unsupported repetition penalty");
+
+        match error {
+            CompatibilityBackendError::UnsupportedSamplingOption {
+                selected_backend,
+                option,
+            } => {
+                assert_eq!(selected_backend, SelectedBackend::Mlx);
+                assert_eq!(option, "repetition_penalty");
             }
             other => panic!("unexpected error: {other}"),
         }

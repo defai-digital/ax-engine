@@ -210,7 +210,7 @@ bash scripts/check-bench-preview.sh
 To start the preview local server:
 
 ```text
-cargo run -p ax-engine-server -- --model-id qwen3_dense --port 8080
+cargo run -p ax-engine-server -- --model-id qwen3_dense --compat-cli-path python3 --compat-model-path /absolute/path/to/mlx-model --port 8080
 ```
 
 To install the checked-in JavaScript preview client from this repository:

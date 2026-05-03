@@ -45,17 +45,30 @@ Current preview endpoints:
 Start the server:
 
 ```text
-cargo run -p ax-engine-server -- --model-id qwen3_dense --port 8080
+cargo run -p ax-engine-server -- \
+  --model-id qwen3_dense \
+  --compat-server-url http://127.0.0.1:8081 \
+  --port 8080
 ```
 
-If you want the native bring-up path to use explicit validated local artifacts
-instead of SDK defaults or environment auto-detect:
+`ax-engine-server` now ships with MLX-backed compatibility as the default local
+route. Provide either `--compat-server-url` or `--compat-model-path` as the
+primary target for that default path. Local `.gguf` paths are routed to
+`llama.cpp` bypass.
+
+If you want to opt into native preview, enable `--native-mode`.
+Native startup will try AX-native first and fall back to `llama.cpp` bypass if
+native startup fails and a valid llama fallback target is configured. Native
+mode is currently allowlisted only for `qwen3_5_9b_q4`; other models should run
+through compatibility until they are promoted deliberately.
 
 ```text
 cargo run -p ax-engine-server -- \
-  --model-id qwen3_dense \
+  --model-id qwen3_5_9b_q4 \
+  --native-mode \
   --native-runtime-artifacts-dir /absolute/path/to/build/metal \
   --native-model-artifacts-dir /absolute/path/to/native-model-artifacts \
+  --llama-fallback-model-path /absolute/path/to/model.gguf \
   --port 8080
 ```
 
@@ -63,18 +76,42 @@ The preview server requires a local Apple M4-or-newer host.
 On M3 and older Macs, startup now fails closed instead of exposing an
 unsupported partial runtime.
 
-Start the preferred compatibility preview path against a running
-`llama.cpp` server:
+Start the preferred compatibility preview path against a local MLX model:
 
 ```text
 cargo run -p ax-engine-server -- \
   --model-id qwen3_dense \
-  --support-tier compatibility \
-  --compat-server-url http://127.0.0.1:8081 \
+  --compat-cli-path python3 \
+  --compat-model-path /absolute/path/to/mlx-model \
   --port 8080
 ```
 
-Or target a documented OpenAI-compatible server such as `vLLM` or `mistral.rs`:
+Or use the default bypass mode against a local GGUF model:
+
+```text
+cargo run -p ax-engine-server -- \
+  --model-id qwen3_dense \
+  --compat-cli-path llama-cli \
+  --compat-model-path /absolute/path/to/model.gguf \
+  --port 8080
+```
+
+To prefer MLX while keeping `llama.cpp` as the required fallback:
+
+```text
+cargo run -p ax-engine-server -- \
+  --model-id qwen3_dense \
+  --mlx \
+  --compat-cli-path python3 \
+  --compat-model-path /absolute/path/to/mlx-model \
+  --llama-fallback-cli-path llama-cli \
+  --llama-fallback-model-path /absolute/path/to/model.gguf \
+  --port 8080
+```
+
+For explicit compatibility routing against a documented OpenAI-compatible server
+such as `vLLM` or `mistral.rs`, keep using `--support-tier compatibility` plus
+`--compat-backend`:
 
 ```text
 cargo run -p ax-engine-server -- \
@@ -85,31 +122,8 @@ cargo run -p ax-engine-server -- \
   --port 8080
 ```
 
-Or use the CLI fallback path against a local GGUF model:
-
-```text
-cargo run -p ax-engine-server -- \
-  --model-id qwen3_dense \
-  --support-tier compatibility \
-  --compat-cli-path llama-cli \
-  --compat-model-path /absolute/path/to/model.gguf \
-  --port 8080
-```
-
-Or use a direct local `mlx-lm` fallback through the official `mlx_lm.generate`
-CLI:
-
-```text
-cargo run -p ax-engine-server -- \
-  --model-id qwen3_dense \
-  --support-tier compatibility \
-  --compat-backend mlx \
-  --compat-cli-path python3 \
-  --compat-model-path /absolute/path/to/mlx-model \
-  --port 8080
-```
-
-For compatibility mode, choose exactly one of:
+For the default route and the explicit compatibility route, choose exactly one
+primary target:
 
 - `--compat-server-url` for the server-backed adapter
   `llama.cpp` uses `/completion`, while `vLLM` and `mistral.rs` use
@@ -117,16 +131,18 @@ For compatibility mode, choose exactly one of:
 - `--compat-model-path` plus `--compat-cli-path` for the local CLI fallback
   adapter
 
-Compatibility backend selection defaults to `llama_cpp`.
-Use `--compat-backend vllm`, `--compat-backend mistral-rs`, or
-`--compat-backend mlx` when the delegated server is not `llama.cpp`.
-The CLI fallback supports `llama.cpp` and a direct `mlx-lm` path.
+Local compatibility model paths default to `mlx` unless the path ends in
+`.gguf`, in which case AX routes to `llama.cpp`. Use `--compat-backend vllm`,
+`--compat-backend mistral-rs`, or `--compat-backend mlx` when you want an
+explicit server-backed compatibility route.
+The CLI fallback supports `llama.cpp` and a direct `mlx-lm` path; `.gguf`
+model paths are routed to `llama.cpp`.
 For `mlx`, `--compat-cli-path` should usually be `python3` so AX can invoke
 `python3 -m mlx_lm.generate`.
 AX passes the request text as a raw prompt and disables the tokenizer chat
 template on that CLI fallback so compatibility requests preserve AX prompt
 semantics. The direct MLX CLI route remains blocking and does not support
-streaming.
+streaming, so `--mlx` keeps `llama.cpp` fallback mandatory.
 
 The preview server now also exposes thin OpenAI-compatible endpoints over that
 same compatibility-backed path:
@@ -156,7 +172,7 @@ To enable server or core diagnostics, set `AX_ENGINE_SERVER_LOG` or `RUST_LOG`
 before starting the server. For example:
 
 ```text
-AX_ENGINE_SERVER_LOG=ax_engine_server=info,ax_engine_core=debug cargo run -p ax-engine-server -- --model-id qwen3_dense --port 8080
+AX_ENGINE_SERVER_LOG=ax_engine_server=info,ax_engine_core=debug cargo run -p ax-engine-server -- --model-id qwen3_5_9b_q4 --native-mode --port 8080
 ```
 
 For throughput or latency measurements, prefer leaving tracing disabled, or use
@@ -186,8 +202,9 @@ curl http://127.0.0.1:8080/v1/generate \
   }'
 ```
 
-When the server is explicitly configured for `--support-tier compatibility`,
-the same blocking endpoint accepts `input_text` for both compatibility modes:
+When the server is running on the default MLX path, the `.gguf` llama.cpp
+bypass path, or an explicit compatibility path, the same blocking endpoint
+accepts `input_text`:
 
 ```text
 curl http://127.0.0.1:8080/v1/generate \

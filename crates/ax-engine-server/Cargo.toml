@@ -5,7 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
-ax-engine-sdk = { path = "../ax-engine-sdk" }
+ax-engine-sdk = { path = "../ax-engine-sdk", features = ["mlx-native"] }
 axum = "0.7"
 clap = { version = "4", features = ["derive"] }
 serde.workspace = true

@@ -197,6 +197,12 @@ impl EngineStepReport {
         if self.step_id.is_none() {
             self.step_id = other.step_id;
         }
+        if self.route.is_none() {
+            self.route = other.route;
+        }
+        if self.metal_dispatch.is_none() {
+            self.metal_dispatch = other.metal_dispatch;
+        }
         self.scheduled_requests += other.scheduled_requests;
         self.scheduled_tokens += other.scheduled_tokens;
         self.ttft_events += other.ttft_events;

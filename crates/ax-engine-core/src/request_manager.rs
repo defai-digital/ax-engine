@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use thiserror::Error;
 
@@ -12,11 +12,14 @@ use crate::runner::RunnerOutput;
 use crate::sampling::{SampledToken, StopReason};
 use crate::scheduler::SchedulePlan;
 
+const MAX_TERMINAL_SNAPSHOT_RETENTION: usize = 1024;
+
 #[derive(Debug)]
 pub struct RequestManager {
     cache_group_id: CacheGroupId,
     records: BTreeMap<RequestId, RequestRecord>,
-    cleaned_terminal: BTreeSet<RequestId>,
+    terminal_snapshots: BTreeMap<RequestId, RequestSnapshot>,
+    terminal_snapshot_order: VecDeque<RequestId>,
 }
 
 impl RequestManager {
@@ -24,7 +27,8 @@ impl RequestManager {
         Self {
             cache_group_id,
             records: BTreeMap::new(),
-            cleaned_terminal: BTreeSet::new(),
+            terminal_snapshots: BTreeMap::new(),
+            terminal_snapshot_order: VecDeque::new(),
         }
     }
 
@@ -38,7 +42,9 @@ impl RequestManager {
     ) -> Result<RequestId, RequestManagerError> {
         let request_id = submission.request_id;
 
-        if self.records.contains_key(&request_id) {
+        if self.records.contains_key(&request_id)
+            || self.terminal_snapshots.contains_key(&request_id)
+        {
             return Err(RequestManagerError::DuplicateRequest(request_id));
         }
 
@@ -77,7 +83,9 @@ impl RequestManager {
     }
 
     pub fn snapshot(&self, request_id: RequestId) -> Option<RequestSnapshot> {
-        self.record(request_id).map(RequestRecord::snapshot)
+        self.record(request_id)
+            .map(RequestRecord::snapshot)
+            .or_else(|| self.terminal_snapshots.get(&request_id).cloned())
     }
 
     pub fn sync_block_table(
@@ -173,9 +181,7 @@ impl RequestManager {
     }
 
     pub fn collect_terminal_cleanup(&self) -> Vec<RequestId> {
-        let request_ids = self.sorted_request_ids(|record| {
-            record.state.is_terminal() && !self.cleaned_terminal.contains(&record.request_id)
-        });
+        let request_ids = self.sorted_request_ids(|record| record.state.is_terminal());
         request_ids
             .into_iter()
             .filter_map(|request_id| {
@@ -190,17 +196,26 @@ impl RequestManager {
         &mut self,
         request_id: RequestId,
     ) -> Result<(), RequestManagerError> {
-        let record = self
+        let is_terminal = self
             .records
             .get(&request_id)
-            .ok_or(RequestManagerError::UnknownRequest(request_id))?;
-        if !record.state.is_terminal() {
+            .ok_or(RequestManagerError::UnknownRequest(request_id))?
+            .state
+            .is_terminal();
+        if !is_terminal {
             return Err(RequestManagerError::ProgressInvariantViolation {
                 request_id,
                 message: "cannot mark cleanup complete for non-terminal request",
             });
         }
-        self.cleaned_terminal.insert(request_id);
+        let record = self
+            .records
+            .remove(&request_id)
+            .ok_or(RequestManagerError::UnknownRequest(request_id))?;
+        self.terminal_snapshots
+            .insert(request_id, record.snapshot());
+        self.terminal_snapshot_order.push_back(request_id);
+        self.prune_terminal_snapshots();
         Ok(())
     }
 
@@ -408,6 +423,15 @@ impl RequestManager {
             .collect()
     }
 
+    fn prune_terminal_snapshots(&mut self) {
+        while self.terminal_snapshot_order.len() > MAX_TERMINAL_SNAPSHOT_RETENTION {
+            let Some(evicted_request_id) = self.terminal_snapshot_order.pop_front() else {
+                break;
+            };
+            self.terminal_snapshots.remove(&evicted_request_id);
+        }
+    }
+
     fn transition_request(
         &mut self,
         request_id: RequestId,
@@ -537,6 +561,49 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert_eq!(first[0], RequestId(1));
         assert!(second.is_empty());
+    }
+
+    #[test]
+    fn mark_terminal_cleaned_moves_request_to_retained_snapshot_store() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+
+        manager.submit(make_submission(1, 1, "qwen3")).unwrap();
+        manager.cancel(RequestId(1)).unwrap();
+        manager.mark_terminal_cleaned(RequestId(1)).unwrap();
+
+        assert!(manager.record(RequestId(1)).is_none());
+        assert_eq!(
+            manager.snapshot(RequestId(1)).unwrap().state,
+            RequestState::Cancelled
+        );
+    }
+
+    #[test]
+    fn retained_terminal_snapshots_are_pruned_after_retention_limit() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+
+        for request_id in 1..=(MAX_TERMINAL_SNAPSHOT_RETENTION as u64 + 1) {
+            manager
+                .submit(make_submission(request_id, request_id, "qwen3"))
+                .unwrap();
+            manager.cancel(RequestId(request_id)).unwrap();
+            manager
+                .mark_terminal_cleaned(RequestId(request_id))
+                .unwrap();
+        }
+
+        assert!(manager.snapshot(RequestId(1)).is_none());
+        assert_eq!(
+            manager
+                .snapshot(RequestId(MAX_TERMINAL_SNAPSHOT_RETENTION as u64 + 1))
+                .unwrap()
+                .state,
+            RequestState::Cancelled
+        );
+        assert_eq!(
+            manager.terminal_snapshot_order.len(),
+            MAX_TERMINAL_SNAPSHOT_RETENTION
+        );
     }
 
     #[test]

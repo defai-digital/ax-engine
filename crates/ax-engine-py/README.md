@@ -11,21 +11,21 @@ Current preview scope:
 - SDK-backed `Session`
 - fail-closed host validation for pre-M4 Macs
 - runtime metadata reporting
-- native token-based `generate(...)`
+- shipped local defaults now use MLX-backed compatibility unless you pass a
+  `.gguf` model path or opt into `native_mode=True`
 - text/chat convenience helpers over the same SDK-backed request contract
 - stepwise request control via `submit(...)`, `step()`, `snapshot(...)`, and
   `cancel(...)`
 - SDK-backed in-process `stream_generate(...)` lifecycle events emitted through
   a native incremental iterator
-- first compatibility preview path via
-  `support_tier="compatibility"` plus `compat_server_url` for the delegated
-  server-backed adapter, with `compat_backend="vllm"` or
+- default local compatibility path via `compat_model_path` for MLX model
+  directories, `.gguf` routing to `llama.cpp`, with `compat_backend="vllm"` or
   `compat_backend="mistral_rs"` or `compat_backend="mlx"` available for
-  server-backed compatibility targets,
-  and `compat_cli_path` / `compat_model_path` retained as CLI fallbacks for
-  blocking `generate(...)` through `llama.cpp` or direct `mlx-lm`; the
-  server-backed path also supports iterator-style `stream_generate(...)` plus
-  preview stepwise request control
+  explicit server-backed compatibility targets, and `compat_cli_path` /
+  `compat_model_path` retained as CLI fallbacks for blocking `generate(...)`
+  through `llama.cpp` or direct `mlx-lm`; `mlx=True` now means "try MLX first,
+  then fall back to llama.cpp"; the server-backed path also supports
+  iterator-style `stream_generate(...)` plus preview stepwise request control
 
 Current non-goals:
 

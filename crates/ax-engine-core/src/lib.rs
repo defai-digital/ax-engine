@@ -1,5 +1,6 @@
 pub mod convert;
 pub mod engine;
+pub mod gguf;
 pub mod execution_plan;
 pub mod ids;
 pub mod kv;

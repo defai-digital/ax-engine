@@ -22,20 +22,30 @@ class FakeNativeSession:
         cache_group_id: int = 0,
         block_size_tokens: int = 16,
         total_blocks: int = 1024,
-        support_tier: str = "native_preview",
+        native_mode: bool = False,
+        mlx: bool = False,
+        support_tier: str = "compatibility",
         compat_backend: str = "llama_cpp",
         compat_cli_path: str = "llama-cli",
         compat_model_path: str | None = None,
         compat_server_url: str | None = None,
+        llama_fallback_cli_path: str = "llama-cli",
+        llama_fallback_model_path: str | None = None,
+        llama_fallback_server_url: str | None = None,
         native_runtime_artifacts_dir: str | None = None,
         native_model_artifacts_dir: str | None = None,
     ) -> None:
         self.model_id = model_id
-        self.support_tier = support_tier
-        self.compat_backend = compat_backend
+        self.native_mode = native_mode
+        self.mlx = mlx
+        self.support_tier = "native_preview" if native_mode else support_tier
+        self.compat_backend = "mlx" if mlx else compat_backend
         self.compat_cli_path = compat_cli_path
         self.compat_model_path = compat_model_path
         self.compat_server_url = compat_server_url
+        self.llama_fallback_cli_path = llama_fallback_cli_path
+        self.llama_fallback_model_path = llama_fallback_model_path
+        self.llama_fallback_server_url = llama_fallback_server_url
         self.native_runtime_artifacts_dir = native_runtime_artifacts_dir
         self.native_model_artifacts_dir = native_model_artifacts_dir
         self.closed = False
@@ -652,11 +662,11 @@ class WrapperContractTests(unittest.TestCase):
             sys.path.remove(str(SOURCE_ROOT))
 
     def test_generate_converts_native_payload_to_dataclass(self) -> None:
-        with self.ax_engine.Session(model_id="qwen3_dense") as session:
+        with self.ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True) as session:
             result = session.generate([1, 2, 3], max_output_tokens=2)
 
         self.assertEqual(result.request_id, 1)
-        self.assertEqual(result.model_id, "qwen3_dense")
+        self.assertEqual(result.model_id, "qwen3_5_9b_q4")
         self.assertEqual(result.prompt_tokens, [1, 2, 3])
         self.assertEqual(result.output_tokens, [4, 5])
         self.assertEqual(result.output_token_logprobs, [-0.25, -0.5])
@@ -712,7 +722,8 @@ class WrapperContractTests(unittest.TestCase):
 
     def test_session_forwards_explicit_native_artifact_dirs(self) -> None:
         with self.ax_engine.Session(
-            model_id="qwen3_dense",
+            model_id="qwen3_5_9b_q4",
+            native_mode=True,
             native_runtime_artifacts_dir="/tmp/ax-metal",
             native_model_artifacts_dir="/tmp/ax-model",
         ) as session:
@@ -780,7 +791,7 @@ class WrapperContractTests(unittest.TestCase):
         )
 
     def test_stepwise_controls_convert_native_payloads(self) -> None:
-        session = self.ax_engine.Session(model_id="qwen3_dense")
+        session = self.ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True)
 
         request_id = session.submit([1, 2, 3], max_output_tokens=2)
         initial = session.snapshot(request_id)
@@ -821,7 +832,7 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(native.cancelled, [11])
 
     def test_stream_generate_emits_request_step_and_response_events(self) -> None:
-        with self.ax_engine.Session(model_id="qwen3_dense") as session:
+        with self.ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True) as session:
             events = list(session.stream_generate([1, 2, 3], max_output_tokens=2))
 
         self.assertEqual(
@@ -874,7 +885,7 @@ class WrapperContractTests(unittest.TestCase):
     def test_stream_generate_raises_when_request_never_terminates(self) -> None:
         self.ax_engine = import_wrapper_module(HungNativeSession)
 
-        with self.ax_engine.Session(model_id="qwen3_dense") as session:
+        with self.ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True) as session:
             with self.assertRaisesRegex(
                 RuntimeError,
                 r"request 11 did not terminate within 258 steps",

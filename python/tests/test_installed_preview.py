@@ -107,7 +107,7 @@ class InstalledPreviewTests(unittest.TestCase):
         cls.ax_engine = module
 
     def test_installed_package_reports_runtime_and_generate_result(self) -> None:
-        with self.ax_engine.Session(model_id="qwen3_dense") as session:
+        with self.ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True) as session:
             runtime = session.runtime()
             result = session.generate([1, 2, 3], max_output_tokens=2)
 
@@ -124,7 +124,7 @@ class InstalledPreviewTests(unittest.TestCase):
         self.assertEqual(result.runtime.support_tier, "native_preview")
 
     def test_installed_package_stream_blocks_reuse_until_iterator_finishes(self) -> None:
-        with self.ax_engine.Session(model_id="qwen3_dense") as session:
+        with self.ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True) as session:
             stream = session.stream_generate([1, 2, 3], max_output_tokens=2)
             first_event = next(stream)
 

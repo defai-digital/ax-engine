@@ -1,8 +1,9 @@
 # Supported Models
 
-AX Engine v4 is native-first and intentionally narrow in certified native scope.
+AX Engine v4 is compatibility-first by default while native mode is brought up
+one model at a time.
 
-## Native-First Support Strategy
+## Support Strategy
 
 AX does not treat model support as a simple yes-or-no list.
 
@@ -14,10 +15,20 @@ Instead, support should be understood through:
 
 This matters because a future model may be:
 
-- fully supported by AX native runtime
+- allowed on AX native runtime
 - still in native bring-up
 - available only through a compatibility path
 - not supported yet
+
+The current default route is:
+
+- local non-GGUF model paths use the MLX-backed compatibility path
+- local `.gguf` model paths bypass to `llama.cpp`
+- `native_mode` is opt-in and currently allowlisted only for
+  `qwen3_5_9b_q4`
+
+The native-mode promotion contract is recorded in
+`.internal/adr/0011-model-promotion-and-default-routing.md`.
 
 ## Native Platform Baseline
 
@@ -50,6 +61,8 @@ Meaning:
 - intended for the supported M4-or-newer native hardware baseline
 - same-family or same-lineage bring-up is in progress
 - not yet fully certified for release-grade claims
+- currently limited to `qwen3_5_9b_q4` while the native path is expanded one
+  model at a time
 
 ### `compatibility`
 
@@ -72,16 +85,17 @@ Meaning:
 
 ## Current Native Target Direction
 
-The current Phase 1 native target direction is:
+The current Phase 1 native target is:
 
-- dense Qwen models, including coder variants
-- dense Gemma models
+- `qwen3_5_9b_q4`
 
 Current native target direction should be read as:
 
 - where AX native bring-up is focused
-- not as a promise that every present or future family variant is already
-  certified
+- not as a promise that every Qwen, Gemma, or future family variant is already
+  native-capable
+- the next model should be added deliberately after benchmark and correctness
+  evidence
 
 ## Future Model Generations
 

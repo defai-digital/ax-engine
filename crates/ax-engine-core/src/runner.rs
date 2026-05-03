@@ -83,6 +83,11 @@ pub struct NativeModelBindingSummary {
     pub buffers_bound: bool,
     pub buffer_count: u32,
     pub buffer_bytes: u64,
+    pub source_quantized_binding_count: u32,
+    pub source_q4_k_binding_count: u32,
+    pub source_q5_k_binding_count: u32,
+    pub source_q6_k_binding_count: u32,
+    pub source_q8_0_binding_count: u32,
 }
 
 pub trait ExecutionRunner: fmt::Debug + Send + Sync {

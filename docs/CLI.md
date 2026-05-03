@@ -37,7 +37,7 @@ ax-bench generate --tokens 1,2,3 --native-runtime-artifacts-dir build/metal --na
 ax-bench stream --tokens 1,2,3 --support-tier compatibility --compat-server-url http://127.0.0.1:8081 --json
 ax-bench doctor --json
 ax-bench metal-build
-cargo run -p ax-engine-server -- --model-id qwen3_dense --port 8080
+cargo run -p ax-engine-server -- --model-id qwen3_dense --compat-cli-path python3 --compat-model-path /absolute/path/to/mlx-model --port 8080
 ```
 
 ## Current State

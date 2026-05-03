@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use ax_engine_core::model::{NativeRuntimeStatus, NativeSourceQuantization};
 use ax_engine_core::{NativeModelArtifactsSummary, NativeModelBindingSummary, NativeTensorFormat};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -7,6 +8,68 @@ use thiserror::Error;
 use crate::compat::{
     CompatibilityBackendConfig, LlamaCppConfig, MlxConfig, OpenAiCompatibleServerConfig,
 };
+
+pub const INITIAL_NATIVE_MODE_MODEL_ID: &str = "qwen3_5_9b_q4";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeModeModelPromotion {
+    pub canonical_model_id: &'static str,
+    pub display_name: &'static str,
+    aliases: &'static [&'static str],
+}
+
+const INITIAL_NATIVE_MODE_MODEL_PROMOTION: NativeModeModelPromotion = NativeModeModelPromotion {
+    canonical_model_id: INITIAL_NATIVE_MODE_MODEL_ID,
+    display_name: "Qwen 3.5 9B Q4",
+    aliases: &[
+        "qwen3_5_9b_q4",
+        "qwen3.5-9b-q4",
+        "qwen3.5-9b-q4_k_m",
+        "qwen/qwen3.5-9b-q4",
+        "qwen/qwen3.5-9b-q4_k_m",
+    ],
+};
+
+pub const NATIVE_MODE_MODEL_PROMOTIONS: &[NativeModeModelPromotion] =
+    &[INITIAL_NATIVE_MODE_MODEL_PROMOTION];
+
+pub fn is_initial_native_mode_model_id(model_id: &str) -> bool {
+    initial_native_mode_model_promotion(model_id).is_some()
+}
+
+pub fn initial_native_mode_model_promotion(
+    model_id: &str,
+) -> Option<&'static NativeModeModelPromotion> {
+    let normalized = normalized_model_id(model_id);
+    NATIVE_MODE_MODEL_PROMOTIONS
+        .iter()
+        .find(|promotion| promotion.matches_normalized(&normalized))
+}
+
+pub fn native_mode_model_requirement_message(requested_model_id: &str) -> String {
+    format!(
+        "native mode currently supports only {} ({}); requested {}",
+        INITIAL_NATIVE_MODE_MODEL_ID,
+        INITIAL_NATIVE_MODE_MODEL_PROMOTION.display_name,
+        requested_model_id
+    )
+}
+
+fn normalized_model_id(model_id: &str) -> String {
+    model_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+impl NativeModeModelPromotion {
+    fn matches_normalized(&self, candidate: &str) -> bool {
+        self.aliases
+            .iter()
+            .any(|alias| normalized_model_id(alias) == candidate)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -21,6 +84,7 @@ pub enum ResolutionPolicy {
 #[serde(rename_all = "snake_case")]
 pub enum SelectedBackend {
     AxNative,
+    MlxNative,
     LlamaCpp,
     Vllm,
     MistralRs,
@@ -29,7 +93,7 @@ pub enum SelectedBackend {
 
 impl SelectedBackend {
     pub const fn is_native(self) -> bool {
-        matches!(self, Self::AxNative)
+        matches!(self, Self::AxNative | Self::MlxNative)
     }
 }
 
@@ -100,6 +164,17 @@ impl CompatibilityBackendKind {
             Self::Mlx => SelectedBackend::Mlx,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewBackendMode {
+    #[default]
+    Explicit,
+    ShippingDefaultLlamaCpp,
+    ShippingMlxWithLlamaFallback,
+    ShippingNativeWithLlamaFallback,
+    ShippingMlxNative,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -181,6 +256,8 @@ impl CapabilityReport {
         match (selected_backend, support_tier) {
             (SelectedBackend::AxNative, SupportTier::NativeCertified) => Self::native_certified(),
             (SelectedBackend::AxNative, SupportTier::NativePreview) => Self::native_preview(),
+            (SelectedBackend::MlxNative, SupportTier::NativePreview) => Self::native_preview(),
+            (SelectedBackend::MlxNative, SupportTier::NativeCertified) => Self::native_certified(),
             (_, SupportTier::Compatibility) => Self::compatibility_baseline(),
             (_, SupportTier::Unsupported) => Self::unsupported(),
             _ => Self::unsupported(),
@@ -286,6 +363,13 @@ pub struct NativeModelReport {
     pub artifacts_source: NativeModelArtifactsSource,
     pub model_family: String,
     pub tensor_format: NativeTensorFormat,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_quantization: Option<NativeSourceQuantization>,
+    #[serde(
+        default,
+        skip_serializing_if = "NativeRuntimeStatus::ready_without_details"
+    )]
+    pub runtime_status: NativeRuntimeStatus,
     pub layer_count: u32,
     pub tensor_count: u32,
     pub tie_word_embeddings: bool,
@@ -297,6 +381,16 @@ pub struct NativeModelReport {
     pub buffer_count: u32,
     #[serde(default)]
     pub buffer_bytes: u64,
+    #[serde(default)]
+    pub source_quantized_binding_count: u32,
+    #[serde(default)]
+    pub source_q4_k_binding_count: u32,
+    #[serde(default)]
+    pub source_q5_k_binding_count: u32,
+    #[serde(default)]
+    pub source_q6_k_binding_count: u32,
+    #[serde(default)]
+    pub source_q8_0_binding_count: u32,
 }
 
 impl NativeModelReport {
@@ -310,6 +404,8 @@ impl NativeModelReport {
             artifacts_source,
             model_family: summary.model_family,
             tensor_format: summary.tensor_format,
+            source_quantization: summary.source_quantization,
+            runtime_status: summary.runtime_status,
             layer_count: summary.layer_count,
             tensor_count: summary.tensor_count,
             tie_word_embeddings: summary.tie_word_embeddings,
@@ -317,6 +413,11 @@ impl NativeModelReport {
             buffers_bound: binding.buffers_bound,
             buffer_count: binding.buffer_count,
             buffer_bytes: binding.buffer_bytes,
+            source_quantized_binding_count: binding.source_quantized_binding_count,
+            source_q4_k_binding_count: binding.source_q4_k_binding_count,
+            source_q5_k_binding_count: binding.source_q5_k_binding_count,
+            source_q6_k_binding_count: binding.source_q6_k_binding_count,
+            source_q8_0_binding_count: binding.source_q8_0_binding_count,
         }
     }
 }
@@ -355,6 +456,10 @@ impl ResolvedBackend {
             SupportTier::NativeCertified,
             None,
         )
+    }
+
+    pub fn mlx_native_preview() -> Self {
+        Self::new(SelectedBackend::MlxNative, SupportTier::NativePreview, None)
     }
 
     pub fn compatibility(
@@ -426,21 +531,29 @@ impl ResolvedBackend {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreviewBackendRequest {
+    pub mode: PreviewBackendMode,
     pub support_tier: SupportTier,
     pub compat_backend: CompatibilityBackendKind,
     pub compat_cli_path: PathBuf,
     pub compat_model_path: Option<PathBuf>,
     pub compat_server_url: Option<String>,
+    pub llama_fallback_cli_path: PathBuf,
+    pub llama_fallback_model_path: Option<PathBuf>,
+    pub llama_fallback_server_url: Option<String>,
 }
 
 impl Default for PreviewBackendRequest {
     fn default() -> Self {
         Self {
+            mode: PreviewBackendMode::Explicit,
             support_tier: SupportTier::NativePreview,
             compat_backend: CompatibilityBackendKind::LlamaCpp,
             compat_cli_path: PathBuf::from("llama-cli"),
             compat_model_path: None,
             compat_server_url: None,
+            llama_fallback_cli_path: PathBuf::from("llama-cli"),
+            llama_fallback_model_path: None,
+            llama_fallback_server_url: None,
         }
     }
 }
@@ -452,6 +565,69 @@ impl PreviewBackendRequest {
             ..Self::default()
         }
     }
+
+    pub fn shipping_default_llama_cpp(
+        compat_cli_path: impl Into<PathBuf>,
+        compat_model_path: Option<PathBuf>,
+        compat_server_url: Option<String>,
+    ) -> Self {
+        Self {
+            mode: PreviewBackendMode::ShippingDefaultLlamaCpp,
+            support_tier: SupportTier::Compatibility,
+            compat_backend: CompatibilityBackendKind::LlamaCpp,
+            compat_cli_path: compat_cli_path.into(),
+            compat_model_path,
+            compat_server_url,
+            ..Self::default()
+        }
+    }
+
+    pub fn shipping_mlx_with_llama_fallback(
+        compat_cli_path: impl Into<PathBuf>,
+        compat_model_path: Option<PathBuf>,
+        compat_server_url: Option<String>,
+        llama_fallback_cli_path: impl Into<PathBuf>,
+        llama_fallback_model_path: Option<PathBuf>,
+        llama_fallback_server_url: Option<String>,
+    ) -> Self {
+        Self {
+            mode: PreviewBackendMode::ShippingMlxWithLlamaFallback,
+            support_tier: SupportTier::Compatibility,
+            compat_backend: CompatibilityBackendKind::Mlx,
+            compat_cli_path: compat_cli_path.into(),
+            compat_model_path,
+            compat_server_url,
+            llama_fallback_cli_path: llama_fallback_cli_path.into(),
+            llama_fallback_model_path,
+            llama_fallback_server_url,
+        }
+    }
+
+    pub fn shipping_native_with_llama_fallback(
+        llama_fallback_cli_path: impl Into<PathBuf>,
+        llama_fallback_model_path: Option<PathBuf>,
+        llama_fallback_server_url: Option<String>,
+    ) -> Self {
+        Self {
+            mode: PreviewBackendMode::ShippingNativeWithLlamaFallback,
+            support_tier: SupportTier::NativePreview,
+            compat_backend: CompatibilityBackendKind::LlamaCpp,
+            compat_cli_path: PathBuf::from("llama-cli"),
+            compat_model_path: None,
+            compat_server_url: None,
+            llama_fallback_cli_path: llama_fallback_cli_path.into(),
+            llama_fallback_model_path,
+            llama_fallback_server_url,
+        }
+    }
+
+    pub fn shipping_mlx_native() -> Self {
+        Self {
+            mode: PreviewBackendMode::ShippingMlxNative,
+            support_tier: SupportTier::NativePreview,
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -459,6 +635,7 @@ pub struct PreviewBackendResolution {
     pub backend_policy: BackendPolicy,
     pub resolved_backend: ResolvedBackend,
     pub compatibility_backend: Option<CompatibilityBackendConfig>,
+    pub fallback_compatibility_backend: Option<CompatibilityBackendConfig>,
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -477,6 +654,12 @@ pub enum PreviewBackendResolutionError {
         "compatibility backend {backend:?} requires compat_server_url; compat_model_path is only supported for llama.cpp or mlx local CLI fallback"
     )]
     CompatibilityCliUnsupported { backend: CompatibilityBackendKind },
+    #[error(
+        "llama.cpp fallback accepts either llama_fallback_server_url or llama_fallback_model_path, not both"
+    )]
+    LlamaFallbackTargetConflict,
+    #[error("llama.cpp fallback requires llama_fallback_server_url or llama_fallback_model_path")]
+    MissingLlamaFallbackTarget,
 }
 
 pub fn preview_support_tier_from_label(
@@ -495,66 +678,105 @@ pub fn preview_support_tier_from_label(
 pub fn resolve_preview_backend(
     request: PreviewBackendRequest,
 ) -> Result<PreviewBackendResolution, PreviewBackendResolutionError> {
+    match request.mode {
+        PreviewBackendMode::Explicit => resolve_explicit_preview_backend(request),
+        PreviewBackendMode::ShippingDefaultLlamaCpp => {
+            let compatibility_backend = resolve_compatibility_backend_target(
+                CompatibilityBackendKind::LlamaCpp,
+                request.compat_cli_path,
+                request.compat_model_path,
+                request.compat_server_url,
+            )?;
+
+            Ok(PreviewBackendResolution {
+                backend_policy: BackendPolicy::allow_compat(),
+                resolved_backend: ResolvedBackend::compatibility(
+                    SelectedBackend::LlamaCpp,
+                    "shipping default route selected llama.cpp bypass",
+                ),
+                compatibility_backend: Some(compatibility_backend),
+                fallback_compatibility_backend: None,
+            })
+        }
+        PreviewBackendMode::ShippingMlxWithLlamaFallback => {
+            let compatibility_backend = resolve_compatibility_backend_target(
+                CompatibilityBackendKind::Mlx,
+                request.compat_cli_path,
+                request.compat_model_path,
+                request.compat_server_url,
+            )?;
+            let fallback_compatibility_backend = resolve_llama_fallback_backend(
+                request.llama_fallback_cli_path,
+                request.llama_fallback_model_path,
+                request.llama_fallback_server_url,
+            )?;
+
+            Ok(PreviewBackendResolution {
+                backend_policy: BackendPolicy::allow_compat(),
+                resolved_backend: ResolvedBackend::compatibility(
+                    SelectedBackend::Mlx,
+                    "shipping route selected MLX bypass with llama.cpp fallback",
+                ),
+                compatibility_backend: Some(compatibility_backend),
+                fallback_compatibility_backend: Some(fallback_compatibility_backend),
+            })
+        }
+        PreviewBackendMode::ShippingNativeWithLlamaFallback => {
+            let fallback_compatibility_backend =
+                if shipping_native_request_has_llama_fallback_target(&request) {
+                    Some(resolve_llama_fallback_backend(
+                        request.llama_fallback_cli_path,
+                        request.llama_fallback_model_path,
+                        request.llama_fallback_server_url,
+                    )?)
+                } else {
+                    None
+                };
+            let backend_policy = if fallback_compatibility_backend.is_some() {
+                BackendPolicy::prefer_native()
+            } else {
+                BackendPolicy::strict_native()
+            };
+
+            Ok(PreviewBackendResolution {
+                backend_policy,
+                resolved_backend: ResolvedBackend::native_preview(),
+                compatibility_backend: None,
+                fallback_compatibility_backend,
+            })
+        }
+        PreviewBackendMode::ShippingMlxNative => Ok(PreviewBackendResolution {
+            backend_policy: BackendPolicy::strict_native(),
+            resolved_backend: ResolvedBackend::mlx_native_preview(),
+            compatibility_backend: None,
+            fallback_compatibility_backend: None,
+        }),
+    }
+}
+
+fn resolve_explicit_preview_backend(
+    request: PreviewBackendRequest,
+) -> Result<PreviewBackendResolution, PreviewBackendResolutionError> {
     match request.support_tier {
         SupportTier::NativePreview => Ok(PreviewBackendResolution {
             backend_policy: BackendPolicy::strict_native(),
             resolved_backend: ResolvedBackend::native_preview(),
             compatibility_backend: None,
+            fallback_compatibility_backend: None,
         }),
         SupportTier::NativeCertified => Ok(PreviewBackendResolution {
             backend_policy: BackendPolicy::strict_native(),
             resolved_backend: ResolvedBackend::native_certified(),
             compatibility_backend: None,
+            fallback_compatibility_backend: None,
         }),
         SupportTier::Compatibility => {
-            if request.compat_server_url.is_some() && request.compat_model_path.is_some() {
-                return Err(PreviewBackendResolutionError::CompatibilityTargetConflict);
-            }
-
-            let compatibility_backend = if let Some(server_url) = request.compat_server_url {
-                match request.compat_backend {
-                    CompatibilityBackendKind::LlamaCpp => CompatibilityBackendConfig::LlamaCpp(
-                        LlamaCppConfig::server_completion(server_url),
-                    ),
-                    CompatibilityBackendKind::Vllm => CompatibilityBackendConfig::Vllm(
-                        OpenAiCompatibleServerConfig::new(server_url),
-                    ),
-                    CompatibilityBackendKind::MistralRs => CompatibilityBackendConfig::MistralRs(
-                        OpenAiCompatibleServerConfig::new(server_url),
-                    ),
-                    CompatibilityBackendKind::Mlx => {
-                        CompatibilityBackendConfig::Mlx(MlxConfig::server_completions(server_url))
-                    }
-                }
-            } else {
-                if !matches!(
-                    request.compat_backend,
-                    CompatibilityBackendKind::LlamaCpp | CompatibilityBackendKind::Mlx
-                ) {
-                    return Err(PreviewBackendResolutionError::CompatibilityCliUnsupported {
-                        backend: request.compat_backend,
-                    });
-                }
-                let model_path = request
-                    .compat_model_path
-                    .ok_or(PreviewBackendResolutionError::MissingCompatibilityTarget)?;
-                match request.compat_backend {
-                    CompatibilityBackendKind::LlamaCpp => CompatibilityBackendConfig::LlamaCpp(
-                        LlamaCppConfig::new(request.compat_cli_path, model_path),
-                    ),
-                    CompatibilityBackendKind::Mlx => {
-                        let cli_path = if request.compat_cli_path == Path::new("llama-cli") {
-                            PathBuf::from("python3")
-                        } else {
-                            request.compat_cli_path
-                        };
-                        CompatibilityBackendConfig::Mlx(MlxConfig::cli(cli_path, model_path))
-                    }
-                    CompatibilityBackendKind::Vllm | CompatibilityBackendKind::MistralRs => {
-                        unreachable!("validated compatibility cli target backend")
-                    }
-                }
-            };
+            let compatibility_backend = resolve_compatibility_backend_target(
+                request.compat_backend,
+                request.compat_cli_path,
+                request.compat_model_path,
+                request.compat_server_url,
+            )?;
 
             Ok(PreviewBackendResolution {
                 backend_policy: BackendPolicy::allow_compat(),
@@ -563,6 +785,7 @@ pub fn resolve_preview_backend(
                     "compatibility backend explicitly requested by preview session config",
                 ),
                 compatibility_backend: Some(compatibility_backend),
+                fallback_compatibility_backend: None,
             })
         }
         SupportTier::Unsupported => {
@@ -571,6 +794,89 @@ pub fn resolve_preview_backend(
             })
         }
     }
+}
+
+fn resolve_compatibility_backend_target(
+    compat_backend: CompatibilityBackendKind,
+    compat_cli_path: PathBuf,
+    compat_model_path: Option<PathBuf>,
+    compat_server_url: Option<String>,
+) -> Result<CompatibilityBackendConfig, PreviewBackendResolutionError> {
+    if compat_server_url.is_some() && compat_model_path.is_some() {
+        return Err(PreviewBackendResolutionError::CompatibilityTargetConflict);
+    }
+
+    if let Some(server_url) = compat_server_url {
+        return Ok(match compat_backend {
+            CompatibilityBackendKind::LlamaCpp => {
+                CompatibilityBackendConfig::LlamaCpp(LlamaCppConfig::server_completion(server_url))
+            }
+            CompatibilityBackendKind::Vllm => {
+                CompatibilityBackendConfig::Vllm(OpenAiCompatibleServerConfig::new(server_url))
+            }
+            CompatibilityBackendKind::MistralRs => {
+                CompatibilityBackendConfig::MistralRs(OpenAiCompatibleServerConfig::new(server_url))
+            }
+            CompatibilityBackendKind::Mlx => {
+                CompatibilityBackendConfig::Mlx(MlxConfig::server_completions(server_url))
+            }
+        });
+    }
+
+    if !matches!(
+        compat_backend,
+        CompatibilityBackendKind::LlamaCpp | CompatibilityBackendKind::Mlx
+    ) {
+        return Err(PreviewBackendResolutionError::CompatibilityCliUnsupported {
+            backend: compat_backend,
+        });
+    }
+
+    let model_path =
+        compat_model_path.ok_or(PreviewBackendResolutionError::MissingCompatibilityTarget)?;
+    Ok(match compat_backend {
+        CompatibilityBackendKind::LlamaCpp => {
+            CompatibilityBackendConfig::LlamaCpp(LlamaCppConfig::new(compat_cli_path, model_path))
+        }
+        CompatibilityBackendKind::Mlx => {
+            let cli_path = if compat_cli_path == Path::new("llama-cli") {
+                PathBuf::from("python3")
+            } else {
+                compat_cli_path
+            };
+            CompatibilityBackendConfig::Mlx(MlxConfig::cli(cli_path, model_path))
+        }
+        CompatibilityBackendKind::Vllm | CompatibilityBackendKind::MistralRs => {
+            unreachable!("validated compatibility cli target backend")
+        }
+    })
+}
+
+fn resolve_llama_fallback_backend(
+    compat_cli_path: PathBuf,
+    compat_model_path: Option<PathBuf>,
+    compat_server_url: Option<String>,
+) -> Result<CompatibilityBackendConfig, PreviewBackendResolutionError> {
+    if compat_server_url.is_some() && compat_model_path.is_some() {
+        return Err(PreviewBackendResolutionError::LlamaFallbackTargetConflict);
+    }
+
+    if let Some(server_url) = compat_server_url {
+        return Ok(CompatibilityBackendConfig::LlamaCpp(
+            LlamaCppConfig::server_completion(server_url),
+        ));
+    }
+
+    let model_path =
+        compat_model_path.ok_or(PreviewBackendResolutionError::MissingLlamaFallbackTarget)?;
+    Ok(CompatibilityBackendConfig::LlamaCpp(LlamaCppConfig::new(
+        compat_cli_path,
+        model_path,
+    )))
+}
+
+fn shipping_native_request_has_llama_fallback_target(request: &PreviewBackendRequest) -> bool {
+    request.llama_fallback_model_path.is_some() || request.llama_fallback_server_url.is_some()
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -727,6 +1033,23 @@ mod tests {
     }
 
     #[test]
+    fn initial_native_mode_model_id_accepts_canonical_qwen35_9b_q4_aliases() {
+        assert!(is_initial_native_mode_model_id("qwen3_5_9b_q4"));
+        assert!(is_initial_native_mode_model_id("Qwen/Qwen3.5-9B-Q4"));
+        assert!(is_initial_native_mode_model_id("Qwen/Qwen3.5-9B-Q4_K_M"));
+        assert!(!is_initial_native_mode_model_id("qwen3_dense"));
+        assert!(!is_initial_native_mode_model_id("qwen3_5_9b"));
+    }
+
+    #[test]
+    fn native_mode_model_requirement_message_names_canonical_target() {
+        assert_eq!(
+            native_mode_model_requirement_message("qwen3_dense"),
+            "native mode currently supports only qwen3_5_9b_q4 (Qwen 3.5 9B Q4); requested qwen3_dense"
+        );
+    }
+
+    #[test]
     fn preview_resolution_compatibility_server_url_uses_sdk_contract() {
         let resolution = resolve_preview_backend(PreviewBackendRequest {
             support_tier: SupportTier::Compatibility,
@@ -875,6 +1198,46 @@ mod tests {
             Some(CompatibilityBackendConfig::Mlx(MlxConfig::cli(
                 "python3",
                 "/tmp/mlx-model",
+            )))
+        );
+    }
+
+    #[test]
+    fn shipping_native_resolution_allows_native_mode_without_llama_fallback_target() {
+        let resolution = resolve_preview_backend(
+            PreviewBackendRequest::shipping_native_with_llama_fallback("llama-cli", None, None),
+        )
+        .expect("native shipping resolution without fallback target should succeed");
+
+        assert_eq!(resolution.backend_policy, BackendPolicy::strict_native());
+        assert_eq!(
+            resolution.resolved_backend,
+            ResolvedBackend::native_preview()
+        );
+        assert!(resolution.compatibility_backend.is_none());
+        assert!(resolution.fallback_compatibility_backend.is_none());
+    }
+
+    #[test]
+    fn shipping_native_resolution_keeps_llama_fallback_when_target_is_configured() {
+        let resolution =
+            resolve_preview_backend(PreviewBackendRequest::shipping_native_with_llama_fallback(
+                "llama-cli",
+                Some(PathBuf::from("/tmp/model.gguf")),
+                None,
+            ))
+            .expect("native shipping resolution with fallback target should succeed");
+
+        assert_eq!(resolution.backend_policy, BackendPolicy::prefer_native());
+        assert_eq!(
+            resolution.resolved_backend,
+            ResolvedBackend::native_preview()
+        );
+        assert_eq!(
+            resolution.fallback_compatibility_backend,
+            Some(CompatibilityBackendConfig::LlamaCpp(LlamaCppConfig::new(
+                "llama-cli",
+                "/tmp/model.gguf",
             )))
         );
     }

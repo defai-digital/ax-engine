@@ -118,22 +118,17 @@ pub(crate) fn sample_argmax_with_logprob(logits: &[f32]) -> Option<(u32, f32)> {
         return None;
     }
 
-    let max_logit = logits
-        .iter()
-        .copied()
-        .filter(|value| value.is_finite())
-        .max_by(f32::total_cmp)?;
     let normalizer = logits
         .iter()
         .copied()
         .filter(|value| value.is_finite())
-        .map(|value| (value - max_logit).exp())
+        .map(|value| (value - best_logit).exp())
         .sum::<f32>();
     if !normalizer.is_finite() || normalizer <= 0.0 {
         return None;
     }
 
-    Some((best_index as u32, best_logit - max_logit - normalizer.ln()))
+    Some((best_index as u32, -normalizer.ln()))
 }
 
 #[cfg(test)]
@@ -197,8 +192,10 @@ mod tests {
             &SamplingParams::default()
         ));
 
-        let mut params = SamplingParams::default();
-        params.temperature = 0.7;
+        let params = SamplingParams {
+            temperature: 0.7,
+            ..SamplingParams::default()
+        };
         assert!(!sampling_params_allow_deterministic_argmax_fast_path(
             &params
         ));

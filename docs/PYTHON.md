@@ -6,7 +6,8 @@ It is intentionally thin:
 
 - it wraps `ax-engine-sdk`, not `ax-engine-core`
 - it exposes runtime metadata from the SDK contract
-- native preview stays token-based for bring-up and evaluation flows
+- shipped local defaults now use MLX-backed compatibility unless you pass a
+  `.gguf` model path or opt into native mode
 - compatibility preview reuses the same SDK contract instead of inventing a
   Python-only adapter
 
@@ -32,15 +33,15 @@ The current preview package provides:
 - explicit native bring-up artifact selection through
   `native_runtime_artifacts_dir` and `native_model_artifacts_dir` when you want
   to point the SDK-owned native path at validated local Metal and model assets
-- first compatibility preview wiring via
-  `Session(..., support_tier="compatibility", compat_server_url=...)` for the
-  server-backed delegated path, plus
+- shipped default compatibility wiring via
+  `Session(..., compat_model_path=...)` for MLX-backed local model directories,
+  `.gguf` routing to `llama.cpp`, plus
   `compat_backend="vllm"`, `compat_backend="mistral_rs"`, or
   `compat_backend="mlx"` for MLX-backed compatibility targets, plus
-  `compat_cli_path` / `compat_model_path` as CLI fallbacks for blocking
-  `generate(...)` requests backed by `llama.cpp` or direct `mlx-lm`; the same
-  `compat_server_url` path now also supports preview stepwise request control
-  and `stream_generate(...)`
+  `compat_cli_path` / `compat_model_path` for blocking `generate(...)` requests
+  backed by `llama.cpp` or direct `mlx-lm`; the same `compat_server_url` path
+  now also supports preview stepwise request control and `stream_generate(...)`
+  and `mlx=True` now means "try MLX first, then fall back to llama.cpp"
 
 The current preview package does not yet provide:
 
@@ -71,7 +72,8 @@ directly into `Session(...)`:
 import ax_engine
 
 with ax_engine.Session(
-    model_id="qwen3_dense",
+    model_id="qwen3_5_9b_q4",
+    native_mode=True,
     native_runtime_artifacts_dir="/absolute/path/to/build/metal",
     native_model_artifacts_dir="/absolute/path/to/native-model-artifacts",
 ) as session:
@@ -95,44 +97,60 @@ bash scripts/check-python-preview.sh
 ```python
 import ax_engine
 
-with ax_engine.Session(model_id="qwen3_dense") as session:
+with ax_engine.Session(
+    model_id="qwen3_dense",
+    compat_cli_path="python3",
+    compat_model_path="/absolute/path/to/mlx-model",
+) as session:
     runtime = session.runtime()
-    result = session.generate([1, 2, 3], max_output_tokens=2)
+    result = session.generate(input_text="Hello from default MLX path", max_output_tokens=2)
 
 print(runtime)
-print(result.output_tokens)
+print(result.output_text)
 ```
 
-Native preview sessions accept pre-tokenized `input_tokens`.
-If you explicitly choose the compatibility tier, blocking `generate(...)` also
-accepts `input_text` and returns `prompt_text` / `output_text` fields while
-preserving the same SDK-owned runtime metadata shape:
+Native preview sessions still accept pre-tokenized `input_tokens`, but they are
+now opt-in through `native_mode=True` and currently allowlisted only for
+`qwen3_5_9b_q4`:
 
 ```python
 import ax_engine
 
 with ax_engine.Session(
-    model_id="qwen3_dense",
-    support_tier="compatibility",
-    compat_backend="vllm",
-    compat_server_url="http://127.0.0.1:8081",
+    model_id="qwen3_5_9b_q4",
+    native_mode=True,
+    native_runtime_artifacts_dir="/absolute/path/to/build/metal",
+    native_model_artifacts_dir="/absolute/path/to/native-model-artifacts",
 ) as session:
     result = session.generate([1, 2, 3], max_output_tokens=32)
 
 print(result.runtime.selected_backend)
 print(result.output_tokens)
-print(result.output_text)
 ```
 
-If you want the local CLI fallback instead of a running `llama.cpp` server:
+If you want the local default MLX path:
 
 ```python
 import ax_engine
 
 with ax_engine.Session(
     model_id="qwen3_dense",
-    support_tier="compatibility",
-    compat_cli_path="llama-cli",
+    compat_cli_path="python3",
+    compat_model_path="/absolute/path/to/mlx-model",
+) as session:
+    result = session.generate(input_text="Hello from MLX", max_output_tokens=32)
+
+print(result.prompt_text)
+print(result.output_text)
+```
+
+If you pass a local GGUF model, AX routes the request to `llama.cpp` bypass:
+
+```python
+import ax_engine
+
+with ax_engine.Session(
+    model_id="qwen3_dense",
     compat_model_path="/absolute/path/to/model.gguf",
 ) as session:
     result = session.generate(input_text="Hello from compatibility", max_output_tokens=32)
@@ -150,7 +168,6 @@ import ax_engine
 
 with ax_engine.Session(
     model_id="qwen3_dense",
-    support_tier="compatibility",
     compat_backend="vllm",
     compat_server_url="http://127.0.0.1:8081",
 ) as session:
@@ -160,18 +177,19 @@ print(result.prompt_text)
 print(result.output_text)
 ```
 
-For a direct local `mlx-lm` path, point `compat_backend="mlx"` at a local MLX
-model directory and let AX invoke the official CLI:
+For a direct local `mlx-lm` path, enable `mlx=True`, point the primary target at
+the local MLX model directory, and also provide a `llama.cpp` fallback:
 
 ```python
 import ax_engine
 
 with ax_engine.Session(
     model_id="qwen3_dense",
-    support_tier="compatibility",
-    compat_backend="mlx",
+    mlx=True,
     compat_cli_path="python3",
     compat_model_path="/absolute/path/to/mlx-model",
+    llama_fallback_cli_path="llama-cli",
+    llama_fallback_model_path="/absolute/path/to/model.gguf",
 ) as session:
     result = session.generate(input_text="Hello from MLX", max_output_tokens=32)
 
@@ -196,7 +214,6 @@ import ax_engine
 
 with ax_engine.Session(
     model_id="qwen3_dense",
-    support_tier="compatibility",
     compat_backend="mistral_rs",
     compat_server_url="http://127.0.0.1:8081",
 ) as session:
@@ -214,7 +231,6 @@ import ax_engine
 
 with ax_engine.Session(
     model_id="qwen3_dense",
-    support_tier="compatibility",
     compat_backend="mistral_rs",
     compat_server_url="http://127.0.0.1:8081",
 ) as session:
@@ -240,10 +256,13 @@ python examples/python/chat.py
 The preview package also exposes the underlying request lifecycle controls that
 `generate(...)` uses internally:
 
+If you want the AX-native lifecycle path specifically, opt in with
+`native_mode=True`:
+
 ```python
 import ax_engine
 
-with ax_engine.Session(model_id="qwen3_dense") as session:
+with ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True) as session:
     request_id = session.submit([1, 2, 3], max_output_tokens=2)
     while True:
         request = session.snapshot(request_id)
@@ -272,7 +291,7 @@ rather than buffered into one terminal batch:
 ```python
 import ax_engine
 
-with ax_engine.Session(model_id="qwen3_dense") as session:
+with ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True) as session:
     for event in session.stream_generate([1, 2, 3], max_output_tokens=2):
         print(event.event, event.delta_tokens, event.response)
 ```

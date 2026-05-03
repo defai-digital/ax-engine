@@ -1200,6 +1200,8 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         })
         | EngineSessionError::UnsupportedHostHardware { .. }
         | EngineSessionError::RequestReportInvariantViolation { .. }
+        | EngineSessionError::StreamEndedWithoutResponse { .. }
+        | EngineSessionError::NativeModelAutoConvert { .. }
         | EngineSessionError::Core(_)
         | EngineSessionError::MetalRuntime(_)
         | EngineSessionError::NativeModelGgufExportLaunch { .. }

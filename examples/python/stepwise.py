@@ -2,7 +2,7 @@ import ax_engine
 
 
 def main() -> None:
-    with ax_engine.Session(model_id="qwen3_dense") as session:
+    with ax_engine.Session(model_id="qwen3_5_9b_q4", native_mode=True) as session:
         request_id = session.submit([1, 2, 3], max_output_tokens=2)
 
         while True:

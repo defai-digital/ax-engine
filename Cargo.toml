@@ -2,16 +2,18 @@
 members = [
     "crates/ax-bench",
     "crates/ax-engine-core",
+    "crates/ax-engine-mlx",
     "crates/ax-engine-py",
     "crates/ax-engine-sdk",
     "crates/ax-engine-server",
+    "crates/mlx-sys",
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
-version = "0.1.0"
+version = "4.0.0"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -625,6 +625,7 @@ struct InferenceArgs {
     deterministic: bool,
     native_mode: bool,
     mlx: bool,
+    mlx_native: bool,
     support_tier: SupportTier,
     compat_backend: CompatibilityBackendKind,
     compat_cli_path: PathBuf,
@@ -650,6 +651,7 @@ impl Default for InferenceArgs {
             deterministic: true,
             native_mode: false,
             mlx: false,
+            mlx_native: false,
             support_tier: SupportTier::Compatibility,
             compat_backend: CompatibilityBackendKind::LlamaCpp,
             compat_cli_path: PathBuf::from("llama-cli"),
@@ -734,6 +736,7 @@ fn parse_inference_args(args: &[String], command: &str) -> Result<InferenceArgs,
             }
             "--native-mode" => parsed.native_mode = true,
             "--mlx" => parsed.mlx = true,
+            "--mlx-native" => parsed.mlx_native = true,
             "--support-tier" => {
                 support_tier_label = next_flag_value(&mut iter, "--support-tier")?.to_string()
             }
@@ -802,9 +805,13 @@ fn parse_inference_args(args: &[String], command: &str) -> Result<InferenceArgs,
         )));
     }
 
-    if parsed.native_mode && parsed.mlx {
+    let exclusive_count = [parsed.native_mode, parsed.mlx, parsed.mlx_native]
+        .iter()
+        .filter(|&&v| v)
+        .count();
+    if exclusive_count > 1 {
         return Err(CliError::Usage(
-            "--native-mode and --mlx cannot be used together".to_string(),
+            "--native-mode, --mlx, and --mlx-native are mutually exclusive".to_string(),
         ));
     }
 
@@ -922,7 +929,9 @@ fn compatibility_backend_kind_from_label(value: &str) -> Result<CompatibilityBac
 }
 
 fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliError> {
-    let backend_request = if args.native_mode {
+    let backend_request = if args.mlx_native {
+        PreviewBackendRequest::shipping_mlx_native()
+    } else if args.native_mode {
         let (llama_fallback_cli_path, llama_fallback_model_path, llama_fallback_server_url) =
             inference_native_mode_llama_fallback_target(args);
         PreviewBackendRequest::shipping_native_with_llama_fallback(
@@ -1131,6 +1140,7 @@ fn format_generate_metadata_suffix(response: &GenerateResponse) -> String {
 fn selected_backend_label(backend: SelectedBackend) -> &'static str {
     match backend {
         SelectedBackend::AxNative => "ax_native",
+        SelectedBackend::MlxNative => "mlx_native",
         SelectedBackend::LlamaCpp => "llama_cpp",
         SelectedBackend::Vllm => "vllm",
         SelectedBackend::MistralRs => "mistral_rs",
@@ -12698,6 +12708,7 @@ mod tests {
             dtype: ax_engine_core::NativeTensorDataType::F16,
             source_tensor_type: None,
             source_quantized: false,
+            quantized_source: None,
             shape,
             file: PathBuf::from("model.safetensors"),
             offset_bytes: 0,
@@ -12719,6 +12730,7 @@ mod tests {
             runtime_status: ax_engine_core::model::NativeRuntimeStatus::default(),
             layer_count: 1,
             hidden_size: 2048,
+            intermediate_size: 11008,
             attention_head_count: 16,
             attention_head_dim: 128,
             kv_head_count: 8,
@@ -12884,6 +12896,7 @@ mod tests {
             runtime_status: ax_engine_core::model::NativeRuntimeStatus::default(),
             layer_count: 1,
             hidden_size: 8,
+            intermediate_size: 24,
             attention_head_count: 2,
             attention_head_dim: 4,
             kv_head_count: 2,

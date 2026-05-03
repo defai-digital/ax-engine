@@ -42,6 +42,11 @@ except ModuleNotFoundError as exc:
 
 
 LAYER_TENSOR_RE = re.compile(r"^blk\.(\d+)\.(.+)$")
+NATIVE_DIRECT_GGUF_DTYPES = {
+    GGMLQuantizationType.F32,
+    GGMLQuantizationType.F16,
+    GGMLQuantizationType.BF16,
+}
 
 
 @dataclass
@@ -149,6 +154,200 @@ def field_int(reader: GGUFReader, *keys: str) -> int | None:
     return None
 
 
+def is_qwen35_architecture(architecture: str) -> bool:
+    return architecture in {
+        "qwen35",
+        "qwen3.5",
+        "qwen3_5",
+        "qwen3_5_text",
+        "qwen3_5_moe",
+    }
+
+
+def gguf_tensor_type_name(tensor_type: GGMLQuantizationType) -> str:
+    return getattr(tensor_type, "name", str(tensor_type)).lower()
+
+
+def source_quantization_summary(reader: GGUFReader) -> dict[str, Any]:
+    tensor_type_counts: dict[str, int] = {}
+    quantized_tensor_count = 0
+    for tensor in reader.tensors:
+        tensor_type_name = gguf_tensor_type_name(tensor.tensor_type)
+        tensor_type_counts[tensor_type_name] = tensor_type_counts.get(tensor_type_name, 0) + 1
+        if tensor.tensor_type not in NATIVE_DIRECT_GGUF_DTYPES:
+            quantized_tensor_count += 1
+    return {
+        "format": "gguf",
+        "tensor_type_counts": dict(sorted(tensor_type_counts.items())),
+        "quantized_tensor_count": quantized_tensor_count,
+        "contains_quantized_tensors": quantized_tensor_count > 0,
+    }
+
+
+def is_qwen35_linear_attention_layer(tensors: dict[str, ReaderTensor]) -> bool:
+    return (
+        "attn_qkv.weight" in tensors
+        and "attn_gate.weight" in tensors
+        and "ssm_a" in tensors
+    )
+
+
+def qwen35_attention_uses_output_gate(
+    architecture: str,
+    tensors: dict[str, ReaderTensor],
+    attention_head_count: int | None,
+    attention_head_dim: int | None,
+) -> bool:
+    if (
+        not is_qwen35_architecture(architecture)
+        or attention_head_count is None
+        or attention_head_dim is None
+        or "attn_q.weight" not in tensors
+    ):
+        return False
+    q_rows, _ = runtime_matrix_shape(tensors["attn_q.weight"])
+    attention_dim = attention_head_count * attention_head_dim
+    return attention_dim > 0 and q_rows == 2 * attention_dim
+
+
+def qwen35_linear_attention_config(reader: GGUFReader) -> tuple[int | None, int | None, int | None, int | None, int | None]:
+    num_value_heads = field_int(
+        reader,
+        "qwen3_5.linear_num_value_heads",
+        "qwen3.5.linear_num_value_heads",
+        "qwen35.linear_num_value_heads",
+        "qwen35.ssm.time_step_rank",
+    )
+    num_key_heads = field_int(
+        reader,
+        "qwen3_5.linear_num_key_heads",
+        "qwen3.5.linear_num_key_heads",
+        "qwen35.linear_num_key_heads",
+        "qwen35.ssm.group_count",
+    )
+    key_head_dim = field_int(
+        reader,
+        "qwen3_5.linear_key_head_dim",
+        "qwen3.5.linear_key_head_dim",
+        "qwen35.linear_key_head_dim",
+        "qwen35.ssm.state_size",
+    )
+    value_head_dim = field_int(
+        reader,
+        "qwen3_5.linear_value_head_dim",
+        "qwen3.5.linear_value_head_dim",
+        "qwen35.linear_value_head_dim",
+    )
+    conv_kernel_dim = field_int(
+        reader,
+        "qwen3_5.linear_conv_kernel_dim",
+        "qwen3.5.linear_conv_kernel_dim",
+        "qwen35.linear_conv_kernel_dim",
+        "qwen35.ssm.conv_kernel",
+    )
+    return num_value_heads, num_key_heads, key_head_dim, value_head_dim, conv_kernel_dim
+
+
+def qwen35_linear_attention_value_head_dim(
+    reader: GGUFReader, layer_tensors: dict[int, dict[str, ReaderTensor]]
+) -> int | None:
+    num_value_heads, num_key_heads, key_head_dim, value_head_dim, _ = (
+        qwen35_linear_attention_config(reader)
+    )
+    if value_head_dim is not None:
+        return value_head_dim
+    if (
+        num_value_heads is None
+        or num_key_heads is None
+        or key_head_dim is None
+        or num_value_heads <= 0
+        or num_key_heads <= 0
+    ):
+        return None
+
+    for tensors in layer_tensors.values():
+        if "attn_qkv.weight" not in tensors:
+            continue
+        conv_dim = runtime_matrix_shape(tensors["attn_qkv.weight"])[0]
+        key_dim = num_key_heads * key_head_dim
+        if conv_dim <= 2 * key_dim:
+            return None
+        remaining = conv_dim - 2 * key_dim
+        if remaining % num_value_heads != 0:
+            return None
+        return remaining // num_value_heads
+    return None
+
+
+def resolve_attention_dims(
+    reader: GGUFReader,
+    architecture: str,
+    layer_tensors: dict[int, dict[str, ReaderTensor]],
+    hidden_size: int | None,
+) -> tuple[int | None, int | None, int | None]:
+    attention_head_count = field_int(
+        reader,
+        f"{architecture}.attention.head_count",
+        "qwen3_5.attention.head_count",
+        "qwen3.5.attention.head_count",
+        "qwen35.attention.head_count",
+    )
+    kv_head_count = field_int(
+        reader,
+        f"{architecture}.attention.head_count_kv",
+        "qwen3_5.attention.head_count_kv",
+        "qwen3.5.attention.head_count_kv",
+        "qwen35.attention.head_count_kv",
+    )
+    head_dim = field_int(
+        reader,
+        f"{architecture}.attention.key_length",
+        f"{architecture}.attention.value_length",
+        "qwen3_5.attention.key_length",
+        "qwen3.5.attention.key_length",
+        "qwen35.attention.key_length",
+        "qwen3_5.attention.value_length",
+        "qwen3.5.attention.value_length",
+        "qwen35.attention.value_length",
+    )
+
+    if attention_head_count is not None and head_dim is not None and kv_head_count is not None:
+        return attention_head_count, kv_head_count, head_dim
+
+    for tensors in layer_tensors.values():
+        if "attn_q.weight" not in tensors or "attn_k.weight" not in tensors:
+            continue
+        q_rows, q_cols = runtime_matrix_shape(tensors["attn_q.weight"])
+        k_rows, k_cols = runtime_matrix_shape(tensors["attn_k.weight"])
+        if q_cols == 0 or k_cols == 0:
+            continue
+        if head_dim is None:
+            q_norm = tensors.get("attn_q_norm.weight")
+            if q_norm is None:
+                continue
+            norm_shape = tensor_shape(q_norm)
+            if len(norm_shape) != 1:
+                continue
+            head_dim = norm_shape[0]
+        if hidden_size is not None:
+            if q_cols != hidden_size or k_cols != hidden_size or head_dim == 0:
+                continue
+        if q_rows % head_dim != 0 or k_rows % head_dim != 0:
+            continue
+        effective_q_rows = q_rows
+        if is_qwen35_architecture(architecture) and "attn_output.weight" in tensors:
+            _, o_cols = runtime_matrix_shape(tensors["attn_output.weight"])
+            if o_cols > 0 and q_rows == 2 * o_cols and o_cols % head_dim == 0:
+                effective_q_rows = o_cols
+        attention_head_count = effective_q_rows // head_dim
+        kv_head_count = k_rows // head_dim
+        if attention_head_count > 0 and kv_head_count > 0 and head_dim > 0:
+            return attention_head_count, kv_head_count, head_dim
+        return None, None, None
+
+    return attention_head_count, kv_head_count, head_dim
+
+
 def guess_native_family(architecture: str) -> str:
     architecture = architecture.lower()
     if architecture.startswith("gemma"):
@@ -210,8 +409,33 @@ def analyze_support(reader: GGUFReader) -> SupportReport:
         shape = runtime_matrix_shape(global_tensors["token_embd.weight"])
         vocab_size, hidden_size = shape[0], shape[1]
 
-    if any(".ssm_" in tensor.name or ".attn_gate." in tensor.name for tensor in reader.tensors):
+    if not is_qwen35_architecture(architecture) and any(
+        ".ssm_" in tensor.name or ".attn_gate." in tensor.name for tensor in reader.tensors
+    ):
         blockers.append("hybrid_ssm_or_attention_gate_tensors_present")
+
+    (
+        attention_head_count_for_check,
+        _,
+        attention_head_dim_for_check,
+    ) = (
+        resolve_attention_dims(reader, architecture, layer_tensors, hidden_size)
+        if is_qwen35_architecture(architecture)
+        else (None, None, None)
+    )
+    (
+        linear_num_value_heads_for_check,
+        linear_num_key_heads_for_check,
+        linear_key_head_dim_for_check,
+        linear_value_head_dim_for_check,
+        linear_conv_kernel_dim_for_check,
+    ) = (
+        qwen35_linear_attention_config(reader)
+        if is_qwen35_architecture(architecture)
+        else (None, None, None, None, None)
+    )
+    if is_qwen35_architecture(architecture) and linear_value_head_dim_for_check is None:
+        linear_value_head_dim_for_check = qwen35_linear_attention_value_head_dim(reader, layer_tensors)
 
     expert_count = field_int(reader, f"{architecture}.expert_count")
     experts_per_token = field_int(
@@ -236,8 +460,94 @@ def analyze_support(reader: GGUFReader) -> SupportReport:
     moe_expert_intermediate_sizes: set[int] = set()
     has_moe = False
     has_packed_qkv = False
+    has_linear_attention = False
 
     for layer_index, tensors in sorted(layer_tensors.items()):
+        if is_qwen35_linear_attention_layer(tensors):
+            has_linear_attention = True
+            required_linear = {
+                "attn_norm.weight",
+                "attn_qkv.weight",
+                "attn_gate.weight",
+                "ssm_a",
+                "ssm_alpha.weight",
+                "ssm_beta.weight",
+                "ssm_conv1d.weight",
+                "ssm_dt.bias",
+                "ssm_norm.weight",
+                "ssm_out.weight",
+                "ffn_gate.weight",
+                "ffn_up.weight",
+                "ffn_down.weight",
+            }
+            ffn_norm = ffn_norm_name(tensors)
+            if ffn_norm is None:
+                blockers.append(f"layer_{layer_index}_missing_ffn_norm")
+                continue
+            required_linear.add(ffn_norm)
+            if not required_linear.issubset(tensors):
+                blockers.append(f"layer_{layer_index}_missing_linear_attention_core_tensors")
+                continue
+
+            qkv_rows, qkv_cols = runtime_matrix_shape(tensors["attn_qkv.weight"])
+            gate_rows, gate_cols = runtime_matrix_shape(tensors["attn_gate.weight"])
+            alpha_rows, alpha_cols = runtime_matrix_shape(tensors["ssm_alpha.weight"])
+            beta_rows, beta_cols = runtime_matrix_shape(tensors["ssm_beta.weight"])
+            ssm_out_rows, ssm_out_cols = runtime_matrix_shape(tensors["ssm_out.weight"])
+            ssm_a_shape = runtime_tensor_shape(tensors["ssm_a"])
+            ssm_dt_shape = runtime_tensor_shape(tensors["ssm_dt.bias"])
+            ssm_norm_shape = runtime_tensor_shape(tensors["ssm_norm.weight"])
+            conv_shape = runtime_tensor_shape(tensors["ssm_conv1d.weight"])
+            if hidden_size is not None and qkv_cols != hidden_size:
+                blockers.append(f"layer_{layer_index}_linear_attention_qkv_input_width_mismatch")
+            if hidden_size is not None and gate_cols != hidden_size:
+                blockers.append(f"layer_{layer_index}_linear_attention_gate_input_width_mismatch")
+            if hidden_size is not None and alpha_cols != hidden_size:
+                blockers.append(f"layer_{layer_index}_linear_attention_alpha_input_width_mismatch")
+            if hidden_size is not None and beta_cols != hidden_size:
+                blockers.append(f"layer_{layer_index}_linear_attention_beta_input_width_mismatch")
+            if hidden_size is not None and ssm_out_cols != hidden_size:
+                blockers.append(f"layer_{layer_index}_linear_attention_out_proj_input_width_mismatch")
+            if qkv_rows <= 0 or gate_cols <= 0 or alpha_rows <= 0 or beta_rows <= 0 or ssm_out_rows <= 0:
+                blockers.append(f"layer_{layer_index}_linear_attention_zero_rows")
+            if all(
+                v is not None
+                for v in (
+                    linear_num_value_heads_for_check,
+                    linear_num_key_heads_for_check,
+                    linear_key_head_dim_for_check,
+                    linear_value_head_dim_for_check,
+                    linear_conv_kernel_dim_for_check,
+                )
+            ):
+                key_dim = linear_num_key_heads_for_check * linear_key_head_dim_for_check
+                value_dim = linear_num_value_heads_for_check * linear_value_head_dim_for_check
+                conv_dim = 2 * key_dim + value_dim
+                if qkv_rows != conv_dim:
+                    blockers.append(f"layer_{layer_index}_linear_attention_qkv_rows_mismatch")
+                if gate_rows != value_dim:
+                    blockers.append(f"layer_{layer_index}_linear_attention_gate_rows_mismatch")
+                if alpha_rows != linear_num_value_heads_for_check:
+                    blockers.append(f"layer_{layer_index}_linear_attention_alpha_rows_mismatch")
+                if beta_rows != linear_num_value_heads_for_check:
+                    blockers.append(f"layer_{layer_index}_linear_attention_beta_rows_mismatch")
+                if ssm_out_rows != (hidden_size or ssm_out_rows) or ssm_out_cols != value_dim:
+                    blockers.append(f"layer_{layer_index}_linear_attention_out_proj_shape_mismatch")
+                if ssm_a_shape != [linear_num_value_heads_for_check]:
+                    blockers.append(f"layer_{layer_index}_linear_attention_a_log_shape_mismatch")
+                if ssm_dt_shape != [linear_num_value_heads_for_check]:
+                    blockers.append(f"layer_{layer_index}_linear_attention_dt_bias_shape_mismatch")
+                if ssm_norm_shape != [linear_value_head_dim_for_check]:
+                    blockers.append(f"layer_{layer_index}_linear_attention_norm_shape_mismatch")
+                conv_tail = 1
+                for dim in conv_shape[1:]:
+                    conv_tail *= dim
+                if not conv_shape or conv_shape[0] != conv_dim or conv_tail != linear_conv_kernel_dim_for_check:
+                    blockers.append(f"layer_{layer_index}_linear_attention_conv1d_shape_mismatch")
+
+            has_packed_qkv = True
+            continue
+
         required = {
             "attn_norm.weight",
             "attn_output.weight",
@@ -296,20 +606,40 @@ def analyze_support(reader: GGUFReader) -> SupportReport:
             if head_dim in (None, 0):
                 blockers.append(f"layer_{layer_index}_missing_head_dim")
                 continue
-            if q_rows % head_dim != 0 or k_rows % head_dim != 0 or v_rows % head_dim != 0:
+            effective_q_rows = q_rows
+            if (
+                is_qwen35_architecture(architecture)
+                and attention_head_count_for_check is not None
+                and attention_head_dim_for_check is not None
+            ):
+                attention_output_cols_for_check = (
+                    attention_head_count_for_check * attention_head_dim_for_check
+                )
+                if q_rows == 2 * attention_output_cols_for_check:
+                    effective_q_rows = attention_output_cols_for_check
+            if effective_q_rows % head_dim != 0 or k_rows % head_dim != 0 or v_rows % head_dim != 0:
                 blockers.append(f"layer_{layer_index}_attention_rows_not_divisible_by_head_dim")
                 continue
             if k_rows != v_rows:
                 blockers.append(f"layer_{layer_index}_kv_row_mismatch")
                 continue
-            if o_rows != (hidden_size or o_rows) or o_cols != q_rows:
+            attention_output_cols = q_rows
+            if (
+                is_qwen35_architecture(architecture)
+                and attention_head_count_for_check is not None
+                and attention_head_dim_for_check is not None
+            ):
+                attention_output_cols = (
+                    attention_head_count_for_check * attention_head_dim_for_check
+                )
+            if o_rows != (hidden_size or o_rows) or o_cols != attention_output_cols:
                 blockers.append(f"layer_{layer_index}_attention_output_shape_mismatch")
                 continue
             if q_cols != (hidden_size or q_cols) or k_cols != (hidden_size or k_cols):
                 blockers.append(f"layer_{layer_index}_attention_input_width_mismatch")
                 continue
 
-            attention_dim_signatures.add((q_rows, k_rows, v_rows, head_dim))
+            attention_dim_signatures.add((effective_q_rows, k_rows, v_rows, head_dim))
 
         has_moe_router = any(
             name in tensors
@@ -435,8 +765,22 @@ def analyze_support(reader: GGUFReader) -> SupportReport:
                     blockers.append(f"layer_{layer_index}_{tensor_name}_intermediate_size_mismatch")
 
     fixed_attention_dims = len(attention_dim_signatures) <= 1
-    if has_packed_qkv:
+    if has_packed_qkv and not is_qwen35_architecture(architecture):
         blockers.append("packed_qkv_export_not_implemented")
+
+    if has_linear_attention:
+        num_value_heads, num_key_heads, key_head_dim, value_head_dim, conv_kernel_dim = (
+            qwen35_linear_attention_config(reader)
+        )
+        if (
+            num_value_heads is None
+            or num_key_heads is None
+            or key_head_dim is None
+            or conv_kernel_dim is None
+        ):
+            blockers.append("missing_qwen35_linear_attention_metadata")
+        if value_head_dim is None and qwen35_linear_attention_value_head_dim(reader, layer_tensors) is None:
+            blockers.append("missing_qwen35_linear_attention_value_head_dim")
     if has_moe:
         if len(moe_expert_counts) > 1:
             blockers.append("moe_expert_count_varies_across_layers")
@@ -479,6 +823,13 @@ def analyze_support(reader: GGUFReader) -> SupportReport:
             "attention_v_norm_no_scale_layers="
             + ",".join(str(index) for index in v_norm_no_scale_layers)
         )
+    source_quantization = source_quantization_summary(reader)
+    if source_quantization["contains_quantized_tensors"]:
+        notes.append(
+            "source_quantized_tensor_count="
+            + str(source_quantization["quantized_tensor_count"])
+        )
+        notes.append("source_quantization_dequantized_for_dense_native_export")
     if has_moe:
         notes.append("moe_manifest_export_supported_runtime_pending")
 
@@ -531,6 +882,23 @@ def native_dtype_name(output_dtype: str) -> str:
     raise ValueError(f"unsupported output dtype {output_dtype}")
 
 
+def source_tensor_type_name(tensor: ReaderTensor) -> str:
+    return gguf_tensor_type_name(tensor.tensor_type)
+
+
+def source_tensor_is_quantized(tensor: ReaderTensor) -> bool:
+    return tensor.tensor_type not in NATIVE_DIRECT_GGUF_DTYPES
+
+
+def quantized_source_output_name(output_name: str) -> str:
+    return "source_quantized/" + output_name + ".gguf.bin"
+
+
+def quantized_source_bytes(tensor: ReaderTensor) -> bytes:
+    data = np.ascontiguousarray(tensor.data)
+    return data.tobytes(order="C")
+
+
 def build_export_specs(
     reader: GGUFReader, report: SupportReport, output_dtype: str, family_override: str | None
 ) -> tuple[dict[str, Any], list[ExportSpec]]:
@@ -554,31 +922,43 @@ def build_export_specs(
         suffix = match.group(2)
         layer_tensors.setdefault(layer_index, {})[suffix] = tensor
 
+    linear_attention_cfg = qwen35_linear_attention_config(reader)
+    if is_qwen35_architecture(architecture):
+        num_value_heads, num_key_heads, key_head_dim, value_head_dim, conv_kernel_dim = (
+            linear_attention_cfg
+        )
+        if value_head_dim is None:
+            value_head_dim = qwen35_linear_attention_value_head_dim(reader, layer_tensors)
     value_from_key_layers, v_norm_no_scale_layers = attention_layer_overrides(
         architecture, reader, layer_count, layer_tensors
     )
-    first_layer = layer_tensors[min(layer_tensors)]
-    q_rows = runtime_matrix_shape(first_layer["attn_q.weight"])[0]
-    kv_rows = runtime_matrix_shape(first_layer["attn_k.weight"])[0]
-    head_dim_tensor = first_layer.get("attn_q_norm.weight") or first_layer.get("attn_k_norm.weight")
-    if head_dim_tensor is None:
-        raise ValueError("first layer must provide attn_q_norm.weight or attn_k_norm.weight")
-    head_dim = tensor_shape(head_dim_tensor)[0]
-    q_head_count = q_rows // head_dim
-    kv_head_count = kv_rows // head_dim
+    attention_head_count, kv_head_count, attention_head_dim = resolve_attention_dims(
+        reader, architecture, layer_tensors, hidden_size
+    )
+    if attention_head_count is None or kv_head_count is None or attention_head_dim is None:
+        raise ValueError("missing or invalid attention geometry metadata")
 
     manifest: dict[str, Any] = {
         "schema_version": "ax.native_model.v1",
         "model_family": family,
         "tensor_format": "safetensors",
+        "source_quantization": source_quantization_summary(reader),
         "layer_count": layer_count,
         "hidden_size": hidden_size,
-        "attention_head_count": q_head_count,
-        "attention_head_dim": head_dim,
+        "attention_head_count": attention_head_count,
+        "attention_head_dim": attention_head_dim,
         "kv_head_count": kv_head_count,
         "vocab_size": vocab_size,
         "tie_word_embeddings": "output.weight" not in global_tensors,
         "tensors": [],
+    }
+    runtime_notes = list(report.notes)
+    if source_quantization_summary(reader)["contains_quantized_tensors"]:
+        runtime_notes.append(f"native_artifact_dtype={native_dtype_name(output_dtype)}")
+    manifest["runtime_status"] = {
+        "ready": report.runtime_ready,
+        "blockers": report.runtime_blockers,
+        "notes": list(dict.fromkeys(runtime_notes)),
     }
     if report.has_moe:
         manifest["moe"] = {
@@ -586,14 +966,42 @@ def build_export_specs(
             "experts_per_token": report.experts_per_token,
             "expert_intermediate_size": report.expert_intermediate_size,
         }
+    if is_qwen35_architecture(architecture) and any(
+        qwen35_attention_uses_output_gate(
+            architecture,
+            tensors,
+            attention_head_count,
+            attention_head_dim,
+        )
+        for tensors in layer_tensors.values()
+    ):
+        manifest["attn_output_gate"] = True
     if value_from_key_layers:
         manifest["attention_value_from_key_layers"] = value_from_key_layers
     if v_norm_no_scale_layers:
         manifest["attention_v_norm_no_scale_layers"] = v_norm_no_scale_layers
+    if is_qwen35_architecture(architecture) and all(
+        v is not None for v in (num_value_heads, num_key_heads, key_head_dim, value_head_dim, conv_kernel_dim)
+    ):
+        manifest["linear_attention"] = {
+            "num_value_heads": num_value_heads,
+            "num_key_heads": num_key_heads,
+            "key_head_dim": key_head_dim,
+            "value_head_dim": value_head_dim,
+            "conv_kernel_dim": conv_kernel_dim,
+        }
 
     rope_theta = field_contents(reader, f"{architecture}.rope.freq_base")
     if isinstance(rope_theta, (int, float)) and rope_theta > 0:
         manifest["rope_theta"] = int(rope_theta)
+    rope_dimension_count = field_contents(reader, f"{architecture}.rope.dimension_count")
+    if (
+        isinstance(rope_dimension_count, int)
+        and rope_dimension_count > 0
+        and attention_head_dim > 0
+        and rope_dimension_count < attention_head_dim
+    ):
+        manifest["partial_rotary_factor"] = rope_dimension_count / attention_head_dim
 
     specs: list[ExportSpec] = []
 
@@ -619,24 +1027,47 @@ def build_export_specs(
         tensors = layer_tensors[layer_index]
         ffn_norm = ffn_norm_name(tensors)
         assert ffn_norm is not None
-        layer_specs = [
-            ("attn_norm.weight", "attention_norm", f"blk.{layer_index}.attn_norm.bin"),
-            ("attn_q_norm.weight", "attention_q_norm", f"blk.{layer_index}.attn_q_norm.bin"),
-            ("attn_k_norm.weight", "attention_k_norm", f"blk.{layer_index}.attn_k_norm.bin"),
-            ("attn_q.weight", "attention_q", f"blk.{layer_index}.attn_q.bin"),
-            ("attn_k.weight", "attention_k", f"blk.{layer_index}.attn_k.bin"),
-            ("attn_output.weight", "attention_o", f"blk.{layer_index}.attn_o.bin"),
-            (ffn_norm, "ffn_norm", f"blk.{layer_index}.ffn_norm.bin"),
-            ("ffn_gate.weight", "ffn_gate", f"blk.{layer_index}.ffn_gate.bin"),
-            ("ffn_up.weight", "ffn_up", f"blk.{layer_index}.ffn_up.bin"),
-            ("ffn_down.weight", "ffn_down", f"blk.{layer_index}.ffn_down.bin"),
-        ]
+        if is_qwen35_linear_attention_layer(tensors):
+            layer_specs = [
+                ("attn_norm.weight", "attention_norm", f"blk.{layer_index}.attn_norm.bin"),
+                (ffn_norm, "ffn_norm", f"blk.{layer_index}.ffn_norm.bin"),
+                ("ffn_gate.weight", "ffn_gate", f"blk.{layer_index}.ffn_gate.bin"),
+                ("ffn_up.weight", "ffn_up", f"blk.{layer_index}.ffn_up.bin"),
+                ("ffn_down.weight", "ffn_down", f"blk.{layer_index}.ffn_down.bin"),
+                ("attn_qkv.weight", "linear_attention_in_proj_qkv", f"blk.{layer_index}.attn_qkv.bin"),
+                ("attn_gate.weight", "linear_attention_in_proj_z", f"blk.{layer_index}.attn_gate.bin"),
+                ("ssm_alpha.weight", "linear_attention_in_proj_a", f"blk.{layer_index}.ssm_alpha.bin"),
+                ("ssm_beta.weight", "linear_attention_in_proj_b", f"blk.{layer_index}.ssm_beta.bin"),
+                ("ssm_conv1d.weight", "linear_attention_conv1d", f"blk.{layer_index}.ssm_conv1d.bin"),
+                ("ssm_dt.bias", "linear_attention_dt_bias", f"blk.{layer_index}.ssm_dt_bias.bin"),
+                ("ssm_a", "linear_attention_a_log", f"blk.{layer_index}.ssm_a.bin"),
+                ("ssm_norm.weight", "linear_attention_norm", f"blk.{layer_index}.ssm_norm.bin"),
+                ("ssm_out.weight", "linear_attention_out_proj", f"blk.{layer_index}.ssm_out.bin"),
+            ]
+        else:
+            layer_specs = [
+                ("attn_norm.weight", "attention_norm", f"blk.{layer_index}.attn_norm.bin"),
+                ("attn_q_norm.weight", "attention_q_norm", f"blk.{layer_index}.attn_q_norm.bin"),
+                ("attn_k_norm.weight", "attention_k_norm", f"blk.{layer_index}.attn_k_norm.bin"),
+                ("attn_q.weight", "attention_q", f"blk.{layer_index}.attn_q.bin"),
+                ("attn_k.weight", "attention_k", f"blk.{layer_index}.attn_k.bin"),
+                ("attn_output.weight", "attention_o", f"blk.{layer_index}.attn_o.bin"),
+                (ffn_norm, "ffn_norm", f"blk.{layer_index}.ffn_norm.bin"),
+                ("ffn_gate.weight", "ffn_gate", f"blk.{layer_index}.ffn_gate.bin"),
+                ("ffn_up.weight", "ffn_up", f"blk.{layer_index}.ffn_up.bin"),
+                ("ffn_down.weight", "ffn_down", f"blk.{layer_index}.ffn_down.bin"),
+            ]
+            if "attn_v.weight" in tensors:
+                layer_specs.insert(
+                    5,
+                    ("attn_v.weight", "attention_v", f"blk.{layer_index}.attn_v.bin"),
+                )
         attention_post_norm = optional_tensor_name(
             tensors,
             "post_attention_norm.weight",
             "post_attention_layernorm.weight",
         )
-        if attention_post_norm is not None:
+        if attention_post_norm is not None and attention_post_norm != ffn_norm:
             layer_specs.append(
                 (
                     attention_post_norm,
@@ -762,7 +1193,9 @@ def build_export_specs(
                     ),
                 ]
             )
-        if "attn_v.weight" in tensors:
+        if "attn_v.weight" in tensors and not any(
+            tensor_name == "attn_v.weight" for tensor_name, _, _ in layer_specs
+        ):
             layer_specs.insert(5, ("attn_v.weight", "attention_v", f"blk.{layer_index}.attn_v.bin"))
         for tensor_name, role, output_name in layer_specs:
             tensor = tensors[tensor_name]
@@ -807,12 +1240,31 @@ def export_model(
                 "role": spec.role,
                 "layer_index": spec.layer_index,
                 "dtype": spec.dtype,
+                "source_tensor_type": source_tensor_type_name(spec.tensor),
+                "source_quantized": source_tensor_is_quantized(spec.tensor),
                 "shape": spec.runtime_shape,
                 "file": spec.output_name,
                 "offset_bytes": 0,
                 "length_bytes": output_path.stat().st_size,
             }
         )
+        if source_tensor_is_quantized(spec.tensor):
+            source_output_name = quantized_source_output_name(spec.output_name)
+            source_output_path = output_dir / source_output_name
+            source_output_path.parent.mkdir(parents=True, exist_ok=True)
+            source_bytes = quantized_source_bytes(spec.tensor)
+            source_output_path.write_bytes(source_bytes)
+            manifest_tensors[-1]["quantized_source"] = {
+                "format": "gguf_tensor_bytes",
+                "file": source_output_name,
+                "offset_bytes": 0,
+                "length_bytes": len(source_bytes),
+            }
+            if len(source_bytes) != spec.tensor.n_bytes:
+                raise ValueError(
+                    f"quantized source byte length mismatch for {spec.tensor.name}: "
+                    f"wrote {len(source_bytes)} expected {spec.tensor.n_bytes}"
+                )
 
     manifest["tensors"] = manifest_tensors
     manifest_path = output_dir / "model-manifest.json"

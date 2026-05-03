@@ -4,8 +4,12 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
+[features]
+mlx-native = ["dep:ax-engine-mlx"]
+
 [dependencies]
 ax-engine-core = { path = "../ax-engine-core" }
+ax-engine-mlx = { path = "../ax-engine-mlx", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

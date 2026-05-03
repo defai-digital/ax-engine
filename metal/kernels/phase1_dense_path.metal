@@ -44,6 +44,11 @@ struct LogitsProjectionParams {
     uint input_width;
 };
 
+struct Q4KMProjectionParams {
+    uint n_rows;        // output rows
+    uint input_width;   // hidden dimension (must be a multiple of 256)
+};
+
 struct BatchedLogitsProjectionParams {
     uint token_count;
     uint vocab_rows;
@@ -161,68 +166,86 @@ kernel void reshape_and_cache(
     value_cache[cache_index] = value[source_index];
 }
 
+// Per-head fused online-softmax attention.
+// Dispatch: n_tokens * head_count threadgroups, head_dim threads per TG.
+// Each TG handles one (token, head) pair using online softmax (single KV pass).
+// Threads collaborate on QK dot products via SIMD+threadgroup reduction,
+// then each thread independently accumulates its value dimension.
 kernel void paged_decode_attention(
-    device const float* query [[buffer(0)]],
-    device const float* key_gathered [[buffer(1)]],
+    device const float* query          [[buffer(0)]],
+    device const float* key_gathered   [[buffer(1)]],
     device const float* value_gathered [[buffer(2)]],
-    device const uint* cu_seq_lens [[buffer(3)]],
-    device const uint* scheduled_cu_seq_lens [[buffer(4)]],
-    device float* output [[buffer(5)]],
+    device const uint*  cu_seq_lens    [[buffer(3)]],
+    device const uint*  scheduled_cu_seq_lens [[buffer(4)]],
+    device float* output               [[buffer(5)]],
     constant AttentionDispatchParams& params [[buffer(6)]],
-    uint gid [[thread_position_in_grid]]
+    uint tg_pos [[threadgroup_position_in_grid]],   // token_id * head_count + head_id
+    uint lid    [[thread_index_in_threadgroup]],     // 0 .. head_dim-1
+    uint lane   [[thread_index_in_simdgroup]],
+    uint simd   [[simdgroup_index_in_threadgroup]],
+    uint n_simd [[simdgroups_per_threadgroup]]
 ) {
-    if (gid >= params.element_count) {
-        return;
-    }
+    if (params.head_dim == 0) return;
 
     uint head_size = params.head_count * params.head_dim;
-    uint token_id = gid / head_size;
-    uint token_lane = gid % head_size;
-    uint head_id = token_lane / params.head_dim;
-    uint lane_id = token_lane % params.head_dim;
+    uint n_tokens  = params.element_count / head_size;
+    uint token_id  = tg_pos / params.head_count;
+    uint head_id   = tg_pos % params.head_count;
+    if (token_id >= n_tokens) return;
 
-    uint batch_lo = 0;
-    uint batch_hi = params.num_seqs;
+    threadgroup float smem[32];  // per-SIMD partial sums (max 32 SIMD groups = 1024-thread TG)
+
+    // Binary search: find which request this token belongs to
+    uint batch_lo = 0, batch_hi = params.num_seqs;
     while (batch_lo < batch_hi) {
-        uint batch_mid = (batch_lo + batch_hi + 1) / 2;
-        if (scheduled_cu_seq_lens[batch_mid] <= token_id) {
-            batch_lo = batch_mid;
-        } else {
-            batch_hi = batch_mid - 1;
-        }
+        uint mid = (batch_lo + batch_hi + 1) / 2;
+        if (scheduled_cu_seq_lens[mid] <= token_id) batch_lo = mid;
+        else batch_hi = mid - 1;
     }
+    uint context_begin = cu_seq_lens[batch_lo];
+    uint context_end   = cu_seq_lens[batch_lo + 1];
 
-    uint batch_id = batch_lo;
-    uint context_begin = cu_seq_lens[batch_id];
-    uint context_end = cu_seq_lens[batch_id + 1];
-    uint head_query_base = token_id * head_size + head_id * params.head_dim;
-    float max_score = -INFINITY;
+    uint q_base    = token_id * head_size + head_id * params.head_dim;
+    float q_val    = (lid < params.head_dim) ? query[q_base + lid] : 0.0f;
+    float inv_scale = rsqrt(float(params.head_dim));
 
-    for (uint context_index = context_begin; context_index < context_end; context_index++) {
-        uint context_base = context_index * head_size + head_id * params.head_dim;
+    // Online softmax accumulators (per-thread, for this thread's value dimension)
+    float m   = -INFINITY;
+    float d   = 0.0f;
+    float acc = 0.0f;
+
+    for (uint c = context_begin; c < context_end; c++) {
+        uint kv_base = c * head_size + head_id * params.head_dim;
+
+        // Compute dot(q, k[c]) collaboratively across the TG
+        float k_val = (lid < params.head_dim) ? key_gathered[kv_base + lid] : 0.0f;
+        float partial_qk = simd_sum(q_val * k_val);
+        if (lane == 0) smem[simd] = partial_qk;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
         float score = 0.0f;
-        for (uint lane = 0; lane < params.head_dim; lane++) {
-            score += query[head_query_base + lane] * key_gathered[context_base + lane];
+        if (simd == 0) {
+            float v = (lane < n_simd) ? smem[lane] : 0.0f;
+            score = simd_sum(v) * inv_scale;
+            if (lane == 0) smem[0] = score;
         }
-        score /= sqrt(float(params.head_dim));
-        max_score = max(max_score, score);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        score = smem[0];
+
+        // Online softmax update for this thread's output dimension (lid)
+        float m_new    = max(m, score);
+        float exp_diff = exp(m - m_new);
+        float exp_s    = exp(score - m_new);
+
+        float v_val = (lid < params.head_dim) ? value_gathered[kv_base + lid] : 0.0f;
+        d   = d   * exp_diff + exp_s;
+        acc = acc * exp_diff + exp_s * v_val;
+        m   = m_new;
     }
 
-    float weight_sum = 0.0f;
-    float accum = 0.0f;
-    for (uint context_index = context_begin; context_index < context_end; context_index++) {
-        uint context_base = context_index * head_size + head_id * params.head_dim;
-        float score = 0.0f;
-        for (uint lane = 0; lane < params.head_dim; lane++) {
-            score += query[head_query_base + lane] * key_gathered[context_base + lane];
-        }
-        score /= sqrt(float(params.head_dim));
-        float weight = exp(score - max_score);
-        weight_sum += weight;
-        accum += weight * value_gathered[context_base + lane_id];
+    if (lid < params.head_dim) {
+        output[q_base + lid] = acc / max(d, 0.000001f);
     }
-
-    output[gid] = accum / max(weight_sum, 0.000001f);
 }
 
 kernel void gather_kv_cache(
@@ -596,428 +619,635 @@ kernel void row_vector_scale_f32(
     output[gid] = input[gid] * scales[lane_index];
 }
 
-kernel void decode_logits_projection_f32(
-    device const float* hidden [[buffer(0)]],
-    device const float* projection [[buffer(1)]],
-    device float* logits [[buffer(2)]],
-    constant LogitsProjectionParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]
-) {
-    if (gid >= params.vocab_rows) {
-        return;
-    }
+// Projection kernels use one simd-group (32 threads) per output row.
+// Each thread handles every 32nd input element; simd_sum reduces to the dot
+// product. This achieves near-memory-bandwidth-limited throughput for GEMV
+// (single-token decode) by fully utilising the GPU's SIMD parallelism.
+// Dispatch: vocab_rows * 32 total threads, threadgroup size 32.
 
-    uint row_base = gid * params.projection_cols;
-    float score = 0.0f;
-    for (uint lane = 0; lane < params.input_width; lane++) {
-        score += projection[row_base + lane] * hidden[lane];
+kernel void decode_logits_projection_f32(
+    device const float* hidden     [[buffer(0)]],
+    device const float* projection [[buffer(1)]],
+    device float*       logits     [[buffer(2)]],
+    constant LogitsProjectionParams& params [[buffer(3)]],
+    uint gid  [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    uint out_row = gid / 32;
+    if (out_row >= params.vocab_rows) return;
+
+    uint row_base = out_row * params.projection_cols;
+    float partial = 0.0f;
+    for (uint col = lane; col < params.input_width; col += 32) {
+        partial += projection[row_base + col] * hidden[col];
     }
-    logits[gid] = score;
+    if (lane == 0) {
+        logits[out_row] = simd_sum(partial);
+    }
 }
 
 kernel void decode_logits_projection_f16(
-    device const float* hidden [[buffer(0)]],
-    device const half* projection [[buffer(1)]],
-    device float* logits [[buffer(2)]],
+    device const float* hidden     [[buffer(0)]],
+    device const half*  projection [[buffer(1)]],
+    device float*       logits     [[buffer(2)]],
     constant LogitsProjectionParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]
+    uint gid  [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]
 ) {
-    if (gid >= params.vocab_rows) {
-        return;
-    }
+    uint out_row = gid / 32;
+    if (out_row >= params.vocab_rows) return;
 
-    uint row_base = gid * params.projection_cols;
-    float score = 0.0f;
-    for (uint lane = 0; lane < params.input_width; lane++) {
-        score += float(projection[row_base + lane]) * hidden[lane];
+    uint row_base = out_row * params.projection_cols;
+    float partial = 0.0f;
+    for (uint col = lane; col < params.input_width; col += 32) {
+        partial += float(projection[row_base + col]) * hidden[col];
     }
-    logits[gid] = score;
+    if (lane == 0) {
+        logits[out_row] = simd_sum(partial);
+    }
 }
 
 kernel void decode_logits_projection_bf16(
-    device const float* hidden [[buffer(0)]],
+    device const float*  hidden     [[buffer(0)]],
     device const bfloat* projection [[buffer(1)]],
-    device float* logits [[buffer(2)]],
+    device float*        logits     [[buffer(2)]],
     constant LogitsProjectionParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]
+    uint gid  [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]
 ) {
-    if (gid >= params.vocab_rows) {
-        return;
-    }
+    uint out_row = gid / 32;
+    if (out_row >= params.vocab_rows) return;
 
-    uint row_base = gid * params.projection_cols;
-    float score = 0.0f;
-    for (uint lane = 0; lane < params.input_width; lane++) {
-        score += float(projection[row_base + lane]) * hidden[lane];
+    uint row_base = out_row * params.projection_cols;
+    float partial = 0.0f;
+    for (uint col = lane; col < params.input_width; col += 32) {
+        partial += float(projection[row_base + col]) * hidden[col];
     }
-    logits[gid] = score;
+    if (lane == 0) {
+        logits[out_row] = simd_sum(partial);
+    }
 }
 
+// Batched projection: one simd-group per (token, output_row) pair.
+// Dispatch: token_count * vocab_rows * 32 total threads, threadgroup size 32.
+
 kernel void decode_logits_projection_batched_f32(
-    device const float* hidden [[buffer(0)]],
+    device const float* hidden     [[buffer(0)]],
     device const float* projection [[buffer(1)]],
-    device float* logits [[buffer(2)]],
+    device float*       logits     [[buffer(2)]],
     constant BatchedLogitsProjectionParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]
+    uint gid  [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]
 ) {
     uint element_count = params.token_count * params.vocab_rows;
-    if (gid >= element_count || params.hidden_stride == 0) {
-        return;
-    }
+    uint flat_index = gid / 32;
+    if (flat_index >= element_count || params.hidden_stride == 0) return;
 
-    uint token_index = gid / params.vocab_rows;
-    uint vocab_index = gid % params.vocab_rows;
-    uint row_base = vocab_index * params.projection_cols;
+    uint token_index = flat_index / params.vocab_rows;
+    uint vocab_index = flat_index % params.vocab_rows;
+    uint row_base    = vocab_index * params.projection_cols;
     uint hidden_base = token_index * params.hidden_stride;
-    float score = 0.0f;
-    for (uint lane = 0; lane < params.input_width; lane++) {
-        score += projection[row_base + lane] * hidden[hidden_base + lane];
+    float partial = 0.0f;
+    for (uint col = lane; col < params.input_width; col += 32) {
+        partial += projection[row_base + col] * hidden[hidden_base + col];
     }
-    logits[gid] = score;
+    if (lane == 0) {
+        logits[flat_index] = simd_sum(partial);
+    }
 }
 
 kernel void decode_logits_projection_batched_f16(
-    device const float* hidden [[buffer(0)]],
-    device const half* projection [[buffer(1)]],
-    device float* logits [[buffer(2)]],
+    device const float* hidden     [[buffer(0)]],
+    device const half*  projection [[buffer(1)]],
+    device float*       logits     [[buffer(2)]],
     constant BatchedLogitsProjectionParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]
+    uint gid  [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]
 ) {
     uint element_count = params.token_count * params.vocab_rows;
-    if (gid >= element_count || params.hidden_stride == 0) {
-        return;
-    }
+    uint flat_index = gid / 32;
+    if (flat_index >= element_count || params.hidden_stride == 0) return;
 
-    uint token_index = gid / params.vocab_rows;
-    uint vocab_index = gid % params.vocab_rows;
-    uint row_base = vocab_index * params.projection_cols;
+    uint token_index = flat_index / params.vocab_rows;
+    uint vocab_index = flat_index % params.vocab_rows;
+    uint row_base    = vocab_index * params.projection_cols;
     uint hidden_base = token_index * params.hidden_stride;
-    float score = 0.0f;
-    for (uint lane = 0; lane < params.input_width; lane++) {
-        score += float(projection[row_base + lane]) * hidden[hidden_base + lane];
+    float partial = 0.0f;
+    for (uint col = lane; col < params.input_width; col += 32) {
+        partial += float(projection[row_base + col]) * hidden[hidden_base + col];
     }
-    logits[gid] = score;
+    if (lane == 0) {
+        logits[flat_index] = simd_sum(partial);
+    }
 }
 
 kernel void decode_logits_projection_batched_bf16(
-    device const float* hidden [[buffer(0)]],
+    device const float*  hidden     [[buffer(0)]],
     device const bfloat* projection [[buffer(1)]],
-    device float* logits [[buffer(2)]],
+    device float*        logits     [[buffer(2)]],
     constant BatchedLogitsProjectionParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]
+    uint gid  [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]
 ) {
     uint element_count = params.token_count * params.vocab_rows;
-    if (gid >= element_count || params.hidden_stride == 0) {
-        return;
-    }
+    uint flat_index = gid / 32;
+    if (flat_index >= element_count || params.hidden_stride == 0) return;
 
-    uint token_index = gid / params.vocab_rows;
-    uint vocab_index = gid % params.vocab_rows;
-    uint row_base = vocab_index * params.projection_cols;
+    uint token_index = flat_index / params.vocab_rows;
+    uint vocab_index = flat_index % params.vocab_rows;
+    uint row_base    = vocab_index * params.projection_cols;
     uint hidden_base = token_index * params.hidden_stride;
-    float score = 0.0f;
-    for (uint lane = 0; lane < params.input_width; lane++) {
-        score += float(projection[row_base + lane]) * hidden[hidden_base + lane];
+    float partial = 0.0f;
+    for (uint col = lane; col < params.input_width; col += 32) {
+        partial += float(projection[row_base + col]) * hidden[hidden_base + col];
     }
-    logits[gid] = score;
+    if (lane == 0) {
+        logits[flat_index] = simd_sum(partial);
+    }
 }
 
+// Parallel argmax using SIMD max + min-index selection.
+// Dispatch with ARGMAX_TG_SIZE threads (1 threadgroup).
+// smem_val/smem_idx hold per-SIMD-group results (max 32 SIMD groups for TG ≤ 1024).
 kernel void logits_argmax_f32(
     device const float* logits [[buffer(0)]],
     device uint* best_index [[buffer(1)]],
     constant LogitsArgmaxParams& params [[buffer(2)]],
-    uint gid [[thread_position_in_grid]]
+    uint gid   [[thread_position_in_grid]],
+    uint lid   [[thread_index_in_threadgroup]],
+    uint lane  [[thread_index_in_simdgroup]],
+    uint simd  [[simdgroup_index_in_threadgroup]],
+    uint n_simd [[simdgroups_per_threadgroup]],
+    uint total [[threads_per_threadgroup]]
 ) {
-    if (gid != 0 || params.element_count == 0) {
-        return;
+    uint n = params.element_count;
+    if (n == 0) return;
+
+    threadgroup float smem_val[32];
+    threadgroup uint  smem_idx[32];
+
+    float local_val = -INFINITY;
+    uint  local_idx = 0;
+    for (uint i = gid; i < n; i += total) {
+        float v = logits[i];
+        if (v > local_val) { local_val = v; local_idx = i; }
     }
 
-    uint best = 0;
-    float best_score = logits[0];
-    for (uint index = 1; index < params.element_count; index++) {
-        float score = logits[index];
-        if (score > best_score) {
-            best_score = score;
-            best = index;
+    float simd_max_v = simd_max(local_val);
+    uint  candidate  = (local_val >= simd_max_v) ? local_idx : UINT_MAX;
+    uint  simd_best  = simd_min(candidate);
+
+    if (lane == 0) { smem_val[simd] = simd_max_v; smem_idx[simd] = simd_best; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) {
+        float best_v = smem_val[0];
+        uint  best_i = smem_idx[0];
+        for (uint s = 1; s < n_simd; s++) {
+            if (smem_val[s] > best_v) { best_v = smem_val[s]; best_i = smem_idx[s]; }
         }
+        best_index[0] = best_i;
     }
-    best_index[0] = best;
 }
 
+// Parallel batched argmax: 1 threadgroup per token.
+// Dispatch: token_count * ARGMAX_TG_SIZE threads, ARGMAX_TG_SIZE per TG.
 kernel void logits_argmax_batched_f32(
     device const float* logits [[buffer(0)]],
     device uint* best_index [[buffer(1)]],
     constant BatchedLogitsArgmaxParams& params [[buffer(2)]],
-    uint gid [[thread_position_in_grid]]
+    uint tg_pos [[threadgroup_position_in_grid]],
+    uint lid    [[thread_index_in_threadgroup]],
+    uint lane   [[thread_index_in_simdgroup]],
+    uint simd   [[simdgroup_index_in_threadgroup]],
+    uint n_simd [[simdgroups_per_threadgroup]],
+    uint total  [[threads_per_threadgroup]]
 ) {
-    if (gid >= params.token_count || params.vocab_rows == 0) {
-        return;
+    if (tg_pos >= params.token_count || params.vocab_rows == 0) return;
+
+    threadgroup float smem_val[32];
+    threadgroup uint  smem_idx[32];
+
+    uint base = tg_pos * params.vocab_rows;
+    uint n    = params.vocab_rows;
+
+    float local_val = -INFINITY;
+    uint  local_idx = 0;
+    for (uint i = lid; i < n; i += total) {
+        float v = logits[base + i];
+        if (v > local_val) { local_val = v; local_idx = i; }
     }
 
-    uint base = gid * params.vocab_rows;
-    uint best = 0;
-    float best_score = logits[base];
-    for (uint index = 1; index < params.vocab_rows; index++) {
-        float score = logits[base + index];
-        if (score > best_score) {
-            best_score = score;
-            best = index;
+    float simd_max_v = simd_max(local_val);
+    uint  candidate  = (local_val >= simd_max_v) ? local_idx : UINT_MAX;
+    uint  simd_best  = simd_min(candidate);
+
+    if (lane == 0) { smem_val[simd] = simd_max_v; smem_idx[simd] = simd_best; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) {
+        float best_v = smem_val[0];
+        uint  best_i = smem_idx[0];
+        for (uint s = 1; s < n_simd; s++) {
+            if (smem_val[s] > best_v) { best_v = smem_val[s]; best_i = smem_idx[s]; }
         }
+        best_index[tg_pos] = best_i;
     }
-    best_index[gid] = best;
 }
 
+// Parallel argmax + logprob.  Two stride-loop passes (argmax then logsumexp)
+// within the same dispatch, communicating via threadgroup memory.
+// Dispatch: ARGMAX_TG_SIZE threads, 1 threadgroup.
 kernel void sample_argmax_logprob_f32(
     device const float* logits [[buffer(0)]],
     device uint* best_index [[buffer(1)]],
     device float* best_logprob [[buffer(2)]],
     constant LogitsArgmaxParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]
+    uint gid   [[thread_position_in_grid]],
+    uint lid   [[thread_index_in_threadgroup]],
+    uint lane  [[thread_index_in_simdgroup]],
+    uint simd  [[simdgroup_index_in_threadgroup]],
+    uint n_simd [[simdgroups_per_threadgroup]],
+    uint total [[threads_per_threadgroup]]
 ) {
-    if (gid != 0 || params.element_count == 0) {
-        return;
+    uint n = params.element_count;
+    if (n == 0) return;
+
+    threadgroup float smem_val[32];
+    threadgroup uint  smem_idx[32];
+
+    // Pass 1: parallel argmax
+    float local_val = -INFINITY;
+    uint  local_idx = 0;
+    for (uint i = gid; i < n; i += total) {
+        float v = logits[i];
+        if (v > local_val) { local_val = v; local_idx = i; }
     }
 
-    uint best = 0;
-    float best_score = logits[0];
-    for (uint index = 1; index < params.element_count; index++) {
-        float score = logits[index];
-        if (score > best_score) {
-            best_score = score;
-            best = index;
+    float simd_max_v = simd_max(local_val);
+    uint  candidate  = (local_val >= simd_max_v) ? local_idx : UINT_MAX;
+    uint  simd_best  = simd_min(candidate);
+
+    if (lane == 0) { smem_val[simd] = simd_max_v; smem_idx[simd] = simd_best; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float best_score = smem_val[0];
+    uint  winner_idx = smem_idx[0];
+    if (lid == 0) {
+        for (uint s = 1; s < n_simd; s++) {
+            if (smem_val[s] > best_score) { best_score = smem_val[s]; winner_idx = smem_idx[s]; }
+        }
+        smem_val[0] = best_score;
+        smem_idx[0] = winner_idx;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    best_score = smem_val[0];
+    winner_idx = smem_idx[0];
+
+    // Pass 2: parallel logsumexp
+    float partial_exp = 0.0f;
+    for (uint i = gid; i < n; i += total) {
+        partial_exp += exp(logits[i] - best_score);
+    }
+    float simd_exp = simd_sum(partial_exp);
+    if (lane == 0) smem_val[simd] = simd_exp;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) {
+        float total_exp = 0.0f;
+        for (uint s = 0; s < n_simd; s++) total_exp += smem_val[s];
+        if (isfinite(total_exp) && total_exp > 0.0f) {
+            best_index[0]  = winner_idx;
+            best_logprob[0] = -log(total_exp);
         }
     }
-
-    float normalizer = 0.0f;
-    for (uint index = 0; index < params.element_count; index++) {
-        normalizer += exp(logits[index] - best_score);
-    }
-    if (!isfinite(normalizer) || normalizer <= 0.0f) {
-        return;
-    }
-
-    best_index[0] = best;
-    best_logprob[0] = best_score - best_score - log(normalizer);
 }
 
+
+// Parallel batched argmax + logprob: 1 threadgroup per token, 2-pass within TG.
+// Dispatch: token_count * ARGMAX_TG_SIZE threads, ARGMAX_TG_SIZE per TG.
 kernel void sample_argmax_logprob_batched_f32(
     device const float* logits [[buffer(0)]],
-    device uint* best_index [[buffer(1)]],
+    device uint*  best_index  [[buffer(1)]],
     device float* best_logprob [[buffer(2)]],
     constant BatchedLogitsArgmaxParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]
+    uint tg_pos [[threadgroup_position_in_grid]],
+    uint lid    [[thread_index_in_threadgroup]],
+    uint lane   [[thread_index_in_simdgroup]],
+    uint simd   [[simdgroup_index_in_threadgroup]],
+    uint n_simd [[simdgroups_per_threadgroup]],
+    uint total  [[threads_per_threadgroup]]
 ) {
-    if (gid >= params.token_count || params.vocab_rows == 0) {
-        return;
+    if (tg_pos >= params.token_count || params.vocab_rows == 0) return;
+
+    threadgroup float smem_val[32];
+    threadgroup uint  smem_idx[32];
+
+    uint base = tg_pos * params.vocab_rows;
+    uint n    = params.vocab_rows;
+
+    // Pass 1: parallel argmax
+    float local_val = -INFINITY;
+    uint  local_idx = 0;
+    for (uint i = lid; i < n; i += total) {
+        float v = logits[base + i];
+        if (v > local_val) { local_val = v; local_idx = i; }
     }
 
-    uint base = gid * params.vocab_rows;
-    uint best = 0;
-    float best_score = logits[base];
-    for (uint index = 1; index < params.vocab_rows; index++) {
-        float score = logits[base + index];
-        if (score > best_score) {
-            best_score = score;
-            best = index;
+    float simd_max_v = simd_max(local_val);
+    uint  candidate  = (local_val >= simd_max_v) ? local_idx : UINT_MAX;
+    uint  simd_best  = simd_min(candidate);
+
+    if (lane == 0) { smem_val[simd] = simd_max_v; smem_idx[simd] = simd_best; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float best_score = smem_val[0];
+    uint  winner     = smem_idx[0];
+    if (lid == 0) {
+        for (uint s = 1; s < n_simd; s++) {
+            if (smem_val[s] > best_score) { best_score = smem_val[s]; winner = smem_idx[s]; }
+        }
+        smem_val[0] = best_score;
+        smem_idx[0] = winner;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    best_score = smem_val[0];
+    winner     = smem_idx[0];
+
+    // Pass 2: parallel logsumexp
+    float partial_exp = 0.0f;
+    for (uint i = lid; i < n; i += total) {
+        partial_exp += exp(logits[base + i] - best_score);
+    }
+    float simd_exp = simd_sum(partial_exp);
+    if (lane == 0) smem_val[simd] = simd_exp;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) {
+        float total_exp = 0.0f;
+        for (uint s = 0; s < n_simd; s++) total_exp += smem_val[s];
+        if (isfinite(total_exp) && total_exp > 0.0f) {
+            best_index[tg_pos]  = winner;
+            best_logprob[tg_pos] = -log(total_exp);
         }
     }
-
-    float normalizer = 0.0f;
-    for (uint index = 0; index < params.vocab_rows; index++) {
-        normalizer += exp(logits[base + index] - best_score);
-    }
-    if (!isfinite(normalizer) || normalizer <= 0.0f) {
-        return;
-    }
-
-    best_index[gid] = best;
-    best_logprob[gid] = best_score - best_score - log(normalizer);
 }
 
+// Parallel rms_norm: stride-loop over input, SIMD + threadgroup reduction.
+// Dispatch: NORM_TG_SIZE threads in 1 threadgroup (NORM_TG_SIZE ≤ 1024).
+// Works for any element_count; threads stride through the vector.
 kernel void rms_norm_f32(
-    device const float* input [[buffer(0)]],
+    device const float* input   [[buffer(0)]],
     device const float* weights [[buffer(1)]],
-    device float* output [[buffer(2)]],
+    device float*       output  [[buffer(2)]],
     constant RmsNormParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]
+    uint gid   [[thread_position_in_grid]],
+    uint lane  [[thread_index_in_simdgroup]],
+    uint simd  [[simdgroup_index_in_threadgroup]],
+    uint n_simd [[simdgroups_per_threadgroup]],
+    uint total [[threads_per_threadgroup]]
 ) {
-    if (gid != 0 || params.element_count == 0) {
-        return;
-    }
+    uint n = params.element_count;
+    if (n == 0) return;
 
-    float mean_square = 0.0f;
-    for (uint index = 0; index < params.element_count; index++) {
-        float value = input[index];
-        mean_square += value * value;
-    }
-    mean_square /= float(params.element_count);
+    threadgroup float smem[32];
 
-    float denom = sqrt(mean_square + params.epsilon);
-    if (!isfinite(denom) || denom <= 0.0f) {
-        return;
-    }
+    float sum_sq = 0.0f;
+    for (uint i = gid; i < n; i += total) { float v = input[i]; sum_sq += v * v; }
 
-    for (uint index = 0; index < params.element_count; index++) {
-        float normalized = (input[index] / denom) * (weights[index] + params.weight_offset);
-        output[index] = normalized;
+    sum_sq = simd_sum(sum_sq);
+    if (lane == 0) smem[simd] = sum_sq;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd == 0) {
+        float v = (lane < n_simd) ? smem[lane] : 0.0f;
+        float total_sq = simd_sum(v);
+        if (lane == 0) smem[0] = total_sq;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float mean_sq = smem[0] / float(n);
+    float denom = sqrt(mean_sq + params.epsilon);
+    if (!isfinite(denom) || denom <= 0.0f) return;
+
+    for (uint i = gid; i < n; i += total) {
+        output[i] = (input[i] / denom) * (weights[i] + params.weight_offset);
     }
 }
 
 kernel void rms_norm_f16(
-    device const float* input [[buffer(0)]],
-    device const half* weights [[buffer(1)]],
-    device float* output [[buffer(2)]],
+    device const float* input   [[buffer(0)]],
+    device const half*  weights [[buffer(1)]],
+    device float*       output  [[buffer(2)]],
     constant RmsNormParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]
+    uint gid   [[thread_position_in_grid]],
+    uint lane  [[thread_index_in_simdgroup]],
+    uint simd  [[simdgroup_index_in_threadgroup]],
+    uint n_simd [[simdgroups_per_threadgroup]],
+    uint total [[threads_per_threadgroup]]
 ) {
-    if (gid != 0 || params.element_count == 0) {
-        return;
-    }
+    uint n = params.element_count;
+    if (n == 0) return;
 
-    float mean_square = 0.0f;
-    for (uint index = 0; index < params.element_count; index++) {
-        float value = input[index];
-        mean_square += value * value;
-    }
-    mean_square /= float(params.element_count);
+    threadgroup float smem[32];
 
-    float denom = sqrt(mean_square + params.epsilon);
-    if (!isfinite(denom) || denom <= 0.0f) {
-        return;
-    }
+    float sum_sq = 0.0f;
+    for (uint i = gid; i < n; i += total) { float v = input[i]; sum_sq += v * v; }
 
-    for (uint index = 0; index < params.element_count; index++) {
-        float normalized =
-            (input[index] / denom) * (float(weights[index]) + params.weight_offset);
-        output[index] = normalized;
+    sum_sq = simd_sum(sum_sq);
+    if (lane == 0) smem[simd] = sum_sq;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd == 0) {
+        float v = (lane < n_simd) ? smem[lane] : 0.0f;
+        float total_sq = simd_sum(v);
+        if (lane == 0) smem[0] = total_sq;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float mean_sq = smem[0] / float(n);
+    float denom = sqrt(mean_sq + params.epsilon);
+    if (!isfinite(denom) || denom <= 0.0f) return;
+
+    for (uint i = gid; i < n; i += total) {
+        output[i] = (input[i] / denom) * (float(weights[i]) + params.weight_offset);
     }
 }
 
 kernel void rms_norm_bf16(
-    device const float* input [[buffer(0)]],
+    device const float*  input   [[buffer(0)]],
     device const bfloat* weights [[buffer(1)]],
-    device float* output [[buffer(2)]],
+    device float*        output  [[buffer(2)]],
     constant RmsNormParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]
+    uint gid   [[thread_position_in_grid]],
+    uint lane  [[thread_index_in_simdgroup]],
+    uint simd  [[simdgroup_index_in_threadgroup]],
+    uint n_simd [[simdgroups_per_threadgroup]],
+    uint total [[threads_per_threadgroup]]
 ) {
-    if (gid != 0 || params.element_count == 0) {
-        return;
-    }
+    uint n = params.element_count;
+    if (n == 0) return;
 
-    float mean_square = 0.0f;
-    for (uint index = 0; index < params.element_count; index++) {
-        float value = input[index];
-        mean_square += value * value;
-    }
-    mean_square /= float(params.element_count);
+    threadgroup float smem[32];
 
-    float denom = sqrt(mean_square + params.epsilon);
-    if (!isfinite(denom) || denom <= 0.0f) {
-        return;
-    }
+    float sum_sq = 0.0f;
+    for (uint i = gid; i < n; i += total) { float v = input[i]; sum_sq += v * v; }
 
-    for (uint index = 0; index < params.element_count; index++) {
-        float normalized =
-            (input[index] / denom) * (float(weights[index]) + params.weight_offset);
-        output[index] = normalized;
+    sum_sq = simd_sum(sum_sq);
+    if (lane == 0) smem[simd] = sum_sq;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd == 0) {
+        float v = (lane < n_simd) ? smem[lane] : 0.0f;
+        float total_sq = simd_sum(v);
+        if (lane == 0) smem[0] = total_sq;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float mean_sq = smem[0] / float(n);
+    float denom = sqrt(mean_sq + params.epsilon);
+    if (!isfinite(denom) || denom <= 0.0f) return;
+
+    for (uint i = gid; i < n; i += total) {
+        output[i] = (input[i] / denom) * (float(weights[i]) + params.weight_offset);
     }
 }
 
+// Parallel batched rms_norm: 1 threadgroup per head, stride-loop within TG.
+// Dispatch: NORM_TG_SIZE * head_count total threads, NORM_TG_SIZE per TG.
+// Each TG handles one head, identified by threadgroup_position_in_grid.
 kernel void rms_norm_batched_f32(
-    device const float* input [[buffer(0)]],
+    device const float* input   [[buffer(0)]],
     device const float* weights [[buffer(1)]],
-    device float* output [[buffer(2)]],
+    device float*       output  [[buffer(2)]],
     constant BatchedRmsNormParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]
+    uint tg_idx [[threadgroup_position_in_grid]],
+    uint lid    [[thread_index_in_threadgroup]],
+    uint lane   [[thread_index_in_simdgroup]],
+    uint simd   [[simdgroup_index_in_threadgroup]],
+    uint n_simd [[simdgroups_per_threadgroup]],
+    uint total  [[threads_per_threadgroup]]
 ) {
-    uint element_count = params.head_count * params.head_dim;
-    if (gid >= element_count || params.head_dim == 0) {
-        return;
-    }
+    uint n = params.head_dim;
+    uint head_idx = tg_idx;
+    if (head_idx >= params.head_count || n == 0) return;
 
-    uint head_index = gid / params.head_dim;
-    uint lane_index = gid % params.head_dim;
-    uint head_base = head_index * params.head_dim;
-    float mean_square = 0.0f;
-    for (uint lane = 0; lane < params.head_dim; lane++) {
-        float value = input[head_base + lane];
-        mean_square += value * value;
-    }
-    mean_square /= float(params.head_dim);
+    uint head_base = head_idx * n;
 
-    float denom = sqrt(mean_square + params.epsilon);
-    if (!isfinite(denom) || denom <= 0.0f) {
-        return;
-    }
+    threadgroup float smem[32];
 
-    float normalized =
-        (input[head_base + lane_index] / denom) * (weights[lane_index] + params.weight_offset);
-    output[gid] = normalized;
+    float sum_sq = 0.0f;
+    for (uint i = lid; i < n; i += total) { float v = input[head_base + i]; sum_sq += v * v; }
+
+    sum_sq = simd_sum(sum_sq);
+    if (lane == 0) smem[simd] = sum_sq;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd == 0) {
+        float v = (lane < n_simd) ? smem[lane] : 0.0f;
+        float total_sq = simd_sum(v);
+        if (lane == 0) smem[0] = total_sq;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float mean_sq = smem[0] / float(n);
+    float denom = sqrt(mean_sq + params.epsilon);
+    if (!isfinite(denom) || denom <= 0.0f) return;
+
+    for (uint i = lid; i < n; i += total) {
+        output[head_base + i] = (input[head_base + i] / denom) *
+            (weights[i] + params.weight_offset);
+    }
 }
 
 kernel void rms_norm_batched_f16(
-    device const float* input [[buffer(0)]],
-    device const half* weights [[buffer(1)]],
-    device float* output [[buffer(2)]],
+    device const float* input   [[buffer(0)]],
+    device const half*  weights [[buffer(1)]],
+    device float*       output  [[buffer(2)]],
     constant BatchedRmsNormParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]
+    uint tg_idx [[threadgroup_position_in_grid]],
+    uint lid    [[thread_index_in_threadgroup]],
+    uint lane   [[thread_index_in_simdgroup]],
+    uint simd   [[simdgroup_index_in_threadgroup]],
+    uint n_simd [[simdgroups_per_threadgroup]],
+    uint total  [[threads_per_threadgroup]]
 ) {
-    uint element_count = params.head_count * params.head_dim;
-    if (gid >= element_count || params.head_dim == 0) {
-        return;
-    }
+    uint n = params.head_dim;
+    uint head_idx = tg_idx;
+    if (head_idx >= params.head_count || n == 0) return;
 
-    uint head_index = gid / params.head_dim;
-    uint lane_index = gid % params.head_dim;
-    uint head_base = head_index * params.head_dim;
-    float mean_square = 0.0f;
-    for (uint lane = 0; lane < params.head_dim; lane++) {
-        float value = input[head_base + lane];
-        mean_square += value * value;
-    }
-    mean_square /= float(params.head_dim);
+    uint head_base = head_idx * n;
 
-    float denom = sqrt(mean_square + params.epsilon);
-    if (!isfinite(denom) || denom <= 0.0f) {
-        return;
-    }
+    threadgroup float smem[32];
 
-    float normalized = (input[head_base + lane_index] / denom) *
-        (float(weights[lane_index]) + params.weight_offset);
-    output[gid] = normalized;
+    float sum_sq = 0.0f;
+    for (uint i = lid; i < n; i += total) { float v = input[head_base + i]; sum_sq += v * v; }
+
+    sum_sq = simd_sum(sum_sq);
+    if (lane == 0) smem[simd] = sum_sq;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd == 0) {
+        float v = (lane < n_simd) ? smem[lane] : 0.0f;
+        float total_sq = simd_sum(v);
+        if (lane == 0) smem[0] = total_sq;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float mean_sq = smem[0] / float(n);
+    float denom = sqrt(mean_sq + params.epsilon);
+    if (!isfinite(denom) || denom <= 0.0f) return;
+
+    for (uint i = lid; i < n; i += total) {
+        output[head_base + i] = (input[head_base + i] / denom) *
+            (float(weights[i]) + params.weight_offset);
+    }
 }
 
 kernel void rms_norm_batched_bf16(
-    device const float* input [[buffer(0)]],
+    device const float*  input   [[buffer(0)]],
     device const bfloat* weights [[buffer(1)]],
-    device float* output [[buffer(2)]],
+    device float*        output  [[buffer(2)]],
     constant BatchedRmsNormParams& params [[buffer(3)]],
-    uint gid [[thread_position_in_grid]]
+    uint tg_idx [[threadgroup_position_in_grid]],
+    uint lid    [[thread_index_in_threadgroup]],
+    uint lane   [[thread_index_in_simdgroup]],
+    uint simd   [[simdgroup_index_in_threadgroup]],
+    uint n_simd [[simdgroups_per_threadgroup]],
+    uint total  [[threads_per_threadgroup]]
 ) {
-    uint element_count = params.head_count * params.head_dim;
-    if (gid >= element_count || params.head_dim == 0) {
-        return;
-    }
+    uint n = params.head_dim;
+    uint head_idx = tg_idx;
+    if (head_idx >= params.head_count || n == 0) return;
 
-    uint head_index = gid / params.head_dim;
-    uint lane_index = gid % params.head_dim;
-    uint head_base = head_index * params.head_dim;
-    float mean_square = 0.0f;
-    for (uint lane = 0; lane < params.head_dim; lane++) {
-        float value = input[head_base + lane];
-        mean_square += value * value;
-    }
-    mean_square /= float(params.head_dim);
+    uint head_base = head_idx * n;
 
-    float denom = sqrt(mean_square + params.epsilon);
-    if (!isfinite(denom) || denom <= 0.0f) {
-        return;
-    }
+    threadgroup float smem[32];
 
-    float normalized = (input[head_base + lane_index] / denom) *
-        (float(weights[lane_index]) + params.weight_offset);
-    output[gid] = normalized;
+    float sum_sq = 0.0f;
+    for (uint i = lid; i < n; i += total) { float v = input[head_base + i]; sum_sq += v * v; }
+
+    sum_sq = simd_sum(sum_sq);
+    if (lane == 0) smem[simd] = sum_sq;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd == 0) {
+        float v = (lane < n_simd) ? smem[lane] : 0.0f;
+        float total_sq = simd_sum(v);
+        if (lane == 0) smem[0] = total_sq;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float mean_sq = smem[0] / float(n);
+    float denom = sqrt(mean_sq + params.epsilon);
+    if (!isfinite(denom) || denom <= 0.0f) return;
+
+    for (uint i = lid; i < n; i += total) {
+        output[head_base + i] = (input[head_base + i] / denom) *
+            (float(weights[i]) + params.weight_offset);
+    }
 }
+
 
 kernel void ffn_gate_silu_product_f32(
     device const float* gate [[buffer(0)]],
@@ -1116,6 +1346,10 @@ kernel void linear_attention_decay_f32(
     output[gid] = exp(-exp(a_log[gid]) * softplus);
 }
 
+// Parallel apply_rope_f32: one thread per (head, rotary-pair).
+// Dispatch: (q_heads + k_heads) * (rotary_dim / 2) threads.
+// Threads gid < q_heads*half_dim operate on query; remainder on key.
+// No serial loops; each thread applies one independent 2D rotation.
 kernel void apply_rope_f32(
     device float* query [[buffer(0)]],
     device float* key [[buffer(1)]],
@@ -1124,55 +1358,38 @@ kernel void apply_rope_f32(
     constant RopeDispatchParams& params [[buffer(4)]],
     uint gid [[thread_position_in_grid]]
 ) {
-    if (gid != 0 || params.head_dim == 0 || (params.head_dim % 2) != 0
+    if (params.head_dim == 0 || (params.head_dim % 2) != 0
         || params.rotary_dim == 0 || params.rotary_dim > params.head_dim
         || (params.rotary_dim % 2) != 0) {
         return;
     }
 
     uint half_dim = params.rotary_dim / 2;
-    for (uint head = 0; head < params.query_head_count; head++) {
-        uint head_base = head * params.head_dim;
-        for (uint index = 0; index < half_dim; index++) {
-            float cos_theta = cos_table[index];
-            float sin_theta = sin_table[index];
-            if (params.rope_style == 0) {
-                uint low_index = head_base + index;
-                uint high_index = head_base + half_dim + index;
-                float low_value = query[low_index];
-                float high_value = query[high_index];
-                query[low_index] = low_value * cos_theta - high_value * sin_theta;
-                query[high_index] = low_value * sin_theta + high_value * cos_theta;
-            } else {
-                uint pair_base = head_base + index * 2;
-                float even_value = query[pair_base];
-                float odd_value = query[pair_base + 1];
-                query[pair_base] = even_value * cos_theta - odd_value * sin_theta;
-                query[pair_base + 1] = odd_value * cos_theta + even_value * sin_theta;
-            }
-        }
-    }
+    uint q_total  = params.query_head_count * half_dim;
+    uint k_total  = params.key_head_count   * half_dim;
+    if (gid >= q_total + k_total) return;
 
-    for (uint head = 0; head < params.key_head_count; head++) {
-        uint head_base = head * params.head_dim;
-        for (uint index = 0; index < half_dim; index++) {
-            float cos_theta = cos_table[index];
-            float sin_theta = sin_table[index];
-            if (params.rope_style == 0) {
-                uint low_index = head_base + index;
-                uint high_index = head_base + half_dim + index;
-                float low_value = key[low_index];
-                float high_value = key[high_index];
-                key[low_index] = low_value * cos_theta - high_value * sin_theta;
-                key[high_index] = low_value * sin_theta + high_value * cos_theta;
-            } else {
-                uint pair_base = head_base + index * 2;
-                float even_value = key[pair_base];
-                float odd_value = key[pair_base + 1];
-                key[pair_base] = even_value * cos_theta - odd_value * sin_theta;
-                key[pair_base + 1] = odd_value * cos_theta + even_value * sin_theta;
-            }
-        }
+    bool is_query = (gid < q_total);
+    uint flat     = is_query ? gid : gid - q_total;
+    uint head_idx = flat / half_dim;
+    uint index    = flat % half_dim;
+
+    float cos_theta = cos_table[index];
+    float sin_theta = sin_table[index];
+    device float* vec = is_query ? query : key;
+    uint head_base    = head_idx * params.head_dim;
+
+    if (params.rope_style == 0) {
+        uint low  = head_base + index;
+        uint high = head_base + half_dim + index;
+        float lv = vec[low], hv = vec[high];
+        vec[low]  = lv * cos_theta - hv * sin_theta;
+        vec[high] = lv * sin_theta + hv * cos_theta;
+    } else {
+        uint pb = head_base + index * 2;
+        float ev = vec[pb], ov = vec[pb + 1];
+        vec[pb]     = ev * cos_theta - ov * sin_theta;
+        vec[pb + 1] = ov * cos_theta + ev * sin_theta;
     }
 }
 
@@ -1246,6 +1463,106 @@ kernel void apply_rope_batched_f32(
                 key[pair_base + 1] = odd_value * cos_theta + even_value * sin_theta;
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Q4_K_M GEMV: output[row] = dot(hidden, W_q4[row])
+//
+// Block layout (from llama.cpp ggml-quants.h / ggml-quants.c):
+//   struct block_q4_K {  // 144 bytes per 256 elements
+//     half d;            // [0..1]  super-block scale
+//     half dmin;         // [2..3]  super-block min-scale
+//     uint8 scales[12];  // [4..15] 6-bit packed (scale, min) for 8 sub-blocks
+//     uint8 qs[128];     // [16..143] packed nibbles
+//   };
+//   Nibble layout: qs[j*32 + l] encodes
+//     low nibble  → element[j*64 + l]        (sub-block j*2 + 0)
+//     high nibble → element[j*64 + 32 + l]   (sub-block j*2 + 1)
+//
+// Dequant formula (matches dequantize_row_q4_K in ggml-quants.c):
+//   For group j in {0,1,2,3}  (64 elements each):
+//     get_scale_min_k4(is+0) → d1, m1  (for elements j*64 + 0..31)
+//     get_scale_min_k4(is+1) → d2, m2  (for elements j*64 + 32..63)
+//     low  nibble: w = d1 * (qs & 0xF) - m1
+//     high nibble: w = d2 * (qs >> 4)  - m2
+//
+// Dispatch: n_rows * PROJECTION_SIMD_WIDTH total threads,
+//           threadgroup = PROJECTION_SIMD_WIDTH (32).
+//   gid / 32 = output row;  lane = gid % 32 = position in SIMD group.
+//   Each lane strides over blocks: for (ib = lane; ib < n_blocks; ib += 32).
+// ---------------------------------------------------------------------------
+
+// Exact port of llama.cpp get_scale_min_k4() used in dequantize_row_q4_K.
+static inline void q4k_get_scale_min(int j,
+                                     device const uint8_t* scales,
+                                     thread float* sc,
+                                     thread float* mn,
+                                     float d, float dmin) {
+    uint8_t raw_sc, raw_mn;
+    if (j < 4) {
+        raw_sc = scales[j]     & 63u;
+        raw_mn = scales[j + 4] & 63u;
+    } else {
+        raw_sc = (scales[j + 4] & 0x0Fu) | ((scales[j - 4] >> 6u) << 4u);
+        raw_mn = (scales[j + 4] >> 4u)   | ((scales[j]     >> 6u) << 4u);
+    }
+    *sc = d    * float(raw_sc);
+    *mn = dmin * float(raw_mn);
+}
+
+kernel void decode_projection_q4km(
+    device const float*   hidden   [[buffer(0)]],
+    device const uint8_t* weights  [[buffer(1)]],  // raw block_q4_K bytes, row-major
+    device float*         output   [[buffer(2)]],
+    constant Q4KMProjectionParams& params [[buffer(3)]],
+    uint3  tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]]
+) {
+    // 2 rows per TG (one per simdgroup), 32 threads per simdgroup.
+    // Dispatch: dispatch_thread_groups(ceil(n_rows/2), 1, 1), threadgroup (32, 2, 1).
+    const uint row = tgpig.x * 2u + (uint)sgitg;
+    if (row >= params.n_rows) return;
+
+    const uint n_blocks = params.input_width / 256u;
+    device const uint8_t* row_w = weights + row * n_blocks * 144u;
+
+    float sumf = 0.f;
+
+    // Thread tiisg (0..31) processes 8 elements per block across 4 groups of 64:
+    //   group j: qs[j*32 + tiisg] → lo nibble: element j*64+tiisg (sub-block j*2)
+    //                              → hi nibble: element j*64+32+tiisg (sub-block j*2+1)
+    // After simd_sum, all 32 threads together cover all 256 elements of each block.
+    for (uint ib = 0; ib < n_blocks; ib++) {
+        device const uint8_t* blk    = row_w + ib * 144u;
+        device const uint8_t* scales = blk + 4u;
+        device const uint8_t* qs     = blk + 16u;
+
+        const float d    = float(((device const half*)blk)[0]);
+        const float dmin = float(((device const half*)blk)[1]);
+
+        for (int j = 0; j < 4; j++) {
+            float sc_lo, mn_lo, sc_hi, mn_hi;
+            q4k_get_scale_min(j * 2,     scales, &sc_lo, &mn_lo, d, dmin);
+            q4k_get_scale_min(j * 2 + 1, scales, &sc_hi, &mn_hi, d, dmin);
+
+            uint8_t byte = qs[(uint)j * 32u + (uint)tiisg];
+            float qlo = float(byte & 0xFu);
+            float qhi = float(byte >> 4u);
+
+            uint elem_base = ib * 256u + (uint)j * 64u;
+            float hlo = hidden[elem_base + (uint)tiisg];
+            float hhi = hidden[elem_base + (uint)tiisg + 32u];
+
+            sumf += sc_lo * hlo * qlo - mn_lo * hlo
+                  + sc_hi * hhi * qhi - mn_hi * hhi;
+        }
+    }
+
+    float sum_all = simd_sum(sumf);
+    if (tiisg == 0) {
+        output[row] = sum_all;
     }
 }
 

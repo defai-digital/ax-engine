@@ -1272,7 +1272,8 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
         | EngineSessionError::Compatibility(CompatibilityBackendError::EmptyChoicesInResponse {
             ..
         })
-        | EngineSessionError::UnsupportedHostHardware { .. } => error_response(
+        | EngineSessionError::UnsupportedHostHardware { .. }
+        | EngineSessionError::NativeModelAutoConvert { .. } => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "unsupported_host",
             error.to_string(),
@@ -1281,6 +1282,7 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
             map_native_gguf_export_failed_response(message)
         }
         EngineSessionError::RequestReportInvariantViolation { .. }
+        | EngineSessionError::StreamEndedWithoutResponse { .. }
         | EngineSessionError::Core(_)
         | EngineSessionError::MetalRuntime(_)
         | EngineSessionError::NativeModelGgufExportLaunch { .. } => error_response(

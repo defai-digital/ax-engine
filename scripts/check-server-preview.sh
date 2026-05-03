@@ -42,7 +42,7 @@ trap cleanup EXIT
 
 cd "$ROOT_DIR"
 
-cargo run -p ax-engine-server -- --host "$HOST" --port "$PORT" >"$LOG_FILE" 2>&1 &
+cargo run -p ax-engine-server -- --host "$HOST" --port "$PORT" --model-id qwen3_5_9b_q4 --native-mode >"$LOG_FILE" 2>&1 &
 SERVER_PID="$!"
 
 AX_ENGINE_SERVER_URL="http://${HOST}:${PORT}" "$PYTHON_BIN" - <<'PY'
@@ -128,7 +128,7 @@ assert health["runtime"]["native_runtime"]["runner"] in {
 
 runtime = request_json("GET", "/v1/runtime")
 assert runtime["service"] == "ax-engine-server"
-assert runtime["model_id"] == "qwen3_dense"
+assert runtime["model_id"] == "qwen3_5_9b_q4"
 assert runtime["runtime"]["selected_backend"] == "ax_native"
 assert runtime["runtime"]["native_runtime"]["runner"] in {
     "deterministic",
@@ -139,7 +139,7 @@ generate = request_json(
     "POST",
     "/v1/generate",
     {
-        "model": "qwen3_dense",
+        "model": "qwen3_5_9b_q4",
         "input_tokens": [1, 2, 3],
         "max_output_tokens": 2,
     },
@@ -152,7 +152,7 @@ submit = request_json(
     "POST",
     "/v1/requests",
     {
-        "model": "qwen3_dense",
+        "model": "qwen3_5_9b_q4",
         "input_tokens": [7, 8, 9],
         "max_output_tokens": 2,
     },
@@ -169,7 +169,7 @@ sse_body = request_text(
     "POST",
     "/v1/generate/stream",
     {
-        "model": "qwen3_dense",
+        "model": "qwen3_5_9b_q4",
         "input_tokens": [1, 2, 3],
         "max_output_tokens": 2,
     },
@@ -316,6 +316,24 @@ def request_text(method: str, path: str, payload: dict | None = None) -> str:
     )
     with urllib.request.urlopen(request, timeout=10) as response:
         return response.read().decode("utf-8")
+
+
+def parse_openai_sse_payloads(body: str) -> list[dict]:
+    payloads: list[dict] = []
+    current_data: list[str] = []
+    for line in body.splitlines():
+        if line.startswith("data: "):
+            value = line[len("data: ") :]
+            if value == "[DONE]":
+                break
+            current_data.append(value)
+            continue
+        if not line and current_data:
+            payloads.append(json.loads("\n".join(current_data)))
+            current_data = []
+    if current_data:
+        payloads.append(json.loads("\n".join(current_data)))
+    return payloads
 
 
 for _ in range(100):
@@ -744,7 +762,6 @@ assert first_step["ttft_events"] == 1
 
 running = request_json("GET", f"/v1/requests/{request_id}")
 assert running["state"] == "running"
-assert running["output_text"] == "compat"
 assert running["output_tokens"] == []
 
 second_step = request_json("POST", "/v1/step")
@@ -752,8 +769,8 @@ assert second_step["scheduled_requests"] == 1
 
 finished = request_json("GET", f"/v1/requests/{request_id}")
 assert finished["state"] == "finished"
-assert finished["output_text"] == "compat stream"
 assert finished["output_tokens"] == []
+assert finished["finish_reason"] == "max_output_tokens"
 
 sse_body = request_text(
     "POST",

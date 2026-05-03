@@ -77,6 +77,15 @@ def route_decision(routes: dict, key: str) -> int:
     return int(routes["route"]["crossover_decisions"].get(key, 0))
 
 
+def expected_native_tool_mode(runtime: dict) -> str:
+    runner = runtime.get("native_runtime", {}).get("runner")
+    if runner == "metal_bringup":
+        return "engine_bringup_runtime"
+    if runner == "deterministic":
+        return "engine_deterministic_runtime"
+    raise AssertionError(f"unexpected native runner for replay smoke: {runner!r}")
+
+
 for replay in replays:
     output_root = root / f"{replay['name']}-results"
     output_root.mkdir(parents=True, exist_ok=True)
@@ -101,11 +110,14 @@ for replay in replays:
     trace = artifacts["trace"]
     summary = artifacts["summary"]
 
-    assert environment["software"]["tool_mode"] == "engine_deterministic_runtime"
+    expected_tool_mode = expected_native_tool_mode(environment["runtime"])
+
+    assert environment["software"]["tool_mode"] == expected_tool_mode
     assert environment["runtime"]["selected_backend"] == "ax_native"
     assert environment["runtime"]["support_tier"] == "native_preview"
     assert environment["runtime"]["resolution_policy"] == "strict_native"
     assert environment["benchmark"]["subcommand"] == "replay"
+    assert routes["mode"] == expected_tool_mode
 
     assert metrics["runtime"]["selected_backend"] == "ax_native"
     assert metrics["runtime"]["support_tier"] == "native_preview"
