@@ -1,6 +1,6 @@
 use mlx_sys::{
     MlxArray, MlxDtype,
-    add, as_strided, astype, dequantize, matmul, multiply, quantized_matmul, repeat_axis,
+    add, astype, dequantize, matmul, multiply, quantized_matmul,
     reshape, slice_last_dim, take, transpose, rms_norm, rope, scaled_dot_product_attention,
 };
 
@@ -34,7 +34,6 @@ impl ModelConfig {
         let query_scale = m.query_pre_attn_scalar
             .map(|s| 1.0 / (s as f32).sqrt())
             .unwrap_or_else(|| 1.0 / (head_dim as f32).sqrt());
-        // Fall back to a reasonable SwiGLU default if not set in manifest.
         let intermediate_size = if m.intermediate_size > 0 {
             m.intermediate_size as usize
         } else {
@@ -74,18 +73,13 @@ pub fn layer_forward(
     let (q_raw, k_raw, v_raw) = qkv_project(cfg, w, &normed);
 
     let seq = hidden.shape()[1] as usize;
-    let packed_qkv = w.qkv_packed.is_some();
 
-    // 3. Reshape to BSHD [1, seq, heads, head_dim] — lazy, always contiguous for separate
-    //    Q/K/V projections; may trigger a copy for non-contiguous packed-QKV slices.
+    // 3. Reshape to BSHD [1, seq, heads, head_dim].
     let q = reshape(&q_raw, &[1, seq as i32, cfg.n_heads as i32, cfg.head_dim as i32], None);
     let k = reshape(&k_raw, &[1, seq as i32, cfg.n_kv_heads as i32, cfg.head_dim as i32], None);
     let v = reshape(&v_raw, &[1, seq as i32, cfg.n_kv_heads as i32, cfg.head_dim as i32], None);
 
-    // 4. Optional per-head Q/K norms (Qwen3) applied in BSHD space — *before* the BHSD
-    //    transpose.  Applying after the transpose would require reshaping a non-contiguous
-    //    array, which forces an implicit GPU copy.  In BSHD space all arrays are contiguous
-    //    so the reshape to [heads*seq, head_dim] is free (lazy).
+    // 4. Optional per-head Q/K norms (Qwen3) applied in BSHD space before transpose.
     let q = if let Some(qn) = &w.q_norm {
         let q_f = reshape(&q, &[(cfg.n_heads * seq) as i32, cfg.head_dim as i32], None);
         let q_n = rms_norm(&q_f, Some(qn), 1e-6, None);
@@ -98,45 +92,33 @@ pub fn layer_forward(
         reshape(&k_n, &[1, seq as i32, cfg.n_kv_heads as i32, cfg.head_dim as i32], None)
     } else { k };
 
-    // 5. Create BHSD views [1, heads, seq, head_dim].
-    //    For separate Q/K/V (contiguous BSHD input) use as_strided — one graph node instead
-    //    of reshape+transpose (two nodes).  For packed QKV the slices may be non-contiguous,
-    //    so we fall back to transpose which MLX handles correctly.
-    let (q, k, v) = if !packed_qkv {
-        (bshd_to_bhsd(&q, seq, cfg.n_heads,    cfg.head_dim),
-         bshd_to_bhsd(&k, seq, cfg.n_kv_heads, cfg.head_dim),
-         bshd_to_bhsd(&v, seq, cfg.n_kv_heads, cfg.head_dim))
-    } else {
-        (transpose(&q, &[0, 2, 1, 3], None),
-         transpose(&k, &[0, 2, 1, 3], None),
-         transpose(&v, &[0, 2, 1, 3], None))
-    };
+    // 5. Transpose BSHD → BHSD [1, heads, seq, head_dim].
+    let q = transpose(&q, &[0, 2, 1, 3], None);
+    let k = transpose(&k, &[0, 2, 1, 3], None);
+    let v = transpose(&v, &[0, 2, 1, 3], None);
 
     // 6. RoPE on [1, heads, seq, head_dim].
     let q_rope = rope(&q, cfg.rope_dims as i32, false, Some(cfg.rope_theta), 1.0, token_offset as i32, None, None);
     let k_rope = rope(&k, cfg.rope_dims as i32, false, Some(cfg.rope_theta), 1.0, token_offset as i32, None, None);
 
-    // 7. Update KV cache (stored as [1, n_kv_heads, seq, head_dim]) and get full K/V.
+    // 7. Update KV cache and get full K/V: [1, n_kv_heads, kv_seq, head_dim].
     let (cached_k, cached_v) = cache.append(layer_idx, k_rope, v);
 
-    // 8. Expand GQA heads: [1, n_kv_heads, kv_seq, head_dim] → [1, n_heads, kv_seq, head_dim].
-    let k_exp = expand_kv_heads(cached_k, cfg.n_heads, cfg.n_kv_heads);
-    let v_exp = expand_kv_heads(cached_v, cfg.n_heads, cfg.n_kv_heads);
-
-    // 9. SDPA — causal mask for prefill (seq>1), no mask for decode (seq=1).
+    // 8. SDPA with native GQA support (n_heads may differ from n_kv_heads).
+    //    MLX broadcasts K/V heads internally — no manual expand_kv_heads needed.
     let causal = seq > 1;
-    let attn_sdpa = scaled_dot_product_attention(&q_rope, &k_exp, &v_exp, cfg.query_scale, causal, None);
+    let attn_sdpa = scaled_dot_product_attention(&q_rope, cached_k, cached_v, cfg.query_scale, causal, None);
 
-    // 10. Transpose back: [1, n_heads, seq, head_dim] → [1, seq, n_heads, head_dim].
+    // 9. Transpose back: [1, n_heads, seq, head_dim] → [1, seq, n_heads, head_dim].
     let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
 
-    // 11. Reshape back to [1, seq, hidden].
+    // 10. Reshape back to [1, seq, hidden].
     let attn_flat = reshape(&attn_out, &[1, seq as i32, (cfg.n_heads * cfg.head_dim) as i32], None);
 
-    // 12. Output projection.
+    // 11. Output projection.
     let attn_proj = qw(&attn_flat, &w.o_proj);
 
-    // 13. Optional attention output gate (Qwen3).
+    // 12. Optional attention output gate (Qwen3).
     let attn_out = if cfg.attn_output_gate {
         let gate = mlx_sys::ops::sigmoid(&attn_proj, None);
         multiply(&attn_proj, &gate, None)
@@ -144,16 +126,16 @@ pub fn layer_forward(
         attn_proj
     };
 
-    // 14. Residual.
+    // 13. Residual.
     let hidden = add(hidden, &attn_out, None);
 
-    // 15. FFN norm.
+    // 14. FFN norm.
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), 1e-6, None);
 
-    // 16. SwiGLU FFN.
+    // 15. SwiGLU FFN.
     let ffn_out = ffn_swiglu(cfg, w, &normed2);
 
-    // 17. Residual.
+    // 16. Residual.
     add(&hidden, &ffn_out, None)
 }
 
@@ -168,7 +150,6 @@ pub fn embed_tokens(token_ids: &[u32], embedding: &QuantizedWeight, hidden_size:
         MlxDtype::Uint32,
     );
     if let Some(scales) = &embedding.scales {
-        // Quantized embedding: take packed rows, then dequantize only selected rows.
         let row_w = take(&embedding.weight, &ids_arr, 0, None);
         let row_s = take(scales, &ids_arr, 0, None);
         let row_b = embedding.biases.as_ref().map(|b| take(b, &ids_arr, 0, None));
@@ -178,16 +159,12 @@ pub fn embed_tokens(token_ids: &[u32], embedding: &QuantizedWeight, hidden_size:
         );
         reshape(&flat, &[1, seq, hidden_size as i32], None)
     } else {
-        // Plain fp16/bf16 embedding: direct gather.
         let flat = take(&embedding.weight, &ids_arr, 0, None);
         reshape(&flat, &[1, seq, hidden_size as i32], None)
     }
 }
 
-/// Full forward pass for a sequence of tokens.
-///
-/// Returns logits for the LAST token only: `[vocab_size]` (f32, on GPU/lazy).
-/// Callers must `eval` before reading.
+/// Full forward pass: returns logits for the LAST token only — `[vocab_size]` f32.
 pub fn forward(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -203,7 +180,6 @@ pub fn forward(
     }
 
     // Slice to last token only: [1, seq, hidden] → [1, 1, hidden].
-    // This reduces lm_head compute from O(seq × vocab) to O(vocab).
     let last_hidden = if token_ids.len() > 1 {
         let last_idx: u32 = (token_ids.len() - 1) as u32;
         let idx_arr = MlxArray::from_raw_data(
@@ -217,11 +193,34 @@ pub fn forward(
         hidden
     };
 
-    // Final norm → lm_head: [1, 1, hidden] → [1, 1, vocab] → [vocab].
     let normed = rms_norm(&last_hidden, Some(&weights.final_norm), 1e-6, None);
     let logits = qw(&normed, &weights.lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     reshape(&logits_f32, &[cfg.vocab_size as i32], None)
+}
+
+/// Forward pass returning logits for ALL token positions — `[seq, vocab_size]` f32.
+///
+/// Used by speculative decode verification to check all draft tokens in one pass.
+pub fn forward_all_positions(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+) -> MlxArray {
+    let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
+    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        hidden = layer_forward(cfg, layer_w, &hidden, cache, li, token_offset);
+    }
+
+    let seq = token_ids.len() as i32;
+    let normed = rms_norm(&hidden, Some(&weights.final_norm), 1e-6, None);
+    let logits = qw(&normed, &weights.lm_head);
+    let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+    reshape(&logits_f32, &[seq, cfg.vocab_size as i32], None)
 }
 
 // ── private helpers ──────────────────────────────────────────────────────────
@@ -244,11 +243,6 @@ fn qkv_project(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> (MlxArray, 
     }
 }
 
-/// Matrix multiply: `x @ w` where `w` may be quantized (MLX affine 4-bit).
-///
-/// For quantized weights MLX stores packed uint32 data; `mlx_quantized_matmul`
-/// handles dequantization on-GPU. For bf16/f16 weights we fall back to a
-/// regular matmul after transposing.
 fn qw(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
     if let Some(scales) = &qw.scales {
         quantized_matmul(x, &qw.weight, scales, qw.biases.as_ref(), true, Some(qw.group_size), Some(qw.bits), None)
@@ -276,46 +270,6 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
     qw(&ffn_hidden, &w.down_proj)
 }
 
-/// Expand KV heads for GQA via repeat interleave.
-///
-/// Input:  `[1, n_kv_heads, kv_seq, head_dim]`
-/// Output: `[1, n_heads, kv_seq, head_dim]`
-fn expand_kv_heads(kv: &MlxArray, n_heads: usize, n_kv_heads: usize) -> MlxArray {
-    if n_heads == n_kv_heads {
-        return kv.clone();
-    }
-    let repeats = (n_heads / n_kv_heads) as i32;
-    // repeat_axis repeats each element along axis 1 (interleave semantics):
-    // [kv0, kv1, ...] → [kv0 × repeats, kv1 × repeats, ...]
-    repeat_axis(kv, repeats, 1, None)
-}
-
-/// Create a BHSD view of a contiguous BSHD array using a single as_strided node.
-///
-/// Input:  `[1, seq, heads, head_dim]` contiguous (BSHD)
-/// Output: `[1, heads, seq, head_dim]` non-contiguous view (BHSD)
-///
-/// Replaces reshape + transpose (2 graph nodes) with one node.  The strides
-/// express that element [b, h, s, d] maps to the BSHD position [b, s, h, d]:
-///   flat_offset = b*(seq*heads*hd) + s*(heads*hd) + h*hd + d
-///              = b*S0 + h*S1 + s*S2 + d*1
-///   → S0 = seq*heads*hd, S1 = hd, S2 = heads*hd
-fn bshd_to_bhsd(x: &MlxArray, seq: usize, heads: usize, head_dim: usize) -> MlxArray {
-    as_strided(
-        x,
-        &[1i32, heads as i32, seq as i32, head_dim as i32],
-        &[
-            (seq * heads * head_dim) as i64,
-            head_dim as i64,
-            (heads * head_dim) as i64,
-            1i64,
-        ],
-        0,
-        None,
-    )
-}
-
-/// Slice along the last dimension: out = x[..., start:end].
 fn mlx_slice_last_dim(x: &MlxArray, start: i32, end: i32, _seq: i32) -> MlxArray {
     slice_last_dim(x, start, end, None)
 }

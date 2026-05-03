@@ -8,7 +8,7 @@ use ax_engine_sdk::{
     classify_native_gguf_export_failure_message, CompatibilityBackendError, EngineSession,
     EngineSessionConfig, EngineSessionError, EngineStepReport, GenerateFinishReason,
     GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent, GenerateStreamState,
-    NativeGgufExportFailureKind, RuntimeReport, SelectedBackend, SessionRequestReport,
+    NativeGgufExportFailureKind, RuntimeReport, SessionRequestReport,
     StatelessGenerateContext,
 };
 use axum::extract::{DefaultBodyLimit, Path, State};
@@ -1091,7 +1091,7 @@ fn render_openai_chat_content(
                     error_response(
                         StatusCode::BAD_REQUEST,
                         "invalid_request",
-                        "text chat content parts require a text field",
+                        "text chat content parts require a text field".to_string(),
                     )
                 })?;
                 rendered.push_str(text);
@@ -1157,11 +1157,11 @@ fn openai_finish_reason(finish_reason: Option<GenerateFinishReason>) -> Option<&
 fn validate_openai_compatibility_backend(
     state: &AppState,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    if state.runtime_report.selected_backend == SelectedBackend::AxNative {
+    if state.runtime_report.selected_backend.is_native() {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
-            "OpenAI-compatible preview endpoints require a compatibility backend because AX native preview is token-based in this repository".to_string(),
+            "OpenAI-compatible endpoints require a compatibility backend; native backends use tokenized input".to_string(),
         ));
     }
     Ok(())
@@ -1285,6 +1285,7 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
         | EngineSessionError::StreamEndedWithoutResponse { .. }
         | EngineSessionError::Core(_)
         | EngineSessionError::MetalRuntime(_)
+        | EngineSessionError::AxNativeNotSupported
         | EngineSessionError::NativeModelGgufExportLaunch { .. } => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "engine_error",
@@ -1542,7 +1543,6 @@ mod tests {
             cache_group_id: 0,
             block_size_tokens: 16,
             total_blocks: 1024,
-            native_mode: false,
             mlx: false,
             mlx_native: false,
             support_tier: args::PreviewSupportTier::Compatibility,
@@ -2693,7 +2693,7 @@ sys.stdout.write(f"mlx::{model}::{prompt}")
             json.get("error")
                 .and_then(|value| value.get("message"))
                 .and_then(Value::as_str),
-            Some("OpenAI-compatible preview endpoints require a compatibility backend because AX native preview is token-based in this repository")
+            Some("OpenAI-compatible endpoints require a compatibility backend; native backends use tokenized input")
         );
     }
 

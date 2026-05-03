@@ -119,6 +119,7 @@ impl GenerateRouteReport {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GenerateStatus {
+    Pending,
     Finished,
     Cancelled,
     Failed,
@@ -641,8 +642,8 @@ mod tests {
             },
             runtime: RuntimeReport {
                 selected_backend: SelectedBackend::AxNative,
-                support_tier: SupportTier::NativeExperimental,
-                resolution_policy: ResolutionPolicy::NativeStrict,
+                support_tier: SupportTier::NativePreview,
+                resolution_policy: ResolutionPolicy::StrictNative,
                 capabilities: CapabilityReport::native_preview(),
                 fallback_reason: None,
                 host: Default::default(),

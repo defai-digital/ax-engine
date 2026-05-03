@@ -23,6 +23,27 @@ impl MlxStream {
             }
         }
     }
+
+    /// Create a new dedicated GPU stream.
+    ///
+    /// Unlike `default_gpu()`, this allocates a fresh stream that is not shared
+    /// with other callers. Setting it as default via `set_as_default()` avoids
+    /// implicit cross-stream synchronization that the shared default stream can
+    /// incur — this mirrors `mx.new_stream(mx.default_device())` in mlx_lm.
+    pub fn new_gpu() -> Self {
+        unsafe {
+            // MLX_GPU = 1 (enum mlx_device_type_: MLX_CPU=0, MLX_GPU=1)
+            let dev = ffi::mlx_device_new_type(1, 0);
+            let stream = ffi::mlx_stream_new_device(dev);
+            ffi::mlx_device_free(dev);
+            Self { inner: stream, owns: true }
+        }
+    }
+
+    /// Set this stream as the process-wide default for all MLX operations.
+    pub fn set_as_default(&self) {
+        unsafe { ffi::mlx_set_default_stream(self.inner); }
+    }
 }
 
 impl Drop for MlxStream {

@@ -238,118 +238,9 @@ fn handle_autotune(args: &[String]) -> Result<(), CliError> {
     ensure_output_root(&autotune_args.output_root)?;
     let manifest = load_manifest(&autotune_args.manifest_path)?;
     validate_manifest(&manifest, ManifestClass::Scenario)?;
-    if manifest.runtime.selected_backend != SelectedBackend::AxNative {
-        return Err(CliError::Contract(
-            "autotune currently supports ax_native scenario manifests only".to_string(),
-        ));
-    }
-
-    let started_at_unix_s = unix_timestamp_secs()?;
-    let result_dir = autotune_args.output_root.join(format!(
-        "{}-{}-autotune",
-        started_at_unix_s,
-        sanitize_component(&manifest.id)
-    ));
-    let trials_dir = result_dir.join("trials");
-    fs::create_dir_all(&trials_dir).map_err(|error| {
-        CliError::Runtime(format!(
-            "failed to create autotune trials directory {}: {error}",
-            trials_dir.display()
-        ))
-    })?;
-
-    let search_space = resolve_autotune_search_space(&manifest, &autotune_args);
-    let candidates = autotune_candidate_configs(&manifest, &search_space);
-    let warm_start_history = if autotune_args.disable_history {
-        AutotuneWarmStartHistory::default()
-    } else {
-        load_autotune_warm_start_history(&autotune_args.output_root, &manifest, &search_space)?
-    };
-    if candidates.is_empty() {
-        return Err(CliError::Contract(
-            "autotune search space resolved to zero candidates".to_string(),
-        ));
-    }
-    let remaining_candidate_count = candidates
-        .iter()
-        .filter(|candidate| {
-            !warm_start_history
-                .trials
-                .iter()
-                .any(|trial| trial.candidate == **candidate)
-        })
-        .count();
-    let iteration_budget = autotune_args.iterations.min(remaining_candidate_count);
-    let mut trials = Vec::with_capacity(iteration_budget);
-
-    for iteration in 0..iteration_budget {
-        let mut observed_trials = warm_start_history.trials.clone();
-        observed_trials.extend(trials.iter().cloned());
-        let selection = select_next_autotune_candidate(
-            &candidates,
-            &search_space,
-            &observed_trials,
-            autotune_args.exploration_weight,
-        );
-        let trial = execute_autotune_trial(
-            &autotune_args.manifest_path,
-            &manifest,
-            &trials_dir,
-            iteration,
-            &candidates[selection.candidate_index],
-            selection.diagnostics,
-            &observed_trials,
-            started_at_unix_s,
-        )?;
-        trials.push(trial);
-    }
-
-    let autotune_result_json = build_autotune_result_json(
-        &autotune_args.manifest_path,
-        &manifest,
-        &autotune_args,
-        &search_space,
-        &warm_start_history,
-        &trials,
-    );
-    write_json_file(&result_dir.join("autotune.json"), &autotune_result_json)?;
-    fs::write(
-        result_dir.join("summary.md"),
-        build_autotune_summary_markdown(
-            &autotune_args.manifest_path,
-            &manifest,
-            &search_space,
-            &warm_start_history,
-            &trials,
-        ),
-    )
-    .map_err(|error| {
-        CliError::Runtime(format!(
-            "failed to write autotune summary.md in {}: {error}",
-            result_dir.display()
-        ))
-    })?;
-    write_autotune_history_index_incremental(
-        &autotune_args.output_root,
-        &result_dir,
-        &autotune_result_json,
-    )?;
-
-    let best_trial = best_autotune_trial(trials.iter().chain(warm_start_history.trials.iter()))
-        .ok_or_else(|| {
-            CliError::Runtime("autotune completed without any recorded trials".to_string())
-        })?;
-    println!(
-        "ax-bench autotune\nmanifest={}\noutput_root={}\nresult_dir={}\niterations={}\nbest_trial={}\nbest_score={:.3}",
-        autotune_args.manifest_path.display(),
-        autotune_args.output_root.display(),
-        result_dir.display(),
-        trials.len(),
-        best_trial.label(),
-        best_trial.score
-    );
-
-    Ok(())
+    Err(CliError::Contract(
+        "autotune is not supported; ax_native mode has been removed".to_string(),
+    ))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -623,7 +514,6 @@ struct InferenceArgs {
     sampling: GenerateSampling,
     metadata: Option<String>,
     deterministic: bool,
-    native_mode: bool,
     mlx: bool,
     mlx_native: bool,
     support_tier: SupportTier,
@@ -649,7 +539,6 @@ impl Default for InferenceArgs {
             sampling: GenerateSampling::default(),
             metadata: None,
             deterministic: true,
-            native_mode: false,
             mlx: false,
             mlx_native: false,
             support_tier: SupportTier::Compatibility,
@@ -734,7 +623,6 @@ fn parse_inference_args(args: &[String], command: &str) -> Result<InferenceArgs,
                     "--deterministic",
                 )?
             }
-            "--native-mode" => parsed.native_mode = true,
             "--mlx" => parsed.mlx = true,
             "--mlx-native" => parsed.mlx_native = true,
             "--support-tier" => {
@@ -805,13 +693,13 @@ fn parse_inference_args(args: &[String], command: &str) -> Result<InferenceArgs,
         )));
     }
 
-    let exclusive_count = [parsed.native_mode, parsed.mlx, parsed.mlx_native]
+    let exclusive_count = [parsed.mlx, parsed.mlx_native]
         .iter()
         .filter(|&&v| v)
         .count();
     if exclusive_count > 1 {
         return Err(CliError::Usage(
-            "--native-mode, --mlx, and --mlx-native are mutually exclusive".to_string(),
+            "--mlx and --mlx-native are mutually exclusive".to_string(),
         ));
     }
 
@@ -931,14 +819,6 @@ fn compatibility_backend_kind_from_label(value: &str) -> Result<CompatibilityBac
 fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliError> {
     let backend_request = if args.mlx_native {
         PreviewBackendRequest::shipping_mlx_native()
-    } else if args.native_mode {
-        let (llama_fallback_cli_path, llama_fallback_model_path, llama_fallback_server_url) =
-            inference_native_mode_llama_fallback_target(args);
-        PreviewBackendRequest::shipping_native_with_llama_fallback(
-            llama_fallback_cli_path,
-            llama_fallback_model_path,
-            llama_fallback_server_url,
-        )
     } else if args.mlx {
         PreviewBackendRequest::shipping_mlx_with_llama_fallback(
             args.compat_cli_path.clone(),
@@ -983,24 +863,6 @@ fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliErr
 
     EngineSession::new(config)
         .map_err(|error| CliError::Runtime(format!("failed to start AX Engine session: {error}")))
-}
-
-fn inference_native_mode_llama_fallback_target(
-    args: &InferenceArgs,
-) -> (PathBuf, Option<PathBuf>, Option<String>) {
-    if args.llama_fallback_model_path.is_some() || args.llama_fallback_server_url.is_some() {
-        (
-            args.llama_fallback_cli_path.clone(),
-            args.llama_fallback_model_path.clone(),
-            args.llama_fallback_server_url.clone(),
-        )
-    } else {
-        (
-            args.compat_cli_path.clone(),
-            args.compat_model_path.clone(),
-            args.compat_server_url.clone(),
-        )
-    }
 }
 
 fn run_inference_generate(args: &InferenceArgs) -> Result<GenerateResponse, CliError> {
@@ -1171,6 +1033,7 @@ fn request_state_label(state: SessionRequestState) -> &'static str {
 
 fn generate_status_label(status: GenerateStatus) -> &'static str {
     match status {
+        GenerateStatus::Pending => "pending",
         GenerateStatus::Finished => "finished",
         GenerateStatus::Cancelled => "cancelled",
         GenerateStatus::Failed => "failed",
@@ -4009,6 +3872,7 @@ fn run_compatibility_blocking_scenario_workload(
         observation.merge_route_metadata(&route_metadata);
 
         let final_state = match response.status {
+            GenerateStatus::Pending => SessionRequestState::Running,
             GenerateStatus::Finished => SessionRequestState::Finished,
             GenerateStatus::Cancelled => SessionRequestState::Cancelled,
             GenerateStatus::Failed => SessionRequestState::Failed,
@@ -7435,15 +7299,6 @@ fn classify_contract_failure(
 fn contract_failure_tool_mode(manifest: &BenchmarkManifest) -> &'static str {
     if let Ok(runtime) = runtime_config_from_manifest(manifest) {
         runtime.tool_mode()
-    } else if manifest.runtime.selected_backend == SelectedBackend::AxNative {
-        if EngineSessionConfig::default()
-            .native_runtime_artifacts_dir()
-            .is_some()
-        {
-            "engine_bringup_runtime"
-        } else {
-            "engine_deterministic_runtime"
-        }
     } else if matches!(
         manifest.runtime.backend_adapter.as_ref(),
         Some(adapter) if adapter.supports_stepwise_benchmark()
@@ -10045,9 +9900,6 @@ fn runtime_backend_adapter_for_report<'a>(
     let selected_backend = actual_runtime
         .map(|report| report.selected_backend)
         .unwrap_or(runtime.resolved_backend.selected_backend);
-    if selected_backend == SelectedBackend::AxNative {
-        return None;
-    }
 
     runtime
         .backend_adapter
@@ -12737,6 +12589,7 @@ mod tests {
             vocab_size: 151936,
             tie_word_embeddings: false,
             rope_theta: None,
+            rope_theta_swa: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
             attn_output_gate: false,
@@ -12903,6 +12756,7 @@ mod tests {
             vocab_size: 5,
             tie_word_embeddings: false,
             rope_theta: None,
+            rope_theta_swa: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
             attn_output_gate: false,
@@ -17446,349 +17300,6 @@ print(json.dumps({
         assert!(result.observation.decode_tokens > 0);
         assert_eq!(result.observation.final_requests.len(), 1);
         assert_eq!(result.observation.final_requests[0].state, "Finished");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn native_scenario_workload_reaches_real_model_forward_with_projection_fixture() {
-        let Some(build_dir) = compiled_repo_metal_build_dir() else {
-            return;
-        };
-        let model_dir = write_projection_native_model_fixture();
-        let observation = run_scenario_workload(
-            RuntimeConfig {
-                deterministic: true,
-                allow_deterministic_native_fallback: false,
-                max_batch_tokens: 32,
-                block_size_tokens: 16,
-                kv_total_blocks: Some(32),
-                flags: RuntimeFlags::default(),
-                backend_policy: BackendPolicy::new(ResolutionPolicy::StrictNative),
-                resolved_backend: ResolvedBackend::new(
-                    SelectedBackend::AxNative,
-                    SupportTier::NativePreview,
-                    None,
-                ),
-                backend_adapter: None,
-                native_runtime_artifacts_dir: Some(build_dir),
-                native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
-                native_model_artifacts_dir: Some(model_dir.clone()),
-                native_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
-            },
-            vec![SyntheticRequestSpec {
-                external_id: "native-projection-smoke".to_string(),
-                request_id: RequestId(1),
-                arrival_sequence: SequenceNo(1),
-                model_family: "qwen3_dense".to_string(),
-                prompt_token_target: 4,
-                input_tokens: vec![1, 2, 3, 4],
-                input_text: None,
-                max_output_tokens: 1,
-                sampling_params: SamplingParams::default(),
-                metadata: None,
-            }],
-        )
-        .expect("native scenario workload should execute with preserved native artifacts");
-
-        // With chunked-prefill, a single-output request completes in the prefill step.
-        assert!(observation.route_metadata.execution_plan.is_some());
-        assert!(observation.route_metadata.attention_route.is_some());
-        assert!(route_decision(&observation, "metal_dispatch_model_conditioned_inputs") > 0);
-        assert_eq!(
-            route_decision(&observation, "metal_dispatch_numeric_scaffold_only"),
-            0
-        );
-        assert_eq!(
-            route_decision(
-                &observation,
-                "metal_dispatch_prefix_cpu_reference_dispatch_count"
-            ),
-            0
-        );
-        assert_eq!(
-            route_decision(
-                &observation,
-                "metal_dispatch_prefix_cpu_projection_row_count"
-            ),
-            0
-        );
-        assert_eq!(
-            route_decision(
-                &observation,
-                "metal_dispatch_prefix_cpu_rms_norm_element_count"
-            ),
-            0
-        );
-        assert_eq!(
-            route_decision(
-                &observation,
-                "metal_dispatch_prefix_cpu_ffn_activation_element_count"
-            ),
-            0
-        );
-        assert!(
-            route_decision(
-                &observation,
-                "metal_dispatch_runtime_real_model_tensor_inputs"
-            ) > 0
-        );
-        assert!(
-            route_decision(
-                &observation,
-                "metal_dispatch_runtime_complete_model_forward_supported"
-            ) > 0
-        );
-        // With chunked prefill, single-output requests may complete during the
-        // prefill step. Decode-specific assertions are conditional.
-        let has_decode_tokens =
-            route_decision(&observation, "metal_dispatch_direct_decode_tokens") > 0;
-        if has_decode_tokens {
-            assert!(
-                route_decision(
-                    &observation,
-                    "metal_dispatch_direct_decode_native_projection_row_count"
-                ) > 0
-            );
-            assert_eq!(
-                route_decision(
-                    &observation,
-                    "metal_dispatch_direct_decode_cpu_projection_row_count"
-                ),
-                0
-            );
-            assert_eq!(
-                route_decision(
-                    &observation,
-                    "metal_dispatch_direct_decode_cpu_rms_norm_element_count"
-                ),
-                0
-            );
-            assert_eq!(
-                route_decision(
-                    &observation,
-                    "metal_dispatch_direct_decode_cpu_ffn_activation_element_count"
-                ),
-                0
-            );
-        }
-        assert_eq!(observation.final_requests.len(), 1);
-        assert_eq!(observation.final_requests[0].state, "Finished");
-        assert!(!observation.final_requests[0].generated_tokens.is_empty());
-
-        let _ = fs::remove_dir_all(model_dir);
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn native_scenario_workload_reaches_multilayer_native_prefix_and_decode_without_cpu_fallback() {
-        let Some(build_dir) = compiled_repo_metal_build_dir() else {
-            return;
-        };
-        let model_dir = write_multilayer_direct_decode_native_model_fixture();
-        let observation = run_scenario_workload(
-            RuntimeConfig {
-                deterministic: true,
-                allow_deterministic_native_fallback: false,
-                max_batch_tokens: 32,
-                block_size_tokens: 16,
-                kv_total_blocks: Some(32),
-                flags: RuntimeFlags::default(),
-                backend_policy: BackendPolicy::new(ResolutionPolicy::StrictNative),
-                resolved_backend: ResolvedBackend::new(
-                    SelectedBackend::AxNative,
-                    SupportTier::NativePreview,
-                    None,
-                ),
-                backend_adapter: None,
-                native_runtime_artifacts_dir: Some(build_dir),
-                native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
-                native_model_artifacts_dir: Some(model_dir.clone()),
-                native_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
-            },
-            vec![SyntheticRequestSpec {
-                external_id: "native-multilayer-smoke".to_string(),
-                request_id: RequestId(1),
-                arrival_sequence: SequenceNo(1),
-                model_family: "qwen3_dense".to_string(),
-                prompt_token_target: 4,
-                input_tokens: vec![1, 2, 3, 4],
-                input_text: None,
-                max_output_tokens: 1,
-                sampling_params: SamplingParams::default(),
-                metadata: None,
-            }],
-        )
-        .expect("native multilayer scenario workload should execute");
-
-        assert!(observation.route_metadata.execution_plan.is_some());
-        assert!(observation.route_metadata.attention_route.is_some());
-        assert!(route_decision(&observation, "metal_dispatch_model_conditioned_inputs") > 0);
-        assert!(
-            route_decision(
-                &observation,
-                "metal_dispatch_prefix_layers_native_attention"
-            ) > 0
-        );
-        assert_eq!(
-            route_decision(
-                &observation,
-                "metal_dispatch_prefix_cpu_reference_dispatch_count"
-            ),
-            0
-        );
-        assert_eq!(
-            route_decision(
-                &observation,
-                "metal_dispatch_prefix_cpu_projection_row_count"
-            ),
-            0
-        );
-        assert_eq!(
-            route_decision(
-                &observation,
-                "metal_dispatch_prefix_cpu_rms_norm_element_count"
-            ),
-            0
-        );
-        assert_eq!(
-            route_decision(
-                &observation,
-                "metal_dispatch_prefix_cpu_ffn_activation_element_count"
-            ),
-            0
-        );
-        assert!(
-            route_decision(
-                &observation,
-                "metal_dispatch_runtime_complete_model_forward_supported"
-            ) > 0
-        );
-        // With chunked prefill, single-output requests may complete during the
-        // prefill step. Decode-specific assertions are conditional.
-        let has_decode_tokens =
-            route_decision(&observation, "metal_dispatch_direct_decode_tokens") > 0;
-        if has_decode_tokens {
-            assert!(
-                route_decision(
-                    &observation,
-                    "metal_dispatch_direct_decode_native_projection_row_count"
-                ) > 0
-            );
-            assert_eq!(
-                route_decision(
-                    &observation,
-                    "metal_dispatch_direct_decode_cpu_projection_row_count"
-                ),
-                0
-            );
-            assert_eq!(
-                route_decision(
-                    &observation,
-                    "metal_dispatch_direct_decode_cpu_rms_norm_element_count"
-                ),
-                0
-            );
-            assert_eq!(
-                route_decision(
-                    &observation,
-                    "metal_dispatch_direct_decode_cpu_ffn_activation_element_count"
-                ),
-                0
-            );
-        }
-        assert_eq!(observation.final_requests.len(), 1);
-        assert_eq!(observation.final_requests[0].state, "Finished");
-        assert!(!observation.final_requests[0].generated_tokens.is_empty());
-
-        let _ = fs::remove_dir_all(model_dir);
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn native_scenario_workload_batches_direct_decode_logits_for_multiple_requests() {
-        let Some(build_dir) = compiled_repo_metal_build_dir() else {
-            return;
-        };
-        let model_dir = write_projection_native_model_fixture();
-        let observation = run_scenario_workload(
-            RuntimeConfig {
-                deterministic: true,
-                allow_deterministic_native_fallback: false,
-                max_batch_tokens: 32,
-                block_size_tokens: 16,
-                kv_total_blocks: Some(32),
-                flags: RuntimeFlags::default(),
-                backend_policy: BackendPolicy::new(ResolutionPolicy::StrictNative),
-                resolved_backend: ResolvedBackend::new(
-                    SelectedBackend::AxNative,
-                    SupportTier::NativePreview,
-                    None,
-                ),
-                backend_adapter: None,
-                native_runtime_artifacts_dir: Some(build_dir),
-                native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
-                native_model_artifacts_dir: Some(model_dir.clone()),
-                native_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
-            },
-            vec![
-                SyntheticRequestSpec {
-                    external_id: "native-batched-decode-a".to_string(),
-                    request_id: RequestId(1),
-                    arrival_sequence: SequenceNo(1),
-                    model_family: "qwen3_dense".to_string(),
-                    prompt_token_target: 4,
-                    input_tokens: vec![1, 2, 3, 4],
-                    input_text: None,
-                    max_output_tokens: 1,
-                    sampling_params: SamplingParams::default(),
-                    metadata: None,
-                },
-                SyntheticRequestSpec {
-                    external_id: "native-batched-decode-b".to_string(),
-                    request_id: RequestId(2),
-                    arrival_sequence: SequenceNo(2),
-                    model_family: "qwen3_dense".to_string(),
-                    prompt_token_target: 4,
-                    input_tokens: vec![1, 2, 3, 4],
-                    input_text: None,
-                    max_output_tokens: 1,
-                    sampling_params: SamplingParams::default(),
-                    metadata: None,
-                },
-            ],
-        )
-        .expect("native batched decode scenario workload should execute");
-
-        // With chunked prefill, single-output requests may complete during the
-        // prefill step without a separate batched decode step.
-        assert!(
-            route_decision(&observation, "metal_dispatch_model_conditioned_inputs") > 0
-                || route_decision(&observation, "metal_dispatch_real_model_forward") > 0
-        );
-        let has_decode_tokens =
-            route_decision(&observation, "metal_dispatch_direct_decode_tokens") > 0;
-        if has_decode_tokens {
-            assert!(
-                route_decision(
-                    &observation,
-                    "metal_dispatch_direct_decode_native_projection_row_count"
-                ) > 0
-            );
-            assert_eq!(
-                route_decision(
-                    &observation,
-                    "metal_dispatch_direct_decode_cpu_projection_row_count"
-                ),
-                0
-            );
-        }
-        assert_eq!(observation.final_requests.len(), 2);
-        assert!(observation
-            .final_requests
-            .iter()
-            .all(|request| request.state == "Finished"));
-
-        let _ = fs::remove_dir_all(model_dir);
     }
 
     #[test]

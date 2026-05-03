@@ -722,27 +722,19 @@ pub fn resolve_preview_backend(
             })
         }
         PreviewBackendMode::ShippingNativeWithLlamaFallback => {
-            let fallback_compatibility_backend =
-                if shipping_native_request_has_llama_fallback_target(&request) {
-                    Some(resolve_llama_fallback_backend(
-                        request.llama_fallback_cli_path,
-                        request.llama_fallback_model_path,
-                        request.llama_fallback_server_url,
-                    )?)
-                } else {
-                    None
-                };
-            let backend_policy = if fallback_compatibility_backend.is_some() {
-                BackendPolicy::prefer_native()
-            } else {
-                BackendPolicy::strict_native()
-            };
-
+            let compatibility_backend = resolve_llama_fallback_backend(
+                request.llama_fallback_cli_path,
+                request.llama_fallback_model_path,
+                request.llama_fallback_server_url,
+            )?;
             Ok(PreviewBackendResolution {
-                backend_policy,
-                resolved_backend: ResolvedBackend::native_preview(),
-                compatibility_backend: None,
-                fallback_compatibility_backend,
+                backend_policy: BackendPolicy::allow_compat(),
+                resolved_backend: ResolvedBackend::compatibility(
+                    SelectedBackend::LlamaCpp,
+                    "native mode bypassed to llama.cpp",
+                ),
+                compatibility_backend: Some(compatibility_backend),
+                fallback_compatibility_backend: None,
             })
         }
         PreviewBackendMode::ShippingMlxNative => Ok(PreviewBackendResolution {
@@ -875,9 +867,6 @@ fn resolve_llama_fallback_backend(
     )))
 }
 
-fn shipping_native_request_has_llama_fallback_target(request: &PreviewBackendRequest) -> bool {
-    request.llama_fallback_model_path.is_some() || request.llama_fallback_server_url.is_some()
-}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RuntimeReport {
@@ -1203,23 +1192,20 @@ mod tests {
     }
 
     #[test]
-    fn shipping_native_resolution_allows_native_mode_without_llama_fallback_target() {
-        let resolution = resolve_preview_backend(
+    fn shipping_native_resolution_requires_llama_fallback_target() {
+        let error = resolve_preview_backend(
             PreviewBackendRequest::shipping_native_with_llama_fallback("llama-cli", None, None),
         )
-        .expect("native shipping resolution without fallback target should succeed");
+        .expect_err("native shipping resolution without fallback target should fail");
 
-        assert_eq!(resolution.backend_policy, BackendPolicy::strict_native());
         assert_eq!(
-            resolution.resolved_backend,
-            ResolvedBackend::native_preview()
+            error,
+            PreviewBackendResolutionError::MissingLlamaFallbackTarget
         );
-        assert!(resolution.compatibility_backend.is_none());
-        assert!(resolution.fallback_compatibility_backend.is_none());
     }
 
     #[test]
-    fn shipping_native_resolution_keeps_llama_fallback_when_target_is_configured() {
+    fn shipping_native_resolution_bypasses_to_llama_cpp_when_target_is_configured() {
         let resolution =
             resolve_preview_backend(PreviewBackendRequest::shipping_native_with_llama_fallback(
                 "llama-cli",
@@ -1228,17 +1214,21 @@ mod tests {
             ))
             .expect("native shipping resolution with fallback target should succeed");
 
-        assert_eq!(resolution.backend_policy, BackendPolicy::prefer_native());
+        assert_eq!(resolution.backend_policy, BackendPolicy::allow_compat());
         assert_eq!(
             resolution.resolved_backend,
-            ResolvedBackend::native_preview()
+            ResolvedBackend::compatibility(
+                SelectedBackend::LlamaCpp,
+                "native mode bypassed to llama.cpp",
+            )
         );
         assert_eq!(
-            resolution.fallback_compatibility_backend,
+            resolution.compatibility_backend,
             Some(CompatibilityBackendConfig::LlamaCpp(LlamaCppConfig::new(
                 "llama-cli",
                 "/tmp/model.gguf",
             )))
         );
+        assert!(resolution.fallback_compatibility_backend.is_none());
     }
 }

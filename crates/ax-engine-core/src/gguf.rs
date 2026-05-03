@@ -376,9 +376,15 @@ fn layer_tensor_role(suffix: &str) -> Option<NativeTensorRole> {
         "attn_v.weight" => Some(NativeTensorRole::AttentionV),
         "attn_output.weight" => Some(NativeTensorRole::AttentionO),
         // FFN (shared between dense and linear attention layers)
-        "ffn_norm.weight" | "post_attention_layernorm.weight" | "post_attention_norm.weight" => {
+        "ffn_norm.weight" | "post_attention_layernorm.weight" => {
             Some(NativeTensorRole::FfnNorm)
         }
+        // post_attention_norm.weight is the post-attn norm in Gemma4 (AttentionPostNorm).
+        // For Qwen35 it serves as the pre-FFN norm (no separate ffn_norm.weight); a
+        // post-processing step below re-classifies it to FfnNorm in that case.
+        "post_attention_norm.weight" => Some(NativeTensorRole::AttentionPostNorm),
+        // post_ffw_norm.weight is the post-FFN norm in Gemma4.
+        "post_ffw_norm.weight" => Some(NativeTensorRole::FfnPostNorm),
         "ffn_gate.weight" => Some(NativeTensorRole::FfnGate),
         "ffn_up.weight" => Some(NativeTensorRole::FfnUp),
         "ffn_down.weight" => Some(NativeTensorRole::FfnDown),
@@ -494,6 +500,8 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
         .unwrap_or_else(|| hidden_size / attention_head_count.max(1));
 
     let rope_theta = get_arch_float("rope.freq_base").and_then(f64_to_u32);
+    // SWA rope theta for ISWA models (e.g. Gemma4 uses 10000.0 for SWA layers).
+    let rope_theta_swa = get_arch_float("rope.freq_base_swa").and_then(f64_to_u32);
 
     let partial_rotary_factor = get_arch_uint("rope.dimension_count")
         .filter(|&dim| attention_head_dim > 0 && dim < attention_head_dim as u64)
@@ -580,6 +588,26 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
 
     tensors.sort_by_key(|s| (s.layer_index, format!("{:?}", s.role)));
 
+    // Post-process AttentionPostNorm → FfnNorm reclassification.
+    // post_attention_norm.weight is initially parsed as AttentionPostNorm. For models like
+    // Qwen35 that have no separate ffn_norm.weight, it acts as the pre-FFN norm instead.
+    {
+        let layers_with_ffn_norm: std::collections::HashSet<u32> = tensors
+            .iter()
+            .filter(|t| t.role == NativeTensorRole::FfnNorm)
+            .filter_map(|t| t.layer_index)
+            .collect();
+        for t in tensors.iter_mut() {
+            if t.role == NativeTensorRole::AttentionPostNorm {
+                if let Some(li) = t.layer_index {
+                    if !layers_with_ffn_norm.contains(&li) {
+                        t.role = NativeTensorRole::FfnNorm;
+                    }
+                }
+            }
+        }
+    }
+
     // Feed-forward intermediate size (optional in GGUF metadata; 0 means unknown)
     let intermediate_size = get_arch_uint("feed_forward_length")
         .map(|v| v as u32)
@@ -652,6 +680,7 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
         vocab_size,
         tie_word_embeddings: !has_lm_head,
         rope_theta,
+        rope_theta_swa,
         query_pre_attn_scalar: None,
         attention_logit_softcap: None,
         attn_output_gate: false,

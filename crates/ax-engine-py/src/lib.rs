@@ -1180,6 +1180,7 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::CompatibilityFallbackFailed { .. }
         | EngineSessionError::NativeStartupFallbackFailed { .. }
         | EngineSessionError::NativeRuntimeArtifactsRequired
+        | EngineSessionError::AxNativeNotSupported
         | EngineSessionError::Compatibility(CompatibilityBackendError::CommandLaunch { .. })
         | EngineSessionError::Compatibility(CompatibilityBackendError::CommandFailed { .. })
         | EngineSessionError::Compatibility(CompatibilityBackendError::CommandTimedOut { .. })

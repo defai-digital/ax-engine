@@ -10191,7 +10191,7 @@ fn apply_model_stage_rope_cpu(
         return;
     }
 
-    let rotary_dim = artifacts.rotary_dim();
+    let rotary_dim = effective_rotary_dim(artifacts, stage_dims.head_dim);
     if rotary_dim == 0 || !rotary_dim.is_multiple_of(2) {
         return;
     }
@@ -10203,7 +10203,7 @@ fn apply_model_stage_rope_cpu(
     }
 
     let (cos_table, sin_table) =
-        build_model_stage_rope_tables(rotary_dim, position, native_model_rope_theta(artifacts));
+        build_model_stage_rope_tables(rotary_dim, position, effective_rope_theta(artifacts, stage_dims.head_dim));
     for head in query[..query_len].chunks_exact_mut(stage_dims.head_dim) {
         apply_rope_style_in_place(&mut head[..rotary_dim], &cos_table, &sin_table, rope_style);
     }
@@ -10233,8 +10233,8 @@ fn apply_model_stage_rope_with_path(
         position,
         stage_dims,
         rope_style,
-        native_model_rope_theta(artifacts),
-        artifacts.rotary_dim(),
+        effective_rope_theta(artifacts, stage_dims.head_dim),
+        effective_rotary_dim(artifacts, stage_dims.head_dim),
     ) {
         if native_query.len() == query.len() && native_key.len() == key.len() {
             query.copy_from_slice(&native_query);
@@ -10263,7 +10263,7 @@ fn apply_batched_model_stage_rope_with_path(
     if rope_style == ModelStageRopeStyle::None {
         return Some(());
     }
-    let rotary_dim = artifacts.rotary_dim();
+    let rotary_dim = effective_rotary_dim(artifacts, stage_dims.head_dim);
     if rotary_dim == 0 || !rotary_dim.is_multiple_of(2) {
         return Some(());
     }
@@ -10276,7 +10276,7 @@ fn apply_batched_model_stage_rope_with_path(
             positions,
             stage_dims,
             rope_style,
-            native_model_rope_theta(artifacts),
+            effective_rope_theta(artifacts, stage_dims.head_dim),
             rotary_dim,
         )
     {
@@ -16730,6 +16730,38 @@ fn native_model_rope_theta(artifacts: &NativeModelArtifacts) -> f32 {
         .rope_theta
         .map(|rope_theta| rope_theta as f32)
         .unwrap_or(PHASE1_MODEL_STAGE_ROPE_FREQ_BASE)
+}
+
+/// Per-layer RoPE frequency base. For ISWA models (Gemma4), SWA layers have a smaller
+/// head_dim than the manifest's full-attention head_dim; they use the SWA rope theta
+/// from `rope_theta_swa`. Reference: llama.cpp llama-model.cpp `get_rope_freq_base`.
+#[cfg(target_os = "macos")]
+fn effective_rope_theta(artifacts: &NativeModelArtifacts, head_dim: usize) -> f32 {
+    let manifest = artifacts.manifest();
+    let manifest_head_dim = manifest.attention_head_dim as usize;
+    if manifest_head_dim > 0 && head_dim < manifest_head_dim {
+        manifest
+            .rope_theta_swa
+            .map(|t| t as f32)
+            .unwrap_or(PHASE1_MODEL_STAGE_ROPE_FREQ_BASE)
+    } else {
+        native_model_rope_theta(artifacts)
+    }
+}
+
+/// Per-layer rotary dimension. For ISWA models (Gemma4), SWA layers use a smaller
+/// head_dim and rotate all of it (partial_rotary_factor = 1.0). The global rotary_dim
+/// (derived from partial_rotary_factor applied to the full-attention head_dim) would be
+/// wrong for SWA layers. Reference: mlx-lm gemma4_text.py sliding_attention config.
+#[cfg(target_os = "macos")]
+fn effective_rotary_dim(artifacts: &NativeModelArtifacts, head_dim: usize) -> usize {
+    let global = artifacts.rotary_dim();
+    let manifest_head_dim = artifacts.manifest().attention_head_dim as usize;
+    if manifest_head_dim > 0 && head_dim < manifest_head_dim {
+        head_dim
+    } else {
+        global
+    }
 }
 
 #[cfg(target_os = "macos")]

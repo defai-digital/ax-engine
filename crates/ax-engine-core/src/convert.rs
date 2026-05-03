@@ -101,6 +101,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         vocab_size: arch.vocab_size,
         tie_word_embeddings,
         rope_theta,
+        rope_theta_swa: None,
         query_pre_attn_scalar,
         attention_logit_softcap,
         attn_output_gate: arch_bool(&config, &model_type, "attn_output_gate").unwrap_or(false),

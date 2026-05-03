@@ -271,6 +271,10 @@ pub struct NativeModelManifest {
     pub tie_word_embeddings: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rope_theta: Option<u32>,
+    /// Rope theta for sliding-window attention (SWA) layers in ISWA models (e.g. Gemma4).
+    /// Corresponds to GGUF key `{arch}.rope.freq_base_swa`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rope_theta_swa: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_pre_attn_scalar: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2061,6 +2065,7 @@ mod tests {
             vocab_size: 151936,
             tie_word_embeddings: false,
             rope_theta: None,
+            rope_theta_swa: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
             attn_output_gate: false,

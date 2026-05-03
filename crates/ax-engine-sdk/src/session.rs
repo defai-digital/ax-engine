@@ -290,13 +290,6 @@ impl EngineSessionConfig {
             return Err(EngineSessionError::UnsupportedHostHardware { detected_host });
         }
 
-        if self.resolved_backend.selected_backend.is_native()
-            && self.native_runtime_artifacts_dir().is_none()
-            && !self.allow_deterministic_native_fallback
-        {
-            return Err(EngineSessionError::NativeRuntimeArtifactsRequired);
-        }
-
         if !self.resolved_backend.selected_backend.is_native() {
             let compatibility_backend = self.compatibility_backend.as_ref().ok_or(
                 EngineSessionError::MissingCompatibilityBackendConfig {
@@ -2158,6 +2151,10 @@ pub enum EngineSessionError {
         "ax_native requires validated Metal runtime artifacts; deterministic native fallback is internal-only and must be explicitly enabled"
     )]
     NativeRuntimeArtifactsRequired,
+    #[error(
+        "ax_native metal bringup is not supported; use --mlx-native for native inference or configure a llama.cpp compatibility backend"
+    )]
+    AxNativeNotSupported,
     #[error("request_id must be greater than zero")]
     InvalidRequestId,
     #[error("unsupported support tier cannot start an engine session")]
@@ -2254,24 +2251,15 @@ fn build_native_core(config: &EngineSessionConfig) -> Result<EngineCore, EngineS
         return Ok(EngineCore::with_kv_config(config.kv_config));
     }
 
-    if let Some(build_dir) = config.native_runtime_artifacts_dir() {
-        return EngineCore::with_metal_bringup_runner_and_model_artifacts(
-            config.kv_config,
-            build_dir,
-            config.native_model_artifacts_dir(),
-        )
-        .map_err(EngineSessionError::from);
-    }
-
     if config.allow_deterministic_native_fallback() {
-        Ok(EngineCore::with_runtime_components(
+        return Ok(EngineCore::with_runtime_components(
             config.kv_config,
             NativePlaceholderRunner,
             DeterministicSampler,
-        ))
-    } else {
-        Err(EngineSessionError::NativeRuntimeArtifactsRequired)
+        ));
     }
+
+    Err(EngineSessionError::AxNativeNotSupported)
 }
 
 #[cfg(feature = "mlx-native")]
@@ -2966,6 +2954,7 @@ mod tests {
             vocab_size: 151936,
             tie_word_embeddings: false,
             rope_theta: None,
+            rope_theta_swa: None,
             query_pre_attn_scalar: None,
             attention_logit_softcap: None,
             attn_output_gate: false,
@@ -3221,11 +3210,9 @@ raise SystemExit(1)
             native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
             ..EngineSessionConfig::default()
         })
-        .expect_err("explicit native artifact dir should route through Metal bring-up");
+        .expect_err("ax_native session should be blocked");
 
-        let EngineSessionError::MetalRuntime(MetalRuntimeError::ReadJson { .. }) = error else {
-            panic!("expected metal runtime read-json error");
-        };
+        assert!(matches!(error, EngineSessionError::AxNativeNotSupported));
     }
 
     #[test]
@@ -3239,10 +3226,7 @@ raise SystemExit(1)
         })
         .expect_err("native session should fail closed");
 
-        assert!(matches!(
-            error,
-            EngineSessionError::NativeRuntimeArtifactsRequired
-        ));
+        assert!(matches!(error, EngineSessionError::AxNativeNotSupported));
     }
 
     #[test]
@@ -3452,34 +3436,6 @@ kernel void kv_scale_update() {}
             Some(NativeRuntimeReport::metal_bringup(
                 NativeRuntimeArtifactsSource::ExplicitConfig,
             ))
-        );
-    }
-
-    #[test]
-    fn build_native_core_rejects_invalid_native_model_artifacts_before_metal_bringup() {
-        let (_repo_root, build_dir) = write_valid_repo_owned_native_runtime_fixture();
-        let missing_model_dir = unique_test_dir("missing-native-model");
-        let config = EngineSessionConfig {
-            native_runtime_artifacts_dir: Some(build_dir.clone()),
-            native_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
-            native_model_artifacts_dir: Some(missing_model_dir),
-            native_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
-            ..EngineSessionConfig::default()
-        };
-
-        let error =
-            build_native_core(&config).expect_err("invalid native model manifest should fail");
-
-        match error {
-            EngineSessionError::MetalRuntime(MetalRuntimeError::NativeModel(_)) => {}
-            other => panic!("expected native model validation error, got {other:?}"),
-        }
-
-        let _ = fs::remove_dir_all(
-            build_dir
-                .parent()
-                .and_then(Path::parent)
-                .unwrap_or(&build_dir),
         );
     }
 
@@ -4287,7 +4243,7 @@ kernel void kv_scale_update() {}
         let runtime = session.runtime_report();
         assert_eq!(runtime.selected_backend, SelectedBackend::LlamaCpp);
         assert!(runtime.fallback_reason.as_deref().is_some_and(
-            |reason| reason.contains("qwen35_quantized_gguf_native_runtime_not_implemented")
+            |reason| reason.contains("ax_native metal bringup is not supported")
         ));
         assert!(runtime.native_model.is_none());
 

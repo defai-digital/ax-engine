@@ -99,7 +99,12 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
 
         let attn_norm = take_weight(specs, &mut name_map, NativeTensorRole::AttentionNorm, idx, "attn_norm")?.weight;
         let o_proj = take_weight(specs, &mut name_map, NativeTensorRole::AttentionO, idx, "o_proj")?;
-        let ffn_norm = take_weight(specs, &mut name_map, NativeTensorRole::FfnNorm, idx, "ffn_norm")?.weight;
+        // Models may use `ffn_norm` OR `attention_post_norm` for the pre-FFN layer norm.
+        let ffn_norm = if has_role(specs, NativeTensorRole::FfnNorm, idx) {
+            take_weight(specs, &mut name_map, NativeTensorRole::FfnNorm, idx, "ffn_norm")?.weight
+        } else {
+            take_weight(specs, &mut name_map, NativeTensorRole::AttentionPostNorm, idx, "attention_post_norm")?.weight
+        };
         let down_proj = take_weight(specs, &mut name_map, NativeTensorRole::FfnDown, idx, "down_proj")?;
 
         let q_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionQNorm, idx)?;

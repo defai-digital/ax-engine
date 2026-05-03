@@ -1,7 +1,6 @@
 use ax_engine_sdk::{
-    is_gguf_path, is_initial_native_mode_model_id, native_mode_model_requirement_message,
-    CompatibilityBackendKind, EngineSessionConfig, PreviewBackendRequest,
-    PreviewSessionConfigRequest, SupportTier, INITIAL_NATIVE_MODE_MODEL_ID,
+    is_gguf_path, CompatibilityBackendKind, EngineSessionConfig, PreviewBackendRequest,
+    PreviewSessionConfigRequest, SupportTier,
 };
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
@@ -70,13 +69,10 @@ pub struct ServerArgs {
     #[arg(long = "total-blocks", default_value_t = 1024)]
     pub total_blocks: u32,
 
-    #[arg(long = "native-mode", default_value_t = false, conflicts_with_all = ["mlx", "mlx_native"])]
-    pub native_mode: bool,
-
-    #[arg(long = "mlx", default_value_t = false, conflicts_with_all = ["native_mode", "mlx_native"])]
+    #[arg(long = "mlx", default_value_t = false, conflicts_with_all = ["mlx_native"])]
     pub mlx: bool,
 
-    #[arg(long = "mlx-native", default_value_t = false, conflicts_with_all = ["native_mode", "mlx"])]
+    #[arg(long = "mlx-native", default_value_t = false, conflicts_with_all = ["mlx"])]
     pub mlx_native: bool,
 
     #[arg(long = "support-tier", value_enum, default_value_t = PreviewSupportTier::Compatibility)]
@@ -118,17 +114,6 @@ impl ServerArgs {
     pub fn session_config(&self) -> Result<EngineSessionConfig, String> {
         let backend_request = if self.mlx_native {
             PreviewBackendRequest::shipping_mlx_native()
-        } else if self.native_mode {
-            if !is_initial_native_mode_model_id(&self.model_id) {
-                return Err(native_mode_model_requirement_message(&self.model_id));
-            }
-            let (llama_fallback_cli_path, llama_fallback_model_path, llama_fallback_server_url) =
-                self.native_mode_llama_fallback_target();
-            PreviewBackendRequest::shipping_native_with_llama_fallback(
-                llama_fallback_cli_path,
-                llama_fallback_model_path,
-                llama_fallback_server_url,
-            )
         } else if self.mlx {
             PreviewBackendRequest::shipping_mlx_with_llama_fallback(
                 PathBuf::from(&self.compat_cli_path),
@@ -181,22 +166,6 @@ impl ServerArgs {
         .map_err(|error| error.to_string())
     }
 
-    fn native_mode_llama_fallback_target(&self) -> (PathBuf, Option<PathBuf>, Option<String>) {
-        if self.llama_fallback_model_path.is_some() || self.llama_fallback_server_url.is_some() {
-            (
-                PathBuf::from(&self.llama_fallback_cli_path),
-                self.llama_fallback_model_path.clone(),
-                self.llama_fallback_server_url.clone(),
-            )
-        } else {
-            (
-                PathBuf::from(&self.compat_cli_path),
-                self.compat_model_path.as_deref().filter(|p| is_gguf_path(p)).map(PathBuf::from),
-                self.compat_server_url.clone(),
-            )
-        }
-    }
-
     fn effective_compat_backend(&self) -> PreviewCompatibilityBackend {
         if let Some(path) = &self.compat_model_path {
             if self.compat_server_url.is_none() {
@@ -229,7 +198,6 @@ mod tests {
             cache_group_id: 0,
             block_size_tokens: 16,
             total_blocks: 1024,
-            native_mode: false,
             mlx: false,
             mlx_native: false,
             support_tier: PreviewSupportTier::Compatibility,
@@ -297,7 +265,7 @@ mod tests {
     #[test]
     fn session_config_matches_sdk_preview_factory_for_native_preview() {
         let args = ServerArgs {
-            model_id: INITIAL_NATIVE_MODE_MODEL_ID.to_string(),
+            model_id: ax_engine_sdk::INITIAL_NATIVE_MODE_MODEL_ID.to_string(),
             cache_group_id: 3,
             total_blocks: 2048,
             support_tier: PreviewSupportTier::NativePreview,
@@ -329,37 +297,6 @@ mod tests {
         assert_eq!(actual.backend_policy, BackendPolicy::strict_native());
         assert_eq!(actual.resolved_backend, ResolvedBackend::native_preview());
         assert!(actual.compatibility_backend.is_none());
-    }
-
-    #[test]
-    fn session_config_native_mode_without_fallback_target_stays_native() {
-        let args = ServerArgs {
-            model_id: INITIAL_NATIVE_MODE_MODEL_ID.to_string(),
-            native_mode: true,
-            ..base_args()
-        };
-
-        let actual = args.session_config().expect("session config should build");
-
-        assert_eq!(actual.backend_policy, BackendPolicy::strict_native());
-        assert_eq!(actual.resolved_backend, ResolvedBackend::native_preview());
-        assert!(actual.compatibility_backend.is_none());
-        assert!(actual.fallback_compatibility_backend.is_none());
-    }
-
-    #[test]
-    fn session_config_native_mode_does_not_reuse_mlx_model_dir_as_llama_fallback() {
-        let args = ServerArgs {
-            model_id: INITIAL_NATIVE_MODE_MODEL_ID.to_string(),
-            native_mode: true,
-            compat_model_path: Some(PathBuf::from("/tmp/qwen3.5-mlx")),
-            ..base_args()
-        };
-
-        let actual = args.session_config().expect("session config should build");
-
-        assert_eq!(actual.backend_policy, BackendPolicy::strict_native());
-        assert!(actual.fallback_compatibility_backend.is_none());
     }
 
     #[test]
@@ -404,21 +341,6 @@ mod tests {
                 LlamaCppConfig::server_completion("http://127.0.0.1:8088")
             ))
         );
-    }
-
-    #[test]
-    fn session_config_rejects_native_mode_for_non_initial_model() {
-        let args = ServerArgs {
-            native_mode: true,
-            model_id: "qwen3_dense".to_string(),
-            ..base_args()
-        };
-
-        let error = args
-            .session_config()
-            .expect_err("native mode should be allowlisted");
-
-        assert!(error.contains(INITIAL_NATIVE_MODE_MODEL_ID));
     }
 
     #[test]
