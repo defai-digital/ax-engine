@@ -125,4 +125,22 @@ mod tests {
         let unique: std::collections::HashSet<u64> = vals.iter().cloned().collect();
         assert_eq!(unique.len(), 10);
     }
+
+    #[test]
+    fn categorical_falls_back_to_argmax_on_nan_logits() {
+        // All-NaN logits produce a non-finite sum; must not panic and must return a valid index.
+        let logits = vec![f32::NAN, f32::NAN, f32::NAN];
+        let mut rng = Xorshift64::new(99);
+        let tok = sample_categorical(&logits, 1.0, &mut rng);
+        assert!((tok as usize) < logits.len());
+    }
+
+    #[test]
+    fn categorical_falls_back_to_argmax_on_all_neg_inf() {
+        // exp(−∞) = 0 for every entry → sum == 0 → fall back to argmax (index 0).
+        let logits = vec![f32::NEG_INFINITY; 4];
+        let mut rng = Xorshift64::new(3);
+        let tok = sample_categorical(&logits, 1.0, &mut rng);
+        assert!((tok as usize) < logits.len());
+    }
 }
