@@ -5,6 +5,13 @@ use crate::array::MlxArray;
 use crate::ffi;
 use crate::stream::MlxStream;
 
+/// Attention mask accepted by MLX fast SDPA.
+pub enum ScaledDotProductAttentionMask<'a> {
+    None,
+    Causal,
+    Array(&'a MlxArray),
+}
+
 fn gpu() -> ffi::mlx_stream {
     unsafe { ffi::mlx_default_gpu_stream_new() }
 }
@@ -76,15 +83,37 @@ pub fn scaled_dot_product_attention(
     causal: bool,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    let mask = if causal {
+        ScaledDotProductAttentionMask::Causal
+    } else {
+        ScaledDotProductAttentionMask::None
+    };
+    scaled_dot_product_attention_with_mask(queries, keys, values, scale, mask, s)
+}
+
+/// Scaled dot-product attention with an explicit MLX mask.
+pub fn scaled_dot_product_attention_with_mask(
+    queries: &MlxArray,
+    keys: &MlxArray,
+    values: &MlxArray,
+    scale: f32,
+    mask: ScaledDotProductAttentionMask<'_>,
+    s: Option<&MlxStream>,
+) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
-        let mask_mode = if causal {
-            CString::new("causal").unwrap()
-        } else {
-            CString::new("").unwrap()
+        let mask_mode = match mask {
+            ScaledDotProductAttentionMask::Causal => CString::new("causal").unwrap(),
+            ScaledDotProductAttentionMask::None | ScaledDotProductAttentionMask::Array(_) => {
+                CString::new("").unwrap()
+            }
         };
         let null_arr = ffi::mlx_array {
             ctx: ptr::null_mut(),
+        };
+        let mask_arr = match mask {
+            ScaledDotProductAttentionMask::Array(mask) => mask.inner,
+            ScaledDotProductAttentionMask::None | ScaledDotProductAttentionMask::Causal => null_arr,
         };
         let mut res = MlxArray::empty();
         ffi::mlx_fast_scaled_dot_product_attention(
@@ -94,7 +123,7 @@ pub fn scaled_dot_product_attention(
             values.inner,
             scale,
             mask_mode.as_ptr(),
-            null_arr, // mask_arr
+            mask_arr,
             null_arr, // sinks
             stream,
         );
