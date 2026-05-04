@@ -122,6 +122,23 @@ pub fn split_linear_attention_qkv(
     }
 }
 
+/// Qwen3.5 gated-delta Q/K no-scale RMSNorm and scaling.
+pub fn normalize_linear_attention_qk(
+    cfg: &LinearAttentionConfig,
+    q: &MlxArray,
+    k: &MlxArray,
+) -> (MlxArray, MlxArray) {
+    let inv_scale = (cfg.key_head_dim as f32).powf(-0.5);
+    let q_normed = rms_norm(q, None, 1e-6, None);
+    let k_normed = rms_norm(k, None, 1e-6, None);
+    let q_scale = scalar_f32_as((inv_scale * inv_scale) as f32, q.dtype());
+    let k_scale = scalar_f32_as(inv_scale as f32, k.dtype());
+    (
+        multiply(&q_normed, &q_scale, None),
+        multiply(&k_normed, &k_scale, None),
+    )
+}
+
 /// Run Qwen3.5's gated-delta recurrent update with the MLX Metal kernel.
 ///
 /// Shapes match mlx-lm/mlx-swift-lm:
@@ -226,6 +243,16 @@ fn scalar_i32(value: i32) -> MlxArray {
         &[1],
         MlxDtype::Int32,
     )
+}
+
+fn scalar_f32_as(value: f32, dtype: MlxDtype) -> MlxArray {
+    let scalar = MlxArray::from_raw_data(
+        &value as *const f32 as *const u8,
+        std::mem::size_of::<f32>(),
+        &[1],
+        MlxDtype::Float32,
+    );
+    astype(&scalar, dtype, None)
 }
 
 const GATED_DELTA_KERNEL_SOURCE: &str = r#"
@@ -369,6 +396,27 @@ mod tests {
 
         assert_eq!(y.shape(), vec![1, 2, 1, 4]);
         assert_eq!(new_state.shape(), vec![1, 1, 4, 32]);
+    }
+
+    #[test]
+    fn normalize_linear_attention_qk_preserves_reference_shapes() {
+        let cfg = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_value_heads: 1,
+            num_key_heads: 1,
+            key_head_dim: 32,
+            value_head_dim: 4,
+            conv_kernel_dim: 4,
+        };
+        let q = zeros(&[1, 2, 1, 32], MlxDtype::Bfloat16, None);
+        let k = zeros(&[1, 2, 1, 32], MlxDtype::Bfloat16, None);
+
+        let (q, k) = normalize_linear_attention_qk(&cfg, &q, &k);
+
+        assert_eq!(q.shape(), vec![1, 2, 1, 32]);
+        assert_eq!(k.shape(), vec![1, 2, 1, 32]);
+        assert_eq!(q.dtype(), MlxDtype::Bfloat16);
+        assert_eq!(k.dtype(), MlxDtype::Bfloat16);
     }
 
     #[test]
