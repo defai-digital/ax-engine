@@ -1,6 +1,8 @@
 /target/
 .DS_Store
 **/.DS_Store
+__pycache__/
+*.py[cod]
 
 # Internal design and planning materials — not for publication
 .internal/

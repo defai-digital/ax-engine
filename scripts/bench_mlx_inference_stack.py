@@ -6,6 +6,9 @@ application harness. `mlx-swift-lm` is supported as an optional command adapter
 because the reference package exposes libraries and benchmark helpers, but no
 repo-stable inference benchmark CLI.
 
+Every comparison run includes `mlx_lm.benchmark`. If that baseline fails, the
+run fails instead of emitting AX-only numbers.
+
 Examples:
   cargo build -p ax-engine-server --release
 
@@ -445,17 +448,74 @@ def metric_value(cell: dict[str, Any], metric: str) -> float:
     return 0.0
 
 
+def attach_mlx_lm_baselines(results: list[dict[str, Any]]) -> None:
+    baselines = {
+        (int(cell["prompt_tokens"]), int(cell["generation_tokens"])): cell
+        for cell in results
+        if cell.get("engine") == "mlx_lm"
+    }
+
+    for cell in results:
+        if cell.get("engine") == "mlx_lm":
+            cell["baseline"] = {
+                "engine": "mlx_lm",
+                "method": "mlx_lm.benchmark",
+                "role": "primary_reference",
+            }
+            continue
+
+        key = (int(cell["prompt_tokens"]), int(cell["generation_tokens"]))
+        baseline = baselines.get(key)
+        if baseline is None:
+            raise RuntimeError(
+                "missing mlx_lm.benchmark baseline for "
+                f"prompt_tokens={key[0]} generation_tokens={key[1]}"
+            )
+
+        baseline_prefill = metric_value(baseline, "prefill_tok_s")
+        baseline_decode = metric_value(baseline, "decode_tok_s")
+        cell_prefill = metric_value(cell, "prefill_tok_s")
+        cell_decode = metric_value(cell, "decode_tok_s")
+        cell["baseline"] = {
+            "engine": "mlx_lm",
+            "method": "mlx_lm.benchmark",
+            "prompt_tokens": key[0],
+            "generation_tokens": key[1],
+            "prefill_tok_s": baseline_prefill,
+            "decode_tok_s": baseline_decode,
+            "prefill_ratio_to_mlx_lm": (
+                cell_prefill / baseline_prefill if baseline_prefill > 0 else None
+            ),
+            "decode_ratio_to_mlx_lm": (
+                cell_decode / baseline_decode if baseline_decode > 0 else None
+            ),
+        }
+
+
 def print_summary(doc: dict[str, Any]) -> None:
     print("\n" + "=" * 88)
     print("AX Engine MLX inference stack benchmark")
     print("=" * 88)
-    print(f"{'Engine':<18} {'Prompt tok':>10} {'Prefill tok/s':>14} {'Decode tok/s':>13}  Method")
+    print(
+        f"{'Engine':<18} {'Prompt tok':>10} {'Prefill tok/s':>14} "
+        f"{'Decode tok/s':>13} {'Decode vs mlx_lm':>16}  Method"
+    )
     print("-" * 88)
     for cell in doc["results"]:
+        baseline = cell.get("baseline", {})
+        decode_ratio = baseline.get("decode_ratio_to_mlx_lm")
+        ratio_text = (
+            "baseline"
+            if cell["engine"] == "mlx_lm"
+            else f"{decode_ratio:.3f}x"
+            if isinstance(decode_ratio, (int, float))
+            else "n/a"
+        )
         print(
             f"{cell['engine']:<18} {cell['prompt_tokens']:>10} "
             f"{metric_value(cell, 'prefill_tok_s'):>14.1f} "
-            f"{metric_value(cell, 'decode_tok_s'):>13.1f}  {cell['method']}"
+            f"{metric_value(cell, 'decode_tok_s'):>13.1f} "
+            f"{ratio_text:>16}  {cell['method']}"
         )
     print()
 
@@ -470,7 +530,6 @@ def main() -> None:
     parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN)
     parser.add_argument("--prefill-step-size", type=int, default=2048)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--skip-mlx-lm", action="store_true")
     parser.add_argument("--skip-ax-engine", action="store_true")
     parser.add_argument("--axengine-port", type=int, default=AXENGINE_PORT)
     parser.add_argument("--ax-no-speculative", action="store_true",
@@ -512,18 +571,17 @@ def main() -> None:
     results: list[dict[str, Any]] = []
     procs: list[subprocess.Popen[Any]] = []
     try:
-        if not args.skip_mlx_lm:
-            for prompt_tokens in prompt_lengths:
-                results.append(
-                    run_mlx_lm_benchmark(
-                        args.model,
-                        prompt_tokens,
-                        args.generation_tokens,
-                        args.repetitions,
-                        args.cooldown,
-                        args.prefill_step_size,
-                    )
+        for prompt_tokens in prompt_lengths:
+            results.append(
+                run_mlx_lm_benchmark(
+                    args.model,
+                    prompt_tokens,
+                    args.generation_tokens,
+                    args.repetitions,
+                    args.cooldown,
+                    args.prefill_step_size,
                 )
+            )
 
         if args.mlx_swift_lm_command:
             for prompt_tokens in prompt_lengths:
@@ -575,6 +633,8 @@ def main() -> None:
         for proc in procs:
             kill_proc(proc)
 
+    attach_mlx_lm_baselines(results)
+
     doc = {
         "schema_version": "ax.mlx_inference_stack.v1",
         "host": collect_host_metadata(),
@@ -583,8 +643,13 @@ def main() -> None:
         "model_dir": str(args.model_dir),
         "reference_contract": {
             "primary_reference": "mlx_lm.benchmark",
+            "primary_reference_required": True,
             "secondary_reference": "mlx-swift-lm external JSON adapter",
             "retired_reference": "SwiftLM application server",
+            "comparison_policy": (
+                "Every non-baseline row is compared against the matching "
+                "mlx_lm.benchmark row for the same prompt and generation shape."
+            ),
         },
         "prompt_tokens": prompt_lengths,
         "generation_tokens": args.generation_tokens,

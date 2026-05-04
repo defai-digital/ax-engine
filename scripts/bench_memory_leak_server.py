@@ -37,7 +37,7 @@ class ModeResult:
     selected_backend: str
     support_tier: str
     resolution_policy: str
-    native_runner: str | None
+    mlx_runner: str | None
     requests: int
     warmup_requests: int
     prompt_tokens: int
@@ -56,13 +56,17 @@ class ModeResult:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run a long-lived server RSS benchmark to check for request-lifecycle leaks."
+        description=(
+            "Run a long-lived server RSS diagnostic to check for request-lifecycle "
+            "leaks. This is not a throughput baseline; use "
+            "bench_mlx_inference_stack.py for mlx_lm.benchmark comparisons."
+        )
     )
     parser.add_argument(
         "--mode",
-        choices=("mlx", "native", "llama", "both"),
+        choices=("mlx", "llama", "both"),
         default="both",
-        help="Which server mode to benchmark.",
+        help="Which server route to inspect for RSS growth.",
     )
     parser.add_argument(
         "--requests",
@@ -340,7 +344,7 @@ def run_mode(
     max_output_tokens: int,
     mlx_model_artifacts_dir: Path | None,
 ) -> ModeResult:
-    if mode in {"mlx", "native"}:
+    if mode == "mlx":
         if mlx_model_artifacts_dir is None:
             raise ValueError(
                 "MLX mode requires --mlx-model-artifacts-dir or AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR"
