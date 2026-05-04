@@ -42,10 +42,17 @@ binary_op!(matmul, mlx_matmul);
 binary_op!(greater_equal, mlx_greater_equal);
 binary_op!(less, mlx_less);
 binary_op!(logical_and, mlx_logical_and);
+binary_op!(maximum, mlx_maximum);
+binary_op!(minimum, mlx_minimum);
+binary_op!(power, mlx_power);
 
 unary_op!(sigmoid, mlx_sigmoid);
 unary_op!(tanh, mlx_tanh);
 unary_op!(erf, mlx_erf);
+unary_op!(exp, mlx_exp);
+unary_op!(log, mlx_log);
+unary_op!(log1p, mlx_log1p);
+unary_op!(negative, mlx_negative);
 
 /// silu(x) = x * sigmoid(x)
 pub fn silu(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
@@ -126,6 +133,15 @@ pub fn expand_dims(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
     }
 }
 
+pub fn expand_dims_axes(a: &MlxArray, axes: &[i32], s: Option<&MlxStream>) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_expand_dims_axes(&mut res.inner, a.inner, axes.as_ptr(), axes.len(), stream);
+        res
+    }
+}
+
 pub fn softmax(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
@@ -144,6 +160,20 @@ pub fn concatenate(arrays: &[&MlxArray], axis: i32, s: Option<&MlxStream>) -> Ml
         }
         let mut res = MlxArray::empty();
         ffi::mlx_concatenate_axis(&mut res.inner, vec, axis, stream);
+        ffi::mlx_vector_array_free(vec);
+        res
+    }
+}
+
+pub fn stack(arrays: &[&MlxArray], axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let vec = ffi::mlx_vector_array_new();
+        for arr in arrays {
+            ffi::mlx_vector_array_append_value(vec, arr.inner);
+        }
+        let mut res = MlxArray::empty();
+        ffi::mlx_stack_axis(&mut res.inner, vec, axis, stream);
         ffi::mlx_vector_array_free(vec);
         res
     }
@@ -295,6 +325,64 @@ pub fn slice_update(
     }
 }
 
+pub fn contiguous(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_contiguous(&mut res.inner, a.inner, false, stream);
+        res
+    }
+}
+
+pub fn clip(a: &MlxArray, min: &MlxArray, max: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_clip(&mut res.inner, a.inner, min.inner, max.inner, stream);
+        res
+    }
+}
+
+pub fn where_cond(
+    condition: &MlxArray,
+    x: &MlxArray,
+    y: &MlxArray,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_where(&mut res.inner, condition.inner, x.inner, y.inner, stream);
+        res
+    }
+}
+
+pub fn conv1d(
+    input: &MlxArray,
+    weight: &MlxArray,
+    stride: i32,
+    padding: i32,
+    dilation: i32,
+    groups: i32,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_conv1d(
+            &mut res.inner,
+            input.inner,
+            weight.inner,
+            stride,
+            padding,
+            dilation,
+            groups,
+            stream,
+        );
+        res
+    }
+}
+
 pub fn argmax(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
@@ -304,6 +392,55 @@ pub fn argmax(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
         let mut res = MlxArray::empty();
         ffi::mlx_argmax_axis(&mut res.inner, a.inner, axis, false, stream);
         res
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conv1d_depthwise_reports_reference_shape() {
+        let input = zeros(&[1, 6, 2], MlxDtype::Float32, None);
+        let weight = zeros(&[2, 3, 1], MlxDtype::Float32, None);
+        let out = conv1d(&input, &weight, 1, 0, 1, 2, None);
+
+        assert_eq!(out.shape(), vec![1, 4, 2]);
+    }
+
+    #[test]
+    fn stack_and_where_preserve_expected_shapes() {
+        let a = zeros(&[2, 3], MlxDtype::Float32, None);
+        let b = zeros(&[2, 3], MlxDtype::Float32, None);
+        let condition = zeros(&[2, 3], MlxDtype::Bool, None);
+
+        assert_eq!(stack(&[&a, &b], 1, None).shape(), vec![2, 2, 3]);
+        assert_eq!(where_cond(&condition, &a, &b, None).shape(), vec![2, 3]);
+    }
+
+    #[test]
+    fn scalar_math_wrappers_keep_input_shape() {
+        let a = zeros(&[2, 3], MlxDtype::Float32, None);
+        let min_value = 0.0_f32;
+        let max_value = 1.0_f32;
+        let min = MlxArray::from_raw_data(
+            &min_value as *const f32 as *const u8,
+            std::mem::size_of::<f32>(),
+            &[1],
+            MlxDtype::Float32,
+        );
+        let max = MlxArray::from_raw_data(
+            &max_value as *const f32 as *const u8,
+            std::mem::size_of::<f32>(),
+            &[1],
+            MlxDtype::Float32,
+        );
+
+        assert_eq!(
+            log1p(&exp(&negative(&a, None), None), None).shape(),
+            vec![2, 3]
+        );
+        assert_eq!(clip(&a, &min, &max, None).shape(), vec![2, 3]);
     }
 }
 
