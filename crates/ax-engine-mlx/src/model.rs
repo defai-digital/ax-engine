@@ -391,20 +391,14 @@ pub fn layer_forward(
             None,
         );
 
-        // 12. Output projection.
-        let attn_proj = qw(
+        // 12-13. Optional Qwen3.5 output gate, then output projection.
+        let attn_proj = attention_output_projection(
             &attn_flat,
+            attn_gate.as_ref(),
             w.o_proj
                 .as_ref()
                 .expect("full-attention layer must have o_proj"),
         );
-
-        // 13. Optional attention output gate (Qwen3.5): sigmoid(gate) * o_proj(attn).
-        let attn_proj = if let Some(gate) = attn_gate {
-            multiply(&mlx_sys::ops::sigmoid(&gate, None), &attn_proj, None)
-        } else {
-            attn_proj
-        };
 
         // 14. Optional post-attention layernorm (Gemma4): applied BEFORE residual add.
         if let Some(post_norm) = &w.attn_post_norm {
@@ -657,6 +651,19 @@ fn qkv_project(
         let v = qw(x, w.v_proj.as_ref().unwrap());
         (q, k, v, gate)
     }
+}
+
+fn attention_output_projection(
+    attn_flat: &MlxArray,
+    attn_gate: Option<&MlxArray>,
+    o_proj: &QuantizedWeight,
+) -> MlxArray {
+    let gated = if let Some(gate) = attn_gate {
+        multiply(attn_flat, &mlx_sys::ops::sigmoid(gate, None), None)
+    } else {
+        attn_flat.clone()
+    };
+    qw(&gated, o_proj)
 }
 
 fn linear_attention_forward(
@@ -1185,6 +1192,17 @@ mod tests {
                 v: (40, 48),
             }
         );
+    }
+
+    #[test]
+    fn attention_output_gate_is_applied_before_output_projection() {
+        let attn_flat = zeros(&[1, 2, 6], MlxDtype::Float32, None);
+        let gate = zeros(&[1, 2, 6], MlxDtype::Float32, None);
+        let o_proj = dense_weight(&[4, 6]);
+
+        let out = attention_output_projection(&attn_flat, Some(&gate), &o_proj);
+
+        assert_eq!(out.shape(), vec![1, 2, 4]);
     }
 
     #[test]
