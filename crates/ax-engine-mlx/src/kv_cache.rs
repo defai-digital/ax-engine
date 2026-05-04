@@ -1,79 +1,189 @@
-use mlx_sys::{MlxArray, concatenate, slice};
+use mlx_sys::{MlxArray, MlxDtype, slice, slice_update, zeros};
 
-/// Per-layer KV cache stored as MLX arrays growing along the sequence axis.
+/// Pre-allocated chunk size (tokens).  The buffer grows by this amount each time
+/// the logical sequence length exceeds capacity, so the number of grow operations
+/// per session is at most ceil(total_tokens / CHUNK).
+const KV_CHUNK_TOKENS: usize = 256;
+
+fn chunk_ceiling(n: usize) -> usize {
+    (n + KV_CHUNK_TOKENS - 1) / KV_CHUNK_TOKENS * KV_CHUNK_TOKENS
+}
+
+struct LayerKV {
+    /// Full backing buffer: `[1, n_kv_heads, capacity, head_dim]`.
+    k: MlxArray,
+    v: MlxArray,
+    n_kv_heads: i32,
+    head_dim: i32,
+    capacity: usize,
+    dtype: MlxDtype,
+}
+
+/// Per-request KV cache with chunked pre-allocation.
 ///
 /// Shape convention: `[1, n_kv_heads, seq_len, head_dim]` (batch=1, SDPA-native format).
+///
+/// ## Growth strategy
+///
+/// Unlike the naive approach that calls `concatenate` on every append (O(n) data
+/// movement per step), this cache pre-allocates buffers in `KV_CHUNK_TOKENS`-sized
+/// blocks and uses `slice_update` to write new tokens into the pre-allocated region.
+/// Buffer growth (via concatenation with zeros) happens at most every `KV_CHUNK_TOKENS`
+/// steps — typically 0–1 times per request for common prompt+decode lengths.
+///
+/// ## Speculative rollback
+///
+/// `trim_to(prefix_len)` only updates `seq_len`.  The "trimmed" positions remain in
+/// the backing buffer but are beyond the logical boundary, so SDPA never sees them.
+/// The next `append` overwrites from `prefix_len`, restoring correctness.
 pub struct MlxKVCache {
-    /// One (keys, values) pair per transformer layer.
-    layers: Vec<Option<(MlxArray, MlxArray)>>,
-    /// Current sequence length (number of tokens cached).
+    layers: Vec<Option<LayerKV>>,
+    /// Current logical sequence length (token count cached).
     pub seq_len: usize,
 }
 
 impl MlxKVCache {
     pub fn new(num_layers: usize) -> Self {
         Self {
-            layers: vec![None; num_layers],
+            layers: (0..num_layers).map(|_| None).collect(),
             seq_len: 0,
         }
     }
 
-    /// Return keys and values for layer `i`, if any exist.
-    pub fn get(&self, layer: usize) -> Option<(&MlxArray, &MlxArray)> {
-        self.layers[layer].as_ref().map(|(k, v)| (k, v))
+    /// Return the logical K/V slice for `layer` (up to `self.seq_len` tokens).
+    pub fn get(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
+        self.layers[layer].as_ref().map(|lkv| {
+            let n = self.seq_len as i32;
+            let k = slice(
+                &lkv.k,
+                &[0, 0, 0, 0],
+                &[1, lkv.n_kv_heads, n, lkv.head_dim],
+                &[1, 1, 1, 1],
+                None,
+            );
+            let v = slice(
+                &lkv.v,
+                &[0, 0, 0, 0],
+                &[1, lkv.n_kv_heads, n, lkv.head_dim],
+                &[1, 1, 1, 1],
+                None,
+            );
+            (k, v)
+        })
     }
 
-    /// Append new key/value slices for layer `i` and return the full (k, v).
+    /// Append new K/V tokens for `layer` and return the full logical K/V for SDPA.
     ///
-    /// `new_k` and `new_v` shape: `[1, n_kv_heads, new_tokens, head_dim]`
+    /// `new_k` / `new_v` shape: `[1, n_kv_heads, new_tokens, head_dim]`
+    ///
+    /// Returns **owned** arrays sliced to `[1, n_kv_heads, seq_len + new_tokens, head_dim]`.
     pub fn append(
         &mut self,
         layer: usize,
         new_k: MlxArray,
         new_v: MlxArray,
-    ) -> (&MlxArray, &MlxArray) {
+    ) -> (MlxArray, MlxArray) {
+        let shape = new_k.shape();
+        let new_tokens = shape[2] as usize;
+        let write_start = self.seq_len;
+        let write_end = write_start + new_tokens;
+        let n_kv_heads = shape[1];
+        let head_dim = shape[3];
+        let dtype = new_k.dtype();
+
         let entry = &mut self.layers[layer];
         match entry {
             None => {
-                *entry = Some((new_k, new_v));
+                let capacity = chunk_ceiling(write_end);
+                let buf_shape = [1i32, n_kv_heads, capacity as i32, head_dim];
+                let k_buf = zeros(&buf_shape, dtype, None);
+                let v_buf = zeros(&buf_shape, dtype, None);
+                let start = [0i32, 0, write_start as i32, 0];
+                let stop = [1i32, n_kv_heads, write_end as i32, head_dim];
+                let strides = [1i32, 1, 1, 1];
+                let k_out = slice_update(&k_buf, &new_k, &start, &stop, &strides, None);
+                let v_out = slice_update(&v_buf, &new_v, &start, &stop, &strides, None);
+                *entry = Some(LayerKV {
+                    k: k_out,
+                    v: v_out,
+                    n_kv_heads,
+                    head_dim,
+                    capacity,
+                    dtype,
+                });
             }
-            Some((cached_k, cached_v)) => {
-                let k = concatenate(&[cached_k, &new_k], 2, None);
-                let v = concatenate(&[cached_v, &new_v], 2, None);
-                *entry = Some((k, v));
+            Some(lkv) => {
+                if write_end > lkv.capacity {
+                    // Grow: allocate a larger buffer and copy existing data.
+                    let new_capacity = chunk_ceiling(write_end);
+                    let buf_shape = [1i32, lkv.n_kv_heads, new_capacity as i32, lkv.head_dim];
+                    let k_new = zeros(&buf_shape, lkv.dtype, None);
+                    let v_new = zeros(&buf_shape, lkv.dtype, None);
+                    let old_stop = [1i32, lkv.n_kv_heads, lkv.capacity as i32, lkv.head_dim];
+                    let zero_start = [0i32, 0, 0, 0];
+                    let ones = [1i32, 1, 1, 1];
+                    lkv.k = slice_update(&k_new, &lkv.k, &zero_start, &old_stop, &ones, None);
+                    lkv.v = slice_update(&v_new, &lkv.v, &zero_start, &old_stop, &ones, None);
+                    lkv.capacity = new_capacity;
+                }
+                let start = [0i32, 0, write_start as i32, 0];
+                let stop = [1i32, lkv.n_kv_heads, write_end as i32, lkv.head_dim];
+                let strides = [1i32, 1, 1, 1];
+                lkv.k = slice_update(&lkv.k, &new_k, &start, &stop, &strides, None);
+                lkv.v = slice_update(&lkv.v, &new_v, &start, &stop, &strides, None);
             }
         }
-        let (k, v) = entry.as_ref().unwrap();
-        (k, v)
+
+        let lkv = self.layers[layer].as_ref().unwrap();
+        let end = write_end as i32;
+        let k_view = slice(
+            &lkv.k,
+            &[0, 0, 0, 0],
+            &[1, lkv.n_kv_heads, end, lkv.head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let v_view = slice(
+            &lkv.v,
+            &[0, 0, 0, 0],
+            &[1, lkv.n_kv_heads, end, lkv.head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        (k_view, v_view)
     }
 
-    /// Trim cache to `prefix_len` tokens (for prefix reuse).
+    /// Trim the logical boundary to `prefix_len` tokens (speculative rollback).
     ///
-    /// Slices K and V along the sequence axis (axis 2) rather than dropping the
-    /// cache entirely, so the valid prefix is preserved for the next decode step.
+    /// With chunked layout this is O(1) — no array data is modified.  The backing
+    /// buffer retains its pre-allocated capacity.  The next `append` writes from
+    /// `prefix_len`, overwriting any rejected speculative positions.
     pub fn trim_to(&mut self, prefix_len: usize) {
-        for entry in &mut self.layers {
-            if let Some((k, v)) = entry {
-                let shape = k.shape();
-                let seq = shape.get(2).copied().unwrap_or(0) as usize;
-                if prefix_len < seq {
-                    // Shape: [1, n_kv_heads, seq, head_dim] — slice axis 2.
-                    let n_kv_heads = shape[1];
-                    let head_dim = shape[3];
-                    let plen = prefix_len as i32;
-                    let start = [0i32, 0, 0, 0];
-                    let stop = [1i32, n_kv_heads, plen, head_dim];
-                    let strides = [1i32; 4];
-                    let k_trimmed = slice(k, &start, &stop, &strides, None);
-                    let v_trimmed = slice(v, &start, &stop, &strides, None);
-                    *entry = Some((k_trimmed, v_trimmed));
-                }
-            }
-        }
         self.seq_len = prefix_len;
     }
 
-    /// Reset cache entirely.
+    /// Collect refs to all K and V backing buffers for bulk `eval`.
+    ///
+    /// Pass these alongside the output token to `mlx_sys::eval()` after each
+    /// decode step.  Without this, every `slice_update` append leaves the
+    /// backing buffer as a lazy graph node pointing at the previous step's
+    /// buffer; after N steps each buffer is a chain of N `slice_update` nodes.
+    /// Evaluating here materialises the chain into a flat buffer so the next
+    /// step's `slice_update` has depth-1 ancestry instead of depth-N.
+    ///
+    /// Mirrors mlx_lm's `mx.eval(y, cache)` pattern.
+    pub fn collect_eval_refs(&self) -> Vec<&MlxArray> {
+        let mut refs = Vec::with_capacity(self.layers.len() * 2);
+        for opt in &self.layers {
+            if let Some(lkv) = opt {
+                refs.push(&lkv.k);
+                refs.push(&lkv.v);
+            }
+        }
+        refs
+    }
+
+    /// Reset cache entirely (e.g., between requests).
     pub fn reset(&mut self) {
         for entry in &mut self.layers {
             *entry = None;

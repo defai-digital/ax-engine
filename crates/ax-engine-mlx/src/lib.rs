@@ -2,6 +2,7 @@ pub mod generate;
 pub mod kv_cache;
 pub mod model;
 pub mod runner;
+pub mod sampling;
 pub mod speculative;
 pub mod weights;
 

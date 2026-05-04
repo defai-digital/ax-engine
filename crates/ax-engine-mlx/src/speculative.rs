@@ -1,6 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 
-use mlx_sys::{argmax, eval};
+use mlx_sys::{MlxArray, argmax, eval};
+
+use crate::sampling::{Xorshift64, sample_categorical};
 
 use crate::kv_cache::MlxKVCache;
 use crate::model::{ModelConfig, forward_all_positions};
@@ -122,11 +124,13 @@ pub fn speculative_decode_step(
     ngram: &mut NgramTable,
     last_token: u32,
     max_draft: usize,
+    temperature: f32,
+    rng: &mut Xorshift64,
 ) -> Vec<u32> {
     let draft = ngram.predict(max_draft);
 
     if draft.is_empty() {
-        return single_decode(cfg, weights, cache, ngram, last_token);
+        return single_decode(cfg, weights, cache, ngram, last_token, temperature, rng);
     }
 
     let token_offset = cache.seq_len;
@@ -142,10 +146,22 @@ pub fn speculative_decode_step(
     eval(&[&logits_all]);
     cache.seq_len += verify_len;
 
+    // For temperature > 0, read all verify-step logits to CPU once so we can
+    // sample the correction / bonus token from the full distribution.
+    // Draft acceptance always uses greedy comparison (n-gram drafts are
+    // deterministic, so there is no draft distribution to resample from).
+    let cpu_logits: Vec<f32> = if temperature > 0.0 {
+        logits_all.data_f32().to_vec()
+    } else {
+        Vec::new()
+    };
+
     // argmax over vocab axis (last axis of 2-D tensor) → [verify_len] u32.
     let predicted_arr = argmax(&logits_all, None);
     eval(&[&predicted_arr]);
     let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
+
+    let vocab = cfg.vocab_size;
 
     // Accept/reject.
     // predicted[i] = model's greedy prediction for the token AFTER verify_input[i].
@@ -158,16 +174,18 @@ pub fn speculative_decode_step(
             result.push(draft[i]);
             accept_count += 1;
         } else {
-            // Correction: take the model's prediction at this position.
-            result.push(predicted[i]);
+            // Correction token: sample at position i with temperature.
+            let tok = sample_pos(&cpu_logits, predicted[i], i, vocab, temperature, rng);
+            result.push(tok);
             break;
         }
     }
 
-    // Bonus: if ALL draft tokens were accepted, the model's next prediction
-    // (after the last draft) is also valid — append it for free.
+    // Bonus: if ALL draft tokens were accepted, sample the next token for free.
     if accept_count == draft.len() {
-        result.push(predicted[draft.len()]);
+        let pos = draft.len();
+        let tok = sample_pos(&cpu_logits, predicted[pos], pos, vocab, temperature, rng);
+        result.push(tok);
     }
 
     // Trim KV cache: keep only [last_token + accepted_drafts].
@@ -178,23 +196,72 @@ pub fn speculative_decode_step(
     ngram.feed(&draft[..accept_count]);
     ngram.feed(&result[accept_count..]); // correction or bonus
 
+    // Materialise the KV backing buffers to break the slice_update graph chain.
+    // forward_all_positions wrote speculative positions into the buffers; the
+    // trim_to above moved the logical boundary back, but the chain still grows
+    // unless we eval here.  Bundled with the already-paid eval(&[&predicted_arr])
+    // sync so no extra GPU round-trip is introduced.
+    let kv_refs = cache.collect_eval_refs();
+    if !kv_refs.is_empty() {
+        eval(&kv_refs);
+    }
+
     result
 }
 
-/// Single-token greedy decode (fallback when n-gram table has no prediction).
+/// Sample token at `pos` in the flattened `[verify_len, vocab]` logit buffer.
+/// Falls back to `greedy_tok` when temperature is 0 or the buffer is empty.
+fn sample_pos(
+    cpu_logits: &[f32],
+    greedy_tok: u32,
+    pos: usize,
+    vocab: usize,
+    temperature: f32,
+    rng: &mut Xorshift64,
+) -> u32 {
+    if temperature <= 0.0 || cpu_logits.is_empty() {
+        return greedy_tok;
+    }
+    let start = pos * vocab;
+    let end = start + vocab;
+    if end > cpu_logits.len() {
+        return greedy_tok;
+    }
+    sample_categorical(&cpu_logits[start..end], temperature, rng)
+}
+
+/// Single-token decode fallback (used when n-gram table has no prediction).
+///
+/// Respects `temperature`: 0.0 → greedy argmax, > 0.0 → categorical sampling.
 pub fn single_decode(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     cache: &mut MlxKVCache,
     ngram: &mut NgramTable,
     last_token: u32,
+    temperature: f32,
+    rng: &mut Xorshift64,
 ) -> Vec<u32> {
     let token_offset = cache.seq_len;
     let logits = crate::model::forward(cfg, weights, &[last_token], cache, token_offset);
     cache.seq_len += 1;
-    let token_arr = argmax(&logits, None);
-    eval(&[&token_arr]);
-    let tok = token_arr.data_u32().first().copied().unwrap_or(0);
+
+    let kv_refs = cache.collect_eval_refs();
+    let tok = if temperature > 0.0 {
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+        targets.push(&logits);
+        targets.extend(kv_refs);
+        eval(&targets);
+        sample_categorical(logits.data_f32(), temperature, rng)
+    } else {
+        let token_arr = argmax(&logits, None);
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+        targets.push(&token_arr);
+        targets.extend(kv_refs);
+        eval(&targets);
+        token_arr.data_u32().first().copied().unwrap_or(0)
+    };
+
     ngram.observe(tok);
     vec![tok]
 }

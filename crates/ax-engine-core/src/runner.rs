@@ -21,7 +21,7 @@ pub struct RunnerInput {
     pub request_contexts: Vec<RunnerRequestContext>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RunnerRequestContext {
     pub request_id: RequestId,
     pub prompt_len: u32,
@@ -29,6 +29,11 @@ pub struct RunnerRequestContext {
     pub generated_len: u32,
     pub max_output_tokens: u32,
     pub deterministic_argmax_sampling: bool,
+    /// Temperature for token sampling. 0.0 means greedy argmax (same as
+    /// `deterministic_argmax_sampling = true`). Runners that support
+    /// probabilistic sampling must use this when > 0.0; runners that don't
+    /// must return an error rather than silently falling back to greedy.
+    pub temperature: f32,
 }
 
 impl RunnerInput {
@@ -242,6 +247,7 @@ mod tests {
                     generated_len: 0,
                     max_output_tokens: 4,
                     deterministic_argmax_sampling: true,
+                    temperature: 0.0,
                 },
                 RunnerRequestContext {
                     request_id: RequestId(2),
@@ -250,6 +256,7 @@ mod tests {
                     generated_len: 0,
                     max_output_tokens: 4,
                     deterministic_argmax_sampling: true,
+                    temperature: 0.0,
                 },
             ],
         });
@@ -305,6 +312,7 @@ mod tests {
                 generated_len: 0,
                 max_output_tokens: 2,
                 deterministic_argmax_sampling: true,
+                temperature: 0.0,
             }],
         });
 

@@ -532,6 +532,7 @@ impl EngineCore {
                         sampling_params_allow_deterministic_argmax_fast_path(
                             &record.sampling_params,
                         ),
+                    temperature: record.sampling_params.temperature,
                 });
             }
         }

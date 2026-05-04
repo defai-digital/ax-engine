@@ -204,6 +204,53 @@ pub fn slice_last_dim(a: &MlxArray, start: i32, end: i32, s: Option<&MlxStream>)
     slice(a, &start_vec, &stop_vec, &strides_vec, s)
 }
 
+/// Allocate a zero-filled array with the given shape and dtype.
+pub fn zeros(shape: &[i32], dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_zeros(
+            &mut res.inner,
+            shape.as_ptr(),
+            shape.len(),
+            dtype.to_ffi(),
+            stream,
+        );
+        res
+    }
+}
+
+/// Return a copy of `src` with `update` written at `src[start:stop:strides]`.
+///
+/// Mirrors Python `mx.array[start:stop:strides] = update`.  Unlike concatenate,
+/// this avoids re-copying existing data — only the `update` region is written.
+pub fn slice_update(
+    src: &MlxArray,
+    update: &MlxArray,
+    start: &[i32],
+    stop: &[i32],
+    strides: &[i32],
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_slice_update(
+            &mut res.inner,
+            src.inner,
+            update.inner,
+            start.as_ptr(),
+            start.len(),
+            stop.as_ptr(),
+            stop.len(),
+            strides.as_ptr(),
+            strides.len(),
+            stream,
+        );
+        res
+    }
+}
+
 pub fn argmax(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);

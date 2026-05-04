@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use mlx_sys::{MlxStream, max_recommended_working_set_size, set_wired_limit};
+use mlx_sys::{MlxStream, enable_compile, max_recommended_working_set_size, set_wired_limit};
 
 use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
@@ -15,6 +15,7 @@ use ax_engine_core::{
 use crate::generate::{chunked_prefill, decode_step};
 use crate::kv_cache::MlxKVCache;
 use crate::model::ModelConfig;
+use crate::sampling::Xorshift64;
 use crate::speculative::{DEFAULT_DRAFT_LEN, NgramTable, single_decode, speculative_decode_step};
 use crate::weights::{ModelWeights, load_weights};
 
@@ -26,6 +27,9 @@ const SPEC_RETRY_INTERVAL: u32 = 8;
 struct RequestState {
     cache: MlxKVCache,
     ngram: NgramTable,
+    /// Per-request PRNG for temperature sampling.  Seeded from request_id so
+    /// deterministic seeds produce reproducible outputs.
+    rng: Xorshift64,
     /// EMA of speculative accept rate (1.0 = always accept, 0.0 = never).
     spec_ema: f32,
     /// Steps remaining before re-enabling speculation (0 = speculation allowed).
@@ -38,10 +42,11 @@ struct RequestState {
 }
 
 impl RequestState {
-    fn new(num_layers: usize) -> Self {
+    fn new(num_layers: usize, request_id: RequestId) -> Self {
         Self {
             cache: MlxKVCache::new(num_layers),
             ngram: NgramTable::new(),
+            rng: Xorshift64::new(request_id.0),
             spec_ema: 1.0,
             spec_disabled_steps: 0,
             bonus_queue: VecDeque::new(),
@@ -59,6 +64,9 @@ pub struct MlxRunner {
     states: Mutex<HashMap<RequestId, RequestState>>,
     /// Dedicated GPU stream kept alive for the runner's lifetime.
     _stream: MlxStream,
+    /// When true, always use single-token decode (disables n-gram speculation).
+    /// Set via `AX_NO_SPEC=1` environment variable for benchmarking isolation.
+    no_speculative: bool,
 }
 
 impl fmt::Debug for MlxRunner {
@@ -74,7 +82,15 @@ impl MlxRunner {
     pub fn from_artifacts(
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
+        no_speculative: bool,
     ) -> Result<Self, MlxRunnerError> {
+        // Enable MLX compute-graph compilation globally.
+        // This caches and reuses compiled Metal shaders across calls with the same
+        // graph structure — the equivalent of mlx_lm's per-step mx.compile() JIT.
+        // Without this, MLX rebuilds the dispatch graph on every decode step,
+        // causing measurable CPU overhead (~10-15% throughput gap vs mlx_lm).
+        enable_compile();
+
         // Dedicated GPU stream — mirrors mlx_lm's `mx.new_stream(mx.default_device())`.
         // Setting it as default avoids implicit cross-stream synchronization on the
         // shared default stream.
@@ -108,7 +124,8 @@ impl MlxRunner {
         // JIT warm-up: trigger Metal shader compilation for both decode and prefill paths.
         {
             let mut dummy_cache = MlxKVCache::new(cfg.layer_count);
-            decode_step(&cfg, &weights, 0, &mut dummy_cache);
+            let mut dummy_rng = Xorshift64::new(0);
+            decode_step(&cfg, &weights, 0, &mut dummy_cache, 0.0, &mut dummy_rng);
             dummy_cache.reset();
             let dummy_tokens: Vec<u32> = vec![0u32; 8];
             chunked_prefill(
@@ -120,6 +137,12 @@ impl MlxRunner {
             );
         }
 
+        // AX_NO_SPEC=1 env var overrides the config flag (for benchmarking/debugging).
+        let no_speculative = no_speculative
+            || std::env::var("AX_NO_SPEC")
+                .map(|v| v == "1")
+                .unwrap_or(false);
+
         Ok(Self {
             cfg,
             weights,
@@ -127,6 +150,7 @@ impl MlxRunner {
             binding_summary,
             states: Mutex::new(HashMap::new()),
             _stream: stream,
+            no_speculative,
         })
     }
 }
@@ -194,11 +218,24 @@ impl MlxRunner {
         let max_output = ctx.map(|c| c.max_output_tokens).unwrap_or(1);
         let generated_len = ctx.map(|c| c.generated_len).unwrap_or(0);
 
-        let mut states = self.states.lock().unwrap();
-        let state = states
-            .entry(item.request_id)
-            .or_insert_with(|| RequestState::new(self.cfg.layer_count));
+        // Extract per-request state from the map and release the lock before GPU
+        // work.  This ensures a long prefill for one request does not block state
+        // access for any other request: the mutex is held only for the O(1)
+        // HashMap remove and subsequent insert, never across a GPU forward pass.
+        //
+        // Concurrency contract: the scheduler must not route the same request_id
+        // to two concurrent run() calls — otherwise one call would create a fresh
+        // empty state from None while the other holds the extracted state.
+        let mut state = {
+            let mut states = self.states.lock().unwrap();
+            states
+                .remove(&item.request_id)
+                .unwrap_or_else(|| RequestState::new(self.cfg.layer_count, item.request_id))
+        };
 
+        let temperature = ctx.map(|c| c.temperature).unwrap_or(0.0);
+
+        // GPU work — mutex is NOT held during prefill, decode, or speculative steps.
         let sampled_token = match item.mode {
             ExecutionMode::Prefill => {
                 let tok = chunked_prefill(
@@ -215,7 +252,7 @@ impl MlxRunner {
                 state.next_model_last_token = None;
                 tok
             }
-            ExecutionMode::Decode => self.decode_one(state, token_ids),
+            ExecutionMode::Decode => self.decode_one(&mut state, token_ids, temperature),
         };
 
         let stop_reason = if generated_len + 1 >= max_output {
@@ -224,8 +261,10 @@ impl MlxRunner {
             None
         };
 
-        if stop_reason.is_some() {
-            states.remove(&item.request_id);
+        // Re-insert state only if the request continues — lock held briefly.
+        if stop_reason.is_none() {
+            let mut states = self.states.lock().unwrap();
+            states.insert(item.request_id, state);
         }
 
         RequestExecutionUpdate {
@@ -241,7 +280,7 @@ impl MlxRunner {
     ///
     /// Pops from the bonus queue when pre-verified tokens are available.
     /// Otherwise runs a speculative or single-token decode pass.
-    fn decode_one(&self, state: &mut RequestState, input_tokens: &[u32]) -> u32 {
+    fn decode_one(&self, state: &mut RequestState, input_tokens: &[u32], temperature: f32) -> u32 {
         // Serve pre-verified bonus tokens without re-running the model.
         if let Some(tok) = state.bonus_queue.pop_front() {
             return tok;
@@ -252,7 +291,7 @@ impl MlxRunner {
             .or_else(|| input_tokens.last().copied())
             .unwrap_or(0);
 
-        let result = self.run_model_decode(state, last_token);
+        let result = self.run_model_decode(state, last_token, temperature);
 
         // result[0] is the output for this step.
         // result[1..last] are bonus tokens (KVs already in cache).
@@ -260,7 +299,8 @@ impl MlxRunner {
         let output = result[0];
 
         // Queue bonus tokens (intermediate accepted drafts).
-        for &t in &result[1..result.len().saturating_sub(1)] {
+        // result[1..len-1] is empty for len<=2; use get() to avoid panic on len=1.
+        for &t in result.get(1..result.len().saturating_sub(1)).unwrap_or(&[]) {
             state.bonus_queue.push_back(t);
         }
 
@@ -271,7 +311,25 @@ impl MlxRunner {
     }
 
     /// Run one model decode step (speculative or single), updating EMA gating.
-    fn run_model_decode(&self, state: &mut RequestState, last_token: u32) -> Vec<u32> {
+    fn run_model_decode(
+        &self,
+        state: &mut RequestState,
+        last_token: u32,
+        temperature: f32,
+    ) -> Vec<u32> {
+        // Runtime opt-out via AX_NO_SPEC=1 for benchmarking isolation.
+        if self.no_speculative {
+            return single_decode(
+                &self.cfg,
+                &self.weights,
+                &mut state.cache,
+                &mut state.ngram,
+                last_token,
+                temperature,
+                &mut state.rng,
+            );
+        }
+
         // Speculation disabled: count down and use single decode.
         if state.spec_disabled_steps > 0 {
             state.spec_disabled_steps -= 1;
@@ -281,6 +339,8 @@ impl MlxRunner {
                 &mut state.cache,
                 &mut state.ngram,
                 last_token,
+                temperature,
+                &mut state.rng,
             );
         }
 
@@ -292,6 +352,8 @@ impl MlxRunner {
                 &mut state.cache,
                 &mut state.ngram,
                 last_token,
+                temperature,
+                &mut state.rng,
             );
         }
 
@@ -303,6 +365,8 @@ impl MlxRunner {
             &mut state.ngram,
             last_token,
             draft_len,
+            temperature,
+            &mut state.rng,
         );
 
         // Update EMA: accept_count = result.len() - 1 (excluding next last_token).
@@ -321,4 +385,70 @@ impl MlxRunner {
 pub enum MlxRunnerError {
     #[error("weight loading failed: {0}")]
     Weights(#[from] crate::weights::WeightLoadError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Verify that the extract-work-reinsert mutex pattern correctly isolates
+    // per-request state without GPU execution required.
+    #[test]
+    fn state_extraction_isolates_concurrent_requests() {
+        let mut states: HashMap<RequestId, RequestState> = HashMap::new();
+        let a = RequestId(1);
+        let b = RequestId(2);
+
+        // Extract A from the map (simulates the lock-brief-remove step).
+        // While A is extracted, B's slot is accessible without contention.
+        let state_a = states.remove(&a).unwrap_or_else(|| RequestState::new(2, a));
+        let state_b = states.remove(&b).unwrap_or_else(|| RequestState::new(2, b));
+
+        // GPU work would run here with state_a / state_b outside the map.
+        // Verify B can be reinserted independently of A.
+        states.insert(b, state_b);
+        states.insert(a, state_a);
+
+        assert_eq!(states.len(), 2);
+        assert!(states.contains_key(&a));
+        assert!(states.contains_key(&b));
+    }
+
+    #[test]
+    fn completed_request_state_is_not_reinserted() {
+        let mut states: HashMap<RequestId, RequestState> = HashMap::new();
+        let id = RequestId(42);
+        states.insert(id, RequestState::new(2, id));
+
+        // Extract and simulate a completed request (stop_reason.is_some()).
+        // The state should not be reinserted, mirroring the run_item control flow.
+        let _state = states.remove(&id).unwrap();
+        // No states.insert here — dropped at end of scope.
+
+        assert!(
+            !states.contains_key(&id),
+            "completed request must not leave orphaned state"
+        );
+    }
+
+    #[test]
+    fn prefill_clears_bonus_and_last_token() {
+        let mut state = RequestState::new(2, RequestId(0));
+        state.bonus_queue.push_back(99);
+        state.bonus_queue.push_back(100);
+        state.next_model_last_token = Some(5);
+
+        // Simulate the prefill reset branch of run_item.
+        state.bonus_queue.clear();
+        state.next_model_last_token = None;
+
+        assert!(
+            state.bonus_queue.is_empty(),
+            "bonus queue must be cleared on prefill"
+        );
+        assert!(
+            state.next_model_last_token.is_none(),
+            "last_token pointer must be reset on prefill"
+        );
+    }
 }

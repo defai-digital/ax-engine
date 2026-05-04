@@ -155,7 +155,7 @@ pub fn layer_forward(
     //    MLX broadcasts K/V heads internally — no manual expand_kv_heads needed.
     let causal = seq > 1;
     let attn_sdpa =
-        scaled_dot_product_attention(&q_rope, cached_k, cached_v, cfg.query_scale, causal, None);
+        scaled_dot_product_attention(&q_rope, &cached_k, &cached_v, cfg.query_scale, causal, None);
 
     // 9. Transpose back: [1, n_heads, seq, head_dim] → [1, seq, n_heads, head_dim].
     let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);

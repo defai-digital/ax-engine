@@ -661,7 +661,7 @@ fn direct_decode_batched_group_partition_skips_shapes_disabled_by_feedback() {
         dims,
         hidden: vec![0.0; dims.hidden_dim],
         attention_input: vec![0.0; dims.input_width],
-        deterministic_argmax_sampling: false,
+        deterministic_argmax_sampling: true,
     };
     let group = vec![make_item(1), make_item(2), make_item(3), make_item(4)];
     let mut feedback = MetalOptionalKernelFeedbackState::default();
@@ -697,7 +697,7 @@ fn direct_decode_batched_group_partition_keeps_allowed_or_singleton_shapes() {
         dims,
         hidden: vec![0.0; dims.hidden_dim],
         attention_input: vec![0.0; dims.input_width],
-        deterministic_argmax_sampling: false,
+        deterministic_argmax_sampling: true,
     };
 
     let allowed_group = vec![make_item(1), make_item(2)];
@@ -828,6 +828,7 @@ fn prefix_attention_group_predicate_partitions_disabled_batch_shape_before_retry
             generated_len: 0,
             max_output_tokens: 32,
             deterministic_argmax_sampling: true,
+            temperature: 0.0,
         }],
     };
     let mut only_singletons_allowed = |candidate_range: std::ops::Range<usize>| {
@@ -5077,7 +5078,7 @@ fn grouped_direct_decode_results_fall_back_to_singletons_when_group_processing_f
             dims,
             hidden: vec![0.0; dims.hidden_dim],
             attention_input: vec![0.0; dims.input_width],
-            deterministic_argmax_sampling: false,
+            deterministic_argmax_sampling: true,
         },
         PreparedDirectDecodeItem {
             request_id: RequestId(11),
@@ -5085,7 +5086,7 @@ fn grouped_direct_decode_results_fall_back_to_singletons_when_group_processing_f
             dims,
             hidden: vec![0.0; dims.hidden_dim],
             attention_input: vec![0.0; dims.input_width],
-            deterministic_argmax_sampling: false,
+            deterministic_argmax_sampling: true,
         },
     ]];
     let mut attempted_group_sizes = Vec::new();
@@ -5150,7 +5151,7 @@ fn grouped_direct_decode_results_recursively_preserve_batched_subgroups() {
             dims,
             hidden: vec![0.0; dims.hidden_dim],
             attention_input: vec![0.0; dims.input_width],
-            deterministic_argmax_sampling: false,
+            deterministic_argmax_sampling: true,
         },
         PreparedDirectDecodeItem {
             request_id: RequestId(5),
@@ -5158,7 +5159,7 @@ fn grouped_direct_decode_results_recursively_preserve_batched_subgroups() {
             dims,
             hidden: vec![0.0; dims.hidden_dim],
             attention_input: vec![0.0; dims.input_width],
-            deterministic_argmax_sampling: false,
+            deterministic_argmax_sampling: true,
         },
         PreparedDirectDecodeItem {
             request_id: RequestId(7),
@@ -5166,7 +5167,7 @@ fn grouped_direct_decode_results_recursively_preserve_batched_subgroups() {
             dims,
             hidden: vec![0.0; dims.hidden_dim],
             attention_input: vec![0.0; dims.input_width],
-            deterministic_argmax_sampling: false,
+            deterministic_argmax_sampling: true,
         },
         PreparedDirectDecodeItem {
             request_id: RequestId(9),
@@ -5174,7 +5175,7 @@ fn grouped_direct_decode_results_recursively_preserve_batched_subgroups() {
             dims,
             hidden: vec![0.0; dims.hidden_dim],
             attention_input: vec![0.0; dims.input_width],
-            deterministic_argmax_sampling: false,
+            deterministic_argmax_sampling: true,
         },
     ]];
     let mut attempted_group_sizes = Vec::new();
@@ -6725,6 +6726,7 @@ fn copied_prefix_blocks_persist_into_layer_cache_for_future_native_decode() {
             generated_len: 0,
             max_output_tokens: 32,
             deterministic_argmax_sampling: true,
+            temperature: 0.0,
         }],
     };
     let decode_workload = MetalDispatchWorkload::from_runner_input(&decode_input)
@@ -9233,7 +9235,8 @@ fn sample_runner_input() -> RunnerInput {
                 processed_prompt_tokens: 0,
                 generated_len: 0,
                 max_output_tokens: 32,
-                deterministic_argmax_sampling: false,
+                deterministic_argmax_sampling: true,
+                temperature: 0.0,
             },
             crate::runner::RunnerRequestContext {
                 request_id: RequestId(9),
@@ -9241,7 +9244,8 @@ fn sample_runner_input() -> RunnerInput {
                 processed_prompt_tokens: 3,
                 generated_len: 0,
                 max_output_tokens: 32,
-                deterministic_argmax_sampling: false,
+                deterministic_argmax_sampling: true,
+                temperature: 0.0,
             },
         ],
     }
@@ -9317,7 +9321,8 @@ fn sample_decode_only_runner_input() -> RunnerInput {
                 processed_prompt_tokens: 3,
                 generated_len: 0,
                 max_output_tokens: 32,
-                deterministic_argmax_sampling: false,
+                deterministic_argmax_sampling: true,
+                temperature: 0.0,
             },
             crate::runner::RunnerRequestContext {
                 request_id: RequestId(11),
@@ -9325,7 +9330,8 @@ fn sample_decode_only_runner_input() -> RunnerInput {
                 processed_prompt_tokens: 5,
                 generated_len: 0,
                 max_output_tokens: 32,
-                deterministic_argmax_sampling: false,
+                deterministic_argmax_sampling: true,
+                temperature: 0.0,
             },
         ],
     }
@@ -9386,7 +9392,8 @@ fn sample_prefill_only_runner_input() -> RunnerInput {
             processed_prompt_tokens: 0,
             generated_len: 0,
             max_output_tokens: 32,
-            deterministic_argmax_sampling: false,
+            deterministic_argmax_sampling: true,
+            temperature: 0.0,
         }],
     }
 }
@@ -9435,7 +9442,8 @@ fn sample_decode_continuation_runner_input() -> RunnerInput {
             processed_prompt_tokens: 4,
             generated_len: 0,
             max_output_tokens: 32,
-            deterministic_argmax_sampling: false,
+            deterministic_argmax_sampling: true,
+            temperature: 0.0,
         }],
     }
 }
@@ -10579,6 +10587,7 @@ fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
                 generated_len: 0,
                 max_output_tokens: 32,
                 deterministic_argmax_sampling: true,
+                temperature: 0.0,
             }],
         };
 
@@ -10673,6 +10682,7 @@ fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
                 generated_len: 1,
                 max_output_tokens: 32,
                 deterministic_argmax_sampling: true,
+                temperature: 0.0,
             }],
         };
         let decode_workload = MetalDispatchWorkload::from_runner_input(&decode_input)
@@ -10968,6 +10978,7 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                 generated_len: 0,
                 max_output_tokens: 32,
                 deterministic_argmax_sampling: true,
+                temperature: 0.0,
             }],
         };
 
@@ -11061,6 +11072,7 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                     generated_len,
                     max_output_tokens: 32,
                     deterministic_argmax_sampling: true,
+                    temperature: 0.0,
                 }],
             };
 
