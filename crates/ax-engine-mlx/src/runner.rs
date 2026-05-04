@@ -414,6 +414,17 @@ fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(
                 .to_string(),
         ));
     }
+    if manifest.sliding_window_size.is_some()
+        || !manifest.layer_types.is_empty()
+        || !manifest.kv_shared_source_layers.is_empty()
+        || manifest.global_head_dim.is_some()
+        || manifest.rope_theta_swa.is_some()
+    {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "interleaved sliding/full attention requires MLX per-layer attention masks and KV sharing"
+                .to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -673,5 +684,34 @@ mod tests {
 
         validate_mlx_supported_manifest(&artifacts)
             .expect("attention output gate is implemented in the MLX model graph");
+    }
+
+    #[test]
+    fn mlx_manifest_validation_rejects_interleaved_sliding_attention() {
+        let mut manifest = dense_manifest();
+        manifest.sliding_window_size = Some(1024);
+        manifest.layer_types = vec![
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+        ];
+        manifest.global_head_dim = Some(8);
+        let artifacts = write_artifacts(manifest);
+
+        let error = validate_mlx_supported_manifest(&artifacts)
+            .expect_err("interleaved sliding attention should fail closed");
+
+        assert!(error.to_string().contains("interleaved"));
+    }
+
+    #[test]
+    fn mlx_manifest_validation_rejects_kv_shared_layers() {
+        let mut manifest = dense_manifest();
+        manifest.kv_shared_source_layers.insert(1, 0);
+        let artifacts = write_artifacts(manifest);
+
+        let error = validate_mlx_supported_manifest(&artifacts)
+            .expect_err("KV-shared layers should fail closed");
+
+        assert!(error.to_string().contains("KV sharing"));
     }
 }
