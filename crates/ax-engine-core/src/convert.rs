@@ -325,6 +325,14 @@ const HF_STANDARD_TENSOR_MAP: &[(&str, TensorMapping)] = &[
         TensorMapping::PerLayer(NativeTensorRole::FfnGateInpScale),
     ),
     (
+        "router.per_expert_scale",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInpExpertScale),
+    ),
+    (
+        "layer_scalar",
+        TensorMapping::PerLayer(NativeTensorRole::LayerScalar),
+    ),
+    (
         "mlp.up_proj.weight",
         TensorMapping::PerLayer(NativeTensorRole::FfnUp),
     ),

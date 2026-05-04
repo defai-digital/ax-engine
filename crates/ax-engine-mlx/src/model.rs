@@ -446,7 +446,14 @@ pub fn layer_forward(
     };
 
     // 18. Residual.
-    add(&hidden, &ffn_out, None)
+    let out = add(&hidden, &ffn_out, None);
+
+    // 19. Optional layer scalar (Gemma4): h = h * layer_scalar.
+    if let Some(scalar) = &w.layer_scalar {
+        multiply(&out, scalar, None)
+    } else {
+        out
+    }
 }
 
 /// Embed token IDs and return hidden states of shape [1, seq_len, hidden].
@@ -871,12 +878,18 @@ fn moe_router_gemma4(
     let normed = rms_norm(hidden, Some(&combined_scale), 1e-6, None);
 
     let expert_scores = qw(&normed, router_proj);
-    top_k_by_argpartition(
+    let (top_k_indices, mut top_k_weights) = top_k_by_argpartition(
         &expert_scores,
         cfg.moe_expert_count,
         cfg.moe_experts_per_token,
         true,
-    )
+    );
+    // Apply per-expert output scale (initialized to ones; fine-tuned checkpoints may differ).
+    if let Some(pes) = &w.router_expert_scale {
+        let gathered = take_along_axis(pes, &top_k_indices, 0, None);
+        top_k_weights = multiply(&top_k_weights, &gathered, None);
+    }
+    (top_k_indices, top_k_weights)
 }
 
 /// Qwen3 MoE router: proj → softmax → pick top-k by weight value (no rms_norm).
@@ -1179,6 +1192,8 @@ mod tests {
             ffn_post_norm2: None,
             router_proj: None,
             router_scale: None,
+            router_expert_scale: None,
+            layer_scalar: None,
             gate_up_exps_packed: None,
             gate_exps: None,
             up_exps: None,
@@ -1265,6 +1280,8 @@ mod tests {
             ffn_post_norm2: None,
             router_proj: None,
             router_scale: None,
+            router_expert_scale: None,
+            layer_scalar: None,
             gate_up_exps_packed: None,
             gate_exps: None,
             up_exps: None,
@@ -1365,6 +1382,8 @@ mod tests {
             ffn_post_norm2: None,
             router_proj: None,
             router_scale: None,
+            router_expert_scale: None,
+            layer_scalar: None,
             gate_up_exps_packed: Some(dense_weight(&[2, 6, 4])),
             gate_exps: None,
             up_exps: None,
@@ -1421,6 +1440,8 @@ mod tests {
             ffn_post_norm2: None,
             router_proj: None,
             router_scale: None,
+            router_expert_scale: None,
+            layer_scalar: None,
             gate_up_exps_packed: Some(dense_weight(&[2, 6, 4])),
             gate_exps: None,
             up_exps: None,
@@ -1477,6 +1498,8 @@ mod tests {
             ffn_post_norm2: None,
             router_proj: None,
             router_scale: None,
+            router_expert_scale: None,
+            layer_scalar: None,
             gate_up_exps_packed: None,
             gate_exps: Some(dense_weight(&[2, 3, 4])),
             up_exps: Some(dense_weight(&[2, 3, 4])),
