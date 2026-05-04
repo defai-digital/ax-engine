@@ -59,22 +59,37 @@ You can validate those replay workloads through the repo-owned smoke path:
 bash scripts/check-bench-replay.sh
 ```
 
+For model-inference performance comparisons, use the MLX stack harness:
+
+```text
+python3 scripts/bench_mlx_inference_stack.py \
+  --model-dir .internal/models/Qwen3.5-9B-MLX-4bit \
+  --prompt-tokens 512,2048 \
+  --generation-tokens 128
+```
+
+That harness uses upstream `mlx_lm.benchmark` as the primary standard and can
+optionally ingest a local `mlx-swift-lm` JSON adapter. The older SwiftLM app
+server path is intentionally retired.
+
 llama.cpp examples also live alongside the MLX bring-up manifests:
 
 - `benchmarks/manifests/scenario/llama_cpp_chat_qwen_short.json`
 - `benchmarks/manifests/replay/llama_cpp_submit_cancel_dual.json`
 - `benchmarks/manifests/replay/llama_cpp_prompt_cache_reuse_dual.json`
 
-The `llama.cpp /completion` manifests still carry the broader stepwise replay
-and prompt-cache coverage. Scenario manifests are single-request blocking llama.cpp examples. Update
-their `runtime.backend_adapter.server_url` before running them directly, or use
-the repo-owned smoke script for the `llama.cpp`-backed path:
+The `llama.cpp /completion` manifests still carry the broader delegated
+stepwise replay and prompt-cache coverage. Treat those as non-MLX delegation
+contract checks, not AX-owned MLX model-inference throughput baselines.
+Scenario manifests are single-request blocking llama.cpp examples. Update their
+`runtime.backend_adapter.server_url` before running them directly, or use the
+repo-owned smoke script for the `llama.cpp`-backed path:
 
 ```text
 bash scripts/check-bench-preview.sh
 ```
 
-The checked-in frozen native Tier 2 scenario matrix lives at:
+The checked-in frozen MLX Tier 2 scenario matrix lives at:
 
 - `benchmarks/manifests/matrix/mlx_dense_phase7.json`
 

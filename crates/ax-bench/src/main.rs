@@ -11,12 +11,11 @@ use ax_engine_sdk::{
     BackendPolicy, EngineSession, EngineSessionConfig, EngineStepReport, GenerateFinishReason,
     GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling, GenerateStatus,
     GenerateStreamEvent, HostReport, LlamaCppConfig, MetalToolchainReport,
-    MlxGgufExportFailureKind, NativeModelArtifactsSource, NativeModelReport,
-    NativeRuntimeArtifactsSource, NativeRuntimeReport, PreviewBackendRequest, ResolutionPolicy,
-    ResolvedBackend, ResolvedSessionConfigRequest, RuntimeReport, SelectedBackend,
-    SessionRequestReport, SessionRequestState, SupportTier, ToolStatusReport,
-    classify_mlx_gguf_export_failure_message, current_host_report, current_metal_toolchain_report,
-    preview_support_tier_from_label,
+    NativeModelArtifactsSource, NativeModelReport, NativeRuntimeArtifactsSource,
+    NativeRuntimeReport, PreviewBackendRequest, ResolutionPolicy, ResolvedBackend,
+    ResolvedSessionConfigRequest, RuntimeReport, SelectedBackend, SessionRequestReport,
+    SessionRequestState, SupportTier, ToolStatusReport, current_host_report,
+    current_metal_toolchain_report, preview_support_tier_from_label,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -32,9 +31,6 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tracing_subscriber::EnvFilter;
 
-const MLX_GGUF_EXPORTER_ENV: &str = "AX_ENGINE_MLX_GGUF_EXPORTER";
-const MLX_GGUF_PYTHON_ENV: &str = "AX_ENGINE_MLX_GGUF_PYTHON";
-const MLX_GGUF_EXPORT_DTYPE_ENV: &str = "AX_ENGINE_MLX_GGUF_EXPORT_DTYPE";
 const NATIVE_DENSE_DEQUANTIZED_EXPORT_NOTE: &str =
     "source_quantization_dequantized_for_dense_native_export";
 const NATIVE_DENSE_DEQUANTIZED_SOURCE_BLOCKER: &str =
@@ -790,6 +786,7 @@ fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliErr
             mlx_runtime_artifacts_dir: None,
             backend_request,
             mlx_model_artifacts_dir,
+            mlx_no_speculative_decode: false,
         })
         .map_err(|error| CliError::Usage(format!("invalid inference configuration: {error}")))?;
 
@@ -1113,8 +1110,6 @@ struct DoctorReport {
     status: DoctorStatus,
     mlx_runtime_ready: bool,
     bringup_allowed: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    mlx_model_bridge: Option<Value>,
     host: HostReport,
     metal_toolchain: MetalToolchainReport,
     issues: Vec<String>,
@@ -1180,39 +1175,27 @@ fn map_metal_build_error(error: ax_engine_core::MetalRuntimeError) -> CliError {
 }
 
 fn build_doctor_report(host: HostReport, metal_toolchain: MetalToolchainReport) -> DoctorReport {
-    build_doctor_report_with_mlx_model_artifacts(host, metal_toolchain, None)
+    build_doctor_report_with_mlx_model_artifacts(host, metal_toolchain)
 }
 
 fn build_doctor_report_for_model(
     host: HostReport,
     metal_toolchain: MetalToolchainReport,
-    mlx_model_artifacts_dir: Option<&Path>,
+    _mlx_model_artifacts_dir: Option<&Path>,
 ) -> DoctorReport {
-    let mlx_model_bridge = mlx_model_artifacts_dir.and_then(|path| {
-        is_native_model_gguf_path(path).then(|| {
-            probe_mlx_gguf_bridge_with_config(path, &default_mlx_gguf_bridge_probe_config())
-        })
-    });
-    build_doctor_report_with_mlx_model_artifacts(host, metal_toolchain, mlx_model_bridge)
+    build_doctor_report_with_mlx_model_artifacts(host, metal_toolchain)
 }
 
 fn build_doctor_report_with_mlx_model_artifacts(
     host: HostReport,
     metal_toolchain: MetalToolchainReport,
-    mlx_model_bridge: Option<Value>,
 ) -> DoctorReport {
     let mlx_runtime_ready = host.supported_mlx_runtime && metal_toolchain.fully_available;
     let bringup_allowed = metal_toolchain.fully_available
         && (host.supported_mlx_runtime || host.unsupported_host_override_active);
-    let mlx_model_bridge_ready = mlx_model_bridge
-        .as_ref()
-        .and_then(|bridge| bridge.get("status"))
-        .and_then(Value::as_str)
-        .map(|status| status == "ready")
-        .unwrap_or(true);
-    let status = if mlx_runtime_ready && mlx_model_bridge_ready {
+    let status = if mlx_runtime_ready {
         DoctorStatus::Ready
-    } else if bringup_allowed && mlx_model_bridge_ready {
+    } else if bringup_allowed {
         DoctorStatus::BringupOnly
     } else {
         DoctorStatus::NotReady
@@ -1224,19 +1207,14 @@ fn build_doctor_report_with_mlx_model_artifacts(
         status,
         mlx_runtime_ready,
         bringup_allowed,
-        mlx_model_bridge: mlx_model_bridge.clone(),
         host: host.clone(),
         metal_toolchain: metal_toolchain.clone(),
-        issues: doctor_issues(&host, &metal_toolchain, mlx_model_bridge.as_ref()),
-        notes: doctor_notes(&host, mlx_model_bridge.as_ref()),
+        issues: doctor_issues(&host, &metal_toolchain),
+        notes: doctor_notes(&host),
     }
 }
 
-fn doctor_issues(
-    host: &HostReport,
-    metal_toolchain: &MetalToolchainReport,
-    mlx_model_bridge: Option<&Value>,
-) -> Vec<String> {
+fn doctor_issues(host: &HostReport, metal_toolchain: &MetalToolchainReport) -> Vec<String> {
     let mut issues = Vec::new();
 
     if !host.supported_mlx_runtime {
@@ -1267,37 +1245,16 @@ fn doctor_issues(
         ));
     }
 
-    if let Some(mlx_model_bridge) = mlx_model_bridge {
-        let status = mlx_model_bridge
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let blockers = mlx_model_bridge
-            .get("blockers")
-            .map(json_value_label)
-            .unwrap_or_else(|| "[]".to_string());
-        if status != "ready" {
-            issues.push(format!(
-                "MLX GGUF bridge is not ready for the selected model (status={status}, blockers={blockers})"
-            ));
-        }
-    }
-
     issues
 }
 
-fn doctor_notes(host: &HostReport, mlx_model_bridge: Option<&Value>) -> Vec<String> {
+fn doctor_notes(host: &HostReport) -> Vec<String> {
     let mut notes = vec!["llama.cpp backends do not widen supported host scope".to_string()];
     if host.unsupported_host_override_active {
         notes.push(
             "AX_ALLOW_UNSUPPORTED_HOST only unlocks development or CI bring-up and does not make benchmark or runtime results supported"
                 .to_string(),
         );
-    }
-    if let Some(mlx_model_bridge) = mlx_model_bridge {
-        if let Some(status) = mlx_model_bridge.get("status").and_then(Value::as_str) {
-            notes.push(format!("MLX GGUF bridge probe status={status}"));
-        }
     }
     notes
 }
@@ -1349,30 +1306,6 @@ fn render_doctor_report(report: &DoctorReport) -> String {
             report.metal_toolchain.fully_available
         ),
     ];
-
-    if let Some(mlx_model_bridge) = report.mlx_model_bridge.as_ref() {
-        lines.push(format!(
-            "mlx_model_bridge.status={}",
-            mlx_model_bridge
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-        ));
-        lines.push(format!(
-            "mlx_model_bridge.source_path={}",
-            mlx_model_bridge
-                .get("source_path")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-        ));
-        lines.push(format!(
-            "mlx_model_bridge.blockers={}",
-            mlx_model_bridge
-                .get("blockers")
-                .map(json_value_label)
-                .unwrap_or_else(|| "[]".to_string())
-        ));
-    }
 
     lines.extend([
         format!(
@@ -4258,6 +4191,7 @@ fn session_config_from_runtime(
         mlx_runtime_artifacts_source,
         mlx_model_artifacts_dir: runtime.mlx_model_artifacts_dir.clone(),
         mlx_model_artifacts_source: runtime.mlx_model_artifacts_source,
+        mlx_no_speculative_decode: false,
     })
 }
 
@@ -7042,15 +6976,8 @@ fn build_contract_failure_summary_markdown(
     let backend_adapter = nested_value(&runtime, &["backend_adapter"])
         .cloned()
         .unwrap_or(Value::String("none".to_string()));
-    let mlx_model_bridge_status = nested_value(&runtime, &["mlx_model_bridge", "status"])
-        .and_then(Value::as_str)
-        .unwrap_or("none");
-    let mlx_model_bridge_blockers = nested_value(&runtime, &["mlx_model_bridge", "blockers"])
-        .map(json_value_label)
-        .unwrap_or_else(|| "[]".to_string());
-
     format!(
-        "# Benchmark Contract Failure\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `contract_failure`\n- code: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{}`\n- mlx_model_bridge_status: `{mlx_model_bridge_status}`\n- mlx_model_bridge_blockers: `{mlx_model_bridge_blockers}`\n- scenario: `{}`\n\nFailure reason:\n\n{}\n\nRecommended action:\n\n{}\n",
+        "# Benchmark Contract Failure\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `contract_failure`\n- code: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{}`\n- scenario: `{}`\n\nFailure reason:\n\n{}\n\nRecommended action:\n\n{}\n",
         manifest_path.display(),
         failure.code,
         json_value_label(&backend_adapter),
@@ -7102,23 +7029,6 @@ fn classify_contract_failure(
         return ContractFailureClassification {
             code: "runtime_backend_resolution_contract_invalid",
             recommended_action: "Fix selected_backend, support_tier, resolution_policy, and fallback_reason so they satisfy the benchmark runtime contract.",
-        };
-    }
-
-    if message.contains("failed to export MLX model artifacts from GGUF") {
-        return match classify_mlx_gguf_export_failure_message(message) {
-            MlxGgufExportFailureKind::UnsupportedModel => ContractFailureClassification {
-                code: "mlx_gguf_bridge_unsupported_model",
-                recommended_action: "Use a GGUF model whose dense attention/FFN layout is supported by the MLX exporter, or switch this benchmark to a llama.cpp backend for the unsupported model.",
-            },
-            MlxGgufExportFailureKind::MissingPythonDependency => ContractFailureClassification {
-                code: "mlx_gguf_bridge_missing_dependency",
-                recommended_action: "Run ax-bench with a Python environment that has numpy and PyYAML available, or point AX_ENGINE_MLX_GGUF_PYTHON / AX_ENGINE_MLX_GGUF_EXPORTER at a ready GGUF exporter toolchain.",
-            },
-            MlxGgufExportFailureKind::ExportFailed => ContractFailureClassification {
-                code: "mlx_gguf_bridge_export_failed",
-                recommended_action: "Inspect the GGUF bridge diagnostics, fix the exporter failure, and rerun the MLX benchmark.",
-            },
         };
     }
 
@@ -8197,7 +8107,7 @@ fn runtime_config_from_manifest(manifest: &BenchmarkManifest) -> Result<RuntimeC
         .runtime
         .mlx_model_artifacts_dir
         .as_ref()
-        .map(|path| classify_mlx_model_artifacts_source(path))
+        .map(|_| NativeModelArtifactsSource::ExplicitConfig)
         .or(default_session_config.mlx_model_artifacts_source);
 
     Ok(RuntimeConfig {
@@ -9551,15 +9461,6 @@ fn serialize_runtime_metadata(
     runtime: &RuntimeConfig,
     actual_runtime: Option<&RuntimeReport>,
 ) -> Value {
-    let mlx_model_bridge = mlx_model_bridge_report(runtime);
-    serialize_runtime_metadata_with_mlx_model_artifacts(runtime, actual_runtime, mlx_model_bridge)
-}
-
-fn serialize_runtime_metadata_with_mlx_model_artifacts(
-    runtime: &RuntimeConfig,
-    actual_runtime: Option<&RuntimeReport>,
-    mlx_model_bridge: Option<Value>,
-) -> Value {
     let mut runtime_json = json!({
         "selected_backend": runtime.resolved_backend.selected_backend,
         "support_tier": runtime.resolved_backend.support_tier,
@@ -9674,13 +9575,6 @@ fn serialize_runtime_metadata_with_mlx_model_artifacts(
                     serde_json::to_value(native_model).expect("MLX model should serialize"),
                 );
         }
-    }
-
-    if let Some(mlx_model_bridge) = mlx_model_bridge {
-        runtime_json
-            .as_object_mut()
-            .expect("runtime metadata should serialize as object")
-            .insert("mlx_model_bridge".to_string(), mlx_model_bridge);
     }
 
     runtime_json
@@ -10309,50 +10203,6 @@ struct RuntimeConfig {
     mlx_model_artifacts_source: Option<NativeModelArtifactsSource>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct MlxGgufBridgeProbeConfig {
-    python_bin: PathBuf,
-    script_path: PathBuf,
-    output_dtype: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct MlxGgufBridgeProbeResult {
-    status: String,
-    #[serde(default)]
-    reason: Option<String>,
-    #[serde(default)]
-    report: Option<MlxGgufBridgeSupportReport>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct MlxGgufBridgeSupportReport {
-    architecture: String,
-    layer_count: u32,
-    #[serde(default)]
-    hidden_size: Option<u32>,
-    #[serde(default)]
-    vocab_size: Option<u32>,
-    fixed_attention_dims: bool,
-    #[serde(default)]
-    has_moe: bool,
-    #[serde(default)]
-    expert_count: Option<u32>,
-    #[serde(default)]
-    experts_per_token: Option<u32>,
-    #[serde(default)]
-    expert_intermediate_size: Option<u32>,
-    supports_export: bool,
-    #[serde(default = "default_true")]
-    runtime_ready: bool,
-    #[serde(default)]
-    blockers: Vec<String>,
-    #[serde(default)]
-    runtime_blockers: Vec<String>,
-    #[serde(default)]
-    notes: Vec<String>,
-}
-
 impl RuntimeConfig {
     fn uses_mlx_runtime(&self) -> bool {
         self.resolved_backend.selected_backend.is_mlx()
@@ -10376,7 +10226,7 @@ impl RuntimeConfig {
         }
 
         let model_dir = self.mlx_model_artifacts_dir.as_ref()?;
-        if is_native_model_gguf_path(model_dir) {
+        if model_dir.is_file() {
             return None;
         }
         let summary = NativeModelArtifacts::from_dir(model_dir).ok()?.summary();
@@ -10406,203 +10256,6 @@ impl RuntimeConfig {
         } else {
             "llama_cpp_blocking_runtime"
         }
-    }
-}
-
-fn is_native_model_gguf_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"))
-}
-
-fn default_mlx_gguf_bridge_probe_config() -> MlxGgufBridgeProbeConfig {
-    let script_path = env::var_os(MLX_GGUF_EXPORTER_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    let python_bin = env::var_os(MLX_GGUF_PYTHON_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("python3"));
-    let output_dtype = env::var(MLX_GGUF_EXPORT_DTYPE_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "f16".to_string());
-    MlxGgufBridgeProbeConfig {
-        python_bin,
-        script_path,
-        output_dtype,
-    }
-}
-
-fn parse_mlx_gguf_bridge_probe_result(
-    stdout: &[u8],
-    stderr: &[u8],
-) -> Option<MlxGgufBridgeProbeResult> {
-    for bytes in [stdout, stderr] {
-        let text = String::from_utf8_lossy(bytes).trim().to_string();
-        if text.is_empty() {
-            continue;
-        }
-        if let Ok(result) = serde_json::from_str::<MlxGgufBridgeProbeResult>(&text) {
-            return Some(result);
-        }
-    }
-    None
-}
-
-fn probe_mlx_gguf_bridge_with_config(
-    gguf_path: &Path,
-    probe_config: &MlxGgufBridgeProbeConfig,
-) -> Value {
-    let launch = Command::new(&probe_config.python_bin)
-        .arg(&probe_config.script_path)
-        .arg("--gguf-path")
-        .arg(gguf_path)
-        .arg("--dry-run")
-        .output();
-
-    let mut report = serde_json::Map::new();
-    report.insert(
-        "source_path".to_string(),
-        json!(gguf_path.display().to_string()),
-    );
-    report.insert(
-        "python_bin".to_string(),
-        json!(probe_config.python_bin.display().to_string()),
-    );
-    report.insert(
-        "script_path".to_string(),
-        json!(probe_config.script_path.display().to_string()),
-    );
-    report.insert(
-        "output_dtype".to_string(),
-        json!(probe_config.output_dtype.clone()),
-    );
-
-    match launch {
-        Ok(output) => {
-            let parsed = parse_mlx_gguf_bridge_probe_result(&output.stdout, &output.stderr);
-            if let Some(parsed) = parsed {
-                let bridge_status = if parsed.status == "ok" {
-                    if parsed
-                        .report
-                        .as_ref()
-                        .is_some_and(|support_report| !support_report.runtime_ready)
-                    {
-                        "runtime_blocked"
-                    } else {
-                        "ready"
-                    }
-                } else if parsed.status == "unsupported" {
-                    "unsupported"
-                } else {
-                    "error"
-                };
-                report.insert("status".to_string(), json!(bridge_status));
-                if let Some(reason) = parsed.reason {
-                    report.insert("reason".to_string(), json!(reason));
-                }
-                if let Some(support_report) = parsed.report {
-                    report.insert(
-                        "architecture".to_string(),
-                        json!(support_report.architecture),
-                    );
-                    report.insert("layer_count".to_string(), json!(support_report.layer_count));
-                    report.insert(
-                        "hidden_size".to_string(),
-                        support_report.hidden_size.map_or(Value::Null, Value::from),
-                    );
-                    report.insert(
-                        "vocab_size".to_string(),
-                        support_report.vocab_size.map_or(Value::Null, Value::from),
-                    );
-                    report.insert(
-                        "fixed_attention_dims".to_string(),
-                        json!(support_report.fixed_attention_dims),
-                    );
-                    report.insert(
-                        "supports_export".to_string(),
-                        json!(support_report.supports_export),
-                    );
-                    report.insert("has_moe".to_string(), json!(support_report.has_moe));
-                    report.insert(
-                        "expert_count".to_string(),
-                        support_report.expert_count.map_or(Value::Null, Value::from),
-                    );
-                    report.insert(
-                        "experts_per_token".to_string(),
-                        support_report
-                            .experts_per_token
-                            .map_or(Value::Null, Value::from),
-                    );
-                    report.insert(
-                        "expert_intermediate_size".to_string(),
-                        support_report
-                            .expert_intermediate_size
-                            .map_or(Value::Null, Value::from),
-                    );
-                    report.insert(
-                        "runtime_ready".to_string(),
-                        json!(support_report.runtime_ready),
-                    );
-                    let export_blockers = support_report.blockers;
-                    let runtime_blockers = support_report.runtime_blockers;
-                    let blockers = if export_blockers.is_empty() && !runtime_blockers.is_empty() {
-                        runtime_blockers.clone()
-                    } else {
-                        export_blockers.clone()
-                    };
-                    report.insert("blockers".to_string(), json!(blockers));
-                    report.insert("export_blockers".to_string(), json!(export_blockers));
-                    report.insert("runtime_blockers".to_string(), json!(runtime_blockers));
-                    report.insert("notes".to_string(), json!(support_report.notes));
-                }
-            } else {
-                report.insert("status".to_string(), json!("error"));
-                report.insert(
-                    "reason".to_string(),
-                    json!(format!(
-                        "failed to parse exporter output (exit_status={})",
-                        output.status
-                    )),
-                );
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                if !stdout.is_empty() {
-                    report.insert("stdout".to_string(), json!(stdout));
-                }
-                if !stderr.is_empty() {
-                    report.insert("stderr".to_string(), json!(stderr));
-                }
-            }
-        }
-        Err(error) => {
-            report.insert("status".to_string(), json!("launch_error"));
-            report.insert("reason".to_string(), json!(error.to_string()));
-        }
-    }
-
-    Value::Object(report)
-}
-
-fn mlx_model_bridge_report(runtime: &RuntimeConfig) -> Option<Value> {
-    if !runtime.uses_mlx_runtime() {
-        return None;
-    }
-    let gguf_path = runtime.mlx_model_artifacts_dir.as_deref()?;
-    if !is_native_model_gguf_path(gguf_path) {
-        return None;
-    }
-    Some(probe_mlx_gguf_bridge_with_config(
-        gguf_path,
-        &default_mlx_gguf_bridge_probe_config(),
-    ))
-}
-
-fn classify_mlx_model_artifacts_source(path: &Path) -> NativeModelArtifactsSource {
-    if is_native_model_gguf_path(path) {
-        NativeModelArtifactsSource::GeneratedFromGguf
-    } else {
-        NativeModelArtifactsSource::ExplicitConfig
     }
 }
 
@@ -12260,22 +11913,6 @@ mod tests {
         std::env::temp_dir().join(format!("ax-bench-{label}-{}-{nanos}", std::process::id()))
     }
 
-    fn fake_gguf_bridge_probe_script(body: &str, label: &str) -> PathBuf {
-        let path = unique_test_dir(label).with_extension("py");
-        fs::write(&path, body).expect("fake gguf bridge probe script should write");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mut permissions = fs::metadata(&path)
-                .expect("script metadata should exist")
-                .permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&path, permissions).expect("script should be executable");
-        }
-        path
-    }
-
     #[cfg(target_os = "macos")]
     #[allow(dead_code)]
     fn compiled_repo_metal_build_dir() -> Option<PathBuf> {
@@ -13458,8 +13095,7 @@ mod tests {
             mlx_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
         };
 
-        let runtime_json =
-            serialize_runtime_metadata_with_mlx_model_artifacts(&runtime, None, None);
+        let runtime_json = serialize_runtime_metadata(&runtime, None);
 
         assert_eq!(
             runtime_json
@@ -13556,7 +13192,7 @@ mod tests {
     }
 
     #[test]
-    fn serialize_runtime_metadata_omits_config_side_native_model_summary_for_gguf_bridge() {
+    fn serialize_runtime_metadata_omits_config_side_model_summary_for_file_path() {
         let runtime = RuntimeConfig {
             deterministic: false,
             max_batch_tokens: 128,
@@ -13571,7 +13207,7 @@ mod tests {
             ),
             backend_adapter: None,
             mlx_model_artifacts_dir: Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf")),
-            mlx_model_artifacts_source: Some(NativeModelArtifactsSource::GeneratedFromGguf),
+            mlx_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
         };
 
         let runtime_json = serialize_runtime_metadata(&runtime, None);
@@ -13584,180 +13220,6 @@ mod tests {
             None
         );
         assert_eq!(runtime_json.get("mlx_model"), None);
-    }
-
-    #[test]
-    fn probe_mlx_gguf_bridge_with_config_reports_ready_support() {
-        let gguf_path = unique_test_dir("gguf-bridge-ready-input").with_extension("gguf");
-        fs::write(&gguf_path, b"fake-gguf").expect("gguf input should write");
-        let script = fake_gguf_bridge_probe_script(
-            r#"#!/usr/bin/env python3
-from __future__ import annotations
-
-import json
-
-print(json.dumps({
-    "status": "ok",
-    "report": {
-        "architecture": "gemma4",
-        "layer_count": 62,
-        "hidden_size": 5376,
-        "vocab_size": 256000,
-        "fixed_attention_dims": False,
-        "supports_export": True,
-        "blockers": [],
-        "notes": ["attention_value_from_key_layers=5,11"]
-    }
-}))
-"#,
-            "gguf-bridge-ready-script",
-        );
-
-        let report = probe_mlx_gguf_bridge_with_config(
-            &gguf_path,
-            &MlxGgufBridgeProbeConfig {
-                python_bin: PathBuf::from("python3"),
-                script_path: script.clone(),
-                output_dtype: "f16".to_string(),
-            },
-        );
-
-        assert_eq!(report.get("status").and_then(Value::as_str), Some("ready"));
-        assert_eq!(
-            report.get("architecture").and_then(Value::as_str),
-            Some("gemma4")
-        );
-        assert_eq!(
-            report.get("supports_export").and_then(Value::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            report
-                .get("blockers")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(0)
-        );
-
-        let _ = fs::remove_file(script);
-        let _ = fs::remove_file(gguf_path);
-    }
-
-    #[test]
-    fn probe_mlx_gguf_bridge_with_config_reports_runtime_blocked_support() {
-        let gguf_path = unique_test_dir("gguf-bridge-runtime-blocked-input").with_extension("gguf");
-        fs::write(&gguf_path, b"fake-gguf").expect("gguf input should write");
-        let script = fake_gguf_bridge_probe_script(
-            r#"#!/usr/bin/env python3
-from __future__ import annotations
-
-import json
-
-print(json.dumps({
-    "status": "ok",
-    "report": {
-        "architecture": "gemma4",
-        "layer_count": 62,
-        "hidden_size": 2816,
-        "vocab_size": 256000,
-        "fixed_attention_dims": False,
-        "has_moe": True,
-        "expert_count": 128,
-        "experts_per_token": 8,
-        "expert_intermediate_size": 704,
-        "supports_export": True,
-        "runtime_ready": False,
-        "blockers": [],
-        "runtime_blockers": ["moe_execution_not_implemented"],
-        "notes": ["moe_manifest_export_supported_runtime_pending"]
-    }
-}))
-"#,
-            "gguf-bridge-runtime-blocked-script",
-        );
-
-        let report = probe_mlx_gguf_bridge_with_config(
-            &gguf_path,
-            &MlxGgufBridgeProbeConfig {
-                python_bin: PathBuf::from("python3"),
-                script_path: script.clone(),
-                output_dtype: "f16".to_string(),
-            },
-        );
-
-        assert_eq!(
-            report.get("status").and_then(Value::as_str),
-            Some("runtime_blocked")
-        );
-        assert_eq!(report.get("has_moe").and_then(Value::as_bool), Some(true));
-        assert_eq!(
-            report.get("expert_count").and_then(Value::as_u64),
-            Some(128)
-        );
-        assert_eq!(
-            report
-                .get("blockers")
-                .and_then(Value::as_array)
-                .and_then(|blockers| blockers.first())
-                .and_then(Value::as_str),
-            Some("moe_execution_not_implemented")
-        );
-        assert_eq!(
-            report
-                .get("runtime_blockers")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(1)
-        );
-
-        let _ = fs::remove_file(script);
-        let _ = fs::remove_file(gguf_path);
-    }
-
-    #[test]
-    fn serialize_runtime_metadata_with_mlx_model_artifacts_override_includes_bridge_report() {
-        let runtime = RuntimeConfig {
-            deterministic: false,
-            max_batch_tokens: 128,
-            block_size_tokens: 16,
-            kv_total_blocks: Some(32),
-            flags: RuntimeFlags::default(),
-            backend_policy: BackendPolicy::new(ResolutionPolicy::MlxOnly),
-            resolved_backend: ResolvedBackend::new(
-                SelectedBackend::Mlx,
-                SupportTier::MlxPreview,
-                None,
-            ),
-            backend_adapter: None,
-            mlx_model_artifacts_dir: Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf")),
-            mlx_model_artifacts_source: Some(NativeModelArtifactsSource::GeneratedFromGguf),
-        };
-
-        let runtime_json = serialize_runtime_metadata_with_mlx_model_artifacts(
-            &runtime,
-            None,
-            Some(json!({
-                "status": "unsupported",
-                "blockers": ["moe_expert_tensors_present"],
-                "source_path": "/tmp/google_gemma-4-26b-it-q4_k_m.gguf"
-            })),
-        );
-
-        assert_eq!(
-            runtime_json
-                .get("mlx_model_bridge")
-                .and_then(|value| value.get("status"))
-                .and_then(Value::as_str),
-            Some("unsupported")
-        );
-        assert_eq!(
-            runtime_json
-                .get("mlx_model_bridge")
-                .and_then(|value| value.get("blockers"))
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(1)
-        );
     }
 
     #[test]
@@ -13998,72 +13460,6 @@ print(json.dumps({
     }
 
     #[test]
-    fn doctor_report_marks_unsupported_gguf_bridge_not_ready() {
-        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
-        let toolchain = doctor_metal_toolchain_fixture(true, true, true);
-        let report = build_doctor_report_with_mlx_model_artifacts(
-            host,
-            toolchain,
-            Some(json!({
-                "status": "unsupported",
-                "source_path": "/tmp/google_gemma-4-26b-it-q4_k_m.gguf",
-                "blockers": ["moe_expert_tensors_present"]
-            })),
-        );
-
-        assert_eq!(report.status, DoctorStatus::NotReady);
-        assert!(
-            report
-                .issues
-                .iter()
-                .any(|issue| issue.contains("MLX GGUF bridge is not ready"))
-        );
-        assert!(
-            report
-                .notes
-                .iter()
-                .any(|note| note.contains("MLX GGUF bridge probe status=unsupported"))
-        );
-    }
-
-    #[test]
-    fn doctor_report_marks_runtime_blocked_gguf_bridge_not_ready() {
-        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
-        let toolchain = doctor_metal_toolchain_fixture(true, true, true);
-        let report = build_doctor_report_with_mlx_model_artifacts(
-            host,
-            toolchain,
-            Some(json!({
-                "status": "runtime_blocked",
-                "source_path": "/tmp/google_gemma-4-26b-a4b-it-q4_k_m.gguf",
-                "blockers": ["moe_execution_not_implemented"],
-                "runtime_blockers": ["moe_execution_not_implemented"],
-                "supports_export": true
-            })),
-        );
-
-        assert_eq!(report.status, DoctorStatus::NotReady);
-        assert!(
-            report
-                .issues
-                .iter()
-                .any(|issue| issue.contains("status=runtime_blocked"))
-        );
-        assert!(
-            report
-                .issues
-                .iter()
-                .any(|issue| issue.contains("moe_execution_not_implemented"))
-        );
-        assert!(
-            report
-                .notes
-                .iter()
-                .any(|note| note.contains("MLX GGUF bridge probe status=runtime_blocked"))
-        );
-    }
-
-    #[test]
     fn doctor_report_marks_override_host_as_bringup_only() {
         let host = doctor_host_fixture(false, true, Some("Apple M3 Max"));
         let toolchain = doctor_metal_toolchain_fixture(true, true, true);
@@ -14131,29 +13527,6 @@ print(json.dumps({
         assert!(text.contains("issues:"));
         assert!(text.contains("notes:"));
         assert!(text.contains("llama.cpp backends do not widen supported host scope"));
-    }
-
-    #[test]
-    fn render_doctor_report_includes_mlx_model_bridge_section_when_present() {
-        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
-        let toolchain = doctor_metal_toolchain_fixture(true, true, true);
-        let report = build_doctor_report_with_mlx_model_artifacts(
-            host,
-            toolchain,
-            Some(json!({
-                "status": "ready",
-                "source_path": "/tmp/google_gemma-4-31b-it-q4_k_m.gguf",
-                "blockers": []
-            })),
-        );
-
-        let text = render_doctor_report(&report);
-
-        assert!(text.contains("mlx_model_bridge.status=ready"));
-        assert!(
-            text.contains("mlx_model_bridge.source_path=/tmp/google_gemma-4-31b-it-q4_k_m.gguf")
-        );
-        assert!(text.contains("mlx_model_bridge.blockers=[]"));
     }
 
     #[test]
@@ -16245,62 +15618,6 @@ print(json.dumps({
     }
 
     #[test]
-    fn contract_failure_json_classifies_mlx_gguf_bridge_unsupported_model() {
-        let mut manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
-        );
-        manifest.runtime.mlx_model_artifacts_dir =
-            Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf"));
-
-        let artifact = build_contract_failure_json(
-            "run-gguf-unsupported",
-            "scenario",
-            Path::new("/tmp/manifest.json"),
-            &manifest,
-            Path::new("/tmp/results"),
-            123,
-            "failed to export MLX model artifacts from GGUF /tmp/google_gemma-4-26b-it-q4_k_m.gguf: status=unsupported blockers=moe_expert_tensors_present",
-        )
-        .expect("contract failure artifact should build");
-
-        assert_eq!(
-            artifact
-                .get("failure")
-                .and_then(|failure| failure.get("code"))
-                .and_then(Value::as_str),
-            Some("mlx_gguf_bridge_unsupported_model")
-        );
-    }
-
-    #[test]
-    fn contract_failure_json_classifies_mlx_gguf_bridge_missing_dependency() {
-        let mut manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
-        );
-        manifest.runtime.mlx_model_artifacts_dir =
-            Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf"));
-
-        let artifact = build_contract_failure_json(
-            "run-gguf-missing-dep",
-            "scenario",
-            Path::new("/tmp/manifest.json"),
-            &manifest,
-            Path::new("/tmp/results"),
-            123,
-            "failed to export MLX model artifacts from GGUF /tmp/google_gemma-4-26b-it-q4_k_m.gguf: status=error reason=missing_python_dependency",
-        )
-        .expect("contract failure artifact should build");
-
-        assert_eq!(
-            artifact
-                .get("failure")
-                .and_then(|failure| failure.get("code"))
-                .and_then(Value::as_str),
-            Some("mlx_gguf_bridge_missing_dependency")
-        );
-    }
-
-    #[test]
     fn build_session_preserves_llama_runtime_fields_via_sdk_factory() {
         let server_url = "http://127.0.0.1:8081";
         let mut manifest = llama_cpp_scenario_manifest(server_url);
@@ -16413,7 +15730,7 @@ print(json.dumps({
     }
 
     #[test]
-    fn build_session_marks_gguf_native_model_override_as_generated_bridge() {
+    fn build_session_preserves_gguf_model_override_as_explicit_source() {
         let mut manifest = load_test_manifest(
             "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
         );
@@ -16431,7 +15748,7 @@ print(json.dumps({
         );
         assert_eq!(
             config.mlx_model_artifacts_source,
-            Some(NativeModelArtifactsSource::GeneratedFromGguf)
+            Some(NativeModelArtifactsSource::ExplicitConfig)
         );
     }
 

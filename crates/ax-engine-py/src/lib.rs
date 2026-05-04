@@ -91,6 +91,7 @@ impl Session {
             backend_request,
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: effective_mlx_model_artifacts_dir,
+            mlx_no_speculative_decode: false,
         })
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let inner = EngineSession::new(config).map_err(to_py_runtime_error)?;

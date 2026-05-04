@@ -29,7 +29,7 @@ build report first into the default `build/metal` directory, or the explicit
 artifacts are present it fails closed unless the benchmark trace and aggregate
 route both show `metal_dispatch_completed`.
 
-The repo now also carries a checked-in frozen native Tier 2 scenario matrix at
+The repo now also carries a checked-in frozen MLX Tier 2 scenario matrix at
 `benchmarks/manifests/matrix/mlx_dense_phase7.json`, and
 `scripts/check-bench-matrix.sh` validates that the whole matrix executes as one
 roll-up through `ax-bench matrix`.
@@ -47,12 +47,17 @@ decision-grade benchmark hosts for AX results.
 hosts can still inspect the exact block reason or override state without
 guessing from a failed benchmark invocation.
 
-The repo now also carries llama.cpp example manifests under those same
-`scenario/` and `replay/` directories. The delegated stepwise
-`llama.cpp /completion` path is the shipping non-MLX benchmark
-path, including submit/cancel replay and delegated prompt-cache reuse. Older
-as legacy examples only; new benchmark coverage should use `mlx` for MLX
-mode or `llama.cpp` for non-MLX inference.
+Model-inference performance benchmarking is MLX-first. Use
+`scripts/bench_mlx_inference_stack.py` to compare AX Engine MLX mode with
+upstream `mlx_lm.benchmark`; `mlx-swift-lm` can be added through that script's
+explicit JSON adapter once a local Swift harness exists. The older SwiftLM app
+server benchmark is retired because it measured application-server behavior,
+not the standard MLX library baseline.
+
+The repo still carries llama.cpp example manifests under those same
+`scenario/` and `replay/` directories. Those cover the delegated non-MLX
+contract, submit/cancel replay, and backend-reported prompt-cache evidence.
+Do not use them as AX-owned model-inference throughput claims.
 
 ## Benchmark Philosophy
 
@@ -79,12 +84,12 @@ That means:
   native AX bring-up, only temporarily allowed for CI/development bring-up via
   override, or not ready because the host or Metal toolchain is outside the
   native contract
-- `ax-bench scenario` now also supports the delegated llama.cpp benchmark path
-  through the SDK-owned backend contract
-  not part of the current shipping benchmark contract
+- `ax-bench scenario` still supports the delegated llama.cpp path through the
+  SDK-owned backend contract, but those runs are route-contract validation for
+  non-MLX delegation, not AX MLX model-inference benchmarks
 - `llama.cpp /completion` scenario and replay manifests still run through the
   preview stepwise lifecycle exposed by the SDK-backed thin access layers,
-  which is the current delegated path for multi-request replay and prompt-cache
+  which is the delegated path for multi-request replay and prompt-cache
   coverage
 - execution artifacts now contain observed route and runtime-derived metrics
 - outputs are still exploratory and not yet decision-grade performance numbers

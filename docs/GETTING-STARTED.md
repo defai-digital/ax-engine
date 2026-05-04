@@ -123,15 +123,10 @@ To run a checked-in scenario manifest through the current bring-up path:
 cargo run -p ax-bench -- scenario --manifest benchmarks/manifests/scenario/chat_qwen_short.json --output-root benchmarks/results
 ```
 
-To benchmark one delegated server-backed llama.cpp scenario through the
-blocking llama.cpp runtime:
-
-```text
-```
-
-The checked-in delegated llama.cpp manifests are historical examples. New
-non-MLX benchmark coverage should use the stepwise
-`llama.cpp /completion` manifests.
+The checked-in delegated llama.cpp manifests are route-contract examples, not
+AX-owned model-inference benchmarks. They should be used to validate the
+stepwise `llama.cpp /completion` delegation path and backend-reported
+prompt-cache evidence.
 
 To validate checked-in MLX dense Qwen and Gemma scenario manifests
 through one repo-owned smoke command:

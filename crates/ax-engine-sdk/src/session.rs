@@ -2,9 +2,6 @@ use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ax_engine_core::{
     CacheGroupId, EngineCore, EngineCoreError, EngineStepOutcome, KvManagerConfig,
@@ -34,14 +31,6 @@ use crate::request::{
 const LLAMA_CPP_STREAM_EXECUTION_PLAN: &str = "llama_cpp.server_completion_stream";
 const NATIVE_METAL_BUILD_DIR_ENV: &str = "AX_ENGINE_METAL_BUILD_DIR";
 const NATIVE_MODEL_DIR_ENV: &str = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR";
-#[allow(dead_code)]
-const MLX_GGUF_EXPORTER_ENV: &str = "AX_ENGINE_MLX_GGUF_EXPORTER";
-#[allow(dead_code)]
-const MLX_GGUF_PYTHON_ENV: &str = "AX_ENGINE_MLX_GGUF_PYTHON";
-#[allow(dead_code)]
-const MLX_GGUF_EXPORT_DTYPE_ENV: &str = "AX_ENGINE_MLX_GGUF_EXPORT_DTYPE";
-#[allow(dead_code)]
-const MLX_GGUF_EXPORT_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_LLAMA_CPP_TERMINAL_REQUESTS: usize = 1024;
 
 #[derive(Clone, Debug)]
@@ -56,6 +45,8 @@ pub struct EngineSessionConfig {
     pub mlx_runtime_artifacts_source: Option<NativeRuntimeArtifactsSource>,
     pub mlx_model_artifacts_dir: Option<PathBuf>,
     pub mlx_model_artifacts_source: Option<NativeModelArtifactsSource>,
+    /// When true, MLX runner uses single-token greedy decode (disables n-gram speculation).
+    pub mlx_no_speculative_decode: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -68,6 +59,8 @@ pub struct PreviewSessionConfigRequest {
     pub backend_request: PreviewBackendRequest,
     pub mlx_runtime_artifacts_dir: Option<PathBuf>,
     pub mlx_model_artifacts_dir: Option<PathBuf>,
+    /// When true, MLX runner uses single-token greedy decode (disables n-gram speculation).
+    pub mlx_no_speculative_decode: bool,
 }
 
 impl Default for PreviewSessionConfigRequest {
@@ -81,6 +74,7 @@ impl Default for PreviewSessionConfigRequest {
             backend_request: PreviewBackendRequest::default(),
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: None,
+            mlx_no_speculative_decode: false,
         }
     }
 }
@@ -99,6 +93,7 @@ pub struct ResolvedSessionConfigRequest {
     pub mlx_runtime_artifacts_source: Option<NativeRuntimeArtifactsSource>,
     pub mlx_model_artifacts_dir: Option<PathBuf>,
     pub mlx_model_artifacts_source: Option<NativeModelArtifactsSource>,
+    pub mlx_no_speculative_decode: bool,
 }
 
 impl Default for ResolvedSessionConfigRequest {
@@ -117,6 +112,7 @@ impl Default for ResolvedSessionConfigRequest {
             mlx_runtime_artifacts_source: default.mlx_runtime_artifacts_source,
             mlx_model_artifacts_dir: default.mlx_model_artifacts_dir,
             mlx_model_artifacts_source: default.mlx_model_artifacts_source,
+            mlx_no_speculative_decode: default.mlx_no_speculative_decode,
         }
     }
 }
@@ -146,6 +142,7 @@ impl Default for EngineSessionConfig {
                 .as_ref()
                 .map(|selection| selection.dir.clone()),
             mlx_model_artifacts_source: mlx_model_artifacts.map(|selection| selection.source),
+            mlx_no_speculative_decode: false,
         }
     }
 }
@@ -177,10 +174,7 @@ impl EngineSessionConfig {
             request
                 .mlx_model_artifacts_dir
                 .map(|dir| MlxModelArtifactsSelection {
-                    source: mlx_model_artifacts_source_from_path(
-                        &dir,
-                        NativeModelArtifactsSource::ExplicitConfig,
-                    ),
+                    source: NativeModelArtifactsSource::ExplicitConfig,
                     dir,
                 });
 
@@ -209,6 +203,7 @@ impl EngineSessionConfig {
             mlx_model_artifacts_source: mlx_model_artifacts
                 .map(|selection| selection.source)
                 .or(default.mlx_model_artifacts_source),
+            mlx_no_speculative_decode: request.mlx_no_speculative_decode,
         })
     }
 
@@ -244,6 +239,7 @@ impl EngineSessionConfig {
             mlx_runtime_artifacts_source: request.mlx_runtime_artifacts_source,
             mlx_model_artifacts_dir: request.mlx_model_artifacts_dir,
             mlx_model_artifacts_source: request.mlx_model_artifacts_source,
+            mlx_no_speculative_decode: request.mlx_no_speculative_decode,
         }
     }
 
@@ -257,10 +253,7 @@ impl EngineSessionConfig {
         env::var_os(NATIVE_MODEL_DIR_ENV)
             .map(PathBuf::from)
             .map(|dir| MlxModelArtifactsSelection {
-                source: mlx_model_artifacts_source_from_path(
-                    &dir,
-                    NativeModelArtifactsSource::ExplicitEnv,
-                ),
+                source: NativeModelArtifactsSource::ExplicitEnv,
                 dir,
             })
     }
@@ -445,59 +438,10 @@ struct MlxModelArtifactsSelection {
     source: NativeModelArtifactsSource,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
-struct MlxGgufExportConfig {
-    python_bin: PathBuf,
-    script_path: PathBuf,
-    output_dtype: String,
-}
-
 #[derive(Clone, Debug)]
 struct PreparedEngineSessionConfig {
     config: EngineSessionConfig,
     ephemeral_mlx_model_artifacts_dir: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug, serde::Deserialize)]
-#[allow(dead_code)]
-struct MlxGgufExportResult {
-    status: String,
-    #[serde(default)]
-    reason: Option<String>,
-    #[serde(default)]
-    report: Option<MlxGgufExportSupportReport>,
-}
-
-#[derive(Clone, Debug, serde::Deserialize)]
-#[allow(dead_code)]
-struct MlxGgufExportSupportReport {
-    #[serde(default)]
-    blockers: Vec<String>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MlxGgufExportFailureKind {
-    MissingPythonDependency,
-    UnsupportedModel,
-    ExportFailed,
-}
-
-pub fn classify_mlx_gguf_export_failure_message(message: &str) -> MlxGgufExportFailureKind {
-    if message.contains("missing_python_dependency") {
-        return MlxGgufExportFailureKind::MissingPythonDependency;
-    }
-
-    if message.contains("status=unsupported")
-        || message.contains("blockers=")
-        || message.contains("moe_expert_tensors_present")
-        || message.contains("hybrid_ssm_or_attention_gate_tensors_present")
-        || message.contains("packed_qkv_export_not_implemented")
-    {
-        return MlxGgufExportFailureKind::UnsupportedModel;
-    }
-
-    MlxGgufExportFailureKind::ExportFailed
 }
 
 fn resolve_default_mlx_runtime_artifacts_selection(
@@ -535,220 +479,6 @@ fn detect_repo_owned_mlx_runtime_artifacts_dir_from(
     }
 
     None
-}
-
-#[allow(dead_code)]
-fn default_mlx_gguf_export_config() -> MlxGgufExportConfig {
-    let script_path = env::var_os(MLX_GGUF_EXPORTER_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    let python_bin = env::var_os(MLX_GGUF_PYTHON_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("python3"));
-    let output_dtype = env::var(MLX_GGUF_EXPORT_DTYPE_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "f16".to_string());
-    MlxGgufExportConfig {
-        python_bin,
-        script_path,
-        output_dtype,
-    }
-}
-
-pub fn is_gguf_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"))
-}
-
-/// Returns true when the Metal runner can load GGUF Q4_K_M files natively
-/// without the Python export step.  This is the default on macOS.
-#[allow(dead_code)]
-fn mlx_gguf_loading_enabled() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        true
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
-    }
-}
-
-/// If `model_dir` looks like an HF/MLX model directory (has `config.json` and
-/// safetensors files but no `model-manifest.json`), run the native converter
-/// and write the manifest in-place so `NativeModelArtifacts::from_dir` can load
-/// it directly without a separate conversion step.
-#[allow(dead_code)]
-fn try_auto_convert_hf_model_dir(
-    model_dir: &Path,
-) -> Result<(), ax_engine_core::convert::ConvertError> {
-    let manifest_path = model_dir.join(ax_engine_core::AX_NATIVE_MODEL_MANIFEST_FILE);
-    if manifest_path.is_file() {
-        return Ok(());
-    }
-    let config_path = model_dir.join("config.json");
-    if !config_path.is_file() {
-        return Ok(());
-    }
-    let manifest = ax_engine_core::convert::convert_hf_model_dir(model_dir)?;
-    ax_engine_core::convert::write_manifest(model_dir, &manifest)
-}
-
-fn mlx_model_artifacts_source_from_path(
-    path: &Path,
-    default_source: NativeModelArtifactsSource,
-) -> NativeModelArtifactsSource {
-    if is_gguf_path(path) {
-        NativeModelArtifactsSource::GeneratedFromGguf
-    } else {
-        default_source
-    }
-}
-
-#[allow(dead_code)]
-fn unique_mlx_gguf_export_dir(gguf_path: &Path) -> PathBuf {
-    let model_stem = gguf_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| !stem.is_empty())
-        .unwrap_or("model");
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    env::temp_dir().join(format!(
-        "ax-engine-native-gguf-{model_stem}-{pid}-{timestamp}"
-    ))
-}
-
-#[allow(dead_code)]
-fn summarize_mlx_gguf_export_failure(stdout: &[u8], stderr: &[u8]) -> String {
-    for bytes in [stderr, stdout] {
-        let text = String::from_utf8_lossy(bytes).trim().to_string();
-        if text.is_empty() {
-            continue;
-        }
-        if let Ok(parsed) = serde_json::from_str::<MlxGgufExportResult>(&text) {
-            if let Some(report) = parsed.report {
-                if !report.blockers.is_empty() {
-                    return format!(
-                        "status={} blockers={}",
-                        parsed.status,
-                        report.blockers.join(",")
-                    );
-                }
-            }
-            if let Some(reason) = parsed.reason {
-                return format!("status={} reason={reason}", parsed.status);
-            }
-            return format!("status={}", parsed.status);
-        }
-        return text;
-    }
-    "exporter produced no diagnostic output".to_string()
-}
-
-#[allow(dead_code)]
-fn export_native_model_artifacts_from_gguf_with_config(
-    gguf_path: &Path,
-    export_config: &MlxGgufExportConfig,
-) -> Result<PathBuf, EngineSessionError> {
-    let output_dir = unique_mlx_gguf_export_dir(gguf_path);
-    let mut command = Command::new(&export_config.python_bin);
-    command
-        .arg(&export_config.script_path)
-        .arg("--gguf-path")
-        .arg(gguf_path)
-        .arg("--output-dir")
-        .arg(&output_dir)
-        .arg("--dtype")
-        .arg(&export_config.output_dtype);
-    let command_output = match run_gguf_export_command_with_timeout(
-        command,
-        &export_config.python_bin,
-        gguf_path,
-        MLX_GGUF_EXPORT_TIMEOUT,
-    ) {
-        Ok(output) => output,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&output_dir);
-            return Err(error);
-        }
-    };
-
-    if !command_output.status.success() {
-        let message =
-            summarize_mlx_gguf_export_failure(&command_output.stdout, &command_output.stderr);
-        let _ = fs::remove_dir_all(&output_dir);
-        return Err(EngineSessionError::NativeModelGgufExportFailed {
-            gguf_path: gguf_path.to_path_buf(),
-            message,
-        });
-    }
-
-    let manifest_path = output_dir.join(ax_engine_core::AX_NATIVE_MODEL_MANIFEST_FILE);
-    if !manifest_path.is_file() {
-        let message =
-            summarize_mlx_gguf_export_failure(&command_output.stdout, &command_output.stderr);
-        let _ = fs::remove_dir_all(&output_dir);
-        return Err(EngineSessionError::NativeModelGgufExportFailed {
-            gguf_path: gguf_path.to_path_buf(),
-            message: format!("export succeeded without manifest output: {message}"),
-        });
-    }
-
-    Ok(output_dir)
-}
-
-#[allow(dead_code)]
-fn run_gguf_export_command_with_timeout(
-    mut command: Command,
-    program: &Path,
-    gguf_path: &Path,
-    timeout: Duration,
-) -> Result<Output, EngineSessionError> {
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| EngineSessionError::NativeModelGgufExportLaunch {
-            gguf_path: gguf_path.to_path_buf(),
-            program: program.to_path_buf(),
-            source,
-        })?;
-    let deadline = Instant::now() + timeout;
-
-    loop {
-        match child.try_wait().map_err(|source| {
-            EngineSessionError::NativeModelGgufExportLaunch {
-                gguf_path: gguf_path.to_path_buf(),
-                program: program.to_path_buf(),
-                source,
-            }
-        })? {
-            Some(_) => {
-                return child.wait_with_output().map_err(|source| {
-                    EngineSessionError::NativeModelGgufExportLaunch {
-                        gguf_path: gguf_path.to_path_buf(),
-                        program: program.to_path_buf(),
-                        source,
-                    }
-                });
-            }
-            None if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(EngineSessionError::NativeModelGgufExportFailed {
-                    gguf_path: gguf_path.to_path_buf(),
-                    message: format!("exporter timed out after {}s", timeout.as_secs()),
-                });
-            }
-            None => thread::sleep(Duration::from_millis(10)),
-        }
-    }
 }
 
 fn prepare_engine_session_config(
@@ -1964,21 +1694,6 @@ pub enum EngineSessionError {
     UnsupportedHostHardware { detected_host: String },
     #[error("llama.cpp backend {selected_backend:?} requires llama_backend config")]
     MissingLlamaCppConfig { selected_backend: SelectedBackend },
-    #[error("failed to launch native GGUF exporter {program} for model {gguf_path}: {source}")]
-    NativeModelGgufExportLaunch {
-        gguf_path: PathBuf,
-        program: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("failed to export MLX model artifacts from GGUF {gguf_path}: {message}")]
-    NativeModelGgufExportFailed { gguf_path: PathBuf, message: String },
-    #[error("failed to auto-convert MLX model artifacts at {model_dir}: {source}")]
-    NativeModelAutoConvert {
-        model_dir: PathBuf,
-        #[source]
-        source: ax_engine_core::convert::ConvertError,
-    },
     #[error(
         "llama.cpp backend {selected_backend:?} does not support {operation} in the preview SDK session yet"
     )]
@@ -2042,7 +1757,12 @@ fn build_mlx_core(config: &EngineSessionConfig) -> Result<EngineCore, EngineSess
     let artifacts = NativeModelArtifacts::from_dir(model_dir)
         .map_err(|e| EngineSessionError::MetalRuntime(e.into()))?;
 
-    let runner = MlxRunner::from_artifacts(&artifacts, DEFAULT_PREFILL_CHUNK).map_err(|e| {
+    let runner = MlxRunner::from_artifacts(
+        &artifacts,
+        DEFAULT_PREFILL_CHUNK,
+        config.mlx_no_speculative_decode,
+    )
+    .map_err(|e| {
         EngineSessionError::MetalRuntime(ax_engine_core::MetalRuntimeError::Generic(e.to_string()))
     })?;
 
@@ -2892,84 +2612,6 @@ sys.exit(17)
         path
     }
 
-    #[allow(dead_code)]
-    fn fake_gguf_exporter_script(fixture_dir: &Path) -> std::path::PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should be valid")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("ax-engine-session-gguf-export-{unique}.py"));
-        let script = format!(
-            r#"#!/usr/bin/env python3
-from __future__ import annotations
-
-import json
-import shutil
-import sys
-from pathlib import Path
-
-fixture_dir = Path({fixture_dir:?})
-args = sys.argv[1:]
-output_dir = Path(args[args.index("--output-dir") + 1])
-output_dir.mkdir(parents=True, exist_ok=True)
-shutil.copytree(fixture_dir, output_dir, dirs_exist_ok=True)
-print(json.dumps({{
-    "status": "ok",
-    "output_dir": str(output_dir),
-    "manifest_path": str(output_dir / "model-manifest.json"),
-}}))
-"#,
-            fixture_dir = fixture_dir
-        );
-
-        fs::write(&path, script).expect("fake gguf exporter should be written");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mut permissions = fs::metadata(&path)
-                .expect("script metadata should exist")
-                .permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&path, permissions).expect("script should be executable");
-        }
-        path
-    }
-
-    #[allow(dead_code)]
-    fn failing_gguf_exporter_script() -> std::path::PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should be valid")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("ax-engine-session-gguf-fail-{unique}.py"));
-        let script = r#"#!/usr/bin/env python3
-from __future__ import annotations
-
-import json
-import sys
-
-print(json.dumps({
-    "status": "unsupported",
-    "report": {"blockers": ["moe_expert_tensors_present"]},
-}))
-raise SystemExit(1)
-"#;
-
-        fs::write(&path, script).expect("failing fake gguf exporter should be written");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mut permissions = fs::metadata(&path)
-                .expect("script metadata should exist")
-                .permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&path, permissions).expect("script should be executable");
-        }
-        path
-    }
-
     #[test]
     fn default_mlx_runtime_artifacts_dir_prefers_explicit_env_path() {
         let (repo_root, _build_dir) = write_valid_repo_owned_mlx_runtime_fixture();
@@ -3032,26 +2674,6 @@ raise SystemExit(1)
             Some(NativeRuntimeReport::metal_bringup(
                 NativeRuntimeArtifactsSource::ExplicitConfig,
             ))
-        );
-    }
-
-    #[test]
-    fn classify_mlx_gguf_export_failure_message_distinguishes_failure_kinds() {
-        assert_eq!(
-            classify_mlx_gguf_export_failure_message(
-                "status=unsupported blockers=moe_expert_tensors_present"
-            ),
-            MlxGgufExportFailureKind::UnsupportedModel
-        );
-        assert_eq!(
-            classify_mlx_gguf_export_failure_message(
-                "status=error reason=missing_python_dependency"
-            ),
-            MlxGgufExportFailureKind::MissingPythonDependency
-        );
-        assert_eq!(
-            classify_mlx_gguf_export_failure_message("exporter produced no diagnostic output"),
-            MlxGgufExportFailureKind::ExportFailed
         );
     }
 
@@ -3180,7 +2802,7 @@ raise SystemExit(1)
     }
 
     #[test]
-    fn preview_session_config_factory_marks_explicit_gguf_model_path_as_generated_bridge() {
+    fn preview_session_config_factory_preserves_explicit_gguf_model_path_source() {
         let config = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
             mlx_model_artifacts_dir: Some(
                 Path::new("/tmp/google_gemma-4-26b-it-q4_k_m.gguf").to_path_buf(),
@@ -3195,7 +2817,7 @@ raise SystemExit(1)
         );
         assert_eq!(
             config.mlx_model_artifacts_source,
-            Some(NativeModelArtifactsSource::GeneratedFromGguf)
+            Some(NativeModelArtifactsSource::ExplicitConfig)
         );
     }
 
@@ -3219,6 +2841,7 @@ raise SystemExit(1)
             mlx_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
             mlx_model_artifacts_dir: Some(Path::new("/tmp/ax-model").to_path_buf()),
             mlx_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
+            mlx_no_speculative_decode: true,
         });
 
         assert_eq!(
@@ -3252,6 +2875,7 @@ raise SystemExit(1)
             config.mlx_model_artifacts_source,
             Some(NativeModelArtifactsSource::ExplicitConfig)
         );
+        assert!(config.mlx_no_speculative_decode);
     }
 
     fn llama_cpp_server_session(server_url: String) -> EngineSession {

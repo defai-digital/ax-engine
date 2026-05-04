@@ -40,5 +40,5 @@
     "expect_deterministic": true,
     "require_prefix_reuse": true
   },
-  "notes": "LlamaCpp shared-prefix scenario for delegated llama.cpp /completion prompt-cache benchmarking. Update runtime.backend_adapter.server_url before running. Treat any reported reuse as delegated backend prompt-cache evidence, not AX Engine scheduler or retained-block reuse."
+  "notes": "LlamaCpp shared-prefix scenario for delegated llama.cpp /completion prompt-cache checks. Update runtime.backend_adapter.server_url before running. Treat any reported reuse as delegated backend prompt-cache evidence, not AX Engine scheduler or retained-block reuse."
 }

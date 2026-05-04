@@ -64,6 +64,11 @@ pub struct ServerArgs {
     pub llama_server_url: Option<String>,
     #[arg(long = "mlx-model-artifacts-dir")]
     pub mlx_model_artifacts_dir: Option<PathBuf>,
+
+    /// Disable n-gram speculative decode and use single-token greedy decode instead.
+    /// Useful for establishing a clean greedy baseline in benchmarks.
+    #[arg(long = "no-speculative-decode", default_value_t = false)]
+    pub no_speculative_decode: bool,
 }
 
 impl ServerArgs {
@@ -107,6 +112,7 @@ impl ServerArgs {
             backend_request,
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir,
+            mlx_no_speculative_decode: self.no_speculative_decode,
         })
         .map_err(|error| error.to_string())
     }
@@ -133,6 +139,7 @@ mod tests {
             llama_model_path: None,
             llama_server_url: None,
             mlx_model_artifacts_dir: None,
+            no_speculative_decode: false,
         }
     }
 
@@ -188,6 +195,7 @@ mod tests {
             max_batch_tokens: 2048,
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: None,
+            mlx_no_speculative_decode: false,
             backend_request: PreviewBackendRequest {
                 support_tier: SupportTier::MlxPreview,
                 llama_cli_path: PathBuf::from("llama-cli"),
@@ -225,6 +233,7 @@ mod tests {
             max_batch_tokens: 1024,
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: None,
+            mlx_no_speculative_decode: false,
             backend_request: PreviewBackendRequest::shipping_default_llama_cpp(
                 PathBuf::from("llama-cli"),
                 None,
@@ -324,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn session_config_marks_explicit_gguf_model_path_as_generated_bridge() {
+    fn session_config_preserves_explicit_gguf_model_path_source() {
         let mlx_model_artifacts_dir = PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf");
         let args = ServerArgs {
             port: 8081,
@@ -344,7 +353,7 @@ mod tests {
         );
         assert_eq!(
             actual.mlx_model_artifacts_source,
-            Some(ax_engine_sdk::NativeModelArtifactsSource::GeneratedFromGguf)
+            Some(ax_engine_sdk::NativeModelArtifactsSource::ExplicitConfig)
         );
     }
 }

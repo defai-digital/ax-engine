@@ -54,8 +54,8 @@ The CLI currently validates:
 - runtime correctness and determinism gates for the current bring-up path
 - structured artifact emission for execution and compare flows, including
   prefix-reuse provenance, explicit prefix-cache evidence, delegated cached
-  prompt-token counts, and compare-time runtime identity on delegated
-  benchmark paths
+  prompt-token counts, and compare-time runtime identity on delegated check
+  paths
 - preview server request translation through the SDK-backed generation and
   request lifecycle paths
 - preview SSE transport through the SDK-backed lifecycle path
@@ -66,18 +66,17 @@ It does not yet perform full production benchmarking.
 The current implementation executes the deterministic engine bring-up path, so
 the artifacts reflect real request progress, route metadata, and synthetic
 runtime observations rather than placeholder files.
-`ax-bench` now also supports delegated llama.cpp benchmarking through the
+`ax-bench` also supports delegated llama.cpp contract checks through the
 SDK-owned backend contract. The stepwise `llama.cpp /completion` adapter carries
-the broader delegated
-coverage for multi-request scenario and replay manifests, including submit /
-cancel shapes driven through one shared SDK session. Replay and llama.cpp
-`shared_prefix` scenarios still surface backend-managed prompt-cache reuse only
-through that stepwise delegated telemetry. Unsupported delegated shapes still
-emit a `contract_failure.json` artifact plus `summary.md` instead of synthetic
-execution metrics.
+the broader delegated coverage for multi-request scenario and replay manifests,
+including submit / cancel shapes driven through one shared SDK session. Replay
+and llama.cpp `shared_prefix` scenarios still surface backend-managed
+prompt-cache reuse only through that stepwise delegated telemetry. Unsupported
+delegated shapes still emit a `contract_failure.json` artifact plus
+`summary.md` instead of synthetic execution metrics.
 Successful compare runs now also carry the resolved compare runtime identity in
 `regression.json` and `comparison.md`, so llama.cpp results do not read like
-MLX bring-up compares; delegated prompt-cache runs also surface the
+MLX compares; delegated prompt-cache runs also surface the
 backend-reported cached-token count directly instead of hiding it only inside
 route crossover metadata.
 `ax-bench baseline` now snapshots one successful benchmark result into a named
@@ -104,9 +103,9 @@ delegated prompt-cache reuse replay example at
 `benchmarks/manifests/replay/llama_cpp_prompt_cache_reuse_dual.json`; update their `server_url` before running them directly.
 `ax-bench doctor` now turns the SDK-owned host and Metal-toolchain diagnostics
 into one human-readable or JSON readiness report. It distinguishes fully
-supported M4-or-newer native hosts from unsupported-host override bring-up, and
-it keeps the rule explicit that llama.cpp adapters do not widen AX native
-host support.
+supported M4-or-newer MLX hosts from unsupported-host override bring-up, and it
+keeps the rule explicit that llama.cpp adapters do not widen AX-owned MLX host
+support.
 `ax-bench metal-build` now owns the checked-in Phase 1 Metal build contract in
 Rust, writing `doctor.json`, `build_report.json`, and `summary.md` into the
 target build directory while driving the explicit `xcrun metal -> metal-ar ->

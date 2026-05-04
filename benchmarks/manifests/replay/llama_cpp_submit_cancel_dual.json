@@ -56,5 +56,5 @@
     "expect_deterministic": true,
     "require_prefix_reuse": false
   },
-  "notes": "LlamaCpp example replay manifest for server-backed llama.cpp /completion submit/cancel benchmarking. Update runtime.backend_adapter.server_url before running."
+  "notes": "LlamaCpp example replay manifest for server-backed llama.cpp /completion submit/cancel delegation checks. Update runtime.backend_adapter.server_url before running."
 }

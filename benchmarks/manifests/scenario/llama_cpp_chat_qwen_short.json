@@ -40,5 +40,5 @@
     "expect_deterministic": true,
     "require_prefix_reuse": false
   },
-  "notes": "LlamaCpp example manifest for server-backed llama.cpp /completion benchmarking. Update runtime.backend_adapter.server_url before running."
+  "notes": "LlamaCpp example manifest for server-backed llama.cpp /completion delegation checks. Update runtime.backend_adapter.server_url before running."
 }

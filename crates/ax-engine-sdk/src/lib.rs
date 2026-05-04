@@ -37,7 +37,6 @@ pub use request::{
 };
 pub use session::{
     EngineSession, EngineSessionConfig, EngineSessionError, GenerateStream, GenerateStreamState,
-    MlxGgufExportFailureKind, PreviewSessionConfigError, PreviewSessionConfigRequest,
-    ResolvedSessionConfigRequest, StatelessGenerateContext,
-    classify_mlx_gguf_export_failure_message, is_gguf_path,
+    PreviewSessionConfigError, PreviewSessionConfigRequest, ResolvedSessionConfigRequest,
+    StatelessGenerateContext,
 };
