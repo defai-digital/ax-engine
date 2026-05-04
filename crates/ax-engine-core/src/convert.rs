@@ -666,8 +666,12 @@ fn parse_layer_types(
         return Vec::new();
     }
     if let Some(layer_types) = config
-        .get("text_config")
-        .and_then(|tc| tc.get("layer_types"))
+        .get("layer_types")
+        .or_else(|| {
+            config
+                .get("text_config")
+                .and_then(|tc| tc.get("layer_types"))
+        })
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
@@ -705,7 +709,9 @@ fn compute_kv_shared_sources(
     if model_type != "gemma4" || layer_types.is_empty() {
         return BTreeMap::new();
     }
-    let num_shared = arch_u64(config, model_type, "num_kv_shared_layers").unwrap_or(0) as usize;
+    let num_shared = arch_u64(config, model_type, "num_kv_shared_layers")
+        .unwrap_or(20)
+        .min(u64::from(layer_count)) as usize;
     let non_shared_count = layer_count as usize - num_shared;
 
     let mut last_full: Option<u32> = None;
@@ -1278,6 +1284,66 @@ mod tests {
             ]
         );
         assert_eq!(manifest.attention_value_from_key_layers, vec![4]);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn parses_root_gemma4_layer_types_before_text_config() {
+        let config = serde_json::json!({
+            "model_type": "gemma4",
+            "layer_types": ["full_attention"],
+            "text_config": {
+                "layer_types": ["sliding_attention"]
+            }
+        });
+
+        let layer_types = parse_layer_types(&config, "gemma4", 1);
+
+        assert_eq!(layer_types, vec!["full_attention".to_string()]);
+    }
+
+    #[test]
+    fn converts_gemma4_default_kv_shared_layers() {
+        let dir = unique_test_dir("gemma4_default_kv_shared");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "gemma4",
+                "vocab_size": 262144,
+                "text_config": {
+                    "hidden_size": 3072,
+                    "num_attention_heads": 32,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128,
+                    "global_head_dim": 256,
+                    "sliding_window_pattern": 5,
+                    "num_hidden_layers": 35,
+                    "vocab_size": 262144
+                }
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                ("model.embed_tokens.weight", "BF16", &[262144, 3072]),
+                ("model.norm.weight", "BF16", &[3072]),
+                ("lm_head.weight", "BF16", &[262144, 3072]),
+            ],
+        );
+
+        let manifest = convert_hf_model_dir(&dir).expect("gemma4 conversion should succeed");
+
+        assert_eq!(manifest.layer_types.len(), 35);
+        assert_eq!(manifest.layer_types[4], "full_attention");
+        assert_eq!(manifest.layer_types[34], "full_attention");
+        assert_eq!(manifest.kv_shared_source_layers.len(), 20);
+        assert_eq!(manifest.kv_shared_source_layers.get(&15), Some(&13));
+        assert_eq!(manifest.kv_shared_source_layers.get(&19), Some(&14));
+        assert!(!manifest.kv_shared_source_layers.contains_key(&14));
+        assert!(manifest.attention_v_norm_no_scale_layers.contains(&14));
+        assert!(!manifest.attention_v_norm_no_scale_layers.contains(&15));
 
         let _ = fs::remove_dir_all(dir);
     }
