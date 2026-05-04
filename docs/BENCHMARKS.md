@@ -8,7 +8,7 @@ sampling policy, and artifact schema are explicit.
 
 | Question | Use | Evidence produced |
 |---|---|---|
-| How fast is AX Engine MLX mode against upstream MLX? | `scripts/bench_mlx_inference_stack.py` | Required `mlx_lm.benchmark` baseline rows, AX Engine MLX greedy/speculative rows, optional `mlx-swift-lm` JSON adapter rows, and ratio-to-baseline fields |
+| How fast is AX Engine MLX mode against upstream MLX? | `scripts/bench_mlx_inference_stack.py` | Required `mlx_lm.benchmark` primary baseline rows, AX Engine MLX greedy/speculative rows, optional `mlx-swift-lm` secondary baseline adapter rows, canonical prompt-token artifacts, and ratio-to-baseline fields |
 | Did a checked-in workload still pass route, correctness, determinism, replay, or regression gates? | `ax-engine-bench` | Workload-contract artifacts under `benchmarks/results` |
 | Is the local host ready for AX-owned MLX benchmarking? | `ax-engine-bench doctor` | Human or JSON readiness report |
 | Did a bounded runtime knob improve a frozen workload? | `ax-engine-bench autotune` | Autotune trial artifacts and warm-start history |
@@ -16,8 +16,9 @@ sampling policy, and artifact schema are explicit.
 
 Do not merge these rows into one unlabeled throughput table. AX-owned
 model-inference claims come from the MLX inference stack, and every such claim
-must include a matching `mlx_lm.benchmark` baseline for the same prompt/decode
-shape. `ax-engine-bench` owns workload contracts. llama.cpp manifests validate
+must include a matching `mlx_lm.benchmark` baseline for the same random-token
+prompt/decode shape, with prompt-token provenance recorded in the artifact.
+`ax-engine-bench` owns workload contracts. llama.cpp manifests validate
 delegation behavior, not AX MLX runtime speed.
 
 ## MLX Model-Inference Comparison
@@ -38,14 +39,23 @@ The reference contract is:
 
 1. `mlx_lm.benchmark` is mandatory and is the canonical upstream Python MLX
    baseline.
-2. AX Engine MLX mode is measured through `ax-engine-server` SSE
+2. The harness mirrors the `mlx_lm.benchmark` prompt standard:
+   `mx.random.seed(0)` followed by
+   `mx.random.randint(0, vocab_size, (1, prompt_tokens))`.
+3. The generated prompt token IDs are written as JSON artifacts and reused by
+   AX Engine and any admitted `mlx-swift-lm` adapter.
+4. AX Engine MLX mode is measured through `ax-engine-server` SSE
    `runner_time_us`.
-3. `mlx-swift-lm` is optional and only admitted through an explicit
-   JSON-emitting adapter command.
+5. `mlx-swift-lm` is optional and only admitted as a secondary reference
+   through an explicit JSON-emitting adapter command built on the
+   `mlx-swift-lm` `BenchmarkHelpers` / `MLXLMCommon` generation APIs.
 
 The harness fails closed if `mlx_lm.benchmark` cannot run. It does not support
 AX-only throughput tables. Every non-baseline row records the matching
-`mlx_lm.benchmark` prompt/decode shape plus prefill/decode ratios.
+`mlx_lm.benchmark` random-token prompt/decode shape plus prefill/decode ratios.
+The direct AX comparison row is greedy by default. Speculative AX rows are
+feature-speedup evidence and must not be treated as the same decode policy as
+the primary MLX baseline.
 
 Use `--ax-both-modes` when speculative decode is part of the question:
 
@@ -61,9 +71,27 @@ The harness labels AX rows as `ax_engine_mlx_greedy` and
 `ax_engine_mlx_speculative`. Greedy throughput and speculative speedups must not
 collapse into one AX number.
 
-The older SwiftLM application-server benchmark is retired for current AX
-Engine decisions. It measures application/server behavior around MLX, not the
-`mlx-swift-lm` library contract. Keep it as historical design input only.
+The `mlx-swift-lm` reference checkout currently exposes `BenchmarkHelpers` for
+loading, tokenization, decoding, download-cache timing, and shared integration
+benchmark scaffolding, but not a repo-stable standalone LLM inference
+benchmark CLI equivalent to `python3 -m mlx_lm.benchmark`. For AX Engine
+inference comparisons, treat `mlx-swift-lm` as a secondary baseline only when
+the adapter:
+
+- is built against the reference `mlx-swift-lm` package, not a custom
+  application server,
+- uses `MLXLMCommon` generation APIs with `GenerateParameters(maxTokens: ...,
+  temperature: 0, prefillStepSize: ...)`,
+- reads the harness-emitted `{prompt_token_ids_path}`,
+- reports prefill and decode throughput for the same random-token prompt/decode
+  shape, and
+- emits raw trial rows when possible so the harness can compute shared
+  mean/median/min/max summaries.
+
+The older SwiftLM application-server benchmark is retired for current AX Engine
+decisions. It measures application/server behavior around MLX, not the
+`mlx-swift-lm` library benchmark contract. Keep it as historical design input
+only.
 
 ## AX Workload Contracts
 
@@ -154,6 +182,8 @@ Decision-grade AX MLX benchmark claims require:
 - Apple Silicon M4-or-newer macOS/aarch64 host.
 - MLX runtime availability.
 - Stable model, tokenizer, prompt shape, and sampling parameters.
+- Prompt-token provenance matching the `mlx_lm.benchmark` random-token
+  standard, including the saved prompt JSON path and SHA-256 hash.
 - Explicit runtime identity: selected backend, support tier, resolution policy,
   feature flags, and AX decode mode.
 - Enough repetitions and cooldown to avoid one-off thermal or startup noise.

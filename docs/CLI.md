@@ -65,10 +65,14 @@ python3 scripts/bench_mlx_inference_stack.py \
 
 `mlx_lm.benchmark` is mandatory. The script fails closed if the matching
 baseline cannot be produced, and every AX or `mlx-swift-lm` row carries
-ratio-to-`mlx_lm.benchmark` fields for the same prompt/decode shape. Use
-`--ax-both-modes` to emit both `ax_engine_mlx_greedy` and
-`ax_engine_mlx_speculative` rows. `mlx-swift-lm` is accepted only through an
-explicit JSON-emitting adapter command. The older SwiftLM application-server
+ratio-to-`mlx_lm.benchmark` fields for the same random-token prompt/decode
+shape. The harness mirrors the upstream prompt standard (`mx.random.seed(0)`
+plus random token IDs from the model vocabulary) and writes the prompt token
+JSON path and hash into the artifact. Greedy AX decode is the default direct
+comparison; use `--ax-both-modes` to also emit `ax_engine_mlx_speculative`
+feature-speedup rows. `mlx-swift-lm` is accepted only as a secondary baseline
+through an explicit `BenchmarkHelpers` / `MLXLMCommon` generation adapter that
+reads the emitted prompt token JSON. The older SwiftLM application-server
 benchmark is retired.
 
 ## Delegated llama.cpp Checks

@@ -29,7 +29,8 @@ This means AX Engine v4 already has a practical split between:
 Benchmarking is intentionally split at the project boundary:
 `ax-engine-bench` records workload-contract evidence, while
 `scripts/bench_mlx_inference_stack.py` records AX Engine MLX model-inference
-comparison against `mlx_lm.benchmark` and optional `mlx-swift-lm` adapter rows.
+comparison against the required `mlx_lm.benchmark` primary baseline and
+optional `mlx-swift-lm` secondary baseline adapter rows.
 Delegated llama.cpp manifests stay outside AX-owned MLX throughput claims.
 
 ## Dependency Boundaries

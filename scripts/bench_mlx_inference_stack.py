@@ -23,16 +23,28 @@ Optional mlx-swift-lm adapter:
   python3 scripts/bench_mlx_inference_stack.py \
     --mlx-swift-lm-command './.internal/tools/mlx-swift-bench \
       --model {model} --prompt-tokens {prompt_tokens} \
-      --generation-tokens {generation_tokens} --trials {trials} --delay {delay}'
+      --generation-tokens {generation_tokens} --trials {trials} --delay {delay} \
+      --prefill-step-size {prefill_step_size} \
+      --prompt-token-ids {prompt_token_ids_path}'
 
-The optional adapter command must print JSON with either:
+The optional mlx-swift-lm adapter is treated as a secondary reference only when
+it follows the mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation contract and
+uses the prompt token JSON emitted by this script. The command template may use:
+  {model}, {prompt_tokens}, {generation_tokens}, {trials}, {delay},
+  {prefill_step_size}, {random_seed}, {batch_size}, {prompt_token_ids_path},
+  {prompt_token_ids_sha256}
+
+The adapter command must print JSON with either:
   {"prompt_tps": 123.4, "generation_tps": 56.7, "peak_memory": 12.3}
 or:
   {"prefill_tok_s": 123.4, "decode_tok_s": 56.7, "peak_memory_gb": 12.3}
+or trial rows:
+  {"trials": [{"prefill_tok_s": 123.4, "decode_tok_s": 56.7}]}
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -42,6 +54,7 @@ import signal
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -56,6 +69,7 @@ DEFAULT_GENERATION_TOKENS = 128
 DEFAULT_REPETITIONS = 5
 DEFAULT_COOLDOWN = 5.0
 AXENGINE_PORT = 8091
+MLX_LM_RANDOM_SEED = 0
 
 
 def _sysctl(key: str) -> str:
@@ -108,6 +122,17 @@ def collect_build_metadata() -> dict[str, Any]:
         "server_binary": str(AX_ENGINE_SERVER),
     }
 
+def collect_model_metadata(model_dir: Path) -> dict[str, Any]:
+    """Read model config.json for provenance; returns empty dict if unavailable."""
+    config_path = model_dir / "config.json"
+    try:
+        cfg = json.loads(config_path.read_text())
+    except Exception:
+        return {}
+    keys = ("model_type", "num_hidden_layers", "vocab_size", "quantization")
+    return {k: cfg[k] for k in keys if k in cfg}
+
+
 MLX_AVERAGES_RE = re.compile(
     r"Averages:\s+prompt_tps=(?P<prompt>[0-9.]+),\s+"
     r"generation_tps=(?P<generation>[0-9.]+),\s+"
@@ -120,9 +145,6 @@ MLX_TRIAL_RE = re.compile(
     r"peak_memory=(?P<memory>[0-9.]+),\s+"
     r"total_time=(?P<total>[0-9.]+)"
 )
-
-_cached_tokenizers: dict[str, Any] = {}
-
 
 def wait_for_server(url: str, timeout: float = 180.0) -> bool:
     deadline = time.monotonic() + timeout
@@ -146,42 +168,160 @@ def kill_proc(proc: subprocess.Popen[Any]) -> None:
             proc.kill()
 
 
-def tokenizer_for(model_dir: Path) -> Any:
-    key = str(model_dir)
-    if key not in _cached_tokenizers:
-        print(f"  [tokenize] loading tokenizer from {model_dir}", file=sys.stderr)
-        from mlx_lm import load
+def model_vocab_size(model_dir: Path) -> int:
+    config_path = model_dir / "config.json"
+    if config_path.exists():
+        config = json.loads(config_path.read_text())
+        vocab_size = config.get("vocab_size")
+        if vocab_size is None:
+            vocab_size = config.get("text_config", {}).get("vocab_size")
+        if vocab_size is not None:
+            return int(vocab_size)
 
-        loaded = load(str(model_dir))
-        tokenizer = loaded[1]
-        _cached_tokenizers[key] = tokenizer
-    return _cached_tokenizers[key]
-
-
-def make_prompt(target_tokens: int) -> str:
-    phrase = (
-        "AX Engine measures deterministic local inference on Apple Silicon. "
-        "The benchmark prompt is intentionally plain and repeatable. "
+    print(
+        f"  [prompt] loading mlx_lm config because {config_path} did not expose vocab_size",
+        file=sys.stderr,
     )
-    chars_needed = max(target_tokens * 5, len(phrase))
-    return (phrase * ((chars_needed // len(phrase)) + 2))[:chars_needed]
+    from mlx_lm import load
+
+    loaded = load(str(model_dir), return_config=True)
+    config = loaded[2]
+    vocab_size = config.get("vocab_size") or config["text_config"]["vocab_size"]
+    return int(vocab_size)
 
 
-def tokenize(prompt: str, model_dir: Path) -> list[int]:
-    tokenizer = tokenizer_for(model_dir)
-    return list(tokenizer.encode(prompt))
+def mlx_lm_reference_prompt_tokens(vocab_size: int, target_tokens: int) -> list[int]:
+    import mlx.core as mx
+
+    mx.random.seed(MLX_LM_RANDOM_SEED)
+    prompt = mx.random.randint(0, vocab_size, (1, target_tokens)).tolist()[0]
+    tokens = [int(token) for token in prompt]
+    if len(tokens) != target_tokens:
+        raise RuntimeError(
+            f"generated prompt length mismatch: target={target_tokens} actual={len(tokens)}"
+        )
+    return tokens
 
 
-def prompt_for_token_count(target_tokens: int, model_dir: Path) -> tuple[str, list[int]]:
-    text = make_prompt(target_tokens)
-    tokens = tokenize(text, model_dir)
-    while len(tokens) < target_tokens:
-        text += " " + make_prompt(target_tokens // 2)
-        tokens = tokenize(text, model_dir)
-    if len(tokens) > target_tokens:
-        tokens = tokens[:target_tokens]
-    print(f"  [tokenize] target={target_tokens} actual={len(tokens)}", file=sys.stderr)
-    return text, tokens
+def token_sha256(tokens: list[int]) -> str:
+    payload = json.dumps(tokens, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def write_prompt_tokens(
+    artifact_root: Path,
+    *,
+    prompt_tokens: int,
+    generation_tokens: int,
+    vocab_size: int,
+    tokens: list[int],
+) -> dict[str, Any]:
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    token_hash = token_sha256(tokens)
+    path = artifact_root / f"prompt-{prompt_tokens}-gen-{generation_tokens}-{token_hash[:12]}.json"
+    payload = {
+        "schema_version": "ax.mlx_reference_prompt.v1",
+        "source": "mlx_lm.benchmark",
+        "random_seed": MLX_LM_RANDOM_SEED,
+        "prompt_distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
+        "vocab_size": vocab_size,
+        "prompt_tokens": prompt_tokens,
+        "generation_tokens": generation_tokens,
+        "sha256": token_hash,
+        "token_ids": tokens,
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    print(
+        f"  [prompt] prompt_tokens={prompt_tokens} sha256={token_hash[:12]} path={path}",
+        file=sys.stderr,
+    )
+    return {
+        "prompt_tokens": prompt_tokens,
+        "generation_tokens": generation_tokens,
+        "vocab_size": vocab_size,
+        "random_seed": MLX_LM_RANDOM_SEED,
+        "token_ids_path": str(path),
+        "token_ids_sha256": token_hash,
+        "token_count": len(tokens),
+    }
+
+
+def build_reference_prompts(
+    prompt_lengths: list[int],
+    generation_tokens: int,
+    model_dir: Path,
+    artifact_root: Path,
+) -> list[dict[str, Any]]:
+    vocab_size = model_vocab_size(model_dir)
+    prompts = []
+    for prompt_tokens in prompt_lengths:
+        tokens = mlx_lm_reference_prompt_tokens(vocab_size, prompt_tokens)
+        prompt_doc = write_prompt_tokens(
+            artifact_root,
+            prompt_tokens=prompt_tokens,
+            generation_tokens=generation_tokens,
+            vocab_size=vocab_size,
+            tokens=tokens,
+        )
+        prompt_doc["token_ids"] = tokens
+        prompts.append(prompt_doc)
+    return prompts
+
+
+def without_inline_tokens(prompt_doc: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in prompt_doc.items() if key != "token_ids"}
+
+
+def validate_prompt_doc(
+    prompt_doc: dict[str, Any],
+    *,
+    prompt_tokens: int,
+    generation_tokens: int,
+) -> None:
+    if int(prompt_doc.get("prompt_tokens", -1)) != prompt_tokens:
+        raise RuntimeError(
+            "prompt artifact token count mismatch: "
+            f"expected={prompt_tokens} actual={prompt_doc.get('prompt_tokens')}"
+        )
+    if int(prompt_doc.get("generation_tokens", -1)) != generation_tokens:
+        raise RuntimeError(
+            "prompt artifact generation count mismatch: "
+            f"expected={generation_tokens} actual={prompt_doc.get('generation_tokens')}"
+        )
+
+    tokens = prompt_doc.get("token_ids")
+    if tokens is not None:
+        token_ids = [int(token) for token in tokens]
+        if len(token_ids) != prompt_tokens:
+            raise RuntimeError(
+                "prompt artifact inline token length mismatch: "
+                f"expected={prompt_tokens} actual={len(token_ids)}"
+            )
+        expected_hash = prompt_doc.get("token_ids_sha256")
+        if expected_hash and token_sha256(token_ids) != expected_hash:
+            raise RuntimeError("prompt artifact inline token hash mismatch")
+
+    path = prompt_doc.get("token_ids_path")
+    expected_hash = prompt_doc.get("token_ids_sha256")
+    if path and expected_hash:
+        payload = json.loads(Path(path).read_text())
+        file_tokens = [int(token) for token in payload.get("token_ids", [])]
+        if len(file_tokens) != prompt_tokens:
+            raise RuntimeError(
+                "prompt artifact file token length mismatch: "
+                f"expected={prompt_tokens} actual={len(file_tokens)}"
+            )
+        if token_sha256(file_tokens) != expected_hash:
+            raise RuntimeError("prompt artifact file token hash mismatch")
+
+
+def summarize_values(values: list[float]) -> dict[str, float]:
+    return {
+        "mean": sum(values) / len(values),
+        "median": statistics.median(values),
+        "min": min(values),
+        "max": max(values),
+    }
 
 
 def parse_mlx_lm_benchmark_output(output: str) -> dict[str, Any]:
@@ -201,12 +341,31 @@ def parse_mlx_lm_benchmark_output(output: str) -> dict[str, Any]:
     if not averages:
         raise RuntimeError("mlx_lm.benchmark output did not contain an Averages line")
 
-    return {
+    parsed = {
         "prefill_tok_s": {"mean": float(averages.group("prompt"))},
         "decode_tok_s": {"mean": float(averages.group("generation"))},
         "peak_memory_gb": {"mean": float(averages.group("memory"))},
         "trials": trials,
     }
+    if trials:
+        parsed["prefill_tok_s"] = summarize_values(
+            [float(trial["prefill_tok_s"]) for trial in trials]
+        )
+        parsed["decode_tok_s"] = summarize_values(
+            [float(trial["decode_tok_s"]) for trial in trials]
+        )
+        parsed["peak_memory_gb"] = summarize_values(
+            [float(trial["peak_memory_gb"]) for trial in trials]
+        )
+        parsed["total_time_s"] = summarize_values(
+            [float(trial["total_time_s"]) for trial in trials]
+        )
+        parsed["reported_averages"] = {
+            "prefill_tok_s": float(averages.group("prompt")),
+            "decode_tok_s": float(averages.group("generation")),
+            "peak_memory_gb": float(averages.group("memory")),
+        }
+    return parsed
 
 
 def run_mlx_lm_benchmark(
@@ -216,13 +375,21 @@ def run_mlx_lm_benchmark(
     repetitions: int,
     cooldown: float,
     prefill_step_size: int,
+    prompt_doc: dict[str, Any],
 ) -> dict[str, Any]:
+    validate_prompt_doc(
+        prompt_doc,
+        prompt_tokens=prompt_tokens,
+        generation_tokens=generation_tokens,
+    )
     cmd = [
         "python3",
         "-m",
         "mlx_lm.benchmark",
         "--model",
         model,
+        "--batch-size",
+        "1",
         "--prompt-tokens",
         str(prompt_tokens),
         "--generation-tokens",
@@ -244,6 +411,14 @@ def run_mlx_lm_benchmark(
         {
             "engine": "mlx_lm",
             "method": "mlx_lm.benchmark",
+            "timing_scope": "upstream_mlx_lm_response_stats",
+            "prompt_contract": "mlx_lm_random_tokens_seed_0",
+            "random_seed": MLX_LM_RANDOM_SEED,
+            "batch_size": 1,
+            "prefill_step_size": prefill_step_size,
+            "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+            "prompt_token_ids_path": prompt_doc["token_ids_path"],
+            "prompt_token_ids_sha256": prompt_doc["token_ids_sha256"],
             "prompt_tokens": prompt_tokens,
             "generation_tokens": generation_tokens,
         }
@@ -337,10 +512,20 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
 def summarize_runs(runs: list[dict[str, float]], key: str) -> dict[str, float]:
     values = [run[key] for run in runs]
     return {
+        "mean": sum(values) / len(values),
         "median": statistics.median(values),
         "min": min(values),
         "max": max(values),
     }
+
+
+def _trial_metric(trial: dict[str, Any], primary: str, fallback: str) -> float:
+    value = trial.get(primary, trial.get(fallback))
+    if value is None:
+        raise RuntimeError(
+            f"mlx-swift-lm trial JSON must include {primary} or {fallback}"
+        )
+    return float(value)
 
 
 def bench_axengine(
@@ -376,6 +561,10 @@ def bench_axengine(
     return {
         "engine": engine_key,
         "method": "server_sse_runner_time_us",
+        "timing_scope": "ax_engine_runner_time_us",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "random_seed": MLX_LM_RANDOM_SEED,
+        "batch_size": 1,
         "prompt_tokens": len(tokens),
         "generation_tokens": generation_tokens,
         "prefill_tok_s": summarize_runs(runs, "prefill_tok_s"),
@@ -386,19 +575,41 @@ def bench_axengine(
     }
 
 
-def parse_swift_adapter_json(stdout: str) -> dict[str, float]:
+def parse_swift_adapter_json(stdout: str) -> dict[str, Any]:
     payload = json.loads(stdout)
     prefill = payload.get("prefill_tok_s", payload.get("prompt_tps"))
     decode = payload.get("decode_tok_s", payload.get("generation_tps"))
     memory = payload.get("peak_memory_gb", payload.get("peak_memory"))
+    trials = payload.get("trials")
+    if trials:
+        prefill_values = [
+            _trial_metric(trial, "prefill_tok_s", "prompt_tps") for trial in trials
+        ]
+        decode_values = [
+            _trial_metric(trial, "decode_tok_s", "generation_tps") for trial in trials
+        ]
+        parsed: dict[str, Any] = {
+            "prefill_tok_s": summarize_values(prefill_values),
+            "decode_tok_s": summarize_values(decode_values),
+            "trials": trials,
+        }
+        memory_values = [
+            trial.get("peak_memory_gb", trial.get("peak_memory")) for trial in trials
+        ]
+        if all(value is not None for value in memory_values):
+            parsed["peak_memory_gb"] = summarize_values(
+                [float(value) for value in memory_values]
+            )
+        return parsed
+
     if prefill is None or decode is None:
         raise RuntimeError("mlx-swift-lm adapter JSON must include prefill/decode throughput")
     parsed = {
-        "prefill_tok_s": float(prefill),
-        "decode_tok_s": float(decode),
+        "prefill_tok_s": {"median": float(prefill)},
+        "decode_tok_s": {"median": float(decode)},
     }
     if memory is not None:
-        parsed["peak_memory_gb"] = float(memory)
+        parsed["peak_memory_gb"] = {"median": float(memory)}
     return parsed
 
 
@@ -409,13 +620,26 @@ def run_mlx_swift_lm_adapter(
     generation_tokens: int,
     repetitions: int,
     cooldown: float,
+    prefill_step_size: int,
+    prompt_doc: dict[str, Any],
 ) -> dict[str, Any]:
+    validate_prompt_doc(
+        prompt_doc,
+        prompt_tokens=prompt_tokens,
+        generation_tokens=generation_tokens,
+    )
     command = command_template.format(
         model=model,
         prompt_tokens=prompt_tokens,
         generation_tokens=generation_tokens,
         trials=repetitions,
         delay=cooldown,
+        prefill_step_size=prefill_step_size,
+        random_seed=MLX_LM_RANDOM_SEED,
+        batch_size=1,
+        prompt_tokens_path=prompt_doc["token_ids_path"],
+        prompt_token_ids_path=prompt_doc["token_ids_path"],
+        prompt_token_ids_sha256=prompt_doc["token_ids_sha256"],
     )
     argv = shlex.split(command)
     print(f"  [mlx-swift-lm] {command}", file=sys.stderr)
@@ -428,14 +652,24 @@ def run_mlx_swift_lm_adapter(
     metrics = parse_swift_adapter_json(result.stdout)
     cell: dict[str, Any] = {
         "engine": "mlx_swift_lm",
-        "method": "external_json_adapter",
+        "method": "mlx_swift_lm_benchmark_adapter",
+        "timing_scope": "external_adapter_reported",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "secondary_reference_role": "mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation adapter",
+        "random_seed": MLX_LM_RANDOM_SEED,
+        "batch_size": 1,
+        "prefill_step_size": prefill_step_size,
+        "prompt_token_ids_path": prompt_doc["token_ids_path"],
+        "prompt_token_ids_sha256": prompt_doc["token_ids_sha256"],
         "prompt_tokens": prompt_tokens,
         "generation_tokens": generation_tokens,
-        "prefill_tok_s": {"median": metrics["prefill_tok_s"]},
-        "decode_tok_s": {"median": metrics["decode_tok_s"]},
+        "prefill_tok_s": metrics["prefill_tok_s"],
+        "decode_tok_s": metrics["decode_tok_s"],
     }
     if "peak_memory_gb" in metrics:
-        cell["peak_memory_gb"] = {"median": metrics["peak_memory_gb"]}
+        cell["peak_memory_gb"] = metrics["peak_memory_gb"]
+    if "trials" in metrics:
+        cell["trials"] = metrics["trials"]
     return cell
 
 
@@ -461,6 +695,8 @@ def attach_mlx_lm_baselines(results: list[dict[str, Any]]) -> None:
                 "engine": "mlx_lm",
                 "method": "mlx_lm.benchmark",
                 "role": "primary_reference",
+                "prompt_contract": cell.get("prompt_contract"),
+                "timing_scope": cell.get("timing_scope"),
             }
             continue
 
@@ -479,6 +715,8 @@ def attach_mlx_lm_baselines(results: list[dict[str, Any]]) -> None:
         cell["baseline"] = {
             "engine": "mlx_lm",
             "method": "mlx_lm.benchmark",
+            "prompt_contract": baseline.get("prompt_contract"),
+            "timing_scope": baseline.get("timing_scope"),
             "prompt_tokens": key[0],
             "generation_tokens": key[1],
             "prefill_tok_s": baseline_prefill,
@@ -533,17 +771,31 @@ def main() -> None:
     parser.add_argument("--skip-ax-engine", action="store_true")
     parser.add_argument("--axengine-port", type=int, default=AXENGINE_PORT)
     parser.add_argument("--ax-no-speculative", action="store_true",
-                        help="Use greedy (no-spec) decode; emits ax_engine_mlx_greedy in JSON")
+                        help="Use greedy (no-spec) decode; this is the default apple-to-apple AX row")
+    parser.add_argument("--ax-speculative", action="store_true",
+                        help="Run only speculative AX decode; use for feature speedup exploration")
     parser.add_argument("--ax-both-modes", action="store_true",
                         help="Run ax-engine twice: once greedy, once speculative. "
                              "Emits both ax_engine_mlx_greedy and ax_engine_mlx_speculative.")
     parser.add_argument(
+        "--prompt-artifact-root",
+        type=Path,
+        help="Directory for canonical mlx_lm random-token prompt JSON files",
+    )
+    parser.add_argument(
         "--mlx-swift-lm-command",
-        help="Optional command template that returns mlx-swift-lm benchmark JSON",
+        help=(
+            "Optional mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation "
+            "adapter command template that returns benchmark JSON"
+        ),
     )
     args = parser.parse_args()
     if args.model == DEFAULT_MODEL_ID and args.model_dir != DEFAULT_MODEL_DIR:
         args.model = str(args.model_dir)
+    if args.ax_speculative and args.ax_no_speculative:
+        parser.error("--ax-speculative conflicts with --ax-no-speculative")
+    if args.ax_speculative and args.ax_both_modes:
+        parser.error("--ax-speculative conflicts with --ax-both-modes")
 
     if not args.skip_ax_engine and not AX_ENGINE_SERVER.exists():
         print(
@@ -554,24 +806,32 @@ def main() -> None:
         sys.exit(1)
 
     prompt_lengths = [int(item.strip()) for item in args.prompt_tokens.split(",") if item.strip()]
+    if args.prompt_artifact_root:
+        prompt_artifact_root = args.prompt_artifact_root
+    elif args.output:
+        prompt_artifact_root = args.output.parent / f"{args.output.stem}-prompts"
+    else:
+        prompt_artifact_root = Path(tempfile.mkdtemp(prefix="ax-mlx-reference-prompts-"))
     print("\n=== AX Engine MLX inference stack ===", file=sys.stderr)
     print(f"  model: {args.model}", file=sys.stderr)
     print(f"  model_dir: {args.model_dir}", file=sys.stderr)
     print(f"  prompt_tokens: {prompt_lengths}", file=sys.stderr)
     print(f"  generation_tokens: {args.generation_tokens}", file=sys.stderr)
     print(f"  repetitions: {args.repetitions} + 1 warmup for AX", file=sys.stderr)
+    print(f"  prompt_artifact_root: {prompt_artifact_root}", file=sys.stderr)
 
-    prompts = []
-    if not args.skip_ax_engine:
-        prompts = [
-            prompt_for_token_count(prompt_tokens, args.model_dir)
-            for prompt_tokens in prompt_lengths
-        ]
+    prompts = build_reference_prompts(
+        prompt_lengths,
+        args.generation_tokens,
+        args.model_dir,
+        prompt_artifact_root,
+    )
 
     results: list[dict[str, Any]] = []
     procs: list[subprocess.Popen[Any]] = []
     try:
-        for prompt_tokens in prompt_lengths:
+        for prompt_doc in prompts:
+            prompt_tokens = int(prompt_doc["prompt_tokens"])
             results.append(
                 run_mlx_lm_benchmark(
                     args.model,
@@ -580,11 +840,13 @@ def main() -> None:
                     args.repetitions,
                     args.cooldown,
                     args.prefill_step_size,
+                    prompt_doc,
                 )
             )
 
         if args.mlx_swift_lm_command:
-            for prompt_tokens in prompt_lengths:
+            for prompt_doc in prompts:
+                prompt_tokens = int(prompt_doc["prompt_tokens"])
                 results.append(
                     run_mlx_swift_lm_adapter(
                         args.mlx_swift_lm_command,
@@ -593,6 +855,8 @@ def main() -> None:
                         args.generation_tokens,
                         args.repetitions,
                         args.cooldown,
+                        args.prefill_step_size,
+                        prompt_doc,
                     )
                 )
 
@@ -600,8 +864,10 @@ def main() -> None:
             modes = []
             if args.ax_both_modes:
                 modes = [True, False]  # greedy first, then speculative
+            elif args.ax_speculative:
+                modes = [False]
             else:
-                modes = [args.ax_no_speculative]
+                modes = [True]
 
             for no_spec in modes:
                 proc = start_axengine(
@@ -614,17 +880,25 @@ def main() -> None:
                 if not wait_for_server(f"http://127.0.0.1:{args.axengine_port}/health"):
                     stderr = proc.stderr.read(2000).decode(errors="replace") if proc.stderr else ""
                     raise RuntimeError(f"ax-engine-server did not become ready:\n{stderr}")
-                for _, tokens in prompts:
+                for prompt_doc in prompts:
+                    validate_prompt_doc(
+                        prompt_doc,
+                        prompt_tokens=int(prompt_doc["prompt_tokens"]),
+                        generation_tokens=args.generation_tokens,
+                    )
                     results.append(
                         bench_axengine(
                             args.axengine_port,
-                            tokens,
+                            prompt_doc["token_ids"],
                             args.generation_tokens,
                             args.repetitions,
                             args.cooldown,
                             no_speculative=no_spec,
                         )
                     )
+                    results[-1]["prefill_step_size"] = args.prefill_step_size
+                    results[-1]["prompt_token_ids_path"] = prompt_doc["token_ids_path"]
+                    results[-1]["prompt_token_ids_sha256"] = prompt_doc["token_ids_sha256"]
                 kill_proc(proc)
                 procs.remove(proc)
                 if no_spec and args.ax_both_modes:
@@ -636,20 +910,39 @@ def main() -> None:
     attach_mlx_lm_baselines(results)
 
     doc = {
-        "schema_version": "ax.mlx_inference_stack.v1",
+        "schema_version": "ax.mlx_inference_stack.v2",
         "host": collect_host_metadata(),
         "build": collect_build_metadata(),
         "model": args.model,
         "model_dir": str(args.model_dir),
+        "model_config": collect_model_metadata(args.model_dir),
         "reference_contract": {
             "primary_reference": "mlx_lm.benchmark",
             "primary_reference_required": True,
-            "secondary_reference": "mlx-swift-lm external JSON adapter",
+            "secondary_reference": "mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation adapter",
+            "secondary_reference_present": bool(args.mlx_swift_lm_command),
+            "secondary_reference_required": False,
             "retired_reference": "SwiftLM application server",
             "comparison_policy": (
                 "Every non-baseline row is compared against the matching "
-                "mlx_lm.benchmark row for the same prompt and generation shape."
+                "mlx_lm.benchmark row for the same random-token prompt and "
+                "generation shape. AX greedy is the default direct comparison; "
+                "speculative AX rows are feature-speedup exploration rows."
             ),
+            "secondary_reference_policy": (
+                "mlx-swift-lm rows are admitted only through an explicit "
+                "BenchmarkHelpers/MLXLMCommon generation adapter that reads "
+                "the prompt token JSON emitted by this harness and reports "
+                "prefill/decode metrics for the same random-token prompt/decode shape."
+            ),
+            "prompt_contract": {
+                "source": "mlx_lm.benchmark",
+                "random_seed": MLX_LM_RANDOM_SEED,
+                "distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
+                "batch_size": 1,
+                "artifacts": [without_inline_tokens(prompt) for prompt in prompts],
+            },
+            "strictness": "same_prompt_tokens_for_ax_and_swift_adapter; mlx_lm_prompt_algorithm_reproduced",
         },
         "prompt_tokens": prompt_lengths,
         "generation_tokens": args.generation_tokens,

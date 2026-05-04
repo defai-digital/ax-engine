@@ -99,8 +99,8 @@ Speculative throughput claims must be reproduced through
 `scripts/bench_mlx_inference_stack.py --ax-both-modes` before they are used in
 release notes or architecture decisions. Historical local rows such as
 `~1.96x mlx_lm` at 256-token context are useful investigation notes only unless
-the run artifact records the model, host, prompt/decode shape, reference
-identity, and AX decode mode.
+the run artifact records the model, host, random-token prompt/decode shape,
+reference identity, and AX decode mode.
 
 ### Batch contract
 
@@ -151,8 +151,10 @@ python3 scripts/bench_mlx_inference_stack.py \
 The canonical reference is `mlx_lm.benchmark`, and the harness now treats it as
 required. A run that cannot produce the matching `mlx_lm.benchmark` baseline
 fails instead of emitting AX-only numbers. `mlx-swift-lm` numbers are valid only
-when they come from a named JSON-emitting adapter. SwiftLM application server
-measurements are retired and should not be used as a baseline for this backend.
+when they come from a named `BenchmarkHelpers` / `MLXLMCommon` generation
+adapter that reads the harness-emitted random-token prompt JSON. SwiftLM
+application server measurements are retired and should not be used as a
+baseline for this backend.
 
 Use `ax-engine-bench scenario`, `replay`, `matrix`, `compare`, `matrix-compare`,
 `baseline`, and `autotune` for workload-contract evidence: route identity,

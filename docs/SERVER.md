@@ -157,9 +157,10 @@ For manual throughput or latency measurements, leave tracing disabled, or use
 an `info` or `warn` filter instead of `debug` / `trace`. For comparable AX MLX
 inference numbers, use `scripts/bench_mlx_inference_stack.py`; it starts the
 server, captures AX SSE `runner_time_us`, runs the required matching
-`mlx_lm.benchmark` baseline, and records the MLX reference runtime identity
-explicitly. Use `ax-engine-bench` for workload-contract artifacts rather than
-manual server timing.
+`mlx_lm.benchmark` baseline, writes the canonical random-token prompt artifacts,
+and records the MLX reference runtime identity explicitly. Use
+`ax-engine-bench` for workload-contract artifacts rather than manual server
+timing.
 
 Inspect runtime metadata:
 

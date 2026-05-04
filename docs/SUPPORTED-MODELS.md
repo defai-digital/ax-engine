@@ -44,8 +44,8 @@ This means:
 - retired AX native mode should not be exposed as a shipping runtime
 - model-inference benchmark claims for MLX mode must come from
   `scripts/bench_mlx_inference_stack.py` with a matching required
-  `mlx_lm.benchmark` baseline and, optionally, an explicit `mlx-swift-lm` JSON
-  adapter
+  `mlx_lm.benchmark` primary baseline and, optionally, an explicit
+  `mlx-swift-lm` `BenchmarkHelpers` / `MLXLMCommon` secondary baseline adapter
 - `ax-engine-bench` scenario, replay, matrix, compare, and autotune artifacts
   describe workload-contract evidence; delegated llama.cpp manifests describe
   non-MLX route-contract evidence only

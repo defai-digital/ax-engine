@@ -25,7 +25,8 @@ Current public docs:
 Start with `BENCHMARKS.md` before interpreting any benchmark number. It defines
 the project split between `ax-engine-bench` workload-contract artifacts,
 `scripts/bench_mlx_inference_stack.py` MLX model-inference comparisons with a
-required matching `mlx_lm.benchmark` baseline, and delegated non-MLX route
+required matching `mlx_lm.benchmark` primary baseline, optional
+`mlx-swift-lm` secondary baseline adapter rows, and delegated non-MLX route
 checks.
 
 It should not contain:
