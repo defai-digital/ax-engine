@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-use mlx_sys::{MlxArray, load_safetensors};
+use mlx_sys::{load_safetensors, MlxArray};
 
 use ax_engine_core::{
     NativeModelArtifacts, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
@@ -31,7 +31,9 @@ pub struct LayerWeights {
     pub v_proj: Option<QuantizedWeight>,
     // Packed QKV projection (some architectures).
     pub qkv_packed: Option<QuantizedWeight>,
-    pub o_proj: QuantizedWeight,
+    pub o_proj: Option<QuantizedWeight>,
+    // Linear attention (Qwen3.5 hybrid layers). Present instead of full-attention QKV/O.
+    pub linear_attn: Option<LinearAttentionWeights>,
     // Dense FFN norms and weights.
     pub ffn_norm: MlxArray,
     pub ffn_post_norm: Option<MlxArray>,
@@ -51,6 +53,19 @@ pub struct LayerWeights {
     pub gate_exps: Option<QuantizedWeight>,
     pub up_exps: Option<QuantizedWeight>,
     pub down_exps: Option<QuantizedWeight>,
+}
+
+/// Weights for a Qwen3.5 GatedDelta linear-attention layer.
+pub struct LinearAttentionWeights {
+    pub in_proj_qkv: QuantizedWeight,
+    pub in_proj_z: QuantizedWeight,
+    pub in_proj_a: QuantizedWeight,
+    pub in_proj_b: QuantizedWeight,
+    pub conv1d: QuantizedWeight,
+    pub dt_bias: MlxArray,
+    pub a_log: MlxArray,
+    pub norm: MlxArray,
+    pub out_proj: QuantizedWeight,
 }
 
 /// A weight matrix plus optional MLX affine quantization metadata.
@@ -154,6 +169,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     let mut layers = Vec::with_capacity(layer_count);
     for li in 0..layer_count {
         let idx = Some(li as u32);
+        let attention_layout = attention_layout_for_layer(specs, idx)?;
 
         let attn_norm = take_weight(
             specs,
@@ -163,13 +179,22 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             "attn_norm",
         )?
         .weight;
-        let o_proj = take_weight(
-            specs,
-            &mut name_map,
-            NativeTensorRole::AttentionO,
-            idx,
-            "o_proj",
-        )?;
+        let o_proj = match attention_layout {
+            AttentionLayout::Full => Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::AttentionO,
+                idx,
+                "o_proj",
+            )?),
+            AttentionLayout::Linear => None,
+        };
+        let linear_attn = match attention_layout {
+            AttentionLayout::Full => None,
+            AttentionLayout::Linear => {
+                Some(load_linear_attention_weights(specs, &mut name_map, idx)?)
+            }
+        };
         // When FfnNorm (pre_feedforward_layernorm) is present (Gemma4), AttentionPostNorm
         // is a genuine post-attention norm applied before the residual add.  When FfnNorm
         // is absent (Qwen3), AttentionPostNorm doubles as the pre-FFN norm instead.
@@ -278,40 +303,41 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         let q_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionQNorm, idx)?;
         let k_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionKNorm, idx)?;
 
-        let (qkv_packed, q_proj, k_proj, v_proj) =
-            if has_role(specs, NativeTensorRole::AttentionQkvPacked, idx) {
-                let p = take_weight(
-                    specs,
-                    &mut name_map,
-                    NativeTensorRole::AttentionQkvPacked,
-                    idx,
-                    "qkv",
-                )?;
-                (Some(p), None, None, None)
-            } else {
-                let q = take_weight(
-                    specs,
-                    &mut name_map,
-                    NativeTensorRole::AttentionQ,
-                    idx,
-                    "q_proj",
-                )?;
-                let k = take_weight(
-                    specs,
-                    &mut name_map,
-                    NativeTensorRole::AttentionK,
-                    idx,
-                    "k_proj",
-                )?;
-                let v = take_weight(
-                    specs,
-                    &mut name_map,
-                    NativeTensorRole::AttentionV,
-                    idx,
-                    "v_proj",
-                )?;
-                (None, Some(q), Some(k), Some(v))
-            };
+        let (qkv_packed, q_proj, k_proj, v_proj) = if attention_layout == AttentionLayout::Linear {
+            (None, None, None, None)
+        } else if has_role(specs, NativeTensorRole::AttentionQkvPacked, idx) {
+            let p = take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::AttentionQkvPacked,
+                idx,
+                "qkv",
+            )?;
+            (Some(p), None, None, None)
+        } else {
+            let q = take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::AttentionQ,
+                idx,
+                "q_proj",
+            )?;
+            let k = take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::AttentionK,
+                idx,
+                "k_proj",
+            )?;
+            let v = take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::AttentionV,
+                idx,
+                "v_proj",
+            )?;
+            (None, Some(q), Some(k), Some(v))
+        };
 
         let (gate_up_packed, gate_proj, up_proj) =
             if has_role(specs, NativeTensorRole::FfnGateUpPacked, idx) {
@@ -351,6 +377,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             v_proj,
             qkv_packed,
             o_proj,
+            linear_attn,
             ffn_norm,
             ffn_post_norm,
             gate_proj,
@@ -374,6 +401,134 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         final_norm,
         lm_head,
         layers,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AttentionLayout {
+    Full,
+    Linear,
+}
+
+fn attention_layout_for_layer(
+    specs: &[NativeTensorSpec],
+    layer_index: Option<u32>,
+) -> Result<AttentionLayout, WeightLoadError> {
+    let has_full = has_full_attention_role(specs, layer_index);
+    let has_linear = has_linear_attention_role(specs, layer_index);
+
+    if has_full && has_linear {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "layer {layer_index:?} mixes full-attention and linear-attention tensor roles"
+        )));
+    }
+    if has_linear {
+        Ok(AttentionLayout::Linear)
+    } else {
+        Ok(AttentionLayout::Full)
+    }
+}
+
+fn has_full_attention_role(specs: &[NativeTensorSpec], layer_index: Option<u32>) -> bool {
+    [
+        NativeTensorRole::AttentionO,
+        NativeTensorRole::AttentionQ,
+        NativeTensorRole::AttentionK,
+        NativeTensorRole::AttentionV,
+        NativeTensorRole::AttentionQkvPacked,
+    ]
+    .into_iter()
+    .any(|role| has_role(specs, role, layer_index))
+}
+
+fn has_linear_attention_role(specs: &[NativeTensorSpec], layer_index: Option<u32>) -> bool {
+    [
+        NativeTensorRole::LinearAttentionInProjQkv,
+        NativeTensorRole::LinearAttentionInProjZ,
+        NativeTensorRole::LinearAttentionInProjA,
+        NativeTensorRole::LinearAttentionInProjB,
+        NativeTensorRole::LinearAttentionConv1d,
+        NativeTensorRole::LinearAttentionDtBias,
+        NativeTensorRole::LinearAttentionALog,
+        NativeTensorRole::LinearAttentionNorm,
+        NativeTensorRole::LinearAttentionOutProj,
+    ]
+    .into_iter()
+    .any(|role| has_role(specs, role, layer_index))
+}
+
+fn load_linear_attention_weights(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    layer_index: Option<u32>,
+) -> Result<LinearAttentionWeights, WeightLoadError> {
+    Ok(LinearAttentionWeights {
+        in_proj_qkv: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::LinearAttentionInProjQkv,
+            layer_index,
+            "linear_attention_in_proj_qkv",
+        )?,
+        in_proj_z: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::LinearAttentionInProjZ,
+            layer_index,
+            "linear_attention_in_proj_z",
+        )?,
+        in_proj_a: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::LinearAttentionInProjA,
+            layer_index,
+            "linear_attention_in_proj_a",
+        )?,
+        in_proj_b: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::LinearAttentionInProjB,
+            layer_index,
+            "linear_attention_in_proj_b",
+        )?,
+        conv1d: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::LinearAttentionConv1d,
+            layer_index,
+            "linear_attention_conv1d",
+        )?,
+        dt_bias: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::LinearAttentionDtBias,
+            layer_index,
+            "linear_attention_dt_bias",
+        )?
+        .weight,
+        a_log: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::LinearAttentionALog,
+            layer_index,
+            "linear_attention_a_log",
+        )?
+        .weight,
+        norm: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::LinearAttentionNorm,
+            layer_index,
+            "linear_attention_norm",
+        )?
+        .weight,
+        out_proj: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::LinearAttentionOutProj,
+            layer_index,
+            "linear_attention_out_proj",
+        )?,
     })
 }
 
@@ -448,4 +603,60 @@ pub enum WeightLoadError {
     RoleMissing(String),
     #[error("quantized tensor metadata missing: {0}")]
     QuantizationMissing(String),
+    #[error("invalid layer tensor layout: {0}")]
+    InvalidLayer(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ax_engine_core::NativeTensorDataType;
+
+    fn spec(role: NativeTensorRole) -> NativeTensorSpec {
+        NativeTensorSpec {
+            name: format!("{role:?}"),
+            role,
+            layer_index: Some(0),
+            dtype: NativeTensorDataType::Bf16,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantization: None,
+            quantized_source: None,
+            shape: vec![1],
+            file: PathBuf::from("model.safetensors"),
+            offset_bytes: 0,
+            length_bytes: 2,
+        }
+    }
+
+    #[test]
+    fn attention_layout_detects_linear_attention_without_full_attention_roles() {
+        let specs = vec![spec(NativeTensorRole::LinearAttentionInProjQkv)];
+
+        let layout = attention_layout_for_layer(&specs, Some(0)).expect("layout should resolve");
+
+        assert_eq!(layout, AttentionLayout::Linear);
+    }
+
+    #[test]
+    fn attention_layout_defaults_to_full_attention() {
+        let specs = vec![spec(NativeTensorRole::AttentionO)];
+
+        let layout = attention_layout_for_layer(&specs, Some(0)).expect("layout should resolve");
+
+        assert_eq!(layout, AttentionLayout::Full);
+    }
+
+    #[test]
+    fn attention_layout_rejects_mixed_attention_families() {
+        let specs = vec![
+            spec(NativeTensorRole::AttentionO),
+            spec(NativeTensorRole::LinearAttentionInProjQkv),
+        ];
+
+        let error = attention_layout_for_layer(&specs, Some(0))
+            .expect_err("mixed attention families should fail");
+
+        assert!(matches!(error, WeightLoadError::InvalidLayer(_)));
+    }
 }
