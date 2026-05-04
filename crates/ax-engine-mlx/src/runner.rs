@@ -414,12 +414,6 @@ fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(
                 .to_string(),
         ));
     }
-    if manifest.attn_output_gate {
-        return Err(MlxRunnerError::UnsupportedFeature(
-            "attn_output_gate requires splitting q_proj gate rows before attention output"
-                .to_string(),
-        ));
-    }
     Ok(())
 }
 
@@ -661,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn mlx_manifest_validation_rejects_attn_output_gate() {
+    fn mlx_manifest_validation_allows_attn_output_gate() {
         let mut manifest = dense_manifest();
         manifest.attn_output_gate = true;
         manifest
@@ -672,9 +666,7 @@ mod tests {
             .shape = vec![8, 4];
         let artifacts = write_artifacts(manifest);
 
-        let error = validate_mlx_supported_manifest(&artifacts)
-            .expect_err("attention output gate should fail closed");
-
-        assert!(error.to_string().contains("attn_output_gate"));
+        validate_mlx_supported_manifest(&artifacts)
+            .expect("attention output gate is implemented in the MLX model graph");
     }
 }
