@@ -660,6 +660,7 @@ mod tests {
     use super::*;
     use ax_engine_core::NativeTensorDataType;
     use mlx_sys::{MlxDtype, zeros};
+    use std::path::Path;
 
     fn spec(role: NativeTensorRole) -> NativeTensorSpec {
         NativeTensorSpec {
@@ -747,5 +748,32 @@ mod tests {
 
         assert_eq!(quantized.group_size, 32);
         assert_eq!(quantized.bits, 8);
+    }
+
+    #[test]
+    fn real_mlx_weights_load_qwen35_linear_attention_when_configured() {
+        if std::env::var("AX_ENGINE_MLX_LOAD_REAL_WEIGHTS").as_deref() != Ok("1") {
+            return;
+        }
+        let Ok(model_dir) = std::env::var("AX_ENGINE_MLX_REAL_MODEL_DIR") else {
+            return;
+        };
+        let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+            .expect("real MLX manifest should load");
+
+        let weights = load_weights(&artifacts).expect("real MLX weights should load");
+
+        assert_eq!(
+            weights.layers.len(),
+            artifacts.manifest().layer_count as usize
+        );
+        assert!(
+            weights
+                .layers
+                .first()
+                .and_then(|layer| layer.linear_attn.as_ref())
+                .is_some(),
+            "Qwen3.5 layer 0 should load linear-attention weights"
+        );
     }
 }
