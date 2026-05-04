@@ -258,13 +258,7 @@ pub fn layer_forward(
 
         let q = transpose(&q, &[0, 2, 1, 3], None);
         let k = transpose(&k, &[0, 2, 1, 3], None);
-        // V: transpose to BSHD then apply no-scale RMSNorm if required (Gemma4).
-        let v = transpose(&v, &[0, 2, 1, 3], None);
-        let v = if v_norm_no_scale {
-            rms_norm_no_scale_bshd(v, cfg.n_kv_heads, head_dim, seq)
-        } else {
-            v
-        };
+        let v = prepare_value_bhsd(v, v_norm_no_scale, cfg.n_kv_heads, head_dim, seq);
 
         let q_rope = rope(
             &q,
@@ -511,6 +505,22 @@ fn rms_norm_no_scale_bshd(x: MlxArray, n_heads: usize, head_dim: usize, seq: usi
         &[1, seq as i32, n_heads as i32, head_dim as i32],
         None,
     )
+}
+
+/// Apply optional V RMSNorm in BSHD, then convert to BHSD for attention/KV cache.
+fn prepare_value_bhsd(
+    v: MlxArray,
+    v_norm_no_scale: bool,
+    n_heads: usize,
+    head_dim: usize,
+    seq: usize,
+) -> MlxArray {
+    let v = if v_norm_no_scale {
+        rms_norm_no_scale_bshd(v, n_heads, head_dim, seq)
+    } else {
+        v
+    };
+    transpose(&v, &[0, 2, 1, 3], None)
 }
 
 /// Build the array mask only when the fast causal/none modes cannot express it.
@@ -839,6 +849,7 @@ mod tests {
     use ax_engine_core::{
         NativeLinearAttentionConfig, NativeMoeConfig, NativeRuntimeStatus, NativeTensorFormat,
     };
+    use mlx_sys::zeros;
     use std::collections::BTreeMap;
 
     fn cfg(attn_output_gate: bool) -> ModelConfig {
@@ -944,6 +955,14 @@ mod tests {
         assert_eq!(cfg.layer_configs[1].rope_theta, 1_000_000.0);
         assert_eq!(cfg.layer_configs[1].rope_dims, 128);
         assert_eq!(cfg.layer_configs[1].sliding_window, None);
+    }
+
+    #[test]
+    fn value_norm_keeps_cache_shape_bhsd() {
+        let v = zeros(&[1, 3, 2, 4], MlxDtype::Float32, None);
+        let prepared = prepare_value_bhsd(v, true, 2, 4, 3);
+
+        assert_eq!(prepared.shape(), vec![1, 2, 3, 4]);
     }
 
     #[test]
