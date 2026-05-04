@@ -25,6 +25,68 @@ pub struct LayerConfig {
     pub v_norm_no_scale: bool,
 }
 
+/// Hyperparameters for Qwen3.5 gated-delta linear-attention layers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinearAttentionConfig {
+    pub full_attention_interval: usize,
+    pub num_value_heads: usize,
+    pub num_key_heads: usize,
+    pub key_head_dim: usize,
+    pub value_head_dim: usize,
+    pub conv_kernel_dim: usize,
+}
+
+impl LinearAttentionConfig {
+    fn from_manifest(m: &NativeModelManifest) -> Option<Self> {
+        let cfg = &m.linear_attention;
+        if !cfg.is_enabled() {
+            return None;
+        }
+        Some(Self {
+            full_attention_interval: cfg
+                .full_attention_interval
+                .expect("validated linear_attention.full_attention_interval")
+                as usize,
+            num_value_heads: cfg
+                .num_value_heads
+                .expect("validated linear_attention.num_value_heads")
+                as usize,
+            num_key_heads: cfg
+                .num_key_heads
+                .expect("validated linear_attention.num_key_heads")
+                as usize,
+            key_head_dim: cfg
+                .key_head_dim
+                .expect("validated linear_attention.key_head_dim")
+                as usize,
+            value_head_dim: cfg
+                .value_head_dim
+                .expect("validated linear_attention.value_head_dim")
+                as usize,
+            conv_kernel_dim: cfg
+                .conv_kernel_dim
+                .expect("validated linear_attention.conv_kernel_dim")
+                as usize,
+        })
+    }
+
+    fn is_linear_layer(&self, layer_idx: usize) -> bool {
+        (layer_idx + 1) % self.full_attention_interval != 0
+    }
+
+    pub fn key_dim(&self) -> usize {
+        self.num_key_heads * self.key_head_dim
+    }
+
+    pub fn value_dim(&self) -> usize {
+        self.num_value_heads * self.value_head_dim
+    }
+
+    pub fn conv_dim(&self) -> usize {
+        self.key_dim() * 2 + self.value_dim()
+    }
+}
+
 /// Hyperparameters extracted from the manifest.
 #[derive(Clone, Debug)]
 pub struct ModelConfig {
@@ -55,6 +117,8 @@ pub struct ModelConfig {
     pub hidden_states_scale: Option<f32>,
     /// Normalise top-k MoE routing weights to sum to 1 (Qwen3 MoE norm_topk_prob).
     pub moe_norm_topk_prob: bool,
+    /// Qwen3.5 gated-delta linear-attention config, when present.
+    pub linear_attention: Option<LinearAttentionConfig>,
 }
 
 impl ModelConfig {
@@ -101,7 +165,14 @@ impl ModelConfig {
             uses_geglu: is_gemma4,
             hidden_states_scale: m.hidden_states_scale,
             moe_norm_topk_prob: m.moe_norm_topk_prob,
+            linear_attention: LinearAttentionConfig::from_manifest(m),
         }
+    }
+
+    pub fn is_linear_attention_layer(&self, layer_idx: usize) -> bool {
+        self.linear_attention
+            .as_ref()
+            .is_some_and(|linear| linear.is_linear_layer(layer_idx))
     }
 }
 
@@ -874,6 +945,7 @@ mod tests {
             uses_geglu: false,
             hidden_states_scale: None,
             moe_norm_topk_prob: false,
+            linear_attention: None,
         }
     }
 
@@ -911,6 +983,49 @@ mod tests {
             hidden_states_scale: Some((2816_f32).sqrt()),
             moe_norm_topk_prob: false,
             linear_attention: NativeLinearAttentionConfig::default(),
+            moe: NativeMoeConfig::default(),
+            tensors: Vec::new(),
+        }
+    }
+
+    fn qwen35_linear_manifest() -> NativeModelManifest {
+        NativeModelManifest {
+            schema_version: ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
+            model_family: "qwen3_5".to_string(),
+            tensor_format: NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: NativeRuntimeStatus::default(),
+            layer_count: 4,
+            hidden_size: 16,
+            intermediate_size: 32,
+            attention_head_count: 2,
+            attention_head_dim: 8,
+            kv_head_count: 1,
+            vocab_size: 32,
+            tie_word_embeddings: false,
+            rope_theta: Some(100_000),
+            rope_theta_swa: None,
+            query_pre_attn_scalar: None,
+            attention_logit_softcap: None,
+            attn_output_gate: true,
+            partial_rotary_factor: Some(0.25),
+            attention_value_from_key_layers: Vec::new(),
+            attention_v_norm_no_scale_layers: Vec::new(),
+            global_head_dim: None,
+            sliding_window_size: None,
+            layer_types: Vec::new(),
+            kv_shared_source_layers: BTreeMap::new(),
+            final_logit_softcapping: None,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: true,
+            linear_attention: NativeLinearAttentionConfig {
+                full_attention_interval: Some(4),
+                num_value_heads: Some(2),
+                num_key_heads: Some(1),
+                key_head_dim: Some(4),
+                value_head_dim: Some(3),
+                conv_kernel_dim: Some(4),
+            },
             moe: NativeMoeConfig::default(),
             tensors: Vec::new(),
         }
@@ -955,6 +1070,24 @@ mod tests {
         assert_eq!(cfg.layer_configs[1].rope_theta, 1_000_000.0);
         assert_eq!(cfg.layer_configs[1].rope_dims, 128);
         assert_eq!(cfg.layer_configs[1].sliding_window, None);
+    }
+
+    #[test]
+    fn qwen35_linear_attention_config_matches_reference_interval() {
+        let cfg = ModelConfig::from_manifest(&qwen35_linear_manifest());
+        let linear = cfg
+            .linear_attention
+            .as_ref()
+            .expect("linear attention config");
+
+        assert_eq!(linear.full_attention_interval, 4);
+        assert_eq!(linear.key_dim(), 4);
+        assert_eq!(linear.value_dim(), 6);
+        assert_eq!(linear.conv_dim(), 14);
+        assert!(cfg.is_linear_attention_layer(0));
+        assert!(cfg.is_linear_attention_layer(1));
+        assert!(cfg.is_linear_attention_layer(2));
+        assert!(!cfg.is_linear_attention_layer(3));
     }
 
     #[test]
