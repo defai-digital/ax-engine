@@ -109,17 +109,7 @@ impl MlxRunner {
         let cfg = ModelConfig::from_manifest(artifacts.manifest());
         let weights = load_weights(artifacts).map_err(MlxRunnerError::Weights)?;
 
-        let binding_summary = NativeModelBindingSummary {
-            bindings_prepared: true,
-            buffers_bound: true,
-            buffer_count: artifacts.tensor_specs().len() as u32,
-            buffer_bytes: 0,
-            source_quantized_binding_count: 0,
-            source_q4_k_binding_count: 0,
-            source_q5_k_binding_count: 0,
-            source_q6_k_binding_count: 0,
-            source_q8_0_binding_count: 0,
-        };
+        let binding_summary = binding_summary_from_specs(artifacts.tensor_specs());
 
         let weights = Arc::new(weights);
 
@@ -427,6 +417,52 @@ fn has_linear_attention_tensors(artifacts: &NativeModelArtifacts) -> bool {
     })
 }
 
+fn binding_summary_from_specs(
+    specs: &[ax_engine_core::NativeTensorSpec],
+) -> NativeModelBindingSummary {
+    let mut summary = NativeModelBindingSummary {
+        bindings_prepared: true,
+        buffers_bound: true,
+        buffer_count: specs.len().min(u32::MAX as usize) as u32,
+        buffer_bytes: 0,
+        source_quantized_binding_count: 0,
+        source_q4_k_binding_count: 0,
+        source_q5_k_binding_count: 0,
+        source_q6_k_binding_count: 0,
+        source_q8_0_binding_count: 0,
+    };
+
+    for spec in specs {
+        summary.buffer_bytes = summary.buffer_bytes.saturating_add(spec.length_bytes);
+        if !spec.source_quantized {
+            continue;
+        }
+        summary.source_quantized_binding_count =
+            summary.source_quantized_binding_count.saturating_add(1);
+        match spec.source_tensor_type.as_deref() {
+            Some("q4_k") => {
+                summary.source_q4_k_binding_count =
+                    summary.source_q4_k_binding_count.saturating_add(1);
+            }
+            Some("q5_k") => {
+                summary.source_q5_k_binding_count =
+                    summary.source_q5_k_binding_count.saturating_add(1);
+            }
+            Some("q6_k") => {
+                summary.source_q6_k_binding_count =
+                    summary.source_q6_k_binding_count.saturating_add(1);
+            }
+            Some("q8_0") => {
+                summary.source_q8_0_binding_count =
+                    summary.source_q8_0_binding_count.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+
+    summary
+}
+
 fn validate_qwen35_linear_attention(manifest: &NativeModelManifest) -> Result<(), MlxRunnerError> {
     if manifest.model_family != "qwen3_5" {
         return Err(MlxRunnerError::UnsupportedFeature(
@@ -602,6 +638,30 @@ mod tests {
             offset_bytes: 0,
             length_bytes: 32,
         }
+    }
+
+    #[test]
+    fn binding_summary_reports_manifest_bytes_and_quantized_sources() {
+        let dense = tensor("dense", NativeTensorRole::AttentionNorm, Some(0), vec![4]);
+        let mut q4 = tensor("q4", NativeTensorRole::AttentionQ, Some(0), vec![8, 4]);
+        q4.source_quantized = true;
+        q4.source_tensor_type = Some("q4_k".to_string());
+        q4.length_bytes = 64;
+        let mut u32_affine = tensor("u32", NativeTensorRole::AttentionO, Some(0), vec![4, 1]);
+        u32_affine.source_quantized = true;
+        u32_affine.length_bytes = 16;
+
+        let summary = binding_summary_from_specs(&[dense, q4, u32_affine]);
+
+        assert!(summary.bindings_prepared);
+        assert!(summary.buffers_bound);
+        assert_eq!(summary.buffer_count, 3);
+        assert_eq!(summary.buffer_bytes, 112);
+        assert_eq!(summary.source_quantized_binding_count, 2);
+        assert_eq!(summary.source_q4_k_binding_count, 1);
+        assert_eq!(summary.source_q5_k_binding_count, 0);
+        assert_eq!(summary.source_q6_k_binding_count, 0);
+        assert_eq!(summary.source_q8_0_binding_count, 0);
     }
 
     fn dense_manifest() -> NativeModelManifest {
@@ -840,6 +900,9 @@ mod tests {
             .expect("real MLX manifest should load");
 
         validate_mlx_supported_manifest(&artifacts).expect("real MLX manifest should be supported");
+        let binding = binding_summary_from_specs(artifacts.tensor_specs());
+        assert!(binding.buffer_bytes > 0);
+        assert!(binding.source_quantized_binding_count > 0);
         let cfg = ModelConfig::from_manifest(artifacts.manifest());
 
         assert_eq!(
