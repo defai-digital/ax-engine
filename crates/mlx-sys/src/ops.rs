@@ -263,6 +263,132 @@ pub fn argmax(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     }
 }
 
+pub fn argsort_axis(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_argsort_axis(&mut res.inner, a.inner, axis, stream);
+        res
+    }
+}
+
+/// Argpartition along `axis`. Returns indices such that the element at position
+/// `kth` would be in its sorted position. Negative kth counts from the end.
+pub fn argpartition_axis(a: &MlxArray, kth: i32, axis: i32, s: Option<&MlxStream>) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_argpartition_axis(&mut res.inner, a.inner, kth, axis, stream);
+        res
+    }
+}
+
+pub fn take_along_axis(
+    a: &MlxArray,
+    indices: &MlxArray,
+    axis: i32,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_take_along_axis(&mut res.inner, a.inner, indices.inner, axis, stream);
+        res
+    }
+}
+
+pub fn sum_axis(a: &MlxArray, axis: i32, keepdims: bool, s: Option<&MlxStream>) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_sum_axis(&mut res.inner, a.inner, axis, keepdims, stream);
+        res
+    }
+}
+
+/// Batched matmul selecting rows of `b` via `rhs_indices`.
+///
+/// Computes `a[lhs_i] @ b[rhs_i]` for each index pair. `lhs_indices` is
+/// always null here (use all rows of `a`). `b` shape: `[N, K, L]`.
+pub fn gather_mm(
+    a: &MlxArray,
+    b: &MlxArray,
+    rhs_indices: &MlxArray,
+    sorted_indices: bool,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let null_arr = ffi::mlx_array {
+            ctx: std::ptr::null_mut(),
+        };
+        let mut res = MlxArray::empty();
+        ffi::mlx_gather_mm(
+            &mut res.inner,
+            a.inner,
+            b.inner,
+            null_arr,
+            rhs_indices.inner,
+            sorted_indices,
+            stream,
+        );
+        res
+    }
+}
+
+/// Quantized batched matmul selecting experts via `rhs_indices`.
+///
+/// Equivalent to `gather_mm` on the dequantized weight. With `transpose=true`,
+/// computes `x @ w[rhs_i].T` for each selected expert.
+#[allow(clippy::too_many_arguments)]
+pub fn gather_qmm(
+    x: &MlxArray,
+    w: &MlxArray,
+    scales: &MlxArray,
+    biases: Option<&MlxArray>,
+    rhs_indices: &MlxArray,
+    transpose: bool,
+    group_size: Option<i32>,
+    bits: Option<i32>,
+    sorted_indices: bool,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let biases_raw = biases.map(|b| b.inner).unwrap_or(ffi::mlx_array {
+            ctx: std::ptr::null_mut(),
+        });
+        let null_arr = ffi::mlx_array {
+            ctx: std::ptr::null_mut(),
+        };
+        let gs = ffi::mlx_optional_int_ {
+            has_value: group_size.is_some(),
+            value: group_size.unwrap_or(64),
+        };
+        let bs = ffi::mlx_optional_int_ {
+            has_value: bits.is_some(),
+            value: bits.unwrap_or(4),
+        };
+        let mut res = MlxArray::empty();
+        ffi::mlx_gather_qmm(
+            &mut res.inner,
+            x.inner,
+            w.inner,
+            scales.inner,
+            biases_raw,
+            null_arr,
+            rhs_indices.inner,
+            transpose,
+            gs,
+            bs,
+            c"affine".as_ptr(),
+            sorted_indices,
+            stream,
+        );
+        res
+    }
+}
+
 /// Dequantize a packed-int4 weight tensor to floating point.
 ///
 /// `w` must be the packed uint32 tensor from MLX quantized format.

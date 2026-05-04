@@ -26,11 +26,24 @@ pub struct LayerWeights {
     // Packed QKV projection (some architectures).
     pub qkv_packed: Option<QuantizedWeight>,
     pub o_proj: QuantizedWeight,
+    // Dense FFN norms and weights.
     pub ffn_norm: MlxArray,
+    pub ffn_post_norm: Option<MlxArray>,
     pub gate_proj: Option<QuantizedWeight>,
     pub up_proj: Option<QuantizedWeight>,
     pub gate_up_packed: Option<QuantizedWeight>,
     pub down_proj: QuantizedWeight,
+    // MoE: extra norms (present when this layer has a MoE block).
+    pub ffn_norm2: Option<MlxArray>,
+    pub ffn_post_norm1: Option<MlxArray>,
+    pub ffn_post_norm2: Option<MlxArray>,
+    // MoE: router weights.
+    pub router_proj: Option<QuantizedWeight>,
+    pub router_scale: Option<MlxArray>,
+    // MoE: expert weights (shape [num_experts, expert_size, hidden] / packed).
+    pub gate_exps: Option<QuantizedWeight>,
+    pub up_exps: Option<QuantizedWeight>,
+    pub down_exps: Option<QuantizedWeight>,
 }
 
 /// A weight matrix plus optional MLX affine quantization metadata.
@@ -165,6 +178,63 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             "down_proj",
         )?;
 
+        let ffn_post_norm =
+            try_take_plain(specs, &mut name_map, NativeTensorRole::FfnPostNorm, idx)?;
+        let ffn_norm2 =
+            try_take_plain(specs, &mut name_map, NativeTensorRole::FfnNorm2, idx)?;
+        let ffn_post_norm1 =
+            try_take_plain(specs, &mut name_map, NativeTensorRole::FfnPostNorm1, idx)?;
+        let ffn_post_norm2 =
+            try_take_plain(specs, &mut name_map, NativeTensorRole::FfnPostNorm2, idx)?;
+
+        let router_proj = if has_role(specs, NativeTensorRole::FfnGateInp, idx) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::FfnGateInp,
+                idx,
+                "router_proj",
+            )?)
+        } else {
+            None
+        };
+        let router_scale =
+            try_take_plain(specs, &mut name_map, NativeTensorRole::FfnGateInpScale, idx)?;
+
+        let gate_exps = if has_role(specs, NativeTensorRole::FfnGateExps, idx) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::FfnGateExps,
+                idx,
+                "gate_exps",
+            )?)
+        } else {
+            None
+        };
+        let up_exps = if has_role(specs, NativeTensorRole::FfnUpExps, idx) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::FfnUpExps,
+                idx,
+                "up_exps",
+            )?)
+        } else {
+            None
+        };
+        let down_exps = if has_role(specs, NativeTensorRole::FfnDownExps, idx) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::FfnDownExps,
+                idx,
+                "down_exps",
+            )?)
+        } else {
+            None
+        };
+
         let q_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionQNorm, idx)?;
         let k_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionKNorm, idx)?;
 
@@ -241,10 +311,19 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             qkv_packed,
             o_proj,
             ffn_norm,
+            ffn_post_norm,
             gate_proj,
             up_proj,
             gate_up_packed,
             down_proj,
+            ffn_norm2,
+            ffn_post_norm1,
+            ffn_post_norm2,
+            router_proj,
+            router_scale,
+            gate_exps,
+            up_exps,
+            down_exps,
         });
     }
 
