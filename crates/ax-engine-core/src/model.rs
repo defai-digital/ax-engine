@@ -2121,6 +2121,14 @@ fn tensor_quantization_or_default(tensor: &NativeTensorSpec) -> NativeTensorQuan
 }
 
 fn validate_tensor_quantization(tensor: &NativeTensorSpec) -> Result<(), NativeModelError> {
+    if tensor.dtype == NativeTensorDataType::U32 && !tensor.source_quantized {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} uses dtype u32 but source_quantized is false",
+                tensor.name
+            ),
+        });
+    }
     let Some(quantization) = &tensor.quantization else {
         return Ok(());
     };
@@ -2956,6 +2964,31 @@ mod tests {
         };
         assert!(
             message.contains("packed quantized shape"),
+            "unexpected error: {message}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_u32_tensor_without_source_quantized_flag() {
+        let mut manifest = packed_layer_manifest();
+        let gate = manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| tensor.role == NativeTensorRole::FfnGateUpPacked)
+            .expect("fixture should include packed ffn gate/up");
+        gate.dtype = NativeTensorDataType::U32;
+        gate.source_quantized = false;
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("u32 tensors should be declared source-quantized");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("dtype u32 but source_quantized is false"),
             "unexpected error: {message}"
         );
 
