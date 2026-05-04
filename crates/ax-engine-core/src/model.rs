@@ -69,6 +69,7 @@ pub enum NativeTensorRole {
     FfnPostNorm2,
     FfnGateInp,
     FfnGateInpScale,
+    FfnGateInpExpertScale,
     FfnGate,
     FfnUp,
     FfnGateUpPacked,
@@ -78,6 +79,7 @@ pub enum NativeTensorRole {
     FfnDown,
     FfnDownExps,
     FfnDownExpsScale,
+    LayerScalar,
     FinalNorm,
     LmHead,
     RopeFreqs,
@@ -113,6 +115,7 @@ impl NativeTensorRole {
                 | Self::FfnPostNorm2
                 | Self::FfnGateInp
                 | Self::FfnGateInpScale
+                | Self::FfnGateInpExpertScale
                 | Self::FfnGate
                 | Self::FfnUp
                 | Self::FfnGateUpPacked
@@ -122,6 +125,7 @@ impl NativeTensorRole {
                 | Self::FfnDown
                 | Self::FfnDownExps
                 | Self::FfnDownExpsScale
+                | Self::LayerScalar
         )
     }
 }

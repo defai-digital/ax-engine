@@ -48,6 +48,10 @@ pub struct LayerWeights {
     // MoE: router weights.
     pub router_proj: Option<QuantizedWeight>,
     pub router_scale: Option<MlxArray>,
+    /// Per-expert output scale (Gemma4 MoE): multiply top-k weights by this after softmax.
+    pub router_expert_scale: Option<MlxArray>,
+    /// Per-layer scalar applied to hidden states after the FFN residual (Gemma4).
+    pub layer_scalar: Option<MlxArray>,
     // MoE: expert weights (shape [num_experts, expert_size, hidden] / packed).
     pub gate_up_exps_packed: Option<QuantizedWeight>,
     pub gate_exps: Option<QuantizedWeight>,
@@ -262,6 +266,14 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         };
         let router_scale =
             try_take_plain(specs, &mut name_map, NativeTensorRole::FfnGateInpScale, idx)?;
+        let router_expert_scale = try_take_plain(
+            specs,
+            &mut name_map,
+            NativeTensorRole::FfnGateInpExpertScale,
+            idx,
+        )?;
+        let layer_scalar =
+            try_take_plain(specs, &mut name_map, NativeTensorRole::LayerScalar, idx)?;
 
         let gate_up_exps_packed = if has_role(specs, NativeTensorRole::FfnGateUpExpsPacked, idx) {
             Some(take_weight(
@@ -430,6 +442,8 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             ffn_post_norm2,
             router_proj,
             router_scale,
+            router_expert_scale,
+            layer_scalar,
             gate_up_exps_packed,
             gate_exps,
             up_exps,
