@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use mlx_sys::{MlxArray, load_safetensors};
 
-use ax_engine_core::{NativeModelArtifacts, NativeTensorRole, NativeTensorSpec};
+use ax_engine_core::{
+    NativeModelArtifacts, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
+};
 
 /// All weight arrays for one model.
 pub struct ModelWeights {
@@ -41,6 +43,7 @@ pub struct LayerWeights {
     pub router_proj: Option<QuantizedWeight>,
     pub router_scale: Option<MlxArray>,
     // MoE: expert weights (shape [num_experts, expert_size, hidden] / packed).
+    pub gate_up_exps_packed: Option<QuantizedWeight>,
     pub gate_exps: Option<QuantizedWeight>,
     pub up_exps: Option<QuantizedWeight>,
     pub down_exps: Option<QuantizedWeight>,
@@ -61,12 +64,22 @@ pub struct QuantizedWeight {
 
 impl QuantizedWeight {
     pub fn new(weight: MlxArray, scales: Option<MlxArray>, biases: Option<MlxArray>) -> Self {
+        Self::with_quantization(weight, scales, biases, None)
+    }
+
+    pub fn with_quantization(
+        weight: MlxArray,
+        scales: Option<MlxArray>,
+        biases: Option<MlxArray>,
+        quantization: Option<&NativeTensorQuantization>,
+    ) -> Self {
+        let quantization = quantization.cloned().unwrap_or_default();
         Self {
             weight,
             scales,
             biases,
-            group_size: 64,
-            bits: 4,
+            group_size: quantization.group_size as i32,
+            bits: quantization.bits as i32,
         }
     }
     pub fn is_quantized(&self) -> bool {
@@ -116,11 +129,14 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     )?
     .weight;
     let lm_head = if artifacts.manifest().tie_word_embeddings {
-        QuantizedWeight::new(
+        let mut tied = QuantizedWeight::new(
             token_embedding.weight.clone(),
             token_embedding.scales.clone(),
             token_embedding.biases.clone(),
-        )
+        );
+        tied.group_size = token_embedding.group_size;
+        tied.bits = token_embedding.bits;
+        tied
     } else {
         take_weight(
             specs,
@@ -180,8 +196,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
 
         let ffn_post_norm =
             try_take_plain(specs, &mut name_map, NativeTensorRole::FfnPostNorm, idx)?;
-        let ffn_norm2 =
-            try_take_plain(specs, &mut name_map, NativeTensorRole::FfnNorm2, idx)?;
+        let ffn_norm2 = try_take_plain(specs, &mut name_map, NativeTensorRole::FfnNorm2, idx)?;
         let ffn_post_norm1 =
             try_take_plain(specs, &mut name_map, NativeTensorRole::FfnPostNorm1, idx)?;
         let ffn_post_norm2 =
@@ -201,6 +216,17 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         let router_scale =
             try_take_plain(specs, &mut name_map, NativeTensorRole::FfnGateInpScale, idx)?;
 
+        let gate_up_exps_packed = if has_role(specs, NativeTensorRole::FfnGateUpExpsPacked, idx) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::FfnGateUpExpsPacked,
+                idx,
+                "gate_up_exps",
+            )?)
+        } else {
+            None
+        };
         let gate_exps = if has_role(specs, NativeTensorRole::FfnGateExps, idx) {
             Some(take_weight(
                 specs,
@@ -321,6 +347,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             ffn_post_norm2,
             router_proj,
             router_scale,
+            gate_up_exps_packed,
             gate_exps,
             up_exps,
             down_exps,
@@ -344,11 +371,11 @@ fn take_weight(
     layer_index: Option<u32>,
     label: &str,
 ) -> Result<QuantizedWeight, WeightLoadError> {
-    let name = specs
+    let spec = specs
         .iter()
         .find(|s| s.role == role && s.layer_index == layer_index)
-        .map(|s| s.name.clone())
         .ok_or_else(|| WeightLoadError::RoleMissing(format!("{label}[{layer_index:?}]")))?;
+    let name = spec.name.clone();
 
     let weight = name_map
         .remove(&name)
@@ -359,7 +386,18 @@ fn take_weight(
     let scales = name_map.remove(&format!("{base}.scales"));
     let biases = name_map.remove(&format!("{base}.biases"));
 
-    Ok(QuantizedWeight::new(weight, scales, biases))
+    if spec.source_quantized && scales.is_none() {
+        return Err(WeightLoadError::QuantizationMissing(format!(
+            "{base}.scales"
+        )));
+    }
+
+    Ok(QuantizedWeight::with_quantization(
+        weight,
+        scales,
+        biases,
+        spec.quantization.as_ref(),
+    ))
 }
 
 /// Load a plain (non-quantized) weight tensor or return None if not present.
@@ -393,4 +431,6 @@ pub enum WeightLoadError {
     TensorMissing(String),
     #[error("required tensor role missing: {0}")]
     RoleMissing(String),
+    #[error("quantized tensor metadata missing: {0}")]
+    QuantizationMissing(String),
 }

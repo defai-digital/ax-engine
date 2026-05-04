@@ -1,6 +1,6 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, add, argpartition_axis, astype, dequantize, expand_dims, gather_qmm,
-    gather_mm, matmul, multiply, quantized_matmul, reshape, rms_norm, rope,
+    MlxArray, MlxDtype, add, argpartition_axis, astype, dequantize, expand_dims, gather_mm,
+    gather_qmm, matmul, multiply, quantized_matmul, reshape, rms_norm, rope,
     scaled_dot_product_attention, slice_last_dim, softmax, sum_axis, take, take_along_axis,
     transpose,
 };
@@ -208,12 +208,7 @@ pub fn layer_forward(
         let h1 = ffn_swiglu(cfg, w, &normed2);
         let h1 = rms_norm(&h1, w.ffn_post_norm1.as_ref(), 1e-6, None);
         // Expert sub-block:
-        let h2_normed = rms_norm(
-            &hidden,
-            w.ffn_norm2.as_ref(),
-            1e-6,
-            None,
-        );
+        let h2_normed = rms_norm(&hidden, w.ffn_norm2.as_ref(), 1e-6, None);
         let (top_k_indices, top_k_weights) = moe_router_forward(cfg, w, &hidden);
         let h2 = moe_experts_forward(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
         let h2 = rms_norm(&h2, w.ffn_post_norm2.as_ref(), 1e-6, None);
@@ -401,7 +396,11 @@ fn mlx_slice_last_dim(x: &MlxArray, start: i32, end: i32) -> MlxArray {
 ///
 /// Mirrors Gemma4TextRouter.__call__:
 ///   rms_norm(x, scale * (1/sqrt(hidden))) → proj → argpartition → softmax
-fn moe_router_forward(cfg: &ModelConfig, w: &LayerWeights, hidden: &MlxArray) -> (MlxArray, MlxArray) {
+fn moe_router_forward(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+) -> (MlxArray, MlxArray) {
     let router_proj = w.router_proj.as_ref().unwrap();
     let router_scale = w.router_scale.as_ref().unwrap();
 
@@ -457,12 +456,23 @@ fn moe_experts_forward(
     let x_exp = expand_dims(x, x.ndim() as i32 - 1, None);
 
     // Gate and up projections using gather_qmm (quantized) or gather_mm (fp).
-    let gate_exps = w.gate_exps.as_ref().unwrap();
-    let up_exps = w.up_exps.as_ref().unwrap();
     let down_exps = w.down_exps.as_ref().unwrap();
 
-    let gate_out = qw_gather(&x_exp, gate_exps, top_k_indices);
-    let up_out = qw_gather(&x_exp, up_exps, top_k_indices);
+    let (gate_out, up_out) = if let Some(packed) = &w.gate_up_exps_packed {
+        let out = qw_gather(&x_exp, packed, top_k_indices);
+        let half = _cfg.moe_expert_intermediate_size as i32;
+        (
+            mlx_slice_last_dim(&out, 0, half),
+            mlx_slice_last_dim(&out, half, half * 2),
+        )
+    } else {
+        let gate_exps = w.gate_exps.as_ref().unwrap();
+        let up_exps = w.up_exps.as_ref().unwrap();
+        (
+            qw_gather(&x_exp, gate_exps, top_k_indices),
+            qw_gather(&x_exp, up_exps, top_k_indices),
+        )
+    };
 
     // SwiGLU activation: silu(gate) * up → [1, seq, top_k, expert_size]
     let gate_act = mlx_sys::ops::silu(&gate_out, None);

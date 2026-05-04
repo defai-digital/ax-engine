@@ -634,6 +634,7 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
                         | NativeTensorDataType::Q6Km
                         | NativeTensorDataType::Q8Zero
                 ),
+                quantization: None,
                 quantized_source: None,
                 shape: logical_shape,
                 file: file_name.clone(),
@@ -662,6 +663,7 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
                                     | NativeTensorDataType::Q6Km
                                     | NativeTensorDataType::Q8Zero
                             ),
+                            quantization: None,
                             quantized_source: None,
                             shape: logical_shape,
                             file: file_name.clone(),

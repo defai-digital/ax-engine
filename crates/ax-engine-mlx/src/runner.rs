@@ -8,8 +8,8 @@ use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
 use ax_engine_core::{
     ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelArtifacts,
-    NativeModelBindingSummary, RequestExecutionUpdate, RequestId, RouteMetadata, RunnerInput,
-    RunnerOutput, StopReason,
+    NativeModelBindingSummary, NativeTensorRole, RequestExecutionUpdate, RequestId, RouteMetadata,
+    RunnerInput, RunnerOutput, StopReason,
 };
 
 use crate::generate::{chunked_prefill, decode_step};
@@ -103,6 +103,8 @@ impl MlxRunner {
         if wired_cap > 0 {
             set_wired_limit(wired_cap);
         }
+
+        validate_mlx_supported_manifest(artifacts)?;
 
         let cfg = ModelConfig::from_manifest(artifacts.manifest());
         let weights = load_weights(artifacts).map_err(MlxRunnerError::Weights)?;
@@ -383,13 +385,54 @@ impl MlxRunner {
 
 #[derive(Debug, thiserror::Error)]
 pub enum MlxRunnerError {
+    #[error("MLX model feature is not supported: {0}")]
+    UnsupportedFeature(String),
     #[error("weight loading failed: {0}")]
     Weights(#[from] crate::weights::WeightLoadError),
+}
+
+fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(), MlxRunnerError> {
+    let manifest = artifacts.manifest();
+    if manifest.linear_attention.is_enabled()
+        || artifacts.tensor_specs().iter().any(|tensor| {
+            matches!(
+                tensor.role,
+                NativeTensorRole::LinearAttentionInProjQkv
+                    | NativeTensorRole::LinearAttentionInProjZ
+                    | NativeTensorRole::LinearAttentionInProjA
+                    | NativeTensorRole::LinearAttentionInProjB
+                    | NativeTensorRole::LinearAttentionConv1d
+                    | NativeTensorRole::LinearAttentionDtBias
+                    | NativeTensorRole::LinearAttentionALog
+                    | NativeTensorRole::LinearAttentionNorm
+                    | NativeTensorRole::LinearAttentionOutProj
+            )
+        })
+    {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "linear_attention layers require a dedicated MLX linear-attention implementation"
+                .to_string(),
+        ));
+    }
+    if manifest.attn_output_gate {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "attn_output_gate requires splitting q_proj gate rows before attention output"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ax_engine_core::{
+        AX_NATIVE_MODEL_MANIFEST_FILE, NativeLinearAttentionConfig, NativeModelManifest,
+        NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat,
+        NativeTensorSpec,
+    };
+    use std::fs;
+    use std::path::PathBuf;
 
     // Verify that the extract-work-reinsert mutex pattern correctly isolates
     // per-request state without GPU execution required.
@@ -450,5 +493,188 @@ mod tests {
             state.next_model_last_token.is_none(),
             "last_token pointer must be reset on prefill"
         );
+    }
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "ax-mlx-runner-{label}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    fn tensor(
+        name: &str,
+        role: NativeTensorRole,
+        layer_index: Option<u32>,
+        shape: Vec<u64>,
+    ) -> NativeTensorSpec {
+        NativeTensorSpec {
+            name: name.to_string(),
+            role,
+            layer_index,
+            dtype: NativeTensorDataType::F16,
+            source_tensor_type: None,
+            source_quantized: false,
+            quantization: None,
+            quantized_source: None,
+            shape,
+            file: PathBuf::from("model.safetensors"),
+            offset_bytes: 0,
+            length_bytes: 32,
+        }
+    }
+
+    fn dense_manifest() -> NativeModelManifest {
+        NativeModelManifest {
+            schema_version: ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
+            model_family: "test_dense".to_string(),
+            tensor_format: NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: NativeRuntimeStatus::default(),
+            layer_count: 1,
+            hidden_size: 4,
+            intermediate_size: 8,
+            attention_head_count: 1,
+            attention_head_dim: 4,
+            kv_head_count: 1,
+            vocab_size: 16,
+            tie_word_embeddings: false,
+            rope_theta: None,
+            rope_theta_swa: None,
+            query_pre_attn_scalar: None,
+            attention_logit_softcap: None,
+            attn_output_gate: false,
+            partial_rotary_factor: None,
+            attention_value_from_key_layers: Vec::new(),
+            attention_v_norm_no_scale_layers: Vec::new(),
+            linear_attention: NativeLinearAttentionConfig::default(),
+            moe: NativeMoeConfig::default(),
+            tensors: vec![
+                tensor(
+                    "model.embed_tokens.weight",
+                    NativeTensorRole::TokenEmbedding,
+                    None,
+                    vec![16, 4],
+                ),
+                tensor(
+                    "model.norm.weight",
+                    NativeTensorRole::FinalNorm,
+                    None,
+                    vec![4],
+                ),
+                tensor(
+                    "lm_head.weight",
+                    NativeTensorRole::LmHead,
+                    None,
+                    vec![16, 4],
+                ),
+                tensor(
+                    "model.layers.0.input_layernorm.weight",
+                    NativeTensorRole::AttentionNorm,
+                    Some(0),
+                    vec![4],
+                ),
+                tensor(
+                    "model.layers.0.self_attn.q_proj.weight",
+                    NativeTensorRole::AttentionQ,
+                    Some(0),
+                    vec![4, 4],
+                ),
+                tensor(
+                    "model.layers.0.self_attn.k_proj.weight",
+                    NativeTensorRole::AttentionK,
+                    Some(0),
+                    vec![4, 4],
+                ),
+                tensor(
+                    "model.layers.0.self_attn.v_proj.weight",
+                    NativeTensorRole::AttentionV,
+                    Some(0),
+                    vec![4, 4],
+                ),
+                tensor(
+                    "model.layers.0.self_attn.o_proj.weight",
+                    NativeTensorRole::AttentionO,
+                    Some(0),
+                    vec![4, 4],
+                ),
+                tensor(
+                    "model.layers.0.mlp.norm.weight",
+                    NativeTensorRole::FfnNorm,
+                    Some(0),
+                    vec![4],
+                ),
+                tensor(
+                    "model.layers.0.mlp.gate_proj.weight",
+                    NativeTensorRole::FfnGate,
+                    Some(0),
+                    vec![8, 4],
+                ),
+                tensor(
+                    "model.layers.0.mlp.up_proj.weight",
+                    NativeTensorRole::FfnUp,
+                    Some(0),
+                    vec![8, 4],
+                ),
+                tensor(
+                    "model.layers.0.mlp.down_proj.weight",
+                    NativeTensorRole::FfnDown,
+                    Some(0),
+                    vec![4, 8],
+                ),
+            ],
+        }
+    }
+
+    fn write_artifacts(manifest: NativeModelManifest) -> NativeModelArtifacts {
+        let dir = unique_test_dir("manifest");
+        fs::create_dir_all(&dir).expect("fixture directory should create");
+        fs::write(dir.join("model.safetensors"), vec![0_u8; 4096]).expect("weights should write");
+        fs::write(
+            dir.join(AX_NATIVE_MODEL_MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).expect("manifest should serialize"),
+        )
+        .expect("manifest should write");
+        NativeModelArtifacts::from_dir(&dir).expect("fixture manifest should validate")
+    }
+
+    #[test]
+    fn mlx_manifest_validation_rejects_linear_attention() {
+        let mut manifest = dense_manifest();
+        manifest.linear_attention = NativeLinearAttentionConfig {
+            num_value_heads: Some(1),
+            num_key_heads: Some(1),
+            key_head_dim: Some(4),
+            value_head_dim: Some(4),
+            conv_kernel_dim: Some(4),
+        };
+        let artifacts = write_artifacts(manifest);
+
+        let error = validate_mlx_supported_manifest(&artifacts)
+            .expect_err("linear attention should fail closed");
+
+        assert!(error.to_string().contains("linear_attention"));
+    }
+
+    #[test]
+    fn mlx_manifest_validation_rejects_attn_output_gate() {
+        let mut manifest = dense_manifest();
+        manifest.attn_output_gate = true;
+        manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| tensor.role == NativeTensorRole::AttentionQ)
+            .expect("q tensor should exist")
+            .shape = vec![8, 4];
+        let artifacts = write_artifacts(manifest);
+
+        let error = validate_mlx_supported_manifest(&artifacts)
+            .expect_err("attention output gate should fail closed");
+
+        assert!(error.to_string().contains("attn_output_gate"));
     }
 }
