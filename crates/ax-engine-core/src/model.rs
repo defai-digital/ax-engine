@@ -2954,6 +2954,32 @@ mod tests {
     }
 
     #[test]
+    fn native_model_artifacts_allow_8_bit_quantized_moe_router_columns() {
+        let mut manifest = moe_layer_manifest();
+        let router = manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| {
+                tensor.layer_index == Some(0) && tensor.role == NativeTensorRole::FfnGateInp
+            })
+            .expect("fixture should include MoE router projection");
+        router.dtype = NativeTensorDataType::U32;
+        router.source_quantized = true;
+        router.quantization = Some(NativeTensorQuantization {
+            mode: "affine".to_string(),
+            group_size: 64,
+            bits: 8,
+        });
+        router.shape = vec![128, 704];
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        NativeModelArtifacts::from_dir(&dir)
+            .expect("8-bit quantized MoE router should validate with 4 values per u32");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn native_model_artifacts_reject_moe_tensors_without_manifest_config() {
         let mut manifest = moe_layer_manifest();
         manifest.moe = NativeMoeConfig::default();
