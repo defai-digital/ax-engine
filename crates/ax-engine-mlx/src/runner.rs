@@ -140,7 +140,10 @@ impl MlxRunner {
         }
 
         // AX_NO_SPEC=1 env var overrides the config flag (for benchmarking/debugging).
+        // Qwen3.5 linear-attention layers keep recurrent state that cannot use
+        // the KV cache's O(1) speculative rollback path, so run them single-step.
         let no_speculative = no_speculative
+            || cfg.linear_attention.is_some()
             || std::env::var("AX_NO_SPEC")
                 .map(|v| v == "1")
                 .unwrap_or(false);
@@ -393,26 +396,8 @@ pub enum MlxRunnerError {
 
 fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(), MlxRunnerError> {
     let manifest = artifacts.manifest();
-    if manifest.linear_attention.is_enabled()
-        || artifacts.tensor_specs().iter().any(|tensor| {
-            matches!(
-                tensor.role,
-                NativeTensorRole::LinearAttentionInProjQkv
-                    | NativeTensorRole::LinearAttentionInProjZ
-                    | NativeTensorRole::LinearAttentionInProjA
-                    | NativeTensorRole::LinearAttentionInProjB
-                    | NativeTensorRole::LinearAttentionConv1d
-                    | NativeTensorRole::LinearAttentionDtBias
-                    | NativeTensorRole::LinearAttentionALog
-                    | NativeTensorRole::LinearAttentionNorm
-                    | NativeTensorRole::LinearAttentionOutProj
-            )
-        })
-    {
-        return Err(MlxRunnerError::UnsupportedFeature(
-            "linear_attention layers require a dedicated MLX linear-attention implementation"
-                .to_string(),
-        ));
+    if manifest.linear_attention.is_enabled() || has_linear_attention_tensors(artifacts) {
+        validate_qwen35_linear_attention(manifest)?;
     }
     if manifest.sliding_window_size.is_some()
         || !manifest.layer_types.is_empty()
@@ -421,6 +406,42 @@ fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(
         || manifest.rope_theta_swa.is_some()
     {
         validate_gemma4_interleaved_attention(manifest)?;
+    }
+    Ok(())
+}
+
+fn has_linear_attention_tensors(artifacts: &NativeModelArtifacts) -> bool {
+    artifacts.tensor_specs().iter().any(|tensor| {
+        matches!(
+            tensor.role,
+            NativeTensorRole::LinearAttentionInProjQkv
+                | NativeTensorRole::LinearAttentionInProjZ
+                | NativeTensorRole::LinearAttentionInProjA
+                | NativeTensorRole::LinearAttentionInProjB
+                | NativeTensorRole::LinearAttentionConv1d
+                | NativeTensorRole::LinearAttentionDtBias
+                | NativeTensorRole::LinearAttentionALog
+                | NativeTensorRole::LinearAttentionNorm
+                | NativeTensorRole::LinearAttentionOutProj
+        )
+    })
+}
+
+fn validate_qwen35_linear_attention(manifest: &NativeModelManifest) -> Result<(), MlxRunnerError> {
+    if manifest.model_family != "qwen3_5" {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "linear_attention is currently supported only for qwen3_5 MLX manifests".to_string(),
+        ));
+    }
+    let Some(key_head_dim) = manifest.linear_attention.key_head_dim else {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "linear_attention.key_head_dim must be configured".to_string(),
+        ));
+    };
+    if key_head_dim % 32 != 0 {
+        return Err(MlxRunnerError::UnsupportedFeature(format!(
+            "linear_attention.key_head_dim {key_head_dim} must be divisible by 32 for the MLX gated-delta kernel"
+        )));
     }
     Ok(())
 }
@@ -704,8 +725,87 @@ mod tests {
         NativeModelArtifacts::from_dir(&dir).expect("fixture manifest should validate")
     }
 
+    fn qwen35_linear_manifest() -> NativeModelManifest {
+        let mut manifest = dense_manifest();
+        manifest.model_family = "qwen3_5".to_string();
+        manifest.linear_attention = NativeLinearAttentionConfig {
+            full_attention_interval: Some(4),
+            num_value_heads: Some(1),
+            num_key_heads: Some(1),
+            key_head_dim: Some(32),
+            value_head_dim: Some(4),
+            conv_kernel_dim: Some(4),
+        };
+        manifest.tensors.retain(|tensor| {
+            !matches!(
+                tensor.role,
+                NativeTensorRole::AttentionQ
+                    | NativeTensorRole::AttentionK
+                    | NativeTensorRole::AttentionV
+                    | NativeTensorRole::AttentionO
+            )
+        });
+        manifest.tensors.extend([
+            tensor(
+                "model.layers.0.linear_attn.in_proj_qkv.weight",
+                NativeTensorRole::LinearAttentionInProjQkv,
+                Some(0),
+                vec![68, 4],
+            ),
+            tensor(
+                "model.layers.0.linear_attn.in_proj_z.weight",
+                NativeTensorRole::LinearAttentionInProjZ,
+                Some(0),
+                vec![4, 4],
+            ),
+            tensor(
+                "model.layers.0.linear_attn.in_proj_a.weight",
+                NativeTensorRole::LinearAttentionInProjA,
+                Some(0),
+                vec![1, 4],
+            ),
+            tensor(
+                "model.layers.0.linear_attn.in_proj_b.weight",
+                NativeTensorRole::LinearAttentionInProjB,
+                Some(0),
+                vec![1, 4],
+            ),
+            tensor(
+                "model.layers.0.linear_attn.conv1d.weight",
+                NativeTensorRole::LinearAttentionConv1d,
+                Some(0),
+                vec![68, 4, 1],
+            ),
+            tensor(
+                "model.layers.0.linear_attn.dt_bias",
+                NativeTensorRole::LinearAttentionDtBias,
+                Some(0),
+                vec![1],
+            ),
+            tensor(
+                "model.layers.0.linear_attn.A_log",
+                NativeTensorRole::LinearAttentionALog,
+                Some(0),
+                vec![1],
+            ),
+            tensor(
+                "model.layers.0.linear_attn.norm.weight",
+                NativeTensorRole::LinearAttentionNorm,
+                Some(0),
+                vec![4],
+            ),
+            tensor(
+                "model.layers.0.linear_attn.out_proj.weight",
+                NativeTensorRole::LinearAttentionOutProj,
+                Some(0),
+                vec![4, 4],
+            ),
+        ]);
+        manifest
+    }
+
     #[test]
-    fn mlx_manifest_validation_rejects_linear_attention() {
+    fn mlx_manifest_validation_rejects_linear_attention_for_non_qwen35() {
         let mut manifest = dense_manifest();
         manifest.linear_attention = NativeLinearAttentionConfig {
             full_attention_interval: Some(4),
@@ -720,7 +820,34 @@ mod tests {
         let error = validate_mlx_supported_manifest(&artifacts)
             .expect_err("linear attention should fail closed");
 
-        assert!(error.to_string().contains("linear_attention"));
+        assert!(error.to_string().contains("qwen3_5"));
+    }
+
+    #[test]
+    fn mlx_manifest_validation_allows_qwen35_linear_attention() {
+        let artifacts = write_artifacts(qwen35_linear_manifest());
+
+        validate_mlx_supported_manifest(&artifacts)
+            .expect("Qwen3.5 linear attention is wired for the MLX path");
+    }
+
+    #[test]
+    fn mlx_manifest_validation_rejects_unsupported_linear_key_dim() {
+        let mut manifest = qwen35_linear_manifest();
+        manifest.linear_attention.key_head_dim = Some(4);
+        for tensor in &mut manifest.tensors {
+            match tensor.role {
+                NativeTensorRole::LinearAttentionInProjQkv => tensor.shape = vec![12, 4],
+                NativeTensorRole::LinearAttentionConv1d => tensor.shape = vec![12, 4, 1],
+                _ => {}
+            }
+        }
+        let artifacts = write_artifacts(manifest);
+
+        let error = validate_mlx_supported_manifest(&artifacts)
+            .expect_err("Dk must match the gated-delta kernel contract");
+
+        assert!(error.to_string().contains("divisible by 32"));
     }
 
     #[test]
