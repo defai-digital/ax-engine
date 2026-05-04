@@ -173,6 +173,10 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             .manifest()
             .kv_shared_source_layers
             .contains_key(&(li as u32));
+        let uses_value_from_key = artifacts
+            .manifest()
+            .attention_value_from_key_layers
+            .contains(&(li as u32));
         let attention_layout = attention_layout_for_layer(specs, idx)?;
 
         let attn_norm = take_weight(
@@ -310,7 +314,8 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         let (qkv_packed, q_proj, k_proj, v_proj) = if attention_layout == AttentionLayout::Linear {
             (None, None, None, None)
         } else {
-            match full_attention_projection_layout(specs, idx, uses_shared_kv)? {
+            match full_attention_projection_layout(specs, idx, uses_shared_kv, uses_value_from_key)?
+            {
                 FullAttentionProjectionLayout::QOnly => {
                     let q = take_weight(
                         specs,
@@ -330,6 +335,23 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                         "qkv",
                     )?;
                     (Some(p), None, None, None)
+                }
+                FullAttentionProjectionLayout::SplitQkValueFromKey => {
+                    let q = take_weight(
+                        specs,
+                        &mut name_map,
+                        NativeTensorRole::AttentionQ,
+                        idx,
+                        "q_proj",
+                    )?;
+                    let k = take_weight(
+                        specs,
+                        &mut name_map,
+                        NativeTensorRole::AttentionK,
+                        idx,
+                        "k_proj",
+                    )?;
+                    (None, Some(q), Some(k), None)
                 }
                 FullAttentionProjectionLayout::SplitQkv => {
                     let q = take_weight(
@@ -434,6 +456,8 @@ enum FullAttentionProjectionLayout {
     /// KV-shared layers compute only Q and reuse a source layer's K/V.
     QOnly,
     PackedQkv,
+    /// K=V full-attention layers compute Q/K and reuse K as V (Gemma4 full attention).
+    SplitQkValueFromKey,
     SplitQkv,
 }
 
@@ -460,6 +484,7 @@ fn full_attention_projection_layout(
     specs: &[NativeTensorSpec],
     layer_index: Option<u32>,
     uses_shared_kv: bool,
+    uses_value_from_key: bool,
 ) -> Result<FullAttentionProjectionLayout, WeightLoadError> {
     let has_packed = has_role(specs, NativeTensorRole::AttentionQkvPacked, layer_index);
     if uses_shared_kv {
@@ -471,7 +496,14 @@ fn full_attention_projection_layout(
         return Ok(FullAttentionProjectionLayout::QOnly);
     }
     if has_packed {
+        if uses_value_from_key {
+            return Err(WeightLoadError::InvalidLayer(format!(
+                "layer {layer_index:?} is marked value-from-key but provides packed QKV weights"
+            )));
+        }
         Ok(FullAttentionProjectionLayout::PackedQkv)
+    } else if uses_value_from_key {
+        Ok(FullAttentionProjectionLayout::SplitQkValueFromKey)
     } else {
         Ok(FullAttentionProjectionLayout::SplitQkv)
     }
@@ -724,17 +756,31 @@ mod tests {
             spec(NativeTensorRole::AttentionO),
         ];
 
-        let layout = full_attention_projection_layout(&specs, Some(0), true)
+        let layout = full_attention_projection_layout(&specs, Some(0), true, false)
             .expect("KV-shared layout should resolve");
 
         assert_eq!(layout, FullAttentionProjectionLayout::QOnly);
     }
 
     #[test]
+    fn full_attention_projection_layout_uses_qk_for_value_from_key_layers() {
+        let specs = vec![
+            spec(NativeTensorRole::AttentionQ),
+            spec(NativeTensorRole::AttentionK),
+            spec(NativeTensorRole::AttentionO),
+        ];
+
+        let layout = full_attention_projection_layout(&specs, Some(0), false, true)
+            .expect("K=V layout should resolve");
+
+        assert_eq!(layout, FullAttentionProjectionLayout::SplitQkValueFromKey);
+    }
+
+    #[test]
     fn full_attention_projection_layout_rejects_packed_qkv_for_kv_shared_layers() {
         let specs = vec![spec(NativeTensorRole::AttentionQkvPacked)];
 
-        let error = full_attention_projection_layout(&specs, Some(0), true)
+        let error = full_attention_projection_layout(&specs, Some(0), true, false)
             .expect_err("packed QKV cannot represent Q-only KV sharing");
 
         assert!(matches!(error, WeightLoadError::InvalidLayer(_)));

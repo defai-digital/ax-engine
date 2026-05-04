@@ -998,22 +998,16 @@ fn validate_native_model_tensor_shapes(
             NativeTensorRole::AttentionQNorm,
             Some(layer_index),
         ) {
-            expect_vector_shape(
-                attention_q_norm,
-                u64::from(manifest.attention_head_dim),
-                "attention_q_norm",
-            )?;
+            let head_dim = configured_attention_head_dim(manifest, layer_index);
+            expect_vector_shape(attention_q_norm, head_dim, "attention_q_norm")?;
         }
         if let Some(attention_k_norm) = manifest_tensor(
             manifest,
             NativeTensorRole::AttentionKNorm,
             Some(layer_index),
         ) {
-            expect_vector_shape(
-                attention_k_norm,
-                u64::from(manifest.attention_head_dim),
-                "attention_k_norm",
-            )?;
+            let head_dim = configured_attention_head_dim(manifest, layer_index);
+            expect_vector_shape(attention_k_norm, head_dim, "attention_k_norm")?;
         }
         // Attention O shape validation — only for layers that have attention tensors.
         // The output projection maps from attention output dim back to hidden_size.
@@ -1099,15 +1093,14 @@ fn validate_native_model_tensor_shapes(
             NativeTensorRole::AttentionQkvPacked,
             Some(layer_index),
         ) {
-            let q_rows =
-                u64::from(manifest.attention_head_count) * u64::from(manifest.attention_head_dim);
+            let head_dim = configured_attention_head_dim(manifest, layer_index);
+            let q_rows = u64::from(manifest.attention_head_count) * head_dim;
             let packed_q_rows = if manifest.attn_output_gate {
                 q_rows.saturating_mul(2)
             } else {
                 q_rows
             };
-            let kv_rows =
-                u64::from(manifest.kv_head_count) * u64::from(manifest.attention_head_dim);
+            let kv_rows = u64::from(manifest.kv_head_count) * head_dim;
             expect_matrix_shape(
                 attention_qkv,
                 packed_q_rows + kv_rows + kv_rows,
@@ -1710,6 +1703,22 @@ fn resolved_moe_dims(manifest: &NativeModelManifest) -> Result<NativeMoeDims, Na
     })
 }
 
+fn configured_attention_head_dim(manifest: &NativeModelManifest, layer_index: u32) -> u64 {
+    if manifest
+        .layer_types
+        .get(layer_index as usize)
+        .is_some_and(|layer_type| layer_type == "full_attention")
+    {
+        u64::from(
+            manifest
+                .global_head_dim
+                .unwrap_or(manifest.attention_head_dim),
+        )
+    } else {
+        u64::from(manifest.attention_head_dim)
+    }
+}
+
 fn resolved_split_attention_dims(
     manifest: &NativeModelManifest,
     layer_index: u32,
@@ -1801,7 +1810,7 @@ fn resolved_split_attention_dims(
             head_dim = Some(k_norm_dim);
         }
     }
-    let head_dim = head_dim.unwrap_or(u64::from(manifest.attention_head_dim));
+    let head_dim = head_dim.unwrap_or_else(|| configured_attention_head_dim(manifest, layer_index));
     if head_dim == 0 {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
@@ -1932,7 +1941,7 @@ fn validate_q_only_attention_tensor(
         })
     })
     .transpose()?
-    .unwrap_or(u64::from(manifest.attention_head_dim));
+    .unwrap_or_else(|| configured_attention_head_dim(manifest, layer_index));
     if head_dim == 0 {
         return Err(NativeModelError::InvalidManifest {
             message: format!(

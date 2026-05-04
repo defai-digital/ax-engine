@@ -85,6 +85,13 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         arch_f64(&config, &model_type, "final_logit_softcapping").map(|v| v as f32);
     let kv_shared_source_layers =
         compute_kv_shared_sources(&config, &model_type, &layer_types, arch.layer_count);
+    let attention_value_from_key_layers = compute_attention_value_from_key_layers(
+        &config,
+        &model_type,
+        &layer_types,
+        &kv_shared_source_layers,
+        arch.layer_count,
+    );
 
     Ok(NativeModelManifest {
         schema_version: AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
@@ -106,7 +113,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         attention_logit_softcap,
         attn_output_gate: arch_bool(&config, &model_type, "attn_output_gate").unwrap_or(false),
         partial_rotary_factor,
-        attention_value_from_key_layers: Vec::new(),
+        attention_value_from_key_layers,
         attention_v_norm_no_scale_layers: if model_type == "gemma4" {
             (0..arch.layer_count)
                 .filter(|&i| !kv_shared_source_layers.contains_key(&i))
@@ -702,6 +709,28 @@ fn compute_kv_shared_sources(
     sources
 }
 
+fn compute_attention_value_from_key_layers(
+    config: &serde_json::Value,
+    model_type: &str,
+    layer_types: &[String],
+    kv_shared_source_layers: &BTreeMap<u32, u32>,
+    layer_count: u32,
+) -> Vec<u32> {
+    if model_type != "gemma4" || !arch_bool(config, model_type, "attention_k_eq_v").unwrap_or(false)
+    {
+        return Vec::new();
+    }
+
+    (0..layer_count)
+        .filter(|&i| {
+            layer_types
+                .get(i as usize)
+                .is_some_and(|layer_type| layer_type == "full_attention")
+                && !kv_shared_source_layers.contains_key(&i)
+        })
+        .collect()
+}
+
 fn f64_to_u32(value: f64) -> Option<u32> {
     if value.is_finite() && value >= 0.0 && value <= f64::from(u32::MAX) {
         Some(value as u32)
@@ -1165,6 +1194,99 @@ mod tests {
             ),
             Some((NativeTensorRole::FfnDownExps, Some(0)))
         );
+    }
+
+    #[test]
+    fn converts_gemma4_k_eq_v_full_attention_layers() {
+        let dir = unique_test_dir("gemma4_k_eq_v");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "gemma4",
+                "vocab_size": 262144,
+                "text_config": {
+                    "hidden_size": 3072,
+                    "num_attention_heads": 32,
+                    "num_key_value_heads": 8,
+                    "num_global_key_value_heads": 4,
+                    "head_dim": 128,
+                    "global_head_dim": 256,
+                    "attention_k_eq_v": true,
+                    "num_hidden_layers": 1,
+                    "vocab_size": 262144,
+                    "layer_types": ["full_attention"]
+                }
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                ("model.embed_tokens.weight", "BF16", &[262144, 3072]),
+                ("model.norm.weight", "BF16", &[3072]),
+                ("lm_head.weight", "BF16", &[262144, 3072]),
+                ("model.layers.0.input_layernorm.weight", "BF16", &[3072]),
+                (
+                    "model.layers.0.self_attn.q_proj.weight",
+                    "BF16",
+                    &[8192, 3072],
+                ),
+                (
+                    "model.layers.0.self_attn.k_proj.weight",
+                    "BF16",
+                    &[1024, 3072],
+                ),
+                (
+                    "model.layers.0.self_attn.o_proj.weight",
+                    "BF16",
+                    &[3072, 8192],
+                ),
+                ("model.layers.0.self_attn.q_norm.weight", "BF16", &[256]),
+                ("model.layers.0.self_attn.k_norm.weight", "BF16", &[256]),
+                (
+                    "model.layers.0.post_attention_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "model.layers.0.pre_feedforward_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "model.layers.0.post_feedforward_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "model.layers.0.mlp.gate_proj.weight",
+                    "BF16",
+                    &[12288, 3072],
+                ),
+                ("model.layers.0.mlp.up_proj.weight", "BF16", &[12288, 3072]),
+                (
+                    "model.layers.0.mlp.down_proj.weight",
+                    "BF16",
+                    &[3072, 12288],
+                ),
+            ],
+        );
+
+        let manifest = convert_hf_model_dir(&dir).expect("gemma4 conversion should succeed");
+
+        assert_eq!(manifest.attention_value_from_key_layers, vec![0]);
+        assert!(
+            !manifest
+                .tensors
+                .iter()
+                .any(|tensor| tensor.role == NativeTensorRole::AttentionV),
+            "K=V Gemma4 full-attention layer should not require v_proj"
+        );
+        write_manifest(&dir, &manifest).expect("write should succeed");
+        crate::model::NativeModelArtifacts::from_dir(&dir)
+            .expect("K=V Gemma4 manifest should validate");
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

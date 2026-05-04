@@ -320,23 +320,26 @@ pub fn layer_forward(
                 &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
                 None,
             );
+            let kv_heads = (k_raw.shape()[2] as usize)
+                .checked_div(head_dim)
+                .expect("k projection output must divide by head_dim");
             let k = reshape(
                 &k_raw,
-                &[1, seq as i32, cfg.n_kv_heads as i32, head_dim as i32],
+                &[1, seq as i32, kv_heads as i32, head_dim as i32],
                 None,
             );
             let v = reshape(
                 &v_raw,
-                &[1, seq as i32, cfg.n_kv_heads as i32, head_dim as i32],
+                &[1, seq as i32, kv_heads as i32, head_dim as i32],
                 None,
             );
 
             let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq);
-            let k = qk_norm_bshd(k, w.k_norm.as_ref(), cfg.n_kv_heads, head_dim, seq);
+            let k = qk_norm_bshd(k, w.k_norm.as_ref(), kv_heads, head_dim, seq);
 
             let q = transpose(&q, &[0, 2, 1, 3], None);
             let k = transpose(&k, &[0, 2, 1, 3], None);
-            let v = prepare_value_bhsd(v, v_norm_no_scale, cfg.n_kv_heads, head_dim, seq);
+            let v = prepare_value_bhsd(v, v_norm_no_scale, kv_heads, head_dim, seq);
 
             let q_rope = rope(
                 &q,
@@ -648,7 +651,11 @@ fn qkv_project(
             .gate
             .map(|(start, end)| mlx_slice_last_dim(&q_full, start, end));
         let k = qw(x, w.k_proj.as_ref().unwrap());
-        let v = qw(x, w.v_proj.as_ref().unwrap());
+        let v = w
+            .v_proj
+            .as_ref()
+            .map(|v_proj| qw(x, v_proj))
+            .unwrap_or_else(|| k.clone());
         (q, k, v, gate)
     }
 }
@@ -1229,6 +1236,47 @@ mod tests {
         eval(&[&out]);
         assert_eq!(out.shape(), vec![1, 1, 1]);
         assert_eq!(out.data_f32(), &[10.0]);
+    }
+
+    #[test]
+    fn qkv_project_reuses_key_when_value_projection_is_absent() {
+        let mut cfg = cfg(false);
+        cfg.n_heads = 2;
+        cfg.n_kv_heads = 8;
+        let weights = LayerWeights {
+            attn_norm: zeros(&[4], MlxDtype::Float32, None),
+            attn_post_norm: None,
+            q_norm: None,
+            k_norm: None,
+            q_proj: Some(dense_weight(&[8, 4])),
+            k_proj: Some(dense_weight(&[4, 4])),
+            v_proj: None,
+            qkv_packed: None,
+            o_proj: Some(dense_weight(&[4, 8])),
+            linear_attn: None,
+            ffn_norm: zeros(&[4], MlxDtype::Float32, None),
+            ffn_post_norm: None,
+            gate_proj: Some(dense_weight(&[3, 4])),
+            up_proj: Some(dense_weight(&[3, 4])),
+            gate_up_packed: None,
+            down_proj: dense_weight(&[4, 3]),
+            ffn_norm2: None,
+            ffn_post_norm1: None,
+            ffn_post_norm2: None,
+            router_proj: None,
+            router_scale: None,
+            gate_up_exps_packed: None,
+            gate_exps: None,
+            up_exps: None,
+            down_exps: None,
+        };
+        let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
+
+        let (_q, k, v, gate) = qkv_project(&cfg, &weights, &x, 4);
+
+        assert!(gate.is_none());
+        assert_eq!(k.shape(), vec![1, 2, 4]);
+        assert_eq!(v.shape(), vec![1, 2, 4]);
     }
 
     #[test]
