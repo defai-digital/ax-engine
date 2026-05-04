@@ -2,13 +2,17 @@ use mlx_sys::{
     MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argpartition_axis, astype, dequantize,
     expand_dims, gather_mm, gather_qmm, gelu, matmul, multiply, quantized_matmul, reshape,
     rms_norm, rope, scaled_dot_product_attention_with_mask, slice_last_dim, softmax, sum_axis,
-    take, take_along_axis, tanh, transpose,
+    take, take_along_axis, tanh, transpose, zeros,
 };
 
 use ax_engine_core::NativeModelManifest;
 
 use crate::attention_mask::create_causal_mask;
 use crate::kv_cache::MlxKVCache;
+use crate::linear_attention::{
+    compute_gated_delta_g, gated_delta_kernel, linear_attention_conv1d,
+    normalize_linear_attention_qk, rms_norm_gated, split_linear_attention_qkv,
+};
 use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
 
 /// Per-layer hyperparameters for interleaved-SWA models (Gemma4).
@@ -278,132 +282,136 @@ pub fn layer_forward(
 
     let seq = hidden.shape()[1] as usize;
 
-    // 2-7. QKV projections + RoPE. KV-shared layers skip K/V and borrow from source.
-    let (q_rope, cached_k, cached_v, attn_gate) = if let Some(src_layer) = kv_source {
-        // KV-shared layer (Gemma4 layers 24-41): compute Q only.
-        let q_raw = qw(
-            &normed,
-            w.q_proj.as_ref().expect("KV-shared layer must have q_proj"),
-        );
-        let q = reshape(
-            &q_raw,
-            &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
-            None,
-        );
-        let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq);
-        let q = transpose(&q, &[0, 2, 1, 3], None);
-        let q_rope = rope(
-            &q,
-            rope_dims as i32,
-            false,
-            Some(rope_theta),
-            1.0,
-            token_offset as i32,
-            None,
-            None,
-        );
-        let (ck, cv) = cache.peek_source_kv(src_layer, seq);
-        (q_rope, ck, cv, None)
+    let attn_proj = if cfg.is_linear_attention_layer(layer_idx) {
+        linear_attention_forward(cfg, w, &normed, cache, layer_idx)
     } else {
-        // Normal layer: compute Q, K, V from own projections.
-        let (q_raw, k_raw, v_raw, attn_gate_raw) = qkv_project(cfg, w, &normed, head_dim);
+        // 2-7. QKV projections + RoPE. KV-shared layers skip K/V and borrow from source.
+        let (q_rope, cached_k, cached_v, attn_gate) = if let Some(src_layer) = kv_source {
+            // KV-shared layer (Gemma4 layers 24-41): compute Q only.
+            let q_raw = qw(
+                &normed,
+                w.q_proj.as_ref().expect("KV-shared layer must have q_proj"),
+            );
+            let q = reshape(
+                &q_raw,
+                &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
+                None,
+            );
+            let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq);
+            let q = transpose(&q, &[0, 2, 1, 3], None);
+            let q_rope = rope(
+                &q,
+                rope_dims as i32,
+                false,
+                Some(rope_theta),
+                1.0,
+                token_offset as i32,
+                None,
+                None,
+            );
+            let (ck, cv) = cache.peek_source_kv(src_layer, seq);
+            (q_rope, ck, cv, None)
+        } else {
+            // Normal layer: compute Q, K, V from own projections.
+            let (q_raw, k_raw, v_raw, attn_gate_raw) = qkv_project(cfg, w, &normed, head_dim);
 
-        let q = reshape(
-            &q_raw,
-            &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
+            let q = reshape(
+                &q_raw,
+                &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
+                None,
+            );
+            let k = reshape(
+                &k_raw,
+                &[1, seq as i32, cfg.n_kv_heads as i32, head_dim as i32],
+                None,
+            );
+            let v = reshape(
+                &v_raw,
+                &[1, seq as i32, cfg.n_kv_heads as i32, head_dim as i32],
+                None,
+            );
+
+            let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq);
+            let k = qk_norm_bshd(k, w.k_norm.as_ref(), cfg.n_kv_heads, head_dim, seq);
+
+            let q = transpose(&q, &[0, 2, 1, 3], None);
+            let k = transpose(&k, &[0, 2, 1, 3], None);
+            let v = prepare_value_bhsd(v, v_norm_no_scale, cfg.n_kv_heads, head_dim, seq);
+
+            let q_rope = rope(
+                &q,
+                rope_dims as i32,
+                false,
+                Some(rope_theta),
+                1.0,
+                token_offset as i32,
+                None,
+                None,
+            );
+            let k_rope = rope(
+                &k,
+                rope_dims as i32,
+                false,
+                Some(rope_theta),
+                1.0,
+                token_offset as i32,
+                None,
+                None,
+            );
+
+            let (ck, cv) = cache.append(layer_idx, k_rope, v);
+            (q_rope, ck, cv, attn_gate_raw)
+        };
+
+        // 8. SDPA (GQA: MLX broadcasts KV heads internally). Sliding attention is
+        // enforced by an array mask, not by truncating K/V, matching mlx-lm.
+        let key_len = cached_k.shape()[2] as usize;
+        let mask_array = attention_mask_array(seq, key_len, sliding_window);
+        let mask = match mask_array.as_ref() {
+            Some(mask) => ScaledDotProductAttentionMask::Array(mask),
+            None if seq > 1 => ScaledDotProductAttentionMask::Causal,
+            None => ScaledDotProductAttentionMask::None,
+        };
+        let attn_sdpa = scaled_dot_product_attention_with_mask(
+            &q_rope,
+            &cached_k,
+            &cached_v,
+            cfg.query_scale,
+            mask,
             None,
         );
-        let k = reshape(
-            &k_raw,
-            &[1, seq as i32, cfg.n_kv_heads as i32, head_dim as i32],
-            None,
-        );
-        let v = reshape(
-            &v_raw,
-            &[1, seq as i32, cfg.n_kv_heads as i32, head_dim as i32],
-            None,
-        );
 
-        let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq);
-        let k = qk_norm_bshd(k, w.k_norm.as_ref(), cfg.n_kv_heads, head_dim, seq);
+        // 10. Transpose back: [1, n_heads, seq, head_dim] → [1, seq, n_heads, head_dim].
+        let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
 
-        let q = transpose(&q, &[0, 2, 1, 3], None);
-        let k = transpose(&k, &[0, 2, 1, 3], None);
-        let v = prepare_value_bhsd(v, v_norm_no_scale, cfg.n_kv_heads, head_dim, seq);
-
-        let q_rope = rope(
-            &q,
-            rope_dims as i32,
-            false,
-            Some(rope_theta),
-            1.0,
-            token_offset as i32,
-            None,
-            None,
-        );
-        let k_rope = rope(
-            &k,
-            rope_dims as i32,
-            false,
-            Some(rope_theta),
-            1.0,
-            token_offset as i32,
-            None,
+        // 11. Reshape to [1, seq, hidden].
+        let attn_flat = reshape(
+            &attn_out,
+            &[1, seq as i32, (cfg.n_heads * head_dim) as i32],
             None,
         );
 
-        let (ck, cv) = cache.append(layer_idx, k_rope, v);
-        (q_rope, ck, cv, attn_gate_raw)
-    };
+        // 12. Output projection.
+        let attn_proj = qw(
+            &attn_flat,
+            w.o_proj
+                .as_ref()
+                .expect("full-attention layer must have o_proj"),
+        );
 
-    // 8. SDPA (GQA: MLX broadcasts KV heads internally). Sliding attention is
-    // enforced by an array mask, not by truncating K/V, matching mlx-lm.
-    let key_len = cached_k.shape()[2] as usize;
-    let mask_array = attention_mask_array(seq, key_len, sliding_window);
-    let mask = match mask_array.as_ref() {
-        Some(mask) => ScaledDotProductAttentionMask::Array(mask),
-        None if seq > 1 => ScaledDotProductAttentionMask::Causal,
-        None => ScaledDotProductAttentionMask::None,
-    };
-    let attn_sdpa = scaled_dot_product_attention_with_mask(
-        &q_rope,
-        &cached_k,
-        &cached_v,
-        cfg.query_scale,
-        mask,
-        None,
-    );
+        // 13. Optional attention output gate (Qwen3.5): sigmoid(gate) * o_proj(attn).
+        let attn_proj = if let Some(gate) = attn_gate {
+            multiply(&mlx_sys::ops::sigmoid(&gate, None), &attn_proj, None)
+        } else {
+            attn_proj
+        };
 
-    // 10. Transpose back: [1, n_heads, seq, head_dim] → [1, seq, n_heads, head_dim].
-    let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
-
-    // 11. Reshape to [1, seq, hidden].
-    let attn_flat = reshape(
-        &attn_out,
-        &[1, seq as i32, (cfg.n_heads * head_dim) as i32],
-        None,
-    );
-
-    // 12. Output projection.
-    let attn_proj = qw(
-        &attn_flat,
-        w.o_proj
-            .as_ref()
-            .expect("full-attention layer must have o_proj"),
-    );
-
-    // 13. Optional attention output gate (Qwen3.5): sigmoid(gate) * o_proj(attn).
-    let attn_proj = if let Some(gate) = attn_gate {
-        multiply(&mlx_sys::ops::sigmoid(&gate, None), &attn_proj, None)
-    } else {
-        attn_proj
-    };
-
-    // 14. Optional post-attention layernorm (Gemma4): applied BEFORE residual add.
-    let attn_proj = if let Some(post_norm) = &w.attn_post_norm {
-        rms_norm(&attn_proj, Some(post_norm), 1e-6, None)
-    } else {
-        attn_proj
+        // 14. Optional post-attention layernorm (Gemma4): applied BEFORE residual add.
+        if let Some(post_norm) = &w.attn_post_norm {
+            rms_norm(&attn_proj, Some(post_norm), 1e-6, None)
+        } else {
+            attn_proj
+        }
     };
 
     // 15. Residual.
@@ -648,6 +656,80 @@ fn qkv_project(
         let k = qw(x, w.k_proj.as_ref().unwrap());
         let v = qw(x, w.v_proj.as_ref().unwrap());
         (q, k, v, gate)
+    }
+}
+
+fn linear_attention_forward(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    cache: &mut MlxKVCache,
+    layer_idx: usize,
+) -> MlxArray {
+    let linear_cfg = cfg
+        .linear_attention
+        .as_ref()
+        .expect("linear attention layer requires linear_attention config");
+    let linear_w = w
+        .linear_attn
+        .as_ref()
+        .expect("linear attention layer requires linear attention weights");
+    let seq = x.shape()[1];
+
+    let qkv = qw(x, &linear_w.in_proj_qkv);
+    let z = reshape(
+        &qw(x, &linear_w.in_proj_z),
+        &[
+            1,
+            seq,
+            linear_cfg.num_value_heads as i32,
+            linear_cfg.value_head_dim as i32,
+        ],
+        None,
+    );
+    let a = qw(x, &linear_w.in_proj_a);
+    let b = qw(x, &linear_w.in_proj_b);
+
+    let (conv_state, recurrent_state) = cache.linear_state(layer_idx);
+    let conv_weight = linear_conv_weight(&linear_w.conv1d);
+    let (conv_out, new_conv_state) =
+        linear_attention_conv1d(linear_cfg, &qkv, &conv_weight, conv_state, None);
+    let qkv = split_linear_attention_qkv(linear_cfg, &conv_out);
+    let (q, k) = normalize_linear_attention_qk(linear_cfg, &qkv.q, &qkv.k);
+    let beta = mlx_sys::ops::sigmoid(&b, None);
+    let g = compute_gated_delta_g(&linear_w.a_log, &a, &linear_w.dt_bias);
+    let state = recurrent_state.cloned().unwrap_or_else(|| {
+        zeros(
+            &[
+                1,
+                linear_cfg.num_value_heads as i32,
+                linear_cfg.value_head_dim as i32,
+                linear_cfg.key_head_dim as i32,
+            ],
+            q.dtype(),
+            None,
+        )
+    });
+    let (out, new_recurrent_state) = gated_delta_kernel(&q, &k, &qkv.v, &g, &beta, &state);
+    cache.set_linear_state(layer_idx, new_conv_state, new_recurrent_state);
+
+    let out = rms_norm_gated(&out, &z, &linear_w.norm);
+    let flat = reshape(&out, &[1, seq, linear_cfg.value_dim() as i32], None);
+    qw(&flat, &linear_w.out_proj)
+}
+
+fn linear_conv_weight(weight: &QuantizedWeight) -> MlxArray {
+    if let Some(scales) = &weight.scales {
+        dequantize(
+            &weight.weight,
+            scales,
+            weight.biases.as_ref(),
+            Some(weight.group_size),
+            Some(weight.bits),
+            None,
+        )
+    } else {
+        weight.weight.clone()
     }
 }
 
@@ -917,6 +999,7 @@ fn qw_gather(x: &MlxArray, qw: &QuantizedWeight, indices: &MlxArray) -> MlxArray
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::weights::LinearAttentionWeights;
     use ax_engine_core::{
         NativeLinearAttentionConfig, NativeMoeConfig, NativeRuntimeStatus, NativeTensorFormat,
     };
@@ -1031,6 +1114,53 @@ mod tests {
         }
     }
 
+    fn dense_weight(shape: &[i32]) -> QuantizedWeight {
+        QuantizedWeight::new(zeros(shape, MlxDtype::Float32, None), None, None)
+    }
+
+    fn qwen35_linear_layer_weights(
+        cfg: &LinearAttentionConfig,
+        hidden_size: usize,
+    ) -> LayerWeights {
+        LayerWeights {
+            attn_norm: zeros(&[hidden_size as i32], MlxDtype::Float32, None),
+            attn_post_norm: None,
+            q_norm: None,
+            k_norm: None,
+            q_proj: None,
+            k_proj: None,
+            v_proj: None,
+            qkv_packed: None,
+            o_proj: None,
+            linear_attn: Some(LinearAttentionWeights {
+                in_proj_qkv: dense_weight(&[cfg.conv_dim() as i32, hidden_size as i32]),
+                in_proj_z: dense_weight(&[cfg.value_dim() as i32, hidden_size as i32]),
+                in_proj_a: dense_weight(&[cfg.num_value_heads as i32, hidden_size as i32]),
+                in_proj_b: dense_weight(&[cfg.num_value_heads as i32, hidden_size as i32]),
+                conv1d: dense_weight(&[cfg.conv_dim() as i32, cfg.conv_kernel_dim as i32, 1_i32]),
+                dt_bias: zeros(&[cfg.num_value_heads as i32], MlxDtype::Float32, None),
+                a_log: zeros(&[cfg.num_value_heads as i32], MlxDtype::Float32, None),
+                norm: zeros(&[cfg.value_head_dim as i32], MlxDtype::Float32, None),
+                out_proj: dense_weight(&[hidden_size as i32, cfg.value_dim() as i32]),
+            }),
+            ffn_norm: zeros(&[hidden_size as i32], MlxDtype::Float32, None),
+            ffn_post_norm: None,
+            gate_proj: None,
+            up_proj: None,
+            gate_up_packed: None,
+            down_proj: dense_weight(&[hidden_size as i32, hidden_size as i32]),
+            ffn_norm2: None,
+            ffn_post_norm1: None,
+            ffn_post_norm2: None,
+            router_proj: None,
+            router_scale: None,
+            gate_up_exps_packed: None,
+            gate_exps: None,
+            up_exps: None,
+            down_exps: None,
+        }
+    }
+
     #[test]
     fn qkv_slices_dense_attention_without_gate() {
         assert_eq!(
@@ -1088,6 +1218,29 @@ mod tests {
         assert!(cfg.is_linear_attention_layer(1));
         assert!(cfg.is_linear_attention_layer(2));
         assert!(!cfg.is_linear_attention_layer(3));
+    }
+
+    #[test]
+    fn linear_attention_forward_returns_hidden_shape_and_updates_cache() {
+        let mut cfg = cfg(true);
+        cfg.hidden_size = 8;
+        cfg.linear_attention = Some(LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_value_heads: 1,
+            num_key_heads: 1,
+            key_head_dim: 32,
+            value_head_dim: 4,
+            conv_kernel_dim: 4,
+        });
+        let linear_cfg = cfg.linear_attention.as_ref().unwrap();
+        let weights = qwen35_linear_layer_weights(linear_cfg, cfg.hidden_size);
+        let hidden = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
+        let mut cache = MlxKVCache::new(1);
+
+        let out = linear_attention_forward(&cfg, &weights, &hidden, &mut cache, 0);
+
+        assert_eq!(out.shape(), vec![1, 2, 8]);
+        assert_eq!(cache.collect_eval_refs().len(), 2);
     }
 
     #[test]
