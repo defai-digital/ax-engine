@@ -132,6 +132,11 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
             None
         },
         moe_norm_topk_prob: arch_bool(&config, &model_type, "norm_topk_prob").unwrap_or(false),
+        hidden_size_per_layer_input: arch_u64(&config, &model_type, "hidden_size_per_layer_input")
+            .and_then(u64_to_u32)
+            .unwrap_or(0),
+        vocab_size_per_layer_input: arch_u64(&config, &model_type, "vocab_size_per_layer_input")
+            .and_then(u64_to_u32),
         linear_attention,
         moe: moe_config(&config, &model_type),
         tensors: mapped_tensors,
@@ -252,6 +257,19 @@ const HF_STANDARD_TENSOR_MAP: &[(&str, TensorMapping)] = &[
         "lm_head.weight",
         TensorMapping::Global(NativeTensorRole::LmHead),
     ),
+    // Per-layer input gating global weights (Gemma4 2B/4B, sanitised model. prefix)
+    (
+        "model.embed_tokens_per_layer.weight",
+        TensorMapping::Global(NativeTensorRole::PerLayerEmbedding),
+    ),
+    (
+        "model.per_layer_model_projection.weight",
+        TensorMapping::Global(NativeTensorRole::PerLayerModelProjection),
+    ),
+    (
+        "model.per_layer_projection_norm.weight",
+        TensorMapping::Global(NativeTensorRole::PerLayerProjectionNorm),
+    ),
     // per-layer attention
     (
         "self_attn.q_proj.weight",
@@ -331,6 +349,19 @@ const HF_STANDARD_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     (
         "layer_scalar",
         TensorMapping::PerLayer(NativeTensorRole::LayerScalar),
+    ),
+    // Per-layer input gating (Gemma4 2B/4B)
+    (
+        "per_layer_input_gate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::PerLayerInputGate),
+    ),
+    (
+        "per_layer_projection.weight",
+        TensorMapping::PerLayer(NativeTensorRole::PerLayerInputProjection),
+    ),
+    (
+        "post_per_layer_input_norm.weight",
+        TensorMapping::PerLayer(NativeTensorRole::PerLayerInputPostNorm),
     ),
     (
         "mlp.up_proj.weight",
@@ -422,6 +453,19 @@ const LANGUAGE_MODEL_PREFIX_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     (
         "language_model.lm_head.weight",
         TensorMapping::Global(NativeTensorRole::LmHead),
+    ),
+    // Per-layer input gating global weights (Gemma4 2B/4B, language_model. prefix)
+    (
+        "language_model.model.embed_tokens_per_layer.weight",
+        TensorMapping::Global(NativeTensorRole::PerLayerEmbedding),
+    ),
+    (
+        "language_model.model.per_layer_model_projection.weight",
+        TensorMapping::Global(NativeTensorRole::PerLayerModelProjection),
+    ),
+    (
+        "language_model.model.per_layer_projection_norm.weight",
+        TensorMapping::Global(NativeTensorRole::PerLayerProjectionNorm),
     ),
 ];
 

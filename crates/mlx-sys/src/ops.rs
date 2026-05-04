@@ -60,9 +60,7 @@ pub fn silu(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     multiply(x, &sig, s)
 }
 
-/// gelu(x) = 0.5 * x * (1 + erf(x / sqrt(2)))
-///
-/// Matches mlx-lm's `nn.gelu_approx` closely enough for inference correctness.
+/// gelu(x) = 0.5 * x * (1 + erf(x / sqrt(2)))  — exact GELU used for GEGLU activations.
 pub fn gelu(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     let dtype = x.dtype();
     let mk_scalar = |v: f32| {
@@ -80,6 +78,32 @@ pub fn gelu(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     let one_plus_erf = add(&erf_val, &mk_scalar(1.0), s);
     let half_x = multiply(x, &mk_scalar(0.5), s);
     multiply(&half_x, &one_plus_erf, s)
+}
+
+/// gelu_approx(x) = 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³)))
+///
+/// Matches mlx-lm's `nn.gelu_approx`. Used by Gemma4 per-layer input gate.
+pub fn gelu_approx(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+    let dtype = x.dtype();
+    let mk_scalar = |v: f32| {
+        let a = MlxArray::from_raw_data(
+            &v as *const f32 as *const u8,
+            std::mem::size_of::<f32>(),
+            &[1_i32],
+            MlxDtype::Float32,
+        );
+        astype(&a, dtype, s)
+    };
+    // sqrt(2/π)
+    let sqrt_2_over_pi: f32 = 0.797_884_6;
+    let coeff: f32 = 0.044_715;
+    let x2 = multiply(x, x, s);
+    let x3 = multiply(&x2, x, s);
+    let cx3 = multiply(&mk_scalar(coeff), &x3, s);
+    let inner = add(x, &cx3, s);
+    let t = tanh(&multiply(&mk_scalar(sqrt_2_over_pi), &inner, s), s);
+    let one_plus_t = add(&mk_scalar(1.0), &t, s);
+    multiply(&multiply(&mk_scalar(0.5), x, s), &one_plus_t, s)
 }
 
 pub fn astype(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {

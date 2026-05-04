@@ -14,6 +14,12 @@ pub struct ModelWeights {
     pub final_norm: MlxArray,
     pub lm_head: QuantizedWeight,
     pub layers: Vec<LayerWeights>,
+    /// Per-layer token embedding table (Gemma4 2B/4B, shape [vocab_per_layer, num_layers*per_layer_dim]).
+    pub per_layer_embed: Option<QuantizedWeight>,
+    /// Global projection hidden → num_layers*per_layer_dim (Gemma4 2B/4B).
+    pub per_layer_model_proj: Option<QuantizedWeight>,
+    /// RMSNorm weight over per_layer_dim applied after model projection (Gemma4 2B/4B).
+    pub per_layer_proj_norm: Option<MlxArray>,
 }
 
 /// Weights (and optional quantization data) for one transformer layer.
@@ -52,6 +58,12 @@ pub struct LayerWeights {
     pub router_expert_scale: Option<MlxArray>,
     /// Per-layer scalar applied to hidden states after the FFN residual (Gemma4).
     pub layer_scalar: Option<MlxArray>,
+    /// Per-layer input gate projection: hidden → per_layer_dim (Gemma4 2B/4B).
+    pub per_layer_gate: Option<QuantizedWeight>,
+    /// Per-layer output projection: per_layer_dim → hidden (Gemma4 2B/4B).
+    pub per_layer_proj_w: Option<QuantizedWeight>,
+    /// Post-gating RMSNorm weight (Gemma4 2B/4B).
+    pub per_layer_post_norm: Option<MlxArray>,
     // MoE: expert weights (shape [num_experts, expert_size, hidden] / packed).
     pub gate_up_exps_packed: Option<QuantizedWeight>,
     pub gate_exps: Option<QuantizedWeight>,
@@ -170,6 +182,43 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         )?
     };
 
+    // Global per-layer input gating weights (Gemma4 2B/4B, optional).
+    let per_layer_embed = if has_role(specs, NativeTensorRole::PerLayerEmbedding, None) {
+        Some(take_weight(
+            specs,
+            &mut name_map,
+            NativeTensorRole::PerLayerEmbedding,
+            None,
+            "per_layer_embed",
+        )?)
+    } else {
+        None
+    };
+    let per_layer_model_proj = if has_role(specs, NativeTensorRole::PerLayerModelProjection, None)
+    {
+        Some(take_weight(
+            specs,
+            &mut name_map,
+            NativeTensorRole::PerLayerModelProjection,
+            None,
+            "per_layer_model_proj",
+        )?)
+    } else {
+        None
+    };
+    let per_layer_proj_norm = if has_role(specs, NativeTensorRole::PerLayerProjectionNorm, None) {
+        let w = take_weight(
+            specs,
+            &mut name_map,
+            NativeTensorRole::PerLayerProjectionNorm,
+            None,
+            "per_layer_proj_norm",
+        )?;
+        Some(w.weight)
+    } else {
+        None
+    };
+
     let mut layers = Vec::with_capacity(layer_count);
     for li in 0..layer_count {
         let idx = Some(li as u32);
@@ -274,6 +323,34 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         )?;
         let layer_scalar =
             try_take_plain(specs, &mut name_map, NativeTensorRole::LayerScalar, idx)?;
+        let per_layer_gate = if has_role(specs, NativeTensorRole::PerLayerInputGate, idx) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::PerLayerInputGate,
+                idx,
+                "per_layer_gate",
+            )?)
+        } else {
+            None
+        };
+        let per_layer_proj_w = if has_role(specs, NativeTensorRole::PerLayerInputProjection, idx) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::PerLayerInputProjection,
+                idx,
+                "per_layer_proj_w",
+            )?)
+        } else {
+            None
+        };
+        let per_layer_post_norm = try_take_plain(
+            specs,
+            &mut name_map,
+            NativeTensorRole::PerLayerInputPostNorm,
+            idx,
+        )?;
 
         let gate_up_exps_packed = if has_role(specs, NativeTensorRole::FfnGateUpExpsPacked, idx) {
             Some(take_weight(
@@ -444,6 +521,9 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             router_scale,
             router_expert_scale,
             layer_scalar,
+            per_layer_gate,
+            per_layer_proj_w,
+            per_layer_post_norm,
             gate_up_exps_packed,
             gate_exps,
             up_exps,
@@ -456,6 +536,9 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         final_norm,
         lm_head,
         layers,
+        per_layer_embed,
+        per_layer_model_proj,
+        per_layer_proj_norm,
     })
 }
 

@@ -11986,6 +11986,8 @@ mod tests {
             final_logit_softcapping: None,
             hidden_states_scale: None,
             moe_norm_topk_prob: false,
+        hidden_size_per_layer_input: 0,
+        vocab_size_per_layer_input: None,
             linear_attention: ax_engine_core::NativeLinearAttentionConfig::default(),
             moe: ax_engine_core::NativeMoeConfig::default(),
             tensors: vec![
@@ -12164,6 +12166,8 @@ mod tests {
             final_logit_softcapping: None,
             hidden_states_scale: None,
             moe_norm_topk_prob: false,
+        hidden_size_per_layer_input: 0,
+        vocab_size_per_layer_input: None,
             linear_attention: ax_engine_core::NativeLinearAttentionConfig::default(),
             moe: ax_engine_core::NativeMoeConfig::default(),
             tensors: vec![
