@@ -2,12 +2,15 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-engine-bench-matrix-compare-check.XXXXXX")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+ROOT_DIR="$AX_REPO_ROOT"
+PYTHON_BIN="$AX_PYTHON_BIN"
+TMP_DIR="$(ax_tmp_dir ax-engine-bench-matrix-compare-check)"
 
 cleanup() {
-    rm -rf "$TMP_DIR"
+    ax_rm_rf "$TMP_DIR"
 }
 
 trap cleanup EXIT
@@ -31,7 +34,7 @@ matrix_manifest.write_text(
     json.dumps(
         {
             "schema_version": "ax.engine_bench.matrix.v1",
-            "id": "subset_native_dense_phase7",
+            "id": "subset_mlx_dense_phase7",
             "class": "scenario_matrix",
             "members": [
                 {
@@ -105,7 +108,7 @@ compare_run = single_run(compare_output)
 matrix_regression = json.loads((compare_run / "matrix_regression.json").read_text())
 summary = (compare_run / "summary.md").read_text()
 
-assert matrix_regression["id"] == "subset_native_dense_phase7"
+assert matrix_regression["id"] == "subset_mlx_dense_phase7"
 assert matrix_regression["summary"]["member_count"] == 2
 assert len(matrix_regression["members"]) == 2
 labels = {member["label"] for member in matrix_regression["members"]}

@@ -2,7 +2,10 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+ROOT_DIR="$AX_REPO_ROOT"
 OUTPUT_DIR="${AX_METAL_OUTPUT_DIR:-$ROOT_DIR/build/metal}"
 MANIFEST_PATH="${AX_METAL_MANIFEST_PATH:-$ROOT_DIR/metal/phase1-kernels.json}"
 

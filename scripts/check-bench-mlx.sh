@@ -2,14 +2,17 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-engine-bench-mlx-check.XXXXXX")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+ROOT_DIR="$AX_REPO_ROOT"
+PYTHON_BIN="$AX_PYTHON_BIN"
+TMP_DIR="$(ax_tmp_dir ax-engine-bench-mlx-check)"
 METAL_BUILD_DIR="${AX_ENGINE_METAL_BUILD_DIR:-${AX_METAL_OUTPUT_DIR:-$ROOT_DIR/build/metal}}"
 : "${AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR:?AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required for MLX benchmark smoke}"
 
 cleanup() {
-    rm -rf "$TMP_DIR"
+    ax_rm_rf "$TMP_DIR"
 }
 
 trap cleanup EXIT

@@ -2,12 +2,15 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-VENV_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-engine-py-check.XXXXXX")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+ROOT_DIR="$AX_REPO_ROOT"
+PYTHON_BIN="$AX_PYTHON_BIN"
+VENV_DIR="$(ax_tmp_dir ax-engine-py-check)"
 
 cleanup() {
-    rm -rf "$VENV_DIR"
+    ax_rm_rf "$VENV_DIR"
 }
 
 trap cleanup EXIT

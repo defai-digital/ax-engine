@@ -2,40 +2,26 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+ROOT_DIR="$AX_REPO_ROOT"
+PYTHON_BIN="$AX_PYTHON_BIN"
 HOST="${HOST:-127.0.0.1}"
-LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/ax-engine-server-check.XXXXXX.log")"
-UPSTREAM_LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/ax-engine-upstream-check.XXXXXX.log")"
+LOG_FILE="$(ax_tmp_file ax-engine-server-check .log)"
+UPSTREAM_LOG_FILE="$(ax_tmp_file ax-engine-upstream-check .log)"
 
-allocate_port() {
-    "$PYTHON_BIN" - <<'PY'
-import socket
-
-with socket.socket() as sock:
-    sock.bind(("127.0.0.1", 0))
-    print(sock.getsockname()[1])
-PY
-}
-
-PORT="$(allocate_port)"
-COMPAT_PORT="$(allocate_port)"
-UPSTREAM_PORT="$(allocate_port)"
+PORT="$(ax_allocate_port)"
+COMPAT_PORT="$(ax_allocate_port)"
+UPSTREAM_PORT="$(ax_allocate_port)"
 
 SERVER_PID=""
 UPSTREAM_PID=""
 
 cleanup() {
-    if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
-        kill "$SERVER_PID" 2>/dev/null || true
-        wait "$SERVER_PID" 2>/dev/null || true
-    fi
-    if [[ -n "$UPSTREAM_PID" ]] && kill -0 "$UPSTREAM_PID" 2>/dev/null; then
-        kill "$UPSTREAM_PID" 2>/dev/null || true
-        wait "$UPSTREAM_PID" 2>/dev/null || true
-    fi
-    rm -f "$LOG_FILE"
-    rm -f "$UPSTREAM_LOG_FILE"
+    ax_kill_pid "$SERVER_PID"
+    ax_kill_pid "$UPSTREAM_PID"
+    ax_rm_rf "$LOG_FILE" "$UPSTREAM_LOG_FILE"
 }
 
 trap cleanup EXIT

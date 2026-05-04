@@ -2,12 +2,15 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-engine-bench-baseline-check.XXXXXX")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+ROOT_DIR="$AX_REPO_ROOT"
+PYTHON_BIN="$AX_PYTHON_BIN"
+TMP_DIR="$(ax_tmp_dir ax-engine-bench-baseline-check)"
 
 cleanup() {
-    rm -rf "$TMP_DIR"
+    ax_rm_rf "$TMP_DIR"
 }
 
 trap cleanup EXIT

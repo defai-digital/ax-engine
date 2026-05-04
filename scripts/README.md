@@ -20,6 +20,8 @@ throughput baselines.
 
 ## Script Groups
 
+- `lib/common.sh`: shared shell helpers for repo-root discovery, Python binary
+  selection, temporary paths, free-port allocation, and PID cleanup.
 - `bench_mlx_inference_stack.py`: MLX model-inference comparison against
   `mlx_lm.benchmark`.
 - `bench_memory_leak_server.py`: long-lived RSS diagnostic for MLX and delegated
