@@ -1,7 +1,8 @@
 use mlx_sys::{
-    add, argpartition_axis, astype, dequantize, expand_dims, gather_mm, gather_qmm, matmul,
-    multiply, quantized_matmul, reshape, rms_norm, rope, scaled_dot_product_attention, slice,
-    slice_last_dim, softmax, sum_axis, take, take_along_axis, tanh, transpose, MlxArray, MlxDtype,
+    MlxArray, MlxDtype, add, argpartition_axis, astype, dequantize, expand_dims, gather_mm,
+    gather_qmm, gelu, matmul, multiply, quantized_matmul, reshape, rms_norm, rope,
+    scaled_dot_product_attention, slice, slice_last_dim, softmax, sum_axis, take, take_along_axis,
+    tanh, transpose,
 };
 
 use ax_engine_core::NativeModelManifest;
@@ -19,6 +20,8 @@ pub struct LayerConfig {
     pub sliding_window: Option<usize>,
     /// None = compute own K/V; Some(src) = reuse K/V from layer `src`.
     pub kv_source_layer: Option<usize>,
+    /// Apply no-scale RMSNorm to V before caching (Gemma4 non-KV-shared layers).
+    pub v_norm_no_scale: bool,
 }
 
 /// Hyperparameters extracted from the manifest.
@@ -45,6 +48,12 @@ pub struct ModelConfig {
     /// True → Gemma4 dual-path MoE routing (rms_norm → proj → softmax).
     /// False → Qwen3 MoE routing (proj → softmax, no rms_norm).
     pub gemma4_moe_router: bool,
+    /// Use GELU (Gemma4) instead of SiLU (Qwen3) for FFN gate activation.
+    pub uses_geglu: bool,
+    /// Scale hidden states after embedding (Gemma4: sqrt(hidden_size)).
+    pub hidden_states_scale: Option<f32>,
+    /// Normalise top-k MoE routing weights to sum to 1 (Qwen3 MoE norm_topk_prob).
+    pub moe_norm_topk_prob: bool,
 }
 
 impl ModelConfig {
@@ -65,7 +74,7 @@ impl ModelConfig {
         };
         let rope_theta = m.rope_theta.map(|t| t as f32).unwrap_or(10000.0);
         let layer_configs = build_layer_configs(m, head_dim, rope_theta, rope_dims);
-        let gemma4_moe_router = m.model_family == "gemma4";
+        let is_gemma4 = m.model_family == "gemma4";
 
         Self {
             layer_count: m.layer_count as usize,
@@ -84,7 +93,10 @@ impl ModelConfig {
             moe_experts_per_token: m.moe.experts_per_token.unwrap_or(0) as usize,
             moe_expert_intermediate_size: m.moe.expert_intermediate_size.unwrap_or(0) as usize,
             layer_configs,
-            gemma4_moe_router,
+            gemma4_moe_router: is_gemma4,
+            uses_geglu: is_gemma4,
+            hidden_states_scale: m.hidden_states_scale,
+            moe_norm_topk_prob: m.moe_norm_topk_prob,
         }
     }
 }
@@ -114,6 +126,7 @@ fn build_layer_configs(
                 .kv_shared_source_layers
                 .get(&(i as u32))
                 .map(|&s| s as usize);
+            let v_norm_no_scale = m.attention_v_norm_no_scale_layers.contains(&(i as u32));
             if lt == "full_attention" {
                 LayerConfig {
                     head_dim: full_head_dim,
@@ -121,6 +134,7 @@ fn build_layer_configs(
                     rope_dims: full_rope_dims,
                     sliding_window: None,
                     kv_source_layer,
+                    v_norm_no_scale,
                 }
             } else {
                 LayerConfig {
@@ -129,17 +143,18 @@ fn build_layer_configs(
                     rope_dims: default_rope_dims,
                     sliding_window,
                     kv_source_layer,
+                    v_norm_no_scale,
                 }
             }
         })
         .collect()
 }
 
-/// Resolve per-layer params: (head_dim, rope_theta, rope_dims, sliding_window, kv_source).
+/// Resolve per-layer params: (head_dim, rope_theta, rope_dims, sliding_window, kv_source, v_norm_no_scale).
 fn layer_params(
     cfg: &ModelConfig,
     layer_idx: usize,
-) -> (usize, f32, usize, Option<usize>, Option<usize>) {
+) -> (usize, f32, usize, Option<usize>, Option<usize>, bool) {
     if let Some(lc) = cfg.layer_configs.get(layer_idx) {
         (
             lc.head_dim,
@@ -147,9 +162,17 @@ fn layer_params(
             lc.rope_dims,
             lc.sliding_window,
             lc.kv_source_layer,
+            lc.v_norm_no_scale,
         )
     } else {
-        (cfg.head_dim, cfg.rope_theta, cfg.rope_dims, None, None)
+        (
+            cfg.head_dim,
+            cfg.rope_theta,
+            cfg.rope_dims,
+            None,
+            None,
+            false,
+        )
     }
 }
 
@@ -164,7 +187,8 @@ pub fn layer_forward(
     layer_idx: usize,
     token_offset: usize,
 ) -> MlxArray {
-    let (head_dim, rope_theta, rope_dims, sliding_window, kv_source) = layer_params(cfg, layer_idx);
+    let (head_dim, rope_theta, rope_dims, sliding_window, kv_source, v_norm_no_scale) =
+        layer_params(cfg, layer_idx);
 
     // 1. Attention norm.
     let normed = rms_norm(hidden, Some(&w.attn_norm), 1e-6, None);
@@ -222,7 +246,14 @@ pub fn layer_forward(
 
         let q = transpose(&q, &[0, 2, 1, 3], None);
         let k = transpose(&k, &[0, 2, 1, 3], None);
+        // V: transpose to BSHD then apply no-scale RMSNorm if required (Gemma4).
         let v = transpose(&v, &[0, 2, 1, 3], None);
+        let v = if v_norm_no_scale {
+            // RMSNormNoScale: normalize by RMS without learnable scale.
+            qk_norm_bshd(v, None, cfg.n_kv_heads, head_dim, seq)
+        } else {
+            v
+        };
 
         let q_rope = rope(
             &q,
@@ -402,6 +433,9 @@ pub fn forward(
 ) -> MlxArray {
     let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    if let Some(scale) = cfg.hidden_states_scale {
+        hidden = scale_hidden(&hidden, scale);
+    }
 
     for (li, layer_w) in weights.layers.iter().enumerate() {
         hidden = layer_forward(cfg, layer_w, &hidden, cache, li, token_offset);
@@ -440,6 +474,9 @@ pub fn forward_all_positions(
 ) -> MlxArray {
     let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    if let Some(scale) = cfg.hidden_states_scale {
+        hidden = scale_hidden(&hidden, scale);
+    }
 
     for (li, layer_w) in weights.layers.iter().enumerate() {
         hidden = layer_forward(cfg, layer_w, &hidden, cache, li, token_offset);
@@ -566,13 +603,30 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
         (gate, up)
     };
 
-    let gate_act = mlx_sys::ops::silu(&gate_out, None);
+    // Gemma4 uses GEGLU (GELU gate); Qwen3 uses SwiGLU (SiLU gate).
+    let gate_act = if cfg.uses_geglu {
+        gelu(&gate_out, None)
+    } else {
+        mlx_sys::ops::silu(&gate_out, None)
+    };
     let ffn_hidden = multiply(&gate_act, &up_out, None);
     qw(&ffn_hidden, &w.down_proj)
 }
 
 fn mlx_slice_last_dim(x: &MlxArray, start: i32, end: i32) -> MlxArray {
     slice_last_dim(x, start, end, None)
+}
+
+fn scale_hidden(hidden: &MlxArray, scale: f32) -> MlxArray {
+    let dtype = hidden.dtype();
+    let s_arr = MlxArray::from_raw_data(
+        &scale as *const f32 as *const u8,
+        std::mem::size_of::<f32>(),
+        &[1_i32],
+        MlxDtype::Float32,
+    );
+    let s_arr = astype(&s_arr, dtype, None);
+    multiply(hidden, &s_arr, None)
 }
 
 fn apply_final_logit_softcap(cfg: &ModelConfig, logits: &MlxArray) -> MlxArray {
@@ -635,13 +689,20 @@ fn moe_router_qwen3(
     let logits = qw(normed, router_proj);
     let last_axis = logits.ndim() as i32 - 1;
     let weights_all = softmax(&logits, last_axis, None);
-    // Top-k by already-normalised softmax weight; no re-softmax needed.
-    top_k_by_argpartition(
+    let (top_k_indices, top_k_weights) = top_k_by_argpartition(
         &weights_all,
         cfg.moe_expert_count,
         cfg.moe_experts_per_token,
         false,
-    )
+    );
+    // norm_topk_prob: renormalise top-k weights to sum to 1.
+    let top_k_weights = if cfg.moe_norm_topk_prob {
+        let sum = sum_axis(&top_k_weights, last_axis, true, None);
+        mlx_sys::ops::divide(&top_k_weights, &sum, None)
+    } else {
+        top_k_weights
+    };
+    (top_k_indices, top_k_weights)
 }
 
 /// Pick top-k elements via argpartition and optionally re-apply softmax.
@@ -701,8 +762,12 @@ fn moe_experts_forward(
         )
     };
 
-    // SwiGLU activation: silu(gate) * up → [1, seq, top_k, expert_size]
-    let gate_act = mlx_sys::ops::silu(&gate_out, None);
+    // Gemma4 experts use GEGLU (GELU gate); Qwen3 uses SwiGLU (SiLU gate).
+    let gate_act = if cfg.uses_geglu {
+        gelu(&gate_out, None)
+    } else {
+        mlx_sys::ops::silu(&gate_out, None)
+    };
     let hidden = multiply(&gate_act, &up_out, None);
 
     // Down projection: [1, seq, top_k, hidden]
@@ -768,6 +833,9 @@ mod tests {
             moe_expert_intermediate_size: 0,
             layer_configs: Vec::new(),
             gemma4_moe_router: false,
+            uses_geglu: false,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: false,
         }
     }
 

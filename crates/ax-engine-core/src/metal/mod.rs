@@ -16740,6 +16740,9 @@ fn native_model_rms_norm_weight_offset(artifacts: &NativeModelArtifacts) -> f32 
 
 #[cfg(target_os = "macos")]
 fn native_model_embedding_scale(artifacts: &NativeModelArtifacts) -> f32 {
+    if let Some(scale) = artifacts.manifest().hidden_states_scale {
+        return scale;
+    }
     let family = artifacts.manifest().model_family.to_ascii_lowercase();
     if family.starts_with("gemma") {
         (artifacts.manifest().hidden_size as f32).sqrt()

@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::model::{
-    NativeLinearAttentionConfig, NativeModelArtifacts, NativeModelManifest, NativeMoeConfig,
-    NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat, NativeTensorRole,
-    NativeTensorSpec, AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeLinearAttentionConfig, NativeModelArtifacts,
+    NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType,
+    NativeTensorFormat, NativeTensorRole, NativeTensorSpec,
 };
 
 // ---------------------------------------------------------------------------
@@ -812,6 +812,8 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
         layer_types: Vec::new(),
         kv_shared_source_layers: Default::default(),
         final_logit_softcapping: None,
+        hidden_states_scale: None,
+        moe_norm_topk_prob: false,
         linear_attention,
         moe: NativeMoeConfig::default(),
         tensors,

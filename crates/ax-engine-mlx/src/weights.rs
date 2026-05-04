@@ -1,8 +1,8 @@
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 
-use mlx_sys::{load_safetensors, MlxArray};
+use mlx_sys::{MlxArray, load_safetensors};
 
 use ax_engine_core::{
     NativeModelArtifacts, NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,

@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use mlx_sys::{enable_compile, max_recommended_working_set_size, set_wired_limit, MlxStream};
+use mlx_sys::{MlxStream, enable_compile, max_recommended_working_set_size, set_wired_limit};
 
 use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
@@ -16,8 +16,8 @@ use crate::generate::{chunked_prefill, decode_step};
 use crate::kv_cache::MlxKVCache;
 use crate::model::ModelConfig;
 use crate::sampling::Xorshift64;
-use crate::speculative::{single_decode, speculative_decode_step, NgramTable, DEFAULT_DRAFT_LEN};
-use crate::weights::{load_weights, ModelWeights};
+use crate::speculative::{DEFAULT_DRAFT_LEN, NgramTable, single_decode, speculative_decode_step};
+use crate::weights::{ModelWeights, load_weights};
 
 const EMA_ALPHA: f32 = 0.1;
 const SPEC_ACCEPT_THRESHOLD: f32 = 0.5;
@@ -432,8 +432,9 @@ fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(
 mod tests {
     use super::*;
     use ax_engine_core::{
-        NativeLinearAttentionConfig, NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus,
-        NativeTensorDataType, NativeTensorFormat, NativeTensorSpec, AX_NATIVE_MODEL_MANIFEST_FILE,
+        AX_NATIVE_MODEL_MANIFEST_FILE, NativeLinearAttentionConfig, NativeModelManifest,
+        NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat,
+        NativeTensorSpec,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -560,6 +561,8 @@ mod tests {
             layer_types: Vec::new(),
             kv_shared_source_layers: Default::default(),
             final_logit_softcapping: None,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: false,
             linear_attention: NativeLinearAttentionConfig::default(),
             moe: NativeMoeConfig::default(),
             tensors: vec![

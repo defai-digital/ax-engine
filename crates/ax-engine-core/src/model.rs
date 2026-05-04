@@ -327,6 +327,12 @@ pub struct NativeModelManifest {
     /// Final-logit softcapping: apply `tanh(x / cap) * cap` after lm_head (Gemma4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_logit_softcapping: Option<f32>,
+    /// Scale applied to token embeddings before the first layer (Gemma4: sqrt(hidden_size)).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden_states_scale: Option<f32>,
+    /// When true, normalise the selected top-k MoE weights to sum to 1 (Qwen3 MoE).
+    #[serde(default)]
+    pub moe_norm_topk_prob: bool,
     #[serde(
         default,
         skip_serializing_if = "NativeLinearAttentionConfig::is_disabled"
@@ -2255,6 +2261,8 @@ mod tests {
             layer_types: Vec::new(),
             kv_shared_source_layers: Default::default(),
             final_logit_softcapping: None,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: false,
             linear_attention: NativeLinearAttentionConfig::default(),
             moe: NativeMoeConfig::default(),
             tensors: vec![

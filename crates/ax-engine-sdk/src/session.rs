@@ -2451,6 +2451,8 @@ mod tests {
             layer_types: Vec::new(),
             kv_shared_source_layers: std::collections::BTreeMap::new(),
             final_logit_softcapping: None,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: false,
             linear_attention: NativeLinearAttentionConfig::default(),
             moe: ax_engine_core::NativeMoeConfig::default(),
             tensors: vec![

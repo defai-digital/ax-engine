@@ -1455,6 +1455,8 @@ fn write_valid_native_model_fixture() -> PathBuf {
         layer_types: Vec::new(),
         kv_shared_source_layers: Default::default(),
         final_logit_softcapping: None,
+        hidden_states_scale: None,
+        moe_norm_topk_prob: false,
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
         moe: crate::model::NativeMoeConfig::default(),
         tensors: vec![
@@ -1646,6 +1648,8 @@ fn write_projection_native_model_fixture() -> PathBuf {
         layer_types: Vec::new(),
         kv_shared_source_layers: Default::default(),
         final_logit_softcapping: None,
+        hidden_states_scale: None,
+        moe_norm_topk_prob: false,
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
         moe: crate::model::NativeMoeConfig::default(),
         tensors: vec![
@@ -2092,6 +2096,8 @@ fn write_grouped_projection_native_model_fixture() -> PathBuf {
         layer_types: Vec::new(),
         kv_shared_source_layers: Default::default(),
         final_logit_softcapping: None,
+        hidden_states_scale: None,
+        moe_norm_topk_prob: false,
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
         moe: crate::model::NativeMoeConfig::default(),
         tensors: vec![
@@ -2387,6 +2393,8 @@ fn write_wide_projection_native_model_fixture() -> PathBuf {
         layer_types: Vec::new(),
         kv_shared_source_layers: Default::default(),
         final_logit_softcapping: None,
+        hidden_states_scale: None,
+        moe_norm_topk_prob: false,
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
         moe: crate::model::NativeMoeConfig::default(),
         tensors: vec![
@@ -2569,6 +2577,8 @@ fn write_wide_direct_decode_native_model_fixture() -> PathBuf {
         layer_types: Vec::new(),
         kv_shared_source_layers: Default::default(),
         final_logit_softcapping: None,
+        hidden_states_scale: None,
+        moe_norm_topk_prob: false,
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
         moe: crate::model::NativeMoeConfig::default(),
         tensors: vec![
@@ -2926,6 +2936,8 @@ fn write_direct_decode_native_model_fixture_with_variant(
         layer_types: Vec::new(),
         kv_shared_source_layers: Default::default(),
         final_logit_softcapping: None,
+        hidden_states_scale: None,
+        moe_norm_topk_prob: false,
         linear_attention: crate::model::NativeLinearAttentionConfig::default(),
         moe: crate::model::NativeMoeConfig::default(),
         tensors,
