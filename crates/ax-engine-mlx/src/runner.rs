@@ -854,6 +854,21 @@ mod tests {
     }
 
     #[test]
+    fn real_mlx_runner_warms_up_qwen35_when_configured() {
+        if std::env::var("AX_ENGINE_MLX_RUN_REAL_FORWARD").as_deref() != Ok("1") {
+            return;
+        }
+        let Ok(model_dir) = std::env::var("AX_ENGINE_MLX_REAL_MODEL_DIR") else {
+            return;
+        };
+        let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+            .expect("real MLX manifest should load");
+
+        MlxRunner::from_artifacts(&artifacts, 8, true)
+            .expect("real Qwen3.5 MLX runner should warm up");
+    }
+
+    #[test]
     fn mlx_manifest_validation_rejects_unsupported_linear_key_dim() {
         let mut manifest = qwen35_linear_manifest();
         manifest.linear_attention.key_head_dim = Some(4);
