@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, add, astype,
-    concatenate, conv1d, exp, log1p, multiply, negative, reshape, slice, slice_last_dim,
+    concatenate, conv1d, exp, log1p, multiply, negative, reshape, rms_norm, slice, slice_last_dim,
     where_cond, zeros,
 };
 
@@ -210,6 +210,15 @@ pub fn gated_delta_kernel(
     )
 }
 
+/// Qwen3Next/Qwen3.5 gated RMSNorm: `silu(gate.float32) * rms_norm(x).float32`.
+pub fn rms_norm_gated(hidden_states: &MlxArray, gate: &MlxArray, weight: &MlxArray) -> MlxArray {
+    let normed = rms_norm(hidden_states, Some(weight), 1e-6, None);
+    let gate_f32 = astype(gate, MlxDtype::Float32, None);
+    let normed_f32 = astype(&normed, MlxDtype::Float32, None);
+    let gated = multiply(&mlx_sys::ops::silu(&gate_f32, None), &normed_f32, None);
+    astype(&gated, hidden_states.dtype(), None)
+}
+
 fn scalar_i32(value: i32) -> MlxArray {
     MlxArray::from_raw_data(
         &value as *const i32 as *const u8,
@@ -360,5 +369,17 @@ mod tests {
 
         assert_eq!(y.shape(), vec![1, 2, 1, 4]);
         assert_eq!(new_state.shape(), vec![1, 1, 4, 32]);
+    }
+
+    #[test]
+    fn rms_norm_gated_preserves_hidden_shape_and_dtype() {
+        let hidden = zeros(&[1, 5, 2, 3], MlxDtype::Bfloat16, None);
+        let gate = zeros(&[1, 5, 2, 3], MlxDtype::Bfloat16, None);
+        let weight = zeros(&[3], MlxDtype::Bfloat16, None);
+
+        let out = rms_norm_gated(&hidden, &gate, &weight);
+
+        assert_eq!(out.shape(), vec![1, 5, 2, 3]);
+        assert_eq!(out.dtype(), MlxDtype::Bfloat16);
     }
 }
