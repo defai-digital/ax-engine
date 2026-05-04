@@ -80,7 +80,7 @@ pub fn layer_forward(
     let normed = rms_norm(hidden, Some(&w.attn_norm), 1e-6, None);
 
     // 2. Q, K, V projections.
-    let (q_raw, k_raw, v_raw) = qkv_project(cfg, w, &normed);
+    let (q_raw, k_raw, v_raw, attn_gate) = qkv_project(cfg, w, &normed);
 
     let seq = hidden.shape()[1] as usize;
 
@@ -180,17 +180,8 @@ pub fn layer_forward(
     let attn_proj = qw(&attn_flat, &w.o_proj);
 
     // 12. Optional attention output gate.
-    // The Metal backend encodes the gate in the second half of q_proj rows:
-    //   gate = sigmoid(q_proj_second_half(normed)) * o_proj_output
-    // The MLX path does not yet implement this split — qkv_project returns the
-    // full q_proj output as Q without splitting out the gate half.  Panic loudly
-    // rather than silently producing wrong attention outputs.
-    let attn_out = if cfg.attn_output_gate {
-        unimplemented!(
-            "attn_output_gate is not yet implemented for the MLX path. \
-             The gate must be derived from the second half of q_proj rows, \
-             matching the Metal backend's compute_attn_output_gate logic."
-        )
+    let attn_out = if let Some(gate) = attn_gate {
+        multiply(&mlx_sys::ops::sigmoid(&gate, None), &attn_proj, None)
     } else {
         attn_proj
     };
@@ -331,24 +322,51 @@ fn qkv_project(
     cfg: &ModelConfig,
     w: &LayerWeights,
     x: &MlxArray,
-) -> (MlxArray, MlxArray, MlxArray) {
+) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
+    let slices = qkv_slices(cfg);
     if let Some(packed) = &w.qkv_packed {
         let out = qw(x, packed);
-        let q_size = cfg.n_heads * cfg.head_dim;
-        let kv_size = cfg.n_kv_heads * cfg.head_dim;
-        let q = mlx_slice_last_dim(&out, 0, q_size as i32);
-        let k = mlx_slice_last_dim(&out, q_size as i32, (q_size + kv_size) as i32);
-        let v = mlx_slice_last_dim(
-            &out,
-            (q_size + kv_size) as i32,
-            (q_size + 2 * kv_size) as i32,
-        );
-        (q, k, v)
+        let q = mlx_slice_last_dim(&out, slices.q.0, slices.q.1);
+        let gate = slices
+            .gate
+            .map(|(start, end)| mlx_slice_last_dim(&out, start, end));
+        let k = mlx_slice_last_dim(&out, slices.k.0, slices.k.1);
+        let v = mlx_slice_last_dim(&out, slices.v.0, slices.v.1);
+        (q, k, v, gate)
     } else {
-        let q = qw(x, w.q_proj.as_ref().unwrap());
+        let q_full = qw(x, w.q_proj.as_ref().unwrap());
+        let q = mlx_slice_last_dim(&q_full, slices.q.0, slices.q.1);
+        let gate = slices
+            .gate
+            .map(|(start, end)| mlx_slice_last_dim(&q_full, start, end));
         let k = qw(x, w.k_proj.as_ref().unwrap());
         let v = qw(x, w.v_proj.as_ref().unwrap());
-        (q, k, v)
+        (q, k, v, gate)
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct QkvSlices {
+    q: (i32, i32),
+    gate: Option<(i32, i32)>,
+    k: (i32, i32),
+    v: (i32, i32),
+}
+
+fn qkv_slices(cfg: &ModelConfig) -> QkvSlices {
+    let q_size = (cfg.n_heads * cfg.head_dim) as i32;
+    let kv_size = (cfg.n_kv_heads * cfg.head_dim) as i32;
+    let gate = cfg.attn_output_gate.then_some((q_size, q_size * 2));
+    let kv_start = if cfg.attn_output_gate {
+        q_size * 2
+    } else {
+        q_size
+    };
+    QkvSlices {
+        q: (0, q_size),
+        gate,
+        k: (kv_start, kv_start + kv_size),
+        v: (kv_start + kv_size, kv_start + kv_size * 2),
     }
 }
 
@@ -515,5 +533,55 @@ fn qw_gather(x: &MlxArray, qw: &QuantizedWeight, indices: &MlxArray) -> MlxArray
         axes.swap(last - 1, last);
         let wt = transpose(&qw.weight, &axes, None);
         gather_mm(x, &wt, indices, false, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(attn_output_gate: bool) -> ModelConfig {
+        ModelConfig {
+            layer_count: 1,
+            hidden_size: 16,
+            intermediate_size: 32,
+            n_heads: 2,
+            n_kv_heads: 1,
+            head_dim: 8,
+            vocab_size: 32,
+            rope_theta: 10000.0,
+            rope_dims: 8,
+            attn_output_gate,
+            query_scale: 1.0,
+            moe_expert_count: 0,
+            moe_experts_per_token: 0,
+            moe_expert_intermediate_size: 0,
+        }
+    }
+
+    #[test]
+    fn qkv_slices_dense_attention_without_gate() {
+        assert_eq!(
+            qkv_slices(&cfg(false)),
+            QkvSlices {
+                q: (0, 16),
+                gate: None,
+                k: (16, 24),
+                v: (24, 32),
+            }
+        );
+    }
+
+    #[test]
+    fn qkv_slices_dense_attention_with_output_gate() {
+        assert_eq!(
+            qkv_slices(&cfg(true)),
+            QkvSlices {
+                q: (0, 16),
+                gate: Some((16, 32)),
+                k: (32, 40),
+                v: (40, 48),
+            }
+        );
     }
 }
