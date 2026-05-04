@@ -136,8 +136,9 @@ without restarting with a flag).
 
 ## Benchmarking
 
-MLX backend performance is benchmarked through the MLX inference-stack harness,
-not through delegated llama.cpp manifests:
+MLX backend throughput is benchmarked through the MLX inference-stack harness,
+not through `ax-engine-bench` scenario/replay manifests and not through
+delegated llama.cpp manifests:
 
 ```text
 python3 scripts/bench_mlx_inference_stack.py \
@@ -152,10 +153,16 @@ only when they come from a named JSON-emitting adapter. SwiftLM application
 server measurements are retired and should not be used as a baseline for this
 backend.
 
-Use `ax-engine-bench scenario`, `replay`, and `matrix` for workload-contract evidence:
-route identity, determinism, prefix reuse, trace shape, and regression
-comparison. Use `bench_mlx_inference_stack.py` for model-inference throughput
-comparisons.
+Use `ax-engine-bench scenario`, `replay`, `matrix`, `compare`, `matrix-compare`,
+`baseline`, and `autotune` for workload-contract evidence: route identity,
+determinism, prefix reuse, trace shape, regression comparison, trusted baseline
+snapshots, and bounded manifest-knob exploration.
+
+Interpretation rule:
+
+- `bench_mlx_inference_stack.py` supports AX MLX model-inference claims.
+- `ax-engine-bench` supports workload-contract and regression claims.
+- llama.cpp manifests support delegated non-MLX route-contract claims only.
 
 ## Implementation phases
 

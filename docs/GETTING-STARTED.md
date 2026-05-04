@@ -5,8 +5,8 @@ AX Engine v4 is currently in active development.
 The repository provides:
 
 - a working inference engine core (request lifecycle, scheduler, KV cache, runner integration)
-- benchmark tooling with scenario, replay, compare, matrix, doctor, and MLX
-  inference-stack comparison flows
+- benchmark tooling split between `ax-engine-bench` workload contracts and the
+  MLX inference-stack comparison harness
 - a preview SDK, local HTTP server, Python bindings, and a JavaScript preview client
 - repo-owned MLX inference plus `llama.cpp` bypass support for non-MLX inference
 
@@ -17,7 +17,7 @@ The near-term target is:
 - Mac-first runtime for Apple M4-or-newer Macs
 - single-machine execution
 - dense Qwen and Gemma families first
-- benchmark and replay discipline before broad optimization
+- benchmark and replay discipline before broad optimization or autotune
 
 The repository is not yet a polished end-user product.
 
@@ -32,8 +32,8 @@ What exists here today:
 - checked-in Metal kernel manifest/build artifacts plus a core-owned Metal
   asset loader and validation-only asset boundary
 - benchmark manifests
-- `ax-engine-bench` scenario / replay / compare bring-up runtime plus thin direct
-  inference commands
+- `ax-engine-bench` scenario / replay / matrix / compare / baseline / autotune
+  workload-contract runtime plus thin direct inference commands
 - preview `ax-engine-sdk` backend-resolution and session contract surface
 - preview `ax-engine-server` local HTTP adapter over the SDK
 - preview `ax-engine-py` / `python/ax_engine` Python access layer for
@@ -62,7 +62,7 @@ selection, rather than only through a flat yes-or-no model list.
 ## Repository Areas
 
 - `crates/ax-engine-core`: core runtime contracts and bring-up execution loop
-- `crates/ax-engine-bench`: benchmark CLI and bring-up runtime harness
+- `crates/ax-engine-bench`: workload-contract CLI and bring-up runtime harness
 - `crates/ax-engine-sdk`: SDK facade with backend resolution and session management
 - `crates/ax-engine-server`: local HTTP server adapter over the SDK
 - `javascript/`: repo-local JavaScript preview client package
@@ -83,7 +83,7 @@ Current development assumes:
 - an Apple Silicon M4-or-newer target environment for the eventual runtime
 
 The benchmark CLI and core workspace compile on a normal Rust setup, but
-decision-grade AX-owned inference benchmark claims require the supported Apple
+decision-grade AX-owned MLX inference claims require the supported Apple
 Silicon MLX runtime environment.
 
 AX Engine v4 MLX mode depends on the available Apple Silicon MLX runtime;
@@ -93,7 +93,7 @@ support exists.
 
 ## First Commands
 
-To inspect the benchmark CLI:
+To inspect the workload-contract CLI:
 
 ```text
 cargo run -p ax-engine-bench -- help
@@ -121,16 +121,17 @@ cargo run -p ax-engine-bench -- generate \
   --llama-server-url http://127.0.0.1:8081
 ```
 
-To run a checked-in scenario manifest through the current bring-up path:
+To run a checked-in scenario manifest through the current workload-contract
+path:
 
 ```text
 cargo run -p ax-engine-bench -- scenario --manifest benchmarks/manifests/scenario/chat_qwen_short.json --output-root benchmarks/results
 ```
 
 The checked-in delegated llama.cpp manifests are route-contract examples, not
-AX-owned model-inference benchmarks. They should be used to validate the
-stepwise `llama.cpp /completion` delegation path and backend-reported
-prompt-cache evidence.
+AX-owned model-inference benchmarks. They validate the stepwise
+`llama.cpp /completion` delegation path and backend-reported prompt-cache
+evidence.
 
 To compare AX Engine MLX mode against the upstream MLX-family inference
 standard:
@@ -145,9 +146,23 @@ python3 scripts/bench_mlx_inference_stack.py \
 ```
 
 That harness uses `mlx_lm.benchmark` as the primary reference. Add
-`--ax-both-modes` when you need both greedy and speculative AX MLX rows, and
-use `--mlx-swift-lm-command` only for an explicit JSON-emitting
-`mlx-swift-lm` harness.
+`--ax-both-modes` when you need both greedy and speculative AX MLX rows. Use
+`--mlx-swift-lm-command` only for an explicit JSON-emitting `mlx-swift-lm`
+harness. Do not use the retired SwiftLM application-server benchmark as a
+current AX Engine baseline.
+
+To run a bounded autotune pass over explicit manifest knobs:
+
+```text
+cargo run -p ax-engine-bench -- autotune \
+  --manifest benchmarks/manifests/scenario/chat_qwen_short.json \
+  --output-root benchmarks/results \
+  --iterations 8
+```
+
+Autotune output is candidate evidence. It still needs the normal
+scenario/replay/compare gates before it influences architecture or release
+decisions.
 
 To validate checked-in MLX dense Qwen and Gemma scenario manifests
 through one repo-owned smoke command:

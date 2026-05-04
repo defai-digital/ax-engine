@@ -8,7 +8,7 @@ It should contain materials such as:
 - JavaScript usage
 - supported models
 - CLI usage
-- benchmark summaries intended for users
+- benchmark interpretation and workload-contract guidance
 - integration guidance
 
 Current public docs:
@@ -21,6 +21,11 @@ Current public docs:
 - `SERVER.md`
 - `SUPPORTED-MODELS.md`
 - `BENCHMARKS.md`
+
+Start with `BENCHMARKS.md` before interpreting any benchmark number. It defines
+the project split between `ax-engine-bench` workload-contract artifacts,
+`scripts/bench_mlx_inference_stack.py` MLX model-inference comparisons, and
+delegated non-MLX route checks.
 
 It should not contain:
 

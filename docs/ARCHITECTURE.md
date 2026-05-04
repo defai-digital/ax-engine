@@ -16,7 +16,8 @@ consistent across the workspace.
   contract, and llama.cpp backend bridge
 - `ax-engine-server`: local HTTP and SSE adapter over the SDK
 - `ax-engine-py`: Python binding surface over the SDK contract
-- `ax-engine-bench`: benchmark CLI, replay harness, reporting, and bring-up checks
+- `ax-engine-bench`: workload-contract CLI, replay harness, reporting,
+  bounded autotune, readiness, and bring-up checks
 
 This means AX Engine v4 already has a practical split between:
 
@@ -24,6 +25,12 @@ This means AX Engine v4 already has a practical split between:
 - runtime/session contract
 - transport adapters
 - tooling and benchmark surfaces
+
+Benchmarking is intentionally split at the project boundary:
+`ax-engine-bench` records workload-contract evidence, while
+`scripts/bench_mlx_inference_stack.py` records AX Engine MLX model-inference
+comparison against `mlx_lm.benchmark` and optional `mlx-swift-lm` adapter rows.
+Delegated llama.cpp manifests stay outside AX-owned MLX throughput claims.
 
 ## Dependency Boundaries
 

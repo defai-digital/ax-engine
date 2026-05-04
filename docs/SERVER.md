@@ -155,9 +155,10 @@ AX_ENGINE_SERVER_LOG=ax_engine_server=info,ax_engine_core=debug cargo run -p ax-
 
 For manual throughput or latency measurements, leave tracing disabled, or use
 an `info` or `warn` filter instead of `debug` / `trace`. For comparable AX MLX
-inference numbers, prefer `scripts/bench_mlx_inference_stack.py`; it starts the
+inference numbers, use `scripts/bench_mlx_inference_stack.py`; it starts the
 server, captures AX SSE `runner_time_us`, and records the MLX reference runtime
-identity explicitly.
+identity explicitly. Use `ax-engine-bench` for workload-contract artifacts
+rather than manual server timing.
 
 Inspect runtime metadata:
 

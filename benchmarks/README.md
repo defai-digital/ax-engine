@@ -1,51 +1,48 @@
 # AX Engine v4 Benchmarks
 
-This directory contains the canonical workload manifests and benchmark outputs
-for AX Engine v4.
-
-Initial layout:
+This directory contains checked-in workload manifests and generated benchmark
+outputs for AX Engine v4.
 
 ```text
 benchmarks/
   manifests/
     matrix/
-    scenario/
     replay/
+    scenario/
   results/
 ```
 
-The first planning goal is not exhaustive workload coverage.
-It is to freeze a small, trustworthy set of canonical workloads that represent
-the Phase 1 dense-path goals:
+The manifests are workload contracts. They are not the MLX reference-inference
+comparison harness. Use `docs/BENCHMARKS.md` for the full benchmarking model.
 
-- short chat
-- coding
-- long context
-- concurrent scheduling
-- shared prefix
-- replay and churn
+## Manifest Families
 
-The manifest schema direction is documented internally.
+### MLX scenario manifests
 
-The checked-in MLX scenario manifests now include one dense Qwen target and
-one dense Gemma target for bring-up route evidence:
+The checked-in MLX scenarios cover the dense preview path:
 
 - `benchmarks/manifests/scenario/chat_qwen_short.json`
 - `benchmarks/manifests/scenario/chat_gemma_short.json`
+- `benchmarks/manifests/scenario/coding_qwen_medium.json`
+- `benchmarks/manifests/scenario/long_context_qwen_8k.json`
+- `benchmarks/manifests/scenario/concurrent_qwen_dual.json`
+- `benchmarks/manifests/scenario/shared_prefix_qwen_enterprise.json`
 
-You can validate both MLX dense families through the repo-owned smoke path:
+Validate the MLX dense smoke set with:
 
 ```text
 bash scripts/check-bench-mlx.sh
 ```
 
-For real-model MLX-mode benchmarking, scenario manifests can carry `runtime.mlx_model_artifacts_dir`.
-Manifest-relative values such as `../../../models/qwen-mlx` are supported.
-If the fields are omitted, `ax-engine-bench` still falls back to the SDK defaults,
-including repo-owned Metal build detection and the
-`AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR` environment variable.
+Scenario manifests can carry `runtime.mlx_model_artifacts_dir` for real-model
+MLX mode. Manifest-relative values are supported. If the field is omitted,
+`ax-engine-bench` falls back to SDK defaults, including
+`AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR`.
 
-The checked-in native replay set now covers:
+### MLX replay manifests
+
+The checked-in replay set validates route, replay, churn, prefix, and memory
+contract behavior:
 
 - `benchmarks/manifests/replay/shared_prefix_long_churn.json`
 - `benchmarks/manifests/replay/retained_prefix_after_cleanup.json`
@@ -53,58 +50,81 @@ The checked-in native replay set now covers:
 - `benchmarks/manifests/replay/full_prefix_to_decode_branch.json`
 - `benchmarks/manifests/replay/memory_blocked_prefix_recovery.json`
 
-You can validate those replay workloads through the repo-owned smoke path:
+Validate them with:
 
 ```text
 bash scripts/check-bench-replay.sh
 ```
 
-For model-inference performance comparisons, use the MLX stack harness rather
-than `ax-engine-bench` scenario or replay manifests:
+### Frozen matrix
 
-```text
-python3 scripts/bench_mlx_inference_stack.py \
-  --model-dir .internal/models/Qwen3.5-9B-MLX-4bit \
-  --prompt-tokens 512,2048 \
-  --generation-tokens 128
-```
-
-That harness uses upstream `mlx_lm.benchmark` as the primary standard and can
-optionally ingest a local `mlx-swift-lm` JSON adapter. The older SwiftLM app
-server path is intentionally retired. Its JSON output labels the reference
-runtime and AX Engine decode mode explicitly, so greedy AX MLX, speculative AX
-MLX, `mlx_lm.benchmark`, and a Swift JSON adapter do not collapse into one
-ambiguous throughput row.
-
-llama.cpp examples also live alongside the MLX bring-up manifests:
-
-- `benchmarks/manifests/scenario/llama_cpp_chat_qwen_short.json`
-- `benchmarks/manifests/replay/llama_cpp_submit_cancel_dual.json`
-- `benchmarks/manifests/replay/llama_cpp_prompt_cache_reuse_dual.json`
-
-The `llama.cpp /completion` manifests still carry the broader delegated
-stepwise replay and prompt-cache coverage. Treat those as non-MLX delegation
-contract checks, not AX-owned MLX model-inference throughput baselines.
-Scenario manifests are single-request blocking llama.cpp examples. Update their
-`runtime.backend_adapter.server_url` before running them directly, or use the
-repo-owned smoke script for the `llama.cpp`-backed path:
-
-```text
-bash scripts/check-bench-preview.sh
-```
-
-The checked-in frozen MLX Tier 2 scenario matrix lives at:
+The frozen dense matrix lives at:
 
 - `benchmarks/manifests/matrix/mlx_dense_phase7.json`
 
-You can validate the full matrix roll-up through:
+Run it with:
 
 ```text
 bash scripts/check-bench-matrix.sh
 ```
 
-You can validate matrix-to-matrix regression roll-up through:
+Compare two successful matrix result directories with:
 
 ```text
 bash scripts/check-bench-matrix-compare.sh
 ```
+
+### Delegated llama.cpp manifests
+
+The llama.cpp examples validate non-MLX delegation contracts only:
+
+- `benchmarks/manifests/scenario/llama_cpp_chat_qwen_short.json`
+- `benchmarks/manifests/scenario/llama_cpp_shared_prefix_qwen_short.json`
+- `benchmarks/manifests/replay/llama_cpp_submit_cancel_dual.json`
+- `benchmarks/manifests/replay/llama_cpp_prompt_cache_reuse_dual.json`
+
+They cover the SDK-owned `llama.cpp /completion` route, submit/cancel behavior,
+and backend-reported prompt-cache evidence. They are not AX-owned MLX
+model-inference throughput baselines.
+
+When running them directly, update `runtime.backend_adapter.server_url`. The
+repo smoke path is:
+
+```text
+bash scripts/check-bench-preview.sh
+```
+
+## Model-Inference Comparisons
+
+For AX Engine MLX mode versus upstream MLX-family references, use:
+
+```text
+python3 scripts/bench_mlx_inference_stack.py \
+  --model-dir .internal/models/Qwen3.5-9B-MLX-4bit \
+  --prompt-tokens 512,2048 \
+  --generation-tokens 128 \
+  --repetitions 5 \
+  --cooldown 5
+```
+
+That harness uses `mlx_lm.benchmark` as the primary standard and can optionally
+ingest an explicit `mlx-swift-lm` JSON adapter. The older SwiftLM
+application-server benchmark is retired for current AX Engine decisions.
+
+Use `--ax-both-modes` when greedy and speculative AX MLX rows both matter.
+
+## Generated Outputs
+
+`ax-engine-bench` writes result directories under the chosen `--output-root`.
+Successful scenario and replay runs emit:
+
+- `manifest.json`
+- `environment.json`
+- `metrics.json`
+- `routes.json`
+- `trace.json`
+- `summary.md`
+
+Contract failures emit `contract_failure.json` plus `summary.md` instead of
+synthetic metrics. Compare, matrix, matrix-compare, baseline, and autotune
+commands emit command-specific structured artifacts.

@@ -6,8 +6,8 @@ Status:
 
 - core engine contracts (request lifecycle, scheduler, KV cache, runner
   integration) are implemented
-- benchmark tooling with scenario, replay, compare, matrix, direct inference,
-  and MLX inference-stack comparison commands is operational
+- benchmark tooling split between `ax-engine-bench` workload contracts and the
+  MLX inference-stack comparison harness is operational
 - preview SDK, local HTTP server, Python bindings, and a JavaScript preview
   client are available
 - repo-owned MLX inference is the AX-owned runtime path
@@ -34,12 +34,16 @@ Public docs:
 - `docs/SUPPORTED-MODELS.md`
 - `docs/BENCHMARKS.md`
 
-Benchmarking now has a strict split: use `scripts/bench_mlx_inference_stack.py`
-for AX Engine MLX mode versus `mlx_lm.benchmark` and optional `mlx-swift-lm`
-JSON-adapter comparisons; use `ax-engine-bench` for checked-in scenario, replay,
-matrix, baseline, and delegated-route contract artifacts. llama.cpp manifests
-validate non-MLX delegation behavior and must not be used as AX-owned MLX
-throughput baselines.
+Benchmarking has a strict split:
+
+- use `scripts/bench_mlx_inference_stack.py` for AX Engine MLX mode versus
+  `mlx_lm.benchmark` and optional `mlx-swift-lm` JSON-adapter comparisons
+- use `ax-engine-bench` for checked-in scenario, replay, matrix, baseline,
+  compare, bounded autotune, readiness, and delegated-route contract artifacts
+- treat llama.cpp manifests as non-MLX delegation checks, not AX-owned MLX
+  throughput baselines
+
+See `docs/BENCHMARKS.md` for the benchmark interpretation rules.
 
 For a repo-owned Python packaging smoke check that bootstraps a temporary
 virtual environment, installs `maturin`, builds the preview package, runs the
@@ -73,9 +77,10 @@ Copyright (c) 2026 [DEFAI Private Limited](https://defai.digital)
 Migration note:
 
 Compared with the earlier AX Engine repository, v4 currently contains the new
-engine-core bring-up path, benchmark manifests, a manifest-driven benchmark
-CLI, a preview `ax-engine-sdk` crate for backend-resolution and session
-contract bring-up, a preview `ax-engine-server` local HTTP adapter built on
+engine-core bring-up path, benchmark manifests, a manifest-driven
+`ax-engine-bench` workload-contract CLI, a preview `ax-engine-sdk` crate for
+backend-resolution and session contract bring-up, a preview `ax-engine-server`
+local HTTP adapter built on
 that SDK contract, a preview `ax-engine-py` / `python/ax_engine` binding
 surface for token-based generation, request lifecycle control, and in-process
 streaming evaluation flows, plus a thin repo-local JavaScript preview client

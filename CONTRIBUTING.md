@@ -34,10 +34,17 @@ cargo test -p ax-engine-py
 # E2E smoke checks
 bash scripts/check-bench-preview.sh
 bash scripts/check-bench-doctor.sh
+bash scripts/check-bench-mlx.sh
+bash scripts/check-bench-replay.sh
 bash scripts/check-metal-kernel-contract.sh
 bash scripts/check-server-preview.sh
 bash scripts/check-python-preview.sh
 ```
+
+For benchmark documentation and result interpretation, start with
+`docs/BENCHMARKS.md`. Use `ax-engine-bench` for workload-contract artifacts and
+`scripts/bench_mlx_inference_stack.py` for AX Engine MLX model-inference
+comparison against `mlx_lm.benchmark`.
 
 ## Code Style
 
