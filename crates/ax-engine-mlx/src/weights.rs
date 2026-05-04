@@ -751,6 +751,43 @@ mod tests {
     }
 
     #[test]
+    fn take_weight_preserves_tensor_specific_quantization_metadata() {
+        let mut router = spec(NativeTensorRole::FfnGateInp);
+        router.name = "model.layers.0.router.proj.weight".to_string();
+        router.dtype = NativeTensorDataType::U32;
+        router.source_quantized = true;
+        router.quantization = Some(NativeTensorQuantization {
+            mode: "affine".to_string(),
+            group_size: 64,
+            bits: 8,
+        });
+        let specs = vec![router];
+        let mut name_map = HashMap::from([
+            (
+                "model.layers.0.router.proj.weight".to_string(),
+                zeros(&[128, 704], MlxDtype::Uint32, None),
+            ),
+            (
+                "model.layers.0.router.proj.scales".to_string(),
+                zeros(&[128, 44], MlxDtype::Bfloat16, None),
+            ),
+        ]);
+
+        let weight = take_weight(
+            &specs,
+            &mut name_map,
+            NativeTensorRole::FfnGateInp,
+            Some(0),
+            "router_proj",
+        )
+        .expect("quantized router should load");
+
+        assert_eq!(weight.group_size, 64);
+        assert_eq!(weight.bits, 8);
+        assert!(weight.scales.is_some());
+    }
+
+    #[test]
     fn real_mlx_weights_load_qwen35_linear_attention_when_configured() {
         if std::env::var("AX_ENGINE_MLX_LOAD_REAL_WEIGHTS").as_deref() != Ok("1") {
             return;
