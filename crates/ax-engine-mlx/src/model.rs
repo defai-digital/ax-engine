@@ -120,6 +120,14 @@ fn build_layer_configs(
         .partial_rotary_factor
         .map(|f| ((full_head_dim as f32 * f) as usize).next_multiple_of(2))
         .unwrap_or(full_head_dim);
+    let sliding_rope_dims = if m.model_family == "gemma4" {
+        // Gemma4's partial_rotary_factor belongs to full_attention's
+        // proportional RoPE. sliding_attention uses default RoPE over the full
+        // sliding head_dim.
+        default_head_dim
+    } else {
+        default_rope_dims
+    };
     let sliding_window = m.sliding_window_size.map(|w| w as usize);
 
     m.layer_types
@@ -144,7 +152,7 @@ fn build_layer_configs(
                 LayerConfig {
                     head_dim: default_head_dim,
                     rope_theta: swa_theta,
-                    rope_dims: default_rope_dims,
+                    rope_dims: sliding_rope_dims,
                     sliding_window,
                     kv_source_layer,
                     v_norm_no_scale,
@@ -828,6 +836,10 @@ fn qw_gather(x: &MlxArray, qw: &QuantizedWeight, indices: &MlxArray) -> MlxArray
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ax_engine_core::{
+        NativeLinearAttentionConfig, NativeMoeConfig, NativeRuntimeStatus, NativeTensorFormat,
+    };
+    use std::collections::BTreeMap;
 
     fn cfg(attn_output_gate: bool) -> ModelConfig {
         ModelConfig {
@@ -851,6 +863,45 @@ mod tests {
             uses_geglu: false,
             hidden_states_scale: None,
             moe_norm_topk_prob: false,
+        }
+    }
+
+    fn gemma4_interleaved_manifest() -> NativeModelManifest {
+        NativeModelManifest {
+            schema_version: ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
+            model_family: "gemma4".to_string(),
+            tensor_format: NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: NativeRuntimeStatus::default(),
+            layer_count: 2,
+            hidden_size: 2816,
+            intermediate_size: 2112,
+            attention_head_count: 8,
+            attention_head_dim: 256,
+            kv_head_count: 2,
+            vocab_size: 262144,
+            tie_word_embeddings: true,
+            rope_theta: Some(1_000_000),
+            rope_theta_swa: Some(10_000),
+            query_pre_attn_scalar: None,
+            attention_logit_softcap: None,
+            attn_output_gate: false,
+            partial_rotary_factor: Some(0.25),
+            attention_value_from_key_layers: Vec::new(),
+            attention_v_norm_no_scale_layers: vec![0],
+            global_head_dim: Some(512),
+            sliding_window_size: Some(512),
+            layer_types: vec![
+                "sliding_attention".to_string(),
+                "full_attention".to_string(),
+            ],
+            kv_shared_source_layers: BTreeMap::new(),
+            final_logit_softcapping: Some(30.0),
+            hidden_states_scale: Some((2816_f32).sqrt()),
+            moe_norm_topk_prob: false,
+            linear_attention: NativeLinearAttentionConfig::default(),
+            moe: NativeMoeConfig::default(),
+            tensors: Vec::new(),
         }
     }
 
@@ -878,6 +929,21 @@ mod tests {
                 v: (40, 48),
             }
         );
+    }
+
+    #[test]
+    fn gemma4_layer_configs_keep_sliding_rope_at_full_head_dim() {
+        let cfg = ModelConfig::from_manifest(&gemma4_interleaved_manifest());
+
+        assert_eq!(cfg.query_scale, 1.0);
+        assert_eq!(cfg.layer_configs[0].head_dim, 256);
+        assert_eq!(cfg.layer_configs[0].rope_theta, 10_000.0);
+        assert_eq!(cfg.layer_configs[0].rope_dims, 256);
+        assert_eq!(cfg.layer_configs[0].sliding_window, Some(512));
+        assert_eq!(cfg.layer_configs[1].head_dim, 512);
+        assert_eq!(cfg.layer_configs[1].rope_theta, 1_000_000.0);
+        assert_eq!(cfg.layer_configs[1].rope_dims, 128);
+        assert_eq!(cfg.layer_configs[1].sliding_window, None);
     }
 
     #[test]
