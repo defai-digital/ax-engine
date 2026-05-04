@@ -34,9 +34,9 @@ pub use io::load_safetensors;
 pub use metal::MlxMetalKernel;
 pub use ops::{
     add, arange, argmax, argpartition_axis, argsort_axis, as_strided, astype, concatenate,
-    dequantize, erf, expand_dims, gather_mm, gather_qmm, gelu, greater_equal, less, logical_and,
-    matmul, multiply, quantized_matmul, repeat_axis, reshape, slice, slice_last_dim, slice_update,
-    softmax, subtract, sum_axis, take, take_along_axis, tanh, transpose, zeros,
+    dequantize, divide, erf, expand_dims, gather_mm, gather_qmm, gelu, greater_equal, less,
+    logical_and, matmul, multiply, quantized_matmul, repeat_axis, reshape, slice, slice_last_dim,
+    slice_update, softmax, subtract, sum_axis, take, take_along_axis, tanh, transpose, zeros,
 };
 pub use stream::MlxStream;
 pub use transforms::{

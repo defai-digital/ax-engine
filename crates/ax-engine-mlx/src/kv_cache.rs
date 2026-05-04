@@ -1,4 +1,4 @@
-use mlx_sys::{slice, slice_update, zeros, MlxArray, MlxDtype};
+use mlx_sys::{MlxArray, MlxDtype, slice, slice_update, zeros};
 
 /// Pre-allocated chunk size (tokens).  The buffer grows by this amount each time
 /// the logical sequence length exceeds capacity, so the number of grow operations

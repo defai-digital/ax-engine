@@ -36,6 +36,7 @@ macro_rules! binary_op {
 
 binary_op!(add, mlx_add);
 binary_op!(subtract, mlx_subtract);
+binary_op!(divide, mlx_divide);
 binary_op!(multiply, mlx_multiply);
 binary_op!(matmul, mlx_matmul);
 binary_op!(greater_equal, mlx_greater_equal);
