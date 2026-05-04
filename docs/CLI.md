@@ -21,6 +21,7 @@ The current command surface is:
 - `ax-bench doctor`
 - `ax-bench metal-build`
 - `ax-engine-server`
+- `scripts/bench_mlx_inference_stack.py`
 
 Example usage:
 
@@ -38,6 +39,7 @@ ax-bench stream --tokens 1,2,3 --support-tier llama_cpp --llama-server-url http:
 ax-bench doctor --json
 ax-bench metal-build
 cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts --port 8080
+python3 scripts/bench_mlx_inference_stack.py --model-dir .internal/models/Qwen3.5-9B-MLX-4bit --prompt-tokens 512,2048 --generation-tokens 128
 ```
 
 ## Current State
@@ -62,10 +64,22 @@ The CLI currently validates:
 - direct blocking and streaming inference through the SDK-owned session
   contract, including llama.cpp backend resolution
 
-It does not yet perform full production benchmarking.
-The current implementation executes the deterministic engine bring-up path, so
-the artifacts reflect real request progress, route metadata, and synthetic
-runtime observations rather than placeholder files.
+`ax-bench` is not the MLX-family reference-inference comparator; that role
+belongs to `scripts/bench_mlx_inference_stack.py`. Production release gates are
+still future work.
+`ax-bench` owns workload-contract artifacts rather than upstream model-runtime
+comparison. The current implementation executes the deterministic SDK/MLX
+bring-up path for checked-in workloads, so artifacts reflect request progress,
+route metadata, runtime identity, and measured runner timing instead of
+placeholder files.
+
+Model-inference performance comparisons are intentionally outside the
+`ax-bench scenario` / `replay` surface. Use
+`scripts/bench_mlx_inference_stack.py` to compare AX Engine MLX mode against
+`mlx_lm.benchmark`, with optional `mlx-swift-lm` JSON adapter support. The
+retired SwiftLM application-server benchmark should not be used as a current AX
+MLX baseline.
+
 `ax-bench` also supports delegated llama.cpp contract checks through the
 SDK-owned backend contract. The stepwise `llama.cpp /completion` adapter carries
 the broader delegated coverage for multi-request scenario and replay manifests,
@@ -101,6 +115,9 @@ The checked-in llama.cpp examples live at
 `benchmarks/manifests/replay/llama_cpp_submit_cancel_dual.json`, plus the
 delegated prompt-cache reuse replay example at
 `benchmarks/manifests/replay/llama_cpp_prompt_cache_reuse_dual.json`; update their `server_url` before running them directly.
+Those manifests validate delegated non-MLX route behavior only; do not compare
+their throughput rows against AX Engine MLX rows as if both were AX-owned
+inference runtimes.
 `ax-bench doctor` now turns the SDK-owned host and Metal-toolchain diagnostics
 into one human-readable or JSON readiness report. It distinguishes fully
 supported M4-or-newer MLX hosts from unsupported-host override bring-up, and it

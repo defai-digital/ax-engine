@@ -5,7 +5,8 @@ AX Engine v4 is currently in active development.
 The repository provides:
 
 - a working inference engine core (request lifecycle, scheduler, KV cache, runner integration)
-- a benchmark CLI with scenario, replay, compare, and doctor commands
+- benchmark tooling with scenario, replay, compare, matrix, doctor, and MLX
+  inference-stack comparison flows
 - a preview SDK, local HTTP server, Python bindings, and a JavaScript preview client
 - repo-owned MLX inference plus `llama.cpp` bypass support for non-MLX inference
 
@@ -46,7 +47,8 @@ What is not yet present in this repository:
 - fully migrated Rust SDK facade
 - broad JavaScript bindings beyond the thin preview HTTP client
 - broad transport-level Python ergonomics beyond the current local preview layer
-- broad MLX Metal mode as a supported user-facing runtime
+- broad model coverage beyond the current MLX-first path and delegated
+  llama.cpp route
 
 Do not assume that user-facing surfaces from the earlier AX repo have already
 migrated into v4.
@@ -80,10 +82,12 @@ Current development assumes:
 - Rust toolchain
 - an Apple Silicon M4-or-newer target environment for the eventual runtime
 
-The benchmark CLI and core workspace compile on a normal Rust setup, but the
-full Metal runtime is not implemented yet.
+The benchmark CLI and core workspace compile on a normal Rust setup, but
+decision-grade AX-owned inference benchmark claims require the supported Apple
+Silicon MLX runtime environment.
 
-AX Engine v4 MLX mode depends on the available Apple Silicon MLX runtime; non-MLX inference uses llama.cpp.
+AX Engine v4 MLX mode depends on the available Apple Silicon MLX runtime;
+non-MLX inference uses delegated llama.cpp routes.
 Runtime surfaces fail closed on pre-M4 hosts instead of pretending degraded
 support exists.
 
@@ -127,6 +131,23 @@ The checked-in delegated llama.cpp manifests are route-contract examples, not
 AX-owned model-inference benchmarks. They should be used to validate the
 stepwise `llama.cpp /completion` delegation path and backend-reported
 prompt-cache evidence.
+
+To compare AX Engine MLX mode against the upstream MLX-family inference
+standard:
+
+```text
+python3 scripts/bench_mlx_inference_stack.py \
+  --model-dir .internal/models/Qwen3.5-9B-MLX-4bit \
+  --prompt-tokens 512,2048 \
+  --generation-tokens 128 \
+  --repetitions 5 \
+  --cooldown 5
+```
+
+That harness uses `mlx_lm.benchmark` as the primary reference. Add
+`--ax-both-modes` when you need both greedy and speculative AX MLX rows, and
+use `--mlx-swift-lm-command` only for an explicit JSON-emitting
+`mlx-swift-lm` harness.
 
 To validate checked-in MLX dense Qwen and Gemma scenario manifests
 through one repo-owned smoke command:
@@ -185,15 +206,15 @@ KV cache buffers, so repeated dispatches can reuse previously materialized
 slot-backed cache storage while refreshing only the per-step metadata/input
 buffers that describe the current workload.
 
-To validate the checked-in native replay manifests for live-share, retained
+To validate the checked-in MLX replay manifests for live-share, retained
 reuse, mixed-path, full-prefix decode, and memory-blocked recovery behavior:
 
 ```text
 bash scripts/check-bench-replay.sh
 ```
 
-To run the repo-owned llama.cpp benchmark smoke path for the checked-in
-scenario and replay example manifests:
+To run the repo-owned llama.cpp delegated-contract smoke path for the
+checked-in scenario and replay example manifests:
 
 ```text
 bash scripts/check-bench-preview.sh

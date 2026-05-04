@@ -59,7 +59,8 @@ You can validate those replay workloads through the repo-owned smoke path:
 bash scripts/check-bench-replay.sh
 ```
 
-For model-inference performance comparisons, use the MLX stack harness:
+For model-inference performance comparisons, use the MLX stack harness rather
+than `ax-bench` scenario or replay manifests:
 
 ```text
 python3 scripts/bench_mlx_inference_stack.py \
@@ -70,7 +71,10 @@ python3 scripts/bench_mlx_inference_stack.py \
 
 That harness uses upstream `mlx_lm.benchmark` as the primary standard and can
 optionally ingest a local `mlx-swift-lm` JSON adapter. The older SwiftLM app
-server path is intentionally retired.
+server path is intentionally retired. Its JSON output labels the reference
+runtime and AX Engine decode mode explicitly, so greedy AX MLX, speculative AX
+MLX, `mlx_lm.benchmark`, and a Swift JSON adapter do not collapse into one
+ambiguous throughput row.
 
 llama.cpp examples also live alongside the MLX bring-up manifests:
 

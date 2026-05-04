@@ -153,8 +153,11 @@ before starting the server. For example:
 AX_ENGINE_SERVER_LOG=ax_engine_server=info,ax_engine_core=debug cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts --port 8080
 ```
 
-For throughput or latency measurements, prefer leaving tracing disabled, or use
-an `info` or `warn` filter instead of `debug` / `trace`.
+For manual throughput or latency measurements, leave tracing disabled, or use
+an `info` or `warn` filter instead of `debug` / `trace`. For comparable AX MLX
+inference numbers, prefer `scripts/bench_mlx_inference_stack.py`; it starts the
+server, captures AX SSE `runner_time_us`, and records the MLX reference runtime
+identity explicitly.
 
 Inspect runtime metadata:
 

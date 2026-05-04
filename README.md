@@ -6,12 +6,12 @@ Status:
 
 - core engine contracts (request lifecycle, scheduler, KV cache, runner
   integration) are implemented
-- benchmark CLI with scenario, replay, compare, and direct inference commands is operational
+- benchmark tooling with scenario, replay, compare, matrix, direct inference,
+  and MLX inference-stack comparison commands is operational
 - preview SDK, local HTTP server, Python bindings, and a JavaScript preview
   client are available
-- compatibility backends (`llama.cpp`, `vLLM`, `mistral.rs`, and MLX-backed
-  paths) are supported for evaluation
-- native Metal execution optimization is ongoing
+- repo-owned MLX inference is the AX-owned runtime path
+- non-MLX local inference routes through the delegated `llama.cpp` contract
 
 Repository layout:
 
@@ -33,6 +33,13 @@ Public docs:
 - `docs/SERVER.md`
 - `docs/SUPPORTED-MODELS.md`
 - `docs/BENCHMARKS.md`
+
+Benchmarking now has a strict split: use `scripts/bench_mlx_inference_stack.py`
+for AX Engine MLX mode versus `mlx_lm.benchmark` and optional `mlx-swift-lm`
+JSON-adapter comparisons; use `ax-bench` for checked-in scenario, replay,
+matrix, baseline, and delegated-route contract artifacts. llama.cpp manifests
+validate non-MLX delegation behavior and must not be used as AX-owned MLX
+throughput baselines.
 
 For a repo-owned Python packaging smoke check that bootstraps a temporary
 virtual environment, installs `maturin`, builds the preview package, runs the

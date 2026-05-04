@@ -23,10 +23,11 @@ for batching and prefix reuse rather than a delegated subprocess wrapper.
 ax-engine-sdk (Rust)
   └── MlxRunner (ExecutionRunner)
         ├── ax-engine-mlx (Rust)
-        │     ├── generate.rs  — chunked prefill (512 tok) + decode loop
-        │     ├── model.rs     — Qwen3 transformer (attn + FFN + norm)
-        │     ├── kv_cache.rs  — KV cache as MLX arrays
-        │     └── weights.rs   — NativeTensorSpec → MlxArray loader
+        │     ├── generate.rs    — chunked prefill (512 tok) + decode loop
+        │     ├── model.rs       — Qwen3 transformer (attn + FFN + norm)
+        │     ├── kv_cache.rs    — chunked KV cache with slice_update growth
+        │     ├── speculative.rs — n-gram self-speculative decode + EMA gating
+        │     └── weights.rs     — NativeTensorSpec → MlxArray loader
         └── mlx-sys (Rust FFI)
               ├── bindgen over /opt/homebrew/include/mlx/c/mlx.h
               └── safe wrappers: MlxArray, MlxStream, ops, fast, transforms
@@ -37,79 +38,158 @@ ax-engine-sdk (Rust)
 | Layer | What it does |
 |---|---|
 | `mlx-sys` | Unsafe FFI + safe RAII wrappers. No logic. |
-| `ax-engine-mlx` | Model graph, inference loop, KV cache. All MLX ops live here. |
+| `ax-engine-mlx` | Model graph, inference loop, KV cache, speculative decode. All MLX ops live here. |
 | `ax-engine-sdk` | Session routing: MLX mode → MlxRunner; non-MLX mode → llama.cpp. |
 
-## Key design decisions learnt from SwiftLM
+## Key design decisions
+
+### Graph compilation
+
+`mlx_enable_compile()` is called once at runner startup before warmup.  This
+enables MLX's compute-graph caching — equivalent to `mx.compile()` in Python
+mlx_lm — so Metal shader compilation and graph dispatch are reused across decode
+steps with the same shape.  Without this, every token step pays a fresh graph
+build cost (~10–15% throughput regression vs mlx_lm).
+
+### Dedicated GPU stream
+
+A new GPU stream is created and set as the thread default (mirrors mlx_lm's
+`mx.new_stream(mx.default_device())`).  This avoids implicit cross-stream
+synchronization on the shared default stream.
+
+### Wired weight memory
+
+`mlx_set_wired_limit(recommendedMaxWorkingSetSize)` is called at startup to
+wire model weights into GPU memory, preventing Metal from paging them between
+requests.
 
 ### Chunked prefill
-Process prompt in 512-token windows (configurable). Between each chunk call
-`mlx_async_eval` to drain the GPU command queue. Prevents Metal's 5-second watchdog
-from firing on long prompts. Matches SwiftLM's default `--prefill-size 512`.
 
-### Single GPU command buffer per layer
-Fuse attention + FFN ops into one `async_eval` fence per transformer layer during
-decode. Avoids 150+ round-trips between CPU and GPU per token (matches ax-engine's
-recent `fuse FFN into single GPU command buffer` commit pattern).
+Process prompt in 512-token windows (configurable).  Between each chunk,
+`mlx_async_eval` drains the GPU command queue without blocking the CPU.
+Prevents Metal's 5-second watchdog from firing on long prompts.  Matches
+SwiftLM's default `--prefill-size 512`.
 
-### Native quantized matmul
-`mlx_quantized_matmul` handles Q4_K_M / Q8_0 weights directly in the GPU kernel,
-no dequantization to f16 needed. Maps directly to `NativeQuantizedTensorSource` in
-the model manifest.
+### Chunked KV cache
 
-### Custom Metal kernel injection
-Existing `phase1_dense_path.metal` kernels (paged attention, KV cache ops) are
-registered via `mlx_fast_metal_kernel_new` and called inside the MLX compute graph.
-This is the exact mechanism SwiftLM uses for its DFlash tape-replay kernels.
+Keys and values are stored in pre-allocated backing buffers sized to the next
+256-token boundary.  New tokens are written with `mlx_slice_update` (no data
+copy of existing entries).  When the buffer is full, a larger buffer is
+allocated and the old data is copied once via `slice_update`.
 
-### KV cache as MLX arrays
-Keys and values grow along the sequence dimension with `mlx_concatenate_axis`.
-Prefix reuse: on a cache hit the existing KV arrays are reused for the shared prefix,
-decode resumes from the split point. No block-table indirection needed at the MLX
-layer (paged dispatch remains in the MLX Metal path for phase1 models).
+This avoids the O(n) full-array `mlx_concatenate_axis` cost that the original
+naive implementation paid on every append.  Speculative rollback (`trim_to`) is
+O(1) — only the logical sequence-length pointer changes; the backing buffer
+retains its data.
+
+After each decode step, all backing buffers are evaluated alongside the output
+token (`mlx_eval([token, k0, v0, k1, v1, ...])`).  This materialises the
+`slice_update` chain into a flat buffer, preventing computation-graph depth
+from growing linearly with sequence length.  Mirrors mlx_lm's `mx.eval(y, cache)`.
+
+### N-gram speculative decode
+
+Self-speculative decoding with a bigram/trigram n-gram table (no second model
+required).  Up to 4 draft tokens per step; verified in one causal forward pass
+over `[last_token, D1, D2, …, D_n]`.  EMA accept-rate gating (α=0.1, threshold
+0.5) disables speculation for 8 steps after the EMA drops below threshold,
+letting the n-gram table recover before re-enabling.
+
+Speculative throughput claims must be reproduced through
+`scripts/bench_mlx_inference_stack.py --ax-both-modes` before they are used in
+release notes or architecture decisions. Historical local rows such as
+`~1.96x mlx_lm` at 256-token context are useful investigation notes only unless
+the run artifact records the model, host, prompt/decode shape, reference
+identity, and AX decode mode.
+
+### Batch contract
+
+MLX mode is single-request optimised for the current milestone.  `MlxRunner::run`
+processes batch items serially; the states mutex is released before GPU work so
+unrelated request-state access is never blocked by a long prefill.  True
+multi-item MLX batching (shared K/V across requests) is deferred.
+
+### Custom Metal kernels
+
+The `mlx-sys` crate exposes `metal.rs` — safe wrappers around `mlx_fast_metal_kernel_new`
+and `mlx_fast_metal_kernel_call` for injecting custom Metal shaders into the MLX
+compute graph.  The `phase1_dense_path.metal` kernel and registration code exist
+in `metal/` and `crates/ax-engine-core/src/metal/`.
+
+**These kernels are not active in the current MLX model execution path.**  The
+model forward pass in `model.rs` uses only MLX fast ops (`rms_norm`, `rope`,
+`scaled_dot_product_attention`, `quantized_matmul`).  Custom-kernel work requires
+profiling evidence on the production decode path before a kernel can be selected
+and wired in.  Any custom-kernel PR must include before/after benchmark rows on
+the canonical scenario matrix.
+
+## Runtime controls
+
+| Flag | Default | Description |
+|---|---|---|
+| `--mlx` | false | Route to MLX mode |
+| `--mlx-model-artifacts-dir <path>` | — | Path to safetensors artifacts dir |
+| `--no-speculative-decode` | false | Disable n-gram speculation (greedy baseline) |
+
+`AX_NO_SPEC=1` environment variable also disables speculation (for debugging
+without restarting with a flag).
+
+## Benchmarking
+
+MLX backend performance is benchmarked through the MLX inference-stack harness,
+not through delegated llama.cpp manifests:
+
+```text
+python3 scripts/bench_mlx_inference_stack.py \
+  --model-dir .internal/models/Qwen3.5-9B-MLX-4bit \
+  --prompt-tokens 256,512,2048 \
+  --generation-tokens 128 \
+  --ax-both-modes
+```
+
+The canonical reference is `mlx_lm.benchmark`. `mlx-swift-lm` numbers are valid
+only when they come from a named JSON-emitting adapter. SwiftLM application
+server measurements are retired and should not be used as a baseline for this
+backend.
+
+Use `ax-bench scenario`, `replay`, and `matrix` for workload-contract evidence:
+route identity, determinism, prefix reuse, trace shape, and regression
+comparison. Use `bench_mlx_inference_stack.py` for model-inference throughput
+comparisons.
 
 ## Implementation phases
 
-### Phase 1 — mlx-sys crate (this PR)
+### Phase 1 — mlx-sys crate
 - `bindgen` over mlx-c headers, linked against `/opt/homebrew/lib/libmlxc.dylib`
 - Safe `MlxArray` (RAII, `Drop` calls `mlx_array_free`)
-- Core ops: matmul, add, multiply, softmax, concat, reshape, transpose, astype, take
-- Fast ops: rms_norm, rope, scaled_dot_product_attention
-- Transforms: eval, async_eval
+- Core ops: matmul, add, multiply, softmax, reshape, transpose, astype, take,
+  slice, slice_update, zeros, as_strided, repeat_axis, concatenate, argmax
+- Fast ops: rms_norm, rope, scaled_dot_product_attention, dequantize, quantized_matmul
+- Transforms: eval, async_eval, enable_compile, clear_cache, set_wired_limit
 - IO: load_safetensors
-- Metal: metal_kernel registration + call
 
-### Phase 2 — ax-engine-mlx crate (this PR)
+### Phase 2 — ax-engine-mlx crate
 - Weight loader: reads `NativeTensorSpec` offsets from safetensors → `MlxArray`
 - Quantized weight binding: Q4_K_M → `mlx_quantized_matmul`
 - Qwen3 dense model graph: embed → 36 × (RMSNorm + GQA + SwiGLU) → RMSNorm → lm_head
-- KV cache: grow-on-append, trim on prefix hit
+- Chunked KV cache with slice_update growth and O(1) speculative rollback
+- N-gram speculative decode with EMA gating
 - Chunked prefill loop
-- Decode loop (single token, returns f32 logits slice)
 - `MlxRunner` implementing `ExecutionRunner`
 
-### Phase 3 — integration (this PR)
-- Add both crates to workspace
+### Phase 3 — integration
+- Both crates in workspace
 - `SelectedBackend::Mlx` variant in `ax-engine-sdk`
 - `--mlx` flag in `ax-engine-server`
-- Python binding: `mlx=True` routes to MLX mode when model artifacts are configured
+- `--no-speculative-decode` flag for greedy baseline benchmarks
+- Python binding: `mlx=True` routes to MLX mode
 
 ### Phase 4 — future
-- Extend model coverage beyond Qwen3 dense (Llama, Mistral, MoE)
-- TurboKV 3-bit KV cache compression (PolarQuant + QJL)
-- Speculative decoding (DFlash-style draft model)
-- Vision-language model support
-
-## Success metrics
-
-| Metric | Target |
-|---|---|
-| Streaming latency | First token < 200 ms for 512-token prompt |
-| Throughput | ≥ mlx_lm baseline tok/s for Qwen3.5 9B Q4 |
-| Delegated-wrapper elimination | Zero subprocess/HTTP overhead on MLX mode |
-| logprob access | Returned on every decode step |
-| Prefix reuse | KV cache reused across requests with shared prefix |
-| Custom kernels | phase1 Metal kernels callable from MLX compute graph |
+- Prompt-prefix reuse (LRU cache for shared prefixes across requests)
+- KV quantization and sliding-window cache layouts
+- Custom Metal kernel integration (after profiling confirms a hot-path target)
+- Multi-item batch execution with shared K/V primitives
+- Extend model coverage beyond Qwen3 dense
 
 ## File map
 
@@ -121,7 +201,7 @@ crates/mlx-sys/
 
 crates/ax-engine-mlx/
   Cargo.toml
-  src/lib.rs, weights.rs, model.rs, kv_cache.rs, generate.rs, runner.rs, sampling.rs
+  src/lib.rs, weights.rs, model.rs, kv_cache.rs, generate.rs, speculative.rs, runner.rs
 
 docs/MLX-BACKEND.md  (this file)
 ```

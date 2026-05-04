@@ -42,6 +42,9 @@ This means:
 - non-MLX local inference should use `llama.cpp`
 - support-tier language should not be read as implying broad MLX Metal model support
 - retired AX native mode should not be exposed as a shipping runtime
+- model-inference benchmark claims for MLX mode should be made through
+  `scripts/bench_mlx_inference_stack.py` against `mlx_lm.benchmark`, not
+  through delegated llama.cpp manifests
 
 ## Support Tiers
 
@@ -114,4 +117,6 @@ Deferred from the main path:
 This document describes product direction and support strategy, not a final
 llama.cpp guarantee.
 The implementation is still in progress, and support claims must be earned by
-actual benchmark and validation evidence.
+actual benchmark and validation evidence. For MLX support claims, that evidence
+must name the MLX reference runtime, AX decode mode, model identity, prompt
+shape, and host readiness state.
