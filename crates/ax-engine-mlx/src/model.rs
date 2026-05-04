@@ -1329,6 +1329,62 @@ mod tests {
     }
 
     #[test]
+    fn moe_experts_forward_weights_multiple_packed_experts() {
+        let mut cfg = cfg(false);
+        cfg.hidden_size = 4;
+        cfg.moe_expert_count = 2;
+        cfg.moe_experts_per_token = 2;
+        cfg.moe_expert_intermediate_size = 3;
+        cfg.uses_geglu = true;
+        let weights = LayerWeights {
+            attn_norm: zeros(&[4], MlxDtype::Float32, None),
+            attn_post_norm: None,
+            q_norm: None,
+            k_norm: None,
+            q_proj: None,
+            k_proj: None,
+            v_proj: None,
+            qkv_packed: None,
+            o_proj: None,
+            linear_attn: None,
+            ffn_norm: zeros(&[4], MlxDtype::Float32, None),
+            ffn_post_norm: None,
+            gate_proj: None,
+            up_proj: None,
+            gate_up_packed: None,
+            down_proj: dense_weight(&[4, 3]),
+            ffn_norm2: None,
+            ffn_post_norm1: None,
+            ffn_post_norm2: None,
+            router_proj: None,
+            router_scale: None,
+            gate_up_exps_packed: Some(dense_weight(&[2, 6, 4])),
+            gate_exps: None,
+            up_exps: None,
+            down_exps: Some(dense_weight(&[2, 4, 3])),
+        };
+        let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
+        let indices_data = [0_u32, 1_u32, 1_u32, 0_u32];
+        let top_k_indices = MlxArray::from_raw_data(
+            indices_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&indices_data),
+            &[1, 2, 2],
+            MlxDtype::Uint32,
+        );
+        let weights_data = [0.75_f32, 0.25_f32, 0.25_f32, 0.75_f32];
+        let top_k_weights = MlxArray::from_raw_data(
+            weights_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&weights_data),
+            &[1, 2, 2],
+            MlxDtype::Float32,
+        );
+
+        let out = moe_experts_forward(&cfg, &weights, &x, &top_k_indices, &top_k_weights);
+
+        assert_eq!(out.shape(), vec![1, 2, 4]);
+    }
+
+    #[test]
     fn value_norm_keeps_cache_shape_bhsd() {
         let v = zeros(&[1, 3, 2, 4], MlxDtype::Float32, None);
         let prepared = prepare_value_bhsd(v, true, 2, 4, 3);
