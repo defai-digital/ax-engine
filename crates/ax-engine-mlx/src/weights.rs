@@ -603,6 +603,13 @@ fn take_weight(
     let base = name.strip_suffix(".weight").unwrap_or(&name);
     let scales = name_map.remove(&format!("{base}.scales"));
     let biases = name_map.remove(&format!("{base}.biases"));
+    let has_quantization_sidecars = scales.is_some() || biases.is_some();
+
+    if !spec.source_quantized && has_quantization_sidecars {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "tensor {name} has MLX quantization sidecar tensors but source_quantized is false"
+        )));
+    }
 
     if spec.source_quantized && scales.is_none() {
         return Err(WeightLoadError::QuantizationMissing(format!(
@@ -816,6 +823,38 @@ mod tests {
         };
 
         assert!(matches!(error, WeightLoadError::QuantizationMissing(_)));
+    }
+
+    #[test]
+    fn take_weight_rejects_quantization_sidecars_when_manifest_is_dense() {
+        let mut router = spec(NativeTensorRole::FfnGateInp);
+        router.name = "model.layers.0.router.proj.weight".to_string();
+        router.dtype = NativeTensorDataType::Bf16;
+        router.source_quantized = false;
+        let specs = vec![router];
+        let mut name_map = HashMap::from([
+            (
+                "model.layers.0.router.proj.weight".to_string(),
+                zeros(&[128, 2816], MlxDtype::Bfloat16, None),
+            ),
+            (
+                "model.layers.0.router.proj.scales".to_string(),
+                zeros(&[128, 44], MlxDtype::Bfloat16, None),
+            ),
+        ]);
+
+        let error = match take_weight(
+            &specs,
+            &mut name_map,
+            NativeTensorRole::FfnGateInp,
+            Some(0),
+            "router_proj",
+        ) {
+            Ok(_) => panic!("dense manifest tensors must not consume quantization sidecars"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, WeightLoadError::InvalidLayer(_)));
     }
 
     #[test]
