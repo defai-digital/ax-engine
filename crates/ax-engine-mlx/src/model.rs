@@ -1021,7 +1021,7 @@ mod tests {
     use ax_engine_core::{
         NativeLinearAttentionConfig, NativeMoeConfig, NativeRuntimeStatus, NativeTensorFormat,
     };
-    use mlx_sys::zeros;
+    use mlx_sys::{eval, zeros};
     use std::collections::BTreeMap;
 
     fn cfg(attn_output_gate: bool) -> ModelConfig {
@@ -1207,13 +1207,28 @@ mod tests {
 
     #[test]
     fn attention_output_gate_is_applied_before_output_projection() {
-        let attn_flat = zeros(&[1, 2, 6], MlxDtype::Float32, None);
-        let gate = zeros(&[1, 2, 6], MlxDtype::Float32, None);
-        let o_proj = dense_weight(&[4, 6]);
+        let attn_data = [2.0_f32, 4.0_f32];
+        let attn_flat = MlxArray::from_raw_data(
+            attn_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&attn_data),
+            &[1, 1, 2],
+            MlxDtype::Float32,
+        );
+        let gate = zeros(&[1, 1, 2], MlxDtype::Float32, None);
+        let proj_data = [2.0_f32, 4.0_f32];
+        let o_proj_weight = MlxArray::from_raw_data(
+            proj_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&proj_data),
+            &[1, 2],
+            MlxDtype::Float32,
+        );
+        let o_proj = QuantizedWeight::new(o_proj_weight, None, None);
 
         let out = attention_output_projection(&attn_flat, Some(&gate), &o_proj);
 
-        assert_eq!(out.shape(), vec![1, 2, 4]);
+        eval(&[&out]);
+        assert_eq!(out.shape(), vec![1, 1, 1]);
+        assert_eq!(out.data_f32(), &[10.0]);
     }
 
     #[test]
