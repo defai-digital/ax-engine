@@ -918,8 +918,17 @@ fn validate_native_model_manifest(
                 "ffn_down_exps",
             )?;
             let has_packed_moe = roles.contains(&NativeTensorRole::FfnGateUpExpsPacked);
-            let has_split_moe = roles.contains(&NativeTensorRole::FfnGateExps)
-                && roles.contains(&NativeTensorRole::FfnUpExps);
+            let has_gate_exps = roles.contains(&NativeTensorRole::FfnGateExps);
+            let has_up_exps = roles.contains(&NativeTensorRole::FfnUpExps);
+            let has_split_moe = has_gate_exps && has_up_exps;
+            if has_packed_moe && (has_gate_exps || has_up_exps) {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer {} must not mix ffn_gate_up_exps_packed with ffn_gate_exps/ffn_up_exps",
+                        layer_index
+                    ),
+                });
+            }
             if !(has_packed_moe || has_split_moe) {
                 return Err(NativeModelError::InvalidManifest {
                     message: format!(
@@ -3010,6 +3019,38 @@ mod tests {
         };
         assert!(
             message.contains("ffn_gate_up_exps_packed or ffn_gate_exps/ffn_up_exps"),
+            "unexpected error: {message}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_mixed_packed_and_split_moe_experts() {
+        let mut manifest = moe_layer_manifest();
+        manifest.tensors.extend([
+            tensor(
+                "model.layers.0.experts.gate_proj.weight",
+                NativeTensorRole::FfnGateExps,
+                Some(0),
+                vec![128, 704, 2816],
+            ),
+            tensor(
+                "model.layers.0.experts.up_proj.weight",
+                NativeTensorRole::FfnUpExps,
+                Some(0),
+                vec![128, 704, 2816],
+            ),
+        ]);
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("MoE expert format should be unambiguous per layer");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("must not mix ffn_gate_up_exps_packed"),
             "unexpected error: {message}"
         );
 
