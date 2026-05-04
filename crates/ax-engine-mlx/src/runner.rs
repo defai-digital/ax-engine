@@ -508,7 +508,7 @@ mod tests {
         NativeTensorSpec,
     };
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     // Verify that the extract-work-reinsert mutex pattern correctly isolates
     // per-request state without GPU execution required.
@@ -729,7 +729,7 @@ mod tests {
         let mut manifest = dense_manifest();
         manifest.model_family = "qwen3_5".to_string();
         manifest.linear_attention = NativeLinearAttentionConfig {
-            full_attention_interval: Some(4),
+            full_attention_interval: None,
             num_value_heads: Some(1),
             num_key_heads: Some(1),
             key_head_dim: Some(32),
@@ -829,6 +829,28 @@ mod tests {
 
         validate_mlx_supported_manifest(&artifacts)
             .expect("Qwen3.5 linear attention is wired for the MLX path");
+    }
+
+    #[test]
+    fn real_mlx_manifest_resolves_qwen35_linear_interval_when_configured() {
+        let Ok(model_dir) = std::env::var("AX_ENGINE_MLX_REAL_MODEL_DIR") else {
+            return;
+        };
+        let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+            .expect("real MLX manifest should load");
+
+        validate_mlx_supported_manifest(&artifacts).expect("real MLX manifest should be supported");
+        let cfg = ModelConfig::from_manifest(artifacts.manifest());
+
+        assert_eq!(
+            cfg.linear_attention
+                .as_ref()
+                .expect("real manifest should configure linear attention")
+                .full_attention_interval,
+            4
+        );
+        assert!(cfg.is_linear_attention_layer(0));
+        assert!(!cfg.is_linear_attention_layer(3));
     }
 
     #[test]

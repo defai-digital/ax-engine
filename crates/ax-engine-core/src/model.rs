@@ -7,6 +7,7 @@ use thiserror::Error;
 
 pub const AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION: &str = "ax.native_model.v1";
 pub const AX_NATIVE_MODEL_MANIFEST_FILE: &str = "model-manifest.json";
+pub const QWEN3_5_DEFAULT_FULL_ATTENTION_INTERVAL: u32 = 4;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -152,6 +153,13 @@ impl NativeLinearAttentionConfig {
 
     pub fn is_disabled(&self) -> bool {
         !self.is_enabled()
+    }
+
+    pub fn resolved_full_attention_interval(&self, model_family: &str) -> Option<u32> {
+        self.full_attention_interval.or_else(|| {
+            (self.is_enabled() && model_family == "qwen3_5")
+                .then_some(QWEN3_5_DEFAULT_FULL_ATTENTION_INTERVAL)
+        })
     }
 }
 
@@ -588,7 +596,9 @@ fn validate_native_model_manifest(
     }
     if manifest.linear_attention.is_enabled() {
         require_positive_field(
-            manifest.linear_attention.full_attention_interval,
+            manifest
+                .linear_attention
+                .resolved_full_attention_interval(&manifest.model_family),
             "linear_attention.full_attention_interval",
         )?;
         require_positive_field(
@@ -2713,6 +2723,56 @@ mod tests {
             }
         );
 
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn qwen35_linear_attention_defaults_missing_full_interval() {
+        let mut manifest = packed_layer_manifest();
+        manifest.model_family = "qwen3_5".to_string();
+        manifest.linear_attention = NativeLinearAttentionConfig {
+            full_attention_interval: None,
+            num_value_heads: Some(32),
+            num_key_heads: Some(16),
+            key_head_dim: Some(128),
+            value_head_dim: Some(128),
+            conv_kernel_dim: Some(4),
+        };
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let artifacts =
+            NativeModelArtifacts::from_dir(&dir).expect("Qwen3.5 should inherit interval 4");
+
+        assert_eq!(
+            artifacts
+                .manifest()
+                .linear_attention
+                .resolved_full_attention_interval(&artifacts.manifest().model_family),
+            Some(QWEN3_5_DEFAULT_FULL_ATTENTION_INTERVAL)
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn non_qwen35_linear_attention_requires_full_interval() {
+        let mut manifest = packed_layer_manifest();
+        manifest.linear_attention = NativeLinearAttentionConfig {
+            full_attention_interval: None,
+            num_value_heads: Some(32),
+            num_key_heads: Some(16),
+            key_head_dim: Some(128),
+            value_head_dim: Some(128),
+            conv_kernel_dim: Some(4),
+        };
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("non-Qwen3.5 manifests must carry an explicit interval");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+
+        assert!(message.contains("linear_attention.full_attention_interval"));
         let _ = fs::remove_dir_all(dir);
     }
 
