@@ -127,6 +127,8 @@ impl NativeTensorRole {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NativeLinearAttentionConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_attention_interval: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_value_heads: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_key_heads: Option<u32>,
@@ -140,7 +142,8 @@ pub struct NativeLinearAttentionConfig {
 
 impl NativeLinearAttentionConfig {
     pub fn is_enabled(&self) -> bool {
-        self.num_value_heads.is_some()
+        self.full_attention_interval.is_some()
+            || self.num_value_heads.is_some()
             || self.num_key_heads.is_some()
             || self.key_head_dim.is_some()
             || self.value_head_dim.is_some()
@@ -577,6 +580,10 @@ fn validate_native_model_manifest(
         }
     }
     if manifest.linear_attention.is_enabled() {
+        require_positive_field(
+            manifest.linear_attention.full_attention_interval,
+            "linear_attention.full_attention_interval",
+        )?;
         require_positive_field(
             manifest.linear_attention.num_value_heads,
             "linear_attention.num_value_heads",
