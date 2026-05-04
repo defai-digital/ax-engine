@@ -1,6 +1,7 @@
 pub mod attention_mask;
 pub mod generate;
 pub mod kv_cache;
+pub mod linear_attention;
 pub mod model;
 pub mod runner;
 pub mod sampling;
