@@ -35,11 +35,16 @@ macro_rules! binary_op {
 }
 
 binary_op!(add, mlx_add);
+binary_op!(subtract, mlx_subtract);
 binary_op!(multiply, mlx_multiply);
 binary_op!(matmul, mlx_matmul);
+binary_op!(greater_equal, mlx_greater_equal);
+binary_op!(less, mlx_less);
+binary_op!(logical_and, mlx_logical_and);
 
 unary_op!(sigmoid, mlx_sigmoid);
 unary_op!(tanh, mlx_tanh);
+unary_op!(erf, mlx_erf);
 
 /// silu(x) = x * sigmoid(x)
 pub fn silu(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
@@ -47,11 +52,48 @@ pub fn silu(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     multiply(x, &sig, s)
 }
 
+/// gelu(x) = 0.5 * x * (1 + erf(x / sqrt(2)))
+///
+/// Matches mlx-lm's `nn.gelu_approx` closely enough for inference correctness.
+pub fn gelu(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
+    let dtype = x.dtype();
+    let mk_scalar = |v: f32| {
+        let a = MlxArray::from_raw_data(
+            &v as *const f32 as *const u8,
+            std::mem::size_of::<f32>(),
+            &[1_i32],
+            MlxDtype::Float32,
+        );
+        astype(&a, dtype, s)
+    };
+    let inv_sqrt2 = mk_scalar(std::f32::consts::FRAC_1_SQRT_2);
+    let scaled = multiply(x, &inv_sqrt2, s);
+    let erf_val = erf(&scaled, s);
+    let one_plus_erf = add(&erf_val, &mk_scalar(1.0), s);
+    let half_x = multiply(x, &mk_scalar(0.5), s);
+    multiply(&half_x, &one_plus_erf, s)
+}
+
 pub fn astype(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
         let mut res = MlxArray::empty();
         ffi::mlx_astype(&mut res.inner, a.inner, dtype.to_ffi(), stream);
+        res
+    }
+}
+
+pub fn arange(
+    start: f64,
+    stop: f64,
+    step: f64,
+    dtype: MlxDtype,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_arange(&mut res.inner, start, stop, step, dtype.to_ffi(), stream);
         res
     }
 }

@@ -1,3 +1,4 @@
+pub mod attention_mask;
 pub mod generate;
 pub mod kv_cache;
 pub mod model;
