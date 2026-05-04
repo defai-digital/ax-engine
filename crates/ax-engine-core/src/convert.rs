@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::model::{
-    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeLinearAttentionConfig, NativeModelManifest,
-    NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat,
-    NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
+    NativeLinearAttentionConfig, NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus,
+    NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization, NativeTensorRole,
+    NativeTensorSpec, AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -544,6 +544,8 @@ fn linear_attention_config(
     }
 
     NativeLinearAttentionConfig {
+        full_attention_interval: arch_u64(config, model_type, "full_attention_interval")
+            .and_then(u64_to_u32),
         num_value_heads: arch_u64(config, model_type, "linear_num_value_heads")
             .and_then(u64_to_u32),
         num_key_heads: arch_u64(config, model_type, "linear_num_key_heads").and_then(u64_to_u32),
@@ -1430,7 +1432,8 @@ mod tests {
                     "linear_num_key_heads": 1,
                     "linear_key_head_dim": 4,
                     "linear_value_head_dim": 2,
-                    "linear_conv_kernel_dim": 4
+                    "linear_conv_kernel_dim": 4,
+                    "full_attention_interval": 4
                 }
             }),
         );
@@ -1528,24 +1531,19 @@ mod tests {
         assert_eq!(manifest.linear_attention.key_head_dim, Some(4));
         assert_eq!(manifest.linear_attention.value_head_dim, Some(2));
         assert_eq!(manifest.linear_attention.conv_kernel_dim, Some(4));
-        assert!(
-            manifest
-                .tensors
-                .iter()
-                .any(|tensor| tensor.role == NativeTensorRole::LinearAttentionInProjQkv)
-        );
-        assert!(
-            manifest
-                .tensors
-                .iter()
-                .any(|tensor| tensor.role == NativeTensorRole::LinearAttentionConv1d)
-        );
-        assert!(
-            manifest
-                .tensors
-                .iter()
-                .any(|tensor| tensor.role == NativeTensorRole::LinearAttentionOutProj)
-        );
+        assert_eq!(manifest.linear_attention.full_attention_interval, Some(4));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::LinearAttentionInProjQkv));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::LinearAttentionConv1d));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::LinearAttentionOutProj));
 
         write_manifest(&dir, &manifest).expect("write should succeed");
         crate::model::NativeModelArtifacts::from_dir(&dir)
@@ -1728,12 +1726,10 @@ mod tests {
         assert_eq!(manifest.moe.expert_count, Some(128));
         assert_eq!(manifest.moe.experts_per_token, Some(8));
         assert_eq!(manifest.moe.expert_intermediate_size, Some(704));
-        assert!(
-            manifest
-                .tensors
-                .iter()
-                .any(|tensor| tensor.role == NativeTensorRole::FfnGateInp)
-        );
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::FfnGateInp));
         let router = manifest
             .tensors
             .iter()
@@ -1745,48 +1741,34 @@ mod tests {
             Some(8),
             "Gemma4 router.proj should keep mlx-lm's 8-bit quantization contract"
         );
-        assert!(
-            manifest
-                .tensors
-                .iter()
-                .any(|tensor| tensor.role == NativeTensorRole::AttentionPostNorm)
-        );
-        assert!(
-            manifest
-                .tensors
-                .iter()
-                .any(|tensor| tensor.role == NativeTensorRole::FfnNorm2)
-        );
-        assert!(
-            manifest
-                .tensors
-                .iter()
-                .any(|tensor| tensor.role == NativeTensorRole::FfnPostNorm)
-        );
-        assert!(
-            manifest
-                .tensors
-                .iter()
-                .any(|tensor| tensor.role == NativeTensorRole::FfnPostNorm1)
-        );
-        assert!(
-            manifest
-                .tensors
-                .iter()
-                .any(|tensor| tensor.role == NativeTensorRole::FfnPostNorm2)
-        );
-        assert!(
-            manifest
-                .tensors
-                .iter()
-                .any(|tensor| tensor.role == NativeTensorRole::FfnGateExps)
-        );
-        assert!(
-            manifest
-                .tensors
-                .iter()
-                .any(|tensor| tensor.role == NativeTensorRole::FfnDownExps)
-        );
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::AttentionPostNorm));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::FfnNorm2));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::FfnPostNorm));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::FfnPostNorm1));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::FfnPostNorm2));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::FfnGateExps));
+        assert!(manifest
+            .tensors
+            .iter()
+            .any(|tensor| tensor.role == NativeTensorRole::FfnDownExps));
 
         write_manifest(&dir, &manifest).expect("write should succeed");
         crate::model::NativeModelArtifacts::from_dir(&dir).expect("moe manifest should validate");
@@ -1946,13 +1928,11 @@ mod tests {
             assert_eq!(norm_count, 24, "all 24 layers should have attention norm");
 
             // All tensors should be BF16
-            assert!(
-                manifest
-                    .tensors
-                    .iter()
-                    .all(|t| t.dtype == NativeTensorDataType::Bf16
-                        || t.dtype == NativeTensorDataType::F32)
-            );
+            assert!(manifest
+                .tensors
+                .iter()
+                .all(|t| t.dtype == NativeTensorDataType::Bf16
+                    || t.dtype == NativeTensorDataType::F32));
 
             // Write manifest, then validate the full NativeModelArtifacts pipeline.
             // Hold the shared lock for the whole duration so parallel metal tests

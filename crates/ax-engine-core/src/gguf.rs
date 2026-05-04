@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::model::{
-    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeLinearAttentionConfig, NativeModelArtifacts,
-    NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType,
-    NativeTensorFormat, NativeTensorRole, NativeTensorSpec,
+    NativeLinearAttentionConfig, NativeModelArtifacts, NativeModelManifest, NativeMoeConfig,
+    NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat, NativeTensorRole,
+    NativeTensorSpec, AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -713,7 +713,16 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
     //   key_head_dim    = ssm.state_size      (or linear_key_head_dim)
     //   value_head_dim  derived from ssm.inner_size / num_value_heads
     //   conv_kernel_dim = ssm.conv_kernel     (or linear_conv_kernel_dim)
+    //   full_attention_interval marks the hybrid full-attention cadence
     let linear_attention = {
+        let full_attention_interval = kv_uint_multi(
+            kv,
+            &[
+                &format!("{arch}.full_attention_interval"),
+                "qwen35.full_attention_interval",
+            ],
+        )
+        .map(|v| v as u32);
         let num_value_heads = kv_uint_multi(
             kv,
             &[
@@ -767,6 +776,7 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
         .map(|v| v as u32);
 
         NativeLinearAttentionConfig {
+            full_attention_interval,
             num_value_heads,
             num_key_heads,
             key_head_dim,
