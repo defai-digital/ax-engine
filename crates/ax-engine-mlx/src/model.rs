@@ -75,7 +75,7 @@ impl LinearAttentionConfig {
     }
 
     fn is_linear_layer(&self, layer_idx: usize) -> bool {
-        (layer_idx + 1) % self.full_attention_interval != 0
+        !(layer_idx + 1).is_multiple_of(self.full_attention_interval)
     }
 
     pub fn key_dim(&self) -> usize {

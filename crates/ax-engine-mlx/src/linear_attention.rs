@@ -131,8 +131,8 @@ pub fn normalize_linear_attention_qk(
     let inv_scale = (cfg.key_head_dim as f32).powf(-0.5);
     let q_normed = rms_norm(q, None, 1e-6, None);
     let k_normed = rms_norm(k, None, 1e-6, None);
-    let q_scale = scalar_f32_as((inv_scale * inv_scale) as f32, q.dtype());
-    let k_scale = scalar_f32_as(inv_scale as f32, k.dtype());
+    let q_scale = scalar_f32_as(inv_scale * inv_scale, q.dtype());
+    let k_scale = scalar_f32_as(inv_scale, k.dtype());
     (
         multiply(&q_normed, &q_scale, None),
         multiply(&k_normed, &k_scale, None),

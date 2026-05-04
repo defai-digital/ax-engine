@@ -395,54 +395,6 @@ pub fn argmax(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn conv1d_depthwise_reports_reference_shape() {
-        let input = zeros(&[1, 6, 2], MlxDtype::Float32, None);
-        let weight = zeros(&[2, 3, 1], MlxDtype::Float32, None);
-        let out = conv1d(&input, &weight, 1, 0, 1, 2, None);
-
-        assert_eq!(out.shape(), vec![1, 4, 2]);
-    }
-
-    #[test]
-    fn stack_and_where_preserve_expected_shapes() {
-        let a = zeros(&[2, 3], MlxDtype::Float32, None);
-        let b = zeros(&[2, 3], MlxDtype::Float32, None);
-        let condition = zeros(&[2, 3], MlxDtype::Bool, None);
-
-        assert_eq!(stack(&[&a, &b], 1, None).shape(), vec![2, 2, 3]);
-        assert_eq!(where_cond(&condition, &a, &b, None).shape(), vec![2, 3]);
-    }
-
-    #[test]
-    fn scalar_math_wrappers_keep_input_shape() {
-        let a = zeros(&[2, 3], MlxDtype::Float32, None);
-        let min_value = 0.0_f32;
-        let max_value = 1.0_f32;
-        let min = MlxArray::from_raw_data(
-            &min_value as *const f32 as *const u8,
-            std::mem::size_of::<f32>(),
-            &[1],
-            MlxDtype::Float32,
-        );
-        let max = MlxArray::from_raw_data(
-            &max_value as *const f32 as *const u8,
-            std::mem::size_of::<f32>(),
-            &[1],
-            MlxDtype::Float32,
-        );
-
-        assert_eq!(
-            log1p(&exp(&negative(&a, None), None), None).shape(),
-            vec![2, 3]
-        );
-        assert_eq!(clip(&a, &min, &max, None).shape(), vec![2, 3]);
-    }
-}
 
 pub fn argsort_axis(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
     unsafe {
@@ -661,5 +613,54 @@ pub fn quantized_matmul(
             stream,
         );
         res
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conv1d_depthwise_reports_reference_shape() {
+        let input = zeros(&[1, 6, 2], MlxDtype::Float32, None);
+        let weight = zeros(&[2, 3, 1], MlxDtype::Float32, None);
+        let out = conv1d(&input, &weight, 1, 0, 1, 2, None);
+
+        assert_eq!(out.shape(), vec![1, 4, 2]);
+    }
+
+    #[test]
+    fn stack_and_where_preserve_expected_shapes() {
+        let a = zeros(&[2, 3], MlxDtype::Float32, None);
+        let b = zeros(&[2, 3], MlxDtype::Float32, None);
+        let condition = zeros(&[2, 3], MlxDtype::Bool, None);
+
+        assert_eq!(stack(&[&a, &b], 1, None).shape(), vec![2, 2, 3]);
+        assert_eq!(where_cond(&condition, &a, &b, None).shape(), vec![2, 3]);
+    }
+
+    #[test]
+    fn scalar_math_wrappers_keep_input_shape() {
+        let a = zeros(&[2, 3], MlxDtype::Float32, None);
+        let min_value = 0.0_f32;
+        let max_value = 1.0_f32;
+        let min = MlxArray::from_raw_data(
+            &min_value as *const f32 as *const u8,
+            std::mem::size_of::<f32>(),
+            &[1],
+            MlxDtype::Float32,
+        );
+        let max = MlxArray::from_raw_data(
+            &max_value as *const f32 as *const u8,
+            std::mem::size_of::<f32>(),
+            &[1],
+            MlxDtype::Float32,
+        );
+
+        assert_eq!(
+            log1p(&exp(&negative(&a, None), None), None).shape(),
+            vec![2, 3]
+        );
+        assert_eq!(clip(&a, &min, &max, None).shape(), vec![2, 3]);
     }
 }
