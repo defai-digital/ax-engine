@@ -1,6 +1,9 @@
+use std::sync::OnceLock;
+
 use mlx_sys::{
-    MlxArray, MlxDtype, add, astype, concatenate, conv1d, exp, log1p, multiply, negative, reshape,
-    slice, slice_last_dim, where_cond, zeros,
+    KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, add, astype,
+    concatenate, conv1d, exp, log1p, multiply, negative, reshape, slice, slice_last_dim,
+    where_cond, zeros,
 };
 
 use crate::model::LinearAttentionConfig;
@@ -11,6 +14,8 @@ pub struct LinearAttentionQkv {
     pub k: MlxArray,
     pub v: MlxArray,
 }
+
+static GATED_DELTA_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 
 /// compute_g from mlx-lm/mlx-swift-lm:
 /// `exp(-exp(A_log.float32) * softplus(a + dt_bias))`.
@@ -117,6 +122,171 @@ pub fn split_linear_attention_qkv(
     }
 }
 
+/// Run Qwen3.5's gated-delta recurrent update with the MLX Metal kernel.
+///
+/// Shapes match mlx-lm/mlx-swift-lm:
+/// - `q`, `k`: `[B, T, Hk, Dk]`
+/// - `v`: `[B, T, Hv, Dv]`
+/// - `g`, `beta`: `[B, T, Hv]`
+/// - `state`: `[B, Hv, Dv, Dk]`
+/// - returns `(y: [B, T, Hv, Dv], state: [B, Hv, Dv, Dk])`
+pub fn gated_delta_kernel(
+    q: &MlxArray,
+    k: &MlxArray,
+    v: &MlxArray,
+    g: &MlxArray,
+    beta: &MlxArray,
+    state: &MlxArray,
+) -> (MlxArray, MlxArray) {
+    let q_shape = q.shape();
+    let v_shape = v.shape();
+    let state_shape = state.shape();
+    let batch = q_shape[0];
+    let seq = q_shape[1];
+    let num_key_heads = q_shape[2];
+    let key_head_dim = q_shape[3];
+    let num_value_heads = v_shape[2];
+    let value_head_dim = v_shape[3];
+    let seq_i32 = scalar_i32(seq);
+
+    let kernel = GATED_DELTA_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "qwen35_gated_delta_step",
+            &["q", "k", "v", "g", "beta", "state_in", "T"],
+            &["y", "state_out"],
+            GATED_DELTA_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+
+    let outputs = kernel.apply_with_template(
+        &[q, k, v, g, beta, state, &seq_i32],
+        &[
+            KernelOutputSpec {
+                shape: vec![batch, seq, num_value_heads, value_head_dim],
+                dtype: q.dtype(),
+            },
+            KernelOutputSpec {
+                shape: state_shape,
+                dtype: state.dtype(),
+            },
+        ],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "InT",
+                dtype: q.dtype(),
+            },
+            KernelTemplateArg::Dtype {
+                name: "StT",
+                dtype: state.dtype(),
+            },
+            KernelTemplateArg::Int {
+                name: "Dk",
+                value: key_head_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "Dv",
+                value: value_head_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "Hk",
+                value: num_key_heads,
+            },
+            KernelTemplateArg::Int {
+                name: "Hv",
+                value: num_value_heads,
+            },
+        ],
+        (32, value_head_dim, batch * num_value_heads),
+        (32, 4, 1),
+        None,
+    );
+
+    let mut outputs = outputs.into_iter();
+    (
+        outputs.next().expect("gated delta y output"),
+        outputs.next().expect("gated delta state output"),
+    )
+}
+
+fn scalar_i32(value: i32) -> MlxArray {
+    MlxArray::from_raw_data(
+        &value as *const i32 as *const u8,
+        std::mem::size_of::<i32>(),
+        &[1],
+        MlxDtype::Int32,
+    )
+}
+
+const GATED_DELTA_KERNEL_SOURCE: &str = r#"
+    auto n = thread_position_in_grid.z;
+    auto b_idx = n / Hv;
+    auto hv_idx = n % Hv;
+    auto hk_idx = hv_idx / (Hv / Hk);
+    constexpr int n_per_t = Dk / 32;
+
+    // q, k: [B, T, Hk, Dk]
+    auto q_ = q + b_idx * T * Hk * Dk + hk_idx * Dk;
+    auto k_ = k + b_idx * T * Hk * Dk + hk_idx * Dk;
+
+    // v, y: [B, T, Hv, Dv]
+    auto v_ = v + b_idx * T * Hv * Dv + hv_idx * Dv;
+    y += b_idx * T * Hv * Dv + hv_idx * Dv;
+
+    auto dk_idx = thread_position_in_threadgroup.x;
+    auto dv_idx = thread_position_in_grid.y;
+
+    // g, beta: [B, T, Hv]
+    auto g_ = g + b_idx * T * Hv;
+    auto beta_ = beta + b_idx * T * Hv;
+
+    // state_in, state_out: [B, Hv, Dv, Dk]
+    auto i_state = state_in + (n * Dv + dv_idx) * Dk;
+    auto o_state = state_out + (n * Dv + dv_idx) * Dk;
+
+    float state[n_per_t];
+    for (int i = 0; i < n_per_t; ++i) {
+      auto s_idx = n_per_t * dk_idx + i;
+      state[i] = static_cast<float>(i_state[s_idx]);
+    }
+
+    for (int t = 0; t < T; ++t) {
+      float kv_mem = 0.0f;
+      for (int i = 0; i < n_per_t; ++i) {
+        auto s_idx = n_per_t * dk_idx + i;
+        state[i] = state[i] * g_[hv_idx];
+        kv_mem += state[i] * k_[s_idx];
+      }
+      kv_mem = simd_sum(kv_mem);
+
+      auto delta = (v_[dv_idx] - kv_mem) * beta_[hv_idx];
+
+      float out = 0.0f;
+      for (int i = 0; i < n_per_t; ++i) {
+        auto s_idx = n_per_t * dk_idx + i;
+        state[i] = state[i] + k_[s_idx] * delta;
+        out += state[i] * q_[s_idx];
+      }
+      out = simd_sum(out);
+      if (thread_index_in_simdgroup == 0) {
+        y[dv_idx] = static_cast<InT>(out);
+      }
+
+      q_ += Hk * Dk;
+      k_ += Hk * Dk;
+      v_ += Hv * Dv;
+      y += Hv * Dv;
+      g_ += Hv;
+      beta_ += Hv;
+    }
+
+    for (int i = 0; i < n_per_t; ++i) {
+      auto s_idx = n_per_t * dk_idx + i;
+      o_state[s_idx] = static_cast<StT>(state[i]);
+    }
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +345,20 @@ mod tests {
         assert_eq!(qkv.q.shape(), vec![1, 5, 1, 4]);
         assert_eq!(qkv.k.shape(), vec![1, 5, 1, 4]);
         assert_eq!(qkv.v.shape(), vec![1, 5, 2, 3]);
+    }
+
+    #[test]
+    fn gated_delta_kernel_reports_reference_shapes() {
+        let q = zeros(&[1, 2, 1, 32], MlxDtype::Float32, None);
+        let k = zeros(&[1, 2, 1, 32], MlxDtype::Float32, None);
+        let v = zeros(&[1, 2, 1, 4], MlxDtype::Float32, None);
+        let g = zeros(&[1, 2, 1], MlxDtype::Float32, None);
+        let beta = zeros(&[1, 2, 1], MlxDtype::Float32, None);
+        let state = zeros(&[1, 1, 4, 32], MlxDtype::Float32, None);
+
+        let (y, new_state) = gated_delta_kernel(&q, &k, &v, &g, &beta, &state);
+
+        assert_eq!(y.shape(), vec![1, 2, 1, 4]);
+        assert_eq!(new_state.shape(), vec![1, 1, 4, 32]);
     }
 }
