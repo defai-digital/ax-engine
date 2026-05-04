@@ -1,6 +1,8 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, add, astype, dequantize, matmul, multiply, quantized_matmul, reshape,
-    rms_norm, rope, scaled_dot_product_attention, slice_last_dim, take, transpose,
+    MlxArray, MlxDtype, add, argpartition_axis, astype, dequantize, expand_dims, gather_qmm,
+    gather_mm, matmul, multiply, quantized_matmul, reshape, rms_norm, rope,
+    scaled_dot_product_attention, slice_last_dim, softmax, sum_axis, take, take_along_axis,
+    transpose,
 };
 
 use ax_engine_core::NativeModelManifest;
@@ -22,6 +24,10 @@ pub struct ModelConfig {
     pub rope_dims: usize,
     pub attn_output_gate: bool,
     pub query_scale: f32,
+    // MoE (0 means dense-only model).
+    pub moe_expert_count: usize,
+    pub moe_experts_per_token: usize,
+    pub moe_expert_intermediate_size: usize,
 }
 
 impl ModelConfig {
@@ -52,6 +58,9 @@ impl ModelConfig {
             rope_dims,
             attn_output_gate: m.attn_output_gate,
             query_scale,
+            moe_expert_count: m.moe.expert_count.unwrap_or(0) as usize,
+            moe_experts_per_token: m.moe.experts_per_token.unwrap_or(0) as usize,
+            moe_expert_intermediate_size: m.moe.expert_intermediate_size.unwrap_or(0) as usize,
         }
     }
 }
@@ -170,10 +179,18 @@ pub fn layer_forward(
     // 11. Output projection.
     let attn_proj = qw(&attn_flat, &w.o_proj);
 
-    // 12. Optional attention output gate (Qwen3).
+    // 12. Optional attention output gate.
+    // The Metal backend encodes the gate in the second half of q_proj rows:
+    //   gate = sigmoid(q_proj_second_half(normed)) * o_proj_output
+    // The MLX path does not yet implement this split — qkv_project returns the
+    // full q_proj output as Q without splitting out the gate half.  Panic loudly
+    // rather than silently producing wrong attention outputs.
     let attn_out = if cfg.attn_output_gate {
-        let gate = mlx_sys::ops::sigmoid(&attn_proj, None);
-        multiply(&attn_proj, &gate, None)
+        unimplemented!(
+            "attn_output_gate is not yet implemented for the MLX path. \
+             The gate must be derived from the second half of q_proj rows, \
+             matching the Metal backend's compute_attn_output_gate logic."
+        )
     } else {
         attn_proj
     };
@@ -181,11 +198,38 @@ pub fn layer_forward(
     // 13. Residual.
     let hidden = add(hidden, &attn_out, None);
 
-    // 14. FFN norm.
+    // 14. Pre-FFN norm (pre_feedforward_layernorm).
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), 1e-6, None);
 
-    // 15. SwiGLU FFN.
-    let ffn_out = ffn_swiglu(cfg, w, &normed2);
+    // 15. FFN: MoE or dense.
+    let ffn_out = if w.router_proj.is_some() {
+        // MoE path (Gemma4 MoE layers).
+        // Dense sub-block:
+        let h1 = ffn_swiglu(cfg, w, &normed2);
+        let h1 = rms_norm(&h1, w.ffn_post_norm1.as_ref(), 1e-6, None);
+        // Expert sub-block:
+        let h2_normed = rms_norm(
+            &hidden,
+            w.ffn_norm2.as_ref(),
+            1e-6,
+            None,
+        );
+        let (top_k_indices, top_k_weights) = moe_router_forward(cfg, w, &hidden);
+        let h2 = moe_experts_forward(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
+        let h2 = rms_norm(&h2, w.ffn_post_norm2.as_ref(), 1e-6, None);
+        // Combine and apply shared post norm.
+        let combined = add(&h1, &h2, None);
+        rms_norm(&combined, w.ffn_post_norm.as_ref(), 1e-6, None)
+    } else {
+        // Dense path (Qwen3, Gemma4 non-MoE).
+        let out = ffn_swiglu(cfg, w, &normed2);
+        // post_feedforward_layernorm (Gemma4 dense; optional for Qwen3).
+        if let Some(pn) = &w.ffn_post_norm {
+            rms_norm(&out, Some(pn), 1e-6, None)
+        } else {
+            out
+        }
+    };
 
     // 16. Residual.
     add(&hidden, &ffn_out, None)
@@ -297,14 +341,12 @@ fn qkv_project(
         let out = qw(x, packed);
         let q_size = cfg.n_heads * cfg.head_dim;
         let kv_size = cfg.n_kv_heads * cfg.head_dim;
-        let seq = x.shape()[1];
-        let q = mlx_slice_last_dim(&out, 0, q_size as i32, seq);
-        let k = mlx_slice_last_dim(&out, q_size as i32, (q_size + kv_size) as i32, seq);
+        let q = mlx_slice_last_dim(&out, 0, q_size as i32);
+        let k = mlx_slice_last_dim(&out, q_size as i32, (q_size + kv_size) as i32);
         let v = mlx_slice_last_dim(
             &out,
             (q_size + kv_size) as i32,
             (q_size + 2 * kv_size) as i32,
-            seq,
         );
         (q, k, v)
     } else {
@@ -337,8 +379,8 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
     let (gate_out, up_out) = if let Some(packed) = &w.gate_up_packed {
         let out = qw(x, packed);
         let half = cfg.intermediate_size as i32;
-        let gate = mlx_slice_last_dim(&out, 0, half, x.shape()[1]);
-        let up = mlx_slice_last_dim(&out, half, half * 2, x.shape()[1]);
+        let gate = mlx_slice_last_dim(&out, 0, half);
+        let up = mlx_slice_last_dim(&out, half, half * 2);
         (gate, up)
     } else {
         let gate = qw(x, w.gate_proj.as_ref().unwrap());
@@ -351,6 +393,117 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
     qw(&ffn_hidden, &w.down_proj)
 }
 
-fn mlx_slice_last_dim(x: &MlxArray, start: i32, end: i32, _seq: i32) -> MlxArray {
+fn mlx_slice_last_dim(x: &MlxArray, start: i32, end: i32) -> MlxArray {
     slice_last_dim(x, start, end, None)
+}
+
+/// Router forward: returns (top_k_indices [1,seq,k], top_k_weights [1,seq,k]).
+///
+/// Mirrors Gemma4TextRouter.__call__:
+///   rms_norm(x, scale * (1/sqrt(hidden))) → proj → argpartition → softmax
+fn moe_router_forward(cfg: &ModelConfig, w: &LayerWeights, hidden: &MlxArray) -> (MlxArray, MlxArray) {
+    let router_proj = w.router_proj.as_ref().unwrap();
+    let router_scale = w.router_scale.as_ref().unwrap();
+
+    // Combined rms_norm weight: router.scale * (1 / sqrt(hidden_size))
+    let root_factor = 1.0_f32 / (cfg.hidden_size as f32).sqrt();
+    let scale_arr = MlxArray::from_raw_data(
+        &root_factor as *const f32 as *const u8,
+        std::mem::size_of::<f32>(),
+        &[1_i32],
+        MlxDtype::Float32,
+    );
+    let scale_arr = astype(&scale_arr, MlxDtype::Bfloat16, None);
+    let combined_scale = multiply(router_scale, &scale_arr, None);
+    let normed = rms_norm(hidden, Some(&combined_scale), 1e-6, None);
+
+    // Expert logit projection: [1, seq, num_experts]
+    let expert_scores = qw(&normed, router_proj);
+
+    let num_experts = cfg.moe_expert_count;
+    let top_k = cfg.moe_experts_per_token;
+    let ndim = expert_scores.ndim() as i32;
+    let last_axis = ndim - 1;
+
+    // argpartition to get top-k indices (last top_k slots are the top-k elements)
+    let part_indices = argpartition_axis(&expert_scores, -(top_k as i32), last_axis, None);
+    let top_k_indices = slice_last_dim(
+        &part_indices,
+        (num_experts - top_k) as i32,
+        num_experts as i32,
+        None,
+    );
+
+    // Gather corresponding logits and softmax
+    let top_k_raw = take_along_axis(&expert_scores, &top_k_indices, last_axis, None);
+    let top_k_weights = softmax(&top_k_raw, last_axis, None);
+
+    (top_k_indices, top_k_weights)
+}
+
+/// Expert forward: applies selected experts to `x` and returns the weighted sum.
+///
+/// x: [1, seq, hidden] (already pre-normed via pre_feedforward_layernorm_2)
+/// top_k_indices: [1, seq, top_k]   expert assignments (uint32)
+/// top_k_weights: [1, seq, top_k]   softmax-normalised weights (bf16)
+fn moe_experts_forward(
+    _cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    top_k_indices: &MlxArray,
+    top_k_weights: &MlxArray,
+) -> MlxArray {
+    // Expand x for broadcast over top_k: [1, seq, hidden] → [1, seq, 1, hidden]
+    let x_exp = expand_dims(x, x.ndim() as i32 - 1, None);
+
+    // Gate and up projections using gather_qmm (quantized) or gather_mm (fp).
+    let gate_exps = w.gate_exps.as_ref().unwrap();
+    let up_exps = w.up_exps.as_ref().unwrap();
+    let down_exps = w.down_exps.as_ref().unwrap();
+
+    let gate_out = qw_gather(&x_exp, gate_exps, top_k_indices);
+    let up_out = qw_gather(&x_exp, up_exps, top_k_indices);
+
+    // SwiGLU activation: silu(gate) * up → [1, seq, top_k, expert_size]
+    let gate_act = mlx_sys::ops::silu(&gate_out, None);
+    let hidden = multiply(&gate_act, &up_out, None);
+
+    // Down projection: [1, seq, top_k, hidden]
+    let down_out = qw_gather(&hidden, down_exps, top_k_indices);
+
+    // Weighted sum over top_k dimension → [1, seq, hidden]
+    let seq_dim = down_out.ndim() as i32;
+    let top_k_axis = seq_dim - 2; // second-to-last dim
+    let scores_exp = expand_dims(top_k_weights, seq_dim - 1, None); // [1,seq,top_k,1]
+    let weighted = multiply(&down_out, &scores_exp, None);
+    sum_axis(&weighted, top_k_axis, false, None)
+}
+
+/// Gather-matmul for expert weights (quantized or dense).
+///
+/// `x`: [..., hidden], `qw.weight`: [num_experts, expert_size, hidden] (or packed).
+/// `indices`: [..., top_k].  Returns [..., top_k, out_size].
+fn qw_gather(x: &MlxArray, qw: &QuantizedWeight, indices: &MlxArray) -> MlxArray {
+    if let Some(scales) = &qw.scales {
+        gather_qmm(
+            x,
+            &qw.weight,
+            scales,
+            qw.biases.as_ref(),
+            indices,
+            true,
+            Some(qw.group_size),
+            Some(qw.bits),
+            false,
+            None,
+        )
+    } else {
+        // Dense experts: weight shape [N, out, in] → need [N, in, out] for gather_mm.
+        let ndim = qw.weight.ndim();
+        let mut axes: Vec<i32> = (0..ndim as i32).collect();
+        let last = axes.len() - 1;
+        axes.swap(last - 1, last);
+        let wt = transpose(&qw.weight, &axes, None);
+        gather_mm(x, &wt, indices, false, None)
+    }
 }

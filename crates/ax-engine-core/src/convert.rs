@@ -725,6 +725,7 @@ fn convert_dtype(dtype: &str, name: &str) -> Result<NativeTensorDataType, Conver
         "F32" => Ok(NativeTensorDataType::F32),
         "I8" => Ok(NativeTensorDataType::I8),
         "U8" => Ok(NativeTensorDataType::U8),
+        "U32" => Ok(NativeTensorDataType::U32),
         other => Err(ConvertError::UnsupportedDtype {
             name: name.to_string(),
             dtype: other.to_string(),
@@ -842,7 +843,7 @@ fn map_tensors(
             layer_index,
             dtype,
             source_tensor_type: None,
-            source_quantized: false,
+            source_quantized: dtype == NativeTensorDataType::U32,
             quantized_source: None,
             shape: entry.shape.clone(),
             file: entry.file.clone(),
