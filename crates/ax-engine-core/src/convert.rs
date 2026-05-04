@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::model::{
     AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeLinearAttentionConfig, NativeModelManifest,
     NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat,
-    NativeTensorRole, NativeTensorSpec,
+    NativeTensorQuantization, NativeTensorRole, NativeTensorSpec,
 };
 
 // ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     let arch = resolve_architecture(&config, &model_type)?;
     let safetensors_files = find_safetensors_files(model_dir)?;
     let all_tensors = parse_all_safetensors_headers(model_dir, &safetensors_files)?;
-    let mapped_tensors = map_tensors(&all_tensors, &family)?;
+    let mapped_tensors = map_tensors(&config, &all_tensors, &family)?;
 
     let tie_word_embeddings = config
         .get("tie_word_embeddings")
@@ -733,6 +733,46 @@ fn convert_dtype(dtype: &str, name: &str) -> Result<NativeTensorDataType, Conver
     }
 }
 
+fn tensor_quantization(
+    config: &serde_json::Value,
+    family: &ModelFamily,
+    tensor_name: &str,
+) -> Option<NativeTensorQuantization> {
+    let mut quantization = config_quantization(config).unwrap_or_default();
+    // mlx-lm's Gemma4 quantization predicate keeps router.proj at 8-bit while
+    // the rest of the affine-quantized model uses the global 4-bit setting.
+    if family.family_name == "gemma4" && tensor_name.ends_with(".router.proj.weight") {
+        quantization.bits = 8;
+    }
+    Some(quantization)
+}
+
+fn config_quantization(config: &serde_json::Value) -> Option<NativeTensorQuantization> {
+    let obj = config
+        .get("quantization")
+        .or_else(|| config.get("quantization_config"))?;
+    let mode = obj
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("affine")
+        .to_string();
+    let group_size = obj
+        .get("group_size")
+        .and_then(|v| v.as_u64())
+        .and_then(u64_to_u32)
+        .unwrap_or(64);
+    let bits = obj
+        .get("bits")
+        .and_then(|v| v.as_u64())
+        .and_then(u64_to_u32)
+        .unwrap_or(4);
+    Some(NativeTensorQuantization {
+        mode,
+        group_size,
+        bits,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tensor name → role mapping
 // ---------------------------------------------------------------------------
@@ -824,6 +864,7 @@ fn match_per_layer_pattern(name: &str, prefix: &str, suffix: &str) -> Option<u32
 }
 
 fn map_tensors(
+    config: &serde_json::Value,
     all_tensors: &[SafetensorEntry],
     family: &ModelFamily,
 ) -> Result<Vec<NativeTensorSpec>, ConvertError> {
@@ -836,6 +877,10 @@ fn map_tensors(
         };
 
         let dtype = convert_dtype(&entry.dtype, &entry.name)?;
+        let source_quantized = dtype == NativeTensorDataType::U32;
+        let quantization = source_quantized
+            .then(|| tensor_quantization(config, family, &entry.name))
+            .flatten();
 
         mapped.push(NativeTensorSpec {
             name: entry.name.clone(),
@@ -843,7 +888,8 @@ fn map_tensors(
             layer_index,
             dtype,
             source_tensor_type: None,
-            source_quantized: dtype == NativeTensorDataType::U32,
+            source_quantized,
+            quantization,
             quantized_source: None,
             shape: entry.shape.clone(),
             file: entry.file.clone(),
@@ -872,7 +918,7 @@ mod tests {
         for (name, dtype, shape) in tensors {
             let elem_size: u64 = match *dtype {
                 "F16" | "BF16" => 2,
-                "F32" => 4,
+                "F32" | "U32" => 4,
                 _ => 1,
             };
             let num_elements: u64 = shape.iter().product();
@@ -1354,6 +1400,11 @@ mod tests {
                     "num_experts": 128,
                     "top_k_experts": 8,
                     "moe_intermediate_size": 704
+                },
+                "quantization": {
+                    "group_size": 64,
+                    "bits": 4,
+                    "mode": "affine"
                 }
             }),
         );
@@ -1449,8 +1500,8 @@ mod tests {
                 ),
                 (
                     "language_model.model.layers.0.router.proj.weight",
-                    "BF16",
-                    &[128, 2816],
+                    "U32",
+                    &[128, 704],
                 ),
                 (
                     "language_model.model.layers.0.router.scale",
@@ -1486,6 +1537,17 @@ mod tests {
                 .tensors
                 .iter()
                 .any(|tensor| tensor.role == NativeTensorRole::FfnGateInp)
+        );
+        let router = manifest
+            .tensors
+            .iter()
+            .find(|tensor| tensor.role == NativeTensorRole::FfnGateInp)
+            .expect("router should map");
+        assert!(router.source_quantized);
+        assert_eq!(
+            router.quantization.as_ref().map(|q| q.bits),
+            Some(8),
+            "Gemma4 router.proj should keep mlx-lm's 8-bit quantization contract"
         );
         assert!(
             manifest

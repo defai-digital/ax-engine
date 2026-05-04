@@ -11,3 +11,6 @@ unsafe_code = "allow"
 mlx-sys = { path = "../mlx-sys" }
 ax-engine-core = { path = "../ax-engine-core" }
 thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

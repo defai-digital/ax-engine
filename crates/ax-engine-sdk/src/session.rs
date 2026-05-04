@@ -2544,6 +2544,7 @@ mod tests {
             dtype: NativeTensorDataType::F16,
             source_tensor_type: None,
             source_quantized: false,
+            quantization: None,
             quantized_source: None,
             shape,
             file: PathBuf::from("model.safetensors"),

@@ -186,11 +186,30 @@ pub struct NativeTensorSpec {
     #[serde(default, skip_serializing_if = "is_false")]
     pub source_quantized: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantization: Option<NativeTensorQuantization>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quantized_source: Option<NativeQuantizedTensorSource>,
     pub shape: Vec<u64>,
     pub file: PathBuf,
     pub offset_bytes: u64,
     pub length_bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NativeTensorQuantization {
+    pub mode: String,
+    pub group_size: u32,
+    pub bits: u32,
+}
+
+impl Default for NativeTensorQuantization {
+    fn default() -> Self {
+        Self {
+            mode: "affine".to_string(),
+            group_size: 64,
+            bits: 4,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -622,6 +641,7 @@ fn validate_native_model_manifest(
         }
         validate_tensor_path(root_dir, tensor)?;
         validate_quantized_source_path(root_dir, tensor)?;
+        validate_tensor_quantization(tensor)?;
 
         if tensor.role.requires_layer_index() {
             let Some(layer_index) = tensor.layer_index else {
@@ -1254,7 +1274,17 @@ fn validate_native_model_tensor_shapes(
                     ),
                 }
             })?;
-            if !ffn_gate_up_packed.source_quantized && cols != hidden_size {
+            if ffn_gate_up_packed.source_quantized {
+                let expected_cols = expected_packed_cols(hidden_size, ffn_gate_up_packed)?;
+                if cols != expected_cols {
+                    return Err(NativeModelError::InvalidManifest {
+                        message: format!(
+                            "layer {} tensor ffn_gate_up_packed must have packed quantized shape [rows, {}], got {:?}",
+                            layer_index, expected_cols, ffn_gate_up_packed.shape
+                        ),
+                    });
+                }
+            } else if cols != hidden_size {
                 return Err(NativeModelError::InvalidManifest {
                     message: format!(
                         "layer {} tensor ffn_gate_up_packed must have hidden_size {} columns, got {:?}",
@@ -1298,7 +1328,17 @@ fn validate_native_model_tensor_shapes(
                         layer_index
                     ),
                 })?;
-            if !ffn_gate.source_quantized && gate_shape.1 != hidden_size {
+            if ffn_gate.source_quantized {
+                let expected_cols = expected_packed_cols(hidden_size, ffn_gate)?;
+                if gate_shape.1 != expected_cols {
+                    return Err(NativeModelError::InvalidManifest {
+                        message: format!(
+                            "layer {} tensor ffn_gate must have packed quantized shape [rows, {}], got {:?}",
+                            layer_index, expected_cols, ffn_gate.shape
+                        ),
+                    });
+                }
+            } else if gate_shape.1 != hidden_size {
                 return Err(NativeModelError::InvalidManifest {
                     message: format!(
                         "layer {} tensor ffn_gate must have hidden_size {} columns, got {:?}",
@@ -1306,7 +1346,17 @@ fn validate_native_model_tensor_shapes(
                     ),
                 });
             }
-            if !ffn_up.source_quantized && up_shape.1 != hidden_size {
+            if ffn_up.source_quantized {
+                let expected_cols = expected_packed_cols(hidden_size, ffn_up)?;
+                if up_shape.1 != expected_cols {
+                    return Err(NativeModelError::InvalidManifest {
+                        message: format!(
+                            "layer {} tensor ffn_up must have packed quantized shape [rows, {}], got {:?}",
+                            layer_index, expected_cols, ffn_up.shape
+                        ),
+                    });
+                }
+            } else if up_shape.1 != hidden_size {
                 return Err(NativeModelError::InvalidManifest {
                     message: format!(
                         "layer {} tensor ffn_up must have hidden_size {} columns, got {:?}",
@@ -1325,7 +1375,17 @@ fn validate_native_model_tensor_shapes(
             gate_shape.0
         };
 
-        if !ffn_down.source_quantized && ffn_down_shape.1 != intermediate_dim {
+        if ffn_down.source_quantized {
+            let expected_cols = expected_packed_cols(intermediate_dim, ffn_down)?;
+            if ffn_down_shape.1 != expected_cols {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer {} tensor ffn_down must have packed quantized shape [rows, {}], got {:?}",
+                        layer_index, expected_cols, ffn_down.shape
+                    ),
+                });
+            }
+        } else if ffn_down_shape.1 != intermediate_dim {
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
                     "layer {} tensor ffn_down must have intermediate_dim {} columns, got {:?}",
@@ -1749,16 +1809,23 @@ fn expect_matrix_shape(
     expected_cols: u64,
     label: &str,
 ) -> Result<(), NativeModelError> {
-    // Quantized tensors (e.g. MLX affine 4-bit) pack columns: allow any col count
-    // as long as rows match and cols divide expected_cols.
+    // Quantized tensors (e.g. MLX affine) pack columns. Validate the row count
+    // and the packed column count derived from bits instead of accepting any
+    // second dimension.
     if tensor.source_quantized {
-        if tensor.shape.first() == Some(&expected_rows) {
+        let Some((rows, cols)) = matrix_shape(tensor) else {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!("tensor {} must be a rank-2 quantized matrix", label),
+            });
+        };
+        let expected_packed_cols = expected_packed_cols(expected_cols, tensor)?;
+        if rows == expected_rows && cols == expected_packed_cols {
             return Ok(());
         }
         return Err(NativeModelError::InvalidManifest {
             message: format!(
-                "tensor {} must have {} rows (quantized), got {:?}",
-                label, expected_rows, tensor.shape
+                "tensor {} must have packed quantized shape [{}, {}], got {:?}",
+                label, expected_rows, expected_packed_cols, tensor.shape
             ),
         });
     }
@@ -1780,7 +1847,31 @@ fn expect_tensor_shape(
     label: &str,
 ) -> Result<(), NativeModelError> {
     if tensor.source_quantized {
-        return Ok(());
+        if tensor.shape.len() != expected_shape.len() {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "tensor {} must have rank {} for quantized shape, got {:?}",
+                    label,
+                    expected_shape.len(),
+                    tensor.shape
+                ),
+            });
+        }
+        if expected_shape.is_empty() {
+            return Ok(());
+        }
+        let expected_last = expected_packed_cols(*expected_shape.last().unwrap(), tensor)?;
+        let mut expected = expected_shape.to_vec();
+        *expected.last_mut().unwrap() = expected_last;
+        if tensor.shape == expected {
+            return Ok(());
+        }
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} must have packed quantized shape {:?}, got {:?}",
+                label, expected, tensor.shape
+            ),
+        });
     }
     if tensor.shape == expected_shape {
         Ok(())
@@ -1792,6 +1883,71 @@ fn expect_tensor_shape(
             ),
         })
     }
+}
+
+fn tensor_quantization_or_default(tensor: &NativeTensorSpec) -> NativeTensorQuantization {
+    tensor.quantization.clone().unwrap_or_default()
+}
+
+fn validate_tensor_quantization(tensor: &NativeTensorSpec) -> Result<(), NativeModelError> {
+    let Some(quantization) = &tensor.quantization else {
+        return Ok(());
+    };
+    if !tensor.source_quantized {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} declares quantization but source_quantized is false",
+                tensor.name
+            ),
+        });
+    }
+    if quantization.mode != "affine" {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} quantization mode {} is unsupported",
+                tensor.name, quantization.mode
+            ),
+        });
+    }
+    if quantization.group_size == 0 {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!("tensor {} quantization group_size must be > 0", tensor.name),
+        });
+    }
+    if !matches!(quantization.bits, 2 | 4 | 8) {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} quantization bits must be 2, 4, or 8, got {}",
+                tensor.name, quantization.bits
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn expected_packed_cols(
+    expected_cols: u64,
+    tensor: &NativeTensorSpec,
+) -> Result<u64, NativeModelError> {
+    let quantization = tensor_quantization_or_default(tensor);
+    let values_per_word = 32_u64
+        .checked_div(u64::from(quantization.bits))
+        .filter(|v| *v > 0)
+        .ok_or_else(|| NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} quantization bits {} cannot pack u32 columns",
+                tensor.name, quantization.bits
+            ),
+        })?;
+    if !expected_cols.is_multiple_of(values_per_word) {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "tensor {} expected column count {} is not divisible by packed u32 lane count {}",
+                tensor.name, expected_cols, values_per_word
+            ),
+        });
+    }
+    Ok(expected_cols / values_per_word)
 }
 
 fn validate_linear_attention_conv_tensor(
@@ -2298,6 +2454,7 @@ mod tests {
             dtype: NativeTensorDataType::F16,
             source_tensor_type: None,
             source_quantized: false,
+            quantization: None,
             quantized_source: None,
             shape,
             file: PathBuf::from("model.safetensors"),
@@ -2481,6 +2638,37 @@ mod tests {
                 .moe_config()
                 .and_then(|config| config.expert_count),
             Some(128)
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_bad_quantized_packed_columns() {
+        let mut manifest = packed_layer_manifest();
+        let gate = manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| tensor.role == NativeTensorRole::FfnGateUpPacked)
+            .expect("fixture should include packed ffn gate/up");
+        gate.dtype = NativeTensorDataType::U32;
+        gate.source_quantized = true;
+        gate.quantization = Some(NativeTensorQuantization {
+            mode: "affine".to_string(),
+            group_size: 64,
+            bits: 4,
+        });
+        gate.shape = vec![8192, 1024];
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("wrong packed column count should fail closed");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("packed quantized shape"),
+            "unexpected error: {message}"
         );
 
         let _ = fs::remove_dir_all(dir);
