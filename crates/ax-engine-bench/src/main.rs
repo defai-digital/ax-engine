@@ -11979,6 +11979,11 @@ mod tests {
             partial_rotary_factor: None,
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
+            global_head_dim: None,
+            sliding_window_size: None,
+            layer_types: Vec::new(),
+            kv_shared_source_layers: std::collections::BTreeMap::new(),
+            final_logit_softcapping: None,
             linear_attention: ax_engine_core::NativeLinearAttentionConfig::default(),
             moe: ax_engine_core::NativeMoeConfig::default(),
             tensors: vec![
@@ -12150,6 +12155,11 @@ mod tests {
             partial_rotary_factor: None,
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
+            global_head_dim: None,
+            sliding_window_size: None,
+            layer_types: Vec::new(),
+            kv_shared_source_layers: std::collections::BTreeMap::new(),
+            final_logit_softcapping: None,
             linear_attention: ax_engine_core::NativeLinearAttentionConfig::default(),
             moe: ax_engine_core::NativeMoeConfig::default(),
             tensors: vec![

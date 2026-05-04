@@ -1,14 +1,25 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, add, argpartition_axis, astype, dequantize, expand_dims, gather_mm,
-    gather_qmm, matmul, multiply, quantized_matmul, reshape, rms_norm, rope,
-    scaled_dot_product_attention, slice_last_dim, softmax, sum_axis, take, take_along_axis, tanh,
-    transpose,
+    add, argpartition_axis, astype, dequantize, expand_dims, gather_mm, gather_qmm, matmul,
+    multiply, quantized_matmul, reshape, rms_norm, rope, scaled_dot_product_attention, slice,
+    slice_last_dim, softmax, sum_axis, take, take_along_axis, tanh, transpose, MlxArray, MlxDtype,
 };
 
 use ax_engine_core::NativeModelManifest;
 
 use crate::kv_cache::MlxKVCache;
 use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
+
+/// Per-layer hyperparameters for interleaved-SWA models (Gemma4).
+#[derive(Clone, Debug)]
+pub struct LayerConfig {
+    pub head_dim: usize,
+    pub rope_theta: f32,
+    pub rope_dims: usize,
+    /// None = global causal attention; Some(n) = sliding-window attention.
+    pub sliding_window: Option<usize>,
+    /// None = compute own K/V; Some(src) = reuse K/V from layer `src`.
+    pub kv_source_layer: Option<usize>,
+}
 
 /// Hyperparameters extracted from the manifest.
 #[derive(Clone, Debug)]
@@ -29,6 +40,11 @@ pub struct ModelConfig {
     pub moe_expert_count: usize,
     pub moe_experts_per_token: usize,
     pub moe_expert_intermediate_size: usize,
+    /// Per-layer config (non-empty only for interleaved SWA models like Gemma4).
+    pub layer_configs: Vec<LayerConfig>,
+    /// True → Gemma4 dual-path MoE routing (rms_norm → proj → softmax).
+    /// False → Qwen3 MoE routing (proj → softmax, no rms_norm).
+    pub gemma4_moe_router: bool,
 }
 
 impl ModelConfig {
@@ -47,6 +63,10 @@ impl ModelConfig {
         } else {
             (m.hidden_size as usize * 8 / 3).next_multiple_of(256)
         };
+        let rope_theta = m.rope_theta.map(|t| t as f32).unwrap_or(10000.0);
+        let layer_configs = build_layer_configs(m, head_dim, rope_theta, rope_dims);
+        let gemma4_moe_router = m.model_family == "gemma4";
+
         Self {
             layer_count: m.layer_count as usize,
             hidden_size: m.hidden_size as usize,
@@ -55,7 +75,7 @@ impl ModelConfig {
             n_kv_heads: m.kv_head_count as usize,
             head_dim,
             vocab_size: m.vocab_size as usize,
-            rope_theta: m.rope_theta.map(|t| t as f32).unwrap_or(10000.0),
+            rope_theta,
             rope_dims,
             attn_output_gate: m.attn_output_gate,
             query_scale,
@@ -63,7 +83,73 @@ impl ModelConfig {
             moe_expert_count: m.moe.expert_count.unwrap_or(0) as usize,
             moe_experts_per_token: m.moe.experts_per_token.unwrap_or(0) as usize,
             moe_expert_intermediate_size: m.moe.expert_intermediate_size.unwrap_or(0) as usize,
+            layer_configs,
+            gemma4_moe_router,
         }
+    }
+}
+
+fn build_layer_configs(
+    m: &NativeModelManifest,
+    default_head_dim: usize,
+    default_rope_theta: f32,
+    default_rope_dims: usize,
+) -> Vec<LayerConfig> {
+    if m.layer_types.is_empty() {
+        return Vec::new();
+    }
+    let swa_theta = m.rope_theta_swa.map(|t| t as f32).unwrap_or(10000.0);
+    let full_head_dim = m.global_head_dim.unwrap_or(m.attention_head_dim) as usize;
+    let full_rope_dims = m
+        .partial_rotary_factor
+        .map(|f| ((full_head_dim as f32 * f) as usize).next_multiple_of(2))
+        .unwrap_or(full_head_dim);
+    let sliding_window = m.sliding_window_size.map(|w| w as usize);
+
+    m.layer_types
+        .iter()
+        .enumerate()
+        .map(|(i, lt)| {
+            let kv_source_layer = m
+                .kv_shared_source_layers
+                .get(&(i as u32))
+                .map(|&s| s as usize);
+            if lt == "full_attention" {
+                LayerConfig {
+                    head_dim: full_head_dim,
+                    rope_theta: default_rope_theta,
+                    rope_dims: full_rope_dims,
+                    sliding_window: None,
+                    kv_source_layer,
+                }
+            } else {
+                LayerConfig {
+                    head_dim: default_head_dim,
+                    rope_theta: swa_theta,
+                    rope_dims: default_rope_dims,
+                    sliding_window,
+                    kv_source_layer,
+                }
+            }
+        })
+        .collect()
+}
+
+/// Resolve per-layer params: (head_dim, rope_theta, rope_dims, sliding_window, kv_source).
+fn layer_params(
+    cfg: &ModelConfig,
+    layer_idx: usize,
+) -> (usize, f32, usize, Option<usize>, Option<usize>) {
+    if let Some(lc) = cfg.layer_configs.get(layer_idx) {
+        (
+            lc.head_dim,
+            lc.rope_theta,
+            lc.rope_dims,
+            lc.sliding_window,
+            lc.kv_source_layer,
+        )
+    } else {
+        (cfg.head_dim, cfg.rope_theta, cfg.rope_dims, None, None)
     }
 }
 
@@ -78,153 +164,190 @@ pub fn layer_forward(
     layer_idx: usize,
     token_offset: usize,
 ) -> MlxArray {
+    let (head_dim, rope_theta, rope_dims, sliding_window, kv_source) = layer_params(cfg, layer_idx);
+
     // 1. Attention norm.
     let normed = rms_norm(hidden, Some(&w.attn_norm), 1e-6, None);
 
-    // 2. Q, K, V projections.
-    let (q_raw, k_raw, v_raw, attn_gate) = qkv_project(cfg, w, &normed);
-
     let seq = hidden.shape()[1] as usize;
 
-    // 3. Reshape to BSHD [1, seq, heads, head_dim].
-    let q = reshape(
-        &q_raw,
-        &[1, seq as i32, cfg.n_heads as i32, cfg.head_dim as i32],
-        None,
-    );
-    let k = reshape(
-        &k_raw,
-        &[1, seq as i32, cfg.n_kv_heads as i32, cfg.head_dim as i32],
-        None,
-    );
-    let v = reshape(
-        &v_raw,
-        &[1, seq as i32, cfg.n_kv_heads as i32, cfg.head_dim as i32],
-        None,
-    );
-
-    // 4. Optional per-head Q/K norms (Qwen3) applied in BSHD space before transpose.
-    let q = if let Some(qn) = &w.q_norm {
-        let q_f = reshape(&q, &[(cfg.n_heads * seq) as i32, cfg.head_dim as i32], None);
-        let q_n = rms_norm(&q_f, Some(qn), 1e-6, None);
-        reshape(
-            &q_n,
-            &[1, seq as i32, cfg.n_heads as i32, cfg.head_dim as i32],
-            None,
-        )
-    } else {
-        q
-    };
-
-    let k = if let Some(kn) = &w.k_norm {
-        let k_f = reshape(
-            &k,
-            &[(cfg.n_kv_heads * seq) as i32, cfg.head_dim as i32],
+    // 2-7. QKV projections + RoPE. KV-shared layers skip K/V and borrow from source.
+    let (q_rope, cached_k, cached_v, attn_gate) = if let Some(src_layer) = kv_source {
+        // KV-shared layer (Gemma4 layers 24-41): compute Q only.
+        let q_raw = qw(
+            &normed,
+            w.q_proj.as_ref().expect("KV-shared layer must have q_proj"),
+        );
+        let q = reshape(
+            &q_raw,
+            &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
             None,
         );
-        let k_n = rms_norm(&k_f, Some(kn), 1e-6, None);
-        reshape(
-            &k_n,
-            &[1, seq as i32, cfg.n_kv_heads as i32, cfg.head_dim as i32],
+        let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq);
+        let q = transpose(&q, &[0, 2, 1, 3], None);
+        let q_rope = rope(
+            &q,
+            rope_dims as i32,
+            false,
+            Some(rope_theta),
+            1.0,
+            token_offset as i32,
             None,
-        )
+            None,
+        );
+        let (ck, cv) = cache.peek_source_kv(src_layer, seq);
+        (q_rope, ck, cv, None)
     } else {
-        k
+        // Normal layer: compute Q, K, V from own projections.
+        let (q_raw, k_raw, v_raw, attn_gate_raw) = qkv_project(cfg, w, &normed, head_dim);
+
+        let q = reshape(
+            &q_raw,
+            &[1, seq as i32, cfg.n_heads as i32, head_dim as i32],
+            None,
+        );
+        let k = reshape(
+            &k_raw,
+            &[1, seq as i32, cfg.n_kv_heads as i32, head_dim as i32],
+            None,
+        );
+        let v = reshape(
+            &v_raw,
+            &[1, seq as i32, cfg.n_kv_heads as i32, head_dim as i32],
+            None,
+        );
+
+        let q = qk_norm_bshd(q, w.q_norm.as_ref(), cfg.n_heads, head_dim, seq);
+        let k = qk_norm_bshd(k, w.k_norm.as_ref(), cfg.n_kv_heads, head_dim, seq);
+
+        let q = transpose(&q, &[0, 2, 1, 3], None);
+        let k = transpose(&k, &[0, 2, 1, 3], None);
+        let v = transpose(&v, &[0, 2, 1, 3], None);
+
+        let q_rope = rope(
+            &q,
+            rope_dims as i32,
+            false,
+            Some(rope_theta),
+            1.0,
+            token_offset as i32,
+            None,
+            None,
+        );
+        let k_rope = rope(
+            &k,
+            rope_dims as i32,
+            false,
+            Some(rope_theta),
+            1.0,
+            token_offset as i32,
+            None,
+            None,
+        );
+
+        let (ck, cv) = cache.append(layer_idx, k_rope, v);
+        (q_rope, ck, cv, attn_gate_raw)
     };
 
-    // 5. Transpose BSHD → BHSD [1, heads, seq, head_dim].
-    let q = transpose(&q, &[0, 2, 1, 3], None);
-    let k = transpose(&k, &[0, 2, 1, 3], None);
-    let v = transpose(&v, &[0, 2, 1, 3], None);
+    // 8. Optional sliding-window KV slice (trim cached KV to the last `window` tokens).
+    let (cached_k, cached_v) = if let Some(window) = sliding_window {
+        let total = cached_k.shape()[2] as usize;
+        if total > window {
+            let start = (total - window) as i32;
+            let end = total as i32;
+            let nkv = cfg.n_kv_heads as i32;
+            let hd = head_dim as i32;
+            (
+                slice(
+                    &cached_k,
+                    &[0, 0, start, 0],
+                    &[1, nkv, end, hd],
+                    &[1, 1, 1, 1],
+                    None,
+                ),
+                slice(
+                    &cached_v,
+                    &[0, 0, start, 0],
+                    &[1, nkv, end, hd],
+                    &[1, 1, 1, 1],
+                    None,
+                ),
+            )
+        } else {
+            (cached_k, cached_v)
+        }
+    } else {
+        (cached_k, cached_v)
+    };
 
-    // 6. RoPE on [1, heads, seq, head_dim].
-    let q_rope = rope(
-        &q,
-        cfg.rope_dims as i32,
-        false,
-        Some(cfg.rope_theta),
-        1.0,
-        token_offset as i32,
-        None,
-        None,
-    );
-    let k_rope = rope(
-        &k,
-        cfg.rope_dims as i32,
-        false,
-        Some(cfg.rope_theta),
-        1.0,
-        token_offset as i32,
-        None,
-        None,
-    );
-
-    // 7. Update KV cache and get full K/V: [1, n_kv_heads, kv_seq, head_dim].
-    let (cached_k, cached_v) = cache.append(layer_idx, k_rope, v);
-
-    // 8. SDPA with native GQA support (n_heads may differ from n_kv_heads).
-    //    MLX broadcasts K/V heads internally — no manual expand_kv_heads needed.
+    // 9. SDPA (GQA: MLX broadcasts KV heads internally). Use per-layer head_dim scale.
     let causal = seq > 1;
+    let query_scale = 1.0 / (head_dim as f32).sqrt();
     let attn_sdpa =
-        scaled_dot_product_attention(&q_rope, &cached_k, &cached_v, cfg.query_scale, causal, None);
+        scaled_dot_product_attention(&q_rope, &cached_k, &cached_v, query_scale, causal, None);
 
-    // 9. Transpose back: [1, n_heads, seq, head_dim] → [1, seq, n_heads, head_dim].
+    // 10. Transpose back: [1, n_heads, seq, head_dim] → [1, seq, n_heads, head_dim].
     let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
 
-    // 10. Reshape back to [1, seq, hidden].
+    // 11. Reshape to [1, seq, hidden].
     let attn_flat = reshape(
         &attn_out,
-        &[1, seq as i32, (cfg.n_heads * cfg.head_dim) as i32],
+        &[1, seq as i32, (cfg.n_heads * head_dim) as i32],
         None,
     );
 
-    // 11. Output projection.
+    // 12. Output projection.
     let attn_proj = qw(&attn_flat, &w.o_proj);
 
-    // 12. Optional attention output gate.
-    let attn_out = if let Some(gate) = attn_gate {
+    // 13. Optional attention output gate (Qwen3.5): sigmoid(gate) * o_proj(attn).
+    let attn_proj = if let Some(gate) = attn_gate {
         multiply(&mlx_sys::ops::sigmoid(&gate, None), &attn_proj, None)
     } else {
         attn_proj
     };
-    let attn_out = if let Some(post_norm) = &w.attn_post_norm {
-        rms_norm(&attn_out, Some(post_norm), 1e-6, None)
+
+    // 14. Optional post-attention layernorm (Gemma4): applied BEFORE residual add.
+    let attn_proj = if let Some(post_norm) = &w.attn_post_norm {
+        rms_norm(&attn_proj, Some(post_norm), 1e-6, None)
     } else {
-        attn_out
+        attn_proj
     };
 
-    // 13. Residual.
-    let hidden = add(hidden, &attn_out, None);
+    // 15. Residual.
+    let hidden = add(hidden, &attn_proj, None);
 
-    // 14. Pre-FFN norm (pre_feedforward_layernorm).
+    // 16. Pre-FFN norm.
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), 1e-6, None);
 
-    // 15. FFN: MoE or dense.
+    // 17. FFN: MoE or dense.
     let ffn_out = if w.router_proj.is_some() {
-        // MoE path (Gemma4 MoE layers).
-        // Dense sub-block:
-        let h1 = ffn_swiglu(cfg, w, &normed2);
-        let h1 = rms_norm(&h1, w.ffn_post_norm1.as_ref(), 1e-6, None);
-        // Expert sub-block:
-        let h2_normed = rms_norm(&hidden, w.ffn_norm2.as_ref(), 1e-6, None);
-        let (top_k_indices, top_k_weights) = moe_router_forward(cfg, w, &hidden);
-        let h2 = moe_experts_forward(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
-        let h2 = rms_norm(&h2, w.ffn_post_norm2.as_ref(), 1e-6, None);
-        // Combine and apply shared post norm.
-        let combined = add(&h1, &h2, None);
-        rms_norm(&combined, w.ffn_post_norm.as_ref(), 1e-6, None)
-    } else {
-        // Dense path (Qwen3, Gemma4 non-MoE).
-        let out = ffn_swiglu(cfg, w, &normed2);
-        // post_feedforward_layernorm (Gemma4 dense; optional for Qwen3).
-        if let Some(pn) = &w.ffn_post_norm {
-            rms_norm(&out, Some(pn), 1e-6, None)
+        if cfg.gemma4_moe_router {
+            // Gemma4 dual-path: dense sub-block + expert sub-block.
+            let h1 = ffn_swiglu(cfg, w, &normed2);
+            let h1 = rms_norm_opt(&h1, w.ffn_post_norm1.as_ref());
+            let h2_normed = if let Some(n2) = &w.ffn_norm2 {
+                rms_norm(&hidden, Some(n2), 1e-6, None)
+            } else {
+                normed2
+            };
+            let (top_k_indices, top_k_weights) = moe_router_gemma4(cfg, w, &hidden);
+            let h2 = moe_experts_forward(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
+            let h2 = rms_norm_opt(&h2, w.ffn_post_norm2.as_ref());
+            let combined = add(&h1, &h2, None);
+            rms_norm_opt(&combined, w.ffn_post_norm.as_ref())
         } else {
-            out
+            // Qwen3 MoE: router (proj → softmax → top-k) + expert forward.
+            let (top_k_indices, top_k_weights) = moe_router_qwen3(cfg, w, &normed2);
+            let out = moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights);
+            rms_norm_opt(&out, w.ffn_post_norm.as_ref())
         }
+    } else {
+        // Dense path (Qwen3, Gemma4 non-MoE layers).
+        let out = ffn_swiglu(cfg, w, &normed2);
+        rms_norm_opt(&out, w.ffn_post_norm.as_ref())
     };
 
-    // 16. Residual.
+    // 18. Residual.
     add(&hidden, &ffn_out, None)
 }
 
@@ -327,12 +450,40 @@ pub fn forward_all_positions(
 
 // ── private helpers ──────────────────────────────────────────────────────────
 
+/// Apply optional per-head RMS norm in BSHD [1, seq, n_heads, head_dim] space.
+fn qk_norm_bshd(
+    x: MlxArray,
+    norm: Option<&MlxArray>,
+    n_heads: usize,
+    head_dim: usize,
+    seq: usize,
+) -> MlxArray {
+    let Some(n) = norm else { return x };
+    let flat = reshape(&x, &[(n_heads * seq) as i32, head_dim as i32], None);
+    let normed = rms_norm(&flat, Some(n), 1e-6, None);
+    reshape(
+        &normed,
+        &[1, seq as i32, n_heads as i32, head_dim as i32],
+        None,
+    )
+}
+
+/// Apply optional RMS norm; pass `x` through if `norm` is None.
+fn rms_norm_opt(x: &MlxArray, norm: Option<&MlxArray>) -> MlxArray {
+    if let Some(n) = norm {
+        rms_norm(x, Some(n), 1e-6, None)
+    } else {
+        x.clone()
+    }
+}
+
 fn qkv_project(
     cfg: &ModelConfig,
     w: &LayerWeights,
     x: &MlxArray,
+    head_dim: usize,
 ) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
-    let slices = qkv_slices(cfg);
+    let slices = qkv_slices(cfg, head_dim);
     if let Some(packed) = &w.qkv_packed {
         let out = qw(x, packed);
         let q = mlx_slice_last_dim(&out, slices.q.0, slices.q.1);
@@ -362,9 +513,9 @@ struct QkvSlices {
     v: (i32, i32),
 }
 
-fn qkv_slices(cfg: &ModelConfig) -> QkvSlices {
-    let q_size = (cfg.n_heads * cfg.head_dim) as i32;
-    let kv_size = (cfg.n_kv_heads * cfg.head_dim) as i32;
+fn qkv_slices(cfg: &ModelConfig, head_dim: usize) -> QkvSlices {
+    let q_size = (cfg.n_heads * head_dim) as i32;
+    let kv_size = (cfg.n_kv_heads * head_dim) as i32;
     let gate = cfg.attn_output_gate.then_some((q_size, q_size * 2));
     let kv_start = if cfg.attn_output_gate {
         q_size * 2
@@ -440,11 +591,8 @@ fn apply_final_logit_softcap(cfg: &ModelConfig, logits: &MlxArray) -> MlxArray {
     multiply(&tanh(&scaled, None), &cap_arr, None)
 }
 
-/// Router forward: returns (top_k_indices [1,seq,k], top_k_weights [1,seq,k]).
-///
-/// Mirrors Gemma4TextRouter.__call__:
-///   rms_norm(x, scale * (1/sqrt(hidden))) → proj → argpartition → softmax
-fn moe_router_forward(
+/// Gemma4 MoE router: rms_norm(scale * hidden) → proj → argpartition → softmax.
+fn moe_router_gemma4(
     cfg: &ModelConfig,
     w: &LayerWeights,
     hidden: &MlxArray,
@@ -452,7 +600,6 @@ fn moe_router_forward(
     let router_proj = w.router_proj.as_ref().unwrap();
     let router_scale = w.router_scale.as_ref().unwrap();
 
-    // Combined rms_norm weight: router.scale * (1 / sqrt(hidden_size))
     let root_factor = 1.0_f32 / (cfg.hidden_size as f32).sqrt();
     let scale_arr = MlxArray::from_raw_data(
         &root_factor as *const f32 as *const u8,
@@ -464,27 +611,55 @@ fn moe_router_forward(
     let combined_scale = multiply(router_scale, &scale_arr, None);
     let normed = rms_norm(hidden, Some(&combined_scale), 1e-6, None);
 
-    // Expert logit projection: [1, seq, num_experts]
     let expert_scores = qw(&normed, router_proj);
+    top_k_by_argpartition(
+        &expert_scores,
+        cfg.moe_expert_count,
+        cfg.moe_experts_per_token,
+        true,
+    )
+}
 
-    let num_experts = cfg.moe_expert_count;
-    let top_k = cfg.moe_experts_per_token;
-    let ndim = expert_scores.ndim() as i32;
-    let last_axis = ndim - 1;
+/// Qwen3 MoE router: proj → softmax → pick top-k by weight value (no rms_norm).
+fn moe_router_qwen3(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    normed: &MlxArray,
+) -> (MlxArray, MlxArray) {
+    let router_proj = w.router_proj.as_ref().unwrap();
+    let logits = qw(normed, router_proj);
+    let last_axis = logits.ndim() as i32 - 1;
+    let weights_all = softmax(&logits, last_axis, None);
+    // Top-k by already-normalised softmax weight; no re-softmax needed.
+    top_k_by_argpartition(
+        &weights_all,
+        cfg.moe_expert_count,
+        cfg.moe_experts_per_token,
+        false,
+    )
+}
 
-    // argpartition to get top-k indices (last top_k slots are the top-k elements)
-    let part_indices = argpartition_axis(&expert_scores, -(top_k as i32), last_axis, None);
+/// Pick top-k elements via argpartition and optionally re-apply softmax.
+fn top_k_by_argpartition(
+    scores: &MlxArray,
+    num_experts: usize,
+    top_k: usize,
+    resoftmax: bool,
+) -> (MlxArray, MlxArray) {
+    let last_axis = scores.ndim() as i32 - 1;
+    let part_indices = argpartition_axis(scores, -(top_k as i32), last_axis, None);
     let top_k_indices = slice_last_dim(
         &part_indices,
         (num_experts - top_k) as i32,
         num_experts as i32,
         None,
     );
-
-    // Gather corresponding logits and softmax
-    let top_k_raw = take_along_axis(&expert_scores, &top_k_indices, last_axis, None);
-    let top_k_weights = softmax(&top_k_raw, last_axis, None);
-
+    let top_k_raw = take_along_axis(scores, &top_k_indices, last_axis, None);
+    let top_k_weights = if resoftmax {
+        softmax(&top_k_raw, last_axis, None)
+    } else {
+        top_k_raw
+    };
     (top_k_indices, top_k_weights)
 }
 
@@ -494,7 +669,7 @@ fn moe_router_forward(
 /// top_k_indices: [1, seq, top_k]   expert assignments (uint32)
 /// top_k_weights: [1, seq, top_k]   softmax-normalised weights (bf16)
 fn moe_experts_forward(
-    _cfg: &ModelConfig,
+    cfg: &ModelConfig,
     w: &LayerWeights,
     x: &MlxArray,
     top_k_indices: &MlxArray,
@@ -503,12 +678,11 @@ fn moe_experts_forward(
     // Expand x for broadcast over top_k: [1, seq, hidden] → [1, seq, 1, hidden]
     let x_exp = expand_dims(x, x.ndim() as i32 - 1, None);
 
-    // Gate and up projections using gather_qmm (quantized) or gather_mm (fp).
     let down_exps = w.down_exps.as_ref().unwrap();
 
     let (gate_out, up_out) = if let Some(packed) = &w.gate_up_exps_packed {
         let out = qw_gather(&x_exp, packed, top_k_indices);
-        let half = _cfg.moe_expert_intermediate_size as i32;
+        let half = cfg.moe_expert_intermediate_size as i32;
         (
             mlx_slice_last_dim(&out, 0, half),
             mlx_slice_last_dim(&out, half, half * 2),
@@ -587,13 +761,15 @@ mod tests {
             moe_expert_count: 0,
             moe_experts_per_token: 0,
             moe_expert_intermediate_size: 0,
+            layer_configs: Vec::new(),
+            gemma4_moe_router: false,
         }
     }
 
     #[test]
     fn qkv_slices_dense_attention_without_gate() {
         assert_eq!(
-            qkv_slices(&cfg(false)),
+            qkv_slices(&cfg(false), 8),
             QkvSlices {
                 q: (0, 16),
                 gate: None,
@@ -606,7 +782,7 @@ mod tests {
     #[test]
     fn qkv_slices_dense_attention_with_output_gate() {
         assert_eq!(
-            qkv_slices(&cfg(true)),
+            qkv_slices(&cfg(true), 8),
             QkvSlices {
                 q: (0, 16),
                 gate: Some((16, 32)),

@@ -1,4 +1,4 @@
-use mlx_sys::{MlxArray, MlxDtype, slice, slice_update, zeros};
+use mlx_sys::{slice, slice_update, zeros, MlxArray, MlxDtype};
 
 /// Pre-allocated chunk size (tokens).  The buffer grows by this amount each time
 /// the logical sequence length exceeds capacity, so the number of grow operations
@@ -157,6 +157,36 @@ impl MlxKVCache {
             refs.push(&lkv.v);
         }
         refs
+    }
+
+    /// Read K/V already written by `source_layer` during the current forward pass.
+    ///
+    /// Used by KV-shared layers (e.g. Gemma4 layers 24-41) that attend against
+    /// a prior layer's cache instead of computing their own K/V projections.
+    ///
+    /// `new_tokens` must equal the number of new tokens being processed this
+    /// step (matches the `write_end = seq_len + new_tokens` slice written by the
+    /// source layer's `append` call earlier in the same forward pass).
+    pub fn peek_source_kv(&self, source_layer: usize, new_tokens: usize) -> (MlxArray, MlxArray) {
+        let lkv = self.layers[source_layer]
+            .as_ref()
+            .expect("KV-shared source layer has no cached KV — source layer must appear earlier");
+        let end = (self.seq_len + new_tokens) as i32;
+        let k_view = slice(
+            &lkv.k,
+            &[0, 0, 0, 0],
+            &[1, lkv.n_kv_heads, end, lkv.head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let v_view = slice(
+            &lkv.v,
+            &[0, 0, 0, 0],
+            &[1, lkv.n_kv_heads, end, lkv.head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        (k_view, v_view)
     }
 
     /// Reset cache entirely (e.g., between requests).
