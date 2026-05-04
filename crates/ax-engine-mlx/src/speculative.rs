@@ -60,27 +60,34 @@ impl NgramTable {
     /// Returns an empty vec when no matching n-gram exists yet.
     pub fn predict(&self, max_len: usize) -> Vec<u32> {
         let mut draft = Vec::with_capacity(max_len);
-        let mut tail: Vec<u32> = self.tail.iter().copied().collect();
-
+        // Fixed-size ring to avoid heap allocation on every decode step.
+        // self.tail has at most 3 elements; we maintain the last ≤3 tokens here.
+        let mut buf = [0u32; 3];
+        let mut len = self.tail.len().min(3);
+        for (i, &t) in self.tail.iter().take(len).enumerate() {
+            buf[i] = t;
+        }
         for _ in 0..max_len {
-            let n = tail.len();
-            let next = if n >= 3 {
+            let next = if len >= 3 {
                 self.trigrams
-                    .get(&(tail[n - 3], tail[n - 2], tail[n - 1]))
+                    .get(&(buf[0], buf[1], buf[2]))
                     .copied()
-                    .or_else(|| self.bigrams.get(&(tail[n - 2], tail[n - 1])).copied())
-            } else if n >= 2 {
-                self.bigrams.get(&(tail[n - 2], tail[n - 1])).copied()
+                    .or_else(|| self.bigrams.get(&(buf[1], buf[2])).copied())
+            } else if len == 2 {
+                self.bigrams.get(&(buf[0], buf[1])).copied()
             } else {
                 None
             };
-
             match next {
                 Some(t) => {
                     draft.push(t);
-                    tail.push(t);
-                    if tail.len() > 3 {
-                        tail.remove(0);
+                    if len < 3 {
+                        buf[len] = t;
+                        len += 1;
+                    } else {
+                        buf[0] = buf[1];
+                        buf[1] = buf[2];
+                        buf[2] = t;
                     }
                 }
                 None => break,
@@ -117,6 +124,7 @@ impl Default for NgramTable {
 /// must NOT re-run the model for them; just pop them as subsequent outputs.
 /// The LAST element of `result` is the starting `last_token` for the next
 /// speculative step.
+#[allow(clippy::too_many_arguments)]
 pub fn speculative_decode_step(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -264,4 +272,69 @@ pub fn single_decode(
 
     ngram.observe(tok);
     vec![tok]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn table_from_sequence(tokens: &[u32]) -> NgramTable {
+        let mut t = NgramTable::new();
+        t.feed(tokens);
+        t
+    }
+
+    #[test]
+    fn predict_returns_empty_for_empty_table() {
+        let t = NgramTable::new();
+        assert!(t.predict(4).is_empty());
+    }
+
+    #[test]
+    fn predict_returns_empty_when_no_matching_ngram_at_tail() {
+        // After feeding a linear sequence, the tail ends with the last 3 tokens
+        // but the bigram for the LAST pair was never recorded (recording happens
+        // when a subsequent token is observed).  So predict returns empty.
+        let t = table_from_sequence(&[1, 2, 3, 4, 5]);
+        // tail=[3,4,5]; bigrams recorded: (1,2)→3, (2,3)→4, (3,4)→5
+        // predict looks up bigram(4,5) which was not recorded → []
+        assert!(t.predict(4).is_empty());
+    }
+
+    #[test]
+    fn predict_chains_trigrams_over_bigrams() {
+        // Repeated pattern builds trigrams; predict reconstructs the cycle.
+        let t = table_from_sequence(&[1, 2, 3, 1, 2, 3, 1, 2, 3]);
+        // tail=[1,2,3]; trigrams: (1,2,3)→1, (2,3,1)→2, (3,1,2)→3
+        let draft = t.predict(4);
+        assert_eq!(draft, vec![1, 2, 3, 1]);
+    }
+
+    #[test]
+    fn predict_deterministic_across_calls() {
+        // predict() must not mutate the table; two calls return identical drafts.
+        let tokens: Vec<u32> = (1u32..=5).cycle().take(20).collect();
+        let t = table_from_sequence(&tokens);
+        // Repeating 1..5 cycle: tail ends at the 3-token suffix of the last triplet.
+        // Trigrams are established so prediction is non-empty.
+        let d1 = t.predict(6);
+        let d2 = t.predict(6);
+        assert_eq!(
+            d1, d2,
+            "predict must be deterministic and must not mutate the table"
+        );
+        assert!(
+            !d1.is_empty(),
+            "repeating sequence should produce a non-empty draft"
+        );
+    }
+
+    #[test]
+    fn predict_stops_at_max_len() {
+        // With a fully cycling pattern, predict should respect the length cap.
+        let tokens: Vec<u32> = (1u32..=3).cycle().take(12).collect();
+        let t = table_from_sequence(&tokens);
+        assert!(t.predict(2).len() <= 2);
+        assert!(t.predict(0).is_empty());
+    }
 }

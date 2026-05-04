@@ -6,7 +6,7 @@ use mlx_sys::{MlxArray, MlxDtype, slice, slice_update, zeros};
 const KV_CHUNK_TOKENS: usize = 256;
 
 fn chunk_ceiling(n: usize) -> usize {
-    (n + KV_CHUNK_TOKENS - 1) / KV_CHUNK_TOKENS * KV_CHUNK_TOKENS
+    n.div_ceil(KV_CHUNK_TOKENS) * KV_CHUNK_TOKENS
 }
 
 struct LayerKV {
@@ -48,28 +48,6 @@ impl MlxKVCache {
             layers: (0..num_layers).map(|_| None).collect(),
             seq_len: 0,
         }
-    }
-
-    /// Return the logical K/V slice for `layer` (up to `self.seq_len` tokens).
-    pub fn get(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
-        self.layers[layer].as_ref().map(|lkv| {
-            let n = self.seq_len as i32;
-            let k = slice(
-                &lkv.k,
-                &[0, 0, 0, 0],
-                &[1, lkv.n_kv_heads, n, lkv.head_dim],
-                &[1, 1, 1, 1],
-                None,
-            );
-            let v = slice(
-                &lkv.v,
-                &[0, 0, 0, 0],
-                &[1, lkv.n_kv_heads, n, lkv.head_dim],
-                &[1, 1, 1, 1],
-                None,
-            );
-            (k, v)
-        })
     }
 
     /// Append new K/V tokens for `layer` and return the full logical K/V for SDPA.
@@ -174,11 +152,9 @@ impl MlxKVCache {
     /// Mirrors mlx_lm's `mx.eval(y, cache)` pattern.
     pub fn collect_eval_refs(&self) -> Vec<&MlxArray> {
         let mut refs = Vec::with_capacity(self.layers.len() * 2);
-        for opt in &self.layers {
-            if let Some(lkv) = opt {
-                refs.push(&lkv.k);
-                refs.push(&lkv.v);
-            }
+        for lkv in self.layers.iter().flatten() {
+            refs.push(&lkv.k);
+            refs.push(&lkv.v);
         }
         refs
     }

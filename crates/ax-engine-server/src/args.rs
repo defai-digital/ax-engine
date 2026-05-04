@@ -333,6 +333,38 @@ mod tests {
     }
 
     #[test]
+    fn no_speculative_decode_flag_sets_mlx_no_speculative_decode() {
+        let args = ServerArgs {
+            mlx: true,
+            no_speculative_decode: true,
+            ..base_args()
+        };
+
+        let actual = args.session_config().expect("session config should build");
+
+        assert!(
+            actual.mlx_no_speculative_decode,
+            "--no-speculative-decode must propagate to mlx_no_speculative_decode; \
+             check args.rs session_config() and EngineSessionConfig::from_preview_request"
+        );
+    }
+
+    #[test]
+    fn default_args_do_not_disable_speculative_decode() {
+        let args = ServerArgs {
+            mlx: true,
+            ..base_args()
+        };
+
+        let actual = args.session_config().expect("session config should build");
+
+        assert!(
+            !actual.mlx_no_speculative_decode,
+            "speculative decode should be enabled by default"
+        );
+    }
+
+    #[test]
     fn session_config_preserves_explicit_gguf_model_path_source() {
         let mlx_model_artifacts_dir = PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf");
         let args = ServerArgs {
