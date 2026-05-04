@@ -1134,6 +1134,40 @@ mod tests {
     }
 
     #[test]
+    fn gemma4_moe_expert_names_map_to_unambiguous_roles() {
+        let family = model_family_for_type("gemma4").expect("gemma4 should be supported");
+
+        assert_eq!(
+            match_tensor(
+                "language_model.model.layers.0.experts.gate_up_proj.weight",
+                &family,
+            ),
+            Some((NativeTensorRole::FfnGateUpExpsPacked, Some(0)))
+        );
+        assert_eq!(
+            match_tensor(
+                "language_model.model.layers.0.experts.switch_glu.gate_proj.weight",
+                &family,
+            ),
+            Some((NativeTensorRole::FfnGateExps, Some(0)))
+        );
+        assert_eq!(
+            match_tensor(
+                "language_model.model.layers.0.experts.switch_glu.up_proj.weight",
+                &family,
+            ),
+            Some((NativeTensorRole::FfnUpExps, Some(0)))
+        );
+        assert_eq!(
+            match_tensor(
+                "language_model.model.layers.0.experts.switch_glu.down_proj.weight",
+                &family,
+            ),
+            Some((NativeTensorRole::FfnDownExps, Some(0)))
+        );
+    }
+
+    #[test]
     fn converts_qwen3_f16_model_directory() {
         let dir = unique_test_dir("qwen3");
         write_config(
