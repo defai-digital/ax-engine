@@ -1,5 +1,5 @@
 {
-  "schema_version": "ax.bench.manifest.v1",
+  "schema_version": "ax.engine_bench.manifest.v1",
   "id": "retained_prefix_after_cleanup",
   "class": "replay",
   "scenario": "replay",

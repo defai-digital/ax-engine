@@ -26,7 +26,7 @@ cargo test --workspace
 
 # Individual crates
 cargo test -p ax-engine-core
-cargo test -p ax-bench
+cargo test -p ax-engine-bench
 cargo test -p ax-engine-sdk
 cargo test -p ax-engine-server
 cargo test -p ax-engine-py

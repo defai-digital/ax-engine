@@ -1,5 +1,5 @@
 {
-  "schema_version": "ax.bench.manifest.v1",
+  "schema_version": "ax.engine_bench.manifest.v1",
   "id": "chat_gemma_short",
   "class": "scenario",
   "scenario": "chat",

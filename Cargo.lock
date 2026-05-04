@@ -91,7 +91,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "ax-bench"
+name = "ax-engine-bench"
 version = "4.0.0"
 dependencies = [
  "ax-engine-core",

@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-bench-baseline-check.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-engine-bench-baseline-check.XXXXXX")"
 
 cleanup() {
     rm -rf "$TMP_DIR"
@@ -48,7 +48,7 @@ subprocess.run(
         "cargo",
         "run",
         "-p",
-        "ax-bench",
+        "ax-engine-bench",
         "--",
         "scenario",
         "--manifest",
@@ -67,7 +67,7 @@ subprocess.run(
         "cargo",
         "run",
         "-p",
-        "ax-bench",
+        "ax-engine-bench",
         "--",
         "baseline",
         "--source",
@@ -99,7 +99,7 @@ duplicate = subprocess.run(
         "cargo",
         "run",
         "-p",
-        "ax-bench",
+        "ax-engine-bench",
         "--",
         "baseline",
         "--source",
@@ -122,7 +122,7 @@ subprocess.run(
         "cargo",
         "run",
         "-p",
-        "ax-bench",
+        "ax-engine-bench",
         "--",
         "scenario",
         "--manifest",
@@ -140,7 +140,7 @@ subprocess.run(
         "cargo",
         "run",
         "-p",
-        "ax-bench",
+        "ax-engine-bench",
         "--",
         "compare",
         "--baseline",

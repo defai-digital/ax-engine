@@ -4,9 +4,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-UPSTREAM_LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/ax-bench-upstream-check.XXXXXX.log")"
-UPSTREAM_REQUEST_LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/ax-bench-upstream-requests.XXXXXX.jsonl")"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-bench-check.XXXXXX")"
+UPSTREAM_LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/ax-engine-bench-upstream-check.XXXXXX.log")"
+UPSTREAM_REQUEST_LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/ax-engine-bench-upstream-requests.XXXXXX.jsonl")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-engine-bench-check.XXXXXX")"
 
 allocate_port() {
     "$PYTHON_BIN" - <<'PY'
@@ -220,7 +220,7 @@ for manifest_path, output_root, command in [
             "cargo",
             "run",
             "-p",
-            "ax-bench",
+            "ax-engine-bench",
             "--",
             command,
             "--manifest",
@@ -319,7 +319,7 @@ subprocess.run(
         "cargo",
         "run",
         "-p",
-        "ax-bench",
+        "ax-engine-bench",
         "--",
         "compare",
         "--baseline",
@@ -362,7 +362,7 @@ failure_result = subprocess.run(
         "cargo",
         "run",
         "-p",
-        "ax-bench",
+        "ax-engine-bench",
         "--",
         "scenario",
         "--manifest",

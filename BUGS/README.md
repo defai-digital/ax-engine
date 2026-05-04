@@ -23,7 +23,7 @@ Bug reports and findings for the ax-engine-v4 project.
 | `ax-engine-sdk` | Backend/session API layer |
 | `ax-engine-server` | HTTP adapter (axum) |
 | `ax-engine-py` | Python bindings (PyO3) |
-| `ax-bench` | Benchmark CLI (clap) |
+| `ax-engine-bench` | Benchmark CLI (clap) |
 | `javascript/ax-engine` | Vanilla JS HTTP client (no framework) |
 
 **Conclusion:** There is no TUI or SolidJS code to report bugs on. If TUI or SolidJS components are planned, they have not yet been added to this repository.

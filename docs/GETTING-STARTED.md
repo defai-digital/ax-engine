@@ -32,7 +32,7 @@ What exists here today:
 - checked-in Metal kernel manifest/build artifacts plus a core-owned Metal
   asset loader and validation-only asset boundary
 - benchmark manifests
-- `ax-bench` scenario / replay / compare bring-up runtime plus thin direct
+- `ax-engine-bench` scenario / replay / compare bring-up runtime plus thin direct
   inference commands
 - preview `ax-engine-sdk` backend-resolution and session contract surface
 - preview `ax-engine-server` local HTTP adapter over the SDK
@@ -62,7 +62,7 @@ selection, rather than only through a flat yes-or-no model list.
 ## Repository Areas
 
 - `crates/ax-engine-core`: core runtime contracts and bring-up execution loop
-- `crates/ax-bench`: benchmark CLI and bring-up runtime harness
+- `crates/ax-engine-bench`: benchmark CLI and bring-up runtime harness
 - `crates/ax-engine-sdk`: SDK facade with backend resolution and session management
 - `crates/ax-engine-server`: local HTTP server adapter over the SDK
 - `javascript/`: repo-local JavaScript preview client package
@@ -96,26 +96,26 @@ support exists.
 To inspect the benchmark CLI:
 
 ```text
-cargo run -p ax-bench -- help
+cargo run -p ax-engine-bench -- help
 ```
 
 To inspect whether the local machine is inside the supported M4-or-newer native
 target contract, or only allowed through an internal bring-up override:
 
 ```text
-cargo run -p ax-bench -- doctor
+cargo run -p ax-engine-bench -- doctor
 ```
 
 To run one thin direct inference request through the SDK-owned session surface:
 
 ```text
-cargo run -p ax-bench -- generate --tokens 1,2,3 --max-output-tokens 4
+cargo run -p ax-engine-bench -- generate --tokens 1,2,3 --max-output-tokens 4
 ```
 
 To run a llama.cpp-backed text request through a delegated server:
 
 ```text
-cargo run -p ax-bench -- generate \
+cargo run -p ax-engine-bench -- generate \
   --prompt "Hello from AX" \
   --support-tier llama_cpp \
   --llama-server-url http://127.0.0.1:8081
@@ -124,7 +124,7 @@ cargo run -p ax-bench -- generate \
 To run a checked-in scenario manifest through the current bring-up path:
 
 ```text
-cargo run -p ax-bench -- scenario --manifest benchmarks/manifests/scenario/chat_qwen_short.json --output-root benchmarks/results
+cargo run -p ax-engine-bench -- scenario --manifest benchmarks/manifests/scenario/chat_qwen_short.json --output-root benchmarks/results
 ```
 
 The checked-in delegated llama.cpp manifests are route-contract examples, not
@@ -173,11 +173,11 @@ compiled Metal preview artifacts (`.air`, `.metalar`, and `.metallib`) when the
 local toolchain is actually ready:
 
 ```text
-cargo run -p ax-bench -- metal-build
+cargo run -p ax-engine-bench -- metal-build
 bash scripts/build-metal-kernels.sh
 ```
 
-The repo-owned `ax-bench metal-build` subcommand is now the canonical build
+The repo-owned `ax-engine-bench metal-build` subcommand is now the canonical build
 entrypoint. `scripts/build-metal-kernels.sh` remains as a thin wrapper over
 that Rust-owned path for smoke checks and automation.
 When the same output directory already holds validated compiled assets for the

@@ -36,7 +36,7 @@ Public docs:
 
 Benchmarking now has a strict split: use `scripts/bench_mlx_inference_stack.py`
 for AX Engine MLX mode versus `mlx_lm.benchmark` and optional `mlx-swift-lm`
-JSON-adapter comparisons; use `ax-bench` for checked-in scenario, replay,
+JSON-adapter comparisons; use `ax-engine-bench` for checked-in scenario, replay,
 matrix, baseline, and delegated-route contract artifacts. llama.cpp manifests
 validate non-MLX delegation behavior and must not be used as AX-owned MLX
 throughput baselines.
@@ -80,6 +80,6 @@ that SDK contract, a preview `ax-engine-py` / `python/ax_engine` binding
 surface for token-based generation, request lifecycle control, and in-process
 streaming evaluation flows, plus a thin repo-local JavaScript preview client
 over the checked-in HTTP surface.
-A thin user-facing inference CLI is now present through `ax-bench generate` and
-`ax-bench stream`, while broader migrated binding surfaces are still expected to
+A thin user-facing inference CLI is now present through `ax-engine-bench generate` and
+`ax-engine-bench stream`, while broader migrated binding surfaces are still expected to
 arrive as thin layers above the core rather than as the design center of v4.

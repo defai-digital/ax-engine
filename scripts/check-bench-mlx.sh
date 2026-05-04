@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-bench-mlx-check.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-engine-bench-mlx-check.XXXXXX")"
 METAL_BUILD_DIR="${AX_ENGINE_METAL_BUILD_DIR:-${AX_METAL_OUTPUT_DIR:-$ROOT_DIR/build/metal}}"
 : "${AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR:?AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required for MLX benchmark smoke}"
 
@@ -87,7 +87,7 @@ for scenario in scenarios:
             "cargo",
             "run",
             "-p",
-            "ax-bench",
+            "ax-engine-bench",
             "--",
             "scenario",
             "--manifest",

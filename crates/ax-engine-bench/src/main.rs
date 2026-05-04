@@ -141,7 +141,7 @@ fn handle_scenario(args: &[String]) -> Result<(), CliError> {
                 &message,
             )?;
             println!(
-                "ax-bench scenario\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus=contract_failure",
+                "ax-engine-bench scenario\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus=contract_failure",
                 manifest.display(),
                 output_root.display(),
                 artifact_dir.display(),
@@ -163,7 +163,7 @@ fn handle_scenario(args: &[String]) -> Result<(), CliError> {
     )?;
 
     println!(
-        "ax-bench scenario\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus={}",
+        "ax-engine-bench scenario\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus={}",
         manifest.display(),
         output_root.display(),
         artifact_dir.display(),
@@ -195,7 +195,7 @@ fn handle_replay(args: &[String]) -> Result<(), CliError> {
                 &message,
             )?;
             println!(
-                "ax-bench replay\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus=contract_failure",
+                "ax-engine-bench replay\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus=contract_failure",
                 manifest.display(),
                 output_root.display(),
                 artifact_dir.display(),
@@ -217,7 +217,7 @@ fn handle_replay(args: &[String]) -> Result<(), CliError> {
     )?;
 
     println!(
-        "ax-bench replay\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus={}",
+        "ax-engine-bench replay\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus={}",
         manifest.display(),
         output_root.display(),
         artifact_dir.display(),
@@ -345,7 +345,7 @@ fn handle_compare(args: &[String]) -> Result<(), CliError> {
     let comparison_dir = write_compare_artifacts(&baseline, &candidate, &output_root)?;
 
     println!(
-        "ax-bench compare\nbaseline={}\ncandidate={}\noutput_root={}\nresult_dir={}",
+        "ax-engine-bench compare\nbaseline={}\ncandidate={}\noutput_root={}\nresult_dir={}",
         baseline.display(),
         candidate.display(),
         output_root.display(),
@@ -365,7 +365,7 @@ fn handle_baseline(args: &[String]) -> Result<(), CliError> {
     let baseline_dir = write_trusted_baseline_artifacts(&source, &name, &output_root)?;
 
     println!(
-        "ax-bench baseline\nsource={}\nname={}\noutput_root={}\nresult_dir={}",
+        "ax-engine-bench baseline\nsource={}\nname={}\noutput_root={}\nresult_dir={}",
         source.display(),
         name,
         output_root.display(),
@@ -385,7 +385,7 @@ fn handle_matrix_compare(args: &[String]) -> Result<(), CliError> {
     let comparison_dir = write_matrix_compare_artifacts(&baseline, &candidate, &output_root)?;
 
     println!(
-        "ax-bench matrix-compare\nbaseline={}\ncandidate={}\noutput_root={}\nresult_dir={}",
+        "ax-engine-bench matrix-compare\nbaseline={}\ncandidate={}\noutput_root={}\nresult_dir={}",
         baseline.display(),
         candidate.display(),
         output_root.display(),
@@ -405,7 +405,7 @@ fn handle_matrix(args: &[String]) -> Result<(), CliError> {
     let execution = execute_matrix_manifest(&manifest, &matrix_manifest, &output_root)?;
 
     println!(
-        "ax-bench matrix\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus={}",
+        "ax-engine-bench matrix\nmanifest={}\noutput_root={}\nresult_dir={}\nstatus={}",
         manifest.display(),
         output_root.display(),
         execution.result_dir.display(),
@@ -1202,7 +1202,7 @@ fn build_doctor_report_with_mlx_model_artifacts(
     };
 
     DoctorReport {
-        schema_version: "ax.bench.doctor.v1".to_string(),
+        schema_version: "ax.engine_bench.doctor.v1".to_string(),
         mlx_target: "apple_m4_or_newer_macos_aarch64".to_string(),
         status,
         mlx_runtime_ready,
@@ -1746,8 +1746,8 @@ struct AutotuneProbeBaseline {
     ttft_ceiling_ms: Option<u64>,
 }
 
-const AUTOTUNE_SCHEMA_VERSION: &str = "ax.bench.autotune.v1";
-const AUTOTUNE_HISTORY_INDEX_SCHEMA_VERSION: &str = "ax.bench.autotune_history_index.v1";
+const AUTOTUNE_SCHEMA_VERSION: &str = "ax.engine_bench.autotune.v1";
+const AUTOTUNE_HISTORY_INDEX_SCHEMA_VERSION: &str = "ax.engine_bench.autotune_history_index.v1";
 
 fn resolve_autotune_search_space(
     manifest: &BenchmarkManifest,
@@ -4866,7 +4866,7 @@ fn build_matrix_json(
         .filter(|member| member.status == "ok")
         .count();
     Ok(json!({
-        "schema_version": "ax.bench.matrix_result.v1",
+        "schema_version": "ax.engine_bench.matrix_result.v1",
         "run_id": run_id,
         "id": matrix_manifest.id,
         "class": matrix_manifest.class,
@@ -5143,7 +5143,7 @@ fn build_matrix_regression_json(
     members: &[MatrixCompareMemberResult],
 ) -> Value {
     json!({
-        "schema_version": "ax.bench.matrix_regression.v1",
+        "schema_version": "ax.engine_bench.matrix_regression.v1",
         "id": matrix_id,
         "baseline_matrix_run_id": baseline_matrix.get("run_id").cloned().unwrap_or(Value::String("baseline".to_string())),
         "candidate_matrix_run_id": candidate_matrix.get("run_id").cloned().unwrap_or(Value::String("candidate".to_string())),
@@ -5437,7 +5437,7 @@ fn build_trusted_baseline_json(
         .unwrap_or_else(|| json!({ "tool_mode": tool_mode.clone() }));
 
     let mut baseline = json!({
-        "schema_version": "ax.bench.trusted_baseline.v1",
+        "schema_version": "ax.engine_bench.trusted_baseline.v1",
         "name": name,
         "slug": slug,
         "created_at_unix_s": created_at_unix_s,
@@ -6304,7 +6304,7 @@ fn build_environment_json(
     );
 
     Ok(json!({
-        "schema_version": "ax.bench.environment.v1",
+        "schema_version": "ax.engine_bench.environment.v1",
         "run_id": run_id,
         "engine_commit": env::var("AX_ENGINE_COMMIT").unwrap_or_else(|_| "unknown".to_string()),
         "machine": {
@@ -6324,7 +6324,7 @@ fn build_environment_json(
             "kernel_release": kernel_release,
             "metal_driver": metal_driver,
             "tool_mode": execution.tool_mode,
-            "ax_bench_version": env!("CARGO_PKG_VERSION")
+            "ax_engine_bench_version": env!("CARGO_PKG_VERSION")
         },
         "runtime": serialize_runtime_metadata(
             &execution.runtime,
@@ -6336,13 +6336,13 @@ fn build_environment_json(
             "started_at_unix_s": started_at_unix_s,
             "completed_at_unix_s": completed_at_unix_s,
             "command": format!(
-                "ax-bench {} --manifest {} --output-root {}",
+                "ax-engine-bench {} --manifest {} --output-root {}",
                 command,
                 manifest_path.display(),
                 output_root.display()
             ),
             "subcommand": command,
-            "schema_family": "ax.bench.v1",
+            "schema_family": "ax.engine_bench.v1",
             "manifest_path": manifest_path.display().to_string(),
             "manifest_fingerprint_fnv1a64": manifest_fingerprint,
             "output_root": output_root.display().to_string(),
@@ -6439,7 +6439,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 
 fn build_metrics_json(run_id: &str, execution: &RuntimeResult) -> Value {
     json!({
-        "schema_version": "ax.bench.metrics.v1",
+        "schema_version": "ax.engine_bench.metrics.v1",
         "run_id": run_id,
         "status": execution.status_label(),
         "runtime": serialize_runtime_metadata(
@@ -6483,7 +6483,7 @@ fn build_routes_json(run_id: &str, execution: &RuntimeResult) -> Value {
         &execution.observation.step_trace,
     );
     json!({
-        "schema_version": "ax.bench.routes.v1",
+        "schema_version": "ax.engine_bench.routes.v1",
         "run_id": run_id,
         "runtime": serialize_runtime_metadata(
             &execution.runtime,
@@ -6496,7 +6496,7 @@ fn build_routes_json(run_id: &str, execution: &RuntimeResult) -> Value {
 
 fn build_trace_json(run_id: &str, execution: &RuntimeResult) -> Value {
     json!({
-        "schema_version": "ax.bench.trace.v1",
+        "schema_version": "ax.engine_bench.trace.v1",
         "run_id": run_id,
         "mode": execution.tool_mode,
         "runtime": serialize_runtime_metadata(
@@ -6891,7 +6891,7 @@ fn build_execution_summary_markdown(
     };
 
     format!(
-        "# Benchmark Run\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `{}`\n- tool_mode: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- fallback_reason: `{fallback_reason}`\n- execution_semantics: `{execution_semantics}`\n- mlx_metal_readiness: `{mlx_metal_readiness_status}`\n- mlx_metal_hot_path_cpu_fallback_free: `{mlx_metal_hot_path_cpu_fallback_free}`\n- mlx_metal_batched_direct_decode_logits_ready: `{mlx_metal_batched_direct_decode_logits_ready}`\n- mlx_metal_prefix_min_dispatch_share: `{mlx_metal_prefix_min_dispatch_share}`\n- mlx_metal_direct_decode_min_dispatch_share: `{mlx_metal_direct_decode_min_dispatch_share}`\n- mlx_metal_readiness_blockers: `{mlx_metal_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- mlx_metal_prefix_layers_attention: `{mlx_metal_prefix_layers_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- mlx_metal_prefix_dispatch_count: `{mlx_metal_prefix_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- mlx_metal_prefix_projection_row_count: `{mlx_metal_prefix_projection_row_count}`\n- metal_prefix_cpu_projection_row_count: `{metal_prefix_cpu_projection_row_count}`\n- metal_prefix_projection_mlx_metal_dispatch_share: `{prefix_projection_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_rms_norm_element_count: `{mlx_metal_prefix_rms_norm_element_count}`\n- metal_prefix_cpu_rms_norm_element_count: `{metal_prefix_cpu_rms_norm_element_count}`\n- metal_prefix_rms_norm_mlx_metal_dispatch_share: `{prefix_rms_norm_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_ffn_activation_element_count: `{mlx_metal_prefix_ffn_activation_element_count}`\n- metal_prefix_cpu_ffn_activation_element_count: `{metal_prefix_cpu_ffn_activation_element_count}`\n- metal_prefix_ffn_activation_mlx_metal_dispatch_share: `{prefix_ffn_activation_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_residual_add_element_count: `{mlx_metal_prefix_residual_add_element_count}`\n- metal_prefix_cpu_residual_add_element_count: `{metal_prefix_cpu_residual_add_element_count}`\n- metal_prefix_residual_add_mlx_metal_dispatch_share: `{prefix_residual_add_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_scale_element_count: `{mlx_metal_prefix_scale_element_count}`\n- metal_prefix_cpu_scale_element_count: `{metal_prefix_cpu_scale_element_count}`\n- metal_prefix_scale_mlx_metal_dispatch_share: `{prefix_scale_mlx_metal_dispatch_share}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- mlx_metal_projection_f32_binding_count: `{mlx_metal_projection_f32_binding_count}`\n- mlx_metal_projection_f16_binding_count: `{mlx_metal_projection_f16_binding_count}`\n- mlx_metal_projection_bf16_binding_count: `{mlx_metal_projection_bf16_binding_count}`\n- mlx_metal_projection_unsupported_binding_count: `{mlx_metal_projection_unsupported_binding_count}`\n- mlx_metal_projection_source_quantized_binding_count: `{mlx_metal_projection_source_quantized_binding_count}`\n- mlx_metal_rms_norm_f32_binding_count: `{mlx_metal_rms_norm_f32_binding_count}`\n- mlx_metal_rms_norm_f16_binding_count: `{mlx_metal_rms_norm_f16_binding_count}`\n- mlx_metal_rms_norm_bf16_binding_count: `{mlx_metal_rms_norm_bf16_binding_count}`\n- mlx_metal_rms_norm_unsupported_binding_count: `{mlx_metal_rms_norm_unsupported_binding_count}`\n- mlx_metal_rms_norm_source_quantized_binding_count: `{mlx_metal_rms_norm_source_quantized_binding_count}`\n- mlx_metal_direct_decode_projection_row_count: `{mlx_metal_direct_decode_projection_row_count}`\n- metal_direct_decode_cpu_projection_row_count: `{metal_direct_decode_cpu_projection_row_count}`\n- metal_direct_decode_projection_mlx_metal_dispatch_share: `{direct_decode_projection_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_rms_norm_element_count: `{mlx_metal_direct_decode_rms_norm_element_count}`\n- metal_direct_decode_cpu_rms_norm_element_count: `{metal_direct_decode_cpu_rms_norm_element_count}`\n- metal_direct_decode_rms_norm_mlx_metal_dispatch_share: `{direct_decode_rms_norm_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_ffn_activation_element_count: `{mlx_metal_direct_decode_ffn_activation_element_count}`\n- metal_direct_decode_cpu_ffn_activation_element_count: `{metal_direct_decode_cpu_ffn_activation_element_count}`\n- metal_direct_decode_ffn_activation_mlx_metal_dispatch_share: `{direct_decode_ffn_activation_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_residual_add_element_count: `{mlx_metal_direct_decode_residual_add_element_count}`\n- metal_direct_decode_cpu_residual_add_element_count: `{metal_direct_decode_cpu_residual_add_element_count}`\n- metal_direct_decode_residual_add_mlx_metal_dispatch_share: `{direct_decode_residual_add_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_scale_element_count: `{mlx_metal_direct_decode_scale_element_count}`\n- metal_direct_decode_cpu_scale_element_count: `{metal_direct_decode_cpu_scale_element_count}`\n- metal_direct_decode_scale_mlx_metal_dispatch_share: `{direct_decode_scale_mlx_metal_dispatch_share}`\n- correctness: `{}`\n- determinism: `{}`\n- ttft_ms: `{:.2}`\n- prefill_tok_s: `{:.2}`\n- decode_tok_s: `{:.2}`\n- e2e_latency_ms: `{:.2}`\n- cpu_time_per_token_us: `{:.2}`\n- runner_time_per_token_us: `{:.2}`\n- runner_time_share_pct: `{:.2}`\n- prefix_hit_rate: `{:.2}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- kv_peak_blocks: `{}`\n{}",
+        "# Benchmark Run\n\n- run_id: `{run_id}`\n- command: `ax-engine-bench {command}`\n- manifest: `{}`\n- status: `{}`\n- tool_mode: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- fallback_reason: `{fallback_reason}`\n- execution_semantics: `{execution_semantics}`\n- mlx_metal_readiness: `{mlx_metal_readiness_status}`\n- mlx_metal_hot_path_cpu_fallback_free: `{mlx_metal_hot_path_cpu_fallback_free}`\n- mlx_metal_batched_direct_decode_logits_ready: `{mlx_metal_batched_direct_decode_logits_ready}`\n- mlx_metal_prefix_min_dispatch_share: `{mlx_metal_prefix_min_dispatch_share}`\n- mlx_metal_direct_decode_min_dispatch_share: `{mlx_metal_direct_decode_min_dispatch_share}`\n- mlx_metal_readiness_blockers: `{mlx_metal_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- mlx_metal_prefix_layers_attention: `{mlx_metal_prefix_layers_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- mlx_metal_prefix_dispatch_count: `{mlx_metal_prefix_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- mlx_metal_prefix_projection_row_count: `{mlx_metal_prefix_projection_row_count}`\n- metal_prefix_cpu_projection_row_count: `{metal_prefix_cpu_projection_row_count}`\n- metal_prefix_projection_mlx_metal_dispatch_share: `{prefix_projection_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_rms_norm_element_count: `{mlx_metal_prefix_rms_norm_element_count}`\n- metal_prefix_cpu_rms_norm_element_count: `{metal_prefix_cpu_rms_norm_element_count}`\n- metal_prefix_rms_norm_mlx_metal_dispatch_share: `{prefix_rms_norm_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_ffn_activation_element_count: `{mlx_metal_prefix_ffn_activation_element_count}`\n- metal_prefix_cpu_ffn_activation_element_count: `{metal_prefix_cpu_ffn_activation_element_count}`\n- metal_prefix_ffn_activation_mlx_metal_dispatch_share: `{prefix_ffn_activation_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_residual_add_element_count: `{mlx_metal_prefix_residual_add_element_count}`\n- metal_prefix_cpu_residual_add_element_count: `{metal_prefix_cpu_residual_add_element_count}`\n- metal_prefix_residual_add_mlx_metal_dispatch_share: `{prefix_residual_add_mlx_metal_dispatch_share}`\n- mlx_metal_prefix_scale_element_count: `{mlx_metal_prefix_scale_element_count}`\n- metal_prefix_cpu_scale_element_count: `{metal_prefix_cpu_scale_element_count}`\n- metal_prefix_scale_mlx_metal_dispatch_share: `{prefix_scale_mlx_metal_dispatch_share}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- mlx_metal_projection_f32_binding_count: `{mlx_metal_projection_f32_binding_count}`\n- mlx_metal_projection_f16_binding_count: `{mlx_metal_projection_f16_binding_count}`\n- mlx_metal_projection_bf16_binding_count: `{mlx_metal_projection_bf16_binding_count}`\n- mlx_metal_projection_unsupported_binding_count: `{mlx_metal_projection_unsupported_binding_count}`\n- mlx_metal_projection_source_quantized_binding_count: `{mlx_metal_projection_source_quantized_binding_count}`\n- mlx_metal_rms_norm_f32_binding_count: `{mlx_metal_rms_norm_f32_binding_count}`\n- mlx_metal_rms_norm_f16_binding_count: `{mlx_metal_rms_norm_f16_binding_count}`\n- mlx_metal_rms_norm_bf16_binding_count: `{mlx_metal_rms_norm_bf16_binding_count}`\n- mlx_metal_rms_norm_unsupported_binding_count: `{mlx_metal_rms_norm_unsupported_binding_count}`\n- mlx_metal_rms_norm_source_quantized_binding_count: `{mlx_metal_rms_norm_source_quantized_binding_count}`\n- mlx_metal_direct_decode_projection_row_count: `{mlx_metal_direct_decode_projection_row_count}`\n- metal_direct_decode_cpu_projection_row_count: `{metal_direct_decode_cpu_projection_row_count}`\n- metal_direct_decode_projection_mlx_metal_dispatch_share: `{direct_decode_projection_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_rms_norm_element_count: `{mlx_metal_direct_decode_rms_norm_element_count}`\n- metal_direct_decode_cpu_rms_norm_element_count: `{metal_direct_decode_cpu_rms_norm_element_count}`\n- metal_direct_decode_rms_norm_mlx_metal_dispatch_share: `{direct_decode_rms_norm_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_ffn_activation_element_count: `{mlx_metal_direct_decode_ffn_activation_element_count}`\n- metal_direct_decode_cpu_ffn_activation_element_count: `{metal_direct_decode_cpu_ffn_activation_element_count}`\n- metal_direct_decode_ffn_activation_mlx_metal_dispatch_share: `{direct_decode_ffn_activation_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_residual_add_element_count: `{mlx_metal_direct_decode_residual_add_element_count}`\n- metal_direct_decode_cpu_residual_add_element_count: `{metal_direct_decode_cpu_residual_add_element_count}`\n- metal_direct_decode_residual_add_mlx_metal_dispatch_share: `{direct_decode_residual_add_mlx_metal_dispatch_share}`\n- mlx_metal_direct_decode_scale_element_count: `{mlx_metal_direct_decode_scale_element_count}`\n- metal_direct_decode_cpu_scale_element_count: `{metal_direct_decode_cpu_scale_element_count}`\n- metal_direct_decode_scale_mlx_metal_dispatch_share: `{direct_decode_scale_mlx_metal_dispatch_share}`\n- correctness: `{}`\n- determinism: `{}`\n- ttft_ms: `{:.2}`\n- prefill_tok_s: `{:.2}`\n- decode_tok_s: `{:.2}`\n- e2e_latency_ms: `{:.2}`\n- cpu_time_per_token_us: `{:.2}`\n- runner_time_per_token_us: `{:.2}`\n- runner_time_share_pct: `{:.2}`\n- prefix_hit_rate: `{:.2}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- kv_peak_blocks: `{}`\n{}",
         manifest_path.display(),
         execution.status_label(),
         execution.tool_mode,
@@ -6928,7 +6928,7 @@ fn build_contract_failure_json(
     let failure = classify_contract_failure(manifest, message);
 
     Ok(json!({
-        "schema_version": "ax.bench.contract_failure.v1",
+        "schema_version": "ax.engine_bench.contract_failure.v1",
         "run_id": run_id,
         "status": "contract_failure",
         "command": command,
@@ -6977,7 +6977,7 @@ fn build_contract_failure_summary_markdown(
         .cloned()
         .unwrap_or(Value::String("none".to_string()));
     format!(
-        "# Benchmark Contract Failure\n\n- run_id: `{run_id}`\n- command: `ax-bench {command}`\n- manifest: `{}`\n- status: `contract_failure`\n- code: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{}`\n- scenario: `{}`\n\nFailure reason:\n\n{}\n\nRecommended action:\n\n{}\n",
+        "# Benchmark Contract Failure\n\n- run_id: `{run_id}`\n- command: `ax-engine-bench {command}`\n- manifest: `{}`\n- status: `contract_failure`\n- code: `{}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{}`\n- scenario: `{}`\n\nFailure reason:\n\n{}\n\nRecommended action:\n\n{}\n",
         manifest_path.display(),
         failure.code,
         json_value_label(&backend_adapter),
@@ -7073,7 +7073,7 @@ fn classify_contract_failure(
     if message.contains("scenario manifest must contain a shape object") {
         return ContractFailureClassification {
             code: "scenario_shape_required",
-            recommended_action: "Add a valid shape object to the scenario manifest before rerunning ax-bench scenario.",
+            recommended_action: "Add a valid shape object to the scenario manifest before rerunning ax-engine-bench scenario.",
         };
     }
 
@@ -7513,7 +7513,7 @@ fn build_regression_json(
     }
 
     let mut regression = json!({
-        "schema_version": "ax.bench.regression.v1",
+        "schema_version": "ax.engine_bench.regression.v1",
         "baseline_run_id": baseline_run_id,
         "candidate_run_id": candidate_run_id,
         "runtime": runtime,
@@ -9786,7 +9786,7 @@ fn validate_llama_cpp_benchmark_runtime(
             Ok(())
         }
         Some(BackendAdapterManifest::LlamaCppCli { .. }) => Err(CliError::Contract(
-            "ax-bench llama.cpp execution does not support CLI adapters; use a server-backed llama.cpp adapter instead".to_string(),
+            "ax-engine-bench llama.cpp execution does not support CLI adapters; use a server-backed llama.cpp adapter instead".to_string(),
         )),
         Some(_) => Err(CliError::Contract(
             "llama.cpp benchmark execution requires a supported backend adapter".to_string(),
@@ -9951,17 +9951,17 @@ fn usage() -> String {
     let text = r#"AX Engine v4 benchmark CLI
 
 Usage:
-  ax-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
-  ax-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
-  ax-bench scenario --manifest <path> --output-root <path>
-  ax-bench replay --manifest <path> --output-root <path>
-  ax-bench autotune --manifest <path> --output-root <path> [--iterations <n>] [--exploration-weight <value>] [--max-batch-token-options <list>] [--kv-total-block-options <list>] [--prefix-cache-options <list>] [--disable-history]
-  ax-bench compare --baseline <path> --candidate <path> --output-root <path>
-  ax-bench matrix-compare --baseline <path> --candidate <path> --output-root <path>
-  ax-bench baseline --source <path> --name <name> --output-root <path>
-  ax-bench matrix --manifest <path> --output-root <path>
-  ax-bench doctor [--json] [--mlx-model-artifacts-dir <path>]
-  ax-bench metal-build [--manifest <path>] [--output-dir <path>]
+  ax-engine-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
+  ax-engine-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
+  ax-engine-bench scenario --manifest <path> --output-root <path>
+  ax-engine-bench replay --manifest <path> --output-root <path>
+  ax-engine-bench autotune --manifest <path> --output-root <path> [--iterations <n>] [--exploration-weight <value>] [--max-batch-token-options <list>] [--kv-total-block-options <list>] [--prefix-cache-options <list>] [--disable-history]
+  ax-engine-bench compare --baseline <path> --candidate <path> --output-root <path>
+  ax-engine-bench matrix-compare --baseline <path> --candidate <path> --output-root <path>
+  ax-engine-bench baseline --source <path> --name <name> --output-root <path>
+  ax-engine-bench matrix --manifest <path> --output-root <path>
+  ax-engine-bench doctor [--json] [--mlx-model-artifacts-dir <path>]
+  ax-engine-bench metal-build [--manifest <path>] [--output-dir <path>]
 "#;
 
     text.to_string()
@@ -11910,7 +11910,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("ax-bench-{label}-{}-{nanos}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "ax-engine-bench-{label}-{}-{nanos}",
+            std::process::id()
+        ))
     }
 
     #[cfg(target_os = "macos")]
@@ -12369,7 +12372,7 @@ mod tests {
 
     fn native_environment_fixture() -> Value {
         json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "device": "Mac17,6",
@@ -12387,7 +12390,7 @@ mod tests {
                 "kernel_release": "25.4.0",
                 "metal_driver": "system-default",
                 "tool_mode": "mlx_runtime",
-                "ax_bench_version": "0.1.0"
+                "ax_engine_bench_version": "0.1.0"
             },
             "runtime": mlx_runtime_fixture(),
             "route": {
@@ -12396,7 +12399,7 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         })
@@ -12965,7 +12968,7 @@ mod tests {
         let baseline = build_trusted_baseline_json(
             "Dense Qwen M4 Baseline",
             "Dense-Qwen-M4-Baseline",
-            Path::new("/tmp/ax-bench-baseline"),
+            Path::new("/tmp/ax-engine-bench-baseline"),
             &manifest,
             &environment,
             &metrics,
@@ -13018,7 +13021,7 @@ mod tests {
         let baseline = build_trusted_baseline_json(
             "Dense Qwen Native Model Baseline",
             "Dense-Qwen-Native-Model-Baseline",
-            Path::new("/tmp/ax-bench-baseline"),
+            Path::new("/tmp/ax-engine-bench-baseline"),
             &manifest,
             &environment,
             &metrics,
@@ -13065,7 +13068,7 @@ mod tests {
         let member = build_matrix_compare_member_result(
             &baseline_member,
             "chat_qwen_short",
-            Path::new("/tmp/ax-bench-compare-member"),
+            Path::new("/tmp/ax-engine-bench-compare-member"),
             &regression,
         )
         .expect("member result should build");
@@ -13549,7 +13552,9 @@ mod tests {
             panic!("doctor args should surface a usage error");
         };
         assert!(message.contains("unknown flag for doctor"));
-        assert!(message.contains("ax-bench doctor [--json] [--mlx-model-artifacts-dir <path>]"));
+        assert!(
+            message.contains("ax-engine-bench doctor [--json] [--mlx-model-artifacts-dir <path>]")
+        );
     }
 
     #[test]
@@ -13976,9 +13981,9 @@ mod tests {
     #[test]
     fn usage_mentions_generate_and_stream_commands() {
         let text = usage();
-        assert!(text.contains("ax-bench generate"));
-        assert!(text.contains("ax-bench stream"));
-        assert!(text.contains("ax-bench autotune"));
+        assert!(text.contains("ax-engine-bench generate"));
+        assert!(text.contains("ax-engine-bench stream"));
+        assert!(text.contains("ax-engine-bench autotune"));
     }
 
     #[test]
@@ -14023,7 +14028,7 @@ mod tests {
 
     fn native_metrics_fixture(run_id: &str, ttft_ms: f64, decode_tok_s: f64) -> Value {
         json!({
-            "schema_version": "ax.bench.metrics.v1",
+            "schema_version": "ax.engine_bench.metrics.v1",
             "run_id": run_id,
             "status": "pass",
             "runtime": mlx_runtime_fixture(),
@@ -14086,7 +14091,7 @@ mod tests {
         write_json_file(
             &run_dir.join("routes.json"),
             &json!({
-                "schema_version": "ax.bench.routes.v1",
+                "schema_version": "ax.engine_bench.routes.v1",
                 "run_id": run_id,
                 "runtime": {
                     "selected_backend": "mlx",
@@ -14109,7 +14114,7 @@ mod tests {
         write_json_file(
             &run_dir.join("trace.json"),
             &json!({
-                "schema_version": "ax.bench.trace.v1",
+                "schema_version": "ax.engine_bench.trace.v1",
                 "run_id": run_id,
                 "mode": "engine_bringup_runtime",
                 "runtime": {
@@ -14134,7 +14139,7 @@ mod tests {
         write_json_file(
             &manifest_path,
             &json!({
-                "schema_version": "ax.bench.matrix.v1",
+                "schema_version": "ax.engine_bench.matrix.v1",
                 "id": "test_mlx_mlx_matrix",
                 "class": "scenario_matrix",
                 "members": members
@@ -14155,7 +14160,7 @@ mod tests {
         write_json_file(
             &result_dir.join("matrix.json"),
             &json!({
-                "schema_version": "ax.bench.matrix_result.v1",
+                "schema_version": "ax.engine_bench.matrix_result.v1",
                 "run_id": run_id,
                 "id": "test_mlx_mlx_matrix",
                 "class": "scenario_matrix",
@@ -14193,7 +14198,7 @@ mod tests {
 
     fn llama_cpp_scenario_manifest(server_url: &str) -> BenchmarkManifest {
         serde_json::from_value(json!({
-            "schema_version": "ax.bench.manifest.v1",
+            "schema_version": "ax.engine_bench.manifest.v1",
             "id": "llama_cpp_chat_qwen_short",
             "class": "scenario",
             "scenario": "chat",
@@ -14631,7 +14636,7 @@ mod tests {
 
     fn llama_cpp_replay_manifest(server_url: &str) -> BenchmarkManifest {
         serde_json::from_value(json!({
-            "schema_version": "ax.bench.manifest.v1",
+            "schema_version": "ax.engine_bench.manifest.v1",
             "id": "llama_cpp_replay_dual_cancel",
             "class": "replay",
             "scenario": "replay",
@@ -14704,7 +14709,7 @@ mod tests {
 
     fn llama_cpp_cli_manifest() -> BenchmarkManifest {
         serde_json::from_value(json!({
-            "schema_version": "ax.bench.manifest.v1",
+            "schema_version": "ax.engine_bench.manifest.v1",
             "id": "llama_cpp_cli_forbidden",
             "class": "scenario",
             "scenario": "chat",
@@ -15039,12 +15044,12 @@ mod tests {
             "scenario",
             &{
                 let manifest_path =
-                    std::env::temp_dir().join("ax-bench-llama-cpp-scenario-manifest.json");
+                    std::env::temp_dir().join("ax-engine-bench-llama-cpp-scenario-manifest.json");
                 write_json_file(&manifest_path, &manifest)
                     .expect("llama.cpp manifest should write");
                 manifest_path
             },
-            Path::new("/tmp/ax-bench-llama-cpp"),
+            Path::new("/tmp/ax-engine-bench-llama-cpp"),
             123,
             &result,
         )
@@ -15761,7 +15766,7 @@ mod tests {
         fs::write(
             &manifest_path,
             r#"{
-  "schema_version": "ax.bench.manifest.v1",
+  "schema_version": "ax.engine_bench.manifest.v1",
   "id": "relative_native",
   "class": "scenario",
   "scenario": "chat",
@@ -15819,7 +15824,7 @@ mod tests {
         fs::write(
             &manifest_path,
             r#"{
-  "schema_version": "ax.bench.manifest.v1",
+  "schema_version": "ax.engine_bench.manifest.v1",
   "id": "env_mlx",
   "class": "scenario",
   "scenario": "chat",
@@ -16962,7 +16967,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_environment_arch_drift() {
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -16984,12 +16989,12 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "x86_64",
                 "system_model": "Mac17,6",
@@ -17011,7 +17016,7 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
@@ -17028,7 +17033,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_environment_kernel_drift() {
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17050,12 +17055,12 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17077,7 +17082,7 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
@@ -17094,7 +17099,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_metal_toolchain_drift() {
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17116,7 +17121,7 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
@@ -17124,7 +17129,7 @@ mod tests {
         candidate_runtime["metal_toolchain"]["metal"]["available"] = json!(false);
         candidate_runtime["metal_toolchain"]["fully_available"] = json!(false);
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17146,7 +17151,7 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
@@ -17163,7 +17168,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_environment_backend_adapter_drift() {
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17186,12 +17191,12 @@ mod tests {
                 "backend_reported_cached_prompt_tokens": 64
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17214,7 +17219,7 @@ mod tests {
                 "backend_reported_cached_prompt_tokens": 64
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
@@ -17247,7 +17252,7 @@ mod tests {
         candidate_runtime["mlx_model"]["tensor_count"] = json!(401);
 
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17269,12 +17274,12 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17296,7 +17301,7 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
@@ -17313,7 +17318,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_route_execution_semantics_drift() {
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17341,12 +17346,12 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17374,7 +17379,7 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
@@ -17391,7 +17396,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_complete_model_forward_support_drift() {
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17420,12 +17425,12 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17454,7 +17459,7 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
@@ -17471,7 +17476,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_route_direct_decode_drift() {
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17500,12 +17505,12 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17535,7 +17540,7 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
@@ -17552,7 +17557,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_route_prefix_attention_drift() {
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17582,12 +17587,12 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17617,7 +17622,7 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
@@ -17634,7 +17639,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_route_prefix_dispatch_count_drift() {
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17666,12 +17671,12 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17703,7 +17708,7 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
@@ -17720,7 +17725,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_route_native_dense_projection_coverage_drift() {
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17763,12 +17768,12 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17811,7 +17816,7 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
@@ -17828,7 +17833,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_route_direct_decode_ffn_drift() {
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17858,12 +17863,12 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17893,7 +17898,7 @@ mod tests {
                 "prefix_reuse_provenance": "none_observed"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "scenario"
             }
         });
@@ -17910,7 +17915,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_prefix_reuse_provenance_drift() {
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17933,12 +17938,12 @@ mod tests {
                 "backend_reported_cached_prompt_tokens": 64
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "replay"
             }
         });
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -17960,7 +17965,7 @@ mod tests {
                 "prefix_reuse_provenance": "mlx_live_request_share"
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "replay"
             }
         });
@@ -17980,7 +17985,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_prefix_cache_evidence_drift() {
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -18003,12 +18008,12 @@ mod tests {
                 "backend_reported_cached_prompt_tokens": 64
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "replay"
             }
         });
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -18031,7 +18036,7 @@ mod tests {
                 "backend_reported_cached_prompt_tokens": 64
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "replay"
             }
         });
@@ -18048,7 +18053,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_backend_reported_cached_prompt_tokens_drift() {
         let baseline = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -18071,12 +18076,12 @@ mod tests {
                 "backend_reported_cached_prompt_tokens": 64
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "replay"
             }
         });
         let candidate = json!({
-            "schema_version": "ax.bench.environment.v1",
+            "schema_version": "ax.engine_bench.environment.v1",
             "machine": {
                 "arch": "aarch64",
                 "system_model": "Mac17,6",
@@ -18099,7 +18104,7 @@ mod tests {
                 "backend_reported_cached_prompt_tokens": 32
             },
             "benchmark": {
-                "schema_family": "ax.bench.v1",
+                "schema_family": "ax.engine_bench.v1",
                 "subcommand": "replay"
             }
         });

@@ -1,5 +1,5 @@
 {
-  "schema_version": "ax.bench.manifest.v1",
+  "schema_version": "ax.engine_bench.manifest.v1",
   "id": "long_context_qwen_8k",
   "class": "scenario",
   "scenario": "long_context",

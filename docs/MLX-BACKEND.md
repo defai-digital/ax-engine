@@ -152,7 +152,7 @@ only when they come from a named JSON-emitting adapter. SwiftLM application
 server measurements are retired and should not be used as a baseline for this
 backend.
 
-Use `ax-bench scenario`, `replay`, and `matrix` for workload-contract evidence:
+Use `ax-engine-bench scenario`, `replay`, and `matrix` for workload-contract evidence:
 route identity, determinism, prefix reuse, trace shape, and regression
 comparison. Use `bench_mlx_inference_stack.py` for model-inference throughput
 comparisons.

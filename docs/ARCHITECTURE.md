@@ -16,7 +16,7 @@ consistent across the workspace.
   contract, and llama.cpp backend bridge
 - `ax-engine-server`: local HTTP and SSE adapter over the SDK
 - `ax-engine-py`: Python binding surface over the SDK contract
-- `ax-bench`: benchmark CLI, replay harness, reporting, and bring-up checks
+- `ax-engine-bench`: benchmark CLI, replay harness, reporting, and bring-up checks
 
 This means AX Engine v4 already has a practical split between:
 
@@ -79,7 +79,7 @@ Good fit:
 These dependencies should stay in the server shell instead of flowing inward
 into the execution core.
 
-### `ax-bench` and `ax-engine-py`
+### `ax-engine-bench` and `ax-engine-py`
 
 Tooling and binding crates can use convenience dependencies when they help with
 reporting, transport, or packaging, as long as those choices do not redefine
@@ -126,7 +126,7 @@ When adding a crate, ask:
 
 1. Does this dependency belong in the execution core, or only at a boundary?
 2. Is this solving a real runtime need, or only making one outer surface more convenient?
-3. Can the dependency stay in `ax-engine-sdk`, `ax-engine-server`, `ax-engine-py`, or `ax-bench` instead of entering `ax-engine-core`?
+3. Can the dependency stay in `ax-engine-sdk`, `ax-engine-server`, `ax-engine-py`, or `ax-engine-bench` instead of entering `ax-engine-core`?
 4. Will this make error handling and observability clearer, or blur crate responsibilities?
 
 For AX Engine v4, a smaller and clearer core is usually the better default.

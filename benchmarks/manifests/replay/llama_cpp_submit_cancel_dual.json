@@ -1,5 +1,5 @@
 {
-  "schema_version": "ax.bench.manifest.v1",
+  "schema_version": "ax.engine_bench.manifest.v1",
   "id": "llama_cpp_submit_cancel_dual",
   "class": "replay",
   "scenario": "replay",

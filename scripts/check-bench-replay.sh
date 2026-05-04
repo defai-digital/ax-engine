@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-bench-replay-check.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-engine-bench-replay-check.XXXXXX")"
 METAL_BUILD_DIR="${AX_ENGINE_METAL_BUILD_DIR:-${AX_METAL_OUTPUT_DIR:-$ROOT_DIR/build/metal}}"
 : "${AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR:?AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required for MLX replay smoke}"
 
@@ -98,7 +98,7 @@ for replay in replays:
             "cargo",
             "run",
             "-p",
-            "ax-bench",
+            "ax-engine-bench",
             "--",
             "replay",
             "--manifest",
@@ -143,7 +143,7 @@ for replay in replays:
 
     steps = trace["steps"]
     assert len(steps) == metrics["step_count"]
-    assert "ax-bench replay" in summary
+    assert "ax-engine-bench replay" in summary
     assert replay["name"] in (run_dir / "manifest.json").read_text()
 
     if replay["name"] == "shared_prefix_long_churn":

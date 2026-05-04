@@ -1,5 +1,5 @@
 {
-  "schema_version": "ax.bench.manifest.v1",
+  "schema_version": "ax.engine_bench.manifest.v1",
   "id": "mixed_live_and_retained_prefix_paths",
   "class": "replay",
   "scenario": "replay",

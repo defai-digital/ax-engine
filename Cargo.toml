@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/ax-bench",
+    "crates/ax-engine-bench",
     "crates/ax-engine-core",
     "crates/ax-engine-mlx",
     "crates/ax-engine-py",

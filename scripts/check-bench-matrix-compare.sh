@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-bench-matrix-compare-check.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ax-engine-bench-matrix-compare-check.XXXXXX")"
 
 cleanup() {
     rm -rf "$TMP_DIR"
@@ -30,7 +30,7 @@ matrix_manifest = root / "subset-matrix.json"
 matrix_manifest.write_text(
     json.dumps(
         {
-            "schema_version": "ax.bench.matrix.v1",
+            "schema_version": "ax.engine_bench.matrix.v1",
             "id": "subset_native_dense_phase7",
             "class": "scenario_matrix",
             "members": [
@@ -67,7 +67,7 @@ for output_root in (baseline_output, candidate_output):
             "cargo",
             "run",
             "-p",
-            "ax-bench",
+            "ax-engine-bench",
             "--",
             "matrix",
             "--manifest",
@@ -87,7 +87,7 @@ subprocess.run(
         "cargo",
         "run",
         "-p",
-        "ax-bench",
+        "ax-engine-bench",
         "--",
         "matrix-compare",
         "--baseline",

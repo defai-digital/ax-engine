@@ -8,6 +8,6 @@ MANIFEST_PATH="${AX_METAL_MANIFEST_PATH:-$ROOT_DIR/metal/phase1-kernels.json}"
 
 cd "$ROOT_DIR"
 
-cargo run --quiet -p ax-bench -- metal-build \
+cargo run --quiet -p ax-engine-bench -- metal-build \
   --manifest "$MANIFEST_PATH" \
   --output-dir "$OUTPUT_DIR"

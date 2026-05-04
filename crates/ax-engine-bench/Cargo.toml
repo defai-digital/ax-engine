@@ -1,5 +1,5 @@
 [package]
-name = "ax-bench"
+name = "ax-engine-bench"
 edition.workspace = true
 license.workspace = true
 version.workspace = true

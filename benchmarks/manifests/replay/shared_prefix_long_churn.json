@@ -1,5 +1,5 @@
 {
-  "schema_version": "ax.bench.manifest.v1",
+  "schema_version": "ax.engine_bench.manifest.v1",
   "id": "shared_prefix_long_churn",
   "class": "replay",
   "scenario": "replay",

@@ -10,9 +10,9 @@ There are three benchmark surfaces:
 
 | Surface | Purpose | Tooling | Result status |
 |---|---|---|---|
-| AX workload contract | Validate checked-in scenario, replay, matrix, baseline, compare, and delegated-route artifacts | `ax-bench` plus `benchmarks/manifests/` | Repo-owned contract evidence |
+| AX workload contract | Validate checked-in scenario, replay, matrix, baseline, compare, and delegated-route artifacts | `ax-engine-bench` plus `benchmarks/manifests/` | Repo-owned contract evidence |
 | MLX inference stack | Compare AX Engine MLX mode against MLX-family reference runtimes | `scripts/bench_mlx_inference_stack.py` | Model-inference performance evidence |
-| llama.cpp delegation | Validate non-MLX route behavior and backend-reported prompt-cache evidence | llama.cpp manifests through `ax-bench` | Delegation contract evidence only |
+| llama.cpp delegation | Validate non-MLX route behavior and backend-reported prompt-cache evidence | llama.cpp manifests through `ax-engine-bench` | Delegation contract evidence only |
 
 Do not mix these surfaces in one throughput table. AX-owned inference
 performance claims come from the MLX inference stack. llama.cpp results explain
@@ -65,13 +65,13 @@ Canonical workload manifests live under:
 - `benchmarks/manifests/replay/`
 - `benchmarks/manifests/matrix/`
 
-Use `ax-bench` for workload artifacts:
+Use `ax-engine-bench` for workload artifacts:
 
 ```text
-ax-bench scenario --manifest benchmarks/manifests/scenario/chat_qwen_short.json --output-root benchmarks/results
-ax-bench replay --manifest benchmarks/manifests/replay/shared_prefix_long_churn.json --output-root benchmarks/results
-ax-bench matrix --manifest benchmarks/manifests/matrix/mlx_dense_phase7.json --output-root benchmarks/results
-ax-bench compare --baseline benchmarks/results/<baseline> --candidate benchmarks/results/<candidate> --output-root benchmarks/results
+ax-engine-bench scenario --manifest benchmarks/manifests/scenario/chat_qwen_short.json --output-root benchmarks/results
+ax-engine-bench replay --manifest benchmarks/manifests/replay/shared_prefix_long_churn.json --output-root benchmarks/results
+ax-engine-bench matrix --manifest benchmarks/manifests/matrix/mlx_dense_phase7.json --output-root benchmarks/results
+ax-engine-bench compare --baseline benchmarks/results/<baseline> --candidate benchmarks/results/<candidate> --output-root benchmarks/results
 ```
 
 Successful execution emits structured artifacts such as `manifest.json`,
@@ -79,14 +79,14 @@ Successful execution emits structured artifacts such as `manifest.json`,
 `summary.md`. Compare and matrix commands emit their own regression and summary
 artifacts.
 
-`ax-bench` is also the place for:
+`ax-engine-bench` is also the place for:
 
 - correctness and determinism gates
 - route identity and support-tier reporting
 - prefix-reuse and prompt-cache provenance
 - trusted-baseline snapshots
 - matrix roll-ups and matrix comparison
-- local readiness diagnostics through `ax-bench doctor`
+- local readiness diagnostics through `ax-engine-bench doctor`
 
 ## Delegated llama.cpp Checks
 
@@ -120,11 +120,11 @@ Decision-grade AX MLX benchmark claims require:
   and feature flags.
 - enough repetitions and cooldown to avoid one-off thermal or startup noise.
 
-`ax-bench doctor` reports whether the local host is ready, bring-up-only, or
+`ax-engine-bench doctor` reports whether the local host is ready, bring-up-only, or
 not ready for AX-owned MLX benchmarking:
 
 ```text
-ax-bench doctor --json
+ax-engine-bench doctor --json
 ```
 
 llama.cpp adapters do not widen AX-owned MLX host support. They are separate
@@ -137,9 +137,9 @@ Use this interpretation table when reading benchmark output:
 | Evidence | Can support | Cannot support |
 |---|---|---|
 | `bench_mlx_inference_stack.py` MLX rows | AX MLX model-inference performance claims | scheduler/replay correctness claims |
-| `ax-bench scenario` / `replay` MLX artifacts | route, correctness, determinism, and workload-contract claims | direct comparison to upstream MLX unless the MLX stack harness was also run |
+| `ax-engine-bench scenario` / `replay` MLX artifacts | route, correctness, determinism, and workload-contract claims | direct comparison to upstream MLX unless the MLX stack harness was also run |
 | llama.cpp delegated artifacts | non-MLX route-contract and backend prompt-cache claims | AX-owned MLX throughput claims |
-| `ax-bench compare` / `matrix-compare` | regression evidence inside the same manifest/runtime family | cross-runtime ranking without matching reference contract |
+| `ax-engine-bench compare` / `matrix-compare` | regression evidence inside the same manifest/runtime family | cross-runtime ranking without matching reference contract |
 
 If the reference identity or runtime route is unclear, treat the number as
 exploratory only.

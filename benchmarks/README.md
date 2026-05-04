@@ -41,7 +41,7 @@ bash scripts/check-bench-mlx.sh
 
 For real-model MLX-mode benchmarking, scenario manifests can carry `runtime.mlx_model_artifacts_dir`.
 Manifest-relative values such as `../../../models/qwen-mlx` are supported.
-If the fields are omitted, `ax-bench` still falls back to the SDK defaults,
+If the fields are omitted, `ax-engine-bench` still falls back to the SDK defaults,
 including repo-owned Metal build detection and the
 `AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR` environment variable.
 
@@ -60,7 +60,7 @@ bash scripts/check-bench-replay.sh
 ```
 
 For model-inference performance comparisons, use the MLX stack harness rather
-than `ax-bench` scenario or replay manifests:
+than `ax-engine-bench` scenario or replay manifests:
 
 ```text
 python3 scripts/bench_mlx_inference_stack.py \

@@ -18,13 +18,13 @@ from pathlib import Path
 repo = Path.cwd()
 
 doctor_json = subprocess.check_output(
-    ["cargo", "run", "-p", "ax-bench", "--", "doctor", "--json"],
+    ["cargo", "run", "-p", "ax-engine-bench", "--", "doctor", "--json"],
     cwd=repo,
     text=True,
 )
 report = json.loads(doctor_json)
 
-assert report["schema_version"] == "ax.bench.doctor.v1"
+assert report["schema_version"] == "ax.engine_bench.doctor.v1"
 assert report["mlx_target"] == "apple_m4_or_newer_macos_aarch64"
 
 host = report["host"]
@@ -53,7 +53,7 @@ assert any(
 )
 
 doctor_text = subprocess.check_output(
-    ["cargo", "run", "-p", "ax-bench", "--", "doctor"],
+    ["cargo", "run", "-p", "ax-engine-bench", "--", "doctor"],
     cwd=repo,
     text=True,
 )
