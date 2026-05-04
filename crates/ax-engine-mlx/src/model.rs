@@ -964,7 +964,7 @@ fn moe_experts_forward(
     let hidden = multiply(&gate_act, &up_out, None);
 
     // Down projection: [1, seq, top_k, hidden]
-    let down_out = qw_gather(&hidden, down_exps, top_k_indices);
+    let down_out = squeeze_switch_singleton(&qw_gather(&hidden, down_exps, top_k_indices));
 
     // Weighted sum over top_k dimension → [1, seq, hidden]
     let seq_dim = down_out.ndim() as i32;
@@ -972,6 +972,17 @@ fn moe_experts_forward(
     let scores_exp = expand_dims(top_k_weights, seq_dim - 1, None); // [1,seq,top_k,1]
     let weighted = multiply(&down_out, &scores_exp, None);
     sum_axis(&weighted, top_k_axis, false, None)
+}
+
+fn squeeze_switch_singleton(x: &MlxArray) -> MlxArray {
+    let mut shape = x.shape();
+    let ndim = shape.len();
+    if ndim >= 2 && shape[ndim - 2] == 1 {
+        shape.remove(ndim - 2);
+        reshape(x, &shape, None)
+    } else {
+        x.clone()
+    }
 }
 
 /// Gather-matmul for expert weights (quantized or dense).
@@ -1259,6 +1270,62 @@ mod tests {
 
         assert_eq!(out.shape(), vec![1, 2, 8]);
         assert_eq!(cache.collect_eval_refs().len(), 2);
+    }
+
+    #[test]
+    fn moe_experts_forward_uses_packed_gate_up_experts() {
+        let mut cfg = cfg(false);
+        cfg.hidden_size = 4;
+        cfg.moe_expert_count = 2;
+        cfg.moe_experts_per_token = 1;
+        cfg.moe_expert_intermediate_size = 3;
+        cfg.uses_geglu = true;
+        let weights = LayerWeights {
+            attn_norm: zeros(&[4], MlxDtype::Float32, None),
+            attn_post_norm: None,
+            q_norm: None,
+            k_norm: None,
+            q_proj: None,
+            k_proj: None,
+            v_proj: None,
+            qkv_packed: None,
+            o_proj: None,
+            linear_attn: None,
+            ffn_norm: zeros(&[4], MlxDtype::Float32, None),
+            ffn_post_norm: None,
+            gate_proj: None,
+            up_proj: None,
+            gate_up_packed: None,
+            down_proj: dense_weight(&[4, 3]),
+            ffn_norm2: None,
+            ffn_post_norm1: None,
+            ffn_post_norm2: None,
+            router_proj: None,
+            router_scale: None,
+            gate_up_exps_packed: Some(dense_weight(&[2, 6, 4])),
+            gate_exps: None,
+            up_exps: None,
+            down_exps: Some(dense_weight(&[2, 4, 3])),
+        };
+        let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
+        let indices_data = [0_u32, 1_u32];
+        let top_k_indices = MlxArray::from_raw_data(
+            indices_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&indices_data),
+            &[1, 2, 1],
+            MlxDtype::Uint32,
+        );
+        let weights_data = [1.0_f32, 1.0_f32];
+        let top_k_weights = MlxArray::from_raw_data(
+            weights_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&weights_data),
+            &[1, 2, 1],
+            MlxDtype::Float32,
+        );
+
+        let out = moe_experts_forward(&cfg, &weights, &x, &top_k_indices, &top_k_weights);
+
+        assert_eq!(out.shape(), vec![1, 2, 4]);
     }
 
     #[test]
