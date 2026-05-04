@@ -694,6 +694,8 @@ mod tests {
             final_logit_softcapping: None,
             hidden_states_scale: None,
             moe_norm_topk_prob: false,
+        hidden_size_per_layer_input: 0,
+        vocab_size_per_layer_input: None,
             linear_attention: NativeLinearAttentionConfig::default(),
             moe: NativeMoeConfig::default(),
             tensors: vec![

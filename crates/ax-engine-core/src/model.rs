@@ -80,6 +80,18 @@ pub enum NativeTensorRole {
     FfnDownExps,
     FfnDownExpsScale,
     LayerScalar,
+    /// Global embedding table for per-layer token inputs (Gemma4 2B/4B).
+    PerLayerEmbedding,
+    /// Global projection from hidden state to stacked per-layer inputs (Gemma4 2B/4B).
+    PerLayerModelProjection,
+    /// Global RMSNorm weight over hidden_size_per_layer_input (Gemma4 2B/4B).
+    PerLayerProjectionNorm,
+    /// Per-layer gate projection: hidden → hidden_size_per_layer_input (Gemma4 2B/4B).
+    PerLayerInputGate,
+    /// Per-layer output projection: hidden_size_per_layer_input → hidden (Gemma4 2B/4B).
+    PerLayerInputProjection,
+    /// Per-layer post-gating RMSNorm weight (Gemma4 2B/4B).
+    PerLayerInputPostNorm,
     FinalNorm,
     LmHead,
     RopeFreqs,
@@ -126,6 +138,9 @@ impl NativeTensorRole {
                 | Self::FfnDownExps
                 | Self::FfnDownExpsScale
                 | Self::LayerScalar
+                | Self::PerLayerInputGate
+                | Self::PerLayerInputProjection
+                | Self::PerLayerInputPostNorm
         )
     }
 }
@@ -346,6 +361,12 @@ pub struct NativeModelManifest {
     /// When true, normalise the selected top-k MoE weights to sum to 1 (Qwen3 MoE).
     #[serde(default)]
     pub moe_norm_topk_prob: bool,
+    /// Dimension of per-layer token embeddings (Gemma4 2B/4B). 0 = feature disabled.
+    #[serde(default)]
+    pub hidden_size_per_layer_input: u32,
+    /// Vocab size for the per-layer embedding table (Gemma4 2B/4B).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vocab_size_per_layer_input: Option<u32>,
     #[serde(
         default,
         skip_serializing_if = "NativeLinearAttentionConfig::is_disabled"
@@ -2496,6 +2517,8 @@ mod tests {
             final_logit_softcapping: None,
             hidden_states_scale: None,
             moe_norm_topk_prob: false,
+        hidden_size_per_layer_input: 0,
+        vocab_size_per_layer_input: None,
             linear_attention: NativeLinearAttentionConfig::default(),
             moe: NativeMoeConfig::default(),
             tensors: vec![

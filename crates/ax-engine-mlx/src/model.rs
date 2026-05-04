@@ -1,8 +1,8 @@
 use mlx_sys::{
     MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argpartition_axis, astype, dequantize,
-    expand_dims, gather_mm, gather_qmm, gelu, matmul, multiply, quantized_matmul, reshape,
-    rms_norm, rope, scaled_dot_product_attention_with_mask, slice_last_dim, softmax, sum_axis,
-    take, take_along_axis, tanh, transpose, zeros,
+    expand_dims, gather_mm, gather_qmm, gelu, gelu_approx, matmul, multiply, quantized_matmul,
+    reshape, rms_norm, rope, scaled_dot_product_attention_with_mask, slice_last_dim, softmax,
+    sum_axis, take, take_along_axis, tanh, transpose, zeros,
 };
 
 use ax_engine_core::NativeModelManifest;
@@ -121,6 +121,8 @@ pub struct ModelConfig {
     pub hidden_states_scale: Option<f32>,
     /// Normalise top-k MoE routing weights to sum to 1 (Qwen3 MoE norm_topk_prob).
     pub moe_norm_topk_prob: bool,
+    /// Dimension of per-layer token embeddings (Gemma4 2B/4B); 0 = disabled.
+    pub hidden_size_per_layer_input: usize,
     /// Qwen3.5 gated-delta linear-attention config, when present.
     pub linear_attention: Option<LinearAttentionConfig>,
 }
@@ -169,6 +171,7 @@ impl ModelConfig {
             uses_geglu: is_gemma4,
             hidden_states_scale: m.hidden_states_scale,
             moe_norm_topk_prob: m.moe_norm_topk_prob,
+            hidden_size_per_layer_input: m.hidden_size_per_layer_input as usize,
             linear_attention: LinearAttentionConfig::from_manifest(m),
         }
     }
@@ -273,6 +276,7 @@ pub fn layer_forward(
     cache: &mut MlxKVCache,
     layer_idx: usize,
     token_offset: usize,
+    per_layer_input: Option<&MlxArray>, // [1, seq, per_layer_dim] or None
 ) -> MlxArray {
     let (head_dim, rope_theta, rope_dims, sliding_window, kv_source, v_norm_no_scale) =
         layer_params(cfg, layer_idx);
@@ -446,9 +450,23 @@ pub fn layer_forward(
     };
 
     // 18. Residual.
-    let out = add(&hidden, &ffn_out, None);
+    let mut out = add(&hidden, &ffn_out, None);
 
-    // 19. Optional layer scalar (Gemma4): h = h * layer_scalar.
+    // 19. Per-layer input gating (Gemma4 2B/4B): gate(h) * per_layer_embed → proj → norm + h.
+    if let (Some(gate_w), Some(proj_w), Some(post_norm), Some(pli)) = (
+        w.per_layer_gate.as_ref(),
+        w.per_layer_proj_w.as_ref(),
+        w.per_layer_post_norm.as_ref(),
+        per_layer_input,
+    ) {
+        let gate = gelu_approx(&qw(&out, gate_w), None);
+        let gated = multiply(&gate, pli, None);
+        let projected = qw(&gated, proj_w);
+        let normed = rms_norm(&projected, Some(post_norm), 1e-6, None);
+        out = add(&out, &normed, None);
+    }
+
+    // 20. Optional layer scalar (Gemma4): h = h * layer_scalar.
     if let Some(scalar) = &w.layer_scalar {
         multiply(&out, scalar, None)
     } else {
@@ -506,8 +524,10 @@ pub fn forward(
         hidden = scale_hidden(&hidden, scale);
     }
 
+    let per_layer_inputs = compute_per_layer_inputs(cfg, weights, token_ids, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        hidden = layer_forward(cfg, layer_w, &hidden, cache, li, token_offset);
+        let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
+        hidden = layer_forward(cfg, layer_w, &hidden, cache, li, token_offset, pli);
     }
 
     // Slice to last token only: [1, seq, hidden] → [1, 1, hidden].
@@ -547,8 +567,10 @@ pub fn forward_all_positions(
         hidden = scale_hidden(&hidden, scale);
     }
 
+    let per_layer_inputs = compute_per_layer_inputs(cfg, weights, token_ids, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        hidden = layer_forward(cfg, layer_w, &hidden, cache, li, token_offset);
+        let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
+        hidden = layer_forward(cfg, layer_w, &hidden, cache, li, token_offset, pli);
     }
 
     let seq = token_ids.len() as i32;
@@ -560,6 +582,81 @@ pub fn forward_all_positions(
 }
 
 // ── private helpers ──────────────────────────────────────────────────────────
+
+/// Compute per-layer input vectors for Gemma4 2B/4B models.
+///
+/// Returns `Some(Vec<MlxArray>)` of length `num_layers`, each `[1, seq, per_layer_dim]`,
+/// or `None` when the model does not use per-layer input gating.
+///
+/// Reference: Gemma4TextModel._get_per_layer_inputs + _project_per_layer_inputs.
+fn compute_per_layer_inputs(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    hidden: &MlxArray, // [1, seq, hidden] after embed_scale — used for model projection
+) -> Option<Vec<MlxArray>> {
+    let per_layer_dim = cfg.hidden_size_per_layer_input;
+    if per_layer_dim == 0 {
+        return None;
+    }
+    let embed_w = weights.per_layer_embed.as_ref()?;
+    let model_proj_w = weights.per_layer_model_proj.as_ref()?;
+    let proj_norm_w = weights.per_layer_proj_norm.as_ref()?;
+
+    let num_layers = cfg.layer_count;
+    let seq = token_ids.len() as i32;
+    let dtype = MlxDtype::Bfloat16;
+
+    // 1. Per-layer token embeddings: [1, seq, num_layers * per_layer_dim]
+    //    embed_tokens_per_layer(input_ids) * sqrt(per_layer_dim)
+    let embed_out = embed_tokens(token_ids, embed_w, num_layers * per_layer_dim);
+    let embed_out = astype(&embed_out, dtype, None);
+    let embed_scale = (per_layer_dim as f32).sqrt();
+    let embed_out = scale_hidden(&embed_out, embed_scale);
+    // Reshape to [1, seq, num_layers, per_layer_dim]
+    let embed_out = reshape(
+        &embed_out,
+        &[1, seq, num_layers as i32, per_layer_dim as i32],
+        None,
+    );
+
+    // 2. Project model hidden: [1, seq, num_layers * per_layer_dim]
+    //    per_layer_model_projection(hidden) * (1 / sqrt(hidden_size))
+    let proj_scale = 1.0 / (cfg.hidden_size as f32).sqrt();
+    let proj_out = qw(hidden, model_proj_w);
+    let proj_out = scale_hidden(&proj_out, proj_scale);
+    // Reshape to [1, seq, num_layers, per_layer_dim]
+    let proj_out = reshape(
+        &proj_out,
+        &[1, seq, num_layers as i32, per_layer_dim as i32],
+        None,
+    );
+    // RMSNorm over last dim (per_layer_dim)
+    let proj_out = rms_norm(&proj_out, Some(proj_norm_w), 1e-6, None);
+
+    // 3. Combine: (proj + embed) * 2^(-0.5)
+    let combined_scale = 2.0_f32.powf(-0.5);
+    let combined = add(&proj_out, &embed_out, None);
+    let combined = scale_hidden(&combined, combined_scale);
+    // combined shape: [1, seq, num_layers, per_layer_dim]
+
+    // 4. Split per layer using take on axis 2
+    let per_layer = (0..num_layers)
+        .map(|li| {
+            let idx_arr = MlxArray::from_raw_data(
+                &(li as u32) as *const u32 as *const u8,
+                std::mem::size_of::<u32>(),
+                &[1_i32],
+                MlxDtype::Uint32,
+            );
+            // take on axis 2: [1, seq, 1, per_layer_dim] → squeeze → [1, seq, per_layer_dim]
+            let slice = take(&combined, &idx_arr, 2, None);
+            reshape(&slice, &[1, seq, per_layer_dim as i32], None)
+        })
+        .collect();
+
+    Some(per_layer)
+}
 
 /// Apply optional per-head RMS norm in BSHD [1, seq, n_heads, head_dim] space.
 fn qk_norm_bshd(
@@ -1066,6 +1163,7 @@ mod tests {
             uses_geglu: false,
             hidden_states_scale: None,
             moe_norm_topk_prob: false,
+            hidden_size_per_layer_input: 0,
             linear_attention: None,
         }
     }
@@ -1103,6 +1201,8 @@ mod tests {
             final_logit_softcapping: Some(30.0),
             hidden_states_scale: Some((2816_f32).sqrt()),
             moe_norm_topk_prob: false,
+            hidden_size_per_layer_input: 0,
+            vocab_size_per_layer_input: None,
             linear_attention: NativeLinearAttentionConfig::default(),
             moe: NativeMoeConfig::default(),
             tensors: Vec::new(),
@@ -1139,6 +1239,8 @@ mod tests {
             final_logit_softcapping: None,
             hidden_states_scale: None,
             moe_norm_topk_prob: true,
+            hidden_size_per_layer_input: 0,
+            vocab_size_per_layer_input: None,
             linear_attention: NativeLinearAttentionConfig {
                 full_attention_interval: None,
                 num_value_heads: Some(2),
@@ -1194,6 +1296,9 @@ mod tests {
             router_scale: None,
             router_expert_scale: None,
             layer_scalar: None,
+            per_layer_gate: None,
+            per_layer_proj_w: None,
+            per_layer_post_norm: None,
             gate_up_exps_packed: None,
             gate_exps: None,
             up_exps: None,
@@ -1282,6 +1387,9 @@ mod tests {
             router_scale: None,
             router_expert_scale: None,
             layer_scalar: None,
+            per_layer_gate: None,
+            per_layer_proj_w: None,
+            per_layer_post_norm: None,
             gate_up_exps_packed: None,
             gate_exps: None,
             up_exps: None,
@@ -1384,6 +1492,9 @@ mod tests {
             router_scale: None,
             router_expert_scale: None,
             layer_scalar: None,
+            per_layer_gate: None,
+            per_layer_proj_w: None,
+            per_layer_post_norm: None,
             gate_up_exps_packed: Some(dense_weight(&[2, 6, 4])),
             gate_exps: None,
             up_exps: None,
@@ -1442,6 +1553,9 @@ mod tests {
             router_scale: None,
             router_expert_scale: None,
             layer_scalar: None,
+            per_layer_gate: None,
+            per_layer_proj_w: None,
+            per_layer_post_norm: None,
             gate_up_exps_packed: Some(dense_weight(&[2, 6, 4])),
             gate_exps: None,
             up_exps: None,
@@ -1500,6 +1614,9 @@ mod tests {
             router_scale: None,
             router_expert_scale: None,
             layer_scalar: None,
+            per_layer_gate: None,
+            per_layer_proj_w: None,
+            per_layer_post_norm: None,
             gate_up_exps_packed: None,
             gate_exps: Some(dense_weight(&[2, 3, 4])),
             up_exps: Some(dense_weight(&[2, 3, 4])),

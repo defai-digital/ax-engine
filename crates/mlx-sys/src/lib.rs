@@ -35,7 +35,7 @@ pub use metal::{KernelOutputSpec, KernelTemplateArg, MlxMetalKernel};
 pub use ops::{
     add, arange, argmax, argpartition_axis, argsort_axis, as_strided, astype, clip, concatenate,
     contiguous, conv1d, dequantize, divide, erf, exp, expand_dims, expand_dims_axes, gather_mm,
-    gather_qmm, gelu, greater_equal, less, log, log1p, logical_and, matmul, maximum, minimum,
+    gather_qmm, gelu, gelu_approx, greater_equal, less, log, log1p, logical_and, matmul, maximum, minimum,
     multiply, negative, power, quantized_matmul, repeat_axis, reshape, slice, slice_last_dim,
     slice_update, softmax, stack, subtract, sum_axis, take, take_along_axis, tanh, transpose,
     where_cond, zeros,
