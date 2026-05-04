@@ -2970,6 +2970,27 @@ mod tests {
     }
 
     #[test]
+    fn native_model_artifacts_reject_incomplete_split_moe_experts() {
+        let mut manifest = moe_layer_manifest();
+        manifest.tensors.retain(|tensor| {
+            !(tensor.layer_index == Some(1) && tensor.role == NativeTensorRole::FfnUpExps)
+        });
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("split MoE expert weights should require gate and up tensors");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("ffn_gate_up_exps_packed or ffn_gate_exps/ffn_up_exps"),
+            "unexpected error: {message}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn native_model_artifacts_reject_missing_layer_qkv_roles() {
         let mut manifest = packed_layer_manifest();
         manifest.tensors.retain(|tensor| {
