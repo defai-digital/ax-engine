@@ -19,9 +19,13 @@ pub struct ModelWeights {
 /// Weights (and optional quantization data) for one transformer layer.
 pub struct LayerWeights {
     pub attn_norm: MlxArray,
+    /// post_attention_layernorm (Gemma4): applied to attn output BEFORE residual add.
+    /// For Qwen3 (no separate pre-FFN norm), this field is None and the same norm
+    /// is used as ffn_norm instead.
+    pub attn_post_norm: Option<MlxArray>,
     pub q_norm: Option<MlxArray>,
     pub k_norm: Option<MlxArray>,
-    // Split Q/K/V projections.
+    // Split Q/K/V projections (None for KV-shared layers that reuse a source layer's KV).
     pub q_proj: Option<QuantizedWeight>,
     pub k_proj: Option<QuantizedWeight>,
     pub v_proj: Option<QuantizedWeight>,
@@ -166,25 +170,35 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             idx,
             "o_proj",
         )?;
-        // Models may use `ffn_norm` OR `attention_post_norm` for the pre-FFN layer norm.
-        let ffn_norm = if has_role(specs, NativeTensorRole::FfnNorm, idx) {
-            take_weight(
+        // When FfnNorm (pre_feedforward_layernorm) is present (Gemma4), AttentionPostNorm
+        // is a genuine post-attention norm applied before the residual add.  When FfnNorm
+        // is absent (Qwen3), AttentionPostNorm doubles as the pre-FFN norm instead.
+        let (attn_post_norm, ffn_norm) = if has_role(specs, NativeTensorRole::FfnNorm, idx) {
+            let apn = try_take_plain(
+                specs,
+                &mut name_map,
+                NativeTensorRole::AttentionPostNorm,
+                idx,
+            )?;
+            let fn_w = take_weight(
                 specs,
                 &mut name_map,
                 NativeTensorRole::FfnNorm,
                 idx,
                 "ffn_norm",
             )?
-            .weight
+            .weight;
+            (apn, fn_w)
         } else {
-            take_weight(
+            let fn_w = take_weight(
                 specs,
                 &mut name_map,
                 NativeTensorRole::AttentionPostNorm,
                 idx,
                 "attention_post_norm",
             )?
-            .weight
+            .weight;
+            (None, fn_w)
         };
         let down_proj = take_weight(
             specs,
@@ -329,6 +343,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
 
         layers.push(LayerWeights {
             attn_norm,
+            attn_post_norm,
             q_norm,
             k_norm,
             q_proj,

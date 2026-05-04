@@ -39,6 +39,7 @@ binary_op!(multiply, mlx_multiply);
 binary_op!(matmul, mlx_matmul);
 
 unary_op!(sigmoid, mlx_sigmoid);
+unary_op!(tanh, mlx_tanh);
 
 /// silu(x) = x * sigmoid(x)
 pub fn silu(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
