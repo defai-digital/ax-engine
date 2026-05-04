@@ -297,7 +297,12 @@ pub fn layer_forward(
     );
 
     // 12. Output projection.
-    let attn_proj = qw(&attn_flat, &w.o_proj);
+    let attn_proj = qw(
+        &attn_flat,
+        w.o_proj
+            .as_ref()
+            .expect("full-attention layer must have o_proj"),
+    );
 
     // 13. Optional attention output gate (Qwen3.5): sigmoid(gate) * o_proj(attn).
     let attn_proj = if let Some(gate) = attn_gate {
