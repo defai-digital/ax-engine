@@ -203,6 +203,7 @@ delegated runtime checks.
 Use these repo-owned checks to validate the benchmark surfaces:
 
 ```text
+bash scripts/check-bench-inference-stack.sh
 bash scripts/check-bench-doctor.sh
 bash scripts/check-bench-mlx.sh
 bash scripts/check-bench-replay.sh

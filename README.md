@@ -37,8 +37,8 @@ Public docs:
 Benchmarking has a strict split:
 
 - use `scripts/bench_mlx_inference_stack.py` for AX Engine MLX mode versus the
-  required `mlx_lm.benchmark` baseline and optional `mlx-swift-lm` JSON-adapter
-  comparisons
+  required `mlx_lm.benchmark` primary baseline and optional `mlx-swift-lm`
+  `BenchmarkHelpers` / `MLXLMCommon` secondary baseline adapter rows
 - use `ax-engine-bench` for checked-in scenario, replay, matrix, baseline,
   compare, bounded autotune, readiness, and delegated-route contract artifacts
 - treat llama.cpp manifests as non-MLX delegation checks, not AX-owned MLX

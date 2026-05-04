@@ -19,9 +19,11 @@ prefill/decode throughput for the same random-token prompt/decode shape. Do
 not use an application-server wrapper or unrelated Swift timing script as the
 `mlx-swift-lm` baseline.
 
-Use `ax-engine-bench` through the `check-bench-*.sh` scripts for workload
-contracts: scenario, replay, matrix, baseline, compare, delegated llama.cpp
-route checks, and readiness.
+Use `ax-engine-bench` through the workload-contract `check-bench-*.sh` scripts
+for scenario, replay, matrix, baseline, compare, delegated llama.cpp route
+checks, and readiness. `check-bench-inference-stack.sh` is the exception in
+that family: it validates the MLX inference-stack harness contract without
+running `ax-engine-bench` or loading a model.
 
 Do not use ad hoc server timing or llama.cpp route checks as AX-owned MLX
 throughput baselines.
@@ -30,11 +32,15 @@ throughput baselines.
 
 - `lib/common.sh`: shared shell helpers for repo-root discovery, Python binary
   selection, temporary paths, free-port allocation, and PID cleanup.
+- `check-scripts.sh`: fast script hygiene gate. It syntax-checks shell scripts,
+  compiles Python scripts, and runs the MLX inference-stack contract tests.
 - `bench_mlx_inference_stack.py`: MLX model-inference comparison against
   `mlx_lm.benchmark`.
 - `test_bench_mlx_inference_stack.py`: unit tests for the MLX benchmark
   contract, parser, prompt artifact hash checks, and secondary adapter shape.
-- `bench_memory_leak_server.py`: long-lived RSS diagnostic for MLX and delegated
+- `check-bench-inference-stack.sh`: lightweight contract check for the MLX
+  inference-stack benchmark harness. It does not load a model.
+- `diagnose_server_rss.py`: long-lived RSS diagnostic for MLX and delegated
   llama.cpp server routes. It is not a throughput benchmark.
 - `check-bench-*.sh`: smoke checks for `ax-engine-bench` workload-contract
   commands.
@@ -46,5 +52,11 @@ throughput baselines.
 Run the MLX inference-stack unit tests without loading a model:
 
 ```text
-python3 -m unittest scripts/test_bench_mlx_inference_stack.py -v
+bash scripts/check-bench-inference-stack.sh
+```
+
+Run the fast script hygiene gate before changing files in this directory:
+
+```text
+bash scripts/check-scripts.sh
 ```

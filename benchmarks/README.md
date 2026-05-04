@@ -119,6 +119,12 @@ Use `--ax-both-modes` when greedy and speculative AX MLX rows both matter.
 Every AX or optional Swift row is compared against the matching
 `mlx_lm.benchmark` random-token prompt/decode shape.
 
+Validate the harness contract without loading a model:
+
+```text
+bash scripts/check-bench-inference-stack.sh
+```
+
 ## Generated Outputs
 
 `ax-engine-bench` writes result directories under the chosen `--output-root`.
