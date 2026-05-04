@@ -63,10 +63,13 @@ python3 scripts/bench_mlx_inference_stack.py \
   --cooldown 5
 ```
 
-Use `--ax-both-modes` to emit both `ax_engine_mlx_greedy` and
-`ax_engine_mlx_speculative` rows. `mlx_lm.benchmark` is the primary reference.
-`mlx-swift-lm` is accepted only through an explicit JSON-emitting adapter
-command. The older SwiftLM application-server benchmark is retired.
+`mlx_lm.benchmark` is mandatory. The script fails closed if the matching
+baseline cannot be produced, and every AX or `mlx-swift-lm` row carries
+ratio-to-`mlx_lm.benchmark` fields for the same prompt/decode shape. Use
+`--ax-both-modes` to emit both `ax_engine_mlx_greedy` and
+`ax_engine_mlx_speculative` rows. `mlx-swift-lm` is accepted only through an
+explicit JSON-emitting adapter command. The older SwiftLM application-server
+benchmark is retired.
 
 ## Delegated llama.cpp Checks
 
@@ -114,10 +117,10 @@ Start the preview server with MLX mode:
 cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts --port 8080
 ```
 
-For comparable AX MLX inference numbers, prefer
+For comparable AX MLX inference numbers, use
 `scripts/bench_mlx_inference_stack.py` over manual server timing. The script
-starts the server, captures AX SSE `runner_time_us`, and records the reference
-runtime identity.
+starts the server, captures AX SSE `runner_time_us`, runs the required
+`mlx_lm.benchmark` baseline, and records the reference runtime identity.
 
 ## Design Intent
 

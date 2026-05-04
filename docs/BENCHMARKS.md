@@ -8,16 +8,17 @@ sampling policy, and artifact schema are explicit.
 
 | Question | Use | Evidence produced |
 |---|---|---|
-| How fast is AX Engine MLX mode against upstream MLX? | `scripts/bench_mlx_inference_stack.py` | Model-inference throughput rows for `mlx_lm.benchmark`, AX Engine MLX greedy, AX Engine MLX speculative, and optional `mlx-swift-lm` JSON adapter rows |
+| How fast is AX Engine MLX mode against upstream MLX? | `scripts/bench_mlx_inference_stack.py` | Required `mlx_lm.benchmark` baseline rows, AX Engine MLX greedy/speculative rows, optional `mlx-swift-lm` JSON adapter rows, and ratio-to-baseline fields |
 | Did a checked-in workload still pass route, correctness, determinism, replay, or regression gates? | `ax-engine-bench` | Workload-contract artifacts under `benchmarks/results` |
 | Is the local host ready for AX-owned MLX benchmarking? | `ax-engine-bench doctor` | Human or JSON readiness report |
 | Did a bounded runtime knob improve a frozen workload? | `ax-engine-bench autotune` | Autotune trial artifacts and warm-start history |
 | Does the non-MLX delegated route still behave correctly? | llama.cpp manifests through `ax-engine-bench` | Delegated route-contract evidence only |
 
 Do not merge these rows into one unlabeled throughput table. AX-owned
-model-inference claims come from the MLX inference stack. `ax-engine-bench`
-owns workload contracts. llama.cpp manifests validate delegation behavior, not
-AX MLX runtime speed.
+model-inference claims come from the MLX inference stack, and every such claim
+must include a matching `mlx_lm.benchmark` baseline for the same prompt/decode
+shape. `ax-engine-bench` owns workload contracts. llama.cpp manifests validate
+delegation behavior, not AX MLX runtime speed.
 
 ## MLX Model-Inference Comparison
 
@@ -33,11 +34,18 @@ python3 scripts/bench_mlx_inference_stack.py \
   --cooldown 5
 ```
 
-The reference order is:
+The reference contract is:
 
-1. `mlx_lm.benchmark`, the canonical upstream Python MLX baseline.
-2. AX Engine MLX mode through `ax-engine-server` SSE `runner_time_us`.
-3. `mlx-swift-lm`, only through an explicit JSON-emitting adapter command.
+1. `mlx_lm.benchmark` is mandatory and is the canonical upstream Python MLX
+   baseline.
+2. AX Engine MLX mode is measured through `ax-engine-server` SSE
+   `runner_time_us`.
+3. `mlx-swift-lm` is optional and only admitted through an explicit
+   JSON-emitting adapter command.
+
+The harness fails closed if `mlx_lm.benchmark` cannot run. It does not support
+AX-only throughput tables. Every non-baseline row records the matching
+`mlx_lm.benchmark` prompt/decode shape plus prefill/decode ratios.
 
 Use `--ax-both-modes` when speculative decode is part of the question:
 
@@ -177,7 +185,7 @@ bash scripts/check-bench-matrix-compare.sh
 
 | Evidence | Can support | Cannot support |
 |---|---|---|
-| `bench_mlx_inference_stack.py` rows | AX MLX model-inference performance claims against named MLX references | Scheduler/replay correctness claims |
+| `bench_mlx_inference_stack.py` rows with matching `mlx_lm.benchmark` baseline | AX MLX model-inference performance claims against named MLX references | Scheduler/replay correctness claims |
 | `ax-engine-bench scenario` / `replay` MLX artifacts | Workload-contract, route, correctness, determinism, replay, and regression claims | Direct upstream MLX comparison unless the MLX stack harness was also run |
 | `ax-engine-bench autotune` artifacts | Candidate evidence for bounded manifest knobs | Architecture selection or cross-runtime ranking |
 | llama.cpp delegated artifacts | Non-MLX route-contract and backend prompt-cache claims | AX-owned MLX throughput claims |

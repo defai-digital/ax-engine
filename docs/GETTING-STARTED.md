@@ -145,11 +145,13 @@ python3 scripts/bench_mlx_inference_stack.py \
   --cooldown 5
 ```
 
-That harness uses `mlx_lm.benchmark` as the primary reference. Add
-`--ax-both-modes` when you need both greedy and speculative AX MLX rows. Use
-`--mlx-swift-lm-command` only for an explicit JSON-emitting `mlx-swift-lm`
-harness. Do not use the retired SwiftLM application-server benchmark as a
-current AX Engine baseline.
+That harness requires `mlx_lm.benchmark` as the primary reference and fails
+closed if the matching baseline cannot be produced. Add `--ax-both-modes` when
+you need both greedy and speculative AX MLX rows. Each AX or optional
+`mlx-swift-lm` row is compared against the matching `mlx_lm.benchmark`
+prompt/decode shape. Use `--mlx-swift-lm-command` only for an explicit
+JSON-emitting `mlx-swift-lm` harness. Do not use the retired SwiftLM
+application-server benchmark as a current AX Engine baseline.
 
 To run a bounded autotune pass over explicit manifest knobs:
 

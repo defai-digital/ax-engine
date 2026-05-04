@@ -9,7 +9,7 @@ Use `bench_mlx_inference_stack.py` for AX Engine MLX model-inference
 comparisons. That script always runs `mlx_lm.benchmark` as the primary baseline
 and fails the run if the baseline cannot be produced. Optional `mlx-swift-lm`
 adapter rows and AX Engine MLX rows are compared against the matching
-`mlx_lm.benchmark` prompt/decode shape.
+`mlx_lm.benchmark` prompt/decode shape and include ratio-to-baseline fields.
 
 Use `ax-engine-bench` through the `check-bench-*.sh` scripts for workload
 contracts: scenario, replay, matrix, baseline, compare, delegated llama.cpp

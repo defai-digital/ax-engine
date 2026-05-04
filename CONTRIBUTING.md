@@ -44,7 +44,7 @@ bash scripts/check-python-preview.sh
 For benchmark documentation and result interpretation, start with
 `docs/BENCHMARKS.md`. Use `ax-engine-bench` for workload-contract artifacts and
 `scripts/bench_mlx_inference_stack.py` for AX Engine MLX model-inference
-comparison against `mlx_lm.benchmark`.
+comparison against the required matching `mlx_lm.benchmark` baseline.
 
 ## Code Style
 

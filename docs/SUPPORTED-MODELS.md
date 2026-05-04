@@ -43,8 +43,9 @@ This means:
 - support-tier language should not be read as implying broad MLX Metal model support
 - retired AX native mode should not be exposed as a shipping runtime
 - model-inference benchmark claims for MLX mode must come from
-  `scripts/bench_mlx_inference_stack.py` against `mlx_lm.benchmark` and,
-  optionally, an explicit `mlx-swift-lm` JSON adapter
+  `scripts/bench_mlx_inference_stack.py` with a matching required
+  `mlx_lm.benchmark` baseline and, optionally, an explicit `mlx-swift-lm` JSON
+  adapter
 - `ax-engine-bench` scenario, replay, matrix, compare, and autotune artifacts
   describe workload-contract evidence; delegated llama.cpp manifests describe
   non-MLX route-contract evidence only

@@ -107,11 +107,14 @@ python3 scripts/bench_mlx_inference_stack.py \
   --cooldown 5
 ```
 
-That harness uses `mlx_lm.benchmark` as the primary standard and can optionally
-ingest an explicit `mlx-swift-lm` JSON adapter. The older SwiftLM
-application-server benchmark is retired for current AX Engine decisions.
+That harness requires `mlx_lm.benchmark` as the primary standard and fails
+closed if the matching baseline cannot be produced. It can optionally ingest an
+explicit `mlx-swift-lm` JSON adapter. The older SwiftLM application-server
+benchmark is retired for current AX Engine decisions.
 
 Use `--ax-both-modes` when greedy and speculative AX MLX rows both matter.
+Every AX or optional Swift row is compared against the matching
+`mlx_lm.benchmark` prompt/decode shape.
 
 ## Generated Outputs
 

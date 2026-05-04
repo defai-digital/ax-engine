@@ -148,10 +148,11 @@ python3 scripts/bench_mlx_inference_stack.py \
   --ax-both-modes
 ```
 
-The canonical reference is `mlx_lm.benchmark`. `mlx-swift-lm` numbers are valid
-only when they come from a named JSON-emitting adapter. SwiftLM application
-server measurements are retired and should not be used as a baseline for this
-backend.
+The canonical reference is `mlx_lm.benchmark`, and the harness now treats it as
+required. A run that cannot produce the matching `mlx_lm.benchmark` baseline
+fails instead of emitting AX-only numbers. `mlx-swift-lm` numbers are valid only
+when they come from a named JSON-emitting adapter. SwiftLM application server
+measurements are retired and should not be used as a baseline for this backend.
 
 Use `ax-engine-bench scenario`, `replay`, `matrix`, `compare`, `matrix-compare`,
 `baseline`, and `autotune` for workload-contract evidence: route identity,
@@ -160,7 +161,8 @@ snapshots, and bounded manifest-knob exploration.
 
 Interpretation rule:
 
-- `bench_mlx_inference_stack.py` supports AX MLX model-inference claims.
+- `bench_mlx_inference_stack.py` supports AX MLX model-inference claims only
+  when the required matching `mlx_lm.benchmark` baseline is present.
 - `ax-engine-bench` supports workload-contract and regression claims.
 - llama.cpp manifests support delegated non-MLX route-contract claims only.
 
