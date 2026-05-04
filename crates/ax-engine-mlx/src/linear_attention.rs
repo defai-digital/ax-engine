@@ -169,7 +169,7 @@ pub fn gated_delta_kernel(
     let kernel = GATED_DELTA_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
             "qwen35_gated_delta_step",
-            &["q", "k", "v", "g", "beta", "state_in", "T"],
+            &["q", "k", "v", "g", "beta", "state_in", "seq_len"],
             &["y", "state_out"],
             GATED_DELTA_KERNEL_SOURCE,
             "",
@@ -256,6 +256,7 @@ fn scalar_f32_as(value: f32, dtype: MlxDtype) -> MlxArray {
 }
 
 const GATED_DELTA_KERNEL_SOURCE: &str = r#"
+    const int t_len = seq_len[0];
     auto n = thread_position_in_grid.z;
     auto b_idx = n / Hv;
     auto hv_idx = n % Hv;
@@ -263,19 +264,19 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
     constexpr int n_per_t = Dk / 32;
 
     // q, k: [B, T, Hk, Dk]
-    auto q_ = q + b_idx * T * Hk * Dk + hk_idx * Dk;
-    auto k_ = k + b_idx * T * Hk * Dk + hk_idx * Dk;
+    auto q_ = q + b_idx * t_len * Hk * Dk + hk_idx * Dk;
+    auto k_ = k + b_idx * t_len * Hk * Dk + hk_idx * Dk;
 
     // v, y: [B, T, Hv, Dv]
-    auto v_ = v + b_idx * T * Hv * Dv + hv_idx * Dv;
-    y += b_idx * T * Hv * Dv + hv_idx * Dv;
+    auto v_ = v + b_idx * t_len * Hv * Dv + hv_idx * Dv;
+    y += b_idx * t_len * Hv * Dv + hv_idx * Dv;
 
     auto dk_idx = thread_position_in_threadgroup.x;
     auto dv_idx = thread_position_in_grid.y;
 
     // g, beta: [B, T, Hv]
-    auto g_ = g + b_idx * T * Hv;
-    auto beta_ = beta + b_idx * T * Hv;
+    auto g_ = g + b_idx * t_len * Hv;
+    auto beta_ = beta + b_idx * t_len * Hv;
 
     // state_in, state_out: [B, Hv, Dv, Dk]
     auto i_state = state_in + (n * Dv + dv_idx) * Dk;
@@ -287,7 +288,7 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
       state[i] = static_cast<float>(i_state[s_idx]);
     }
 
-    for (int t = 0; t < T; ++t) {
+    for (int t = 0; t < t_len; ++t) {
       float kv_mem = 0.0f;
       for (int i = 0; i < n_per_t; ++i) {
         auto s_idx = n_per_t * dk_idx + i;
