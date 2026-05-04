@@ -26,7 +26,10 @@ pub mod ffi {
 }
 
 pub use array::{MlxArray, MlxDtype};
-pub use fast::{rms_norm, rope, scaled_dot_product_attention};
+pub use fast::{
+    ScaledDotProductAttentionMask, rms_norm, rope, scaled_dot_product_attention,
+    scaled_dot_product_attention_with_mask,
+};
 pub use io::load_safetensors;
 pub use metal::MlxMetalKernel;
 pub use ops::{
