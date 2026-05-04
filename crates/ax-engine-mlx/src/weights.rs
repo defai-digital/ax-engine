@@ -788,6 +788,37 @@ mod tests {
     }
 
     #[test]
+    fn take_weight_rejects_quantized_tensor_without_scales() {
+        let mut router = spec(NativeTensorRole::FfnGateInp);
+        router.name = "model.layers.0.router.proj.weight".to_string();
+        router.dtype = NativeTensorDataType::U32;
+        router.source_quantized = true;
+        router.quantization = Some(NativeTensorQuantization {
+            mode: "affine".to_string(),
+            group_size: 64,
+            bits: 8,
+        });
+        let specs = vec![router];
+        let mut name_map = HashMap::from([(
+            "model.layers.0.router.proj.weight".to_string(),
+            zeros(&[128, 704], MlxDtype::Uint32, None),
+        )]);
+
+        let error = match take_weight(
+            &specs,
+            &mut name_map,
+            NativeTensorRole::FfnGateInp,
+            Some(0),
+            "router_proj",
+        ) {
+            Ok(_) => panic!("quantized MLX tensors require co-located scales"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, WeightLoadError::QuantizationMissing(_)));
+    }
+
+    #[test]
     fn real_mlx_weights_load_qwen35_linear_attention_when_configured() {
         if std::env::var("AX_ENGINE_MLX_LOAD_REAL_WEIGHTS").as_deref() != Ok("1") {
             return;
