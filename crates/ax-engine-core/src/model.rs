@@ -306,6 +306,24 @@ pub struct NativeModelManifest {
     pub attention_value_from_key_layers: Vec<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attention_v_norm_no_scale_layers: Vec<u32>,
+    /// Head dimension for full-attention layers in interleaved SWA models (e.g. Gemma4).
+    /// Sliding-attention layers use `attention_head_dim`; full-attention layers use this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_head_dim: Option<u32>,
+    /// Sliding-window size for SWA layers (None = global attention).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sliding_window_size: Option<u32>,
+    /// Per-layer type annotations ("sliding_attention" / "full_attention").
+    /// Empty for homogeneous models; populated for interleaved-SWA models (Gemma4).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layer_types: Vec<String>,
+    /// Maps KV-shared layer index → source layer index that supplies K/V.
+    /// For layers absent from this map, K/V is computed from the layer's own weights.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub kv_shared_source_layers: BTreeMap<u32, u32>,
+    /// Final-logit softcapping: apply `tanh(x / cap) * cap` after lm_head (Gemma4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_logit_softcapping: Option<f32>,
     #[serde(
         default,
         skip_serializing_if = "NativeLinearAttentionConfig::is_disabled"
@@ -2225,6 +2243,11 @@ mod tests {
             partial_rotary_factor: None,
             attention_value_from_key_layers: Vec::new(),
             attention_v_norm_no_scale_layers: Vec::new(),
+            global_head_dim: None,
+            sliding_window_size: None,
+            layer_types: Vec::new(),
+            kv_shared_source_layers: Default::default(),
+            final_logit_softcapping: None,
             linear_attention: NativeLinearAttentionConfig::default(),
             moe: NativeMoeConfig::default(),
             tensors: vec![

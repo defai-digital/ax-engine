@@ -68,16 +68,8 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let rope_theta = arch_f64(&config, &model_type, "rope_theta")
-        .or_else(|| {
-            // Qwen3.5+ nests rope_theta inside rope_parameters
-            let text_config = config.get("text_config")?;
-            text_config
-                .get("rope_parameters")
-                .and_then(|rp| rp.get("rope_theta"))
-                .and_then(|v| v.as_f64())
-        })
-        .and_then(f64_to_u32);
+    let (rope_theta, rope_theta_swa, partial_rotary_factor) =
+        parse_rope_params(&config, &model_type);
 
     let query_pre_attn_scalar =
         arch_f64(&config, &model_type, "query_pre_attn_scalar").and_then(f64_to_u32);
@@ -85,6 +77,14 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     let attention_logit_softcap =
         arch_f64(&config, &model_type, "attn_logit_softcapping").and_then(f64_to_u32);
     let linear_attention = linear_attention_config(&config, &model_type);
+
+    let layer_types = parse_layer_types(&config, &model_type);
+    let global_head_dim = arch_u64(&config, &model_type, "global_head_dim").and_then(u64_to_u32);
+    let sliding_window_size = arch_u64(&config, &model_type, "sliding_window").and_then(u64_to_u32);
+    let final_logit_softcapping =
+        arch_f64(&config, &model_type, "final_logit_softcapping").map(|v| v as f32);
+    let kv_shared_source_layers =
+        compute_kv_shared_sources(&config, &model_type, &layer_types, arch.layer_count);
 
     Ok(NativeModelManifest {
         schema_version: AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
@@ -101,23 +101,18 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         vocab_size: arch.vocab_size,
         tie_word_embeddings,
         rope_theta,
-        rope_theta_swa: None,
+        rope_theta_swa,
         query_pre_attn_scalar,
         attention_logit_softcap,
         attn_output_gate: arch_bool(&config, &model_type, "attn_output_gate").unwrap_or(false),
-        partial_rotary_factor: arch_f64(&config, &model_type, "partial_rotary_factor")
-            .or_else(|| {
-                // Qwen3.5+ nests partial_rotary_factor inside rope_parameters
-                let text_config = config.get("text_config")?;
-                text_config
-                    .get("rope_parameters")
-                    .and_then(|rp| rp.get("partial_rotary_factor"))
-                    .and_then(|v| v.as_f64())
-            })
-            .map(|v| v as f32)
-            .filter(|v| *v <= 1.0),
+        partial_rotary_factor,
         attention_value_from_key_layers: Vec::new(),
         attention_v_norm_no_scale_layers: Vec::new(),
+        global_head_dim,
+        sliding_window_size,
+        layer_types,
+        kv_shared_source_layers,
+        final_logit_softcapping,
         linear_attention,
         moe: moe_config(&config, &model_type),
         tensors: mapped_tensors,
@@ -170,6 +165,7 @@ pub(crate) fn ensure_manifest_for_hf_model_dir(model_dir: &Path) -> Result<(), C
 struct ModelFamily {
     family_name: &'static str,
     tensor_map: &'static [(&'static str, TensorMapping)],
+    extra_tensor_map: Option<&'static [(&'static str, TensorMapping)]>,
     uses_language_model_prefix: bool,
 }
 
@@ -178,6 +174,26 @@ enum TensorMapping {
     Global(NativeTensorRole),
     PerLayer(NativeTensorRole),
 }
+
+/// Extra per-layer tensor patterns for Qwen3 MoE (mlp.gate → router; switch_mlp → experts).
+const QWEN3_MOE_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "mlp.gate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
+    ),
+    (
+        "mlp.switch_mlp.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateExps),
+    ),
+    (
+        "mlp.switch_mlp.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUpExps),
+    ),
+    (
+        "mlp.switch_mlp.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+];
 
 /// HuggingFace tensor name patterns shared by Qwen3/Gemma4.
 ///
@@ -387,21 +403,31 @@ fn model_family_for_type(model_type: &str) -> Result<ModelFamily, ConvertError> 
         "qwen3" => Ok(ModelFamily {
             family_name: "qwen3",
             tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: None,
             uses_language_model_prefix: false,
         }),
         "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_text" => Ok(ModelFamily {
             family_name: "qwen3_5",
             tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: None,
             uses_language_model_prefix: true,
         }),
         "qwen3_next" | "qwen3.6" | "qwen3_6" => Ok(ModelFamily {
             family_name: "qwen3_next",
             tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: None,
             uses_language_model_prefix: true,
+        }),
+        "qwen3_moe" => Ok(ModelFamily {
+            family_name: "qwen3_moe",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(QWEN3_MOE_EXTRA_TENSOR_MAP),
+            uses_language_model_prefix: false,
         }),
         "gemma4" => Ok(ModelFamily {
             family_name: "gemma4",
             tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: None,
             uses_language_model_prefix: true,
         }),
         other => Err(ConvertError::UnsupportedModelType {
@@ -461,6 +487,13 @@ fn uses_text_config(model_type: &str) -> bool {
     )
 }
 
+fn is_qwen3_5_family(model_type: &str) -> bool {
+    matches!(
+        model_type,
+        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_text"
+    )
+}
+
 /// Get a u64 field, checking both the top-level config and a nested `text_config`
 /// (Gemma4 and Qwen3.5+ nest architecture params under `text_config`).
 fn arch_u64(config: &serde_json::Value, model_type: &str, field: &str) -> Option<u64> {
@@ -506,10 +539,7 @@ fn linear_attention_config(
     config: &serde_json::Value,
     model_type: &str,
 ) -> NativeLinearAttentionConfig {
-    if !matches!(
-        model_type,
-        "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_text"
-    ) {
+    if !is_qwen3_5_family(model_type) {
         return NativeLinearAttentionConfig::default();
     }
 
@@ -525,16 +555,137 @@ fn linear_attention_config(
 }
 
 fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
-    if !arch_bool(config, model_type, "enable_moe_block").unwrap_or(false) {
+    let is_gemma4_moe = arch_bool(config, model_type, "enable_moe_block").unwrap_or(false);
+    let is_qwen3_moe = model_type == "qwen3_moe";
+    if !is_gemma4_moe && !is_qwen3_moe {
         return NativeMoeConfig::default();
     }
 
+    let expert_count = arch_u64(config, model_type, "num_experts")
+        .or_else(|| arch_u64(config, model_type, "num_local_experts"))
+        .and_then(u64_to_u32);
+    let experts_per_token = arch_u64(config, model_type, "top_k_experts")
+        .or_else(|| arch_u64(config, model_type, "num_experts_per_tok"))
+        .and_then(u64_to_u32);
     NativeMoeConfig {
-        expert_count: arch_u64(config, model_type, "num_experts").and_then(u64_to_u32),
-        experts_per_token: arch_u64(config, model_type, "top_k_experts").and_then(u64_to_u32),
+        expert_count,
+        experts_per_token,
         expert_intermediate_size: arch_u64(config, model_type, "moe_intermediate_size")
             .and_then(u64_to_u32),
     }
+}
+
+/// Parse per-model rope theta (main + SWA) and partial_rotary_factor.
+///
+/// Returns `(rope_theta, rope_theta_swa, partial_rotary_factor)`.
+/// Gemma4 stores these nested under `text_config.rope_parameters.{full,sliding}_attention`.
+/// Qwen3.5/Next stores them flat inside `text_config.rope_parameters`.
+fn parse_rope_params(
+    config: &serde_json::Value,
+    model_type: &str,
+) -> (Option<u32>, Option<u32>, Option<f32>) {
+    if model_type == "gemma4" {
+        let rp = config
+            .get("text_config")
+            .and_then(|tc| tc.get("rope_parameters"));
+        let full_theta = rp
+            .and_then(|rp| rp.get("full_attention"))
+            .and_then(|fa| fa.get("rope_theta"))
+            .and_then(|v| v.as_f64())
+            .or_else(|| arch_f64(config, model_type, "rope_theta"))
+            .and_then(f64_to_u32);
+        let sliding_theta = rp
+            .and_then(|rp| rp.get("sliding_attention"))
+            .and_then(|sa| sa.get("rope_theta"))
+            .and_then(|v| v.as_f64())
+            .and_then(f64_to_u32);
+        let partial_rotary = rp
+            .and_then(|rp| rp.get("full_attention"))
+            .and_then(|fa| fa.get("partial_rotary_factor"))
+            .and_then(|v| v.as_f64())
+            .or_else(|| arch_f64(config, model_type, "partial_rotary_factor"))
+            .map(|v| v as f32)
+            .filter(|&v| v <= 1.0);
+        return (full_theta, sliding_theta, partial_rotary);
+    }
+
+    let theta = arch_f64(config, model_type, "rope_theta")
+        .or_else(|| {
+            let text_config = config.get("text_config")?;
+            text_config
+                .get("rope_parameters")
+                .and_then(|rp| rp.get("rope_theta"))
+                .and_then(|v| v.as_f64())
+        })
+        .and_then(f64_to_u32);
+
+    let partial_rotary = arch_f64(config, model_type, "partial_rotary_factor")
+        .or_else(|| {
+            let text_config = config.get("text_config")?;
+            text_config
+                .get("rope_parameters")
+                .and_then(|rp| rp.get("partial_rotary_factor"))
+                .and_then(|v| v.as_f64())
+        })
+        .map(|v| v as f32)
+        .filter(|&v| v <= 1.0);
+
+    (theta, None, partial_rotary)
+}
+
+/// Parse per-layer type list from config (e.g. Gemma4's `layer_types` field).
+fn parse_layer_types(config: &serde_json::Value, model_type: &str) -> Vec<String> {
+    if model_type != "gemma4" {
+        return Vec::new();
+    }
+    config
+        .get("text_config")
+        .and_then(|tc| tc.get("layer_types"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Compute the KV-source mapping for KV-shared layers (Gemma4).
+///
+/// The last `num_kv_shared_layers` layers reuse K/V from the last non-shared
+/// layer of the same type (sliding vs. full).
+fn compute_kv_shared_sources(
+    config: &serde_json::Value,
+    model_type: &str,
+    layer_types: &[String],
+    layer_count: u32,
+) -> BTreeMap<u32, u32> {
+    if model_type != "gemma4" || layer_types.is_empty() {
+        return BTreeMap::new();
+    }
+    let num_shared = arch_u64(config, model_type, "num_kv_shared_layers").unwrap_or(0) as usize;
+    let non_shared_count = layer_count as usize - num_shared;
+
+    let mut last_full: Option<u32> = None;
+    let mut last_sliding: Option<u32> = None;
+    let mut sources = BTreeMap::new();
+
+    for (i, lt) in layer_types.iter().enumerate() {
+        if i < non_shared_count {
+            if lt == "full_attention" {
+                last_full = Some(i as u32);
+            } else {
+                last_sliding = Some(i as u32);
+            }
+        } else if let Some(src) = if lt == "full_attention" {
+            last_full
+        } else {
+            last_sliding
+        } {
+            sources.insert(i as u32, src);
+        }
+    }
+    sources
 }
 
 fn f64_to_u32(value: f64) -> Option<u32> {
@@ -784,6 +935,13 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
         return Some(result);
     }
 
+    // Try extra per-family map (e.g. Qwen3 MoE switch-expert tensors).
+    if let Some(extra) = family.extra_tensor_map {
+        if let Some(result) = match_prefixed_per_layer(name, "model.layers.", extra) {
+            return Some(result);
+        }
+    }
+
     // Try language_model.model.… prefix (Gemma4, Qwen3.5, Qwen3.6)
     if family.uses_language_model_prefix {
         if let Some(result) = match_tensor_in_map(name, LANGUAGE_MODEL_PREFIX_TENSOR_MAP) {
@@ -794,7 +952,7 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
         {
             return Some(result);
         }
-        if family.family_name == "qwen3_5" {
+        if is_qwen3_5_family(family.family_name) {
             if let Some(result) = match_prefixed_per_layer(
                 name,
                 "language_model.model.layers.",
@@ -803,7 +961,7 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
                 return Some(result);
             }
         }
-    } else if family.family_name == "qwen3_5" {
+    } else if is_qwen3_5_family(family.family_name) {
         if let Some(result) =
             match_prefixed_per_layer(name, "model.layers.", QWEN35_LINEAR_TENSOR_MAP)
         {
@@ -1104,9 +1262,14 @@ mod tests {
                     "num_attention_heads": 32,
                     "num_key_value_heads": 8,
                     "head_dim": 128,
+                    "global_head_dim": 256,
+                    "sliding_window": 1024,
                     "num_hidden_layers": 2,
                     "vocab_size": 262144,
                     "rope_theta": 1000000,
+                    "final_logit_softcapping": 30.0,
+                    "layer_types": ["sliding_attention", "sliding_attention"],
+                    "num_kv_shared_layers": 1,
                 }
             }),
         );
@@ -1227,6 +1390,17 @@ mod tests {
         assert_eq!(manifest.kv_head_count, 8);
         assert_eq!(manifest.vocab_size, 262144);
         assert_eq!(manifest.rope_theta, Some(1000000));
+        assert_eq!(manifest.global_head_dim, Some(256));
+        assert_eq!(manifest.sliding_window_size, Some(1024));
+        assert_eq!(manifest.final_logit_softcapping, Some(30.0));
+        assert_eq!(
+            manifest.layer_types,
+            vec![
+                "sliding_attention".to_string(),
+                "sliding_attention".to_string()
+            ]
+        );
+        assert_eq!(manifest.kv_shared_source_layers.get(&1), Some(&0));
 
         let has_lm_head = manifest
             .tensors
@@ -1378,6 +1552,28 @@ mod tests {
             .expect("linear-attention manifest should validate");
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn maps_qwen3_moe_switch_mlp_tensors() {
+        let family = model_family_for_type("qwen3_moe").expect("qwen3_moe should be supported");
+
+        assert_eq!(
+            match_tensor("model.layers.2.mlp.gate.weight", &family),
+            Some((NativeTensorRole::FfnGateInp, Some(2)))
+        );
+        assert_eq!(
+            match_tensor("model.layers.2.mlp.switch_mlp.gate_proj.weight", &family),
+            Some((NativeTensorRole::FfnGateExps, Some(2)))
+        );
+        assert_eq!(
+            match_tensor("model.layers.2.mlp.switch_mlp.up_proj.weight", &family),
+            Some((NativeTensorRole::FfnUpExps, Some(2)))
+        );
+        assert_eq!(
+            match_tensor("model.layers.2.mlp.switch_mlp.down_proj.weight", &family),
+            Some((NativeTensorRole::FfnDownExps, Some(2)))
+        );
     }
 
     #[test]
