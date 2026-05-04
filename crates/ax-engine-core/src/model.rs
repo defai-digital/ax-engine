@@ -547,6 +547,7 @@ fn validate_native_model_manifest(
         &manifest.attention_v_norm_no_scale_layers,
         "attention_v_norm_no_scale_layers",
     )?;
+    validate_interleaved_attention_metadata(manifest)?;
     if let Some(rope_theta) = manifest.rope_theta {
         if rope_theta == 0 {
             return Err(NativeModelError::InvalidManifest {
@@ -1472,6 +1473,86 @@ fn validate_manifest_layer_index_list(
                     field_name, layer_index, manifest.layer_count
                 ),
             });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_interleaved_attention_metadata(
+    manifest: &NativeModelManifest,
+) -> Result<(), NativeModelError> {
+    if let Some(rope_theta_swa) = manifest.rope_theta_swa {
+        if rope_theta_swa == 0 {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!("rope_theta_swa must be > 0, got {rope_theta_swa}"),
+            });
+        }
+    }
+    if let Some(global_head_dim) = manifest.global_head_dim {
+        if global_head_dim == 0 {
+            return Err(NativeModelError::InvalidManifest {
+                message: "global_head_dim must be > 0".to_string(),
+            });
+        }
+    }
+    if let Some(sliding_window_size) = manifest.sliding_window_size {
+        if sliding_window_size == 0 {
+            return Err(NativeModelError::InvalidManifest {
+                message: "sliding_window_size must be > 0".to_string(),
+            });
+        }
+    }
+
+    if !manifest.layer_types.is_empty() {
+        if manifest.layer_types.len() != manifest.layer_count as usize {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "layer_types must contain one entry per layer, got {} for layer_count {}",
+                    manifest.layer_types.len(),
+                    manifest.layer_count
+                ),
+            });
+        }
+        for (idx, layer_type) in manifest.layer_types.iter().enumerate() {
+            if layer_type != "sliding_attention" && layer_type != "full_attention" {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer_types[{idx}] must be sliding_attention or full_attention, got {layer_type:?}"
+                    ),
+                });
+            }
+        }
+    }
+
+    for (&layer_index, &source_layer) in &manifest.kv_shared_source_layers {
+        if layer_index >= manifest.layer_count || source_layer >= manifest.layer_count {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "kv_shared_source_layers contains out-of-range mapping {} -> {} (layer_count={})",
+                    layer_index, source_layer, manifest.layer_count
+                ),
+            });
+        }
+        if source_layer >= layer_index {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "kv_shared_source_layers layer {} must reference an earlier source layer, got {}",
+                    layer_index, source_layer
+                ),
+            });
+        }
+        if !manifest.layer_types.is_empty() {
+            let layer_type = &manifest.layer_types[layer_index as usize];
+            let source_type = &manifest.layer_types[source_layer as usize];
+            if layer_type != source_type {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "kv_shared_source_layers layer {} type {:?} cannot reuse source {} type {:?}",
+                        layer_index, layer_type, source_layer, source_type
+                    ),
+                });
+            }
         }
     }
 
@@ -2955,6 +3036,74 @@ mod tests {
             panic!("expected invalid manifest error");
         };
         assert!(message.contains("attention_value_from_key_layers"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_mismatched_layer_types_length() {
+        let mut manifest = packed_layer_manifest();
+        manifest.layer_types = vec!["sliding_attention".to_string()];
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("layer_types length mismatch should fail closed");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(message.contains("layer_types"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_invalid_kv_shared_source_layer() {
+        let mut manifest = packed_layer_manifest();
+        manifest.kv_shared_source_layers.insert(1, 99);
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error =
+            NativeModelArtifacts::from_dir(&dir).expect_err("bad KV source should fail closed");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(message.contains("kv_shared_source_layers"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_cross_type_kv_shared_source_layer() {
+        let mut manifest = packed_layer_manifest();
+        manifest.layer_types = vec![
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+        ];
+        manifest.kv_shared_source_layers.insert(1, 0);
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error =
+            NativeModelArtifacts::from_dir(&dir).expect_err("bad KV source should fail closed");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(message.contains("cannot reuse source"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_zero_interleaved_attention_fields() {
+        let mut manifest = packed_layer_manifest();
+        manifest.rope_theta_swa = Some(0);
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error =
+            NativeModelArtifacts::from_dir(&dir).expect_err("zero rope_theta_swa should fail");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(message.contains("rope_theta_swa"));
 
         let _ = fs::remove_dir_all(dir);
     }
