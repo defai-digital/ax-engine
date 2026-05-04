@@ -78,7 +78,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         arch_f64(&config, &model_type, "attn_logit_softcapping").and_then(f64_to_u32);
     let linear_attention = linear_attention_config(&config, &model_type);
 
-    let layer_types = parse_layer_types(&config, &model_type);
+    let layer_types = parse_layer_types(&config, &model_type, arch.layer_count);
     let global_head_dim = arch_u64(&config, &model_type, "global_head_dim").and_then(u64_to_u32);
     let sliding_window_size = arch_u64(&config, &model_type, "sliding_window").and_then(u64_to_u32);
     let final_logit_softcapping =
@@ -655,11 +655,17 @@ fn parse_rope_params(
 }
 
 /// Parse per-layer type list from config (e.g. Gemma4's `layer_types` field).
-fn parse_layer_types(config: &serde_json::Value, model_type: &str) -> Vec<String> {
+/// Gemma4 reference implementations derive it from `sliding_window_pattern`
+/// when the field is omitted.
+fn parse_layer_types(
+    config: &serde_json::Value,
+    model_type: &str,
+    layer_count: u32,
+) -> Vec<String> {
     if model_type != "gemma4" {
         return Vec::new();
     }
-    config
+    if let Some(layer_types) = config
         .get("text_config")
         .and_then(|tc| tc.get("layer_types"))
         .and_then(|v| v.as_array())
@@ -668,7 +674,22 @@ fn parse_layer_types(config: &serde_json::Value, model_type: &str) -> Vec<String
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect()
         })
-        .unwrap_or_default()
+    {
+        return layer_types;
+    }
+
+    let pattern = arch_u64(config, model_type, "sliding_window_pattern")
+        .filter(|&pattern| pattern > 0)
+        .unwrap_or(5);
+    (0..layer_count)
+        .map(|i| {
+            if (u64::from(i) + 1).is_multiple_of(pattern) {
+                "full_attention".to_string()
+            } else {
+                "sliding_attention".to_string()
+            }
+        })
+        .collect()
 }
 
 /// Compute the KV-source mapping for KV-shared layers (Gemma4).
@@ -1194,6 +1215,71 @@ mod tests {
             ),
             Some((NativeTensorRole::FfnDownExps, Some(0)))
         );
+    }
+
+    #[test]
+    fn converts_gemma4_default_layer_type_pattern_for_k_eq_v() {
+        let dir = unique_test_dir("gemma4_default_layer_types");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "gemma4",
+                "vocab_size": 262144,
+                "text_config": {
+                    "hidden_size": 3072,
+                    "num_attention_heads": 32,
+                    "num_key_value_heads": 8,
+                    "num_global_key_value_heads": 4,
+                    "head_dim": 128,
+                    "global_head_dim": 256,
+                    "attention_k_eq_v": true,
+                    "sliding_window_pattern": 5,
+                    "num_hidden_layers": 5,
+                    "vocab_size": 262144
+                }
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                ("model.embed_tokens.weight", "BF16", &[262144, 3072]),
+                ("model.norm.weight", "BF16", &[3072]),
+                ("lm_head.weight", "BF16", &[262144, 3072]),
+                ("model.layers.4.input_layernorm.weight", "BF16", &[3072]),
+                (
+                    "model.layers.4.self_attn.q_proj.weight",
+                    "BF16",
+                    &[8192, 3072],
+                ),
+                (
+                    "model.layers.4.self_attn.k_proj.weight",
+                    "BF16",
+                    &[1024, 3072],
+                ),
+                (
+                    "model.layers.4.self_attn.o_proj.weight",
+                    "BF16",
+                    &[3072, 8192],
+                ),
+            ],
+        );
+
+        let manifest = convert_hf_model_dir(&dir).expect("gemma4 conversion should succeed");
+
+        assert_eq!(
+            manifest.layer_types,
+            vec![
+                "sliding_attention".to_string(),
+                "sliding_attention".to_string(),
+                "sliding_attention".to_string(),
+                "sliding_attention".to_string(),
+                "full_attention".to_string(),
+            ]
+        );
+        assert_eq!(manifest.attention_value_from_key_layers, vec![4]);
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
