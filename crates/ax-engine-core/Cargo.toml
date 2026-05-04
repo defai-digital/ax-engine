@@ -20,3 +20,7 @@ workspace = true
 
 [lib]
 path = "src/lib.rs"
+
+[[bin]]
+name = "generate-manifest"
+path = "src/bin/generate_manifest.rs"
