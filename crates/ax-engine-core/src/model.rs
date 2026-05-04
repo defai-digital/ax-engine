@@ -783,20 +783,41 @@ fn validate_native_model_manifest(
                 layer_index,
                 "attention_o",
             )?;
-            let has_packed_qkv = roles.contains(&NativeTensorRole::AttentionQkvPacked);
-            let has_split_qkv = roles.contains(&NativeTensorRole::AttentionQ)
-                && roles.contains(&NativeTensorRole::AttentionK)
-                && (roles.contains(&NativeTensorRole::AttentionV)
-                    || manifest
-                        .attention_value_from_key_layers
-                        .contains(&layer_index));
-            if !(has_packed_qkv || has_split_qkv) {
-                return Err(NativeModelError::InvalidManifest {
-                    message: format!(
-                        "layer {} must provide attention_qkv_packed or attention_q/attention_k plus attention_v (or mark the layer in attention_value_from_key_layers)",
-                        layer_index
-                    ),
-                });
+            let uses_shared_kv = manifest.kv_shared_source_layers.contains_key(&layer_index);
+            if uses_shared_kv {
+                require_layer_role(
+                    roles,
+                    NativeTensorRole::AttentionQ,
+                    layer_index,
+                    "attention_q",
+                )?;
+                if roles.contains(&NativeTensorRole::AttentionQkvPacked)
+                    || roles.contains(&NativeTensorRole::AttentionK)
+                    || roles.contains(&NativeTensorRole::AttentionV)
+                {
+                    return Err(NativeModelError::InvalidManifest {
+                        message: format!(
+                            "KV-shared layer {} must provide attention_q/attention_o only and reuse source K/V",
+                            layer_index
+                        ),
+                    });
+                }
+            } else {
+                let has_packed_qkv = roles.contains(&NativeTensorRole::AttentionQkvPacked);
+                let has_split_qkv = roles.contains(&NativeTensorRole::AttentionQ)
+                    && roles.contains(&NativeTensorRole::AttentionK)
+                    && (roles.contains(&NativeTensorRole::AttentionV)
+                        || manifest
+                            .attention_value_from_key_layers
+                            .contains(&layer_index));
+                if !(has_packed_qkv || has_split_qkv) {
+                    return Err(NativeModelError::InvalidManifest {
+                        message: format!(
+                            "layer {} must provide attention_qkv_packed or attention_q/attention_k plus attention_v (or mark the layer in attention_value_from_key_layers)",
+                            layer_index
+                        ),
+                    });
+                }
             }
         }
         if has_any_linear_attention {
@@ -1081,19 +1102,28 @@ fn validate_native_model_tensor_shapes(
                 NativeTensorRole::AttentionQ,
                 "attention_q",
             )?;
-            let attention_k = required_layer_tensor_spec(
-                manifest,
-                layer_index,
-                NativeTensorRole::AttentionK,
-                "attention_k",
-            )?;
-            let split_dims = resolved_split_attention_dims(manifest, layer_index)?;
-            expect_matrix_shape(attention_q, split_dims.q_rows, hidden_size, "attention_q")?;
-            expect_matrix_shape(attention_k, split_dims.kv_rows, hidden_size, "attention_k")?;
-            if let Some(attention_v) =
-                manifest_tensor(manifest, NativeTensorRole::AttentionV, Some(layer_index))
-            {
-                expect_matrix_shape(attention_v, split_dims.kv_rows, hidden_size, "attention_v")?;
+            if manifest.kv_shared_source_layers.contains_key(&layer_index) {
+                validate_q_only_attention_tensor(manifest, layer_index, attention_q)?;
+            } else {
+                let attention_k = required_layer_tensor_spec(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::AttentionK,
+                    "attention_k",
+                )?;
+                let split_dims = resolved_split_attention_dims(manifest, layer_index)?;
+                expect_matrix_shape(attention_q, split_dims.q_rows, hidden_size, "attention_q")?;
+                expect_matrix_shape(attention_k, split_dims.kv_rows, hidden_size, "attention_k")?;
+                if let Some(attention_v) =
+                    manifest_tensor(manifest, NativeTensorRole::AttentionV, Some(layer_index))
+                {
+                    expect_matrix_shape(
+                        attention_v,
+                        split_dims.kv_rows,
+                        hidden_size,
+                        "attention_v",
+                    )?;
+                }
             }
         }
         // Layers without any attention tensors (e.g. linear_attention) skip QKV shape validation.
@@ -1763,6 +1793,75 @@ fn resolved_split_attention_dims(
     };
 
     Ok(NativeSplitAttentionDims { q_rows, kv_rows })
+}
+
+fn validate_q_only_attention_tensor(
+    manifest: &NativeModelManifest,
+    layer_index: u32,
+    attention_q: &NativeTensorSpec,
+) -> Result<(), NativeModelError> {
+    let (q_rows, q_cols) =
+        matrix_shape(attention_q).ok_or_else(|| NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} tensor attention_q must be a rank-2 matrix",
+                layer_index
+            ),
+        })?;
+    let hidden_size = u64::from(manifest.hidden_size);
+    if !attention_q.source_quantized && q_cols != hidden_size {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} tensor attention_q must have shape [q_rows, {}], got {:?}",
+                layer_index, hidden_size, attention_q.shape
+            ),
+        });
+    }
+
+    let head_dim = manifest_tensor(
+        manifest,
+        NativeTensorRole::AttentionQNorm,
+        Some(layer_index),
+    )
+    .map(|q_norm| {
+        vector_shape(q_norm).ok_or_else(|| NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} tensor attention_q_norm must be a rank-1 vector",
+                layer_index
+            ),
+        })
+    })
+    .transpose()?
+    .unwrap_or(u64::from(manifest.attention_head_dim));
+    if head_dim == 0 {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} resolved attention head_dim must be > 0",
+                layer_index
+            ),
+        });
+    }
+    let effective_q_rows = if manifest.attn_output_gate {
+        if !q_rows.is_multiple_of(2) {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "layer {} attention_q rows {} must be even when attn_output_gate is enabled",
+                    layer_index, q_rows
+                ),
+            });
+        }
+        q_rows / 2
+    } else {
+        q_rows
+    };
+    if effective_q_rows == 0 || !effective_q_rows.is_multiple_of(head_dim) {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "layer {} attention_q rows {} (effective {}) must be divisible by head_dim {}",
+                layer_index, q_rows, effective_q_rows, head_dim
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn manifest_tensor(
@@ -2741,6 +2840,94 @@ mod tests {
             panic!("expected invalid manifest error");
         };
         assert!(message.contains("attention_qkv_packed"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_q_only_kv_shared_layer() {
+        let mut manifest = packed_layer_manifest();
+        manifest.model_family = "gemma4".to_string();
+        manifest.sliding_window_size = Some(1024);
+        manifest.layer_types = vec![
+            "sliding_attention".to_string(),
+            "sliding_attention".to_string(),
+        ];
+        manifest.kv_shared_source_layers.insert(1, 0);
+        manifest.tensors.retain(|tensor| {
+            !(tensor.layer_index == Some(1)
+                && matches!(
+                    tensor.role,
+                    NativeTensorRole::AttentionQkvPacked
+                        | NativeTensorRole::AttentionK
+                        | NativeTensorRole::AttentionV
+                ))
+        });
+        manifest.tensors.extend([
+            tensor(
+                "model.layers.1.self_attn.q_proj.weight",
+                NativeTensorRole::AttentionQ,
+                Some(1),
+                vec![2048, 2048],
+            ),
+            tensor(
+                "model.layers.1.self_attn.q_norm.weight",
+                NativeTensorRole::AttentionQNorm,
+                Some(1),
+                vec![128],
+            ),
+        ]);
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        NativeModelArtifacts::from_dir(&dir).expect("Q-only KV-shared layer should validate");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_kv_shared_layer_with_own_kv() {
+        let mut manifest = packed_layer_manifest();
+        manifest.model_family = "gemma4".to_string();
+        manifest.sliding_window_size = Some(1024);
+        manifest.layer_types = vec![
+            "sliding_attention".to_string(),
+            "sliding_attention".to_string(),
+        ];
+        manifest.kv_shared_source_layers.insert(1, 0);
+        manifest.tensors.retain(|tensor| {
+            !(tensor.layer_index == Some(1) && tensor.role == NativeTensorRole::AttentionQkvPacked)
+        });
+        manifest.tensors.extend([
+            tensor(
+                "model.layers.1.self_attn.q_proj.weight",
+                NativeTensorRole::AttentionQ,
+                Some(1),
+                vec![2048, 2048],
+            ),
+            tensor(
+                "model.layers.1.self_attn.k_proj.weight",
+                NativeTensorRole::AttentionK,
+                Some(1),
+                vec![1024, 2048],
+            ),
+            tensor(
+                "model.layers.1.self_attn.v_proj.weight",
+                NativeTensorRole::AttentionV,
+                Some(1),
+                vec![1024, 2048],
+            ),
+        ]);
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("KV-shared layer with packed QKV should fail closed");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("KV-shared layer"),
+            "unexpected error: {message}"
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

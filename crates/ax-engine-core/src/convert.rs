@@ -1350,22 +1350,11 @@ mod tests {
                     &[4096, 3072],
                 ),
                 (
-                    "model.layers.1.self_attn.k_proj.weight",
-                    "BF16",
-                    &[1024, 3072],
-                ),
-                (
-                    "model.layers.1.self_attn.v_proj.weight",
-                    "BF16",
-                    &[1024, 3072],
-                ),
-                (
                     "model.layers.1.self_attn.o_proj.weight",
                     "BF16",
                     &[3072, 4096],
                 ),
                 ("model.layers.1.self_attn.q_norm.weight", "BF16", &[128]),
-                ("model.layers.1.self_attn.k_norm.weight", "BF16", &[128]),
                 (
                     "model.layers.1.post_attention_layernorm.weight",
                     "BF16",
@@ -1418,12 +1407,26 @@ mod tests {
             ]
         );
         assert_eq!(manifest.kv_shared_source_layers.get(&1), Some(&0));
+        assert!(
+            !manifest.tensors.iter().any(|tensor| {
+                tensor.layer_index == Some(1)
+                    && matches!(
+                        tensor.role,
+                        NativeTensorRole::AttentionK | NativeTensorRole::AttentionV
+                    )
+            }),
+            "KV-shared Gemma4 layers should reuse source K/V instead of mapping their own"
+        );
 
         let has_lm_head = manifest
             .tensors
             .iter()
             .any(|t| t.role == NativeTensorRole::LmHead);
         assert!(has_lm_head);
+
+        write_manifest(&dir, &manifest).expect("write should succeed");
+        crate::model::NativeModelArtifacts::from_dir(&dir)
+            .expect("Gemma4 KV-shared manifest should validate");
 
         let _ = fs::remove_dir_all(dir);
     }
