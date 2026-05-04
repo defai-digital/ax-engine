@@ -70,9 +70,9 @@ pub struct LinearAttentionWeights {
 
 /// A weight matrix plus optional MLX affine quantization metadata.
 ///
-/// When `scales` is `Some`, the weight tensor contains packed 4-bit integers
-/// and must be multiplied via `mlx_quantized_matmul` rather than regular
-/// matmul.
+/// When `scales` is `Some`, the weight tensor contains packed affine-quantized
+/// integers and must be multiplied via `mlx_quantized_matmul` rather than
+/// regular matmul.
 pub struct QuantizedWeight {
     pub weight: MlxArray,
     pub scales: Option<MlxArray>,
@@ -659,6 +659,7 @@ pub enum WeightLoadError {
 mod tests {
     use super::*;
     use ax_engine_core::NativeTensorDataType;
+    use mlx_sys::{MlxDtype, zeros};
 
     fn spec(role: NativeTensorRole) -> NativeTensorSpec {
         NativeTensorSpec {
@@ -729,5 +730,22 @@ mod tests {
             .expect_err("packed QKV cannot represent Q-only KV sharing");
 
         assert!(matches!(error, WeightLoadError::InvalidLayer(_)));
+    }
+
+    #[test]
+    fn quantized_weight_uses_tensor_specific_quantization_metadata() {
+        let quantization = NativeTensorQuantization {
+            mode: "affine".to_string(),
+            group_size: 32,
+            bits: 8,
+        };
+        let weight = zeros(&[1, 1], MlxDtype::Uint32, None);
+        let scales = Some(zeros(&[1, 1], MlxDtype::Bfloat16, None));
+
+        let quantized =
+            QuantizedWeight::with_quantization(weight, scales, None, Some(&quantization));
+
+        assert_eq!(quantized.group_size, 32);
+        assert_eq!(quantized.bits, 8);
     }
 }
