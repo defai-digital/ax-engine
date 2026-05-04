@@ -815,13 +815,24 @@ fn validate_native_model_manifest(
                     });
                 }
             } else {
+                let uses_value_from_key = manifest
+                    .attention_value_from_key_layers
+                    .contains(&layer_index);
+                if uses_value_from_key
+                    && (roles.contains(&NativeTensorRole::AttentionQkvPacked)
+                        || roles.contains(&NativeTensorRole::AttentionV))
+                {
+                    return Err(NativeModelError::InvalidManifest {
+                        message: format!(
+                            "value-from-key layer {} must provide split attention_q/attention_k without attention_v or attention_qkv_packed",
+                            layer_index
+                        ),
+                    });
+                }
                 let has_packed_qkv = roles.contains(&NativeTensorRole::AttentionQkvPacked);
                 let has_split_qkv = roles.contains(&NativeTensorRole::AttentionQ)
                     && roles.contains(&NativeTensorRole::AttentionK)
-                    && (roles.contains(&NativeTensorRole::AttentionV)
-                        || manifest
-                            .attention_value_from_key_layers
-                            .contains(&layer_index));
+                    && (roles.contains(&NativeTensorRole::AttentionV) || uses_value_from_key);
                 if !(has_packed_qkv || has_split_qkv) {
                     return Err(NativeModelError::InvalidManifest {
                         message: format!(
@@ -3242,6 +3253,45 @@ mod tests {
 
         NativeModelArtifacts::from_dir(&dir)
             .expect("attention_value_from_key_layers should allow missing attention_v");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_value_from_key_layers_with_attention_v() {
+        let mut manifest = split_layer_manifest_with_value_from_key();
+        manifest.tensors.push(tensor(
+            "model.layers.1.self_attn.v_proj.weight",
+            NativeTensorRole::AttentionV,
+            Some(1),
+            vec![1024, 2048],
+        ));
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("value-from-key layer must not also provide attention_v");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(message.contains("value-from-key layer 1"));
+        assert!(message.contains("attention_v"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_value_from_key_layers_with_packed_qkv() {
+        let mut manifest = packed_layer_manifest();
+        manifest.attention_value_from_key_layers = vec![1];
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("value-from-key layer must not provide packed QKV");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(message.contains("value-from-key layer 1"));
+        assert!(message.contains("attention_qkv_packed"));
 
         let _ = fs::remove_dir_all(dir);
     }
