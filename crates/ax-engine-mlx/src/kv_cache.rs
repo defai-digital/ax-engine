@@ -19,9 +19,18 @@ struct LayerKV {
     dtype: MlxDtype,
 }
 
-/// Per-request KV cache with chunked pre-allocation.
+#[derive(Default)]
+struct LinearLayerState {
+    /// Qwen3.5 gated-delta conv tail: `[1, conv_kernel - 1, conv_dim]`.
+    conv_state: Option<MlxArray>,
+    /// Qwen3.5 gated-delta recurrent state: `[1, value_heads, value_dim, key_dim]`.
+    recurrent_state: Option<MlxArray>,
+}
+
+/// Per-request attention cache with chunked KV pre-allocation.
 ///
-/// Shape convention: `[1, n_kv_heads, seq_len, head_dim]` (batch=1, SDPA-native format).
+/// Full-attention KV shape convention:
+/// `[1, n_kv_heads, seq_len, head_dim]` (batch=1, SDPA-native format).
 ///
 /// ## Growth strategy
 ///
@@ -38,6 +47,7 @@ struct LayerKV {
 /// The next `append` overwrites from `prefix_len`, restoring correctness.
 pub struct MlxKVCache {
     layers: Vec<Option<LayerKV>>,
+    linear_layers: Vec<LinearLayerState>,
     /// Current logical sequence length (token count cached).
     pub seq_len: usize,
 }
@@ -46,6 +56,9 @@ impl MlxKVCache {
     pub fn new(num_layers: usize) -> Self {
         Self {
             layers: (0..num_layers).map(|_| None).collect(),
+            linear_layers: (0..num_layers)
+                .map(|_| LinearLayerState::default())
+                .collect(),
             seq_len: 0,
         }
     }
@@ -151,12 +164,38 @@ impl MlxKVCache {
     ///
     /// Mirrors mlx_lm's `mx.eval(y, cache)` pattern.
     pub fn collect_eval_refs(&self) -> Vec<&MlxArray> {
-        let mut refs = Vec::with_capacity(self.layers.len() * 2);
+        let mut refs = Vec::with_capacity(self.layers.len() * 4);
         for lkv in self.layers.iter().flatten() {
             refs.push(&lkv.k);
             refs.push(&lkv.v);
         }
+        for linear in &self.linear_layers {
+            if let Some(conv_state) = &linear.conv_state {
+                refs.push(conv_state);
+            }
+            if let Some(recurrent_state) = &linear.recurrent_state {
+                refs.push(recurrent_state);
+            }
+        }
         refs
+    }
+
+    /// Read the cached gated-delta states for a Qwen3.5 linear-attention layer.
+    pub fn linear_state(&self, layer: usize) -> (Option<&MlxArray>, Option<&MlxArray>) {
+        let state = &self.linear_layers[layer];
+        (state.conv_state.as_ref(), state.recurrent_state.as_ref())
+    }
+
+    /// Store the gated-delta states for a Qwen3.5 linear-attention layer.
+    pub fn set_linear_state(
+        &mut self,
+        layer: usize,
+        conv_state: MlxArray,
+        recurrent_state: MlxArray,
+    ) {
+        let state = &mut self.linear_layers[layer];
+        state.conv_state = Some(conv_state);
+        state.recurrent_state = Some(recurrent_state);
     }
 
     /// Read K/V already written by `source_layer` during the current forward pass.
@@ -194,6 +233,38 @@ impl MlxKVCache {
         for entry in &mut self.layers {
             *entry = None;
         }
+        for state in &mut self.linear_layers {
+            *state = LinearLayerState::default();
+        }
         self.seq_len = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linear_state_is_eval_tracked_and_reset() {
+        let mut cache = MlxKVCache::new(2);
+        let conv = zeros(&[1, 3, 14], MlxDtype::Float32, None);
+        let recurrent = zeros(&[1, 4, 8, 6], MlxDtype::Float32, None);
+
+        cache.set_linear_state(1, conv, recurrent);
+
+        let (conv_state, recurrent_state) = cache.linear_state(1);
+        assert_eq!(conv_state.expect("conv state").shape(), vec![1, 3, 14]);
+        assert_eq!(
+            recurrent_state.expect("recurrent state").shape(),
+            vec![1, 4, 8, 6]
+        );
+        assert_eq!(cache.collect_eval_refs().len(), 2);
+
+        cache.reset();
+
+        let (conv_state, recurrent_state) = cache.linear_state(1);
+        assert!(conv_state.is_none());
+        assert!(recurrent_state.is_none());
+        assert!(cache.collect_eval_refs().is_empty());
     }
 }
