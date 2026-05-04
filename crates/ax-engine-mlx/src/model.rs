@@ -48,7 +48,7 @@ impl LinearAttentionConfig {
         }
         Some(Self {
             full_attention_interval: cfg
-                .full_attention_interval
+                .resolved_full_attention_interval(&m.model_family)
                 .expect("validated linear_attention.full_attention_interval")
                 as usize,
             num_value_heads: cfg
@@ -1102,7 +1102,7 @@ mod tests {
             hidden_states_scale: None,
             moe_norm_topk_prob: true,
             linear_attention: NativeLinearAttentionConfig {
-                full_attention_interval: Some(4),
+                full_attention_interval: None,
                 num_value_heads: Some(2),
                 num_key_heads: Some(1),
                 key_head_dim: Some(4),
