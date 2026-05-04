@@ -5348,8 +5348,8 @@ fn resolve_runtime_staged_inputs_fails_closed_when_model_projection_is_invalid()
     let crate::model::NativeModelError::InvalidManifest { message } = error else {
         panic!("expected invalid manifest");
     };
-    assert!(message.contains("attention_q rows 8"));
-    assert!(message.contains("head_dim 3"));
+    assert!(message.contains("attention_o"));
+    assert!(message.contains("[8, 6]"));
 
     let _ = fs::remove_dir_all(model_dir);
 }

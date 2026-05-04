@@ -1017,21 +1017,14 @@ fn validate_native_model_tensor_shapes(
         if let Some(attention_o) =
             manifest_tensor(manifest, NativeTensorRole::AttentionO, Some(layer_index))
         {
-            let o_shape =
-                matrix_shape(attention_o).ok_or_else(|| NativeModelError::InvalidManifest {
-                    message: format!(
-                        "layer {} tensor attention_o must be a rank-2 matrix",
-                        layer_index
-                    ),
-                })?;
-            if !attention_o.source_quantized && o_shape.0 != hidden_size {
-                return Err(NativeModelError::InvalidManifest {
-                    message: format!(
-                        "layer {} tensor attention_o must have {} output rows, got {}",
-                        layer_index, hidden_size, o_shape.0
-                    ),
-                });
-            }
+            let attention_output_cols = u64::from(manifest.attention_head_count)
+                * configured_attention_head_dim(manifest, layer_index);
+            expect_matrix_shape(
+                attention_o,
+                hidden_size,
+                attention_output_cols,
+                "attention_o",
+            )?;
         }
 
         let ffn_norm = manifest_tensor(manifest, NativeTensorRole::FfnNorm, Some(layer_index))
@@ -3426,6 +3419,30 @@ mod tests {
         };
         assert!(message.contains("attention_q_norm"));
         assert!(message.contains("128"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_attention_o_input_dim_mismatches() {
+        let mut manifest = packed_layer_manifest();
+        manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| {
+                tensor.role == NativeTensorRole::AttentionO && tensor.layer_index == Some(0)
+            })
+            .expect("attention o should exist")
+            .shape = vec![2048, 1024];
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error =
+            NativeModelArtifacts::from_dir(&dir).expect_err("attention o mismatch should fail");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(message.contains("attention_o"));
+        assert!(message.contains("2048"));
 
         let _ = fs::remove_dir_all(dir);
     }
