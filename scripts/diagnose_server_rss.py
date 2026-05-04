@@ -101,8 +101,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-json",
         type=Path,
-        default=Path("/tmp/ax-engine-memory-leak-benchmark.json"),
-        help="Where to write the benchmark JSON report.",
+        default=Path("/tmp/ax-engine-server-rss-diagnostic.json"),
+        help="Where to write the RSS diagnostic JSON report.",
     )
     parser.add_argument(
         "--server-binary",
@@ -175,7 +175,7 @@ def wait_for_health(base_url: str) -> dict[str, Any]:
 
 
 def prompt_tokens(count: int) -> list[int]:
-    # Keep token ids small and stable; the synthetic benchmark only needs payload size.
+    # Keep token ids small and stable; the RSS diagnostic only needs payload size.
     return [(index % 255) + 1 for index in range(count)]
 
 
@@ -397,7 +397,7 @@ def run_mode(
             response = request_json(server.base_url, "POST", "/v1/generate", payload)
             if response.get("status") != "finished":
                 raise RuntimeError(
-                    f"request {request_index} did not finish in {mode} benchmark: {response}"
+                    f"request {request_index} did not finish in {mode} RSS diagnostic: {response}"
                 )
 
             should_sample = (
