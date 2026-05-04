@@ -1,7 +1,7 @@
 use std::ffi::CString;
 use std::ptr;
 
-use crate::array::MlxArray;
+use crate::array::{MlxArray, MlxDtype};
 use crate::ffi;
 use crate::stream::MlxStream;
 
@@ -63,6 +63,23 @@ impl MlxMetalKernel {
         thread_group: (i32, i32, i32),
         s: Option<&MlxStream>,
     ) -> Vec<MlxArray> {
+        self.apply_with_template(inputs, output_specs, &[], grid, thread_group, s)
+    }
+
+    /// Call the kernel with template arguments.
+    ///
+    /// MLX fast kernels use template arguments for compile-time constants such
+    /// as dtypes and head dimensions.  The names must match the identifiers used
+    /// in the kernel source.
+    pub fn apply_with_template(
+        &self,
+        inputs: &[&MlxArray],
+        output_specs: &[KernelOutputSpec],
+        template_args: &[KernelTemplateArg<'_>],
+        grid: (i32, i32, i32),
+        thread_group: (i32, i32, i32),
+        s: Option<&MlxStream>,
+    ) -> Vec<MlxArray> {
         unsafe {
             let stream = s
                 .map(|s| s.inner)
@@ -83,6 +100,35 @@ impl MlxMetalKernel {
                     spec.shape.len(),
                     spec.dtype.to_ffi(),
                 );
+            }
+            let mut template_names = Vec::with_capacity(template_args.len());
+            for arg in template_args {
+                let name = CString::new(arg.name())
+                    .expect("Metal kernel template argument names must not contain NUL bytes");
+                match *arg {
+                    KernelTemplateArg::Dtype { dtype, .. } => {
+                        ffi::mlx_fast_metal_kernel_config_add_template_arg_dtype(
+                            config,
+                            name.as_ptr(),
+                            dtype.to_ffi(),
+                        );
+                    }
+                    KernelTemplateArg::Int { value, .. } => {
+                        ffi::mlx_fast_metal_kernel_config_add_template_arg_int(
+                            config,
+                            name.as_ptr(),
+                            value,
+                        );
+                    }
+                    KernelTemplateArg::Bool { value, .. } => {
+                        ffi::mlx_fast_metal_kernel_config_add_template_arg_bool(
+                            config,
+                            name.as_ptr(),
+                            value,
+                        );
+                    }
+                }
+                template_names.push(name);
             }
             ffi::mlx_fast_metal_kernel_config_set_grid(config, grid.0, grid.1, grid.2);
             ffi::mlx_fast_metal_kernel_config_set_thread_group(
@@ -125,6 +171,20 @@ impl Drop for MlxMetalKernel {
 pub struct KernelOutputSpec {
     pub shape: Vec<i32>,
     pub dtype: crate::array::MlxDtype,
+}
+
+pub enum KernelTemplateArg<'a> {
+    Dtype { name: &'a str, dtype: MlxDtype },
+    Int { name: &'a str, value: i32 },
+    Bool { name: &'a str, value: bool },
+}
+
+impl KernelTemplateArg<'_> {
+    fn name(&self) -> &str {
+        match self {
+            Self::Dtype { name, .. } | Self::Int { name, .. } | Self::Bool { name, .. } => name,
+        }
+    }
 }
 
 fn build_string_vec(strs: &[&str]) -> ffi::mlx_vector_string {

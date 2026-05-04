@@ -31,7 +31,7 @@ pub use fast::{
     scaled_dot_product_attention_with_mask,
 };
 pub use io::load_safetensors;
-pub use metal::MlxMetalKernel;
+pub use metal::{KernelOutputSpec, KernelTemplateArg, MlxMetalKernel};
 pub use ops::{
     add, arange, argmax, argpartition_axis, argsort_axis, as_strided, astype, clip, concatenate,
     contiguous, conv1d, dequantize, divide, erf, exp, expand_dims, expand_dims_axes, gather_mm,
