@@ -8,8 +8,8 @@ use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
 use ax_engine_core::{
     ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelArtifacts,
-    NativeModelBindingSummary, NativeTensorRole, RequestExecutionUpdate, RequestId, RouteMetadata,
-    RunnerInput, RunnerOutput, StopReason,
+    NativeModelBindingSummary, NativeModelManifest, NativeTensorRole, RequestExecutionUpdate,
+    RequestId, RouteMetadata, RunnerInput, RunnerOutput, StopReason,
 };
 
 use crate::generate::{chunked_prefill, decode_step};
@@ -420,11 +420,61 @@ fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(
         || manifest.global_head_dim.is_some()
         || manifest.rope_theta_swa.is_some()
     {
+        validate_gemma4_interleaved_attention(manifest)?;
+    }
+    Ok(())
+}
+
+fn validate_gemma4_interleaved_attention(
+    manifest: &NativeModelManifest,
+) -> Result<(), MlxRunnerError> {
+    if manifest.model_family != "gemma4" {
         return Err(MlxRunnerError::UnsupportedFeature(
-            "interleaved sliding/full attention requires MLX per-layer attention masks and KV sharing"
+            "interleaved sliding/full attention is only implemented for Gemma4 manifests"
                 .to_string(),
         ));
     }
+    if manifest.layer_types.len() != manifest.layer_count as usize {
+        return Err(MlxRunnerError::UnsupportedFeature(format!(
+            "Gemma4 interleaved attention requires one layer_type per layer, got {} for {} layers",
+            manifest.layer_types.len(),
+            manifest.layer_count
+        )));
+    }
+
+    for (idx, layer_type) in manifest.layer_types.iter().enumerate() {
+        if layer_type != "sliding_attention" && layer_type != "full_attention" {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "Gemma4 layer {idx} uses unsupported layer_type {layer_type:?}"
+            )));
+        }
+    }
+
+    let has_sliding = manifest
+        .layer_types
+        .iter()
+        .any(|layer_type| layer_type == "sliding_attention");
+    if has_sliding && manifest.sliding_window_size.is_none() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "Gemma4 sliding_attention layers require sliding_window_size".to_string(),
+        ));
+    }
+
+    for (&layer, &source) in &manifest.kv_shared_source_layers {
+        if layer >= manifest.layer_count || source >= manifest.layer_count || source >= layer {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "Gemma4 KV-shared layer {layer} has invalid source layer {source}"
+            )));
+        }
+        let layer_type = &manifest.layer_types[layer as usize];
+        let source_type = &manifest.layer_types[source as usize];
+        if layer_type != source_type {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "Gemma4 KV-shared layer {layer} type {layer_type:?} cannot reuse source {source} type {source_type:?}"
+            )));
+        }
+    }
+
     Ok(())
 }
 
@@ -690,31 +740,63 @@ mod tests {
     }
 
     #[test]
-    fn mlx_manifest_validation_rejects_interleaved_sliding_attention() {
+    fn mlx_manifest_validation_allows_gemma4_interleaved_attention() {
         let mut manifest = dense_manifest();
+        manifest.model_family = "gemma4".to_string();
+        manifest.sliding_window_size = Some(1024);
+        manifest.layer_types = vec!["sliding_attention".to_string()];
+        manifest.global_head_dim = Some(8);
+        let artifacts = write_artifacts(manifest);
+
+        validate_mlx_supported_manifest(&artifacts)
+            .expect("Gemma4 interleaved attention is implemented in the MLX model graph");
+    }
+
+    #[test]
+    fn mlx_manifest_validation_rejects_unknown_interleaved_attention() {
+        let mut manifest = dense_manifest();
+        manifest.sliding_window_size = Some(1024);
+        manifest.layer_types = vec!["sliding_attention".to_string()];
+        manifest.global_head_dim = Some(8);
+        let artifacts = write_artifacts(manifest);
+
+        let error = validate_mlx_supported_manifest(&artifacts)
+            .expect_err("non-Gemma4 interleaved attention should fail closed");
+
+        assert!(error.to_string().contains("Gemma4"));
+    }
+
+    #[test]
+    fn mlx_manifest_validation_allows_valid_gemma4_kv_shared_layers() {
+        let mut manifest = dense_manifest();
+        manifest.model_family = "gemma4".to_string();
+        manifest.layer_count = 2;
+        manifest.sliding_window_size = Some(1024);
+        manifest.layer_types = vec![
+            "sliding_attention".to_string(),
+            "sliding_attention".to_string(),
+        ];
+        manifest.kv_shared_source_layers.insert(1, 0);
+
+        validate_gemma4_interleaved_attention(&manifest)
+            .expect("same-type Gemma4 KV sharing should be supported");
+    }
+
+    #[test]
+    fn mlx_manifest_validation_rejects_cross_type_gemma4_kv_shared_layers() {
+        let mut manifest = dense_manifest();
+        manifest.model_family = "gemma4".to_string();
+        manifest.layer_count = 2;
         manifest.sliding_window_size = Some(1024);
         manifest.layer_types = vec![
             "sliding_attention".to_string(),
             "full_attention".to_string(),
         ];
-        manifest.global_head_dim = Some(8);
-        let artifacts = write_artifacts(manifest);
-
-        let error = validate_mlx_supported_manifest(&artifacts)
-            .expect_err("interleaved sliding attention should fail closed");
-
-        assert!(error.to_string().contains("interleaved"));
-    }
-
-    #[test]
-    fn mlx_manifest_validation_rejects_kv_shared_layers() {
-        let mut manifest = dense_manifest();
         manifest.kv_shared_source_layers.insert(1, 0);
-        let artifacts = write_artifacts(manifest);
 
-        let error = validate_mlx_supported_manifest(&artifacts)
-            .expect_err("KV-shared layers should fail closed");
+        let error = validate_gemma4_interleaved_attention(&manifest)
+            .expect_err("cross-type KV sharing should fail closed");
 
-        assert!(error.to_string().contains("KV sharing"));
+        assert!(error.to_string().contains("cannot reuse"));
     }
 }
