@@ -25,7 +25,8 @@ pub enum NativeTensorDataType {
     F32,
     I8,
     U8,
-    /// Packed uint32 — used by MLX affine 4-bit quantization for the weight tensor.
+    /// Packed uint32 — used by MLX affine quantization for the weight tensor.
+    /// Bit width and group size are carried by per-tensor quantization metadata.
     /// Scales and biases are stored as separate bf16/f32 tensors with the same base name.
     U32,
     /// Q4_K_M quantized: 256-element super-blocks, 144 bytes each (4.5 bits/weight).
