@@ -32,7 +32,7 @@ pub use metal::MlxMetalKernel;
 pub use ops::{
     add, argmax, argpartition_axis, argsort_axis, as_strided, astype, concatenate, dequantize,
     expand_dims, gather_mm, gather_qmm, matmul, multiply, quantized_matmul, repeat_axis, reshape,
-    slice, slice_last_dim, slice_update, softmax, sum_axis, take, take_along_axis, transpose,
+    slice, slice_last_dim, slice_update, softmax, sum_axis, take, take_along_axis, tanh, transpose,
     zeros,
 };
 pub use stream::MlxStream;

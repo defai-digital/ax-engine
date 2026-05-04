@@ -1,7 +1,7 @@
 use mlx_sys::{
     MlxArray, MlxDtype, add, argpartition_axis, astype, dequantize, expand_dims, gather_mm,
     gather_qmm, matmul, multiply, quantized_matmul, reshape, rms_norm, rope,
-    scaled_dot_product_attention, slice_last_dim, softmax, sum_axis, take, take_along_axis,
+    scaled_dot_product_attention, slice_last_dim, softmax, sum_axis, take, take_along_axis, tanh,
     transpose,
 };
 
@@ -24,6 +24,7 @@ pub struct ModelConfig {
     pub rope_dims: usize,
     pub attn_output_gate: bool,
     pub query_scale: f32,
+    pub final_logit_softcapping: Option<f32>,
     // MoE (0 means dense-only model).
     pub moe_expert_count: usize,
     pub moe_experts_per_token: usize,
@@ -58,6 +59,7 @@ impl ModelConfig {
             rope_dims,
             attn_output_gate: m.attn_output_gate,
             query_scale,
+            final_logit_softcapping: m.final_logit_softcapping,
             moe_expert_count: m.moe.expert_count.unwrap_or(0) as usize,
             moe_experts_per_token: m.moe.experts_per_token.unwrap_or(0) as usize,
             moe_expert_intermediate_size: m.moe.expert_intermediate_size.unwrap_or(0) as usize,
@@ -185,6 +187,11 @@ pub fn layer_forward(
     } else {
         attn_proj
     };
+    let attn_out = if let Some(post_norm) = &w.attn_post_norm {
+        rms_norm(&attn_out, Some(post_norm), 1e-6, None)
+    } else {
+        attn_out
+    };
 
     // 13. Residual.
     let hidden = add(hidden, &attn_out, None);
@@ -289,6 +296,7 @@ pub fn forward(
     let normed = rms_norm(&last_hidden, Some(&weights.final_norm), 1e-6, None);
     let logits = qw(&normed, &weights.lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+    let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
     reshape(&logits_f32, &[cfg.vocab_size as i32], None)
 }
 
@@ -313,6 +321,7 @@ pub fn forward_all_positions(
     let normed = rms_norm(&hidden, Some(&weights.final_norm), 1e-6, None);
     let logits = qw(&normed, &weights.lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+    let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
     reshape(&logits_f32, &[seq, cfg.vocab_size as i32], None)
 }
 
@@ -408,6 +417,27 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
 
 fn mlx_slice_last_dim(x: &MlxArray, start: i32, end: i32) -> MlxArray {
     slice_last_dim(x, start, end, None)
+}
+
+fn apply_final_logit_softcap(cfg: &ModelConfig, logits: &MlxArray) -> MlxArray {
+    let Some(cap) = cfg.final_logit_softcapping.filter(|cap| *cap > 0.0) else {
+        return logits.clone();
+    };
+    let inv_cap = 1.0_f32 / cap;
+    let inv_cap_arr = MlxArray::from_raw_data(
+        &inv_cap as *const f32 as *const u8,
+        std::mem::size_of::<f32>(),
+        &[1_i32],
+        MlxDtype::Float32,
+    );
+    let cap_arr = MlxArray::from_raw_data(
+        &cap as *const f32 as *const u8,
+        std::mem::size_of::<f32>(),
+        &[1_i32],
+        MlxDtype::Float32,
+    );
+    let scaled = multiply(logits, &inv_cap_arr, None);
+    multiply(&tanh(&scaled, None), &cap_arr, None)
 }
 
 /// Router forward: returns (top_k_indices [1,seq,k], top_k_weights [1,seq,k]).
@@ -553,6 +583,7 @@ mod tests {
             rope_dims: 8,
             attn_output_gate,
             query_scale: 1.0,
+            final_logit_softcapping: None,
             moe_expert_count: 0,
             moe_experts_per_token: 0,
             moe_expert_intermediate_size: 0,
