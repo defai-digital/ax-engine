@@ -1,12 +1,13 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, add, argpartition_axis, astype, dequantize, expand_dims, gather_mm,
-    gather_qmm, gelu, matmul, multiply, quantized_matmul, reshape, rms_norm, rope,
-    scaled_dot_product_attention, slice, slice_last_dim, softmax, sum_axis, take, take_along_axis,
-    tanh, transpose,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argpartition_axis, astype, dequantize,
+    expand_dims, gather_mm, gather_qmm, gelu, matmul, multiply, quantized_matmul, reshape,
+    rms_norm, rope, scaled_dot_product_attention_with_mask, slice_last_dim, softmax, sum_axis,
+    take, take_along_axis, tanh, transpose,
 };
 
 use ax_engine_core::NativeModelManifest;
 
+use crate::attention_mask::create_causal_mask;
 use crate::kv_cache::MlxKVCache;
 use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
 
@@ -63,10 +64,6 @@ impl ModelConfig {
             .partial_rotary_factor
             .map(|f| ((head_dim as f32 * f) as usize).next_multiple_of(2))
             .unwrap_or(head_dim);
-        let query_scale = m
-            .query_pre_attn_scalar
-            .map(|s| 1.0 / (s as f32).sqrt())
-            .unwrap_or_else(|| 1.0 / (head_dim as f32).sqrt());
         let intermediate_size = if m.intermediate_size > 0 {
             m.intermediate_size as usize
         } else {
@@ -75,6 +72,13 @@ impl ModelConfig {
         let rope_theta = m.rope_theta.map(|t| t as f32).unwrap_or(10000.0);
         let layer_configs = build_layer_configs(m, head_dim, rope_theta, rope_dims);
         let is_gemma4 = m.model_family == "gemma4";
+        let query_scale = if is_gemma4 {
+            1.0
+        } else {
+            m.query_pre_attn_scalar
+                .map(|s| 1.0 / (s as f32).sqrt())
+                .unwrap_or_else(|| 1.0 / (head_dim as f32).sqrt())
+        };
 
         Self {
             layer_count: m.layer_count as usize,
@@ -249,8 +253,7 @@ pub fn layer_forward(
         // V: transpose to BSHD then apply no-scale RMSNorm if required (Gemma4).
         let v = transpose(&v, &[0, 2, 1, 3], None);
         let v = if v_norm_no_scale {
-            // RMSNormNoScale: normalize by RMS without learnable scale.
-            qk_norm_bshd(v, None, cfg.n_kv_heads, head_dim, seq)
+            rms_norm_no_scale_bshd(v, cfg.n_kv_heads, head_dim, seq)
         } else {
             v
         };
@@ -280,42 +283,23 @@ pub fn layer_forward(
         (q_rope, ck, cv, attn_gate_raw)
     };
 
-    // 8. Optional sliding-window KV slice (trim cached KV to the last `window` tokens).
-    let (cached_k, cached_v) = if let Some(window) = sliding_window {
-        let total = cached_k.shape()[2] as usize;
-        if total > window {
-            let start = (total - window) as i32;
-            let end = total as i32;
-            let nkv = cfg.n_kv_heads as i32;
-            let hd = head_dim as i32;
-            (
-                slice(
-                    &cached_k,
-                    &[0, 0, start, 0],
-                    &[1, nkv, end, hd],
-                    &[1, 1, 1, 1],
-                    None,
-                ),
-                slice(
-                    &cached_v,
-                    &[0, 0, start, 0],
-                    &[1, nkv, end, hd],
-                    &[1, 1, 1, 1],
-                    None,
-                ),
-            )
-        } else {
-            (cached_k, cached_v)
-        }
-    } else {
-        (cached_k, cached_v)
+    // 8. SDPA (GQA: MLX broadcasts KV heads internally). Sliding attention is
+    // enforced by an array mask, not by truncating K/V, matching mlx-lm.
+    let key_len = cached_k.shape()[2] as usize;
+    let mask_array = attention_mask_array(seq, key_len, sliding_window);
+    let mask = match mask_array.as_ref() {
+        Some(mask) => ScaledDotProductAttentionMask::Array(mask),
+        None if seq > 1 => ScaledDotProductAttentionMask::Causal,
+        None => ScaledDotProductAttentionMask::None,
     };
-
-    // 9. SDPA (GQA: MLX broadcasts KV heads internally). Use per-layer head_dim scale.
-    let causal = seq > 1;
-    let query_scale = 1.0 / (head_dim as f32).sqrt();
-    let attn_sdpa =
-        scaled_dot_product_attention(&q_rope, &cached_k, &cached_v, query_scale, causal, None);
+    let attn_sdpa = scaled_dot_product_attention_with_mask(
+        &q_rope,
+        &cached_k,
+        &cached_v,
+        cfg.query_scale,
+        mask,
+        None,
+    );
 
     // 10. Transpose back: [1, n_heads, seq, head_dim] → [1, seq, n_heads, head_dim].
     let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
@@ -508,6 +492,37 @@ fn qk_norm_bshd(
         &[1, seq as i32, n_heads as i32, head_dim as i32],
         None,
     )
+}
+
+/// Apply no-scale per-head RMS norm in BSHD [1, seq, n_heads, head_dim] space.
+fn rms_norm_no_scale_bshd(x: MlxArray, n_heads: usize, head_dim: usize, seq: usize) -> MlxArray {
+    let flat = reshape(&x, &[(n_heads * seq) as i32, head_dim as i32], None);
+    let normed = rms_norm(&flat, None, 1e-6, None);
+    reshape(
+        &normed,
+        &[1, seq as i32, n_heads as i32, head_dim as i32],
+        None,
+    )
+}
+
+/// Build the array mask only when the fast causal/none modes cannot express it.
+fn attention_mask_array(
+    seq_len: usize,
+    key_len: usize,
+    sliding_window: Option<usize>,
+) -> Option<MlxArray> {
+    if seq_len == 0 {
+        return None;
+    }
+
+    let offset = key_len.saturating_sub(seq_len);
+    if let Some(window) = sliding_window {
+        return Some(create_causal_mask(seq_len, offset, Some(window)));
+    }
+    if offset > 0 && seq_len > 1 {
+        return Some(create_causal_mask(seq_len, offset, None));
+    }
+    None
 }
 
 /// Apply optional RMS norm; pass `x` through if `norm` is None.
@@ -863,5 +878,25 @@ mod tests {
                 v: (40, 48),
             }
         );
+    }
+
+    #[test]
+    fn attention_mask_array_uses_fast_modes_for_simple_causal_cases() {
+        assert!(attention_mask_array(1, 1, None).is_none());
+        assert!(attention_mask_array(4, 4, None).is_none());
+    }
+
+    #[test]
+    fn attention_mask_array_uses_offset_mask_for_cached_prefill() {
+        let mask = attention_mask_array(2, 5, None).expect("cached prefill needs offset mask");
+
+        assert_eq!(mask.shape(), vec![2, 5]);
+    }
+
+    #[test]
+    fn attention_mask_array_keeps_full_kv_for_sliding_attention() {
+        let mask = attention_mask_array(1, 6, Some(4)).expect("decode needs sliding mask");
+
+        assert_eq!(mask.shape(), vec![1, 6]);
     }
 }
