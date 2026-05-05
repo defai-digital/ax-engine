@@ -20,7 +20,7 @@ AX surface for broader model coverage.
 | Path | Select it when | Notes |
 |---|---|---|
 | Repo-owned MLX runtime | You have a supported Qwen/Gemma MLX model artifact and want repo-owned runtime behavior or performance evidence | Use `--mlx` plus `--mlx-model-artifacts-dir`; benchmark claims must use the MLX inference-stack harness |
-| `mlx_lm_delegated` | Upstream `mlx-lm` supports the MLX text model but AX does not yet have a repo-owned graph | Requires a running `mlx_lm.server`; Phase 1 is blocking text completion only |
+| `mlx_lm_delegated` | Upstream `mlx-lm` supports the MLX text model but AX does not yet have a repo-owned graph | Requires a running `mlx_lm.server`; supports text generation, fake SSE, and OpenAI-compatible text completion/chat shapes |
 | `llama_cpp` | You have GGUF/non-MLX local inference needs | Use a llama.cpp server or CLI target; these are delegated route-contract claims |
 
 ## Installation
@@ -130,8 +130,9 @@ ax-engine-bench generate \
   --mlx-lm-server-url http://127.0.0.1:8090
 ```
 
-That route is explicit compatibility only. It is text-only and blocking in
-Phase 1, and it is not a repo-owned MLX performance claim.
+That route is explicit compatibility only. It is text-only, supports AX
+blocking and fake-SSE text surfaces, and is not a repo-owned MLX performance
+claim.
 
 To run a checked-in scenario manifest through the current workload-contract
 path:

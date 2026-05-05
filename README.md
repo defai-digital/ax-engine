@@ -73,7 +73,7 @@ workloads.
 | Path | Use it for | Current scope |
 |---|---|---|
 | Repo-owned MLX runtime | Supported Qwen/Gemma MLX model artifacts and repo-owned performance claims | Local Apple Silicon inference, token-based server/SDK requests, benchmarked direct and n-gram acceleration modes |
-| `mlx_lm_delegated` | MLX text models that upstream `mlx-lm` supports before AX has a repo-owned graph | Blocking text completion through a user-provided `mlx_lm.server`; no chat/stream/tool/VLM compatibility contract yet |
+| `mlx_lm_delegated` | MLX text models that upstream `mlx-lm` supports before AX has a repo-owned graph | Text generation through a user-provided `mlx_lm.server`; `/v1/generate`, fake SSE over `/v1/generate/stream`, and OpenAI-compatible completion/chat text endpoints |
 | `llama_cpp` | GGUF and non-MLX local inference | Delegated llama.cpp server/CLI compatibility; route-contract evidence, not repo-owned MLX throughput |
 
 The runtime report exposes `selected_backend`, `support_tier`, and
@@ -330,9 +330,10 @@ mlx_lm.server --model /path/to/local/mlx-model --host 127.0.0.1 --port 8090
 ```
 
 `mlx_lm_delegated` is a compatibility route, not a repo-owned MLX throughput
-claim. In the current preview it supports blocking text completion through
-upstream `mlx_lm.server`; chat completions, transport streaming, tool calls,
-and visual/multimodal inputs are not yet AX compatibility contracts.
+claim. It forwards text generation to upstream `mlx_lm.server`, preserves AX
+sampling fields such as `temperature`, `top_p`, `top_k`, `repetition_penalty`,
+and `seed`, and exposes blocking plus fake-SSE text surfaces through AX. Tool
+calls and visual/multimodal inputs are not yet AX compatibility contracts.
 
 ```bash
 # Primary benchmark: AX vs mlx_lm vs mlx-swift-lm

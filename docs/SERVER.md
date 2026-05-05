@@ -46,8 +46,9 @@ Current preview endpoints:
 
 - `--mlx` selects the repo-owned MLX runtime for supported local model
   artifacts
-- `--support-tier mlx_lm_delegated` delegates blocking text completion to a
-  user-provided `mlx_lm.server`
+- `--support-tier mlx_lm_delegated` delegates text generation to a
+  user-provided `mlx_lm.server` while preserving AX blocking, fake-SSE, and
+  OpenAI-compatible text surfaces
 - `--support-tier llama_cpp` or a GGUF target delegates non-MLX inference to
   llama.cpp
 
@@ -113,8 +114,9 @@ cargo run -p ax-engine-server -- \
   --port 8080
 ```
 
-`mlx_lm_delegated` is text-only and blocking in Phase 1. It is not a
-repo-owned MLX performance claim, and it is not a visual/multimodal contract.
+`mlx_lm_delegated` is text-only and delegates model execution to an explicitly
+configured upstream `mlx_lm.server`. It is not a repo-owned MLX performance
+claim, and it is not a visual/multimodal contract.
 
 The preview server now also exposes thin OpenAI-compatible endpoints over that
 same llama.cpp-backed path:
@@ -357,8 +359,12 @@ lifecycle contract as the SDK.
 The server allocates request ids from one process-local sequence across both
 paths so transport logs and client correlation do not collide when clients mix
 blocking and stepwise APIs.
-For Phase 1, the `mlx_lm_delegated` backend supports blocking
-`/v1/generate` through `mlx_lm.server` `/v1/completions`.
+The `mlx_lm_delegated` backend supports `/v1/generate` through
+`mlx_lm.server` `/v1/completions`. AX also exposes fake SSE over
+`/v1/generate/stream` and streamed OpenAI-compatible completion/chat endpoints
+by chunking the blocking delegated response into the normal AX SSE envelopes.
+This preserves the AX transport contract for UI clients, but it is not true
+token-by-token upstream streaming.
 
 For Phase 1, the llama.cpp backend supports blocking `/v1/generate`,
 OpenAI-compatible `/v1/completions`, and OpenAI-compatible

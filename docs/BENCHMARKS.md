@@ -21,6 +21,7 @@ Qwen 3.5 9B, Qwen 3.6 35B A3B 4/5/6/8-bit, and Qwen Coder Next.
 | Did a bounded runtime knob improve a frozen workload? | `ax-engine-bench autotune` | Autotune trial artifacts and warm-start history |
 | Does the non-MLX delegated route still behave correctly? | llama.cpp manifests through `ax-engine-bench` | Delegated route-contract evidence only |
 | Does upstream `mlx-lm` delegated text compatibility still behave correctly? | Explicit `mlx_lm_delegated` checks through SDK/server/CLI surfaces | Delegated route-contract evidence only |
+| Which AX runtime path is best for a product endpoint on this host? | `scripts/bench_ax_engine_three_modes.py` against already-running AX servers | End-to-end AX API latency by mode; not raw model throughput |
 
 Do not merge these rows into one unlabeled throughput table. Repo-owned
 model-inference claims come from the MLX inference stack, and every such claim
@@ -29,6 +30,33 @@ prompt/decode shape, with prompt-token provenance recorded in the artifact.
 `ax-engine-bench` owns workload contracts. llama.cpp manifests and
 `mlx_lm_delegated` checks validate delegation behavior, not repo-owned MLX runtime
 speed.
+
+## AX Runtime-Mode Comparison
+
+Use the three-mode harness when the question is product-path latency through AX
+surfaces, for example comparing repo-owned MLX default, repo-owned MLX with
+n-gram acceleration disabled, and `mlx_lm_delegated`.
+
+Start each server mode separately, then run:
+
+```text
+python3 scripts/bench_ax_engine_three_modes.py \
+  --model-id qwen3_dense \
+  --prompt "Reply with just: ready." \
+  --tokens-file /path/to/chat-template-token-ids.json \
+  --max-output-tokens 32 \
+  --mode preview_default,http://127.0.0.1:19091,tokens \
+  --mode preview_direct,http://127.0.0.1:19092,tokens \
+  --mode mlx_lm_delegated,http://127.0.0.1:19093,text \
+  --output benchmarks/results/runtime-modes/$(date +%F)-qwen3-4b.json
+```
+
+This harness records warmup/measured observations, median wall time, p25/p75,
+HTTP status, finish reason, and output token count. Its output is suitable for
+manager/product latency decisions, but it must be labeled as
+`end_to_end_ax_generate_api_latency`. Keep it separate from
+`bench_mlx_inference_stack.py`, which is the repo-owned MLX throughput evidence
+path.
 
 ## MLX Model-Inference Comparison
 
@@ -204,9 +232,11 @@ user-provided `mlx_lm.server` for unsupported MLX text models. They must record
 `selected_backend=mlx_lm_delegated` and `support_tier=mlx_lm_delegated`, and
 they must not be described as repo-owned MLX throughput evidence.
 
-Phase 1 supports blocking text generation only. Token-array prompts, streaming,
-stepwise lifecycle calls, and visual/multimodal contracts are intentionally
-unsupported until a separate route and artifact contract exists.
+The delegated route supports text generation through upstream
+`mlx_lm.server`, including AX fake-SSE surfaces that wrap the blocking
+delegated response. Token-array prompts, stepwise lifecycle calls, and
+visual/multimodal contracts are intentionally unsupported until a separate
+route and artifact contract exists.
 
 ## Readiness
 
