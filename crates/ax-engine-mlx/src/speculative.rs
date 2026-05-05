@@ -270,7 +270,11 @@ pub fn speculative_decode_step(
     // Trim KV cache: keep only [last_token + accepted_drafts].
     // The correction/bonus token at result.last() is NOT yet in the cache.
     // KV buffers were already materialised inside verify_draft's combined eval.
-    cache.trim_to(verification.committed_len);
+    let trimmed = cache.trim_to(verification.committed_len);
+    debug_assert!(
+        trimmed,
+        "speculative verification committed_len must not exceed cache seq_len"
+    );
 
     // Update n-gram table.
     ngram.feed(&draft[..verification.accept_count]);
@@ -306,7 +310,11 @@ fn speculative_decode_step_linear_safe(
     if verification.accept_count == draft.len() {
         // verify_cache's KV buffers were already materialised inside verify_draft's
         // combined eval — no separate materialize_cache call needed.
-        verify_cache.trim_to(verification.committed_len);
+        let trimmed = verify_cache.trim_to(verification.committed_len);
+        debug_assert!(
+            trimmed,
+            "linear-safe verification committed_len must not exceed cache seq_len"
+        );
         *cache = verify_cache;
     } else {
         recompute_committed_prefix(

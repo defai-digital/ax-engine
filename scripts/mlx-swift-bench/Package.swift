@@ -12,6 +12,7 @@ let package = Package(
             name: "mlx-swift-bench",
             dependencies: [
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "BenchmarkHelpers", package: "mlx-swift-lm"),
             ],

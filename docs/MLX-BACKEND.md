@@ -150,7 +150,7 @@ delegated llama.cpp manifests:
 
 ```text
 python3 scripts/bench_mlx_inference_stack.py \
-  --model-dir .internal/models/Qwen3.5-9B-MLX-4bit \
+  --model-dir /path/to/local/mlx-model \
   --prompt-tokens 256,512,2048 \
   --generation-tokens 128 \
   --ax-both-modes
@@ -190,7 +190,7 @@ Interpretation rule:
 ### Phase 2 — ax-engine-mlx crate
 - Weight loader: reads `NativeTensorSpec` offsets from safetensors → `MlxArray`
 - Quantized weight binding: Q4_K_M → `mlx_quantized_matmul`
-- Model graph: Qwen3 dense (GQA + SwiGLU), Qwen3.5 MoE (linear attention + MoE FFN + attn_output_gate), Gemma4 (per-layer embeddings, per-layer input gating, sliding-window + full attention, KV sharing, logit softcapping)
+- Model graph: Qwen3 dense (GQA + SwiGLU), Qwen3.5 MoE (linear attention + MoE FFN + attn_output_gate), Gemma4 (per-layer embeddings, per-layer input gating, sliding-window + full attention, KV sharing, logit softcapping, sorted SwitchGLU expert gather for large MoE prefill batches)
 - Chunked KV cache with slice_update growth and O(1) speculative rollback
 - N-gram speculative decode with EMA gating
 - Chunked prefill loop

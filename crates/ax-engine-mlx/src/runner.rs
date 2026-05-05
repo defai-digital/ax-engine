@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use mlx_sys::{
     MlxArray, MlxStream, clear_cache, enable_compile, max_recommended_working_set_size,
@@ -11,8 +12,17 @@ use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
 use ax_engine_core::{
     ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelArtifacts,
-    NativeModelBindingSummary, NativeModelManifest, NativeTensorRole, RequestExecutionUpdate,
-    RequestId, RunnerInput, RunnerOutput, StopReason,
+    NativeModelBindingSummary, NativeModelManifest, NativeTensorRole,
+    ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB, ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
+    ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS, ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
+    ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB, ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_LOGICAL_KIB, ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS,
+    ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS,
+    ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB,
+    ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_TOKENS,
+    ROUTE_DECISION_AX_MLX_KV_SLIDING_RETAINED_TOKENS,
+    ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS, RequestExecutionUpdate, RequestId, RunnerInput,
+    RunnerOutput, StopReason,
 };
 
 use crate::generate::{
@@ -139,12 +149,9 @@ impl SpeculationTelemetry {
             ),
         ];
 
-        decisions.extend(
-            entries
-                .into_iter()
-                .filter(|(_, value)| *value > 0)
-                .map(|(key, value)| (key.to_string(), value)),
-        );
+        for (key, value) in entries {
+            upsert_route_decision(decisions, key, value);
+        }
     }
 }
 
@@ -156,11 +163,167 @@ fn saturating_u32_from_u64(value: u64) -> u32 {
     value.min(u32::MAX as u64) as u32
 }
 
+fn saturating_u32_from_u128(value: u128) -> u32 {
+    value.min(u32::MAX as u128) as u32
+}
+
+fn elapsed_us(started: Instant) -> u32 {
+    saturating_u32_from_u128(started.elapsed().as_micros())
+}
+
 fn kib_ceil(bytes: u64) -> u32 {
     if bytes == 0 {
         0
     } else {
         saturating_u32_from_u64(bytes.saturating_add(1023) / 1024)
+    }
+}
+
+fn upsert_route_decision(decisions: &mut Vec<(String, u32)>, key: &str, value: u32) {
+    let mut updated = false;
+    decisions.retain_mut(|(existing_key, existing_value)| {
+        if existing_key == key {
+            if updated {
+                false
+            } else {
+                *existing_value = value;
+                updated = true;
+                true
+            }
+        } else {
+            true
+        }
+    });
+
+    if !updated {
+        decisions.push((key.to_string(), value));
+    }
+}
+
+fn kv_layer_windows_from_config(cfg: &ModelConfig) -> Vec<Option<usize>> {
+    let mut windows = vec![None; cfg.layer_count];
+    for (idx, layer) in cfg.layer_configs.iter().enumerate().take(cfg.layer_count) {
+        windows[idx] = layer.sliding_window;
+    }
+    windows
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct DecodeTelemetry {
+    prefill_steps: u32,
+    prefill_wall_us: u32,
+    decode_steps: u32,
+    decode_wall_us: u32,
+    greedy_bootstrap_steps: u32,
+    greedy_bootstrap_wall_us: u32,
+    greedy_pipeline_steps: u32,
+    greedy_pipeline_wall_us: u32,
+    single_decode_steps: u32,
+    single_decode_wall_us: u32,
+    speculative_decode_steps: u32,
+    speculative_decode_wall_us: u32,
+    bonus_tokens: u32,
+}
+
+impl DecodeTelemetry {
+    fn record_prefill(&mut self, wall_us: u32) {
+        self.prefill_steps = self.prefill_steps.saturating_add(1);
+        self.prefill_wall_us = self.prefill_wall_us.saturating_add(wall_us);
+    }
+
+    fn record_decode(&mut self, wall_us: u32) {
+        self.decode_steps = self.decode_steps.saturating_add(1);
+        self.decode_wall_us = self.decode_wall_us.saturating_add(wall_us);
+    }
+
+    fn record_greedy_bootstrap(&mut self, wall_us: u32) {
+        self.greedy_bootstrap_steps = self.greedy_bootstrap_steps.saturating_add(1);
+        self.greedy_bootstrap_wall_us = self.greedy_bootstrap_wall_us.saturating_add(wall_us);
+    }
+
+    fn record_greedy_pipeline(&mut self, wall_us: u32) {
+        self.greedy_pipeline_steps = self.greedy_pipeline_steps.saturating_add(1);
+        self.greedy_pipeline_wall_us = self.greedy_pipeline_wall_us.saturating_add(wall_us);
+    }
+
+    fn record_single_decode(&mut self, wall_us: u32) {
+        self.single_decode_steps = self.single_decode_steps.saturating_add(1);
+        self.single_decode_wall_us = self.single_decode_wall_us.saturating_add(wall_us);
+    }
+
+    fn record_speculative_decode(&mut self, wall_us: u32) {
+        self.speculative_decode_steps = self.speculative_decode_steps.saturating_add(1);
+        self.speculative_decode_wall_us = self.speculative_decode_wall_us.saturating_add(wall_us);
+    }
+
+    fn record_bonus_token(&mut self) {
+        self.bonus_tokens = self.bonus_tokens.saturating_add(1);
+    }
+
+    fn merge_from(&mut self, other: Self) {
+        self.prefill_steps = self.prefill_steps.saturating_add(other.prefill_steps);
+        self.prefill_wall_us = self.prefill_wall_us.saturating_add(other.prefill_wall_us);
+        self.decode_steps = self.decode_steps.saturating_add(other.decode_steps);
+        self.decode_wall_us = self.decode_wall_us.saturating_add(other.decode_wall_us);
+        self.greedy_bootstrap_steps = self
+            .greedy_bootstrap_steps
+            .saturating_add(other.greedy_bootstrap_steps);
+        self.greedy_bootstrap_wall_us = self
+            .greedy_bootstrap_wall_us
+            .saturating_add(other.greedy_bootstrap_wall_us);
+        self.greedy_pipeline_steps = self
+            .greedy_pipeline_steps
+            .saturating_add(other.greedy_pipeline_steps);
+        self.greedy_pipeline_wall_us = self
+            .greedy_pipeline_wall_us
+            .saturating_add(other.greedy_pipeline_wall_us);
+        self.single_decode_steps = self
+            .single_decode_steps
+            .saturating_add(other.single_decode_steps);
+        self.single_decode_wall_us = self
+            .single_decode_wall_us
+            .saturating_add(other.single_decode_wall_us);
+        self.speculative_decode_steps = self
+            .speculative_decode_steps
+            .saturating_add(other.speculative_decode_steps);
+        self.speculative_decode_wall_us = self
+            .speculative_decode_wall_us
+            .saturating_add(other.speculative_decode_wall_us);
+        self.bonus_tokens = self.bonus_tokens.saturating_add(other.bonus_tokens);
+    }
+
+    fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
+        let entries = [
+            ("ax_mlx_prefill_steps", self.prefill_steps),
+            ("ax_mlx_prefill_wall_us", self.prefill_wall_us),
+            ("ax_mlx_decode_steps", self.decode_steps),
+            ("ax_mlx_decode_wall_us", self.decode_wall_us),
+            ("ax_mlx_greedy_bootstrap_steps", self.greedy_bootstrap_steps),
+            (
+                "ax_mlx_greedy_bootstrap_wall_us",
+                self.greedy_bootstrap_wall_us,
+            ),
+            ("ax_mlx_greedy_pipeline_steps", self.greedy_pipeline_steps),
+            (
+                "ax_mlx_greedy_pipeline_wall_us",
+                self.greedy_pipeline_wall_us,
+            ),
+            ("ax_mlx_single_decode_steps", self.single_decode_steps),
+            ("ax_mlx_single_decode_wall_us", self.single_decode_wall_us),
+            (
+                "ax_mlx_speculative_decode_steps",
+                self.speculative_decode_steps,
+            ),
+            (
+                "ax_mlx_speculative_decode_wall_us",
+                self.speculative_decode_wall_us,
+            ),
+            ("ax_mlx_bonus_tokens", self.bonus_tokens),
+        ];
+
+        for (key, value) in entries {
+            upsert_route_decision(decisions, key, value);
+        }
     }
 }
 
@@ -172,6 +335,10 @@ struct KvCacheTelemetry {
     logical_bytes: u64,
     capacity_bytes: u64,
     full_attention_layers: u64,
+    sliding_window_layers: u64,
+    sliding_window_retained_tokens: u64,
+    sliding_window_reclaimable_capacity_tokens: u64,
+    sliding_window_reclaimable_capacity_bytes: u64,
     linear_state_layers: u64,
     linear_state_bytes: u64,
     growth_count: u64,
@@ -180,7 +347,9 @@ struct KvCacheTelemetry {
 impl KvCacheTelemetry {
     fn merge_from(&mut self, usage: MlxKVCacheUsage) {
         self.request_snapshots = self.request_snapshots.saturating_add(1);
-        self.logical_tokens = self.logical_tokens.saturating_add(usage.logical_tokens as u64);
+        self.logical_tokens = self
+            .logical_tokens
+            .saturating_add(usage.logical_tokens as u64);
         self.capacity_tokens = self
             .capacity_tokens
             .saturating_add(usage.capacity_tokens as u64);
@@ -189,6 +358,18 @@ impl KvCacheTelemetry {
         self.full_attention_layers = self
             .full_attention_layers
             .saturating_add(usage.full_attention_layers as u64);
+        self.sliding_window_layers = self
+            .sliding_window_layers
+            .saturating_add(usage.sliding_window_layers as u64);
+        self.sliding_window_retained_tokens = self
+            .sliding_window_retained_tokens
+            .saturating_add(usage.sliding_window_retained_tokens as u64);
+        self.sliding_window_reclaimable_capacity_tokens = self
+            .sliding_window_reclaimable_capacity_tokens
+            .saturating_add(usage.sliding_window_reclaimable_capacity_tokens as u64);
+        self.sliding_window_reclaimable_capacity_bytes = self
+            .sliding_window_reclaimable_capacity_bytes
+            .saturating_add(usage.sliding_window_reclaimable_capacity_bytes);
         self.linear_state_layers = self
             .linear_state_layers
             .saturating_add(usage.linear_state_layers as u64);
@@ -204,41 +385,63 @@ impl KvCacheTelemetry {
         }
 
         let entries = [
-            ("ax_mlx_kv_request_snapshots", self.request_snapshots),
             (
-                "ax_mlx_kv_logical_tokens",
+                ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS,
+                self.request_snapshots,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS,
                 saturating_u32_from_u64(self.logical_tokens),
             ),
             (
-                "ax_mlx_kv_capacity_tokens",
+                ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
                 saturating_u32_from_u64(self.capacity_tokens),
             ),
-            ("ax_mlx_kv_logical_kib", kib_ceil(self.logical_bytes)),
-            ("ax_mlx_kv_capacity_kib", kib_ceil(self.capacity_bytes)),
             (
-                "ax_mlx_kv_full_attention_layers",
+                ROUTE_DECISION_AX_MLX_KV_LOGICAL_KIB,
+                kib_ceil(self.logical_bytes),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB,
+                kib_ceil(self.capacity_bytes),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS,
                 saturating_u32_from_u64(self.full_attention_layers),
             ),
             (
-                "ax_mlx_kv_linear_state_layers",
+                ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS,
+                saturating_u32_from_u64(self.sliding_window_layers),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_SLIDING_RETAINED_TOKENS,
+                saturating_u32_from_u64(self.sliding_window_retained_tokens),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_TOKENS,
+                saturating_u32_from_u64(self.sliding_window_reclaimable_capacity_tokens),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB,
+                kib_ceil(self.sliding_window_reclaimable_capacity_bytes),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,
                 saturating_u32_from_u64(self.linear_state_layers),
             ),
             (
-                "ax_mlx_kv_linear_state_kib",
+                ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB,
                 kib_ceil(self.linear_state_bytes),
             ),
             (
-                "ax_mlx_kv_growth_count",
+                ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
                 saturating_u32_from_u64(self.growth_count),
             ),
         ];
 
-        decisions.extend(
-            entries
-                .into_iter()
-                .filter(|(_, value)| *value > 0)
-                .map(|(key, value)| (key.to_string(), value)),
-        );
+        for (key, value) in entries {
+            upsert_route_decision(decisions, key, value);
+        }
     }
 }
 
@@ -273,6 +476,7 @@ struct RequestState {
     /// Cumulative per-request counters surfaced through route metadata for
     /// benchmark auditability.
     speculation: SpeculationTelemetry,
+    decode_telemetry: DecodeTelemetry,
 }
 
 impl RequestState {
@@ -288,6 +492,7 @@ impl RequestState {
             next_model_last_token: None,
             pending_greedy: None,
             speculation: SpeculationTelemetry::default(),
+            decode_telemetry: DecodeTelemetry::default(),
         }
     }
 
@@ -301,6 +506,7 @@ pub struct MlxRunner {
     cfg: ModelConfig,
     weights: Arc<ModelWeights>,
     prefill_chunk: usize,
+    kv_layer_windows: Vec<Option<usize>>,
     binding_summary: NativeModelBindingSummary,
     states: Mutex<HashMap<RequestId, RequestState>>,
     /// Dedicated GPU stream kept alive for the runner's lifetime.
@@ -348,6 +554,7 @@ impl MlxRunner {
         validate_mlx_supported_manifest(artifacts)?;
 
         let cfg = ModelConfig::from_manifest(artifacts.manifest());
+        let kv_layer_windows = kv_layer_windows_from_config(&cfg);
         let weights = load_weights(artifacts).map_err(MlxRunnerError::Weights)?;
 
         let binding_summary = binding_summary_from_specs(artifacts.tensor_specs());
@@ -383,6 +590,7 @@ impl MlxRunner {
             cfg,
             weights,
             prefill_chunk: prefill_chunk.max(1),
+            kv_layer_windows,
             binding_summary,
             states: Mutex::new(HashMap::new()),
             _stream: stream,
@@ -400,6 +608,7 @@ impl ExecutionRunner for MlxRunner {
 
         let mut route_metadata = input.execution_batch.route_metadata.clone();
         let mut speculation = SpeculationTelemetry::default();
+        let mut decode_telemetry = DecodeTelemetry::default();
         let mut kv_cache = KvCacheTelemetry::default();
 
         for item in &input.execution_batch.items {
@@ -410,10 +619,12 @@ impl ExecutionRunner for MlxRunner {
 
             let result = self.run_item(item, ctx);
             speculation.merge_from(result.speculation);
+            decode_telemetry.merge_from(result.decode_telemetry);
             kv_cache.merge_from(result.kv_usage);
             request_updates.push(result.update);
         }
         speculation.append_route_decisions(&mut route_metadata.crossover_decisions);
+        decode_telemetry.append_route_decisions(&mut route_metadata.crossover_decisions);
         kv_cache.append_route_decisions(&mut route_metadata.crossover_decisions);
 
         let tokens_written: u32 = input
@@ -459,6 +670,7 @@ impl MlxRunner {
                     error: Some("empty token slice".into()),
                 },
                 speculation: SpeculationTelemetry::default(),
+                decode_telemetry: DecodeTelemetry::default(),
                 kv_usage: MlxKVCacheUsage::default(),
             };
         }
@@ -486,6 +698,7 @@ impl MlxRunner {
         // GPU work — mutex is NOT held during prefill, decode, or speculative steps.
         let sampled_token = match item.mode {
             ExecutionMode::Prefill => {
+                let prefill_started = Instant::now();
                 let tok = chunked_prefill(
                     &self.cfg,
                     &self.weights,
@@ -512,17 +725,31 @@ impl MlxRunner {
                 // materialise it while the GPU is already computing the third token.
                 // Only for greedy (temperature = 0) non-speculative runs.
                 if self.no_speculative && temperature == 0.0 {
+                    let bootstrap_started = Instant::now();
                     state.pending_greedy = Some(start_greedy_pipeline(
                         &self.cfg,
                         &self.weights,
                         tok,
                         &mut state.cache,
                     ));
+                    state
+                        .decode_telemetry
+                        .record_greedy_bootstrap(elapsed_us(bootstrap_started));
                 }
 
+                state
+                    .decode_telemetry
+                    .record_prefill(elapsed_us(prefill_started));
                 tok
             }
-            ExecutionMode::Decode => self.decode_one(&mut state, token_ids, temperature),
+            ExecutionMode::Decode => {
+                let decode_started = Instant::now();
+                let tok = self.decode_one(&mut state, token_ids, temperature);
+                state
+                    .decode_telemetry
+                    .record_decode(elapsed_us(decode_started));
+                tok
+            }
         };
 
         let stop_reason = if generated_len + 1 >= max_output {
@@ -533,7 +760,10 @@ impl MlxRunner {
 
         // Re-insert state only if the request continues — lock held briefly.
         let speculation = state.speculation;
-        let kv_usage = state.cache.usage_snapshot();
+        let decode_telemetry = state.decode_telemetry;
+        let kv_usage = state
+            .cache
+            .usage_snapshot_with_layer_windows(&self.kv_layer_windows);
         if stop_reason.is_none() {
             let mut states = self.states.lock().unwrap();
             states.insert(item.request_id, state);
@@ -553,6 +783,7 @@ impl MlxRunner {
                 error: None,
             },
             speculation,
+            decode_telemetry,
             kv_usage,
         }
     }
@@ -568,6 +799,7 @@ impl MlxRunner {
         // (Bonus tokens only exist on the speculative path; the greedy pipeline
         // never populates the bonus queue.)
         if let Some(tok) = state.bonus_queue.pop_front() {
+            state.decode_telemetry.record_bonus_token();
             return tok;
         }
 
@@ -579,8 +811,12 @@ impl MlxRunner {
             && temperature == 0.0
             && let Some(pending) = state.pending_greedy.take()
         {
+            let branch_started = Instant::now();
             let (tok, next_pending) =
                 advance_greedy_pipeline(&self.cfg, &self.weights, &pending, &mut state.cache);
+            state
+                .decode_telemetry
+                .record_greedy_pipeline(elapsed_us(branch_started));
             state.pending_greedy = Some(next_pending);
             return tok;
         }
@@ -618,7 +854,8 @@ impl MlxRunner {
     ) -> Vec<u32> {
         // Runtime opt-out via AX_NO_SPEC=1 for benchmarking isolation.
         if self.no_speculative {
-            return single_decode(
+            let branch_started = Instant::now();
+            let result = single_decode(
                 &self.cfg,
                 &self.weights,
                 &mut state.cache,
@@ -627,13 +864,18 @@ impl MlxRunner {
                 temperature,
                 &mut state.rng,
             );
+            state
+                .decode_telemetry
+                .record_single_decode(elapsed_us(branch_started));
+            return result;
         }
 
         // Speculation disabled: count down and use single decode.
         if state.spec_disabled_steps > 0 {
             state.spec_disabled_steps -= 1;
             state.speculation.record_cooldown_step();
-            return single_decode(
+            let branch_started = Instant::now();
+            let result = single_decode(
                 &self.cfg,
                 &self.weights,
                 &mut state.cache,
@@ -642,12 +884,17 @@ impl MlxRunner {
                 temperature,
                 &mut state.rng,
             );
+            state
+                .decode_telemetry
+                .record_single_decode(elapsed_us(branch_started));
+            return result;
         }
 
         let draft = speculative_draft(&state.ngram, self.cfg.linear_attention.is_some());
         if draft.is_empty() {
             state.speculation.record_no_draft();
-            return single_decode(
+            let branch_started = Instant::now();
+            let result = single_decode(
                 &self.cfg,
                 &self.weights,
                 &mut state.cache,
@@ -656,9 +903,14 @@ impl MlxRunner {
                 temperature,
                 &mut state.rng,
             );
+            state
+                .decode_telemetry
+                .record_single_decode(elapsed_us(branch_started));
+            return result;
         }
 
         let draft_len = draft.len();
+        let branch_started = Instant::now();
         let result = speculative_decode_step(
             &self.cfg,
             &self.weights,
@@ -669,6 +921,9 @@ impl MlxRunner {
             temperature,
             &mut state.rng,
         );
+        state
+            .decode_telemetry
+            .record_speculative_decode(elapsed_us(branch_started));
 
         // Beta-Bernoulli posterior update.
         // accept_count = result.len() - 1 (last element is next model input, not bonus).
@@ -703,6 +958,7 @@ impl MlxRunner {
 struct MlxItemRun {
     update: RequestExecutionUpdate,
     speculation: SpeculationTelemetry,
+    decode_telemetry: DecodeTelemetry,
     kv_usage: MlxKVCacheUsage,
 }
 
@@ -1366,6 +1622,247 @@ mod tests {
         assert_eq!(decisions.get("ax_spec_cooldown_steps"), Some(&1));
         assert_eq!(decisions.get("ax_spec_cooldown_events"), Some(&1));
         assert_eq!(decisions.get("ax_spec_cooldown_steps_scheduled"), Some(&4));
+
+        let mut zero_decisions = Vec::new();
+        SpeculationTelemetry::default().append_route_decisions(&mut zero_decisions);
+        let zero_decisions = zero_decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(zero_decisions.get("ax_spec_draft_attempts"), Some(&0));
+        assert_eq!(zero_decisions.get("ax_spec_complete_misses"), Some(&0));
+        assert_eq!(zero_decisions.get("ax_spec_cooldown_events"), Some(&0));
+    }
+
+    #[test]
+    fn route_decision_upsert_replaces_existing_value_and_removes_duplicates() {
+        let mut decisions = vec![
+            ("other".to_string(), 7),
+            ("ax_spec_draft_tokens".to_string(), 1),
+            ("ax_spec_draft_tokens".to_string(), 2),
+        ];
+
+        upsert_route_decision(&mut decisions, "ax_spec_draft_tokens", 9);
+
+        assert_eq!(decisions[0], ("other".to_string(), 7));
+        assert_eq!(decisions[1], ("ax_spec_draft_tokens".to_string(), 9));
+        assert_eq!(
+            decisions
+                .iter()
+                .filter(|(key, _)| key == "ax_spec_draft_tokens")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn decode_telemetry_records_route_counters() {
+        let mut telemetry = DecodeTelemetry::default();
+
+        telemetry.record_prefill(100);
+        telemetry.record_decode(40);
+        telemetry.record_greedy_bootstrap(7);
+        telemetry.record_greedy_pipeline(11);
+        telemetry.record_single_decode(13);
+        telemetry.record_speculative_decode(17);
+        telemetry.record_bonus_token();
+        telemetry.record_bonus_token();
+
+        let mut decisions = vec![
+            ("ax_mlx_decode_steps".to_string(), 999),
+            ("other_counter".to_string(), 3),
+            ("ax_mlx_decode_steps".to_string(), 111),
+        ];
+        telemetry.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(decisions.get("ax_mlx_prefill_steps"), Some(&1));
+        assert_eq!(decisions.get("ax_mlx_prefill_wall_us"), Some(&100));
+        assert_eq!(decisions.get("ax_mlx_decode_steps"), Some(&1));
+        assert_eq!(decisions.get("ax_mlx_decode_wall_us"), Some(&40));
+        assert_eq!(decisions.get("ax_mlx_greedy_bootstrap_steps"), Some(&1));
+        assert_eq!(decisions.get("ax_mlx_greedy_bootstrap_wall_us"), Some(&7));
+        assert_eq!(decisions.get("ax_mlx_greedy_pipeline_steps"), Some(&1));
+        assert_eq!(decisions.get("ax_mlx_greedy_pipeline_wall_us"), Some(&11));
+        assert_eq!(decisions.get("ax_mlx_single_decode_steps"), Some(&1));
+        assert_eq!(decisions.get("ax_mlx_single_decode_wall_us"), Some(&13));
+        assert_eq!(decisions.get("ax_mlx_speculative_decode_steps"), Some(&1));
+        assert_eq!(
+            decisions.get("ax_mlx_speculative_decode_wall_us"),
+            Some(&17)
+        );
+        assert_eq!(decisions.get("ax_mlx_bonus_tokens"), Some(&2));
+        assert_eq!(decisions.get("other_counter"), Some(&3));
+    }
+
+    #[test]
+    fn kv_cache_telemetry_records_route_counters() {
+        let mut telemetry = KvCacheTelemetry::default();
+        telemetry.merge_from(MlxKVCacheUsage {
+            logical_tokens: 3,
+            capacity_tokens: 256,
+            logical_bytes: 96,
+            capacity_bytes: 8192,
+            full_attention_layers: 1,
+            linear_state_layers: 0,
+            linear_state_bytes: 0,
+            growth_count: 1,
+            ..MlxKVCacheUsage::default()
+        });
+        telemetry.merge_from(MlxKVCacheUsage {
+            logical_tokens: 5,
+            capacity_tokens: 512,
+            logical_bytes: 160,
+            capacity_bytes: 16384,
+            full_attention_layers: 2,
+            sliding_window_layers: 1,
+            sliding_window_retained_tokens: 4,
+            sliding_window_reclaimable_capacity_tokens: 256,
+            sliding_window_reclaimable_capacity_bytes: 8192,
+            linear_state_layers: 1,
+            linear_state_bytes: 936,
+            growth_count: 2,
+        });
+
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS),
+            Some(&2)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS),
+            Some(&8)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS),
+            Some(&768)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_LOGICAL_KIB),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB),
+            Some(&24)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS),
+            Some(&3)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_SLIDING_RETAINED_TOKENS),
+            Some(&4)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_TOKENS),
+            Some(&256)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB),
+            Some(&8)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT),
+            Some(&3)
+        );
+        assert!(
+            ax_engine_core::ROUTE_DECISION_AX_MLX_KV_KEYS
+                .iter()
+                .all(|key| decisions.contains_key(*key)),
+            "KV telemetry must emit the full canonical counter set after any snapshot"
+        );
+    }
+
+    #[test]
+    fn kv_cache_telemetry_emits_zero_counters_after_empty_snapshot() {
+        let mut telemetry = KvCacheTelemetry::default();
+        telemetry.merge_from(MlxKVCacheUsage::default());
+
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            decisions.len(),
+            ax_engine_core::ROUTE_DECISION_AX_MLX_KV_KEYS.len(),
+            "KV telemetry should distinguish zero counters from unsupported telemetry"
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS),
+            Some(&1)
+        );
+        for key in ax_engine_core::ROUTE_DECISION_AX_MLX_KV_KEYS {
+            assert!(
+                decisions.contains_key(key),
+                "missing canonical KV counter {key}"
+            );
+        }
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT),
+            Some(&0)
+        );
+    }
+
+    #[test]
+    fn kv_cache_telemetry_upserts_existing_canonical_counters() {
+        let mut telemetry = KvCacheTelemetry::default();
+        telemetry.merge_from(MlxKVCacheUsage {
+            capacity_tokens: 256,
+            capacity_bytes: 8192,
+            growth_count: 1,
+            ..MlxKVCacheUsage::default()
+        });
+
+        let mut decisions = vec![
+            (ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS.to_string(), 999),
+            ("other_counter".to_string(), 7),
+            (ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS.to_string(), 111),
+        ];
+        telemetry.append_route_decisions(&mut decisions);
+
+        assert_eq!(
+            decisions
+                .iter()
+                .filter(|(key, _)| key == ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS)
+                .count(),
+            1
+        );
+        assert_eq!(
+            decisions
+                .iter()
+                .find(|(key, _)| key == ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS)
+                .map(|(_, value)| *value),
+            Some(256)
+        );
+        assert!(decisions.contains(&("other_counter".to_string(), 7)));
     }
 
     #[test]

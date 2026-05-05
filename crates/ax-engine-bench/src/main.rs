@@ -5739,6 +5739,11 @@ fn build_trusted_baseline_summary_markdown(trusted_baseline: &Value) -> String {
     )
     .map(json_value_label)
     .unwrap_or_else(|| "none".to_string());
+    let route_json = trusted_baseline
+        .get("route")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    let mlx_kv_cache_lines = mlx_kv_cache_route_markdown_lines(&route_json, "");
     let ttft_ms = nested_value(trusted_baseline, &["metrics", "ttft_ms"])
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
@@ -5753,7 +5758,7 @@ fn build_trusted_baseline_summary_markdown(trusted_baseline: &Value) -> String {
         .unwrap_or(0.0);
 
     format!(
-        "# Trusted Benchmark Baseline\n\n- name: `{name}`\n- source_run_id: `{source_run_id}`\n- source_result_dir: `{source_result_dir}`\n- manifest_id: `{manifest_id}`\n- manifest_class: `{manifest_class}`\n- scenario: `{scenario}`\n- model_family: `{model_family}`\n- tool_mode: `{tool_mode}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- execution_semantics: `{execution_semantics}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- mlx_metal_prefix_layers_attention: `{mlx_metal_prefix_layers_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- mlx_metal_prefix_dispatch_count: `{mlx_metal_prefix_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- mlx_metal_projection_f32_binding_count: `{mlx_metal_projection_f32_binding_count}`\n- mlx_metal_projection_f16_binding_count: `{mlx_metal_projection_f16_binding_count}`\n- mlx_metal_projection_bf16_binding_count: `{mlx_metal_projection_bf16_binding_count}`\n- mlx_metal_projection_unsupported_binding_count: `{mlx_metal_projection_unsupported_binding_count}`\n- mlx_metal_rms_norm_f32_binding_count: `{mlx_metal_rms_norm_f32_binding_count}`\n- mlx_metal_rms_norm_f16_binding_count: `{mlx_metal_rms_norm_f16_binding_count}`\n- mlx_metal_rms_norm_bf16_binding_count: `{mlx_metal_rms_norm_bf16_binding_count}`\n- mlx_metal_rms_norm_unsupported_binding_count: `{mlx_metal_rms_norm_unsupported_binding_count}`\n- prefix_cache_path: `{prefix_cache_path}`\n- prefix_cache_evidence: `{prefix_cache_evidence}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- ttft_ms: `{ttft_ms:.2}`\n- decode_tok_s: `{decode_tok_s:.2}`\n- memory_peak_mb: `{memory_peak_mb:.2}`\n- prefix_hit_rate: `{prefix_hit_rate:.2}`\n\nThis directory is a named trusted baseline snapshot. Compare future benchmark runs against this directory instead of overwriting it in place.\n"
+        "# Trusted Benchmark Baseline\n\n- name: `{name}`\n- source_run_id: `{source_run_id}`\n- source_result_dir: `{source_result_dir}`\n- manifest_id: `{manifest_id}`\n- manifest_class: `{manifest_class}`\n- scenario: `{scenario}`\n- model_family: `{model_family}`\n- tool_mode: `{tool_mode}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- execution_semantics: `{execution_semantics}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- mlx_metal_prefix_layers_attention: `{mlx_metal_prefix_layers_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- mlx_metal_prefix_dispatch_count: `{mlx_metal_prefix_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_checksum_lo: `{metal_direct_decode_checksum_lo}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- mlx_metal_projection_f32_binding_count: `{mlx_metal_projection_f32_binding_count}`\n- mlx_metal_projection_f16_binding_count: `{mlx_metal_projection_f16_binding_count}`\n- mlx_metal_projection_bf16_binding_count: `{mlx_metal_projection_bf16_binding_count}`\n- mlx_metal_projection_unsupported_binding_count: `{mlx_metal_projection_unsupported_binding_count}`\n- mlx_metal_rms_norm_f32_binding_count: `{mlx_metal_rms_norm_f32_binding_count}`\n- mlx_metal_rms_norm_f16_binding_count: `{mlx_metal_rms_norm_f16_binding_count}`\n- mlx_metal_rms_norm_bf16_binding_count: `{mlx_metal_rms_norm_bf16_binding_count}`\n- mlx_metal_rms_norm_unsupported_binding_count: `{mlx_metal_rms_norm_unsupported_binding_count}`\n{mlx_kv_cache_lines}- prefix_cache_path: `{prefix_cache_path}`\n- prefix_cache_evidence: `{prefix_cache_evidence}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n- ttft_ms: `{ttft_ms:.2}`\n- decode_tok_s: `{decode_tok_s:.2}`\n- memory_peak_mb: `{memory_peak_mb:.2}`\n- prefix_hit_rate: `{prefix_hit_rate:.2}`\n\nThis directory is a named trusted baseline snapshot. Compare future benchmark runs against this directory instead of overwriting it in place.\n"
     )
 }
 
@@ -7708,6 +7713,27 @@ fn build_regression_json(
             }),
         );
 
+    for key in ax_engine_core::ROUTE_DECISION_AX_MLX_KV_KEYS {
+        let baseline_value = route_counter_from_json(&baseline_route, key);
+        let candidate_value = route_counter_from_json(&candidate_route, key);
+        regression
+            .get_mut("summary")
+            .and_then(Value::as_object_mut)
+            .expect("regression summary should serialize as object")
+            .insert(key.to_string(), json!(baseline_value));
+        regression
+            .get_mut("contract")
+            .and_then(Value::as_object_mut)
+            .expect("regression contract should serialize as object")
+            .insert(
+                key.to_string(),
+                json!({
+                    "baseline": baseline_value,
+                    "candidate": candidate_value
+                }),
+            );
+    }
+
     if let Some(value) = baseline_backend_reported_cached_prompt_tokens.clone() {
         regression
             .get_mut("summary")
@@ -8012,6 +8038,7 @@ fn build_compare_summary_markdown(
         .and_then(|summary| summary.get("backend_reported_cached_prompt_tokens"))
         .map(json_value_label)
         .unwrap_or_else(|| "none".to_string());
+    let mlx_kv_cache_lines = mlx_kv_cache_regression_markdown_lines(regression_json);
     let compare_mode = explicit_or_inferred_compare_mode(regression_json);
     let tool_mode = explicit_or_inferred_tool_mode(
         regression_json,
@@ -8054,7 +8081,7 @@ fn build_compare_summary_markdown(
         mlx_metal_dispatch_share_label(candidate_mlx_metal_direct_decode_min_dispatch_share);
 
     format!(
-        "# Benchmark Compare\n\n- baseline: `{baseline_id}`\n{trusted_baseline_line}- candidate: `{candidate_id}`\n- mode: `{compare_mode}`\n- tool_mode: `{tool_mode}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- execution_semantics: `{execution_semantics}`\n- baseline_mlx_metal_readiness: `{baseline_mlx_metal_readiness}`\n- baseline_mlx_metal_hot_path_cpu_fallback_free: `{baseline_mlx_metal_hot_path_cpu_fallback_free}`\n- baseline_mlx_metal_batched_direct_decode_logits_ready: `{baseline_mlx_metal_batched_direct_decode_logits_ready}`\n- baseline_prefix_min_mlx_metal_dispatch_share: `{baseline_mlx_metal_prefix_min_dispatch_share}`\n- baseline_direct_decode_min_mlx_metal_dispatch_share: `{baseline_mlx_metal_direct_decode_min_dispatch_share}`\n- baseline_mlx_metal_readiness_blockers: `{baseline_mlx_metal_readiness_blockers}`\n- candidate_mlx_metal_readiness: `{candidate_mlx_metal_readiness}`\n- candidate_mlx_metal_hot_path_cpu_fallback_free: `{candidate_mlx_metal_hot_path_cpu_fallback_free}`\n- candidate_mlx_metal_batched_direct_decode_logits_ready: `{candidate_mlx_metal_batched_direct_decode_logits_ready}`\n- candidate_prefix_min_mlx_metal_dispatch_share: `{candidate_mlx_metal_prefix_min_dispatch_share}`\n- candidate_direct_decode_min_mlx_metal_dispatch_share: `{candidate_mlx_metal_direct_decode_min_dispatch_share}`\n- candidate_mlx_metal_readiness_blockers: `{candidate_mlx_metal_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- mlx_metal_prefix_layers_attention: `{mlx_metal_prefix_layers_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- mlx_metal_prefix_dispatch_count: `{mlx_metal_prefix_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- mlx_metal_projection_f32_binding_count: `{mlx_metal_projection_f32_binding_count}`\n- mlx_metal_projection_f16_binding_count: `{mlx_metal_projection_f16_binding_count}`\n- mlx_metal_projection_bf16_binding_count: `{mlx_metal_projection_bf16_binding_count}`\n- mlx_metal_projection_unsupported_binding_count: `{mlx_metal_projection_unsupported_binding_count}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- mlx_metal_rms_norm_f32_binding_count: `{mlx_metal_rms_norm_f32_binding_count}`\n- mlx_metal_rms_norm_f16_binding_count: `{mlx_metal_rms_norm_f16_binding_count}`\n- mlx_metal_rms_norm_bf16_binding_count: `{mlx_metal_rms_norm_bf16_binding_count}`\n- mlx_metal_rms_norm_unsupported_binding_count: `{mlx_metal_rms_norm_unsupported_binding_count}`\n- prefix_cache_path: `{prefix_cache_path}`\n- prefix_cache_evidence: `{prefix_cache_evidence}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n\n| Metric | Delta % |\n| --- | ---: |\n| TTFT | {ttft:.2} |\n| Decode tok/s | {decode:.2} |\n| Memory peak MB | {memory:.2} |\n| Prefix hit rate | {prefix:.2} |\n{}",
+        "# Benchmark Compare\n\n- baseline: `{baseline_id}`\n{trusted_baseline_line}- candidate: `{candidate_id}`\n- mode: `{compare_mode}`\n- tool_mode: `{tool_mode}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- execution_semantics: `{execution_semantics}`\n- baseline_mlx_metal_readiness: `{baseline_mlx_metal_readiness}`\n- baseline_mlx_metal_hot_path_cpu_fallback_free: `{baseline_mlx_metal_hot_path_cpu_fallback_free}`\n- baseline_mlx_metal_batched_direct_decode_logits_ready: `{baseline_mlx_metal_batched_direct_decode_logits_ready}`\n- baseline_prefix_min_mlx_metal_dispatch_share: `{baseline_mlx_metal_prefix_min_dispatch_share}`\n- baseline_direct_decode_min_mlx_metal_dispatch_share: `{baseline_mlx_metal_direct_decode_min_dispatch_share}`\n- baseline_mlx_metal_readiness_blockers: `{baseline_mlx_metal_readiness_blockers}`\n- candidate_mlx_metal_readiness: `{candidate_mlx_metal_readiness}`\n- candidate_mlx_metal_hot_path_cpu_fallback_free: `{candidate_mlx_metal_hot_path_cpu_fallback_free}`\n- candidate_mlx_metal_batched_direct_decode_logits_ready: `{candidate_mlx_metal_batched_direct_decode_logits_ready}`\n- candidate_prefix_min_mlx_metal_dispatch_share: `{candidate_mlx_metal_prefix_min_dispatch_share}`\n- candidate_direct_decode_min_mlx_metal_dispatch_share: `{candidate_mlx_metal_direct_decode_min_dispatch_share}`\n- candidate_mlx_metal_readiness_blockers: `{candidate_mlx_metal_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- mlx_metal_prefix_layers_attention: `{mlx_metal_prefix_layers_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- mlx_metal_prefix_dispatch_count: `{mlx_metal_prefix_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- mlx_metal_projection_f32_binding_count: `{mlx_metal_projection_f32_binding_count}`\n- mlx_metal_projection_f16_binding_count: `{mlx_metal_projection_f16_binding_count}`\n- mlx_metal_projection_bf16_binding_count: `{mlx_metal_projection_bf16_binding_count}`\n- mlx_metal_projection_unsupported_binding_count: `{mlx_metal_projection_unsupported_binding_count}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- mlx_metal_rms_norm_f32_binding_count: `{mlx_metal_rms_norm_f32_binding_count}`\n- mlx_metal_rms_norm_f16_binding_count: `{mlx_metal_rms_norm_f16_binding_count}`\n- mlx_metal_rms_norm_bf16_binding_count: `{mlx_metal_rms_norm_bf16_binding_count}`\n- mlx_metal_rms_norm_unsupported_binding_count: `{mlx_metal_rms_norm_unsupported_binding_count}`\n{mlx_kv_cache_lines}- prefix_cache_path: `{prefix_cache_path}`\n- prefix_cache_evidence: `{prefix_cache_evidence}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n\n| Metric | Delta % |\n| --- | ---: |\n| TTFT | {ttft:.2} |\n| Decode tok/s | {decode:.2} |\n| Memory peak MB | {memory:.2} |\n| Prefix hit rate | {prefix:.2} |\n{}",
         summary_note
     )
 }
@@ -8783,6 +8810,37 @@ fn route_count_from_json(route_json: &Value, field: &str, decision_keys: &[&str]
         .unwrap_or(0)
 }
 
+fn route_counter_from_json(route_json: &Value, key: &str) -> u32 {
+    route_count_from_json(route_json, key, &[key])
+}
+
+fn mlx_kv_cache_route_markdown_lines(route_json: &Value, prefix: &str) -> String {
+    let mut lines = String::new();
+    for key in ax_engine_core::ROUTE_DECISION_AX_MLX_KV_KEYS {
+        lines.push_str(&format!(
+            "- {prefix}{key}: `{}`\n",
+            route_counter_from_json(route_json, key)
+        ));
+    }
+    lines
+}
+
+fn mlx_kv_cache_regression_markdown_lines(regression_json: &Value) -> String {
+    let mut lines = String::new();
+    for key in ax_engine_core::ROUTE_DECISION_AX_MLX_KV_KEYS {
+        let baseline = nested_value(regression_json, &["contract", key, "baseline"])
+            .or_else(|| nested_value(regression_json, &["summary", key]))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let candidate = nested_value(regression_json, &["contract", key, "candidate"])
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        lines.push_str(&format!("- baseline_{key}: `{baseline}`\n"));
+        lines.push_str(&format!("- candidate_{key}: `{candidate}`\n"));
+    }
+    lines
+}
+
 fn route_execution_semantics_from_json(route_json: &Value) -> String {
     if let Some(value) = nested_value(route_json, &["execution_semantics"]).and_then(Value::as_str)
     {
@@ -8940,6 +8998,11 @@ fn serialize_route_metadata(route: &RouteMetadata) -> Value {
         "metal_model_layer_count".to_string(),
         json!(route_model_layer_count(route)),
     );
+    for key in ax_engine_core::ROUTE_DECISION_AX_MLX_KV_KEYS {
+        if let Some(value) = crossover_decisions.get(key).cloned() {
+            route_json.insert(key.to_string(), value);
+        }
+    }
     route_json.insert(
         "metal_complete_model_forward_supported".to_string(),
         json!(
@@ -10423,6 +10486,9 @@ impl RuntimeObservation {
         }
         self.total_cpu_time_us += outcome.metrics.cpu_time_us;
         self.total_runner_time_us += outcome.metrics.runner_time_us;
+        self.evictions = self
+            .evictions
+            .saturating_add(u64::from(outcome.metrics.evictions));
         self.kv_peak_blocks = self
             .kv_peak_blocks
             .max(engine.kv_manager().used_block_count());
@@ -10503,6 +10569,7 @@ impl RuntimeObservation {
         }
         self.total_cpu_time_us += step.cpu_time_us;
         self.total_runner_time_us += step.runner_time_us;
+        self.evictions = self.evictions.saturating_add(u64::from(step.evictions));
 
         if self.ttft_ms.is_none() && step.ttft_events > 0 {
             self.ttft_ms = Some(current_time_ms);
@@ -11246,6 +11313,7 @@ struct StepTraceEntry {
     cpu_time_us: u64,
     runner_time_us: u64,
     kv_usage_blocks: u32,
+    evictions: u32,
     runner_executed: bool,
     route_metadata: RouteMetadata,
     metal_dispatch: Option<MetalDispatchStepTrace>,
@@ -11284,6 +11352,7 @@ impl StepTraceEntry {
             cpu_time_us: outcome.metrics.cpu_time_us,
             runner_time_us: outcome.metrics.runner_time_us,
             kv_usage_blocks: engine.kv_manager().used_block_count(),
+            evictions: outcome.metrics.evictions,
             runner_executed: outcome.runner_output.is_some(),
             route_metadata,
             metal_dispatch: outcome
@@ -11309,6 +11378,7 @@ impl StepTraceEntry {
             "cpu_time_us": self.cpu_time_us,
             "runner_time_us": self.runner_time_us,
             "kv_usage_blocks": self.kv_usage_blocks,
+            "evictions": self.evictions,
             "runner_executed": self.runner_executed,
             "route": serialize_route_metadata(&self.route_metadata),
             "items": self.items.iter().map(StepTraceItem::json).collect::<Vec<_>>()
@@ -11346,6 +11416,7 @@ impl StepTraceEntry {
             cpu_time_us: step.cpu_time_us,
             runner_time_us: step.runner_time_us,
             kv_usage_blocks: step.kv_usage_blocks,
+            evictions: step.evictions,
             runner_executed: false,
             route_metadata,
             metal_dispatch: None,
@@ -11651,6 +11722,7 @@ mod tests {
             cpu_time_us: 123,
             runner_time_us: 45,
             kv_usage_blocks: 1,
+            evictions: 2,
             runner_executed: true,
             route_metadata: RouteMetadata::empty(),
             metal_dispatch: Some(MetalDispatchStepTrace::from_trace(
@@ -11667,6 +11739,7 @@ mod tests {
                 .and_then(Value::as_str),
             Some("completed")
         );
+        assert_eq!(json.get("evictions").and_then(Value::as_u64), Some(2));
         assert_eq!(
             json.get("metal_dispatch")
                 .and_then(|trace| trace.get("runtime_required_pipeline_count"))
@@ -11862,6 +11935,42 @@ mod tests {
                 .and_then(|validation| validation.get("attention_max_abs_diff_microunits"))
                 .and_then(Value::as_u64),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn metrics_json_surfaces_observed_evictions() {
+        let execution = RuntimeResult {
+            tool_mode: "mlx_runtime",
+            runtime: RuntimeConfig {
+                deterministic: true,
+                max_batch_tokens: 8,
+                block_size_tokens: 4,
+                kv_total_blocks: Some(2),
+                flags: RuntimeFlags::default(),
+                backend_policy: BackendPolicy::new(ResolutionPolicy::MlxOnly),
+                resolved_backend: ResolvedBackend::new(
+                    SelectedBackend::Mlx,
+                    SupportTier::MlxPreview,
+                    None,
+                ),
+                backend_adapter: None,
+                mlx_model_artifacts_dir: None,
+                mlx_model_artifacts_source: None,
+            },
+            observation: RuntimeObservation {
+                evictions: 7,
+                ..RuntimeObservation::default()
+            },
+            correctness: GateStatus::pass(),
+            determinism: GateStatus::pass(),
+        };
+
+        let metrics = build_metrics_json("run-evictions", &execution);
+
+        assert_eq!(
+            nested_value(&metrics, &["metrics", "evictions"]).and_then(Value::as_f64),
+            Some(7.0)
         );
     }
 
@@ -12966,6 +13075,56 @@ mod tests {
         assert_eq!(
             route_json.get("metal_direct_decode_residual_add_mlx_metal_dispatch_share"),
             Some(&Value::from(1.0_f64))
+        );
+    }
+
+    #[test]
+    fn serialize_route_metadata_preserves_mlx_kv_cache_counters() {
+        let mut route = RouteMetadata::empty();
+        route.crossover_decisions.push((
+            ax_engine_core::ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB.to_string(),
+            24,
+        ));
+        route.crossover_decisions.push((
+            ax_engine_core::ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT.to_string(),
+            3,
+        ));
+        route.crossover_decisions.push((
+            ax_engine_core::ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB.to_string(),
+            8,
+        ));
+
+        let route_json = serialize_route_metadata(&route);
+        let decisions = route_json
+            .get("crossover_decisions")
+            .and_then(Value::as_object)
+            .expect("route decisions should serialize as an object");
+
+        assert_eq!(
+            decisions.get(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB),
+            Some(&Value::from(24))
+        );
+        assert_eq!(
+            decisions.get(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT),
+            Some(&Value::from(3))
+        );
+        assert_eq!(
+            decisions
+                .get(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB),
+            Some(&Value::from(8))
+        );
+        assert_eq!(
+            route_json.get(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB),
+            Some(&Value::from(24))
+        );
+        assert_eq!(
+            route_json.get(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT),
+            Some(&Value::from(3))
+        );
+        assert_eq!(
+            route_json
+                .get(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB),
+            Some(&Value::from(8))
         );
     }
 
@@ -16307,7 +16466,10 @@ mod tests {
                 "metal_direct_decode_cpu_ffn_activation_element_count": 0,
                 "prefix_cache_path": "metadata_lookup",
                 "prefix_cache_evidence": "none_observed",
-                "prefix_reuse_provenance": "none_observed"
+                "prefix_reuse_provenance": "none_observed",
+                "ax_mlx_kv_capacity_kib": 32,
+                "ax_mlx_kv_sliding_reclaimable_capacity_kib": 8,
+                "ax_mlx_kv_growth_count": 1
             }
         });
         let candidate_environment = json!({
@@ -16344,7 +16506,10 @@ mod tests {
                 "metal_direct_decode_cpu_ffn_activation_element_count": 0,
                 "prefix_cache_path": "metadata_lookup",
                 "prefix_cache_evidence": "none_observed",
-                "prefix_reuse_provenance": "none_observed"
+                "prefix_reuse_provenance": "none_observed",
+                "ax_mlx_kv_capacity_kib": 48,
+                "ax_mlx_kv_sliding_reclaimable_capacity_kib": 12,
+                "ax_mlx_kv_growth_count": 2
             }
         });
 
@@ -16413,6 +16578,25 @@ mod tests {
                 "batched_direct_decode_group_fallback_remaining"
             ])
         );
+        assert_eq!(
+            regression
+                .get("summary")
+                .and_then(|summary| {
+                    summary.get(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB)
+                })
+                .and_then(Value::as_u64),
+            Some(32)
+        );
+        assert_eq!(
+            regression
+                .get("contract")
+                .and_then(|contract| {
+                    contract.get(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB)
+                })
+                .and_then(|field| field.get("candidate"))
+                .and_then(Value::as_u64),
+            Some(48)
+        );
 
         let summary = build_compare_summary_markdown(
             &baseline_metrics,
@@ -16421,6 +16605,10 @@ mod tests {
             None,
         );
         assert!(summary.contains("metal_direct_decode_batching_opportunity_observed: `true`"));
+        assert!(summary.contains("baseline_ax_mlx_kv_capacity_kib: `32`"));
+        assert!(summary.contains("candidate_ax_mlx_kv_capacity_kib: `48`"));
+        assert!(summary.contains("baseline_ax_mlx_kv_sliding_reclaimable_capacity_kib: `8`"));
+        assert!(summary.contains("candidate_ax_mlx_kv_sliding_reclaimable_capacity_kib: `12`"));
     }
 
     #[test]
@@ -16508,6 +16696,7 @@ mod tests {
             cpu_time_us: 0,
             runner_time_us: 0,
             kv_usage_blocks: 0,
+            evictions: 0,
             runner_executed: true,
             route_metadata: RouteMetadata::empty(),
             metal_dispatch: None,
@@ -16541,6 +16730,45 @@ mod tests {
             route_json.get("metal_direct_decode_batching_opportunity_observed"),
             Some(&Value::Bool(true))
         );
+    }
+
+    #[test]
+    fn trusted_baseline_summary_surfaces_mlx_kv_cache_counters() {
+        let trusted_baseline = json!({
+            "name": "MLX KV Baseline",
+            "source_run_id": "run-kv",
+            "source_result_dir": "/tmp/run-kv",
+            "manifest": {
+                "id": "chat_qwen_short",
+                "class": "scenario",
+                "scenario": "chat",
+                "model_family": "qwen3_dense"
+            },
+            "runtime": {
+                "tool_mode": "engine_bringup_runtime",
+                "selected_backend": "mlx",
+                "support_tier": "mlx_preview",
+                "resolution_policy": "mlx_only"
+            },
+            "route": {
+                "execution_semantics": "metal_real_model_forward",
+                "ax_mlx_kv_capacity_kib": 64,
+                "ax_mlx_kv_sliding_reclaimable_capacity_kib": 8,
+                "ax_mlx_kv_growth_count": 4
+            },
+            "metrics": {
+                "ttft_ms": 10.0,
+                "decode_tok_s": 100.0,
+                "memory_peak_mb": 1024.0,
+                "prefix_hit_rate": 0.0
+            }
+        });
+
+        let summary = build_trusted_baseline_summary_markdown(&trusted_baseline);
+
+        assert!(summary.contains("ax_mlx_kv_capacity_kib: `64`"));
+        assert!(summary.contains("ax_mlx_kv_sliding_reclaimable_capacity_kib: `8`"));
+        assert!(summary.contains("ax_mlx_kv_growth_count: `4`"));
     }
 
     #[test]

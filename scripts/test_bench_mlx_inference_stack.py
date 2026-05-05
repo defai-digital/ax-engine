@@ -176,6 +176,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_spec_draft_attempts"], 3)
         self.assertEqual(telemetry["ax_spec_draft_tokens"], 12)
         self.assertEqual(telemetry["ax_spec_accepted_tokens"], 9)
+        self.assertEqual(telemetry["ax_spec_complete_misses"], 0)
+        self.assertEqual(telemetry["ax_spec_cooldown_steps"], 0)
+        self.assertEqual(telemetry["ax_spec_cooldown_events"], 0)
         self.assertEqual(telemetry["ax_spec_accept_rate_micros"], 750000)
         self.assertNotIn("unrelated", telemetry)
 
@@ -202,6 +205,66 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_spec_draft_tokens"], 20)
         self.assertEqual(summary["ax_spec_accepted_tokens"], 15)
         self.assertEqual(summary["ax_spec_accept_rate_micros"], 750000)
+
+    def test_ax_mlx_telemetry_is_extracted_and_summarized(self) -> None:
+        telemetry = bench.extract_ax_mlx_telemetry(
+            {
+                "crossover_decisions": {
+                    "ax_mlx_prefill_steps": 1,
+                    "ax_mlx_prefill_wall_us": 100,
+                    "ax_mlx_decode_steps": 2,
+                    "ax_mlx_decode_wall_us": 80,
+                    "ax_mlx_greedy_pipeline_steps": 2,
+                    "ax_mlx_greedy_pipeline_wall_us": 70,
+                    "unrelated": 99,
+                }
+            }
+        )
+
+        self.assertEqual(telemetry["ax_mlx_prefill_steps"], 1)
+        self.assertEqual(telemetry["ax_mlx_prefill_wall_us"], 100)
+        self.assertEqual(telemetry["ax_mlx_decode_steps"], 2)
+        self.assertEqual(telemetry["ax_mlx_decode_wall_us"], 80)
+        self.assertEqual(telemetry["ax_mlx_greedy_pipeline_steps"], 2)
+        self.assertEqual(telemetry["ax_mlx_greedy_pipeline_wall_us"], 70)
+        self.assertEqual(telemetry["ax_mlx_single_decode_steps"], 0)
+        self.assertEqual(telemetry["ax_mlx_bonus_tokens"], 0)
+        self.assertNotIn("unrelated", telemetry)
+
+        summary = bench.summarize_ax_mlx_telemetry(
+            [
+                {"ax_mlx_telemetry": telemetry},
+                {
+                    "ax_mlx_telemetry": {
+                        "ax_mlx_prefill_steps": 1,
+                        "ax_mlx_decode_steps": 3,
+                        "ax_mlx_decode_wall_us": 120,
+                    }
+                },
+            ]
+        )
+        self.assertEqual(summary["ax_mlx_prefill_steps"], 2)
+        self.assertEqual(summary["ax_mlx_decode_steps"], 5)
+        self.assertEqual(summary["ax_mlx_decode_wall_us"], 200)
+
+    def test_route_with_more_decisions_keeps_step_telemetry_over_response_route(self) -> None:
+        step_route = {
+            "attention_route": "qwen_paged_decode",
+            "crossover_decisions": {
+                "ax_spec_draft_attempts": 3,
+                "ax_spec_accepted_tokens": 6,
+            },
+        }
+        response_route = {
+            "attention_route": "qwen_paged_decode",
+            "crossover_decisions": {},
+        }
+
+        self.assertIs(bench.route_with_more_decisions(step_route, None), step_route)
+        self.assertIs(
+            bench.route_with_more_decisions(response_route, step_route),
+            step_route,
+        )
 
     def test_attach_baseline_requires_matching_mlx_lm_row(self) -> None:
         results = [
@@ -242,6 +305,74 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     }
                 ]
             )
+
+    def test_load_reused_reference_rows_filters_and_requires_mlx_lm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "artifact.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "test",
+                        "results": [
+                            {
+                                "engine": "mlx_lm",
+                                "prompt_tokens": 4,
+                                "generation_tokens": 2,
+                                "prefill_tok_s": {"median": 100.0},
+                                "decode_tok_s": {"median": 50.0},
+                            },
+                            {
+                                "engine": "mlx_swift_lm",
+                                "prompt_tokens": 4,
+                                "generation_tokens": 2,
+                                "prefill_tok_s": {"median": 90.0},
+                                "decode_tok_s": {"median": 45.0},
+                            },
+                            {
+                                "engine": "ax_engine_mlx_greedy",
+                                "prompt_tokens": 4,
+                                "generation_tokens": 2,
+                            },
+                        ],
+                    }
+                )
+            )
+
+            rows, doc = bench.load_reused_reference_rows(
+                path,
+                prompt_lengths=[4],
+                generation_tokens=2,
+            )
+
+            self.assertEqual(doc["schema_version"], "test")
+            self.assertEqual([row["engine"] for row in rows], ["mlx_lm", "mlx_swift_lm"])
+
+            with self.assertRaisesRegex(RuntimeError, "missing mlx_lm reference rows"):
+                bench.load_reused_reference_rows(
+                    path,
+                    prompt_lengths=[8],
+                    generation_tokens=2,
+                )
+
+    def test_validate_reused_reference_prompt_hashes_rejects_mismatches(self) -> None:
+        rows = [
+            {
+                "engine": "mlx_lm",
+                "prompt_tokens": 4,
+                "generation_tokens": 2,
+                "prompt_token_ids_sha256": "old",
+            }
+        ]
+        prompts = [
+            {
+                "prompt_tokens": 4,
+                "generation_tokens": 2,
+                "token_ids_sha256": "new",
+            }
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "prompt hash mismatch"):
+            bench.validate_reused_reference_prompt_hashes(rows, prompts)
 
 
 if __name__ == "__main__":

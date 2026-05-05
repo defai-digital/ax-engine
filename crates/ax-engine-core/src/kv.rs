@@ -630,10 +630,43 @@ impl KvManager {
     }
 
     fn select_cached_block_eviction_candidate(&self) -> Option<CachedBlockKey> {
+        let mut has_cached_descendant = BTreeMap::new();
+        for entry in self.cached_blocks.values() {
+            if let Some(parent_block_hash) = entry.parent_block_hash {
+                has_cached_descendant.insert(parent_block_hash, true);
+            }
+        }
+
+        self.oldest_cached_block_matching(|cache_key, entry| {
+            !has_cached_descendant.contains_key(&cache_key.block_hash)
+                && self.cached_entry_releases_block(entry)
+        })
+        .or_else(|| {
+            self.oldest_cached_block_matching(|_, entry| self.cached_entry_releases_block(entry))
+        })
+        .or_else(|| {
+            self.oldest_cached_block_matching(|cache_key, _| {
+                !has_cached_descendant.contains_key(&cache_key.block_hash)
+            })
+        })
+        .or_else(|| self.oldest_cached_block_matching(|_, _| true))
+    }
+
+    fn oldest_cached_block_matching(
+        &self,
+        predicate: impl Fn(&CachedBlockKey, &CachedBlockEntry) -> bool,
+    ) -> Option<CachedBlockKey> {
         self.cached_blocks
             .iter()
+            .filter(|(cache_key, entry)| predicate(cache_key, entry))
             .min_by_key(|(_, entry)| entry.last_touch_tick)
             .map(|(cache_key, _)| *cache_key)
+    }
+
+    fn cached_entry_releases_block(&self, entry: &CachedBlockEntry) -> bool {
+        self.block_ref_counts
+            .get(&entry.block_id)
+            .is_some_and(|ref_count| *ref_count == 1)
     }
 
     fn evict_cached_block(&mut self, cache_key: &CachedBlockKey) -> Result<(), KvManagerError> {
@@ -946,6 +979,37 @@ mod tests {
     }
 
     #[test]
+    fn shared_full_prefix_reuses_partial_tail_block_before_allocating_more() {
+        let mut manager = make_manager(8, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        manager
+            .register_request(RequestId(2), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+            .unwrap();
+        manager.allocate(RequestId(1), 8).unwrap();
+
+        let lookup = manager
+            .lookup_prefix(RequestId(2), &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+            .unwrap();
+        manager.share_prefix(RequestId(2), &lookup).unwrap();
+
+        let tail = manager.allocate(RequestId(2), 2).unwrap();
+        let reuse = manager.allocate(RequestId(2), 1).unwrap();
+        let table = manager.block_tables.get(&RequestId(2)).unwrap();
+
+        assert_eq!(tail.append_mode, AppendMode::AllocateNewBlocks);
+        assert_eq!(tail.new_block_ids, vec![BlockId(2)]);
+        assert_eq!(reuse.append_mode, AppendMode::ReuseCurrentPartialBlock);
+        assert!(reuse.new_block_ids.is_empty());
+        assert_eq!(table.block_ids, vec![BlockId(0), BlockId(1), BlockId(2)]);
+        assert_eq!(table.logical_token_count, 11);
+        assert_eq!(table.full_block_count, 2);
+        assert_eq!(table.partial_block_tokens, 3);
+        assert_eq!(manager.used_block_count(), 3);
+    }
+
+    #[test]
     fn cached_prefix_survives_source_free_and_matches_future_request() {
         let mut manager = make_manager(8, 4);
         manager
@@ -1084,11 +1148,84 @@ mod tests {
         manager.allocate(RequestId(1), 8).unwrap();
         manager.free(RequestId(1)).unwrap();
 
-        let root_key = manager.select_cached_block_eviction_candidate().unwrap();
+        let root_key = manager
+            .full_block_key_sequence(&[1, 2, 3, 4, 5, 6, 7, 8], 1)
+            .unwrap()[0];
         manager.evict_cached_block(&root_key).unwrap();
 
         assert_eq!(manager.available_block_count(), 3);
         assert_eq!(manager.used_block_count(), 0);
+    }
+
+    #[test]
+    fn allocation_eviction_preserves_shorter_cached_prefix_when_leaf_is_enough() {
+        let mut manager = make_manager(2, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        manager
+            .register_request(RequestId(2), vec![9, 10, 11, 12])
+            .unwrap();
+        manager
+            .register_request(RequestId(3), vec![1, 2, 3, 4, 99])
+            .unwrap();
+        manager.allocate(RequestId(1), 8).unwrap();
+        manager.free(RequestId(1)).unwrap();
+
+        let allocation = manager.allocate(RequestId(2), 4).unwrap();
+
+        assert_eq!(allocation.allocation_status, AllocationStatus::Allocated);
+        assert_eq!(manager.take_recent_evictions(), 1);
+        let lookup = manager
+            .lookup_prefix(RequestId(3), &[1, 2, 3, 4, 99])
+            .unwrap();
+        assert_eq!(lookup.matched_token_count, 4);
+        assert!(lookup.uses_retained_cache());
+    }
+
+    #[test]
+    fn allocation_eviction_prefers_releasable_cached_leaf_over_live_shared_cache_entry() {
+        let mut manager = make_manager(3, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4])
+            .unwrap();
+        manager
+            .register_request(RequestId(2), vec![1, 2, 3, 4, 99])
+            .unwrap();
+        manager
+            .register_request(RequestId(3), vec![9, 10, 11, 12])
+            .unwrap();
+        manager
+            .register_request(RequestId(4), vec![20, 21, 22, 23])
+            .unwrap();
+        manager
+            .register_request(RequestId(5), vec![1, 2, 3, 4, 88])
+            .unwrap();
+
+        manager.allocate(RequestId(1), 4).unwrap();
+        manager.free(RequestId(1)).unwrap();
+
+        let lookup = manager
+            .lookup_prefix(RequestId(2), &[1, 2, 3, 4, 99])
+            .unwrap();
+        let retained_root_key = manager.full_block_key_sequence(&[1, 2, 3, 4], 1).unwrap()[0];
+        manager.share_prefix(RequestId(2), &lookup).unwrap();
+        manager.allocate(RequestId(2), 1).unwrap();
+
+        manager.allocate(RequestId(3), 4).unwrap();
+        manager.free(RequestId(3)).unwrap();
+
+        assert_eq!(manager.available_block_count(), 0);
+
+        let allocation = manager.allocate(RequestId(4), 4).unwrap();
+
+        assert_eq!(allocation.allocation_status, AllocationStatus::Allocated);
+        assert_eq!(manager.take_recent_evictions(), 1);
+        assert!(manager.cached_blocks.contains_key(&retained_root_key));
+        let retained_lookup = manager
+            .lookup_prefix(RequestId(5), &[1, 2, 3, 4, 88])
+            .unwrap();
+        assert_eq!(retained_lookup.matched_token_count, 4);
     }
 
     #[test]

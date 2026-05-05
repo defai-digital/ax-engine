@@ -31,6 +31,38 @@ pub struct RouteMetadata {
     pub crossover_decisions: Vec<(String, u32)>,
 }
 
+pub const ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS: &str = "ax_mlx_kv_request_snapshots";
+pub const ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS: &str = "ax_mlx_kv_logical_tokens";
+pub const ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS: &str = "ax_mlx_kv_capacity_tokens";
+pub const ROUTE_DECISION_AX_MLX_KV_LOGICAL_KIB: &str = "ax_mlx_kv_logical_kib";
+pub const ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB: &str = "ax_mlx_kv_capacity_kib";
+pub const ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS: &str = "ax_mlx_kv_full_attention_layers";
+pub const ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS: &str = "ax_mlx_kv_sliding_window_layers";
+pub const ROUTE_DECISION_AX_MLX_KV_SLIDING_RETAINED_TOKENS: &str =
+    "ax_mlx_kv_sliding_retained_tokens";
+pub const ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_TOKENS: &str =
+    "ax_mlx_kv_sliding_reclaimable_capacity_tokens";
+pub const ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB: &str =
+    "ax_mlx_kv_sliding_reclaimable_capacity_kib";
+pub const ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS: &str = "ax_mlx_kv_linear_state_layers";
+pub const ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB: &str = "ax_mlx_kv_linear_state_kib";
+pub const ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT: &str = "ax_mlx_kv_growth_count";
+pub const ROUTE_DECISION_AX_MLX_KV_KEYS: [&str; 13] = [
+    ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS,
+    ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS,
+    ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
+    ROUTE_DECISION_AX_MLX_KV_LOGICAL_KIB,
+    ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB,
+    ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_SLIDING_RETAINED_TOKENS,
+    ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_TOKENS,
+    ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB,
+    ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB,
+    ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
+];
+
 impl RouteMetadata {
     pub fn empty() -> Self {
         Self {
@@ -296,6 +328,7 @@ fn route_seed(snapshot: &RequestSnapshot, batch_mode: Option<ExecutionMode>) -> 
 mod tests {
     use super::*;
     use crate::ids::{ModelId, SequenceNo};
+    use std::collections::BTreeSet;
 
     fn make_snapshot(
         request_id: u64,
@@ -324,6 +357,32 @@ mod tests {
             terminal_stop_reason: None,
             last_error: None,
         }
+    }
+
+    #[test]
+    fn mlx_kv_route_decision_keys_are_stable_and_unique() {
+        assert_eq!(
+            ROUTE_DECISION_AX_MLX_KV_KEYS.len(),
+            ROUTE_DECISION_AX_MLX_KV_KEYS
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .len()
+        );
+        assert!(
+            ROUTE_DECISION_AX_MLX_KV_KEYS
+                .iter()
+                .all(|key| key.starts_with("ax_mlx_kv_"))
+        );
+        assert!(
+            ROUTE_DECISION_AX_MLX_KV_KEYS
+                .iter()
+                .all(|key| key.is_ascii())
+        );
+        assert!(
+            ROUTE_DECISION_AX_MLX_KV_KEYS
+                .iter()
+                .all(|key| !key.contains('-'))
+        );
     }
 
     #[test]

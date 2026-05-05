@@ -35,7 +35,7 @@ MLX-family reference:
 
 ```text
 python3 scripts/bench_mlx_inference_stack.py \
-  --model-dir .internal/models/Qwen3.5-9B-MLX-4bit \
+  --model-dir /path/to/local/mlx-model \
   --prompt-tokens 512,2048 \
   --generation-tokens 128 \
   --repetitions 5 \
@@ -68,7 +68,7 @@ Use `--ax-both-modes` when speculative decode is part of the question:
 
 ```text
 python3 scripts/bench_mlx_inference_stack.py \
-  --model-dir .internal/models/Qwen3.5-9B-MLX-4bit \
+  --model-dir /path/to/local/mlx-model \
   --prompt-tokens 256,512,2048 \
   --generation-tokens 128 \
   --ax-both-modes

@@ -244,6 +244,7 @@ impl EngineCore {
             ttft_events = metrics.ttft_events,
             prefix_hits = metrics.prefix_hits,
             kv_usage_blocks = metrics.kv_usage_blocks,
+            evictions = metrics.evictions,
             cpu_time_us = metrics.cpu_time_us,
             runner_time_us = metrics.runner_time_us,
             cleanup_results = cleanup_results.len(),
@@ -1883,6 +1884,42 @@ mod tests {
                 .processed_prompt_tokens,
             0
         );
+    }
+
+    #[test]
+    fn engine_eviction_preserves_shorter_retained_prefix_for_future_request() {
+        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 2));
+
+        engine
+            .submit(make_submission_with_prompt(
+                1,
+                1,
+                vec![1, 2, 3, 4, 5, 6, 7, 8],
+                1,
+            ))
+            .unwrap();
+        engine.step(8, true).unwrap();
+        engine.cancel(RequestId(1)).unwrap();
+
+        engine
+            .submit(make_submission_with_prompt(2, 2, vec![9, 10, 11, 12], 1))
+            .unwrap();
+        let eviction = engine.step(4, true).unwrap();
+
+        assert_eq!(eviction.metrics.evictions, 1);
+        assert_eq!(engine.kv_manager().used_block_count(), 2);
+
+        engine
+            .submit(make_submission_with_prompt(3, 3, vec![1, 2, 3, 4, 99], 1))
+            .unwrap();
+
+        let lookup = engine
+            .kv_manager()
+            .lookup_prefix(RequestId(3), &[1, 2, 3, 4, 99])
+            .unwrap();
+
+        assert_eq!(lookup.matched_token_count, 4);
+        assert!(lookup.uses_retained_cache());
     }
 
     #[test]

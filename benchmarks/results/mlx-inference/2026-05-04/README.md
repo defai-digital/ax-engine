@@ -11,7 +11,8 @@ AX and, when present, the Swift adapter perform one untimed warmup.
 BenchmarkHelpers/MLXLMCommon adapter reference. `ax_engine_mlx_greedy` is the
 direct same-policy AX comparison. `ax_engine_mlx_speculative` is effective
 throughput from AX's n-gram speculative policy and must not be read as raw model
-decode speed.
+decode speed. Result JSON files include fixed-schema speculative telemetry with
+zero-valued draft, accept/reject, complete-miss, no-draft, and cooldown counters.
 
 ## Artifacts
 

@@ -6,6 +6,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 import BenchmarkHelpers
 
 // MARK: - Args
@@ -73,6 +74,38 @@ func loadTokenIds(from url: URL) throws -> [Int32] {
     exit(1)
 }
 
+func shouldUseVLMFactory(modelDir: URL) -> Bool {
+    let configURL = modelDir.appendingPathComponent("config.json")
+    guard
+        let data = try? Data(contentsOf: configURL),
+        let obj = try? JSONSerialization.jsonObject(with: data),
+        let dict = obj as? [String: Any],
+        dict["model_type"] as? String == "gemma4",
+        let textConfig = dict["text_config"] as? [String: Any],
+        textConfig["enable_moe_block"] as? Bool == true
+    else {
+        return false
+    }
+
+    return true
+}
+
+func loadModelContainer(modelDir: URL, useVLMFactory: Bool) async throws -> ModelContainer {
+    if useVLMFactory {
+        fputs("  [mlx-swift-bench] using MLXVLM factory for Gemma4 MoE\n", stderr)
+        return try await VLMModelFactory.shared.loadContainer(
+            from: modelDir,
+            using: NoOpTokenizerLoader()
+        )
+    }
+
+    fputs("  [mlx-swift-bench] using MLXLLM factory\n", stderr)
+    return try await LLMModelFactory.shared.loadContainer(
+        from: modelDir,
+        using: NoOpTokenizerLoader()
+    )
+}
+
 // MARK: - Output types
 
 struct TrialResult: Codable, Sendable {
@@ -92,7 +125,8 @@ func runOneTrial(
     tokenIds: [Int32],
     generationTokens: Int,
     prefillStepSize: Int,
-    trialIndex: Int
+    trialIndex: Int,
+    useBatchInput: Bool
 ) async throws -> TrialResult {
     let params = GenerateParameters(
         maxTokens: generationTokens,
@@ -102,7 +136,8 @@ func runOneTrial(
     let promptTokenCount = tokenIds.count
 
     return try await container.perform { (context: ModelContext) throws -> TrialResult in
-        let promptArray = MLXArray(tokenIds)
+        let flatPromptArray = MLXArray(tokenIds)
+        let promptArray = useBatchInput ? flatPromptArray.expandedDimensions(axis: 0) : flatPromptArray
         let input = LMInput(tokens: promptArray)
 
         // Time prefill by measuring the init (prefill happens inside init).
@@ -138,12 +173,10 @@ func runOneTrial(
 
 func runBenchmark(args: BenchArgs) async throws {
     fputs("  [mlx-swift-bench] loading model from \(args.modelDir.path)\n", stderr)
-    // Use LLMModelFactory.shared directly to ensure the text-only path is used,
-    // bypassing MLXVLM's factory which takes priority for "gemma4" model_type
-    // and has a batch-dimension bug in its prepare() path.
-    let container = try await LLMModelFactory.shared.loadContainer(
-        from: args.modelDir,
-        using: NoOpTokenizerLoader()
+    let useVLMFactory = shouldUseVLMFactory(modelDir: args.modelDir)
+    let container = try await loadModelContainer(
+        modelDir: args.modelDir,
+        useVLMFactory: useVLMFactory
     )
 
     let tokenIds = try loadTokenIds(from: args.promptTokenIdsPath)
@@ -160,7 +193,8 @@ func runBenchmark(args: BenchArgs) async throws {
         tokenIds: tokenIds,
         generationTokens: args.generationTokens,
         prefillStepSize: args.prefillStepSize,
-        trialIndex: 0
+        trialIndex: 0,
+        useBatchInput: useVLMFactory
     )
     Memory.clearCache()
 
@@ -175,7 +209,8 @@ func runBenchmark(args: BenchArgs) async throws {
             tokenIds: tokenIds,
             generationTokens: args.generationTokens,
             prefillStepSize: args.prefillStepSize,
-            trialIndex: i
+            trialIndex: i,
+            useBatchInput: useVLMFactory
         )
         results.append(result)
         Memory.clearCache()

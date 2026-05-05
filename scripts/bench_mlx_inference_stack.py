@@ -44,6 +44,7 @@ or trial rows:
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import http.client
 import json
@@ -85,6 +86,22 @@ AX_SPEC_TELEMETRY_KEYS = [
     "ax_spec_cooldown_steps_scheduled",
 ]
 AX_SPEC_ACCEPT_RATE_KEY = "ax_spec_accept_rate_micros"
+
+AX_MLX_TELEMETRY_KEYS = [
+    "ax_mlx_prefill_steps",
+    "ax_mlx_prefill_wall_us",
+    "ax_mlx_decode_steps",
+    "ax_mlx_decode_wall_us",
+    "ax_mlx_greedy_bootstrap_steps",
+    "ax_mlx_greedy_bootstrap_wall_us",
+    "ax_mlx_greedy_pipeline_steps",
+    "ax_mlx_greedy_pipeline_wall_us",
+    "ax_mlx_single_decode_steps",
+    "ax_mlx_single_decode_wall_us",
+    "ax_mlx_speculative_decode_steps",
+    "ax_mlx_speculative_decode_wall_us",
+    "ax_mlx_bonus_tokens",
+]
 
 
 def _sysctl(key: str) -> str:
@@ -512,11 +529,7 @@ def extract_ax_speculative_telemetry(route: dict[str, Any] | None) -> dict[str, 
     if not route:
         return {}
     decisions = route.get("crossover_decisions") or {}
-    telemetry = {
-        key: int(decisions[key])
-        for key in AX_SPEC_TELEMETRY_KEYS
-        if key in decisions
-    }
+    telemetry = {key: int(decisions.get(key, 0)) for key in AX_SPEC_TELEMETRY_KEYS}
     if (
         telemetry.get("ax_spec_draft_attempts", 0) > 0
         and AX_SPEC_ACCEPT_RATE_KEY not in telemetry
@@ -528,6 +541,27 @@ def extract_ax_speculative_telemetry(route: dict[str, Any] | None) -> dict[str, 
                 round(accepted_tokens * 1_000_000 / draft_tokens)
             )
     return telemetry
+
+
+def extract_ax_mlx_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
+    if not route:
+        return {}
+    decisions = route.get("crossover_decisions") or {}
+    return {key: int(decisions.get(key, 0)) for key in AX_MLX_TELEMETRY_KEYS}
+
+
+def route_with_more_decisions(
+    candidate: dict[str, Any] | None, current: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if not candidate:
+        return current
+    if not current:
+        return candidate
+    candidate_count = len(candidate.get("crossover_decisions") or {})
+    current_count = len(current.get("crossover_decisions") or {})
+    if candidate_count > current_count:
+        return candidate
+    return current
 
 
 def summarize_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
@@ -545,6 +579,14 @@ def summarize_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
                 / totals["ax_spec_draft_tokens"]
             )
         )
+    return totals
+
+
+def summarize_ax_mlx_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for run in runs:
+        for key, value in (run.get("ax_mlx_telemetry") or {}).items():
+            totals[key] = totals.get(key, 0) + int(value)
     return totals
 
 
@@ -588,10 +630,10 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
         if current_event == "step":
             runner_us = int(obj.get("step", {}).get("runner_time_us", 0))
             output_tokens = int(obj.get("request", {}).get("output_len", output_tokens))
-            final_route = (
+            final_route = route_with_more_decisions(
                 obj.get("step", {}).get("route")
-                or obj.get("request", {}).get("route")
-                or final_route
+                or obj.get("request", {}).get("route"),
+                final_route,
             )
             if prefill_us is None:
                 prefill_us = runner_us
@@ -600,7 +642,10 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
         elif current_event == "response":
             response_tokens = obj.get("response", {}).get("output_tokens", [])
             output_tokens = len(response_tokens) or output_tokens
-            final_route = obj.get("response", {}).get("route") or final_route
+            final_route = route_with_more_decisions(
+                obj.get("response", {}).get("route"),
+                final_route,
+            )
 
     conn.close()
     prompt_tokens = len(tokens)
@@ -617,6 +662,9 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
     telemetry = extract_ax_speculative_telemetry(final_route)
     if telemetry:
         run["speculative_telemetry"] = telemetry
+    mlx_telemetry = extract_ax_mlx_telemetry(final_route)
+    if mlx_telemetry:
+        run["ax_mlx_telemetry"] = mlx_telemetry
     return run
 
 
@@ -694,6 +742,7 @@ def bench_axengine(
         "prefill_s": summarize_runs(runs, "prefill_s"),
         "decode_s": summarize_runs(runs, "decode_s"),
         "speculative_telemetry": summarize_telemetry(runs),
+        "ax_mlx_telemetry": summarize_ax_mlx_telemetry(runs),
         "trials": runs,
     }
 
@@ -853,6 +902,58 @@ def attach_mlx_lm_baselines(results: list[dict[str, Any]]) -> None:
         }
 
 
+def load_reused_reference_rows(
+    path: Path,
+    *,
+    prompt_lengths: list[int],
+    generation_tokens: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    doc = json.loads(path.read_text())
+    wanted = {(prompt_tokens, generation_tokens) for prompt_tokens in prompt_lengths}
+    rows: list[dict[str, Any]] = []
+    seen_mlx_lm: set[tuple[int, int]] = set()
+
+    for cell in doc.get("results", []):
+        engine = cell.get("engine")
+        if engine not in {"mlx_lm", "mlx_swift_lm"}:
+            continue
+        key = (int(cell["prompt_tokens"]), int(cell["generation_tokens"]))
+        if key not in wanted:
+            continue
+        rows.append(copy.deepcopy(cell))
+        if engine == "mlx_lm":
+            seen_mlx_lm.add(key)
+
+    missing = sorted(wanted - seen_mlx_lm)
+    if missing:
+        raise RuntimeError(
+            f"{path} is missing mlx_lm reference rows for prompt/generation pairs: {missing}"
+        )
+    return rows, doc
+
+
+def validate_reused_reference_prompt_hashes(
+    rows: list[dict[str, Any]],
+    prompts: list[dict[str, Any]],
+) -> None:
+    expected = {
+        (int(prompt["prompt_tokens"]), int(prompt["generation_tokens"])): prompt[
+            "token_ids_sha256"
+        ]
+        for prompt in prompts
+    }
+    for cell in rows:
+        key = (int(cell["prompt_tokens"]), int(cell["generation_tokens"]))
+        expected_hash = expected.get(key)
+        actual_hash = cell.get("prompt_token_ids_sha256")
+        if expected_hash and actual_hash != expected_hash:
+            raise RuntimeError(
+                "reused reference row prompt hash mismatch for "
+                f"engine={cell.get('engine')} prompt_tokens={key[0]} "
+                f"generation_tokens={key[1]} expected={expected_hash} actual={actual_hash}"
+            )
+
+
 def print_summary(doc: dict[str, Any]) -> None:
     print("\n" + "=" * 88)
     print("AX Engine MLX inference stack benchmark")
@@ -892,6 +993,15 @@ def main() -> None:
     parser.add_argument("--prefill-step-size", type=int, default=2048)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--skip-ax-engine", action="store_true")
+    parser.add_argument(
+        "--reuse-reference-results-from",
+        type=Path,
+        help=(
+            "Reuse mlx_lm/mlx_swift_lm rows from an existing artifact and rerun "
+            "only AX rows. This keeps AX refreshes apple-to-apple with the "
+            "published reference rows and prompt contract."
+        ),
+    )
     parser.add_argument("--axengine-port", type=int, default=AXENGINE_PORT)
     parser.add_argument("--ax-no-speculative", action="store_true",
                         help="Use greedy (no-spec) decode; this is the default apple-to-apple AX row")
@@ -919,6 +1029,8 @@ def main() -> None:
         parser.error("--ax-speculative conflicts with --ax-no-speculative")
     if args.ax_speculative and args.ax_both_modes:
         parser.error("--ax-speculative conflicts with --ax-both-modes")
+    if args.reuse_reference_results_from and args.mlx_swift_lm_command:
+        parser.error("--reuse-reference-results-from conflicts with --mlx-swift-lm-command")
 
     if not args.skip_ax_engine and not AX_ENGINE_SERVER.exists():
         print(
@@ -952,21 +1064,37 @@ def main() -> None:
     )
 
     results: list[dict[str, Any]] = []
+    reused_reference_doc: dict[str, Any] | None = None
+    if args.reuse_reference_results_from:
+        reused_rows, reused_reference_doc = load_reused_reference_rows(
+            args.reuse_reference_results_from,
+            prompt_lengths=prompt_lengths,
+            generation_tokens=args.generation_tokens,
+        )
+        validate_reused_reference_prompt_hashes(reused_rows, prompts)
+        results.extend(reused_rows)
+        print(
+            f"  [reference] reused {len(reused_rows)} mlx_lm/mlx_swift_lm rows "
+            f"from {args.reuse_reference_results_from}",
+            file=sys.stderr,
+        )
+
     procs: list[subprocess.Popen[Any]] = []
     try:
-        for prompt_doc in prompts:
-            prompt_tokens = int(prompt_doc["prompt_tokens"])
-            results.append(
-                run_mlx_lm_benchmark(
-                    args.model,
-                    prompt_tokens,
-                    args.generation_tokens,
-                    args.repetitions,
-                    args.cooldown,
-                    args.prefill_step_size,
-                    prompt_doc,
+        if not args.reuse_reference_results_from:
+            for prompt_doc in prompts:
+                prompt_tokens = int(prompt_doc["prompt_tokens"])
+                results.append(
+                    run_mlx_lm_benchmark(
+                        args.model,
+                        prompt_tokens,
+                        args.generation_tokens,
+                        args.repetitions,
+                        args.cooldown,
+                        args.prefill_step_size,
+                        prompt_doc,
+                    )
                 )
-            )
 
         if args.mlx_swift_lm_command:
             for prompt_doc in prompts:
@@ -1034,6 +1162,10 @@ def main() -> None:
 
     attach_mlx_lm_baselines(results)
 
+    secondary_reference_present = bool(args.mlx_swift_lm_command) or any(
+        cell.get("engine") == "mlx_swift_lm" for cell in results
+    )
+
     doc = {
         "schema_version": "ax.mlx_inference_stack.v2",
         "host": collect_host_metadata(),
@@ -1045,7 +1177,7 @@ def main() -> None:
             "primary_reference": "mlx_lm.benchmark",
             "primary_reference_required": True,
             "secondary_reference": "mlx-swift-lm BenchmarkHelpers/MLXLMCommon generation adapter",
-            "secondary_reference_present": bool(args.mlx_swift_lm_command),
+            "secondary_reference_present": secondary_reference_present,
             "secondary_reference_required": False,
             "retired_reference": "SwiftLM application server",
             "comparison_policy": (
@@ -1077,6 +1209,32 @@ def main() -> None:
         "concurrency": 1,
         "results": results,
     }
+    if args.reuse_reference_results_from:
+        doc["ax_only_refresh"] = {
+            "method": "reuse_existing_reference_rows_and_rerun_ax_engine_rows",
+            "reference_results_source": str(args.reuse_reference_results_from),
+            "reference_rows_reused": len(
+                [
+                    cell
+                    for cell in results
+                    if cell.get("engine") in {"mlx_lm", "mlx_swift_lm"}
+                ]
+            ),
+            "ax_rows_refreshed": len(
+                [
+                    cell
+                    for cell in results
+                    if str(cell.get("engine", "")).startswith("ax_engine")
+                ]
+            ),
+        }
+        if reused_reference_doc:
+            doc["reference_contract"]["reused_reference_artifact_schema_version"] = (
+                reused_reference_doc.get("schema_version")
+            )
+            doc["reference_contract"]["reused_reference_artifact_build"] = (
+                reused_reference_doc.get("build", {})
+            )
 
     print_summary(doc)
     print(json.dumps(doc, indent=2))
