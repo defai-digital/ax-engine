@@ -9,6 +9,7 @@ fn chunk_ceiling(n: usize) -> usize {
     n.div_ceil(KV_CHUNK_TOKENS) * KV_CHUNK_TOKENS
 }
 
+#[derive(Clone)]
 struct LayerKV {
     /// Full backing buffer: `[1, n_kv_heads, capacity, head_dim]`.
     k: MlxArray,
@@ -19,7 +20,7 @@ struct LayerKV {
     dtype: MlxDtype,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct LinearLayerState {
     /// Qwen3.5 gated-delta conv tail: `[1, conv_kernel - 1, conv_dim]`.
     conv_state: Option<MlxArray>,
@@ -50,6 +51,16 @@ pub struct MlxKVCache {
     linear_layers: Vec<LinearLayerState>,
     /// Current logical sequence length (token count cached).
     pub seq_len: usize,
+}
+
+impl Clone for MlxKVCache {
+    fn clone(&self) -> Self {
+        Self {
+            layers: self.layers.clone(),
+            linear_layers: self.linear_layers.clone(),
+            seq_len: self.seq_len,
+        }
+    }
 }
 
 impl MlxKVCache {
@@ -149,7 +160,16 @@ impl MlxKVCache {
     /// With chunked layout this is O(1) — no array data is modified.  The backing
     /// buffer retains its pre-allocated capacity.  The next `append` writes from
     /// `prefix_len`, overwriting any rejected speculative positions.
+    ///
+    /// # Preconditions
+    /// `prefix_len` must be ≤ `seq_len`.  Callers that pass a value beyond the
+    /// current sequence length silently corrupt the cache (forward beyond trim).
     pub fn trim_to(&mut self, prefix_len: usize) {
+        debug_assert!(
+            prefix_len <= self.seq_len,
+            "trim_to({prefix_len}) called with seq_len={} — would extend, not trim",
+            self.seq_len
+        );
         self.seq_len = prefix_len;
     }
 
@@ -266,5 +286,40 @@ mod tests {
         assert!(conv_state.is_none());
         assert!(recurrent_state.is_none());
         assert!(cache.collect_eval_refs().is_empty());
+    }
+
+    #[test]
+    fn linear_state_survives_trim_to() {
+        let mut cache = MlxKVCache::new(1);
+        let conv = zeros(&[1, 3, 14], MlxDtype::Float32, None);
+        let recurrent = zeros(&[1, 4, 8, 6], MlxDtype::Float32, None);
+
+        cache.seq_len = 8;
+        cache.set_linear_state(0, conv, recurrent);
+        cache.trim_to(4);
+
+        assert_eq!(cache.seq_len, 4);
+        let (conv_state, recurrent_state) = cache.linear_state(0);
+        assert!(
+            conv_state.is_some() && recurrent_state.is_some(),
+            "linear recurrent state is not rolled back by seq_len trim"
+        );
+    }
+
+    #[test]
+    fn clone_preserves_linear_state_for_speculative_branch() {
+        let mut cache = MlxKVCache::new(1);
+        let conv = zeros(&[1, 3, 14], MlxDtype::Float32, None);
+        let recurrent = zeros(&[1, 4, 8, 6], MlxDtype::Float32, None);
+
+        cache.seq_len = 12;
+        cache.set_linear_state(0, conv, recurrent);
+        let branch = cache.clone();
+        cache.reset();
+
+        assert_eq!(branch.seq_len, 12);
+        let (conv_state, recurrent_state) = branch.linear_state(0);
+        assert!(conv_state.is_some());
+        assert!(recurrent_state.is_some());
     }
 }

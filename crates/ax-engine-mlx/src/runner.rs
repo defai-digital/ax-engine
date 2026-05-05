@@ -2,7 +2,9 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use mlx_sys::{MlxStream, enable_compile, max_recommended_working_set_size, set_wired_limit};
+use mlx_sys::{
+    MlxArray, MlxStream, enable_compile, max_recommended_working_set_size, set_wired_limit,
+};
 
 use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
@@ -12,16 +14,34 @@ use ax_engine_core::{
     RequestId, RouteMetadata, RunnerInput, RunnerOutput, StopReason,
 };
 
-use crate::generate::{chunked_prefill, decode_step};
+use crate::generate::{
+    advance_greedy_pipeline, chunked_prefill, decode_step, start_greedy_pipeline,
+};
 use crate::kv_cache::MlxKVCache;
 use crate::model::ModelConfig;
 use crate::sampling::Xorshift64;
-use crate::speculative::{DEFAULT_DRAFT_LEN, NgramTable, single_decode, speculative_decode_step};
+use crate::speculative::{
+    DEFAULT_DRAFT_LEN, DRAFT_CONFIDENCE_THRESHOLD, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN,
+    NgramTable, single_decode, speculative_decode_step,
+};
 use crate::weights::{ModelWeights, load_weights};
 
-const EMA_ALPHA: f32 = 0.1;
+/// Beta prior counts for the speculation accept-rate gate.
+///
+/// Beta(3, 1) → initial posterior mean = 0.75, above the accept threshold,
+/// so speculation is enabled optimistically from the first step and is only
+/// suppressed once the posterior accumulates evidence of a low accept rate.
+const SPEC_BETA_PRIOR_ALPHA: f32 = 3.0;
+const SPEC_BETA_PRIOR_BETA: f32 = 1.0;
+
+/// Cap total Beta observations to ~100 to bound the "memory" of the gate
+/// and allow the posterior to adapt if token statistics change mid-sequence.
+/// Equivalent to an EMA span of roughly 100 speculative steps.
+const SPEC_BETA_MAX_TOTAL: f32 = 100.0;
+
 const SPEC_ACCEPT_THRESHOLD: f32 = 0.5;
 const SPEC_RETRY_INTERVAL: u32 = 8;
+const LINEAR_SPEC_RETRY_INTERVAL: u32 = 128;
 
 /// Per-request mutable state persisted across prefill → decode steps.
 struct RequestState {
@@ -30,8 +50,12 @@ struct RequestState {
     /// Per-request PRNG for temperature sampling.  Seeded from request_id so
     /// deterministic seeds produce reproducible outputs.
     rng: Xorshift64,
-    /// EMA of speculative accept rate (1.0 = always accept, 0.0 = never).
-    spec_ema: f32,
+    /// Beta-Bernoulli posterior α for the speculation accept-rate gate.
+    /// Incremented by accepted draft tokens each speculative step.
+    spec_beta_alpha: f32,
+    /// Beta-Bernoulli posterior β for the speculation accept-rate gate.
+    /// Incremented by rejected draft tokens each speculative step.
+    spec_beta_beta: f32,
     /// Steps remaining before re-enabling speculation (0 = speculation allowed).
     spec_disabled_steps: u32,
     /// Pre-verified bonus tokens ready to serve without a model run.
@@ -39,6 +63,14 @@ struct RequestState {
     /// The token to use as `last_token` for the next model run.
     /// None on the very first decode step (use framework-supplied input instead).
     next_model_last_token: Option<u32>,
+    /// Lazy token from the previous greedy decode step (double-buffer pipeline).
+    ///
+    /// When `Some`, the next call to `decode_one` uses `advance_greedy_pipeline`
+    /// to materialise this token while simultaneously submitting the next step
+    /// to the GPU — eliminating the GPU idle gap between steps.
+    ///
+    /// Only set when `no_speculative = true` and `temperature == 0.0`.
+    pending_greedy: Option<MlxArray>,
 }
 
 impl RequestState {
@@ -47,11 +79,17 @@ impl RequestState {
             cache: MlxKVCache::new(num_layers),
             ngram: NgramTable::new(),
             rng: Xorshift64::new(request_id.0),
-            spec_ema: 1.0,
+            spec_beta_alpha: SPEC_BETA_PRIOR_ALPHA,
+            spec_beta_beta: SPEC_BETA_PRIOR_BETA,
             spec_disabled_steps: 0,
             bonus_queue: VecDeque::new(),
             next_model_last_token: None,
+            pending_greedy: None,
         }
+    }
+
+    fn spec_posterior_mean(&self) -> f32 {
+        self.spec_beta_alpha / (self.spec_beta_alpha + self.spec_beta_beta)
     }
 }
 
@@ -130,10 +168,10 @@ impl MlxRunner {
         }
 
         // AX_NO_SPEC=1 env var overrides the config flag (for benchmarking/debugging).
-        // Qwen3.5 linear-attention layers keep recurrent state that cannot use
-        // the KV cache's O(1) speculative rollback path, so run them single-step.
+        // Qwen3.5 linear-attention uses `speculative_decode_step_linear_safe` which
+        // clones the cache for verification and recomputes the committed prefix on
+        // partial accept — so speculative is safe to enable for linear-attention models.
         let no_speculative = no_speculative
-            || cfg.linear_attention.is_some()
             || std::env::var("AX_NO_SPEC")
                 .map(|v| v == "1")
                 .unwrap_or(false);
@@ -245,6 +283,21 @@ impl MlxRunner {
                 // Reset bonus state for this new generation.
                 state.bonus_queue.clear();
                 state.next_model_last_token = None;
+                state.pending_greedy = None;
+
+                // Bootstrap the double-buffer greedy pipeline: submit the second token's
+                // forward pass to the GPU asynchronously so the first decode step can
+                // materialise it while the GPU is already computing the third token.
+                // Only for greedy (temperature = 0) non-speculative runs.
+                if self.no_speculative && temperature == 0.0 {
+                    state.pending_greedy = Some(start_greedy_pipeline(
+                        &self.cfg,
+                        &self.weights,
+                        tok,
+                        &mut state.cache,
+                    ));
+                }
+
                 tok
             }
             ExecutionMode::Decode => self.decode_one(&mut state, token_ids, temperature),
@@ -274,10 +327,28 @@ impl MlxRunner {
     /// Produce one output token for a decode step.
     ///
     /// Pops from the bonus queue when pre-verified tokens are available.
+    /// Uses the double-buffer greedy pipeline when `no_speculative = true` and
+    /// `temperature == 0.0` (bootstrapped during prefill).
     /// Otherwise runs a speculative or single-token decode pass.
     fn decode_one(&self, state: &mut RequestState, input_tokens: &[u32], temperature: f32) -> u32 {
         // Serve pre-verified bonus tokens without re-running the model.
+        // (Bonus tokens only exist on the speculative path; the greedy pipeline
+        // never populates the bonus queue.)
         if let Some(tok) = state.bonus_queue.pop_front() {
+            return tok;
+        }
+
+        // Double-buffer greedy pipeline: materialise the pending lazy token while
+        // simultaneously submitting the next step to the GPU.  This mirrors
+        // mlx_lm's `_step(y)` → `async_eval(next_y)` → `eval(y)` loop and
+        // eliminates the GPU idle gap between consecutive greedy decode steps.
+        if self.no_speculative
+            && temperature == 0.0
+            && let Some(pending) = state.pending_greedy.take()
+        {
+            let (tok, next_pending) =
+                advance_greedy_pipeline(&self.cfg, &self.weights, &pending, &mut state.cache);
+            state.pending_greedy = Some(next_pending);
             return tok;
         }
 
@@ -305,7 +376,7 @@ impl MlxRunner {
         output
     }
 
-    /// Run one model decode step (speculative or single), updating EMA gating.
+    /// Run one model decode step (speculative or single), updating the Beta-Bernoulli gate.
     fn run_model_decode(
         &self,
         state: &mut RequestState,
@@ -339,7 +410,7 @@ impl MlxRunner {
             );
         }
 
-        let draft = state.ngram.predict(DEFAULT_DRAFT_LEN);
+        let draft = speculative_draft(&state.ngram, self.cfg.linear_attention.is_some());
         if draft.is_empty() {
             return single_decode(
                 &self.cfg,
@@ -359,20 +430,69 @@ impl MlxRunner {
             &mut state.cache,
             &mut state.ngram,
             last_token,
-            draft_len,
+            &draft,
             temperature,
             &mut state.rng,
         );
 
-        // Update EMA: accept_count = result.len() - 1 (excluding next last_token).
+        // Beta-Bernoulli posterior update.
+        // accept_count = result.len() - 1 (last element is next model input, not bonus).
         let accept_count = result.len().saturating_sub(1);
-        let accept_rate = accept_count as f32 / draft_len as f32;
-        state.spec_ema = state.spec_ema * (1.0 - EMA_ALPHA) + accept_rate * EMA_ALPHA;
-        if state.spec_ema < SPEC_ACCEPT_THRESHOLD {
-            state.spec_disabled_steps = SPEC_RETRY_INTERVAL;
+        state.spec_beta_alpha += accept_count as f32;
+        state.spec_beta_beta += (draft_len - accept_count) as f32;
+
+        // Normalise to keep total observations bounded — prevents the posterior
+        // from becoming overconfident and unable to adapt to changing statistics.
+        let total = state.spec_beta_alpha + state.spec_beta_beta;
+        if total > SPEC_BETA_MAX_TOTAL {
+            let scale = SPEC_BETA_MAX_TOTAL / total;
+            state.spec_beta_alpha *= scale;
+            state.spec_beta_beta *= scale;
+        }
+
+        if let Some(disabled_steps) = speculative_disabled_steps(
+            self.cfg.linear_attention.is_some(),
+            accept_count,
+            draft_len,
+            state.spec_posterior_mean(),
+        ) {
+            state.spec_disabled_steps = disabled_steps;
         }
 
         result
+    }
+}
+
+fn speculative_disabled_steps(
+    has_linear_attention: bool,
+    accept_count: usize,
+    draft_len: usize,
+    posterior_mean: f32,
+) -> Option<u32> {
+    if draft_len == 0 {
+        return None;
+    }
+
+    if has_linear_attention {
+        // Linear-attention recurrent state cannot be rolled back with the cheap
+        // KV `trim_to` path. Any partial reject pays branch verification plus
+        // committed-prefix recompute, so probe conservatively and continue only
+        // while full drafts are accepted.
+        return (accept_count < draft_len).then_some(LINEAR_SPEC_RETRY_INTERVAL);
+    }
+
+    (posterior_mean < SPEC_ACCEPT_THRESHOLD).then_some(SPEC_RETRY_INTERVAL)
+}
+
+fn speculative_draft(ngram: &NgramTable, has_linear_attention: bool) -> Vec<u32> {
+    if has_linear_attention {
+        // Dense rollback is O(1); linear-attention partial-reject pays
+        // branch/recompute, so cap at DEFAULT_DRAFT_LEN to bound recompute cost.
+        ngram.predict_with_confidence(DEFAULT_DRAFT_LEN, LINEAR_MIN_NGRAM_SUPPORT, DRAFT_CONFIDENCE_THRESHOLD)
+    } else {
+        // Dense models extend up to MAX_DRAFT_LEN when the n-gram chain is
+        // high-confidence; the confidence gate stops the chain early otherwise.
+        ngram.predict_with_confidence(MAX_DRAFT_LEN, 1, DRAFT_CONFIDENCE_THRESHOLD)
     }
 }
 
@@ -694,8 +814,8 @@ mod tests {
             final_logit_softcapping: None,
             hidden_states_scale: None,
             moe_norm_topk_prob: false,
-        hidden_size_per_layer_input: 0,
-        vocab_size_per_layer_input: None,
+            hidden_size_per_layer_input: 0,
+            vocab_size_per_layer_input: None,
             linear_attention: NativeLinearAttentionConfig::default(),
             moe: NativeMoeConfig::default(),
             tensors: vec![
@@ -931,6 +1051,60 @@ mod tests {
 
         MlxRunner::from_artifacts(&artifacts, 8, true)
             .expect("real Qwen3.5 MLX runner should warm up");
+    }
+
+    #[test]
+    fn linear_attention_speculation_cools_down_after_partial_accept() {
+        assert_eq!(
+            speculative_disabled_steps(true, 3, DEFAULT_DRAFT_LEN, 0.95),
+            Some(LINEAR_SPEC_RETRY_INTERVAL)
+        );
+        assert_eq!(
+            speculative_disabled_steps(true, DEFAULT_DRAFT_LEN, DEFAULT_DRAFT_LEN, 0.25),
+            None
+        );
+    }
+
+    #[test]
+    fn dense_speculation_uses_beta_posterior_gate() {
+        // Posterior mean above threshold → no cooldown.
+        assert_eq!(
+            speculative_disabled_steps(false, 3, DEFAULT_DRAFT_LEN, 0.95),
+            None
+        );
+        // Posterior mean below threshold → cooldown period.
+        assert_eq!(
+            speculative_disabled_steps(false, 0, DEFAULT_DRAFT_LEN, 0.49),
+            Some(SPEC_RETRY_INTERVAL)
+        );
+    }
+
+    #[test]
+    fn linear_attention_draft_requires_repeated_ngram_evidence() {
+        let mut ngram = NgramTable::new();
+        ngram.feed(&[1, 2, 3, 1, 2, 3]);
+
+        // Dense: 3-token cycle builds high-confidence bigrams → draft up to MAX_DRAFT_LEN.
+        let dense_draft = speculative_draft(&ngram, false);
+        assert!(!dense_draft.is_empty(), "dense draft should be non-empty");
+        assert!(
+            dense_draft.len() <= MAX_DRAFT_LEN,
+            "dense draft must not exceed MAX_DRAFT_LEN"
+        );
+
+        // Linear-attention: min_support=2 filters one-off n-grams.
+        assert!(
+            speculative_draft(&ngram, true).is_empty(),
+            "linear attention should not probe one-off prompt n-grams"
+        );
+
+        ngram.feed(&[1, 2, 3]);
+        let lin_draft = speculative_draft(&ngram, true);
+        assert!(!lin_draft.is_empty(), "linear attention draft should be non-empty after second repeat");
+        assert!(
+            lin_draft.len() <= DEFAULT_DRAFT_LEN,
+            "linear attention draft must not exceed DEFAULT_DRAFT_LEN"
+        );
     }
 
     #[test]
