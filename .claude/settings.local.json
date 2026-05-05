@@ -65,7 +65,20 @@
       "Bash(AX_ENGINE_NATIVE_MODEL_DIR=/Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.5-2B-bf16 cargo run:*)",
       "Bash(curl:*)",
       "Bash(pkill -f \"ax-engine-server\")",
-      "Bash(target/release/ax-engine-server:*)"
+      "Bash(target/release/ax-engine-server:*)",
+      "Bash(git rm *)",
+      "Bash(git rebase *)",
+      "Bash(git push *)",
+      "Bash(git reset *)",
+      "Bash(git tag *)",
+      "Bash(gh release *)",
+      "Bash(gh api *)",
+      "Bash(brew tap *)",
+      "Bash(brew info *)",
+      "Bash(gh run *)",
+      "Bash(gh secret *)",
+      "Bash(gh workflow *)",
+      "Bash(shasum -a 256)"
     ]
   }
 }
