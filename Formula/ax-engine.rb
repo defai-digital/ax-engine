@@ -6,7 +6,7 @@ class AxEngine < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/defai-digital/ax-engine/releases/download/v4.2.2/ax-engine-v4.2.2-macos-arm64.tar.gz"
-      sha256 "092fa1bf5b35266c87fd244708859db19f15d86c3042c6d84ef8cc057b364b8d"
+      sha256 "6325fef1eeec1d720a950d58da556caaee03659063f1f15a3b501138968f7e26"
     else
       odie "ax-engine requires Apple Silicon (arm64)."
     end
