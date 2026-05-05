@@ -30,7 +30,7 @@ AX surface for broader model coverage.
 For tagged macOS arm64 releases:
 
 ```text
-brew install automatosx/ax-engine/ax-engine
+brew install defai-digital/ax-engine/ax-engine
 ```
 
 This installs `ax-engine-server` and `ax-engine-bench`.
