@@ -827,22 +827,7 @@ impl MlxRunner {
             .unwrap_or(0);
 
         let result = self.run_model_decode(state, last_token, temperature);
-
-        // result[0] is the output for this step.
-        // result[1..last] are bonus tokens (KVs already in cache).
-        // result[last] is the starting point for the next model run (KV not yet in cache).
-        let output = result[0];
-
-        // Queue bonus tokens (intermediate accepted drafts).
-        // result[1..len-1] is empty for len<=2; use get() to avoid panic on len=1.
-        for &t in result.get(1..result.len().saturating_sub(1)).unwrap_or(&[]) {
-            state.bonus_queue.push_back(t);
-        }
-
-        // The last element drives the next model run.
-        state.next_model_last_token = result.last().copied();
-
-        output
+        apply_decode_result(state, &result)
     }
 
     /// Run one model decode step (speculative or single), updating the Beta-Bernoulli gate.
@@ -953,6 +938,24 @@ impl MlxRunner {
 
         result
     }
+}
+
+fn apply_decode_result(state: &mut RequestState, result: &[u32]) -> u32 {
+    debug_assert!(
+        !result.is_empty(),
+        "MLX decode path must return at least one token"
+    );
+
+    // result[0] is the output for this step.
+    // result[1..] are already verified output tokens to emit before the next
+    // model run.  The last token also drives that next model run, but it still
+    // belongs in the user-visible output stream; dropping it corrupts generation.
+    let output = result[0];
+    for &token in result.get(1..).unwrap_or(&[]) {
+        state.bonus_queue.push_back(token);
+    }
+    state.next_model_last_token = result.last().copied();
+    output
 }
 
 struct MlxItemRun {
@@ -1238,6 +1241,36 @@ mod tests {
             state.next_model_last_token.is_none(),
             "last_token pointer must be reset on prefill"
         );
+    }
+
+    #[test]
+    fn speculative_decode_result_keeps_correction_token_in_output_queue() {
+        let mut state = RequestState::new(2, RequestId(7));
+
+        let output = apply_decode_result(&mut state, &[11, 12]);
+
+        assert_eq!(output, 11);
+        assert_eq!(
+            state.bonus_queue.iter().copied().collect::<Vec<_>>(),
+            vec![12],
+            "correction token must be emitted before the next model run"
+        );
+        assert_eq!(state.next_model_last_token, Some(12));
+    }
+
+    #[test]
+    fn speculative_decode_result_queues_full_accept_tail_and_bonus() {
+        let mut state = RequestState::new(2, RequestId(8));
+
+        let output = apply_decode_result(&mut state, &[21, 22, 23, 24]);
+
+        assert_eq!(output, 21);
+        assert_eq!(
+            state.bonus_queue.iter().copied().collect::<Vec<_>>(),
+            vec![22, 23, 24],
+            "accepted drafts and final bonus token are all user-visible output"
+        );
+        assert_eq!(state.next_model_last_token, Some(24));
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {

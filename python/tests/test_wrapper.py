@@ -715,6 +715,46 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(native.mlx_model_artifacts_dir, "/tmp/mlx-model")
         self.assertEqual(runtime.selected_backend, "mlx")
 
+    def test_openai_mlx_shim_helpers_tokenize_and_render_chat_prompt(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        class FakeTokenizer:
+            def encode(self, text: str) -> object:
+                return types.SimpleNamespace(ids=[ord(ch) for ch in text])
+
+        tokens, prompt_text = openai_server.prompt_to_tokens("AX", FakeTokenizer())
+        self.assertEqual(tokens, [65, 88])
+        self.assertEqual(prompt_text, "AX")
+        token_prompt, token_prompt_text = openai_server.prompt_to_tokens(
+            [1, 2, 3], FakeTokenizer()
+        )
+        self.assertEqual(token_prompt, [1, 2, 3])
+        self.assertIsNone(token_prompt_text)
+        self.assertEqual(
+            openai_server.render_chat_prompt(
+                [
+                    {"role": "system", "content": "You are AX"},
+                    {"role": "user", "content": [{"type": "text", "text": "Say hi"}]},
+                ]
+            ),
+            "system: You are AX\nuser: Say hi\nassistant:",
+        )
+
+    def test_openai_mlx_shim_builds_mlx_session_with_artifacts_dir(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        session = openai_server.build_session(
+            model_id="qwen3_dense",
+            mlx_model_artifacts_dir="/tmp/mlx-model",
+            session_factory=FakeNativeSession,
+            session_kwargs={"deterministic": False},
+        )
+
+        self.assertIsInstance(session, FakeNativeSession)
+        self.assertEqual(session.model_id, "qwen3_dense")
+        self.assertTrue(session.mlx)
+        self.assertEqual(session.mlx_model_artifacts_dir, "/tmp/mlx-model")
+
     def test_generate_text_convenience_uses_input_text_contract(self) -> None:
         with self.ax_engine.Session(
             model_id="qwen3_dense",
