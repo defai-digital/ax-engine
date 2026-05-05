@@ -87,8 +87,9 @@ Meaning:
 
 - request is handled by an explicitly configured `mlx_lm.server`
 - this is broad MLX text-model compatibility, not repo-owned MLX runtime support
-- Phase 1 supports text-only blocking generation; token prompts, streaming,
-  and multimodal inputs fail closed
+- supports text-only blocking generation, fake SSE over AX streaming endpoints,
+  and OpenAI-compatible text completion/chat response shapes
+- token-array prompts and multimodal inputs fail closed
 - benchmark evidence must be labeled as delegated route-contract evidence, not
   repo-owned MLX throughput
 - `mlx-swift-lm` remains a secondary benchmark/reference adapter, not the

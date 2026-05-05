@@ -110,9 +110,11 @@ ax-engine-bench generate \
   --mlx-lm-server-url http://127.0.0.1:8090
 ```
 
-This path is text-only and blocking in Phase 1. It validates AX surface
-compatibility with `mlx_lm.server`; it is not a repo-owned MLX performance
-benchmark and should not be mixed into `ax_engine_mlx` throughput tables.
+This path is text-only delegated compatibility through `mlx_lm.server`. Server
+surfaces can expose fake SSE around the blocking delegated response; CLI
+benchmark rows remain delegated route-contract evidence, not repo-owned MLX
+performance claims, and should not be mixed into `ax_engine_mlx` throughput
+tables.
 
 ## Direct Inference Helpers
 

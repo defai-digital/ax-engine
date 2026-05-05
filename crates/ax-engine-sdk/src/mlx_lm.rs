@@ -121,6 +121,8 @@ fn run_mlx_lm_server_completion_generate(
         max_tokens: request.max_output_tokens,
         temperature: request.sampling.temperature,
         top_p: request.sampling.top_p,
+        top_k: request.sampling.top_k,
+        repetition_penalty: request.sampling.repetition_penalty,
         seed: request.sampling.seed,
         stream: false,
     };
@@ -239,6 +241,8 @@ struct MlxLmCompletionRequest<'a> {
     max_tokens: u32,
     temperature: f32,
     top_p: f32,
+    top_k: u32,
+    repetition_penalty: f32,
     seed: u64,
     stream: bool,
 }
@@ -295,14 +299,25 @@ mod tests {
             assert_eq!(payload["model"], "qwen3_dense");
             assert_eq!(payload["prompt"], "hello");
             assert_eq!(payload["max_tokens"], 3);
+            assert_eq!(payload["temperature"], 0.25);
+            assert_eq!(payload["top_p"], 0.75);
+            assert_eq!(payload["top_k"], 40);
+            assert_eq!(payload["repetition_penalty"], 1.1);
+            assert_eq!(payload["seed"], 42);
             assert_eq!(payload["stream"], false);
         });
 
+        let mut request = text_request("hello");
+        request.sampling.temperature = 0.25;
+        request.sampling.top_p = 0.75;
+        request.sampling.top_k = 40;
+        request.sampling.repetition_penalty = 1.1;
+        request.sampling.seed = 42;
         let response = run_blocking_generate(
             7,
             &runtime_report(),
             &MlxLmConfig::server_completion(server_url),
-            &text_request("hello"),
+            &request,
         )
         .expect("mlx-lm delegated completion should succeed");
 

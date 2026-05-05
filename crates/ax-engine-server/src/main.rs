@@ -8,9 +8,11 @@ use std::time::Duration;
 
 use ax_engine_sdk::{
     EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
-    GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent,
-    GenerateStreamState, LlamaCppBackendError, MlxLmBackendError, RuntimeReport, SelectedBackend,
-    SessionRequestReport, StatelessGenerateContext,
+    GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,
+    GenerateStatus, GenerateStreamEvent, GenerateStreamRequestEvent, GenerateStreamResponseEvent,
+    GenerateStreamState, GenerateStreamStepEvent, LlamaCppBackendError, MlxLmBackendError,
+    RuntimeReport, SelectedBackend, SessionRequestReport, SessionRequestState,
+    StatelessGenerateContext,
 };
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
@@ -526,7 +528,7 @@ async fn openai_completions(
     State(state): State<AppState>,
     Json(request): Json<OpenAiCompletionHttpRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    validate_openai_llama_backend(&state)?;
+    validate_openai_text_backend(&state)?;
     validate_model(&state, request.model.as_deref())?;
     let request = build_openai_completion_request(&state, request)?;
 
@@ -554,7 +556,7 @@ async fn openai_chat_completions(
     State(state): State<AppState>,
     Json(request): Json<OpenAiChatCompletionHttpRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    validate_openai_llama_backend(&state)?;
+    validate_openai_text_backend(&state)?;
     validate_model(&state, request.model.as_deref())?;
     let request = build_openai_chat_request(&state, request)?;
 
@@ -589,6 +591,9 @@ async fn generate_stream(
 
     let request_id = allocate_request_id(&state);
     let request = build_generate_request(&state, request);
+    if state.runtime_report.selected_backend == SelectedBackend::MlxLmDelegated {
+        return stream_blocking_generate_response(state, request_id, request).await;
+    }
     if state
         .stateless_generate_context
         .supports_llama_cpp_streaming()
@@ -640,6 +645,10 @@ async fn stream_openai_request(
     stream_kind: OpenAiStreamKind,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let request_id = allocate_request_id(&state);
+    if state.runtime_report.selected_backend == SelectedBackend::MlxLmDelegated {
+        return stream_openai_blocking_generate_response(state, request_id, request, stream_kind)
+            .await;
+    }
     if state
         .stateless_generate_context
         .supports_llama_cpp_streaming()
@@ -688,6 +697,63 @@ async fn stream_openai_request(
         .into_response())
 }
 
+async fn stream_blocking_generate_response(
+    state: AppState,
+    request_id: u64,
+    request: GenerateRequest,
+) -> Result<
+    Sse<UnboundedReceiverStream<Result<Event, Infallible>>>,
+    (StatusCode, Json<ErrorResponse>),
+> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
+    let runtime = state.runtime_report.clone();
+
+    tokio::task::spawn_blocking(move || {
+        drive_blocking_generate_response(
+            stateless_generate_context,
+            runtime,
+            request_id,
+            request,
+            tx,
+        );
+    });
+
+    Ok(Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(5))
+            .text("keep-alive"),
+    ))
+}
+
+async fn stream_openai_blocking_generate_response(
+    state: AppState,
+    request_id: u64,
+    request: GenerateRequest,
+    stream_kind: OpenAiStreamKind,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
+
+    tokio::task::spawn_blocking(move || {
+        drive_openai_blocking_generate_response(
+            stateless_generate_context,
+            request_id,
+            request,
+            stream_kind,
+            tx,
+        );
+    });
+
+    Ok(Sse::new(UnboundedReceiverStream::new(rx))
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(5))
+                .text("keep-alive"),
+        )
+        .into_response())
+}
+
 async fn submit_request(
     State(state): State<AppState>,
     Json(request): Json<GenerateHttpRequest>,
@@ -714,6 +780,117 @@ async fn submit_request(
 
 fn allocate_request_id(state: &AppState) -> u64 {
     state.next_request_id.fetch_add(1, Ordering::AcqRel)
+}
+
+fn drive_blocking_generate_response(
+    context: Arc<StatelessGenerateContext>,
+    runtime: RuntimeReport,
+    request_id: u64,
+    request: GenerateRequest,
+    tx: mpsc::UnboundedSender<Result<Event, Infallible>>,
+) {
+    let initial_report = delegated_initial_report(request_id, &request);
+    if !send_sdk_stream_event(
+        &tx,
+        GenerateStreamEvent::Request(GenerateStreamRequestEvent {
+            request: initial_report,
+            runtime,
+        }),
+    ) {
+        return;
+    }
+
+    let max_output_tokens = request.max_output_tokens;
+    match context.generate_with_request_id(request_id, request) {
+        Ok(response) => {
+            let report = report_from_blocking_response(&response, max_output_tokens);
+            let step = EngineStepReport {
+                step_id: Some(0),
+                scheduled_requests: 1,
+                scheduled_tokens: response.known_output_token_count().unwrap_or(0),
+                ttft_events: u32::from(
+                    response
+                        .output_text
+                        .as_deref()
+                        .is_some_and(|text| !text.is_empty()),
+                ),
+                route: Some(response.route.clone()),
+                ..EngineStepReport::default()
+            };
+            if !send_sdk_stream_event(
+                &tx,
+                GenerateStreamEvent::Step(GenerateStreamStepEvent {
+                    request: report,
+                    step,
+                    delta_tokens: response.output_tokens.clone(),
+                    delta_token_logprobs: response.output_token_logprobs.clone(),
+                    delta_text: response.output_text.clone(),
+                }),
+            ) {
+                return;
+            }
+            let _ = send_sdk_stream_event(
+                &tx,
+                GenerateStreamEvent::Response(GenerateStreamResponseEvent { response }),
+            );
+        }
+        Err(error) => {
+            let (_, Json(error)) = map_session_error(error);
+            send_stream_error(&tx, error);
+        }
+    }
+}
+
+fn drive_openai_blocking_generate_response(
+    context: Arc<StatelessGenerateContext>,
+    request_id: u64,
+    request: GenerateRequest,
+    stream_kind: OpenAiStreamKind,
+    tx: mpsc::UnboundedSender<Result<Event, Infallible>>,
+) {
+    let max_output_tokens = request.max_output_tokens;
+    match context.generate_with_request_id(request_id, request) {
+        Ok(response) => {
+            let mut chat_role_emitted = false;
+            let report = report_from_blocking_response(&response, max_output_tokens);
+            let step = EngineStepReport {
+                step_id: Some(0),
+                scheduled_requests: 1,
+                scheduled_tokens: response.known_output_token_count().unwrap_or(0),
+                ttft_events: u32::from(
+                    response
+                        .output_text
+                        .as_deref()
+                        .is_some_and(|text| !text.is_empty()),
+                ),
+                route: Some(response.route.clone()),
+                ..EngineStepReport::default()
+            };
+            let event = GenerateStreamEvent::Step(GenerateStreamStepEvent {
+                request: report,
+                step,
+                delta_tokens: response.output_tokens.clone(),
+                delta_token_logprobs: response.output_token_logprobs.clone(),
+                delta_text: response.output_text.clone(),
+            });
+            if !send_openai_stream_event(&tx, event, stream_kind, &mut chat_role_emitted) {
+                return;
+            }
+            if !send_openai_stream_event(
+                &tx,
+                GenerateStreamEvent::Response(GenerateStreamResponseEvent { response }),
+                stream_kind,
+                &mut chat_role_emitted,
+            ) {
+                return;
+            }
+            let _ = tx.send(Ok(Event::default().data("[DONE]")));
+        }
+        Err(error) => {
+            let (_, Json(error)) = map_session_error(error);
+            send_openai_stream_error(&tx, error);
+        }
+    }
 }
 
 fn drive_generate_stream_state(
@@ -1270,6 +1447,69 @@ fn openai_usage(response: &GenerateResponse) -> Option<OpenAiUsage> {
     })
 }
 
+fn delegated_initial_report(request_id: u64, request: &GenerateRequest) -> SessionRequestReport {
+    let route = delegated_route_report();
+    let prompt_len = request.input_tokens.len() as u32;
+    SessionRequestReport {
+        request_id,
+        model_id: request.model_id.clone(),
+        state: SessionRequestState::Waiting,
+        prompt_tokens: request.input_tokens.clone(),
+        processed_prompt_tokens: 0,
+        output_tokens: Vec::new(),
+        output_token_logprobs: Vec::new(),
+        prompt_len,
+        output_len: 0,
+        max_output_tokens: request.max_output_tokens,
+        cancel_requested: false,
+        execution_plan_ref: route.execution_plan.clone(),
+        route,
+        finish_reason: None,
+        terminal_stop_reason: None,
+        last_error: None,
+    }
+}
+
+fn report_from_blocking_response(
+    response: &GenerateResponse,
+    max_output_tokens: u32,
+) -> SessionRequestReport {
+    SessionRequestReport {
+        request_id: response.request_id,
+        model_id: response.model_id.clone(),
+        state: match response.status {
+            GenerateStatus::Finished => SessionRequestState::Finished,
+            GenerateStatus::Cancelled => SessionRequestState::Cancelled,
+            GenerateStatus::Failed => SessionRequestState::Failed,
+            GenerateStatus::Pending => SessionRequestState::Running,
+        },
+        prompt_tokens: response.prompt_tokens.clone(),
+        processed_prompt_tokens: response.known_prompt_token_count().unwrap_or(0),
+        output_tokens: response.output_tokens.clone(),
+        output_token_logprobs: response.output_token_logprobs.clone(),
+        prompt_len: response.known_prompt_token_count().unwrap_or(0),
+        output_len: response.known_output_token_count().unwrap_or(0),
+        max_output_tokens,
+        cancel_requested: false,
+        execution_plan_ref: response.route.execution_plan.clone(),
+        route: response.route.clone(),
+        finish_reason: response.finish_reason,
+        terminal_stop_reason: None,
+        last_error: None,
+    }
+}
+
+fn delegated_route_report() -> GenerateRouteReport {
+    GenerateRouteReport {
+        execution_plan: Some("mlx_lm_delegated.server_completion".to_string()),
+        attention_route: None,
+        kv_mode: None,
+        prefix_cache_path: None,
+        barrier_mode: None,
+        crossover_decisions: Default::default(),
+    }
+}
+
 fn openai_finish_reason(finish_reason: Option<GenerateFinishReason>) -> Option<&'static str> {
     match finish_reason {
         Some(GenerateFinishReason::MaxOutputTokens) => Some("length"),
@@ -1278,14 +1518,15 @@ fn openai_finish_reason(finish_reason: Option<GenerateFinishReason>) -> Option<&
     }
 }
 
-fn validate_openai_llama_backend(
-    state: &AppState,
-) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    if state.runtime_report.selected_backend != SelectedBackend::LlamaCpp {
+fn validate_openai_text_backend(state: &AppState) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if !matches!(
+        state.runtime_report.selected_backend,
+        SelectedBackend::LlamaCpp | SelectedBackend::MlxLmDelegated
+    ) {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
-            "OpenAI-compatible endpoints require a llama.cpp backend; use /v1/generate for other preview backends".to_string(),
+            "OpenAI-compatible text endpoints require a llama.cpp or mlx_lm_delegated backend; use /v1/generate for repo-owned MLX preview".to_string(),
         ));
     }
     Ok(())
@@ -1971,8 +2212,20 @@ sys.stdout.write(f"server::{prompt}")
     }
 
     #[tokio::test]
-    async fn openai_completions_endpoint_rejects_mlx_lm_delegated_backend() {
-        let app = build_router(mlx_lm_delegated_state("http://127.0.0.1:1".to_string()));
+    async fn openai_completions_endpoint_translates_mlx_lm_delegated_response() {
+        let (mlx_lm_server_url, mlx_lm_server_handle) = spawn_llama_cpp_completion_server(
+            r#"{"choices":[{"text":"mlx-lm::hello","finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}"#.to_string(),
+            |payload| {
+                assert_eq!(
+                    payload.get("prompt"),
+                    Some(&Value::String("hello mlx-lm".to_string()))
+                );
+                assert_eq!(payload.get("stream"), Some(&Value::Bool(false)));
+                assert_eq!(payload.get("top_k"), Some(&json!(0)));
+                assert_eq!(payload.get("repetition_penalty"), Some(&json!(1.0)));
+            },
+        );
+        let app = build_router(mlx_lm_delegated_state(mlx_lm_server_url));
         let (status, json) = json_response(
             &app,
             Request::builder()
@@ -1986,20 +2239,30 @@ sys.stdout.write(f"server::{prompt}")
                 .unwrap(),
         )
         .await;
+        mlx_lm_server_handle
+            .join()
+            .expect("mlx-lm server thread should finish");
 
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(status, StatusCode::OK);
         assert_eq!(
-            json.get("error")
-                .and_then(|error| error.get("code"))
-                .and_then(Value::as_str),
-            Some("invalid_request")
+            json.get("object").and_then(Value::as_str),
+            Some("text_completion")
         );
-        assert!(
-            json.get("error")
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .contains("require a llama.cpp backend")
+        assert_eq!(
+            json.get("choices")
+                .and_then(Value::as_array)
+                .and_then(|choices| choices.first())
+                .and_then(|choice| choice.get("text"))
+                .and_then(Value::as_str),
+            Some("mlx-lm::hello")
+        );
+        assert_eq!(
+            json.get("choices")
+                .and_then(Value::as_array)
+                .and_then(|choices| choices.first())
+                .and_then(|choice| choice.get("finish_reason"))
+                .and_then(Value::as_str),
+            Some("stop")
         );
     }
 
@@ -2188,6 +2451,49 @@ sys.stdout.write(f"server::{prompt}")
     }
 
     #[tokio::test]
+    async fn mlx_lm_delegated_generate_stream_endpoint_fakes_sse_from_blocking_response() {
+        let (mlx_lm_server_url, mlx_lm_server_handle) = spawn_llama_cpp_completion_server(
+            r#"{"choices":[{"text":" delegated stream","finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":2}}"#.to_string(),
+            |payload| {
+                assert_eq!(
+                    payload.get("prompt"),
+                    Some(&Value::String("hello delegated stream".to_string()))
+                );
+                assert_eq!(payload.get("stream"), Some(&Value::Bool(false)));
+            },
+        );
+        let app = build_router(mlx_lm_delegated_state(mlx_lm_server_url));
+        let (status, content_type, body) = text_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/generate/stream")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&sample_text_http_request("hello delegated stream", 2))
+                        .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        mlx_lm_server_handle
+            .join()
+            .expect("mlx-lm server thread should finish");
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(content_type.starts_with("text/event-stream"));
+        let events = parse_sse_events(&body);
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].0, "request");
+        assert_eq!(events[1].0, "step");
+        assert_eq!(
+            events[1].1.get("delta_text").and_then(Value::as_str),
+            Some(" delegated stream")
+        );
+        assert_eq!(events[2].0, "response");
+    }
+
+    #[tokio::test]
     async fn openai_completions_stream_endpoint_emits_openai_sse_chunks() {
         let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_stream_server(
             1,
@@ -2352,6 +2658,78 @@ sys.stdout.write(f"server::{prompt}")
                 .and_then(Value::as_str),
             Some("length")
         );
+    }
+
+    #[tokio::test]
+    async fn openai_chat_stream_endpoint_fakes_sse_for_mlx_lm_delegated() {
+        let (mlx_lm_server_url, mlx_lm_server_handle) = spawn_llama_cpp_completion_server(
+            r#"{"choices":[{"text":"chat delegated","finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2}}"#.to_string(),
+            |payload| {
+                assert_eq!(
+                    payload.get("prompt"),
+                    Some(&Value::String(
+                        "user: hello mlx-lm chat stream\nassistant:".to_string()
+                    ))
+                );
+                assert_eq!(payload.get("stream"), Some(&Value::Bool(false)));
+            },
+        );
+        let app = build_router(mlx_lm_delegated_state(mlx_lm_server_url));
+        let (status, content_type, body) = text_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&sample_openai_chat_request(
+                        "hello mlx-lm chat stream",
+                        2,
+                        true,
+                    ))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        mlx_lm_server_handle
+            .join()
+            .expect("mlx-lm server thread should finish");
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(content_type.starts_with("text/event-stream"));
+        let payloads = parse_openai_sse_payloads(&body);
+        assert_eq!(payloads.len(), 2);
+        assert_eq!(
+            payloads[0]
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|choices| choices.first())
+                .and_then(|choice| choice.get("delta"))
+                .and_then(|delta| delta.get("role"))
+                .and_then(Value::as_str),
+            Some("assistant")
+        );
+        assert_eq!(
+            payloads[0]
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|choices| choices.first())
+                .and_then(|choice| choice.get("delta"))
+                .and_then(|delta| delta.get("content"))
+                .and_then(Value::as_str),
+            Some("chat delegated")
+        );
+        assert_eq!(
+            payloads[1]
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|choices| choices.first())
+                .and_then(|choice| choice.get("finish_reason"))
+                .and_then(Value::as_str),
+            Some("stop")
+        );
+        assert!(body.contains("data: [DONE]"));
     }
 
     #[tokio::test]

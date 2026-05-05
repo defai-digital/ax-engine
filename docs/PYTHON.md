@@ -149,9 +149,10 @@ print(result.runtime.selected_backend)
 print(result.output_text)
 ```
 
-`mlx_lm_delegated` is text-only and blocking in Phase 1. It rejects token-array
-prompts, streaming, and stepwise lifecycle calls; use `mlx=True` when the goal
-is repo-owned MLX inference.
+`mlx_lm_delegated` is text-only delegated compatibility. The Python blocking
+generate path forwards text prompts to upstream `mlx_lm.server`; token-array
+prompts and stepwise lifecycle calls still fail closed. Use `mlx=True` when the
+goal is repo-owned MLX inference.
 
 If you pass a local GGUF model, AX routes the request to delegated `llama.cpp`:
 
@@ -333,8 +334,10 @@ does native or delegated work, so Python-side threads can continue to make
 progress around long-running generate, step, cancel, or stream polling calls.
 For Phase 1, stepwise request-control methods (`submit`, `step`, `snapshot`,
 `cancel`) support MLX preview plus the server-backed llama.cpp preview path
-selected with `llama_server_url`. The `mlx_lm_delegated` route is blocking-only
-for now. That delegated stepwise path is still intentionally narrow, but one
+selected with `llama_server_url`. The `mlx_lm_delegated` route remains
+blocking-only in the Python session API for now; server endpoints wrap that
+blocking response when clients need fake SSE. That delegated stepwise path is
+still intentionally narrow, but one
 session can now hold multiple active
 llama.cpp requests at once and `step()` aggregates progress across all
 currently active delegated requests through the same SDK-owned lifecycle shape.
