@@ -9,8 +9,8 @@ use ax_engine_sdk::{
     GenerateStreamEvent as SdkGenerateStreamEvent, GenerateStreamState, HostReport,
     LlamaCppBackendError, MetalDispatchKernelStepReport, MetalDispatchNumericStepReport,
     MetalDispatchStepReport, MetalDispatchValidationStepReport, MetalToolchainReport,
-    PreviewBackendRequest, PreviewSessionConfigRequest, RuntimeReport, SessionRequestReport,
-    ToolStatusReport, preview_support_tier_from_label,
+    MlxLmBackendError, PreviewBackendRequest, PreviewSessionConfigRequest, RuntimeReport,
+    SessionRequestReport, ToolStatusReport, preview_support_tier_from_label,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -40,7 +40,7 @@ struct GenerateStreamIterator {
 impl Session {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (model_id="qwen3_dense".to_string(), *, deterministic=true, max_batch_tokens=2048, cache_group_id=0, block_size_tokens=16, total_blocks=1024, mlx=false, support_tier="llama_cpp", llama_cli_path="llama-cli".to_string(), llama_model_path=None, llama_server_url=None, mlx_model_artifacts_dir=None))]
+    #[pyo3(signature = (model_id="qwen3_dense".to_string(), *, deterministic=true, max_batch_tokens=2048, cache_group_id=0, block_size_tokens=16, total_blocks=1024, mlx=false, support_tier="llama_cpp", llama_cli_path="llama-cli".to_string(), llama_model_path=None, llama_server_url=None, mlx_lm_server_url=None, mlx_model_artifacts_dir=None))]
     fn new(
         model_id: String,
         deterministic: bool,
@@ -53,6 +53,7 @@ impl Session {
         llama_cli_path: String,
         llama_model_path: Option<String>,
         llama_server_url: Option<String>,
+        mlx_lm_server_url: Option<String>,
         mlx_model_artifacts_dir: Option<String>,
     ) -> PyResult<Self> {
         let support_tier = preview_support_tier_from_label(support_tier)
@@ -79,6 +80,7 @@ impl Session {
                 llama_cli_path: PathBuf::from(llama_cli_path),
                 llama_model_path: llama_model_path.map(PathBuf::from),
                 llama_server_url,
+                mlx_lm_server_url,
                 ..PreviewBackendRequest::default()
             }
         };
@@ -91,7 +93,7 @@ impl Session {
             backend_request,
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: effective_mlx_model_artifacts_dir,
-            mlx_no_speculative_decode: false,
+            mlx_disable_ngram_acceleration: false,
         })
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let inner = EngineSession::new(config).map_err(to_py_runtime_error)?;
@@ -1072,6 +1074,8 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::InvalidRequestId
         | EngineSessionError::UnsupportedSupportTier
         | EngineSessionError::LlamaCppDoesNotSupportLifecycle { .. }
+        | EngineSessionError::MlxLmDoesNotSupportLifecycle { .. }
+        | EngineSessionError::MlxLmDoesNotSupportStreaming
         | EngineSessionError::StatelessStreamRequiresLlamaCpp { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
         | EngineSessionError::RequestDidNotTerminate { .. }
@@ -1082,11 +1086,17 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingPromptInput { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::UnsupportedTokenPrompt { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::AmbiguousPromptInput { .. })
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::BackendConfigMismatch { .. }) => {
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::BackendConfigMismatch { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::MissingInputText)
+        | EngineSessionError::MlxLm(MlxLmBackendError::UnsupportedTokenPrompt)
+        | EngineSessionError::MlxLm(MlxLmBackendError::BackendConfigMismatch { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. }) => {
             PyValueError::new_err(error.to_string())
         }
         EngineSessionError::BackendContract(_)
         | EngineSessionError::MissingLlamaCppConfig { .. }
+        | EngineSessionError::MissingMlxLmConfig
+        | EngineSessionError::MissingDelegatedRuntime { .. }
         | EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
         | EngineSessionError::MlxRuntimeArtifactsRequired
         | EngineSessionError::MlxRuntimeUnavailable
@@ -1099,9 +1109,15 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpStatus { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpResponseRead { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::InvalidResponseJson { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::SerializeRequestJson { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::HttpRequest { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::HttpStatus { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::InvalidResponseJson { .. })
         | EngineSessionError::UnsupportedHostHardware { .. }
         | EngineSessionError::RequestReportInvariantViolation { .. }
         | EngineSessionError::StreamEndedWithoutResponse { .. }
+        | EngineSessionError::EmbeddingNotSupported
+        | EngineSessionError::EmbeddingFailed { .. }
         | EngineSessionError::Core(_)
         | EngineSessionError::MetalRuntime(_) => PyRuntimeError::new_err(error.to_string()),
     }
@@ -1149,6 +1165,7 @@ mod tests {
             Some(model_path.display().to_string()),
             None,
             None,
+            None,
         )
         .expect("llama.cpp session should build")
     }
@@ -1166,6 +1183,7 @@ mod tests {
             "llama-cli".to_string(),
             None,
             Some(server_url),
+            None,
             None,
         )
         .expect("llama.cpp session should build")
@@ -1185,6 +1203,7 @@ mod tests {
             "llama_cpp",
             "llama-cli".to_string(),
             Some("/tmp/qwen3.5-mlx".to_string()),
+            None,
             None,
             None,
         )
@@ -1213,6 +1232,7 @@ mod tests {
             Some("/tmp/qwen3.5-9b-q4.gguf".to_string()),
             None,
             None,
+            None,
         )
         .expect("GGUF session should build");
 
@@ -1220,6 +1240,34 @@ mod tests {
             let runtime = session.runtime(py).expect("runtime should serialize");
             let runtime = runtime.bind(py);
             assert_eq!(dict_string(runtime, "selected_backend"), "llama_cpp");
+        });
+    }
+
+    #[test]
+    fn python_session_routes_mlx_lm_delegated_to_runtime_report() {
+        init_python();
+        let session = Session::new(
+            "qwen3_dense".to_string(),
+            true,
+            2048,
+            0,
+            16,
+            1024,
+            false,
+            "mlx_lm_delegated",
+            "llama-cli".to_string(),
+            None,
+            None,
+            Some("http://127.0.0.1:8090".to_string()),
+            None,
+        )
+        .expect("mlx-lm delegated session should build");
+
+        Python::with_gil(|py| {
+            let runtime = session.runtime(py).expect("runtime should serialize");
+            let runtime = runtime.bind(py);
+            assert_eq!(dict_string(runtime, "selected_backend"), "mlx_lm_delegated");
+            assert_eq!(dict_string(runtime, "support_tier"), "mlx_lm_delegated");
         });
     }
 

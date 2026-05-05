@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::llama_cpp::LlamaCppConfig;
+use crate::mlx_lm::MlxLmConfig;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -13,6 +14,7 @@ pub enum ResolutionPolicy {
     #[default]
     MlxOnly,
     PreferMlx,
+    AllowMlxLmDelegated,
     AllowLlamaCpp,
 }
 
@@ -20,6 +22,7 @@ pub enum ResolutionPolicy {
 #[serde(rename_all = "snake_case")]
 pub enum SelectedBackend {
     Mlx,
+    MlxLmDelegated,
     LlamaCpp,
 }
 
@@ -34,6 +37,7 @@ impl SelectedBackend {
 pub enum SupportTier {
     MlxCertified,
     MlxPreview,
+    MlxLmDelegated,
     LlamaCpp,
     Unsupported,
 }
@@ -65,6 +69,10 @@ impl BackendPolicy {
 
     pub const fn allow_llama_cpp() -> Self {
         Self::new(ResolutionPolicy::AllowLlamaCpp)
+    }
+
+    pub const fn allow_mlx_lm_delegated() -> Self {
+        Self::new(ResolutionPolicy::AllowMlxLmDelegated)
     }
 }
 
@@ -136,6 +144,17 @@ impl CapabilityReport {
         }
     }
 
+    pub const fn mlx_lm_delegated_text() -> Self {
+        Self {
+            text_generation: true,
+            token_streaming: false,
+            deterministic_mode: false,
+            prefix_reuse: false,
+            long_context_validation: CapabilityLevel::Unsupported,
+            benchmark_metrics: CapabilityLevel::Unsupported,
+        }
+    }
+
     pub const fn llama_cpp_cli_baseline() -> Self {
         Self {
             text_generation: true,
@@ -165,6 +184,9 @@ impl CapabilityReport {
         match (selected_backend, support_tier) {
             (SelectedBackend::Mlx, SupportTier::MlxPreview) => Self::mlx_preview(),
             (SelectedBackend::Mlx, SupportTier::MlxCertified) => Self::mlx_certified(),
+            (SelectedBackend::MlxLmDelegated, SupportTier::MlxLmDelegated) => {
+                Self::mlx_lm_delegated_text()
+            }
             (_, SupportTier::LlamaCpp) => Self::llama_cpp_baseline(),
             (_, SupportTier::Unsupported) => Self::unsupported(),
             _ => Self::unsupported(),
@@ -176,6 +198,10 @@ impl CapabilityReport {
             LlamaCppConfig::Cli(_) => Self::llama_cpp_cli_baseline(),
             LlamaCppConfig::ServerCompletion(_) => Self::llama_cpp_baseline(),
         }
+    }
+
+    pub fn for_mlx_lm_backend(_config: &MlxLmConfig) -> Self {
+        Self::mlx_lm_delegated_text()
     }
 }
 
@@ -355,6 +381,14 @@ impl ResolvedBackend {
         )
     }
 
+    pub fn mlx_lm_delegated(reason: impl Into<String>) -> Self {
+        Self::new(
+            SelectedBackend::MlxLmDelegated,
+            SupportTier::MlxLmDelegated,
+            Some(reason.into()),
+        )
+    }
+
     pub fn validate_against(
         &self,
         backend_policy: &BackendPolicy,
@@ -371,6 +405,25 @@ impl ResolvedBackend {
             }
             if self.fallback_reason.is_some() {
                 return Err(BackendContractError::MlxBackendCannotHaveFallbackReason);
+            }
+            return Ok(());
+        }
+
+        if self.selected_backend == SelectedBackend::MlxLmDelegated {
+            if self.support_tier != SupportTier::MlxLmDelegated {
+                return Err(BackendContractError::MlxLmBackendRequiresMlxLmTier {
+                    support_tier: self.support_tier,
+                });
+            }
+            if matches!(backend_policy.resolution_policy, ResolutionPolicy::MlxOnly) {
+                return Err(BackendContractError::MlxOnlyPolicyCannotResolveMlxLmDelegated);
+            }
+            let has_reason = self
+                .fallback_reason
+                .as_deref()
+                .is_some_and(|reason| !reason.trim().is_empty());
+            if !has_reason {
+                return Err(BackendContractError::MlxLmBackendRequiresDelegationReason);
             }
             return Ok(());
         }
@@ -411,6 +464,7 @@ pub struct PreviewBackendRequest {
     pub llama_cli_path: PathBuf,
     pub llama_model_path: Option<PathBuf>,
     pub llama_server_url: Option<String>,
+    pub mlx_lm_server_url: Option<String>,
 }
 
 impl Default for PreviewBackendRequest {
@@ -421,6 +475,7 @@ impl Default for PreviewBackendRequest {
             llama_cli_path: PathBuf::from("llama-cli"),
             llama_model_path: None,
             llama_server_url: None,
+            mlx_lm_server_url: None,
         }
     }
 }
@@ -462,16 +517,21 @@ pub struct PreviewBackendResolution {
     pub backend_policy: BackendPolicy,
     pub resolved_backend: ResolvedBackend,
     pub llama_backend: Option<LlamaCppConfig>,
+    pub mlx_lm_backend: Option<MlxLmConfig>,
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum PreviewBackendResolutionError {
-    #[error("unsupported support_tier {value}; expected mlx_preview, mlx_certified, or llama_cpp")]
+    #[error(
+        "unsupported support_tier {value}; expected mlx_preview, mlx_certified, mlx_lm_delegated, or llama_cpp"
+    )]
     UnsupportedSupportTierLabel { value: String },
     #[error("support_tier llama_cpp accepts either llama_server_url or llama_model_path, not both")]
     LlamaCppTargetConflict,
     #[error("support_tier llama_cpp requires llama_server_url or llama_model_path")]
     MissingLlamaCppTarget,
+    #[error("support_tier mlx_lm_delegated requires mlx_lm_server_url")]
+    MissingMlxLmServerUrl,
 }
 
 pub fn preview_support_tier_from_label(
@@ -480,6 +540,7 @@ pub fn preview_support_tier_from_label(
     match value {
         "mlx_preview" => Ok(SupportTier::MlxPreview),
         "mlx_certified" => Ok(SupportTier::MlxCertified),
+        "mlx_lm_delegated" => Ok(SupportTier::MlxLmDelegated),
         "llama_cpp" => Ok(SupportTier::LlamaCpp),
         other => Err(PreviewBackendResolutionError::UnsupportedSupportTierLabel {
             value: other.to_string(),
@@ -506,12 +567,14 @@ pub fn resolve_preview_backend(
                     "shipping default route selected llama.cpp bypass",
                 ),
                 llama_backend: Some(llama_backend),
+                mlx_lm_backend: None,
             })
         }
         PreviewBackendMode::ShippingMlx => Ok(PreviewBackendResolution {
             backend_policy: BackendPolicy::mlx_only(),
             resolved_backend: ResolvedBackend::mlx_preview(),
             llama_backend: None,
+            mlx_lm_backend: None,
         }),
     }
 }
@@ -524,6 +587,7 @@ fn resolve_explicit_preview_backend(
             backend_policy: BackendPolicy::mlx_only(),
             resolved_backend: ResolvedBackend::mlx_preview(),
             llama_backend: None,
+            mlx_lm_backend: None,
         }),
         SupportTier::MlxCertified => Ok(PreviewBackendResolution {
             backend_policy: BackendPolicy::mlx_only(),
@@ -533,6 +597,15 @@ fn resolve_explicit_preview_backend(
                 None,
             ),
             llama_backend: None,
+            mlx_lm_backend: None,
+        }),
+        SupportTier::MlxLmDelegated => Ok(PreviewBackendResolution {
+            backend_policy: BackendPolicy::allow_mlx_lm_delegated(),
+            resolved_backend: ResolvedBackend::mlx_lm_delegated(
+                "mlx-lm delegated backend explicitly requested by preview session config",
+            ),
+            llama_backend: None,
+            mlx_lm_backend: Some(resolve_mlx_lm_target(request.mlx_lm_server_url)?),
         }),
         SupportTier::LlamaCpp => {
             let llama_backend = resolve_llama_cpp_target(
@@ -548,6 +621,7 @@ fn resolve_explicit_preview_backend(
                     "llama.cpp backend explicitly requested by preview session config",
                 ),
                 llama_backend: Some(llama_backend),
+                mlx_lm_backend: None,
             })
         }
         SupportTier::Unsupported => {
@@ -556,6 +630,14 @@ fn resolve_explicit_preview_backend(
             })
         }
     }
+}
+
+fn resolve_mlx_lm_target(
+    mlx_lm_server_url: Option<String>,
+) -> Result<MlxLmConfig, PreviewBackendResolutionError> {
+    let server_url =
+        mlx_lm_server_url.ok_or(PreviewBackendResolutionError::MissingMlxLmServerUrl)?;
+    Ok(MlxLmConfig::server_completion(server_url))
 }
 
 fn resolve_llama_cpp_target(
@@ -636,6 +718,7 @@ fn support_tier_label(support_tier: SupportTier) -> &'static str {
     match support_tier {
         SupportTier::MlxCertified => "mlx_certified",
         SupportTier::MlxPreview => "mlx_preview",
+        SupportTier::MlxLmDelegated => "mlx_lm_delegated",
         SupportTier::LlamaCpp => "llama_cpp",
         SupportTier::Unsupported => "unsupported",
     }
@@ -658,6 +741,14 @@ pub enum BackendContractError {
     },
     #[error("mlx_only policy cannot resolve to llama.cpp backend {selected_backend:?}")]
     MlxOnlyPolicyCannotResolveLlamaCpp { selected_backend: SelectedBackend },
+    #[error("mlx_only policy cannot resolve to mlx-lm delegated backend")]
+    MlxOnlyPolicyCannotResolveMlxLmDelegated,
+    #[error(
+        "mlx-lm delegated backend requires mlx_lm_delegated support tier, got {support_tier:?}"
+    )]
+    MlxLmBackendRequiresMlxLmTier { support_tier: SupportTier },
+    #[error("mlx-lm delegated backend requires fallback_reason/delegation reason")]
+    MlxLmBackendRequiresDelegationReason,
     #[error("llama.cpp backend {selected_backend:?} requires fallback_reason")]
     LlamaCppBackendRequiresFallbackReason { selected_backend: SelectedBackend },
 }
@@ -715,8 +806,63 @@ mod tests {
             Ok(SupportTier::MlxCertified)
         );
         assert_eq!(
+            preview_support_tier_from_label("mlx_lm_delegated"),
+            Ok(SupportTier::MlxLmDelegated)
+        );
+        assert_eq!(
             preview_support_tier_from_label("llama_cpp"),
             Ok(SupportTier::LlamaCpp)
+        );
+    }
+
+    #[test]
+    fn preview_resolution_mlx_lm_delegated_server_url_uses_sdk_contract() {
+        let resolution = resolve_preview_backend(PreviewBackendRequest {
+            support_tier: SupportTier::MlxLmDelegated,
+            mlx_lm_server_url: Some("http://127.0.0.1:8090".to_string()),
+            ..PreviewBackendRequest::default()
+        })
+        .expect("mlx-lm delegated resolution should succeed");
+
+        assert_eq!(
+            resolution.backend_policy,
+            BackendPolicy::allow_mlx_lm_delegated()
+        );
+        assert_eq!(
+            resolution.resolved_backend,
+            ResolvedBackend::mlx_lm_delegated(
+                "mlx-lm delegated backend explicitly requested by preview session config",
+            )
+        );
+        assert_eq!(
+            resolution.mlx_lm_backend,
+            Some(MlxLmConfig::server_completion("http://127.0.0.1:8090"))
+        );
+        assert!(resolution.llama_backend.is_none());
+    }
+
+    #[test]
+    fn preview_resolution_mlx_lm_delegated_requires_server_url() {
+        let error = resolve_preview_backend(PreviewBackendRequest {
+            support_tier: SupportTier::MlxLmDelegated,
+            ..PreviewBackendRequest::default()
+        })
+        .expect_err("mlx-lm delegated resolution should require a server URL");
+
+        assert_eq!(error, PreviewBackendResolutionError::MissingMlxLmServerUrl);
+    }
+
+    #[test]
+    fn rejects_mlx_lm_delegated_under_mlx_only_policy() {
+        let resolved = ResolvedBackend::mlx_lm_delegated("explicit compatibility route");
+
+        let error = resolved
+            .validate_against(&BackendPolicy::mlx_only())
+            .expect_err("MLX-only policy should reject delegated mlx-lm");
+
+        assert_eq!(
+            error,
+            BackendContractError::MlxOnlyPolicyCannotResolveMlxLmDelegated
         );
     }
 

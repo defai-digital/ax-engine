@@ -7,6 +7,8 @@ It is intentionally thin:
 - it wraps `ax-engine-sdk`, not `ax-engine-core`
 - it exposes runtime metadata from the SDK contract
 - `mlx=True` selects the repo-owned MLX runtime
+- `support_tier="mlx_lm_delegated"` selects explicit upstream `mlx-lm` text
+  compatibility through `mlx_lm.server`
 - non-MLX inference routes to `llama.cpp`
 - llama.cpp preview reuses the same SDK contract instead of inventing a
   Python-only adapter
@@ -31,6 +33,7 @@ The current preview package provides:
 - backend-resolution metadata such as `selected_backend`, `support_tier`, and
   `resolution_policy`, plus host and Metal-toolchain diagnostics
 - explicit MLX artifact selection through `mlx_model_artifacts_dir`
+- delegated `mlx-lm` text compatibility through `mlx_lm_server_url`
 - llama.cpp llama.cpp wiring through `llama_cli_path`,
   `llama_model_path`, or `llama_server_url`
 
@@ -129,6 +132,27 @@ print(result.prompt_text)
 print(result.output_text)
 ```
 
+If you want an unsupported MLX text model to stay behind AX Engine Python
+surfaces, run `mlx_lm.server` yourself and choose the explicit delegated route:
+
+```python
+import ax_engine
+
+with ax_engine.Session(
+    model_id="local-mlx-model",
+    support_tier="mlx_lm_delegated",
+    mlx_lm_server_url="http://127.0.0.1:8090",
+) as session:
+    result = session.generate_text("Hello from mlx-lm", max_output_tokens=32)
+
+print(result.runtime.selected_backend)
+print(result.output_text)
+```
+
+`mlx_lm_delegated` is text-only and blocking in Phase 1. It rejects token-array
+prompts, streaming, and stepwise lifecycle calls; use `mlx=True` when the goal
+is AX-owned MLX inference.
+
 If you pass a local GGUF model, AX routes the request to `llama.cpp` bypass:
 
 ```python
@@ -177,8 +201,9 @@ with ax_engine.Session(
 print(result.output_text)
 ```
 
-Use `mlx=True` for AX-owned MLX inference or configure a llama.cpp
-llama.cpp target for non-MLX inference.
+Use `mlx=True` for AX-owned MLX inference, `support_tier="mlx_lm_delegated"`
+for explicit upstream MLX text compatibility, or configure a llama.cpp target
+for non-MLX inference.
 
 If llama.cpp is backed by `llama_server_url`, the same SDK-owned contract
 also supports iterator-style `stream_generate(...)`:
@@ -307,9 +332,10 @@ Those blocking extension calls now release the Python GIL while the Rust SDK
 does native or delegated work, so Python-side threads can continue to make
 progress around long-running generate, step, cancel, or stream polling calls.
 For Phase 1, stepwise request-control methods (`submit`, `step`, `snapshot`,
-`cancel`) support MLX preview plus the server-backed llama.cpp llama.cpp
-preview path selected with `llama_server_url`. That delegated stepwise path is
-still intentionally narrow, but one session can now hold multiple active
+`cancel`) support MLX preview plus the server-backed llama.cpp preview path
+selected with `llama_server_url`. The `mlx_lm_delegated` route is blocking-only
+for now. That delegated stepwise path is still intentionally narrow, but one
+session can now hold multiple active
 llama.cpp requests at once and `step()` aggregates progress across all
 currently active delegated requests through the same SDK-owned lifecycle shape.
 

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 pub enum PreviewSupportTier {
     MlxCertified,
     MlxPreview,
+    MlxLmDelegated,
     LlamaCpp,
 }
 
@@ -16,6 +17,7 @@ impl PreviewSupportTier {
         match self {
             Self::MlxCertified => SupportTier::MlxCertified,
             Self::MlxPreview => SupportTier::MlxPreview,
+            Self::MlxLmDelegated => SupportTier::MlxLmDelegated,
             Self::LlamaCpp => SupportTier::LlamaCpp,
         }
     }
@@ -62,13 +64,15 @@ pub struct ServerArgs {
 
     #[arg(long = "llama-server-url")]
     pub llama_server_url: Option<String>,
+    #[arg(long = "mlx-lm-server-url")]
+    pub mlx_lm_server_url: Option<String>,
     #[arg(long = "mlx-model-artifacts-dir")]
     pub mlx_model_artifacts_dir: Option<PathBuf>,
 
-    /// Disable n-gram speculative decode and use single-token greedy decode instead.
-    /// Useful for establishing a clean greedy baseline in benchmarks.
-    #[arg(long = "no-speculative-decode", default_value_t = false)]
-    pub no_speculative_decode: bool,
+    /// Disable n-gram acceleration and run the direct same-policy decode path.
+    /// Useful for establishing clean benchmark comparisons against mlx_lm.
+    #[arg(long = "disable-ngram-acceleration", default_value_t = false)]
+    pub disable_ngram_acceleration: bool,
 }
 
 impl ServerArgs {
@@ -91,6 +95,7 @@ impl ServerArgs {
                 llama_cli_path: PathBuf::from(&self.llama_cli_path),
                 llama_model_path: self.llama_model_path.clone(),
                 llama_server_url: self.llama_server_url.clone(),
+                mlx_lm_server_url: self.mlx_lm_server_url.clone(),
                 ..PreviewBackendRequest::default()
             }
         };
@@ -112,7 +117,7 @@ impl ServerArgs {
             backend_request,
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir,
-            mlx_no_speculative_decode: self.no_speculative_decode,
+            mlx_disable_ngram_acceleration: self.disable_ngram_acceleration,
         })
         .map_err(|error| error.to_string())
     }
@@ -138,8 +143,9 @@ mod tests {
             llama_cli_path: "llama-cli".to_string(),
             llama_model_path: None,
             llama_server_url: None,
+            mlx_lm_server_url: None,
             mlx_model_artifacts_dir: None,
-            no_speculative_decode: false,
+            disable_ngram_acceleration: false,
         }
     }
 
@@ -150,6 +156,7 @@ mod tests {
         assert_eq!(actual.backend_policy, expected.backend_policy);
         assert_eq!(actual.resolved_backend, expected.resolved_backend);
         assert_eq!(actual.llama_backend, expected.llama_backend);
+        assert_eq!(actual.mlx_lm_backend, expected.mlx_lm_backend);
         assert_eq!(
             actual.mlx_model_artifacts_dir,
             expected.mlx_model_artifacts_dir
@@ -169,6 +176,10 @@ mod tests {
         assert_eq!(
             PreviewSupportTier::MlxPreview.as_sdk_support_tier(),
             SupportTier::MlxPreview
+        );
+        assert_eq!(
+            PreviewSupportTier::MlxLmDelegated.as_sdk_support_tier(),
+            SupportTier::MlxLmDelegated
         );
         assert_eq!(
             PreviewSupportTier::LlamaCpp.as_sdk_support_tier(),
@@ -195,7 +206,7 @@ mod tests {
             max_batch_tokens: 2048,
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: None,
-            mlx_no_speculative_decode: false,
+            mlx_disable_ngram_acceleration: false,
             backend_request: PreviewBackendRequest {
                 support_tier: SupportTier::MlxPreview,
                 llama_cli_path: PathBuf::from("llama-cli"),
@@ -233,7 +244,7 @@ mod tests {
             max_batch_tokens: 1024,
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: None,
-            mlx_no_speculative_decode: false,
+            mlx_disable_ngram_acceleration: false,
             backend_request: PreviewBackendRequest::shipping_default_llama_cpp(
                 PathBuf::from("llama-cli"),
                 None,
@@ -252,6 +263,41 @@ mod tests {
             actual.llama_backend,
             Some(LlamaCppConfig::server_completion("http://127.0.0.1:8088"))
         );
+    }
+
+    #[test]
+    fn session_config_matches_sdk_preview_factory_for_mlx_lm_delegated_server() {
+        let args = ServerArgs {
+            support_tier: PreviewSupportTier::MlxLmDelegated,
+            mlx_lm_server_url: Some("http://127.0.0.1:8090".to_string()),
+            ..base_args()
+        };
+
+        let actual = args.session_config().expect("session config should build");
+        let expected = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
+            cache_group_id: ax_engine_sdk::CacheGroupId(0),
+            block_size_tokens: 16,
+            total_blocks: 1024,
+            deterministic: true,
+            max_batch_tokens: 2048,
+            mlx_runtime_artifacts_dir: None,
+            mlx_model_artifacts_dir: None,
+            mlx_disable_ngram_acceleration: false,
+            backend_request: PreviewBackendRequest {
+                support_tier: SupportTier::MlxLmDelegated,
+                mlx_lm_server_url: Some("http://127.0.0.1:8090".to_string()),
+                ..PreviewBackendRequest::default()
+            },
+        })
+        .expect("sdk preview config should build");
+
+        assert_configs_match(&actual, &expected);
+        assert_eq!(
+            actual.resolved_backend.selected_backend,
+            SelectedBackend::MlxLmDelegated
+        );
+        assert!(actual.llama_backend.is_none());
+        assert!(actual.mlx_lm_backend.is_some());
     }
 
     #[test]
@@ -333,24 +379,24 @@ mod tests {
     }
 
     #[test]
-    fn no_speculative_decode_flag_sets_mlx_no_speculative_decode() {
+    fn disable_ngram_acceleration_flag_sets_mlx_disable_ngram_acceleration() {
         let args = ServerArgs {
             mlx: true,
-            no_speculative_decode: true,
+            disable_ngram_acceleration: true,
             ..base_args()
         };
 
         let actual = args.session_config().expect("session config should build");
 
         assert!(
-            actual.mlx_no_speculative_decode,
-            "--no-speculative-decode must propagate to mlx_no_speculative_decode; \
+            actual.mlx_disable_ngram_acceleration,
+            "--disable-ngram-acceleration must propagate to mlx_disable_ngram_acceleration; \
              check args.rs session_config() and EngineSessionConfig::from_preview_request"
         );
     }
 
     #[test]
-    fn default_args_do_not_disable_speculative_decode() {
+    fn default_args_do_not_disable_ngram_acceleration() {
         let args = ServerArgs {
             mlx: true,
             ..base_args()
@@ -359,8 +405,8 @@ mod tests {
         let actual = args.session_config().expect("session config should build");
 
         assert!(
-            !actual.mlx_no_speculative_decode,
-            "speculative decode should be enabled by default"
+            !actual.mlx_disable_ngram_acceleration,
+            "n-gram acceleration should be enabled by default"
         );
     }
 

@@ -8,25 +8,27 @@ Measured results for each tested model are summarized in `README.md` under the
 **Benchmarks** section. Public review artifacts live under
 `benchmarks/results/mlx-inference/<date>/`; for example, the 2026-05-04 result
 set includes the full JSON output, prompt-token JSON files, and command logs for
-Gemma 4 E2B 4/5/6/8-bit, Gemma 4 26B A4B, Gemma 4 31B, Qwen 3 4B,
+Gemma 4 E2B 4/5/6/8-bit, Gemma 4 26B A4B, Gemma 4 31B,
 Qwen 3.5 9B, Qwen 3.6 35B A3B 4/5/6/8-bit, and Qwen Coder Next.
 
 ## Which Tool To Use
 
 | Question | Use | Evidence produced |
 |---|---|---|
-| How fast is AX Engine MLX mode against upstream MLX? | `scripts/bench_mlx_inference_stack.py` | Required `mlx_lm.benchmark` primary baseline rows, AX Engine MLX greedy/speculative rows, optional `mlx-swift-lm` secondary baseline adapter rows, canonical prompt-token artifacts, and ratio-to-baseline fields |
+| How fast is AX Engine MLX mode against upstream MLX? | `scripts/bench_mlx_inference_stack.py` | Required `mlx_lm.benchmark` primary baseline rows, AX Engine MLX direct and n-gram acceleration rows, optional `mlx-swift-lm` secondary baseline adapter rows, canonical prompt-token artifacts, and ratio-to-baseline fields |
 | Did a checked-in workload still pass route, correctness, determinism, replay, or regression gates? | `ax-engine-bench` | Workload-contract artifacts under `benchmarks/results` |
 | Is the local host ready for AX-owned MLX benchmarking? | `ax-engine-bench doctor` | Human or JSON readiness report |
 | Did a bounded runtime knob improve a frozen workload? | `ax-engine-bench autotune` | Autotune trial artifacts and warm-start history |
 | Does the non-MLX delegated route still behave correctly? | llama.cpp manifests through `ax-engine-bench` | Delegated route-contract evidence only |
+| Does upstream `mlx-lm` delegated text compatibility still behave correctly? | Explicit `mlx_lm_delegated` checks through SDK/server/CLI surfaces | Delegated route-contract evidence only |
 
 Do not merge these rows into one unlabeled throughput table. AX-owned
 model-inference claims come from the MLX inference stack, and every such claim
 must include a matching `mlx_lm.benchmark` baseline for the same random-token
 prompt/decode shape, with prompt-token provenance recorded in the artifact.
-`ax-engine-bench` owns workload contracts. llama.cpp manifests validate
-delegation behavior, not AX MLX runtime speed.
+`ax-engine-bench` owns workload contracts. llama.cpp manifests and
+`mlx_lm_delegated` checks validate delegation behavior, not AX MLX runtime
+speed.
 
 ## MLX Model-Inference Comparison
 
@@ -60,35 +62,35 @@ The reference contract is:
 The harness fails closed if `mlx_lm.benchmark` cannot run. It does not support
 AX-only throughput tables. Every non-baseline row records the matching
 `mlx_lm.benchmark` random-token prompt/decode shape plus prefill/decode ratios.
-The direct AX comparison row is greedy by default. Speculative AX rows are
-feature-speedup evidence and must not be treated as the same decode policy as
-the primary MLX baseline.
+The default AX row is the direct same-policy comparison against the primary MLX
+baseline. AX n-gram acceleration rows are effective-throughput evidence and
+must not be treated as the same decode policy as the primary MLX baseline.
 
-Use `--ax-both-modes` when speculative decode is part of the question:
+Use `--ax-compare-policies` when n-gram acceleration is part of the question:
 
 ```text
 python3 scripts/bench_mlx_inference_stack.py \
   --model-dir /path/to/local/mlx-model \
   --prompt-tokens 256,512,2048 \
   --generation-tokens 128 \
-  --ax-both-modes
+  --ax-compare-policies
 ```
 
-The harness labels AX rows as `ax_engine_mlx_greedy` and
-`ax_engine_mlx_speculative`. Greedy throughput and speculative speedups must not
-collapse into one AX number. AX rows also record `speculative_decode_policy`:
-`greedy_no_speculative_decode` for the direct comparison row, `ngram_kv_trim`
-for dense/full-attention speculative rows, and
-`ngram_linear_attention_support_gated_branch_recompute` for Qwen3.5-style
+The harness labels AX rows as `ax_engine_mlx` and
+`ax_engine_mlx_ngram_accel`. Direct throughput and n-gram acceleration
+throughput must not collapse into one AX number. AX rows also record
+`ax_decode_policy`: `direct_no_ngram_acceleration` for the direct comparison
+row, `ngram_acceleration_kv_trim` for dense/full-attention n-gram acceleration
+rows, and `ngram_acceleration_linear_attention_branch_recompute` for Qwen3.5-style
 recurrent linear-attention rows, where repeated n-gram evidence is required
 before probing and partial accepts trigger a longer cooldown.
 
-Speculative AX result objects also include `speculative_telemetry` when the
+N-gram acceleration AX result objects also include `ngram_acceleration_telemetry` when the
 runtime emits route counters. The stored counters cover draft attempts, draft
 tokens, accepted/rejected draft tokens, full accepts, partial rejects, complete
 misses, no-draft steps, cooldown steps, cooldown events, cooldown steps
-scheduled, and an `ax_spec_accept_rate_micros` derived from accepted/draft
-tokens. Use these counters to audit whether a speculative speedup came from
+scheduled, and an `ax_ngram_accept_rate_micros` derived from accepted/draft
+tokens. Use these counters to audit whether an acceleration row came from
 real n-gram acceptance or from timing noise.
 
 The `mlx-swift-lm` reference checkout currently exposes `BenchmarkHelpers` for
@@ -195,6 +197,17 @@ local llama.cpp server. The repo smoke path is:
 bash scripts/check-bench-preview.sh
 ```
 
+## Delegated mlx-lm Checks
+
+`mlx_lm_delegated` checks validate AX surface compatibility with a
+user-provided `mlx_lm.server` for unsupported MLX text models. They must record
+`selected_backend=mlx_lm_delegated` and `support_tier=mlx_lm_delegated`, and
+they must not be described as AX-owned MLX throughput evidence.
+
+Phase 1 supports blocking text generation only. Token-array prompts, streaming,
+stepwise lifecycle calls, and visual/multimodal contracts are intentionally
+unsupported until a separate route and artifact contract exists.
+
 ## Readiness
 
 Decision-grade AX MLX benchmark claims require:
@@ -215,8 +228,8 @@ Inspect local readiness with:
 ax-engine-bench doctor --json
 ```
 
-llama.cpp adapters do not widen AX-owned MLX host support. They are separate
-delegated runtime checks.
+Delegated `mlx_lm_delegated` and llama.cpp adapters do not widen AX-owned MLX
+host support. They are separate delegated runtime checks.
 
 ## Smoke Checks
 
@@ -239,6 +252,7 @@ bash scripts/check-bench-matrix-compare.sh
 | `bench_mlx_inference_stack.py` rows with matching `mlx_lm.benchmark` baseline | AX MLX model-inference performance claims against named MLX references | Scheduler/replay correctness claims |
 | `ax-engine-bench scenario` / `replay` MLX artifacts | Workload-contract, route, correctness, determinism, replay, and regression claims | Direct upstream MLX comparison unless the MLX stack harness was also run |
 | `ax-engine-bench autotune` artifacts | Candidate evidence for bounded manifest knobs | Architecture selection or cross-runtime ranking |
+| `mlx_lm_delegated` artifacts | Upstream mlx-lm text compatibility through AX surfaces | AX-owned MLX throughput claims or visual/multimodal support |
 | llama.cpp delegated artifacts | Non-MLX route-contract and backend prompt-cache claims | AX-owned MLX throughput claims |
 | `ax-engine-bench compare` / `matrix-compare` | Regression evidence inside the same manifest/runtime family | Cross-runtime ranking without matching reference contract |
 

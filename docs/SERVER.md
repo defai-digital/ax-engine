@@ -100,9 +100,9 @@ cargo run -p ax-engine-server -- \
   --port 8080
 ```
 
-OpenAI-compatible delegated routes such as `vLLM`, `mistral.rs`, and MLX
-llama.cpp adapters are no longer part of the shipping inference contract.
-Use the `llama.cpp` server route for non-MLX server-backed inference:
+OpenAI-compatible delegated routes such as `vLLM` and `mistral.rs` are not part
+of the shipping inference contract. Use the `llama.cpp` server route for
+GGUF/non-MLX server-backed inference:
 
 ```text
 cargo run -p ax-engine-server -- \
@@ -121,6 +121,23 @@ primary target:
 
 Local non-MLX model paths are treated as `llama.cpp` targets. Use `--mlx` when
 you want AX-owned MLX inference.
+
+To keep using AX server surfaces for an MLX text model that AX-owned MLX mode
+does not yet support, run `mlx_lm.server` yourself and select the explicit
+delegated backend:
+
+```text
+mlx_lm.server --model /absolute/path/to/mlx-model --host 127.0.0.1 --port 8090
+
+cargo run -p ax-engine-server -- \
+  --model-id local-mlx-model \
+  --support-tier mlx_lm_delegated \
+  --mlx-lm-server-url http://127.0.0.1:8090 \
+  --port 8080
+```
+
+`mlx_lm_delegated` is text-only and blocking in Phase 1. It is not an AX MLX
+performance claim, and it is not a visual/multimodal contract.
 
 The preview server now also exposes thin OpenAI-compatible endpoints over that
 same llama.cpp-backed path:
@@ -363,6 +380,9 @@ lifecycle contract as the SDK.
 The server allocates request ids from one process-local sequence across both
 paths so transport logs and client correlation do not collide when clients mix
 blocking and stepwise APIs.
+For Phase 1, the `mlx_lm_delegated` backend supports blocking
+`/v1/generate` through `mlx_lm.server` `/v1/completions`.
+
 For Phase 1, the llama.cpp backend supports blocking `/v1/generate`,
 OpenAI-compatible `/v1/completions`, and OpenAI-compatible
 `/v1/chat/completions`.

@@ -5,12 +5,13 @@
     clippy::unnecessary_lazy_evaluations
 )]
 
-pub use ax_engine_core::{CacheGroupId, KvManagerConfig};
+pub use ax_engine_core::{CacheGroupId, EmbeddingPooling, KvManagerConfig};
 
 pub mod backend;
 pub mod generate;
 mod host;
 pub mod llama_cpp;
+pub mod mlx_lm;
 pub mod request;
 pub mod session;
 
@@ -30,6 +31,7 @@ pub use generate::{
 pub use llama_cpp::{
     LlamaCppBackendError, LlamaCppCliConfig, LlamaCppConfig, LlamaCppServerCompletionConfig,
 };
+pub use mlx_lm::{MlxLmBackendError, MlxLmConfig, MlxLmServerCompletionConfig};
 pub use request::{
     EngineStepReport, MetalDispatchKernelStepReport, MetalDispatchNumericStepReport,
     MetalDispatchStepReport, MetalDispatchValidationStepReport, SessionRequestReport,
