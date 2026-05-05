@@ -15,19 +15,19 @@ Qwen 3.5 9B, Qwen 3.6 35B A3B 4/5/6/8-bit, and Qwen Coder Next.
 
 | Question | Use | Evidence produced |
 |---|---|---|
-| How fast is AX Engine MLX mode against upstream MLX? | `scripts/bench_mlx_inference_stack.py` | Required `mlx_lm.benchmark` primary baseline rows, AX Engine MLX direct and n-gram acceleration rows, optional `mlx-swift-lm` secondary baseline adapter rows, canonical prompt-token artifacts, and ratio-to-baseline fields |
+| How fast is the repo-owned MLX runtime against upstream MLX? | `scripts/bench_mlx_inference_stack.py` | Required `mlx_lm.benchmark` primary baseline rows, AX direct and n-gram acceleration rows, optional `mlx-swift-lm` secondary baseline adapter rows, canonical prompt-token artifacts, and ratio-to-baseline fields |
 | Did a checked-in workload still pass route, correctness, determinism, replay, or regression gates? | `ax-engine-bench` | Workload-contract artifacts under `benchmarks/results` |
-| Is the local host ready for AX-owned MLX benchmarking? | `ax-engine-bench doctor` | Human or JSON readiness report |
+| Is the local host ready for repo-owned MLX benchmarking? | `ax-engine-bench doctor` | Human or JSON readiness report |
 | Did a bounded runtime knob improve a frozen workload? | `ax-engine-bench autotune` | Autotune trial artifacts and warm-start history |
 | Does the non-MLX delegated route still behave correctly? | llama.cpp manifests through `ax-engine-bench` | Delegated route-contract evidence only |
 | Does upstream `mlx-lm` delegated text compatibility still behave correctly? | Explicit `mlx_lm_delegated` checks through SDK/server/CLI surfaces | Delegated route-contract evidence only |
 
-Do not merge these rows into one unlabeled throughput table. AX-owned
+Do not merge these rows into one unlabeled throughput table. Repo-owned
 model-inference claims come from the MLX inference stack, and every such claim
 must include a matching `mlx_lm.benchmark` baseline for the same random-token
 prompt/decode shape, with prompt-token provenance recorded in the artifact.
 `ax-engine-bench` owns workload contracts. llama.cpp manifests and
-`mlx_lm_delegated` checks validate delegation behavior, not AX MLX runtime
+`mlx_lm_delegated` checks validate delegation behavior, not repo-owned MLX runtime
 speed.
 
 ## MLX Model-Inference Comparison
@@ -53,7 +53,7 @@ The reference contract is:
    `mx.random.randint(0, vocab_size, (1, prompt_tokens))`.
 3. The generated prompt token IDs are written as JSON artifacts and reused by
    AX Engine and any admitted `mlx-swift-lm` adapter.
-4. AX Engine MLX mode is measured through `ax-engine-server` SSE
+4. Repo-owned MLX runtime is measured through `ax-engine-server` SSE
    `runner_time_us`.
 5. `mlx-swift-lm` is optional and only admitted as a secondary reference
    through an explicit JSON-emitting adapter command built on the
@@ -188,7 +188,7 @@ The repo carries delegated non-MLX examples:
 
 These validate the SDK-owned llama.cpp adapter contract, submit/cancel behavior,
 and backend-reported prompt-cache evidence. They must not be described as
-AX-owned model-inference throughput benchmarks.
+repo-owned model-inference throughput benchmarks.
 
 When running them directly, update `runtime.backend_adapter.server_url` for the
 local llama.cpp server. The repo smoke path is:
@@ -202,7 +202,7 @@ bash scripts/check-bench-preview.sh
 `mlx_lm_delegated` checks validate AX surface compatibility with a
 user-provided `mlx_lm.server` for unsupported MLX text models. They must record
 `selected_backend=mlx_lm_delegated` and `support_tier=mlx_lm_delegated`, and
-they must not be described as AX-owned MLX throughput evidence.
+they must not be described as repo-owned MLX throughput evidence.
 
 Phase 1 supports blocking text generation only. Token-array prompts, streaming,
 stepwise lifecycle calls, and visual/multimodal contracts are intentionally
@@ -210,7 +210,7 @@ unsupported until a separate route and artifact contract exists.
 
 ## Readiness
 
-Decision-grade AX MLX benchmark claims require:
+Decision-grade repo-owned MLX benchmark claims require:
 
 - Apple Silicon M4-or-newer macOS/aarch64 host.
 - MLX runtime availability.
@@ -228,8 +228,8 @@ Inspect local readiness with:
 ax-engine-bench doctor --json
 ```
 
-Delegated `mlx_lm_delegated` and llama.cpp adapters do not widen AX-owned MLX
-host support. They are separate delegated runtime checks.
+Delegated `mlx_lm_delegated` and llama.cpp adapters do not widen repo-owned
+MLX host support. They are separate delegated runtime checks.
 
 ## Smoke Checks
 
@@ -249,11 +249,11 @@ bash scripts/check-bench-matrix-compare.sh
 
 | Evidence | Can support | Cannot support |
 |---|---|---|
-| `bench_mlx_inference_stack.py` rows with matching `mlx_lm.benchmark` baseline | AX MLX model-inference performance claims against named MLX references | Scheduler/replay correctness claims |
+| `bench_mlx_inference_stack.py` rows with matching `mlx_lm.benchmark` baseline | Repo-owned MLX model-inference performance claims against named MLX references | Scheduler/replay correctness claims |
 | `ax-engine-bench scenario` / `replay` MLX artifacts | Workload-contract, route, correctness, determinism, replay, and regression claims | Direct upstream MLX comparison unless the MLX stack harness was also run |
 | `ax-engine-bench autotune` artifacts | Candidate evidence for bounded manifest knobs | Architecture selection or cross-runtime ranking |
-| `mlx_lm_delegated` artifacts | Upstream mlx-lm text compatibility through AX surfaces | AX-owned MLX throughput claims or visual/multimodal support |
-| llama.cpp delegated artifacts | Non-MLX route-contract and backend prompt-cache claims | AX-owned MLX throughput claims |
+| `mlx_lm_delegated` artifacts | Upstream mlx-lm text compatibility through AX surfaces | Repo-owned MLX throughput claims or visual/multimodal support |
+| llama.cpp delegated artifacts | Non-MLX route-contract and backend prompt-cache claims | Repo-owned MLX throughput claims |
 | `ax-engine-bench compare` / `matrix-compare` | Regression evidence inside the same manifest/runtime family | Cross-runtime ranking without matching reference contract |
 
 If the reference identity or runtime route is unclear, treat the number as

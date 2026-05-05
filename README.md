@@ -1,28 +1,56 @@
 # AX Engine
 
-A Mac-first LLM inference core for Apple Silicon M4+, built around one idea:
+AX Engine is a Mac-first LLM inference runtime, local server, SDK layer, and
+benchmark toolkit for Apple Silicon.
 
-**for supported transformer families, an AX-owned scheduling and n-gram
-acceleration layer above MLX delivers measurably higher effective throughput than
-running the MLX reference runtimes directly.**
+It is not "AX MLX" as a product. MLX is the primary Apple Silicon execution
+backend for supported model families, while AX Engine also exposes explicit
+compatibility routes for upstream `mlx-lm` and `llama.cpp` so users can stay on
+one AX surface while model coverage grows.
 
 > Requires macOS on Apple Silicon M4 or newer and Rust 1.85+.
 
+## 30-Second Setup
+
+Install the released command-line tools and verify the local runtime contract:
+
+```bash
+brew install automatosx/ax-engine/ax-engine
+```
+
+```bash
+ax-engine-bench doctor
+ax-engine-server --help
+```
+
+This verifies the released AX Engine tools. Running inference requires choosing
+a runtime path below: repo-owned MLX, delegated `mlx-lm`, or delegated
+`llama.cpp`.
+
 ## Why AX Engine
 
-[mlx_lm](https://github.com/ml-explore/mlx-lm) is excellent — it is the
-canonical Python MLX inference reference and the benchmark every AX row is
-measured against.
-[mlx-swift-lm](https://github.com/ml-explore/mlx-swift) brings the same
-runtime to Swift with the same model coverage. Both are the right choice when
-you need broad HuggingFace model support or direct MLX ecosystem integration.
+AX Engine gives local inference work a stable runtime contract:
 
-AX Engine is not trying to replace either.
+- `ax-engine-server` exposes a local HTTP adapter over the runtime.
+- `ax-engine-bench` records workload contracts, route identity, correctness,
+  determinism, and performance evidence.
+- `ax-engine-sdk`, Python bindings, and the JavaScript preview client provide
+  thin integration surfaces over the same backend-resolution rules.
+- Repo-owned MLX execution is optimized for supported Qwen and Gemma families.
+- Delegated `mlx_lm.server` and `llama.cpp` routes cover explicit
+  compatibility cases without turning delegated results into AX-owned
+  throughput claims.
 
-The gap AX targets is narrow: for **supported model families** on **Apple
-Silicon**, an orchestration layer that owns n-gram acceleration, request
-scheduling, and KV state management above MLX can extract throughput that the
-upstream runtimes leave on the table:
+[mlx_lm](https://github.com/ml-explore/mlx-lm) and
+[mlx-swift-lm](https://github.com/ml-explore/mlx-swift) remain the canonical
+MLX references. AX Engine compares against them, learns from them, and delegates
+to `mlx-lm` for unsupported MLX text models when requested. The AX-owned value
+is the runtime layer around supported workloads: request lifecycle, scheduling,
+KV/cache policy, n-gram acceleration, and auditable benchmark artifacts.
+
+For supported transformer families on Apple Silicon, the AX-owned runtime layer
+can produce higher effective throughput than the reference MLX runtimes on
+matching benchmark shapes:
 
 - **N-gram acceleration** reaches up to 2.4x mlx_lm decode
   throughput on high-hit benchmark rows — with no second draft model and no
@@ -40,17 +68,28 @@ MLX** — how tokens are speculated, how requests are scheduled, how KV state is
 materialized — produces measurably higher effective throughput on supported
 workloads.
 
+## Runtime Paths
+
+| Path | Use it for | Current scope |
+|---|---|---|
+| Repo-owned MLX runtime | Supported Qwen/Gemma MLX model artifacts and repo-owned performance claims | Local Apple Silicon inference, token-based server/SDK requests, benchmarked direct and n-gram acceleration modes |
+| `mlx_lm_delegated` | MLX text models that upstream `mlx-lm` supports before AX has a repo-owned graph | Blocking text completion through a user-provided `mlx_lm.server`; no chat/stream/tool/VLM compatibility contract yet |
+| `llama_cpp` | GGUF and non-MLX local inference | Delegated llama.cpp server/CLI compatibility; route-contract evidence, not repo-owned MLX throughput |
+
+The runtime report exposes `selected_backend`, `support_tier`, and
+`resolution_policy` so callers and benchmark artifacts can distinguish these
+paths.
+
 ## Design
 
-### Execution layer
+### Execution Layer
 
-AX Engine uses MLX directly for all tensor operations via the official `mlx-c`
-C API. Matrix multiply, quantized matmul, attention, RMSNorm, and RoPE go
-through MLX's own Apple-maintained Metal kernels, which use `simdgroup_matrix`
-hardware tile multiply, hardware BF16 acceleration (M3+/M4+), and flash-style
-SDPA. AX owns what happens above the compute graph.
+The repo-owned MLX path uses MLX directly for tensor operations via the official
+`mlx-c` C API. Matrix multiply, quantized matmul, attention, RMSNorm, and RoPE
+go through MLX's Apple-maintained Metal kernels. AX owns the runtime behavior
+above that graph.
 
-What AX builds above MLX:
+What AX Engine adds around model execution:
 
 - **N-gram acceleration**: a bigram/trigram table built at runtime predicts
   up to 4 draft tokens per step. The target model verifies them in one forward
@@ -72,7 +111,7 @@ What AX builds above MLX:
   All other ops in the same models (dense attention, FFN, projections) delegate
   to MLX's hardware-optimized paths.
 
-### Memory layer
+### Memory Layer
 
 `mlx_set_wired_limit(recommendedMaxWorkingSetSize)` wires model weights into GPU
 memory at startup, preventing Metal from paging them between requests. A
@@ -211,12 +250,58 @@ Canonical manifests live under `benchmarks/manifests/{scenario,replay,matrix}`.
 See `docs/BENCHMARKS.md` for the evidence split, methodology, and
 prompt-provenance requirements.
 
-## Quick Start
+## Installation
+
+### Homebrew
+
+For tagged macOS arm64 releases, install the preview command-line tools from
+the AutomatosX tap:
 
 ```bash
-cargo build --workspace --release
+brew install automatosx/ax-engine/ax-engine
+```
 
-# HTTP inference server (MLX mode)
+This installs:
+
+- `ax-engine-server`: local HTTP adapter over the SDK runtime
+- `ax-engine-bench`: workload-contract, readiness, direct-generate, and
+  benchmark-support CLI
+
+Check the installed tools:
+
+```bash
+ax-engine-server --help
+ax-engine-bench doctor
+```
+
+Homebrew is the quickest path for the released server and benchmark binaries.
+Use the source build when you need the full Rust workspace, Python extension,
+local examples, or changes that have not been tagged yet.
+
+### Source
+
+Development builds require Rust and the MLX C runtime on Apple Silicon:
+
+```bash
+brew install mlx-c
+cargo build --workspace --release
+```
+
+Python bindings are built from source:
+
+```bash
+maturin develop
+python -m unittest discover -s python/tests -v
+```
+
+## Quick Start
+
+The commands below use source-build paths. If you installed with Homebrew, use
+`ax-engine-server` and `ax-engine-bench` directly instead of
+`./target/release/...`.
+
+```bash
+# HTTP inference server (repo-owned MLX runtime)
 ./target/release/ax-engine-server \
   --mlx \
   --mlx-model-artifacts-dir /path/to/local/mlx-model \
@@ -230,7 +315,26 @@ with ax_engine.Session(model_id='gemma4', mlx=True,
     result = s.generate([1, 2, 3], max_output_tokens=32)
     print(result.output_tokens)
 EOF
+```
 
+For an unsupported MLX text model that upstream `mlx-lm` can serve, keep AX
+Engine as the CLI/server surface and delegate the model execution explicitly:
+
+```bash
+mlx_lm.server --model /path/to/local/mlx-model --host 127.0.0.1 --port 8090
+
+./target/release/ax-engine-bench generate \
+  --prompt "Hello from mlx-lm" \
+  --support-tier mlx_lm_delegated \
+  --mlx-lm-server-url http://127.0.0.1:8090
+```
+
+`mlx_lm_delegated` is a compatibility route, not a repo-owned MLX throughput
+claim. In the current preview it supports blocking text completion through
+upstream `mlx_lm.server`; chat completions, transport streaming, tool calls,
+and visual/multimodal inputs are not yet AX compatibility contracts.
+
+```bash
 # Primary benchmark: AX vs mlx_lm vs mlx-swift-lm
 python3 scripts/bench_mlx_inference_stack.py \
   --model-dir /path/to/local/mlx-model \

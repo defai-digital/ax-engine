@@ -2,9 +2,9 @@
 
 AX Engine routes inference through three labeled shipping paths:
 
-- repo-owned MLX mode for MLX inference
+- repo-owned MLX runtime for supported Apple Silicon model artifacts
 - explicit `mlx-lm` delegated compatibility for unsupported MLX text models
-- `llama.cpp` bypass for non-MLX inference
+- `llama.cpp` delegated compatibility for GGUF and non-MLX inference
 
 ## Support Strategy
 
@@ -18,34 +18,34 @@ Instead, support should be understood through:
 
 This matters because a future model may be:
 
-- available through AX-owned MLX mode
+- available through the repo-owned MLX runtime
 - available through the explicit `mlx-lm` delegated path
-- available through the `llama.cpp` bypass path
+- available through the delegated `llama.cpp` path
 - not supported yet
 
 The current default route is:
 
-- explicit MLX mode routes to `mlx`
+- explicit repo-owned MLX requests route to `mlx`
 - explicit `mlx_lm_delegated` routes to a user-provided `mlx_lm.server`
 - all non-MLX inference routes to `llama.cpp`
 - local `.gguf` model paths route to `llama.cpp`
-- AX native mode is no longer a supported user-facing inference mode
+- retired AX native mode is no longer a supported user-facing inference mode
 
 The current routing decision is recorded in the private ADR set.
 
-## MLX Platform Baseline
+## Runtime Baseline
 
-AX Engine MLX mode targets Apple Silicon Macs where the MLX runtime and AX's
-MLX integration are available.
+The repo-owned MLX runtime targets Apple Silicon Macs where the MLX runtime and
+AX Engine's model graph are both available.
 
 This means:
 
-- MLX mode is the repo-owned local Mac inference path
-- `mlx_lm_delegated` is compatibility, not an AX-owned runtime
-- non-MLX local inference should use `llama.cpp`
-- support-tier language should not be read as implying broad MLX Metal model support
+- repo-owned MLX runtime is the local Mac path for supported model artifacts
+- `mlx_lm_delegated` is compatibility, not the repo-owned runtime
+- non-MLX local inference should use delegated `llama.cpp`
+- support-tier language should not be read as implying broad model support
 - retired AX native mode should not be exposed as a shipping runtime
-- model-inference benchmark claims for MLX mode must come from
+- model-inference benchmark claims for repo-owned MLX runtime must come from
   `scripts/bench_mlx_inference_stack.py` with a matching required
   `mlx_lm.benchmark` primary baseline and, optionally, an explicit
   `mlx-swift-lm` `BenchmarkHelpers` / `MLXLMCommon` secondary baseline adapter
@@ -60,24 +60,24 @@ This means:
 Meaning:
 
 - reserved for a future certified repo-owned runtime
-- not currently used for AX MLX Metal mode
+- not currently used for the repo-owned MLX runtime
 - must not be assigned without benchmark and correctness evidence
 
 ### `mlx_preview`
 
 Meaning:
 
-- repo-owned MLX mode is selected
+- repo-owned MLX runtime is selected
 - MLX runtime behavior is still preview-grade unless explicitly certified
-- not a claim that AX MLX Metal mode is supported
+- not a claim that every MLX model architecture is supported
 
 ### `llama_cpp`
 
 Meaning:
 
 - request is handled through `llama.cpp`
-- this should not be read as equivalent to AX-owned MLX-mode feature coverage or
-  performance
+- this should not be read as equivalent to repo-owned runtime feature coverage
+  or performance
 - `vLLM`, `mistral.rs`, and unlabeled MLX adapters are not part of the current
   shipping inference route
 
@@ -86,11 +86,11 @@ Meaning:
 Meaning:
 
 - request is handled by an explicitly configured `mlx_lm.server`
-- this is broad MLX text-model compatibility, not AX-owned MLX runtime support
+- this is broad MLX text-model compatibility, not repo-owned MLX runtime support
 - Phase 1 supports text-only blocking generation; token prompts, streaming,
   and multimodal inputs fail closed
 - benchmark evidence must be labeled as delegated route-contract evidence, not
-  AX MLX throughput
+  repo-owned MLX throughput
 - `mlx-swift-lm` remains a secondary benchmark/reference adapter, not the
   default delegated backend
 
@@ -104,14 +104,14 @@ Meaning:
 
 The current runtime direction is:
 
-- use `mlx` for explicit MLX mode
+- use `mlx` for explicit repo-owned MLX runtime requests
 - use `mlx_lm_delegated` only when explicitly requested for MLX text-model
   compatibility
 - use `llama_cpp` for all non-MLX inference
 - promote MLX preview models only after reference-runtime comparison,
   correctness smoke coverage, and public benchmark artifacts are available
 
-## Current AX MLX Preview Models
+## Current Repo-Owned MLX Preview Models
 
 | Family | Model | Evidence |
 |---|---|---|
@@ -123,8 +123,8 @@ The current runtime direction is:
 ## Current Limitations And Problems
 
 Gemma 4 E4B has model and scenario manifests but no MLX stack benchmark run
-yet; its public benchmark rows are pending. All other AX MLX preview models
-above have completed benchmark rows.
+yet; its public benchmark rows are pending. All other repo-owned MLX preview
+models above have completed benchmark rows.
 The Gemma 4 26B A4B MoE row intentionally omits `mlx_swift_lm` because the
 local Swift reference does not currently implement Gemma4 MoE Router/Experts.
 Gemma 4 E2B 5/6/8-bit rows include both `mlx_lm` and `mlx_swift_lm`
@@ -144,24 +144,26 @@ Depending on readiness, that model may resolve to:
 - `llama_cpp`
 - `unsupported`
 
-where `mlx_preview` means repo-owned MLX mode, and `mlx_lm_delegated`
+where `mlx_preview` means repo-owned MLX runtime, and `mlx_lm_delegated`
 means upstream `mlx-lm` compatibility through AX surfaces.
 
-## Not a Broad LlamaCpp Matrix
+## Not A Broad Model Matrix
 
-The v4 rewrite is not trying to support every architecture early.
+AX Engine is not trying to support every architecture through the repo-owned
+runtime early. Unsupported models should resolve to a delegated compatibility
+path or to `unsupported`, with that route visible in runtime metadata.
 
 Deferred from the main path:
 
 - multimodal models
 - hybrid-only architectures
 - MoE-first support
-- broad llama.cpp exceptions during core bring-up
+- broad delegated exceptions that lack route-contract evidence
 
 ## Important Note
 
-This document describes product direction and support strategy, not a final
-llama.cpp guarantee.
+This document describes product direction and support strategy, not a universal
+backend guarantee.
 The implementation is still in progress, and support claims must be earned by
 actual benchmark and validation evidence. For MLX support claims, that evidence
 must name the MLX reference runtime, AX decode mode, model identity, prompt

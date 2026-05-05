@@ -10767,16 +10767,14 @@ impl RuntimeObservation {
     }
 
     /// Decode throughput from runner execution time when available.
-    /// Legacy synthetic/llama.cpp paths fall back to the old step proxy.
+    /// Returns 0.0 when the runtime did not report decode runner time.
     fn decode_tok_s(&self) -> f64 {
         if self.decode_tokens == 0 {
             0.0
         } else if self.total_decode_runner_time_us > 0 {
             tokens_per_second_from_micros(self.decode_tokens, self.total_decode_runner_time_us)
-        } else if self.decode_steps == 0 {
-            0.0
         } else {
-            (self.decode_tokens as f64 * 1000.0) / self.decode_steps as f64
+            0.0
         }
     }
 
@@ -15193,6 +15191,30 @@ mod tests {
         observation.merge_route_metadata(&second);
 
         assert_eq!(route_decision(&observation, "live_share_hits"), u32::MAX);
+    }
+
+    #[test]
+    fn decode_tok_s_returns_zero_without_runner_timing() {
+        let observation = RuntimeObservation {
+            decode_tokens: 4,
+            decode_steps: 2,
+            total_decode_runner_time_us: 0,
+            ..RuntimeObservation::default()
+        };
+
+        assert_eq!(observation.decode_tok_s(), 0.0);
+    }
+
+    #[test]
+    fn decode_tok_s_uses_runner_timing_when_available() {
+        let observation = RuntimeObservation {
+            decode_tokens: 4,
+            decode_steps: 2,
+            total_decode_runner_time_us: 2_000,
+            ..RuntimeObservation::default()
+        };
+
+        assert_eq!(observation.decode_tok_s(), 2_000.0);
     }
 
     #[test]

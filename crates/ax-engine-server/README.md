@@ -10,8 +10,8 @@ Current scope:
 - explicit runtime metadata reporting, including `selected_backend`,
   `support_tier`, and `resolution_policy`
 - preview generation API for bring-up and integration testing
-- stepwise request lifecycle endpoints over a shared preview session for native
-  runtime paths plus server-backed llama.cpp adapters
+- stepwise request lifecycle endpoints over a shared preview session for
+  repo-owned MLX runtime paths plus server-backed llama.cpp adapters
 - thin OpenAI-compatible `/v1/completions` and `/v1/chat/completions`
   translation over llama.cpp-backed preview requests
 
@@ -112,10 +112,10 @@ full remote orchestration surface during Phase 1 bring-up.
 request lifecycle rather than inventing a second streaming runtime.
 For Phase 1, llama.cpp backends support blocking `/v1/generate`, plus thin
 OpenAI-compatible `/v1/completions` and `/v1/chat/completions`. The
-server-backed `llama.cpp`, `vLLM`, `mistral.rs`, and explicit MLX server paths
-also support stateless SSE `/v1/generate/stream`, streamed OpenAI-compatible
-responses, and preview stepwise `/v1/requests`, `/v1/step`, and
-`/v1/requests/:id/cancel`. Shared compatibility sessions can now hold multiple
-active delegated requests while `/v1/step` aggregates one delegated step across
-them. `llama-cli` and direct `mlx-lm` remain blocking text-prompt fallbacks for
-local bring-up.
+server-backed `llama.cpp` path also supports stateless SSE
+`/v1/generate/stream`, streamed OpenAI-compatible responses, and preview
+stepwise `/v1/requests`, `/v1/step`, and `/v1/requests/:id/cancel`.
+Shared compatibility sessions can hold multiple active delegated llama.cpp
+requests while `/v1/step` aggregates one delegated step across them.
+`llama-cli` and direct `mlx-lm` remain blocking text-prompt fallbacks for local
+bring-up.
