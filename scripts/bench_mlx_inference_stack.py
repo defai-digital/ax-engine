@@ -72,34 +72,37 @@ DEFAULT_COOLDOWN = 5.0
 AXENGINE_PORT = 8091
 MLX_LM_RANDOM_SEED = 0
 
-AX_SPEC_TELEMETRY_KEYS = [
-    "ax_spec_draft_attempts",
-    "ax_spec_draft_tokens",
-    "ax_spec_accepted_tokens",
-    "ax_spec_rejected_tokens",
-    "ax_spec_full_accepts",
-    "ax_spec_partial_rejects",
-    "ax_spec_complete_misses",
-    "ax_spec_no_draft_steps",
-    "ax_spec_cooldown_steps",
-    "ax_spec_cooldown_events",
-    "ax_spec_cooldown_steps_scheduled",
+AX_ENGINE_DIRECT_KEY = "ax_engine_mlx"
+AX_ENGINE_NGRAM_ACCEL_KEY = "ax_engine_mlx_ngram_accel"
+
+AX_NGRAM_TELEMETRY_KEYS = [
+    "ax_ngram_draft_attempts",
+    "ax_ngram_draft_tokens",
+    "ax_ngram_accepted_tokens",
+    "ax_ngram_rejected_tokens",
+    "ax_ngram_full_accepts",
+    "ax_ngram_partial_rejects",
+    "ax_ngram_complete_misses",
+    "ax_ngram_no_draft_steps",
+    "ax_ngram_cooldown_steps",
+    "ax_ngram_cooldown_events",
+    "ax_ngram_cooldown_steps_scheduled",
 ]
-AX_SPEC_ACCEPT_RATE_KEY = "ax_spec_accept_rate_micros"
+AX_NGRAM_ACCEPT_RATE_KEY = "ax_ngram_accept_rate_micros"
 
 AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_prefill_steps",
     "ax_mlx_prefill_wall_us",
     "ax_mlx_decode_steps",
     "ax_mlx_decode_wall_us",
-    "ax_mlx_greedy_bootstrap_steps",
-    "ax_mlx_greedy_bootstrap_wall_us",
-    "ax_mlx_greedy_pipeline_steps",
-    "ax_mlx_greedy_pipeline_wall_us",
+    "ax_mlx_direct_bootstrap_steps",
+    "ax_mlx_direct_bootstrap_wall_us",
+    "ax_mlx_direct_pipeline_steps",
+    "ax_mlx_direct_pipeline_wall_us",
     "ax_mlx_single_decode_steps",
     "ax_mlx_single_decode_wall_us",
-    "ax_mlx_speculative_decode_steps",
-    "ax_mlx_speculative_decode_wall_us",
+    "ax_mlx_ngram_decode_steps",
+    "ax_mlx_ngram_decode_wall_us",
     "ax_mlx_bonus_tokens",
 ]
 
@@ -200,14 +203,14 @@ def native_manifest_has_linear_attention(linear_attention: Any) -> bool:
     return any(value is not None for value in linear_attention.values())
 
 
-def ax_speculative_decode_policy(
-    model_metadata: dict[str, Any], *, no_speculative: bool
+def ax_decode_policy(
+    model_metadata: dict[str, Any], *, direct_mode: bool
 ) -> str:
-    if no_speculative:
-        return "greedy_no_speculative_decode"
+    if direct_mode:
+        return "direct_no_ngram_acceleration"
     if model_metadata.get("linear_attention_enabled"):
-        return "ngram_linear_attention_support_gated_branch_recompute"
-    return "ngram_kv_trim"
+        return "ngram_acceleration_linear_attention_branch_recompute"
+    return "ngram_acceleration_kv_trim"
 
 
 MLX_AVERAGES_RE = re.compile(
@@ -508,7 +511,7 @@ def start_axengine(
     model_dir: Path,
     port: int,
     *,
-    no_speculative: bool,
+    direct_mode: bool,
 ) -> subprocess.Popen[Any]:
     cmd = [
         str(binary),
@@ -518,26 +521,26 @@ def start_axengine(
         "--port",
         str(port),
     ]
-    if no_speculative:
-        cmd.append("--no-speculative-decode")
+    if direct_mode:
+        cmd.append("--disable-ngram-acceleration")
     env = {**os.environ, "AX_MLX_NATIVE_CONFIRM": "1"}
     print(f"  [ax-engine] {' '.join(cmd)}", file=sys.stderr)
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
 
 
-def extract_ax_speculative_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
+def extract_ax_ngram_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
     if not route:
         return {}
     decisions = route.get("crossover_decisions") or {}
-    telemetry = {key: int(decisions.get(key, 0)) for key in AX_SPEC_TELEMETRY_KEYS}
+    telemetry = {key: int(decisions.get(key, 0)) for key in AX_NGRAM_TELEMETRY_KEYS}
     if (
-        telemetry.get("ax_spec_draft_attempts", 0) > 0
-        and AX_SPEC_ACCEPT_RATE_KEY not in telemetry
+        telemetry.get("ax_ngram_draft_attempts", 0) > 0
+        and AX_NGRAM_ACCEPT_RATE_KEY not in telemetry
     ):
-        draft_tokens = telemetry.get("ax_spec_draft_tokens", 0)
-        accepted_tokens = telemetry.get("ax_spec_accepted_tokens", 0)
+        draft_tokens = telemetry.get("ax_ngram_draft_tokens", 0)
+        accepted_tokens = telemetry.get("ax_ngram_accepted_tokens", 0)
         if draft_tokens > 0:
-            telemetry[AX_SPEC_ACCEPT_RATE_KEY] = int(
+            telemetry[AX_NGRAM_ACCEPT_RATE_KEY] = int(
                 round(accepted_tokens * 1_000_000 / draft_tokens)
             )
     return telemetry
@@ -567,16 +570,16 @@ def route_with_more_decisions(
 def summarize_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
     totals: dict[str, int] = {}
     for run in runs:
-        for key, value in (run.get("speculative_telemetry") or {}).items():
-            if key == AX_SPEC_ACCEPT_RATE_KEY:
+        for key, value in (run.get("ngram_acceleration_telemetry") or {}).items():
+            if key == AX_NGRAM_ACCEPT_RATE_KEY:
                 continue
             totals[key] = totals.get(key, 0) + int(value)
-    if totals.get("ax_spec_draft_tokens", 0) > 0:
-        totals[AX_SPEC_ACCEPT_RATE_KEY] = int(
+    if totals.get("ax_ngram_draft_tokens", 0) > 0:
+        totals[AX_NGRAM_ACCEPT_RATE_KEY] = int(
             round(
-                totals.get("ax_spec_accepted_tokens", 0)
+                totals.get("ax_ngram_accepted_tokens", 0)
                 * 1_000_000
-                / totals["ax_spec_draft_tokens"]
+                / totals["ax_ngram_draft_tokens"]
             )
         )
     return totals
@@ -659,9 +662,9 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
         "decode_tok_s": measured_decode_tokens / decode_s if decode_s > 0 else 0.0,
         "output_tokens": float(output_tokens),
     }
-    telemetry = extract_ax_speculative_telemetry(final_route)
+    telemetry = extract_ax_ngram_telemetry(final_route)
     if telemetry:
-        run["speculative_telemetry"] = telemetry
+        run["ngram_acceleration_telemetry"] = telemetry
     mlx_telemetry = extract_ax_mlx_telemetry(final_route)
     if mlx_telemetry:
         run["ax_mlx_telemetry"] = mlx_telemetry
@@ -695,15 +698,15 @@ def bench_axengine(
     cooldown: float,
     *,
     model_metadata: dict[str, Any],
-    no_speculative: bool = False,
+    direct_mode: bool = False,
 ) -> dict[str, Any]:
-    engine_key = "ax_engine_mlx_greedy" if no_speculative else "ax_engine_mlx_speculative"
-    speculative_policy = ax_speculative_decode_policy(
-        model_metadata, no_speculative=no_speculative
+    engine_key = AX_ENGINE_DIRECT_KEY if direct_mode else AX_ENGINE_NGRAM_ACCEL_KEY
+    decode_policy = ax_decode_policy(
+        model_metadata, direct_mode=direct_mode
     )
     print(
         f"  [ax-engine/{engine_key}] prompt={len(tokens)} "
-        f"generation={generation_tokens} policy={speculative_policy}",
+        f"generation={generation_tokens} policy={decode_policy}",
         file=sys.stderr,
     )
     axengine_one_run(port, tokens, generation_tokens)
@@ -726,11 +729,11 @@ def bench_axengine(
         "engine": engine_key,
         "method": "server_sse_runner_time_us",
         "timing_scope": "ax_engine_runner_time_us",
-        "speculative_decode_policy": speculative_policy,
-        "speculative_decode_claim_status": (
-            "greedy_baseline"
-            if no_speculative
-            else "feature_speedup_exploration_requires_matching_baseline"
+        "ax_decode_policy": decode_policy,
+        "ax_decode_claim_status": (
+            "direct_same_policy_baseline"
+            if direct_mode
+            else "ngram_acceleration_effective_throughput"
         ),
         "prompt_contract": "mlx_lm_random_tokens_seed_0",
         "random_seed": MLX_LM_RANDOM_SEED,
@@ -741,7 +744,7 @@ def bench_axengine(
         "decode_tok_s": summarize_runs(runs, "decode_tok_s"),
         "prefill_s": summarize_runs(runs, "prefill_s"),
         "decode_s": summarize_runs(runs, "decode_s"),
-        "speculative_telemetry": summarize_telemetry(runs),
+        "ngram_acceleration_telemetry": summarize_telemetry(runs),
         "ax_mlx_telemetry": summarize_ax_mlx_telemetry(runs),
         "trials": runs,
     }
@@ -1003,13 +1006,31 @@ def main() -> None:
         ),
     )
     parser.add_argument("--axengine-port", type=int, default=AXENGINE_PORT)
-    parser.add_argument("--ax-no-speculative", action="store_true",
-                        help="Use greedy (no-spec) decode; this is the default apple-to-apple AX row")
-    parser.add_argument("--ax-speculative", action="store_true",
-                        help="Run only speculative AX decode; use for feature speedup exploration")
-    parser.add_argument("--ax-both-modes", action="store_true",
-                        help="Run ax-engine twice: once greedy, once speculative. "
-                             "Emits both ax_engine_mlx_greedy and ax_engine_mlx_speculative.")
+    parser.add_argument(
+        "--ax-direct",
+        dest="ax_direct",
+        action="store_true",
+        help=(
+            "Run only the direct same-policy AX row. This is the default "
+            "apple-to-apple AX comparison."
+        ),
+    )
+    parser.add_argument(
+        "--ax-ngram-accel",
+        dest="ax_ngram_accel",
+        action="store_true",
+        help="Run only AX n-gram acceleration effective-throughput rows.",
+    )
+    parser.add_argument(
+        "--ax-compare-policies",
+        dest="ax_compare_policies",
+        action="store_true",
+        help=(
+            "Run ax-engine twice: direct same-policy first, then n-gram "
+            f"acceleration. Emits {AX_ENGINE_DIRECT_KEY} and "
+            f"{AX_ENGINE_NGRAM_ACCEL_KEY}."
+        ),
+    )
     parser.add_argument(
         "--prompt-artifact-root",
         type=Path,
@@ -1025,10 +1046,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.model == DEFAULT_MODEL_ID and args.model_dir != DEFAULT_MODEL_DIR:
         args.model = str(args.model_dir)
-    if args.ax_speculative and args.ax_no_speculative:
-        parser.error("--ax-speculative conflicts with --ax-no-speculative")
-    if args.ax_speculative and args.ax_both_modes:
-        parser.error("--ax-speculative conflicts with --ax-both-modes")
+    if args.ax_ngram_accel and args.ax_direct:
+        parser.error("--ax-ngram-accel conflicts with --ax-direct")
+    if args.ax_ngram_accel and args.ax_compare_policies:
+        parser.error("--ax-ngram-accel conflicts with --ax-compare-policies")
     if args.reuse_reference_results_from and args.mlx_swift_lm_command:
         parser.error("--reuse-reference-results-from conflicts with --mlx-swift-lm-command")
 
@@ -1114,19 +1135,19 @@ def main() -> None:
 
         if not args.skip_ax_engine:
             modes = []
-            if args.ax_both_modes:
-                modes = [True, False]  # greedy first, then speculative
-            elif args.ax_speculative:
+            if args.ax_compare_policies:
+                modes = [True, False]  # direct first, then n-gram acceleration
+            elif args.ax_ngram_accel:
                 modes = [False]
             else:
                 modes = [True]
 
-            for no_spec in modes:
+            for direct_mode in modes:
                 proc = start_axengine(
                     AX_ENGINE_SERVER,
                     args.model_dir,
                     args.axengine_port,
-                    no_speculative=no_spec,
+                    direct_mode=direct_mode,
                 )
                 procs.append(proc)
                 if not wait_for_server(f"http://127.0.0.1:{args.axengine_port}/health"):
@@ -1146,7 +1167,7 @@ def main() -> None:
                             args.repetitions,
                             args.cooldown,
                             model_metadata=model_metadata,
-                            no_speculative=no_spec,
+                            direct_mode=direct_mode,
                         )
                     )
                     results[-1]["prefill_step_size"] = args.prefill_step_size
@@ -1154,7 +1175,7 @@ def main() -> None:
                     results[-1]["prompt_token_ids_sha256"] = prompt_doc["token_ids_sha256"]
                 kill_proc(proc)
                 procs.remove(proc)
-                if no_spec and args.ax_both_modes:
+                if direct_mode and args.ax_compare_policies:
                     time.sleep(3)  # brief cooldown between modes
     finally:
         for proc in procs:
@@ -1183,8 +1204,9 @@ def main() -> None:
             "comparison_policy": (
                 "Every non-baseline row is compared against the matching "
                 "mlx_lm.benchmark row for the same random-token prompt and "
-                "generation shape. AX greedy is the default direct comparison; "
-                "speculative AX rows are feature-speedup exploration rows."
+                "generation shape. ax_engine_mlx is the default direct "
+                "same-policy comparison; ax_engine_mlx_ngram_accel rows are "
+                "n-gram acceleration effective-throughput rows."
             ),
             "secondary_reference_policy": (
                 "mlx-swift-lm rows are admitted only through an explicit "

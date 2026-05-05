@@ -1041,19 +1041,23 @@ impl EngineSession {
 
     /// Compute a dense embedding for `token_ids` using the active MLX model.
     ///
-    /// Returns the pooled hidden-state vector as `Vec<f32>`.  Only supported
-    /// when the session is using an MLX-native backend; returns
+    /// When `normalize` is `true` the returned vector is L2-normalized to unit
+    /// length, which is required for cosine / dot-product similarity and is the
+    /// standard expectation of all major embedding models.
+    ///
+    /// Only supported when the session is using an MLX-native backend; returns
     /// `EngineSessionError::EmbeddingNotSupported` otherwise.
     pub fn embed(
         &self,
         token_ids: &[u32],
         pooling: EmbeddingPooling,
+        normalize: bool,
     ) -> Result<Vec<f32>, EngineSessionError> {
         if !self.uses_mlx_runtime() {
             return Err(EngineSessionError::EmbeddingNotSupported);
         }
         self.core
-            .embed(token_ids, pooling)
+            .embed(token_ids, pooling, normalize)
             .map_err(|message| EngineSessionError::EmbeddingFailed { message })
     }
 

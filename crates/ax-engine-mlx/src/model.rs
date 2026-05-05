@@ -569,7 +569,7 @@ pub fn forward(
 
 /// Forward pass returning logits for ALL token positions — `[seq, vocab_size]` f32.
 ///
-/// Used by speculative decode verification to check all draft tokens in one pass.
+/// Used by draft verification to check all draft tokens in one pass.
 pub fn forward_all_positions(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -597,13 +597,40 @@ pub fn forward_all_positions(
     reshape(&logits_f32, &[seq, cfg.vocab_size as i32], None)
 }
 
+/// Stateless forward pass for dense-embedding extraction.
+///
+/// Runs the full transformer stack (embed → layers → final norm) but skips
+/// `lm_head`.  Returns the normalized hidden states as `[1, seq, hidden_size]`
+/// bfloat16.  The caller is responsible for pooling and dtype conversion.
+///
+/// No KV cache is consulted or updated — embeddings are always computed from
+/// scratch in a single forward pass.
+pub fn forward_for_embedding(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+) -> MlxArray {
+    let mut cache = MlxKVCache::new(weights.layers.len());
+    let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
+    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    if let Some(scale) = cfg.hidden_states_scale {
+        hidden = scale_hidden(&hidden, scale);
+    }
+    let per_layer_inputs = compute_per_layer_inputs(cfg, weights, token_ids, &hidden);
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
+        hidden = layer_forward(cfg, layer_w, &hidden, &mut cache, li, 0, pli);
+    }
+    rms_norm(&hidden, Some(&weights.final_norm), 1e-6, None)
+}
+
 /// Single-token forward pass accepting a lazy token `MlxArray`.
 ///
 /// Functionally equivalent to `forward(cfg, weights, &[tok], cache, offset)`,
 /// but takes the token as an unevaluated MLX array so the caller can build the
 /// next step's compute graph *before* the current step's GPU work completes.
-/// This enables double-buffer pipelining (see `start_greedy_pipeline` /
-/// `advance_greedy_pipeline` in `generate.rs`):
+/// This enables double-buffer pipelining (see `start_direct_pipeline` /
+/// `advance_direct_pipeline` in `generate.rs`):
 ///
 /// ```text
 /// GPU: [step N ....][step N+1 (submitted before N finishes) ....]

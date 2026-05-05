@@ -4,14 +4,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use mlx_sys::{
-    MlxArray, MlxStream, clear_cache, enable_compile, max_recommended_working_set_size,
-    set_wired_limit,
+    MlxArray, MlxDtype, MlxStream, add, astype, clear_cache, divide, enable_compile,
+    max_recommended_working_set_size, multiply, power, set_wired_limit, sum_axis, take,
 };
 
 use ax_engine_core::runner::RunnerRequestContext;
 use ax_engine_core::scheduler::ExecutionMode;
 use ax_engine_core::{
-    ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelArtifacts,
+    EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelArtifacts,
     NativeModelBindingSummary, NativeModelManifest, NativeTensorRole,
     ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB, ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS, ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
@@ -26,48 +26,48 @@ use ax_engine_core::{
 };
 
 use crate::generate::{
-    advance_greedy_pipeline, chunked_prefill, decode_step, start_greedy_pipeline,
+    advance_direct_pipeline, chunked_prefill, decode_step, start_direct_pipeline,
 };
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::ModelConfig;
-use crate::sampling::Xorshift64;
-use crate::speculative::{
+use crate::ngram_accel::{
     DEFAULT_DRAFT_LEN, DRAFT_CONFIDENCE_THRESHOLD, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN,
-    NgramTable, single_decode, speculative_decode_step,
+    NgramTable, ngram_accel_decode_step, single_decode,
 };
+use crate::sampling::Xorshift64;
 use crate::weights::{ModelWeights, load_weights};
 
-/// Beta prior counts for the speculation accept-rate gate.
+/// Beta prior counts for the n-gram acceleration accept-rate gate.
 ///
 /// Beta(3, 1) → initial posterior mean = 0.75, above the accept threshold,
-/// so speculation is enabled optimistically from the first step and is only
+/// so n-gram acceleration is enabled optimistically from the first step and is only
 /// suppressed once the posterior accumulates evidence of a low accept rate.
-const SPEC_BETA_PRIOR_ALPHA: f32 = 3.0;
-const SPEC_BETA_PRIOR_BETA: f32 = 1.0;
+const NGRAM_BETA_PRIOR_ALPHA: f32 = 3.0;
+const NGRAM_BETA_PRIOR_BETA: f32 = 1.0;
 
 /// Cap total Beta observations to ~100 to bound the "memory" of the gate
 /// and allow the posterior to adapt if token statistics change mid-sequence.
-/// Equivalent to an EMA span of roughly 100 speculative steps.
-const SPEC_BETA_MAX_TOTAL: f32 = 100.0;
+/// Equivalent to an EMA span of roughly 100 n-gram acceleration steps.
+const NGRAM_BETA_MAX_TOTAL: f32 = 100.0;
 
-const SPEC_ACCEPT_THRESHOLD: f32 = 0.5;
-const SPEC_RETRY_INTERVAL: u32 = 8;
-/// Steps to suppress speculation after a complete miss (0 draft tokens accepted)
+const NGRAM_ACCEPT_THRESHOLD: f32 = 0.5;
+const NGRAM_RETRY_INTERVAL: u32 = 8;
+/// Steps to suppress n-gram acceleration after a complete miss (0 draft tokens accepted)
 /// on a linear-attention model.  Recompute cost is O(1) token regardless of context
 /// length, so 128 was far too conservative; 16 gives the n-gram table time to
 /// recover without sacrificing the whole generation window.
-const LINEAR_SPEC_RETRY_INTERVAL: u32 = 16;
+const LINEAR_NGRAM_RETRY_INTERVAL: u32 = 16;
 /// Steps to suppress after a *partial* accept (≥1 draft token accepted but not all).
 /// Partial accept means the n-gram is close — retry quickly.
-const LINEAR_SPEC_PARTIAL_RETRY_INTERVAL: u32 = 4;
+const LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL: u32 = 4;
 /// Maximum number of prompt tail tokens fed into the n-gram table.
 /// Long prompts (especially random-token benchmarks) would otherwise fill the
-/// table with useless bigrams that trigger false-positive speculation and force
-/// expensive recompute on the very first speculative attempt.
+/// table with useless bigrams that trigger false-positive n-gram acceleration and force
+/// expensive recompute on the very first n-gram acceleration attempt.
 const NGRAM_PROMPT_FEED_MAX: usize = 64;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct SpeculationTelemetry {
+struct NgramAccelerationTelemetry {
     draft_attempts: u32,
     draft_tokens: u32,
     accepted_tokens: u32,
@@ -81,7 +81,7 @@ struct SpeculationTelemetry {
     cooldown_steps_scheduled: u32,
 }
 
-impl SpeculationTelemetry {
+impl NgramAccelerationTelemetry {
     fn record_draft(&mut self, draft_len: usize, accept_count: usize) {
         self.draft_attempts = self.draft_attempts.saturating_add(1);
         self.draft_tokens = self.draft_tokens.saturating_add(saturating_u32(draft_len));
@@ -133,18 +133,18 @@ impl SpeculationTelemetry {
 
     fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
         let entries = [
-            ("ax_spec_draft_attempts", self.draft_attempts),
-            ("ax_spec_draft_tokens", self.draft_tokens),
-            ("ax_spec_accepted_tokens", self.accepted_tokens),
-            ("ax_spec_rejected_tokens", self.rejected_tokens),
-            ("ax_spec_full_accepts", self.full_accepts),
-            ("ax_spec_partial_rejects", self.partial_rejects),
-            ("ax_spec_complete_misses", self.complete_misses),
-            ("ax_spec_no_draft_steps", self.no_draft_steps),
-            ("ax_spec_cooldown_steps", self.cooldown_steps),
-            ("ax_spec_cooldown_events", self.cooldown_events),
+            ("ax_ngram_draft_attempts", self.draft_attempts),
+            ("ax_ngram_draft_tokens", self.draft_tokens),
+            ("ax_ngram_accepted_tokens", self.accepted_tokens),
+            ("ax_ngram_rejected_tokens", self.rejected_tokens),
+            ("ax_ngram_full_accepts", self.full_accepts),
+            ("ax_ngram_partial_rejects", self.partial_rejects),
+            ("ax_ngram_complete_misses", self.complete_misses),
+            ("ax_ngram_no_draft_steps", self.no_draft_steps),
+            ("ax_ngram_cooldown_steps", self.cooldown_steps),
+            ("ax_ngram_cooldown_events", self.cooldown_events),
             (
-                "ax_spec_cooldown_steps_scheduled",
+                "ax_ngram_cooldown_steps_scheduled",
                 self.cooldown_steps_scheduled,
             ),
         ];
@@ -214,14 +214,14 @@ struct DecodeTelemetry {
     prefill_wall_us: u32,
     decode_steps: u32,
     decode_wall_us: u32,
-    greedy_bootstrap_steps: u32,
-    greedy_bootstrap_wall_us: u32,
-    greedy_pipeline_steps: u32,
-    greedy_pipeline_wall_us: u32,
+    direct_bootstrap_steps: u32,
+    direct_bootstrap_wall_us: u32,
+    direct_pipeline_steps: u32,
+    direct_pipeline_wall_us: u32,
     single_decode_steps: u32,
     single_decode_wall_us: u32,
-    speculative_decode_steps: u32,
-    speculative_decode_wall_us: u32,
+    ngram_decode_steps: u32,
+    ngram_decode_wall_us: u32,
     bonus_tokens: u32,
 }
 
@@ -236,14 +236,14 @@ impl DecodeTelemetry {
         self.decode_wall_us = self.decode_wall_us.saturating_add(wall_us);
     }
 
-    fn record_greedy_bootstrap(&mut self, wall_us: u32) {
-        self.greedy_bootstrap_steps = self.greedy_bootstrap_steps.saturating_add(1);
-        self.greedy_bootstrap_wall_us = self.greedy_bootstrap_wall_us.saturating_add(wall_us);
+    fn record_direct_bootstrap(&mut self, wall_us: u32) {
+        self.direct_bootstrap_steps = self.direct_bootstrap_steps.saturating_add(1);
+        self.direct_bootstrap_wall_us = self.direct_bootstrap_wall_us.saturating_add(wall_us);
     }
 
-    fn record_greedy_pipeline(&mut self, wall_us: u32) {
-        self.greedy_pipeline_steps = self.greedy_pipeline_steps.saturating_add(1);
-        self.greedy_pipeline_wall_us = self.greedy_pipeline_wall_us.saturating_add(wall_us);
+    fn record_direct_pipeline(&mut self, wall_us: u32) {
+        self.direct_pipeline_steps = self.direct_pipeline_steps.saturating_add(1);
+        self.direct_pipeline_wall_us = self.direct_pipeline_wall_us.saturating_add(wall_us);
     }
 
     fn record_single_decode(&mut self, wall_us: u32) {
@@ -251,9 +251,9 @@ impl DecodeTelemetry {
         self.single_decode_wall_us = self.single_decode_wall_us.saturating_add(wall_us);
     }
 
-    fn record_speculative_decode(&mut self, wall_us: u32) {
-        self.speculative_decode_steps = self.speculative_decode_steps.saturating_add(1);
-        self.speculative_decode_wall_us = self.speculative_decode_wall_us.saturating_add(wall_us);
+    fn record_ngram_decode(&mut self, wall_us: u32) {
+        self.ngram_decode_steps = self.ngram_decode_steps.saturating_add(1);
+        self.ngram_decode_wall_us = self.ngram_decode_wall_us.saturating_add(wall_us);
     }
 
     fn record_bonus_token(&mut self) {
@@ -265,30 +265,30 @@ impl DecodeTelemetry {
         self.prefill_wall_us = self.prefill_wall_us.saturating_add(other.prefill_wall_us);
         self.decode_steps = self.decode_steps.saturating_add(other.decode_steps);
         self.decode_wall_us = self.decode_wall_us.saturating_add(other.decode_wall_us);
-        self.greedy_bootstrap_steps = self
-            .greedy_bootstrap_steps
-            .saturating_add(other.greedy_bootstrap_steps);
-        self.greedy_bootstrap_wall_us = self
-            .greedy_bootstrap_wall_us
-            .saturating_add(other.greedy_bootstrap_wall_us);
-        self.greedy_pipeline_steps = self
-            .greedy_pipeline_steps
-            .saturating_add(other.greedy_pipeline_steps);
-        self.greedy_pipeline_wall_us = self
-            .greedy_pipeline_wall_us
-            .saturating_add(other.greedy_pipeline_wall_us);
+        self.direct_bootstrap_steps = self
+            .direct_bootstrap_steps
+            .saturating_add(other.direct_bootstrap_steps);
+        self.direct_bootstrap_wall_us = self
+            .direct_bootstrap_wall_us
+            .saturating_add(other.direct_bootstrap_wall_us);
+        self.direct_pipeline_steps = self
+            .direct_pipeline_steps
+            .saturating_add(other.direct_pipeline_steps);
+        self.direct_pipeline_wall_us = self
+            .direct_pipeline_wall_us
+            .saturating_add(other.direct_pipeline_wall_us);
         self.single_decode_steps = self
             .single_decode_steps
             .saturating_add(other.single_decode_steps);
         self.single_decode_wall_us = self
             .single_decode_wall_us
             .saturating_add(other.single_decode_wall_us);
-        self.speculative_decode_steps = self
-            .speculative_decode_steps
-            .saturating_add(other.speculative_decode_steps);
-        self.speculative_decode_wall_us = self
-            .speculative_decode_wall_us
-            .saturating_add(other.speculative_decode_wall_us);
+        self.ngram_decode_steps = self
+            .ngram_decode_steps
+            .saturating_add(other.ngram_decode_steps);
+        self.ngram_decode_wall_us = self
+            .ngram_decode_wall_us
+            .saturating_add(other.ngram_decode_wall_us);
         self.bonus_tokens = self.bonus_tokens.saturating_add(other.bonus_tokens);
     }
 
@@ -298,26 +298,20 @@ impl DecodeTelemetry {
             ("ax_mlx_prefill_wall_us", self.prefill_wall_us),
             ("ax_mlx_decode_steps", self.decode_steps),
             ("ax_mlx_decode_wall_us", self.decode_wall_us),
-            ("ax_mlx_greedy_bootstrap_steps", self.greedy_bootstrap_steps),
+            ("ax_mlx_direct_bootstrap_steps", self.direct_bootstrap_steps),
             (
-                "ax_mlx_greedy_bootstrap_wall_us",
-                self.greedy_bootstrap_wall_us,
+                "ax_mlx_direct_bootstrap_wall_us",
+                self.direct_bootstrap_wall_us,
             ),
-            ("ax_mlx_greedy_pipeline_steps", self.greedy_pipeline_steps),
+            ("ax_mlx_direct_pipeline_steps", self.direct_pipeline_steps),
             (
-                "ax_mlx_greedy_pipeline_wall_us",
-                self.greedy_pipeline_wall_us,
+                "ax_mlx_direct_pipeline_wall_us",
+                self.direct_pipeline_wall_us,
             ),
             ("ax_mlx_single_decode_steps", self.single_decode_steps),
             ("ax_mlx_single_decode_wall_us", self.single_decode_wall_us),
-            (
-                "ax_mlx_speculative_decode_steps",
-                self.speculative_decode_steps,
-            ),
-            (
-                "ax_mlx_speculative_decode_wall_us",
-                self.speculative_decode_wall_us,
-            ),
+            ("ax_mlx_ngram_decode_steps", self.ngram_decode_steps),
+            ("ax_mlx_ngram_decode_wall_us", self.ngram_decode_wall_us),
             ("ax_mlx_bonus_tokens", self.bonus_tokens),
         ];
 
@@ -452,30 +446,30 @@ struct RequestState {
     /// Per-request PRNG for temperature sampling.  Seeded from request_id so
     /// deterministic seeds produce reproducible outputs.
     rng: Xorshift64,
-    /// Beta-Bernoulli posterior α for the speculation accept-rate gate.
-    /// Incremented by accepted draft tokens each speculative step.
-    spec_beta_alpha: f32,
-    /// Beta-Bernoulli posterior β for the speculation accept-rate gate.
-    /// Incremented by rejected draft tokens each speculative step.
-    spec_beta_beta: f32,
-    /// Steps remaining before re-enabling speculation (0 = speculation allowed).
-    spec_disabled_steps: u32,
+    /// Beta-Bernoulli posterior α for the n-gram acceleration accept-rate gate.
+    /// Incremented by accepted draft tokens each n-gram acceleration step.
+    ngram_beta_alpha: f32,
+    /// Beta-Bernoulli posterior β for the n-gram acceleration accept-rate gate.
+    /// Incremented by rejected draft tokens each n-gram acceleration step.
+    ngram_beta_beta: f32,
+    /// Steps remaining before re-enabling ngram_acceleration (0 = n-gram acceleration allowed).
+    ngram_disabled_steps: u32,
     /// Pre-verified bonus tokens ready to serve without a model run.
     bonus_queue: VecDeque<u32>,
     /// The token to use as `last_token` for the next model run.
     /// None on the very first decode step (use framework-supplied input instead).
     next_model_last_token: Option<u32>,
-    /// Lazy token from the previous greedy decode step (double-buffer pipeline).
+    /// Lazy token from the previous direct decode step (double-buffer pipeline).
     ///
-    /// When `Some`, the next call to `decode_one` uses `advance_greedy_pipeline`
+    /// When `Some`, the next call to `decode_one` uses `advance_direct_pipeline`
     /// to materialise this token while simultaneously submitting the next step
     /// to the GPU — eliminating the GPU idle gap between steps.
     ///
-    /// Only set when `no_speculative = true` and `temperature == 0.0`.
-    pending_greedy: Option<MlxArray>,
+    /// Only set when `disable_ngram_acceleration = true` and `temperature == 0.0`.
+    pending_direct: Option<MlxArray>,
     /// Cumulative per-request counters surfaced through route metadata for
     /// benchmark auditability.
-    speculation: SpeculationTelemetry,
+    ngram_acceleration: NgramAccelerationTelemetry,
     decode_telemetry: DecodeTelemetry,
 }
 
@@ -485,19 +479,19 @@ impl RequestState {
             cache: MlxKVCache::new(num_layers),
             ngram: NgramTable::new(),
             rng: Xorshift64::new(request_id.0),
-            spec_beta_alpha: SPEC_BETA_PRIOR_ALPHA,
-            spec_beta_beta: SPEC_BETA_PRIOR_BETA,
-            spec_disabled_steps: 0,
+            ngram_beta_alpha: NGRAM_BETA_PRIOR_ALPHA,
+            ngram_beta_beta: NGRAM_BETA_PRIOR_BETA,
+            ngram_disabled_steps: 0,
             bonus_queue: VecDeque::new(),
             next_model_last_token: None,
-            pending_greedy: None,
-            speculation: SpeculationTelemetry::default(),
+            pending_direct: None,
+            ngram_acceleration: NgramAccelerationTelemetry::default(),
             decode_telemetry: DecodeTelemetry::default(),
         }
     }
 
-    fn spec_posterior_mean(&self) -> f32 {
-        self.spec_beta_alpha / (self.spec_beta_alpha + self.spec_beta_beta)
+    fn ngram_posterior_mean(&self) -> f32 {
+        self.ngram_beta_alpha / (self.ngram_beta_alpha + self.ngram_beta_beta)
     }
 }
 
@@ -511,9 +505,8 @@ pub struct MlxRunner {
     states: Mutex<HashMap<RequestId, RequestState>>,
     /// Dedicated GPU stream kept alive for the runner's lifetime.
     _stream: MlxStream,
-    /// When true, always use single-token decode (disables n-gram speculation).
-    /// Set via `AX_NO_SPEC=1` environment variable for benchmarking isolation.
-    no_speculative: bool,
+    /// When true, disable n-gram acceleration and use the direct decode path.
+    disable_ngram_acceleration: bool,
 }
 
 impl fmt::Debug for MlxRunner {
@@ -529,7 +522,7 @@ impl MlxRunner {
     pub fn from_artifacts(
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
-        no_speculative: bool,
+        disable_ngram_acceleration: bool,
     ) -> Result<Self, MlxRunnerError> {
         // Enable MLX compute-graph compilation globally.
         // This caches and reuses compiled Metal shaders across calls with the same
@@ -577,15 +570,9 @@ impl MlxRunner {
             );
         }
 
-        // AX_NO_SPEC=1 env var overrides the config flag (for benchmarking/debugging).
-        // Qwen3.5 linear-attention uses `speculative_decode_step_linear_safe` which
+        // Qwen3.5 linear-attention uses `ngram_accel_decode_step_linear_safe` which
         // clones the cache for verification and recomputes the committed prefix on
-        // partial accept — so speculative is safe to enable for linear-attention models.
-        let no_speculative = no_speculative
-            || std::env::var("AX_NO_SPEC")
-                .map(|v| v == "1")
-                .unwrap_or(false);
-
+        // partial accept, so n-gram acceleration is safe to enable for these models.
         Ok(Self {
             cfg,
             weights,
@@ -594,7 +581,7 @@ impl MlxRunner {
             binding_summary,
             states: Mutex::new(HashMap::new()),
             _stream: stream,
-            no_speculative,
+            disable_ngram_acceleration,
         })
     }
 }
@@ -607,7 +594,7 @@ impl ExecutionRunner for MlxRunner {
         let logits_outputs = Vec::new();
 
         let mut route_metadata = input.execution_batch.route_metadata.clone();
-        let mut speculation = SpeculationTelemetry::default();
+        let mut ngram_acceleration = NgramAccelerationTelemetry::default();
         let mut decode_telemetry = DecodeTelemetry::default();
         let mut kv_cache = KvCacheTelemetry::default();
 
@@ -618,12 +605,12 @@ impl ExecutionRunner for MlxRunner {
                 .find(|c| c.request_id == item.request_id);
 
             let result = self.run_item(item, ctx);
-            speculation.merge_from(result.speculation);
+            ngram_acceleration.merge_from(result.ngram_acceleration);
             decode_telemetry.merge_from(result.decode_telemetry);
             kv_cache.merge_from(result.kv_usage);
             request_updates.push(result.update);
         }
-        speculation.append_route_decisions(&mut route_metadata.crossover_decisions);
+        ngram_acceleration.append_route_decisions(&mut route_metadata.crossover_decisions);
         decode_telemetry.append_route_decisions(&mut route_metadata.crossover_decisions);
         kv_cache.append_route_decisions(&mut route_metadata.crossover_decisions);
 
@@ -651,6 +638,93 @@ impl ExecutionRunner for MlxRunner {
     fn native_model_binding_summary(&self) -> Option<NativeModelBindingSummary> {
         Some(self.binding_summary)
     }
+
+    fn embed(
+        &self,
+        token_ids: &[u32],
+        pooling: EmbeddingPooling,
+        normalize: bool,
+    ) -> Result<Vec<f32>, &'static str> {
+        if token_ids.is_empty() {
+            return Err("token_ids must not be empty");
+        }
+        let hidden = crate::model::forward_for_embedding(&self.cfg, &self.weights, token_ids);
+        // hidden: [1, seq, hidden_size] bfloat16
+        let seq = token_ids.len() as i32;
+        let pooled = match pooling {
+            EmbeddingPooling::Mean => {
+                let summed = sum_axis(&hidden, 1, false, None);
+                // summed: [1, hidden_size] bfloat16
+                let scale = 1.0_f32 / seq as f32;
+                let scale_arr = MlxArray::from_raw_data(
+                    &scale as *const f32 as *const u8,
+                    std::mem::size_of::<f32>(),
+                    &[],
+                    MlxDtype::Float32,
+                );
+                multiply(&summed, &scale_arr, None)
+            }
+            EmbeddingPooling::Last => {
+                let last_idx = (seq - 1) as u32;
+                let idx_arr = MlxArray::from_raw_data(
+                    &last_idx as *const u32 as *const u8,
+                    std::mem::size_of::<u32>(),
+                    &[1_i32],
+                    MlxDtype::Uint32,
+                );
+                // take on axis 1: [1, seq, hidden] → [1, 1, hidden]
+                take(&hidden, &idx_arr, 1, None)
+            }
+            EmbeddingPooling::Cls => {
+                let first_idx: u32 = 0;
+                let idx_arr = MlxArray::from_raw_data(
+                    &first_idx as *const u32 as *const u8,
+                    std::mem::size_of::<u32>(),
+                    &[1_i32],
+                    MlxDtype::Uint32,
+                );
+                // take on axis 1: [1, seq, hidden] → [1, 1, hidden]
+                take(&hidden, &idx_arr, 1, None)
+            }
+        };
+        // Convert to float32 before normalization for numerical precision.
+        // pooled: [1, hidden_size] (Mean) or [1, 1, hidden_size] (Last/Cls)
+        let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
+        let result = if normalize {
+            l2_normalize_last_dim(&pooled_f32)
+        } else {
+            pooled_f32
+        };
+        mlx_sys::eval(&[&result]);
+        Ok(result.data_f32().to_vec())
+    }
+}
+
+/// L2-normalize `x` along its last dimension.
+///
+/// Works on any shape `[..., d]` — broadcasts the norm back for division.
+/// Adds a small epsilon (1e-12) for numerical stability on near-zero vectors.
+fn l2_normalize_last_dim(x: &MlxArray) -> MlxArray {
+    let ndim = x.shape().len() as i32;
+    let last_axis = ndim - 1;
+    let x_sq = multiply(x, x, None);
+    let sum_sq = sum_axis(&x_sq, last_axis, true, None);
+    let half = MlxArray::from_raw_data(
+        &0.5_f32 as *const f32 as *const u8,
+        std::mem::size_of::<f32>(),
+        &[],
+        MlxDtype::Float32,
+    );
+    let norm = power(&sum_sq, &half, None);
+    let eps_val = 1e-12_f32;
+    let eps = MlxArray::from_raw_data(
+        &eps_val as *const f32 as *const u8,
+        std::mem::size_of::<f32>(),
+        &[],
+        MlxDtype::Float32,
+    );
+    let norm_stable = add(&norm, &eps, None);
+    divide(x, &norm_stable, None)
 }
 
 impl MlxRunner {
@@ -669,7 +743,7 @@ impl MlxRunner {
                     stop_reason: None,
                     error: Some("empty token slice".into()),
                 },
-                speculation: SpeculationTelemetry::default(),
+                ngram_acceleration: NgramAccelerationTelemetry::default(),
                 decode_telemetry: DecodeTelemetry::default(),
                 kv_usage: MlxKVCacheUsage::default(),
             };
@@ -695,7 +769,7 @@ impl MlxRunner {
 
         let temperature = ctx.map(|c| c.temperature).unwrap_or(0.0);
 
-        // GPU work — mutex is NOT held during prefill, decode, or speculative steps.
+        // GPU work — mutex is NOT held during prefill, decode, or n-gram acceleration steps.
         let sampled_token = match item.mode {
             ExecutionMode::Prefill => {
                 let prefill_started = Instant::now();
@@ -710,23 +784,23 @@ impl MlxRunner {
                 // Only the last NGRAM_PROMPT_FEED_MAX tokens are fed: long prompts
                 // (e.g. random-token benchmarks with 512+ tokens) would otherwise
                 // inject hundreds of useless bigrams, causing a false-positive spec
-                // attempt on the very first decode step and disabling speculation
-                // for LINEAR_SPEC_RETRY_INTERVAL steps — wiping out most of the
+                // attempt on the very first decode step and disabling n-gram acceleration
+                // for LINEAR_NGRAM_RETRY_INTERVAL steps — wiping out most of the
                 // generation window.
                 let feed_start = token_ids.len().saturating_sub(NGRAM_PROMPT_FEED_MAX);
                 state.ngram.feed(&token_ids[feed_start..]);
                 // Reset bonus state for this new generation.
                 state.bonus_queue.clear();
                 state.next_model_last_token = None;
-                state.pending_greedy = None;
+                state.pending_direct = None;
 
-                // Bootstrap the double-buffer greedy pipeline: submit the second token's
+                // Bootstrap the double-buffer direct pipeline: submit the second token's
                 // forward pass to the GPU asynchronously so the first decode step can
                 // materialise it while the GPU is already computing the third token.
-                // Only for greedy (temperature = 0) non-speculative runs.
-                if self.no_speculative && temperature == 0.0 {
+                // Only for direct same-policy runs with temperature = 0.
+                if self.disable_ngram_acceleration && temperature == 0.0 {
                     let bootstrap_started = Instant::now();
-                    state.pending_greedy = Some(start_greedy_pipeline(
+                    state.pending_direct = Some(start_direct_pipeline(
                         &self.cfg,
                         &self.weights,
                         tok,
@@ -734,7 +808,7 @@ impl MlxRunner {
                     ));
                     state
                         .decode_telemetry
-                        .record_greedy_bootstrap(elapsed_us(bootstrap_started));
+                        .record_direct_bootstrap(elapsed_us(bootstrap_started));
                 }
 
                 state
@@ -759,7 +833,7 @@ impl MlxRunner {
         };
 
         // Re-insert state only if the request continues — lock held briefly.
-        let speculation = state.speculation;
+        let ngram_acceleration = state.ngram_acceleration;
         let decode_telemetry = state.decode_telemetry;
         let kv_usage = state
             .cache
@@ -782,7 +856,7 @@ impl MlxRunner {
                 stop_reason,
                 error: None,
             },
-            speculation,
+            ngram_acceleration,
             decode_telemetry,
             kv_usage,
         }
@@ -791,33 +865,33 @@ impl MlxRunner {
     /// Produce one output token for a decode step.
     ///
     /// Pops from the bonus queue when pre-verified tokens are available.
-    /// Uses the double-buffer greedy pipeline when `no_speculative = true` and
+    /// Uses the double-buffer direct pipeline when `disable_ngram_acceleration = true` and
     /// `temperature == 0.0` (bootstrapped during prefill).
-    /// Otherwise runs a speculative or single-token decode pass.
+    /// Otherwise runs an n-gram accelerated or single-token decode pass.
     fn decode_one(&self, state: &mut RequestState, input_tokens: &[u32], temperature: f32) -> u32 {
         // Serve pre-verified bonus tokens without re-running the model.
-        // (Bonus tokens only exist on the speculative path; the greedy pipeline
+        // (Bonus tokens only exist on the n-gram acceleration path; the direct pipeline
         // never populates the bonus queue.)
         if let Some(tok) = state.bonus_queue.pop_front() {
             state.decode_telemetry.record_bonus_token();
             return tok;
         }
 
-        // Double-buffer greedy pipeline: materialise the pending lazy token while
+        // Double-buffer direct pipeline: materialise the pending lazy token while
         // simultaneously submitting the next step to the GPU.  This mirrors
         // mlx_lm's `_step(y)` → `async_eval(next_y)` → `eval(y)` loop and
-        // eliminates the GPU idle gap between consecutive greedy decode steps.
-        if self.no_speculative
+        // eliminates the GPU idle gap between consecutive direct decode steps.
+        if self.disable_ngram_acceleration
             && temperature == 0.0
-            && let Some(pending) = state.pending_greedy.take()
+            && let Some(pending) = state.pending_direct.take()
         {
             let branch_started = Instant::now();
             let (tok, next_pending) =
-                advance_greedy_pipeline(&self.cfg, &self.weights, &pending, &mut state.cache);
+                advance_direct_pipeline(&self.cfg, &self.weights, &pending, &mut state.cache);
             state
                 .decode_telemetry
-                .record_greedy_pipeline(elapsed_us(branch_started));
-            state.pending_greedy = Some(next_pending);
+                .record_direct_pipeline(elapsed_us(branch_started));
+            state.pending_direct = Some(next_pending);
             return tok;
         }
 
@@ -830,15 +904,14 @@ impl MlxRunner {
         apply_decode_result(state, &result)
     }
 
-    /// Run one model decode step (speculative or single), updating the Beta-Bernoulli gate.
+    /// Run one model decode step, updating the n-gram accept-rate gate.
     fn run_model_decode(
         &self,
         state: &mut RequestState,
         last_token: u32,
         temperature: f32,
     ) -> Vec<u32> {
-        // Runtime opt-out via AX_NO_SPEC=1 for benchmarking isolation.
-        if self.no_speculative {
+        if self.disable_ngram_acceleration {
             let branch_started = Instant::now();
             let result = single_decode(
                 &self.cfg,
@@ -855,10 +928,10 @@ impl MlxRunner {
             return result;
         }
 
-        // Speculation disabled: count down and use single decode.
-        if state.spec_disabled_steps > 0 {
-            state.spec_disabled_steps -= 1;
-            state.speculation.record_cooldown_step();
+        // N-gram acceleration disabled: count down and use single decode.
+        if state.ngram_disabled_steps > 0 {
+            state.ngram_disabled_steps -= 1;
+            state.ngram_acceleration.record_cooldown_step();
             let branch_started = Instant::now();
             let result = single_decode(
                 &self.cfg,
@@ -875,9 +948,9 @@ impl MlxRunner {
             return result;
         }
 
-        let draft = speculative_draft(&state.ngram, self.cfg.linear_attention.is_some());
+        let draft = ngram_acceleration_draft(&state.ngram, self.cfg.linear_attention.is_some());
         if draft.is_empty() {
-            state.speculation.record_no_draft();
+            state.ngram_acceleration.record_no_draft();
             let branch_started = Instant::now();
             let result = single_decode(
                 &self.cfg,
@@ -896,7 +969,7 @@ impl MlxRunner {
 
         let draft_len = draft.len();
         let branch_started = Instant::now();
-        let result = speculative_decode_step(
+        let result = ngram_accel_decode_step(
             &self.cfg,
             &self.weights,
             &mut state.cache,
@@ -908,32 +981,36 @@ impl MlxRunner {
         );
         state
             .decode_telemetry
-            .record_speculative_decode(elapsed_us(branch_started));
+            .record_ngram_decode(elapsed_us(branch_started));
 
         // Beta-Bernoulli posterior update.
         // accept_count = result.len() - 1 (last element is next model input, not bonus).
         let accept_count = result.len().saturating_sub(1);
-        state.speculation.record_draft(draft_len, accept_count);
-        state.spec_beta_alpha += accept_count as f32;
-        state.spec_beta_beta += (draft_len - accept_count) as f32;
+        state
+            .ngram_acceleration
+            .record_draft(draft_len, accept_count);
+        state.ngram_beta_alpha += accept_count as f32;
+        state.ngram_beta_beta += (draft_len - accept_count) as f32;
 
         // Normalise to keep total observations bounded — prevents the posterior
         // from becoming overconfident and unable to adapt to changing statistics.
-        let total = state.spec_beta_alpha + state.spec_beta_beta;
-        if total > SPEC_BETA_MAX_TOTAL {
-            let scale = SPEC_BETA_MAX_TOTAL / total;
-            state.spec_beta_alpha *= scale;
-            state.spec_beta_beta *= scale;
+        let total = state.ngram_beta_alpha + state.ngram_beta_beta;
+        if total > NGRAM_BETA_MAX_TOTAL {
+            let scale = NGRAM_BETA_MAX_TOTAL / total;
+            state.ngram_beta_alpha *= scale;
+            state.ngram_beta_beta *= scale;
         }
 
-        if let Some(disabled_steps) = speculative_disabled_steps(
+        if let Some(disabled_steps) = ngram_acceleration_disabled_steps(
             self.cfg.linear_attention.is_some(),
             accept_count,
             draft_len,
-            state.spec_posterior_mean(),
+            state.ngram_posterior_mean(),
         ) {
-            state.spec_disabled_steps = disabled_steps;
-            state.speculation.record_cooldown_event(disabled_steps);
+            state.ngram_disabled_steps = disabled_steps;
+            state
+                .ngram_acceleration
+                .record_cooldown_event(disabled_steps);
         }
 
         result
@@ -960,12 +1037,12 @@ fn apply_decode_result(state: &mut RequestState, result: &[u32]) -> u32 {
 
 struct MlxItemRun {
     update: RequestExecutionUpdate,
-    speculation: SpeculationTelemetry,
+    ngram_acceleration: NgramAccelerationTelemetry,
     decode_telemetry: DecodeTelemetry,
     kv_usage: MlxKVCacheUsage,
 }
 
-fn speculative_disabled_steps(
+fn ngram_acceleration_disabled_steps(
     has_linear_attention: bool,
     accept_count: usize,
     draft_len: usize,
@@ -985,15 +1062,15 @@ fn speculative_disabled_steps(
         // the n-gram was directionally correct; retry quickly.  A complete miss
         // means the table prediction is off; back off longer.
         if accept_count == 0 {
-            return Some(LINEAR_SPEC_RETRY_INTERVAL); // complete miss: 16 steps
+            return Some(LINEAR_NGRAM_RETRY_INTERVAL); // complete miss: 16 steps
         }
-        return (accept_count < draft_len).then_some(LINEAR_SPEC_PARTIAL_RETRY_INTERVAL); // partial: 4 steps
+        return (accept_count < draft_len).then_some(LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL); // partial: 4 steps
     }
 
-    (posterior_mean < SPEC_ACCEPT_THRESHOLD).then_some(SPEC_RETRY_INTERVAL)
+    (posterior_mean < NGRAM_ACCEPT_THRESHOLD).then_some(NGRAM_RETRY_INTERVAL)
 }
 
-fn speculative_draft(ngram: &NgramTable, has_linear_attention: bool) -> Vec<u32> {
+fn ngram_acceleration_draft(ngram: &NgramTable, has_linear_attention: bool) -> Vec<u32> {
     if has_linear_attention {
         // Dense rollback is O(1); linear-attention partial-reject pays
         // branch/recompute, so cap at DEFAULT_DRAFT_LEN to bound recompute cost.
@@ -1244,7 +1321,7 @@ mod tests {
     }
 
     #[test]
-    fn speculative_decode_result_keeps_correction_token_in_output_queue() {
+    fn ngram_decode_result_keeps_correction_token_in_output_queue() {
         let mut state = RequestState::new(2, RequestId(7));
 
         let output = apply_decode_result(&mut state, &[11, 12]);
@@ -1259,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn speculative_decode_result_queues_full_accept_tail_and_bonus() {
+    fn ngram_decode_result_queues_full_accept_tail_and_bonus() {
         let mut state = RequestState::new(2, RequestId(8));
 
         let output = apply_decode_result(&mut state, &[21, 22, 23, 24]);
@@ -1600,27 +1677,27 @@ mod tests {
     }
 
     #[test]
-    fn linear_attention_speculation_cools_down_after_reject() {
+    fn linear_attention_ngram_acceleration_cools_down_after_reject() {
         // Complete miss (0 accepted): long cooldown.
         assert_eq!(
-            speculative_disabled_steps(true, 0, DEFAULT_DRAFT_LEN, 0.95),
-            Some(LINEAR_SPEC_RETRY_INTERVAL)
+            ngram_acceleration_disabled_steps(true, 0, DEFAULT_DRAFT_LEN, 0.95),
+            Some(LINEAR_NGRAM_RETRY_INTERVAL)
         );
         // Partial accept (some but not all): short cooldown to retry quickly.
         assert_eq!(
-            speculative_disabled_steps(true, 3, DEFAULT_DRAFT_LEN, 0.95),
-            Some(LINEAR_SPEC_PARTIAL_RETRY_INTERVAL)
+            ngram_acceleration_disabled_steps(true, 3, DEFAULT_DRAFT_LEN, 0.95),
+            Some(LINEAR_NGRAM_PARTIAL_RETRY_INTERVAL)
         );
         // Full accept: no cooldown.
         assert_eq!(
-            speculative_disabled_steps(true, DEFAULT_DRAFT_LEN, DEFAULT_DRAFT_LEN, 0.25),
+            ngram_acceleration_disabled_steps(true, DEFAULT_DRAFT_LEN, DEFAULT_DRAFT_LEN, 0.25),
             None
         );
     }
 
     #[test]
-    fn speculation_telemetry_records_acceptance_and_cooldown_counters() {
-        let mut telemetry = SpeculationTelemetry::default();
+    fn ngram_acceleration_telemetry_records_acceptance_and_cooldown_counters() {
+        let mut telemetry = NgramAccelerationTelemetry::default();
 
         telemetry.record_no_draft();
         telemetry.record_draft(DEFAULT_DRAFT_LEN, DEFAULT_DRAFT_LEN);
@@ -1635,53 +1712,53 @@ mod tests {
             .into_iter()
             .collect::<std::collections::BTreeMap<_, _>>();
 
-        assert_eq!(decisions.get("ax_spec_no_draft_steps"), Some(&1));
-        assert_eq!(decisions.get("ax_spec_draft_attempts"), Some(&3));
+        assert_eq!(decisions.get("ax_ngram_no_draft_steps"), Some(&1));
+        assert_eq!(decisions.get("ax_ngram_draft_attempts"), Some(&3));
         assert_eq!(
-            decisions.get("ax_spec_draft_tokens"),
+            decisions.get("ax_ngram_draft_tokens"),
             Some(&(DEFAULT_DRAFT_LEN as u32 * 3))
         );
         assert_eq!(
-            decisions.get("ax_spec_accepted_tokens"),
+            decisions.get("ax_ngram_accepted_tokens"),
             Some(&(DEFAULT_DRAFT_LEN as u32 + 2))
         );
         assert_eq!(
-            decisions.get("ax_spec_rejected_tokens"),
+            decisions.get("ax_ngram_rejected_tokens"),
             Some(&(DEFAULT_DRAFT_LEN as u32 * 2 - 2))
         );
-        assert_eq!(decisions.get("ax_spec_full_accepts"), Some(&1));
-        assert_eq!(decisions.get("ax_spec_complete_misses"), Some(&1));
-        assert_eq!(decisions.get("ax_spec_partial_rejects"), Some(&1));
-        assert_eq!(decisions.get("ax_spec_cooldown_steps"), Some(&1));
-        assert_eq!(decisions.get("ax_spec_cooldown_events"), Some(&1));
-        assert_eq!(decisions.get("ax_spec_cooldown_steps_scheduled"), Some(&4));
+        assert_eq!(decisions.get("ax_ngram_full_accepts"), Some(&1));
+        assert_eq!(decisions.get("ax_ngram_complete_misses"), Some(&1));
+        assert_eq!(decisions.get("ax_ngram_partial_rejects"), Some(&1));
+        assert_eq!(decisions.get("ax_ngram_cooldown_steps"), Some(&1));
+        assert_eq!(decisions.get("ax_ngram_cooldown_events"), Some(&1));
+        assert_eq!(decisions.get("ax_ngram_cooldown_steps_scheduled"), Some(&4));
 
         let mut zero_decisions = Vec::new();
-        SpeculationTelemetry::default().append_route_decisions(&mut zero_decisions);
+        NgramAccelerationTelemetry::default().append_route_decisions(&mut zero_decisions);
         let zero_decisions = zero_decisions
             .into_iter()
             .collect::<std::collections::BTreeMap<_, _>>();
-        assert_eq!(zero_decisions.get("ax_spec_draft_attempts"), Some(&0));
-        assert_eq!(zero_decisions.get("ax_spec_complete_misses"), Some(&0));
-        assert_eq!(zero_decisions.get("ax_spec_cooldown_events"), Some(&0));
+        assert_eq!(zero_decisions.get("ax_ngram_draft_attempts"), Some(&0));
+        assert_eq!(zero_decisions.get("ax_ngram_complete_misses"), Some(&0));
+        assert_eq!(zero_decisions.get("ax_ngram_cooldown_events"), Some(&0));
     }
 
     #[test]
     fn route_decision_upsert_replaces_existing_value_and_removes_duplicates() {
         let mut decisions = vec![
             ("other".to_string(), 7),
-            ("ax_spec_draft_tokens".to_string(), 1),
-            ("ax_spec_draft_tokens".to_string(), 2),
+            ("ax_ngram_draft_tokens".to_string(), 1),
+            ("ax_ngram_draft_tokens".to_string(), 2),
         ];
 
-        upsert_route_decision(&mut decisions, "ax_spec_draft_tokens", 9);
+        upsert_route_decision(&mut decisions, "ax_ngram_draft_tokens", 9);
 
         assert_eq!(decisions[0], ("other".to_string(), 7));
-        assert_eq!(decisions[1], ("ax_spec_draft_tokens".to_string(), 9));
+        assert_eq!(decisions[1], ("ax_ngram_draft_tokens".to_string(), 9));
         assert_eq!(
             decisions
                 .iter()
-                .filter(|(key, _)| key == "ax_spec_draft_tokens")
+                .filter(|(key, _)| key == "ax_ngram_draft_tokens")
                 .count(),
             1
         );
@@ -1693,10 +1770,10 @@ mod tests {
 
         telemetry.record_prefill(100);
         telemetry.record_decode(40);
-        telemetry.record_greedy_bootstrap(7);
-        telemetry.record_greedy_pipeline(11);
+        telemetry.record_direct_bootstrap(7);
+        telemetry.record_direct_pipeline(11);
         telemetry.record_single_decode(13);
-        telemetry.record_speculative_decode(17);
+        telemetry.record_ngram_decode(17);
         telemetry.record_bonus_token();
         telemetry.record_bonus_token();
 
@@ -1714,17 +1791,14 @@ mod tests {
         assert_eq!(decisions.get("ax_mlx_prefill_wall_us"), Some(&100));
         assert_eq!(decisions.get("ax_mlx_decode_steps"), Some(&1));
         assert_eq!(decisions.get("ax_mlx_decode_wall_us"), Some(&40));
-        assert_eq!(decisions.get("ax_mlx_greedy_bootstrap_steps"), Some(&1));
-        assert_eq!(decisions.get("ax_mlx_greedy_bootstrap_wall_us"), Some(&7));
-        assert_eq!(decisions.get("ax_mlx_greedy_pipeline_steps"), Some(&1));
-        assert_eq!(decisions.get("ax_mlx_greedy_pipeline_wall_us"), Some(&11));
+        assert_eq!(decisions.get("ax_mlx_direct_bootstrap_steps"), Some(&1));
+        assert_eq!(decisions.get("ax_mlx_direct_bootstrap_wall_us"), Some(&7));
+        assert_eq!(decisions.get("ax_mlx_direct_pipeline_steps"), Some(&1));
+        assert_eq!(decisions.get("ax_mlx_direct_pipeline_wall_us"), Some(&11));
         assert_eq!(decisions.get("ax_mlx_single_decode_steps"), Some(&1));
         assert_eq!(decisions.get("ax_mlx_single_decode_wall_us"), Some(&13));
-        assert_eq!(decisions.get("ax_mlx_speculative_decode_steps"), Some(&1));
-        assert_eq!(
-            decisions.get("ax_mlx_speculative_decode_wall_us"),
-            Some(&17)
-        );
+        assert_eq!(decisions.get("ax_mlx_ngram_decode_steps"), Some(&1));
+        assert_eq!(decisions.get("ax_mlx_ngram_decode_wall_us"), Some(&17));
         assert_eq!(decisions.get("ax_mlx_bonus_tokens"), Some(&2));
         assert_eq!(decisions.get("other_counter"), Some(&3));
     }
@@ -1899,16 +1973,16 @@ mod tests {
     }
 
     #[test]
-    fn dense_speculation_uses_beta_posterior_gate() {
+    fn dense_ngram_acceleration_uses_beta_posterior_gate() {
         // Posterior mean above threshold → no cooldown.
         assert_eq!(
-            speculative_disabled_steps(false, 3, DEFAULT_DRAFT_LEN, 0.95),
+            ngram_acceleration_disabled_steps(false, 3, DEFAULT_DRAFT_LEN, 0.95),
             None
         );
         // Posterior mean below threshold → cooldown period.
         assert_eq!(
-            speculative_disabled_steps(false, 0, DEFAULT_DRAFT_LEN, 0.49),
-            Some(SPEC_RETRY_INTERVAL)
+            ngram_acceleration_disabled_steps(false, 0, DEFAULT_DRAFT_LEN, 0.49),
+            Some(NGRAM_RETRY_INTERVAL)
         );
     }
 
@@ -1918,7 +1992,7 @@ mod tests {
         ngram.feed(&[1, 2, 3, 1, 2, 3]);
 
         // Dense: 3-token cycle builds high-confidence bigrams → draft up to MAX_DRAFT_LEN.
-        let dense_draft = speculative_draft(&ngram, false);
+        let dense_draft = ngram_acceleration_draft(&ngram, false);
         assert!(!dense_draft.is_empty(), "dense draft should be non-empty");
         assert!(
             dense_draft.len() <= MAX_DRAFT_LEN,
@@ -1927,12 +2001,12 @@ mod tests {
 
         // Linear-attention: min_support=2 filters one-off n-grams.
         assert!(
-            speculative_draft(&ngram, true).is_empty(),
+            ngram_acceleration_draft(&ngram, true).is_empty(),
             "linear attention should not probe one-off prompt n-grams"
         );
 
         ngram.feed(&[1, 2, 3]);
-        let lin_draft = speculative_draft(&ngram, true);
+        let lin_draft = ngram_acceleration_draft(&ngram, true);
         assert!(
             !lin_draft.is_empty(),
             "linear attention draft should be non-empty after second repeat"

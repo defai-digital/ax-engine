@@ -9,7 +9,7 @@ use std::time::Duration;
 use ax_engine_sdk::{
     EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent,
-    GenerateStreamState, LlamaCppBackendError, MlxLmBackendError, RuntimeReport,
+    GenerateStreamState, LlamaCppBackendError, MlxLmBackendError, RuntimeReport, SelectedBackend,
     SessionRequestReport, StatelessGenerateContext,
 };
 use axum::extract::{DefaultBodyLimit, Path, State};
@@ -99,15 +99,27 @@ struct ErrorBody {
 struct OpenAiEmbeddingRequest {
     #[serde(default)]
     model: Option<String>,
-    /// Pre-tokenized input. A single sequence of token IDs.
+    /// Pre-tokenized input — a single sequence of token IDs.
     input: Vec<u32>,
     /// Ignored — always returns float32. Present for OpenAI API compatibility.
     #[serde(default)]
     #[allow(dead_code)]
     encoding_format: Option<String>,
-    /// Pooling strategy: "mean" (default), "last", or "cls".
+    /// Pooling strategy: "last" (default), "mean", or "cls".
+    ///
+    /// "last" takes the final token's hidden state, which is the standard for
+    /// decoder-only embedding models (Qwen3-Embedding, Gemma Embedding, etc.).
+    /// The caller is responsible for appending an EOS token to the input when
+    /// the model expects it.  "mean" averages all positions; "cls" takes the
+    /// first token.
     #[serde(default)]
     pooling: Option<String>,
+    /// Whether to L2-normalize the output vector to unit length (default true).
+    ///
+    /// Normalized embeddings allow cosine similarity to be computed as a simple
+    /// dot product.  All major embedding APIs return normalized vectors.
+    #[serde(default)]
+    normalize: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -469,20 +481,21 @@ async fn openai_embeddings(
         ));
     }
 
-    let pooling = match request.pooling.as_deref().unwrap_or("mean") {
-        "mean" => EmbeddingPooling::Mean,
+    let pooling = match request.pooling.as_deref().unwrap_or("last") {
         "last" => EmbeddingPooling::Last,
+        "mean" => EmbeddingPooling::Mean,
         "cls" => EmbeddingPooling::Cls,
         other => {
             return Err(error_response(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
                 format!(
-                    "unknown pooling strategy {other:?}; expected \"mean\", \"last\", or \"cls\""
+                    "unknown pooling strategy {other:?}; expected \"last\", \"mean\", or \"cls\""
                 ),
             ));
         }
     };
+    let normalize = request.normalize.unwrap_or(true);
 
     let token_count = request.input.len();
     let model_id = state.model_id.as_ref().clone();
@@ -490,7 +503,7 @@ async fn openai_embeddings(
     let embedding = run_blocking_session_task(move || {
         request_session
             .blocking_lock()
-            .embed(&request.input, pooling)
+            .embed(&request.input, pooling, normalize)
     })
     .await?;
 
@@ -1268,11 +1281,11 @@ fn openai_finish_reason(finish_reason: Option<GenerateFinishReason>) -> Option<&
 fn validate_openai_llama_backend(
     state: &AppState,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    if state.runtime_report.selected_backend.is_mlx() {
+    if state.runtime_report.selected_backend != SelectedBackend::LlamaCpp {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
-            "OpenAI-compatible endpoints require a llama.cpp backend; native backends use tokenized input".to_string(),
+            "OpenAI-compatible endpoints require a llama.cpp backend; use /v1/generate for other preview backends".to_string(),
         ));
     }
     Ok(())
@@ -1339,13 +1352,15 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::BackendConfigMismatch { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::MissingInputText)
         | EngineSessionError::MlxLm(MlxLmBackendError::UnsupportedTokenPrompt)
-        | EngineSessionError::MlxLm(MlxLmBackendError::BackendConfigMismatch { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. }) => {
+        | EngineSessionError::MlxLm(MlxLmBackendError::BackendConfigMismatch { .. }) => {
             error_response(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
                 error.to_string(),
             )
+        }
+        EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. }) => {
+            error_response(StatusCode::BAD_GATEWAY, "backend_error", error.to_string())
         }
         EngineSessionError::BackendContract(_)
         | EngineSessionError::MissingLlamaCppConfig { .. }
@@ -1665,6 +1680,18 @@ sys.stdout.write(f"server::{prompt}")
         build_app_state(args.model_id.clone(), session).expect("app state should build")
     }
 
+    fn mlx_lm_delegated_state(server_url: String) -> AppState {
+        let args = ServerArgs {
+            support_tier: args::PreviewSupportTier::MlxLmDelegated,
+            mlx_lm_server_url: Some(server_url),
+            ..base_server_args()
+        };
+
+        let session_config = args.session_config().expect("session config should build");
+        let session = EngineSession::new(session_config.clone()).expect("session should build");
+        build_app_state(args.model_id.clone(), session).expect("app state should build")
+    }
+
     fn spawn_llama_cpp_completion_server(
         response_body: String,
         assert_request: impl FnOnce(Value) + Send + 'static,
@@ -1940,6 +1967,39 @@ sys.stdout.write(f"server::{prompt}")
                 .and_then(|choice| choice.get("finish_reason"))
                 .and_then(Value::as_str),
             Some("length")
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_completions_endpoint_rejects_mlx_lm_delegated_backend() {
+        let app = build_router(mlx_lm_delegated_state("http://127.0.0.1:1".to_string()));
+        let (status, json) = json_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&sample_openai_completion_request("hello mlx-lm", 2, false))
+                        .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json.get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str),
+            Some("invalid_request")
+        );
+        assert!(
+            json.get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("require a llama.cpp backend")
         );
     }
 

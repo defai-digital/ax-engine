@@ -48,7 +48,7 @@ pub use request::{
 };
 pub use request_manager::{RequestManager, RequestManagerError};
 pub use runner::{
-    DeterministicRunner, ExecutionRunner, ExecutionStatus, KvWriteSummary,
+    DeterministicRunner, EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvWriteSummary,
     NativeModelBindingSummary, RequestExecutionUpdate, RequestLogitsOutput, ResolvedBlockTable,
     RunnerInput, RunnerOutput,
 };

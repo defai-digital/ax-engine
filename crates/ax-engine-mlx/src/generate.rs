@@ -45,14 +45,14 @@ pub fn chunked_prefill(
     }
 }
 
-/// Start the double-buffer greedy decode pipeline from a known (materialised) token.
+/// Start the double-buffer direct decode pipeline from a known (materialised) token.
 ///
 /// Runs one forward pass, submits the result to the GPU via `async_eval`, and
 /// returns the **lazy** token array.  The caller stores this and passes it to
-/// `advance_greedy_pipeline` on the next decode step.
+/// `advance_direct_pipeline` on the next decode step.
 ///
-/// Only valid for temperature = 0 (greedy).  For sampling paths use `decode_step`.
-pub fn start_greedy_pipeline(
+/// Only valid for deterministic argmax decoding (temperature = 0).  For sampling paths use `decode_step`.
+pub fn start_direct_pipeline(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     last_token: u32,
@@ -70,7 +70,7 @@ pub fn start_greedy_pipeline(
     token_arr
 }
 
-/// Advance the double-buffer greedy pipeline by one step.
+/// Advance the double-buffer direct pipeline by one step.
 ///
 /// This mirrors mlx_lm's `_step(y)` → `mx.async_eval(next_y)` → `mx.eval(y)` pattern:
 ///
@@ -80,10 +80,10 @@ pub fn start_greedy_pipeline(
 /// 4. Return `(step_N_token_u32, step_N+1_lazy_token)`.
 ///
 /// The caller stores the returned lazy token as the next pending value.
-pub fn advance_greedy_pipeline(
+pub fn advance_direct_pipeline(
     cfg: &ModelConfig,
     weights: &ModelWeights,
-    pending: &MlxArray, // lazy token from previous `start_greedy_pipeline` / `advance_greedy_pipeline`
+    pending: &MlxArray, // lazy token from previous `start_direct_pipeline` / `advance_direct_pipeline`
     cache: &mut MlxKVCache,
 ) -> (u32, MlxArray) {
     // Build next step's graph using the lazy pending token.
@@ -102,7 +102,7 @@ pub fn advance_greedy_pipeline(
     async_eval(&targets);
 
     // Materialise the pending (step N) token.  Because `async_eval` was called
-    // in the previous `start_greedy_pipeline` / `advance_greedy_pipeline`, the GPU
+    // in the previous `start_direct_pipeline` / `advance_direct_pipeline`, the GPU
     // has been working on this token the entire time the CPU was building N+1's
     // graph above — so `eval` is typically a no-op barrier.
     eval(&[pending]);
@@ -113,7 +113,7 @@ pub fn advance_greedy_pipeline(
 
 /// Decode one token: forward pass for a single token and return sampled ID.
 ///
-/// When `temperature` is 0.0, uses GPU argmax (greedy).  When > 0.0, evals
+/// When `temperature` is 0.0, uses GPU argmax.  When > 0.0, evals
 /// logits to CPU and samples from the temperature-scaled categorical
 /// distribution.  The caller must pass a per-request `rng` for reproducibility.
 pub fn decode_step(
@@ -141,7 +141,7 @@ pub fn decode_step(
         let logits_data = logits.data_f32();
         sample_categorical(logits_data, temperature, rng)
     } else {
-        // Greedy path: GPU argmax, no CPU data movement.
+        // Deterministic argmax path: GPU argmax, no CPU data movement.
         let token_arr = argmax(&logits, None);
         let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
         targets.push(&token_arr);

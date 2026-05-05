@@ -96,8 +96,37 @@ pub struct NativeModelBindingSummary {
     pub source_q8_0_binding_count: u32,
 }
 
+/// Pooling strategy for embedding requests.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EmbeddingPooling {
+    /// Mean of all token hidden states (default).
+    #[default]
+    Mean,
+    /// Hidden state of the last token.
+    Last,
+    /// Hidden state of the first token (CLS-style).
+    Cls,
+}
+
 pub trait ExecutionRunner: fmt::Debug + Send + Sync {
     fn run(&self, input: RunnerInput) -> RunnerOutput;
+
+    /// Compute a dense embedding for `token_ids` and return it as a `Vec<f32>`.
+    ///
+    /// When `normalize` is true the returned vector is L2-normalized (unit
+    /// length), which is required for cosine/dot-product similarity.  Almost
+    /// all embedding models expect this.
+    ///
+    /// The default implementation returns an error; only runners that support
+    /// hidden-state extraction (currently `MlxRunner`) implement this.
+    fn embed(
+        &self,
+        _token_ids: &[u32],
+        _pooling: EmbeddingPooling,
+        _normalize: bool,
+    ) -> Result<Vec<f32>, &'static str> {
+        Err("embedding not supported by this runner")
+    }
 
     fn release_request_state(&self, _request_id: RequestId) {}
 

@@ -1089,8 +1089,7 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::BackendConfigMismatch { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::MissingInputText)
         | EngineSessionError::MlxLm(MlxLmBackendError::UnsupportedTokenPrompt)
-        | EngineSessionError::MlxLm(MlxLmBackendError::BackendConfigMismatch { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. }) => {
+        | EngineSessionError::MlxLm(MlxLmBackendError::BackendConfigMismatch { .. }) => {
             PyValueError::new_err(error.to_string())
         }
         EngineSessionError::BackendContract(_)
@@ -1113,6 +1112,7 @@ fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MlxLm(MlxLmBackendError::HttpRequest { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::HttpStatus { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::InvalidResponseJson { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. })
         | EngineSessionError::UnsupportedHostHardware { .. }
         | EngineSessionError::RequestReportInvariantViolation { .. }
         | EngineSessionError::StreamEndedWithoutResponse { .. }

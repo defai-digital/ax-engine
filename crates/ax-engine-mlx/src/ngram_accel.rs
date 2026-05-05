@@ -8,7 +8,7 @@ use crate::kv_cache::MlxKVCache;
 use crate::model::{ModelConfig, forward_all_positions};
 use crate::weights::ModelWeights;
 
-/// Default number of draft tokens to attempt per speculative step.
+/// Default number of draft tokens to attempt per n-gram acceleration step.
 pub const DEFAULT_DRAFT_LEN: usize = 4;
 
 /// Extended draft ceiling for dense models when confidence is high.
@@ -25,7 +25,7 @@ pub const MAX_DRAFT_LEN: usize = 6;
 /// continuations matched the current best — reliable enough to attempt.
 pub const DRAFT_CONFIDENCE_THRESHOLD: f32 = 0.4;
 
-/// Linear-attention speculative verification is expensive on partial reject
+/// Linear-attention draft verification is expensive on partial reject
 /// because recurrent state is not O(1)-trimmable. Require repeated n-gram
 /// evidence before probing that path.
 pub const LINEAR_MIN_NGRAM_SUPPORT: u32 = 2;
@@ -46,7 +46,7 @@ impl NgramPrediction {
     }
 }
 
-/// N-gram lookup table for self-speculative (draft-free) decoding.
+/// N-gram lookup table for self-drafting decoding.
 ///
 /// Tracks bigrams and trigrams observed in the prompt and generated tokens.
 /// `predict()` chains lookups to produce a draft sequence.
@@ -206,14 +206,14 @@ impl Default for NgramTable {
     }
 }
 
-/// Run one speculative decode step and return a batch of verified tokens.
+/// Run one n-gram acceleration decode step and return a batch of verified tokens.
 ///
 /// ## Algorithm
 ///
 /// 1. **Draft** — look up `max_draft` candidates from the n-gram table.
 /// 2. **Verify** — one `forward_all_positions` pass over `[last_token] ++ draft`.
-/// 3. **Accept/reject** — greedily accept draft tokens where the model's
-///    greedy prediction matches, stopping at the first mismatch.
+/// 3. **Accept/reject** — accept draft tokens where the model's
+///    argmax prediction matches, stopping at the first mismatch.
 /// 4. **Trim** — roll back the KV cache to remove rejected positions.
 /// 5. **Update** — feed accepted tokens into the n-gram table.
 ///
@@ -226,9 +226,9 @@ impl Default for NgramTable {
 /// The bonus tokens already have their KV entries in the cache.  The caller
 /// must NOT re-run the model for them; just pop them as subsequent outputs.
 /// The LAST element of `result` is the starting `last_token` for the next
-/// speculative step.
+/// n-gram acceleration step.
 #[allow(clippy::too_many_arguments)]
-pub fn speculative_decode_step(
+pub fn ngram_accel_decode_step(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     cache: &mut MlxKVCache,
@@ -243,7 +243,7 @@ pub fn speculative_decode_step(
     }
 
     if cfg.linear_attention.is_some() {
-        return speculative_decode_step_linear_safe(
+        return ngram_accel_decode_step_linear_safe(
             cfg,
             weights,
             cache,
@@ -273,7 +273,7 @@ pub fn speculative_decode_step(
     let trimmed = cache.trim_to(verification.committed_len);
     debug_assert!(
         trimmed,
-        "speculative verification committed_len must not exceed cache seq_len"
+        "n-gram verification committed_len must not exceed cache seq_len"
     );
 
     // Update n-gram table.
@@ -284,7 +284,7 @@ pub fn speculative_decode_step(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn speculative_decode_step_linear_safe(
+fn ngram_accel_decode_step_linear_safe(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     cache: &mut MlxKVCache,
@@ -377,7 +377,7 @@ fn verify_draft(
     //
     // For temperature > 0, read all verify-step logits to CPU once so we can
     // sample the correction / bonus token from the full distribution.
-    // Draft acceptance always uses greedy comparison (n-gram drafts are
+    // Draft acceptance always uses argmax comparison (n-gram drafts are
     // deterministic, so there is no draft distribution to resample from).
     let cpu_logits: Vec<f32> = if temperature > 0.0 {
         logits_all.data_f32().to_vec()
@@ -389,7 +389,7 @@ fn verify_draft(
     let vocab = cfg.vocab_size;
 
     // Accept/reject.
-    // predicted[i] = model's greedy prediction for the token AFTER verify_input[i].
+    // predicted[i] = model's argmax prediction for the token AFTER verify_input[i].
     // draft[i]     = verify_input[i+1].
     let mut result: Vec<u32> = Vec::new();
     let mut accept_count = 0usize;
@@ -442,29 +442,29 @@ fn recompute_committed_prefix(
 }
 
 /// Sample token at `pos` in the flattened `[verify_len, vocab]` logit buffer.
-/// Falls back to `greedy_tok` when temperature is 0 or the buffer is empty.
+/// Falls back to `argmax_tok` when temperature is 0 or the buffer is empty.
 fn sample_pos(
     cpu_logits: &[f32],
-    greedy_tok: u32,
+    argmax_tok: u32,
     pos: usize,
     vocab: usize,
     temperature: f32,
     rng: &mut Xorshift64,
 ) -> u32 {
     if temperature <= 0.0 || cpu_logits.is_empty() {
-        return greedy_tok;
+        return argmax_tok;
     }
     let start = pos * vocab;
     let end = start + vocab;
     if end > cpu_logits.len() {
-        return greedy_tok;
+        return argmax_tok;
     }
     sample_categorical(&cpu_logits[start..end], temperature, rng)
 }
 
 /// Single-token decode fallback (used when n-gram table has no prediction).
 ///
-/// Respects `temperature`: 0.0 → greedy argmax, > 0.0 → categorical sampling.
+/// Respects `temperature`: 0.0 → argmax, > 0.0 → categorical sampling.
 pub fn single_decode(
     cfg: &ModelConfig,
     weights: &ModelWeights,
