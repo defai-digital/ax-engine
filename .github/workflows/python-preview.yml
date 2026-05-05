@@ -26,6 +26,9 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
+      - name: Install MLX
+        run: brew install mlx
+
       - name: Run workspace tests
         run: cargo test --quiet
 
