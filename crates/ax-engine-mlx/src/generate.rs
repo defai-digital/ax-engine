@@ -25,22 +25,32 @@ pub fn chunked_prefill(
     loop {
         let end = (offset + chunk_size).min(total);
         let chunk = &prompt_tokens[offset..end];
-        let logits = forward(cfg, weights, chunk, cache, offset);
+        let logits = forward(cfg, weights, chunk, cache, cache.seq_len);
         cache.seq_len += chunk.len();
         offset = end;
 
         if offset == total {
             // GPU argmax over [vocab] logits → token ID.
             let token_arr = argmax(&logits, None);
-            eval(&[&token_arr]);
+            let kv_refs = cache.collect_eval_refs();
+            let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+            targets.push(&token_arr);
+            targets.extend(kv_refs);
+            eval(&targets);
             // Free MLX's graph/intermediate-array cache after prefill.
             // SwiftLM does the same (MLX.Memory.clearCache()) to reclaim GPU
             // memory consumed by the prefill computation graph.
             clear_cache();
             return token_arr.data_u32().first().copied().unwrap_or(0);
         } else {
-            // Drain GPU queue asynchronously; don't block on intermediate chunks.
-            async_eval(&[&logits]);
+            // Drain GPU queue asynchronously and materialise appended KV buffers.
+            // Each chunk updates K/V through lazy slice_update graph nodes; evaluating
+            // only logits lets long-prefill graphs accumulate across chunks.
+            let kv_refs = cache.collect_eval_refs();
+            let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+            targets.push(&logits);
+            targets.extend(kv_refs);
+            async_eval(&targets);
         }
     }
 }

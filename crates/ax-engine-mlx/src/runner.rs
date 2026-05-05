@@ -1,5 +1,6 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;
+use std::fs;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -502,6 +503,7 @@ pub struct MlxRunner {
     prefill_chunk: usize,
     kv_layer_windows: Vec<Option<usize>>,
     binding_summary: NativeModelBindingSummary,
+    terminal_token_ids: Vec<u32>,
     states: Mutex<HashMap<RequestId, RequestState>>,
     /// Dedicated GPU stream kept alive for the runner's lifetime.
     _stream: MlxStream,
@@ -547,6 +549,7 @@ impl MlxRunner {
         validate_mlx_supported_manifest(artifacts)?;
 
         let cfg = ModelConfig::from_manifest(artifacts.manifest());
+        let terminal_token_ids = resolve_terminal_token_ids(artifacts);
         let kv_layer_windows = kv_layer_windows_from_config(&cfg);
         let weights = load_weights(artifacts).map_err(MlxRunnerError::Weights)?;
 
@@ -579,6 +582,7 @@ impl MlxRunner {
             prefill_chunk: prefill_chunk.max(1),
             kv_layer_windows,
             binding_summary,
+            terminal_token_ids,
             states: Mutex::new(HashMap::new()),
             _stream: stream,
             disable_ngram_acceleration,
@@ -751,6 +755,7 @@ impl MlxRunner {
 
         let max_output = ctx.map(|c| c.max_output_tokens).unwrap_or(1);
         let generated_len = ctx.map(|c| c.generated_len).unwrap_or(0);
+        let prefill_completes_prompt = prefill_item_completes_prompt(item, ctx);
 
         // Extract per-request state from the map and release the lock before GPU
         // work.  This ensures a long prefill for one request does not block state
@@ -780,41 +785,43 @@ impl MlxRunner {
                     &mut state.cache,
                     self.prefill_chunk,
                 );
-                // Seed the n-gram table with the tail of the prompt.
-                // Only the last NGRAM_PROMPT_FEED_MAX tokens are fed: long prompts
-                // (e.g. random-token benchmarks with 512+ tokens) would otherwise
-                // inject hundreds of useless bigrams, causing a false-positive spec
-                // attempt on the very first decode step and disabling n-gram acceleration
-                // for LINEAR_NGRAM_RETRY_INTERVAL steps — wiping out most of the
-                // generation window.
-                let feed_start = token_ids.len().saturating_sub(NGRAM_PROMPT_FEED_MAX);
-                state.ngram.feed(&token_ids[feed_start..]);
-                // Reset bonus state for this new generation.
-                state.bonus_queue.clear();
-                state.next_model_last_token = None;
-                state.pending_direct = None;
+                if prefill_completes_prompt {
+                    // Seed the n-gram table with the tail of the prompt.
+                    // Only the last NGRAM_PROMPT_FEED_MAX tokens are fed: long prompts
+                    // (e.g. random-token benchmarks with 512+ tokens) would otherwise
+                    // inject hundreds of useless bigrams, causing a false-positive spec
+                    // attempt on the very first decode step and disabling n-gram acceleration
+                    // for LINEAR_NGRAM_RETRY_INTERVAL steps — wiping out most of the
+                    // generation window.
+                    let feed_start = token_ids.len().saturating_sub(NGRAM_PROMPT_FEED_MAX);
+                    state.ngram.feed(&token_ids[feed_start..]);
+                    // Reset bonus state for this new generation.
+                    state.bonus_queue.clear();
+                    state.next_model_last_token = None;
+                    state.pending_direct = None;
 
-                // Bootstrap the double-buffer direct pipeline: submit the second token's
-                // forward pass to the GPU asynchronously so the first decode step can
-                // materialise it while the GPU is already computing the third token.
-                // Only for direct same-policy runs with temperature = 0.
-                if self.disable_ngram_acceleration && temperature == 0.0 {
-                    let bootstrap_started = Instant::now();
-                    state.pending_direct = Some(start_direct_pipeline(
-                        &self.cfg,
-                        &self.weights,
-                        tok,
-                        &mut state.cache,
-                    ));
-                    state
-                        .decode_telemetry
-                        .record_direct_bootstrap(elapsed_us(bootstrap_started));
+                    // Bootstrap the double-buffer direct pipeline: submit the second token's
+                    // forward pass to the GPU asynchronously so the first decode step can
+                    // materialise it while the GPU is already computing the third token.
+                    // Only for direct same-policy runs with temperature = 0.
+                    if self.disable_ngram_acceleration && temperature == 0.0 {
+                        let bootstrap_started = Instant::now();
+                        state.pending_direct = Some(start_direct_pipeline(
+                            &self.cfg,
+                            &self.weights,
+                            tok,
+                            &mut state.cache,
+                        ));
+                        state
+                            .decode_telemetry
+                            .record_direct_bootstrap(elapsed_us(bootstrap_started));
+                    }
                 }
 
                 state
                     .decode_telemetry
                     .record_prefill(elapsed_us(prefill_started));
-                tok
+                prefill_completes_prompt.then_some(tok)
             }
             ExecutionMode::Decode => {
                 let decode_started = Instant::now();
@@ -822,15 +829,18 @@ impl MlxRunner {
                 state
                     .decode_telemetry
                     .record_decode(elapsed_us(decode_started));
-                tok
+                Some(tok)
             }
         };
 
-        let stop_reason = if generated_len + 1 >= max_output {
-            Some(StopReason::MaxOutputTokens)
-        } else {
-            None
-        };
+        let stop_reason = sampled_token.and_then(|sampled_token| {
+            stop_reason_for_sampled_token(
+                sampled_token,
+                generated_len,
+                max_output,
+                &self.terminal_token_ids,
+            )
+        });
 
         // Re-insert state only if the request continues — lock held briefly.
         let ngram_acceleration = state.ngram_acceleration;
@@ -852,7 +862,7 @@ impl MlxRunner {
             update: RequestExecutionUpdate {
                 request_id: item.request_id,
                 tokens_executed: item.scheduled_token_count,
-                output_token: Some(sampled_token),
+                output_token: sampled_token,
                 stop_reason,
                 error: None,
             },
@@ -901,7 +911,7 @@ impl MlxRunner {
             .unwrap_or(0);
 
         let result = self.run_model_decode(state, last_token, temperature);
-        apply_decode_result(state, &result)
+        apply_decode_result(state, &result, &self.terminal_token_ids)
     }
 
     /// Run one model decode step, updating the n-gram accept-rate gate.
@@ -1017,7 +1027,11 @@ impl MlxRunner {
     }
 }
 
-fn apply_decode_result(state: &mut RequestState, result: &[u32]) -> u32 {
+fn apply_decode_result(
+    state: &mut RequestState,
+    result: &[u32],
+    terminal_token_ids: &[u32],
+) -> u32 {
     debug_assert!(
         !result.is_empty(),
         "MLX decode path must return at least one token"
@@ -1030,9 +1044,50 @@ fn apply_decode_result(state: &mut RequestState, result: &[u32]) -> u32 {
     let output = result[0];
     for &token in result.get(1..).unwrap_or(&[]) {
         state.bonus_queue.push_back(token);
+        if token_is_terminal(token, terminal_token_ids) {
+            break;
+        }
     }
-    state.next_model_last_token = result.last().copied();
+    state.next_model_last_token = state
+        .bonus_queue
+        .back()
+        .copied()
+        .or_else(|| result.last().copied());
     output
+}
+
+fn stop_reason_for_sampled_token(
+    sampled_token: u32,
+    generated_len: u32,
+    max_output: u32,
+    terminal_token_ids: &[u32],
+) -> Option<StopReason> {
+    if token_is_terminal(sampled_token, terminal_token_ids) {
+        Some(StopReason::EosToken)
+    } else if generated_len.saturating_add(1) >= max_output {
+        Some(StopReason::MaxOutputTokens)
+    } else {
+        None
+    }
+}
+
+fn token_is_terminal(token: u32, terminal_token_ids: &[u32]) -> bool {
+    terminal_token_ids.contains(&token)
+}
+
+fn prefill_item_completes_prompt(
+    item: &ax_engine_core::ExecutionItem,
+    ctx: Option<&RunnerRequestContext>,
+) -> bool {
+    if item.mode != ExecutionMode::Prefill {
+        return false;
+    }
+    ctx.map(|c| {
+        c.processed_prompt_tokens
+            .saturating_add(item.scheduled_token_count)
+            >= c.prompt_len
+    })
+    .unwrap_or(true)
 }
 
 struct MlxItemRun {
@@ -1173,6 +1228,98 @@ fn binding_summary_from_specs(
     summary
 }
 
+fn resolve_terminal_token_ids(artifacts: &NativeModelArtifacts) -> Vec<u32> {
+    let mut token_ids = BTreeSet::new();
+    let mut token_strings = BTreeSet::new();
+
+    for file_name in ["config.json", "tokenizer_config.json"] {
+        let Some(value) = read_json_file(&artifacts.root_dir().join(file_name)) else {
+            continue;
+        };
+        collect_token_ids(value.get("eos_token_id"), &mut token_ids);
+        collect_token_ids(value.get("eos_token_ids"), &mut token_ids);
+        collect_token_ids(value.get("pad_token_id"), &mut token_ids);
+        collect_token_strings(value.get("eos_token"), &mut token_strings);
+        collect_token_strings(value.get("pad_token"), &mut token_strings);
+    }
+
+    if !token_strings.is_empty()
+        && let Some(tokenizer) = read_json_file(&artifacts.root_dir().join("tokenizer.json"))
+    {
+        collect_added_token_ids_for_strings(&tokenizer, &token_strings, &mut token_ids);
+    }
+
+    let vocab_size = artifacts.manifest().vocab_size;
+    token_ids.retain(|token_id| *token_id < vocab_size);
+    token_ids.into_iter().collect()
+}
+
+fn read_json_file(path: &std::path::Path) -> Option<serde_json::Value> {
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn collect_token_ids(value: Option<&serde_json::Value>, token_ids: &mut BTreeSet<u32>) {
+    match value {
+        Some(serde_json::Value::Number(number)) => {
+            if let Some(token_id) = number.as_u64().and_then(|id| u32::try_from(id).ok()) {
+                token_ids.insert(token_id);
+            }
+        }
+        Some(serde_json::Value::Array(values)) => {
+            for value in values {
+                collect_token_ids(Some(value), token_ids);
+            }
+        }
+        Some(serde_json::Value::Object(object)) => {
+            collect_token_ids(object.get("id"), token_ids);
+        }
+        _ => {}
+    }
+}
+
+fn collect_token_strings(value: Option<&serde_json::Value>, token_strings: &mut BTreeSet<String>) {
+    match value {
+        Some(serde_json::Value::String(token)) => {
+            token_strings.insert(token.clone());
+        }
+        Some(serde_json::Value::Array(values)) => {
+            for value in values {
+                collect_token_strings(Some(value), token_strings);
+            }
+        }
+        Some(serde_json::Value::Object(object)) => {
+            if let Some(content) = object.get("content") {
+                collect_token_strings(Some(content), token_strings);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_added_token_ids_for_strings(
+    tokenizer: &serde_json::Value,
+    token_strings: &BTreeSet<String>,
+    token_ids: &mut BTreeSet<u32>,
+) {
+    let Some(added_tokens) = tokenizer
+        .get("added_tokens")
+        .and_then(|value| value.as_array())
+    else {
+        return;
+    };
+
+    for token in added_tokens {
+        let Some(content) = token.get("content").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if !token_strings.contains(content) {
+            continue;
+        }
+        collect_token_ids(token.get("id"), token_ids);
+    }
+}
+
 fn validate_qwen_gated_delta_linear_attention(
     manifest: &NativeModelManifest,
 ) -> Result<(), MlxRunnerError> {
@@ -1251,6 +1398,7 @@ fn validate_gemma4_interleaved_attention(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ax_engine_core::scheduler::PositionRange;
     use ax_engine_core::{
         AX_NATIVE_MODEL_MANIFEST_FILE, NativeLinearAttentionConfig, NativeModelManifest,
         NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat,
@@ -1324,7 +1472,7 @@ mod tests {
     fn ngram_decode_result_keeps_correction_token_in_output_queue() {
         let mut state = RequestState::new(2, RequestId(7));
 
-        let output = apply_decode_result(&mut state, &[11, 12]);
+        let output = apply_decode_result(&mut state, &[11, 12], &[]);
 
         assert_eq!(output, 11);
         assert_eq!(
@@ -1339,7 +1487,7 @@ mod tests {
     fn ngram_decode_result_queues_full_accept_tail_and_bonus() {
         let mut state = RequestState::new(2, RequestId(8));
 
-        let output = apply_decode_result(&mut state, &[21, 22, 23, 24]);
+        let output = apply_decode_result(&mut state, &[21, 22, 23, 24], &[]);
 
         assert_eq!(output, 21);
         assert_eq!(
@@ -1348,6 +1496,80 @@ mod tests {
             "accepted drafts and final bonus token are all user-visible output"
         );
         assert_eq!(state.next_model_last_token, Some(24));
+    }
+
+    #[test]
+    fn stop_reason_prefers_eos_before_max_output() {
+        assert_eq!(
+            stop_reason_for_sampled_token(151645, 1, 32, &[151645]),
+            Some(StopReason::EosToken)
+        );
+        assert_eq!(
+            stop_reason_for_sampled_token(7, 31, 32, &[151645]),
+            Some(StopReason::MaxOutputTokens)
+        );
+        assert_eq!(stop_reason_for_sampled_token(7, 1, 32, &[151645]), None);
+    }
+
+    #[test]
+    fn ngram_decode_result_truncates_bonus_queue_at_eos() {
+        let mut state = RequestState::new(2, RequestId(9));
+
+        let output = apply_decode_result(&mut state, &[31, 32, 151645, 33], &[151645]);
+
+        assert_eq!(output, 31);
+        assert_eq!(
+            state.bonus_queue.iter().copied().collect::<Vec<_>>(),
+            vec![32, 151645],
+            "verified bonus tokens after EOS must not be emitted"
+        );
+        assert_eq!(state.next_model_last_token, Some(151645));
+    }
+
+    #[test]
+    fn split_prefill_only_completes_on_final_prompt_chunk() {
+        let item = ax_engine_core::ExecutionItem {
+            request_id: RequestId(10),
+            mode: ExecutionMode::Prefill,
+            input_token_slice: vec![0; 2048],
+            reused_prefix_token_slice: Vec::new(),
+            position_range: PositionRange {
+                start: 0,
+                end_exclusive: 2048,
+            },
+            scheduled_token_count: 2048,
+            block_table_ref: RequestId(10),
+            prefix_tokens_reused: 0,
+            prefix_blocks_reused: 0,
+        };
+        let first_context = RunnerRequestContext {
+            request_id: RequestId(10),
+            prompt_len: 2722,
+            processed_prompt_tokens: 0,
+            generated_len: 0,
+            max_output_tokens: 24,
+            deterministic_argmax_sampling: true,
+            temperature: 0.0,
+        };
+        assert!(!prefill_item_completes_prompt(&item, Some(&first_context)));
+
+        let final_item = ax_engine_core::ExecutionItem {
+            input_token_slice: vec![0; 674],
+            position_range: PositionRange {
+                start: 2048,
+                end_exclusive: 2722,
+            },
+            scheduled_token_count: 674,
+            ..item
+        };
+        let final_context = RunnerRequestContext {
+            processed_prompt_tokens: 2048,
+            ..first_context
+        };
+        assert!(prefill_item_completes_prompt(
+            &final_item,
+            Some(&final_context)
+        ));
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {
@@ -1518,6 +1740,18 @@ mod tests {
         }
     }
 
+    fn set_vocab_size(manifest: &mut NativeModelManifest, vocab_size: u32) {
+        manifest.vocab_size = vocab_size;
+        for tensor in &mut manifest.tensors {
+            if matches!(
+                tensor.role,
+                NativeTensorRole::TokenEmbedding | NativeTensorRole::LmHead
+            ) {
+                tensor.shape[0] = vocab_size as u64;
+            }
+        }
+    }
+
     fn write_artifacts(manifest: NativeModelManifest) -> NativeModelArtifacts {
         let dir = unique_test_dir("manifest");
         fs::create_dir_all(&dir).expect("fixture directory should create");
@@ -1528,6 +1762,39 @@ mod tests {
         )
         .expect("manifest should write");
         NativeModelArtifacts::from_dir(&dir).expect("fixture manifest should validate")
+    }
+
+    #[test]
+    fn terminal_token_ids_resolve_from_config_json_array() {
+        let mut manifest = dense_manifest();
+        set_vocab_size(&mut manifest, 128);
+        let artifacts = write_artifacts(manifest);
+        fs::write(
+            artifacts.root_dir().join("config.json"),
+            r#"{"eos_token_id":[1,106,999]}"#,
+        )
+        .expect("config should write");
+
+        assert_eq!(resolve_terminal_token_ids(&artifacts), vec![1, 106]);
+    }
+
+    #[test]
+    fn terminal_token_ids_resolve_tokenizer_config_string_from_tokenizer_json() {
+        let mut manifest = dense_manifest();
+        set_vocab_size(&mut manifest, 200_000);
+        let artifacts = write_artifacts(manifest);
+        fs::write(
+            artifacts.root_dir().join("tokenizer_config.json"),
+            r#"{"eos_token":"<|im_end|>","pad_token":"<|endoftext|>"}"#,
+        )
+        .expect("tokenizer config should write");
+        fs::write(
+            artifacts.root_dir().join("tokenizer.json"),
+            r#"{"added_tokens":[{"id":151643,"content":"<|endoftext|>"},{"id":151645,"content":"<|im_end|>"}]}"#,
+        )
+        .expect("tokenizer should write");
+
+        assert_eq!(resolve_terminal_token_ids(&artifacts), vec![151643, 151645]);
     }
 
     fn qwen35_linear_manifest() -> NativeModelManifest {
