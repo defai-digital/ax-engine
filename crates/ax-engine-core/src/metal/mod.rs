@@ -20208,7 +20208,7 @@ fn capture_numeric_cache_snapshot(
 }
 
 #[cfg(target_os = "macos")]
-const SHARED_BUFFER_READBACK_MAX_TEXTURE_WIDTH: u32 = 32_768;
+const SHARED_BUFFER_READBACK_MAX_TEXTURE_WIDTH: u32 = 16_384;
 #[cfg(target_os = "macos")]
 const SHARED_BUFFER_READBACK_ALIGNMENT_ELEMENTS: u32 = 4;
 
