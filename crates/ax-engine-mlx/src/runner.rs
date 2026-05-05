@@ -488,7 +488,11 @@ fn speculative_draft(ngram: &NgramTable, has_linear_attention: bool) -> Vec<u32>
     if has_linear_attention {
         // Dense rollback is O(1); linear-attention partial-reject pays
         // branch/recompute, so cap at DEFAULT_DRAFT_LEN to bound recompute cost.
-        ngram.predict_with_confidence(DEFAULT_DRAFT_LEN, LINEAR_MIN_NGRAM_SUPPORT, DRAFT_CONFIDENCE_THRESHOLD)
+        ngram.predict_with_confidence(
+            DEFAULT_DRAFT_LEN,
+            LINEAR_MIN_NGRAM_SUPPORT,
+            DRAFT_CONFIDENCE_THRESHOLD,
+        )
     } else {
         // Dense models extend up to MAX_DRAFT_LEN when the n-gram chain is
         // high-confidence; the confidence gate stops the chain early otherwise.
@@ -507,7 +511,7 @@ pub enum MlxRunnerError {
 fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(), MlxRunnerError> {
     let manifest = artifacts.manifest();
     if manifest.linear_attention.is_enabled() || has_linear_attention_tensors(artifacts) {
-        validate_qwen35_linear_attention(manifest)?;
+        validate_qwen_gated_delta_linear_attention(manifest)?;
     }
     if manifest.sliding_window_size.is_some()
         || !manifest.layer_types.is_empty()
@@ -583,10 +587,13 @@ fn binding_summary_from_specs(
     summary
 }
 
-fn validate_qwen35_linear_attention(manifest: &NativeModelManifest) -> Result<(), MlxRunnerError> {
-    if manifest.model_family != "qwen3_5" {
+fn validate_qwen_gated_delta_linear_attention(
+    manifest: &NativeModelManifest,
+) -> Result<(), MlxRunnerError> {
+    if !matches!(manifest.model_family.as_str(), "qwen3_5" | "qwen3_next") {
         return Err(MlxRunnerError::UnsupportedFeature(
-            "linear_attention is currently supported only for qwen3_5 MLX manifests".to_string(),
+            "linear_attention is currently supported only for qwen3_5/qwen3_next MLX manifests"
+                .to_string(),
         ));
     }
     let Some(key_head_dim) = manifest.linear_attention.key_head_dim else {
@@ -1002,7 +1009,7 @@ mod tests {
         let error = validate_mlx_supported_manifest(&artifacts)
             .expect_err("linear attention should fail closed");
 
-        assert!(error.to_string().contains("qwen3_5"));
+        assert!(error.to_string().contains("qwen3_5/qwen3_next"));
     }
 
     #[test]
@@ -1100,7 +1107,10 @@ mod tests {
 
         ngram.feed(&[1, 2, 3]);
         let lin_draft = speculative_draft(&ngram, true);
-        assert!(!lin_draft.is_empty(), "linear attention draft should be non-empty after second repeat");
+        assert!(
+            !lin_draft.is_empty(),
+            "linear attention draft should be non-empty after second repeat"
+        );
         assert!(
             lin_draft.len() <= DEFAULT_DRAFT_LEN,
             "linear attention draft must not exceed DEFAULT_DRAFT_LEN"

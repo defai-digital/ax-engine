@@ -90,7 +90,23 @@ The current runtime direction is:
 
 - use `mlx` for explicit MLX mode
 - use `llama_cpp` for all non-MLX inference
-- do not promote models into AX MLX Metal mode
+- promote MLX preview models only after reference-runtime comparison,
+  correctness smoke coverage, and public benchmark artifacts are available
+
+## Current AX MLX Preview Models
+
+| Family | Model | Evidence |
+|---|---|---|
+| Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it | MLX stack benchmark + workload-contract scenario |
+| Qwen 3 | Qwen3-4B | MLX stack benchmark + workload-contract scenario |
+| Qwen 3.5 | Qwen3.5-9B | MLX stack benchmark + workload-contract scenario |
+| Qwen 3 Coder Next | Qwen3-Coder-Next-4bit | MLX stack benchmark, server smoke, Qwen3Next MoE/linear-attention regression tests |
+
+## Current Limitations And Problems
+
+No current public benchmark row is blocked for the MLX preview models above.
+Speculative rows remain effective-throughput measurements from AX's n-gram
+policy and must not be described as raw model-kernel speedups.
 
 ## Future Model Generations
 
