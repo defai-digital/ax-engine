@@ -11865,6 +11865,16 @@ mod tests {
         );
     }
 
+    fn repo_manifest_path(relative: &str) -> String {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("workspace root should be two levels above CARGO_MANIFEST_DIR")
+            .join(relative)
+            .to_string_lossy()
+            .into_owned()
+    }
+
     fn load_test_manifest(path: &str) -> BenchmarkManifest {
         let mut manifest = load_manifest(Path::new(path)).expect("manifest should load");
         if manifest.runtime.selected_backend == SelectedBackend::Mlx {
@@ -13629,7 +13639,7 @@ mod tests {
     #[test]
     fn autotune_candidate_configs_keep_manifest_runtime_as_first_trial() {
         let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+            repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
         );
 
         let search_space = resolve_autotune_search_space(
@@ -13661,7 +13671,7 @@ mod tests {
     #[test]
     fn autotune_candidate_configs_respect_explicit_search_space_overrides() {
         let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+            repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
         );
         let search_space = resolve_autotune_search_space(
             &manifest,
@@ -13835,7 +13845,7 @@ mod tests {
     #[test]
     fn autotune_probe_manifest_reduces_shape_and_disables_determinism_check() {
         let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+            repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
         );
 
         let probe_manifest = autotune_probe_manifest(
@@ -13894,7 +13904,7 @@ mod tests {
         let execution = RuntimeResult {
             tool_mode: "engine_bringup_runtime",
             runtime: runtime_config_from_manifest(&load_test_manifest(
-                "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+                repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
             ))
             .expect("runtime config should build"),
             observation: RuntimeObservation::default(),
@@ -14094,7 +14104,7 @@ mod tests {
         write_json_file(
             &run_dir.join("manifest.json"),
             &load_test_manifest_json(
-                "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+                repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
             ),
         )
         .expect("fixture manifest should write");
@@ -14394,7 +14404,7 @@ mod tests {
         let output_root = root.join("out");
         fs::create_dir_all(&output_root).expect("autotune output root should create");
         let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+            repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
         );
         let search_space = resolve_autotune_search_space(
             &manifest,
@@ -14479,7 +14489,7 @@ mod tests {
         let output_root = root.join("out");
         fs::create_dir_all(&output_root).expect("autotune output root should create");
         let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+            repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
         );
         let search_space = resolve_autotune_search_space(
             &manifest,
@@ -14557,7 +14567,7 @@ mod tests {
         let output_root = root.join("out");
         fs::create_dir_all(&output_root).expect("autotune output root should create");
         let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+            repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
         );
         let search_space = resolve_autotune_search_space(
             &manifest,
@@ -14597,7 +14607,7 @@ mod tests {
         let output_root = root.join("out");
         fs::create_dir_all(&output_root).expect("autotune output root should create");
         let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+            repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
         );
         let historical_dir = write_named_autotune_history_fixture(
             &output_root,
@@ -15685,7 +15695,7 @@ mod tests {
     #[test]
     fn build_session_preserves_mlx_runtime_artifact_defaults_via_sdk_factory() {
         let manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+            repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
         );
         let runtime = runtime_config_from_manifest(&manifest).expect("runtime config should load");
         let specs = scenario_specs_from_manifest(&manifest).expect("scenario specs should build");
@@ -15717,7 +15727,7 @@ mod tests {
     #[test]
     fn build_session_preserves_explicit_mlx_model_artifact_manifest_override() {
         let mut manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+            repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
         );
         manifest.runtime.mlx_model_artifacts_dir = Some(PathBuf::from("/tmp/ax-mlx-model"));
 
@@ -15757,7 +15767,7 @@ mod tests {
     #[test]
     fn build_session_preserves_gguf_model_override_as_explicit_source() {
         let mut manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+            repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
         );
         manifest.runtime.mlx_model_artifacts_dir =
             Some(PathBuf::from("/tmp/google_gemma-4-26b-it-q4_k_m.gguf"));
@@ -15894,7 +15904,7 @@ mod tests {
     #[test]
     fn llama_cpp_replay_executes_with_delegated_prompt_cache_reuse() {
         let mut manifest = load_test_manifest(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/replay/llama_cpp_prompt_cache_reuse_dual.json",
+            repo_manifest_path("benchmarks/manifests/replay/llama_cpp_prompt_cache_reuse_dual.json").as_str(),
         );
 
         let replay_events =
@@ -16699,7 +16709,7 @@ mod tests {
                 json!({
                     "label": "Chat Qwen Short",
                     "manifest_id": "chat_qwen_short",
-                    "manifest_path": "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+                    "manifest_path": repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
                     "scenario": "chat",
                     "model_family": "qwen3_dense",
                     "status": "ok",
@@ -16715,7 +16725,7 @@ mod tests {
                 json!({
                     "label": "Concurrent Qwen Dual",
                     "manifest_id": "concurrent_qwen_dual",
-                    "manifest_path": "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/concurrent_qwen_dual.json",
+                    "manifest_path": repo_manifest_path("benchmarks/manifests/scenario/concurrent_qwen_dual.json").as_str(),
                     "scenario": "concurrent",
                     "model_family": "qwen3_dense",
                     "status": "ok",
@@ -16738,7 +16748,7 @@ mod tests {
                 json!({
                     "label": "Chat Qwen Short",
                     "manifest_id": "chat_qwen_short",
-                    "manifest_path": "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+                    "manifest_path": repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
                     "scenario": "chat",
                     "model_family": "qwen3_dense",
                     "status": "ok",
@@ -16754,7 +16764,7 @@ mod tests {
                 json!({
                     "label": "Concurrent Qwen Dual",
                     "manifest_id": "concurrent_qwen_dual",
-                    "manifest_path": "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/concurrent_qwen_dual.json",
+                    "manifest_path": repo_manifest_path("benchmarks/manifests/scenario/concurrent_qwen_dual.json").as_str(),
                     "scenario": "concurrent",
                     "model_family": "qwen3_dense",
                     "status": "ok",
@@ -16845,7 +16855,7 @@ mod tests {
             &[json!({
                 "label": "Chat Qwen Short",
                 "manifest_id": "chat_qwen_short",
-                "manifest_path": "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+                "manifest_path": repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
                 "scenario": "chat",
                 "model_family": "qwen3_dense",
                 "status": "ok",
@@ -16866,7 +16876,7 @@ mod tests {
             &[json!({
                 "label": "Chat Qwen Short",
                 "manifest_id": "chat_qwen_short",
-                "manifest_path": "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+                "manifest_path": repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
                 "scenario": "chat",
                 "model_family": "qwen3_dense",
                 "status": "ok",
@@ -16953,7 +16963,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_runtime_drift() {
         let baseline = load_test_manifest_json(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/scenario/chat_qwen_short.json",
+            repo_manifest_path("benchmarks/manifests/scenario/chat_qwen_short.json").as_str(),
         );
         let mut candidate = baseline.clone();
         candidate["runtime"]["max_batch_tokens"] = json!(4096);
@@ -16970,7 +16980,7 @@ mod tests {
     #[test]
     fn compare_validation_rejects_replay_event_drift() {
         let baseline = load_test_manifest_json(
-            "/Users/akiralam/code/ax-engine-v4/benchmarks/manifests/replay/full_prefix_to_decode_branch.json",
+            repo_manifest_path("benchmarks/manifests/replay/full_prefix_to_decode_branch.json").as_str(),
         );
         let mut candidate = baseline.clone();
         candidate["events"][1]["t_ms"] = json!(2);
