@@ -1,0 +1,314 @@
+
+=== [1/13] gemma-4-e2b-it-4bit.json ===
+model_dir=/Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-4bit
+-- mode=greedy
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-4bit --port 8091 --no-speculative-decode
+  [ax-engine/ax_engine_mlx_greedy] prompt=128 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=3246.5 tok/s decode=176.1 tok/s out=128
+    rep 2: prefill=3116.9 tok/s decode=173.7 tok/s out=128
+    rep 3: prefill=3063.4 tok/s decode=172.3 tok/s out=128
+  [ax-engine/ax_engine_mlx_greedy] prompt=512 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=7537.1 tok/s decode=167.2 tok/s out=128
+    rep 2: prefill=7447.3 tok/s decode=167.3 tok/s out=128
+    rep 3: prefill=7482.5 tok/s decode=165.4 tok/s out=128
+-- mode=speculative
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-4bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=3769.8 tok/s decode=470.7 tok/s out=128
+    rep 2: prefill=3731.0 tok/s decode=476.6 tok/s out=128
+    rep 3: prefill=3795.5 tok/s decode=479.6 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=7969.5 tok/s decode=456.3 tok/s out=128
+    rep 2: prefill=7998.5 tok/s decode=449.2 tok/s out=128
+    rep 3: prefill=8416.9 tok/s decode=447.3 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/gemma-4-e2b-it-4bit.json
+
+=== [2/13] gemma-4-e2b-it-5bit.json ===
+model_dir=/Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-5bit
+-- mode=greedy
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-5bit --port 8091 --no-speculative-decode
+  [ax-engine/ax_engine_mlx_greedy] prompt=128 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=3132.0 tok/s decode=154.9 tok/s out=128
+    rep 2: prefill=3190.1 tok/s decode=155.1 tok/s out=128
+    rep 3: prefill=3182.7 tok/s decode=155.0 tok/s out=128
+  [ax-engine/ax_engine_mlx_greedy] prompt=512 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=7208.1 tok/s decode=145.7 tok/s out=128
+    rep 2: prefill=7520.3 tok/s decode=151.9 tok/s out=128
+    rep 3: prefill=7461.4 tok/s decode=152.0 tok/s out=128
+-- mode=speculative
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-5bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=3653.3 tok/s decode=373.3 tok/s out=128
+    rep 2: prefill=3741.9 tok/s decode=382.3 tok/s out=128
+    rep 3: prefill=3752.1 tok/s decode=383.1 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=8330.8 tok/s decode=379.7 tok/s out=128
+    rep 2: prefill=8419.3 tok/s decode=380.5 tok/s out=128
+    rep 3: prefill=8399.9 tok/s decode=379.4 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/gemma-4-e2b-it-5bit.json
+
+=== [3/13] gemma-4-e2b-it-6bit.json ===
+model_dir=/Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-6bit
+-- mode=greedy
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-6bit --port 8091 --no-speculative-decode
+  [ax-engine/ax_engine_mlx_greedy] prompt=128 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=3168.9 tok/s decode=147.8 tok/s out=128
+    rep 2: prefill=3173.5 tok/s decode=146.9 tok/s out=128
+    rep 3: prefill=3237.1 tok/s decode=147.1 tok/s out=128
+  [ax-engine/ax_engine_mlx_greedy] prompt=512 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=7190.5 tok/s decode=140.7 tok/s out=128
+    rep 2: prefill=7264.9 tok/s decode=143.1 tok/s out=128
+    rep 3: prefill=7147.1 tok/s decode=143.9 tok/s out=128
+-- mode=speculative
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-6bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=3705.0 tok/s decode=349.5 tok/s out=128
+    rep 2: prefill=3629.5 tok/s decode=345.8 tok/s out=128
+    rep 3: prefill=3597.2 tok/s decode=347.9 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=7913.7 tok/s decode=342.3 tok/s out=128
+    rep 2: prefill=8101.0 tok/s decode=344.2 tok/s out=128
+    rep 3: prefill=8281.7 tok/s decode=349.8 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/gemma-4-e2b-it-6bit.json
+
+=== [4/13] gemma-4-e2b-it-8bit.json ===
+model_dir=/Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-8bit
+-- mode=greedy
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-8bit --port 8091 --no-speculative-decode
+  [ax-engine/ax_engine_mlx_greedy] prompt=128 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=3114.8 tok/s decode=130.0 tok/s out=128
+    rep 2: prefill=3137.8 tok/s decode=130.9 tok/s out=128
+    rep 3: prefill=3154.7 tok/s decode=130.6 tok/s out=128
+  [ax-engine/ax_engine_mlx_greedy] prompt=512 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=7502.4 tok/s decode=124.1 tok/s out=128
+    rep 2: prefill=7417.0 tok/s decode=124.9 tok/s out=128
+    rep 3: prefill=7326.8 tok/s decode=124.7 tok/s out=128
+-- mode=speculative
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-8bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=3577.9 tok/s decode=371.0 tok/s out=128
+    rep 2: prefill=3427.1 tok/s decode=355.7 tok/s out=128
+    rep 3: prefill=3596.2 tok/s decode=369.3 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=8044.7 tok/s decode=367.2 tok/s out=128
+    rep 2: prefill=8165.1 tok/s decode=371.8 tok/s out=128
+    rep 3: prefill=8127.5 tok/s decode=369.8 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/gemma-4-e2b-it-8bit.json
+
+=== [5/13] gemma-4-26b-a4b-it-4bit.json ===
+model_dir=/Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-26b-a4b-it-4bit
+-- mode=greedy
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-26b-a4b-it-4bit --port 8091 --no-speculative-decode
+  [ax-engine/ax_engine_mlx_greedy] prompt=128 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=682.4 tok/s decode=115.3 tok/s out=128
+    rep 2: prefill=680.8 tok/s decode=113.2 tok/s out=128
+    rep 3: prefill=682.3 tok/s decode=115.2 tok/s out=128
+  [ax-engine/ax_engine_mlx_greedy] prompt=512 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=754.2 tok/s decode=109.6 tok/s out=128
+    rep 2: prefill=780.8 tok/s decode=110.5 tok/s out=128
+    rep 3: prefill=777.9 tok/s decode=110.0 tok/s out=128
+-- mode=speculative
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-26b-a4b-it-4bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=730.4 tok/s decode=239.1 tok/s out=128
+    rep 2: prefill=735.0 tok/s decode=239.1 tok/s out=128
+    rep 3: prefill=730.4 tok/s decode=236.6 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=809.6 tok/s decode=215.8 tok/s out=128
+    rep 2: prefill=807.9 tok/s decode=211.2 tok/s out=128
+    rep 3: prefill=789.5 tok/s decode=209.9 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/gemma-4-26b-a4b-it-4bit.json
+
+=== [6/13] gemma-4-31b-it-4bit.json ===
+model_dir=/Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-31b-it-4bit
+-- mode=greedy
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-31b-it-4bit --port 8091 --no-speculative-decode
+  [ax-engine/ax_engine_mlx_greedy] prompt=128 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=535.5 tok/s decode=26.1 tok/s out=128
+    rep 2: prefill=524.5 tok/s decode=24.4 tok/s out=128
+    rep 3: prefill=522.8 tok/s decode=24.4 tok/s out=128
+  [ax-engine/ax_engine_mlx_greedy] prompt=512 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=648.9 tok/s decode=23.5 tok/s out=128
+    rep 2: prefill=645.3 tok/s decode=24.0 tok/s out=128
+    rep 3: prefill=664.1 tok/s decode=23.7 tok/s out=128
+-- mode=speculative
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-31b-it-4bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=627.4 tok/s decode=51.4 tok/s out=128
+    rep 2: prefill=626.8 tok/s decode=50.5 tok/s out=128
+    rep 3: prefill=626.1 tok/s decode=51.3 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=748.0 tok/s decode=45.9 tok/s out=128
+    rep 2: prefill=751.9 tok/s decode=48.8 tok/s out=128
+    rep 3: prefill=735.8 tok/s decode=45.8 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/gemma-4-31b-it-4bit.json
+
+=== [7/13] qwen3-4b-4bit.json ===
+model_dir=/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25
+-- mode=greedy
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25 --port 8091 --no-speculative-decode
+  [ax-engine/ax_engine_mlx_greedy] prompt=128 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=3040.5 tok/s decode=160.3 tok/s out=128
+    rep 2: prefill=3046.9 tok/s decode=160.4 tok/s out=128
+    rep 3: prefill=3066.5 tok/s decode=160.2 tok/s out=128
+  [ax-engine/ax_engine_mlx_greedy] prompt=512 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=5296.9 tok/s decode=157.5 tok/s out=128
+    rep 2: prefill=5366.2 tok/s decode=157.7 tok/s out=128
+    rep 3: prefill=5359.2 tok/s decode=157.9 tok/s out=128
+-- mode=speculative
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25 --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=3364.7 tok/s decode=313.6 tok/s out=128
+    rep 2: prefill=3286.3 tok/s decode=306.1 tok/s out=128
+    rep 3: prefill=3310.5 tok/s decode=303.9 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=5567.9 tok/s decode=286.2 tok/s out=128
+    rep 2: prefill=5539.5 tok/s decode=282.6 tok/s out=128
+    rep 3: prefill=5643.2 tok/s decode=287.4 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/qwen3-4b-4bit.json
+
+=== [8/13] qwen3_5-9b-mlx-4bit.json ===
+model_dir=/Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.5-9B-MLX-4bit
+-- mode=greedy
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.5-9B-MLX-4bit --port 8091 --no-speculative-decode
+  [ax-engine/ax_engine_mlx_greedy] prompt=128 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=1891.6 tok/s decode=94.4 tok/s out=128
+    rep 2: prefill=1915.3 tok/s decode=93.2 tok/s out=128
+    rep 3: prefill=1894.5 tok/s decode=92.1 tok/s out=128
+  [ax-engine/ax_engine_mlx_greedy] prompt=512 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=2706.2 tok/s decode=93.4 tok/s out=128
+    rep 2: prefill=2701.7 tok/s decode=93.3 tok/s out=128
+    rep 3: prefill=2711.2 tok/s decode=91.3 tok/s out=128
+-- mode=speculative
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.5-9B-MLX-4bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=2099.5 tok/s decode=170.0 tok/s out=128
+    rep 2: prefill=2092.8 tok/s decode=170.2 tok/s out=128
+    rep 3: prefill=2086.8 tok/s decode=165.5 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=2833.5 tok/s decode=85.7 tok/s out=128
+    rep 2: prefill=2823.4 tok/s decode=83.4 tok/s out=128
+    rep 3: prefill=2774.7 tok/s decode=84.2 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/qwen3_5-9b-mlx-4bit.json
+
+=== [9/13] qwen3_6-35b-a3b-ud-mlx-4bit.json ===
+model_dir=/Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-UD-MLX-4bit
+-- mode=greedy
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-UD-MLX-4bit --port 8091 --no-speculative-decode
+  [ax-engine/ax_engine_mlx_greedy] prompt=128 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=959.8 tok/s decode=106.5 tok/s out=128
+    rep 2: prefill=960.8 tok/s decode=111.6 tok/s out=128
+    rep 3: prefill=959.4 tok/s decode=108.4 tok/s out=128
+  [ax-engine/ax_engine_mlx_greedy] prompt=512 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=1157.0 tok/s decode=110.6 tok/s out=128
+    rep 2: prefill=1155.5 tok/s decode=107.7 tok/s out=128
+    rep 3: prefill=1114.5 tok/s decode=109.8 tok/s out=128
+-- mode=speculative
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-UD-MLX-4bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=1034.1 tok/s decode=210.3 tok/s out=128
+    rep 2: prefill=1003.6 tok/s decode=198.0 tok/s out=128
+    rep 3: prefill=1005.6 tok/s decode=201.7 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=1179.9 tok/s decode=204.1 tok/s out=128
+    rep 2: prefill=1184.2 tok/s decode=211.1 tok/s out=128
+    rep 3: prefill=1181.4 tok/s decode=211.1 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/qwen3_6-35b-a3b-ud-mlx-4bit.json
+
+=== [10/13] qwen3_6-35b-a3b-5bit.json ===
+model_dir=/Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-5bit
+-- mode=greedy
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-5bit --port 8091 --no-speculative-decode
+  [ax-engine/ax_engine_mlx_greedy] prompt=128 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=780.2 tok/s decode=120.4 tok/s out=128
+    rep 2: prefill=804.5 tok/s decode=120.1 tok/s out=128
+    rep 3: prefill=799.4 tok/s decode=120.8 tok/s out=128
+  [ax-engine/ax_engine_mlx_greedy] prompt=512 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=929.9 tok/s decode=118.0 tok/s out=128
+    rep 2: prefill=898.2 tok/s decode=117.9 tok/s out=128
+    rep 3: prefill=928.6 tok/s decode=120.6 tok/s out=128
+-- mode=speculative
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-5bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=824.7 tok/s decode=210.9 tok/s out=128
+    rep 2: prefill=819.6 tok/s decode=205.9 tok/s out=128
+    rep 3: prefill=851.3 tok/s decode=213.8 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=944.9 tok/s decode=209.0 tok/s out=128
+    rep 2: prefill=928.1 tok/s decode=204.3 tok/s out=128
+    rep 3: prefill=921.9 tok/s decode=211.0 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/qwen3_6-35b-a3b-5bit.json
+
+=== [11/13] qwen3_6-35b-a3b-6bit.json ===
+model_dir=/Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-6bit
+-- mode=greedy
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-6bit --port 8091 --no-speculative-decode
+  [ax-engine/ax_engine_mlx_greedy] prompt=128 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=744.4 tok/s decode=102.8 tok/s out=128
+    rep 2: prefill=757.5 tok/s decode=105.0 tok/s out=128
+    rep 3: prefill=729.7 tok/s decode=104.5 tok/s out=128
+  [ax-engine/ax_engine_mlx_greedy] prompt=512 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=853.3 tok/s decode=98.1 tok/s out=128
+    rep 2: prefill=858.4 tok/s decode=103.3 tok/s out=128
+    rep 3: prefill=865.3 tok/s decode=105.5 tok/s out=128
+-- mode=speculative
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-6bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=799.1 tok/s decode=196.1 tok/s out=128
+    rep 2: prefill=786.9 tok/s decode=194.6 tok/s out=128
+    rep 3: prefill=799.2 tok/s decode=195.5 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=881.5 tok/s decode=193.0 tok/s out=128
+    rep 2: prefill=881.0 tok/s decode=193.4 tok/s out=128
+    rep 3: prefill=880.6 tok/s decode=192.9 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/qwen3_6-35b-a3b-6bit.json
+
+=== [12/13] qwen3_6-35b-a3b-8bit.json ===
+model_dir=/Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-8bit
+-- mode=greedy
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-8bit --port 8091 --no-speculative-decode
+  [ax-engine/ax_engine_mlx_greedy] prompt=128 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=738.6 tok/s decode=96.5 tok/s out=128
+    rep 2: prefill=760.7 tok/s decode=96.6 tok/s out=128
+    rep 3: prefill=746.2 tok/s decode=96.5 tok/s out=128
+  [ax-engine/ax_engine_mlx_greedy] prompt=512 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=851.0 tok/s decode=94.3 tok/s out=128
+    rep 2: prefill=865.8 tok/s decode=91.9 tok/s out=128
+    rep 3: prefill=869.4 tok/s decode=86.9 tok/s out=128
+-- mode=speculative
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-8bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=818.9 tok/s decode=195.4 tok/s out=128
+    rep 2: prefill=817.3 tok/s decode=195.5 tok/s out=128
+    rep 3: prefill=819.0 tok/s decode=195.5 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=925.1 tok/s decode=193.9 tok/s out=128
+    rep 2: prefill=931.2 tok/s decode=195.8 tok/s out=128
+    rep 3: prefill=930.3 tok/s decode=196.8 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/qwen3_6-35b-a3b-8bit.json
+
+=== [13/13] qwen3-coder-next-4bit.json ===
+model_dir=/Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3-Coder-Next-4bit
+-- mode=greedy
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3-Coder-Next-4bit --port 8091 --no-speculative-decode
+  [ax-engine/ax_engine_mlx_greedy] prompt=128 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=692.1 tok/s decode=95.5 tok/s out=128
+    rep 2: prefill=692.5 tok/s decode=93.4 tok/s out=128
+    rep 3: prefill=691.6 tok/s decode=96.1 tok/s out=128
+  [ax-engine/ax_engine_mlx_greedy] prompt=512 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=821.9 tok/s decode=94.5 tok/s out=128
+    rep 2: prefill=802.4 tok/s decode=93.3 tok/s out=128
+    rep 3: prefill=776.0 tok/s decode=93.9 tok/s out=128
+-- mode=speculative
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3-Coder-Next-4bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=737.6 tok/s decode=204.9 tok/s out=128
+    rep 2: prefill=735.1 tok/s decode=204.0 tok/s out=128
+    rep 3: prefill=738.1 tok/s decode=204.6 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=814.0 tok/s decode=200.4 tok/s out=128
+    rep 2: prefill=803.7 tok/s decode=199.1 tok/s out=128
+    rep 3: prefill=815.4 tok/s decode=196.1 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/qwen3-coder-next-4bit.json
+
+AX-only refresh complete.

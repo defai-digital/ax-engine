@@ -369,7 +369,22 @@ mod tests {
             kv_mode: Some("paged".to_string()),
             prefix_cache_path: Some("live_request_share".to_string()),
             barrier_mode: None,
-            crossover_decisions: vec![("prefix_reused_tokens".to_string(), 64)],
+            crossover_decisions: vec![
+                ("prefix_reused_tokens".to_string(), 64),
+                (
+                    ax_engine_core::ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB.to_string(),
+                    24,
+                ),
+                (
+                    ax_engine_core::ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT.to_string(),
+                    3,
+                ),
+                (
+                    ax_engine_core::ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB
+                        .to_string(),
+                    8,
+                ),
+            ],
         };
 
         let report = GenerateRouteReport::from_route(&route);
@@ -377,6 +392,24 @@ mod tests {
         assert_eq!(
             report.crossover_decisions.get("prefix_reused_tokens"),
             Some(&64)
+        );
+        assert_eq!(
+            report
+                .crossover_decisions
+                .get(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB),
+            Some(&24)
+        );
+        assert_eq!(
+            report
+                .crossover_decisions
+                .get(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT),
+            Some(&3)
+        );
+        assert_eq!(
+            report
+                .crossover_decisions
+                .get(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB),
+            Some(&8)
         );
         assert_eq!(
             report.prefix_cache_path.as_deref(),

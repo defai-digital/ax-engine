@@ -28,8 +28,7 @@ The current default route is:
 - local `.gguf` model paths route to `llama.cpp`
 - AX native mode is no longer a supported user-facing inference mode
 
-The current routing decision is recorded in
-`.internal/adr/0012-retire-ax-native-and-route-mlx-or-llama.md`.
+The current routing decision is recorded in the private ADR set.
 
 ## MLX Platform Baseline
 

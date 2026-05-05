@@ -9,13 +9,70 @@ fn chunk_ceiling(n: usize) -> usize {
     n.div_ceil(KV_CHUNK_TOKENS) * KV_CHUNK_TOKENS
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AppendShape {
+    new_tokens: usize,
+    n_kv_heads: i32,
+    head_dim: i32,
+    dtype: MlxDtype,
+}
+
+fn validate_append_inputs(
+    layer: usize,
+    layer_count: usize,
+    new_k: &MlxArray,
+    new_v: &MlxArray,
+) -> AppendShape {
+    assert!(
+        layer < layer_count,
+        "KV cache layer {layer} out of bounds for {layer_count} layers"
+    );
+
+    let k_shape = new_k.shape();
+    let v_shape = new_v.shape();
+    assert_eq!(
+        k_shape, v_shape,
+        "KV cache append requires matching K/V shapes"
+    );
+    assert_eq!(
+        k_shape.len(),
+        4,
+        "KV cache append expects [1, n_kv_heads, tokens, head_dim]"
+    );
+    assert_eq!(k_shape[0], 1, "KV cache append supports batch=1 only");
+    assert!(
+        k_shape[1] > 0 && k_shape[2] > 0 && k_shape[3] > 0,
+        "KV cache append requires positive heads, tokens, and head_dim"
+    );
+
+    let k_dtype = new_k.dtype();
+    assert_eq!(
+        k_dtype,
+        new_v.dtype(),
+        "KV cache append requires matching K/V dtypes"
+    );
+
+    AppendShape {
+        new_tokens: k_shape[2] as usize,
+        n_kv_heads: k_shape[1],
+        head_dim: k_shape[3],
+        dtype: k_dtype,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MlxKVCacheUsage {
     pub logical_tokens: usize,
     pub capacity_tokens: usize,
     pub logical_bytes: u64,
     pub capacity_bytes: u64,
+    /// KV-backed attention layers, including sliding-window attention layers.
     pub full_attention_layers: usize,
+    /// KV-backed layers with a configured sliding window.
+    pub sliding_window_layers: usize,
+    pub sliding_window_retained_tokens: usize,
+    pub sliding_window_reclaimable_capacity_tokens: usize,
+    pub sliding_window_reclaimable_capacity_bytes: u64,
     pub linear_state_layers: usize,
     pub linear_state_bytes: u64,
     pub growth_count: u64,
@@ -100,13 +157,13 @@ impl MlxKVCache {
         new_k: MlxArray,
         new_v: MlxArray,
     ) -> (MlxArray, MlxArray) {
-        let shape = new_k.shape();
-        let new_tokens = shape[2] as usize;
+        let append = validate_append_inputs(layer, self.layers.len(), &new_k, &new_v);
+        let new_tokens = append.new_tokens;
         let write_start = self.seq_len;
         let write_end = write_start + new_tokens;
-        let n_kv_heads = shape[1];
-        let head_dim = shape[3];
-        let dtype = new_k.dtype();
+        let n_kv_heads = append.n_kv_heads;
+        let head_dim = append.head_dim;
+        let dtype = append.dtype;
 
         let entry = &mut self.layers[layer];
         match entry {
@@ -131,6 +188,18 @@ impl MlxKVCache {
                 });
             }
             Some(lkv) => {
+                assert_eq!(
+                    lkv.n_kv_heads, n_kv_heads,
+                    "KV cache append cannot change n_kv_heads for an existing layer"
+                );
+                assert_eq!(
+                    lkv.head_dim, head_dim,
+                    "KV cache append cannot change head_dim for an existing layer"
+                );
+                assert_eq!(
+                    lkv.dtype, dtype,
+                    "KV cache append cannot change dtype for an existing layer"
+                );
                 if write_end > lkv.capacity {
                     // Grow: allocate a larger buffer and copy existing data.
                     let new_capacity = chunk_ceiling(write_end);
@@ -178,16 +247,14 @@ impl MlxKVCache {
     /// buffer retains its pre-allocated capacity.  The next `append` writes from
     /// `prefix_len`, overwriting any rejected speculative positions.
     ///
-    /// # Preconditions
-    /// `prefix_len` must be ≤ `seq_len`.  Callers that pass a value beyond the
-    /// current sequence length silently corrupt the cache (forward beyond trim).
-    pub fn trim_to(&mut self, prefix_len: usize) {
-        debug_assert!(
-            prefix_len <= self.seq_len,
-            "trim_to({prefix_len}) called with seq_len={} — would extend, not trim",
-            self.seq_len
-        );
-        self.seq_len = prefix_len;
+    /// Returns `true` when the requested trim point was valid.  Invalid requests
+    /// are clamped to the current logical length so a release build cannot extend
+    /// the cache and make SDPA attend to unwritten positions.
+    #[must_use]
+    pub fn trim_to(&mut self, prefix_len: usize) -> bool {
+        let valid = prefix_len <= self.seq_len;
+        self.seq_len = prefix_len.min(self.seq_len);
+        valid
     }
 
     /// Collect refs to all K and V backing buffers for bulk `eval`.
@@ -218,13 +285,23 @@ impl MlxKVCache {
     }
 
     pub fn usage_snapshot(&self) -> MlxKVCacheUsage {
+        self.usage_snapshot_with_layer_windows(&[])
+    }
+
+    pub fn usage_snapshot_with_layer_windows(
+        &self,
+        layer_windows: &[Option<usize>],
+    ) -> MlxKVCacheUsage {
         let mut usage = MlxKVCacheUsage {
             logical_tokens: self.seq_len,
             growth_count: self.growth_count,
             ..MlxKVCacheUsage::default()
         };
 
-        for lkv in self.layers.iter().flatten() {
+        for (layer_idx, lkv) in self.layers.iter().enumerate() {
+            let Some(lkv) = lkv else {
+                continue;
+            };
             let elements_per_token = (lkv.n_kv_heads as u64).saturating_mul(lkv.head_dim as u64);
             let bytes_per_element = lkv.dtype.size_bytes() as u64;
             let bytes_per_token = elements_per_token
@@ -239,6 +316,22 @@ impl MlxKVCache {
             usage.capacity_bytes = usage
                 .capacity_bytes
                 .saturating_add(bytes_per_token.saturating_mul(lkv.capacity as u64));
+
+            if let Some(window) = layer_windows.get(layer_idx).copied().flatten() {
+                let retained_tokens = self.seq_len.min(window);
+                let retained_capacity = chunk_ceiling(retained_tokens).min(lkv.capacity);
+                let reclaimable_tokens = lkv.capacity.saturating_sub(retained_capacity);
+                usage.sliding_window_layers = usage.sliding_window_layers.saturating_add(1);
+                usage.sliding_window_retained_tokens = usage
+                    .sliding_window_retained_tokens
+                    .saturating_add(retained_tokens);
+                usage.sliding_window_reclaimable_capacity_tokens = usage
+                    .sliding_window_reclaimable_capacity_tokens
+                    .saturating_add(reclaimable_tokens);
+                usage.sliding_window_reclaimable_capacity_bytes = usage
+                    .sliding_window_reclaimable_capacity_bytes
+                    .saturating_add(bytes_per_token.saturating_mul(reclaimable_tokens as u64));
+            }
         }
 
         for linear in &self.linear_layers {
@@ -360,13 +453,26 @@ mod tests {
 
         cache.seq_len = 8;
         cache.set_linear_state(0, conv, recurrent);
-        cache.trim_to(4);
+        assert!(cache.trim_to(4));
 
         assert_eq!(cache.seq_len, 4);
         let (conv_state, recurrent_state) = cache.linear_state(0);
         assert!(
             conv_state.is_some() && recurrent_state.is_some(),
             "linear recurrent state is not rolled back by seq_len trim"
+        );
+    }
+
+    #[test]
+    fn trim_to_does_not_extend_logical_sequence() {
+        let mut cache = MlxKVCache::new(1);
+        cache.seq_len = 8;
+
+        assert!(!cache.trim_to(12));
+
+        assert_eq!(
+            cache.seq_len, 8,
+            "invalid rollback points must not expose unwritten KV slots"
         );
     }
 
@@ -403,6 +509,89 @@ mod tests {
         assert_eq!(usage.logical_bytes, 96);
         assert_eq!(usage.capacity_bytes, 8192);
         assert_eq!(usage.growth_count, 1);
+    }
+
+    #[test]
+    fn usage_snapshot_tracks_sliding_window_trim_opportunity() {
+        let mut cache = MlxKVCache::new(1);
+        let k = zeros(&[1, 2, 300, 4], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 2, 300, 4], MlxDtype::Bfloat16, None);
+
+        cache.append(0, k, v);
+        cache.seq_len = 300;
+
+        let usage = cache.usage_snapshot_with_layer_windows(&[Some(128)]);
+        assert_eq!(usage.capacity_tokens, 512);
+        assert_eq!(usage.sliding_window_layers, 1);
+        assert_eq!(usage.sliding_window_retained_tokens, 128);
+        assert_eq!(usage.sliding_window_reclaimable_capacity_tokens, 256);
+        assert_eq!(usage.sliding_window_reclaimable_capacity_bytes, 8192);
+    }
+
+    #[test]
+    fn usage_snapshot_ignores_unwritten_sliding_window_layers() {
+        let mut cache = MlxKVCache::new(2);
+        let k = zeros(&[1, 2, 300, 4], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 2, 300, 4], MlxDtype::Bfloat16, None);
+
+        cache.append(0, k, v);
+        cache.seq_len = 300;
+
+        let usage = cache.usage_snapshot_with_layer_windows(&[Some(128), Some(128)]);
+        assert_eq!(usage.full_attention_layers, 1);
+        assert_eq!(usage.sliding_window_layers, 1);
+        assert_eq!(usage.sliding_window_reclaimable_capacity_tokens, 256);
+    }
+
+    #[test]
+    fn usage_snapshot_does_not_report_reclaimable_capacity_inside_window() {
+        let mut cache = MlxKVCache::new(1);
+        let k = zeros(&[1, 2, 120, 4], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 2, 120, 4], MlxDtype::Bfloat16, None);
+
+        cache.append(0, k, v);
+        cache.seq_len = 120;
+
+        let usage = cache.usage_snapshot_with_layer_windows(&[Some(512)]);
+        assert_eq!(usage.capacity_tokens, 256);
+        assert_eq!(usage.sliding_window_layers, 1);
+        assert_eq!(usage.sliding_window_retained_tokens, 120);
+        assert_eq!(usage.sliding_window_reclaimable_capacity_tokens, 0);
+        assert_eq!(usage.sliding_window_reclaimable_capacity_bytes, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "matching K/V shapes")]
+    fn append_rejects_mismatched_kv_shapes() {
+        let mut cache = MlxKVCache::new(1);
+        let k = zeros(&[1, 2, 3, 4], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 2, 4, 4], MlxDtype::Bfloat16, None);
+
+        let _ = cache.append(0, k, v);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot change head_dim")]
+    fn append_rejects_existing_layer_shape_drift() {
+        let mut cache = MlxKVCache::new(1);
+        let k = zeros(&[1, 2, 3, 4], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 2, 3, 4], MlxDtype::Bfloat16, None);
+        let _ = cache.append(0, k, v);
+        cache.seq_len = 3;
+
+        let k = zeros(&[1, 2, 1, 5], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 2, 1, 5], MlxDtype::Bfloat16, None);
+        let _ = cache.append(0, k, v);
+    }
+
+    #[test]
+    #[should_panic(expected = "requires matching K/V dtypes")]
+    fn append_rejects_mismatched_kv_dtypes() {
+        let mut cache = MlxKVCache::new(1);
+        let k = zeros(&[1, 2, 3, 4], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 2, 3, 4], MlxDtype::Float32, None);
+
+        let _ = cache.append(0, k, v);
     }
 
     #[test]

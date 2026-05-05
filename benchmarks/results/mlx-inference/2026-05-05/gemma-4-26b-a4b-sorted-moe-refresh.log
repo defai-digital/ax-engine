@@ -1,0 +1,24 @@
+
+-- Gemma 4 26B A4B mode=greedy
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-26b-a4b-it-4bit --port 8091 --no-speculative-decode
+  [ax-engine/ax_engine_mlx_greedy] prompt=128 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=1222.4 tok/s decode=113.1 tok/s out=128
+    rep 2: prefill=1251.9 tok/s decode=108.4 tok/s out=128
+    rep 3: prefill=1191.0 tok/s decode=111.4 tok/s out=128
+  [ax-engine/ax_engine_mlx_greedy] prompt=512 generation=128 policy=greedy_no_speculative_decode
+    rep 1: prefill=2659.1 tok/s decode=107.8 tok/s out=128
+    rep 2: prefill=2751.9 tok/s decode=108.9 tok/s out=128
+    rep 3: prefill=2788.3 tok/s decode=110.0 tok/s out=128
+
+-- Gemma 4 26B A4B mode=speculative
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-26b-a4b-it-4bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=1335.6 tok/s decode=217.8 tok/s out=128
+    rep 2: prefill=1338.0 tok/s decode=217.1 tok/s out=128
+    rep 3: prefill=1322.7 tok/s decode=217.4 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=2935.1 tok/s decode=169.7 tok/s out=128
+    rep 2: prefill=2819.9 tok/s decode=167.6 tok/s out=128
+    rep 3: prefill=2810.0 tok/s decode=169.7 tok/s out=128
+
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/gemma-4-26b-a4b-it-4bit.json

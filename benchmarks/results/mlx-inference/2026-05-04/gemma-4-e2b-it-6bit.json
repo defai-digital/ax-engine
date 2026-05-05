@@ -559,6 +559,19 @@
         "decode_tok_s": 161.276,
         "prefill_ratio_to_mlx_lm": 1.6904599713240356,
         "decode_ratio_to_mlx_lm": 2.132758601316123
+      },
+      "speculative_telemetry": {
+        "ax_spec_draft_attempts": 0,
+        "ax_spec_draft_tokens": 0,
+        "ax_spec_accepted_tokens": 0,
+        "ax_spec_rejected_tokens": 0,
+        "ax_spec_full_accepts": 0,
+        "ax_spec_partial_rejects": 0,
+        "ax_spec_complete_misses": 0,
+        "ax_spec_no_draft_steps": 0,
+        "ax_spec_cooldown_steps": 0,
+        "ax_spec_cooldown_events": 0,
+        "ax_spec_cooldown_steps_scheduled": 0
       }
     },
     {
@@ -633,6 +646,19 @@
         "decode_tok_s": 154.205,
         "prefill_ratio_to_mlx_lm": 1.0842551045472542,
         "decode_ratio_to_mlx_lm": 2.2435709591752473
+      },
+      "speculative_telemetry": {
+        "ax_spec_draft_attempts": 0,
+        "ax_spec_draft_tokens": 0,
+        "ax_spec_accepted_tokens": 0,
+        "ax_spec_rejected_tokens": 0,
+        "ax_spec_full_accepts": 0,
+        "ax_spec_partial_rejects": 0,
+        "ax_spec_complete_misses": 0,
+        "ax_spec_no_draft_steps": 0,
+        "ax_spec_cooldown_steps": 0,
+        "ax_spec_cooldown_events": 0,
+        "ax_spec_cooldown_steps_scheduled": 0
       }
     }
   ]

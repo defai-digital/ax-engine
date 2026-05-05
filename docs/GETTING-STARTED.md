@@ -138,7 +138,7 @@ standard:
 
 ```text
 python3 scripts/bench_mlx_inference_stack.py \
-  --model-dir .internal/models/Qwen3.5-9B-MLX-4bit \
+  --model-dir /path/to/local/mlx-model \
   --prompt-tokens 512,2048 \
   --generation-tokens 128 \
   --repetitions 5 \

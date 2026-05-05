@@ -1,8 +1,9 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argpartition_axis, astype, concatenate,
-    dequantize, expand_dims, expand_dims_axes, gather_mm, gather_qmm, gelu, gelu_approx, matmul,
-    multiply, quantized_matmul, reshape, rms_norm, rope, scaled_dot_product_attention_with_mask,
-    slice_last_dim, softmax, sum_axis, take, take_along_axis, tanh, transpose, zeros,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argpartition_axis, argsort_axis,
+    astype, concatenate, dequantize, divide, expand_dims, expand_dims_axes, gather_mm, gather_qmm,
+    gelu, gelu_approx, matmul, multiply, quantized_matmul, reshape, rms_norm, rope,
+    scaled_dot_product_attention_with_mask, slice_last_dim, softmax, sum_axis, take,
+    take_along_axis, tanh, transpose, zeros,
 };
 
 use ax_engine_core::NativeModelManifest;
@@ -14,6 +15,8 @@ use crate::linear_attention::{
     normalize_linear_attention_qk, rms_norm_gated, split_linear_attention_qkv,
 };
 use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
+
+const SWITCH_GLU_SORT_THRESHOLD: usize = 64;
 
 /// Per-layer hyperparameters for interleaved-SWA models (Gemma4).
 #[derive(Clone, Debug)]
@@ -1290,10 +1293,16 @@ fn moe_experts_forward(
     // Match MLX SwitchGLU: [batch, seq, hidden] → [batch, seq, 1, 1, hidden].
     // The extra singleton before top_k is required by gather_mm/gather_qmm broadcasting.
     let x_exp = expand_dims_axes(x, &[-2, -3], None);
+    let gather_inputs = switch_gather_inputs(&x_exp, top_k_indices);
     let down_exps = w.down_exps.as_ref().unwrap();
 
     let (gate_out, up_out) = if let Some(packed) = &w.gate_up_exps_packed {
-        let out = qw_gather(&x_exp, packed, top_k_indices);
+        let out = qw_gather(
+            &gather_inputs.x,
+            packed,
+            &gather_inputs.indices,
+            gather_inputs.sorted_indices,
+        );
         let half = cfg.moe_expert_intermediate_size as i32;
         (
             mlx_slice_last_dim(&out, 0, half),
@@ -1303,8 +1312,18 @@ fn moe_experts_forward(
         let gate_exps = w.gate_exps.as_ref().unwrap();
         let up_exps = w.up_exps.as_ref().unwrap();
         (
-            qw_gather(&x_exp, gate_exps, top_k_indices),
-            qw_gather(&x_exp, up_exps, top_k_indices),
+            qw_gather(
+                &gather_inputs.x,
+                gate_exps,
+                &gather_inputs.indices,
+                gather_inputs.sorted_indices,
+            ),
+            qw_gather(
+                &gather_inputs.x,
+                up_exps,
+                &gather_inputs.indices,
+                gather_inputs.sorted_indices,
+            ),
         )
     };
 
@@ -1317,7 +1336,13 @@ fn moe_experts_forward(
     let hidden = multiply(&gate_act, &up_out, None);
 
     // Down projection: [1, seq, top_k, hidden]
-    let down_out = squeeze_switch_singleton(&qw_gather(&hidden, down_exps, top_k_indices));
+    let down_out = squeeze_switch_singleton(&qw_gather(
+        &hidden,
+        down_exps,
+        &gather_inputs.indices,
+        gather_inputs.sorted_indices,
+    ));
+    let down_out = gather_inputs.unsort(down_out);
 
     // Weighted sum over top_k dimension → [1, seq, hidden]
     let seq_dim = down_out.ndim() as i32;
@@ -1325,6 +1350,80 @@ fn moe_experts_forward(
     let scores_exp = expand_dims(top_k_weights, top_k_weights.ndim() as i32, None);
     let weighted = multiply(&down_out, &scores_exp, None);
     sum_axis(&weighted, top_k_axis, false, None)
+}
+
+struct SwitchGatherInputs {
+    x: MlxArray,
+    indices: MlxArray,
+    sorted_indices: bool,
+    inv_order: Option<MlxArray>,
+    original_indices_shape: Vec<i32>,
+}
+
+impl SwitchGatherInputs {
+    fn unsort(&self, x: MlxArray) -> MlxArray {
+        let Some(inv_order) = &self.inv_order else {
+            return x;
+        };
+        let unsorted = take(&x, inv_order, 0, None);
+        let mut shape = self.original_indices_shape.clone();
+        let hidden = *x
+            .shape()
+            .last()
+            .expect("expert output must have hidden dim");
+        shape.push(hidden);
+        reshape(&unsorted, &shape, None)
+    }
+}
+
+fn switch_gather_inputs(x_expanded: &MlxArray, indices: &MlxArray) -> SwitchGatherInputs {
+    let indices_shape = indices.shape();
+    let selection_count = shape_element_count(&indices_shape);
+    let top_k = indices_shape.last().copied().unwrap_or(1).max(1) as usize;
+    if selection_count < SWITCH_GLU_SORT_THRESHOLD {
+        return SwitchGatherInputs {
+            x: x_expanded.clone(),
+            indices: indices.clone(),
+            sorted_indices: false,
+            inv_order: None,
+            original_indices_shape: indices_shape,
+        };
+    }
+
+    let flat_indices = reshape(indices, &[selection_count as i32], None);
+    let order = argsort_axis(&flat_indices, -1, None);
+    let inv_order = argsort_axis(&order, -1, None);
+    let sorted_indices = take(&flat_indices, &order, 0, None);
+
+    let x_shape = x_expanded.shape();
+    let hidden = *x_shape
+        .last()
+        .expect("SwitchGLU input must include hidden dim");
+    let rows = selection_count / top_k;
+    let x_flat = reshape(x_expanded, &[rows as i32, 1, hidden], None);
+    let top_k_scalar = MlxArray::from_raw_data(
+        &(top_k as u32) as *const u32 as *const u8,
+        std::mem::size_of::<u32>(),
+        &[1],
+        MlxDtype::Uint32,
+    );
+    let row_indices = astype(&divide(&order, &top_k_scalar, None), MlxDtype::Uint32, None);
+    let x_sorted = take(&x_flat, &row_indices, 0, None);
+
+    SwitchGatherInputs {
+        x: x_sorted,
+        indices: sorted_indices,
+        sorted_indices: true,
+        inv_order: Some(inv_order),
+        original_indices_shape: indices_shape,
+    }
+}
+
+fn shape_element_count(shape: &[i32]) -> usize {
+    shape
+        .iter()
+        .map(|dim| usize::try_from(*dim).expect("MLX shape dims must be non-negative"))
+        .product()
 }
 
 fn squeeze_switch_singleton(x: &MlxArray) -> MlxArray {
@@ -1342,7 +1441,12 @@ fn squeeze_switch_singleton(x: &MlxArray) -> MlxArray {
 ///
 /// `x`: [..., hidden], `qw.weight`: [num_experts, expert_size, hidden] (or packed).
 /// `indices`: [..., top_k].  Returns [..., top_k, out_size].
-fn qw_gather(x: &MlxArray, qw: &QuantizedWeight, indices: &MlxArray) -> MlxArray {
+fn qw_gather(
+    x: &MlxArray,
+    qw: &QuantizedWeight,
+    indices: &MlxArray,
+    sorted_indices: bool,
+) -> MlxArray {
     if let Some(scales) = &qw.scales {
         gather_qmm(
             x,
@@ -1353,7 +1457,7 @@ fn qw_gather(x: &MlxArray, qw: &QuantizedWeight, indices: &MlxArray) -> MlxArray
             true,
             Some(qw.group_size),
             Some(qw.bits),
-            false,
+            sorted_indices,
             None,
         )
     } else {
@@ -1363,7 +1467,7 @@ fn qw_gather(x: &MlxArray, qw: &QuantizedWeight, indices: &MlxArray) -> MlxArray
         let last = axes.len() - 1;
         axes.swap(last - 1, last);
         let wt = transpose(&qw.weight, &axes, None);
-        gather_mm(x, &wt, indices, false, None)
+        gather_mm(x, &wt, indices, sorted_indices, None)
     }
 }
 
@@ -1994,6 +2098,115 @@ mod tests {
         let out = moe_experts_forward(&cfg, &weights, &x, &top_k_indices, &top_k_weights);
 
         assert_eq!(out.shape(), vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn moe_experts_forward_sorts_large_prefill_expert_indices() {
+        let mut cfg = cfg(false);
+        cfg.hidden_size = 4;
+        cfg.moe_expert_count = 4;
+        cfg.moe_experts_per_token = 4;
+        cfg.moe_expert_intermediate_size = 3;
+        cfg.uses_geglu = true;
+        let weights = LayerWeights {
+            attn_norm: zeros(&[4], MlxDtype::Float32, None),
+            attn_post_norm: None,
+            q_norm: None,
+            k_norm: None,
+            q_proj: None,
+            k_proj: None,
+            v_proj: None,
+            qkv_packed: None,
+            o_proj: None,
+            linear_attn: None,
+            ffn_norm: zeros(&[4], MlxDtype::Float32, None),
+            ffn_post_norm: None,
+            gate_proj: None,
+            up_proj: None,
+            gate_up_packed: None,
+            down_proj: Some(dense_weight(&[4, 3])),
+            ffn_norm2: None,
+            ffn_post_norm1: None,
+            ffn_post_norm2: None,
+            router_proj: None,
+            router_scale: None,
+            router_expert_scale: None,
+            layer_scalar: None,
+            per_layer_gate: None,
+            per_layer_proj_w: None,
+            per_layer_post_norm: None,
+            shared_expert_gate: None,
+            shared_gate_proj: None,
+            shared_up_proj: None,
+            shared_down_proj: None,
+            gate_up_exps_packed: Some(dense_weight(&[4, 6, 4])),
+            gate_exps: None,
+            up_exps: None,
+            down_exps: Some(dense_weight(&[4, 4, 3])),
+        };
+        let x = zeros(&[1, 16, 4], MlxDtype::Float32, None);
+        let indices_data = (0..64).map(|i| (3 - (i % 4)) as u32).collect::<Vec<_>>();
+        let top_k_indices = MlxArray::from_raw_data(
+            indices_data.as_ptr() as *const u8,
+            indices_data.len() * std::mem::size_of::<u32>(),
+            &[1, 16, 4],
+            MlxDtype::Uint32,
+        );
+        let weights_data = vec![0.25_f32; 64];
+        let top_k_weights = MlxArray::from_raw_data(
+            weights_data.as_ptr() as *const u8,
+            weights_data.len() * std::mem::size_of::<f32>(),
+            &[1, 16, 4],
+            MlxDtype::Float32,
+        );
+
+        let gather_inputs =
+            switch_gather_inputs(&expand_dims_axes(&x, &[-2, -3], None), &top_k_indices);
+        assert!(gather_inputs.sorted_indices);
+        assert_eq!(gather_inputs.x.shape(), vec![64, 1, 4]);
+        assert_eq!(gather_inputs.indices.shape(), vec![64]);
+
+        let out = moe_experts_forward(&cfg, &weights, &x, &top_k_indices, &top_k_weights);
+
+        assert_eq!(out.shape(), vec![1, 16, 4]);
+    }
+
+    #[test]
+    fn switch_gather_inputs_sorts_indices_and_tracks_source_rows() {
+        let x_data = (0..16)
+            .flat_map(|row| std::iter::repeat_n(row as f32, 4))
+            .collect::<Vec<_>>();
+        let x = MlxArray::from_raw_data(
+            x_data.as_ptr() as *const u8,
+            x_data.len() * std::mem::size_of::<f32>(),
+            &[1, 16, 4],
+            MlxDtype::Float32,
+        );
+        let indices_data = (0..64).rev().map(|i| i as u32).collect::<Vec<_>>();
+        let top_k_indices = MlxArray::from_raw_data(
+            indices_data.as_ptr() as *const u8,
+            indices_data.len() * std::mem::size_of::<u32>(),
+            &[1, 16, 4],
+            MlxDtype::Uint32,
+        );
+
+        let gather_inputs =
+            switch_gather_inputs(&expand_dims_axes(&x, &[-2, -3], None), &top_k_indices);
+
+        eval(&[&gather_inputs.indices, &gather_inputs.x]);
+        assert!(gather_inputs.sorted_indices);
+        assert_eq!(
+            gather_inputs.indices.data_u32(),
+            &(0..64).map(|i| i as u32).collect::<Vec<_>>()
+        );
+        let sorted_rows = gather_inputs
+            .x
+            .data_f32()
+            .chunks_exact(4)
+            .map(|row| row[0] as usize)
+            .collect::<Vec<_>>();
+        let expected_rows = (0..64).map(|expert| (63 - expert) / 4).collect::<Vec<_>>();
+        assert_eq!(sorted_rows, expected_rows);
     }
 
     #[test]

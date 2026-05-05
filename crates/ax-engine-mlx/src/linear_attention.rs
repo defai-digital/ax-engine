@@ -172,6 +172,14 @@ pub fn gated_delta_kernel(
         key_head_dim % 32 == 0,
         "gated_delta_kernel requires key_head_dim divisible by 32 (got {key_head_dim})"
     );
+    // The kernel GQA mapping is `hk_idx = hv_idx / (Hv / Hk)` (integer division).
+    // If num_value_heads is not a multiple of num_key_heads the mapping truncates
+    // silently and every affected value head reads the wrong key/query slice.
+    assert!(
+        num_key_heads > 0 && num_value_heads % num_key_heads == 0,
+        "gated_delta_kernel requires num_value_heads to be a multiple of num_key_heads \
+         (got {num_value_heads} value heads, {num_key_heads} key heads)"
+    );
 
     let kernel = GATED_DELTA_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(

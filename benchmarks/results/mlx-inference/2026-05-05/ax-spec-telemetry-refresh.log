@@ -1,0 +1,158 @@
+
+=== [1/13] speculative telemetry gemma-4-e2b-it-4bit.json ===
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-4bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=3691.3 tok/s decode=472.3 tok/s out=128
+    rep 2: prefill=3756.1 tok/s decode=474.0 tok/s out=128
+    rep 3: prefill=3817.1 tok/s decode=475.0 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=8377.5 tok/s decode=473.4 tok/s out=128
+    rep 2: prefill=8494.3 tok/s decode=473.2 tok/s out=128
+    rep 3: prefill=8423.3 tok/s decode=466.4 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/gemma-4-e2b-it-4bit.json
+
+=== [2/13] speculative telemetry gemma-4-e2b-it-5bit.json ===
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-5bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=3665.2 tok/s decode=370.2 tok/s out=128
+    rep 2: prefill=3528.8 tok/s decode=355.7 tok/s out=128
+    rep 3: prefill=3455.6 tok/s decode=355.3 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=7741.9 tok/s decode=351.3 tok/s out=128
+    rep 2: prefill=7972.2 tok/s decode=353.6 tok/s out=128
+    rep 3: prefill=8113.1 tok/s decode=371.8 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/gemma-4-e2b-it-5bit.json
+
+=== [3/13] speculative telemetry gemma-4-e2b-it-6bit.json ===
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-6bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=3489.6 tok/s decode=333.3 tok/s out=128
+    rep 2: prefill=3495.9 tok/s decode=332.9 tok/s out=128
+    rep 3: prefill=3669.7 tok/s decode=350.3 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=8034.1 tok/s decode=337.6 tok/s out=128
+    rep 2: prefill=7834.6 tok/s decode=345.4 tok/s out=128
+    rep 3: prefill=7981.4 tok/s decode=330.1 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/gemma-4-e2b-it-6bit.json
+
+=== [4/13] speculative telemetry gemma-4-e2b-it-8bit.json ===
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-e2b-it-8bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=3523.5 tok/s decode=353.3 tok/s out=128
+    rep 2: prefill=3445.3 tok/s decode=351.1 tok/s out=128
+    rep 3: prefill=3612.6 tok/s decode=371.3 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=8065.0 tok/s decode=370.7 tok/s out=128
+    rep 2: prefill=8116.7 tok/s decode=369.3 tok/s out=128
+    rep 3: prefill=8158.7 tok/s decode=370.2 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/gemma-4-e2b-it-8bit.json
+
+=== [5/13] speculative telemetry gemma-4-26b-a4b-it-4bit.json ===
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-26b-a4b-it-4bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=715.0 tok/s decode=233.9 tok/s out=128
+    rep 2: prefill=712.0 tok/s decode=233.3 tok/s out=128
+    rep 3: prefill=716.1 tok/s decode=231.4 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=788.2 tok/s decode=202.1 tok/s out=128
+    rep 2: prefill=748.0 tok/s decode=206.2 tok/s out=128
+    rep 3: prefill=769.9 tok/s decode=213.0 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/gemma-4-26b-a4b-it-4bit.json
+
+=== [6/13] speculative telemetry gemma-4-31b-it-4bit.json ===
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/gemma-4-31b-it-4bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=632.3 tok/s decode=51.8 tok/s out=128
+    rep 2: prefill=625.6 tok/s decode=52.3 tok/s out=128
+    rep 3: prefill=622.0 tok/s decode=49.9 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=672.4 tok/s decode=44.9 tok/s out=128
+    rep 2: prefill=662.0 tok/s decode=45.6 tok/s out=128
+    rep 3: prefill=653.9 tok/s decode=46.7 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/gemma-4-31b-it-4bit.json
+
+=== [7/13] speculative telemetry qwen3-4b-4bit.json ===
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25 --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=3304.5 tok/s decode=293.9 tok/s out=128
+    rep 2: prefill=3373.1 tok/s decode=305.8 tok/s out=128
+    rep 3: prefill=3399.8 tok/s decode=310.3 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_kv_trim
+    rep 1: prefill=5616.7 tok/s decode=293.5 tok/s out=128
+    rep 2: prefill=5689.0 tok/s decode=292.2 tok/s out=128
+    rep 3: prefill=6018.8 tok/s decode=314.0 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/qwen3-4b-4bit.json
+
+=== [8/13] speculative telemetry qwen3_5-9b-mlx-4bit.json ===
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.5-9B-MLX-4bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=2194.4 tok/s decode=175.7 tok/s out=128
+    rep 2: prefill=2219.0 tok/s decode=175.5 tok/s out=128
+    rep 3: prefill=2152.3 tok/s decode=175.3 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=3023.1 tok/s decode=94.5 tok/s out=128
+    rep 2: prefill=3014.1 tok/s decode=92.7 tok/s out=128
+    rep 3: prefill=3032.2 tok/s decode=89.7 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/qwen3_5-9b-mlx-4bit.json
+
+=== [9/13] speculative telemetry qwen3_6-35b-a3b-ud-mlx-4bit.json ===
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-UD-MLX-4bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=1046.9 tok/s decode=222.6 tok/s out=128
+    rep 2: prefill=1041.5 tok/s decode=230.3 tok/s out=128
+    rep 3: prefill=1105.5 tok/s decode=230.0 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=1262.0 tok/s decode=226.4 tok/s out=128
+    rep 2: prefill=1265.1 tok/s decode=215.2 tok/s out=128
+    rep 3: prefill=1195.7 tok/s decode=207.1 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/qwen3_6-35b-a3b-ud-mlx-4bit.json
+
+=== [10/13] speculative telemetry qwen3_6-35b-a3b-5bit.json ===
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-5bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=828.7 tok/s decode=206.4 tok/s out=128
+    rep 2: prefill=849.6 tok/s decode=214.3 tok/s out=128
+    rep 3: prefill=850.0 tok/s decode=213.6 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=942.4 tok/s decode=211.9 tok/s out=128
+    rep 2: prefill=940.6 tok/s decode=204.9 tok/s out=128
+    rep 3: prefill=941.1 tok/s decode=204.9 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/qwen3_6-35b-a3b-5bit.json
+
+=== [11/13] speculative telemetry qwen3_6-35b-a3b-6bit.json ===
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-6bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=797.2 tok/s decode=197.0 tok/s out=128
+    rep 2: prefill=798.2 tok/s decode=196.8 tok/s out=128
+    rep 3: prefill=801.7 tok/s decode=196.0 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=846.8 tok/s decode=193.9 tok/s out=128
+    rep 2: prefill=879.5 tok/s decode=193.5 tok/s out=128
+    rep 3: prefill=880.3 tok/s decode=193.4 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/qwen3_6-35b-a3b-6bit.json
+
+=== [12/13] speculative telemetry qwen3_6-35b-a3b-8bit.json ===
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3.6-35B-A3B-8bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=815.6 tok/s decode=193.9 tok/s out=128
+    rep 2: prefill=815.1 tok/s decode=191.4 tok/s out=128
+    rep 3: prefill=766.9 tok/s decode=187.5 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=903.5 tok/s decode=188.1 tok/s out=128
+    rep 2: prefill=847.9 tok/s decode=192.1 tok/s out=128
+    rep 3: prefill=905.4 tok/s decode=192.9 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/qwen3_6-35b-a3b-8bit.json
+
+=== [13/13] speculative telemetry qwen3-coder-next-4bit.json ===
+  [ax-engine] /Users/akiralam/code/ax-engine-v4/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine-v4/.internal/models/Qwen3-Coder-Next-4bit --port 8091
+  [ax-engine/ax_engine_mlx_speculative] prompt=128 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=716.9 tok/s decode=192.3 tok/s out=128
+    rep 2: prefill=739.5 tok/s decode=204.0 tok/s out=128
+    rep 3: prefill=737.3 tok/s decode=203.6 tok/s out=128
+  [ax-engine/ax_engine_mlx_speculative] prompt=512 generation=128 policy=ngram_linear_attention_support_gated_branch_recompute
+    rep 1: prefill=774.9 tok/s decode=194.8 tok/s out=128
+    rep 2: prefill=813.7 tok/s decode=201.0 tok/s out=128
+    rep 3: prefill=814.8 tok/s decode=201.7 tok/s out=128
+wrote /Users/akiralam/code/ax-engine-v4/benchmarks/results/mlx-inference/2026-05-05/qwen3-coder-next-4bit.json
+
+Speculative telemetry refresh complete.
