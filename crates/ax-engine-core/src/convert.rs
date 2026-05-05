@@ -133,13 +133,11 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         rope_theta_swa,
         query_pre_attn_scalar,
         attention_logit_softcap,
-        // qwen3_next always uses a sigmoid output gate on the attention result (the gate is
-        // split from q_proj output, not a separate configurable flag).  vllm's reference
-        // implementation defaults this to true when absent: getattr(config, "attn_output_gate", True).
-        // Absent the field in config.json, ax-engine must apply the same default.
-        attn_output_gate: arch_bool(&config, &model_type, "attn_output_gate").unwrap_or(
-            matches!(model_type.as_str(), "qwen3_next" | "qwen3_6" | "qwen3.6"),
-        ),
+        // Qwen3.5/Qwen3Next full-attention layers split q_proj into queries and a sigmoid
+        // output gate. The MLX references instantiate that gate unconditionally, so absent
+        // config metadata must default to the reference architecture rather than false.
+        attn_output_gate: arch_bool(&config, &model_type, "attn_output_gate")
+            .unwrap_or(defaults_attn_output_gate(&model_type)),
         partial_rotary_factor,
         attention_value_from_key_layers,
         attention_v_norm_no_scale_layers: if model_type == "gemma4" {
@@ -622,6 +620,10 @@ fn is_qwen3_5_family(model_type: &str) -> bool {
 }
 
 fn is_qwen_gated_delta_family(model_type: &str) -> bool {
+    is_qwen3_5_family(model_type) || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
+}
+
+fn defaults_attn_output_gate(model_type: &str) -> bool {
     is_qwen3_5_family(model_type) || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
 }
 
@@ -2202,13 +2204,16 @@ mod tests {
             ],
         );
 
-        let manifest =
-            convert_hf_model_dir(&dir).expect("qwen3.5 MoE conversion should succeed");
+        let manifest = convert_hf_model_dir(&dir).expect("qwen3.5 MoE conversion should succeed");
 
         assert_eq!(manifest.model_family, "qwen3_5");
         assert_eq!(manifest.moe.expert_count, Some(4));
         assert_eq!(manifest.moe.experts_per_token, Some(2));
         assert_eq!(manifest.moe.expert_intermediate_size, Some(8));
+        assert!(
+            manifest.attn_output_gate,
+            "Qwen3.5 MoE full-attention layers must default to the reference output gate"
+        );
         for role in [
             NativeTensorRole::FfnGateInp,
             NativeTensorRole::FfnGateExps,
@@ -2380,7 +2385,10 @@ mod tests {
         assert!(manifest.moe_norm_topk_prob);
         // attn_output_gate must default to true for qwen3_next even when absent from config.json.
         // All full-attention layers in the qwen3_next architecture use the sigmoid output gate.
-        assert!(manifest.attn_output_gate, "qwen3_next attn_output_gate must default to true");
+        assert!(
+            manifest.attn_output_gate,
+            "qwen3_next attn_output_gate must default to true"
+        );
         assert!(
             manifest
                 .tensors

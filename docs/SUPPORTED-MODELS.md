@@ -97,14 +97,19 @@ The current runtime direction is:
 
 | Family | Model | Evidence |
 |---|---|---|
-| Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it | MLX stack benchmark + workload-contract scenario |
+| Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it, gemma-4-26b-a4b-it, gemma-4-31b-it | MLX stack benchmark + workload-contract scenario; E2B affine 4/5/6/8-bit, 26B A4B MoE, and 31B dense have MLX stack benchmark + server smoke |
 | Qwen 3 | Qwen3-4B | MLX stack benchmark + workload-contract scenario |
 | Qwen 3.5 | Qwen3.5-9B | MLX stack benchmark + workload-contract scenario |
+| Qwen 3.6 | Qwen3.6-35B-A3B 4/5/6/8-bit MLX | MLX stack benchmark, server smoke, Qwen3.5-MoE manifest regression test |
 | Qwen 3 Coder Next | Qwen3-Coder-Next-4bit | MLX stack benchmark, server smoke, Qwen3Next MoE/linear-attention regression tests |
 
 ## Current Limitations And Problems
 
-No current public benchmark row is blocked for the MLX preview models above.
+No current public benchmark row is blocked for the AX MLX preview models above.
+The Gemma 4 26B A4B MoE row intentionally omits `mlx_swift_lm` because the
+local Swift reference does not currently implement Gemma4 MoE Router/Experts.
+Gemma 4 E2B 5/6/8-bit rows include both `mlx_lm` and `mlx_swift_lm`
+reference rows.
 Speculative rows remain effective-throughput measurements from AX's n-gram
 policy and must not be described as raw model-kernel speedups.
 

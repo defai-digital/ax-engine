@@ -2334,10 +2334,10 @@ fn validate_tensor_quantization(tensor: &NativeTensorSpec) -> Result<(), NativeM
             message: format!("tensor {} quantization group_size must be > 0", tensor.name),
         });
     }
-    if !matches!(quantization.bits, 2 | 4 | 8) {
+    if !(2..=8).contains(&quantization.bits) {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
-                "tensor {} quantization bits must be 2, 4, or 8, got {}",
+                "tensor {} quantization bits must be in 2..=8, got {}",
                 tensor.name, quantization.bits
             ),
         });
@@ -2350,24 +2350,15 @@ fn expected_packed_cols(
     tensor: &NativeTensorSpec,
 ) -> Result<u64, NativeModelError> {
     let quantization = tensor_quantization_or_default(tensor);
-    let values_per_word = 32_u64
-        .checked_div(u64::from(quantization.bits))
-        .filter(|v| *v > 0)
+    let packed_bits = expected_cols
+        .checked_mul(u64::from(quantization.bits))
         .ok_or_else(|| NativeModelError::InvalidManifest {
             message: format!(
-                "tensor {} quantization bits {} cannot pack u32 columns",
-                tensor.name, quantization.bits
+                "tensor {} quantized column count overflowed for {} columns at {} bits",
+                tensor.name, expected_cols, quantization.bits
             ),
         })?;
-    if !expected_cols.is_multiple_of(values_per_word) {
-        return Err(NativeModelError::InvalidManifest {
-            message: format!(
-                "tensor {} expected column count {} is not divisible by packed u32 lane count {}",
-                tensor.name, expected_cols, values_per_word
-            ),
-        });
-    }
-    Ok(expected_cols / values_per_word)
+    Ok(packed_bits.div_ceil(32))
 }
 
 fn validate_linear_attention_conv_tensor(
@@ -3224,6 +3215,33 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_5_and_6_bit_quantized_packed_columns() {
+        for bits in [5, 6] {
+            let mut manifest = packed_layer_manifest();
+            let gate = manifest
+                .tensors
+                .iter_mut()
+                .find(|tensor| tensor.role == NativeTensorRole::FfnGateUpPacked)
+                .expect("fixture should include packed ffn gate/up");
+            gate.dtype = NativeTensorDataType::U32;
+            gate.source_quantized = true;
+            gate.quantization = Some(NativeTensorQuantization {
+                mode: "affine".to_string(),
+                group_size: 64,
+                bits,
+            });
+            gate.shape = vec![8192, (2048 * u64::from(bits)).div_ceil(32)];
+            let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+            NativeModelArtifacts::from_dir(&dir).unwrap_or_else(|error| {
+                panic!("{bits}-bit quantized packed columns should validate: {error}")
+            });
+
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     #[test]
