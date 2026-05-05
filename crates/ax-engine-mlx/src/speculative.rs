@@ -269,18 +269,12 @@ pub fn speculative_decode_step(
 
     // Trim KV cache: keep only [last_token + accepted_drafts].
     // The correction/bonus token at result.last() is NOT yet in the cache.
+    // KV buffers were already materialised inside verify_draft's combined eval.
     cache.trim_to(verification.committed_len);
 
     // Update n-gram table.
     ngram.feed(&draft[..verification.accept_count]);
     ngram.feed(&verification.result[verification.accept_count..]); // correction or bonus
-
-    // Materialise the KV backing buffers to break the slice_update graph chain.
-    // forward_all_positions wrote speculative positions into the buffers; the
-    // trim_to above moved the logical boundary back, but the chain still grows
-    // unless we eval here.  Bundled with the already-paid eval(&[&predicted_arr])
-    // sync so no extra GPU round-trip is introduced.
-    materialize_cache(cache);
 
     verification.result
 }
@@ -310,9 +304,10 @@ fn speculative_decode_step_linear_safe(
     );
 
     if verification.accept_count == draft.len() {
+        // verify_cache's KV buffers were already materialised inside verify_draft's
+        // combined eval — no separate materialize_cache call needed.
         verify_cache.trim_to(verification.committed_len);
         *cache = verify_cache;
-        materialize_cache(cache);
     } else {
         recompute_committed_prefix(
             cfg,
@@ -355,9 +350,23 @@ fn verify_draft(
 
     // One causal forward pass -> [verify_len, vocab_size] f32 logits.
     let logits_all = forward_all_positions(cfg, weights, &verify_input, cache, token_offset);
-    eval(&[&logits_all]);
     cache.seq_len += verify_len;
 
+    // Build the argmax graph node before any GPU sync.
+    // Evaluating predicted_arr transitively evaluates logits_all, so we can
+    // combine what was three separate evals (logits_all, predicted_arr, KV refs)
+    // into a single blocking call.
+    let predicted_arr = argmax(&logits_all, None);
+    let kv_refs = cache.collect_eval_refs();
+    let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+    targets.push(&predicted_arr);
+    targets.extend(kv_refs);
+    eval(&targets);
+
+    // Both logits_all (transitive dep of predicted_arr) and predicted_arr are
+    // now materialised. KV backing buffers are also flat — no separate
+    // materialize_cache call is needed in the caller.
+    //
     // For temperature > 0, read all verify-step logits to CPU once so we can
     // sample the correction / bonus token from the full distribution.
     // Draft acceptance always uses greedy comparison (n-gram drafts are
@@ -367,10 +376,6 @@ fn verify_draft(
     } else {
         Vec::new()
     };
-
-    // argmax over vocab axis (last axis of 2-D tensor) -> [verify_len] u32.
-    let predicted_arr = argmax(&logits_all, None);
-    eval(&[&predicted_arr]);
     let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
 
     let vocab = cfg.vocab_size;
@@ -426,13 +431,6 @@ fn recompute_committed_prefix(
     targets.push(&logits);
     targets.extend(kv_refs);
     eval(&targets);
-}
-
-fn materialize_cache(cache: &MlxKVCache) {
-    let kv_refs = cache.collect_eval_refs();
-    if !kv_refs.is_empty() {
-        eval(&kv_refs);
-    }
 }
 
 /// Sample token at `pos` in the flattened `[verify_len, vocab]` logit buffer.
