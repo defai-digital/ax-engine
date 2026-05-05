@@ -15,7 +15,7 @@ one AX surface while model coverage grows.
 Install the released command-line tools and verify the local runtime contract:
 
 ```bash
-brew install automatosx/ax-engine/ax-engine
+brew install defai-digital/ax-engine/ax-engine
 ```
 
 ```bash
@@ -258,7 +258,7 @@ For tagged macOS arm64 releases, install the preview command-line tools from
 the AutomatosX tap:
 
 ```bash
-brew install automatosx/ax-engine/ax-engine
+brew install defai-digital/ax-engine/ax-engine
 ```
 
 This installs:
