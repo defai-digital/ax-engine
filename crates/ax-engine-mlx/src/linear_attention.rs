@@ -289,28 +289,36 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
     auto i_state = state_in + (n * Dv + dv_idx) * Dk;
     auto o_state = state_out + (n * Dv + dv_idx) * Dk;
 
+    // s_base is invariant across both the t-loop and the inner i-loops.
+    const int s_base = n_per_t * dk_idx;
+
     float state[n_per_t];
     for (int i = 0; i < n_per_t; ++i) {
-      auto s_idx = n_per_t * dk_idx + i;
-      state[i] = static_cast<float>(i_state[s_idx]);
+      state[i] = static_cast<float>(i_state[s_base + i]);
     }
 
     for (int t = 0; t < t_len; ++t) {
+      // Load per-timestep scalars once from global memory.  g_[hv_idx] and
+      // beta_[hv_idx] are read n_per_t and 1 times respectively in the
+      // original loop body; caching them avoids repeated address computations
+      // and makes the float promotion explicit (InT may be BF16).
+      const float g_t    = static_cast<float>(g_[hv_idx]);
+      const float beta_t = static_cast<float>(beta_[hv_idx]);
+      const float v_t    = static_cast<float>(v_[dv_idx]);
+
       float kv_mem = 0.0f;
       for (int i = 0; i < n_per_t; ++i) {
-        auto s_idx = n_per_t * dk_idx + i;
-        state[i] = state[i] * g_[hv_idx];
-        kv_mem += state[i] * k_[s_idx];
+        state[i] = state[i] * g_t;
+        kv_mem += state[i] * static_cast<float>(k_[s_base + i]);
       }
       kv_mem = simd_sum(kv_mem);
 
-      auto delta = (v_[dv_idx] - kv_mem) * beta_[hv_idx];
+      const float delta = (v_t - kv_mem) * beta_t;
 
       float out = 0.0f;
       for (int i = 0; i < n_per_t; ++i) {
-        auto s_idx = n_per_t * dk_idx + i;
-        state[i] = state[i] + k_[s_idx] * delta;
-        out += state[i] * q_[s_idx];
+        state[i] = state[i] + static_cast<float>(k_[s_base + i]) * delta;
+        out += state[i] * static_cast<float>(q_[s_base + i]);
       }
       out = simd_sum(out);
       if (thread_index_in_simdgroup == 0) {
@@ -326,8 +334,7 @@ const GATED_DELTA_KERNEL_SOURCE: &str = r#"
     }
 
     for (int i = 0; i < n_per_t; ++i) {
-      auto s_idx = n_per_t * dk_idx + i;
-      o_state[s_idx] = static_cast<StT>(state[i]);
+      o_state[s_base + i] = static_cast<StT>(state[i]);
     }
 "#;
 
