@@ -45,8 +45,10 @@ workloads.
 ### Execution layer
 
 AX Engine uses MLX directly for all tensor operations via the official `mlx-c`
-C API. It does not reimplement matrix multiply or attention — it owns what
-happens above the compute graph.
+C API. Matrix multiply, quantized matmul, attention, RMSNorm, and RoPE go
+through MLX's own Apple-maintained Metal kernels, which use `simdgroup_matrix`
+hardware tile multiply, hardware BF16 acceleration (M3+/M4+), and flash-style
+SDPA. AX owns what happens above the compute graph.
 
 What AX builds above MLX:
 
@@ -65,6 +67,10 @@ What AX builds above MLX:
 - **Graph compilation**: `mlx_enable_compile()` is called once at startup so
   Metal shader compilation and dispatch tables are reused across steps with the
   same shape — equivalent to `mx.compile()` in mlx_lm.
+- **GatedDelta linear attention**: hybrid architectures (Qwen3.5, Qwen3-Next)
+  use a custom SIMD-group Metal kernel for the recurrent GatedDelta state update.
+  All other ops in the same models (dense attention, FFN, projections) delegate
+  to MLX's hardware-optimized paths.
 
 ### Memory layer
 
@@ -77,21 +83,27 @@ stream.
 
 | Family | Model | Architecture notes |
 |---|---|---|
-| Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it | Per-layer embeddings, input gating, sliding-window + full attention, KV sharing, logit softcapping |
+| Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it, gemma-4-31b-it | Per-layer embeddings, input gating, sliding-window + full attention, KV sharing, logit softcapping |
 | Qwen 3 | Qwen3-4B | Dense GQA + SwiGLU |
 | Qwen 3.5 | Qwen3.5-9B | Linear attention + MoE FFN, attn_output_gate per-head interleaving |
-| Qwen 3 Coder Next | Qwen3-Coder-Next-4bit | Gated-delta linear attention, sparse top-k MoE, shared expert |
+| Qwen 3.6 / Coder Next | Qwen3.6-35B-A3B-UD-MLX-4bit, Qwen3-Coder-Next-4bit | `qwen3_next` architecture: GatedDelta linear attention (3 of every 4 layers) + full attention with per-head sigmoid gate (every 4th layer) + sparse top-k MoE with shared expert |
 
 All models use MLX safetensors format with the AX `model-manifest.json`
 descriptor. Each supported architecture has a hand-written forward pass in
 `ax-engine-mlx`. Adding a new architecture means implementing the model graph,
 not wiring up a generic loader.
 
-## Limitations And Problems
+## Limitations
 
-No current public benchmark row is blocked for the supported MLX preview models
-listed above. Speculative rows remain effective-throughput measurements and
-should not be read as raw model-kernel speedups.
+- **GatedDelta prefill**: Qwen3.5 and Qwen3-Next linear-attention layers use a
+  custom Metal kernel with a serial time loop. For long prompts (512+ tokens),
+  this puts AX prefill behind mlx-swift-lm on those models; decode throughput is
+  unaffected.
+- **Raw HuggingFace weights**: ax-engine loads MLX community (pre-sanitized)
+  weights. Raw HF checkpoints for hybrid models need norm-weight `+1.0` and
+  conv1d `moveaxis(2,1)` transformations that the converter does not apply.
+- **Speculative rows**: effective-throughput measurements, not raw model-kernel
+  speedups. n-gram hit rate is prompt/output-pattern dependent.
 
 ## Performance
 
@@ -106,14 +118,18 @@ reports observed effective throughput, not raw model speed.
 |---|---|---:|---:|---:|---:|---|
 | Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 197.5 | 192.4 (−2.6%) | 176.0 (−10.9%) | **467.6** (+136.8%) |
 |  |  | 512 | 191.9 | 179.5 (−6.5%) | 170.9 (−11.0%) | **464.8** (+142.2%) |
+| Gemma 4 31B | 4-bit · group=64 · affine | 128 | 26.2 | 24.8 (−5.5%) | 25.5 (−3.0%) | **53.3** (+103.3%) |
+|  |  | 512 | 24.9 | 24.7 (−0.9%) | 25.5 (+2.1%) | **50.4** (+102.1%) |
 | Qwen 3 4B | 4-bit · group=64 | 128 | 169.6 | 168.7 (−0.6%) | 167.7 (−1.1%) | **311.5** (+83.7%) |
 |  |  | 512 | 169.8 | 161.0 (−5.2%) | 158.9 (−6.4%) | **289.5** (+70.4%) |
 | Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 92.6 | 93.7 (+1.1%) | 95.2 (+2.7%) | **168.7** (+82.1%) † |
 |  |  | 512 | 94.8 | 91.4 (−3.6%) | 94.5 (−0.3%) | 87.5 (−7.7%) † |
+| Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine§ | 128 | 107.6 | 103.6 (−3.7%) | 108.5 (+0.9%) | **211.0** (+96.2%) † |
+|  |  | 512 | 103.3 | 101.4 (−1.9%) | 110.0 (+6.5%) | **207.7** (+101.1%) † |
 | Qwen Coder Next | 4-bit · group=64 · affine‡ | 128 | 92.2 | 89.4 (−3.0%) | 95.1 (+3.2%) | **204.7** (+122.1%) † |
 |  |  | 512 | 90.4 | 89.2 (−1.3%) | 95.4 (+5.6%) | **200.7** (+122.1%) † |
 
-† Qwen 3.5 and Qwen Coder Next speculative rows use a rollback-safe
+† Qwen 3.5, Qwen 3.6, and Qwen Coder Next speculative rows use a rollback-safe
 branch/recompute path for SSM state. These are effective-throughput
 measurements from AX's n-gram speculative policy, not raw model decode speed.
 Linear-attention speculation is prompt/output-pattern dependent.
@@ -121,16 +137,24 @@ Linear-attention speculation is prompt/output-pattern dependent.
 ‡ Qwen Coder Next uses MLX affine 4-bit globally, with 8-bit overrides for
 router and shared-expert gate tensors.
 
+§ Qwen 3.6 35B A3B uses Unsloth UD-MLX affine 4-bit globally, with 8-bit
+overrides for embeddings, attention/linear-attention projections, shared expert,
+and lm_head tensors.
+
 ### Prefill throughput (tok/s) — percentages vs mlx_lm
 
 | Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine |
 |---|---|---:|---:|---:|---:|
 | Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 2,265.8 | 2,450.4 (+8.1%) | 3,248.7 (+43.4%) |
 |  |  | 512 | 7,634.1 | 6,664.3 (−12.7%) | 7,640.2 (+0.1%) |
+| Gemma 4 31B | 4-bit · group=64 · affine | 128 | 336.5 | 641.6 (+90.7%) | 541.8 (+61.0%) |
+|  |  | 512 | 563.5 | 760.6 (+35.0%) | 727.2 (+29.1%) |
 | Qwen 3 4B | 4-bit · group=64 | 128 | 1,581.1 | 3,627.8 (+129.4%) | 3,077.7 (+94.7%) |
 |  |  | 512 | 3,726.0 | 6,173.7 (+65.7%) | 5,428.9 (+45.7%) |
 | Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 1,038.5 | 2,101.1 (+102.3%) | 1,912.0 (+84.1%) |
 |  |  | 512 | 2,161.4 | 3,165.8 (+46.5%) | 2,735.7 (+26.6%) |
+| Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine§ | 128 | 531.7 | 963.2 (+81.1%) | 930.3 (+75.0%) |
+|  |  | 512 | 1,594.2 | 2,546.5 (+59.7%) | 1,169.3 (−26.7%) |
 | Qwen Coder Next | 4-bit · group=64 · affine‡ | 128 | 267.1 | 384.9 (+44.1%) | 698.7 (+161.6%) |
 |  |  | 512 | 815.4 | 1,417.0 (+73.8%) | 801.2 (−1.7%) |
 
