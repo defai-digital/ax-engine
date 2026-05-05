@@ -1,8 +1,8 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argpartition_axis, astype, dequantize,
-    expand_dims, gather_mm, gather_qmm, gelu, gelu_approx, matmul, multiply, quantized_matmul,
-    reshape, rms_norm, rope, scaled_dot_product_attention_with_mask, slice_last_dim, softmax,
-    sum_axis, take, take_along_axis, tanh, transpose, zeros,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argpartition_axis, astype, concatenate,
+    dequantize, expand_dims, expand_dims_axes, gather_mm, gather_qmm, gelu, gelu_approx, matmul,
+    multiply, quantized_matmul, reshape, rms_norm, rope, scaled_dot_product_attention_with_mask,
+    slice_last_dim, softmax, sum_axis, take, take_along_axis, tanh, transpose, zeros,
 };
 
 use ax_engine_core::NativeModelManifest;
@@ -440,7 +440,10 @@ pub fn layer_forward(
         } else {
             // Qwen3 MoE: router (proj → softmax → top-k) + expert forward.
             let (top_k_indices, top_k_weights) = moe_router_qwen3(cfg, w, &normed2);
-            let out = moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights);
+            let mut out = moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights);
+            if w.shared_expert_gate.is_some() {
+                out = add(&out, &shared_expert_forward(w, &normed2), None);
+            }
             rms_norm_opt(&out, w.ffn_post_norm.as_ref())
         }
     } else {
@@ -883,19 +886,7 @@ fn linear_attention_forward(
         .expect("linear attention layer requires linear attention weights");
     let seq = x.shape()[1];
 
-    let qkv = qw(x, &linear_w.in_proj_qkv);
-    let z = reshape(
-        &qw(x, &linear_w.in_proj_z),
-        &[
-            1,
-            seq,
-            linear_cfg.num_value_heads as i32,
-            linear_cfg.value_head_dim as i32,
-        ],
-        None,
-    );
-    let a = qw(x, &linear_w.in_proj_a);
-    let b = qw(x, &linear_w.in_proj_b);
+    let (qkv, z, a, b) = linear_attention_inputs(linear_cfg, linear_w, x, seq);
 
     let (conv_state, recurrent_state) = cache.linear_state(layer_idx);
     let conv_weight = linear_conv_weight(&linear_w.conv1d);
@@ -923,6 +914,126 @@ fn linear_attention_forward(
     let out = rms_norm_gated(&out, &z, &linear_w.norm);
     let flat = reshape(&out, &[1, seq, linear_cfg.value_dim() as i32], None);
     qw(&flat, &linear_w.out_proj)
+}
+
+fn linear_attention_inputs(
+    cfg: &LinearAttentionConfig,
+    w: &crate::weights::LinearAttentionWeights,
+    x: &MlxArray,
+    seq: i32,
+) -> (MlxArray, MlxArray, MlxArray, MlxArray) {
+    if let (Some(qkvz_w), Some(ba_w)) = (&w.in_proj_qkvz, &w.in_proj_ba) {
+        let mixed_qkvz = qw(x, qkvz_w);
+        let value_heads_per_key = cfg.num_value_heads / cfg.num_key_heads;
+        let value_dim_per_key = value_heads_per_key * cfg.value_head_dim;
+        let qkvz_per_key = cfg.key_head_dim * 2 + value_dim_per_key * 2;
+        let mixed_qkvz = reshape(
+            &mixed_qkvz,
+            &[1, seq, cfg.num_key_heads as i32, qkvz_per_key as i32],
+            None,
+        );
+        let q = slice_last_dim(&mixed_qkvz, 0, cfg.key_head_dim as i32, None);
+        let k = slice_last_dim(
+            &mixed_qkvz,
+            cfg.key_head_dim as i32,
+            (cfg.key_head_dim * 2) as i32,
+            None,
+        );
+        let v = slice_last_dim(
+            &mixed_qkvz,
+            (cfg.key_head_dim * 2) as i32,
+            (cfg.key_head_dim * 2 + value_dim_per_key) as i32,
+            None,
+        );
+        let z = slice_last_dim(
+            &mixed_qkvz,
+            (cfg.key_head_dim * 2 + value_dim_per_key) as i32,
+            qkvz_per_key as i32,
+            None,
+        );
+        let qkv = concatenate(
+            &[
+                &reshape(&q, &[1, seq, cfg.key_dim() as i32], None),
+                &reshape(&k, &[1, seq, cfg.key_dim() as i32], None),
+                &reshape(&v, &[1, seq, cfg.value_dim() as i32], None),
+            ],
+            2,
+            None,
+        );
+        let z = reshape(
+            &z,
+            &[
+                1,
+                seq,
+                cfg.num_value_heads as i32,
+                cfg.value_head_dim as i32,
+            ],
+            None,
+        );
+
+        let mixed_ba = qw(x, ba_w);
+        let ba = reshape(
+            &mixed_ba,
+            &[
+                1,
+                seq,
+                cfg.num_key_heads as i32,
+                (value_heads_per_key * 2) as i32,
+            ],
+            None,
+        );
+        let b = reshape(
+            &slice_last_dim(&ba, 0, value_heads_per_key as i32, None),
+            &[1, seq, cfg.num_value_heads as i32],
+            None,
+        );
+        let a = reshape(
+            &slice_last_dim(
+                &ba,
+                value_heads_per_key as i32,
+                (value_heads_per_key * 2) as i32,
+                None,
+            ),
+            &[1, seq, cfg.num_value_heads as i32],
+            None,
+        );
+        return (qkv, z, a, b);
+    }
+
+    let qkv = qw(
+        x,
+        w.in_proj_qkv
+            .as_ref()
+            .expect("split linear attention must have qkv projection"),
+    );
+    let z = reshape(
+        &qw(
+            x,
+            w.in_proj_z
+                .as_ref()
+                .expect("split linear attention must have z projection"),
+        ),
+        &[
+            1,
+            seq,
+            cfg.num_value_heads as i32,
+            cfg.value_head_dim as i32,
+        ],
+        None,
+    );
+    let a = qw(
+        x,
+        w.in_proj_a
+            .as_ref()
+            .expect("split linear attention must have a projection"),
+    );
+    let b = qw(
+        x,
+        w.in_proj_b
+            .as_ref()
+            .expect("split linear attention must have b projection"),
+    );
+    (qkv, z, a, b)
 }
 
 fn linear_conv_weight(weight: &QuantizedWeight) -> MlxArray {
@@ -1003,7 +1114,41 @@ fn ffn_swiglu(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
         mlx_sys::ops::silu(&gate_out, None)
     };
     let ffn_hidden = multiply(&gate_act, &up_out, None);
-    qw(&ffn_hidden, &w.down_proj)
+    qw(
+        &ffn_hidden,
+        w.down_proj
+            .as_ref()
+            .expect("dense FFN layer must have down_proj"),
+    )
+}
+
+fn shared_expert_forward(w: &LayerWeights, x: &MlxArray) -> MlxArray {
+    let gate = qw(
+        x,
+        w.shared_gate_proj
+            .as_ref()
+            .expect("shared expert must have gate projection"),
+    );
+    let up = qw(
+        x,
+        w.shared_up_proj
+            .as_ref()
+            .expect("shared expert must have up projection"),
+    );
+    let hidden = multiply(&mlx_sys::ops::silu(&gate, None), &up, None);
+    let shared = qw(
+        &hidden,
+        w.shared_down_proj
+            .as_ref()
+            .expect("shared expert must have down projection"),
+    );
+    let shared_gate = qw(
+        x,
+        w.shared_expert_gate
+            .as_ref()
+            .expect("shared expert must have gate input projection"),
+    );
+    multiply(&mlx_sys::ops::sigmoid(&shared_gate, None), &shared, None)
 }
 
 fn mlx_slice_last_dim(x: &MlxArray, start: i32, end: i32) -> MlxArray {
@@ -1096,7 +1241,9 @@ fn moe_router_qwen3(
     );
     // norm_topk_prob: renormalise top-k weights to sum to 1.
     let top_k_weights = if cfg.moe_norm_topk_prob {
-        let sum = sum_axis(&top_k_weights, last_axis, true, None);
+        let sum = sum_axis(&top_k_weights, last_axis, false, None);
+        let shape = top_k_weights.shape();
+        let sum = reshape(&sum, &[shape[0], shape[1], 1], None);
         mlx_sys::ops::divide(&top_k_weights, &sum, None)
     } else {
         top_k_weights
@@ -1140,9 +1287,9 @@ fn moe_experts_forward(
     top_k_indices: &MlxArray,
     top_k_weights: &MlxArray,
 ) -> MlxArray {
-    // Expand x for broadcast over top_k: [1, seq, hidden] → [1, seq, 1, hidden]
-    let x_exp = expand_dims(x, x.ndim() as i32 - 1, None);
-
+    // Match MLX SwitchGLU: [batch, seq, hidden] → [batch, seq, 1, 1, hidden].
+    // The extra singleton before top_k is required by gather_mm/gather_qmm broadcasting.
+    let x_exp = expand_dims_axes(x, &[-2, -3], None);
     let down_exps = w.down_exps.as_ref().unwrap();
 
     let (gate_out, up_out) = if let Some(packed) = &w.gate_up_exps_packed {
@@ -1175,7 +1322,7 @@ fn moe_experts_forward(
     // Weighted sum over top_k dimension → [1, seq, hidden]
     let seq_dim = down_out.ndim() as i32;
     let top_k_axis = seq_dim - 2; // second-to-last dim
-    let scores_exp = expand_dims(top_k_weights, seq_dim - 1, None); // [1,seq,top_k,1]
+    let scores_exp = expand_dims(top_k_weights, top_k_weights.ndim() as i32, None);
     let weighted = multiply(&down_out, &scores_exp, None);
     sum_axis(&weighted, top_k_axis, false, None)
 }
@@ -1362,10 +1509,18 @@ mod tests {
             qkv_packed: None,
             o_proj: None,
             linear_attn: Some(LinearAttentionWeights {
-                in_proj_qkv: dense_weight(&[cfg.conv_dim() as i32, hidden_size as i32]),
-                in_proj_z: dense_weight(&[cfg.value_dim() as i32, hidden_size as i32]),
-                in_proj_a: dense_weight(&[cfg.num_value_heads as i32, hidden_size as i32]),
-                in_proj_b: dense_weight(&[cfg.num_value_heads as i32, hidden_size as i32]),
+                in_proj_qkv: Some(dense_weight(&[cfg.conv_dim() as i32, hidden_size as i32])),
+                in_proj_z: Some(dense_weight(&[cfg.value_dim() as i32, hidden_size as i32])),
+                in_proj_a: Some(dense_weight(&[
+                    cfg.num_value_heads as i32,
+                    hidden_size as i32,
+                ])),
+                in_proj_b: Some(dense_weight(&[
+                    cfg.num_value_heads as i32,
+                    hidden_size as i32,
+                ])),
+                in_proj_qkvz: None,
+                in_proj_ba: None,
                 conv1d: dense_weight(&[cfg.conv_dim() as i32, cfg.conv_kernel_dim as i32, 1_i32]),
                 dt_bias: zeros(&[cfg.num_value_heads as i32], MlxDtype::Float32, None),
                 a_log: zeros(&[cfg.num_value_heads as i32], MlxDtype::Float32, None),
@@ -1377,7 +1532,7 @@ mod tests {
             gate_proj: None,
             up_proj: None,
             gate_up_packed: None,
-            down_proj: dense_weight(&[hidden_size as i32, hidden_size as i32]),
+            down_proj: Some(dense_weight(&[hidden_size as i32, hidden_size as i32])),
             ffn_norm2: None,
             ffn_post_norm1: None,
             ffn_post_norm2: None,
@@ -1388,6 +1543,10 @@ mod tests {
             per_layer_gate: None,
             per_layer_proj_w: None,
             per_layer_post_norm: None,
+            shared_expert_gate: None,
+            shared_gate_proj: None,
+            shared_up_proj: None,
+            shared_down_proj: None,
             gate_up_exps_packed: None,
             gate_exps: None,
             up_exps: None,
@@ -1468,7 +1627,7 @@ mod tests {
             gate_proj: Some(dense_weight(&[3, 4])),
             up_proj: Some(dense_weight(&[3, 4])),
             gate_up_packed: None,
-            down_proj: dense_weight(&[4, 3]),
+            down_proj: Some(dense_weight(&[4, 3])),
             ffn_norm2: None,
             ffn_post_norm1: None,
             ffn_post_norm2: None,
@@ -1479,6 +1638,10 @@ mod tests {
             per_layer_gate: None,
             per_layer_proj_w: None,
             per_layer_post_norm: None,
+            shared_expert_gate: None,
+            shared_gate_proj: None,
+            shared_up_proj: None,
+            shared_down_proj: None,
             gate_up_exps_packed: None,
             gate_exps: None,
             up_exps: None,
@@ -1573,7 +1736,7 @@ mod tests {
             gate_proj: None,
             up_proj: None,
             gate_up_packed: None,
-            down_proj: dense_weight(&[4, 3]),
+            down_proj: Some(dense_weight(&[4, 3])),
             ffn_norm2: None,
             ffn_post_norm1: None,
             ffn_post_norm2: None,
@@ -1584,6 +1747,10 @@ mod tests {
             per_layer_gate: None,
             per_layer_proj_w: None,
             per_layer_post_norm: None,
+            shared_expert_gate: None,
+            shared_gate_proj: None,
+            shared_up_proj: None,
+            shared_down_proj: None,
             gate_up_exps_packed: Some(dense_weight(&[2, 6, 4])),
             gate_exps: None,
             up_exps: None,
@@ -1634,7 +1801,7 @@ mod tests {
             gate_proj: None,
             up_proj: None,
             gate_up_packed: None,
-            down_proj: dense_weight(&[4, 3]),
+            down_proj: Some(dense_weight(&[4, 3])),
             ffn_norm2: None,
             ffn_post_norm1: None,
             ffn_post_norm2: None,
@@ -1645,6 +1812,10 @@ mod tests {
             per_layer_gate: None,
             per_layer_proj_w: None,
             per_layer_post_norm: None,
+            shared_expert_gate: None,
+            shared_gate_proj: None,
+            shared_up_proj: None,
+            shared_down_proj: None,
             gate_up_exps_packed: Some(dense_weight(&[2, 6, 4])),
             gate_exps: None,
             up_exps: None,
@@ -1695,7 +1866,7 @@ mod tests {
             gate_proj: None,
             up_proj: None,
             gate_up_packed: None,
-            down_proj: dense_weight(&[4, 3]),
+            down_proj: Some(dense_weight(&[4, 3])),
             ffn_norm2: None,
             ffn_post_norm1: None,
             ffn_post_norm2: None,
@@ -1706,6 +1877,10 @@ mod tests {
             per_layer_gate: None,
             per_layer_proj_w: None,
             per_layer_post_norm: None,
+            shared_expert_gate: None,
+            shared_gate_proj: None,
+            shared_up_proj: None,
+            shared_down_proj: None,
             gate_up_exps_packed: None,
             gate_exps: Some(dense_weight(&[2, 3, 4])),
             up_exps: Some(dense_weight(&[2, 3, 4])),
@@ -1730,6 +1905,135 @@ mod tests {
         let out = moe_experts_forward(&cfg, &weights, &x, &top_k_indices, &top_k_weights);
 
         assert_eq!(out.shape(), vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn moe_experts_forward_supports_reference_switchglu_broadcast_for_topk_gt_tokens() {
+        let mut cfg = cfg(false);
+        cfg.hidden_size = 4;
+        cfg.moe_expert_count = 4;
+        cfg.moe_experts_per_token = 3;
+        cfg.moe_expert_intermediate_size = 3;
+        cfg.uses_geglu = false;
+        let weights = LayerWeights {
+            attn_norm: zeros(&[4], MlxDtype::Float32, None),
+            attn_post_norm: None,
+            q_norm: None,
+            k_norm: None,
+            q_proj: None,
+            k_proj: None,
+            v_proj: None,
+            qkv_packed: None,
+            o_proj: None,
+            linear_attn: None,
+            ffn_norm: zeros(&[4], MlxDtype::Float32, None),
+            ffn_post_norm: None,
+            gate_proj: None,
+            up_proj: None,
+            gate_up_packed: None,
+            down_proj: Some(dense_weight(&[4, 3])),
+            ffn_norm2: None,
+            ffn_post_norm1: None,
+            ffn_post_norm2: None,
+            router_proj: None,
+            router_scale: None,
+            router_expert_scale: None,
+            layer_scalar: None,
+            per_layer_gate: None,
+            per_layer_proj_w: None,
+            per_layer_post_norm: None,
+            shared_expert_gate: None,
+            shared_gate_proj: None,
+            shared_up_proj: None,
+            shared_down_proj: None,
+            gate_up_exps_packed: None,
+            gate_exps: Some(dense_weight(&[4, 3, 4])),
+            up_exps: Some(dense_weight(&[4, 3, 4])),
+            down_exps: Some(dense_weight(&[4, 4, 3])),
+        };
+        let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
+        let indices_data = [0_u32, 1_u32, 2_u32, 2_u32, 1_u32, 0_u32];
+        let top_k_indices = MlxArray::from_raw_data(
+            indices_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&indices_data),
+            &[1, 2, 3],
+            MlxDtype::Uint32,
+        );
+        let weights_data = [0.50_f32, 0.25_f32, 0.25_f32, 0.25_f32, 0.25_f32, 0.50_f32];
+        let top_k_weights = MlxArray::from_raw_data(
+            weights_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&weights_data),
+            &[1, 2, 3],
+            MlxDtype::Float32,
+        );
+
+        let out = moe_experts_forward(&cfg, &weights, &x, &top_k_indices, &top_k_weights);
+
+        assert_eq!(out.shape(), vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn moe_experts_forward_keeps_single_token_sequence_axis() {
+        let mut cfg = cfg(false);
+        cfg.hidden_size = 4;
+        cfg.moe_expert_count = 4;
+        cfg.moe_experts_per_token = 3;
+        cfg.moe_expert_intermediate_size = 3;
+        let weights = LayerWeights {
+            attn_norm: zeros(&[4], MlxDtype::Float32, None),
+            attn_post_norm: None,
+            q_norm: None,
+            k_norm: None,
+            q_proj: None,
+            k_proj: None,
+            v_proj: None,
+            qkv_packed: None,
+            o_proj: None,
+            linear_attn: None,
+            ffn_norm: zeros(&[4], MlxDtype::Float32, None),
+            ffn_post_norm: None,
+            gate_proj: None,
+            up_proj: None,
+            gate_up_packed: None,
+            down_proj: Some(dense_weight(&[4, 3])),
+            ffn_norm2: None,
+            ffn_post_norm1: None,
+            ffn_post_norm2: None,
+            router_proj: None,
+            router_scale: None,
+            router_expert_scale: None,
+            layer_scalar: None,
+            per_layer_gate: None,
+            per_layer_proj_w: None,
+            per_layer_post_norm: None,
+            shared_expert_gate: None,
+            shared_gate_proj: None,
+            shared_up_proj: None,
+            shared_down_proj: None,
+            gate_up_exps_packed: None,
+            gate_exps: Some(dense_weight(&[4, 3, 4])),
+            up_exps: Some(dense_weight(&[4, 3, 4])),
+            down_exps: Some(dense_weight(&[4, 4, 3])),
+        };
+        let x = zeros(&[1, 1, 4], MlxDtype::Float32, None);
+        let indices_data = [0_u32, 1_u32, 2_u32];
+        let top_k_indices = MlxArray::from_raw_data(
+            indices_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&indices_data),
+            &[1, 1, 3],
+            MlxDtype::Uint32,
+        );
+        let weights_data = [0.50_f32, 0.25_f32, 0.25_f32];
+        let top_k_weights = MlxArray::from_raw_data(
+            weights_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&weights_data),
+            &[1, 1, 3],
+            MlxDtype::Float32,
+        );
+
+        let out = moe_experts_forward(&cfg, &weights, &x, &top_k_indices, &top_k_weights);
+
+        assert_eq!(out.shape(), vec![1, 1, 4]);
     }
 
     #[test]

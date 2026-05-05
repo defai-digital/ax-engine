@@ -80,11 +80,18 @@ stream.
 | Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it | Per-layer embeddings, input gating, sliding-window + full attention, KV sharing, logit softcapping |
 | Qwen 3 | Qwen3-4B | Dense GQA + SwiGLU |
 | Qwen 3.5 | Qwen3.5-9B | Linear attention + MoE FFN, attn_output_gate per-head interleaving |
+| Qwen 3 Coder Next | Qwen3-Coder-Next-4bit | Gated-delta linear attention, sparse top-k MoE, shared expert |
 
 All models use MLX safetensors format with the AX `model-manifest.json`
 descriptor. Each supported architecture has a hand-written forward pass in
 `ax-engine-mlx`. Adding a new architecture means implementing the model graph,
 not wiring up a generic loader.
+
+## Limitations And Problems
+
+No current public benchmark row is blocked for the supported MLX preview models
+listed above. Speculative rows remain effective-throughput measurements and
+should not be read as raw model-kernel speedups.
 
 ## Performance
 
@@ -103,12 +110,16 @@ reports observed effective throughput, not raw model speed.
 |  |  | 512 | 169.8 | 161.0 (−5.2%) | 158.9 (−6.4%) | **289.5** (+70.4%) |
 | Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 92.6 | 93.7 (+1.1%) | 95.2 (+2.7%) | **168.7** (+82.1%) † |
 |  |  | 512 | 94.8 | 91.4 (−3.6%) | 94.5 (−0.3%) | 87.5 (−7.7%) † |
+| Qwen Coder Next | 4-bit · group=64 · affine‡ | 128 | 92.2 | 89.4 (−3.0%) | 95.1 (+3.2%) | **204.7** (+122.1%) † |
+|  |  | 512 | 90.4 | 89.2 (−1.3%) | 95.4 (+5.6%) | **200.7** (+122.1%) † |
 
-† Qwen 3.5 speculative uses a rollback-safe branch/recompute path for SSM state;
-linear-attention speculation requires repeated n-gram evidence and cools down
-after partial accepts. This mitigates low-hit prompts, but the 512-token
-random-token case still falls back below greedy because branch/recompute probes
-remain more expensive than accepted drafts in that run.
+† Qwen 3.5 and Qwen Coder Next speculative rows use a rollback-safe
+branch/recompute path for SSM state. These are effective-throughput
+measurements from AX's n-gram speculative policy, not raw model decode speed.
+Linear-attention speculation is prompt/output-pattern dependent.
+
+‡ Qwen Coder Next uses MLX affine 4-bit globally, with 8-bit overrides for
+router and shared-expert gate tensors.
 
 ### Prefill throughput (tok/s) — percentages vs mlx_lm
 
@@ -120,6 +131,8 @@ remain more expensive than accepted drafts in that run.
 |  |  | 512 | 3,726.0 | 6,173.7 (+65.7%) | 5,428.9 (+45.7%) |
 | Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 1,038.5 | 2,101.1 (+102.3%) | 1,912.0 (+84.1%) |
 |  |  | 512 | 2,161.4 | 3,165.8 (+46.5%) | 2,735.7 (+26.6%) |
+| Qwen Coder Next | 4-bit · group=64 · affine‡ | 128 | 267.1 | 384.9 (+44.1%) | 698.7 (+161.6%) |
+|  |  | 512 | 815.4 | 1,417.0 (+73.8%) | 801.2 (−1.7%) |
 
 ### Workload contract (ax-engine-bench scenario, 256-input / 128-output, temp=0)
 

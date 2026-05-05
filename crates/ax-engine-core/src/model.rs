@@ -54,9 +54,11 @@ pub enum NativeTensorRole {
     AttentionQkvPacked,
     AttentionO,
     LinearAttentionInProjQkv,
+    LinearAttentionInProjQkvz,
     LinearAttentionInProjZ,
     LinearAttentionInProjA,
     LinearAttentionInProjB,
+    LinearAttentionInProjBa,
     LinearAttentionConv1d,
     LinearAttentionDtBias,
     LinearAttentionALog,
@@ -73,6 +75,10 @@ pub enum NativeTensorRole {
     FfnGate,
     FfnUp,
     FfnGateUpPacked,
+    FfnSharedExpertGateInp,
+    FfnSharedExpertGate,
+    FfnSharedExpertUp,
+    FfnSharedExpertDown,
     FfnGateExps,
     FfnUpExps,
     FfnGateUpExpsPacked,
@@ -112,9 +118,11 @@ impl NativeTensorRole {
                 | Self::AttentionQkvPacked
                 | Self::AttentionO
                 | Self::LinearAttentionInProjQkv
+                | Self::LinearAttentionInProjQkvz
                 | Self::LinearAttentionInProjZ
                 | Self::LinearAttentionInProjA
                 | Self::LinearAttentionInProjB
+                | Self::LinearAttentionInProjBa
                 | Self::LinearAttentionConv1d
                 | Self::LinearAttentionDtBias
                 | Self::LinearAttentionALog
@@ -131,6 +139,10 @@ impl NativeTensorRole {
                 | Self::FfnGate
                 | Self::FfnUp
                 | Self::FfnGateUpPacked
+                | Self::FfnSharedExpertGateInp
+                | Self::FfnSharedExpertGate
+                | Self::FfnSharedExpertUp
+                | Self::FfnSharedExpertDown
                 | Self::FfnGateExps
                 | Self::FfnUpExps
                 | Self::FfnGateUpExpsPacked
@@ -774,15 +786,19 @@ fn validate_native_model_manifest(
                 ),
             });
         }
-        require_layer_role(roles, NativeTensorRole::FfnDown, layer_index, "ffn_down")?;
-
         let has_packed_gate_up = roles.contains(&NativeTensorRole::FfnGateUpPacked);
         let has_split_gate_up =
             roles.contains(&NativeTensorRole::FfnGate) && roles.contains(&NativeTensorRole::FfnUp);
-        if !(has_packed_gate_up || has_split_gate_up) {
+        let has_dense_ffn =
+            roles.contains(&NativeTensorRole::FfnDown) && (has_packed_gate_up || has_split_gate_up);
+        let has_shared_expert_ffn = roles.contains(&NativeTensorRole::FfnSharedExpertGateInp)
+            && roles.contains(&NativeTensorRole::FfnSharedExpertGate)
+            && roles.contains(&NativeTensorRole::FfnSharedExpertUp)
+            && roles.contains(&NativeTensorRole::FfnSharedExpertDown);
+        if !(has_dense_ffn || has_shared_expert_ffn) {
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
-                    "layer {} must provide ffn_gate_up_packed or ffn_gate/ffn_up",
+                    "layer {} must provide dense FFN tensors or Qwen3Next shared-expert FFN tensors",
                     layer_index
                 ),
             });
@@ -795,9 +811,11 @@ fn validate_native_model_manifest(
             || roles.contains(&NativeTensorRole::AttentionK)
             || roles.contains(&NativeTensorRole::AttentionQkvPacked);
         let has_any_linear_attention = roles.contains(&NativeTensorRole::LinearAttentionInProjQkv)
+            || roles.contains(&NativeTensorRole::LinearAttentionInProjQkvz)
             || roles.contains(&NativeTensorRole::LinearAttentionInProjZ)
             || roles.contains(&NativeTensorRole::LinearAttentionInProjA)
             || roles.contains(&NativeTensorRole::LinearAttentionInProjB)
+            || roles.contains(&NativeTensorRole::LinearAttentionInProjBa)
             || roles.contains(&NativeTensorRole::LinearAttentionConv1d)
             || roles.contains(&NativeTensorRole::LinearAttentionDtBias)
             || roles.contains(&NativeTensorRole::LinearAttentionALog)
@@ -808,6 +826,10 @@ fn validate_native_model_manifest(
             || roles.contains(&NativeTensorRole::FfnNorm2)
             || roles.contains(&NativeTensorRole::FfnPostNorm1)
             || roles.contains(&NativeTensorRole::FfnPostNorm2)
+            || roles.contains(&NativeTensorRole::FfnSharedExpertGateInp)
+            || roles.contains(&NativeTensorRole::FfnSharedExpertGate)
+            || roles.contains(&NativeTensorRole::FfnSharedExpertUp)
+            || roles.contains(&NativeTensorRole::FfnSharedExpertDown)
             || roles.contains(&NativeTensorRole::FfnGateExps)
             || roles.contains(&NativeTensorRole::FfnUpExps)
             || roles.contains(&NativeTensorRole::FfnGateUpExpsPacked)
@@ -877,30 +899,20 @@ fn validate_native_model_manifest(
                     ),
                 });
             }
-            require_layer_role(
-                roles,
-                NativeTensorRole::LinearAttentionInProjQkv,
-                layer_index,
-                "linear_attention_in_proj_qkv",
-            )?;
-            require_layer_role(
-                roles,
-                NativeTensorRole::LinearAttentionInProjZ,
-                layer_index,
-                "linear_attention_in_proj_z",
-            )?;
-            require_layer_role(
-                roles,
-                NativeTensorRole::LinearAttentionInProjA,
-                layer_index,
-                "linear_attention_in_proj_a",
-            )?;
-            require_layer_role(
-                roles,
-                NativeTensorRole::LinearAttentionInProjB,
-                layer_index,
-                "linear_attention_in_proj_b",
-            )?;
+            let has_split_linear = roles.contains(&NativeTensorRole::LinearAttentionInProjQkv)
+                && roles.contains(&NativeTensorRole::LinearAttentionInProjZ)
+                && roles.contains(&NativeTensorRole::LinearAttentionInProjA)
+                && roles.contains(&NativeTensorRole::LinearAttentionInProjB);
+            let has_packed_linear = roles.contains(&NativeTensorRole::LinearAttentionInProjQkvz)
+                && roles.contains(&NativeTensorRole::LinearAttentionInProjBa);
+            if !(has_split_linear || has_packed_linear) {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer {} must provide linear_attention split qkv/z/a/b or packed qkvz/ba projections",
+                        layer_index
+                    ),
+                });
+            }
             require_layer_role(
                 roles,
                 NativeTensorRole::LinearAttentionConv1d,
@@ -953,6 +965,36 @@ fn validate_native_model_manifest(
                 layer_index,
                 "ffn_down_exps",
             )?;
+            if roles.contains(&NativeTensorRole::FfnSharedExpertGateInp)
+                || roles.contains(&NativeTensorRole::FfnSharedExpertGate)
+                || roles.contains(&NativeTensorRole::FfnSharedExpertUp)
+                || roles.contains(&NativeTensorRole::FfnSharedExpertDown)
+            {
+                require_layer_role(
+                    roles,
+                    NativeTensorRole::FfnSharedExpertGateInp,
+                    layer_index,
+                    "ffn_shared_expert_gate_inp",
+                )?;
+                require_layer_role(
+                    roles,
+                    NativeTensorRole::FfnSharedExpertGate,
+                    layer_index,
+                    "ffn_shared_expert_gate",
+                )?;
+                require_layer_role(
+                    roles,
+                    NativeTensorRole::FfnSharedExpertUp,
+                    layer_index,
+                    "ffn_shared_expert_up",
+                )?;
+                require_layer_role(
+                    roles,
+                    NativeTensorRole::FfnSharedExpertDown,
+                    layer_index,
+                    "ffn_shared_expert_down",
+                )?;
+            }
             let has_packed_moe = roles.contains(&NativeTensorRole::FfnGateUpExpsPacked);
             let has_gate_exps = roles.contains(&NativeTensorRole::FfnGateExps);
             let has_up_exps = roles.contains(&NativeTensorRole::FfnUpExps);
@@ -1095,26 +1137,26 @@ fn validate_native_model_tensor_shapes(
             expect_vector_shape(ffn_post_norm_2, hidden_size, "ffn_post_norm_2")?;
         }
 
-        let ffn_down = required_layer_tensor_spec(
-            manifest,
-            layer_index,
-            NativeTensorRole::FfnDown,
-            "ffn_down",
-        )?;
-        let ffn_down_shape =
-            matrix_shape(ffn_down).ok_or_else(|| NativeModelError::InvalidManifest {
-                message: format!(
-                    "layer {} tensor ffn_down must be a rank-2 matrix",
-                    layer_index
-                ),
-            })?;
-        if !ffn_down.source_quantized && ffn_down_shape.0 != hidden_size {
-            return Err(NativeModelError::InvalidManifest {
-                message: format!(
-                    "layer {} tensor ffn_down must have shape [{}, intermediate_dim], got {:?}",
-                    layer_index, hidden_size, ffn_down.shape
-                ),
-            });
+        let ffn_down = manifest_tensor(manifest, NativeTensorRole::FfnDown, Some(layer_index));
+        let ffn_down_shape = ffn_down
+            .map(|tensor| {
+                matrix_shape(tensor).ok_or_else(|| NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer {} tensor ffn_down must be a rank-2 matrix",
+                        layer_index
+                    ),
+                })
+            })
+            .transpose()?;
+        if let (Some(ffn_down), Some(ffn_down_shape)) = (ffn_down, ffn_down_shape) {
+            if !ffn_down.source_quantized && ffn_down_shape.0 != hidden_size {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "layer {} tensor ffn_down must have shape [{}, intermediate_dim], got {:?}",
+                        layer_index, hidden_size, ffn_down.shape
+                    ),
+                });
+            }
         }
 
         if let Some(attention_qkv) = manifest_tensor(
@@ -1178,54 +1220,79 @@ fn validate_native_model_tensor_shapes(
         .is_some()
         {
             let linear_dims = resolved_linear_attention_dims(manifest)?;
-            let in_proj_qkv = required_layer_tensor_spec(
+            if let Some(in_proj_qkvz) = manifest_tensor(
                 manifest,
-                layer_index,
-                NativeTensorRole::LinearAttentionInProjQkv,
-                "linear_attention_in_proj_qkv",
-            )?;
-            expect_matrix_shape(
-                in_proj_qkv,
-                linear_dims.conv_dim,
-                hidden_size,
-                "linear_attention_in_proj_qkv",
-            )?;
-            let in_proj_z = required_layer_tensor_spec(
-                manifest,
-                layer_index,
-                NativeTensorRole::LinearAttentionInProjZ,
-                "linear_attention_in_proj_z",
-            )?;
-            expect_matrix_shape(
-                in_proj_z,
-                linear_dims.value_dim,
-                hidden_size,
-                "linear_attention_in_proj_z",
-            )?;
-            let in_proj_a = required_layer_tensor_spec(
-                manifest,
-                layer_index,
-                NativeTensorRole::LinearAttentionInProjA,
-                "linear_attention_in_proj_a",
-            )?;
-            expect_matrix_shape(
-                in_proj_a,
-                linear_dims.num_value_heads,
-                hidden_size,
-                "linear_attention_in_proj_a",
-            )?;
-            let in_proj_b = required_layer_tensor_spec(
-                manifest,
-                layer_index,
-                NativeTensorRole::LinearAttentionInProjB,
-                "linear_attention_in_proj_b",
-            )?;
-            expect_matrix_shape(
-                in_proj_b,
-                linear_dims.num_value_heads,
-                hidden_size,
-                "linear_attention_in_proj_b",
-            )?;
+                NativeTensorRole::LinearAttentionInProjQkvz,
+                Some(layer_index),
+            ) {
+                expect_matrix_shape(
+                    in_proj_qkvz,
+                    linear_dims.conv_dim + linear_dims.value_dim,
+                    hidden_size,
+                    "linear_attention_in_proj_qkvz",
+                )?;
+                let in_proj_ba = required_layer_tensor_spec(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::LinearAttentionInProjBa,
+                    "linear_attention_in_proj_ba",
+                )?;
+                expect_matrix_shape(
+                    in_proj_ba,
+                    linear_dims.num_value_heads.saturating_mul(2),
+                    hidden_size,
+                    "linear_attention_in_proj_ba",
+                )?;
+            } else {
+                let in_proj_qkv = required_layer_tensor_spec(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::LinearAttentionInProjQkv,
+                    "linear_attention_in_proj_qkv",
+                )?;
+                expect_matrix_shape(
+                    in_proj_qkv,
+                    linear_dims.conv_dim,
+                    hidden_size,
+                    "linear_attention_in_proj_qkv",
+                )?;
+                let in_proj_z = required_layer_tensor_spec(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::LinearAttentionInProjZ,
+                    "linear_attention_in_proj_z",
+                )?;
+                expect_matrix_shape(
+                    in_proj_z,
+                    linear_dims.value_dim,
+                    hidden_size,
+                    "linear_attention_in_proj_z",
+                )?;
+                let in_proj_a = required_layer_tensor_spec(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::LinearAttentionInProjA,
+                    "linear_attention_in_proj_a",
+                )?;
+                expect_matrix_shape(
+                    in_proj_a,
+                    linear_dims.num_value_heads,
+                    hidden_size,
+                    "linear_attention_in_proj_a",
+                )?;
+                let in_proj_b = required_layer_tensor_spec(
+                    manifest,
+                    layer_index,
+                    NativeTensorRole::LinearAttentionInProjB,
+                    "linear_attention_in_proj_b",
+                )?;
+                expect_matrix_shape(
+                    in_proj_b,
+                    linear_dims.num_value_heads,
+                    hidden_size,
+                    "linear_attention_in_proj_b",
+                )?;
+            }
             let dt_bias = required_layer_tensor_spec(
                 manifest,
                 layer_index,
@@ -1365,7 +1432,7 @@ fn validate_native_model_tensor_shapes(
             }
         }
 
-        let intermediate_dim = if let Some(ffn_gate_up_packed) = manifest_tensor(
+        let dense_intermediate_dim = if let Some(ffn_gate_up_packed) = manifest_tensor(
             manifest,
             NativeTensorRole::FfnGateUpPacked,
             Some(layer_index),
@@ -1405,7 +1472,8 @@ fn validate_native_model_tensor_shapes(
                 });
             }
             rows / 2
-        } else {
+        } else if manifest_tensor(manifest, NativeTensorRole::FfnGate, Some(layer_index)).is_some()
+        {
             let ffn_gate = required_layer_tensor_spec(
                 manifest,
                 layer_index,
@@ -1477,25 +1545,82 @@ fn validate_native_model_tensor_shapes(
                 });
             }
             gate_shape.0
+        } else {
+            0
         };
 
-        if ffn_down.source_quantized {
-            let expected_cols = expected_packed_cols(intermediate_dim, ffn_down)?;
-            if ffn_down_shape.1 != expected_cols {
+        if let (Some(ffn_down), Some(ffn_down_shape)) = (
+            manifest_tensor(manifest, NativeTensorRole::FfnDown, Some(layer_index)),
+            ffn_down_shape,
+        ) {
+            if ffn_down.source_quantized {
+                let expected_cols = expected_packed_cols(dense_intermediate_dim, ffn_down)?;
+                if ffn_down_shape.1 != expected_cols {
+                    return Err(NativeModelError::InvalidManifest {
+                        message: format!(
+                            "layer {} tensor ffn_down must have packed quantized shape [rows, {}], got {:?}",
+                            layer_index, expected_cols, ffn_down.shape
+                        ),
+                    });
+                }
+            } else if ffn_down_shape.1 != dense_intermediate_dim {
                 return Err(NativeModelError::InvalidManifest {
                     message: format!(
-                        "layer {} tensor ffn_down must have packed quantized shape [rows, {}], got {:?}",
-                        layer_index, expected_cols, ffn_down.shape
+                        "layer {} tensor ffn_down must have intermediate_dim {} columns, got {:?}",
+                        layer_index, dense_intermediate_dim, ffn_down.shape
                     ),
                 });
             }
-        } else if ffn_down_shape.1 != intermediate_dim {
-            return Err(NativeModelError::InvalidManifest {
-                message: format!(
-                    "layer {} tensor ffn_down must have intermediate_dim {} columns, got {:?}",
-                    layer_index, intermediate_dim, ffn_down.shape
-                ),
-            });
+        }
+
+        if let Some(shared_gate_inp) = manifest_tensor(
+            manifest,
+            NativeTensorRole::FfnSharedExpertGateInp,
+            Some(layer_index),
+        ) {
+            let moe_dims = resolved_moe_dims(manifest)?;
+            expect_matrix_shape(
+                shared_gate_inp,
+                1,
+                hidden_size,
+                "ffn_shared_expert_gate_inp",
+            )?;
+            let shared_gate = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::FfnSharedExpertGate,
+                "ffn_shared_expert_gate",
+            )?;
+            expect_matrix_shape(
+                shared_gate,
+                moe_dims.expert_intermediate_size,
+                hidden_size,
+                "ffn_shared_expert_gate",
+            )?;
+            let shared_up = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::FfnSharedExpertUp,
+                "ffn_shared_expert_up",
+            )?;
+            expect_matrix_shape(
+                shared_up,
+                moe_dims.expert_intermediate_size,
+                hidden_size,
+                "ffn_shared_expert_up",
+            )?;
+            let shared_down = required_layer_tensor_spec(
+                manifest,
+                layer_index,
+                NativeTensorRole::FfnSharedExpertDown,
+                "ffn_shared_expert_down",
+            )?;
+            expect_matrix_shape(
+                shared_down,
+                hidden_size,
+                moe_dims.expert_intermediate_size,
+                "ffn_shared_expert_down",
+            )?;
         }
     }
 

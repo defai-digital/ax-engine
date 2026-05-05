@@ -127,9 +127,8 @@ impl NgramTable {
             buf[i] = t;
         }
 
-        let passes = |p: &&NgramPrediction| {
-            p.support >= min_support && p.confidence() >= conf_threshold
-        };
+        let passes =
+            |p: &&NgramPrediction| p.support >= min_support && p.confidence() >= conf_threshold;
 
         for _ in 0..max_len {
             let next = if len >= 3 {
@@ -189,7 +188,14 @@ where
             p.total = p.total.saturating_add(1);
         }
         None => {
-            map.insert(key, NgramPrediction { token, support: 1, total: 1 });
+            map.insert(
+                key,
+                NgramPrediction {
+                    token,
+                    support: 1,
+                    total: 1,
+                },
+            );
         }
     }
 }

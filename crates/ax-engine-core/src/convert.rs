@@ -133,7 +133,13 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         rope_theta_swa,
         query_pre_attn_scalar,
         attention_logit_softcap,
-        attn_output_gate: arch_bool(&config, &model_type, "attn_output_gate").unwrap_or(false),
+        // qwen3_next always uses a sigmoid output gate on the attention result (the gate is
+        // split from q_proj output, not a separate configurable flag).  vllm's reference
+        // implementation defaults this to true when absent: getattr(config, "attn_output_gate", True).
+        // Absent the field in config.json, ax-engine must apply the same default.
+        attn_output_gate: arch_bool(&config, &model_type, "attn_output_gate").unwrap_or(
+            matches!(model_type.as_str(), "qwen3_next" | "qwen3_6" | "qwen3.6"),
+        ),
         partial_rotary_factor,
         attention_value_from_key_layers,
         attention_v_norm_no_scale_layers: if model_type == "gemma4" {
@@ -393,6 +399,22 @@ const HF_STANDARD_TENSOR_MAP: &[(&str, TensorMapping)] = &[
         "mlp.down_proj.weight",
         TensorMapping::PerLayer(NativeTensorRole::FfnDown),
     ),
+    (
+        "mlp.shared_expert_gate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGateInp),
+    ),
+    (
+        "mlp.shared_expert.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGate),
+    ),
+    (
+        "mlp.shared_expert.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertUp),
+    ),
+    (
+        "mlp.shared_expert.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
+    ),
     // packed gate+up
     (
         "mlp.gate_up_proj.weight",
@@ -426,6 +448,10 @@ const QWEN35_LINEAR_TENSOR_MAP: &[(&str, TensorMapping)] = &[
         TensorMapping::PerLayer(NativeTensorRole::LinearAttentionInProjQkv),
     ),
     (
+        "linear_attn.in_proj_qkvz.weight",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionInProjQkvz),
+    ),
+    (
         "linear_attn.in_proj_z.weight",
         TensorMapping::PerLayer(NativeTensorRole::LinearAttentionInProjZ),
     ),
@@ -436,6 +462,10 @@ const QWEN35_LINEAR_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     (
         "linear_attn.in_proj_b.weight",
         TensorMapping::PerLayer(NativeTensorRole::LinearAttentionInProjB),
+    ),
+    (
+        "linear_attn.in_proj_ba.weight",
+        TensorMapping::PerLayer(NativeTensorRole::LinearAttentionInProjBa),
     ),
     (
         "linear_attn.conv1d.weight",
@@ -502,13 +532,17 @@ fn model_family_for_type(model_type: &str) -> Result<ModelFamily, ConvertError> 
         "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_text" => Ok(ModelFamily {
             family_name: "qwen3_5",
             tensor_map: HF_STANDARD_TENSOR_MAP,
-            extra_tensor_map: None,
+            extra_tensor_map: if matches!(model_type, "qwen3_5_moe" | "qwen3_5_text") {
+                Some(QWEN3_MOE_EXTRA_TENSOR_MAP)
+            } else {
+                None
+            },
             uses_language_model_prefix: true,
         }),
         "qwen3_next" | "qwen3.6" | "qwen3_6" => Ok(ModelFamily {
             family_name: "qwen3_next",
             tensor_map: HF_STANDARD_TENSOR_MAP,
-            extra_tensor_map: None,
+            extra_tensor_map: Some(QWEN3_MOE_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: true,
         }),
         "qwen3_moe" => Ok(ModelFamily {
@@ -587,6 +621,10 @@ fn is_qwen3_5_family(model_type: &str) -> bool {
     )
 }
 
+fn is_qwen_gated_delta_family(model_type: &str) -> bool {
+    is_qwen3_5_family(model_type) || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
+}
+
 /// Get a u64 field, checking both the top-level config and a nested `text_config`
 /// (Gemma4 and Qwen3.5+ nest architecture params under `text_config`).
 fn arch_u64(config: &serde_json::Value, model_type: &str, field: &str) -> Option<u64> {
@@ -632,7 +670,7 @@ fn linear_attention_config(
     config: &serde_json::Value,
     model_type: &str,
 ) -> NativeLinearAttentionConfig {
-    if !is_qwen3_5_family(model_type) {
+    if !is_qwen_gated_delta_family(model_type) {
         return NativeLinearAttentionConfig::default();
     }
 
@@ -651,8 +689,9 @@ fn linear_attention_config(
 
 fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
     let is_gemma4_moe = arch_bool(config, model_type, "enable_moe_block").unwrap_or(false);
-    let is_qwen3_moe = model_type == "qwen3_moe";
-    if !is_gemma4_moe && !is_qwen3_moe {
+    let is_qwen3_moe = matches!(model_type, "qwen3_moe" | "qwen3_5_moe" | "qwen3_5_text");
+    let is_qwen3_next_moe = model_type == "qwen3_next";
+    if !is_gemma4_moe && !is_qwen3_moe && !is_qwen3_next_moe {
         return NativeMoeConfig::default();
     }
 
@@ -1034,6 +1073,9 @@ fn tensor_quantization(
     tensor_name: &str,
 ) -> Option<NativeTensorQuantization> {
     let mut quantization = config_quantization(config).unwrap_or_default();
+    if let Some(override_quantization) = tensor_quantization_override(config, tensor_name) {
+        quantization = override_quantization;
+    }
     // mlx-lm's Gemma4 quantization predicate keeps router.proj at 8-bit while
     // the rest of the affine-quantized model uses the global 4-bit setting.
     if family.family_name == "gemma4" && tensor_name.ends_with(".router.proj.weight") {
@@ -1057,6 +1099,55 @@ fn config_quantization(config: &serde_json::Value) -> Option<NativeTensorQuantiz
         .and_then(u64_to_u32)
         .unwrap_or(64);
     let bits = obj
+        .get("bits")
+        .and_then(|v| v.as_u64())
+        .and_then(u64_to_u32)
+        .unwrap_or(4);
+    Some(NativeTensorQuantization {
+        mode,
+        group_size,
+        bits,
+    })
+}
+
+fn tensor_quantization_override(
+    config: &serde_json::Value,
+    tensor_name: &str,
+) -> Option<NativeTensorQuantization> {
+    let obj = config
+        .get("quantization")
+        .or_else(|| config.get("quantization_config"))?;
+    let candidates = [
+        tensor_name,
+        tensor_name.strip_suffix(".weight").unwrap_or(tensor_name),
+        tensor_name
+            .strip_prefix("language_model.")
+            .unwrap_or(tensor_name),
+        tensor_name
+            .strip_prefix("language_model.")
+            .unwrap_or(tensor_name)
+            .strip_suffix(".weight")
+            .unwrap_or(tensor_name),
+    ];
+    candidates
+        .iter()
+        .find_map(|key| obj.get(*key))
+        .and_then(parse_quantization_value)
+}
+
+fn parse_quantization_value(value: &serde_json::Value) -> Option<NativeTensorQuantization> {
+    let object = value.as_object()?;
+    let mode = object
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("affine")
+        .to_string();
+    let group_size = object
+        .get("group_size")
+        .and_then(|v| v.as_u64())
+        .and_then(u64_to_u32)
+        .unwrap_or(64);
+    let bits = object
         .get("bits")
         .and_then(|v| v.as_u64())
         .and_then(u64_to_u32)
@@ -1096,7 +1187,19 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
         {
             return Some(result);
         }
-        if is_qwen3_5_family(family.family_name) {
+        if let Some(extra) = family.extra_tensor_map {
+            if let Some(result) =
+                match_prefixed_per_layer(name, "language_model.model.layers.", extra)
+            {
+                return Some(result);
+            }
+        }
+        if is_qwen_gated_delta_family(family.family_name) {
+            if let Some(result) =
+                match_prefixed_per_layer(name, "model.layers.", QWEN35_LINEAR_TENSOR_MAP)
+            {
+                return Some(result);
+            }
             if let Some(result) = match_prefixed_per_layer(
                 name,
                 "language_model.model.layers.",
@@ -1105,7 +1208,7 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
                 return Some(result);
             }
         }
-    } else if is_qwen3_5_family(family.family_name) {
+    } else if is_qwen_gated_delta_family(family.family_name) {
         if let Some(result) =
             match_prefixed_per_layer(name, "model.layers.", QWEN35_LINEAR_TENSOR_MAP)
         {
@@ -1959,6 +2062,180 @@ mod tests {
     }
 
     #[test]
+    fn converts_qwen3_5_moe_language_model_switch_mlp_directory() {
+        let dir = unique_test_dir("qwen3_5_moe_language_model");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "qwen3_5_moe",
+                "vocab_size": 32,
+                "text_config": {
+                    "hidden_size": 8,
+                    "num_attention_heads": 2,
+                    "num_key_value_heads": 1,
+                    "head_dim": 4,
+                    "num_hidden_layers": 1,
+                    "vocab_size": 32,
+                    "linear_num_value_heads": 2,
+                    "linear_num_key_heads": 1,
+                    "linear_key_head_dim": 4,
+                    "linear_value_head_dim": 2,
+                    "linear_conv_kernel_dim": 4,
+                    "full_attention_interval": 4,
+                    "num_experts": 4,
+                    "num_experts_per_tok": 2,
+                    "moe_intermediate_size": 8
+                },
+                "quantization": {
+                    "group_size": 64,
+                    "bits": 4,
+                    "mode": "affine",
+                    "language_model.model.layers.0.mlp.gate": {
+                        "group_size": 64,
+                        "bits": 8
+                    }
+                }
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                ("language_model.model.embed_tokens.weight", "BF16", &[32, 8]),
+                ("language_model.model.norm.weight", "BF16", &[8]),
+                ("language_model.lm_head.weight", "BF16", &[32, 8]),
+                (
+                    "language_model.model.layers.0.input_layernorm.weight",
+                    "BF16",
+                    &[8],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.in_proj_qkv.weight",
+                    "BF16",
+                    &[12, 8],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.in_proj_z.weight",
+                    "BF16",
+                    &[4, 8],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.in_proj_a.weight",
+                    "BF16",
+                    &[2, 8],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.in_proj_b.weight",
+                    "BF16",
+                    &[2, 8],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.conv1d.weight",
+                    "BF16",
+                    &[12, 1, 4],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.dt_bias",
+                    "F32",
+                    &[2],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.A_log",
+                    "F32",
+                    &[2],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.norm.weight",
+                    "BF16",
+                    &[2],
+                ),
+                (
+                    "language_model.model.layers.0.linear_attn.out_proj.weight",
+                    "BF16",
+                    &[8, 4],
+                ),
+                (
+                    "language_model.model.layers.0.post_attention_layernorm.weight",
+                    "BF16",
+                    &[8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.gate.weight",
+                    "U32",
+                    &[4, 2],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.switch_mlp.gate_proj.weight",
+                    "BF16",
+                    &[4, 8, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.switch_mlp.up_proj.weight",
+                    "BF16",
+                    &[4, 8, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.switch_mlp.down_proj.weight",
+                    "BF16",
+                    &[4, 8, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.shared_expert_gate.weight",
+                    "BF16",
+                    &[1, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.shared_expert.gate_proj.weight",
+                    "BF16",
+                    &[8, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.shared_expert.up_proj.weight",
+                    "BF16",
+                    &[8, 8],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.shared_expert.down_proj.weight",
+                    "BF16",
+                    &[8, 8],
+                ),
+            ],
+        );
+
+        let manifest =
+            convert_hf_model_dir(&dir).expect("qwen3.5 MoE conversion should succeed");
+
+        assert_eq!(manifest.model_family, "qwen3_5");
+        assert_eq!(manifest.moe.expert_count, Some(4));
+        assert_eq!(manifest.moe.experts_per_token, Some(2));
+        assert_eq!(manifest.moe.expert_intermediate_size, Some(8));
+        for role in [
+            NativeTensorRole::FfnGateInp,
+            NativeTensorRole::FfnGateExps,
+            NativeTensorRole::FfnUpExps,
+            NativeTensorRole::FfnDownExps,
+            NativeTensorRole::FfnSharedExpertDown,
+        ] {
+            assert!(
+                manifest.tensors.iter().any(|tensor| tensor.role == role),
+                "missing role {role:?}"
+            );
+        }
+        let gate = manifest
+            .tensors
+            .iter()
+            .find(|tensor| tensor.role == NativeTensorRole::FfnGateInp)
+            .expect("router should map");
+        assert_eq!(gate.quantization.as_ref().map(|q| q.bits), Some(8));
+
+        write_manifest(&dir, &manifest).expect("write should succeed");
+        crate::model::NativeModelArtifacts::from_dir(&dir)
+            .expect("qwen3.5 MoE manifest should validate");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn maps_qwen3_moe_switch_mlp_tensors() {
         let family = model_family_for_type("qwen3_moe").expect("qwen3_moe should be supported");
 
@@ -1978,6 +2255,156 @@ mod tests {
             match_tensor("model.layers.2.mlp.switch_mlp.down_proj.weight", &family),
             Some((NativeTensorRole::FfnDownExps, Some(2)))
         );
+    }
+
+    #[test]
+    fn converts_qwen3_next_linear_moe_shared_expert_model_directory() {
+        let dir = unique_test_dir("qwen3_next_linear_moe");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "qwen3_next",
+                "hidden_size": 64,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "head_dim": 32,
+                "num_hidden_layers": 1,
+                "vocab_size": 128,
+                "linear_num_value_heads": 2,
+                "linear_num_key_heads": 1,
+                "linear_key_head_dim": 32,
+                "linear_value_head_dim": 16,
+                "linear_conv_kernel_dim": 4,
+                "full_attention_interval": 4,
+                "num_experts": 4,
+                "num_experts_per_tok": 2,
+                "moe_intermediate_size": 8,
+                "norm_topk_prob": true,
+                "quantization_config": {
+                    "group_size": 64,
+                    "bits": 4,
+                    "mode": "affine",
+                    "model.layers.0.mlp.gate": {
+                        "group_size": 64,
+                        "bits": 8
+                    },
+                    "model.layers.0.mlp.shared_expert_gate": {
+                        "group_size": 64,
+                        "bits": 8
+                    }
+                }
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                ("model.embed_tokens.weight", "BF16", &[128, 64]),
+                ("model.norm.weight", "BF16", &[64]),
+                ("lm_head.weight", "BF16", &[128, 64]),
+                ("model.layers.0.input_layernorm.weight", "BF16", &[64]),
+                (
+                    "model.layers.0.linear_attn.in_proj_qkvz.weight",
+                    "BF16",
+                    &[128, 64],
+                ),
+                (
+                    "model.layers.0.linear_attn.in_proj_ba.weight",
+                    "BF16",
+                    &[4, 64],
+                ),
+                (
+                    "model.layers.0.linear_attn.conv1d.weight",
+                    "BF16",
+                    &[96, 1, 4],
+                ),
+                ("model.layers.0.linear_attn.dt_bias", "F32", &[2]),
+                ("model.layers.0.linear_attn.A_log", "F32", &[2]),
+                ("model.layers.0.linear_attn.norm.weight", "BF16", &[16]),
+                (
+                    "model.layers.0.linear_attn.out_proj.weight",
+                    "BF16",
+                    &[64, 32],
+                ),
+                (
+                    "model.layers.0.post_attention_layernorm.weight",
+                    "BF16",
+                    &[64],
+                ),
+                ("model.layers.0.mlp.gate.weight", "U32", &[4, 16]),
+                (
+                    "model.layers.0.mlp.switch_mlp.gate_proj.weight",
+                    "BF16",
+                    &[4, 8, 64],
+                ),
+                (
+                    "model.layers.0.mlp.switch_mlp.up_proj.weight",
+                    "BF16",
+                    &[4, 8, 64],
+                ),
+                (
+                    "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                    "BF16",
+                    &[4, 64, 8],
+                ),
+                (
+                    "model.layers.0.mlp.shared_expert_gate.weight",
+                    "U32",
+                    &[1, 16],
+                ),
+                (
+                    "model.layers.0.mlp.shared_expert.gate_proj.weight",
+                    "BF16",
+                    &[8, 64],
+                ),
+                (
+                    "model.layers.0.mlp.shared_expert.up_proj.weight",
+                    "BF16",
+                    &[8, 64],
+                ),
+                (
+                    "model.layers.0.mlp.shared_expert.down_proj.weight",
+                    "BF16",
+                    &[64, 8],
+                ),
+            ],
+        );
+
+        let manifest = convert_hf_model_dir(&dir).expect("qwen3_next conversion should succeed");
+
+        assert_eq!(manifest.model_family, "qwen3_next");
+        assert_eq!(manifest.linear_attention.full_attention_interval, Some(4));
+        assert_eq!(manifest.moe.expert_count, Some(4));
+        assert_eq!(manifest.moe.experts_per_token, Some(2));
+        assert_eq!(manifest.moe.expert_intermediate_size, Some(8));
+        assert!(manifest.moe_norm_topk_prob);
+        // attn_output_gate must default to true for qwen3_next even when absent from config.json.
+        // All full-attention layers in the qwen3_next architecture use the sigmoid output gate.
+        assert!(manifest.attn_output_gate, "qwen3_next attn_output_gate must default to true");
+        assert!(
+            manifest
+                .tensors
+                .iter()
+                .any(|tensor| tensor.role == NativeTensorRole::FfnSharedExpertDown)
+        );
+        let gate = manifest
+            .tensors
+            .iter()
+            .find(|tensor| tensor.role == NativeTensorRole::FfnGateInp)
+            .expect("Qwen3Next router should map");
+        assert_eq!(gate.quantization.as_ref().map(|q| q.bits), Some(8));
+        let shared_gate = manifest
+            .tensors
+            .iter()
+            .find(|tensor| tensor.role == NativeTensorRole::FfnSharedExpertGateInp)
+            .expect("Qwen3Next shared expert gate should map");
+        assert_eq!(shared_gate.quantization.as_ref().map(|q| q.bits), Some(8));
+
+        write_manifest(&dir, &manifest).expect("write should succeed");
+        crate::model::NativeModelArtifacts::from_dir(&dir)
+            .expect("qwen3_next manifest should validate");
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

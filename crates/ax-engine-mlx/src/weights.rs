@@ -46,7 +46,7 @@ pub struct LayerWeights {
     pub gate_proj: Option<QuantizedWeight>,
     pub up_proj: Option<QuantizedWeight>,
     pub gate_up_packed: Option<QuantizedWeight>,
-    pub down_proj: QuantizedWeight,
+    pub down_proj: Option<QuantizedWeight>,
     // MoE: extra norms (present when this layer has a MoE block).
     pub ffn_norm2: Option<MlxArray>,
     pub ffn_post_norm1: Option<MlxArray>,
@@ -65,6 +65,10 @@ pub struct LayerWeights {
     /// Post-gating RMSNorm weight (Gemma4 2B/4B).
     pub per_layer_post_norm: Option<MlxArray>,
     // MoE: expert weights (shape [num_experts, expert_size, hidden] / packed).
+    pub shared_expert_gate: Option<QuantizedWeight>,
+    pub shared_gate_proj: Option<QuantizedWeight>,
+    pub shared_up_proj: Option<QuantizedWeight>,
+    pub shared_down_proj: Option<QuantizedWeight>,
     pub gate_up_exps_packed: Option<QuantizedWeight>,
     pub gate_exps: Option<QuantizedWeight>,
     pub up_exps: Option<QuantizedWeight>,
@@ -73,10 +77,12 @@ pub struct LayerWeights {
 
 /// Weights for a Qwen3.5 GatedDelta linear-attention layer.
 pub struct LinearAttentionWeights {
-    pub in_proj_qkv: QuantizedWeight,
-    pub in_proj_z: QuantizedWeight,
-    pub in_proj_a: QuantizedWeight,
-    pub in_proj_b: QuantizedWeight,
+    pub in_proj_qkv: Option<QuantizedWeight>,
+    pub in_proj_z: Option<QuantizedWeight>,
+    pub in_proj_a: Option<QuantizedWeight>,
+    pub in_proj_b: Option<QuantizedWeight>,
+    pub in_proj_qkvz: Option<QuantizedWeight>,
+    pub in_proj_ba: Option<QuantizedWeight>,
     pub conv1d: QuantizedWeight,
     pub dt_bias: MlxArray,
     pub a_log: MlxArray,
@@ -285,13 +291,17 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             .weight;
             (None, fn_w)
         };
-        let down_proj = take_weight(
-            specs,
-            &mut name_map,
-            NativeTensorRole::FfnDown,
-            idx,
-            "down_proj",
-        )?;
+        let down_proj = if has_role(specs, NativeTensorRole::FfnDown, idx) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::FfnDown,
+                idx,
+                "down_proj",
+            )?)
+        } else {
+            None
+        };
 
         let ffn_post_norm =
             try_take_plain(specs, &mut name_map, NativeTensorRole::FfnPostNorm, idx)?;
@@ -350,6 +360,51 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             NativeTensorRole::PerLayerInputPostNorm,
             idx,
         )?;
+
+        let shared_expert_gate = if has_role(specs, NativeTensorRole::FfnSharedExpertGateInp, idx) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::FfnSharedExpertGateInp,
+                idx,
+                "shared_expert_gate",
+            )?)
+        } else {
+            None
+        };
+        let shared_gate_proj = if has_role(specs, NativeTensorRole::FfnSharedExpertGate, idx) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::FfnSharedExpertGate,
+                idx,
+                "shared_gate_proj",
+            )?)
+        } else {
+            None
+        };
+        let shared_up_proj = if has_role(specs, NativeTensorRole::FfnSharedExpertUp, idx) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::FfnSharedExpertUp,
+                idx,
+                "shared_up_proj",
+            )?)
+        } else {
+            None
+        };
+        let shared_down_proj = if has_role(specs, NativeTensorRole::FfnSharedExpertDown, idx) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::FfnSharedExpertDown,
+                idx,
+                "shared_down_proj",
+            )?)
+        } else {
+            None
+        };
 
         let gate_up_exps_packed = if has_role(specs, NativeTensorRole::FfnGateUpExpsPacked, idx) {
             Some(take_weight(
@@ -478,7 +533,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                     "gate_up",
                 )?;
                 (Some(p), None, None)
-            } else {
+            } else if has_role(specs, NativeTensorRole::FfnGate, idx) {
                 let g = take_weight(
                     specs,
                     &mut name_map,
@@ -494,6 +549,8 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                     "up_proj",
                 )?;
                 (None, Some(g), Some(u))
+            } else {
+                (None, None, None)
             };
 
         layers.push(LayerWeights {
@@ -523,6 +580,10 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             per_layer_gate,
             per_layer_proj_w,
             per_layer_post_norm,
+            shared_expert_gate,
+            shared_gate_proj,
+            shared_up_proj,
+            shared_down_proj,
             gate_up_exps_packed,
             gate_exps,
             up_exps,
@@ -620,9 +681,11 @@ fn has_full_attention_role(specs: &[NativeTensorSpec], layer_index: Option<u32>)
 fn has_linear_attention_role(specs: &[NativeTensorSpec], layer_index: Option<u32>) -> bool {
     [
         NativeTensorRole::LinearAttentionInProjQkv,
+        NativeTensorRole::LinearAttentionInProjQkvz,
         NativeTensorRole::LinearAttentionInProjZ,
         NativeTensorRole::LinearAttentionInProjA,
         NativeTensorRole::LinearAttentionInProjB,
+        NativeTensorRole::LinearAttentionInProjBa,
         NativeTensorRole::LinearAttentionConv1d,
         NativeTensorRole::LinearAttentionDtBias,
         NativeTensorRole::LinearAttentionALog,
@@ -639,33 +702,47 @@ fn load_linear_attention_weights(
     layer_index: Option<u32>,
 ) -> Result<LinearAttentionWeights, WeightLoadError> {
     Ok(LinearAttentionWeights {
-        in_proj_qkv: take_weight(
+        in_proj_qkv: try_take_weight(
             specs,
             name_map,
             NativeTensorRole::LinearAttentionInProjQkv,
             layer_index,
             "linear_attention_in_proj_qkv",
         )?,
-        in_proj_z: take_weight(
+        in_proj_z: try_take_weight(
             specs,
             name_map,
             NativeTensorRole::LinearAttentionInProjZ,
             layer_index,
             "linear_attention_in_proj_z",
         )?,
-        in_proj_a: take_weight(
+        in_proj_a: try_take_weight(
             specs,
             name_map,
             NativeTensorRole::LinearAttentionInProjA,
             layer_index,
             "linear_attention_in_proj_a",
         )?,
-        in_proj_b: take_weight(
+        in_proj_b: try_take_weight(
             specs,
             name_map,
             NativeTensorRole::LinearAttentionInProjB,
             layer_index,
             "linear_attention_in_proj_b",
+        )?,
+        in_proj_qkvz: try_take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::LinearAttentionInProjQkvz,
+            layer_index,
+            "linear_attention_in_proj_qkvz",
+        )?,
+        in_proj_ba: try_take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::LinearAttentionInProjBa,
+            layer_index,
+            "linear_attention_in_proj_ba",
         )?,
         conv1d: take_weight(
             specs,
@@ -751,6 +828,20 @@ fn take_weight(
         biases,
         spec.quantization.as_ref(),
     ))
+}
+
+fn try_take_weight(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    role: NativeTensorRole,
+    layer_index: Option<u32>,
+    label: &str,
+) -> Result<Option<QuantizedWeight>, WeightLoadError> {
+    if has_role(specs, role, layer_index) {
+        take_weight(specs, name_map, role, layer_index, label).map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 /// Load a plain (non-quantized) weight tensor or return None if not present.
