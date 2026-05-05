@@ -12,13 +12,13 @@ use ax_engine_core::scheduler::ExecutionMode;
 use ax_engine_core::{
     ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelArtifacts,
     NativeModelBindingSummary, NativeModelManifest, NativeTensorRole, RequestExecutionUpdate,
-    RequestId, RouteMetadata, RunnerInput, RunnerOutput, StopReason,
+    RequestId, RunnerInput, RunnerOutput, StopReason,
 };
 
 use crate::generate::{
     advance_greedy_pipeline, chunked_prefill, decode_step, start_greedy_pipeline,
 };
-use crate::kv_cache::MlxKVCache;
+use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::ModelConfig;
 use crate::sampling::Xorshift64;
 use crate::speculative::{
@@ -56,6 +56,192 @@ const LINEAR_SPEC_PARTIAL_RETRY_INTERVAL: u32 = 4;
 /// expensive recompute on the very first speculative attempt.
 const NGRAM_PROMPT_FEED_MAX: usize = 64;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SpeculationTelemetry {
+    draft_attempts: u32,
+    draft_tokens: u32,
+    accepted_tokens: u32,
+    rejected_tokens: u32,
+    full_accepts: u32,
+    partial_rejects: u32,
+    complete_misses: u32,
+    no_draft_steps: u32,
+    cooldown_steps: u32,
+    cooldown_events: u32,
+    cooldown_steps_scheduled: u32,
+}
+
+impl SpeculationTelemetry {
+    fn record_draft(&mut self, draft_len: usize, accept_count: usize) {
+        self.draft_attempts = self.draft_attempts.saturating_add(1);
+        self.draft_tokens = self.draft_tokens.saturating_add(saturating_u32(draft_len));
+        self.accepted_tokens = self
+            .accepted_tokens
+            .saturating_add(saturating_u32(accept_count));
+        self.rejected_tokens = self
+            .rejected_tokens
+            .saturating_add(saturating_u32(draft_len.saturating_sub(accept_count)));
+
+        if accept_count == draft_len {
+            self.full_accepts = self.full_accepts.saturating_add(1);
+        } else if accept_count == 0 {
+            self.complete_misses = self.complete_misses.saturating_add(1);
+        } else {
+            self.partial_rejects = self.partial_rejects.saturating_add(1);
+        }
+    }
+
+    fn record_no_draft(&mut self) {
+        self.no_draft_steps = self.no_draft_steps.saturating_add(1);
+    }
+
+    fn record_cooldown_step(&mut self) {
+        self.cooldown_steps = self.cooldown_steps.saturating_add(1);
+    }
+
+    fn record_cooldown_event(&mut self, disabled_steps: u32) {
+        self.cooldown_events = self.cooldown_events.saturating_add(1);
+        self.cooldown_steps_scheduled =
+            self.cooldown_steps_scheduled.saturating_add(disabled_steps);
+    }
+
+    fn merge_from(&mut self, other: Self) {
+        self.draft_attempts = self.draft_attempts.saturating_add(other.draft_attempts);
+        self.draft_tokens = self.draft_tokens.saturating_add(other.draft_tokens);
+        self.accepted_tokens = self.accepted_tokens.saturating_add(other.accepted_tokens);
+        self.rejected_tokens = self.rejected_tokens.saturating_add(other.rejected_tokens);
+        self.full_accepts = self.full_accepts.saturating_add(other.full_accepts);
+        self.partial_rejects = self.partial_rejects.saturating_add(other.partial_rejects);
+        self.complete_misses = self.complete_misses.saturating_add(other.complete_misses);
+        self.no_draft_steps = self.no_draft_steps.saturating_add(other.no_draft_steps);
+        self.cooldown_steps = self.cooldown_steps.saturating_add(other.cooldown_steps);
+        self.cooldown_events = self.cooldown_events.saturating_add(other.cooldown_events);
+        self.cooldown_steps_scheduled = self
+            .cooldown_steps_scheduled
+            .saturating_add(other.cooldown_steps_scheduled);
+    }
+
+    fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
+        let entries = [
+            ("ax_spec_draft_attempts", self.draft_attempts),
+            ("ax_spec_draft_tokens", self.draft_tokens),
+            ("ax_spec_accepted_tokens", self.accepted_tokens),
+            ("ax_spec_rejected_tokens", self.rejected_tokens),
+            ("ax_spec_full_accepts", self.full_accepts),
+            ("ax_spec_partial_rejects", self.partial_rejects),
+            ("ax_spec_complete_misses", self.complete_misses),
+            ("ax_spec_no_draft_steps", self.no_draft_steps),
+            ("ax_spec_cooldown_steps", self.cooldown_steps),
+            ("ax_spec_cooldown_events", self.cooldown_events),
+            (
+                "ax_spec_cooldown_steps_scheduled",
+                self.cooldown_steps_scheduled,
+            ),
+        ];
+
+        decisions.extend(
+            entries
+                .into_iter()
+                .filter(|(_, value)| *value > 0)
+                .map(|(key, value)| (key.to_string(), value)),
+        );
+    }
+}
+
+fn saturating_u32(value: usize) -> u32 {
+    value.min(u32::MAX as usize) as u32
+}
+
+fn saturating_u32_from_u64(value: u64) -> u32 {
+    value.min(u32::MAX as u64) as u32
+}
+
+fn kib_ceil(bytes: u64) -> u32 {
+    if bytes == 0 {
+        0
+    } else {
+        saturating_u32_from_u64(bytes.saturating_add(1023) / 1024)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct KvCacheTelemetry {
+    request_snapshots: u32,
+    logical_tokens: u64,
+    capacity_tokens: u64,
+    logical_bytes: u64,
+    capacity_bytes: u64,
+    full_attention_layers: u64,
+    linear_state_layers: u64,
+    linear_state_bytes: u64,
+    growth_count: u64,
+}
+
+impl KvCacheTelemetry {
+    fn merge_from(&mut self, usage: MlxKVCacheUsage) {
+        self.request_snapshots = self.request_snapshots.saturating_add(1);
+        self.logical_tokens = self.logical_tokens.saturating_add(usage.logical_tokens as u64);
+        self.capacity_tokens = self
+            .capacity_tokens
+            .saturating_add(usage.capacity_tokens as u64);
+        self.logical_bytes = self.logical_bytes.saturating_add(usage.logical_bytes);
+        self.capacity_bytes = self.capacity_bytes.saturating_add(usage.capacity_bytes);
+        self.full_attention_layers = self
+            .full_attention_layers
+            .saturating_add(usage.full_attention_layers as u64);
+        self.linear_state_layers = self
+            .linear_state_layers
+            .saturating_add(usage.linear_state_layers as u64);
+        self.linear_state_bytes = self
+            .linear_state_bytes
+            .saturating_add(usage.linear_state_bytes);
+        self.growth_count = self.growth_count.saturating_add(usage.growth_count);
+    }
+
+    fn append_route_decisions(&self, decisions: &mut Vec<(String, u32)>) {
+        if self.request_snapshots == 0 {
+            return;
+        }
+
+        let entries = [
+            ("ax_mlx_kv_request_snapshots", self.request_snapshots),
+            (
+                "ax_mlx_kv_logical_tokens",
+                saturating_u32_from_u64(self.logical_tokens),
+            ),
+            (
+                "ax_mlx_kv_capacity_tokens",
+                saturating_u32_from_u64(self.capacity_tokens),
+            ),
+            ("ax_mlx_kv_logical_kib", kib_ceil(self.logical_bytes)),
+            ("ax_mlx_kv_capacity_kib", kib_ceil(self.capacity_bytes)),
+            (
+                "ax_mlx_kv_full_attention_layers",
+                saturating_u32_from_u64(self.full_attention_layers),
+            ),
+            (
+                "ax_mlx_kv_linear_state_layers",
+                saturating_u32_from_u64(self.linear_state_layers),
+            ),
+            (
+                "ax_mlx_kv_linear_state_kib",
+                kib_ceil(self.linear_state_bytes),
+            ),
+            (
+                "ax_mlx_kv_growth_count",
+                saturating_u32_from_u64(self.growth_count),
+            ),
+        ];
+
+        decisions.extend(
+            entries
+                .into_iter()
+                .filter(|(_, value)| *value > 0)
+                .map(|(key, value)| (key.to_string(), value)),
+        );
+    }
+}
+
 /// Per-request mutable state persisted across prefill → decode steps.
 struct RequestState {
     cache: MlxKVCache,
@@ -84,6 +270,9 @@ struct RequestState {
     ///
     /// Only set when `no_speculative = true` and `temperature == 0.0`.
     pending_greedy: Option<MlxArray>,
+    /// Cumulative per-request counters surfaced through route metadata for
+    /// benchmark auditability.
+    speculation: SpeculationTelemetry,
 }
 
 impl RequestState {
@@ -98,6 +287,7 @@ impl RequestState {
             bonus_queue: VecDeque::new(),
             next_model_last_token: None,
             pending_greedy: None,
+            speculation: SpeculationTelemetry::default(),
         }
     }
 
@@ -208,15 +398,23 @@ impl ExecutionRunner for MlxRunner {
         let logits_handles = Vec::new();
         let logits_outputs = Vec::new();
 
+        let mut route_metadata = input.execution_batch.route_metadata.clone();
+        let mut speculation = SpeculationTelemetry::default();
+        let mut kv_cache = KvCacheTelemetry::default();
+
         for item in &input.execution_batch.items {
             let ctx = input
                 .request_contexts
                 .iter()
                 .find(|c| c.request_id == item.request_id);
 
-            let update = self.run_item(item, ctx);
-            request_updates.push(update);
+            let result = self.run_item(item, ctx);
+            speculation.merge_from(result.speculation);
+            kv_cache.merge_from(result.kv_usage);
+            request_updates.push(result.update);
         }
+        speculation.append_route_decisions(&mut route_metadata.crossover_decisions);
+        kv_cache.append_route_decisions(&mut route_metadata.crossover_decisions);
 
         let tokens_written: u32 = input
             .execution_batch
@@ -234,7 +432,7 @@ impl ExecutionRunner for MlxRunner {
                 tokens_written,
                 blocks_touched: 0,
             },
-            route_metadata: RouteMetadata::empty(),
+            route_metadata,
             execution_status: ExecutionStatus::Success,
         }
     }
@@ -249,15 +447,19 @@ impl MlxRunner {
         &self,
         item: &ax_engine_core::ExecutionItem,
         ctx: Option<&RunnerRequestContext>,
-    ) -> RequestExecutionUpdate {
+    ) -> MlxItemRun {
         let token_ids = &item.input_token_slice;
         if token_ids.is_empty() {
-            return RequestExecutionUpdate {
-                request_id: item.request_id,
-                tokens_executed: 0,
-                output_token: None,
-                stop_reason: None,
-                error: Some("empty token slice".into()),
+            return MlxItemRun {
+                update: RequestExecutionUpdate {
+                    request_id: item.request_id,
+                    tokens_executed: 0,
+                    output_token: None,
+                    stop_reason: None,
+                    error: Some("empty token slice".into()),
+                },
+                speculation: SpeculationTelemetry::default(),
+                kv_usage: MlxKVCacheUsage::default(),
             };
         }
 
@@ -330,6 +532,8 @@ impl MlxRunner {
         };
 
         // Re-insert state only if the request continues — lock held briefly.
+        let speculation = state.speculation;
+        let kv_usage = state.cache.usage_snapshot();
         if stop_reason.is_none() {
             let mut states = self.states.lock().unwrap();
             states.insert(item.request_id, state);
@@ -340,12 +544,16 @@ impl MlxRunner {
             clear_cache();
         }
 
-        RequestExecutionUpdate {
-            request_id: item.request_id,
-            tokens_executed: item.scheduled_token_count,
-            output_token: Some(sampled_token),
-            stop_reason,
-            error: None,
+        MlxItemRun {
+            update: RequestExecutionUpdate {
+                request_id: item.request_id,
+                tokens_executed: item.scheduled_token_count,
+                output_token: Some(sampled_token),
+                stop_reason,
+                error: None,
+            },
+            speculation,
+            kv_usage,
         }
     }
 
@@ -424,6 +632,7 @@ impl MlxRunner {
         // Speculation disabled: count down and use single decode.
         if state.spec_disabled_steps > 0 {
             state.spec_disabled_steps -= 1;
+            state.speculation.record_cooldown_step();
             return single_decode(
                 &self.cfg,
                 &self.weights,
@@ -437,6 +646,7 @@ impl MlxRunner {
 
         let draft = speculative_draft(&state.ngram, self.cfg.linear_attention.is_some());
         if draft.is_empty() {
+            state.speculation.record_no_draft();
             return single_decode(
                 &self.cfg,
                 &self.weights,
@@ -463,6 +673,7 @@ impl MlxRunner {
         // Beta-Bernoulli posterior update.
         // accept_count = result.len() - 1 (last element is next model input, not bonus).
         let accept_count = result.len().saturating_sub(1);
+        state.speculation.record_draft(draft_len, accept_count);
         state.spec_beta_alpha += accept_count as f32;
         state.spec_beta_beta += (draft_len - accept_count) as f32;
 
@@ -482,10 +693,17 @@ impl MlxRunner {
             state.spec_posterior_mean(),
         ) {
             state.spec_disabled_steps = disabled_steps;
+            state.speculation.record_cooldown_event(disabled_steps);
         }
 
         result
     }
+}
+
+struct MlxItemRun {
+    update: RequestExecutionUpdate,
+    speculation: SpeculationTelemetry,
+    kv_usage: MlxKVCacheUsage,
 }
 
 fn speculative_disabled_steps(
@@ -1109,6 +1327,45 @@ mod tests {
             speculative_disabled_steps(true, DEFAULT_DRAFT_LEN, DEFAULT_DRAFT_LEN, 0.25),
             None
         );
+    }
+
+    #[test]
+    fn speculation_telemetry_records_acceptance_and_cooldown_counters() {
+        let mut telemetry = SpeculationTelemetry::default();
+
+        telemetry.record_no_draft();
+        telemetry.record_draft(DEFAULT_DRAFT_LEN, DEFAULT_DRAFT_LEN);
+        telemetry.record_draft(DEFAULT_DRAFT_LEN, 0);
+        telemetry.record_draft(DEFAULT_DRAFT_LEN, 2);
+        telemetry.record_cooldown_step();
+        telemetry.record_cooldown_event(4);
+
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(decisions.get("ax_spec_no_draft_steps"), Some(&1));
+        assert_eq!(decisions.get("ax_spec_draft_attempts"), Some(&3));
+        assert_eq!(
+            decisions.get("ax_spec_draft_tokens"),
+            Some(&(DEFAULT_DRAFT_LEN as u32 * 3))
+        );
+        assert_eq!(
+            decisions.get("ax_spec_accepted_tokens"),
+            Some(&(DEFAULT_DRAFT_LEN as u32 + 2))
+        );
+        assert_eq!(
+            decisions.get("ax_spec_rejected_tokens"),
+            Some(&(DEFAULT_DRAFT_LEN as u32 * 2 - 2))
+        );
+        assert_eq!(decisions.get("ax_spec_full_accepts"), Some(&1));
+        assert_eq!(decisions.get("ax_spec_complete_misses"), Some(&1));
+        assert_eq!(decisions.get("ax_spec_partial_rejects"), Some(&1));
+        assert_eq!(decisions.get("ax_spec_cooldown_steps"), Some(&1));
+        assert_eq!(decisions.get("ax_spec_cooldown_events"), Some(&1));
+        assert_eq!(decisions.get("ax_spec_cooldown_steps_scheduled"), Some(&4));
     }
 
     #[test]

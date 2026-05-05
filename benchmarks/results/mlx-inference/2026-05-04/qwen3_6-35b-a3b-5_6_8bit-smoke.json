@@ -1,0 +1,162 @@
+{
+  "schema_version": "ax.mlx_server_smoke.v1",
+  "generated_by": "target/release/ax-engine-server /v1/generate smoke",
+  "results": [
+    {
+      "model_id": "qwen3_6_35b_a3b_5bit",
+      "model_dir": ".internal/models/Qwen3.6-35B-A3B-5bit",
+      "request": {
+        "input_tokens": [
+          2,
+          106,
+          107
+        ],
+        "max_output_tokens": 2,
+        "sampling": {
+          "temperature": 0,
+          "seed": 0
+        }
+      },
+      "health_status": "ok",
+      "response": {
+        "request_id": 1,
+        "model_id": "qwen3_6_35b_a3b_5bit",
+        "prompt_tokens": [
+          2,
+          106,
+          107
+        ],
+        "output_tokens": [
+          198,
+          2
+        ],
+        "status": "finished",
+        "finish_reason": "max_output_tokens",
+        "step_count": 2,
+        "ttft_step": 1,
+        "route": {
+          "execution_plan": "phase1.qwen3_6_35b_a3b_5bit.paged_decode",
+          "attention_route": "qwen3_6_35b_a3b_5bit_paged_decode",
+          "kv_mode": "paged_metadata",
+          "barrier_mode": "serial"
+        },
+        "runtime": {
+          "selected_backend": "mlx",
+          "support_tier": "mlx_preview",
+          "resolution_policy": "mlx_only",
+          "host": {
+            "os": "macos",
+            "arch": "aarch64",
+            "detected_soc": "Apple M5 Max",
+            "supported_mlx_runtime": true,
+            "unsupported_host_override_active": false
+          }
+        }
+      }
+    },
+    {
+      "model_id": "qwen3_6_35b_a3b_6bit",
+      "model_dir": ".internal/models/Qwen3.6-35B-A3B-6bit",
+      "request": {
+        "input_tokens": [
+          2,
+          106,
+          107
+        ],
+        "max_output_tokens": 2,
+        "sampling": {
+          "temperature": 0,
+          "seed": 0
+        }
+      },
+      "health_status": "ok",
+      "response": {
+        "request_id": 1,
+        "model_id": "qwen3_6_35b_a3b_6bit",
+        "prompt_tokens": [
+          2,
+          106,
+          107
+        ],
+        "output_tokens": [
+          248046,
+          198
+        ],
+        "status": "finished",
+        "finish_reason": "max_output_tokens",
+        "step_count": 2,
+        "ttft_step": 1,
+        "route": {
+          "execution_plan": "phase1.qwen3_6_35b_a3b_6bit.paged_decode",
+          "attention_route": "qwen3_6_35b_a3b_6bit_paged_decode",
+          "kv_mode": "paged_metadata",
+          "barrier_mode": "serial"
+        },
+        "runtime": {
+          "selected_backend": "mlx",
+          "support_tier": "mlx_preview",
+          "resolution_policy": "mlx_only",
+          "host": {
+            "os": "macos",
+            "arch": "aarch64",
+            "detected_soc": "Apple M5 Max",
+            "supported_mlx_runtime": true,
+            "unsupported_host_override_active": false
+          }
+        }
+      }
+    },
+    {
+      "model_id": "qwen3_6_35b_a3b_8bit",
+      "model_dir": ".internal/models/Qwen3.6-35B-A3B-8bit",
+      "request": {
+        "input_tokens": [
+          2,
+          106,
+          107
+        ],
+        "max_output_tokens": 2,
+        "sampling": {
+          "temperature": 0,
+          "seed": 0
+        }
+      },
+      "health_status": "ok",
+      "response": {
+        "request_id": 1,
+        "model_id": "qwen3_6_35b_a3b_8bit",
+        "prompt_tokens": [
+          2,
+          106,
+          107
+        ],
+        "output_tokens": [
+          271,
+          550
+        ],
+        "status": "finished",
+        "finish_reason": "max_output_tokens",
+        "step_count": 2,
+        "ttft_step": 1,
+        "route": {
+          "execution_plan": "phase1.qwen3_6_35b_a3b_8bit.paged_decode",
+          "attention_route": "qwen3_6_35b_a3b_8bit_paged_decode",
+          "kv_mode": "paged_metadata",
+          "barrier_mode": "serial"
+        },
+        "runtime": {
+          "selected_backend": "mlx",
+          "support_tier": "mlx_preview",
+          "resolution_policy": "mlx_only",
+          "host": {
+            "os": "macos",
+            "arch": "aarch64",
+            "detected_soc": "Apple M5 Max",
+            "supported_mlx_runtime": true,
+            "unsupported_host_override_active": false
+          }
+        }
+      }
+    }
+  ]
+}

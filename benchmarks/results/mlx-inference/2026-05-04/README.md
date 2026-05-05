@@ -31,6 +31,9 @@ decode speed.
 | Qwen 3.6 35B A3B 8-bit | `qwen3_6-35b-a3b-8bit.json` | `qwen3_6-35b-a3b-8bit-prompts/` | `qwen3_6-35b-a3b-8bit.log` |
 | Qwen Coder Next | `qwen3-coder-next-4bit.json` | `qwen3-coder-next-4bit-prompts/` | `qwen3-coder-next-4bit.log` |
 
+Qwen 3.6 35B A3B 5/6/8-bit AX server smoke evidence is stored in
+`qwen3_6-35b-a3b-5_6_8bit-smoke.json`.
+
 Qwen 3 4B used the local Hugging Face snapshot
 `mlx-community/Qwen3-4B-4bit@4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25`.
 Gemma 4 E2B, Gemma 4 26B A4B, Gemma 4 31B, Qwen 3.5 9B,
@@ -70,8 +73,10 @@ AX greedy/speculative rows.
 Qwen 3.6 35B A3B 5/6/8-bit rows are AX quantization-support checks against the
 MLX-community `qwen3_5_moe` checkpoints. The 5/6-bit checkpoints are affine
 5/6-bit globally with 8-bit router and shared-expert gate overrides; the 8-bit
-checkpoint is affine 8-bit throughout. All three passed AX server smoke before
-the full benchmark run.
+checkpoint is affine 8-bit throughout. The exact AX `/v1/generate` smoke
+request/response for all three is recorded in
+`qwen3_6-35b-a3b-5_6_8bit-smoke.json`; the full benchmark JSON files then record
+the reference-runtime and AX throughput rows.
 
 ## Summary
 
