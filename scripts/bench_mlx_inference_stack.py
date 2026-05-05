@@ -71,6 +71,21 @@ DEFAULT_COOLDOWN = 5.0
 AXENGINE_PORT = 8091
 MLX_LM_RANDOM_SEED = 0
 
+AX_SPEC_TELEMETRY_KEYS = [
+    "ax_spec_draft_attempts",
+    "ax_spec_draft_tokens",
+    "ax_spec_accepted_tokens",
+    "ax_spec_rejected_tokens",
+    "ax_spec_full_accepts",
+    "ax_spec_partial_rejects",
+    "ax_spec_complete_misses",
+    "ax_spec_no_draft_steps",
+    "ax_spec_cooldown_steps",
+    "ax_spec_cooldown_events",
+    "ax_spec_cooldown_steps_scheduled",
+]
+AX_SPEC_ACCEPT_RATE_KEY = "ax_spec_accept_rate_micros"
+
 
 def _sysctl(key: str) -> str:
     try:
@@ -493,7 +508,47 @@ def start_axengine(
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
 
 
-def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> dict[str, float]:
+def extract_ax_speculative_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
+    if not route:
+        return {}
+    decisions = route.get("crossover_decisions") or {}
+    telemetry = {
+        key: int(decisions[key])
+        for key in AX_SPEC_TELEMETRY_KEYS
+        if key in decisions
+    }
+    if (
+        telemetry.get("ax_spec_draft_attempts", 0) > 0
+        and AX_SPEC_ACCEPT_RATE_KEY not in telemetry
+    ):
+        draft_tokens = telemetry.get("ax_spec_draft_tokens", 0)
+        accepted_tokens = telemetry.get("ax_spec_accepted_tokens", 0)
+        if draft_tokens > 0:
+            telemetry[AX_SPEC_ACCEPT_RATE_KEY] = int(
+                round(accepted_tokens * 1_000_000 / draft_tokens)
+            )
+    return telemetry
+
+
+def summarize_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for run in runs:
+        for key, value in (run.get("speculative_telemetry") or {}).items():
+            if key == AX_SPEC_ACCEPT_RATE_KEY:
+                continue
+            totals[key] = totals.get(key, 0) + int(value)
+    if totals.get("ax_spec_draft_tokens", 0) > 0:
+        totals[AX_SPEC_ACCEPT_RATE_KEY] = int(
+            round(
+                totals.get("ax_spec_accepted_tokens", 0)
+                * 1_000_000
+                / totals["ax_spec_draft_tokens"]
+            )
+        )
+    return totals
+
+
+def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> dict[str, Any]:
     payload = json.dumps(
         {"input_tokens": tokens, "max_output_tokens": generation_tokens}
     ).encode()
@@ -517,6 +572,7 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
     decode_us = 0
     output_tokens = 0
     current_event = ""
+    final_route: dict[str, Any] | None = None
 
     for raw in response:
         line = raw.decode("utf-8", errors="replace").strip()
@@ -532,6 +588,11 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
         if current_event == "step":
             runner_us = int(obj.get("step", {}).get("runner_time_us", 0))
             output_tokens = int(obj.get("request", {}).get("output_len", output_tokens))
+            final_route = (
+                obj.get("step", {}).get("route")
+                or obj.get("request", {}).get("route")
+                or final_route
+            )
             if prefill_us is None:
                 prefill_us = runner_us
             else:
@@ -539,19 +600,24 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
         elif current_event == "response":
             response_tokens = obj.get("response", {}).get("output_tokens", [])
             output_tokens = len(response_tokens) or output_tokens
+            final_route = obj.get("response", {}).get("route") or final_route
 
     conn.close()
     prompt_tokens = len(tokens)
     prefill_s = (prefill_us or 0) / 1_000_000
     decode_s = decode_us / 1_000_000
     measured_decode_tokens = max(output_tokens - 1, 0)
-    return {
+    run: dict[str, Any] = {
         "prefill_s": prefill_s,
         "decode_s": decode_s,
         "prefill_tok_s": prompt_tokens / prefill_s if prefill_s > 0 else 0.0,
         "decode_tok_s": measured_decode_tokens / decode_s if decode_s > 0 else 0.0,
         "output_tokens": float(output_tokens),
     }
+    telemetry = extract_ax_speculative_telemetry(final_route)
+    if telemetry:
+        run["speculative_telemetry"] = telemetry
+    return run
 
 
 def summarize_runs(runs: list[dict[str, float]], key: str) -> dict[str, float]:
@@ -627,6 +693,7 @@ def bench_axengine(
         "decode_tok_s": summarize_runs(runs, "decode_tok_s"),
         "prefill_s": summarize_runs(runs, "prefill_s"),
         "decode_s": summarize_runs(runs, "decode_s"),
+        "speculative_telemetry": summarize_telemetry(runs),
         "trials": runs,
     }
 

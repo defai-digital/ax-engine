@@ -161,6 +161,48 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             "ngram_kv_trim",
         )
 
+    def test_ax_speculative_telemetry_is_extracted_from_route(self) -> None:
+        telemetry = bench.extract_ax_speculative_telemetry(
+            {
+                "crossover_decisions": {
+                    "ax_spec_draft_attempts": 3,
+                    "ax_spec_draft_tokens": 12,
+                    "ax_spec_accepted_tokens": 9,
+                    "unrelated": 99,
+                }
+            }
+        )
+
+        self.assertEqual(telemetry["ax_spec_draft_attempts"], 3)
+        self.assertEqual(telemetry["ax_spec_draft_tokens"], 12)
+        self.assertEqual(telemetry["ax_spec_accepted_tokens"], 9)
+        self.assertEqual(telemetry["ax_spec_accept_rate_micros"], 750000)
+        self.assertNotIn("unrelated", telemetry)
+
+    def test_ax_speculative_telemetry_summarizes_trials(self) -> None:
+        summary = bench.summarize_telemetry(
+            [
+                {
+                    "speculative_telemetry": {
+                        "ax_spec_draft_tokens": 8,
+                        "ax_spec_accepted_tokens": 4,
+                        "ax_spec_accept_rate_micros": 500000,
+                    }
+                },
+                {
+                    "speculative_telemetry": {
+                        "ax_spec_draft_tokens": 12,
+                        "ax_spec_accepted_tokens": 11,
+                        "ax_spec_accept_rate_micros": 916667,
+                    }
+                },
+            ]
+        )
+
+        self.assertEqual(summary["ax_spec_draft_tokens"], 20)
+        self.assertEqual(summary["ax_spec_accepted_tokens"], 15)
+        self.assertEqual(summary["ax_spec_accept_rate_micros"], 750000)
+
     def test_attach_baseline_requires_matching_mlx_lm_row(self) -> None:
         results = [
             {

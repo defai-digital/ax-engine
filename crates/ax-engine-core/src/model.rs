@@ -8,6 +8,7 @@ use thiserror::Error;
 pub const AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION: &str = "ax.native_model.v1";
 pub const AX_NATIVE_MODEL_MANIFEST_FILE: &str = "model-manifest.json";
 pub const QWEN3_5_DEFAULT_FULL_ATTENTION_INTERVAL: u32 = 4;
+const SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[4, 5, 6, 8];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -2334,11 +2335,11 @@ fn validate_tensor_quantization(tensor: &NativeTensorSpec) -> Result<(), NativeM
             message: format!("tensor {} quantization group_size must be > 0", tensor.name),
         });
     }
-    if !(2..=8).contains(&quantization.bits) {
+    if !SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS.contains(&quantization.bits) {
         return Err(NativeModelError::InvalidManifest {
             message: format!(
-                "tensor {} quantization bits must be in 2..=8, got {}",
-                tensor.name, quantization.bits
+                "tensor {} quantization bits must be one of {:?}, got {}",
+                tensor.name, SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS, quantization.bits
             ),
         });
     }
@@ -3242,6 +3243,37 @@ mod tests {
 
             let _ = fs::remove_dir_all(dir);
         }
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_unbenchmarked_affine_quantization_bits() {
+        let mut manifest = packed_layer_manifest();
+        let gate = manifest
+            .tensors
+            .iter_mut()
+            .find(|tensor| tensor.role == NativeTensorRole::FfnGateUpPacked)
+            .expect("fixture should include packed ffn gate/up");
+        gate.dtype = NativeTensorDataType::U32;
+        gate.source_quantized = true;
+        gate.quantization = Some(NativeTensorQuantization {
+            mode: "affine".to_string(),
+            group_size: 64,
+            bits: 7,
+        });
+        gate.shape = vec![8192, (2048 * 7_u64).div_ceil(32)];
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("unbenchmarked affine bit widths should fail closed");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("quantization bits must be one of"),
+            "unexpected error: {message}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

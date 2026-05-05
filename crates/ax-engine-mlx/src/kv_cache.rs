@@ -9,6 +9,18 @@ fn chunk_ceiling(n: usize) -> usize {
     n.div_ceil(KV_CHUNK_TOKENS) * KV_CHUNK_TOKENS
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MlxKVCacheUsage {
+    pub logical_tokens: usize,
+    pub capacity_tokens: usize,
+    pub logical_bytes: u64,
+    pub capacity_bytes: u64,
+    pub full_attention_layers: usize,
+    pub linear_state_layers: usize,
+    pub linear_state_bytes: u64,
+    pub growth_count: u64,
+}
+
 #[derive(Clone)]
 struct LayerKV {
     /// Full backing buffer: `[1, n_kv_heads, capacity, head_dim]`.
@@ -51,6 +63,7 @@ pub struct MlxKVCache {
     linear_layers: Vec<LinearLayerState>,
     /// Current logical sequence length (token count cached).
     pub seq_len: usize,
+    growth_count: u64,
 }
 
 impl Clone for MlxKVCache {
@@ -59,6 +72,7 @@ impl Clone for MlxKVCache {
             layers: self.layers.clone(),
             linear_layers: self.linear_layers.clone(),
             seq_len: self.seq_len,
+            growth_count: self.growth_count,
         }
     }
 }
@@ -71,6 +85,7 @@ impl MlxKVCache {
                 .map(|_| LinearLayerState::default())
                 .collect(),
             seq_len: 0,
+            growth_count: 0,
         }
     }
 
@@ -105,6 +120,7 @@ impl MlxKVCache {
                 let strides = [1i32, 1, 1, 1];
                 let k_out = slice_update(&k_buf, &new_k, &start, &stop, &strides, None);
                 let v_out = slice_update(&v_buf, &new_v, &start, &stop, &strides, None);
+                self.growth_count = self.growth_count.saturating_add(1);
                 *entry = Some(LayerKV {
                     k: k_out,
                     v: v_out,
@@ -127,6 +143,7 @@ impl MlxKVCache {
                     lkv.k = slice_update(&k_new, &lkv.k, &zero_start, &old_stop, &ones, None);
                     lkv.v = slice_update(&v_new, &lkv.v, &zero_start, &old_stop, &ones, None);
                     lkv.capacity = new_capacity;
+                    self.growth_count = self.growth_count.saturating_add(1);
                 }
                 let start = [0i32, 0, write_start as i32, 0];
                 let stop = [1i32, lkv.n_kv_heads, write_end as i32, lkv.head_dim];
@@ -200,6 +217,52 @@ impl MlxKVCache {
         refs
     }
 
+    pub fn usage_snapshot(&self) -> MlxKVCacheUsage {
+        let mut usage = MlxKVCacheUsage {
+            logical_tokens: self.seq_len,
+            growth_count: self.growth_count,
+            ..MlxKVCacheUsage::default()
+        };
+
+        for lkv in self.layers.iter().flatten() {
+            let elements_per_token = (lkv.n_kv_heads as u64).saturating_mul(lkv.head_dim as u64);
+            let bytes_per_element = lkv.dtype.size_bytes() as u64;
+            let bytes_per_token = elements_per_token
+                .saturating_mul(bytes_per_element)
+                .saturating_mul(2);
+
+            usage.full_attention_layers = usage.full_attention_layers.saturating_add(1);
+            usage.capacity_tokens = usage.capacity_tokens.saturating_add(lkv.capacity);
+            usage.logical_bytes = usage
+                .logical_bytes
+                .saturating_add(bytes_per_token.saturating_mul(self.seq_len as u64));
+            usage.capacity_bytes = usage
+                .capacity_bytes
+                .saturating_add(bytes_per_token.saturating_mul(lkv.capacity as u64));
+        }
+
+        for linear in &self.linear_layers {
+            let layer_bytes = linear
+                .conv_state
+                .as_ref()
+                .map(|array| array.nbytes() as u64)
+                .unwrap_or(0)
+                .saturating_add(
+                    linear
+                        .recurrent_state
+                        .as_ref()
+                        .map(|array| array.nbytes() as u64)
+                        .unwrap_or(0),
+                );
+            if layer_bytes > 0 {
+                usage.linear_state_layers = usage.linear_state_layers.saturating_add(1);
+                usage.linear_state_bytes = usage.linear_state_bytes.saturating_add(layer_bytes);
+            }
+        }
+
+        usage
+    }
+
     /// Read the cached gated-delta states for a Qwen3.5 linear-attention layer.
     pub fn linear_state(&self, layer: usize) -> (Option<&MlxArray>, Option<&MlxArray>) {
         let state = &self.linear_layers[layer];
@@ -257,6 +320,7 @@ impl MlxKVCache {
             *state = LinearLayerState::default();
         }
         self.seq_len = 0;
+        self.growth_count = 0;
     }
 }
 
@@ -321,5 +385,36 @@ mod tests {
         let (conv_state, recurrent_state) = branch.linear_state(0);
         assert!(conv_state.is_some());
         assert!(recurrent_state.is_some());
+    }
+
+    #[test]
+    fn usage_snapshot_tracks_full_attention_capacity_and_growth() {
+        let mut cache = MlxKVCache::new(1);
+        let k = zeros(&[1, 2, 3, 4], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 2, 3, 4], MlxDtype::Bfloat16, None);
+
+        cache.append(0, k, v);
+        cache.seq_len = 3;
+
+        let usage = cache.usage_snapshot();
+        assert_eq!(usage.logical_tokens, 3);
+        assert_eq!(usage.capacity_tokens, 256);
+        assert_eq!(usage.full_attention_layers, 1);
+        assert_eq!(usage.logical_bytes, 96);
+        assert_eq!(usage.capacity_bytes, 8192);
+        assert_eq!(usage.growth_count, 1);
+    }
+
+    #[test]
+    fn usage_snapshot_tracks_linear_state_bytes() {
+        let mut cache = MlxKVCache::new(1);
+        let conv = zeros(&[1, 3, 14], MlxDtype::Float32, None);
+        let recurrent = zeros(&[1, 4, 8, 6], MlxDtype::Float32, None);
+
+        cache.set_linear_state(0, conv, recurrent);
+
+        let usage = cache.usage_snapshot();
+        assert_eq!(usage.linear_state_layers, 1);
+        assert_eq!(usage.linear_state_bytes, 936);
     }
 }

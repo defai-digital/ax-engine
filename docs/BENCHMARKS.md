@@ -83,6 +83,14 @@ for dense/full-attention speculative rows, and
 recurrent linear-attention rows, where repeated n-gram evidence is required
 before probing and partial accepts trigger a longer cooldown.
 
+Speculative AX result objects also include `speculative_telemetry` when the
+runtime emits route counters. The stored counters cover draft attempts, draft
+tokens, accepted/rejected draft tokens, full accepts, partial rejects, complete
+misses, no-draft steps, cooldown steps, cooldown events, cooldown steps
+scheduled, and an `ax_spec_accept_rate_micros` derived from accepted/draft
+tokens. Use these counters to audit whether a speculative speedup came from
+real n-gram acceptance or from timing noise.
+
 The `mlx-swift-lm` reference checkout currently exposes `BenchmarkHelpers` for
 loading, tokenization, decoding, download-cache timing, and shared integration
 benchmark scaffolding, but not a repo-stable standalone LLM inference

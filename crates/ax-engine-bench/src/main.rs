@@ -15904,7 +15904,10 @@ mod tests {
     #[test]
     fn llama_cpp_replay_executes_with_delegated_prompt_cache_reuse() {
         let mut manifest = load_test_manifest(
-            repo_manifest_path("benchmarks/manifests/replay/llama_cpp_prompt_cache_reuse_dual.json").as_str(),
+            repo_manifest_path(
+                "benchmarks/manifests/replay/llama_cpp_prompt_cache_reuse_dual.json",
+            )
+            .as_str(),
         );
 
         let replay_events =
@@ -16980,7 +16983,8 @@ mod tests {
     #[test]
     fn compare_validation_rejects_replay_event_drift() {
         let baseline = load_test_manifest_json(
-            repo_manifest_path("benchmarks/manifests/replay/full_prefix_to_decode_branch.json").as_str(),
+            repo_manifest_path("benchmarks/manifests/replay/full_prefix_to_decode_branch.json")
+                .as_str(),
         );
         let mut candidate = baseline.clone();
         candidate["events"][1]["t_ms"] = json!(2);
