@@ -189,7 +189,8 @@ impl NativeLinearAttentionConfig {
 
     pub fn resolved_full_attention_interval(&self, model_family: &str) -> Option<u32> {
         self.full_attention_interval.or_else(|| {
-            (self.is_enabled() && model_family == "qwen3_5")
+            let is_hybrid_family = matches!(model_family, "qwen3_5" | "qwen3_next");
+            (self.is_enabled() && is_hybrid_family)
                 .then_some(QWEN3_5_DEFAULT_FULL_ATTENTION_INTERVAL)
         })
     }
@@ -795,10 +796,15 @@ fn validate_native_model_manifest(
             && roles.contains(&NativeTensorRole::FfnSharedExpertGate)
             && roles.contains(&NativeTensorRole::FfnSharedExpertUp)
             && roles.contains(&NativeTensorRole::FfnSharedExpertDown);
-        if !(has_dense_ffn || has_shared_expert_ffn) {
+        let has_moe_expert_ffn = roles.contains(&NativeTensorRole::FfnGateInp)
+            && roles.contains(&NativeTensorRole::FfnDownExps)
+            && (roles.contains(&NativeTensorRole::FfnGateUpExpsPacked)
+                || roles.contains(&NativeTensorRole::FfnGateExps)
+                || roles.contains(&NativeTensorRole::FfnUpExps));
+        if !(has_dense_ffn || has_shared_expert_ffn || has_moe_expert_ffn) {
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
-                    "layer {} must provide dense FFN tensors or Qwen3Next shared-expert FFN tensors",
+                    "layer {} must provide dense FFN tensors or MoE expert tensors",
                     layer_index
                 ),
             });
@@ -965,11 +971,11 @@ fn validate_native_model_manifest(
                 layer_index,
                 "ffn_down_exps",
             )?;
-            if roles.contains(&NativeTensorRole::FfnSharedExpertGateInp)
+            let has_any_shared_expert = roles.contains(&NativeTensorRole::FfnSharedExpertGateInp)
                 || roles.contains(&NativeTensorRole::FfnSharedExpertGate)
                 || roles.contains(&NativeTensorRole::FfnSharedExpertUp)
-                || roles.contains(&NativeTensorRole::FfnSharedExpertDown)
-            {
+                || roles.contains(&NativeTensorRole::FfnSharedExpertDown);
+            if has_any_shared_expert || moe_requires_shared_expert(manifest) {
                 require_layer_role(
                     roles,
                     NativeTensorRole::FfnSharedExpertGateInp,
@@ -1021,6 +1027,10 @@ fn validate_native_model_manifest(
     validate_native_model_tensor_shapes(manifest)?;
 
     Ok(())
+}
+
+fn moe_requires_shared_expert(manifest: &NativeModelManifest) -> bool {
+    manifest.moe.is_enabled() && matches!(manifest.model_family.as_str(), "qwen3_5" | "qwen3_next")
 }
 
 fn validate_native_model_tensor_shapes(
@@ -2860,6 +2870,79 @@ mod tests {
         manifest
     }
 
+    fn switch_moe_manifest(model_family: &str, include_shared_expert: bool) -> NativeModelManifest {
+        let mut manifest = packed_layer_manifest();
+        manifest.model_family = model_family.to_string();
+        manifest.layer_count = 1;
+        manifest.moe = NativeMoeConfig {
+            expert_count: Some(4),
+            experts_per_token: Some(2),
+            expert_intermediate_size: Some(512),
+        };
+        manifest.tensors.retain(|tensor| {
+            tensor.layer_index != Some(1)
+                && !matches!(
+                    tensor.role,
+                    NativeTensorRole::FfnGateUpPacked | NativeTensorRole::FfnDown
+                )
+        });
+        manifest.tensors.extend([
+            tensor(
+                "model.layers.0.mlp.gate.weight",
+                NativeTensorRole::FfnGateInp,
+                Some(0),
+                vec![4, 2048],
+            ),
+            tensor(
+                "model.layers.0.mlp.switch_mlp.gate_proj.weight",
+                NativeTensorRole::FfnGateExps,
+                Some(0),
+                vec![4, 512, 2048],
+            ),
+            tensor(
+                "model.layers.0.mlp.switch_mlp.up_proj.weight",
+                NativeTensorRole::FfnUpExps,
+                Some(0),
+                vec![4, 512, 2048],
+            ),
+            tensor(
+                "model.layers.0.mlp.switch_mlp.down_proj.weight",
+                NativeTensorRole::FfnDownExps,
+                Some(0),
+                vec![4, 2048, 512],
+            ),
+        ]);
+        if include_shared_expert {
+            manifest.tensors.extend([
+                tensor(
+                    "model.layers.0.mlp.shared_expert_gate.weight",
+                    NativeTensorRole::FfnSharedExpertGateInp,
+                    Some(0),
+                    vec![1, 2048],
+                ),
+                tensor(
+                    "model.layers.0.mlp.shared_expert.gate_proj.weight",
+                    NativeTensorRole::FfnSharedExpertGate,
+                    Some(0),
+                    vec![512, 2048],
+                ),
+                tensor(
+                    "model.layers.0.mlp.shared_expert.up_proj.weight",
+                    NativeTensorRole::FfnSharedExpertUp,
+                    Some(0),
+                    vec![512, 2048],
+                ),
+                tensor(
+                    "model.layers.0.mlp.shared_expert.down_proj.weight",
+                    NativeTensorRole::FfnSharedExpertDown,
+                    Some(0),
+                    vec![2048, 512],
+                ),
+            ]);
+        }
+        manifest
+    }
+
     fn tensor(
         name: &str,
         role: NativeTensorRole,
@@ -3289,6 +3372,46 @@ mod tests {
             message.contains("must not mix ffn_gate_up_exps_packed"),
             "unexpected error: {message}"
         );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_qwen3_moe_without_shared_expert() {
+        let manifest = switch_moe_manifest("qwen3_moe", false);
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        NativeModelArtifacts::from_dir(&dir)
+            .expect("Qwen3 MoE switch experts do not require a shared expert block");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_reject_qwen35_moe_without_shared_expert() {
+        let manifest = switch_moe_manifest("qwen3_5", false);
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        let error = NativeModelArtifacts::from_dir(&dir)
+            .expect_err("Qwen3.5 MoE requires the reference shared expert block");
+        let NativeModelError::InvalidManifest { message } = error else {
+            panic!("expected invalid manifest error");
+        };
+        assert!(
+            message.contains("ffn_shared_expert_gate_inp"),
+            "unexpected error: {message}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_model_artifacts_allow_qwen35_moe_with_shared_expert() {
+        let manifest = switch_moe_manifest("qwen3_5", true);
+        let (dir, _) = write_fixture(manifest, &["model.safetensors"]);
+
+        NativeModelArtifacts::from_dir(&dir)
+            .expect("Qwen3.5 MoE should validate with switch experts and shared expert");
 
         let _ = fs::remove_dir_all(dir);
     }
