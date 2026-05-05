@@ -133,6 +133,19 @@ AX-owned MLX mode remains token-based and therefore fails closed on those text
 or chat-oriented endpoints instead of inventing tokenizer or chat-template
 behavior inside the server.
 
+For OpenAI-compatible MLX serving, run the optional Python shim with an explicit
+MLX model artifact directory and tokenizer:
+
+```text
+python -m ax_engine.openai_server \
+  --model-id qwen3_dense \
+  --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts \
+  --tokenizer /absolute/path/to/tokenizer.json \
+  --port 8080
+```
+
+Install the optional server dependencies with `pip install 'ax-engine[openai]'`.
+
 To run a repo-owned end-to-end smoke check that starts the preview binary and
 exercises health, runtime, one-shot generate, cancel, and SSE streaming over
 real HTTP:
