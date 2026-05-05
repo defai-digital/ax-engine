@@ -1,7 +1,7 @@
 use mlx_sys::{MlxArray, argmax, async_eval, clear_cache, eval};
 
 use crate::kv_cache::MlxKVCache;
-use crate::model::{ModelConfig, forward};
+use crate::model::{ModelConfig, forward, forward_lazy_single};
 use crate::sampling::{Xorshift64, sample_categorical};
 use crate::weights::ModelWeights;
 
@@ -43,6 +43,72 @@ pub fn chunked_prefill(
             async_eval(&[&logits]);
         }
     }
+}
+
+/// Start the double-buffer greedy decode pipeline from a known (materialised) token.
+///
+/// Runs one forward pass, submits the result to the GPU via `async_eval`, and
+/// returns the **lazy** token array.  The caller stores this and passes it to
+/// `advance_greedy_pipeline` on the next decode step.
+///
+/// Only valid for temperature = 0 (greedy).  For sampling paths use `decode_step`.
+pub fn start_greedy_pipeline(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    last_token: u32,
+    cache: &mut MlxKVCache,
+) -> MlxArray {
+    let token_offset = cache.seq_len;
+    let logits = forward(cfg, weights, &[last_token], cache, token_offset);
+    cache.seq_len += 1;
+    let token_arr = argmax(&logits, None);
+    let kv_refs = cache.collect_eval_refs();
+    let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+    targets.push(&token_arr);
+    targets.extend(kv_refs);
+    async_eval(&targets);
+    token_arr
+}
+
+/// Advance the double-buffer greedy pipeline by one step.
+///
+/// This mirrors mlx_lm's `_step(y)` → `mx.async_eval(next_y)` → `mx.eval(y)` pattern:
+///
+/// 1. Build step N+1's compute graph using the pending lazy token (no GPU sync).
+/// 2. Submit step N+1 to the GPU via `async_eval`.
+/// 3. Materialise the pending (step N) token — GPU should already have it.
+/// 4. Return `(step_N_token_u32, step_N+1_lazy_token)`.
+///
+/// The caller stores the returned lazy token as the next pending value.
+pub fn advance_greedy_pipeline(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    pending: &MlxArray, // lazy token from previous `start_greedy_pipeline` / `advance_greedy_pipeline`
+    cache: &mut MlxKVCache,
+) -> (u32, MlxArray) {
+    // Build next step's graph using the lazy pending token.
+    // forward_lazy_single accepts an unevaluated MlxArray, so this runs entirely
+    // on the CPU without waiting for `pending` to be materialised.
+    let token_offset = cache.seq_len;
+    let logits = forward_lazy_single(cfg, weights, pending, cache, token_offset);
+    cache.seq_len += 1;
+    let next_token_arr = argmax(&logits, None);
+    let kv_refs = cache.collect_eval_refs();
+    let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+    targets.push(&next_token_arr);
+    targets.extend(kv_refs);
+    // Submit step N+1 to the GPU before waiting for step N.
+    // The GPU will sequence correctly: N+1 starts as soon as N's results are ready.
+    async_eval(&targets);
+
+    // Materialise the pending (step N) token.  Because `async_eval` was called
+    // in the previous `start_greedy_pipeline` / `advance_greedy_pipeline`, the GPU
+    // has been working on this token the entire time the CPU was building N+1's
+    // graph above — so `eval` is typically a no-op barrier.
+    eval(&[pending]);
+    let tok = pending.data_u32().first().copied().unwrap_or(0);
+
+    (tok, next_token_arr)
 }
 
 /// Decode one token: forward pass for a single token and return sampled ID.

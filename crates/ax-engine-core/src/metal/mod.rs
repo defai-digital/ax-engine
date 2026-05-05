@@ -1115,18 +1115,24 @@ impl TokenSampler for MetalBringupSampler {
                         }
                     })
                 });
-                let token_id = sampled_from_logits
-                    .map(|(token_id, _)| token_id)
-                    .unwrap_or_else(|| request.previous_token.saturating_add(1));
+                let invalid_logits = request.logits.is_some() && sampled_from_logits.is_none();
+                let token_id = if invalid_logits {
+                    0
+                } else {
+                    sampled_from_logits
+                        .map(|(token_id, _)| token_id)
+                        .unwrap_or_else(|| request.previous_token.saturating_add(1))
+                };
                 let logprob = sampled_from_logits
                     .map(|(_, logprob)| logprob)
-                    .or(Some(0.0));
-                let stop_reason =
-                    if request.generated_len.saturating_add(1) >= request.max_output_tokens {
-                        Some(StopReason::MaxOutputTokens)
-                    } else {
-                        None
-                    };
+                    .or_else(|| (!invalid_logits).then_some(0.0));
+                let stop_reason = if invalid_logits {
+                    Some(StopReason::Error)
+                } else if request.generated_len.saturating_add(1) >= request.max_output_tokens {
+                    Some(StopReason::MaxOutputTokens)
+                } else {
+                    None
+                };
 
                 SampledToken {
                     request_id: request.request_id,

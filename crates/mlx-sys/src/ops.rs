@@ -419,7 +419,6 @@ pub fn argmax(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     }
 }
 
-
 pub fn argsort_axis(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);

@@ -1,6 +1,6 @@
 # Python
 
-`python/ax_engine` is the preview Python access layer for AX Engine v4.
+`python/ax_engine` is the preview Python access layer for AX Engine.
 
 It is intentionally thin:
 

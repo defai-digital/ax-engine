@@ -61,7 +61,29 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     let arch = resolve_architecture(&config, &model_type)?;
     let safetensors_files = find_safetensors_files(model_dir)?;
     let all_tensors = parse_all_safetensors_headers(model_dir, &safetensors_files)?;
-    let mapped_tensors = map_tensors(&config, &all_tensors, &family)?;
+    let mut mapped_tensors = map_tensors(&config, &all_tensors, &family)?;
+
+    // KV-shared layers have K/V weights in the checkpoint (mlx-lm ignores them), but
+    // our manifest must not include them — the runtime reuses K/V from the source layer.
+    // Build the shared-layer set early so we can filter before the manifest is constructed.
+    let kv_shared_layers_early: std::collections::HashSet<u32> = {
+        let layer_types_early = parse_layer_types(&config, &model_type, arch.layer_count);
+        compute_kv_shared_sources(&config, &model_type, &layer_types_early, arch.layer_count)
+            .into_keys()
+            .collect()
+    };
+    if !kv_shared_layers_early.is_empty() {
+        mapped_tensors.retain(|spec| {
+            let is_kv_role = matches!(
+                spec.role,
+                NativeTensorRole::AttentionK | NativeTensorRole::AttentionV
+            );
+            !(is_kv_role
+                && spec
+                    .layer_index
+                    .is_some_and(|li| kv_shared_layers_early.contains(&li)))
+        });
+    }
 
     let tie_word_embeddings = config
         .get("tie_word_embeddings")

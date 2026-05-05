@@ -128,6 +128,26 @@ impl RequestManager {
         Ok(())
     }
 
+    pub fn rollback_prefix_reuse(
+        &mut self,
+        request_id: RequestId,
+        matched_prompt_tokens: u32,
+    ) -> Result<(), RequestManagerError> {
+        let record = self
+            .records
+            .get_mut(&request_id)
+            .ok_or(RequestManagerError::UnknownRequest(request_id))?;
+        if record.processed_prompt_tokens != matched_prompt_tokens {
+            return Err(RequestManagerError::ProgressInvariantViolation {
+                request_id,
+                message: "prefix reuse rollback target no longer matches processed prompt tokens",
+            });
+        }
+        record.processed_prompt_tokens = 0;
+        record.block_table = BlockTable::empty(self.cache_group_id);
+        Ok(())
+    }
+
     pub fn validate_prefix_reuse(
         &self,
         request_id: RequestId,
@@ -288,6 +308,15 @@ impl RequestManager {
                         message: "sampleable update missing sampled token",
                     },
                 )?;
+                if matches!(sampled_token.stop_reason, Some(StopReason::Error)) {
+                    record
+                        .fail("sampler reported stop_reason=Error")
+                        .map_err(|source| RequestManagerError::InvalidStateTransition {
+                            request_id: update.request_id,
+                            source,
+                        })?;
+                    continue;
+                }
 
                 if record.processed_prompt_tokens < record.prompt_tokens.len() as u32 {
                     let next_processed_prompt_tokens = record
@@ -623,6 +652,28 @@ mod tests {
     }
 
     #[test]
+    fn rollback_prefix_reuse_restores_empty_request_state() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+
+        manager.submit(make_submission(5, 1, "qwen3")).unwrap();
+        manager.admit_waiting().unwrap();
+        manager.apply_prefix_reuse(RequestId(5), 3).unwrap();
+
+        manager.rollback_prefix_reuse(RequestId(5), 3).unwrap();
+
+        let snapshot = manager.snapshot(RequestId(5)).unwrap();
+        assert_eq!(snapshot.processed_prompt_tokens, 0);
+        assert!(
+            manager
+                .record(RequestId(5))
+                .unwrap()
+                .block_table
+                .block_ids
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn applies_prefill_runner_output_and_returns_request_to_runnable() {
         let mut manager = RequestManager::new(CacheGroupId(7));
 
@@ -717,6 +768,56 @@ mod tests {
         assert_eq!(snapshot.state, RequestState::Runnable);
         assert_eq!(snapshot.generated_tokens, vec![99]);
         assert_eq!(snapshot.generated_token_logprobs, vec![Some(0.0)]);
+    }
+
+    #[test]
+    fn sampler_error_transitions_request_to_failed_without_fake_token() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+
+        manager.submit(make_submission(1, 1, "qwen3")).unwrap();
+        manager.admit_waiting().unwrap();
+        {
+            let record = manager.records.get_mut(&RequestId(1)).unwrap();
+            record.processed_prompt_tokens = 3;
+            record.mark_runnable().unwrap();
+            record.start_running().unwrap();
+        }
+
+        let summary = manager
+            .apply_execution_results(
+                &RunnerOutput {
+                    step_id: StepId(2),
+                    request_updates: vec![crate::runner::RequestExecutionUpdate {
+                        request_id: RequestId(1),
+                        tokens_executed: 1,
+                        output_token: None,
+                        stop_reason: None,
+                        error: None,
+                    }],
+                    logits_handles: vec![RequestId(1)],
+                    logits_outputs: vec![],
+                    kv_write_summary: KvWriteSummary {
+                        tokens_written: 1,
+                        blocks_touched: 1,
+                    },
+                    route_metadata: crate::scheduler::RouteMetadata::empty(),
+                    execution_status: ExecutionStatus::Success,
+                },
+                &[crate::sampling::SampledToken {
+                    request_id: RequestId(1),
+                    token_id: 100,
+                    stop_reason: Some(StopReason::Error),
+                    logprob: None,
+                }],
+                &[RequestId(1)],
+            )
+            .unwrap();
+
+        assert_eq!(summary.ttft_events, 0);
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.state, RequestState::Failed);
+        assert!(snapshot.generated_tokens.is_empty());
+        assert!(snapshot.generated_token_logprobs.is_empty());
     }
 
     #[test]

@@ -818,10 +818,20 @@ def _render_chat_prompt(messages: list[ChatMessage | dict[str, str]]) -> str:
     lines: list[str] = []
     for message in messages:
         normalized = _normalize_chat_message(message)
+        role = _normalize_chat_role(normalized.role)
         content = normalized.content.replace("\\", "\\\\").replace("\n", "\\n")
-        lines.append(f"{normalized.role.strip()}: {content}")
+        lines.append(f"{role}: {content}")
     lines.append("assistant:")
     return "\n".join(lines)
+
+
+def _normalize_chat_role(role: str) -> str:
+    normalized = role.strip()
+    if normalized not in {"system", "user", "assistant", "tool", "function"}:
+        raise ValueError(
+            "unsupported chat role; expected one of system, user, assistant, tool, function"
+        )
+    return normalized
 
 
 def _normalize_chat_message(message: ChatMessage | dict[str, str]) -> ChatMessage:

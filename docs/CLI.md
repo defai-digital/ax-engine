@@ -1,6 +1,6 @@
 # CLI
 
-AX Engine v4 currently exposes three command surfaces:
+AX Engine currently exposes three command surfaces:
 
 - `ax-engine-bench` for workload contracts, readiness, bounded autotune, Metal
   build checks, and thin direct SDK inference helpers.

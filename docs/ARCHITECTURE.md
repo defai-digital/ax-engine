@@ -1,6 +1,6 @@
 # Architecture
 
-AX Engine v4 is organized as a small set of crates with intentionally different
+AX Engine is organized as a small set of crates with intentionally different
 dependency boundaries.
 
 The project goal is not to make every crate depend on the same general-purpose
@@ -19,7 +19,7 @@ consistent across the workspace.
 - `ax-engine-bench`: workload-contract CLI, replay harness, reporting,
   bounded autotune, readiness, and bring-up checks
 
-This means AX Engine v4 already has a practical split between:
+This means AX Engine already has a practical split between:
 
 - execution core
 - runtime/session contract
@@ -55,7 +55,7 @@ Avoid by default:
 Serialization should only enter the core when a specific type truly needs to
 cross a crate or process boundary. Core internals should not derive
 serialization traits just for convenience.
-AX Engine v4 currently uses a small amount of core-level serialization for
+AX Engine currently uses a small amount of core-level serialization for
 public Metal manifest and build-report contracts that are shared across
 workspace surfaces.
 
@@ -95,7 +95,7 @@ the core API surface.
 
 ## Error Model
 
-AX Engine v4 should prefer typed domain errors for core and SDK surfaces.
+AX Engine should prefer typed domain errors for core and SDK surfaces.
 
 That keeps it possible to distinguish:
 
@@ -137,4 +137,4 @@ When adding a crate, ask:
 3. Can the dependency stay in `ax-engine-sdk`, `ax-engine-server`, `ax-engine-py`, or `ax-engine-bench` instead of entering `ax-engine-core`?
 4. Will this make error handling and observability clearer, or blur crate responsibilities?
 
-For AX Engine v4, a smaller and clearer core is usually the better default.
+For AX Engine, a smaller and clearer core is usually the better default.

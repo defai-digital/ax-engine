@@ -1,6 +1,6 @@
 # JavaScript
 
-AX Engine v4 now includes a thin repo-local JavaScript preview client at
+AX Engine now includes a thin repo-local JavaScript preview client at
 `javascript/ax-engine`.
 
 It is intentionally small:

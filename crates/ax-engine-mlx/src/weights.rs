@@ -194,8 +194,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     } else {
         None
     };
-    let per_layer_model_proj = if has_role(specs, NativeTensorRole::PerLayerModelProjection, None)
-    {
+    let per_layer_model_proj = if has_role(specs, NativeTensorRole::PerLayerModelProjection, None) {
         Some(take_weight(
             specs,
             &mut name_map,

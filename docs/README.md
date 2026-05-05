@@ -1,4 +1,4 @@
-# AX Engine v4 Public Docs
+# AX Engine Public Docs
 
 This directory is reserved for public-facing documentation.
 

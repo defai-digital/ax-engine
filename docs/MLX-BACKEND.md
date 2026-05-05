@@ -2,7 +2,7 @@
 
 ## Current Direction
 
-AX Engine v4 uses two user-facing inference paths: MLX mode for repo-owned MLX execution, and llama.cpp for non-MLX inference.
+AX Engine uses two user-facing inference paths: MLX mode for repo-owned MLX execution, and llama.cpp for non-MLX inference.
 MLX mode is the repo-owned Mac-local inference path, implemented through
 `ax-engine-mlx` and selected explicitly with `--mlx` or Python `mlx=True`.
 
@@ -95,12 +95,20 @@ over `[last_token, D1, D2, …, D_n]`.  EMA accept-rate gating (α=0.1, threshol
 0.5) disables speculation for 8 steps after the EMA drops below threshold,
 letting the n-gram table recover before re-enabling.
 
+Dense/full-attention models use the chunked KV cache's O(1) `trim_to` rollback.
+Linear-attention models such as Qwen3.5 use a rollback-safe branch path instead:
+verification mutates a cloned cache, all-accepted drafts commit that branch, and
+rejected drafts recompute `[last_token + accepted_drafts]` from the original
+cache so recurrent state stays aligned with the logical sequence.
+
 Speculative throughput claims must be reproduced through
 `scripts/bench_mlx_inference_stack.py --ax-both-modes` before they are used in
-release notes or architecture decisions. Historical local rows such as
-`~1.96x mlx_lm` at 256-token context are useful investigation notes only unless
-the run artifact records the model, host, random-token prompt/decode shape,
-reference identity, and AX decode mode.
+release notes or architecture decisions. Measured results on Gemma4-e2b-it-4bit
+(Apple M5 Max, 128 GB, batch=1, 3 trials) are recorded in `README.md`:
+1.83x mlx_lm at 128-token prompt and 1.89x at 512-token prompt.
+Any prior unattributed `~1.96x mlx_lm` rows are investigation notes only; they
+do not carry model, host, random-token prompt/decode shape, reference identity,
+or AX decode mode provenance.
 
 ### Batch contract
 
@@ -182,7 +190,7 @@ Interpretation rule:
 ### Phase 2 — ax-engine-mlx crate
 - Weight loader: reads `NativeTensorSpec` offsets from safetensors → `MlxArray`
 - Quantized weight binding: Q4_K_M → `mlx_quantized_matmul`
-- Qwen3 dense model graph: embed → 36 × (RMSNorm + GQA + SwiGLU) → RMSNorm → lm_head
+- Model graph: Qwen3 dense (GQA + SwiGLU), Qwen3.5 MoE (linear attention + MoE FFN + attn_output_gate), Gemma4 (per-layer embeddings, per-layer input gating, sliding-window + full attention, KV sharing, logit softcapping)
 - Chunked KV cache with slice_update growth and O(1) speculative rollback
 - N-gram speculative decode with EMA gating
 - Chunked prefill loop
@@ -200,7 +208,7 @@ Interpretation rule:
 - KV quantization and sliding-window cache layouts
 - Custom Metal kernel integration (after profiling confirms a hot-path target)
 - Multi-item batch execution with shared K/V primitives
-- Extend model coverage beyond Qwen3 dense
+- Expand model coverage to additional dense and MoE architectures
 
 ## File map
 

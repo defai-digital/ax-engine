@@ -1,6 +1,6 @@
 # Getting Started
 
-AX Engine v4 is currently in active development.
+AX Engine is currently in active development.
 
 The repository provides:
 
@@ -86,7 +86,7 @@ The benchmark CLI and core workspace compile on a normal Rust setup, but
 decision-grade AX-owned MLX inference claims require the supported Apple
 Silicon MLX runtime environment.
 
-AX Engine v4 MLX mode depends on the available Apple Silicon MLX runtime;
+AX Engine MLX mode depends on the available Apple Silicon MLX runtime;
 non-MLX inference uses delegated llama.cpp routes.
 Runtime surfaces fail closed on pre-M4 hosts instead of pretending degraded
 support exists.

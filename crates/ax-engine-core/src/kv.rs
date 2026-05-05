@@ -280,6 +280,47 @@ impl KvManager {
         Ok(())
     }
 
+    pub fn rollback_prefix_share(
+        &mut self,
+        request_id: RequestId,
+        lookup: &PrefixLookupResult,
+    ) -> Result<(), KvManagerError> {
+        let table = self
+            .block_tables
+            .get(&request_id)
+            .ok_or(KvManagerError::UnknownRequest(request_id))?;
+        if table.block_ids != lookup.matched_blocks
+            || table.logical_token_count != lookup.matched_token_count
+            || table.partial_block_tokens != 0
+        {
+            return Err(KvManagerError::InvariantViolation(
+                "prefix share rollback target no longer matches lookup",
+            ));
+        }
+
+        for block_id in lookup.matched_blocks.iter().rev() {
+            let ref_count = self.block_ref_counts.get_mut(block_id).ok_or(
+                KvManagerError::InvariantViolation("shared prefix block missing refcount"),
+            )?;
+            if *ref_count == 1 {
+                return Err(KvManagerError::InvariantViolation(
+                    "shared prefix rollback would release sole block owner",
+                ));
+            }
+            *ref_count -= 1;
+        }
+
+        let table = self
+            .block_tables
+            .get_mut(&request_id)
+            .ok_or(KvManagerError::UnknownRequest(request_id))?;
+        table.block_ids.clear();
+        table.logical_token_count = 0;
+        table.full_block_count = 0;
+        table.partial_block_tokens = 0;
+        Ok(())
+    }
+
     pub fn validate_prefix_share(
         &self,
         request_id: RequestId,
@@ -957,6 +998,42 @@ mod tests {
             manager.block_table(RequestId(2)).unwrap().block_ids,
             Vec::<BlockId>::new()
         );
+    }
+
+    #[test]
+    fn rollback_prefix_share_releases_shared_refs_and_clears_target_table() {
+        let mut manager = make_manager(3, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        manager
+            .register_request(RequestId(2), vec![1, 2, 3, 4, 5, 6, 7, 8, 9])
+            .unwrap();
+        manager.allocate(RequestId(1), 8).unwrap();
+
+        let lookup = manager
+            .lookup_prefix(RequestId(2), &[1, 2, 3, 4, 5, 6, 7, 8, 9])
+            .unwrap();
+        manager.share_prefix(RequestId(2), &lookup).unwrap();
+
+        manager
+            .rollback_prefix_share(RequestId(2), &lookup)
+            .unwrap();
+
+        assert_eq!(
+            manager.block_table(RequestId(2)).unwrap().block_ids,
+            Vec::<BlockId>::new()
+        );
+        assert_eq!(manager.available_block_count(), 1);
+        let free = manager.free(RequestId(1)).unwrap();
+        assert!(free.released_blocks.is_empty());
+        assert_eq!(manager.available_block_count(), 1);
+
+        manager
+            .register_request(RequestId(3), vec![99, 98, 97, 96, 95])
+            .unwrap();
+        let allocation = manager.allocate(RequestId(3), 5).unwrap();
+        assert_eq!(allocation.allocation_status, AllocationStatus::Allocated);
     }
 
     #[test]
