@@ -287,7 +287,7 @@ impl GenerateStatus {
             RequestState::Waiting
             | RequestState::Runnable
             | RequestState::BlockedOnMemory
-            | RequestState::Running => Self::Failed,
+            | RequestState::Running => Self::Pending,
         }
     }
 
@@ -299,7 +299,7 @@ impl GenerateStatus {
             SessionRequestState::Waiting
             | SessionRequestState::Runnable
             | SessionRequestState::BlockedOnMemory
-            | SessionRequestState::Running => Self::Failed,
+            | SessionRequestState::Running => Self::Pending,
         }
     }
 }
@@ -488,6 +488,35 @@ mod tests {
         );
 
         assert_eq!(response.finish_reason, Some(GenerateFinishReason::Stop));
+    }
+
+    #[test]
+    fn active_generate_states_report_pending_without_finish_reason() {
+        for state in [
+            RequestState::Waiting,
+            RequestState::Runnable,
+            RequestState::BlockedOnMemory,
+            RequestState::Running,
+        ] {
+            assert_eq!(
+                GenerateStatus::from_request_state(state),
+                GenerateStatus::Pending
+            );
+            assert_eq!(GenerateFinishReason::from_request_state(state, None), None);
+        }
+
+        for state in [
+            SessionRequestState::Waiting,
+            SessionRequestState::Runnable,
+            SessionRequestState::BlockedOnMemory,
+            SessionRequestState::Running,
+        ] {
+            assert_eq!(
+                GenerateStatus::from_session_state(state),
+                GenerateStatus::Pending
+            );
+            assert_eq!(GenerateFinishReason::from_session_state(state, None), None);
+        }
     }
 
     #[test]

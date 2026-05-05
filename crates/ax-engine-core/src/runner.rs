@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::ids::{RequestId, StepId};
@@ -134,8 +135,9 @@ pub(crate) fn successful_runner_output_from_input(input: &RunnerInput) -> Runner
     let blocks_touched = input
         .block_tables
         .iter()
-        .map(|resolved| resolved.block_table.block_ids.len() as u32)
-        .sum();
+        .flat_map(|resolved| resolved.block_table.block_ids.iter().copied())
+        .collect::<BTreeSet<_>>()
+        .len() as u32;
 
     RunnerOutput {
         step_id: input.execution_batch.step_id,
@@ -270,6 +272,74 @@ mod tests {
         assert_eq!(output.kv_write_summary.tokens_written, 4);
         assert_eq!(output.kv_write_summary.blocks_touched, 2);
         assert_eq!(output.route_metadata, route_metadata);
+    }
+
+    #[test]
+    fn deterministic_runner_counts_shared_blocks_once() {
+        let runner = DeterministicRunner;
+        let output = runner.run(RunnerInput {
+            block_size_tokens: 16,
+            execution_batch: ExecutionBatch {
+                step_id: StepId(9),
+                model_id: "qwen3".into(),
+                execution_plan_ref: Some("dense.plan".into()),
+                items: vec![
+                    ExecutionItem {
+                        request_id: RequestId(1),
+                        mode: ExecutionMode::Prefill,
+                        input_token_slice: vec![1],
+                        reused_prefix_token_slice: Vec::new(),
+                        position_range: PositionRange {
+                            start: 0,
+                            end_exclusive: 1,
+                        },
+                        scheduled_token_count: 1,
+                        block_table_ref: RequestId(1),
+                        prefix_tokens_reused: 0,
+                        prefix_blocks_reused: 0,
+                    },
+                    ExecutionItem {
+                        request_id: RequestId(2),
+                        mode: ExecutionMode::Prefill,
+                        input_token_slice: vec![2],
+                        reused_prefix_token_slice: Vec::new(),
+                        position_range: PositionRange {
+                            start: 0,
+                            end_exclusive: 1,
+                        },
+                        scheduled_token_count: 1,
+                        block_table_ref: RequestId(2),
+                        prefix_tokens_reused: 0,
+                        prefix_blocks_reused: 0,
+                    },
+                ],
+                total_scheduled_tokens: 2,
+                route_metadata: RouteMetadata::empty(),
+            },
+            block_tables: vec![
+                ResolvedBlockTable {
+                    request_id: RequestId(1),
+                    block_table: BlockTableView {
+                        cache_group_id: crate::ids::CacheGroupId(1),
+                        block_ids: vec![crate::ids::BlockId(0), crate::ids::BlockId(1)],
+                    },
+                },
+                ResolvedBlockTable {
+                    request_id: RequestId(2),
+                    block_table: BlockTableView {
+                        cache_group_id: crate::ids::CacheGroupId(1),
+                        block_ids: vec![
+                            crate::ids::BlockId(0),
+                            crate::ids::BlockId(1),
+                            crate::ids::BlockId(2),
+                        ],
+                    },
+                },
+            ],
+            request_contexts: Vec::new(),
+        });
+
+        assert_eq!(output.kv_write_summary.blocks_touched, 3);
     }
 
     #[test]

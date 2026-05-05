@@ -153,12 +153,6 @@ impl Scheduler {
         let mut items = Vec::new();
 
         for snapshot in runnable {
-            if snapshot.processed_prompt_tokens >= snapshot.prompt_len
-                && snapshot.generated_len >= snapshot.max_output_tokens
-            {
-                continue;
-            }
-
             if snapshot.model_id != batch_model_id || remaining_budget == 0 {
                 deferred_requests.push(snapshot.request_id);
                 continue;
@@ -246,10 +240,7 @@ impl Scheduler {
             .last()
             .copied()
             .or_else(|| snapshot.prompt_tokens.last().copied())?;
-        let position_start = snapshot
-            .prompt_len
-            .saturating_sub(1)
-            .saturating_add(snapshot.generated_len);
+        let position_start = snapshot.prompt_len.saturating_add(snapshot.generated_len);
 
         Some(ExecutionItem {
             request_id: snapshot.request_id,
@@ -381,8 +372,8 @@ mod tests {
         assert_eq!(
             execution_batch.items[0].position_range,
             PositionRange {
-                start: 3,
-                end_exclusive: 4,
+                start: 4,
+                end_exclusive: 5,
             }
         );
     }
@@ -404,10 +395,25 @@ mod tests {
         assert_eq!(
             execution_batch.items[0].position_range,
             PositionRange {
-                start: 2,
-                end_exclusive: 3,
+                start: 3,
+                end_exclusive: 4,
             }
         );
+    }
+
+    #[test]
+    fn max_output_runnable_request_remains_visible_as_deferred() {
+        let scheduler = Scheduler::new();
+        let schedule_plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(10),
+            request_snapshots: vec![make_snapshot(12, 1, "qwen3", &[1, 2, 3], 3, &[7, 8], 2)],
+            memory_pressure: None,
+            global_token_budget: 1,
+        });
+
+        assert!(schedule_plan.selected_requests.is_empty());
+        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(12)]);
+        assert!(schedule_plan.execution_batch.is_none());
     }
 
     #[test]
@@ -530,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn skips_requests_with_no_remaining_work() {
+    fn defers_requests_with_no_remaining_work_so_they_stay_visible() {
         let scheduler = Scheduler::new();
         let schedule_plan = scheduler.plan(&SchedulerInput {
             step_id: StepId(21),
@@ -540,7 +546,7 @@ mod tests {
         });
 
         assert!(schedule_plan.selected_requests.is_empty());
-        assert!(schedule_plan.deferred_requests.is_empty());
+        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
         assert!(schedule_plan.execution_batch.is_none());
     }
 

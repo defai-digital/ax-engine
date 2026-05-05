@@ -182,7 +182,7 @@ impl EngineCore {
         let retried_memory_blocked = self.request_manager.retry_memory_blocked()?;
         let admitted_requests = self.request_manager.admit_waiting()?;
         self.refresh_execution_plan_refs()?;
-        let step_id = self.allocate_step_id();
+        let step_id = self.allocate_step_id()?;
         step_span.record("step_id", step_id.0);
         trace!(
             cleanup_results = cleanup_results.len(),
@@ -261,13 +261,13 @@ impl EngineCore {
         })
     }
 
-    fn allocate_step_id(&mut self) -> StepId {
+    fn allocate_step_id(&mut self) -> Result<StepId, EngineCoreError> {
         let step_id = StepId(self.next_step_id);
         self.next_step_id = self
             .next_step_id
             .checked_add(1)
-            .expect("step ID overflow; engine has been running for an unreasonable duration");
-        step_id
+            .ok_or(EngineCoreError::StepIdOverflow)?;
+        Ok(step_id)
     }
 
     fn resolve_kv_schedule_plan(
@@ -308,6 +308,12 @@ impl EngineCore {
                     ));
                 }
                 AllocationStatus::InsufficientCapacity | AllocationStatus::Deferred => {
+                    if let Some(lookup) = prefix_reuse.get(&rid) {
+                        self.kv_manager.rollback_prefix_share(rid, lookup)?;
+                        self.request_manager
+                            .rollback_prefix_reuse(rid, lookup.matched_token_count)?;
+                        self.sync_request_block_table(rid)?;
+                    }
                     memory_blocked_requests.push(rid);
                 }
             }
@@ -1089,6 +1095,8 @@ pub enum EngineCoreError {
         step_id: StepId,
         message: &'static str,
     },
+    #[error("step ID counter overflowed")]
+    StepIdOverflow,
 }
 
 #[cfg(test)]
@@ -1756,6 +1764,16 @@ mod tests {
     }
 
     #[test]
+    fn step_reports_step_id_overflow_without_panicking() {
+        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 1));
+        engine.next_step_id = u64::MAX;
+
+        let error = engine.step(1, true).unwrap_err();
+
+        assert_eq!(error, EngineCoreError::StepIdOverflow);
+    }
+
+    #[test]
     fn blocked_request_retries_after_capacity_is_freed() {
         let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 8, 1));
 
@@ -1863,7 +1881,46 @@ mod tests {
                 .snapshot(RequestId(2))
                 .unwrap()
                 .processed_prompt_tokens,
-            8
+            0
+        );
+    }
+
+    #[test]
+    fn blocked_prefix_reuse_rolls_back_refs_so_capacity_can_recover() {
+        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 3));
+        let shared_prefix = vec![10, 11, 12, 13, 14, 15, 16, 17];
+
+        engine
+            .submit(make_submission_with_prompt(1, 1, shared_prefix.clone(), 2))
+            .unwrap();
+        engine.step(8, true).unwrap();
+
+        let mut extended_prompt = shared_prefix;
+        extended_prompt.extend([90, 91, 92, 93, 94]);
+        engine
+            .submit(make_submission_with_prompt(2, 2, extended_prompt, 1))
+            .unwrap();
+
+        let blocked = engine.step(5, true).unwrap();
+        assert_eq!(
+            blocked.schedule_plan.memory_blocked_requests,
+            vec![RequestId(2)]
+        );
+        assert_eq!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(2))
+                .unwrap()
+                .processed_prompt_tokens,
+            0
+        );
+
+        engine.step(1, true).unwrap();
+        let recovered = engine.step(4, true).unwrap();
+
+        assert_eq!(
+            recovered.schedule_plan.selected_requests,
+            vec![RequestId(2)]
         );
     }
 

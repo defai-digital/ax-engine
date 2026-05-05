@@ -475,26 +475,22 @@ pub fn layer_forward(
 }
 
 /// Embed token IDs and return hidden states of shape [1, seq_len, hidden].
-pub fn embed_tokens(
-    token_ids: &[u32],
+/// Embed tokens from a pre-built 1-D `[seq]` token-ID array.
+///
+/// Accepts lazy (unevaluated) arrays — all ops are lazy MLX graph nodes — so
+/// this can be called with a GPU argmax result before it has been materialised.
+/// Used internally by `embed_tokens` (materialized path) and by
+/// `forward_lazy_single` (double-buffer pipelining path).
+fn embed_tokens_arr(
+    ids_1d: &MlxArray,
     embedding: &QuantizedWeight,
     hidden_size: usize,
 ) -> MlxArray {
-    let seq = token_ids.len() as i32;
-    let ids_shape = [seq];
-    let ids_arr = MlxArray::from_raw_data(
-        token_ids.as_ptr() as *const u8,
-        std::mem::size_of_val(token_ids),
-        &ids_shape,
-        MlxDtype::Uint32,
-    );
+    let seq = ids_1d.shape()[0]; // shape metadata is available without eval
     if let Some(scales) = &embedding.scales {
-        let row_w = take(&embedding.weight, &ids_arr, 0, None);
-        let row_s = take(scales, &ids_arr, 0, None);
-        let row_b = embedding
-            .biases
-            .as_ref()
-            .map(|b| take(b, &ids_arr, 0, None));
+        let row_w = take(&embedding.weight, ids_1d, 0, None);
+        let row_s = take(scales, ids_1d, 0, None);
+        let row_b = embedding.biases.as_ref().map(|b| take(b, ids_1d, 0, None));
         let flat = dequantize(
             &row_w,
             &row_s,
@@ -505,9 +501,23 @@ pub fn embed_tokens(
         );
         reshape(&flat, &[1, seq, hidden_size as i32], None)
     } else {
-        let flat = take(&embedding.weight, &ids_arr, 0, None);
+        let flat = take(&embedding.weight, ids_1d, 0, None);
         reshape(&flat, &[1, seq, hidden_size as i32], None)
     }
+}
+
+pub fn embed_tokens(
+    token_ids: &[u32],
+    embedding: &QuantizedWeight,
+    hidden_size: usize,
+) -> MlxArray {
+    let ids_1d = MlxArray::from_raw_data(
+        token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(token_ids),
+        &[token_ids.len() as i32],
+        MlxDtype::Uint32,
+    );
+    embed_tokens_arr(&ids_1d, embedding, hidden_size)
 }
 
 /// Full forward pass: returns logits for the LAST token only — `[vocab_size]` f32.
@@ -581,18 +591,61 @@ pub fn forward_all_positions(
     reshape(&logits_f32, &[seq, cfg.vocab_size as i32], None)
 }
 
+/// Single-token forward pass accepting a lazy token `MlxArray`.
+///
+/// Functionally equivalent to `forward(cfg, weights, &[tok], cache, offset)`,
+/// but takes the token as an unevaluated MLX array so the caller can build the
+/// next step's compute graph *before* the current step's GPU work completes.
+/// This enables double-buffer pipelining (see `start_greedy_pipeline` /
+/// `advance_greedy_pipeline` in `generate.rs`):
+///
+/// ```text
+/// GPU: [step N ....][step N+1 (submitted before N finishes) ....]
+/// CPU:              [build N+1 graph][submit async][eval N][return N's token]
+/// ```
+///
+/// `token_arr` must be a scalar or `[1]` shaped `u32` array.
+pub fn forward_lazy_single(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_arr: &MlxArray, // scalar or [1] u32; may be unevaluated (lazy)
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+) -> MlxArray {
+    // Normalise to [1] for embedding take (reshape is a no-op if already [1]).
+    let tok_1d = reshape(token_arr, &[1_i32], None);
+
+    let mut hidden = embed_tokens_arr(&tok_1d, &weights.token_embedding, cfg.hidden_size);
+    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    if let Some(scale) = cfg.hidden_states_scale {
+        hidden = scale_hidden(&hidden, scale);
+    }
+    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &tok_1d, &hidden);
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
+        hidden = layer_forward(cfg, layer_w, &hidden, cache, li, token_offset, pli);
+    }
+    // Single token: hidden shape is [1, 1, hidden_size] — no sequence slice needed.
+    let normed = rms_norm(&hidden, Some(&weights.final_norm), 1e-6, None);
+    let logits = qw(&normed, &weights.lm_head);
+    let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+    let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
+    reshape(&logits_f32, &[cfg.vocab_size as i32], None)
+}
+
 // ── private helpers ──────────────────────────────────────────────────────────
 
-/// Compute per-layer input vectors for Gemma4 2B/4B models.
+/// Compute per-layer input vectors for Gemma4 2B/4B models from a pre-built
+/// 1-D `[seq]` token-ID array.  Accepts lazy (unevaluated) arrays.
 ///
 /// Returns `Some(Vec<MlxArray>)` of length `num_layers`, each `[1, seq, per_layer_dim]`,
 /// or `None` when the model does not use per-layer input gating.
 ///
 /// Reference: Gemma4TextModel._get_per_layer_inputs + _project_per_layer_inputs.
-fn compute_per_layer_inputs(
+fn compute_per_layer_inputs_arr(
     cfg: &ModelConfig,
     weights: &ModelWeights,
-    token_ids: &[u32],
+    ids_1d: &MlxArray, // [seq] u32, may be unevaluated
     hidden: &MlxArray, // [1, seq, hidden] after embed_scale — used for model projection
 ) -> Option<Vec<MlxArray>> {
     let per_layer_dim = cfg.hidden_size_per_layer_input;
@@ -604,12 +657,12 @@ fn compute_per_layer_inputs(
     let proj_norm_w = weights.per_layer_proj_norm.as_ref()?;
 
     let num_layers = cfg.layer_count;
-    let seq = token_ids.len() as i32;
+    let seq = ids_1d.shape()[0]; // shape metadata available without eval
     let dtype = MlxDtype::Bfloat16;
 
     // 1. Per-layer token embeddings: [1, seq, num_layers * per_layer_dim]
     //    embed_tokens_per_layer(input_ids) * sqrt(per_layer_dim)
-    let embed_out = embed_tokens(token_ids, embed_w, num_layers * per_layer_dim);
+    let embed_out = embed_tokens_arr(ids_1d, embed_w, num_layers * per_layer_dim);
     let embed_out = astype(&embed_out, dtype, None);
     let embed_scale = (per_layer_dim as f32).sqrt();
     let embed_out = scale_hidden(&embed_out, embed_scale);
@@ -656,6 +709,21 @@ fn compute_per_layer_inputs(
         .collect();
 
     Some(per_layer)
+}
+
+fn compute_per_layer_inputs(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    hidden: &MlxArray,
+) -> Option<Vec<MlxArray>> {
+    let ids_1d = MlxArray::from_raw_data(
+        token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(token_ids),
+        &[token_ids.len() as i32],
+        MlxDtype::Uint32,
+    );
+    compute_per_layer_inputs_arr(cfg, weights, &ids_1d, hidden)
 }
 
 /// Apply optional per-head RMS norm in BSHD [1, seq, n_heads, head_dim] space.
@@ -750,10 +818,31 @@ fn qkv_project(
         (q, k, v, gate)
     } else {
         let q_full = qw(x, w.q_proj.as_ref().unwrap());
-        let q = mlx_slice_last_dim(&q_full, slices.q.0, slices.q.1);
-        let gate = slices
-            .gate
-            .map(|(start, end)| mlx_slice_last_dim(&q_full, start, end));
+        let (q, gate) = if slices.gate.is_some() {
+            // attn_output_gate=true: q_proj output is [B, L, n_heads, 2*head_dim] interleaved.
+            // Split by reshaping to [B, L, n_heads, 2*head_dim] and slicing last dim,
+            // matching mlx-lm's `mx.split(q_proj_out.reshape(B, L, n_heads, -1), 2, axis=-1)`.
+            let seq = q_full.shape()[1];
+            let q_heads = reshape(
+                &q_full,
+                &[1, seq, cfg.n_heads as i32, 2 * head_dim as i32],
+                None,
+            );
+            let q = reshape(
+                &slice_last_dim(&q_heads, 0, head_dim as i32, None),
+                &[1, seq, (cfg.n_heads * head_dim) as i32],
+                None,
+            );
+            let gate = reshape(
+                &slice_last_dim(&q_heads, head_dim as i32, 2 * head_dim as i32, None),
+                &[1, seq, (cfg.n_heads * head_dim) as i32],
+                None,
+            );
+            (q, Some(gate))
+        } else {
+            let q = mlx_slice_last_dim(&q_full, slices.q.0, slices.q.1);
+            (q, None)
+        };
         let k = qw(x, w.k_proj.as_ref().unwrap());
         let v = w
             .v_proj

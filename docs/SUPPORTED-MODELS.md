@@ -1,6 +1,6 @@
 # Supported Models
 
-AX Engine v4 routes inference through two supported shipping paths:
+AX Engine routes inference through two supported shipping paths:
 
 - repo-owned MLX mode for MLX inference
 - `llama.cpp` bypass for non-MLX inference
@@ -33,7 +33,7 @@ The current routing decision is recorded in
 
 ## MLX Platform Baseline
 
-AX Engine v4 MLX mode targets Apple Silicon Macs where the MLX runtime and AX's
+AX Engine MLX mode targets Apple Silicon Macs where the MLX runtime and AX's
 MLX integration are available.
 
 This means:
