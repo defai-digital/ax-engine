@@ -12,10 +12,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 SCRIPT_PATH = Path(__file__).with_name("bench_mlx_inference_stack.py")
-SPEC = importlib.util.spec_from_file_location("bench_mlx_inference_stack", SCRIPT_PATH)
-assert SPEC and SPEC.loader
-bench = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(bench)
+MODULE_SPEC = importlib.util.spec_from_file_location("bench_mlx_inference_stack", SCRIPT_PATH)
+assert MODULE_SPEC and MODULE_SPEC.loader
+bench = importlib.util.module_from_spec(MODULE_SPEC)
+MODULE_SPEC.loader.exec_module(bench)
 
 
 class MlxInferenceStackBenchTests(unittest.TestCase):
@@ -145,66 +145,66 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertTrue(metadata["linear_attention_enabled"])
         self.assertEqual(
-            bench.ax_speculative_decode_policy(metadata, no_speculative=False),
-            "ngram_linear_attention_support_gated_branch_recompute",
+            bench.ax_decode_policy(metadata, direct_mode=False),
+            "ngram_acceleration_linear_attention_branch_recompute",
         )
         self.assertEqual(
-            bench.ax_speculative_decode_policy(metadata, no_speculative=True),
-            "greedy_no_speculative_decode",
+            bench.ax_decode_policy(metadata, direct_mode=True),
+            "direct_no_ngram_acceleration",
         )
 
-    def test_ax_speculative_decode_policy_defaults_to_kv_trim(self) -> None:
+    def test_ax_decode_policy_defaults_to_kv_trim(self) -> None:
         self.assertEqual(
-            bench.ax_speculative_decode_policy(
-                {"linear_attention_enabled": False}, no_speculative=False
+            bench.ax_decode_policy(
+                {"linear_attention_enabled": False}, direct_mode=False
             ),
-            "ngram_kv_trim",
+            "ngram_acceleration_kv_trim",
         )
 
-    def test_ax_speculative_telemetry_is_extracted_from_route(self) -> None:
-        telemetry = bench.extract_ax_speculative_telemetry(
+    def test_ax_ngram_telemetry_is_extracted_from_route(self) -> None:
+        telemetry = bench.extract_ax_ngram_telemetry(
             {
                 "crossover_decisions": {
-                    "ax_spec_draft_attempts": 3,
-                    "ax_spec_draft_tokens": 12,
-                    "ax_spec_accepted_tokens": 9,
+                    "ax_ngram_draft_attempts": 3,
+                    "ax_ngram_draft_tokens": 12,
+                    "ax_ngram_accepted_tokens": 9,
                     "unrelated": 99,
                 }
             }
         )
 
-        self.assertEqual(telemetry["ax_spec_draft_attempts"], 3)
-        self.assertEqual(telemetry["ax_spec_draft_tokens"], 12)
-        self.assertEqual(telemetry["ax_spec_accepted_tokens"], 9)
-        self.assertEqual(telemetry["ax_spec_complete_misses"], 0)
-        self.assertEqual(telemetry["ax_spec_cooldown_steps"], 0)
-        self.assertEqual(telemetry["ax_spec_cooldown_events"], 0)
-        self.assertEqual(telemetry["ax_spec_accept_rate_micros"], 750000)
+        self.assertEqual(telemetry["ax_ngram_draft_attempts"], 3)
+        self.assertEqual(telemetry["ax_ngram_draft_tokens"], 12)
+        self.assertEqual(telemetry["ax_ngram_accepted_tokens"], 9)
+        self.assertEqual(telemetry["ax_ngram_complete_misses"], 0)
+        self.assertEqual(telemetry["ax_ngram_cooldown_steps"], 0)
+        self.assertEqual(telemetry["ax_ngram_cooldown_events"], 0)
+        self.assertEqual(telemetry["ax_ngram_accept_rate_micros"], 750000)
         self.assertNotIn("unrelated", telemetry)
 
-    def test_ax_speculative_telemetry_summarizes_trials(self) -> None:
+    def test_ax_ngram_telemetry_summarizes_trials(self) -> None:
         summary = bench.summarize_telemetry(
             [
                 {
-                    "speculative_telemetry": {
-                        "ax_spec_draft_tokens": 8,
-                        "ax_spec_accepted_tokens": 4,
-                        "ax_spec_accept_rate_micros": 500000,
+                    "ngram_acceleration_telemetry": {
+                        "ax_ngram_draft_tokens": 8,
+                        "ax_ngram_accepted_tokens": 4,
+                        "ax_ngram_accept_rate_micros": 500000,
                     }
                 },
                 {
-                    "speculative_telemetry": {
-                        "ax_spec_draft_tokens": 12,
-                        "ax_spec_accepted_tokens": 11,
-                        "ax_spec_accept_rate_micros": 916667,
+                    "ngram_acceleration_telemetry": {
+                        "ax_ngram_draft_tokens": 12,
+                        "ax_ngram_accepted_tokens": 11,
+                        "ax_ngram_accept_rate_micros": 916667,
                     }
                 },
             ]
         )
 
-        self.assertEqual(summary["ax_spec_draft_tokens"], 20)
-        self.assertEqual(summary["ax_spec_accepted_tokens"], 15)
-        self.assertEqual(summary["ax_spec_accept_rate_micros"], 750000)
+        self.assertEqual(summary["ax_ngram_draft_tokens"], 20)
+        self.assertEqual(summary["ax_ngram_accepted_tokens"], 15)
+        self.assertEqual(summary["ax_ngram_accept_rate_micros"], 750000)
 
     def test_ax_mlx_telemetry_is_extracted_and_summarized(self) -> None:
         telemetry = bench.extract_ax_mlx_telemetry(
@@ -214,8 +214,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_prefill_wall_us": 100,
                     "ax_mlx_decode_steps": 2,
                     "ax_mlx_decode_wall_us": 80,
-                    "ax_mlx_greedy_pipeline_steps": 2,
-                    "ax_mlx_greedy_pipeline_wall_us": 70,
+                    "ax_mlx_direct_pipeline_steps": 2,
+                    "ax_mlx_direct_pipeline_wall_us": 70,
                     "unrelated": 99,
                 }
             }
@@ -225,8 +225,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_mlx_prefill_wall_us"], 100)
         self.assertEqual(telemetry["ax_mlx_decode_steps"], 2)
         self.assertEqual(telemetry["ax_mlx_decode_wall_us"], 80)
-        self.assertEqual(telemetry["ax_mlx_greedy_pipeline_steps"], 2)
-        self.assertEqual(telemetry["ax_mlx_greedy_pipeline_wall_us"], 70)
+        self.assertEqual(telemetry["ax_mlx_direct_pipeline_steps"], 2)
+        self.assertEqual(telemetry["ax_mlx_direct_pipeline_wall_us"], 70)
         self.assertEqual(telemetry["ax_mlx_single_decode_steps"], 0)
         self.assertEqual(telemetry["ax_mlx_bonus_tokens"], 0)
         self.assertNotIn("unrelated", telemetry)
@@ -251,8 +251,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         step_route = {
             "attention_route": "qwen_paged_decode",
             "crossover_decisions": {
-                "ax_spec_draft_attempts": 3,
-                "ax_spec_accepted_tokens": 6,
+                "ax_ngram_draft_attempts": 3,
+                "ax_ngram_accepted_tokens": 6,
             },
         }
         response_route = {
@@ -279,7 +279,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 "decode_tok_s": {"median": 50.0},
             },
             {
-                "engine": "ax_engine_mlx_greedy",
+                "engine": "ax_engine_mlx",
                 "method": "server_sse_runner_time_us",
                 "prompt_tokens": 4,
                 "generation_tokens": 2,
@@ -297,7 +297,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             bench.attach_mlx_lm_baselines(
                 [
                     {
-                        "engine": "ax_engine_mlx_greedy",
+                        "engine": "ax_engine_mlx",
                         "prompt_tokens": 8,
                         "generation_tokens": 2,
                         "prefill_tok_s": {"median": 80.0},
@@ -329,7 +329,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                                 "decode_tok_s": {"median": 45.0},
                             },
                             {
-                                "engine": "ax_engine_mlx_greedy",
+                                "engine": "ax_engine_mlx",
                                 "prompt_tokens": 4,
                                 "generation_tokens": 2,
                             },

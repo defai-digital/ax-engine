@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      mlx_model_artifacts_dir:
+        description: Optional path to mounted MLX model artifacts for real-model smoke checks.
+        required: false
+        type: string
 
 jobs:
   python-preview:
@@ -11,6 +16,7 @@ jobs:
     timeout-minutes: 30
     env:
       AX_ALLOW_UNSUPPORTED_HOST: "1"
+      AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR: ${{ github.event.inputs.mlx_model_artifacts_dir || vars.AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR }}
 
     steps:
       - name: Check out repository
@@ -35,11 +41,8 @@ jobs:
       - name: Run workspace clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Run server preview smoke check
-        run: bash scripts/check-server-preview.sh
-
-      - name: Run native benchmark smoke check
-        run: bash scripts/check-bench-native.sh
+      - name: Run script hygiene smoke check
+        run: bash scripts/check-scripts.sh
 
       - name: Run benchmark doctor smoke check
         run: bash scripts/check-bench-doctor.sh
@@ -47,20 +50,39 @@ jobs:
       - name: Run Metal kernel contract smoke check
         run: bash scripts/check-metal-kernel-contract.sh
 
+      - name: Run benchmark preview smoke check
+        run: bash scripts/check-bench-preview.sh
+
+      - name: Detect MLX model artifacts
+        id: mlx-artifacts
+        run: |
+          if [ -n "${AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR:-}" ] && [ -d "$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR" ]; then
+            echo "available=true" >>"$GITHUB_OUTPUT"
+            echo "MLX model artifacts found at $AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR"
+          else
+            echo "available=false" >>"$GITHUB_OUTPUT"
+            echo "MLX model artifacts not mounted; skipping real-model smoke checks."
+          fi
+
+      - name: Run server preview smoke check
+        if: steps.mlx-artifacts.outputs.available == 'true'
+        run: bash scripts/check-server-preview.sh
+
       - name: Run frozen matrix benchmark smoke check
+        if: steps.mlx-artifacts.outputs.available == 'true'
         run: bash scripts/check-bench-matrix.sh
 
       - name: Run matrix compare benchmark smoke check
+        if: steps.mlx-artifacts.outputs.available == 'true'
         run: bash scripts/check-bench-matrix-compare.sh
 
       - name: Run trusted baseline benchmark smoke check
+        if: steps.mlx-artifacts.outputs.available == 'true'
         run: bash scripts/check-bench-baseline.sh
 
       - name: Run replay benchmark smoke check
+        if: steps.mlx-artifacts.outputs.available == 'true'
         run: bash scripts/check-bench-replay.sh
-
-      - name: Run benchmark preview smoke check
-        run: bash scripts/check-bench-preview.sh
 
       - name: Run Python preview packaging smoke check
         run: bash scripts/check-python-preview.sh

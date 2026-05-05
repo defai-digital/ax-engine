@@ -146,6 +146,15 @@ impl EngineCore {
         self.runner.native_model_binding_summary()
     }
 
+    pub fn embed(
+        &self,
+        token_ids: &[u32],
+        pooling: crate::runner::EmbeddingPooling,
+        normalize: bool,
+    ) -> Result<Vec<f32>, &'static str> {
+        self.runner.embed(token_ids, pooling, normalize)
+    }
+
     pub fn submit(&mut self, submission: RequestSubmission) -> Result<RequestId, EngineCoreError> {
         let request_id = submission.request_id;
         self.kv_manager

@@ -110,7 +110,7 @@ struct LinearLayerState {
 /// Buffer growth (via concatenation with zeros) happens at most every `KV_CHUNK_TOKENS`
 /// steps — typically 0–1 times per request for common prompt+decode lengths.
 ///
-/// ## Speculative rollback
+/// ## Draft rollback
 ///
 /// `trim_to(prefix_len)` only updates `seq_len`.  The "trimmed" positions remain in
 /// the backing buffer but are beyond the logical boundary, so SDPA never sees them.
@@ -241,11 +241,11 @@ impl MlxKVCache {
         (k_view, v_view)
     }
 
-    /// Trim the logical boundary to `prefix_len` tokens (speculative rollback).
+    /// Trim the logical boundary to `prefix_len` tokens (draft rollback).
     ///
     /// With chunked layout this is O(1) — no array data is modified.  The backing
     /// buffer retains its pre-allocated capacity.  The next `append` writes from
-    /// `prefix_len`, overwriting any rejected speculative positions.
+    /// `prefix_len`, overwriting any rejected draft positions.
     ///
     /// Returns `true` when the requested trim point was valid.  Invalid requests
     /// are clamped to the current logical length so a release build cannot extend
@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn clone_preserves_linear_state_for_speculative_branch() {
+    fn clone_preserves_linear_state_for_draft_branch() {
         let mut cache = MlxKVCache::new(1);
         let conv = zeros(&[1, 3, 14], MlxDtype::Float32, None);
         let recurrent = zeros(&[1, 4, 8, 6], MlxDtype::Float32, None);

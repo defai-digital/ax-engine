@@ -1,14 +1,14 @@
 {
   "schema_version": "ax.engine_bench.manifest.v1",
-  "id": "chat_qwen3_4b_short",
+  "id": "chat_gemma4_e4b_short",
   "class": "scenario",
   "scenario": "chat",
   "model": {
-    "family": "qwen3",
+    "family": "gemma4",
     "revision": "phase1-canonical",
     "quant": "4bit",
-    "tokenizer_revision": "qwen-tokenizer-v1",
-    "chat_template_revision": "qwen3-chat-v1"
+    "tokenizer_revision": "gemma-tokenizer-v1",
+    "chat_template_revision": "gemma-chat-v1"
   },
   "runtime": {
     "selected_backend": "mlx",
@@ -39,5 +39,5 @@
     "expect_deterministic": true,
     "require_prefix_reuse": false
   },
-  "notes": "Short chat scenario for Qwen3-4B-4bit bring-up, route evidence, and single-request decode validation."
+  "notes": "Short chat scenario for Gemma4-e4b-it-4bit bring-up, route evidence, and single-request decode validation."
 }
