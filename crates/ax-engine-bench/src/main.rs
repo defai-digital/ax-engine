@@ -516,6 +516,7 @@ struct InferenceArgs {
     llama_cli_path: PathBuf,
     llama_model_path: Option<PathBuf>,
     llama_server_url: Option<String>,
+    mlx_lm_server_url: Option<String>,
     mlx_model_artifacts_dir: Option<PathBuf>,
     json: bool,
 }
@@ -535,6 +536,7 @@ impl Default for InferenceArgs {
             llama_cli_path: PathBuf::from("llama-cli"),
             llama_model_path: None,
             llama_server_url: None,
+            mlx_lm_server_url: None,
             mlx_model_artifacts_dir: None,
             json: false,
         }
@@ -624,6 +626,10 @@ fn parse_inference_args(args: &[String], command: &str) -> Result<InferenceArgs,
             "--llama-server-url" => {
                 parsed.llama_server_url =
                     Some(next_flag_value(&mut iter, "--llama-server-url")?.to_string())
+            }
+            "--mlx-lm-server-url" => {
+                parsed.mlx_lm_server_url =
+                    Some(next_flag_value(&mut iter, "--mlx-lm-server-url")?.to_string())
             }
             "--mlx-model-artifacts-dir" => {
                 parsed.mlx_model_artifacts_dir = Some(PathBuf::from(next_flag_value(
@@ -761,9 +767,15 @@ fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliErr
             args.llama_model_path.clone(),
             args.llama_server_url.clone(),
         )
+    } else if args.support_tier == SupportTier::MlxLmDelegated {
+        PreviewBackendRequest {
+            support_tier: SupportTier::MlxLmDelegated,
+            mlx_lm_server_url: args.mlx_lm_server_url.clone(),
+            ..PreviewBackendRequest::default()
+        }
     } else {
         return Err(CliError::Usage(
-            "non-MLX inference routes only to llama.cpp; pass --mlx for AX-owned MLX inference"
+            "non-MLX inference routes to explicit delegated backends: llama_cpp or mlx_lm_delegated; pass --mlx for AX-owned MLX inference"
                 .to_string(),
         ));
     };
@@ -786,7 +798,7 @@ fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliErr
             mlx_runtime_artifacts_dir: None,
             backend_request,
             mlx_model_artifacts_dir,
-            mlx_no_speculative_decode: false,
+            mlx_disable_ngram_acceleration: false,
         })
         .map_err(|error| CliError::Usage(format!("invalid inference configuration: {error}")))?;
 
@@ -931,6 +943,7 @@ fn format_generate_metadata_suffix(response: &GenerateResponse) -> String {
 fn selected_backend_label(backend: SelectedBackend) -> &'static str {
     match backend {
         SelectedBackend::Mlx => "mlx",
+        SelectedBackend::MlxLmDelegated => "mlx_lm_delegated",
         SelectedBackend::LlamaCpp => "llama_cpp",
     }
 }
@@ -939,6 +952,7 @@ fn support_tier_label(support_tier: SupportTier) -> &'static str {
     match support_tier {
         SupportTier::MlxCertified => "mlx_certified",
         SupportTier::MlxPreview => "mlx_preview",
+        SupportTier::MlxLmDelegated => "mlx_lm_delegated",
         SupportTier::LlamaCpp => "llama_cpp",
         SupportTier::Unsupported => "unsupported",
     }
@@ -4187,11 +4201,12 @@ fn session_config_from_runtime(
         backend_policy: runtime.backend_policy,
         resolved_backend: runtime.resolved_backend.clone(),
         llama_backend,
+        mlx_lm_backend: None,
         mlx_runtime_artifacts_dir,
         mlx_runtime_artifacts_source,
         mlx_model_artifacts_dir: runtime.mlx_model_artifacts_dir.clone(),
         mlx_model_artifacts_source: runtime.mlx_model_artifacts_source,
-        mlx_no_speculative_decode: false,
+        mlx_disable_ngram_acceleration: false,
     })
 }
 
@@ -10014,8 +10029,8 @@ fn usage() -> String {
     let text = r#"AX Engine v4 benchmark CLI
 
 Usage:
-  ax-engine-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
-  ax-engine-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
+  ax-engine-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
+  ax-engine-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
   ax-engine-bench scenario --manifest <path> --output-root <path>
   ax-engine-bench replay --manifest <path> --output-root <path>
   ax-engine-bench autotune --manifest <path> --output-root <path> [--iterations <n>] [--exploration-weight <value>] [--max-batch-token-options <list>] [--kv-total-block-options <list>] [--prefix-cache-options <list>] [--disable-history]
@@ -14196,6 +14211,27 @@ mod tests {
             Some("http://127.0.0.1:8081")
         );
         assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_inference_args_accepts_mlx_lm_delegated_server_url() {
+        let args = vec![
+            "--prompt".to_string(),
+            "hello mlx-lm".to_string(),
+            "--support-tier".to_string(),
+            "mlx_lm_delegated".to_string(),
+            "--mlx-lm-server-url".to_string(),
+            "http://127.0.0.1:8090".to_string(),
+        ];
+
+        let parsed = parse_inference_args(&args, "generate").expect("inference args should parse");
+
+        assert_eq!(parsed.input_text.as_deref(), Some("hello mlx-lm"));
+        assert_eq!(parsed.support_tier, SupportTier::MlxLmDelegated);
+        assert_eq!(
+            parsed.mlx_lm_server_url.as_deref(),
+            Some("http://127.0.0.1:8090")
+        );
     }
 
     #[test]

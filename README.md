@@ -2,8 +2,8 @@
 
 A Mac-first LLM inference core for Apple Silicon M4+, built around one idea:
 
-**for supported transformer families, an AX-owned scheduling and speculative
-decode layer above MLX delivers measurably higher effective throughput than
+**for supported transformer families, an AX-owned scheduling and n-gram
+acceleration layer above MLX delivers measurably higher effective throughput than
 running the MLX reference runtimes directly.**
 
 > Requires macOS on Apple Silicon M4 or newer and Rust 1.85+.
@@ -20,11 +20,11 @@ you need broad HuggingFace model support or direct MLX ecosystem integration.
 AX Engine is not trying to replace either.
 
 The gap AX targets is narrow: for **supported model families** on **Apple
-Silicon**, an orchestration layer that owns speculative decode, request
+Silicon**, an orchestration layer that owns n-gram acceleration, request
 scheduling, and KV state management above MLX can extract throughput that the
 upstream runtimes leave on the table:
 
-- **n-gram self-speculative decode** reaches up to 2.4x mlx_lm decode
+- **N-gram acceleration** reaches up to 2.4x mlx_lm decode
   throughput on high-hit benchmark rows — with no second draft model and no
   model changes
 - **AX-owned request lifecycle** provides deterministic, auditable scheduling,
@@ -52,16 +52,16 @@ SDPA. AX owns what happens above the compute graph.
 
 What AX builds above MLX:
 
-- **N-gram speculative decode**: a bigram/trigram table built at runtime predicts
+- **N-gram acceleration**: a bigram/trigram table built at runtime predicts
   up to 4 draft tokens per step. The target model verifies them in one forward
   pass over `[last_token, D1, …, D_n]`. An EMA accept-rate gate (α=0.1,
-  threshold 0.5) disables speculation after a bad sequence and re-enables when
+  threshold 0.5) disables acceleration after a bad sequence and re-enables when
   the table recovers. No second draft model required.
 - **Scheduler and KV manager**: request lifecycle, batching, memory-blocked
   recovery, and execution planning live in `ax-engine-core` — deterministic,
   async-free, no framework dependencies.
 - **Chunked KV cache**: keys and values grow in pre-allocated backing buffers via
-  `slice_update`. Speculative rollback is O(1) — only the sequence-length
+  `slice_update`. Draft rollback is O(1) — only the sequence-length
   pointer moves. After each decode step, all KV buffers are evaluated with the
   output token to flatten the lazy-eval graph and prevent O(N²) graph depth.
 - **Graph compilation**: `mlx_enable_compile()` is called once at startup so
@@ -84,7 +84,6 @@ stream.
 | Family | Model | Architecture notes |
 |---|---|---|
 | Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it, gemma-4-26b-a4b-it, gemma-4-31b-it | Dense, per-layer embedding, and MoE variants; MLX affine 4/5/6/8-bit weights, sliding-window + full attention, K=V full-attention layers, logit softcapping |
-| Qwen 3 | Qwen3-4B | Dense GQA + SwiGLU |
 | Qwen 3.5 | Qwen3.5-9B | Linear attention + MoE FFN, attn_output_gate per-head interleaving |
 | Qwen 3.6 / Coder Next | Qwen3.6-35B-A3B 4/5/6/8-bit MLX, Qwen3-Coder-Next-4bit | `qwen3_next` architecture: GatedDelta linear attention (3 of every 4 layers) + full attention with per-head sigmoid gate (every 4th layer) + sparse top-k MoE with shared expert |
 
@@ -102,7 +101,7 @@ not wiring up a generic loader.
 - **Raw HuggingFace weights**: ax-engine loads MLX community (pre-sanitized)
   weights. Raw HF checkpoints for hybrid models need norm-weight `+1.0` and
   conv1d `moveaxis(2,1)` transformations that the converter does not apply.
-- **Speculative rows**: effective-throughput measurements, not raw model-kernel
+- **N-gram acceleration rows**: effective-throughput measurements, not raw model-kernel
   speedups. n-gram hit rate is prompt/output-pattern dependent.
 
 ## Performance
@@ -110,13 +109,17 @@ not wiring up a generic loader.
 **Apple M5 Max · 128 GB · macOS 26.4.1.** Random-token prompts (mlx_lm seed=0),
 batch=1, prefill_step_size=2048, 3 timed trials + 1 warmup. Reference rows are
 from the public benchmark artifacts; AX rows were refreshed on 2026-05-05 with
-the same prompt artifacts and `server_sse_runner_time_us`. `ax greedy` uses the
-same decode policy as `mlx_lm`; `ax speculative` adds n-gram self-speculation and
+the same prompt artifacts and `server_sse_runner_time_us`. `ax engine` is the
+direct same-policy comparison against `mlx_lm`; `ax engine + n-gram accel`
 reports observed effective throughput, not raw model speed.
+
+Gemma 4 E4B benchmark rows are pending; the model manifest and scenario
+manifest are present. See `benchmarks/results/mlx-inference/2026-05-04/README.md`
+for the run command.
 
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
-| Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine (greedy) | ax engine (speculative) |
+| Model | MLX quantization | Prompt tok | mlx_lm | mlx_swift_lm | ax engine | ax engine + n-gram accel |
 |---|---|---:|---:|---:|---:|---|
 | Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 197.5 | 192.4 (−2.6%) | 173.7 (−12.0%) | **474.0 (+140.0%)** |
 |   |   | 512 | 191.9 | 179.5 (−6.5%) | 167.2 (−12.9%) | **473.2 (+146.5%)** |
@@ -130,8 +133,6 @@ reports observed effective throughput, not raw model speed.
 |   |   | 512 | 113.1 | 104.7 (−7.5%) | 110.4 (−2.4%) | **177.5 (+56.9%)** |
 | Gemma 4 31B | 4-bit · group=64 · affine | 128 | 26.2 | 24.8 (−5.5%) | 24.4 (−7.0%) | **51.8 (+97.6%)** |
 |   |   | 512 | 24.9 | 24.7 (−0.9%) | 23.7 (−5.0%) | **45.6 (+82.9%)** |
-| Qwen 3 4B | 4-bit · group=64 | 128 | 169.6 | 168.7 (−0.6%) | 160.3 (−5.5%) | **305.8 (+80.3%)** |
-|   |   | 512 | 169.8 | 161.0 (−5.2%) | 157.7 (−7.2%) | **293.5 (+72.8%)** |
 | Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 96.5 | 93.7 (−2.9%) | 89.9 (−6.9%) | **168.4 (+74.5%) †** |
 |   |   | 512 | 101.3 | 91.4 (−9.8%) | 89.1 (−12.0%) | 83.9 (−17.1%) † |
 | Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine§ | 128 | 107.6 | 103.6 (−3.7%) | 107.7 (+0.1%) | **208.2 (+93.5%) †** |
@@ -145,11 +146,11 @@ reports observed effective throughput, not raw model speed.
 | Qwen Coder Next | 4-bit · group=64 · affine‡ | 128 | 92.2 | 89.4 (−3.0%) | 93.8 (+1.8%) | **213.8 (+132.0%) †** |
 |   |   | 512 | 90.4 | 89.2 (−1.3%) | 92.7 (+2.6%) | **211.3 (+133.8%) †** |
 
-† Qwen 3.5, Qwen 3.6, and Qwen Coder Next speculative rows use a rollback-safe
+† Qwen 3.5, Qwen 3.6, and Qwen Coder Next n-gram acceleration rows use a rollback-safe
 branch/recompute path for SSM state. These are effective-throughput
-measurements from AX's n-gram speculative policy, not raw model decode speed.
-Linear-attention speculation is prompt/output-pattern dependent. Benchmark JSON
-artifacts include fixed-schema speculative telemetry counters for draft attempts,
+measurements from AX's n-gram acceleration policy, not raw model decode speed.
+Linear-attention acceleration is prompt/output-pattern dependent. Benchmark JSON
+artifacts include fixed-schema n-gram telemetry counters for draft attempts,
 accepted/rejected tokens, complete misses, no-draft steps, and cooldowns.
 
 ‡ Qwen Coder Next uses MLX affine 4-bit globally, with 8-bit overrides for
@@ -162,12 +163,14 @@ checkpoint is affine 8-bit throughout.
 
 ¶ Gemma 4 26B A4B is the public Gemma 4 MoE MLX model. Its checkpoint uses
 affine 4-bit globally, with 8-bit overrides for dense MLP and router
-projections. Its `mlx_swift_lm` row is admitted through the Gemma4 MoE
-`MLXVLM` factory path in the benchmark adapter, using the same prompt-token
-JSON contract as the other Swift rows.
+projections. The `mlx_swift_lm` reference row loads this model via the
+`MLXVLM` factory (required for MoE architectures) rather than the standard
+Swift path; prompt tokenization is otherwise identical to all other Swift rows.
 
-‖ Gemma 4 E2B 5/6/8-bit rows are quantization-support checks against
-`mlx_lm` primary baseline plus `mlx_swift_lm` secondary reference rows.
+‖ Gemma 4 E2B 5/6/8-bit checkpoints use affine quantization at their
+respective bit depths globally. These rows verify AX Engine's higher-bit
+quantization support; the 4-bit row is the primary decode performance
+reference.
 
 ### Prefill throughput (tok/s) — percentages vs mlx_lm
 
@@ -185,8 +188,6 @@ JSON contract as the other Swift rows.
 |   |   | 512 | 1,620.7 | 2,938.6 (+81.3%) | 2,749.7 (+69.7%) |
 | Gemma 4 31B | 4-bit · group=64 · affine | 128 | 336.5 | 641.6 (+90.7%) | 524.5 (+55.9%) |
 |   |   | 512 | 563.5 | 760.6 (+35.0%) | 648.9 (+15.2%) |
-| Qwen 3 4B | 4-bit · group=64 | 128 | 1,581.1 | 3,627.8 (+129.4%) | 3,046.9 (+92.7%) |
-|   |   | 512 | 3,726.0 | 6,173.7 (+65.7%) | 5,359.2 (+43.8%) |
 | Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 1,133.3 | 2,101.1 (+85.4%) | 1,862.5 (+64.3%) |
 |   |   | 512 | 2,245.7 | 3,165.8 (+41.0%) | 2,652.0 (+18.1%) |
 | Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine§ | 128 | 531.7 | 963.2 (+81.1%) | 1,011.1 (+90.2%) |
@@ -234,7 +235,7 @@ EOF
 python3 scripts/bench_mlx_inference_stack.py \
   --model-dir /path/to/local/mlx-model \
   --prompt-tokens 128,512 --generation-tokens 128 \
-  --ax-both-modes --repetitions 3 \
+  --ax-compare-policies --repetitions 3 \
   --mlx-swift-lm-command './scripts/mlx-swift-bench/.build/release/mlx-swift-bench \
     --model {model} --prompt-token-ids {prompt_token_ids_path} \
     --generation-tokens {generation_tokens} --trials {trials} \
@@ -255,15 +256,17 @@ bash scripts/check-python-preview.sh
 
 ```
 crates/ax-engine-core    Engine state machine, scheduler, KV manager, sampler
-crates/ax-engine-mlx     MLX model graph, speculative decode, KV cache, runner
+crates/ax-engine-mlx     MLX model graph, n-gram acceleration, KV cache, runner
 crates/mlx-sys           bindgen FFI over mlx-c; safe MlxArray RAII wrappers
-crates/ax-engine-sdk     Session API, backend resolution (MLX or llama.cpp)
+crates/ax-engine-sdk     Session API, backend resolution (MLX, mlx-lm delegated, or llama.cpp)
 crates/ax-engine-server  Axum HTTP/SSE adapter (OpenAI-compatible routes)
 crates/ax-engine-bench   Manifest-driven workload-contract CLI
 crates/ax-engine-py      PyO3 extension (ABI3, Python 3.10+)
 ```
 
-Non-MLX inference routes through the delegated `llama.cpp` contract.
+Unsupported MLX text models can use the explicit delegated `mlx_lm_delegated`
+route through a user-provided `mlx_lm.server`. Non-MLX inference routes through
+the delegated `llama.cpp` contract.
 
 ## Development
 

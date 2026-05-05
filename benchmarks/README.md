@@ -94,6 +94,14 @@ repo smoke path is:
 bash scripts/check-bench-preview.sh
 ```
 
+### Delegated mlx-lm compatibility
+
+`mlx_lm_delegated` is for explicit upstream `mlx-lm` text-model compatibility
+through a user-provided `mlx_lm.server`. Those checks should be stored and
+described as delegated route-contract evidence only. They are not AX-owned MLX
+model-inference throughput baselines, and they should not be merged into
+`ax_engine_mlx` performance tables.
+
 ## Model-Inference Comparisons
 
 For AX Engine MLX mode versus upstream MLX-family references, use:
@@ -115,8 +123,8 @@ Engine and any secondary reference. It can optionally ingest an explicit
 SwiftLM application-server benchmark is retired for current AX Engine
 decisions.
 
-Use `--ax-both-modes` when greedy and speculative AX MLX rows both matter.
-Every AX or optional Swift row is compared against the matching
+Use `--ax-compare-policies` when both direct AX MLX and n-gram acceleration
+rows matter. Every AX or optional Swift row is compared against the matching
 `mlx_lm.benchmark` random-token prompt/decode shape.
 
 Checked-in MLX inference-stack result sets live under

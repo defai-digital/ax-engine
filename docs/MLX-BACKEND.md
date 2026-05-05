@@ -2,12 +2,16 @@
 
 ## Current Direction
 
-AX Engine uses two user-facing inference paths: MLX mode for repo-owned MLX execution, and llama.cpp for non-MLX inference.
-MLX mode is the repo-owned Mac-local inference path, implemented through
-`ax-engine-mlx` and selected explicitly with `--mlx` or Python `mlx=True`.
+AX Engine uses three labeled user-facing inference paths:
 
-Non-MLX inference bypasses AX-owned execution and routes to `llama.cpp`.
-Direct MLX adapters, `mlx_lm` wrapper paths, `vLLM`, and `mistral.rs` are not
+- `mlx`: repo-owned MLX execution through `ax-engine-mlx`, selected explicitly
+  with `--mlx` or Python `mlx=True`
+- `mlx_lm_delegated`: explicit upstream `mlx-lm` text compatibility through a
+  user-provided `mlx_lm.server`
+- `llama_cpp`: delegated GGUF/non-MLX inference
+
+`mlx_lm_delegated` is a compatibility route, not an AX-owned MLX runtime. It
+must stay outside AX MLX performance claims. `vLLM` and `mistral.rs` are not
 shipping peer inference routes.
 
 ## Backend Design
@@ -26,7 +30,7 @@ ax-engine-sdk (Rust)
         │     ├── generate.rs    — chunked prefill (512 tok) + decode loop
         │     ├── model.rs       — Qwen3 transformer (attn + FFN + norm)
         │     ├── kv_cache.rs    — chunked KV cache with slice_update growth
-        │     ├── speculative.rs — n-gram self-speculative decode + EMA gating
+        │     ├── ngram_accel.rs — n-gram acceleration + EMA gating
         │     └── weights.rs     — NativeTensorSpec → MlxArray loader
         └── mlx-sys (Rust FFI)
               ├── bindgen over /opt/homebrew/include/mlx/c/mlx.h
@@ -38,8 +42,8 @@ ax-engine-sdk (Rust)
 | Layer | What it does |
 |---|---|
 | `mlx-sys` | Unsafe FFI + safe RAII wrappers. No logic. |
-| `ax-engine-mlx` | Model graph, inference loop, KV cache, speculative decode. All MLX ops live here. |
-| `ax-engine-sdk` | Session routing: MLX mode → MlxRunner; non-MLX mode → llama.cpp. |
+| `ax-engine-mlx` | Model graph, inference loop, KV cache, n-gram acceleration. All MLX ops live here. |
+| `ax-engine-sdk` | Session routing: `mlx` → MlxRunner; `mlx_lm_delegated` → `mlx_lm.server`; `llama_cpp` → llama.cpp. |
 
 ## Key design decisions
 
@@ -78,7 +82,7 @@ copy of existing entries).  When the buffer is full, a larger buffer is
 allocated and the old data is copied once via `slice_update`.
 
 This avoids the O(n) full-array `mlx_concatenate_axis` cost that the original
-naive implementation paid on every append.  Speculative rollback (`trim_to`) is
+naive implementation paid on every append.  Draft rollback (`trim_to`) is
 O(1) — only the logical sequence-length pointer changes; the backing buffer
 retains its data.
 
@@ -87,12 +91,12 @@ token (`mlx_eval([token, k0, v0, k1, v1, ...])`).  This materialises the
 `slice_update` chain into a flat buffer, preventing computation-graph depth
 from growing linearly with sequence length.  Mirrors mlx_lm's `mx.eval(y, cache)`.
 
-### N-gram speculative decode
+### N-gram acceleration
 
-Self-speculative decoding with a bigram/trigram n-gram table (no second model
+Runtime acceleration with a bigram/trigram n-gram table (no second model
 required).  Up to 4 draft tokens per step; verified in one causal forward pass
 over `[last_token, D1, D2, …, D_n]`.  EMA accept-rate gating (α=0.1, threshold
-0.5) disables speculation for 8 steps after the EMA drops below threshold,
+0.5) disables n-gram probing for 8 steps after the EMA drops below threshold,
 letting the n-gram table recover before re-enabling.
 
 Dense/full-attention models use the chunked KV cache's O(1) `trim_to` rollback.
@@ -101,8 +105,8 @@ verification mutates a cloned cache, all-accepted drafts commit that branch, and
 rejected drafts recompute `[last_token + accepted_drafts]` from the original
 cache so recurrent state stays aligned with the logical sequence.
 
-Speculative throughput claims must be reproduced through
-`scripts/bench_mlx_inference_stack.py --ax-both-modes` before they are used in
+N-gram acceleration throughput claims must be reproduced through
+`scripts/bench_mlx_inference_stack.py --ax-compare-policies` before they are used in
 release notes or architecture decisions. Measured results on Gemma4-e2b-it-4bit
 (Apple M5 Max, 128 GB, batch=1, 3 trials) are recorded in `README.md`:
 1.83x mlx_lm at 128-token prompt and 1.89x at 512-token prompt.
@@ -137,10 +141,10 @@ the canonical scenario matrix.
 |---|---|---|
 | `--mlx` | false | Route to MLX mode |
 | `--mlx-model-artifacts-dir <path>` | — | Path to safetensors artifacts dir |
-| `--no-speculative-decode` | false | Disable n-gram speculation (greedy baseline) |
+| `--disable-ngram-acceleration` | false | Disable n-gram acceleration for direct comparison runs |
 
-`AX_NO_SPEC=1` environment variable also disables speculation (for debugging
-without restarting with a flag).
+Use `--disable-ngram-acceleration` when a direct same-policy comparison row is
+required. AX Engine does not expose deprecated decode-mode aliases.
 
 ## Benchmarking
 
@@ -153,7 +157,7 @@ python3 scripts/bench_mlx_inference_stack.py \
   --model-dir /path/to/local/mlx-model \
   --prompt-tokens 256,512,2048 \
   --generation-tokens 128 \
-  --ax-both-modes
+  --ax-compare-policies
 ```
 
 The canonical reference is `mlx_lm.benchmark`, and the harness now treats it as
@@ -175,6 +179,8 @@ Interpretation rule:
   when the required matching `mlx_lm.benchmark` baseline is present.
 - `ax-engine-bench` supports workload-contract and regression claims.
 - llama.cpp manifests support delegated non-MLX route-contract claims only.
+- `mlx_lm_delegated` checks support delegated MLX text route-contract claims
+  only; they are not AX MLX throughput evidence.
 
 ## Implementation phases
 
@@ -191,16 +197,18 @@ Interpretation rule:
 - Weight loader: reads `NativeTensorSpec` offsets from safetensors → `MlxArray`
 - Quantized weight binding: Q4_K_M → `mlx_quantized_matmul`
 - Model graph: Qwen3 dense (GQA + SwiGLU), Qwen3.5 MoE (linear attention + MoE FFN + attn_output_gate), Gemma4 (per-layer embeddings, per-layer input gating, sliding-window + full attention, KV sharing, logit softcapping, sorted SwitchGLU expert gather for large MoE prefill batches)
-- Chunked KV cache with slice_update growth and O(1) speculative rollback
-- N-gram speculative decode with EMA gating
+- Chunked KV cache with slice_update growth and O(1) n-gram branch rollback
+- N-gram acceleration with EMA gating
 - Chunked prefill loop
 - `MlxRunner` implementing `ExecutionRunner`
 
 ### Phase 3 — integration
 - Both crates in workspace
 - `SelectedBackend::Mlx` variant in `ax-engine-sdk`
+- `SelectedBackend::MlxLmDelegated` for explicit upstream `mlx-lm` text
+  compatibility through `mlx_lm.server`
 - `--mlx` flag in `ax-engine-server`
-- `--no-speculative-decode` flag for greedy baseline benchmarks
+- `--disable-ngram-acceleration` flag for direct comparison benchmarks
 - Python binding: `mlx=True` routes to MLX mode
 
 ### Phase 4 — future
@@ -220,7 +228,7 @@ crates/mlx-sys/
 
 crates/ax-engine-mlx/
   Cargo.toml
-  src/lib.rs, weights.rs, model.rs, kv_cache.rs, generate.rs, speculative.rs, runner.rs
+  src/lib.rs, weights.rs, model.rs, kv_cache.rs, generate.rs, ngram_accel.rs, runner.rs
 
 docs/MLX-BACKEND.md  (this file)
 ```

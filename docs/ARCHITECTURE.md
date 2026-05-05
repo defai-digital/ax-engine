@@ -13,7 +13,7 @@ consistent across the workspace.
 - `ax-engine-core`: request lifecycle, scheduler, KV cache, runner integration,
   and deterministic bring-up loop
 - `ax-engine-sdk`: backend resolution, session management, request lifecycle
-  contract, and llama.cpp backend bridge
+  contract, and delegated backend bridges for `mlx_lm.server` and llama.cpp
 - `ax-engine-server`: local HTTP and SSE adapter over the SDK
 - `ax-engine-py`: Python binding surface over the SDK contract
 - `ax-engine-bench`: workload-contract CLI, replay harness, reporting,
@@ -31,7 +31,8 @@ Benchmarking is intentionally split at the project boundary:
 `scripts/bench_mlx_inference_stack.py` records AX Engine MLX model-inference
 comparison against the required `mlx_lm.benchmark` primary baseline and
 optional `mlx-swift-lm` secondary baseline adapter rows.
-Delegated llama.cpp manifests stay outside AX-owned MLX throughput claims.
+Delegated `mlx_lm_delegated` and llama.cpp checks stay outside AX-owned MLX
+throughput claims.
 
 ## Dependency Boundaries
 
@@ -65,7 +66,8 @@ The SDK is the runtime-facing contract layer. It is a good place for:
 
 - `serde` and `serde_json`
 - typed error boundaries
-- backend metadata and llama.cpp payload translation
+- backend metadata plus delegated `mlx_lm.server` and llama.cpp payload
+  translation
 - session-level request and response types
 
 If future work introduces a more explicit "runtime" naming convention, the
@@ -102,7 +104,7 @@ That keeps it possible to distinguish:
 - request validation failures
 - state transition violations
 - unsupported host or backend conditions
-- llama.cpp backend failures
+- delegated backend failures
 - transport-level failures
 
 `anyhow` can still be useful in one-off tooling or local utilities, but it

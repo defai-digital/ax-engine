@@ -1,8 +1,9 @@
 # Supported Models
 
-AX Engine routes inference through two supported shipping paths:
+AX Engine routes inference through three labeled shipping paths:
 
 - repo-owned MLX mode for MLX inference
+- explicit `mlx-lm` delegated compatibility for unsupported MLX text models
 - `llama.cpp` bypass for non-MLX inference
 
 ## Support Strategy
@@ -18,12 +19,14 @@ Instead, support should be understood through:
 This matters because a future model may be:
 
 - available through AX-owned MLX mode
+- available through the explicit `mlx-lm` delegated path
 - available through the `llama.cpp` bypass path
 - not supported yet
 
 The current default route is:
 
 - explicit MLX mode routes to `mlx`
+- explicit `mlx_lm_delegated` routes to a user-provided `mlx_lm.server`
 - all non-MLX inference routes to `llama.cpp`
 - local `.gguf` model paths route to `llama.cpp`
 - AX native mode is no longer a supported user-facing inference mode
@@ -38,6 +41,7 @@ MLX integration are available.
 This means:
 
 - MLX mode is the repo-owned local Mac inference path
+- `mlx_lm_delegated` is compatibility, not an AX-owned runtime
 - non-MLX local inference should use `llama.cpp`
 - support-tier language should not be read as implying broad MLX Metal model support
 - retired AX native mode should not be exposed as a shipping runtime
@@ -46,8 +50,8 @@ This means:
   `mlx_lm.benchmark` primary baseline and, optionally, an explicit
   `mlx-swift-lm` `BenchmarkHelpers` / `MLXLMCommon` secondary baseline adapter
 - `ax-engine-bench` scenario, replay, matrix, compare, and autotune artifacts
-  describe workload-contract evidence; delegated llama.cpp manifests describe
-  non-MLX route-contract evidence only
+  describe workload-contract evidence; delegated llama.cpp and
+  `mlx_lm_delegated` manifests describe route-contract evidence only
 
 ## Support Tiers
 
@@ -74,8 +78,21 @@ Meaning:
 - request is handled through `llama.cpp`
 - this should not be read as equivalent to AX-owned MLX-mode feature coverage or
   performance
-- `vLLM`, `mistral.rs`, and MLX adapters are not part of the
-  current shipping inference route
+- `vLLM`, `mistral.rs`, and unlabeled MLX adapters are not part of the current
+  shipping inference route
+
+### `mlx_lm_delegated`
+
+Meaning:
+
+- request is handled by an explicitly configured `mlx_lm.server`
+- this is broad MLX text-model compatibility, not AX-owned MLX runtime support
+- Phase 1 supports text-only blocking generation; token prompts, streaming,
+  and multimodal inputs fail closed
+- benchmark evidence must be labeled as delegated route-contract evidence, not
+  AX MLX throughput
+- `mlx-swift-lm` remains a secondary benchmark/reference adapter, not the
+  default delegated backend
 
 ### `unsupported`
 
@@ -88,6 +105,8 @@ Meaning:
 The current runtime direction is:
 
 - use `mlx` for explicit MLX mode
+- use `mlx_lm_delegated` only when explicitly requested for MLX text-model
+  compatibility
 - use `llama_cpp` for all non-MLX inference
 - promote MLX preview models only after reference-runtime comparison,
   correctness smoke coverage, and public benchmark artifacts are available
@@ -96,21 +115,22 @@ The current runtime direction is:
 
 | Family | Model | Evidence |
 |---|---|---|
-| Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it, gemma-4-26b-a4b-it, gemma-4-31b-it | MLX stack benchmark + workload-contract scenario; E2B affine 4/5/6/8-bit, 26B A4B MoE, and 31B dense have MLX stack benchmark + server smoke |
-| Qwen 3 | Qwen3-4B | MLX stack benchmark + workload-contract scenario |
+| Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it, gemma-4-26b-a4b-it, gemma-4-31b-it | MLX stack benchmark + workload-contract scenario; E2B affine 4/5/6/8-bit, 26B A4B MoE, and 31B dense have MLX stack benchmark + server smoke; E4B model manifest and scenario manifest are present, MLX stack benchmark run pending |
 | Qwen 3.5 | Qwen3.5-9B | MLX stack benchmark + workload-contract scenario |
 | Qwen 3.6 | Qwen3.6-35B-A3B 4/5/6/8-bit MLX | MLX stack benchmark, server smoke, Qwen3.5-MoE manifest regression test |
 | Qwen 3 Coder Next | Qwen3-Coder-Next-4bit | MLX stack benchmark, server smoke, Qwen3Next MoE/linear-attention regression tests |
 
 ## Current Limitations And Problems
 
-No current public benchmark row is blocked for the AX MLX preview models above.
+Gemma 4 E4B has model and scenario manifests but no MLX stack benchmark run
+yet; its public benchmark rows are pending. All other AX MLX preview models
+above have completed benchmark rows.
 The Gemma 4 26B A4B MoE row intentionally omits `mlx_swift_lm` because the
 local Swift reference does not currently implement Gemma4 MoE Router/Experts.
 Gemma 4 E2B 5/6/8-bit rows include both `mlx_lm` and `mlx_swift_lm`
 reference rows.
-Speculative rows remain effective-throughput measurements from AX's n-gram
-policy and must not be described as raw model-kernel speedups.
+N-gram acceleration rows remain effective-throughput measurements from AX's
+n-gram policy and must not be described as raw model-kernel speedups.
 
 ## Future Model Generations
 
@@ -120,10 +140,12 @@ generation, AX should not force an all-or-nothing answer.
 Depending on readiness, that model may resolve to:
 
 - `mlx_preview`
+- `mlx_lm_delegated`
 - `llama_cpp`
 - `unsupported`
 
-where `mlx_preview` means repo-owned MLX mode, not AX MLX Metal mode.
+where `mlx_preview` means repo-owned MLX mode, and `mlx_lm_delegated`
+means upstream `mlx-lm` compatibility through AX surfaces.
 
 ## Not a Broad LlamaCpp Matrix
 

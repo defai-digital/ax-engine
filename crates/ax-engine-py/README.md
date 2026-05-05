@@ -12,12 +12,15 @@ Current preview scope:
 - fail-closed host validation for pre-M4 Macs
 - runtime metadata reporting
 - `mlx=True` selects the repo-owned MLX runtime
+- `support_tier="mlx_lm_delegated"` selects explicit upstream `mlx-lm` text
+  compatibility through `mlx_lm_server_url`
 - non-MLX inference routes to `llama.cpp`
 - text/chat convenience helpers over the same SDK-backed request contract
 - stepwise request control via `submit(...)`, `step()`, `snapshot(...)`, and
   `cancel(...)`
 - SDK-backed in-process `stream_generate(...)` lifecycle events emitted through
   a native incremental iterator
+- mlx-lm compatibility via `mlx_lm_server_url`
 - llama.cpp compatibility via `llama_model_path`, `llama_cli_path`, or
   `llama_server_url`
 - `native_mode=True` is retired and returns an error
@@ -30,9 +33,11 @@ Current non-goals:
 - broad compatibility lifecycle parity across multiple delegated adapters
 
 For Phase 1, stepwise request-control methods support MLX preview plus the
-server-backed `llama.cpp` compatibility path. One compatibility session can now
-hold multiple active delegated requests while `step()` aggregates progress
-across them.
+server-backed `llama.cpp` compatibility path. The `mlx_lm_delegated` path is
+text-only blocking generation through `mlx_lm.server`; token prompts,
+streaming, and lifecycle calls fail closed. One llama.cpp compatibility session
+can now hold multiple active delegated requests while `step()` aggregates
+progress across them.
 
 Build from the repository root with `maturin`:
 

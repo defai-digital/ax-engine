@@ -7,9 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use ax_engine_sdk::{
-    EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport, GenerateFinishReason,
-    GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent, GenerateStreamState,
-    LlamaCppBackendError, RuntimeReport, SessionRequestReport, StatelessGenerateContext,
+    EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
+    GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateSampling, GenerateStreamEvent,
+    GenerateStreamState, LlamaCppBackendError, MlxLmBackendError, RuntimeReport,
+    SessionRequestReport, StatelessGenerateContext,
 };
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
@@ -92,6 +93,42 @@ struct ErrorResponse {
 struct ErrorBody {
     code: &'static str,
     message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiEmbeddingRequest {
+    #[serde(default)]
+    model: Option<String>,
+    /// Pre-tokenized input. A single sequence of token IDs.
+    input: Vec<u32>,
+    /// Ignored — always returns float32. Present for OpenAI API compatibility.
+    #[serde(default)]
+    #[allow(dead_code)]
+    encoding_format: Option<String>,
+    /// Pooling strategy: "mean" (default), "last", or "cls".
+    #[serde(default)]
+    pooling: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiEmbeddingResponse {
+    object: &'static str,
+    data: Vec<OpenAiEmbeddingObject>,
+    model: String,
+    usage: OpenAiEmbeddingUsage,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiEmbeddingObject {
+    object: &'static str,
+    embedding: Vec<f32>,
+    index: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiEmbeddingUsage {
+    prompt_tokens: usize,
+    total_tokens: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -363,6 +400,7 @@ fn build_router(state: AppState) -> Router {
         .route("/healthz", get(health))
         .route("/v1/runtime", get(runtime_info))
         .route("/v1/models", get(models))
+        .route("/v1/embeddings", post(openai_embeddings))
         .route("/v1/completions", post(openai_completions))
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/step", post(step_request))
@@ -415,6 +453,60 @@ async fn generate(
     .await?;
 
     Ok(Json(response))
+}
+
+async fn openai_embeddings(
+    State(state): State<AppState>,
+    Json(request): Json<OpenAiEmbeddingRequest>,
+) -> Result<Json<OpenAiEmbeddingResponse>, (StatusCode, Json<ErrorResponse>)> {
+    validate_model(&state, request.model.as_deref())?;
+
+    if request.input.is_empty() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "input must not be empty".into(),
+        ));
+    }
+
+    let pooling = match request.pooling.as_deref().unwrap_or("mean") {
+        "mean" => EmbeddingPooling::Mean,
+        "last" => EmbeddingPooling::Last,
+        "cls" => EmbeddingPooling::Cls,
+        other => {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!(
+                    "unknown pooling strategy {other:?}; expected \"mean\", \"last\", or \"cls\""
+                ),
+            ));
+        }
+    };
+
+    let token_count = request.input.len();
+    let model_id = state.model_id.as_ref().clone();
+    let request_session = state.request_session.clone();
+    let embedding = run_blocking_session_task(move || {
+        request_session
+            .blocking_lock()
+            .embed(&request.input, pooling)
+    })
+    .await?;
+
+    Ok(Json(OpenAiEmbeddingResponse {
+        object: "list",
+        data: vec![OpenAiEmbeddingObject {
+            object: "embedding",
+            embedding,
+            index: 0,
+        }],
+        model: model_id,
+        usage: OpenAiEmbeddingUsage {
+            prompt_tokens: token_count,
+            total_tokens: token_count,
+        },
+    }))
 }
 
 async fn openai_completions(
@@ -1230,6 +1322,8 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
         | EngineSessionError::InvalidRequestId
         | EngineSessionError::UnsupportedSupportTier
         | EngineSessionError::LlamaCppDoesNotSupportLifecycle { .. }
+        | EngineSessionError::MlxLmDoesNotSupportLifecycle { .. }
+        | EngineSessionError::MlxLmDoesNotSupportStreaming
         | EngineSessionError::StatelessStreamRequiresLlamaCpp { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
         | EngineSessionError::RequestDidNotTerminate { .. }
@@ -1242,7 +1336,11 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingPromptInput { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::UnsupportedTokenPrompt { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::AmbiguousPromptInput { .. })
-        | EngineSessionError::LlamaCpp(LlamaCppBackendError::BackendConfigMismatch { .. }) => {
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::BackendConfigMismatch { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::MissingInputText)
+        | EngineSessionError::MlxLm(MlxLmBackendError::UnsupportedTokenPrompt)
+        | EngineSessionError::MlxLm(MlxLmBackendError::BackendConfigMismatch { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. }) => {
             error_response(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
@@ -1251,6 +1349,8 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
         }
         EngineSessionError::BackendContract(_)
         | EngineSessionError::MissingLlamaCppConfig { .. }
+        | EngineSessionError::MissingMlxLmConfig
+        | EngineSessionError::MissingDelegatedRuntime { .. }
         | EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
         | EngineSessionError::MlxRuntimeArtifactsRequired
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandLaunch { .. })
@@ -1262,13 +1362,23 @@ fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<ErrorRespon
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpStatus { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpResponseRead { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::InvalidResponseJson { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::SerializeRequestJson { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::HttpRequest { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::HttpStatus { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::InvalidResponseJson { .. })
         | EngineSessionError::UnsupportedHostHardware { .. } => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "unsupported_host",
             error.to_string(),
         ),
+        EngineSessionError::EmbeddingNotSupported => error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            error.to_string(),
+        ),
         EngineSessionError::RequestReportInvariantViolation { .. }
         | EngineSessionError::StreamEndedWithoutResponse { .. }
+        | EngineSessionError::EmbeddingFailed { .. }
         | EngineSessionError::Core(_)
         | EngineSessionError::MetalRuntime(_)
         | EngineSessionError::MlxRuntimeUnavailable => error_response(
@@ -1493,8 +1603,9 @@ mod tests {
             llama_cli_path: "llama-cli".to_string(),
             llama_model_path: None,
             llama_server_url: None,
+            mlx_lm_server_url: None,
             mlx_model_artifacts_dir: None,
-            no_speculative_decode: false,
+            disable_ngram_acceleration: false,
         }
     }
 

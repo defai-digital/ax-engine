@@ -4,8 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ax_engine_core::{
-    CacheGroupId, EngineCore, EngineCoreError, EngineStepOutcome, KvManagerConfig,
-    MetalKernelAssets, MetalRuntimeError, ModelId, RequestId, RequestSubmission, SequenceNo,
+    CacheGroupId, EmbeddingPooling, EngineCore, EngineCoreError, EngineStepOutcome,
+    KvManagerConfig, MetalKernelAssets, MetalRuntimeError, ModelId, RequestId, RequestSubmission,
+    SequenceNo,
 };
 use thiserror::Error;
 
@@ -24,6 +25,7 @@ use crate::llama_cpp::{
     LlamaCppBackendError, LlamaCppConfig, LlamaCppPromptProgress, LlamaCppStreamChunk,
     LlamaCppStreamHandle, run_blocking_generate, start_streaming_generate,
 };
+use crate::mlx_lm::{MlxLmBackendError, MlxLmConfig, run_blocking_generate as run_mlx_lm_generate};
 use crate::request::{
     EngineStepReport, MetalDispatchStepReport, SessionRequestReport, SessionRequestState,
 };
@@ -41,12 +43,13 @@ pub struct EngineSessionConfig {
     pub backend_policy: BackendPolicy,
     pub resolved_backend: ResolvedBackend,
     pub llama_backend: Option<LlamaCppConfig>,
+    pub mlx_lm_backend: Option<MlxLmConfig>,
     pub mlx_runtime_artifacts_dir: Option<PathBuf>,
     pub mlx_runtime_artifacts_source: Option<NativeRuntimeArtifactsSource>,
     pub mlx_model_artifacts_dir: Option<PathBuf>,
     pub mlx_model_artifacts_source: Option<NativeModelArtifactsSource>,
-    /// When true, MLX runner uses single-token greedy decode (disables n-gram speculation).
-    pub mlx_no_speculative_decode: bool,
+    /// When true, MLX runner disables n-gram acceleration and uses the direct path.
+    pub mlx_disable_ngram_acceleration: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,8 +62,8 @@ pub struct PreviewSessionConfigRequest {
     pub backend_request: PreviewBackendRequest,
     pub mlx_runtime_artifacts_dir: Option<PathBuf>,
     pub mlx_model_artifacts_dir: Option<PathBuf>,
-    /// When true, MLX runner uses single-token greedy decode (disables n-gram speculation).
-    pub mlx_no_speculative_decode: bool,
+    /// When true, MLX runner disables n-gram acceleration and uses the direct path.
+    pub mlx_disable_ngram_acceleration: bool,
 }
 
 impl Default for PreviewSessionConfigRequest {
@@ -74,7 +77,7 @@ impl Default for PreviewSessionConfigRequest {
             backend_request: PreviewBackendRequest::default(),
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: None,
-            mlx_no_speculative_decode: false,
+            mlx_disable_ngram_acceleration: false,
         }
     }
 }
@@ -89,11 +92,12 @@ pub struct ResolvedSessionConfigRequest {
     pub backend_policy: BackendPolicy,
     pub resolved_backend: ResolvedBackend,
     pub llama_backend: Option<LlamaCppConfig>,
+    pub mlx_lm_backend: Option<MlxLmConfig>,
     pub mlx_runtime_artifacts_dir: Option<PathBuf>,
     pub mlx_runtime_artifacts_source: Option<NativeRuntimeArtifactsSource>,
     pub mlx_model_artifacts_dir: Option<PathBuf>,
     pub mlx_model_artifacts_source: Option<NativeModelArtifactsSource>,
-    pub mlx_no_speculative_decode: bool,
+    pub mlx_disable_ngram_acceleration: bool,
 }
 
 impl Default for ResolvedSessionConfigRequest {
@@ -108,11 +112,12 @@ impl Default for ResolvedSessionConfigRequest {
             backend_policy: default.backend_policy,
             resolved_backend: default.resolved_backend,
             llama_backend: default.llama_backend,
+            mlx_lm_backend: default.mlx_lm_backend,
             mlx_runtime_artifacts_dir: default.mlx_runtime_artifacts_dir,
             mlx_runtime_artifacts_source: default.mlx_runtime_artifacts_source,
             mlx_model_artifacts_dir: default.mlx_model_artifacts_dir,
             mlx_model_artifacts_source: default.mlx_model_artifacts_source,
-            mlx_no_speculative_decode: default.mlx_no_speculative_decode,
+            mlx_disable_ngram_acceleration: default.mlx_disable_ngram_acceleration,
         }
     }
 }
@@ -134,6 +139,7 @@ impl Default for EngineSessionConfig {
             backend_policy: BackendPolicy::mlx_only(),
             resolved_backend: ResolvedBackend::mlx_preview(),
             llama_backend: None,
+            mlx_lm_backend: None,
             mlx_runtime_artifacts_dir: mlx_runtime_artifacts
                 .as_ref()
                 .map(|selection| selection.dir.clone()),
@@ -142,7 +148,7 @@ impl Default for EngineSessionConfig {
                 .as_ref()
                 .map(|selection| selection.dir.clone()),
             mlx_model_artifacts_source: mlx_model_artifacts.map(|selection| selection.source),
-            mlx_no_speculative_decode: false,
+            mlx_disable_ngram_acceleration: false,
         }
     }
 }
@@ -189,6 +195,7 @@ impl EngineSessionConfig {
             backend_policy: resolution.backend_policy,
             resolved_backend: resolution.resolved_backend,
             llama_backend: resolution.llama_backend,
+            mlx_lm_backend: resolution.mlx_lm_backend,
             mlx_runtime_artifacts_dir: mlx_runtime_artifacts
                 .as_ref()
                 .map(|selection| selection.dir.clone())
@@ -203,7 +210,7 @@ impl EngineSessionConfig {
             mlx_model_artifacts_source: mlx_model_artifacts
                 .map(|selection| selection.source)
                 .or(default.mlx_model_artifacts_source),
-            mlx_no_speculative_decode: request.mlx_no_speculative_decode,
+            mlx_disable_ngram_acceleration: request.mlx_disable_ngram_acceleration,
         })
     }
 
@@ -235,11 +242,12 @@ impl EngineSessionConfig {
             backend_policy: request.backend_policy,
             resolved_backend: request.resolved_backend,
             llama_backend: request.llama_backend,
+            mlx_lm_backend: request.mlx_lm_backend,
             mlx_runtime_artifacts_dir: request.mlx_runtime_artifacts_dir,
             mlx_runtime_artifacts_source: request.mlx_runtime_artifacts_source,
             mlx_model_artifacts_dir: request.mlx_model_artifacts_dir,
             mlx_model_artifacts_source: request.mlx_model_artifacts_source,
-            mlx_no_speculative_decode: request.mlx_no_speculative_decode,
+            mlx_disable_ngram_acceleration: request.mlx_disable_ngram_acceleration,
         }
     }
 
@@ -274,12 +282,20 @@ impl EngineSessionConfig {
             return Err(EngineSessionError::UnsupportedHostHardware { detected_host });
         }
 
-        if !self.resolved_backend.selected_backend.is_mlx() {
-            self.llama_backend
-                .as_ref()
-                .ok_or(EngineSessionError::MissingLlamaCppConfig {
-                    selected_backend: self.resolved_backend.selected_backend,
-                })?;
+        match self.resolved_backend.selected_backend {
+            SelectedBackend::Mlx => {}
+            SelectedBackend::LlamaCpp => {
+                self.llama_backend
+                    .as_ref()
+                    .ok_or(EngineSessionError::MissingLlamaCppConfig {
+                        selected_backend: self.resolved_backend.selected_backend,
+                    })?;
+            }
+            SelectedBackend::MlxLmDelegated => {
+                self.mlx_lm_backend
+                    .as_ref()
+                    .ok_or(EngineSessionError::MissingMlxLmConfig)?;
+            }
         }
 
         Ok(())
@@ -291,6 +307,9 @@ impl EngineSessionConfig {
                 .with_mlx_runtime(self.mlx_runtime_report());
         if let Some(llama_backend) = self.llama_backend.as_ref() {
             runtime.capabilities = CapabilityReport::for_llama_cpp_backend(llama_backend);
+        }
+        if let Some(mlx_lm_backend) = self.mlx_lm_backend.as_ref() {
+            runtime.capabilities = CapabilityReport::for_mlx_lm_backend(mlx_lm_backend);
         }
         runtime
     }
@@ -333,12 +352,12 @@ impl EngineSessionConfig {
 #[derive(Clone, Debug)]
 pub struct StatelessGenerateContext {
     config: EngineSessionConfig,
-    llama_runtime: Option<RuntimeReport>,
+    delegated_runtime: Option<RuntimeReport>,
 }
 
 impl StatelessGenerateContext {
     pub fn new(config: EngineSessionConfig) -> Result<Self, EngineSessionError> {
-        let llama_runtime = if config.resolved_backend.selected_backend.is_mlx() {
+        let delegated_runtime = if config.resolved_backend.selected_backend.is_mlx() {
             None
         } else {
             config.validate()?;
@@ -347,7 +366,7 @@ impl StatelessGenerateContext {
 
         Ok(Self {
             config,
-            llama_runtime,
+            delegated_runtime,
         })
     }
 
@@ -356,7 +375,7 @@ impl StatelessGenerateContext {
     }
 
     pub fn supports_llama_cpp_streaming(&self) -> bool {
-        !self.config.resolved_backend.selected_backend.is_mlx()
+        self.config.resolved_backend.selected_backend == SelectedBackend::LlamaCpp
     }
 
     pub fn generate_with_request_id(
@@ -371,12 +390,12 @@ impl StatelessGenerateContext {
 
         EngineSession::validate_generate_request(request_id, &request)?;
         let runtime =
-            self.llama_runtime
+            self.delegated_runtime
                 .as_ref()
-                .ok_or(EngineSessionError::MissingLlamaCppConfig {
+                .ok_or(EngineSessionError::MissingDelegatedRuntime {
                     selected_backend: self.config.resolved_backend.selected_backend,
                 })?;
-        run_llama_cpp_generate_prevalidated(&self.config, runtime, request_id, &request)
+        run_delegated_generate_prevalidated(&self.config, runtime, request_id, &request)
     }
 
     pub fn stream_state_with_request_id(
@@ -389,12 +408,15 @@ impl StatelessGenerateContext {
                 selected_backend: self.config.resolved_backend.selected_backend,
             });
         }
+        if self.config.resolved_backend.selected_backend == SelectedBackend::MlxLmDelegated {
+            return Err(EngineSessionError::MlxLmDoesNotSupportStreaming);
+        }
 
         EngineSession::validate_generate_request(request_id, &request)?;
         let runtime =
-            self.llama_runtime
+            self.delegated_runtime
                 .as_ref()
-                .ok_or(EngineSessionError::MissingLlamaCppConfig {
+                .ok_or(EngineSessionError::MissingDelegatedRuntime {
                     selected_backend: self.config.resolved_backend.selected_backend,
                 })?;
         let (runtime, stream, route_backend) =
@@ -657,16 +679,6 @@ impl EngineSession {
         }
     }
 
-    fn llama_cpp_generate_with_request_id(
-        &mut self,
-        request_id: u64,
-        request: GenerateRequest,
-    ) -> Result<GenerateResponse, EngineSessionError> {
-        Self::validate_generate_request(request_id, &request)?;
-        self.advance_request_id(request_id);
-        run_llama_cpp_generate_with_config(&self.config, request_id, &request)
-    }
-
     fn llama_cpp_submit_generate_with_request_id(
         &mut self,
         request_id: u64,
@@ -791,7 +803,7 @@ impl EngineSession {
 
         Self::validate_generate_request(request_id, &request)?;
         config.validate()?;
-        run_llama_cpp_generate_with_config(config, request_id, &request)
+        run_delegated_generate_with_config(config, request_id, &request)
     }
 
     pub fn config(&self) -> &EngineSessionConfig {
@@ -946,7 +958,17 @@ impl EngineSession {
     ) -> Result<u64, EngineSessionError> {
         Self::validate_generate_request(request_id, &request)?;
         if !self.uses_mlx_runtime() {
-            return self.llama_cpp_submit_generate_with_request_id(request_id, request);
+            return match self.config.resolved_backend.selected_backend {
+                SelectedBackend::LlamaCpp => {
+                    self.llama_cpp_submit_generate_with_request_id(request_id, request)
+                }
+                SelectedBackend::MlxLmDelegated => {
+                    Err(EngineSessionError::MlxLmDoesNotSupportLifecycle {
+                        operation: "submit_generate",
+                    })
+                }
+                SelectedBackend::Mlx => unreachable!("uses_mlx_runtime was already checked"),
+            };
         }
         if request.input_text.is_some() {
             return Err(EngineSessionError::MlxBackendRequiresTokenizedInput);
@@ -1011,10 +1033,28 @@ impl EngineSession {
         request: GenerateRequest,
     ) -> Result<GenerateResponse, EngineSessionError> {
         if !self.uses_mlx_runtime() {
-            return self.llama_cpp_generate_with_request_id(request_id, request);
+            return run_delegated_generate_with_config(&self.config, request_id, &request);
         }
         let request_id = self.submit_generate_with_request_id(request_id, request)?;
         self.run_to_completion(request_id)
+    }
+
+    /// Compute a dense embedding for `token_ids` using the active MLX model.
+    ///
+    /// Returns the pooled hidden-state vector as `Vec<f32>`.  Only supported
+    /// when the session is using an MLX-native backend; returns
+    /// `EngineSessionError::EmbeddingNotSupported` otherwise.
+    pub fn embed(
+        &self,
+        token_ids: &[u32],
+        pooling: EmbeddingPooling,
+    ) -> Result<Vec<f32>, EngineSessionError> {
+        if !self.uses_mlx_runtime() {
+            return Err(EngineSessionError::EmbeddingNotSupported);
+        }
+        self.core
+            .embed(token_ids, pooling)
+            .map_err(|message| EngineSessionError::EmbeddingFailed { message })
     }
 
     pub fn stream_state(&self, request_id: u64) -> Result<GenerateStreamState, EngineSessionError> {
@@ -1043,7 +1083,15 @@ impl EngineSession {
         request: GenerateRequest,
     ) -> Result<GenerateStreamState, EngineSessionError> {
         if !self.uses_mlx_runtime() {
-            return self.llama_cpp_stream_state_with_request_id(request_id, request);
+            return match self.config.resolved_backend.selected_backend {
+                SelectedBackend::LlamaCpp => {
+                    self.llama_cpp_stream_state_with_request_id(request_id, request)
+                }
+                SelectedBackend::MlxLmDelegated => {
+                    Err(EngineSessionError::MlxLmDoesNotSupportStreaming)
+                }
+                SelectedBackend::Mlx => unreachable!("uses_mlx_runtime was already checked"),
+            };
         }
 
         let request_id = self.submit_generate_with_request_id(request_id, request)?;
@@ -1666,6 +1714,8 @@ pub enum EngineSessionError {
     BackendContract(#[from] BackendContractError),
     #[error(transparent)]
     LlamaCpp(#[from] LlamaCppBackendError),
+    #[error(transparent)]
+    MlxLm(#[from] MlxLmBackendError),
     #[error("max_batch_tokens must be greater than zero")]
     InvalidMaxBatchTokens,
     #[error("generate request requires input_tokens or input_text")]
@@ -1694,6 +1744,10 @@ pub enum EngineSessionError {
     UnsupportedHostHardware { detected_host: String },
     #[error("llama.cpp backend {selected_backend:?} requires llama_backend config")]
     MissingLlamaCppConfig { selected_backend: SelectedBackend },
+    #[error("mlx-lm delegated backend requires mlx_lm_backend config")]
+    MissingMlxLmConfig,
+    #[error("delegated backend {selected_backend:?} is missing runtime report")]
+    MissingDelegatedRuntime { selected_backend: SelectedBackend },
     #[error(
         "llama.cpp backend {selected_backend:?} does not support {operation} in the preview SDK session yet"
     )]
@@ -1701,6 +1755,10 @@ pub enum EngineSessionError {
         selected_backend: SelectedBackend,
         operation: &'static str,
     },
+    #[error("mlx-lm delegated backend does not support streaming in this preview contract")]
+    MlxLmDoesNotSupportStreaming,
+    #[error("mlx-lm delegated backend does not support {operation} in the preview SDK lifecycle")]
+    MlxLmDoesNotSupportLifecycle { operation: &'static str },
     #[error("stateless streaming requires a llama.cpp backend, got {selected_backend:?}")]
     StatelessStreamRequiresLlamaCpp { selected_backend: SelectedBackend },
     #[error(
@@ -1730,6 +1788,10 @@ pub enum EngineSessionError {
     Core(#[from] EngineCoreError),
     #[error(transparent)]
     MetalRuntime(#[from] MetalRuntimeError),
+    #[error("embedding is not supported by the active backend")]
+    EmbeddingNotSupported,
+    #[error("embedding failed: {message}")]
+    EmbeddingFailed { message: &'static str },
 }
 
 fn build_native_core(config: &EngineSessionConfig) -> Result<EngineCore, EngineSessionError> {
@@ -1760,7 +1822,7 @@ fn build_mlx_core(config: &EngineSessionConfig) -> Result<EngineCore, EngineSess
     let runner = MlxRunner::from_artifacts(
         &artifacts,
         DEFAULT_PREFILL_CHUNK,
-        config.mlx_no_speculative_decode,
+        config.mlx_disable_ngram_acceleration,
     )
     .map_err(|e| {
         EngineSessionError::MetalRuntime(ax_engine_core::MetalRuntimeError::Generic(e.to_string()))
@@ -1809,13 +1871,38 @@ fn build_llama_cpp_stream_state(
     )))
 }
 
-fn run_llama_cpp_generate_with_config(
+fn run_delegated_generate_with_config(
     config: &EngineSessionConfig,
     request_id: u64,
     request: &GenerateRequest,
 ) -> Result<GenerateResponse, EngineSessionError> {
     let runtime = config.runtime_report();
-    run_llama_cpp_generate_prevalidated(config, &runtime, request_id, request)
+    run_delegated_generate_prevalidated(config, &runtime, request_id, request)
+}
+
+fn run_delegated_generate_prevalidated(
+    config: &EngineSessionConfig,
+    runtime: &RuntimeReport,
+    request_id: u64,
+    request: &GenerateRequest,
+) -> Result<GenerateResponse, EngineSessionError> {
+    match config.resolved_backend.selected_backend {
+        SelectedBackend::LlamaCpp => {
+            run_llama_cpp_generate_prevalidated(config, runtime, request_id, request)
+        }
+        SelectedBackend::MlxLmDelegated => {
+            let mlx_lm_backend = config
+                .mlx_lm_backend
+                .as_ref()
+                .ok_or(EngineSessionError::MissingMlxLmConfig)?;
+            run_mlx_lm_generate(request_id, runtime, mlx_lm_backend, request)
+                .map_err(EngineSessionError::from)
+        }
+        SelectedBackend::Mlx => {
+            let mut session = EngineSession::new(config.clone())?;
+            session.generate_with_request_id(request_id, request.clone())
+        }
+    }
 }
 
 fn run_llama_cpp_generate_prevalidated(
@@ -2785,6 +2872,44 @@ sys.exit(17)
     }
 
     #[test]
+    fn preview_session_config_factory_builds_mlx_lm_delegated_backend() {
+        let config = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
+            backend_request: PreviewBackendRequest {
+                support_tier: SupportTier::MlxLmDelegated,
+                mlx_lm_server_url: Some("http://127.0.0.1:8090".to_string()),
+                ..PreviewBackendRequest::default()
+            },
+            ..PreviewSessionConfigRequest::default()
+        })
+        .expect("preview config factory should build mlx-lm delegated config");
+
+        assert_eq!(
+            config.backend_policy,
+            BackendPolicy::allow_mlx_lm_delegated()
+        );
+        assert_eq!(
+            config.resolved_backend.selected_backend,
+            SelectedBackend::MlxLmDelegated
+        );
+        assert_eq!(
+            config.resolved_backend.support_tier,
+            SupportTier::MlxLmDelegated
+        );
+        assert!(config.llama_backend.is_none());
+        assert_eq!(
+            config.mlx_lm_backend,
+            Some(MlxLmConfig::server_completion("http://127.0.0.1:8090"))
+        );
+
+        let runtime = config.runtime_report();
+        assert_eq!(runtime.selected_backend, SelectedBackend::MlxLmDelegated);
+        assert_eq!(runtime.support_tier, SupportTier::MlxLmDelegated);
+        assert!(runtime.capabilities.text_generation);
+        assert!(!runtime.capabilities.token_streaming);
+        assert!(runtime.mlx_runtime.is_none());
+    }
+
+    #[test]
     fn preview_session_config_factory_preserves_explicit_native_artifact_dirs() {
         let config = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
             mlx_runtime_artifacts_dir: Some(Path::new("/tmp/ax-metal").to_path_buf()),
@@ -2847,11 +2972,12 @@ sys.exit(17)
             llama_backend: Some(crate::llama_cpp::LlamaCppConfig::server_completion(
                 "http://127.0.0.1:8080".to_string(),
             )),
+            mlx_lm_backend: None,
             mlx_runtime_artifacts_dir: Some(Path::new("/tmp/ax-metal").to_path_buf()),
             mlx_runtime_artifacts_source: Some(NativeRuntimeArtifactsSource::ExplicitConfig),
             mlx_model_artifacts_dir: Some(Path::new("/tmp/ax-model").to_path_buf()),
             mlx_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
-            mlx_no_speculative_decode: true,
+            mlx_disable_ngram_acceleration: true,
         });
 
         assert_eq!(
@@ -2885,7 +3011,7 @@ sys.exit(17)
             config.mlx_model_artifacts_source,
             Some(NativeModelArtifactsSource::ExplicitConfig)
         );
-        assert!(config.mlx_no_speculative_decode);
+        assert!(config.mlx_disable_ngram_acceleration);
     }
 
     fn llama_cpp_server_session(server_url: String) -> EngineSession {

@@ -8,7 +8,8 @@ The repository provides:
 - benchmark tooling split between `ax-engine-bench` workload contracts and the
   MLX inference-stack comparison harness
 - a preview SDK, local HTTP server, Python bindings, and a JavaScript preview client
-- repo-owned MLX inference plus `llama.cpp` bypass support for non-MLX inference
+- repo-owned MLX inference, explicit `mlx-lm` delegated text compatibility, and
+  `llama.cpp` bypass support for non-MLX inference
 
 ## Current Scope
 
@@ -47,8 +48,8 @@ What is not yet present in this repository:
 - fully migrated Rust SDK facade
 - broad JavaScript bindings beyond the thin preview HTTP client
 - broad transport-level Python ergonomics beyond the current local preview layer
-- broad model coverage beyond the current MLX-first path and delegated
-  llama.cpp route
+- broad model coverage beyond the current MLX-first path and explicit
+  delegated compatibility routes
 
 Do not assume that user-facing surfaces from the earlier AX repo have already
 migrated into v4.
@@ -87,6 +88,7 @@ decision-grade AX-owned MLX inference claims require the supported Apple
 Silicon MLX runtime environment.
 
 AX Engine MLX mode depends on the available Apple Silicon MLX runtime;
+unsupported MLX text models can use the explicit delegated `mlx-lm` route, and
 non-MLX inference uses delegated llama.cpp routes.
 Runtime surfaces fail closed on pre-M4 hosts instead of pretending degraded
 support exists.
@@ -121,6 +123,21 @@ cargo run -p ax-engine-bench -- generate \
   --llama-server-url http://127.0.0.1:8081
 ```
 
+To run an MLX text model through upstream `mlx-lm` while keeping AX Engine
+server/SDK/CLI surfaces:
+
+```text
+mlx_lm.server --model /absolute/path/to/mlx-model --host 127.0.0.1 --port 8090
+
+cargo run -p ax-engine-bench -- generate \
+  --prompt "Hello from mlx-lm" \
+  --support-tier mlx_lm_delegated \
+  --mlx-lm-server-url http://127.0.0.1:8090
+```
+
+That route is explicit compatibility only. It is text-only and blocking in
+Phase 1, and it is not an AX-owned MLX performance claim.
+
 To run a checked-in scenario manifest through the current workload-contract
 path:
 
@@ -146,9 +163,10 @@ python3 scripts/bench_mlx_inference_stack.py \
 ```
 
 That harness requires `mlx_lm.benchmark` as the primary reference and fails
-closed if the matching baseline cannot be produced. Add `--ax-both-modes` when
-you need both greedy and speculative AX MLX rows. The direct AX comparison is
-greedy by default, while speculative rows are feature-speedup evidence. Each AX
+closed if the matching baseline cannot be produced. Add `--ax-compare-policies`
+when you need both direct and n-gram acceleration AX MLX rows. The default AX
+row is the direct same-policy comparison, while n-gram acceleration rows are
+effective-throughput evidence. Each AX
 or optional `mlx-swift-lm` row is compared against the matching
 `mlx_lm.benchmark` random-token prompt/decode shape. Use
 `--mlx-swift-lm-command` only for an explicit `BenchmarkHelpers` /

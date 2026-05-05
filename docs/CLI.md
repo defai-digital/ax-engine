@@ -68,8 +68,8 @@ baseline cannot be produced, and every AX or `mlx-swift-lm` row carries
 ratio-to-`mlx_lm.benchmark` fields for the same random-token prompt/decode
 shape. The harness mirrors the upstream prompt standard (`mx.random.seed(0)`
 plus random token IDs from the model vocabulary) and writes the prompt token
-JSON path and hash into the artifact. Greedy AX decode is the default direct
-comparison; use `--ax-both-modes` to also emit `ax_engine_mlx_speculative`
+JSON path and hash into the artifact. AX direct decode is the default direct
+comparison; use `--ax-compare-policies` to also emit `ax_engine_mlx_ngram_accel`
 feature-speedup rows. `mlx-swift-lm` is accepted only as a secondary baseline
 through an explicit `BenchmarkHelpers` / `MLXLMCommon` generation adapter that
 reads the emitted prompt token JSON. The older SwiftLM application-server
@@ -95,6 +95,25 @@ Update `runtime.backend_adapter.server_url` before running them directly, or use
 bash scripts/check-bench-preview.sh
 ```
 
+## Delegated mlx-lm Compatibility
+
+For an MLX text model that is supported by upstream `mlx-lm` but not yet by
+AX-owned MLX mode, run `mlx_lm.server` yourself and select the explicit
+delegated route:
+
+```text
+mlx_lm.server --model /absolute/path/to/mlx-model --host 127.0.0.1 --port 8090
+
+ax-engine-bench generate \
+  --prompt "Hello from mlx-lm" \
+  --support-tier mlx_lm_delegated \
+  --mlx-lm-server-url http://127.0.0.1:8090
+```
+
+This path is text-only and blocking in Phase 1. It validates AX surface
+compatibility with `mlx_lm.server`; it is not an AX-owned MLX performance
+benchmark and should not be mixed into `ax_engine_mlx` throughput tables.
+
 ## Direct Inference Helpers
 
 `ax-engine-bench generate` and `ax-engine-bench stream` are thin wrappers over
@@ -106,6 +125,7 @@ Examples:
 ax-engine-bench generate --tokens 1,2,3 --max-output-tokens 4
 ax-engine-bench generate --tokens 1,2,3 --mlx --mlx-model-artifacts-dir /tmp/mlx-model-artifacts
 ax-engine-bench generate --prompt "Hello from AX" --support-tier llama_cpp --llama-server-url http://127.0.0.1:8081
+ax-engine-bench generate --prompt "Hello from mlx-lm" --support-tier mlx_lm_delegated --mlx-lm-server-url http://127.0.0.1:8090
 ax-engine-bench stream --tokens 1,2,3 --support-tier llama_cpp --llama-server-url http://127.0.0.1:8081 --json
 ```
 
