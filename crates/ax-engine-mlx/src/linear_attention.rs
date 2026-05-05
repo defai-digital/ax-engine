@@ -165,6 +165,13 @@ pub fn gated_delta_kernel(
     let num_value_heads = v_shape[2];
     let value_head_dim = v_shape[3];
     let seq_i32 = scalar_i32(seq);
+    // The Metal kernel uses `constexpr int n_per_t = Dk / 32` (integer division over
+    // 32 SIMD lanes).  If key_head_dim is not divisible by 32, the remainder is silently
+    // dropped and the state update is mathematically wrong.
+    assert!(
+        key_head_dim % 32 == 0,
+        "gated_delta_kernel requires key_head_dim divisible by 32 (got {key_head_dim})"
+    );
 
     let kernel = GATED_DELTA_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
