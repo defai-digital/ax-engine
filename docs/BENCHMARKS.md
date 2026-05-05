@@ -8,7 +8,8 @@ Measured results for each tested model are summarized in `README.md` under the
 **Benchmarks** section. Public review artifacts live under
 `benchmarks/results/mlx-inference/<date>/`; for example, the 2026-05-04 result
 set includes the full JSON output, prompt-token JSON files, and command logs for
-Gemma 4 E2B, Qwen 3 4B, and Qwen 3.5 9B.
+Gemma 4 E2B 4/5/6/8-bit, Gemma 4 26B A4B, Gemma 4 31B, Qwen 3 4B,
+Qwen 3.5 9B, Qwen 3.6 35B A3B 4/5/6/8-bit, and Qwen Coder Next.
 
 ## Which Tool To Use
 

@@ -83,10 +83,10 @@ stream.
 
 | Family | Model | Architecture notes |
 |---|---|---|
-| Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it, gemma-4-31b-it | Per-layer embeddings, input gating, sliding-window + full attention, KV sharing, logit softcapping |
+| Gemma 4 | gemma-4-e2b-it, gemma-4-e4b-it, gemma-4-26b-a4b-it, gemma-4-31b-it | Dense, per-layer embedding, and MoE variants; MLX affine 4/5/6/8-bit weights, sliding-window + full attention, K=V full-attention layers, logit softcapping |
 | Qwen 3 | Qwen3-4B | Dense GQA + SwiGLU |
 | Qwen 3.5 | Qwen3.5-9B | Linear attention + MoE FFN, attn_output_gate per-head interleaving |
-| Qwen 3.6 / Coder Next | Qwen3.6-35B-A3B-UD-MLX-4bit, Qwen3-Coder-Next-4bit | `qwen3_next` architecture: GatedDelta linear attention (3 of every 4 layers) + full attention with per-head sigmoid gate (every 4th layer) + sparse top-k MoE with shared expert |
+| Qwen 3.6 / Coder Next | Qwen3.6-35B-A3B 4/5/6/8-bit MLX, Qwen3-Coder-Next-4bit | `qwen3_next` architecture: GatedDelta linear attention (3 of every 4 layers) + full attention with per-head sigmoid gate (every 4th layer) + sparse top-k MoE with shared expert |
 
 All models use MLX safetensors format with the AX `model-manifest.json`
 descriptor. Each supported architecture has a hand-written forward pass in
@@ -118,14 +118,28 @@ reports observed effective throughput, not raw model speed.
 |---|---|---:|---:|---:|---:|---|
 | Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 197.5 | 192.4 (−2.6%) | 176.0 (−10.9%) | **467.6** (+136.8%) |
 |  |  | 512 | 191.9 | 179.5 (−6.5%) | 170.9 (−11.0%) | **464.8** (+142.2%) |
+| Gemma 4 E2B | 5-bit · group=64 · affine‖ | 128 | 182.9 | 174.1 (−4.8%) | 162.2 (−11.3%) | **380.8** (+108.2%) |
+|  |  | 512 | 178.1 | 167.0 (−6.2%) | 155.2 (−12.9%) | **377.2** (+111.8%) |
+| Gemma 4 E2B | 6-bit · group=64 · affine‖ | 128 | 161.3 | 153.0 (−5.1%) | 145.4 (−9.8%) | **344.0** (+113.3%) |
+|  |  | 512 | 154.2 | 147.1 (−4.6%) | 139.6 (−9.5%) | **346.0** (+124.4%) |
+| Gemma 4 E2B | 8-bit · group=64 · affine‖ | 128 | 139.4 | 134.9 (−3.2%) | 128.2 (−8.0%) | **369.9** (+165.3%) |
+|  |  | 512 | 134.5 | 130.8 (−2.8%) | 123.4 (−8.3%) | **368.2** (+173.7%) |
+| Gemma 4 26B A4B | 4-bit · group=64 · affine¶ | 128 | 118.3 | n/a¶ | 115.2 (−2.6%) | **234.7** (+98.4%) |
+|  |  | 512 | 113.1 | n/a¶ | 111.3 (−1.6%) | **211.4** (+86.9%) |
 | Gemma 4 31B | 4-bit · group=64 · affine | 128 | 26.2 | 24.8 (−5.5%) | 25.5 (−3.0%) | **53.3** (+103.3%) |
 |  |  | 512 | 24.9 | 24.7 (−0.9%) | 25.5 (+2.1%) | **50.4** (+102.1%) |
 | Qwen 3 4B | 4-bit · group=64 | 128 | 169.6 | 168.7 (−0.6%) | 167.7 (−1.1%) | **311.5** (+83.7%) |
 |  |  | 512 | 169.8 | 161.0 (−5.2%) | 158.9 (−6.4%) | **289.5** (+70.4%) |
-| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 92.6 | 93.7 (+1.1%) | 95.2 (+2.7%) | **168.7** (+82.1%) † |
-|  |  | 512 | 94.8 | 91.4 (−3.6%) | 94.5 (−0.3%) | 87.5 (−7.7%) † |
+| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 97.0 | 93.7 (−3.4%) | 94.0 (−3.1%) | **171.0** (+76.3%) † |
+|  |  | 512 | 96.3 | 91.4 (−5.1%) | 93.2 (−3.2%) | 87.6 (−9.0%) † |
 | Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine§ | 128 | 107.6 | 103.6 (−3.7%) | 108.5 (+0.9%) | **211.0** (+96.2%) † |
 |  |  | 512 | 103.3 | 101.4 (−1.9%) | 110.0 (+6.5%) | **207.7** (+101.1%) † |
+| Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine§ | 128 | 116.8 | 110.2 (−5.6%) | 119.8 (+2.5%) | **215.9** (+84.8%) † |
+|  |  | 512 | 113.7 | 108.7 (−4.4%) | 120.2 (+5.6%) | **212.5** (+86.8%) † |
+| Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine§ | 128 | 102.9 | 99.1 (−3.6%) | 105.6 (+2.6%) | **197.5** (+91.9%) † |
+|  |  | 512 | 101.1 | 98.0 (−3.1%) | 105.4 (+4.3%) | **195.8** (+93.7%) † |
+| Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine§ | 128 | 93.6 | 89.3 (−4.6%) | 103.1 (+10.1%) | **208.9** (+123.1%) † |
+|  |  | 512 | 91.4 | 89.1 (−2.6%) | 102.4 (+12.0%) | **205.6** (+124.8%) † |
 | Qwen Coder Next | 4-bit · group=64 · affine‡ | 128 | 92.2 | 89.4 (−3.0%) | 95.1 (+3.2%) | **204.7** (+122.1%) † |
 |  |  | 512 | 90.4 | 89.2 (−1.3%) | 95.4 (+5.6%) | **200.7** (+122.1%) † |
 
@@ -137,9 +151,19 @@ Linear-attention speculation is prompt/output-pattern dependent.
 ‡ Qwen Coder Next uses MLX affine 4-bit globally, with 8-bit overrides for
 router and shared-expert gate tensors.
 
-§ Qwen 3.6 35B A3B uses Unsloth UD-MLX affine 4-bit globally, with 8-bit
-overrides for embeddings, attention/linear-attention projections, shared expert,
-and lm_head tensors.
+§ Qwen 3.6 35B A3B includes the Unsloth UD-MLX 4-bit checkpoint plus
+MLX-community 5/6/8-bit checkpoints. The 5/6-bit checkpoints are affine 5/6-bit
+globally with 8-bit router and shared-expert gate overrides; the 8-bit
+checkpoint is affine 8-bit throughout.
+
+¶ Gemma 4 26B A4B is the public Gemma 4 MoE MLX model. Its checkpoint uses
+affine 4-bit globally, with 8-bit overrides for dense MLP and router
+projections. The local `mlx-swift-lm` reference currently has Gemma4 dense/text
+support but no Gemma4 MoE Router/Experts path, so no Swift row is admitted for
+that model.
+
+‖ Gemma 4 E2B 5/6/8-bit rows are quantization-support checks against
+`mlx_lm` primary baseline plus `mlx_swift_lm` secondary reference rows.
 
 ### Prefill throughput (tok/s) — percentages vs mlx_lm
 
@@ -147,14 +171,28 @@ and lm_head tensors.
 |---|---|---:|---:|---:|---:|
 | Gemma 4 E2B | 4-bit · group=64 · affine | 128 | 2,265.8 | 2,450.4 (+8.1%) | 3,248.7 (+43.4%) |
 |  |  | 512 | 7,634.1 | 6,664.3 (−12.7%) | 7,640.2 (+0.1%) |
+| Gemma 4 E2B | 5-bit · group=64 · affine‖ | 128 | 2,267.5 | 2,393.9 (+5.6%) | 3,197.3 (+41.0%) |
+|  |  | 512 | 8,405.7 | 6,742.6 (−19.8%) | 7,507.0 (−10.7%) |
+| Gemma 4 E2B | 6-bit · group=64 · affine‖ | 128 | 2,156.3 | 3,436.8 (+59.4%) | 3,122.3 (+44.8%) |
+|  |  | 512 | 7,320.7 | 7,962.3 (+8.8%) | 7,315.7 (−0.1%) |
+| Gemma 4 E2B | 8-bit · group=64 · affine‖ | 128 | 1,911.7 | 3,082.0 (+61.2%) | 3,070.4 (+60.6%) |
+|  |  | 512 | 6,582.8 | 6,758.1 (+2.7%) | 7,356.1 (+11.7%) |
+| Gemma 4 26B A4B | 4-bit · group=64 · affine¶ | 128 | 545.3 | n/a¶ | 691.3 (+26.8%) |
+|  |  | 512 | 1,620.7 | n/a¶ | 788.3 (−51.4%) |
 | Gemma 4 31B | 4-bit · group=64 · affine | 128 | 336.5 | 641.6 (+90.7%) | 541.8 (+61.0%) |
 |  |  | 512 | 563.5 | 760.6 (+35.0%) | 727.2 (+29.1%) |
 | Qwen 3 4B | 4-bit · group=64 | 128 | 1,581.1 | 3,627.8 (+129.4%) | 3,077.7 (+94.7%) |
 |  |  | 512 | 3,726.0 | 6,173.7 (+65.7%) | 5,428.9 (+45.7%) |
-| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 1,038.5 | 2,101.1 (+102.3%) | 1,912.0 (+84.1%) |
-|  |  | 512 | 2,161.4 | 3,165.8 (+46.5%) | 2,735.7 (+26.6%) |
+| Qwen 3.5 9B | 4-bit · group=64 · affine | 128 | 1,145.7 | 2,101.1 (+83.4%) | 1,943.9 (+69.7%) |
+|  |  | 512 | 2,265.2 | 3,165.8 (+39.8%) | 2,745.1 (+21.2%) |
 | Qwen 3.6 35B A3B | UD-MLX 4-bit · group=64 · affine§ | 128 | 531.7 | 963.2 (+81.1%) | 930.3 (+75.0%) |
 |  |  | 512 | 1,594.2 | 2,546.5 (+59.7%) | 1,169.3 (−26.7%) |
+| Qwen 3.6 35B A3B | MLX 5-bit · group=64 · affine§ | 128 | 474.4 | 861.8 (+81.7%) | 810.2 (+70.8%) |
+|  |  | 512 | 1,484.5 | 2,416.7 (+62.8%) | 939.6 (−36.7%) |
+| Qwen 3.6 35B A3B | MLX 6-bit · group=64 · affine§ | 128 | 420.0 | 762.4 (+81.5%) | 758.0 (+80.5%) |
+|  |  | 512 | 1,377.9 | 2,350.6 (+70.6%) | 872.0 (−36.7%) |
+| Qwen 3.6 35B A3B | MLX 8-bit · group=64 · affine§ | 128 | 393.1 | 617.7 (+57.1%) | 812.0 (+106.5%) |
+|  |  | 512 | 1,202.2 | 2,305.2 (+91.7%) | 931.1 (−22.5%) |
 | Qwen Coder Next | 4-bit · group=64 · affine‡ | 128 | 267.1 | 384.9 (+44.1%) | 698.7 (+161.6%) |
 |  |  | 512 | 815.4 | 1,417.0 (+73.8%) | 801.2 (−1.7%) |
 

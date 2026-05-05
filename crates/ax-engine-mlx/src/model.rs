@@ -1217,7 +1217,7 @@ fn moe_router_gemma4(
     );
     // Apply per-expert output scale (initialized to ones; fine-tuned checkpoints may differ).
     if let Some(pes) = &w.router_expert_scale {
-        let gathered = take_along_axis(pes, &top_k_indices, 0, None);
+        let gathered = take(pes, &top_k_indices, 0, None);
         top_k_weights = multiply(&top_k_weights, &gathered, None);
     }
     (top_k_indices, top_k_weights)
@@ -1775,6 +1775,30 @@ mod tests {
         let out = moe_experts_forward(&cfg, &weights, &x, &top_k_indices, &top_k_weights);
 
         assert_eq!(out.shape(), vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn gemma4_router_expert_scale_gathers_by_top_k_indices() {
+        let scale_data = [1.0_f32, 2.0_f32, 3.0_f32, 4.0_f32];
+        let per_expert_scale = MlxArray::from_raw_data(
+            scale_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&scale_data),
+            &[4],
+            MlxDtype::Float32,
+        );
+        let indices_data = [0_u32, 3_u32, 2_u32, 1_u32];
+        let top_k_indices = MlxArray::from_raw_data(
+            indices_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&indices_data),
+            &[1, 2, 2],
+            MlxDtype::Uint32,
+        );
+
+        let gathered = take(&per_expert_scale, &top_k_indices, 0, None);
+
+        eval(&[&gathered]);
+        assert_eq!(gathered.shape(), vec![1, 2, 2]);
+        assert_eq!(gathered.data_f32(), &[1.0, 4.0, 3.0, 2.0]);
     }
 
     #[test]

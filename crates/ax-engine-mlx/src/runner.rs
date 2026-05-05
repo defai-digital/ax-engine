@@ -3,7 +3,8 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use mlx_sys::{
-    MlxArray, MlxStream, enable_compile, max_recommended_working_set_size, set_wired_limit,
+    MlxArray, MlxStream, clear_cache, enable_compile, max_recommended_working_set_size,
+    set_wired_limit,
 };
 
 use ax_engine_core::runner::RunnerRequestContext;
@@ -41,7 +42,19 @@ const SPEC_BETA_MAX_TOTAL: f32 = 100.0;
 
 const SPEC_ACCEPT_THRESHOLD: f32 = 0.5;
 const SPEC_RETRY_INTERVAL: u32 = 8;
-const LINEAR_SPEC_RETRY_INTERVAL: u32 = 128;
+/// Steps to suppress speculation after a complete miss (0 draft tokens accepted)
+/// on a linear-attention model.  Recompute cost is O(1) token regardless of context
+/// length, so 128 was far too conservative; 16 gives the n-gram table time to
+/// recover without sacrificing the whole generation window.
+const LINEAR_SPEC_RETRY_INTERVAL: u32 = 16;
+/// Steps to suppress after a *partial* accept (≥1 draft token accepted but not all).
+/// Partial accept means the n-gram is close — retry quickly.
+const LINEAR_SPEC_PARTIAL_RETRY_INTERVAL: u32 = 4;
+/// Maximum number of prompt tail tokens fed into the n-gram table.
+/// Long prompts (especially random-token benchmarks) would otherwise fill the
+/// table with useless bigrams that trigger false-positive speculation and force
+/// expensive recompute on the very first speculative attempt.
+const NGRAM_PROMPT_FEED_MAX: usize = 64;
 
 /// Per-request mutable state persisted across prefill → decode steps.
 struct RequestState {
@@ -278,8 +291,15 @@ impl MlxRunner {
                     &mut state.cache,
                     self.prefill_chunk,
                 );
-                // Seed n-gram table with prompt tokens for better early speculation.
-                state.ngram.feed(token_ids);
+                // Seed the n-gram table with the tail of the prompt.
+                // Only the last NGRAM_PROMPT_FEED_MAX tokens are fed: long prompts
+                // (e.g. random-token benchmarks with 512+ tokens) would otherwise
+                // inject hundreds of useless bigrams, causing a false-positive spec
+                // attempt on the very first decode step and disabling speculation
+                // for LINEAR_SPEC_RETRY_INTERVAL steps — wiping out most of the
+                // generation window.
+                let feed_start = token_ids.len().saturating_sub(NGRAM_PROMPT_FEED_MAX);
+                state.ngram.feed(&token_ids[feed_start..]);
                 // Reset bonus state for this new generation.
                 state.bonus_queue.clear();
                 state.next_model_last_token = None;
@@ -313,6 +333,11 @@ impl MlxRunner {
         if stop_reason.is_none() {
             let mut states = self.states.lock().unwrap();
             states.insert(item.request_id, state);
+        } else {
+            // Free MLX's intermediate graph and compute cache after each completed
+            // request.  Mirrors mlx_lm's mx.metal.clear_cache() at end of generation;
+            // reclaims GPU memory that would otherwise persist until the next request.
+            clear_cache();
         }
 
         RequestExecutionUpdate {
@@ -474,11 +499,18 @@ fn speculative_disabled_steps(
     }
 
     if has_linear_attention {
-        // Linear-attention recurrent state cannot be rolled back with the cheap
-        // KV `trim_to` path. Any partial reject pays branch verification plus
-        // committed-prefix recompute, so probe conservatively and continue only
-        // while full drafts are accepted.
-        return (accept_count < draft_len).then_some(LINEAR_SPEC_RETRY_INTERVAL);
+        // Linear-attention recurrent state cannot be rolled back with trim_to; any
+        // partial reject pays branch verification + committed-prefix recompute.
+        // Recompute cost is O(accepted+1) tokens — bounded at DEFAULT_DRAFT_LEN+1,
+        // not O(context length) — so a large retry interval is unwarranted.
+        //
+        // Differentiate complete miss from partial accept: a partial accept means
+        // the n-gram was directionally correct; retry quickly.  A complete miss
+        // means the table prediction is off; back off longer.
+        if accept_count == 0 {
+            return Some(LINEAR_SPEC_RETRY_INTERVAL); // complete miss: 16 steps
+        }
+        return (accept_count < draft_len).then_some(LINEAR_SPEC_PARTIAL_RETRY_INTERVAL); // partial: 4 steps
     }
 
     (posterior_mean < SPEC_ACCEPT_THRESHOLD).then_some(SPEC_RETRY_INTERVAL)
@@ -1061,11 +1093,18 @@ mod tests {
     }
 
     #[test]
-    fn linear_attention_speculation_cools_down_after_partial_accept() {
+    fn linear_attention_speculation_cools_down_after_reject() {
+        // Complete miss (0 accepted): long cooldown.
         assert_eq!(
-            speculative_disabled_steps(true, 3, DEFAULT_DRAFT_LEN, 0.95),
+            speculative_disabled_steps(true, 0, DEFAULT_DRAFT_LEN, 0.95),
             Some(LINEAR_SPEC_RETRY_INTERVAL)
         );
+        // Partial accept (some but not all): short cooldown to retry quickly.
+        assert_eq!(
+            speculative_disabled_steps(true, 3, DEFAULT_DRAFT_LEN, 0.95),
+            Some(LINEAR_SPEC_PARTIAL_RETRY_INTERVAL)
+        );
+        // Full accept: no cooldown.
         assert_eq!(
             speculative_disabled_steps(true, DEFAULT_DRAFT_LEN, DEFAULT_DRAFT_LEN, 0.25),
             None
