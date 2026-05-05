@@ -119,6 +119,11 @@ Use `--ax-both-modes` when greedy and speculative AX MLX rows both matter.
 Every AX or optional Swift row is compared against the matching
 `mlx_lm.benchmark` random-token prompt/decode shape.
 
+Checked-in MLX inference-stack result sets live under
+`benchmarks/results/mlx-inference/<date>/`. Each set should include the JSON
+result document, prompt-token JSON artifacts, and the command log used to
+produce the run.
+
 Validate the harness contract without loading a model:
 
 ```text

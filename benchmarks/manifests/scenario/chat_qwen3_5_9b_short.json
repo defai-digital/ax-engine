@@ -1,0 +1,43 @@
+{
+  "schema_version": "ax.engine_bench.manifest.v1",
+  "id": "chat_qwen3_5_9b_short",
+  "class": "scenario",
+  "scenario": "chat",
+  "model": {
+    "family": "qwen3_5",
+    "revision": "phase1-canonical",
+    "quant": "4bit",
+    "tokenizer_revision": "qwen-tokenizer-v1",
+    "chat_template_revision": "chatml-v1"
+  },
+  "runtime": {
+    "selected_backend": "mlx",
+    "support_tier": "mlx_preview",
+    "resolution_policy": "mlx_only",
+    "deterministic": true,
+    "max_batch_tokens": 2048,
+    "flags": {
+      "prefix_cache": false
+    }
+  },
+  "sampling": {
+    "temperature": 0,
+    "top_p": 1,
+    "top_k": 0,
+    "seed": 1234
+  },
+  "shape": {
+    "input_tokens_target": 256,
+    "output_tokens_target": 128,
+    "concurrency": 1
+  },
+  "source": {
+    "dataset_id": "ax-chat-v1",
+    "prompt_set": "short"
+  },
+  "checks": {
+    "expect_deterministic": true,
+    "require_prefix_reuse": false
+  },
+  "notes": "Short chat scenario for Qwen3.5-9B-4bit bring-up, route evidence, and single-request decode validation."
+}

@@ -1,8 +1,14 @@
 # Benchmarks
 
-AX Engine v4 keeps benchmarking deliberately split by evidence type. A result is
+AX Engine keeps benchmarking deliberately split by evidence type. A result is
 useful only when the workload, runtime route, reference engine, host, model,
 sampling policy, and artifact schema are explicit.
+
+Measured results for each tested model are summarized in `README.md` under the
+**Benchmarks** section. Public review artifacts live under
+`benchmarks/results/mlx-inference/<date>/`; for example, the 2026-05-04 result
+set includes the full JSON output, prompt-token JSON files, and command logs for
+Gemma 4 E2B, Qwen 3 4B, and Qwen 3.5 9B.
 
 ## Which Tool To Use
 
@@ -69,7 +75,12 @@ python3 scripts/bench_mlx_inference_stack.py \
 
 The harness labels AX rows as `ax_engine_mlx_greedy` and
 `ax_engine_mlx_speculative`. Greedy throughput and speculative speedups must not
-collapse into one AX number.
+collapse into one AX number. AX rows also record `speculative_decode_policy`:
+`greedy_no_speculative_decode` for the direct comparison row, `ngram_kv_trim`
+for dense/full-attention speculative rows, and
+`ngram_linear_attention_support_gated_branch_recompute` for Qwen3.5-style
+recurrent linear-attention rows, where repeated n-gram evidence is required
+before probing and partial accepts trigger a longer cooldown.
 
 The `mlx-swift-lm` reference checkout currently exposes `BenchmarkHelpers` for
 loading, tokenization, decoding, download-cache timing, and shared integration

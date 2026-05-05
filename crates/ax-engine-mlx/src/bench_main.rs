@@ -118,8 +118,16 @@ fn main() {
 
         // Run until we have generated at least DECODE_STEPS effective tokens.
         while tokens_generated < DECODE_STEPS {
+            let draft = ngram.predict(DEFAULT_DRAFT_LEN);
             let emitted = speculative_decode_step(
-                &cfg, &weights, &mut cache, &mut ngram, tok, DEFAULT_DRAFT_LEN, 0.0, &mut rng,
+                &cfg,
+                &weights,
+                &mut cache,
+                &mut ngram,
+                tok,
+                &draft,
+                0.0,
+                &mut rng,
             );
             // emitted[0]       — output token for this step
             // emitted[1..n-1]  — bonus tokens (accepted drafts already in KV)
