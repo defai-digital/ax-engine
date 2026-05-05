@@ -1,64 +1,61 @@
 # Getting Started
 
-AX Engine is currently in active development.
+AX Engine is a Mac-first inference runtime with a local server, SDK bindings,
+and benchmark tooling. It is not only an MLX experiment: the repo-owned MLX
+runtime is one path, and delegated compatibility paths let users keep the same
+AX surface for broader model coverage.
 
-The repository provides:
+## What You Get
 
-- a working inference engine core (request lifecycle, scheduler, KV cache, runner integration)
-- benchmark tooling split between `ax-engine-bench` workload contracts and the
-  MLX inference-stack comparison harness
-- a preview SDK, local HTTP server, Python bindings, and a JavaScript preview client
-- repo-owned MLX inference, explicit `mlx-lm` delegated text compatibility, and
-  `llama.cpp` bypass support for non-MLX inference
+- `ax-engine-server`: local HTTP server over the SDK runtime
+- `ax-engine-bench`: workload-contract, readiness, direct-generate, and
+  benchmark-support CLI
+- `ax-engine-sdk`: backend resolution and session contract
+- Python bindings and a JavaScript preview client
+- repo-owned MLX inference for supported Qwen/Gemma model artifacts
+- explicit delegated compatibility for `mlx_lm.server` and `llama.cpp`
 
-## Current Scope
+## Choose A Runtime Path
 
-The near-term target is:
+| Path | Select it when | Notes |
+|---|---|---|
+| Repo-owned MLX runtime | You have a supported Qwen/Gemma MLX model artifact and want repo-owned runtime behavior or performance evidence | Use `--mlx` plus `--mlx-model-artifacts-dir`; benchmark claims must use the MLX inference-stack harness |
+| `mlx_lm_delegated` | Upstream `mlx-lm` supports the MLX text model but AX does not yet have a repo-owned graph | Requires a running `mlx_lm.server`; Phase 1 is blocking text completion only |
+| `llama_cpp` | You have GGUF/non-MLX local inference needs | Use a llama.cpp server or CLI target; these are delegated route-contract claims |
 
-- Mac-first runtime for Apple M4-or-newer Macs
-- single-machine execution
-- dense Qwen and Gemma families first
-- benchmark and replay discipline before broad optimization or autotune
+## Installation
 
-The repository is not yet a polished end-user product.
+### Homebrew
 
-## If You Used Earlier AX Engine
+For tagged macOS arm64 releases:
 
-This v4 repository does not yet provide feature parity with the earlier
-`ax-engine` workspace.
+```text
+brew install automatosx/ax-engine/ax-engine
+```
 
-What exists here today:
+This installs `ax-engine-server` and `ax-engine-bench`.
 
-- engine-core request lifecycle, scheduler, KV, and deterministic bring-up loop
-- checked-in Metal kernel manifest/build artifacts plus a core-owned Metal
-  asset loader and validation-only asset boundary
-- benchmark manifests
-- `ax-engine-bench` scenario / replay / matrix / compare / baseline / autotune
-  workload-contract runtime plus thin direct inference commands
-- preview `ax-engine-sdk` backend-resolution and session contract surface
-- preview `ax-engine-server` local HTTP adapter over the SDK
-- preview `ax-engine-py` / `python/ax_engine` Python access layer for
-  token-based generation, request lifecycle control, and in-process streaming
-- repo-local `javascript/ax-engine` preview client over the checked-in HTTP
-  and OpenAI-compatible server endpoints
+```text
+ax-engine-server --help
+ax-engine-bench doctor
+```
 
-What is not yet present in this repository:
+### Source
 
-- broad production or orchestrated HTTP server surface
-- fully migrated Rust SDK facade
-- broad JavaScript bindings beyond the thin preview HTTP client
-- broad transport-level Python ergonomics beyond the current local preview layer
-- broad model coverage beyond the current MLX-first path and explicit
-  delegated compatibility routes
+Use source builds for development, Python bindings, local examples, or changes
+that have not been tagged yet:
 
-Do not assume that user-facing surfaces from the earlier AX repo have already
-migrated into v4.
+```text
+brew install mlx-c
+cargo build --workspace --release
+```
 
-These client-facing surfaces are still expected to return, but as thin layers
-above the engine core rather than as the primary architecture driver.
+Python bindings are built into the active environment with:
 
-Model support is also expected to be reported through support tiers and backend
-selection, rather than only through a flat yes-or-no model list.
+```text
+maturin develop
+python -m unittest discover -s python/tests -v
+```
 
 ## Repository Areas
 
@@ -76,48 +73,46 @@ selection, rather than only through a flat yes-or-no model list.
 For the current crate layering and dependency-boundary guidance, see
 `docs/ARCHITECTURE.md`.
 
-## Build Prerequisites
+## Requirements
 
-Current development assumes:
+- macOS on Apple Silicon M4 or newer for repo-owned MLX runtime claims
+- Rust 1.85+ for source builds
+- `mlx-c` for source-built MLX runtime binaries
+- a running `mlx_lm.server` for `mlx_lm_delegated`
+- a llama.cpp server or CLI target for `llama_cpp`
 
-- Rust toolchain
-- an Apple Silicon M4-or-newer target environment for the eventual runtime
-
-The benchmark CLI and core workspace compile on a normal Rust setup, but
-decision-grade AX-owned MLX inference claims require the supported Apple
-Silicon MLX runtime environment.
-
-AX Engine MLX mode depends on the available Apple Silicon MLX runtime;
-unsupported MLX text models can use the explicit delegated `mlx-lm` route, and
-non-MLX inference uses delegated llama.cpp routes.
-Runtime surfaces fail closed on pre-M4 hosts instead of pretending degraded
-support exists.
+Runtime surfaces fail closed when a backend is unavailable instead of silently
+pretending support exists.
 
 ## First Commands
+
+If you installed with Homebrew, use `ax-engine-bench` directly. If you are
+working from source, replace `ax-engine-bench` with
+`cargo run -p ax-engine-bench --`.
 
 To inspect the workload-contract CLI:
 
 ```text
-cargo run -p ax-engine-bench -- help
+ax-engine-bench help
 ```
 
-To inspect whether the local machine is inside the supported M4-or-newer native
-target contract, or only allowed through an internal bring-up override:
+To inspect whether the local machine is inside the supported M4-or-newer AX
+runtime contract:
 
 ```text
-cargo run -p ax-engine-bench -- doctor
+ax-engine-bench doctor
 ```
 
 To run one thin direct inference request through the SDK-owned session surface:
 
 ```text
-cargo run -p ax-engine-bench -- generate --tokens 1,2,3 --max-output-tokens 4
+ax-engine-bench generate --tokens 1,2,3 --max-output-tokens 4
 ```
 
 To run a llama.cpp-backed text request through a delegated server:
 
 ```text
-cargo run -p ax-engine-bench -- generate \
+ax-engine-bench generate \
   --prompt "Hello from AX" \
   --support-tier llama_cpp \
   --llama-server-url http://127.0.0.1:8081
@@ -129,28 +124,28 @@ server/SDK/CLI surfaces:
 ```text
 mlx_lm.server --model /absolute/path/to/mlx-model --host 127.0.0.1 --port 8090
 
-cargo run -p ax-engine-bench -- generate \
+ax-engine-bench generate \
   --prompt "Hello from mlx-lm" \
   --support-tier mlx_lm_delegated \
   --mlx-lm-server-url http://127.0.0.1:8090
 ```
 
 That route is explicit compatibility only. It is text-only and blocking in
-Phase 1, and it is not an AX-owned MLX performance claim.
+Phase 1, and it is not a repo-owned MLX performance claim.
 
 To run a checked-in scenario manifest through the current workload-contract
 path:
 
 ```text
-cargo run -p ax-engine-bench -- scenario --manifest benchmarks/manifests/scenario/chat_qwen_short.json --output-root benchmarks/results
+ax-engine-bench scenario --manifest benchmarks/manifests/scenario/chat_qwen_short.json --output-root benchmarks/results
 ```
 
 The checked-in delegated llama.cpp manifests are route-contract examples, not
-AX-owned model-inference benchmarks. They validate the stepwise
+repo-owned model-inference benchmarks. They validate the stepwise
 `llama.cpp /completion` delegation path and backend-reported prompt-cache
 evidence.
 
-To compare AX Engine MLX mode against the upstream MLX-family inference
+To compare the repo-owned MLX runtime against the upstream MLX-family inference
 standard:
 
 ```text
@@ -164,9 +159,9 @@ python3 scripts/bench_mlx_inference_stack.py \
 
 That harness requires `mlx_lm.benchmark` as the primary reference and fails
 closed if the matching baseline cannot be produced. Add `--ax-compare-policies`
-when you need both direct and n-gram acceleration AX MLX rows. The default AX
-row is the direct same-policy comparison, while n-gram acceleration rows are
-effective-throughput evidence. Each AX
+when you need both direct and n-gram acceleration repo-owned MLX rows. The
+default AX row is the direct same-policy comparison, while n-gram acceleration
+rows are effective-throughput evidence. Each AX
 or optional `mlx-swift-lm` row is compared against the matching
 `mlx_lm.benchmark` random-token prompt/decode shape. Use
 `--mlx-swift-lm-command` only for an explicit `BenchmarkHelpers` /
@@ -177,7 +172,7 @@ AX Engine baseline.
 To run a bounded autotune pass over explicit manifest knobs:
 
 ```text
-cargo run -p ax-engine-bench -- autotune \
+ax-engine-bench autotune \
   --manifest benchmarks/manifests/scenario/chat_qwen_short.json \
   --output-root benchmarks/results \
   --iterations 8

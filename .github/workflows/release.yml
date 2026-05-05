@@ -43,6 +43,7 @@ jobs:
       - name: Package binaries
         id: package
         run: |
+          set -euo pipefail
           TAG="${{ steps.tag.outputs.name }}"
           VERSION="${TAG#v}"
           ARCHIVE="ax-engine-${TAG}-macos-arm64.tar.gz"
@@ -65,13 +66,16 @@ jobs:
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
+          set -euo pipefail
           TAG="${{ steps.tag.outputs.name }}"
           VERSION="${{ steps.package.outputs.version }}"
           SHA256="${{ steps.package.outputs.sha256 }}"
           ARCHIVE="${{ steps.package.outputs.archive }}"
           DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${ARCHIVE}"
 
-          git clone "https://automatosx:${HOMEBREW_TAP_TOKEN}@github.com/automatosx/homebrew-ax-engine.git" /tmp/tap
+          git config --global credential.helper store
+          printf 'https://automatosx:%s@github.com\n' "${HOMEBREW_TAP_TOKEN}" > ~/.git-credentials
+          git clone "https://github.com/automatosx/homebrew-ax-engine.git" /tmp/tap
           cd /tmp/tap
 
           git config user.name "Automatosx"

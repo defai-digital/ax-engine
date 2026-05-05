@@ -1,4 +1,4 @@
-# ax-engine MLX Backend
+# AX Engine Repo-Owned MLX Runtime
 
 ## Current Direction
 
@@ -10,16 +10,17 @@ AX Engine uses three labeled user-facing inference paths:
   user-provided `mlx_lm.server`
 - `llama_cpp`: delegated GGUF/non-MLX inference
 
-`mlx_lm_delegated` is a compatibility route, not an AX-owned MLX runtime. It
-must stay outside AX MLX performance claims. `vLLM` and `mistral.rs` are not
-shipping peer inference routes.
+`mlx_lm_delegated` is a compatibility route, not the repo-owned MLX runtime. It
+must stay outside repo-owned MLX performance claims. `vLLM` and `mistral.rs`
+are not shipping peer inference routes.
 
 ## Backend Design
 
-MLX mode uses a direct Rust ↔ MLX C++ integration via the official `mlx-c` C API.
-This mirrors the SwiftLM lesson that high-throughput Mac inference needs direct
-MLX tensor execution, explicit GPU queue control, and an AX-owned scheduler layer
-for batching and prefix reuse rather than a delegated subprocess wrapper.
+The repo-owned MLX runtime uses a direct Rust ↔ MLX C++ integration via the
+official `mlx-c` C API. This mirrors the SwiftLM lesson that high-throughput Mac
+inference needs direct MLX tensor execution, explicit GPU queue control, and an
+AX-owned scheduler layer for batching and prefix reuse rather than a delegated
+subprocess wrapper.
 
 ## Architecture
 
@@ -116,10 +117,11 @@ or AX decode mode provenance.
 
 ### Batch contract
 
-MLX mode is single-request optimised for the current milestone.  `MlxRunner::run`
-processes batch items serially; the states mutex is released before GPU work so
-unrelated request-state access is never blocked by a long prefill.  True
-multi-item MLX batching (shared K/V across requests) is deferred.
+The repo-owned MLX runtime is single-request optimised for the current
+milestone. `MlxRunner::run` processes batch items serially; the states mutex is
+released before GPU work so unrelated request-state access is never blocked by
+a long prefill. True multi-item MLX batching (shared K/V across requests) is
+deferred.
 
 ### Custom Metal kernels
 
@@ -139,7 +141,7 @@ the canonical scenario matrix.
 
 | Flag | Default | Description |
 |---|---|---|
-| `--mlx` | false | Route to MLX mode |
+| `--mlx` | false | Route to the repo-owned MLX runtime |
 | `--mlx-model-artifacts-dir <path>` | — | Path to safetensors artifacts dir |
 | `--disable-ngram-acceleration` | false | Disable n-gram acceleration for direct comparison runs |
 
@@ -148,8 +150,8 @@ required. AX Engine does not expose deprecated decode-mode aliases.
 
 ## Benchmarking
 
-MLX backend throughput is benchmarked through the MLX inference-stack harness,
-not through `ax-engine-bench` scenario/replay manifests and not through
+Repo-owned MLX runtime throughput is benchmarked through the MLX
+inference-stack harness, not through `ax-engine-bench` scenario/replay manifests and not through
 delegated llama.cpp manifests:
 
 ```text
@@ -175,12 +177,12 @@ snapshots, and bounded manifest-knob exploration.
 
 Interpretation rule:
 
-- `bench_mlx_inference_stack.py` supports AX MLX model-inference claims only
+- `bench_mlx_inference_stack.py` supports repo-owned MLX model-inference claims only
   when the required matching `mlx_lm.benchmark` baseline is present.
 - `ax-engine-bench` supports workload-contract and regression claims.
 - llama.cpp manifests support delegated non-MLX route-contract claims only.
 - `mlx_lm_delegated` checks support delegated MLX text route-contract claims
-  only; they are not AX MLX throughput evidence.
+  only; they are not repo-owned MLX throughput evidence.
 
 ## Implementation phases
 
@@ -209,7 +211,7 @@ Interpretation rule:
   compatibility through `mlx_lm.server`
 - `--mlx` flag in `ax-engine-server`
 - `--disable-ngram-acceleration` flag for direct comparison benchmarks
-- Python binding: `mlx=True` routes to MLX mode
+- Python binding: `mlx=True` routes to the repo-owned MLX runtime
 
 ### Phase 4 — future
 - Prompt-prefix reuse (LRU cache for shared prefixes across requests)

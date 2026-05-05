@@ -34,7 +34,7 @@ The current preview package provides:
   `resolution_policy`, plus host and Metal-toolchain diagnostics
 - explicit MLX artifact selection through `mlx_model_artifacts_dir`
 - delegated `mlx-lm` text compatibility through `mlx_lm_server_url`
-- llama.cpp llama.cpp wiring through `llama_cli_path`,
+- llama.cpp wiring through `llama_cli_path`,
   `llama_model_path`, or `llama_server_url`
 
 The current preview package does not yet provide:
@@ -58,8 +58,8 @@ pretending native or delegated support exists.
 This builds the Rust extension and installs the `ax_engine` package into the
 active Python environment.
 
-If you want repo-owned MLX mode to use explicit validated local model artifacts,
-pass that path directly into `Session(...)`:
+If you want the repo-owned MLX runtime to use explicit validated local model
+artifacts, pass that path directly into `Session(...)`:
 
 ```python
 import ax_engine
@@ -116,7 +116,7 @@ print(result.runtime.selected_backend)
 print(result.output_tokens)
 ```
 
-If you want the repo-owned MLX path:
+If you want the repo-owned MLX runtime:
 
 ```python
 import ax_engine
@@ -151,9 +151,9 @@ print(result.output_text)
 
 `mlx_lm_delegated` is text-only and blocking in Phase 1. It rejects token-array
 prompts, streaming, and stepwise lifecycle calls; use `mlx=True` when the goal
-is AX-owned MLX inference.
+is repo-owned MLX inference.
 
-If you pass a local GGUF model, AX routes the request to `llama.cpp` bypass:
+If you pass a local GGUF model, AX routes the request to delegated `llama.cpp`:
 
 ```python
 import ax_engine
@@ -185,8 +185,8 @@ print(result.prompt_text)
 print(result.output_text)
 ```
 
-For AX-owned MLX mode, enable `mlx=True` and point the model artifact path at
-the local MLX-ready model directory:
+For the repo-owned MLX runtime, enable `mlx=True` and point the model artifact
+path at the local MLX-ready model directory:
 
 ```python
 import ax_engine
@@ -201,7 +201,7 @@ with ax_engine.Session(
 print(result.output_text)
 ```
 
-Use `mlx=True` for AX-owned MLX inference, `support_tier="mlx_lm_delegated"`
+Use `mlx=True` for repo-owned MLX inference, `support_tier="mlx_lm_delegated"`
 for explicit upstream MLX text compatibility, or configure a llama.cpp target
 for non-MLX inference.
 

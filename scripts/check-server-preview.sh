@@ -523,7 +523,7 @@ kill "$UPSTREAM_PID" 2>/dev/null || true
 wait "$UPSTREAM_PID" 2>/dev/null || true
 UPSTREAM_PID=""
 
-OPENAI_UPSTREAM_PORT="$(allocate_port)"
+OPENAI_UPSTREAM_PORT="$(ax_allocate_port)"
 
 AX_ENGINE_LLAMA_CPP_UPSTREAM_PORT="$OPENAI_UPSTREAM_PORT" "$PYTHON_BIN" - <<'PY' >"$UPSTREAM_LOG_FILE" 2>&1 &
 from __future__ import annotations

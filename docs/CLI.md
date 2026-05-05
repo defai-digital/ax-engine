@@ -4,8 +4,8 @@ AX Engine currently exposes three command surfaces:
 
 - `ax-engine-bench` for workload contracts, readiness, bounded autotune, Metal
   build checks, and thin direct SDK inference helpers.
-- `scripts/bench_mlx_inference_stack.py` for AX Engine MLX model-inference
-  comparison against MLX-family references.
+- `scripts/bench_mlx_inference_stack.py` for repo-owned MLX runtime
+  model-inference comparison against MLX-family references.
 - `ax-engine-server` for the preview local HTTP adapter.
 
 ## `ax-engine-bench`
@@ -51,8 +51,8 @@ manifest/runtime family.
 
 ## MLX Inference Stack
 
-Use `scripts/bench_mlx_inference_stack.py` when the question is AX Engine MLX
-throughput versus upstream MLX-family runtimes:
+Use `scripts/bench_mlx_inference_stack.py` when the question is repo-owned MLX
+runtime throughput versus upstream MLX-family runtimes:
 
 ```text
 python3 scripts/bench_mlx_inference_stack.py \
@@ -80,7 +80,7 @@ benchmark is retired.
 `ax-engine-bench` can run delegated llama.cpp scenario and replay manifests
 through the SDK-owned backend contract. Those runs validate non-MLX route
 behavior, submit/cancel behavior, and backend prompt-cache evidence. They are
-not AX-owned MLX model-inference benchmarks.
+not repo-owned MLX model-inference benchmarks.
 
 Checked-in examples:
 
@@ -98,7 +98,7 @@ bash scripts/check-bench-preview.sh
 ## Delegated mlx-lm Compatibility
 
 For an MLX text model that is supported by upstream `mlx-lm` but not yet by
-AX-owned MLX mode, run `mlx_lm.server` yourself and select the explicit
+the repo-owned MLX runtime, run `mlx_lm.server` yourself and select the explicit
 delegated route:
 
 ```text
@@ -111,7 +111,7 @@ ax-engine-bench generate \
 ```
 
 This path is text-only and blocking in Phase 1. It validates AX surface
-compatibility with `mlx_lm.server`; it is not an AX-owned MLX performance
+compatibility with `mlx_lm.server`; it is not a repo-owned MLX performance
 benchmark and should not be mixed into `ax_engine_mlx` throughput tables.
 
 ## Direct Inference Helpers
@@ -135,13 +135,13 @@ logprob data when present. Use `--json` for the full structured payload.
 
 ## Server
 
-Start the preview server with MLX mode:
+Start the preview server with the repo-owned MLX runtime:
 
 ```text
 cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts --port 8080
 ```
 
-For comparable AX MLX inference numbers, use
+For comparable repo-owned MLX inference numbers, use
 `scripts/bench_mlx_inference_stack.py` over manual server timing. The script
 starts the server, captures AX SSE `runner_time_us`, runs the required
 `mlx_lm.benchmark` baseline, and records the reference runtime identity.
@@ -159,4 +159,4 @@ The CLI exists to support:
 - local transport-layer integration against the SDK contract
 
 The CLI should fail closed when provenance is incomplete. It should never turn a
-delegated route check into an unlabeled AX MLX throughput number.
+delegated route check into an unlabeled repo-owned MLX throughput number.

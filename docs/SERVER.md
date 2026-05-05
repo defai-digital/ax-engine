@@ -15,7 +15,7 @@ The current preview server is intentionally narrow:
 - preview OpenAI-compatible `/v1/completions` and `/v1/chat/completions`
   endpoints for llama.cpp-backed integration
 - stepwise request lifecycle endpoints that mirror the SDK preview contract for
-  MLX-mode sessions plus the llama.cpp bypass path
+  repo-owned MLX sessions plus the llama.cpp delegated path
 
 It is not yet:
 
@@ -40,23 +40,20 @@ Current preview endpoints:
 - `POST /v1/generate/stream`
 - `POST /v1/generate`
 
-## Example
+## Examples
 
-Start the server:
+`ax-engine-server` exposes three explicit runtime paths:
 
-```text
-cargo run -p ax-engine-server -- \
-  --model-id qwen3_dense \
-  --llama-server-url http://127.0.0.1:8081 \
-  --port 8080
-```
-
-`ax-engine-server` now ships with two inference routes:
-
-- `--mlx` selects the repo-owned MLX runtime
-- non-MLX inference routes to `llama.cpp`
+- `--mlx` selects the repo-owned MLX runtime for supported local model
+  artifacts
+- `--support-tier mlx_lm_delegated` delegates blocking text completion to a
+  user-provided `mlx_lm.server`
+- `--support-tier llama_cpp` or a GGUF target delegates non-MLX inference to
+  llama.cpp
 
 Retired AX native mode is not a supported user-facing server mode.
+
+Start the repo-owned MLX path against local MLX model artifacts:
 
 ```text
 cargo run -p ax-engine-server -- \
@@ -70,27 +67,7 @@ The preview server requires a local Apple M4-or-newer host.
 On M3 and older Macs, startup now fails closed instead of exposing an
 unsupported partial runtime.
 
-Start the repo-owned MLX path against local MLX model artifacts:
-
-```text
-cargo run -p ax-engine-server -- \
-  --model-id qwen3_dense \
-  --mlx \
-  --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts \
-  --port 8080
-```
-
-Or use the default bypass mode against a local GGUF model:
-
-```text
-cargo run -p ax-engine-server -- \
-  --model-id qwen3_dense \
-  --llama-cli-path llama-cli \
-  --llama-model-path /absolute/path/to/model.gguf \
-  --port 8080
-```
-
-To run the non-MLX bypass route, configure a `llama.cpp` target:
+Use the llama.cpp delegated path against a local GGUF model:
 
 ```text
 cargo run -p ax-engine-server -- \
@@ -119,12 +96,12 @@ primary target:
 - `--llama-model-path` plus `--llama-cli-path` for the local CLI fallback
   adapter
 
-Local non-MLX model paths are treated as `llama.cpp` targets. Use `--mlx` when
-you want AX-owned MLX inference.
+Local GGUF paths are treated as `llama.cpp` targets. Use `--mlx` when you want
+repo-owned MLX inference.
 
-To keep using AX server surfaces for an MLX text model that AX-owned MLX mode
-does not yet support, run `mlx_lm.server` yourself and select the explicit
-delegated backend:
+To keep using AX server surfaces for an MLX text model that the repo-owned MLX
+runtime does not yet support, run `mlx_lm.server` yourself and select the
+explicit delegated backend:
 
 ```text
 mlx_lm.server --model /absolute/path/to/mlx-model --host 127.0.0.1 --port 8090
@@ -136,8 +113,8 @@ cargo run -p ax-engine-server -- \
   --port 8080
 ```
 
-`mlx_lm_delegated` is text-only and blocking in Phase 1. It is not an AX MLX
-performance claim, and it is not a visual/multimodal contract.
+`mlx_lm_delegated` is text-only and blocking in Phase 1. It is not a
+repo-owned MLX performance claim, and it is not a visual/multimodal contract.
 
 The preview server now also exposes thin OpenAI-compatible endpoints over that
 same llama.cpp-backed path:
@@ -146,9 +123,9 @@ same llama.cpp-backed path:
 - `POST /v1/chat/completions`
 
 Those routes are intentionally llama.cpp-only in this repository.
-AX-owned MLX mode remains token-based and therefore fails closed on those text
-or chat-oriented endpoints instead of inventing tokenizer or chat-template
-behavior inside the server.
+The repo-owned MLX runtime remains token-based and therefore fails closed on
+those text or chat-oriented endpoints instead of inventing tokenizer or
+chat-template behavior inside the server.
 
 For OpenAI-compatible MLX serving, run the optional Python shim with an explicit
 MLX model artifact directory and tokenizer:
@@ -184,11 +161,11 @@ AX_ENGINE_SERVER_LOG=ax_engine_server=info,ax_engine_core=debug cargo run -p ax-
 ```
 
 For manual throughput or latency measurements, leave tracing disabled, or use
-an `info` or `warn` filter instead of `debug` / `trace`. For comparable AX MLX
-inference numbers, use `scripts/bench_mlx_inference_stack.py`; it starts the
-server, captures AX SSE `runner_time_us`, runs the required matching
-`mlx_lm.benchmark` baseline, writes the canonical random-token prompt artifacts,
-and records the MLX reference runtime identity explicitly. Use
+an `info` or `warn` filter instead of `debug` / `trace`. For comparable
+repo-owned MLX inference numbers, use `scripts/bench_mlx_inference_stack.py`;
+it starts the server, captures AX SSE `runner_time_us`, runs the required
+matching `mlx_lm.benchmark` baseline, writes the canonical random-token prompt
+artifacts, and records the MLX reference runtime identity explicitly. Use
 `ax-engine-bench` for workload-contract artifacts rather than manual server
 timing.
 
@@ -216,8 +193,8 @@ curl http://127.0.0.1:8080/v1/generate \
   }'
 ```
 
-When the server is running on the default MLX path, the `.gguf` llama.cpp
-bypass path, or an explicit llama.cpp path, the same blocking endpoint
+When the server is running on the repo-owned MLX path, the `.gguf` delegated
+llama.cpp path, or an explicit llama.cpp server path, the same blocking endpoint
 accepts `input_text`:
 
 ```text
