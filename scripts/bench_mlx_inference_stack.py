@@ -124,13 +124,58 @@ def collect_build_metadata() -> dict[str, Any]:
 
 def collect_model_metadata(model_dir: Path) -> dict[str, Any]:
     """Read model config.json for provenance; returns empty dict if unavailable."""
+    metadata: dict[str, Any] = {}
     config_path = model_dir / "config.json"
     try:
         cfg = json.loads(config_path.read_text())
     except Exception:
-        return {}
+        cfg = {}
     keys = ("model_type", "num_hidden_layers", "vocab_size", "quantization")
-    return {k: cfg[k] for k in keys if k in cfg}
+    metadata.update({k: cfg[k] for k in keys if k in cfg})
+
+    manifest_path = model_dir / "model-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except Exception:
+        manifest = {}
+
+    if manifest:
+        linear_attention = manifest.get("linear_attention") or {}
+        metadata["model_family"] = manifest.get("model_family")
+        metadata["linear_attention_enabled"] = native_manifest_has_linear_attention(
+            linear_attention
+        )
+        if isinstance(linear_attention, dict):
+            metadata["linear_attention"] = {
+                key: linear_attention.get(key)
+                for key in (
+                    "full_attention_interval",
+                    "num_value_heads",
+                    "num_key_heads",
+                    "key_head_dim",
+                    "value_head_dim",
+                    "conv_kernel_dim",
+                )
+                if key in linear_attention
+            }
+
+    return metadata
+
+
+def native_manifest_has_linear_attention(linear_attention: Any) -> bool:
+    if not isinstance(linear_attention, dict):
+        return False
+    return any(value is not None for value in linear_attention.values())
+
+
+def ax_speculative_decode_policy(
+    model_metadata: dict[str, Any], *, no_speculative: bool
+) -> str:
+    if no_speculative:
+        return "greedy_no_speculative_decode"
+    if model_metadata.get("linear_attention_enabled"):
+        return "ngram_linear_attention_support_gated_branch_recompute"
+    return "ngram_kv_trim"
 
 
 MLX_AVERAGES_RE = re.compile(
@@ -535,11 +580,16 @@ def bench_axengine(
     repetitions: int,
     cooldown: float,
     *,
+    model_metadata: dict[str, Any],
     no_speculative: bool = False,
 ) -> dict[str, Any]:
     engine_key = "ax_engine_mlx_greedy" if no_speculative else "ax_engine_mlx_speculative"
+    speculative_policy = ax_speculative_decode_policy(
+        model_metadata, no_speculative=no_speculative
+    )
     print(
-        f"  [ax-engine/{engine_key}] prompt={len(tokens)} generation={generation_tokens}",
+        f"  [ax-engine/{engine_key}] prompt={len(tokens)} "
+        f"generation={generation_tokens} policy={speculative_policy}",
         file=sys.stderr,
     )
     axengine_one_run(port, tokens, generation_tokens)
@@ -562,6 +612,12 @@ def bench_axengine(
         "engine": engine_key,
         "method": "server_sse_runner_time_us",
         "timing_scope": "ax_engine_runner_time_us",
+        "speculative_decode_policy": speculative_policy,
+        "speculative_decode_claim_status": (
+            "greedy_baseline"
+            if no_speculative
+            else "feature_speedup_exploration_requires_matching_baseline"
+        ),
         "prompt_contract": "mlx_lm_random_tokens_seed_0",
         "random_seed": MLX_LM_RANDOM_SEED,
         "batch_size": 1,
@@ -819,6 +875,7 @@ def main() -> None:
     print(f"  generation_tokens: {args.generation_tokens}", file=sys.stderr)
     print(f"  repetitions: {args.repetitions} + 1 warmup for AX", file=sys.stderr)
     print(f"  prompt_artifact_root: {prompt_artifact_root}", file=sys.stderr)
+    model_metadata = collect_model_metadata(args.model_dir)
 
     prompts = build_reference_prompts(
         prompt_lengths,
@@ -893,6 +950,7 @@ def main() -> None:
                             args.generation_tokens,
                             args.repetitions,
                             args.cooldown,
+                            model_metadata=model_metadata,
                             no_speculative=no_spec,
                         )
                     )
@@ -915,7 +973,7 @@ def main() -> None:
         "build": collect_build_metadata(),
         "model": args.model,
         "model_dir": str(args.model_dir),
-        "model_config": collect_model_metadata(args.model_dir),
+        "model_config": model_metadata,
         "reference_contract": {
             "primary_reference": "mlx_lm.benchmark",
             "primary_reference_required": True,

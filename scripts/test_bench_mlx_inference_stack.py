@@ -119,6 +119,48 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             self.assertEqual(row["method"], "mlx_swift_lm_benchmark_adapter")
             self.assertEqual(row["prompt_token_ids_sha256"], prompt["token_ids_sha256"])
 
+    def test_collect_model_metadata_detects_linear_attention_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config.json").write_text(
+                json.dumps({"model_type": "qwen3_5", "vocab_size": 10})
+            )
+            (root / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "model_family": "qwen3_5",
+                        "linear_attention": {
+                            "full_attention_interval": None,
+                            "num_value_heads": 4,
+                            "num_key_heads": 1,
+                            "key_head_dim": 128,
+                            "value_head_dim": 128,
+                            "conv_kernel_dim": 4,
+                        },
+                    }
+                )
+            )
+
+            metadata = bench.collect_model_metadata(root)
+
+        self.assertTrue(metadata["linear_attention_enabled"])
+        self.assertEqual(
+            bench.ax_speculative_decode_policy(metadata, no_speculative=False),
+            "ngram_linear_attention_support_gated_branch_recompute",
+        )
+        self.assertEqual(
+            bench.ax_speculative_decode_policy(metadata, no_speculative=True),
+            "greedy_no_speculative_decode",
+        )
+
+    def test_ax_speculative_decode_policy_defaults_to_kv_trim(self) -> None:
+        self.assertEqual(
+            bench.ax_speculative_decode_policy(
+                {"linear_attention_enabled": False}, no_speculative=False
+            ),
+            "ngram_kv_trim",
+        )
+
     def test_attach_baseline_requires_matching_mlx_lm_row(self) -> None:
         results = [
             {
