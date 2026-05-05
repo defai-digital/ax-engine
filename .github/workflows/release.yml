@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build (e.g. v4.2.1)"
+        description: "Release tag to build (e.g. v4.2.2)"
         required: true
 
 jobs:
@@ -65,8 +65,6 @@ jobs:
             --clobber
 
       - name: Update Homebrew formula
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${{ steps.tag.outputs.name }}"
@@ -75,13 +73,9 @@ jobs:
           ARCHIVE="${{ steps.package.outputs.archive }}"
           DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${ARCHIVE}"
 
-          git config --global credential.helper store
-          printf 'https://automatosx:%s@github.com\n' "${HOMEBREW_TAP_TOKEN}" > ~/.git-credentials
-          git clone "https://github.com/automatosx/homebrew-ax-engine.git" /tmp/tap
-          cd /tmp/tap
-
-          git config user.name "Automatosx"
-          git config user.email "automatosx@defai.digital"
+          # Check out main so we can push the formula update back
+          git fetch origin main
+          git checkout main
 
           sed -i '' \
             -e "s|version \"[^\"]*\"|version \"${VERSION}\"|" \
@@ -89,6 +83,8 @@ jobs:
             -e "s|sha256 \"[^\"]*\"|sha256 \"${SHA256}\"|" \
             Formula/ax-engine.rb
 
+          git config user.name "Automatosx"
+          git config user.email "automatosx@defai.digital"
           git add Formula/ax-engine.rb
-          git commit -m "feat: update ax-engine to v${VERSION}"
+          git diff --cached --quiet || git commit -m "chore: update Homebrew formula to v${VERSION}"
           git push origin main
