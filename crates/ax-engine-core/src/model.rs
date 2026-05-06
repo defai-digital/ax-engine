@@ -269,6 +269,10 @@ pub struct NativeGlmRouterConfig {
     pub first_dense_layer_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routed_scaling_factor: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_group: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topk_group: Option<u32>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub has_shared_experts: bool,
 }
@@ -277,6 +281,8 @@ impl NativeGlmRouterConfig {
     pub fn is_enabled(&self) -> bool {
         self.first_dense_layer_count.is_some()
             || self.routed_scaling_factor.is_some()
+            || self.n_group.is_some()
+            || self.topk_group.is_some()
             || self.has_shared_experts
     }
 
@@ -835,6 +841,31 @@ fn validate_native_model_manifest(
             None => {
                 return Err(NativeModelError::InvalidManifest {
                     message: "glm_router.routed_scaling_factor must be configured".to_string(),
+                });
+            }
+        }
+        require_positive_field(manifest.glm_router.n_group, "glm_router.n_group")?;
+        require_positive_field(manifest.glm_router.topk_group, "glm_router.topk_group")?;
+        if let (Some(n_group), Some(topk_group)) =
+            (manifest.glm_router.n_group, manifest.glm_router.topk_group)
+        {
+            if topk_group > n_group {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "glm_router.topk_group {} must be <= glm_router.n_group {}",
+                        topk_group, n_group
+                    ),
+                });
+            }
+            if manifest
+                .moe
+                .expert_count
+                .is_some_and(|expert_count| expert_count % n_group != 0)
+            {
+                return Err(NativeModelError::InvalidManifest {
+                    message: format!(
+                        "moe.expert_count must divide evenly across glm_router.n_group {n_group}"
+                    ),
                 });
             }
         }
