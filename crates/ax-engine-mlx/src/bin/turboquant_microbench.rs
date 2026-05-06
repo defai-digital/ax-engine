@@ -21,6 +21,7 @@ struct Config {
     cold_tokens: Vec<usize>,
     hot_tokens: usize,
     variants: Vec<String>,
+    n_query_heads: usize,
     n_kv_heads: usize,
     head_dim: usize,
     block_tokens: usize,
@@ -39,6 +40,7 @@ impl Default for Config {
                 .iter()
                 .map(|variant| (*variant).to_string())
                 .collect(),
+            n_query_heads: 1,
             n_kv_heads: 1,
             head_dim: 128,
             block_tokens: 256,
@@ -100,6 +102,9 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--n-kv-heads" => {
                 config.n_kv_heads = parse_usize(&value(&mut idx)?, "--n-kv-heads")?;
             }
+            "--n-query-heads" => {
+                config.n_query_heads = parse_usize(&value(&mut idx)?, "--n-query-heads")?;
+            }
             "--head-dim" => {
                 config.head_dim = parse_usize(&value(&mut idx)?, "--head-dim")?;
             }
@@ -134,6 +139,15 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     if config.repetitions == 0 {
         return Err("--repetitions must be > 0".to_string());
     }
+    if config.n_query_heads == 0 || config.n_kv_heads == 0 {
+        return Err("--n-query-heads and --n-kv-heads must be > 0".to_string());
+    }
+    if !config.n_query_heads.is_multiple_of(config.n_kv_heads) {
+        return Err(format!(
+            "--n-query-heads ({}) must be a multiple of --n-kv-heads ({})",
+            config.n_query_heads, config.n_kv_heads
+        ));
+    }
 
     Ok(config)
 }
@@ -154,6 +168,7 @@ fn run(config: Config) -> Result<serde_json::Value, String> {
         "value_bits": 4,
         "output_path": config.output.as_ref().map(|path| path.display().to_string()),
         "config": {
+            "n_query_heads": config.n_query_heads,
             "n_kv_heads": config.n_kv_heads,
             "head_dim": config.head_dim,
             "variants": config.variants,
@@ -230,6 +245,7 @@ fn run_case(config: &Config, cold_tokens: usize) -> Result<serde_json::Value, St
 
     Ok(json!({
         "cold_tokens": cold_tokens,
+        "n_query_heads": config.n_query_heads,
         "n_kv_heads": config.n_kv_heads,
         "head_dim": config.head_dim,
         "compressed_buffer_bytes": descriptor.compressed_buffer_bytes,
@@ -258,15 +274,17 @@ fn hot_tail_merge_quality(
         .map(|offset| token_heads(cold_tokens + offset, config))
         .collect::<Vec<_>>();
 
-    let mut expected_outputs = Vec::with_capacity(config.n_kv_heads);
-    let mut actual_outputs = Vec::with_capacity(config.n_kv_heads);
+    let mut expected_outputs = Vec::with_capacity(config.n_query_heads);
+    let mut actual_outputs = Vec::with_capacity(config.n_query_heads);
+    let repeats = config.n_query_heads / config.n_kv_heads;
     for (head_index, query) in queries.iter().enumerate() {
+        let kv_head_index = head_index / repeats;
         let mut cold_head = buffer
-            .debug_reconstruct_head_history(head_index, cold_tokens)
+            .debug_reconstruct_head_history(kv_head_index, cold_tokens)
             .map_err(|error| error.to_string())?;
         let hot_head = hot_tokens
             .iter()
-            .map(|heads| heads[head_index].clone())
+            .map(|heads| heads[kv_head_index].clone())
             .collect::<Vec<_>>();
         cold_head.extend(hot_head.clone());
         expected_outputs.push(
@@ -325,7 +343,7 @@ fn measure_variant(
     let workload = descriptor.workload();
     let metal_median = median_u128(&metal_wall_us);
     let token_heads_per_second =
-        (descriptor.cold_tokens * config.n_kv_heads) as f64 / (metal_median / 1e6);
+        (descriptor.cold_tokens * config.n_query_heads) as f64 / (metal_median / 1e6);
     let estimated_read_gib_s = if metal_median > 0.0 {
         workload.estimated_total_read_bytes as f64 / metal_median * 1e6 / 1024.0 / 1024.0 / 1024.0
     } else {
@@ -365,7 +383,7 @@ fn token_heads(token_index: usize, config: &Config) -> Vec<(Vec<f32>, Vec<f32>)>
 }
 
 fn queries(config: &Config) -> Vec<Vec<f32>> {
-    (0..config.n_kv_heads)
+    (0..config.n_query_heads)
         .map(|head_index| {
             (0..config.head_dim)
                 .map(|dim| deterministic_value(7, head_index, dim, 11, 37, 41))
@@ -446,7 +464,7 @@ fn known_variants() -> [&'static str; 3] {
 
 fn help() -> String {
     "Usage: cargo run -p ax-engine-mlx --release --bin turboquant-microbench -- \\
-       [--cold-tokens 512,2048] [--hot-tokens 0] [--n-kv-heads 1] [--head-dim 128] \\
+       [--cold-tokens 512,2048] [--hot-tokens 0] [--n-query-heads 1] [--n-kv-heads 1] [--head-dim 128] \\
        [--variants dim_parallel,head_serial,two_stage_scores] \\
        [--repetitions 5] [--warmup 1] [--output path.json]"
         .to_string()
@@ -467,6 +485,8 @@ mod tests {
             "16".into(),
             "--n-kv-heads".into(),
             "2".into(),
+            "--n-query-heads".into(),
+            "4".into(),
             "--repetitions".into(),
             "3".into(),
             "--output".into(),
@@ -478,6 +498,7 @@ mod tests {
         assert_eq!(config.hot_tokens, 16);
         assert_eq!(config.variants, vec!["dim_parallel", "two_stage_scores"]);
         assert_eq!(config.n_kv_heads, 2);
+        assert_eq!(config.n_query_heads, 4);
         assert_eq!(config.repetitions, 3);
         assert_eq!(config.output, Some(PathBuf::from("out.json")));
     }
@@ -509,6 +530,7 @@ mod tests {
             cold_tokens: vec![8],
             hot_tokens: 2,
             variants: Vec::new(),
+            n_query_heads: 4,
             n_kv_heads: 2,
             head_dim: 128,
             block_tokens: 4,

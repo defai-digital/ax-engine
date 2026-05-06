@@ -11,8 +11,8 @@ use crate::turboquant::{
 static TURBOQUANT_FUSED_COLD_DECODE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static TURBOQUANT_FUSED_COLD_DECODE_HEAD_SERIAL_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static TURBOQUANT_FUSED_COLD_DECODE_SCORE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
-static TURBOQUANT_FUSED_COLD_DECODE_AGGREGATE_STATS_KERNEL: OnceLock<MlxMetalKernel> =
-    OnceLock::new();
+static TURBOQUANT_FUSED_COLD_DECODE_HEAD_STATS_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 
 fn validate_query_head_mapping(
     descriptor: TurboQuantFusedDecodeLaunchDescriptor,
@@ -464,18 +464,18 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
         .next()
         .expect("TurboQuant score output");
 
-    let stats_kernel = TURBOQUANT_FUSED_COLD_DECODE_AGGREGATE_STATS_KERNEL.get_or_init(|| {
+    let stats_kernel = TURBOQUANT_FUSED_COLD_DECODE_HEAD_STATS_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "turboquant_fused_cold_decode_k8v4_aggregate_stats",
-            &["compressed", "scores"],
-            &["max_scores", "exp_sums", "weighted_value_sum"],
-            TURBOQUANT_FUSED_COLD_DECODE_AGGREGATE_STATS_KERNEL_SOURCE,
+            "turboquant_fused_cold_decode_k8v4_head_stats",
+            &["scores"],
+            &["max_scores", "exp_sums"],
+            TURBOQUANT_FUSED_COLD_DECODE_HEAD_STATS_KERNEL_SOURCE,
             TURBOQUANT_FUSED_COLD_DECODE_KERNEL_HEADER,
             true,
         )
     });
-    let outputs = stats_kernel.apply_with_template(
-        &[&compressed, &scores],
+    let stats_outputs = stats_kernel.apply_with_template(
+        &[&scores],
         &[
             KernelOutputSpec {
                 shape: vec![descriptor.n_query_heads as i32],
@@ -485,11 +485,45 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
                 shape: vec![descriptor.n_query_heads as i32],
                 dtype: MlxDtype::Float32,
             },
-            KernelOutputSpec {
-                shape: vec![descriptor.n_query_heads as i32, descriptor.head_dim as i32],
-                dtype: MlxDtype::Float32,
+        ],
+        &[
+            KernelTemplateArg::Int {
+                name: "COLD_TOKENS",
+                value: descriptor.cold_tokens as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "HEADS",
+                value: descriptor.n_query_heads as i32,
             },
         ],
+        (descriptor.n_query_heads as i32, 1, 1),
+        (1, 1, 1),
+        None,
+    );
+    let mut stats_outputs = stats_outputs.into_iter();
+    let max_scores = stats_outputs
+        .next()
+        .expect("TurboQuant partition max-score output");
+    let exp_sums = stats_outputs
+        .next()
+        .expect("TurboQuant partition exp-sum output");
+
+    let value_sum_kernel = TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "turboquant_fused_cold_decode_k8v4_value_sum",
+            &["compressed", "scores", "max_scores"],
+            &["weighted_value_sum"],
+            TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL_SOURCE,
+            TURBOQUANT_FUSED_COLD_DECODE_KERNEL_HEADER,
+            true,
+        )
+    });
+    let value_outputs = value_sum_kernel.apply_with_template(
+        &[&compressed, &scores, &max_scores],
+        &[KernelOutputSpec {
+            shape: vec![descriptor.n_query_heads as i32, descriptor.head_dim as i32],
+            dtype: MlxDtype::Float32,
+        }],
         &[
             KernelTemplateArg::Int {
                 name: "COLD_TOKENS",
@@ -549,12 +583,8 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats(
         None,
     );
 
-    let mut outputs = outputs.into_iter();
-    let max_scores = outputs
-        .next()
-        .expect("TurboQuant partition max-score output");
-    let exp_sums = outputs.next().expect("TurboQuant partition exp-sum output");
-    let weighted_value_sum = outputs
+    let weighted_value_sum = value_outputs
+        .into_iter()
         .next()
         .expect("TurboQuant partition weighted-value output");
     eval(&[&max_scores, &exp_sums, &weighted_value_sum]);
@@ -749,13 +779,11 @@ const TURBOQUANT_FUSED_COLD_DECODE_SCORE_KERNEL_SOURCE: &str = r#"
     scores[head * COLD_TOKENS + token] = score * key_norm * inv_sqrt_dim;
 "#;
 
-const TURBOQUANT_FUSED_COLD_DECODE_AGGREGATE_STATS_KERNEL_SOURCE: &str = r#"
-    const int dim = thread_position_in_grid.x;
-    const int head = thread_position_in_grid.y;
-    if (dim >= HEAD_DIM || head >= HEADS) {
+const TURBOQUANT_FUSED_COLD_DECODE_HEAD_STATS_KERNEL_SOURCE: &str = r#"
+    const int head = thread_position_in_grid.x;
+    if (head >= HEADS) {
       return;
     }
-    const int kv_head = head / (HEADS / KV_HEADS);
 
     float max_score = -3.4028234663852886e+38f;
     for (int token = 0; token < COLD_TOKENS; ++token) {
@@ -763,6 +791,23 @@ const TURBOQUANT_FUSED_COLD_DECODE_AGGREGATE_STATS_KERNEL_SOURCE: &str = r#"
     }
 
     float denom = 0.0f;
+    for (int token = 0; token < COLD_TOKENS; ++token) {
+      denom += exp(scores[head * COLD_TOKENS + token] - max_score);
+    }
+
+    max_scores[head] = max_score;
+    exp_sums[head] = denom;
+"#;
+
+const TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL_SOURCE: &str = r#"
+    const int dim = thread_position_in_grid.x;
+    const int head = thread_position_in_grid.y;
+    if (dim >= HEAD_DIM || head >= HEADS) {
+      return;
+    }
+    const int kv_head = head / (HEADS / KV_HEADS);
+
+    const float max_score = max_scores[head];
     float weighted = 0.0f;
     for (int token = 0; token < COLD_TOKENS; ++token) {
       const int block = token / BLOCK_TOKENS;
@@ -777,15 +822,10 @@ const TURBOQUANT_FUSED_COLD_DECODE_AGGREGATE_STATS_KERNEL_SOURCE: &str = r#"
       const float value_scale = tq_read_f32(compressed, slot + VALUE_SCALES_OFFSET + group * 4);
       const float value = value_min + value_scale * (float)tq_unpack_v4(compressed, value_payload, dim);
 
-      denom += weight;
       weighted += weight * value;
     }
 
     weighted_value_sum[head * HEAD_DIM + dim] = weighted;
-    if (dim == 0) {
-      max_scores[head] = max_score;
-      exp_sums[head] = denom;
-    }
 "#;
 
 #[cfg(test)]
