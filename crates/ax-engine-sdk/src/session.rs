@@ -34,6 +34,7 @@ const LLAMA_CPP_STREAM_EXECUTION_PLAN: &str = "llama_cpp.server_completion_strea
 const NATIVE_METAL_BUILD_DIR_ENV: &str = "AX_ENGINE_METAL_BUILD_DIR";
 const NATIVE_MODEL_DIR_ENV: &str = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR";
 const MAX_LLAMA_CPP_TERMINAL_REQUESTS: usize = 1024;
+const MAX_NATIVE_ROUTE_REPORTS: usize = 1024;
 
 #[derive(Clone, Debug)]
 pub struct EngineSessionConfig {
@@ -535,6 +536,8 @@ pub struct EngineSession {
     runtime: RuntimeReport,
     next_request_id: u64,
     ephemeral_mlx_model_artifacts_dir: Option<PathBuf>,
+    native_request_routes: BTreeMap<u64, GenerateRouteReport>,
+    native_route_report_order: VecDeque<u64>,
     llama_requests: BTreeMap<u64, LlamaCppLifecycleRequestSlot>,
     llama_terminal_request_order: VecDeque<u64>,
 }
@@ -689,6 +692,20 @@ impl EngineSession {
         }
     }
 
+    fn store_native_request_route(&mut self, request_id: u64, route: GenerateRouteReport) {
+        if !self.native_request_routes.contains_key(&request_id) {
+            self.native_route_report_order.push_back(request_id);
+        }
+        self.native_request_routes.insert(request_id, route);
+
+        while self.native_route_report_order.len() > MAX_NATIVE_ROUTE_REPORTS {
+            let Some(evicted_request_id) = self.native_route_report_order.pop_front() else {
+                break;
+            };
+            self.native_request_routes.remove(&evicted_request_id);
+        }
+    }
+
     fn llama_cpp_submit_generate_with_request_id(
         &mut self,
         request_id: u64,
@@ -783,6 +800,8 @@ impl EngineSession {
             runtime,
             next_request_id: 1,
             ephemeral_mlx_model_artifacts_dir,
+            native_request_routes: BTreeMap::new(),
+            native_route_report_order: VecDeque::new(),
             llama_requests: BTreeMap::new(),
             llama_terminal_request_order: VecDeque::new(),
         })
@@ -918,14 +937,31 @@ impl EngineSession {
             return Ok(aggregate);
         }
 
-        self.step().map(|outcome| {
-            let metal_dispatch = outcome
-                .runner_output
+        let outcome = self.step()?;
+        let metal_dispatch = outcome
+            .runner_output
+            .as_ref()
+            .and_then(|_| self.core.last_metal_dispatch())
+            .map(|trace| MetalDispatchStepReport::from_trace(&trace));
+        let report = EngineStepReport::from_native_outcome(&outcome, metal_dispatch);
+        if let Some(route) = report.route.as_ref() {
+            let request_ids = outcome
+                .schedule_plan
+                .execution_batch
                 .as_ref()
-                .and_then(|_| self.core.last_metal_dispatch())
-                .map(|trace| MetalDispatchStepReport::from_trace(&trace));
-            EngineStepReport::from_native_outcome(&outcome, metal_dispatch)
-        })
+                .map(|batch| {
+                    batch
+                        .items
+                        .iter()
+                        .map(|item| item.request_id.0)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for request_id in request_ids {
+                self.store_native_request_route(request_id, route.clone());
+            }
+        }
+        Ok(report)
     }
 
     pub fn request_report(&self, request_id: u64) -> Option<SessionRequestReport> {
@@ -935,11 +971,14 @@ impl EngineSession {
                 .get(&request_id)
                 .map(LlamaCppLifecycleRequestSlot::report);
         }
-        let report: SessionRequestReport = self
+        let mut report: SessionRequestReport = self
             .core
             .request_manager()
             .snapshot(RequestId(request_id))
             .map(Into::into)?;
+        if let Some(route) = self.native_request_routes.get(&request_id) {
+            report.route = route.clone();
+        }
         Some(report)
     }
 
@@ -1168,11 +1207,12 @@ impl EngineSession {
                     });
                 }
 
-                let next_report = self.request_report(state.request_id).ok_or(
+                let mut next_report = self.request_report(state.request_id).ok_or(
                     EngineSessionError::MissingRequestSnapshot {
                         request_id: state.request_id,
                     },
                 )?;
+                apply_native_step_route_to_report(&mut next_report, &step);
                 if state.emitted_output_len > next_report.output_tokens.len() {
                     return Err(EngineSessionError::RequestReportInvariantViolation {
                         request_id: state.request_id,
@@ -1611,6 +1651,12 @@ fn llama_cpp_stream_route(_selected_backend: SelectedBackend) -> GenerateRouteRe
         prefix_cache_path: None,
         barrier_mode: None,
         crossover_decisions: Default::default(),
+    }
+}
+
+fn apply_native_step_route_to_report(report: &mut SessionRequestReport, step: &EngineStepReport) {
+    if let Some(route) = step.route.as_ref() {
+        report.route = route.clone();
     }
 }
 
@@ -2058,6 +2104,11 @@ mod tests {
     }
 
     #[derive(Clone, Debug)]
+    struct TerminalRouteReportingRunner {
+        trace: MetalDispatchTrace,
+    }
+
+    #[derive(Clone, Debug)]
     struct NativeModelReportingRunner {
         summary: NativeModelArtifactsSummary,
         binding: Option<ax_engine_core::NativeModelBindingSummary>,
@@ -2074,6 +2125,49 @@ mod tests {
                     tokens_executed: item.scheduled_token_count,
                     output_token: None,
                     stop_reason: None,
+                    error: None,
+                })
+                .collect::<Vec<_>>();
+            let mut route_metadata = input.execution_batch.route_metadata.clone();
+            route_metadata.attention_route = Some("mock_native_attention".to_string());
+            route_metadata
+                .crossover_decisions
+                .push(("metal_dispatch_completed".to_string(), 1));
+
+            RunnerOutput {
+                step_id: input.execution_batch.step_id,
+                request_updates,
+                logits_handles: Vec::new(),
+                logits_outputs: Vec::new(),
+                kv_write_summary: KvWriteSummary {
+                    tokens_written: input.execution_batch.total_scheduled_tokens,
+                    blocks_touched: input
+                        .block_tables
+                        .iter()
+                        .map(|resolved| resolved.block_table.block_ids.len() as u32)
+                        .sum(),
+                },
+                route_metadata,
+                execution_status: ExecutionStatus::Success,
+            }
+        }
+
+        fn metal_dispatch_trace(&self) -> Option<MetalDispatchTrace> {
+            Some(self.trace.clone())
+        }
+    }
+
+    impl ExecutionRunner for TerminalRouteReportingRunner {
+        fn run(&self, input: RunnerInput) -> RunnerOutput {
+            let request_updates = input
+                .execution_batch
+                .items
+                .iter()
+                .map(|item| RequestExecutionUpdate {
+                    request_id: item.request_id,
+                    tokens_executed: item.scheduled_token_count,
+                    output_token: Some(42),
+                    stop_reason: Some(ax_engine_core::StopReason::MaxOutputTokens),
                     error: None,
                 })
                 .collect::<Vec<_>>();
@@ -2479,7 +2573,7 @@ mod tests {
             default_block_size_tokens: PHASE1_DEFAULT_BLOCK_SIZE_TOKENS,
             supported_block_size_tokens: PHASE1_SUPPORTED_BLOCK_SIZE_TOKENS.to_vec(),
             source_file: std::path::PathBuf::from("metal/kernels/phase1_dense_path.metal"),
-            toolchain_requirements: ["xcrun metal", "xcrun metallib", "xcrun metal-ar"]
+            toolchain_requirements: ["xcrun metal", "xcrun metallib"]
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
@@ -3666,6 +3760,8 @@ sys.exit(17)
             config,
             next_request_id: 2,
             ephemeral_mlx_model_artifacts_dir: None,
+            native_request_routes: BTreeMap::new(),
+            native_route_report_order: VecDeque::new(),
             llama_requests: BTreeMap::new(),
             llama_terminal_request_order: VecDeque::new(),
         };
@@ -3687,6 +3783,20 @@ sys.exit(17)
             step.route
                 .as_ref()
                 .and_then(|route| route.crossover_decisions.get("metal_dispatch_completed")),
+            Some(&1)
+        );
+        let request_report = session
+            .request_report(1)
+            .expect("native request report should exist after step");
+        assert_eq!(
+            request_report.route.attention_route.as_deref(),
+            Some("mock_native_attention")
+        );
+        assert_eq!(
+            request_report
+                .route
+                .crossover_decisions
+                .get("metal_dispatch_completed"),
             Some(&1)
         );
         assert_eq!(
@@ -3809,6 +3919,57 @@ sys.exit(17)
                 .as_ref()
                 .map(|dispatch| dispatch.execution_logits_vocab_scan_row_count),
             Some(151936)
+        );
+    }
+
+    #[test]
+    fn native_generate_response_surfaces_runner_route_metadata() {
+        let core = EngineCore::with_runtime_components(
+            KvManagerConfig::new(CacheGroupId(0), 16, 64),
+            TerminalRouteReportingRunner {
+                trace: sample_metal_dispatch_trace(),
+            },
+            DeterministicSampler,
+        );
+        let config = mlx_test_session_config();
+        let mut session = EngineSession {
+            core,
+            runtime: config.runtime_report(),
+            config,
+            next_request_id: 2,
+            ephemeral_mlx_model_artifacts_dir: None,
+            native_request_routes: BTreeMap::new(),
+            native_route_report_order: VecDeque::new(),
+            llama_requests: BTreeMap::new(),
+            llama_terminal_request_order: VecDeque::new(),
+        };
+
+        let response = session
+            .generate_with_request_id(
+                41,
+                GenerateRequest {
+                    model_id: "qwen3_dense".to_string(),
+                    input_tokens: vec![1, 2, 3, 4],
+                    input_text: None,
+                    max_output_tokens: 1,
+                    sampling: Default::default(),
+                    metadata: None,
+                },
+            )
+            .expect("native blocking generate should succeed");
+
+        assert_eq!(response.status, crate::generate::GenerateStatus::Finished);
+        assert_eq!(response.step_count, 1);
+        assert_eq!(
+            response.route.attention_route.as_deref(),
+            Some("mock_native_attention")
+        );
+        assert_eq!(
+            response
+                .route
+                .crossover_decisions
+                .get("metal_dispatch_completed"),
+            Some(&1)
         );
     }
 
