@@ -31,11 +31,11 @@ pub struct GenerateResponse {
     pub output_token_logprobs: Vec<Option<f32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_text: Option<String>,
-    /// Token count reported by a llama.cpp backend when token arrays are not available.
+    /// Token count reported by a text-only delegated backend when token arrays are not available.
     /// When set, takes precedence over `prompt_tokens.len()` for usage reporting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_token_count: Option<u32>,
-    /// Token count reported by a llama.cpp backend when token arrays are not available.
+    /// Token count reported by a text-only delegated backend when token arrays are not available.
     /// When set, takes precedence over `output_tokens.len()` for usage reporting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_count: Option<u32>,
