@@ -114,4 +114,4 @@ jobs:
             echo "TAP_TOKEN secret is not set; cannot push to Homebrew tap" >&2
             exit 1
           fi
-          git push "https://${TAP_TOKEN}@github.com/defai-digital/homebrew-ax-engine.git" main
+          git push "https://x-access-token:${TAP_TOKEN}@github.com/defai-digital/homebrew-ax-engine.git" main
