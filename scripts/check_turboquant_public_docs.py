@@ -38,6 +38,8 @@ REQUIRED_SNIPPETS = {
         "shadow-storage sync calls and wall time",
         "fused_compressed_decode path code",
         "cpu_oracle_compressed_decode rows",
+        "check_turboquant_promotion_readiness.py",
+        "head_dim=128",
         "promoted TurboQuant support still requires a long-context quality artifact",
     ],
     "scripts/README.md": [

@@ -25,6 +25,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/check_turboquant_quality_artifact.py \
   scripts/check_turboquant_microbench_artifact.py \
   scripts/check_turboquant_public_docs.py \
+  scripts/check_turboquant_promotion_readiness.py \
   scripts/test_turboquant_quality_artifact.py \
   scripts/test_turboquant_microbench_artifact.py \
   scripts/probe_mlx_model_support.py \
