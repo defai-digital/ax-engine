@@ -7,6 +7,8 @@ use crate::model::ModelConfig;
 
 pub type FullPrecisionKvTokenVectors = (Vec<f32>, Vec<f32>);
 
+pub const TURBOQUANT_SLOT_ALIGNMENT_BYTES: usize = 16;
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum TurboQuantCodecError {
     #[error("TurboQuant reference codec requires a non-empty vector")]
@@ -37,6 +39,16 @@ pub enum TurboQuantCodecError {
     MismatchedVectorDimension { expected: usize, actual: usize },
     #[error("TurboQuant reference attention requires at least one KV token")]
     EmptyKvHistory,
+    #[error("invalid TurboQuant layout parameter {name}={value}")]
+    InvalidLayoutParameter { name: &'static str, value: usize },
+    #[error("TurboQuant layout address {name} index {index} is out of range for limit {limit}")]
+    LayoutAddressOutOfRange {
+        name: &'static str,
+        index: usize,
+        limit: usize,
+    },
+    #[error("TurboQuant layout byte-size calculation overflowed")]
+    LayoutSizeOverflow,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -94,6 +106,176 @@ impl TurboQuantSupportReport {
             .iter()
             .map(|layer| layer.is_eligible())
             .collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TurboQuantBlockLayoutConfig {
+    pub preset: MlxTurboQuantPreset,
+    pub block_tokens: usize,
+    pub n_kv_heads: usize,
+    pub head_dim: usize,
+    pub value_group_size: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TurboQuantBlockLayout {
+    pub config: TurboQuantBlockLayoutConfig,
+    pub value_group_count: usize,
+    pub key_payload_bytes_per_head: usize,
+    pub key_norm_bytes_per_head: usize,
+    pub value_payload_bytes_per_head: usize,
+    pub value_metadata_bytes_per_head: usize,
+    pub raw_slot_bytes_per_head: usize,
+    pub slot_bytes_per_head: usize,
+    pub token_stride_bytes: usize,
+    pub block_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TurboQuantSlotAddress {
+    pub block_index: usize,
+    pub token_offset: usize,
+    pub head_index: usize,
+    pub slot_offset_bytes: usize,
+    pub key_payload_offset_bytes: usize,
+    pub key_norm_offset_bytes: usize,
+    pub value_payload_offset_bytes: usize,
+    pub value_mins_offset_bytes: usize,
+    pub value_scales_offset_bytes: usize,
+    pub slot_bytes: usize,
+}
+
+impl TurboQuantBlockLayout {
+    pub fn new(config: TurboQuantBlockLayoutConfig) -> Result<Self, TurboQuantCodecError> {
+        validate_layout_nonzero("block_tokens", config.block_tokens)?;
+        validate_layout_nonzero("n_kv_heads", config.n_kv_heads)?;
+        validate_layout_nonzero("head_dim", config.head_dim)?;
+        validate_layout_nonzero("value_group_size", config.value_group_size)?;
+        validate_key_shape_len(config.head_dim)?;
+        key_centroids(config.preset.key_bits())?;
+
+        let value_group_count = config.head_dim.div_ceil(config.value_group_size);
+        let key_payload_bytes_per_head =
+            packed_index_bytes(config.head_dim, config.preset.key_bits())?;
+        let key_norm_bytes_per_head = std::mem::size_of::<f32>();
+        let value_payload_bytes_per_head =
+            packed_index_bytes(config.head_dim, config.preset.value_bits())?;
+        let value_metadata_bytes_per_head = checked_mul(
+            checked_mul(value_group_count, std::mem::size_of::<f32>())?,
+            2,
+        )?;
+        let raw_slot_bytes_per_head = checked_add_many(&[
+            key_payload_bytes_per_head,
+            key_norm_bytes_per_head,
+            value_payload_bytes_per_head,
+            value_metadata_bytes_per_head,
+        ])?;
+        let slot_bytes_per_head =
+            align_up(raw_slot_bytes_per_head, TURBOQUANT_SLOT_ALIGNMENT_BYTES)?;
+        let token_stride_bytes = checked_mul(config.n_kv_heads, slot_bytes_per_head)?;
+        let block_bytes = checked_mul(config.block_tokens, token_stride_bytes)?;
+
+        Ok(Self {
+            config,
+            value_group_count,
+            key_payload_bytes_per_head,
+            key_norm_bytes_per_head,
+            value_payload_bytes_per_head,
+            value_metadata_bytes_per_head,
+            raw_slot_bytes_per_head,
+            slot_bytes_per_head,
+            token_stride_bytes,
+            block_bytes,
+        })
+    }
+
+    pub fn block_count_for_tokens(&self, token_count: usize) -> usize {
+        token_count.div_ceil(self.config.block_tokens)
+    }
+
+    pub fn buffer_bytes_for_tokens(
+        &self,
+        token_count: usize,
+    ) -> Result<usize, TurboQuantCodecError> {
+        checked_mul(self.block_count_for_tokens(token_count), self.block_bytes)
+    }
+
+    pub fn address(
+        &self,
+        block_index: usize,
+        token_offset: usize,
+        head_index: usize,
+    ) -> Result<TurboQuantSlotAddress, TurboQuantCodecError> {
+        if token_offset >= self.config.block_tokens {
+            return Err(TurboQuantCodecError::LayoutAddressOutOfRange {
+                name: "token_offset",
+                index: token_offset,
+                limit: self.config.block_tokens,
+            });
+        }
+        if head_index >= self.config.n_kv_heads {
+            return Err(TurboQuantCodecError::LayoutAddressOutOfRange {
+                name: "head_index",
+                index: head_index,
+                limit: self.config.n_kv_heads,
+            });
+        }
+
+        let block_offset = checked_mul(block_index, self.block_bytes)?;
+        let token_offset_bytes = checked_mul(token_offset, self.token_stride_bytes)?;
+        let head_offset_bytes = checked_mul(head_index, self.slot_bytes_per_head)?;
+        let slot_offset_bytes =
+            checked_add_many(&[block_offset, token_offset_bytes, head_offset_bytes])?;
+
+        self.slot_address_at(block_index, token_offset, head_index, slot_offset_bytes)
+    }
+
+    pub fn address_for_token(
+        &self,
+        token_index: usize,
+        head_index: usize,
+    ) -> Result<TurboQuantSlotAddress, TurboQuantCodecError> {
+        self.address(
+            token_index / self.config.block_tokens,
+            token_index % self.config.block_tokens,
+            head_index,
+        )
+    }
+
+    fn slot_address_at(
+        &self,
+        block_index: usize,
+        token_offset: usize,
+        head_index: usize,
+        slot_offset_bytes: usize,
+    ) -> Result<TurboQuantSlotAddress, TurboQuantCodecError> {
+        let key_payload_offset_bytes = slot_offset_bytes;
+        let key_norm_offset_bytes =
+            checked_add_many(&[key_payload_offset_bytes, self.key_payload_bytes_per_head])?;
+        let value_payload_offset_bytes =
+            checked_add_many(&[key_norm_offset_bytes, self.key_norm_bytes_per_head])?;
+        let value_mins_offset_bytes = checked_add_many(&[
+            value_payload_offset_bytes,
+            self.value_payload_bytes_per_head,
+        ])?;
+        let value_scales_offset_bytes = checked_add_many(&[
+            value_mins_offset_bytes,
+            self.value_metadata_bytes_per_head / 2,
+        ])?;
+
+        Ok(TurboQuantSlotAddress {
+            block_index,
+            token_offset,
+            head_index,
+            slot_offset_bytes,
+            key_payload_offset_bytes,
+            key_norm_offset_bytes,
+            value_payload_offset_bytes,
+            value_mins_offset_bytes,
+            value_scales_offset_bytes,
+            slot_bytes: self.slot_bytes_per_head,
+        })
     }
 }
 
@@ -682,13 +864,50 @@ pub fn hadamard_in_place(values: &mut [f32]) -> Result<(), TurboQuantCodecError>
 }
 
 fn validate_key_shape(values: &[f32]) -> Result<(), TurboQuantCodecError> {
-    if values.is_empty() {
+    validate_key_shape_len(values.len())
+}
+
+fn validate_key_shape_len(len: usize) -> Result<(), TurboQuantCodecError> {
+    if len == 0 {
         return Err(TurboQuantCodecError::EmptyVector);
     }
-    if !values.len().is_power_of_two() {
-        return Err(TurboQuantCodecError::NonPowerOfTwoDimension(values.len()));
+    if !len.is_power_of_two() {
+        return Err(TurboQuantCodecError::NonPowerOfTwoDimension(len));
     }
     Ok(())
+}
+
+fn validate_layout_nonzero(name: &'static str, value: usize) -> Result<(), TurboQuantCodecError> {
+    if value == 0 {
+        return Err(TurboQuantCodecError::InvalidLayoutParameter { name, value });
+    }
+    Ok(())
+}
+
+fn checked_add_many(values: &[usize]) -> Result<usize, TurboQuantCodecError> {
+    values.iter().try_fold(0usize, |acc, value| {
+        acc.checked_add(*value)
+            .ok_or(TurboQuantCodecError::LayoutSizeOverflow)
+    })
+}
+
+fn checked_mul(left: usize, right: usize) -> Result<usize, TurboQuantCodecError> {
+    left.checked_mul(right)
+        .ok_or(TurboQuantCodecError::LayoutSizeOverflow)
+}
+
+fn align_up(value: usize, alignment: usize) -> Result<usize, TurboQuantCodecError> {
+    if alignment == 0 || !alignment.is_power_of_two() {
+        return Err(TurboQuantCodecError::InvalidLayoutParameter {
+            name: "alignment",
+            value: alignment,
+        });
+    }
+    let mask = alignment - 1;
+    value
+        .checked_add(mask)
+        .map(|value| value & !mask)
+        .ok_or(TurboQuantCodecError::LayoutSizeOverflow)
 }
 
 fn validate_centroid_count(bit_width: u32, centroids: &[f32]) -> Result<(), TurboQuantCodecError> {
@@ -859,6 +1078,154 @@ mod tests {
                 TurboQuantLayerSupportReason::LinearAttention,
                 TurboQuantLayerSupportReason::Eligible,
             ]
+        );
+    }
+
+    #[test]
+    fn block_layout_computes_aligned_slot_and_block_sizes() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 16,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+
+        assert_eq!(layout.value_group_count, 2);
+        assert_eq!(layout.key_payload_bytes_per_head, 8);
+        assert_eq!(layout.key_norm_bytes_per_head, 4);
+        assert_eq!(layout.value_payload_bytes_per_head, 4);
+        assert_eq!(layout.value_metadata_bytes_per_head, 16);
+        assert_eq!(layout.raw_slot_bytes_per_head, 32);
+        assert_eq!(layout.slot_bytes_per_head, 32);
+        assert_eq!(layout.token_stride_bytes, 64);
+        assert_eq!(layout.block_bytes, 1024);
+        assert_eq!(layout.block_count_for_tokens(0), 0);
+        assert_eq!(layout.block_count_for_tokens(33), 3);
+        assert_eq!(
+            layout
+                .buffer_bytes_for_tokens(33)
+                .expect("buffer size should fit"),
+            3072
+        );
+    }
+
+    #[test]
+    fn block_layout_aligns_low_bit_research_slots() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K3V4Research,
+            block_tokens: 4,
+            n_kv_heads: 1,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+
+        assert_eq!(layout.key_payload_bytes_per_head, 3);
+        assert_eq!(layout.raw_slot_bytes_per_head, 27);
+        assert_eq!(
+            layout.slot_bytes_per_head,
+            TURBOQUANT_SLOT_ALIGNMENT_BYTES * 2
+        );
+        assert_eq!(layout.block_bytes, 128);
+    }
+
+    #[test]
+    fn block_layout_maps_token_and_head_to_slot_offsets() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 16,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+
+        let address = layout
+            .address(1, 3, 1)
+            .expect("slot address should be in range");
+        assert_eq!(
+            address,
+            TurboQuantSlotAddress {
+                block_index: 1,
+                token_offset: 3,
+                head_index: 1,
+                slot_offset_bytes: 1248,
+                key_payload_offset_bytes: 1248,
+                key_norm_offset_bytes: 1256,
+                value_payload_offset_bytes: 1260,
+                value_mins_offset_bytes: 1264,
+                value_scales_offset_bytes: 1272,
+                slot_bytes: 32,
+            }
+        );
+        assert_eq!(
+            layout
+                .address_for_token(19, 1)
+                .expect("absolute address should map to same slot"),
+            address
+        );
+    }
+
+    #[test]
+    fn block_layout_rejects_invalid_config_and_out_of_range_addresses() {
+        let error = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 0,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect_err("zero block size should fail");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::InvalidLayoutParameter {
+                name: "block_tokens",
+                value: 0,
+            }
+        );
+
+        let error = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 16,
+            n_kv_heads: 2,
+            head_dim: 12,
+            value_group_size: 4,
+        })
+        .expect_err("non power-of-two head dim should fail");
+        assert_eq!(error, TurboQuantCodecError::NonPowerOfTwoDimension(12));
+
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 16,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let error = layout
+            .address(0, 16, 0)
+            .expect_err("token offset outside the block should fail");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::LayoutAddressOutOfRange {
+                name: "token_offset",
+                index: 16,
+                limit: 16,
+            }
+        );
+
+        let error = layout
+            .address(0, 0, 2)
+            .expect_err("head index outside the token should fail");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::LayoutAddressOutOfRange {
+                name: "head_index",
+                index: 2,
+                limit: 2,
+            }
         );
     }
 
