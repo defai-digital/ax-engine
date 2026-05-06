@@ -66,7 +66,7 @@ jobs:
 
       - name: Update Homebrew formula
         env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${{ steps.tag.outputs.name }}"
@@ -76,7 +76,7 @@ jobs:
           DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${ARCHIVE}"
 
           git config --global credential.helper store
-          printf 'https://x-access-token:%s@github.com\n' "${HOMEBREW_TAP_TOKEN}" > ~/.git-credentials
+          printf 'https://x-access-token:%s@github.com\n' "${TAP_TOKEN}" > ~/.git-credentials
           git clone "https://github.com/defai-digital/homebrew-ax-engine.git" /tmp/tap
           cd /tmp/tap
 
@@ -109,6 +109,9 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE=1 brew test defai-digital/ax-engine/ax-engine
 
           # Push only after successful install and test
-          # Push with explicit token URL to avoid runner GITHUB_TOKEN overriding credentials
           cd /tmp/tap
-          git push "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/defai-digital/homebrew-ax-engine.git" main
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo "TAP_TOKEN secret is not set; cannot push to Homebrew tap" >&2
+            exit 1
+          fi
+          git push "https://${TAP_TOKEN}@github.com/defai-digital/homebrew-ax-engine.git" main
