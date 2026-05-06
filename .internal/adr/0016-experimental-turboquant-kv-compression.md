@@ -149,6 +149,13 @@ preset, mapped profile, gate thresholds, and decision together so callers do not
 duplicate policy mapping. It remains CPU-only and does not alter runtime
 defaults, KV storage, SDPA, or generation.
 
+The compressed-buffer quality check is accepted as the debug and benchmark
+wrapper around comparison plus preset evaluation. `TurboQuantDecodeQualityCheck`
+keeps the comparison report and evaluation together, while
+`debug_evaluate_attention_quality_for_all_heads` evaluates reconstructed
+compressed-buffer decode output through the layout's preset. This remains
+CPU-only and does not alter runtime defaults, KV storage, SDPA, or generation.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

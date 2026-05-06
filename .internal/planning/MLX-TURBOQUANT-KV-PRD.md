@@ -179,6 +179,18 @@ Implemented decode quality evaluation slice on 2026-05-06:
 - Keeps the evaluation contract disconnected from MLX allocation, runtime KV
   storage, SDPA, generation, and user-visible defaults.
 
+Implemented compressed-buffer quality check slice on 2026-05-06:
+
+- Added `TurboQuantDecodeQualityCheck` to carry the decode comparison report and
+  preset quality evaluation together.
+- Added `debug_evaluate_attention_quality_for_all_heads` on the compressed block
+  buffer so benchmark/debug callers can compare reconstructed attention output
+  and evaluate it through the layout's quantization preset in one step.
+- Added tests covering direct quality-check construction and compressed-buffer
+  quality evaluation.
+- Keeps the helper disconnected from MLX allocation, runtime KV storage, SDPA,
+  generation, and user-visible defaults.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction
