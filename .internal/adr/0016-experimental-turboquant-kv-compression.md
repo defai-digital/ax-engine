@@ -170,6 +170,12 @@ compressed decode plan can proceed, while hot-window-only plans bypass the check
 because they do not read compressed storage. This remains CPU-only and does not
 alter runtime defaults, KV storage, SDPA, or generation.
 
+The compressed decode input validation contract is accepted as the shape guard
+above future fused decode launches. `validate_queries` checks per-head query
+count and dimensions; `validate_decode_inputs` composes that with compressed
+coverage validation. The check remains CPU-only and does not alter runtime
+defaults, KV storage, SDPA, or generation.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

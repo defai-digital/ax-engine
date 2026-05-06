@@ -216,6 +216,17 @@ Implemented compressed decode coverage guard slice on 2026-05-06:
 - Keeps the guard disconnected from MLX allocation, runtime KV storage, SDPA,
   generation, and user-visible defaults.
 
+Implemented compressed decode input validation slice on 2026-05-06:
+
+- Added `TurboQuantCompressedDecodePlan::validate_queries` for per-head query
+  count and head-dimension validation before future compressed decode launches.
+- Added `validate_decode_inputs` to compose query validation with compressed
+  cold-slot coverage validation.
+- Fails closed for query head-count mismatch and query-dimension mismatch before
+  any compressed-buffer read.
+- Keeps the validation disconnected from MLX allocation, runtime KV storage,
+  SDPA, generation, and user-visible defaults.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction
