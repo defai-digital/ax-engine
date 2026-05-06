@@ -103,22 +103,22 @@ def probe_glm4_moe_lite(model_dir: Path, keys: list[str]) -> dict[str, Any]:
     }
     reference_ready = all(item["exists"] for item in reference_files) and all(features.values())
 
-    manifest_blocker = (
-        "AX model-manifest.json is absent for this artifact"
-        if manifest_ready is None
-        else "AX model-manifest.json is draft-only and not runtime-ready"
-    )
-    blockers = [
-        manifest_blocker,
-        "ax-engine-mlx does not yet implement the GLM4MoELite MLA attention graph",
-        "ax-engine-mlx does not yet implement GLM sigmoid top-k router with correction bias and routed scaling",
-        "KV cache contract must support latent-kv plus RoPE key state before decode can be claimed",
-    ]
+    blockers = []
+    if manifest_ready is None:
+        blockers.append("AX model-manifest.json is absent for this artifact")
+    elif not manifest_ready:
+        blockers.append("AX model-manifest.json is not runtime-ready")
     if not reference_ready:
         blockers.insert(0, "local GLM reference files or checkpoint feature probes are incomplete")
 
+    support_decision = (
+        "repo_owned_runtime_ready"
+        if reference_ready and manifest_ready is True
+        else "implementation_candidate"
+    )
+
     return {
-        "support_decision": "implementation_candidate",
+        "support_decision": support_decision,
         "can_implement_repo_owned_runtime": reference_ready,
         "reference_support": "complete_enough_for_ax_port" if reference_ready else "incomplete",
         "reference_files": reference_files,
@@ -130,13 +130,10 @@ def probe_glm4_moe_lite(model_dir: Path, keys: list[str]) -> dict[str, Any]:
         },
         "blockers": blockers,
         "next_steps": [
-            "generate and inspect the draft GLM model-manifest.json"
+            "generate and inspect the GLM model-manifest.json"
             if manifest_ready is None
-            else "keep the GLM model-manifest.json draft-only until runtime support lands",
-            "implement GLM MLA forward path with latent KV cache semantics",
-            "implement GLM dense-first/MoE-later FFN with sigmoid router correction bias",
-            "add tiny manifest/shape regression tests plus real-model server smoke",
-            "promote README rows only after AX benchmark artifacts exist",
+            else "refresh the GLM benchmark artifact after runtime changes",
+            "compare AX decode telemetry against mlx_lm before optimizing performance",
         ],
     }
 

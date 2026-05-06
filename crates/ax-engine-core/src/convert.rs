@@ -717,21 +717,7 @@ fn defaults_attn_output_gate(model_type: &str) -> bool {
     is_qwen3_5_family(model_type) || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
 }
 
-fn runtime_status_for_model_type(model_type: &str) -> NativeRuntimeStatus {
-    if is_glm4_moe_lite(model_type) {
-        return NativeRuntimeStatus {
-            ready: false,
-            blockers: vec![
-                "glm4_moe_lite manifest conversion is draft-only until ax-engine-mlx implements GLM4MoELite MLA attention".to_string(),
-                "GLM sigmoid top-k router with e_score_correction_bias and routed_scaling_factor is not implemented in ax-engine-mlx".to_string(),
-                "GLM latent-KV plus RoPE-key decode cache semantics are not implemented in ax-engine-mlx".to_string(),
-            ],
-            notes: vec![
-                "Apple mlx-lm and Apple mlx-swift-lm provide complete-enough GLM4MoELite references for implementation planning".to_string(),
-            ],
-        };
-    }
-
+fn runtime_status_for_model_type(_model_type: &str) -> NativeRuntimeStatus {
     NativeRuntimeStatus::default()
 }
 
@@ -1470,23 +1456,16 @@ fn validate_converted_model_contract(
     manifest: &NativeModelManifest,
 ) -> Result<(), ConvertError> {
     if is_glm4_moe_lite(model_type) {
-        return validate_glm4_moe_lite_draft_contract(config, manifest);
+        return validate_glm4_moe_lite_contract(config, manifest);
     }
 
     Ok(())
 }
 
-fn validate_glm4_moe_lite_draft_contract(
+fn validate_glm4_moe_lite_contract(
     config: &serde_json::Value,
     manifest: &NativeModelManifest,
 ) -> Result<(), ConvertError> {
-    if manifest.runtime_status.ready {
-        return invalid_model_contract(
-            "glm4_moe_lite",
-            "draft manifest must keep runtime_status.ready=false until the MLX graph is implemented",
-        );
-    }
-
     let first_dense_layers = arch_u64(config, "glm4_moe_lite", "first_k_dense_replace")
         .and_then(u64_to_u32)
         .unwrap_or(1)
@@ -2994,7 +2973,7 @@ mod tests {
                 (
                     "model.layers.0.self_attn.q_a_proj.weight",
                     "U32",
-                    &[768, 512],
+                    &[768, 256],
                 ),
                 (
                     "model.layers.0.self_attn.q_a_layernorm.weight",
@@ -3004,12 +2983,12 @@ mod tests {
                 (
                     "model.layers.0.self_attn.q_b_proj.weight",
                     "U32",
-                    &[5120, 768],
+                    &[5120, 96],
                 ),
                 (
                     "model.layers.0.self_attn.kv_a_proj_with_mqa.weight",
                     "U32",
-                    &[576, 512],
+                    &[576, 256],
                 ),
                 (
                     "model.layers.0.self_attn.kv_a_layernorm.weight",
@@ -3019,31 +2998,31 @@ mod tests {
                 (
                     "model.layers.0.self_attn.embed_q.weight",
                     "U32",
-                    &[3840, 512],
+                    &[20, 512, 24],
                 ),
                 (
                     "model.layers.0.self_attn.unembed_out.weight",
                     "U32",
-                    &[5120, 512],
+                    &[20, 256, 64],
                 ),
                 (
                     "model.layers.0.self_attn.o_proj.weight",
                     "U32",
-                    &[2048, 5120],
+                    &[2048, 640],
                 ),
                 (
                     "model.layers.0.post_attention_layernorm.weight",
                     "BF16",
                     &[2048],
                 ),
-                ("model.layers.0.mlp.gate_proj.weight", "U32", &[10240, 512]),
-                ("model.layers.0.mlp.up_proj.weight", "U32", &[10240, 512]),
-                ("model.layers.0.mlp.down_proj.weight", "U32", &[2048, 2560]),
+                ("model.layers.0.mlp.gate_proj.weight", "U32", &[10240, 256]),
+                ("model.layers.0.mlp.up_proj.weight", "U32", &[10240, 256]),
+                ("model.layers.0.mlp.down_proj.weight", "U32", &[2048, 1280]),
                 ("model.layers.1.input_layernorm.weight", "BF16", &[2048]),
                 (
                     "model.layers.1.self_attn.q_a_proj.weight",
                     "U32",
-                    &[768, 512],
+                    &[768, 256],
                 ),
                 (
                     "model.layers.1.self_attn.q_a_layernorm.weight",
@@ -3053,12 +3032,12 @@ mod tests {
                 (
                     "model.layers.1.self_attn.q_b_proj.weight",
                     "U32",
-                    &[5120, 768],
+                    &[5120, 96],
                 ),
                 (
                     "model.layers.1.self_attn.kv_a_proj_with_mqa.weight",
                     "U32",
-                    &[576, 512],
+                    &[576, 256],
                 ),
                 (
                     "model.layers.1.self_attn.kv_a_layernorm.weight",
@@ -3068,17 +3047,17 @@ mod tests {
                 (
                     "model.layers.1.self_attn.embed_q.weight",
                     "U32",
-                    &[3840, 512],
+                    &[20, 512, 24],
                 ),
                 (
                     "model.layers.1.self_attn.unembed_out.weight",
                     "U32",
-                    &[5120, 512],
+                    &[20, 256, 64],
                 ),
                 (
                     "model.layers.1.self_attn.o_proj.weight",
                     "U32",
-                    &[2048, 5120],
+                    &[2048, 640],
                 ),
                 (
                     "model.layers.1.post_attention_layernorm.weight",
@@ -3094,37 +3073,37 @@ mod tests {
                 (
                     "model.layers.1.mlp.switch_mlp.gate_proj.weight",
                     "U32",
-                    &[64, 1536, 512],
+                    &[64, 1536, 256],
                 ),
                 (
                     "model.layers.1.mlp.switch_mlp.up_proj.weight",
                     "U32",
-                    &[64, 1536, 512],
+                    &[64, 1536, 256],
                 ),
                 (
                     "model.layers.1.mlp.switch_mlp.down_proj.weight",
                     "U32",
-                    &[64, 2048, 384],
+                    &[64, 2048, 192],
                 ),
                 (
                     "model.layers.1.mlp.shared_experts.gate_proj.weight",
                     "U32",
-                    &[1536, 512],
+                    &[1536, 256],
                 ),
                 (
                     "model.layers.1.mlp.shared_experts.up_proj.weight",
                     "U32",
-                    &[1536, 512],
+                    &[1536, 256],
                 ),
                 (
                     "model.layers.1.mlp.shared_experts.down_proj.weight",
                     "U32",
-                    &[2048, 384],
+                    &[2048, 192],
                 ),
             ],
         );
 
-        let manifest = convert_hf_model_dir(&dir).expect("GLM draft conversion should succeed");
+        let manifest = convert_hf_model_dir(&dir).expect("GLM conversion should succeed");
 
         assert_eq!(manifest.model_family, "glm4_moe_lite");
         assert_eq!(manifest.attention_head_dim, 256);
@@ -3142,14 +3121,8 @@ mod tests {
         assert_eq!(manifest.glm_router.topk_group, Some(1));
         assert!(manifest.glm_router.has_shared_experts);
         assert!(manifest.moe_norm_topk_prob);
-        assert!(!manifest.runtime_status.ready);
-        assert!(
-            manifest
-                .runtime_status
-                .blockers
-                .iter()
-                .any(|blocker| blocker.contains("GLM4MoELite MLA attention"))
-        );
+        assert!(manifest.runtime_status.ready);
+        assert!(manifest.runtime_status.blockers.is_empty());
 
         for role in [
             NativeTensorRole::AttentionQa,
@@ -3169,13 +3142,8 @@ mod tests {
         }
 
         write_manifest(&dir, &manifest).expect("write should succeed");
-        let error = crate::model::NativeModelArtifacts::from_dir(&dir)
-            .expect_err("draft GLM manifest must not validate as runtime-ready");
-        assert!(
-            error
-                .to_string()
-                .contains("native model manifest is not runtime ready")
-        );
+        crate::model::NativeModelArtifacts::from_dir(&dir)
+            .expect("runtime-ready GLM manifest should validate");
 
         let _ = fs::remove_dir_all(dir);
     }

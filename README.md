@@ -137,23 +137,19 @@ descriptor. Each supported architecture has a hand-written forward pass in
 `ax-engine-mlx`. Adding a new architecture means implementing the model graph,
 not wiring up a generic loader.
 
-Recent community-model checks that lack an AX `model-manifest.json` are tracked
-as reference-only evidence, not repo-owned AX support. On 2026-05-06,
-`mlx-community/GLM-4.7-Flash-4bit` benchmarked successfully through
-`mlx_lm.benchmark`; `mlx-community/DeepSeek-V4-Flash-2bit-DQ` downloaded but
-failed closed because upstream `mlx-lm` did not support `model_type=deepseek_v4`
-in this environment. See
+Recent community-model checks are tracked according to the evidence they have.
+On 2026-05-06, `mlx-community/GLM-4.7-Flash-4bit` was promoted to a repo-owned
+MLX runtime path after the GLM MLA attention, sigmoid router, and latent-KV
+cache contracts landed and an AX server benchmark completed.
+`mlx-community/DeepSeek-V4-Flash-2bit-DQ` downloaded but failed closed because
+upstream `mlx-lm` did not support `model_type=deepseek_v4` in this environment.
+See
 `benchmarks/results/mlx-inference/2026-05-06/README.md` for commands and
-artifacts. Before promoting either architecture, run
-`scripts/probe_mlx_model_support.py --model-dir <model-dir>`: GLM currently
-classifies as an implementation candidate because Apple `mlx-lm` and Apple
-`mlx-swift-lm` both expose GLM4MoELite references. AX can now map GLM tensors
-and config-derived MLA/router metadata into a draft `model-manifest.json`, but
-that manifest is intentionally marked `runtime_status.ready=false` until the
-GLM MLA attention, router, and latent-KV cache paths exist. DeepSeek V4 remains
-fail-closed because the available
-SwiftLM port is partial and drops checkpoint features that affect the forward
-contract.
+artifacts. Before promoting any additional architecture, run
+`scripts/probe_mlx_model_support.py --model-dir <model-dir>`: GLM now reports
+`repo_owned_runtime_ready` when the runtime-ready manifest and local reference
+files are present. DeepSeek V4 remains fail-closed because the available SwiftLM
+port is partial and drops checkpoint features that affect the forward contract.
 
 ## Limitations
 
@@ -172,7 +168,8 @@ contract.
 **Apple M5 Max · 128 GB · macOS 26.4.1.** Random-token prompts (mlx_lm seed=0),
 batch=1, prefill_step_size=2048, 3 timed trials + 1 warmup. All rows
 below were refreshed on 2026-05-05 from
-`benchmarks/results/mlx-inference/2026-05-05/`. `ax engine` is the direct
+`benchmarks/results/mlx-inference/2026-05-05/`, with GLM 4.7 rows added from
+`benchmarks/results/mlx-inference/2026-05-06/`. `ax engine` is the direct
 same-policy comparison against `mlx_lm`; `ax engine + n-gram accel` reports
 observed effective throughput, not raw model speed.
 
@@ -197,8 +194,6 @@ artifact exist.
 
 | Model | Repo revision | Status | Prompt tok | mlx_lm prefill tok/s | mlx_lm decode tok/s | Peak memory |
 |---|---|---|---:|---:|---:|---:|
-| mlx-community/GLM-4.7-Flash-4bit | `1454cffb1a21737e162f508e5bc70be9def89276` | Reference benchmark passed; draft manifest candidate | 128 | 487.5 | 89.7 | 17.063 GB |
-|    |    |    | 512 | 1,517.5 | 85.5 | 17.495 GB |
 | mlx-community/DeepSeek-V4-Flash-2bit-DQ | `722bf559b7de93575b2320973cf2002e05bfe6c9` | Downloaded; fail-closed partial reference; benchmark blocked by `mlx_lm`: `Model type deepseek_v4 not supported` | 128 / 512 | - | - | - |
 
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
@@ -229,13 +224,17 @@ artifact exist.
 |    |    | 512 | 92.9 | 88.1 (−5.2%) | 94.5 (+1.6%) | **232.1 (+149.8%) †** |
 | Qwen Coder Next | 4-bit · group=64 · affine‡ | 128 | 88.6 | 85.2 (−3.8%) | 92.3 (+4.2%) | **247.1 (+178.8%) †** |
 |    |    | 512 | 88.9 | 88.3 (−0.7%) | 94.6 (+6.4%) | **242.3 (+172.7%) †** |
+| GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 93.0 | 88.0 (−5.4%) | 50.9 (−45.3%) | 60.2 (−35.3%) † |
+|    |    | 512 | 90.4 | 84.5 (−6.6%) | 49.4 (−45.4%) | 46.3 (−48.8%) † |
 
-† Qwen 3.5, Qwen 3.6, and Qwen Coder Next n-gram acceleration rows use a rollback-safe
-branch/recompute path for SSM state. These are effective-throughput
-measurements from AX's n-gram acceleration policy, not raw model decode speed.
-Linear-attention acceleration is prompt/output-pattern dependent. Benchmark JSON
-artifacts include fixed-schema n-gram telemetry fields; the throughput table
-uses the median `server_sse_runner_time_us` timing plus output-token count.
+† Qwen 3.5, Qwen 3.6, Qwen Coder Next, and GLM 4.7 n-gram acceleration rows
+are effective-throughput measurements from AX's n-gram acceleration policy, not
+raw model decode speed. Qwen-family linear-attention rows use a rollback-safe
+branch/recompute path for SSM state. Acceleration is prompt/output-pattern
+dependent: the GLM 4.7 run improved the 128-token AX direct decode row from
+50.9 to 60.2 tok/s, but the 512-token row dropped from 49.4 to 46.3 tok/s.
+Benchmark JSON artifacts include fixed-schema n-gram telemetry fields; the
+throughput table uses median AX runner timing plus output-token count.
 
 ‡ Qwen Coder Next uses MLX affine 4-bit globally, with 8-bit overrides for
 router and shared-expert gate tensors.
@@ -284,6 +283,8 @@ reference.
 |    |    | 512 | 1,199.5 | 2,234.5 (+86.3%) | 2,319.0 (+93.3%) |
 | Qwen Coder Next | 4-bit · group=64 · affine‡ | 128 | 276.4 | 437.8 (+58.4%) | 852.1 (+208.3%) |
 |    |    | 512 | 888.6 | 1,652.8 (+86.0%) | 2,686.0 (+202.3%) |
+| GLM 4.7 Flash | 4-bit · group=64 · affine | 128 | 502.9 | 1,045.0 (+107.8%) | 861.6 (+71.3%) |
+|    |    | 512 | 1,584.7 | 2,588.8 (+63.4%) | 2,081.9 (+31.4%) |
 
 ### Workload Contracts
 

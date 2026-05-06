@@ -130,14 +130,15 @@ graph in `ax-engine-mlx`, server smoke coverage, and MLX stack benchmark rows
 that include AX runtime results.
 
 Use `scripts/probe_mlx_model_support.py --model-dir <model-dir>` before
-starting a repo-owned implementation for a new MLX architecture. The probe reads
-the model config, safetensors index, and local reference implementations, then
-classifies the artifact as an implementation candidate, known family, partial
+starting or promoting a repo-owned implementation for a new MLX architecture.
+The probe reads the model config, safetensors index, manifest readiness, and
+local reference implementations, then classifies the artifact as
+repo-owned-runtime-ready, an implementation candidate, known family, partial
 reference, or unknown architecture with explicit blockers.
 
 | Model | Config model_type | Current AX status | Latest local evidence |
 |---|---|---|---|
-| `mlx-community/GLM-4.7-Flash-4bit` | `glm4_moe_lite` | Draft manifest candidate, not repo-owned AX support yet | `mlx_lm.benchmark` passed on 2026-05-06; converter maps GLM MLA/router roles and config-derived MLA/router metadata into a `runtime_status.ready=false` draft manifest; support probe finds complete-enough Apple `mlx-lm` + Apple `mlx-swift-lm` references |
+| `mlx-community/GLM-4.7-Flash-4bit` | `glm4_moe_lite` | Repo-owned MLX runtime ready | `mlx_lm.benchmark`, `mlx_swift_lm`, refreshed `ax_engine_mlx` direct, and `ax_engine_mlx_ngram_accel` benchmarks passed on 2026-05-06; support probe reports `repo_owned_runtime_ready`; median AX direct decode is 50.9 tok/s at 128 prompt tokens and 49.4 tok/s at 512 prompt tokens; n-gram effective decode is 60.2 tok/s at 128 prompt tokens and 46.3 tok/s at 512 prompt tokens |
 | `mlx-community/DeepSeek-V4-Flash-2bit-DQ` | `deepseek_v4` | Fail closed: partial reference only, not repo-owned AX support | Downloaded on 2026-05-06; `mlx_lm.benchmark` failed with `Model type deepseek_v4 not supported`; support probe finds the available SwiftLM port drops compressor/indexer and `tid2eid` hash-routing weights that are present in the checkpoint |
 
 ## Current Limitations And Problems

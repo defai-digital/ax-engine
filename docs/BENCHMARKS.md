@@ -10,10 +10,9 @@ Measured results for each tested model are summarized in `README.md` under the
 set includes the full JSON output, prompt-token JSON files, and command logs for
 Gemma 4 E2B 4/5/6/8-bit, Gemma 4 26B A4B, Gemma 4 31B,
 Qwen 3.5 9B, Qwen 3.6 35B A3B 4/5/6/8-bit, and Qwen Coder Next.
-The 2026-05-06 result set separately records reference-only `mlx_lm.benchmark`
-checks for `mlx-community/GLM-4.7-Flash-4bit` and
-`mlx-community/DeepSeek-V4-Flash-2bit-DQ`; those rows are not repo-owned AX
-runtime claims.
+The 2026-05-06 result set records `mlx-community/GLM-4.7-Flash-4bit` with
+repo-owned AX runtime rows and `mlx-community/DeepSeek-V4-Flash-2bit-DQ` as a
+reference-only fail-closed check.
 
 ## Which Tool To Use
 
@@ -238,17 +237,12 @@ they must not be described as repo-owned MLX throughput evidence.
 
 Reference-only `mlx_lm.benchmark` checks are even narrower: they prove the
 upstream Python reference can load and benchmark a downloaded model artifact,
-but they do not prove AX route compatibility unless a delegated server check is
-also run. The 2026-05-06 GLM/DeepSeek community checks are in this category.
-For new MLX architectures, run `scripts/probe_mlx_model_support.py` alongside
-the benchmark check so support claims include both performance evidence and a
-reference-grounded implementation decision. A reference-only benchmark can make
-GLM an implementation candidate, and the converter may now emit a draft GLM
-manifest with explicit MLA attention and router metadata, but it still cannot
-promote GLM to repo-owned support until the AX graph, smoke test, and AX
-benchmark rows exist. A partial reference, such as the current DeepSeek V4
-SwiftLM port that drops
-compressor/indexer and hash-routing tensors, must stay fail-closed.
+but they do not prove AX route compatibility unless an AX server check is also
+run. The 2026-05-06 DeepSeek community check is in this category. GLM has moved
+out of this bucket because it now has a runtime-ready manifest, GLM graph
+coverage, a server smoke, and AX benchmark rows. A partial reference, such as
+the current DeepSeek V4 SwiftLM port that drops compressor/indexer and
+hash-routing tensors, must stay fail-closed.
 
 The delegated route supports text generation through upstream
 `mlx_lm.server`, including AX fake-SSE surfaces that wrap the blocking

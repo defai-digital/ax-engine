@@ -139,6 +139,15 @@ pub fn reshape(a: &MlxArray, shape: &[i32], s: Option<&MlxStream>) -> MlxArray {
     }
 }
 
+pub fn broadcast_to(a: &MlxArray, shape: &[i32], s: Option<&MlxStream>) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_broadcast_to(&mut res.inner, a.inner, shape.as_ptr(), shape.len(), stream);
+        res
+    }
+}
+
 pub fn transpose(a: &MlxArray, axes: &[i32], s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
@@ -449,6 +458,28 @@ pub fn take_along_axis(
         let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
         let mut res = MlxArray::empty();
         ffi::mlx_take_along_axis(&mut res.inner, a.inner, indices.inner, axis, stream);
+        res
+    }
+}
+
+pub fn put_along_axis(
+    a: &MlxArray,
+    indices: &MlxArray,
+    values: &MlxArray,
+    axis: i32,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(gpu);
+        let mut res = MlxArray::empty();
+        ffi::mlx_put_along_axis(
+            &mut res.inner,
+            a.inner,
+            indices.inner,
+            values.inner,
+            axis,
+            stream,
+        );
         res
     }
 }

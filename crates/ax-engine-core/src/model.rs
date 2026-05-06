@@ -972,12 +972,20 @@ fn validate_native_model_manifest(
             && roles.contains(&NativeTensorRole::FfnSharedExpertGate)
             && roles.contains(&NativeTensorRole::FfnSharedExpertUp)
             && roles.contains(&NativeTensorRole::FfnSharedExpertDown);
+        let has_glm_shared_expert_ffn = manifest.model_family == "glm4_moe_lite"
+            && roles.contains(&NativeTensorRole::FfnSharedExpertGate)
+            && roles.contains(&NativeTensorRole::FfnSharedExpertUp)
+            && roles.contains(&NativeTensorRole::FfnSharedExpertDown);
         let has_moe_expert_ffn = roles.contains(&NativeTensorRole::FfnGateInp)
             && roles.contains(&NativeTensorRole::FfnDownExps)
             && (roles.contains(&NativeTensorRole::FfnGateUpExpsPacked)
                 || roles.contains(&NativeTensorRole::FfnGateExps)
                 || roles.contains(&NativeTensorRole::FfnUpExps));
-        if !(has_dense_ffn || has_shared_expert_ffn || has_moe_expert_ffn) {
+        if !(has_dense_ffn
+            || has_shared_expert_ffn
+            || has_glm_shared_expert_ffn
+            || has_moe_expert_ffn)
+        {
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
                     "layer {} must provide dense FFN tensors or MoE expert tensors",
@@ -991,7 +999,8 @@ fn validate_native_model_manifest(
         let has_any_attention = roles.contains(&NativeTensorRole::AttentionO)
             || roles.contains(&NativeTensorRole::AttentionQ)
             || roles.contains(&NativeTensorRole::AttentionK)
-            || roles.contains(&NativeTensorRole::AttentionQkvPacked);
+            || roles.contains(&NativeTensorRole::AttentionQkvPacked)
+            || has_any_glm_mla_attention_role(roles);
         let has_any_linear_attention = roles.contains(&NativeTensorRole::LinearAttentionInProjQkv)
             || roles.contains(&NativeTensorRole::LinearAttentionInProjQkvz)
             || roles.contains(&NativeTensorRole::LinearAttentionInProjZ)
@@ -1024,51 +1033,88 @@ fn validate_native_model_manifest(
                 layer_index,
                 "attention_o",
             )?;
-            let uses_shared_kv = manifest.kv_shared_source_layers.contains_key(&layer_index);
-            if uses_shared_kv {
-                require_layer_role(
-                    roles,
-                    NativeTensorRole::AttentionQ,
-                    layer_index,
-                    "attention_q",
-                )?;
+            if has_any_glm_mla_attention_role(roles) {
+                if manifest.model_family != "glm4_moe_lite" {
+                    return Err(NativeModelError::InvalidManifest {
+                        message: format!(
+                            "layer {} provides GLM MLA attention tensors but model_family is {:?}",
+                            layer_index, manifest.model_family
+                        ),
+                    });
+                }
+                for (role, label) in [
+                    (NativeTensorRole::AttentionQa, "attention_qa"),
+                    (NativeTensorRole::AttentionQaNorm, "attention_qa_norm"),
+                    (NativeTensorRole::AttentionQb, "attention_qb"),
+                    (NativeTensorRole::AttentionKvA, "attention_kv_a"),
+                    (NativeTensorRole::AttentionKvANorm, "attention_kv_a_norm"),
+                    (NativeTensorRole::AttentionEmbedQ, "attention_embed_q"),
+                    (
+                        NativeTensorRole::AttentionUnembedOut,
+                        "attention_unembed_out",
+                    ),
+                ] {
+                    require_layer_role(roles, role, layer_index, label)?;
+                }
                 if roles.contains(&NativeTensorRole::AttentionQkvPacked)
+                    || roles.contains(&NativeTensorRole::AttentionQ)
                     || roles.contains(&NativeTensorRole::AttentionK)
                     || roles.contains(&NativeTensorRole::AttentionV)
                 {
                     return Err(NativeModelError::InvalidManifest {
                         message: format!(
-                            "KV-shared layer {} must provide attention_q/attention_o only and reuse source K/V",
+                            "layer {} must not mix GLM MLA attention with standard Q/K/V tensors",
                             layer_index
                         ),
                     });
                 }
             } else {
-                let uses_value_from_key = manifest
-                    .attention_value_from_key_layers
-                    .contains(&layer_index);
-                if uses_value_from_key
-                    && (roles.contains(&NativeTensorRole::AttentionQkvPacked)
-                        || roles.contains(&NativeTensorRole::AttentionV))
-                {
-                    return Err(NativeModelError::InvalidManifest {
-                        message: format!(
-                            "value-from-key layer {} must provide split attention_q/attention_k without attention_v or attention_qkv_packed",
-                            layer_index
-                        ),
-                    });
-                }
-                let has_packed_qkv = roles.contains(&NativeTensorRole::AttentionQkvPacked);
-                let has_split_qkv = roles.contains(&NativeTensorRole::AttentionQ)
-                    && roles.contains(&NativeTensorRole::AttentionK)
-                    && (roles.contains(&NativeTensorRole::AttentionV) || uses_value_from_key);
-                if !(has_packed_qkv || has_split_qkv) {
-                    return Err(NativeModelError::InvalidManifest {
-                        message: format!(
-                            "layer {} must provide attention_qkv_packed or attention_q/attention_k plus attention_v (or mark the layer in attention_value_from_key_layers)",
-                            layer_index
-                        ),
-                    });
+                let uses_shared_kv = manifest.kv_shared_source_layers.contains_key(&layer_index);
+                if uses_shared_kv {
+                    require_layer_role(
+                        roles,
+                        NativeTensorRole::AttentionQ,
+                        layer_index,
+                        "attention_q",
+                    )?;
+                    if roles.contains(&NativeTensorRole::AttentionQkvPacked)
+                        || roles.contains(&NativeTensorRole::AttentionK)
+                        || roles.contains(&NativeTensorRole::AttentionV)
+                    {
+                        return Err(NativeModelError::InvalidManifest {
+                            message: format!(
+                                "KV-shared layer {} must provide attention_q/attention_o only and reuse source K/V",
+                                layer_index
+                            ),
+                        });
+                    }
+                } else {
+                    let uses_value_from_key = manifest
+                        .attention_value_from_key_layers
+                        .contains(&layer_index);
+                    if uses_value_from_key
+                        && (roles.contains(&NativeTensorRole::AttentionQkvPacked)
+                            || roles.contains(&NativeTensorRole::AttentionV))
+                    {
+                        return Err(NativeModelError::InvalidManifest {
+                            message: format!(
+                                "value-from-key layer {} must provide split attention_q/attention_k without attention_v or attention_qkv_packed",
+                                layer_index
+                            ),
+                        });
+                    }
+                    let has_packed_qkv = roles.contains(&NativeTensorRole::AttentionQkvPacked);
+                    let has_split_qkv = roles.contains(&NativeTensorRole::AttentionQ)
+                        && roles.contains(&NativeTensorRole::AttentionK)
+                        && (roles.contains(&NativeTensorRole::AttentionV) || uses_value_from_key);
+                    if !(has_packed_qkv || has_split_qkv) {
+                        return Err(NativeModelError::InvalidManifest {
+                            message: format!(
+                                "layer {} must provide attention_qkv_packed or attention_q/attention_k plus attention_v (or mark the layer in attention_value_from_key_layers)",
+                                layer_index
+                            ),
+                        });
+                    }
                 }
             }
         }
@@ -1152,12 +1198,14 @@ fn validate_native_model_manifest(
                 || roles.contains(&NativeTensorRole::FfnSharedExpertUp)
                 || roles.contains(&NativeTensorRole::FfnSharedExpertDown);
             if has_any_shared_expert || moe_requires_shared_expert(manifest) {
-                require_layer_role(
-                    roles,
-                    NativeTensorRole::FfnSharedExpertGateInp,
-                    layer_index,
-                    "ffn_shared_expert_gate_inp",
-                )?;
+                if manifest.model_family != "glm4_moe_lite" {
+                    require_layer_role(
+                        roles,
+                        NativeTensorRole::FfnSharedExpertGateInp,
+                        layer_index,
+                        "ffn_shared_expert_gate_inp",
+                    )?;
+                }
                 require_layer_role(
                     roles,
                     NativeTensorRole::FfnSharedExpertGate,
@@ -1203,6 +1251,16 @@ fn validate_native_model_manifest(
     validate_native_model_tensor_shapes(manifest)?;
 
     Ok(())
+}
+
+fn has_any_glm_mla_attention_role(roles: &[NativeTensorRole]) -> bool {
+    roles.contains(&NativeTensorRole::AttentionQa)
+        || roles.contains(&NativeTensorRole::AttentionQaNorm)
+        || roles.contains(&NativeTensorRole::AttentionQb)
+        || roles.contains(&NativeTensorRole::AttentionKvA)
+        || roles.contains(&NativeTensorRole::AttentionKvANorm)
+        || roles.contains(&NativeTensorRole::AttentionEmbedQ)
+        || roles.contains(&NativeTensorRole::AttentionUnembedOut)
 }
 
 fn moe_requires_shared_expert(manifest: &NativeModelManifest) -> bool {
@@ -1280,6 +1338,7 @@ fn validate_native_model_tensor_shapes(
         // o_proj still maps from num_heads * head_dim, not from q_proj rows.
         if let Some(attention_o) =
             manifest_tensor(manifest, NativeTensorRole::AttentionO, Some(layer_index))
+            && manifest_tensor(manifest, NativeTensorRole::AttentionQa, Some(layer_index)).is_none()
         {
             let attention_output_cols = u64::from(manifest.attention_head_count)
                 * configured_attention_head_dim(manifest, layer_index);
@@ -1396,6 +1455,10 @@ fn validate_native_model_tensor_shapes(
                     )?;
                 }
             }
+        } else if manifest_tensor(manifest, NativeTensorRole::AttentionQa, Some(layer_index))
+            .is_some()
+        {
+            validate_glm_mla_attention_tensor_shapes(manifest, layer_index)?;
         }
         // Layers without any attention tensors (e.g. linear_attention) skip QKV shape validation.
         if manifest_tensor(
@@ -1811,6 +1874,120 @@ fn validate_native_model_tensor_shapes(
     }
 
     Ok(())
+}
+
+fn validate_glm_mla_attention_tensor_shapes(
+    manifest: &NativeModelManifest,
+    layer_index: u32,
+) -> Result<(), NativeModelError> {
+    let hidden_size = u64::from(manifest.hidden_size);
+    let head_count = u64::from(manifest.attention_head_count);
+    let q_lora_rank = u64::from(manifest.mla_attention.q_lora_rank.ok_or_else(|| {
+        NativeModelError::InvalidManifest {
+            message: "mla_attention.q_lora_rank must be configured".to_string(),
+        }
+    })?);
+    let kv_lora_rank = u64::from(manifest.mla_attention.kv_lora_rank.ok_or_else(|| {
+        NativeModelError::InvalidManifest {
+            message: "mla_attention.kv_lora_rank must be configured".to_string(),
+        }
+    })?);
+    let qk_nope_head_dim = u64::from(manifest.mla_attention.qk_nope_head_dim.ok_or_else(|| {
+        NativeModelError::InvalidManifest {
+            message: "mla_attention.qk_nope_head_dim must be configured".to_string(),
+        }
+    })?);
+    let qk_rope_head_dim = u64::from(manifest.mla_attention.qk_rope_head_dim.ok_or_else(|| {
+        NativeModelError::InvalidManifest {
+            message: "mla_attention.qk_rope_head_dim must be configured".to_string(),
+        }
+    })?);
+    let value_head_dim = u64::from(manifest.mla_attention.value_head_dim.ok_or_else(|| {
+        NativeModelError::InvalidManifest {
+            message: "mla_attention.value_head_dim must be configured".to_string(),
+        }
+    })?);
+    let q_head_dim = qk_nope_head_dim + qk_rope_head_dim;
+
+    let attention_qa = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionQa,
+        "attention_qa",
+    )?;
+    expect_matrix_shape(attention_qa, q_lora_rank, hidden_size, "attention_qa")?;
+    let attention_qa_norm = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionQaNorm,
+        "attention_qa_norm",
+    )?;
+    expect_vector_shape(attention_qa_norm, q_lora_rank, "attention_qa_norm")?;
+    let attention_qb = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionQb,
+        "attention_qb",
+    )?;
+    expect_matrix_shape(
+        attention_qb,
+        head_count * q_head_dim,
+        q_lora_rank,
+        "attention_qb",
+    )?;
+    let attention_kv_a = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionKvA,
+        "attention_kv_a",
+    )?;
+    expect_matrix_shape(
+        attention_kv_a,
+        kv_lora_rank + qk_rope_head_dim,
+        hidden_size,
+        "attention_kv_a",
+    )?;
+    let attention_kv_a_norm = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionKvANorm,
+        "attention_kv_a_norm",
+    )?;
+    expect_vector_shape(attention_kv_a_norm, kv_lora_rank, "attention_kv_a_norm")?;
+    let attention_embed_q = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionEmbedQ,
+        "attention_embed_q",
+    )?;
+    expect_tensor_shape(
+        attention_embed_q,
+        &[head_count, kv_lora_rank, qk_nope_head_dim],
+        "attention_embed_q",
+    )?;
+    let attention_unembed_out = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionUnembedOut,
+        "attention_unembed_out",
+    )?;
+    expect_tensor_shape(
+        attention_unembed_out,
+        &[head_count, value_head_dim, kv_lora_rank],
+        "attention_unembed_out",
+    )?;
+    let attention_o = required_layer_tensor_spec(
+        manifest,
+        layer_index,
+        NativeTensorRole::AttentionO,
+        "attention_o",
+    )?;
+    expect_matrix_shape(
+        attention_o,
+        hidden_size,
+        head_count * value_head_dim,
+        "attention_o",
+    )
 }
 
 fn validate_manifest_layer_index_list(

@@ -1233,7 +1233,11 @@ fn glm_mla_embed_q_prefill(cfg: &ModelConfig, w: &LayerWeights, kv_latent: &MlxA
     } else {
         let weight = reshape(
             &embed_q.weight,
-            &[cfg.n_heads as i32, mla_cfg.kv_lora_rank as i32, mla_cfg.qk_nope_head_dim as i32],
+            &[
+                cfg.n_heads as i32,
+                mla_cfg.kv_lora_rank as i32,
+                mla_cfg.qk_nope_head_dim as i32,
+            ],
             None,
         );
         matmul(kv_latent, &weight, None)
@@ -1264,7 +1268,11 @@ fn glm_mla_embed_q_decode(cfg: &ModelConfig, w: &LayerWeights, q_nope: &MlxArray
     } else {
         let weight = reshape(
             &embed_q.weight,
-            &[cfg.n_heads as i32, mla_cfg.kv_lora_rank as i32, mla_cfg.qk_nope_head_dim as i32],
+            &[
+                cfg.n_heads as i32,
+                mla_cfg.kv_lora_rank as i32,
+                mla_cfg.qk_nope_head_dim as i32,
+            ],
             None,
         );
         let weight = transpose(&weight, &[0, 2, 1], None);
@@ -1295,7 +1303,11 @@ fn glm_mla_unembed_out(cfg: &ModelConfig, w: &LayerWeights, latent: &MlxArray) -
     } else {
         let weight = reshape(
             &unembed_out.weight,
-            &[cfg.n_heads as i32, mla_cfg.value_head_dim as i32, mla_cfg.kv_lora_rank as i32],
+            &[
+                cfg.n_heads as i32,
+                mla_cfg.value_head_dim as i32,
+                mla_cfg.kv_lora_rank as i32,
+            ],
             None,
         );
         let weight = transpose(&weight, &[0, 2, 1], None);
