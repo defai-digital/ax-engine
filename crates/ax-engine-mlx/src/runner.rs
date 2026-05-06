@@ -254,7 +254,7 @@ fn elapsed_us(started: Instant) -> u32 {
 fn direct_pipeline_clear_cache_due(emitted_tokens: u32, cadence: u32) -> bool {
     cadence != 0
         && emitted_tokens != 0
-        && (emitted_tokens == 1 || emitted_tokens.saturating_sub(1) % cadence == 0)
+        && (emitted_tokens == 1 || emitted_tokens.saturating_sub(1).is_multiple_of(cadence))
 }
 
 fn kib_ceil(bytes: u64) -> u32 {
