@@ -245,6 +245,15 @@ compression ratio. This remains internal and CPU-only; it does not launch
 kernels, allocate MLX storage, alter SDPA, change generation, publish route
 metadata, or expose a public switch.
 
+The production readiness cutoff is accepted as the fail-closed boundary above
+the CPU/reference foundation. `TurboQuantProductionRequirements` requires a real
+fused decode kernel, runtime KV storage integration, runner route metadata
+integration, a long-context benchmark and model-quality artifact, and public
+switch/docs approval before TurboQuant can be called runtime complete. Missing
+any gate blocks production readiness. This cutoff preserves the default disabled
+path and does not launch kernels, allocate MLX storage, alter SDPA, change
+generation, publish route metadata, or expose a public switch.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

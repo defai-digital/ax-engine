@@ -334,6 +334,22 @@ Implemented fused decode promotion evidence summary slice on 2026-05-06:
   allocate MLX storage, change SDPA, change generation, publish route metadata,
   or expose a user-facing switch.
 
+Implemented production readiness cutoff slice on 2026-05-06:
+
+- Added `TurboQuantProductionRequirements` and `TurboQuantProductionReadiness`
+  as the fail-closed production gate above the CPU/reference foundation.
+- Requires all five production gates before TurboQuant can be called runtime
+  complete:
+  - real fused decode kernel
+  - runtime KV storage integration
+  - runner route metadata integration
+  - long-context benchmark and model-quality artifact
+  - public switch plus public support docs
+- Defaults to blocked until every gate is explicitly satisfied.
+- Keeps the current implementation optional and non-invasive; no kernel is
+  launched, no MLX storage changes, no SDPA/generation change, no route metadata
+  publication, and no public support claim is introduced by this cutoff.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction
