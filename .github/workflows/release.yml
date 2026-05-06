@@ -109,6 +109,6 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE=1 brew test defai-digital/ax-engine/ax-engine
 
           # Push only after successful install and test
-          # Set the remote URL explicitly so the tap token is used, not the runner GITHUB_TOKEN
-          git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/defai-digital/homebrew-ax-engine.git"
-          git push origin main
+          # Push with explicit token URL to avoid runner GITHUB_TOKEN overriding credentials
+          cd /tmp/tap
+          git push "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/defai-digital/homebrew-ax-engine.git" main
