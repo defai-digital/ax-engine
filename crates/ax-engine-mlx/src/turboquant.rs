@@ -49,6 +49,13 @@ pub enum TurboQuantCodecError {
     },
     #[error("TurboQuant layout byte-size calculation overflowed")]
     LayoutSizeOverflow,
+    #[error(
+        "TurboQuant compressed slot token={token_index}, head={head_index} has not been written"
+    )]
+    CompressedSlotUnwritten {
+        token_index: usize,
+        head_index: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -276,6 +283,257 @@ impl TurboQuantBlockLayout {
             value_scales_offset_bytes,
             slot_bytes: self.slot_bytes_per_head,
         })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TurboQuantCompressedHeadSlot {
+    pub key: QuantizedKeyVector,
+    pub value: QuantizedValueGroups,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TurboQuantCompressedBlockBuffer {
+    layout: TurboQuantBlockLayout,
+    bytes: Vec<u8>,
+    written_slots: Vec<bool>,
+    token_count: usize,
+}
+
+impl TurboQuantCompressedBlockBuffer {
+    pub fn new(layout: TurboQuantBlockLayout) -> Self {
+        Self {
+            layout,
+            bytes: Vec::new(),
+            written_slots: Vec::new(),
+            token_count: 0,
+        }
+    }
+
+    pub fn layout(&self) -> &TurboQuantBlockLayout {
+        &self.layout
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn token_count(&self) -> usize {
+        self.token_count
+    }
+
+    pub fn block_count(&self) -> usize {
+        self.layout.block_count_for_tokens(self.token_count)
+    }
+
+    pub fn write_slot(
+        &mut self,
+        token_index: usize,
+        head_index: usize,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<(), TurboQuantCodecError> {
+        self.validate_slot_vectors(key, value)?;
+        let address = self.layout.address_for_token(token_index, head_index)?;
+        self.ensure_capacity_for_tokens(token_index.saturating_add(1))?;
+
+        let key = encode_key_vector(key, self.layout.config.preset)?;
+        let value = encode_value_groups_4bit(value, self.layout.config.value_group_size)?;
+
+        self.zero_slot(&address)?;
+        self.write_compressed_slot_at(&address, &key, &value)?;
+
+        let slot_index = self.slot_index(token_index, head_index)?;
+        self.written_slots[slot_index] = true;
+        self.token_count = self.token_count.max(token_index.saturating_add(1));
+        Ok(())
+    }
+
+    pub fn read_compressed_slot(
+        &self,
+        token_index: usize,
+        head_index: usize,
+    ) -> Result<TurboQuantCompressedHeadSlot, TurboQuantCodecError> {
+        self.validate_written_slot(token_index, head_index)?;
+        let address = self.layout.address_for_token(token_index, head_index)?;
+
+        Ok(TurboQuantCompressedHeadSlot {
+            key: self.read_key_at(&address),
+            value: self.read_value_at(&address),
+        })
+    }
+
+    pub fn debug_reconstruct_slot(
+        &self,
+        token_index: usize,
+        head_index: usize,
+    ) -> Result<FullPrecisionKvTokenVectors, TurboQuantCodecError> {
+        let slot = self.read_compressed_slot(token_index, head_index)?;
+        Ok((
+            decode_key_vector(&slot.key)?,
+            decode_value_groups_4bit(&slot.value)?,
+        ))
+    }
+
+    fn validate_slot_vectors(
+        &self,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<(), TurboQuantCodecError> {
+        let expected = self.layout.config.head_dim;
+        if key.len() != expected {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected,
+                actual: key.len(),
+            });
+        }
+        if value.len() != expected {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected,
+                actual: value.len(),
+            });
+        }
+        Ok(())
+    }
+
+    fn ensure_capacity_for_tokens(
+        &mut self,
+        token_count: usize,
+    ) -> Result<(), TurboQuantCodecError> {
+        let buffer_bytes = self.layout.buffer_bytes_for_tokens(token_count)?;
+        self.bytes.resize(buffer_bytes, 0);
+
+        let slot_count = checked_mul(
+            checked_mul(
+                self.layout.block_count_for_tokens(token_count),
+                self.layout.config.block_tokens,
+            )?,
+            self.layout.config.n_kv_heads,
+        )?;
+        self.written_slots.resize(slot_count, false);
+        Ok(())
+    }
+
+    fn zero_slot(&mut self, address: &TurboQuantSlotAddress) -> Result<(), TurboQuantCodecError> {
+        let end = checked_add_many(&[address.slot_offset_bytes, address.slot_bytes])?;
+        self.bytes[address.slot_offset_bytes..end].fill(0);
+        Ok(())
+    }
+
+    fn write_compressed_slot_at(
+        &mut self,
+        address: &TurboQuantSlotAddress,
+        key: &QuantizedKeyVector,
+        value: &QuantizedValueGroups,
+    ) -> Result<(), TurboQuantCodecError> {
+        self.write_bytes(
+            address.key_payload_offset_bytes,
+            self.layout.key_payload_bytes_per_head,
+            &key.packed_indices,
+        );
+        self.write_f32(address.key_norm_offset_bytes, key.l2_norm);
+        self.write_bytes(
+            address.value_payload_offset_bytes,
+            self.layout.value_payload_bytes_per_head,
+            &value.packed_values,
+        );
+        self.write_f32_slice(address.value_mins_offset_bytes, &value.mins);
+        self.write_f32_slice(address.value_scales_offset_bytes, &value.scales);
+        Ok(())
+    }
+
+    fn write_bytes(&mut self, offset: usize, len: usize, source: &[u8]) {
+        let end = offset + len;
+        let target = &mut self.bytes[offset..end];
+        target.fill(0);
+        target[..source.len()].copy_from_slice(source);
+    }
+
+    fn write_f32(&mut self, offset: usize, value: f32) {
+        self.bytes[offset..offset + std::mem::size_of::<f32>()]
+            .copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn write_f32_slice(&mut self, offset: usize, values: &[f32]) {
+        for (idx, value) in values.iter().enumerate() {
+            self.write_f32(offset + idx * std::mem::size_of::<f32>(), *value);
+        }
+    }
+
+    fn read_key_at(&self, address: &TurboQuantSlotAddress) -> QuantizedKeyVector {
+        QuantizedKeyVector {
+            dim: self.layout.config.head_dim,
+            bit_width: self.layout.config.preset.key_bits(),
+            l2_norm: self.read_f32(address.key_norm_offset_bytes),
+            packed_indices: self.bytes[address.key_payload_offset_bytes
+                ..address.key_payload_offset_bytes + self.layout.key_payload_bytes_per_head]
+                .to_vec(),
+        }
+    }
+
+    fn read_value_at(&self, address: &TurboQuantSlotAddress) -> QuantizedValueGroups {
+        QuantizedValueGroups {
+            element_count: self.layout.config.head_dim,
+            group_size: self.layout.config.value_group_size,
+            mins: self.read_f32_vec(
+                address.value_mins_offset_bytes,
+                self.layout.value_group_count,
+            ),
+            scales: self.read_f32_vec(
+                address.value_scales_offset_bytes,
+                self.layout.value_group_count,
+            ),
+            packed_values: self.bytes[address.value_payload_offset_bytes
+                ..address.value_payload_offset_bytes + self.layout.value_payload_bytes_per_head]
+                .to_vec(),
+        }
+    }
+
+    fn read_f32(&self, offset: usize) -> f32 {
+        let mut bytes = [0u8; std::mem::size_of::<f32>()];
+        bytes.copy_from_slice(&self.bytes[offset..offset + std::mem::size_of::<f32>()]);
+        f32::from_le_bytes(bytes)
+    }
+
+    fn read_f32_vec(&self, offset: usize, len: usize) -> Vec<f32> {
+        (0..len)
+            .map(|idx| self.read_f32(offset + idx * std::mem::size_of::<f32>()))
+            .collect()
+    }
+
+    fn validate_written_slot(
+        &self,
+        token_index: usize,
+        head_index: usize,
+    ) -> Result<(), TurboQuantCodecError> {
+        if head_index >= self.layout.config.n_kv_heads {
+            return Err(TurboQuantCodecError::LayoutAddressOutOfRange {
+                name: "head_index",
+                index: head_index,
+                limit: self.layout.config.n_kv_heads,
+            });
+        }
+        let slot_index = self.slot_index(token_index, head_index)?;
+        if token_index >= self.token_count
+            || !self.written_slots.get(slot_index).copied().unwrap_or(false)
+        {
+            return Err(TurboQuantCodecError::CompressedSlotUnwritten {
+                token_index,
+                head_index,
+            });
+        }
+        Ok(())
+    }
+
+    fn slot_index(
+        &self,
+        token_index: usize,
+        head_index: usize,
+    ) -> Result<usize, TurboQuantCodecError> {
+        checked_add_many(&[
+            checked_mul(token_index, self.layout.config.n_kv_heads)?,
+            head_index,
+        ])
     }
 }
 
@@ -1219,6 +1477,149 @@ mod tests {
         let error = layout
             .address(0, 0, 2)
             .expect_err("head index outside the token should fail");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::LayoutAddressOutOfRange {
+                name: "head_index",
+                index: 2,
+                limit: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn compressed_block_buffer_writes_and_reads_slot_layout() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 4,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let key = vec![0.5, -1.0, 2.0, 0.25, -0.75, 1.5, -2.5, 0.0];
+        let value = vec![-1.0, -0.6, -0.2, 0.0, 0.2, 0.5, 0.9, 1.0];
+
+        buffer
+            .write_slot(5, 1, &key, &value)
+            .expect("slot write should work");
+
+        assert_eq!(buffer.token_count(), 6);
+        assert_eq!(buffer.block_count(), 2);
+        assert_eq!(buffer.as_bytes().len(), layout.block_bytes * 2);
+
+        let address = layout
+            .address_for_token(5, 1)
+            .expect("address should be in range");
+        assert!(
+            buffer.as_bytes()[address.key_payload_offset_bytes
+                ..address.key_payload_offset_bytes + layout.key_payload_bytes_per_head]
+                .iter()
+                .any(|byte| *byte != 0)
+        );
+
+        let compressed = buffer
+            .read_compressed_slot(5, 1)
+            .expect("slot read should work");
+        assert_eq!(compressed.key.dim, 8);
+        assert_eq!(compressed.key.bit_width, 8);
+        assert_eq!(compressed.value.element_count, 8);
+        assert_eq!(compressed.value.group_size, 4);
+        assert_eq!(compressed.value.mins.len(), 2);
+        assert_eq!(compressed.value.scales.len(), 2);
+
+        let (decoded_key, decoded_value) = buffer
+            .debug_reconstruct_slot(5, 1)
+            .expect("slot reconstruct should work");
+        assert!(cosine_similarity(&key, &decoded_key) > 0.999);
+        assert!(
+            max_abs_diff(&value, &decoded_value) <= 0.08,
+            "expected {value:?}, got {decoded_value:?}"
+        );
+    }
+
+    #[test]
+    fn compressed_block_buffer_keeps_token_heads_independent() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 4,
+            value_group_size: 2,
+        })
+        .expect("layout should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let key0 = vec![1.0, 0.0, 0.0, 0.0];
+        let value0 = vec![0.0, 1.0, 2.0, 3.0];
+        let key1 = vec![0.0, 1.0, 0.0, 0.0];
+        let value1 = vec![3.0, 2.0, 1.0, 0.0];
+
+        buffer
+            .write_slot(0, 0, &key0, &value0)
+            .expect("head 0 write should work");
+        buffer
+            .write_slot(0, 1, &key1, &value1)
+            .expect("head 1 write should work");
+
+        let (decoded_key0, decoded_value0) = buffer
+            .debug_reconstruct_slot(0, 0)
+            .expect("head 0 read should work");
+        let (decoded_key1, decoded_value1) = buffer
+            .debug_reconstruct_slot(0, 1)
+            .expect("head 1 read should work");
+
+        assert!(cosine_similarity(&key0, &decoded_key0) > 0.999);
+        assert!(cosine_similarity(&key1, &decoded_key1) > 0.999);
+        assert!(max_abs_diff(&value0, &decoded_value0) <= 0.08);
+        assert!(max_abs_diff(&value1, &decoded_value1) <= 0.08);
+        assert_ne!(
+            buffer
+                .read_compressed_slot(0, 0)
+                .expect("head 0 compressed slot"),
+            buffer
+                .read_compressed_slot(0, 1)
+                .expect("head 1 compressed slot")
+        );
+    }
+
+    #[test]
+    fn compressed_block_buffer_fails_closed_for_bad_writes_and_unwritten_reads() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 4,
+            value_group_size: 2,
+        })
+        .expect("layout should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+
+        let error = buffer
+            .read_compressed_slot(0, 0)
+            .expect_err("unwritten slot should fail");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::CompressedSlotUnwritten {
+                token_index: 0,
+                head_index: 0,
+            }
+        );
+
+        let error = buffer
+            .write_slot(0, 0, &[1.0, 0.0], &[0.0, 1.0, 2.0, 3.0])
+            .expect_err("wrong key dimension should fail");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::MismatchedVectorDimension {
+                expected: 4,
+                actual: 2,
+            }
+        );
+
+        let error = buffer
+            .write_slot(0, 2, &[1.0, 0.0, 0.0, 0.0], &[0.0, 1.0, 2.0, 3.0])
+            .expect_err("head index outside layout should fail");
         assert_eq!(
             error,
             TurboQuantCodecError::LayoutAddressOutOfRange {
