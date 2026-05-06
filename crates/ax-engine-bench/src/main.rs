@@ -799,6 +799,7 @@ fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliErr
             backend_request,
             mlx_model_artifacts_dir,
             mlx_disable_ngram_acceleration: false,
+            mlx_kv_compression: ax_engine_sdk::MlxKvCompressionConfig::disabled(),
         })
         .map_err(|error| CliError::Usage(format!("invalid inference configuration: {error}")))?;
 
@@ -1128,6 +1129,50 @@ struct DoctorReport {
     metal_toolchain: MetalToolchainReport,
     issues: Vec<String>,
     notes: Vec<String>,
+    performance_advice: Vec<DoctorAdvice>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DoctorAdviceSeverity {
+    Info,
+    Warning,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct DoctorAdvice {
+    id: String,
+    severity: DoctorAdviceSeverity,
+    summary: String,
+    detail: String,
+}
+
+impl DoctorAdvice {
+    fn info(id: &str, summary: &str, detail: &str) -> Self {
+        Self::new(id, DoctorAdviceSeverity::Info, summary, detail)
+    }
+
+    fn warning(id: &str, summary: &str, detail: &str) -> Self {
+        Self::new(id, DoctorAdviceSeverity::Warning, summary, detail)
+    }
+
+    fn new(id: &str, severity: DoctorAdviceSeverity, summary: &str, detail: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            severity,
+            summary: summary.to_string(),
+            detail: detail.to_string(),
+        }
+    }
+}
+
+impl DoctorAdviceSeverity {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warning => "warning",
+        }
+    }
 }
 
 fn metal_build_doctor_report(report: &DoctorReport) -> MetalBuildDoctorReport {
@@ -1189,20 +1234,21 @@ fn map_metal_build_error(error: ax_engine_core::MetalRuntimeError) -> CliError {
 }
 
 fn build_doctor_report(host: HostReport, metal_toolchain: MetalToolchainReport) -> DoctorReport {
-    build_doctor_report_with_mlx_model_artifacts(host, metal_toolchain)
+    build_doctor_report_with_mlx_model_artifacts(host, metal_toolchain, None)
 }
 
 fn build_doctor_report_for_model(
     host: HostReport,
     metal_toolchain: MetalToolchainReport,
-    _mlx_model_artifacts_dir: Option<&Path>,
+    mlx_model_artifacts_dir: Option<&Path>,
 ) -> DoctorReport {
-    build_doctor_report_with_mlx_model_artifacts(host, metal_toolchain)
+    build_doctor_report_with_mlx_model_artifacts(host, metal_toolchain, mlx_model_artifacts_dir)
 }
 
 fn build_doctor_report_with_mlx_model_artifacts(
     host: HostReport,
     metal_toolchain: MetalToolchainReport,
+    mlx_model_artifacts_dir: Option<&Path>,
 ) -> DoctorReport {
     let mlx_runtime_ready = host.supported_mlx_runtime && metal_toolchain.fully_available;
     let bringup_allowed = metal_toolchain.fully_available
@@ -1225,6 +1271,7 @@ fn build_doctor_report_with_mlx_model_artifacts(
         metal_toolchain: metal_toolchain.clone(),
         issues: doctor_issues(&host, &metal_toolchain),
         notes: doctor_notes(&host),
+        performance_advice: doctor_performance_advice(&host, mlx_model_artifacts_dir),
     }
 }
 
@@ -1271,6 +1318,198 @@ fn doctor_notes(host: &HostReport) -> Vec<String> {
         );
     }
     notes
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DoctorModelArtifactsHint {
+    model_type: Option<String>,
+    quantization: Option<DoctorQuantizationHint>,
+    path_label: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DoctorQuantizationHint {
+    mode: String,
+    group_size: u32,
+    bits: u32,
+}
+
+fn doctor_performance_advice(
+    host: &HostReport,
+    mlx_model_artifacts_dir: Option<&Path>,
+) -> Vec<DoctorAdvice> {
+    let mut advice = vec![
+        DoctorAdvice::info(
+            "ngram_acceleration_default_on",
+            "N-gram acceleration is enabled by default for the repo-owned MLX runtime.",
+            "Use --disable-ngram-acceleration only for direct A/B comparison rows; do not add a separate --ngram-accel enable flag.",
+        ),
+        DoctorAdvice::info(
+            "mlx_throughput_harness",
+            "Use the MLX inference-stack harness for throughput claims.",
+            "Run scripts/bench_mlx_inference_stack.py with --ax-compare-policies so AX rows are paired with matching mlx_lm baseline rows.",
+        ),
+        DoctorAdvice::info(
+            "single_request_benchmark_shape",
+            "Treat batch=1 as the supported MLX performance shape today.",
+            "The repo-owned MLX runner is optimized for single-request execution; multi-item batching remains a separate scheduler/runtime milestone.",
+        ),
+        DoctorAdvice::warning(
+            "swiftlm_is_baseline_only",
+            "Do not treat mlx-swift-lm as an AX prefill/decode hybrid path.",
+            "mlx-swift-lm is admitted as a named benchmark baseline adapter, not as a supported runtime path that can prefill before AX decode.",
+        ),
+    ];
+
+    if !host.supported_mlx_runtime {
+        advice.push(DoctorAdvice::warning(
+            "unsupported_host_benchmark_scope",
+            "Do not publish MLX throughput claims from an unsupported host.",
+            "Unsupported-host runs are useful for bring-up only; use a supported Apple Silicon host before comparing N-gram or quantization policy.",
+        ));
+    }
+
+    let Some(model_dir) = mlx_model_artifacts_dir else {
+        advice.push(DoctorAdvice::info(
+            "model_artifacts_not_selected",
+            "Pass --mlx-model-artifacts-dir for model-specific quantization advice.",
+            "Without model artifacts doctor can only report runtime-level guidance, not whether this checkpoint should be compared against another quantization.",
+        ));
+        return advice;
+    };
+
+    match inspect_doctor_model_artifacts(model_dir) {
+        Ok(model_hint) => advice.extend(doctor_model_performance_advice(&model_hint)),
+        Err(message) => advice.push(DoctorAdvice::warning(
+            "model_artifacts_unreadable",
+            "Model-specific performance advice is unavailable.",
+            &message,
+        )),
+    }
+
+    advice
+}
+
+fn inspect_doctor_model_artifacts(path: &Path) -> Result<DoctorModelArtifactsHint, String> {
+    if !path.exists() {
+        return Err(format!(
+            "model artifacts path does not exist: {}",
+            path.display()
+        ));
+    }
+    if !path.is_dir() {
+        return Err(format!(
+            "model artifacts path is not a directory: {}",
+            path.display()
+        ));
+    }
+
+    let config_path = path.join("config.json");
+    if !config_path.is_file() {
+        return Err(format!(
+            "model artifacts path is missing config.json: {}",
+            path.display()
+        ));
+    }
+
+    let config = load_json_value(&config_path).map_err(|error| error.to_string())?;
+    Ok(DoctorModelArtifactsHint {
+        model_type: doctor_config_string(&config, "model_type").map(str::to_string),
+        quantization: doctor_config_quantization(&config),
+        path_label: path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase(),
+    })
+}
+
+fn doctor_model_performance_advice(hint: &DoctorModelArtifactsHint) -> Vec<DoctorAdvice> {
+    let mut advice = Vec::new();
+    let model_type = hint.model_type.as_deref().unwrap_or("unknown");
+    let quantization = hint.quantization.as_ref();
+
+    match model_type {
+        "gemma4" => {
+            if quantization.map(|q| q.bits) == Some(4) {
+                advice.push(DoctorAdvice::info(
+                    "gemma4_4bit_first",
+                    "Gemma 4 4-bit is the first throughput candidate.",
+                    "Current Gemma 4 decode rows show 4-bit as the fastest direct and N-gram policy for the checked-in E2B comparison; verify quality before moving up in bits.",
+                ));
+            } else {
+                advice.push(DoctorAdvice::info(
+                    "gemma4_quantization_compare",
+                    "Benchmark this Gemma 4 quantization against 4-bit before calling it faster.",
+                    "Higher-bit Gemma 4 checkpoints can improve quality, but current decode rows do not support a blanket speed claim over 4-bit.",
+                ));
+            }
+        }
+        "qwen3_next" | "qwen3_6" | "qwen3.6" => {
+            if quantization.map(|q| q.bits) == Some(4) || hint.path_label.contains("ud-mlx") {
+                advice.push(DoctorAdvice::warning(
+                    "qwen36_quantization_compare",
+                    "Do not assume Qwen 3.6 4-bit is the fastest checkpoint.",
+                    "Current Qwen 3.6 35B rows show the MLX 5-bit checkpoint ahead of the UD-MLX 4-bit checkpoint on decode throughput; compare both on the target prompt mix.",
+                ));
+            } else if quantization.map(|q| q.bits) == Some(5) {
+                advice.push(DoctorAdvice::info(
+                    "qwen36_5bit_throughput_candidate",
+                    "Qwen 3.6 5-bit is a strong throughput candidate.",
+                    "Current Qwen 3.6 35B rows show 5-bit leading decode throughput, but memory pressure and quality targets still need workload-specific validation.",
+                ));
+            }
+            advice.push(DoctorAdvice::info(
+                "qwen_gated_delta_prefill_scope",
+                "Keep Qwen 3.6 prefill/decode comparisons inside the MLX inference-stack harness.",
+                "Qwen gated-delta prefill remains a known architecture-sensitive path; do not substitute a SwiftLM prefill plus AX decode claim without a new runtime contract.",
+            ));
+        }
+        "qwen3_5" | "qwen3_5_moe" | "qwen3_5_text" => advice.push(DoctorAdvice::info(
+            "qwen_gated_delta_prefill_scope",
+            "Keep Qwen gated-delta prefill/decode comparisons inside the MLX inference-stack harness.",
+            "Qwen gated-delta prefill remains architecture-sensitive; use paired baseline rows before changing runtime policy.",
+        )),
+        _ => advice.push(DoctorAdvice::info(
+            "model_specific_policy_unknown",
+            "No model-family-specific performance policy is available.",
+            "Use the MLX inference-stack harness to establish direct and N-gram rows before making quantization or acceleration recommendations.",
+        )),
+    }
+
+    if quantization.is_none() {
+        advice.push(DoctorAdvice::info(
+            "quantization_metadata_missing",
+            "Quantization metadata was not found in config.json.",
+            "Doctor cannot rank quantization choices without a quantization or quantization_config block.",
+        ));
+    }
+
+    advice
+}
+
+fn doctor_config_string<'a>(config: &'a Value, field: &str) -> Option<&'a str> {
+    config
+        .get(field)
+        .and_then(Value::as_str)
+        .or_else(|| config.get("text_config")?.get(field)?.as_str())
+}
+
+fn doctor_config_quantization(config: &Value) -> Option<DoctorQuantizationHint> {
+    let obj = config
+        .get("quantization")
+        .or_else(|| config.get("quantization_config"))
+        .or_else(|| config.get("text_config")?.get("quantization"))
+        .or_else(|| config.get("text_config")?.get("quantization_config"))?;
+    Some(DoctorQuantizationHint {
+        mode: obj
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("affine")
+            .to_string(),
+        group_size: obj.get("group_size").and_then(Value::as_u64).unwrap_or(64) as u32,
+        bits: obj.get("bits").and_then(Value::as_u64).unwrap_or(4) as u32,
+    })
 }
 
 fn missing_metal_tools(metal_toolchain: &MetalToolchainReport) -> Vec<&'static str> {
@@ -1348,6 +1587,16 @@ fn render_doctor_report(report: &DoctorReport) -> String {
 
     lines.push("notes:".to_string());
     lines.extend(report.notes.iter().map(|note| format!("  - {note}")));
+    lines.push("performance_advice:".to_string());
+    lines.extend(report.performance_advice.iter().map(|advice| {
+        format!(
+            "  - [{}] {}: {} ({})",
+            advice.severity.as_str(),
+            advice.id,
+            advice.summary,
+            advice.detail
+        )
+    }));
 
     lines.join("\n")
 }
@@ -4207,6 +4456,7 @@ fn session_config_from_runtime(
         mlx_model_artifacts_dir: runtime.mlx_model_artifacts_dir.clone(),
         mlx_model_artifacts_source: runtime.mlx_model_artifacts_source,
         mlx_disable_ngram_acceleration: false,
+        mlx_kv_compression: ax_engine_sdk::MlxKvCompressionConfig::disabled(),
     })
 }
 
@@ -12121,7 +12371,9 @@ mod tests {
             hidden_size_per_layer_input: 0,
             vocab_size_per_layer_input: None,
             linear_attention: ax_engine_core::NativeLinearAttentionConfig::default(),
+            mla_attention: Default::default(),
             moe: ax_engine_core::NativeMoeConfig::default(),
+            glm_router: Default::default(),
             tensors: vec![
                 native_model_tensor(
                     "model.embed_tokens.weight",
@@ -12301,7 +12553,9 @@ mod tests {
             hidden_size_per_layer_input: 0,
             vocab_size_per_layer_input: None,
             linear_attention: ax_engine_core::NativeLinearAttentionConfig::default(),
+            mla_attention: Default::default(),
             moe: ax_engine_core::NativeMoeConfig::default(),
+            glm_router: Default::default(),
             tensors: vec![
                 native_model_tensor_with_file(
                     "model.embed_tokens.weight",
@@ -13662,6 +13916,18 @@ mod tests {
             report.notes,
             vec!["llama.cpp backends do not widen supported host scope".to_string()]
         );
+        assert!(
+            report
+                .performance_advice
+                .iter()
+                .any(|advice| advice.id == "ngram_acceleration_default_on")
+        );
+        assert!(
+            report
+                .performance_advice
+                .iter()
+                .any(|advice| advice.id == "swiftlm_is_baseline_only")
+        );
     }
 
     #[test]
@@ -13731,7 +13997,80 @@ mod tests {
         assert!(text.contains("host.detected_soc=Apple M3 Max"));
         assert!(text.contains("issues:"));
         assert!(text.contains("notes:"));
+        assert!(text.contains("performance_advice:"));
+        assert!(text.contains("ngram_acceleration_default_on"));
         assert!(text.contains("llama.cpp backends do not widen supported host scope"));
+    }
+
+    #[test]
+    fn doctor_report_adds_qwen36_quantization_advice_from_model_config() {
+        let root = unique_test_dir("doctor-qwen36");
+        let model_dir = root.join("Qwen3.6-35B-A3B-UD-MLX-4bit");
+        fs::create_dir_all(&model_dir).expect("model dir should create");
+        fs::write(
+            model_dir.join("config.json"),
+            r#"{
+                "model_type": "qwen3_next",
+                "quantization": {
+                    "mode": "affine",
+                    "group_size": 64,
+                    "bits": 4
+                }
+            }"#,
+        )
+        .expect("config should write");
+        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+        let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+        let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+        assert!(
+            report
+                .performance_advice
+                .iter()
+                .any(|advice| advice.id == "qwen36_quantization_compare"
+                    && advice.severity == DoctorAdviceSeverity::Warning)
+        );
+        assert!(
+            report
+                .performance_advice
+                .iter()
+                .any(|advice| advice.id == "qwen_gated_delta_prefill_scope")
+        );
+
+        fs::remove_dir_all(root).expect("test dir should clean up");
+    }
+
+    #[test]
+    fn doctor_report_adds_gemma4_quantization_advice_from_model_config() {
+        let root = unique_test_dir("doctor-gemma4");
+        let model_dir = root.join("gemma-4-e2b-it-4bit");
+        fs::create_dir_all(&model_dir).expect("model dir should create");
+        fs::write(
+            model_dir.join("config.json"),
+            r#"{
+                "model_type": "gemma4",
+                "quantization_config": {
+                    "mode": "affine",
+                    "group_size": 64,
+                    "bits": 4
+                }
+            }"#,
+        )
+        .expect("config should write");
+        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+        let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+        let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+        assert!(
+            report
+                .performance_advice
+                .iter()
+                .any(|advice| advice.id == "gemma4_4bit_first")
+        );
+
+        fs::remove_dir_all(root).expect("test dir should clean up");
     }
 
     #[test]

@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use ax_engine_core::{
     CacheGroupId, EmbeddingPooling, EngineCore, EngineCoreError, EngineStepOutcome,
-    KvManagerConfig, MetalKernelAssets, MetalRuntimeError, ModelId, RequestId, RequestSubmission,
-    SequenceNo,
+    KvManagerConfig, MetalKernelAssets, MetalRuntimeError, MlxKvCompressionConfig, ModelId,
+    RequestId, RequestSubmission, SequenceNo,
 };
 use thiserror::Error;
 
@@ -50,6 +50,8 @@ pub struct EngineSessionConfig {
     pub mlx_model_artifacts_source: Option<NativeModelArtifactsSource>,
     /// When true, MLX runner disables n-gram acceleration and uses the direct path.
     pub mlx_disable_ngram_acceleration: bool,
+    /// Optional MLX KV compression policy. Disabled by default.
+    pub mlx_kv_compression: MlxKvCompressionConfig,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,6 +66,8 @@ pub struct PreviewSessionConfigRequest {
     pub mlx_model_artifacts_dir: Option<PathBuf>,
     /// When true, MLX runner disables n-gram acceleration and uses the direct path.
     pub mlx_disable_ngram_acceleration: bool,
+    /// Optional MLX KV compression policy. Disabled by default.
+    pub mlx_kv_compression: MlxKvCompressionConfig,
 }
 
 impl Default for PreviewSessionConfigRequest {
@@ -78,6 +82,7 @@ impl Default for PreviewSessionConfigRequest {
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: None,
             mlx_disable_ngram_acceleration: false,
+            mlx_kv_compression: MlxKvCompressionConfig::disabled(),
         }
     }
 }
@@ -98,6 +103,7 @@ pub struct ResolvedSessionConfigRequest {
     pub mlx_model_artifacts_dir: Option<PathBuf>,
     pub mlx_model_artifacts_source: Option<NativeModelArtifactsSource>,
     pub mlx_disable_ngram_acceleration: bool,
+    pub mlx_kv_compression: MlxKvCompressionConfig,
 }
 
 impl Default for ResolvedSessionConfigRequest {
@@ -118,6 +124,7 @@ impl Default for ResolvedSessionConfigRequest {
             mlx_model_artifacts_dir: default.mlx_model_artifacts_dir,
             mlx_model_artifacts_source: default.mlx_model_artifacts_source,
             mlx_disable_ngram_acceleration: default.mlx_disable_ngram_acceleration,
+            mlx_kv_compression: default.mlx_kv_compression,
         }
     }
 }
@@ -149,6 +156,7 @@ impl Default for EngineSessionConfig {
                 .map(|selection| selection.dir.clone()),
             mlx_model_artifacts_source: mlx_model_artifacts.map(|selection| selection.source),
             mlx_disable_ngram_acceleration: false,
+            mlx_kv_compression: MlxKvCompressionConfig::disabled(),
         }
     }
 }
@@ -211,6 +219,7 @@ impl EngineSessionConfig {
                 .map(|selection| selection.source)
                 .or(default.mlx_model_artifacts_source),
             mlx_disable_ngram_acceleration: request.mlx_disable_ngram_acceleration,
+            mlx_kv_compression: request.mlx_kv_compression,
         })
     }
 
@@ -248,6 +257,7 @@ impl EngineSessionConfig {
             mlx_model_artifacts_dir: request.mlx_model_artifacts_dir,
             mlx_model_artifacts_source: request.mlx_model_artifacts_source,
             mlx_disable_ngram_acceleration: request.mlx_disable_ngram_acceleration,
+            mlx_kv_compression: request.mlx_kv_compression,
         }
     }
 
@@ -1827,6 +1837,7 @@ fn build_mlx_core(config: &EngineSessionConfig) -> Result<EngineCore, EngineSess
         &artifacts,
         DEFAULT_PREFILL_CHUNK,
         config.mlx_disable_ngram_acceleration,
+        config.mlx_kv_compression,
     )
     .map_err(|e| {
         EngineSessionError::MetalRuntime(ax_engine_core::MetalRuntimeError::Generic(e.to_string()))
@@ -2547,7 +2558,9 @@ mod tests {
             hidden_size_per_layer_input: 0,
             vocab_size_per_layer_input: None,
             linear_attention: NativeLinearAttentionConfig::default(),
+            mla_attention: Default::default(),
             moe: ax_engine_core::NativeMoeConfig::default(),
+            glm_router: Default::default(),
             tensors: vec![
                 native_model_tensor(
                     "model.embed_tokens.weight",
@@ -2982,6 +2995,7 @@ sys.exit(17)
             mlx_model_artifacts_dir: Some(Path::new("/tmp/ax-model").to_path_buf()),
             mlx_model_artifacts_source: Some(NativeModelArtifactsSource::ExplicitConfig),
             mlx_disable_ngram_acceleration: true,
+            mlx_kv_compression: MlxKvCompressionConfig::turboquant_shadow(),
         });
 
         assert_eq!(
@@ -3016,6 +3030,10 @@ sys.exit(17)
             Some(NativeModelArtifactsSource::ExplicitConfig)
         );
         assert!(config.mlx_disable_ngram_acceleration);
+        assert_eq!(
+            config.mlx_kv_compression,
+            MlxKvCompressionConfig::turboquant_shadow()
+        );
     }
 
     fn llama_cpp_server_session(server_url: String) -> EngineSession {

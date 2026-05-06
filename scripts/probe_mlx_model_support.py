@@ -63,6 +63,7 @@ def _file_probe(path: Path, markers: list[str] | None = None) -> dict[str, Any]:
 
 def probe_glm4_moe_lite(model_dir: Path, keys: list[str]) -> dict[str, Any]:
     manifest_path = model_dir / "model-manifest.json"
+    manifest: dict[str, Any] = {}
     manifest_ready: bool | None = None
     if manifest_path.exists():
         try:
@@ -122,6 +123,11 @@ def probe_glm4_moe_lite(model_dir: Path, keys: list[str]) -> dict[str, Any]:
         "reference_support": "complete_enough_for_ax_port" if reference_ready else "incomplete",
         "reference_files": reference_files,
         "checkpoint_features": features,
+        "draft_manifest_features": {
+            "mla_attention_configured": bool((manifest.get("mla_attention") or {})),
+            "glm_router_configured": bool((manifest.get("glm_router") or {})),
+            "runtime_ready": manifest_ready,
+        },
         "blockers": blockers,
         "next_steps": [
             "generate and inspect the draft GLM model-manifest.json"

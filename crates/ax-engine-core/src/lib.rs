@@ -49,8 +49,8 @@ pub use request::{
 pub use request_manager::{RequestManager, RequestManagerError};
 pub use runner::{
     DeterministicRunner, EmbeddingPooling, ExecutionRunner, ExecutionStatus, KvWriteSummary,
-    NativeModelBindingSummary, RequestExecutionUpdate, RequestLogitsOutput, ResolvedBlockTable,
-    RunnerInput, RunnerOutput,
+    MlxKvCompressionConfig, MlxKvCompressionMode, MlxTurboQuantPreset, NativeModelBindingSummary,
+    RequestExecutionUpdate, RequestLogitsOutput, ResolvedBlockTable, RunnerInput, RunnerOutput,
 };
 pub use sampling::{
     DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, SamplingParams, StopReason,
@@ -59,6 +59,16 @@ pub use sampling::{
 pub use scheduler::{
     ExecutionBatch, ExecutionItem, ExecutionMode, PositionRange,
     ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB, ROUTE_DECISION_AX_MLX_KV_CAPACITY_TOKENS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_CANDIDATE_TOKEN_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ELIGIBLE_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_COMPRESSED_KIB,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_ESTIMATED_SAVED_KIB,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FULL_PRECISION_KIB,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_HOT_TOKEN_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEY_BITS, ROUTE_DECISION_AX_MLX_KV_COMPRESSION_KEYS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_PRESET, ROUTE_DECISION_AX_MLX_KV_COMPRESSION_RATIO_MILLI,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_REQUEST_SNAPSHOTS,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_STATUS, ROUTE_DECISION_AX_MLX_KV_COMPRESSION_VALUE_BITS,
     ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS, ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
     ROUTE_DECISION_AX_MLX_KV_KEYS, ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB,
     ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS, ROUTE_DECISION_AX_MLX_KV_LOGICAL_KIB,

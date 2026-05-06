@@ -244,9 +244,10 @@ For new MLX architectures, run `scripts/probe_mlx_model_support.py` alongside
 the benchmark check so support claims include both performance evidence and a
 reference-grounded implementation decision. A reference-only benchmark can make
 GLM an implementation candidate, and the converter may now emit a draft GLM
-manifest, but it still cannot promote GLM to repo-owned support until the AX
-graph, smoke test, and AX benchmark rows exist. A partial reference, such as
-the current DeepSeek V4 SwiftLM port that drops
+manifest with explicit MLA attention and router metadata, but it still cannot
+promote GLM to repo-owned support until the AX graph, smoke test, and AX
+benchmark rows exist. A partial reference, such as the current DeepSeek V4
+SwiftLM port that drops
 compressor/indexer and hash-routing tensors, must stay fail-closed.
 
 The delegated route supports text generation through upstream

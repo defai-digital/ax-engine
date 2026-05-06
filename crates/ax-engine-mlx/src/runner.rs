@@ -1941,7 +1941,9 @@ mod tests {
             hidden_size_per_layer_input: 0,
             vocab_size_per_layer_input: None,
             linear_attention: NativeLinearAttentionConfig::default(),
+            mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
+            glm_router: Default::default(),
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",

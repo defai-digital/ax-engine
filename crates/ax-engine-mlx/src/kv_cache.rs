@@ -1,4 +1,7 @@
+use ax_engine_core::{MlxKvCompressionConfig, MlxKvCompressionMode};
 use mlx_sys::{MlxArray, MlxDtype, slice, slice_update, zeros};
+
+use crate::turboquant::packed_kv_bytes_per_token;
 
 /// Pre-allocated chunk size (tokens).  The buffer grows by this amount each time
 /// the logical sequence length exceeds capacity, so the number of grow operations
@@ -76,6 +79,24 @@ pub struct MlxKVCacheUsage {
     pub linear_state_layers: usize,
     pub linear_state_bytes: u64,
     pub growth_count: u64,
+    pub kv_compression: MlxKvCompressionUsage,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MlxKvCompressionUsage {
+    pub policy_enabled: bool,
+    /// 0 disabled, 1 shadow estimate active, 2 short context, 3 no eligible layer.
+    pub status_code: u32,
+    pub preset_code: u32,
+    pub key_bits: u32,
+    pub value_bits: u32,
+    pub eligible_layers: usize,
+    pub candidate_token_layers: usize,
+    pub hot_token_layers: usize,
+    pub full_precision_bytes: u64,
+    pub estimated_compressed_bytes: u64,
+    pub estimated_saved_bytes: u64,
+    pub estimated_ratio_milli: u32,
 }
 
 #[derive(Clone)]
@@ -292,6 +313,30 @@ impl MlxKVCache {
         &self,
         layer_windows: &[Option<usize>],
     ) -> MlxKVCacheUsage {
+        self.usage_snapshot_with_layer_windows_and_compression(
+            layer_windows,
+            MlxKvCompressionConfig::disabled(),
+        )
+    }
+
+    pub fn usage_snapshot_with_layer_windows_and_compression(
+        &self,
+        layer_windows: &[Option<usize>],
+        compression: MlxKvCompressionConfig,
+    ) -> MlxKVCacheUsage {
+        self.usage_snapshot_with_layer_windows_compression_and_layer_eligibility(
+            layer_windows,
+            compression,
+            None,
+        )
+    }
+
+    pub fn usage_snapshot_with_layer_windows_compression_and_layer_eligibility(
+        &self,
+        layer_windows: &[Option<usize>],
+        compression: MlxKvCompressionConfig,
+        compression_eligible_layers: Option<&[bool]>,
+    ) -> MlxKVCacheUsage {
         let mut usage = MlxKVCacheUsage {
             logical_tokens: self.seq_len,
             growth_count: self.growth_count,
@@ -351,6 +396,110 @@ impl MlxKVCache {
                 usage.linear_state_layers = usage.linear_state_layers.saturating_add(1);
                 usage.linear_state_bytes = usage.linear_state_bytes.saturating_add(layer_bytes);
             }
+        }
+
+        usage.kv_compression = self.estimate_kv_compression_usage(
+            layer_windows,
+            compression,
+            compression_eligible_layers,
+        );
+
+        usage
+    }
+
+    fn estimate_kv_compression_usage(
+        &self,
+        layer_windows: &[Option<usize>],
+        compression: MlxKvCompressionConfig,
+        compression_eligible_layers: Option<&[bool]>,
+    ) -> MlxKvCompressionUsage {
+        if !compression.is_enabled() {
+            return MlxKvCompressionUsage::default();
+        }
+
+        let key_bits = compression.preset.key_bits();
+        let value_bits = compression.preset.value_bits();
+        let mut usage = MlxKvCompressionUsage {
+            policy_enabled: true,
+            status_code: 1,
+            preset_code: compression.preset.route_code(),
+            key_bits,
+            value_bits,
+            ..MlxKvCompressionUsage::default()
+        };
+
+        if self.seq_len < compression.min_context_tokens {
+            usage.status_code = 2;
+            return usage;
+        }
+
+        let cold_tokens = self.seq_len.saturating_sub(compression.hot_window_tokens);
+        if cold_tokens == 0 {
+            usage.status_code = 2;
+            return usage;
+        }
+
+        for (layer_idx, lkv) in self.layers.iter().enumerate() {
+            let Some(lkv) = lkv else {
+                continue;
+            };
+            if layer_windows.get(layer_idx).copied().flatten().is_some() {
+                continue;
+            }
+            if let Some(eligible_layers) = compression_eligible_layers
+                && !eligible_layers.get(layer_idx).copied().unwrap_or(false)
+            {
+                continue;
+            }
+
+            usage.eligible_layers = usage.eligible_layers.saturating_add(1);
+            usage.candidate_token_layers = usage.candidate_token_layers.saturating_add(cold_tokens);
+            usage.hot_token_layers = usage.hot_token_layers.saturating_add(
+                self.seq_len
+                    .saturating_sub(cold_tokens)
+                    .min(compression.hot_window_tokens),
+            );
+
+            let elements_per_token = (lkv.n_kv_heads as u64).saturating_mul(lkv.head_dim as u64);
+            let bytes_per_element = lkv.dtype.size_bytes() as u64;
+            let full_precision_per_token = elements_per_token
+                .saturating_mul(bytes_per_element)
+                .saturating_mul(2);
+            let elements_per_token_usize =
+                usize::try_from(elements_per_token).unwrap_or(usize::MAX);
+            let compressed_bytes_per_token =
+                packed_kv_bytes_per_token(elements_per_token_usize, key_bits, value_bits)
+                    .expect("TurboQuant shadow presets use supported packed bit widths")
+                    as u64;
+
+            usage.full_precision_bytes = usage
+                .full_precision_bytes
+                .saturating_add(full_precision_per_token.saturating_mul(cold_tokens as u64));
+            usage.estimated_compressed_bytes = usage
+                .estimated_compressed_bytes
+                .saturating_add(compressed_bytes_per_token.saturating_mul(cold_tokens as u64));
+        }
+
+        if usage.eligible_layers == 0 {
+            usage.status_code = 3;
+            return usage;
+        }
+
+        usage.estimated_saved_bytes = usage
+            .full_precision_bytes
+            .saturating_sub(usage.estimated_compressed_bytes);
+        usage.estimated_ratio_milli = if usage.full_precision_bytes == 0 {
+            0
+        } else {
+            usage
+                .estimated_compressed_bytes
+                .saturating_mul(1000)
+                .saturating_div(usage.full_precision_bytes)
+                .min(u32::MAX as u64) as u32
+        };
+
+        if matches!(compression.mode, MlxKvCompressionMode::TurboQuantShadow) {
+            usage.status_code = 1;
         }
 
         usage
@@ -526,6 +675,110 @@ mod tests {
         assert_eq!(usage.sliding_window_retained_tokens, 128);
         assert_eq!(usage.sliding_window_reclaimable_capacity_tokens, 256);
         assert_eq!(usage.sliding_window_reclaimable_capacity_bytes, 8192);
+    }
+
+    #[test]
+    fn usage_snapshot_does_not_emit_compression_by_default() {
+        let mut cache = MlxKVCache::new(1);
+        let k = zeros(&[1, 2, 600, 4], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 2, 600, 4], MlxDtype::Bfloat16, None);
+
+        cache.append(0, k, v);
+        cache.seq_len = 600;
+
+        let usage = cache.usage_snapshot_with_layer_windows(&[None]);
+        assert_eq!(usage.kv_compression, MlxKvCompressionUsage::default());
+    }
+
+    #[test]
+    fn turboquant_shadow_estimates_full_attention_cold_tokens_only() {
+        let mut cache = MlxKVCache::new(1);
+        let k = zeros(&[1, 2, 600, 4], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 2, 600, 4], MlxDtype::Bfloat16, None);
+
+        cache.append(0, k, v);
+        cache.seq_len = 600;
+
+        let usage = cache.usage_snapshot_with_layer_windows_and_compression(
+            &[None],
+            MlxKvCompressionConfig::turboquant_shadow(),
+        );
+
+        assert!(usage.kv_compression.policy_enabled);
+        assert_eq!(usage.kv_compression.status_code, 1);
+        assert_eq!(usage.kv_compression.preset_code, 1);
+        assert_eq!(usage.kv_compression.key_bits, 8);
+        assert_eq!(usage.kv_compression.value_bits, 4);
+        assert_eq!(usage.kv_compression.eligible_layers, 1);
+        assert_eq!(usage.kv_compression.candidate_token_layers, 344);
+        assert_eq!(usage.kv_compression.hot_token_layers, 256);
+        assert_eq!(usage.kv_compression.full_precision_bytes, 11_008);
+        assert_eq!(usage.kv_compression.estimated_compressed_bytes, 4_128);
+        assert_eq!(usage.kv_compression.estimated_saved_bytes, 6_880);
+        assert_eq!(usage.kv_compression.estimated_ratio_milli, 375);
+    }
+
+    #[test]
+    fn turboquant_shadow_respects_layer_eligibility_mask() {
+        let mut cache = MlxKVCache::new(2);
+        let k0 = zeros(&[1, 2, 600, 4], MlxDtype::Bfloat16, None);
+        let v0 = zeros(&[1, 2, 600, 4], MlxDtype::Bfloat16, None);
+        let k1 = zeros(&[1, 2, 600, 4], MlxDtype::Bfloat16, None);
+        let v1 = zeros(&[1, 2, 600, 4], MlxDtype::Bfloat16, None);
+
+        cache.append(0, k0, v0);
+        cache.append(1, k1, v1);
+        cache.seq_len = 600;
+
+        let usage = cache.usage_snapshot_with_layer_windows_compression_and_layer_eligibility(
+            &[None, None],
+            MlxKvCompressionConfig::turboquant_shadow(),
+            Some(&[false, true]),
+        );
+
+        assert_eq!(usage.kv_compression.status_code, 1);
+        assert_eq!(usage.kv_compression.eligible_layers, 1);
+        assert_eq!(usage.kv_compression.candidate_token_layers, 344);
+
+        let usage = cache.usage_snapshot_with_layer_windows_compression_and_layer_eligibility(
+            &[None, None],
+            MlxKvCompressionConfig::turboquant_shadow(),
+            Some(&[false]),
+        );
+
+        assert_eq!(usage.kv_compression.status_code, 3);
+        assert_eq!(usage.kv_compression.eligible_layers, 0);
+        assert_eq!(usage.kv_compression.candidate_token_layers, 0);
+    }
+
+    #[test]
+    fn turboquant_shadow_does_not_target_short_context_or_sliding_window_layers() {
+        let mut cache = MlxKVCache::new(2);
+        let k = zeros(&[1, 2, 300, 4], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 2, 300, 4], MlxDtype::Bfloat16, None);
+        cache.append(0, k, v);
+        cache.seq_len = 300;
+
+        let usage = cache.usage_snapshot_with_layer_windows_and_compression(
+            &[None, None],
+            MlxKvCompressionConfig::turboquant_shadow(),
+        );
+        assert_eq!(usage.kv_compression.status_code, 2);
+        assert_eq!(usage.kv_compression.candidate_token_layers, 0);
+
+        let mut cache = MlxKVCache::new(1);
+        let k = zeros(&[1, 2, 600, 4], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 2, 600, 4], MlxDtype::Bfloat16, None);
+        cache.append(0, k, v);
+        cache.seq_len = 600;
+
+        let usage = cache.usage_snapshot_with_layer_windows_and_compression(
+            &[Some(512)],
+            MlxKvCompressionConfig::turboquant_shadow(),
+        );
+        assert_eq!(usage.kv_compression.status_code, 3);
+        assert_eq!(usage.kv_compression.eligible_layers, 0);
+        assert_eq!(usage.kv_compression.candidate_token_layers, 0);
     }
 
     #[test]

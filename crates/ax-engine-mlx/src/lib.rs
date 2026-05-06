@@ -6,6 +6,7 @@ pub mod model;
 pub mod ngram_accel;
 pub mod runner;
 pub mod sampling;
+pub mod turboquant;
 pub mod weights;
 
 pub use runner::MlxRunner;

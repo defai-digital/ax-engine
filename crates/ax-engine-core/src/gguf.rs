@@ -817,7 +817,9 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
         hidden_size_per_layer_input: 0,
         vocab_size_per_layer_input: None,
         linear_attention,
+        mla_attention: Default::default(),
         moe: NativeMoeConfig::default(),
+        glm_router: Default::default(),
         tensors,
     };
 

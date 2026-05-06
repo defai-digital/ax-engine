@@ -137,7 +137,7 @@ reference, or unknown architecture with explicit blockers.
 
 | Model | Config model_type | Current AX status | Latest local evidence |
 |---|---|---|---|
-| `mlx-community/GLM-4.7-Flash-4bit` | `glm4_moe_lite` | Draft manifest candidate, not repo-owned AX support yet | `mlx_lm.benchmark` passed on 2026-05-06; converter maps GLM MLA/router roles into a `runtime_status.ready=false` draft manifest; support probe finds complete-enough Apple `mlx-lm` + Apple `mlx-swift-lm` references |
+| `mlx-community/GLM-4.7-Flash-4bit` | `glm4_moe_lite` | Draft manifest candidate, not repo-owned AX support yet | `mlx_lm.benchmark` passed on 2026-05-06; converter maps GLM MLA/router roles and config-derived MLA/router metadata into a `runtime_status.ready=false` draft manifest; support probe finds complete-enough Apple `mlx-lm` + Apple `mlx-swift-lm` references |
 | `mlx-community/DeepSeek-V4-Flash-2bit-DQ` | `deepseek_v4` | Fail closed: partial reference only, not repo-owned AX support | Downloaded on 2026-05-06; `mlx_lm.benchmark` failed with `Model type deepseek_v4 not supported`; support probe finds the available SwiftLM port drops compressor/indexer and `tid2eid` hash-routing weights that are present in the checkpoint |
 
 ## Current Limitations And Problems

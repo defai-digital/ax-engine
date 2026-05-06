@@ -84,6 +84,86 @@ pub struct RunnerOutput {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MlxKvCompressionMode {
+    #[default]
+    Disabled,
+    /// Opt-in accounting-only TurboQuant path. It does not change KV storage or logits.
+    TurboQuantShadow,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MlxTurboQuantPreset {
+    /// 8-bit keys and 4-bit values; conservative first preset from the reference survey.
+    #[default]
+    K8V4,
+    /// 4-bit keys and 4-bit values; useful after quality gates exist.
+    K4V4,
+    /// 3-bit keys and 4-bit values; research-only until accuracy gates promote it.
+    K3V4Research,
+}
+
+impl MlxTurboQuantPreset {
+    pub fn key_bits(self) -> u32 {
+        match self {
+            Self::K8V4 => 8,
+            Self::K4V4 => 4,
+            Self::K3V4Research => 3,
+        }
+    }
+
+    pub fn value_bits(self) -> u32 {
+        4
+    }
+
+    pub fn route_code(self) -> u32 {
+        match self {
+            Self::K8V4 => 1,
+            Self::K4V4 => 2,
+            Self::K3V4Research => 3,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MlxKvCompressionConfig {
+    pub mode: MlxKvCompressionMode,
+    pub preset: MlxTurboQuantPreset,
+    pub hot_window_tokens: usize,
+    pub min_context_tokens: usize,
+}
+
+impl Default for MlxKvCompressionConfig {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
+impl MlxKvCompressionConfig {
+    pub const DEFAULT_HOT_WINDOW_TOKENS: usize = 256;
+    pub const DEFAULT_MIN_CONTEXT_TOKENS: usize = 512;
+
+    pub fn disabled() -> Self {
+        Self {
+            mode: MlxKvCompressionMode::Disabled,
+            preset: MlxTurboQuantPreset::K8V4,
+            hot_window_tokens: Self::DEFAULT_HOT_WINDOW_TOKENS,
+            min_context_tokens: Self::DEFAULT_MIN_CONTEXT_TOKENS,
+        }
+    }
+
+    pub fn turboquant_shadow() -> Self {
+        Self {
+            mode: MlxKvCompressionMode::TurboQuantShadow,
+            ..Self::disabled()
+        }
+    }
+
+    pub fn is_enabled(self) -> bool {
+        !matches!(self.mode, MlxKvCompressionMode::Disabled)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct NativeModelBindingSummary {
     pub bindings_prepared: bool,
     pub buffers_bound: bool,
