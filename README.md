@@ -141,15 +141,12 @@ Recent community-model checks are tracked according to the evidence they have.
 On 2026-05-06, `mlx-community/GLM-4.7-Flash-4bit` was promoted to a repo-owned
 MLX runtime path after the GLM MLA attention, sigmoid router, and latent-KV
 cache contracts landed and an AX server benchmark completed.
-`mlx-community/DeepSeek-V4-Flash-2bit-DQ` downloaded but failed closed because
-upstream `mlx-lm` did not support `model_type=deepseek_v4` in this environment.
 See
 `benchmarks/results/mlx-inference/2026-05-06/README.md` for commands and
 artifacts. Before promoting any additional architecture, run
 `scripts/probe_mlx_model_support.py --model-dir <model-dir>`: GLM now reports
 `repo_owned_runtime_ready` when the runtime-ready manifest and local reference
-files are present. DeepSeek V4 remains fail-closed because the available SwiftLM
-port is partial and drops checkpoint features that affect the forward contract.
+files are present.
 
 ## Limitations
 
@@ -183,18 +180,6 @@ submitting or comparing external rows.
 Gemma 4 E4B benchmark rows are pending; the model manifest and scenario
 manifest are present. See `benchmarks/results/mlx-inference/2026-05-04/README.md`
 for the run command.
-
-### Reference-only MLX checks
-
-These rows use upstream `mlx_lm.benchmark` only. They show whether a community
-MLX model can run today through the reference stack; they are not AX Engine
-repo-owned runtime rows and should not be compared with `ax engine` columns
-until a model manifest, graph implementation, server smoke, and AX benchmark
-artifact exist.
-
-| Model | Repo revision | Status | Prompt tok | mlx_lm prefill tok/s | mlx_lm decode tok/s | Peak memory |
-|---|---|---|---:|---:|---:|---:|
-| mlx-community/DeepSeek-V4-Flash-2bit-DQ | `722bf559b7de93575b2320973cf2002e05bfe6c9` | Downloaded; fail-closed partial reference; benchmark blocked by `mlx_lm`: `Model type deepseek_v4 not supported` | 128 / 512 | - | - | - |
 
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
