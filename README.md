@@ -172,7 +172,7 @@ contract.
 **Apple M5 Max · 128 GB · macOS 26.4.1.** Random-token prompts (mlx_lm seed=0),
 batch=1, prefill_step_size=2048, 3 timed trials + 1 warmup. All rows
 below were refreshed on 2026-05-05 from
-`benchmarks/results/mlx-inference/2026-05-05-rerun/`. `ax engine` is the direct
+`benchmarks/results/mlx-inference/2026-05-05/`. `ax engine` is the direct
 same-policy comparison against `mlx_lm`; `ax engine + n-gram accel` reports
 observed effective throughput, not raw model speed.
 

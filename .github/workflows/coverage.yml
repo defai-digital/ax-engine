@@ -1,0 +1,76 @@
+name: Coverage Report
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  coverage:
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      AX_ALLOW_UNSUPPORTED_HOST: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ensure stable Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Install MLX C library
+        run: brew install mlx-c
+
+      - name: Install Rust coverage tool
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Collect Rust coverage
+        run: |
+          mkdir -p target/coverage
+          cargo llvm-cov --workspace --all-features --lcov --output-path target/coverage/rust-lcov.info
+          cargo llvm-cov report --summary-only | tee target/coverage/rust-summary.txt
+
+      - name: Collect Python coverage
+        run: |
+          python -m venv .venv-coverage
+          source .venv-coverage/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install "maturin>=1.7,<2" coverage
+          python -m maturin develop --quiet
+          AX_ENGINE_RUN_INSTALLED_TESTS=1 python -m coverage run -m unittest discover -s python/tests -v
+          python -m coverage xml -o target/coverage/python-coverage.xml
+          python -m coverage report | tee target/coverage/python-summary.txt
+
+      - name: Write coverage summary
+        run: |
+          {
+            echo "## Coverage Report"
+            echo
+            echo "### Rust"
+            echo '```text'
+            cat target/coverage/rust-summary.txt
+            echo '```'
+            echo
+            echo "### Python"
+            echo '```text'
+            cat target/coverage/python-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            target/coverage/rust-lcov.info
+            target/coverage/rust-summary.txt
+            target/coverage/python-coverage.xml
+            target/coverage/python-summary.txt
