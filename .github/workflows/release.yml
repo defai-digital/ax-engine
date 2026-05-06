@@ -83,11 +83,24 @@ jobs:
           git config user.name "Automatosx"
           git config user.email "automatosx@defai.digital"
 
+          if ! grep -q 'depends_on "mlx-c"' Formula/ax-engine.rb; then
+            ruby -0pi -e 'sub(/  depends_on :macos\n/, "  depends_on \"mlx-c\"\n  depends_on :macos\n")' Formula/ax-engine.rb
+          fi
+
           sed -i '' \
             -e "s|version \"[^\"]*\"|version \"${VERSION}\"|" \
             -e "s|url \"[^\"]*\"|url \"${DOWNLOAD_URL}\"|" \
             -e "s|sha256 \"[^\"]*\"|sha256 \"${SHA256}\"|" \
             Formula/ax-engine.rb
+
+          grep -q 'depends_on "mlx-c"' Formula/ax-engine.rb
+          ruby -c Formula/ax-engine.rb
+
+          brew uninstall --ignore-dependencies ax-engine || true
+          brew uninstall --ignore-dependencies mlx-c || true
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install --formula Formula/ax-engine.rb
+          test -e "$(brew --prefix mlx-c)/lib/libmlxc.dylib"
+          HOMEBREW_NO_AUTO_UPDATE=1 brew test ax-engine
 
           git add Formula/ax-engine.rb
           git diff --cached --quiet || git commit -m "chore: update ax-engine to v${VERSION}"
