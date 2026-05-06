@@ -94,6 +94,94 @@ impl LinearAttentionConfig {
     }
 }
 
+/// GLM4MoELite MLA attention dimensions extracted from the manifest.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlmMlaAttentionConfig {
+    pub q_lora_rank: usize,
+    pub kv_lora_rank: usize,
+    pub qk_nope_head_dim: usize,
+    pub qk_rope_head_dim: usize,
+    pub value_head_dim: usize,
+    pub q_head_dim: usize,
+    pub query_scale: f32,
+}
+
+impl GlmMlaAttentionConfig {
+    fn from_manifest(m: &NativeModelManifest) -> Option<Self> {
+        let cfg = &m.mla_attention;
+        if !cfg.is_enabled() {
+            return None;
+        }
+
+        let q_lora_rank = cfg
+            .q_lora_rank
+            .expect("validated mla_attention.q_lora_rank") as usize;
+        let kv_lora_rank = cfg
+            .kv_lora_rank
+            .expect("validated mla_attention.kv_lora_rank") as usize;
+        let qk_nope_head_dim =
+            cfg.qk_nope_head_dim
+                .expect("validated mla_attention.qk_nope_head_dim") as usize;
+        let qk_rope_head_dim =
+            cfg.qk_rope_head_dim
+                .expect("validated mla_attention.qk_rope_head_dim") as usize;
+        let value_head_dim = cfg
+            .value_head_dim
+            .expect("validated mla_attention.value_head_dim") as usize;
+        let q_head_dim = qk_nope_head_dim + qk_rope_head_dim;
+
+        Some(Self {
+            q_lora_rank,
+            kv_lora_rank,
+            qk_nope_head_dim,
+            qk_rope_head_dim,
+            value_head_dim,
+            q_head_dim,
+            query_scale: 1.0 / (q_head_dim as f32).sqrt(),
+        })
+    }
+
+    pub fn latent_kv_cache_width(&self) -> usize {
+        self.kv_lora_rank
+    }
+
+    pub fn rope_key_cache_width(&self) -> usize {
+        self.qk_rope_head_dim
+    }
+}
+
+/// GLM4MoELite router contract extracted from mlx-lm/glm4_moe_lite.py.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlmRouterConfig {
+    pub first_dense_layer_count: usize,
+    pub routed_scaling_factor: f32,
+    pub has_shared_experts: bool,
+}
+
+impl GlmRouterConfig {
+    fn from_manifest(m: &NativeModelManifest) -> Option<Self> {
+        let cfg = &m.glm_router;
+        if !cfg.is_enabled() {
+            return None;
+        }
+
+        Some(Self {
+            first_dense_layer_count: cfg
+                .first_dense_layer_count
+                .expect("validated glm_router.first_dense_layer_count")
+                as usize,
+            routed_scaling_factor: cfg
+                .routed_scaling_factor
+                .expect("validated glm_router.routed_scaling_factor"),
+            has_shared_experts: cfg.has_shared_experts,
+        })
+    }
+
+    pub fn is_moe_layer(&self, layer_idx: usize) -> bool {
+        layer_idx >= self.first_dense_layer_count
+    }
+}
+
 /// Hyperparameters extracted from the manifest.
 #[derive(Clone, Debug)]
 pub struct ModelConfig {
@@ -128,6 +216,10 @@ pub struct ModelConfig {
     pub hidden_size_per_layer_input: usize,
     /// Qwen3.5 gated-delta linear-attention config, when present.
     pub linear_attention: Option<LinearAttentionConfig>,
+    /// GLM4MoELite MLA attention config, when present.
+    pub glm_mla_attention: Option<GlmMlaAttentionConfig>,
+    /// GLM4MoELite sigmoid router config, when present.
+    pub glm_router: Option<GlmRouterConfig>,
 }
 
 impl ModelConfig {
@@ -176,6 +268,8 @@ impl ModelConfig {
             moe_norm_topk_prob: m.moe_norm_topk_prob,
             hidden_size_per_layer_input: m.hidden_size_per_layer_input as usize,
             linear_attention: LinearAttentionConfig::from_manifest(m),
+            glm_mla_attention: GlmMlaAttentionConfig::from_manifest(m),
+            glm_router: GlmRouterConfig::from_manifest(m),
         }
     }
 
@@ -183,6 +277,12 @@ impl ModelConfig {
         self.linear_attention
             .as_ref()
             .is_some_and(|linear| linear.is_linear_layer(layer_idx))
+    }
+
+    pub fn is_glm_moe_layer(&self, layer_idx: usize) -> bool {
+        self.glm_router
+            .as_ref()
+            .is_some_and(|router| router.is_moe_layer(layer_idx))
     }
 }
 
@@ -1502,6 +1602,7 @@ fn qw_gather(
 mod tests {
     use super::*;
     use crate::weights::LinearAttentionWeights;
+    use ax_engine_core::model::{NativeGlmRouterConfig, NativeMlaAttentionConfig};
     use ax_engine_core::{
         NativeLinearAttentionConfig, NativeMoeConfig, NativeRuntimeStatus, NativeTensorFormat,
     };
@@ -1532,6 +1633,8 @@ mod tests {
             moe_norm_topk_prob: false,
             hidden_size_per_layer_input: 0,
             linear_attention: None,
+            glm_mla_attention: None,
+            glm_router: None,
         }
     }
 
@@ -1621,6 +1724,66 @@ mod tests {
             mla_attention: Default::default(),
             moe: NativeMoeConfig::default(),
             glm_router: Default::default(),
+            tensors: Vec::new(),
+        }
+    }
+
+    fn glm4_moe_lite_manifest() -> NativeModelManifest {
+        NativeModelManifest {
+            schema_version: ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
+            model_family: "glm4_moe_lite".to_string(),
+            tensor_format: NativeTensorFormat::Safetensors,
+            source_quantization: None,
+            runtime_status: NativeRuntimeStatus {
+                ready: false,
+                blockers: vec![
+                    "GLM4MoELite runtime support is implemented in staged slices".to_string(),
+                ],
+                notes: Vec::new(),
+            },
+            layer_count: 3,
+            hidden_size: 2048,
+            intermediate_size: 8192,
+            attention_head_count: 20,
+            attention_head_dim: 256,
+            kv_head_count: 20,
+            vocab_size: 151_552,
+            tie_word_embeddings: false,
+            rope_theta: Some(1_000_000),
+            rope_theta_swa: None,
+            query_pre_attn_scalar: None,
+            attention_logit_softcap: None,
+            attn_output_gate: false,
+            partial_rotary_factor: None,
+            attention_value_from_key_layers: Vec::new(),
+            attention_v_norm_no_scale_layers: Vec::new(),
+            global_head_dim: None,
+            sliding_window_size: None,
+            layer_types: Vec::new(),
+            kv_shared_source_layers: BTreeMap::new(),
+            final_logit_softcapping: None,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: true,
+            hidden_size_per_layer_input: 0,
+            vocab_size_per_layer_input: None,
+            linear_attention: NativeLinearAttentionConfig::default(),
+            mla_attention: NativeMlaAttentionConfig {
+                q_lora_rank: Some(768),
+                kv_lora_rank: Some(512),
+                qk_nope_head_dim: Some(192),
+                qk_rope_head_dim: Some(64),
+                value_head_dim: Some(256),
+            },
+            moe: NativeMoeConfig {
+                expert_count: Some(64),
+                experts_per_token: Some(4),
+                expert_intermediate_size: Some(1536),
+            },
+            glm_router: NativeGlmRouterConfig {
+                first_dense_layer_count: Some(1),
+                routed_scaling_factor: Some(1.8),
+                has_shared_experts: true,
+            },
             tensors: Vec::new(),
         }
     }
@@ -1814,6 +1977,8 @@ mod tests {
             .as_ref()
             .expect("linear attention config");
 
+        assert!(cfg.glm_mla_attention.is_none());
+        assert!(cfg.glm_router.is_none());
         assert_eq!(linear.full_attention_interval, 4);
         assert_eq!(linear.key_dim(), 4);
         assert_eq!(linear.value_dim(), 6);
@@ -1822,6 +1987,39 @@ mod tests {
         assert!(cfg.is_linear_attention_layer(1));
         assert!(cfg.is_linear_attention_layer(2));
         assert!(!cfg.is_linear_attention_layer(3));
+    }
+
+    #[test]
+    fn glm_mla_attention_config_matches_reference_shape_contract() {
+        let cfg = ModelConfig::from_manifest(&glm4_moe_lite_manifest());
+        let mla = cfg
+            .glm_mla_attention
+            .as_ref()
+            .expect("GLM MLA attention config");
+
+        assert_eq!(mla.q_lora_rank, 768);
+        assert_eq!(mla.kv_lora_rank, 512);
+        assert_eq!(mla.qk_nope_head_dim, 192);
+        assert_eq!(mla.qk_rope_head_dim, 64);
+        assert_eq!(mla.value_head_dim, 256);
+        assert_eq!(mla.q_head_dim, 256);
+        assert_eq!(mla.latent_kv_cache_width(), 512);
+        assert_eq!(mla.rope_key_cache_width(), 64);
+        assert!((mla.query_scale - (1.0 / 256_f32.sqrt())).abs() < f32::EPSILON);
+        assert_eq!(cfg.query_scale, mla.query_scale);
+    }
+
+    #[test]
+    fn glm_router_config_matches_reference_dense_moe_split() {
+        let cfg = ModelConfig::from_manifest(&glm4_moe_lite_manifest());
+        let router = cfg.glm_router.as_ref().expect("GLM router config");
+
+        assert_eq!(router.first_dense_layer_count, 1);
+        assert!((router.routed_scaling_factor - 1.8).abs() < f32::EPSILON);
+        assert!(router.has_shared_experts);
+        assert!(!cfg.is_glm_moe_layer(0));
+        assert!(cfg.is_glm_moe_layer(1));
+        assert!(cfg.is_glm_moe_layer(2));
     }
 
     #[test]
