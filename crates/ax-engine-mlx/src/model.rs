@@ -1,9 +1,9 @@
 use mlx_sys::{
     MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argpartition_axis, argsort_axis,
-    astype, concatenate, dequantize, divide, expand_dims, expand_dims_axes, gather_mm, gather_qmm,
-    gelu, gelu_approx, matmul, multiply, quantized_matmul, reshape, rms_norm, rope,
-    scaled_dot_product_attention_with_mask, slice_last_dim, softmax, sum_axis, take,
-    take_along_axis, tanh, transpose, where_cond, zeros,
+    astype, broadcast_to, concatenate, dequantize, divide, expand_dims, expand_dims_axes,
+    gather_mm, gather_qmm, gelu, gelu_approx, matmul, multiply, put_along_axis, quantized_matmul,
+    reshape, rms_norm, rope, scaled_dot_product_attention_with_mask, slice, slice_last_dim,
+    softmax, sum_axis, take, take_along_axis, tanh, transpose, where_cond, zeros,
 };
 
 use ax_engine_core::NativeModelManifest;
@@ -1209,89 +1209,97 @@ fn glm_mla_causal_positional_scores(
     where_cond(&mask, positional_scores, &masked_value, None)
 }
 
-#[allow(dead_code)] // Staged GLM contract; wired after MLA attention path lands.
+/// Prefill path: `kv_latent [B,1,seq,kv_lora_rank] @ embed_q [n_heads,kv_lora_rank,qk_nope_head_dim]`
+/// → `[B,n_heads,seq,qk_nope_head_dim]`.  Uses quantized_matmul (transpose=false) so the 4-bit
+/// packed weight is never materialized as float — equivalent to mlx-lm QuantizedMultiLinear(transpose=False).
 fn glm_mla_embed_q_prefill(cfg: &ModelConfig, w: &LayerWeights, kv_latent: &MlxArray) -> MlxArray {
     let mla_cfg = cfg
         .glm_mla_attention
         .as_ref()
         .expect("GLM MLA attention config");
     let mla_w = w.glm_mla_attn.as_ref().expect("GLM MLA attention weights");
-    let weight = glm_mla_embed_q_heads(cfg, mla_cfg, mla_w);
-    matmul(kv_latent, &weight, None)
+    let embed_q = &mla_w.embed_q;
+    if let Some(scales) = &embed_q.scales {
+        quantized_matmul(
+            kv_latent,
+            &embed_q.weight,
+            scales,
+            embed_q.biases.as_ref(),
+            false,
+            Some(embed_q.group_size),
+            Some(embed_q.bits),
+            None,
+        )
+    } else {
+        let weight = reshape(
+            &embed_q.weight,
+            &[cfg.n_heads as i32, mla_cfg.kv_lora_rank as i32, mla_cfg.qk_nope_head_dim as i32],
+            None,
+        );
+        matmul(kv_latent, &weight, None)
+    }
 }
 
-#[allow(dead_code)] // Staged GLM contract; wired after MLA attention path lands.
+/// Decode path: `q_nope [B,n_heads,1,qk_nope_head_dim] @ embed_q.T [n_heads,qk_nope_head_dim,kv_lora_rank]`
+/// → `[B,n_heads,1,kv_lora_rank]`.  Uses quantized_matmul (transpose=true) — equivalent to
+/// mlx-lm QuantizedMultiLinear(transpose=True).
 fn glm_mla_embed_q_decode(cfg: &ModelConfig, w: &LayerWeights, q_nope: &MlxArray) -> MlxArray {
     let mla_cfg = cfg
         .glm_mla_attention
         .as_ref()
         .expect("GLM MLA attention config");
     let mla_w = w.glm_mla_attn.as_ref().expect("GLM MLA attention weights");
-    let weight = glm_mla_embed_q_heads(cfg, mla_cfg, mla_w);
-    let weight = transpose(&weight, &[0, 2, 1], None);
-    matmul(q_nope, &weight, None)
+    let embed_q = &mla_w.embed_q;
+    if let Some(scales) = &embed_q.scales {
+        quantized_matmul(
+            q_nope,
+            &embed_q.weight,
+            scales,
+            embed_q.biases.as_ref(),
+            true,
+            Some(embed_q.group_size),
+            Some(embed_q.bits),
+            None,
+        )
+    } else {
+        let weight = reshape(
+            &embed_q.weight,
+            &[cfg.n_heads as i32, mla_cfg.kv_lora_rank as i32, mla_cfg.qk_nope_head_dim as i32],
+            None,
+        );
+        let weight = transpose(&weight, &[0, 2, 1], None);
+        matmul(q_nope, &weight, None)
+    }
 }
 
-#[allow(dead_code)] // Staged GLM contract; wired after MLA attention path lands.
+/// `latent @ unembed_out.T`: maps latent KV space → value head space.
+/// Uses quantized_matmul (transpose=true) — equivalent to mlx-lm QuantizedMultiLinear(transpose=True).
 fn glm_mla_unembed_out(cfg: &ModelConfig, w: &LayerWeights, latent: &MlxArray) -> MlxArray {
     let mla_cfg = cfg
         .glm_mla_attention
         .as_ref()
         .expect("GLM MLA attention config");
     let mla_w = w.glm_mla_attn.as_ref().expect("GLM MLA attention weights");
-    let weight = glm_mla_unembed_out_heads(cfg, mla_cfg, mla_w);
-    let weight = transpose(&weight, &[0, 2, 1], None);
-    matmul(latent, &weight, None)
-}
-
-#[allow(dead_code)] // Staged GLM contract; wired after MLA attention path lands.
-fn glm_mla_embed_q_heads(
-    cfg: &ModelConfig,
-    mla_cfg: &GlmMlaAttentionConfig,
-    mla_w: &crate::weights::GlmMlaAttentionWeights,
-) -> MlxArray {
-    let weight = glm_mla_multilinear_weight(&mla_w.embed_q);
-    reshape(
-        &weight,
-        &[
-            cfg.n_heads as i32,
-            mla_cfg.kv_lora_rank as i32,
-            mla_cfg.qk_nope_head_dim as i32,
-        ],
-        None,
-    )
-}
-
-#[allow(dead_code)] // Staged GLM contract; wired after MLA attention path lands.
-fn glm_mla_unembed_out_heads(
-    cfg: &ModelConfig,
-    mla_cfg: &GlmMlaAttentionConfig,
-    mla_w: &crate::weights::GlmMlaAttentionWeights,
-) -> MlxArray {
-    let weight = glm_mla_multilinear_weight(&mla_w.unembed_out);
-    reshape(
-        &weight,
-        &[
-            cfg.n_heads as i32,
-            mla_cfg.value_head_dim as i32,
-            mla_cfg.kv_lora_rank as i32,
-        ],
-        None,
-    )
-}
-
-fn glm_mla_multilinear_weight(weight: &QuantizedWeight) -> MlxArray {
-    if let Some(scales) = &weight.scales {
-        dequantize(
-            &weight.weight,
+    let unembed_out = &mla_w.unembed_out;
+    if let Some(scales) = &unembed_out.scales {
+        quantized_matmul(
+            latent,
+            &unembed_out.weight,
             scales,
-            weight.biases.as_ref(),
-            Some(weight.group_size),
-            Some(weight.bits),
+            unembed_out.biases.as_ref(),
+            true,
+            Some(unembed_out.group_size),
+            Some(unembed_out.bits),
             None,
         )
     } else {
-        weight.weight.clone()
+        let weight = reshape(
+            &unembed_out.weight,
+            &[cfg.n_heads as i32, mla_cfg.value_head_dim as i32, mla_cfg.kv_lora_rank as i32],
+            None,
+        );
+        let weight = transpose(&weight, &[0, 2, 1], None);
+        matmul(latent, &weight, None)
     }
 }
 
@@ -1716,18 +1724,10 @@ pub(crate) fn moe_router_glm_from_logits(
     correction_bias: &MlxArray,
 ) -> (MlxArray, MlxArray) {
     let router = cfg.glm_router.as_ref().expect("GLM router config");
-    assert_eq!(
-        router.n_group, 1,
-        "grouped GLM router selection is a separate implementation slice"
-    );
-    assert_eq!(
-        router.topk_group, 1,
-        "grouped GLM router selection is a separate implementation slice"
-    );
-
     let last_axis = logits.ndim() as i32 - 1;
     let scores = mlx_sys::ops::sigmoid(&astype(logits, MlxDtype::Float32, None), None);
     let selection_scores = add(&scores, correction_bias, None);
+    let selection_scores = glm_router_apply_group_selection(cfg, router, &selection_scores);
     let (top_k_indices, _) = top_k_by_argpartition(
         &selection_scores,
         cfg.moe_expert_count,
@@ -1752,6 +1752,78 @@ pub(crate) fn moe_router_glm_from_logits(
         top_k_indices,
         scale_hidden(&top_k_weights, router.routed_scaling_factor),
     )
+}
+
+fn glm_router_apply_group_selection(
+    cfg: &ModelConfig,
+    router: &GlmRouterConfig,
+    selection_scores: &MlxArray,
+) -> MlxArray {
+    if router.n_group <= 1 {
+        return selection_scores.clone();
+    }
+
+    assert!(
+        cfg.moe_expert_count.is_multiple_of(router.n_group),
+        "GLM expert count must divide evenly across router groups"
+    );
+    assert!(
+        router.topk_group <= router.n_group,
+        "GLM topk_group must be <= n_group"
+    );
+    let zero_group_count = router.n_group - router.topk_group;
+    if zero_group_count == 0 {
+        return selection_scores.clone();
+    }
+
+    let shape = selection_scores.shape();
+    assert_eq!(
+        shape.len(),
+        3,
+        "GLM router scores must be [batch, seq, experts]"
+    );
+    let batch = shape[0];
+    let seq = shape[1];
+    let experts_per_group = cfg.moe_expert_count / router.n_group;
+    assert!(
+        experts_per_group >= 2,
+        "GLM grouped router requires at least two experts per group"
+    );
+
+    let grouped = reshape(
+        selection_scores,
+        &[batch, seq, router.n_group as i32, experts_per_group as i32],
+        None,
+    );
+    let (_, group_top2) = top_k_by_argpartition(&grouped, experts_per_group, 2, false);
+    let group_scores = sum_axis(&group_top2, -1, true, None);
+    let group_axis = group_scores.ndim() as i32 - 2;
+    let group_idx = argpartition_axis(
+        &group_scores,
+        (zero_group_count as i32) - 1,
+        group_axis,
+        None,
+    );
+    let group_idx = slice(
+        &group_idx,
+        &[0, 0, 0, 0],
+        &[batch, seq, zero_group_count as i32, 1],
+        &[1, 1, 1, 1],
+        None,
+    );
+    let group_idx = broadcast_to(
+        &group_idx,
+        &[
+            batch,
+            seq,
+            zero_group_count as i32,
+            experts_per_group as i32,
+        ],
+        None,
+    );
+    let zero = scalar_like(0.0, grouped.dtype());
+    let masked = put_along_axis(&grouped, &group_idx, &zero, group_axis, None);
+    reshape(&masked, &[batch, seq, cfg.moe_expert_count as i32], None)
 }
 
 /// Pick top-k elements via argpartition and optionally re-apply softmax.
@@ -2588,6 +2660,40 @@ mod tests {
         selected.sort_unstable();
         assert_eq!(selected, vec![1, 3]);
         assert_eq!(weights.shape(), vec![1, 1, 2]);
+        for weight in weights.data_f32() {
+            assert!((*weight - 0.9).abs() < 1e-5, "{weight}");
+        }
+    }
+
+    #[test]
+    fn glm_router_group_selection_masks_unselected_groups() {
+        let mut manifest = glm4_moe_lite_manifest();
+        manifest.moe.expert_count = Some(4);
+        manifest.moe.experts_per_token = Some(2);
+        manifest.glm_router.n_group = Some(2);
+        manifest.glm_router.topk_group = Some(1);
+        let cfg = ModelConfig::from_manifest(&manifest);
+        let logits_data = [0.0_f32, 0.0, 0.0, 0.0];
+        let logits = MlxArray::from_raw_data(
+            logits_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&logits_data),
+            &[1, 1, 4],
+            MlxDtype::Float32,
+        );
+        let bias_data = [10.0_f32, 10.0, 0.0, 0.0];
+        let bias = MlxArray::from_raw_data(
+            bias_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&bias_data),
+            &[1, 1, 4],
+            MlxDtype::Float32,
+        );
+
+        let (indices, weights) = moe_router_glm_from_logits(&cfg, &logits, &bias);
+        eval(&[&indices, &weights]);
+
+        let mut selected = indices.data_u32().to_vec();
+        selected.sort_unstable();
+        assert_eq!(selected, vec![0, 1]);
         for weight in weights.data_f32() {
             assert!((*weight - 0.9).abs() < 1e-5, "{weight}");
         }
