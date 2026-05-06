@@ -77,6 +77,23 @@ pub struct QuantizedValueGroups {
     pub packed_values: Vec<u8>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct TurboQuantDecodeHeadComparison {
+    pub head_index: usize,
+    pub vector_dim: usize,
+    pub max_abs_diff: f32,
+    pub mean_abs_diff: f32,
+    pub cosine_similarity: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TurboQuantDecodeComparisonReport {
+    pub heads: Vec<TurboQuantDecodeHeadComparison>,
+    pub max_abs_diff: f32,
+    pub mean_abs_diff: f32,
+    pub min_cosine_similarity: f32,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TurboQuantLayerSupportReason {
     Eligible,
@@ -470,6 +487,16 @@ impl TurboQuantCompressedBlockBuffer {
                 self.debug_decode_attention_for_head(query, head_index, token_count)
             })
             .collect()
+    }
+
+    pub fn debug_compare_attention_for_all_heads(
+        &self,
+        queries: &[Vec<f32>],
+        expected_outputs: &[Vec<f32>],
+        token_count: usize,
+    ) -> Result<TurboQuantDecodeComparisonReport, TurboQuantCodecError> {
+        let actual_outputs = self.debug_decode_attention_for_all_heads(queries, token_count)?;
+        compare_decode_outputs(expected_outputs, &actual_outputs)
     }
 
     fn validate_slot_vectors(
@@ -946,6 +973,73 @@ pub fn reference_decode_attention(
     Ok(output)
 }
 
+pub fn compare_decode_outputs(
+    expected_outputs: &[Vec<f32>],
+    actual_outputs: &[Vec<f32>],
+) -> Result<TurboQuantDecodeComparisonReport, TurboQuantCodecError> {
+    if expected_outputs.len() != actual_outputs.len() {
+        return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+            expected: expected_outputs.len(),
+            actual: actual_outputs.len(),
+        });
+    }
+
+    let mut heads = Vec::with_capacity(expected_outputs.len());
+    let mut total_abs_diff = 0.0f32;
+    let mut total_elements = 0usize;
+    let mut max_abs_diff = 0.0f32;
+    let mut min_cosine_similarity = 1.0f32;
+
+    for (head_index, (expected, actual)) in expected_outputs.iter().zip(actual_outputs).enumerate()
+    {
+        if expected.len() != actual.len() {
+            return Err(TurboQuantCodecError::MismatchedVectorDimension {
+                expected: expected.len(),
+                actual: actual.len(),
+            });
+        }
+
+        let mut head_total_abs_diff = 0.0f32;
+        let mut head_max_abs_diff = 0.0f32;
+        for (expected, actual) in expected.iter().zip(actual) {
+            let diff = (expected - actual).abs();
+            head_total_abs_diff += diff;
+            head_max_abs_diff = head_max_abs_diff.max(diff);
+        }
+
+        let vector_dim = expected.len();
+        let head_mean_abs_diff = if vector_dim == 0 {
+            0.0
+        } else {
+            head_total_abs_diff / vector_dim as f32
+        };
+        let cosine_similarity = vector_cosine_similarity(expected, actual);
+
+        max_abs_diff = max_abs_diff.max(head_max_abs_diff);
+        total_abs_diff += head_total_abs_diff;
+        total_elements = total_elements.saturating_add(vector_dim);
+        min_cosine_similarity = min_cosine_similarity.min(cosine_similarity);
+        heads.push(TurboQuantDecodeHeadComparison {
+            head_index,
+            vector_dim,
+            max_abs_diff: head_max_abs_diff,
+            mean_abs_diff: head_mean_abs_diff,
+            cosine_similarity,
+        });
+    }
+
+    Ok(TurboQuantDecodeComparisonReport {
+        heads,
+        max_abs_diff,
+        mean_abs_diff: if total_elements == 0 {
+            0.0
+        } else {
+            total_abs_diff / total_elements as f32
+        },
+        min_cosine_similarity,
+    })
+}
+
 fn validate_attention_token(
     query_dim: usize,
     value_dim: usize,
@@ -1287,6 +1381,17 @@ fn validate_centroid_count(bit_width: u32, centroids: &[f32]) -> Result<(), Turb
 
 fn l2_norm(values: &[f32]) -> f32 {
     values.iter().map(|value| value * value).sum::<f32>().sqrt()
+}
+
+fn vector_cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
+    let dot = left
+        .iter()
+        .zip(right)
+        .map(|(left, right)| left * right)
+        .sum::<f32>();
+    let left_norm = l2_norm(left).max(f32::EPSILON);
+    let right_norm = l2_norm(right).max(f32::EPSILON);
+    dot / (left_norm * right_norm)
 }
 
 #[cfg(test)]
@@ -2034,6 +2139,115 @@ mod tests {
         assert_eq!(
             error,
             TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: 2,
+                actual: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn compare_decode_outputs_reports_per_head_error_metrics() {
+        let expected = vec![vec![1.0, 2.0, 3.0], vec![0.5, -0.5, 1.0]];
+        let actual = vec![vec![1.0, 2.25, 2.5], vec![0.4, -0.4, 1.2]];
+
+        let report = compare_decode_outputs(&expected, &actual).expect("compare outputs");
+
+        assert_eq!(report.heads.len(), 2);
+        assert_eq!(report.heads[0].head_index, 0);
+        assert_eq!(report.heads[0].vector_dim, 3);
+        assert!((report.heads[0].max_abs_diff - 0.5).abs() < 1e-6);
+        assert!((report.heads[0].mean_abs_diff - 0.25).abs() < 1e-6);
+        assert_eq!(report.heads[1].head_index, 1);
+        assert!((report.heads[1].max_abs_diff - 0.2).abs() < 1e-6);
+        assert!((report.max_abs_diff - 0.5).abs() < 1e-6);
+        assert!((report.mean_abs_diff - 1.15 / 6.0).abs() < 1e-6);
+        assert!(report.min_cosine_similarity > 0.98);
+    }
+
+    #[test]
+    fn compressed_block_buffer_compares_all_head_decode_against_full_precision_oracle() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let tokens = (0..4)
+            .map(|token_index| {
+                vec![
+                    (
+                        (0..8)
+                            .map(|idx| token_index as f32 * 0.06 + idx as f32 * 0.05 - 0.25)
+                            .collect::<Vec<_>>(),
+                        (0..8)
+                            .map(|idx| token_index as f32 * 0.04 - idx as f32 * 0.015)
+                            .collect::<Vec<_>>(),
+                    ),
+                    (
+                        (0..8)
+                            .map(|idx| token_index as f32 * -0.04 + idx as f32 * 0.06 + 0.15)
+                            .collect::<Vec<_>>(),
+                        (0..8)
+                            .map(|idx| token_index as f32 * 0.03 + idx as f32 * 0.025 - 0.2)
+                            .collect::<Vec<_>>(),
+                    ),
+                ]
+            })
+            .collect::<Vec<_>>();
+        for (token_index, heads) in tokens.iter().enumerate() {
+            buffer
+                .write_token(token_index, heads)
+                .expect("token write should work");
+        }
+        let queries = vec![
+            vec![0.2, -0.1, 0.4, 0.1, -0.3, 0.5, 0.0, -0.2],
+            vec![0.0, 0.3, -0.2, 0.6, -0.1, 0.2, 0.4, -0.5],
+        ];
+        let expected_outputs = queries
+            .iter()
+            .enumerate()
+            .map(|(head_index, query)| {
+                let history = tokens
+                    .iter()
+                    .map(|heads| heads[head_index].clone())
+                    .collect::<Vec<_>>();
+                reference_decode_attention(query, &history).expect("full precision decode")
+            })
+            .collect::<Vec<_>>();
+
+        let report = buffer
+            .debug_compare_attention_for_all_heads(&queries, &expected_outputs, tokens.len())
+            .expect("decode comparison should work");
+
+        assert_eq!(report.heads.len(), 2);
+        assert!(report.max_abs_diff < 0.02, "report was {report:?}");
+        assert!(report.mean_abs_diff < 0.01, "report was {report:?}");
+        assert!(
+            report.min_cosine_similarity > 0.999,
+            "report was {report:?}"
+        );
+    }
+
+    #[test]
+    fn compare_decode_outputs_fails_closed_for_shape_mismatch() {
+        let error = compare_decode_outputs(&[vec![1.0, 2.0]], &[vec![1.0], vec![2.0]])
+            .expect_err("head count mismatch should fail");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: 1,
+                actual: 2,
+            }
+        );
+
+        let error = compare_decode_outputs(&[vec![1.0, 2.0]], &[vec![1.0]])
+            .expect_err("vector dimension mismatch should fail");
+        assert_eq!(
+            error,
+            TurboQuantCodecError::MismatchedVectorDimension {
                 expected: 2,
                 actual: 1,
             }
