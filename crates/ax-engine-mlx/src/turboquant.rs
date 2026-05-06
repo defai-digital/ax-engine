@@ -94,6 +94,30 @@ pub struct TurboQuantDecodeComparisonReport {
     pub min_cosine_similarity: f32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TurboQuantDecodeQualityProfile {
+    StrictDebug,
+    ReferenceK8V4,
+    ResearchLoose,
+}
+
+impl TurboQuantDecodeQualityProfile {
+    pub const fn gate(self) -> TurboQuantDecodeQualityGate {
+        match self {
+            Self::StrictDebug => TurboQuantDecodeQualityGate::STRICT_DEBUG,
+            Self::ReferenceK8V4 => TurboQuantDecodeQualityGate::REFERENCE_K8V4,
+            Self::ResearchLoose => TurboQuantDecodeQualityGate::RESEARCH_LOOSE,
+        }
+    }
+
+    pub const fn for_quantization_preset(preset: MlxTurboQuantPreset) -> Self {
+        match preset {
+            MlxTurboQuantPreset::K8V4 => Self::ReferenceK8V4,
+            MlxTurboQuantPreset::K4V4 | MlxTurboQuantPreset::K3V4Research => Self::ResearchLoose,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TurboQuantDecodeQualityGate {
     pub max_abs_diff: f32,
@@ -2290,6 +2314,36 @@ mod tests {
                     >= TurboQuantDecodeQualityGate::RESEARCH_LOOSE.min_cosine_similarity
             );
         }
+    }
+
+    #[test]
+    fn decode_quality_profiles_map_quantization_presets_to_gates() {
+        assert_eq!(
+            TurboQuantDecodeQualityProfile::StrictDebug.gate(),
+            TurboQuantDecodeQualityGate::STRICT_DEBUG
+        );
+        assert_eq!(
+            TurboQuantDecodeQualityProfile::ReferenceK8V4.gate(),
+            TurboQuantDecodeQualityGate::REFERENCE_K8V4
+        );
+        assert_eq!(
+            TurboQuantDecodeQualityProfile::ResearchLoose.gate(),
+            TurboQuantDecodeQualityGate::RESEARCH_LOOSE
+        );
+        assert_eq!(
+            TurboQuantDecodeQualityProfile::for_quantization_preset(MlxTurboQuantPreset::K8V4),
+            TurboQuantDecodeQualityProfile::ReferenceK8V4
+        );
+        assert_eq!(
+            TurboQuantDecodeQualityProfile::for_quantization_preset(MlxTurboQuantPreset::K4V4),
+            TurboQuantDecodeQualityProfile::ResearchLoose
+        );
+        assert_eq!(
+            TurboQuantDecodeQualityProfile::for_quantization_preset(
+                MlxTurboQuantPreset::K3V4Research
+            ),
+            TurboQuantDecodeQualityProfile::ResearchLoose
+        );
     }
 
     #[test]
