@@ -494,6 +494,18 @@ pub struct TurboQuantFusedDecodePromotionReadiness {
     pub benchmark_estimate: TurboQuantFusedDecodeBenchmarkEstimate,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct TurboQuantFusedDecodePromotionEvidence {
+    pub readiness: TurboQuantFusedDecodePromotionReadiness,
+    pub quality_passed: bool,
+    pub max_abs_diff: f32,
+    pub max_abs_diff_limit: f32,
+    pub mean_abs_diff: f32,
+    pub mean_abs_diff_limit: f32,
+    pub min_cosine_similarity: f32,
+    pub min_cosine_similarity_limit: f32,
+}
+
 impl TurboQuantFusedDecodePromotionReadiness {
     pub fn is_ready(self) -> bool {
         self.status == TurboQuantFusedDecodePromotionStatus::Ready
@@ -598,6 +610,24 @@ impl TurboQuantFusedDecodeLaunchDescriptor {
             preset: self.preset,
             quality_profile: quality_check.evaluation.profile,
             benchmark_estimate,
+        }
+    }
+
+    pub fn promotion_evidence(
+        self,
+        quality_check: &TurboQuantDecodeQualityCheck,
+    ) -> TurboQuantFusedDecodePromotionEvidence {
+        let readiness = self.promotion_readiness(quality_check);
+        let decision = quality_check.evaluation.decision;
+        TurboQuantFusedDecodePromotionEvidence {
+            readiness,
+            quality_passed: decision.passed,
+            max_abs_diff: decision.max_abs_diff,
+            max_abs_diff_limit: decision.max_abs_diff_limit,
+            mean_abs_diff: decision.mean_abs_diff,
+            mean_abs_diff_limit: decision.mean_abs_diff_limit,
+            min_cosine_similarity: decision.min_cosine_similarity,
+            min_cosine_similarity_limit: decision.min_cosine_similarity_limit,
         }
     }
 }
@@ -2915,6 +2945,60 @@ mod tests {
         assert_eq!(
             readiness.benchmark_estimate.cold_compression_ratio_milli,
             222
+        );
+    }
+
+    #[test]
+    fn fused_decode_launch_descriptor_reports_promotion_evidence() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 1,
+            head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+            value_group_size: 32,
+        })
+        .expect("layout should build");
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 2, 1).expect("plan should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        buffer
+            .write_token(
+                0,
+                &[(
+                    vec![0.1; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM],
+                    vec![0.2; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM],
+                )],
+            )
+            .expect("cold token");
+        let descriptor = plan
+            .fused_decode_launch_descriptor(
+                &buffer,
+                &[vec![0.1; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+            )
+            .expect("candidate launch should produce descriptor");
+        let comparison = compare_decode_outputs(
+            &[vec![1.0; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+            &[vec![1.0; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+        )
+        .expect("comparison should pass");
+        let quality_check =
+            TurboQuantDecodeQualityCheck::for_preset(MlxTurboQuantPreset::K8V4, comparison);
+
+        let evidence = descriptor.promotion_evidence(&quality_check);
+
+        assert!(evidence.readiness.is_ready());
+        assert!(evidence.quality_passed);
+        assert_eq!(evidence.max_abs_diff, 0.0);
+        assert_eq!(evidence.max_abs_diff_limit, 0.04);
+        assert_eq!(evidence.mean_abs_diff, 0.0);
+        assert_eq!(evidence.mean_abs_diff_limit, 0.02);
+        assert_eq!(evidence.min_cosine_similarity, 1.0);
+        assert_eq!(evidence.min_cosine_similarity_limit, 0.998);
+        assert_eq!(
+            evidence
+                .readiness
+                .benchmark_estimate
+                .estimated_cold_saved_kib,
+            1
         );
     }
 
