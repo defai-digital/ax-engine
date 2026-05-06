@@ -156,6 +156,7 @@ impl EngineCore {
     }
 
     pub fn submit(&mut self, submission: RequestSubmission) -> Result<RequestId, EngineCoreError> {
+        validate_submission(&submission)?;
         let request_id = submission.request_id;
         self.kv_manager
             .register_request(request_id, submission.input_tokens.clone())?;
@@ -1084,6 +1085,22 @@ impl EngineCore {
     }
 }
 
+fn validate_submission(submission: &RequestSubmission) -> Result<(), EngineCoreError> {
+    if submission.input_tokens.is_empty() {
+        return Err(EngineCoreError::InvalidRequestSubmission {
+            request_id: submission.request_id,
+            message: "input_tokens must not be empty",
+        });
+    }
+    if submission.max_output_tokens == 0 {
+        return Err(EngineCoreError::InvalidRequestSubmission {
+            request_id: submission.request_id,
+            message: "max_output_tokens must be greater than 0",
+        });
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct EngineStepOutcome {
     pub admitted_requests: Vec<RequestId>,
@@ -1096,6 +1113,11 @@ pub struct EngineStepOutcome {
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum EngineCoreError {
+    #[error("invalid request submission {request_id:?}: {message}")]
+    InvalidRequestSubmission {
+        request_id: RequestId,
+        message: &'static str,
+    },
     #[error("request manager error: {0}")]
     RequestManager(#[from] RequestManagerError),
     #[error("KV manager error: {0}")]
@@ -1448,6 +1470,40 @@ mod tests {
             arrival_sequence: SequenceNo(arrival_sequence),
             metadata: None,
         }
+    }
+
+    #[test]
+    fn submit_rejects_empty_input_tokens() {
+        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+
+        let error = engine
+            .submit(make_submission_with_prompt(5, 1, Vec::new(), 2))
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            EngineCoreError::InvalidRequestSubmission {
+                request_id: RequestId(5),
+                message: "input_tokens must not be empty",
+            }
+        );
+        assert!(engine.request_manager().snapshot(RequestId(5)).is_none());
+    }
+
+    #[test]
+    fn submit_rejects_zero_max_output_tokens() {
+        let mut engine = EngineCore::with_kv_config(KvManagerConfig::new(CacheGroupId(2), 4, 8));
+
+        let error = engine.submit(make_submission(5, 1, 0)).unwrap_err();
+
+        assert_eq!(
+            error,
+            EngineCoreError::InvalidRequestSubmission {
+                request_id: RequestId(5),
+                message: "max_output_tokens must be greater than 0",
+            }
+        );
+        assert!(engine.request_manager().snapshot(RequestId(5)).is_none());
     }
 
     #[test]
