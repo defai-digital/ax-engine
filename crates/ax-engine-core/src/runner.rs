@@ -89,6 +89,8 @@ pub enum MlxKvCompressionMode {
     Disabled,
     /// Opt-in accounting-only TurboQuant path. It does not change KV storage or logits.
     TurboQuantShadow,
+    /// Opt-in fused decode route selection experiment. Falls back to full precision until promoted.
+    TurboQuantFusedExperimental,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -158,8 +160,19 @@ impl MlxKvCompressionConfig {
         }
     }
 
+    pub fn turboquant_fused_experimental() -> Self {
+        Self {
+            mode: MlxKvCompressionMode::TurboQuantFusedExperimental,
+            ..Self::disabled()
+        }
+    }
+
     pub fn is_enabled(self) -> bool {
         !matches!(self.mode, MlxKvCompressionMode::Disabled)
+    }
+
+    pub fn requests_fused_decode(self) -> bool {
+        matches!(self.mode, MlxKvCompressionMode::TurboQuantFusedExperimental)
     }
 }
 

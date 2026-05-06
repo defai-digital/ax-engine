@@ -74,19 +74,25 @@ cat > "$TMP_DIR/candidate-benchmark.json" <<'JSON'
       "generation_tokens": 256,
       "prompt_token_ids_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "decode_tok_s": {"median": 90.0},
-      "experimental_mlx_kv_compression": "turboquant-shadow",
+      "experimental_mlx_kv_compression": "turboquant-fused-experimental",
       "kv_compression_decode_path": "fused_compressed_decode",
       "kv_compression_telemetry": {
-        "ax_mlx_kv_compression_route_metadata_schema": 1,
+        "ax_mlx_kv_compression_route_metadata_schema": 2,
         "ax_mlx_kv_compression_production_ready": 0,
-        "ax_mlx_kv_compression_production_blockers": 2,
+        "ax_mlx_kv_compression_production_blockers": 1,
         "ax_mlx_kv_compression_preset": 1,
         "ax_mlx_kv_compression_key_bits": 8,
         "ax_mlx_kv_compression_value_bits": 4,
         "ax_mlx_kv_compression_eligible_layers": 20,
         "ax_mlx_kv_compression_candidate_token_layers": 120000,
         "ax_mlx_kv_compression_estimated_saved_kib": 4096,
-        "ax_mlx_kv_compression_runtime_storage_written_slots": 5000
+        "ax_mlx_kv_compression_runtime_storage_written_slots": 5000,
+        "ax_mlx_kv_compression_decode_path": 2,
+        "ax_mlx_kv_compression_fused_decode_candidates": 1,
+        "ax_mlx_kv_compression_fused_decode_attempts": 1,
+        "ax_mlx_kv_compression_fused_decode_successes": 1,
+        "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
+        "ax_mlx_kv_compression_fused_decode_fallback_reason": 0
       }
     }
   ]
@@ -121,16 +127,22 @@ cat > "$TMP_DIR/shadow-candidate-benchmark.json" <<'JSON'
       "experimental_mlx_kv_compression": "turboquant-shadow",
       "kv_compression_decode_path": "full_precision_shadow",
       "kv_compression_telemetry": {
-        "ax_mlx_kv_compression_route_metadata_schema": 1,
+        "ax_mlx_kv_compression_route_metadata_schema": 2,
         "ax_mlx_kv_compression_production_ready": 0,
-        "ax_mlx_kv_compression_production_blockers": 2,
+        "ax_mlx_kv_compression_production_blockers": 1,
         "ax_mlx_kv_compression_preset": 1,
         "ax_mlx_kv_compression_key_bits": 8,
         "ax_mlx_kv_compression_value_bits": 4,
         "ax_mlx_kv_compression_eligible_layers": 20,
         "ax_mlx_kv_compression_candidate_token_layers": 120000,
         "ax_mlx_kv_compression_estimated_saved_kib": 4096,
-        "ax_mlx_kv_compression_runtime_storage_written_slots": 5000
+        "ax_mlx_kv_compression_runtime_storage_written_slots": 5000,
+        "ax_mlx_kv_compression_decode_path": 1,
+        "ax_mlx_kv_compression_fused_decode_candidates": 1,
+        "ax_mlx_kv_compression_fused_decode_attempts": 0,
+        "ax_mlx_kv_compression_fused_decode_successes": 0,
+        "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
+        "ax_mlx_kv_compression_fused_decode_fallback_reason": 1
       }
     }
   ]

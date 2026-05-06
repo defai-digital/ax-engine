@@ -128,6 +128,14 @@ AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS = [
     "ax_mlx_kv_compression_runtime_storage_token_layers",
     "ax_mlx_kv_compression_runtime_storage_kib",
     "ax_mlx_kv_compression_runtime_storage_written_slots",
+    "ax_mlx_kv_compression_shadow_sync_calls",
+    "ax_mlx_kv_compression_shadow_sync_wall_us",
+    "ax_mlx_kv_compression_decode_path",
+    "ax_mlx_kv_compression_fused_decode_candidates",
+    "ax_mlx_kv_compression_fused_decode_attempts",
+    "ax_mlx_kv_compression_fused_decode_successes",
+    "ax_mlx_kv_compression_fused_decode_fallbacks",
+    "ax_mlx_kv_compression_fused_decode_fallback_reason",
 ]
 
 
@@ -673,6 +681,8 @@ def summarize_ax_mlx_kv_compression_telemetry(
         "ax_mlx_kv_compression_route_metadata_schema",
         "ax_mlx_kv_compression_production_ready",
         "ax_mlx_kv_compression_production_blockers",
+        "ax_mlx_kv_compression_decode_path",
+        "ax_mlx_kv_compression_fused_decode_fallback_reason",
     }
     for run in runs:
         telemetry = run.get("kv_compression_telemetry") or {}
@@ -682,6 +692,33 @@ def summarize_ax_mlx_kv_compression_telemetry(
             else:
                 totals[key] = totals.get(key, 0) + int(value)
     return totals
+
+
+def kv_compression_decode_path_label(telemetry: dict[str, int]) -> str:
+    if telemetry.get("ax_mlx_kv_compression_decode_path") == 2:
+        return "fused_compressed_decode"
+    if telemetry.get("ax_mlx_kv_compression_decode_path") == 3:
+        return "cpu_oracle_compressed_decode"
+    return "full_precision_shadow"
+
+
+def kv_compression_fused_decode_fallback_reason_label(
+    telemetry: dict[str, int],
+) -> str:
+    reason = telemetry.get("ax_mlx_kv_compression_fused_decode_fallback_reason", 0)
+    return {
+        0: "none",
+        1: "shadow_only",
+        2: "missing_runtime_storage",
+        3: "unsupported_preset",
+        4: "runner_not_integrated",
+        5: "cpu_oracle_unavailable",
+    }.get(reason, f"unknown_{reason}")
+
+
+def is_ax_prefill_step(step: dict[str, Any], *, seen_prefill: bool) -> bool:
+    scheduled_tokens = int(step.get("scheduled_tokens") or 0)
+    return not seen_prefill or scheduled_tokens > 1
 
 
 def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> dict[str, Any]:
@@ -704,7 +741,8 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
             f"ax-engine HTTP {response.status}: {response.read(300).decode(errors='replace')}"
         )
 
-    prefill_us: int | None = None
+    prefill_us = 0
+    seen_prefill = False
     decode_us = 0
     output_tokens = 0
     current_event = ""
@@ -722,15 +760,17 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
         except json.JSONDecodeError:
             continue
         if current_event == "step":
-            runner_us = int(obj.get("step", {}).get("runner_time_us", 0))
+            step = obj.get("step", {})
+            runner_us = int(step.get("runner_time_us", 0))
             output_tokens = int(obj.get("request", {}).get("output_len", output_tokens))
             final_route = route_with_more_decisions(
-                obj.get("step", {}).get("route")
+                step.get("route")
                 or obj.get("request", {}).get("route"),
                 final_route,
             )
-            if prefill_us is None:
-                prefill_us = runner_us
+            if is_ax_prefill_step(step, seen_prefill=seen_prefill):
+                prefill_us += runner_us
+                seen_prefill = True
             else:
                 decode_us += runner_us
         elif current_event == "response":
@@ -743,7 +783,7 @@ def axengine_one_run(port: int, tokens: list[int], generation_tokens: int) -> di
 
     conn.close()
     prompt_tokens = len(tokens)
-    prefill_s = (prefill_us or 0) / 1_000_000
+    prefill_s = prefill_us / 1_000_000
     decode_s = decode_us / 1_000_000
     measured_decode_tokens = max(output_tokens - 1, 0)
     run: dict[str, Any] = {
@@ -847,8 +887,16 @@ def bench_axengine(
     compression_summary = summarize_ax_mlx_kv_compression_telemetry(runs)
     if kv_compression != "disabled":
         row["experimental_mlx_kv_compression"] = kv_compression
-        row["kv_compression_decode_path"] = "full_precision_shadow"
-        row["kv_compression_claim_status"] = "telemetry_only_full_precision_generation"
+        decode_path = kv_compression_decode_path_label(compression_summary)
+        row["kv_compression_decode_path"] = decode_path
+        row["kv_compression_claim_status"] = (
+            "integrated_fused_compressed_decode"
+            if decode_path == "fused_compressed_decode"
+            else "telemetry_only_full_precision_generation"
+        )
+        row["kv_compression_fused_decode_fallback_reason_label"] = (
+            kv_compression_fused_decode_fallback_reason_label(compression_summary)
+        )
     if compression_summary:
         row["kv_compression_telemetry"] = compression_summary
     return row
@@ -1137,7 +1185,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--experimental-mlx-kv-compression",
-        choices=["disabled", "turboquant-shadow"],
+        choices=["disabled", "turboquant-shadow", "turboquant-fused-experimental"],
         default="disabled",
         help=(
             "Pass the AX server experimental MLX KV compression flag through "

@@ -128,15 +128,20 @@ pub fn normalize_linear_attention_qk(
     q: &MlxArray,
     k: &MlxArray,
 ) -> (MlxArray, MlxArray) {
-    let inv_scale = (cfg.key_head_dim as f32).powf(-0.5);
+    let (q_scale, k_scale) = linear_attention_qk_scale(cfg.key_head_dim);
     let q_normed = rms_norm(q, None, 1e-6, None);
     let k_normed = rms_norm(k, None, 1e-6, None);
-    let q_scale = scalar_f32_as(inv_scale * inv_scale, q.dtype());
-    let k_scale = scalar_f32_as(inv_scale, k.dtype());
+    let q_scale = scalar_f32_as(q_scale, q.dtype());
+    let k_scale = scalar_f32_as(k_scale, k.dtype());
     (
         multiply(&q_normed, &q_scale, None),
         multiply(&k_normed, &k_scale, None),
     )
+}
+
+fn linear_attention_qk_scale(key_head_dim: usize) -> (f32, f32) {
+    let inv_scale = (key_head_dim as f32).powf(-0.5);
+    (inv_scale, inv_scale)
 }
 
 /// Run Qwen3.5's gated-delta recurrent update with the MLX Metal kernel.
@@ -440,6 +445,14 @@ mod tests {
         assert_eq!(k.shape(), vec![1, 2, 1, 32]);
         assert_eq!(q.dtype(), MlxDtype::Bfloat16);
         assert_eq!(k.dtype(), MlxDtype::Bfloat16);
+    }
+
+    #[test]
+    fn normalize_linear_attention_qk_scales_q_and_k_symmetrically() {
+        let (q_scale, k_scale) = linear_attention_qk_scale(4);
+
+        assert!((q_scale - 0.5).abs() < f32::EPSILON);
+        assert!((k_scale - 0.5).abs() < f32::EPSILON);
     }
 
     #[test]

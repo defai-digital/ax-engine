@@ -73,6 +73,19 @@ keeps generation on the existing full-precision MLX KV path, does not change
 SDPA inputs, logits, sampling, or output tokens, and does not imply production
 TurboQuant support.
 
+`turboquant-fused-experimental` is an additional route-selection experiment. It
+requests compressed decode and tries the two-stage Metal cold decode plus
+full-precision hot-tail merge for eligible K8/V4 single-token decode layers.
+When Metal succeeds, route metadata reports `fused_compressed_decode`; when
+Metal is unavailable but the reference fallback works, it reports
+`cpu_oracle_compressed_decode`. Use route metadata to inspect candidate,
+attempt, success, fallback, and fallback-reason counters. Fallback reason label
+`runner_not_integrated` means no runtime decode attempt was observed yet;
+`cpu_oracle_unavailable` means both compressed-decode attempts fell back to the
+full-precision MLX KV path. Only `fused_compressed_decode` route evidence with
+successful attempts and zero fallbacks can feed the internal quality artifact
+gate; shadow and CPU oracle rows are diagnostic only.
+
 ```text
 cargo run -p ax-engine-server -- \
   --model-id qwen3_dense \
@@ -86,7 +99,10 @@ cargo run -p ax-engine-server -- \
 
 When enabled, route metadata includes TurboQuant eligibility, estimated
 compressed/saved KiB, production-readiness blockers, and runtime shadow-storage
-counters. When disabled, the server emits no TurboQuant compression metadata.
+counters, including shadow sync calls and wall time. It also reports the current
+compression decode path plus fused decode candidate, attempt, success, fallback,
+and fallback-reason counters. When disabled, the server emits no TurboQuant
+compression metadata.
 
 For common repo-owned MLX targets, use a preset to select the model id, MLX
 runtime, support tier, and current safe defaults while keeping model artifacts

@@ -2,9 +2,12 @@ use ax_engine_core::{MlxKvCompressionConfig, MlxKvCompressionMode};
 use mlx_sys::{MlxArray, MlxDtype, eval, slice, slice_update, zeros};
 
 use crate::turboquant::{
-    FullPrecisionKvTokenVectors, TurboQuantBlockLayout, TurboQuantBlockLayoutConfig,
-    TurboQuantCompressedBlockBuffer, packed_kv_bytes_per_token,
+    FullPrecisionKvTokenVectors, TurboQuantAttentionPartitionStats, TurboQuantBlockLayout,
+    TurboQuantBlockLayoutConfig, TurboQuantCodecError, TurboQuantCompressedBlockBuffer,
+    TurboQuantCompressedDecodePlan, merge_attention_partition_stats, packed_kv_bytes_per_token,
+    reference_decode_attention_partition_stats,
 };
+use crate::turboquant_metal::turboquant_fused_cold_decode_metal_two_stage_partition_stats;
 
 /// Pre-allocated chunk size (tokens).  The buffer grows by this amount each time
 /// the logical sequence length exceeds capacity, so the number of grow operations
@@ -214,6 +217,22 @@ fn f16_bits_to_f32(bits: u16) -> f32 {
     f32::from_bits(f32_bits)
 }
 
+fn turboquant_shadow_layout_for_layer(
+    lkv: &LayerKV,
+    compression: MlxKvCompressionConfig,
+) -> Option<TurboQuantBlockLayout> {
+    let head_dim = usize::try_from(lkv.head_dim).ok()?;
+    let n_kv_heads = usize::try_from(lkv.n_kv_heads).ok()?;
+    TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+        preset: compression.preset,
+        block_tokens: KV_CHUNK_TOKENS,
+        n_kv_heads,
+        head_dim,
+        value_group_size: 32.min(head_dim).max(1),
+    })
+    .ok()
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MlxKVCacheUsage {
     pub logical_tokens: usize,
@@ -236,7 +255,12 @@ pub struct MlxKVCacheUsage {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MlxKvCompressionUsage {
     pub policy_enabled: bool,
-    /// 0 disabled, 1 shadow storage active, 2 short context, 3 no eligible layer.
+    pub fused_decode_requested: bool,
+    pub fused_decode_attempts: u64,
+    pub fused_decode_successes: u64,
+    pub fused_decode_metal_successes: u64,
+    pub fused_decode_fallbacks: u64,
+    /// 0 disabled, 1 compression storage active, 2 short context, 3 no eligible layer.
     pub status_code: u32,
     pub preset_code: u32,
     pub key_bits: u32,
@@ -252,6 +276,21 @@ pub struct MlxKvCompressionUsage {
     pub runtime_storage_token_layers: usize,
     pub runtime_storage_bytes: u64,
     pub runtime_storage_written_slots: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MlxKvCompressionDecodeUsage {
+    pub fused_decode_attempts: u64,
+    pub fused_decode_successes: u64,
+    pub fused_decode_metal_successes: u64,
+    pub fused_decode_fallbacks: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MlxKvCompressionDecodeOutcome {
+    Fallback,
+    CpuOracle,
+    Metal,
 }
 
 #[derive(Clone)]
@@ -326,6 +365,7 @@ pub struct MlxKVCache {
     /// Current logical sequence length (token count cached).
     pub seq_len: usize,
     growth_count: u64,
+    turboquant_decode_usage: MlxKvCompressionDecodeUsage,
 }
 
 impl Clone for MlxKVCache {
@@ -337,6 +377,7 @@ impl Clone for MlxKVCache {
             turboquant_shadow_layers: self.turboquant_shadow_layers.clone(),
             seq_len: self.seq_len,
             growth_count: self.growth_count,
+            turboquant_decode_usage: self.turboquant_decode_usage,
         }
     }
 }
@@ -352,7 +393,46 @@ impl MlxKVCache {
             turboquant_shadow_layers: (0..num_layers).map(|_| None).collect(),
             seq_len: 0,
             growth_count: 0,
+            turboquant_decode_usage: MlxKvCompressionDecodeUsage::default(),
         }
+    }
+
+    pub fn record_turboquant_fused_decode_attempt(
+        &mut self,
+        outcome: MlxKvCompressionDecodeOutcome,
+    ) {
+        self.turboquant_decode_usage.fused_decode_attempts = self
+            .turboquant_decode_usage
+            .fused_decode_attempts
+            .saturating_add(1);
+        match outcome {
+            MlxKvCompressionDecodeOutcome::Fallback => {
+                self.turboquant_decode_usage.fused_decode_fallbacks = self
+                    .turboquant_decode_usage
+                    .fused_decode_fallbacks
+                    .saturating_add(1);
+            }
+            MlxKvCompressionDecodeOutcome::CpuOracle => {
+                self.turboquant_decode_usage.fused_decode_successes = self
+                    .turboquant_decode_usage
+                    .fused_decode_successes
+                    .saturating_add(1);
+            }
+            MlxKvCompressionDecodeOutcome::Metal => {
+                self.turboquant_decode_usage.fused_decode_successes = self
+                    .turboquant_decode_usage
+                    .fused_decode_successes
+                    .saturating_add(1);
+                self.turboquant_decode_usage.fused_decode_metal_successes = self
+                    .turboquant_decode_usage
+                    .fused_decode_metal_successes
+                    .saturating_add(1);
+            }
+        }
+    }
+
+    pub fn take_turboquant_decode_usage(&mut self) -> MlxKvCompressionDecodeUsage {
+        std::mem::take(&mut self.turboquant_decode_usage)
     }
 
     /// Append new K/V tokens for `layer` and return the full logical K/V for SDPA.
@@ -610,9 +690,7 @@ impl MlxKVCache {
         compression: MlxKvCompressionConfig,
         compression_eligible_layers: Option<&[bool]>,
     ) -> TurboQuantShadowStorageUsage {
-        if !matches!(compression.mode, MlxKvCompressionMode::TurboQuantShadow)
-            || self.seq_len < compression.min_context_tokens
-        {
+        if !compression.is_enabled() || self.seq_len < compression.min_context_tokens {
             self.clear_turboquant_shadow_storage();
             return TurboQuantShadowStorageUsage::default();
         }
@@ -640,22 +718,10 @@ impl MlxKVCache {
                 continue;
             };
 
-            let Ok(head_dim) = usize::try_from(lkv.head_dim) else {
+            let Some(layout) = turboquant_shadow_layout_for_layer(lkv, compression) else {
                 self.turboquant_shadow_layers[layer_idx] = None;
                 continue;
             };
-            let Ok(n_kv_heads) = usize::try_from(lkv.n_kv_heads) else {
-                self.turboquant_shadow_layers[layer_idx] = None;
-                continue;
-            };
-            let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
-                preset: compression.preset,
-                block_tokens: KV_CHUNK_TOKENS,
-                n_kv_heads,
-                head_dim,
-                value_group_size: 32.min(head_dim).max(1),
-            })
-            .expect("TurboQuant shadow support report only permits valid layouts");
 
             let reset_storage = self.turboquant_shadow_layers[layer_idx]
                 .as_ref()
@@ -690,6 +756,68 @@ impl MlxKVCache {
         self.turboquant_shadow_storage_usage()
     }
 
+    pub fn turboquant_shadow_storage_sync_due(
+        &self,
+        layer_windows: &[Option<usize>],
+        compression: MlxKvCompressionConfig,
+        compression_eligible_layers: Option<&[bool]>,
+    ) -> bool {
+        if !compression.is_enabled() {
+            return false;
+        }
+
+        if self.seq_len < compression.min_context_tokens {
+            return self.turboquant_shadow_layers.iter().any(Option::is_some);
+        }
+
+        let cold_tokens = self.seq_len.saturating_sub(compression.hot_window_tokens);
+        if cold_tokens == 0 {
+            return self.turboquant_shadow_layers.iter().any(Option::is_some);
+        }
+
+        for layer_idx in 0..self.layers.len() {
+            if layer_windows.get(layer_idx).copied().flatten().is_some() {
+                if self.turboquant_shadow_layers[layer_idx].is_some() {
+                    return true;
+                }
+                continue;
+            }
+            if let Some(eligible_layers) = compression_eligible_layers
+                && !eligible_layers.get(layer_idx).copied().unwrap_or(false)
+            {
+                if self.turboquant_shadow_layers[layer_idx].is_some() {
+                    return true;
+                }
+                continue;
+            }
+
+            let Some(lkv) = self.layers[layer_idx].as_ref() else {
+                if self.turboquant_shadow_layers[layer_idx].is_some() {
+                    return true;
+                }
+                continue;
+            };
+            let Some(layout) = turboquant_shadow_layout_for_layer(lkv, compression) else {
+                if self.turboquant_shadow_layers[layer_idx].is_some() {
+                    return true;
+                }
+                continue;
+            };
+
+            let Some(storage) = self.turboquant_shadow_layers[layer_idx].as_ref() else {
+                return true;
+            };
+            if storage.layout != layout || storage.compressed_tokens > cold_tokens {
+                return true;
+            }
+            if cold_tokens.saturating_sub(storage.compressed_tokens) >= KV_CHUNK_TOKENS {
+                return true;
+            }
+        }
+
+        false
+    }
+
     pub fn turboquant_shadow_storage_usage(&self) -> TurboQuantShadowStorageUsage {
         let mut usage = TurboQuantShadowStorageUsage::default();
         for storage in self.turboquant_shadow_layers.iter().flatten() {
@@ -703,6 +831,208 @@ impl MlxKVCache {
                 .saturating_add(storage.buffer.written_slot_count());
         }
         usage
+    }
+
+    pub fn turboquant_shadow_storage_cold_tokens(&self, layer: usize) -> Option<usize> {
+        self.turboquant_shadow_layers
+            .get(layer)
+            .and_then(Option::as_ref)
+            .map(|storage| storage.compressed_tokens)
+    }
+
+    pub fn debug_turboquant_shadow_decode_attention_for_layer(
+        &self,
+        layer: usize,
+        queries: &[Vec<f32>],
+        hot_window_tokens: usize,
+    ) -> Result<Vec<Vec<f32>>, TurboQuantCodecError> {
+        self.debug_turboquant_shadow_decode_attention_for_layer_with_total_tokens(
+            layer,
+            queries,
+            hot_window_tokens,
+            self.seq_len,
+        )
+    }
+
+    pub fn debug_turboquant_shadow_decode_attention_for_layer_with_total_tokens(
+        &self,
+        layer: usize,
+        queries: &[Vec<f32>],
+        _hot_window_tokens: usize,
+        total_tokens: usize,
+    ) -> Result<Vec<Vec<f32>>, TurboQuantCodecError> {
+        let cold_stats =
+            self.debug_turboquant_shadow_decode_cold_stats_cpu(layer, queries, total_tokens)?;
+        self.merge_turboquant_shadow_decode_cold_stats_with_hot_tail(
+            layer,
+            queries,
+            total_tokens,
+            &cold_stats,
+        )
+    }
+
+    pub fn debug_turboquant_shadow_decode_attention_metal_for_layer_with_total_tokens(
+        &self,
+        layer: usize,
+        queries: &[Vec<f32>],
+        total_tokens: usize,
+    ) -> Result<Vec<Vec<f32>>, TurboQuantCodecError> {
+        let cold_stats =
+            self.debug_turboquant_shadow_decode_cold_stats_metal(layer, queries, total_tokens)?;
+        self.merge_turboquant_shadow_decode_cold_stats_with_hot_tail(
+            layer,
+            queries,
+            total_tokens,
+            &cold_stats,
+        )
+    }
+
+    fn debug_turboquant_shadow_decode_cold_stats_cpu(
+        &self,
+        layer: usize,
+        queries: &[Vec<f32>],
+        total_tokens: usize,
+    ) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
+        let lkv = self.layers.get(layer).and_then(Option::as_ref).ok_or(
+            TurboQuantCodecError::CompressedDecodePlanIncomplete {
+                cold_tokens: total_tokens,
+                required_slots: 1,
+                written_slots: 0,
+            },
+        )?;
+        let storage = self
+            .turboquant_shadow_layers
+            .get(layer)
+            .and_then(Option::as_ref)
+            .ok_or(TurboQuantCodecError::CompressedDecodePlanIncomplete {
+                cold_tokens: total_tokens,
+                required_slots: 1,
+                written_slots: 0,
+            })?;
+        let n_kv_heads = usize::try_from(lkv.n_kv_heads).unwrap_or(usize::MAX);
+        if queries.len() != n_kv_heads {
+            return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: n_kv_heads,
+                actual: queries.len(),
+            });
+        }
+
+        let cold_tokens = storage.compressed_tokens;
+        if cold_tokens == 0 {
+            return Err(TurboQuantCodecError::EmptyKvHistory);
+        }
+        if cold_tokens > total_tokens {
+            let required_slots = total_tokens.saturating_mul(n_kv_heads);
+            return Err(TurboQuantCodecError::CompressedDecodePlanIncomplete {
+                cold_tokens: total_tokens,
+                required_slots,
+                written_slots: storage.compressed_tokens.saturating_mul(n_kv_heads),
+            });
+        }
+        let cold_stats = storage
+            .buffer
+            .debug_decode_partition_stats_for_all_heads(queries, cold_tokens)?;
+        Ok(cold_stats)
+    }
+
+    fn debug_turboquant_shadow_decode_cold_stats_metal(
+        &self,
+        layer: usize,
+        queries: &[Vec<f32>],
+        total_tokens: usize,
+    ) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
+        let lkv = self.layers.get(layer).and_then(Option::as_ref).ok_or(
+            TurboQuantCodecError::CompressedDecodePlanIncomplete {
+                cold_tokens: total_tokens,
+                required_slots: 1,
+                written_slots: 0,
+            },
+        )?;
+        let storage = self
+            .turboquant_shadow_layers
+            .get(layer)
+            .and_then(Option::as_ref)
+            .ok_or(TurboQuantCodecError::CompressedDecodePlanIncomplete {
+                cold_tokens: total_tokens,
+                required_slots: 1,
+                written_slots: 0,
+            })?;
+        let n_kv_heads = usize::try_from(lkv.n_kv_heads).unwrap_or(usize::MAX);
+        if queries.len() != n_kv_heads {
+            return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: n_kv_heads,
+                actual: queries.len(),
+            });
+        }
+
+        let cold_tokens = storage.compressed_tokens;
+        if cold_tokens == 0 {
+            return Err(TurboQuantCodecError::EmptyKvHistory);
+        }
+        if cold_tokens > total_tokens {
+            let required_slots = total_tokens.saturating_mul(n_kv_heads);
+            return Err(TurboQuantCodecError::CompressedDecodePlanIncomplete {
+                cold_tokens: total_tokens,
+                required_slots,
+                written_slots: storage.compressed_tokens.saturating_mul(n_kv_heads),
+            });
+        }
+        let plan = TurboQuantCompressedDecodePlan::new(
+            storage.layout,
+            total_tokens,
+            total_tokens.saturating_sub(cold_tokens),
+        )?;
+        let descriptor = plan.fused_decode_launch_descriptor(&storage.buffer, queries)?;
+        turboquant_fused_cold_decode_metal_two_stage_partition_stats(
+            descriptor,
+            &storage.buffer,
+            queries,
+        )
+    }
+
+    fn merge_turboquant_shadow_decode_cold_stats_with_hot_tail(
+        &self,
+        layer: usize,
+        queries: &[Vec<f32>],
+        total_tokens: usize,
+        cold_stats: &[TurboQuantAttentionPartitionStats],
+    ) -> Result<Vec<Vec<f32>>, TurboQuantCodecError> {
+        let lkv = self.layers.get(layer).and_then(Option::as_ref).ok_or(
+            TurboQuantCodecError::CompressedDecodePlanIncomplete {
+                cold_tokens: total_tokens,
+                required_slots: 1,
+                written_slots: 0,
+            },
+        )?;
+        let n_kv_heads = usize::try_from(lkv.n_kv_heads).unwrap_or(usize::MAX);
+        if cold_stats.len() != n_kv_heads {
+            return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: n_kv_heads,
+                actual: cold_stats.len(),
+            });
+        }
+        eval(&[&lkv.k, &lkv.v]);
+
+        let mut outputs = Vec::with_capacity(n_kv_heads);
+        for (head_index, query) in queries.iter().enumerate() {
+            let cold_tokens = cold_stats[head_index].token_count;
+            let hot_tokens = (cold_tokens..total_tokens)
+                .map(|token_index| kv_heads_for_token(lkv, token_index)[head_index].clone())
+                .collect::<Vec<_>>();
+            if hot_tokens.is_empty() {
+                outputs.push(merge_attention_partition_stats(&[
+                    cold_stats[head_index].clone()
+                ])?);
+            } else {
+                let hot_stats = reference_decode_attention_partition_stats(query, &hot_tokens)?;
+                outputs.push(merge_attention_partition_stats(&[
+                    cold_stats[head_index].clone(),
+                    hot_stats,
+                ])?);
+            }
+        }
+
+        Ok(outputs)
     }
 
     fn clear_turboquant_shadow_storage(&mut self) {
@@ -873,6 +1203,7 @@ impl MlxKVCache {
         let value_bits = compression.preset.value_bits();
         let mut usage = MlxKvCompressionUsage {
             policy_enabled: true,
+            fused_decode_requested: compression.requests_fused_decode(),
             status_code: 1,
             preset_code: compression.preset.route_code(),
             key_bits,
@@ -1030,6 +1361,7 @@ impl MlxKVCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::turboquant::reference_decode_attention;
 
     #[test]
     fn linear_state_is_eval_tracked_and_reset() {
@@ -1279,6 +1611,117 @@ mod tests {
         assert_eq!(usage.kv_compression.runtime_storage_bytes, storage.bytes);
 
         cache.reset();
+        assert_eq!(
+            cache.turboquant_shadow_storage_usage(),
+            TurboQuantShadowStorageUsage::default()
+        );
+    }
+
+    #[test]
+    fn turboquant_shadow_decode_merges_runtime_cold_storage_with_hot_tail() {
+        let mut cache = MlxKVCache::new(1);
+        let k_data: Vec<f32> = (0..48).map(|idx| ((idx % 13) as f32 - 6.0) / 8.0).collect();
+        let v_data: Vec<f32> = (0..48).map(|idx| ((idx % 11) as f32 - 5.0) / 7.0).collect();
+        let k = MlxArray::from_raw_data(
+            k_data.as_ptr().cast(),
+            k_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 6, 4],
+            MlxDtype::Float32,
+        );
+        let v = MlxArray::from_raw_data(
+            v_data.as_ptr().cast(),
+            v_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 6, 4],
+            MlxDtype::Float32,
+        );
+        let compression = MlxKvCompressionConfig {
+            hot_window_tokens: 2,
+            min_context_tokens: 4,
+            ..MlxKvCompressionConfig::turboquant_shadow()
+        };
+        let queries = vec![vec![0.15, -0.25, 0.35, -0.45], vec![-0.2, 0.1, 0.4, -0.3]];
+
+        cache.append(0, k, v);
+        cache.seq_len = 6;
+        cache.sync_turboquant_shadow_storage(&[None], compression, Some(&[true]));
+
+        let actual = cache
+            .debug_turboquant_shadow_decode_attention_for_layer(0, &queries, 2)
+            .expect("shadow runtime storage should decode");
+        let lkv = cache.layers[0].as_ref().expect("layer cache");
+        let expected = queries
+            .iter()
+            .enumerate()
+            .map(|(head_index, query)| {
+                let history = (0..cache.seq_len)
+                    .map(|token_index| kv_heads_for_token(lkv, token_index)[head_index].clone())
+                    .collect::<Vec<_>>();
+                reference_decode_attention(query, &history).expect("full precision attention")
+            })
+            .collect::<Vec<_>>();
+
+        for (expected, actual) in expected.iter().zip(&actual) {
+            for (expected, actual) in expected.iter().zip(actual) {
+                assert!((actual - expected).abs() < 0.05);
+            }
+        }
+    }
+
+    #[test]
+    fn turboquant_shadow_decode_fails_closed_without_runtime_storage() {
+        let mut cache = MlxKVCache::new(1);
+        let k = zeros(&[1, 2, 6, 4], MlxDtype::Float32, None);
+        let v = zeros(&[1, 2, 6, 4], MlxDtype::Float32, None);
+        cache.append(0, k, v);
+        cache.seq_len = 6;
+
+        let error = cache
+            .debug_turboquant_shadow_decode_attention_for_layer(0, &[vec![0.0; 4], vec![0.0; 4]], 2)
+            .expect_err("missing compressed storage should fail closed");
+        assert!(matches!(
+            error,
+            TurboQuantCodecError::CompressedDecodePlanIncomplete { .. }
+        ));
+    }
+
+    #[test]
+    fn turboquant_shadow_sync_due_waits_for_block_sized_cold_advances() {
+        let mut cache = MlxKVCache::new(1);
+        let k_data: Vec<f32> = (0..48).map(|idx| idx as f32 / 16.0).collect();
+        let v_data: Vec<f32> = (0..48).map(|idx| 1.0 - (idx as f32 / 64.0)).collect();
+        let k = MlxArray::from_raw_data(
+            k_data.as_ptr().cast(),
+            k_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 6, 4],
+            MlxDtype::Float32,
+        );
+        let v = MlxArray::from_raw_data(
+            v_data.as_ptr().cast(),
+            v_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 6, 4],
+            MlxDtype::Float32,
+        );
+        let compression = MlxKvCompressionConfig {
+            hot_window_tokens: 2,
+            min_context_tokens: 4,
+            ..MlxKvCompressionConfig::turboquant_shadow()
+        };
+
+        cache.append(0, k, v);
+        cache.seq_len = 6;
+        assert!(cache.turboquant_shadow_storage_sync_due(&[None], compression, Some(&[true])));
+        cache.sync_turboquant_shadow_storage(&[None], compression, Some(&[true]));
+        assert!(!cache.turboquant_shadow_storage_sync_due(&[None], compression, Some(&[true])));
+
+        cache.seq_len = 6 + KV_CHUNK_TOKENS - 1;
+        assert!(!cache.turboquant_shadow_storage_sync_due(&[None], compression, Some(&[true])));
+
+        cache.seq_len = 6 + KV_CHUNK_TOKENS;
+        assert!(cache.turboquant_shadow_storage_sync_due(&[None], compression, Some(&[true])));
+
+        cache.seq_len = 2;
+        assert!(cache.turboquant_shadow_storage_sync_due(&[None], compression, Some(&[true])));
+        cache.sync_turboquant_shadow_storage(&[None], compression, Some(&[true]));
         assert_eq!(
             cache.turboquant_shadow_storage_usage(),
             TurboQuantShadowStorageUsage::default()

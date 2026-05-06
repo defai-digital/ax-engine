@@ -21,7 +21,8 @@ MIN_CONTEXT_TOKENS = 8192
 MIN_GENERATION_TOKENS = 128
 MIN_DECODE_RATIO_TO_BASELINE = 0.85
 MIN_SAVED_KIB = 1
-MAX_RUNTIME_PRODUCTION_BLOCKERS = 2
+MAX_RUNTIME_PRODUCTION_BLOCKERS = 1
+REQUIRED_CANDIDATE_COMPRESSION_MODE = "turboquant-fused-experimental"
 
 QUALITY_GATES = {
     "reference_k8v4": {
@@ -42,6 +43,12 @@ REQUIRED_ROUTE_KEYS = {
     "ax_mlx_kv_compression_candidate_token_layers",
     "ax_mlx_kv_compression_estimated_saved_kib",
     "ax_mlx_kv_compression_runtime_storage_written_slots",
+    "ax_mlx_kv_compression_decode_path",
+    "ax_mlx_kv_compression_fused_decode_candidates",
+    "ax_mlx_kv_compression_fused_decode_attempts",
+    "ax_mlx_kv_compression_fused_decode_successes",
+    "ax_mlx_kv_compression_fused_decode_fallbacks",
+    "ax_mlx_kv_compression_fused_decode_fallback_reason",
 }
 
 HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -130,12 +137,12 @@ def _validate_route_metadata(route_metadata: dict[str, Any]) -> None:
     _require(not missing, f"route metadata missing required keys: {', '.join(missing)}")
 
     _require(
-        _integer(decisions["ax_mlx_kv_compression_route_metadata_schema"], "route schema") >= 1,
-        "route metadata schema must be >= 1",
+        _integer(decisions["ax_mlx_kv_compression_route_metadata_schema"], "route schema") >= 2,
+        "route metadata schema must be >= 2",
     )
     _require(
         _integer(decisions["ax_mlx_kv_compression_production_ready"], "production ready") == 0,
-        "quality artifacts must not mark TurboQuant production-ready before public docs approval",
+        "quality artifacts must not mark TurboQuant production-ready before artifact approval",
     )
     _require(
         _integer(decisions["ax_mlx_kv_compression_production_blockers"], "production blockers")
@@ -176,6 +183,50 @@ def _validate_route_metadata(route_metadata: dict[str, Any]) -> None:
         > 0,
         "route metadata must show runtime compressed slot writes",
     )
+    _require(
+        _integer(decisions["ax_mlx_kv_compression_decode_path"], "compression decode path") == 2,
+        "route metadata must report fused_compressed_decode path code 2",
+    )
+    _require(
+        _integer(
+            decisions["ax_mlx_kv_compression_fused_decode_candidates"],
+            "fused decode candidates",
+        )
+        > 0,
+        "route metadata must show fused decode candidate snapshots",
+    )
+    _require(
+        _integer(
+            decisions["ax_mlx_kv_compression_fused_decode_attempts"],
+            "fused decode attempts",
+        )
+        > 0,
+        "route metadata must show fused decode attempts",
+    )
+    _require(
+        _integer(
+            decisions["ax_mlx_kv_compression_fused_decode_successes"],
+            "fused decode successes",
+        )
+        > 0,
+        "route metadata must show fused decode successes",
+    )
+    _require(
+        _integer(
+            decisions["ax_mlx_kv_compression_fused_decode_fallbacks"],
+            "fused decode fallbacks",
+        )
+        == 0,
+        "route metadata must show zero fused decode fallbacks",
+    )
+    _require(
+        _integer(
+            decisions["ax_mlx_kv_compression_fused_decode_fallback_reason"],
+            "fused decode fallback reason",
+        )
+        == 0,
+        "route metadata must report no fused decode fallback reason",
+    )
 
 
 def validate_artifact(doc: dict[str, Any], *, root: Path = REPO_ROOT, require_files: bool = True) -> None:
@@ -214,6 +265,10 @@ def validate_artifact(doc: dict[str, Any], *, root: Path = REPO_ROOT, require_fi
 
     candidate = _mapping(doc.get("candidate"), "candidate")
     _require(candidate.get("backend") == "mlx", "candidate.backend must be mlx")
+    _require(
+        candidate.get("kv_compression_mode") == REQUIRED_CANDIDATE_COMPRESSION_MODE,
+        f"candidate.kv_compression_mode must be {REQUIRED_CANDIDATE_COMPRESSION_MODE}",
+    )
     _require(candidate.get("preset") == "k8v4", "candidate.preset must be k8v4")
     _require(
         candidate.get("quality_profile") == "reference_k8v4",

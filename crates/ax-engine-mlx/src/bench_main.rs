@@ -58,8 +58,17 @@ fn main() {
     let mut prefill_ms: Vec<f64> = Vec::new();
     for run in 0..RUNS {
         let mut cache = MlxKVCache::new(cfg.layer_count);
+        let mut rng = Xorshift64::new(run as u64);
         let t0 = Instant::now();
-        let _first = chunked_prefill(&cfg, &weights, &prompt, &mut cache, DEFAULT_PREFILL_CHUNK);
+        let _first = chunked_prefill(
+            &cfg,
+            &weights,
+            &prompt,
+            &mut cache,
+            DEFAULT_PREFILL_CHUNK,
+            0.0,
+            &mut rng,
+        );
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         clear_cache();
         if run > 0 {
@@ -86,6 +95,8 @@ fn main() {
             &short_prompt,
             &mut cache,
             DEFAULT_PREFILL_CHUNK,
+            0.0,
+            &mut rng,
         );
         let mut step_times = Vec::with_capacity(DECODE_STEPS);
         for _ in 0..DECODE_STEPS {
@@ -132,6 +143,8 @@ fn main() {
             &ngram_prompt,
             &mut cache,
             DEFAULT_PREFILL_CHUNK,
+            0.0,
+            &mut rng,
         );
 
         let t0 = Instant::now();

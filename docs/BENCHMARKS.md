@@ -127,12 +127,67 @@ python3 scripts/bench_mlx_inference_stack.py \
   --experimental-mlx-kv-compression turboquant-shadow
 ```
 
+Use `--experimental-mlx-kv-compression turboquant-fused-experimental` only for
+runner-route selection evidence. It requests compressed decode and can report
+`fused_compressed_decode` when the eligible K8/V4 single-token path uses the
+two-stage Metal cold decode plus full-precision hot tail. If Metal is
+unavailable but the reference fallback works, the path is
+`cpu_oracle_compressed_decode`. Fallback reason label `runner_not_integrated`
+means no runtime decode attempt was observed yet; `cpu_oracle_unavailable`
+means both compressed-decode attempts fell back to full-precision generation.
+The TurboQuant reference codec and microbench artifacts include a split-softmax
+oracle for the hot-window merge: cold and hot partitions must be combined
+through shared log-sum-exp normalization, not by adding independently normalized
+output vectors.
+
 The default remains disabled. `turboquant-shadow` keeps generation on the
 full-precision MLX decode path and records route counters for eligibility,
-estimated saved KiB, runtime shadow-storage writes, and remaining production
-blockers when the runtime emits them. It is artifact evidence only; promoted
-TurboQuant support still requires a long-context quality artifact validated by
+estimated saved KiB, runtime shadow-storage writes, shadow-storage sync calls
+and wall time, current compression decode path, fused decode candidate
+snapshots, attempt/success/fallback counters, and remaining production blockers
+when the runtime emits them. It is artifact evidence only; promoted TurboQuant
+support still requires a long-context quality artifact validated by
 `scripts/check_turboquant_quality_artifact.py`.
+
+The quality artifact gate is stricter than telemetry collection. Promotion
+evidence must use candidate mode `turboquant-fused-experimental`, route
+metadata schema `>= 2`, K8/V4, fused_compressed_decode path code `2`, fused
+decode attempts and successes greater than zero, and zero fused decode
+fallbacks. Shadow rows and cpu_oracle_compressed_decode rows are useful for
+diagnosis, but they are rejected as promotion evidence.
+
+The internal quantitative benchmark design lives in
+`.internal/benchmark/TURBOQUANT-BENCHMARK-DESIGN.md`. It separates microkernel
+timing, optional shadow-storage overhead, integrated fused compressed decode,
+and long-context quality gates so TurboQuant results can report decode ratio,
+prefill ratio, KV saved percent, runtime storage coverage, fallback rate, and
+quality pass/fail without mixing evidence types.
+
+For fused-kernel-only evidence, use the `ax-engine-mlx` microbenchmark:
+
+```text
+cargo run -p ax-engine-mlx --release --bin turboquant-microbench -- \
+  --cold-tokens 512,2048,8192 \
+  --hot-tokens 128 \
+  --variants dim_parallel,two_stage_scores \
+  --repetitions 5 \
+  --output benchmarks/results/turboquant/<date>/microbench.json
+```
+
+The output schema is `ax.turboquant_fused_decode_microbench.v1`. It compares
+the K8/V4 MLX/Metal fused cold-decode kernel with the CPU compressed reference
+oracle. This is kernel evidence only; it does not mean the server generation
+path is using fused compressed decode. When `--hot-tokens` is positive, the
+artifact also records `hot_tail_merge` quality for the shared log-sum-exp merge
+contract between compressed cold partition stats and full-precision hot-tail
+stats.
+
+Validate saved fused-kernel evidence without rerunning Metal:
+
+```text
+python3 scripts/check_turboquant_microbench_artifact.py \
+  benchmarks/results/turboquant/<date>/microbench.json
+```
 
 N-gram acceleration AX result objects also include `ngram_acceleration_telemetry` when the
 runtime emits route counters. The stored counters cover draft attempts, draft

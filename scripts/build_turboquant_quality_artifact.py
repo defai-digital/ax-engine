@@ -225,6 +225,7 @@ def build_quality_artifact(
         },
         "candidate": {
             "backend": "mlx",
+            "kv_compression_mode": candidate_row.get("experimental_mlx_kv_compression"),
             "preset": "k8v4",
             "quality_profile": "reference_k8v4",
             "decode_path": candidate_row.get("kv_compression_decode_path"),

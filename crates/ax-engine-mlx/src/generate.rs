@@ -1,7 +1,10 @@
 use mlx_sys::{MlxArray, argmax, async_eval, clear_cache, eval};
 
 use crate::kv_cache::MlxKVCache;
-use crate::model::{ModelConfig, forward, forward_lazy_single};
+use crate::model::{
+    ModelConfig, TurboQuantModelDecodeContext, forward,
+    forward_lazy_single_with_turboquant_context, forward_with_turboquant_context,
+};
 use crate::sampling::{Xorshift64, sample_categorical};
 use crate::weights::ModelWeights;
 
@@ -10,13 +13,15 @@ pub const DEFAULT_PREFILL_CHUNK: usize = 512;
 
 /// Process the full prompt in chunks of `chunk_size` tokens.
 ///
-/// Returns the sampled next-token ID (GPU argmax on last-token logits).
+/// Returns the sampled next-token ID from the last-token logits.
 pub fn chunked_prefill(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     prompt_tokens: &[u32],
     cache: &mut MlxKVCache,
     chunk_size: usize,
+    temperature: f32,
+    rng: &mut Xorshift64,
 ) -> u32 {
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
@@ -30,22 +35,39 @@ pub fn chunked_prefill(
         offset = end;
 
         if offset == total {
-            // GPU argmax over [vocab] logits → token ID.
-            // KV cache is in the computation graph of token_arr (via SDPA), so
-            // evaluating token_arr materialises all KV buffers as a side effect.
-            let token_arr = argmax(&logits, None);
-            eval(&[&token_arr]);
+            let tok = if temperature > 0.0 {
+                eval_with_kv_refs(&logits, cache);
+                let logits_data = logits.data_f32();
+                sample_categorical(logits_data, temperature, rng)
+            } else {
+                // GPU argmax over [vocab] logits -> token ID.
+                let token_arr = argmax(&logits, None);
+                eval_with_kv_refs(&token_arr, cache);
+                token_arr.data_u32().first().copied().unwrap_or(0)
+            };
             // Free MLX's graph/intermediate-array cache after prefill.
             // SwiftLM does the same (MLX.Memory.clearCache()) to reclaim GPU
             // memory consumed by the prefill computation graph.
             clear_cache();
-            return token_arr.data_u32().first().copied().unwrap_or(0);
+            return tok;
         } else {
             // Drain GPU queue asynchronously. logits depends on the KV cache
             // transitively (via SDPA), so evaluating logits materialises the
             // appended KV slice_update nodes and prevents O(N²) graph growth.
             async_eval(&[&logits]);
         }
+    }
+}
+
+fn eval_with_kv_refs(output: &MlxArray, cache: &MlxKVCache) {
+    let kv_refs = cache.collect_eval_refs();
+    if kv_refs.is_empty() {
+        eval(&[output]);
+    } else {
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+        targets.push(output);
+        targets.extend(kv_refs);
+        eval(&targets);
     }
 }
 
@@ -62,8 +84,25 @@ pub fn start_direct_pipeline(
     last_token: u32,
     cache: &mut MlxKVCache,
 ) -> MlxArray {
+    start_direct_pipeline_with_turboquant_context(cfg, weights, last_token, cache, None)
+}
+
+pub fn start_direct_pipeline_with_turboquant_context(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    last_token: u32,
+    cache: &mut MlxKVCache,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+) -> MlxArray {
     let token_offset = cache.seq_len;
-    let logits = forward(cfg, weights, &[last_token], cache, token_offset);
+    let logits = forward_with_turboquant_context(
+        cfg,
+        weights,
+        &[last_token],
+        cache,
+        token_offset,
+        turboquant_context,
+    );
     cache.seq_len += 1;
     // KV cache is in token_arr's computation graph; no extra refs needed.
     let token_arr = argmax(&logits, None);
@@ -87,11 +126,28 @@ pub fn advance_direct_pipeline(
     pending: &MlxArray, // lazy token from previous `start_direct_pipeline` / `advance_direct_pipeline`
     cache: &mut MlxKVCache,
 ) -> (u32, MlxArray) {
+    advance_direct_pipeline_with_turboquant_context(cfg, weights, pending, cache, None)
+}
+
+pub fn advance_direct_pipeline_with_turboquant_context(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    pending: &MlxArray, // lazy token from previous `start_direct_pipeline` / `advance_direct_pipeline`
+    cache: &mut MlxKVCache,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+) -> (u32, MlxArray) {
     // Build next step's graph using the lazy pending token.
     // forward_lazy_single accepts an unevaluated MlxArray, so this runs entirely
     // on the CPU without waiting for `pending` to be materialised.
     let token_offset = cache.seq_len;
-    let logits = forward_lazy_single(cfg, weights, pending, cache, token_offset);
+    let logits = forward_lazy_single_with_turboquant_context(
+        cfg,
+        weights,
+        pending,
+        cache,
+        token_offset,
+        turboquant_context,
+    );
     cache.seq_len += 1;
     let next_token_arr = argmax(&logits, None);
     // Submit step N+1 to the GPU before waiting for step N.
@@ -121,21 +177,37 @@ pub fn decode_step(
     temperature: f32,
     rng: &mut Xorshift64,
 ) -> u32 {
+    decode_step_with_turboquant_context(cfg, weights, last_token, cache, temperature, rng, None)
+}
+
+pub fn decode_step_with_turboquant_context(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    last_token: u32,
+    cache: &mut MlxKVCache,
+    temperature: f32,
+    rng: &mut Xorshift64,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+) -> u32 {
     let token_offset = cache.seq_len;
-    let logits = forward(cfg, weights, &[last_token], cache, token_offset);
+    let logits = forward_with_turboquant_context(
+        cfg,
+        weights,
+        &[last_token],
+        cache,
+        token_offset,
+        turboquant_context,
+    );
     cache.seq_len += 1;
 
     if temperature > 0.0 {
-        // logits is in the KV cache's computation graph, so evaluating logits
-        // materialises all KV slice_update nodes and prevents O(N²) graph growth.
-        eval(&[&logits]);
+        eval_with_kv_refs(&logits, cache);
         let logits_data = logits.data_f32();
         sample_categorical(logits_data, temperature, rng)
     } else {
         // Deterministic argmax path: GPU argmax, no CPU data movement.
-        // KV cache is in token_arr's computation graph via SDPA dependency.
         let token_arr = argmax(&logits, None);
-        eval(&[&token_arr]);
+        eval_with_kv_refs(&token_arr, cache);
         token_arr.data_u32().first().copied().unwrap_or(0)
     }
 }

@@ -23,9 +23,14 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/build_turboquant_quality_metrics.py \
   scripts/build_turboquant_quality_artifact.py \
   scripts/check_turboquant_quality_artifact.py \
+  scripts/check_turboquant_microbench_artifact.py \
+  scripts/check_turboquant_public_docs.py \
   scripts/test_turboquant_quality_artifact.py \
+  scripts/test_turboquant_microbench_artifact.py \
   scripts/probe_mlx_model_support.py \
   scripts/test_probe_mlx_model_support.py \
   scripts/diagnose_server_rss.py
 bash scripts/check-bench-inference-stack.sh
 bash scripts/check-turboquant-quality-gate.sh
+bash scripts/check-turboquant-microbench-gate.sh
+"$PYTHON_BIN" scripts/check_turboquant_public_docs.py
