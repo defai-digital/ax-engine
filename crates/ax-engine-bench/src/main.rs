@@ -1412,6 +1412,15 @@ fn inspect_doctor_model_artifacts(path: &Path) -> Result<DoctorModelArtifactsHin
         ));
     }
 
+    let manifest_path = path.join("model-manifest.json");
+    if !manifest_path.is_file() {
+        return Err(format!(
+            "model artifacts path is missing model-manifest.json: {}; run `cargo run -p ax-engine-core --bin generate-manifest -- {}` before using this snapshot as AX MLX artifacts",
+            path.display(),
+            path.display()
+        ));
+    }
+
     let config = load_json_value(&config_path).map_err(|error| error.to_string())?;
     Ok(DoctorModelArtifactsHint {
         model_type: doctor_config_string(&config, "model_type").map(str::to_string),
@@ -1521,10 +1530,6 @@ fn missing_metal_tools(metal_toolchain: &MetalToolchainReport) -> Vec<&'static s
     if !metal_toolchain.metallib.available {
         missing.push("xcrun metallib");
     }
-    if !metal_toolchain.metal_ar.available {
-        missing.push("xcrun metal-ar");
-    }
-
     missing
 }
 
@@ -1855,7 +1860,9 @@ fn execute_manifest_runtime_with_test_options(
     let correctness = evaluate_correctness(manifest, &first)?;
     let determinism = if manifest_expect_deterministic(manifest)? {
         let second = execute_manifest_with_runtime(manifest, runtime.clone())?;
-        if first.digest == second.digest {
+        if deterministic_runtime_digest(&first.digest)
+            == deterministic_runtime_digest(&second.digest)
+        {
             GateStatus::pass()
         } else {
             GateStatus::fail("deterministic rerun produced a different runtime digest")
@@ -8474,6 +8481,12 @@ fn manifest_expect_deterministic(manifest: &BenchmarkManifest) -> Result<bool, C
     Ok(manifest.checks.expect_deterministic)
 }
 
+fn deterministic_runtime_digest(value: &Value) -> Value {
+    json!({
+        "requests": value.get("requests").cloned().unwrap_or(Value::Null)
+    })
+}
+
 fn route_metadata_from_generate_route(route: &GenerateRouteReport) -> RouteMetadata {
     RouteMetadata {
         execution_plan: route.execution_plan.clone(),
@@ -12298,6 +12311,11 @@ mod tests {
         ))
     }
 
+    fn write_doctor_model_manifest(model_dir: &Path) {
+        fs::write(model_dir.join("model-manifest.json"), "{}")
+            .expect("model manifest should write");
+    }
+
     #[cfg(target_os = "macos")]
     #[allow(dead_code)]
     fn compiled_repo_metal_build_dir() -> Option<PathBuf> {
@@ -13888,7 +13906,7 @@ mod tests {
         metal_ar_available: bool,
     ) -> MetalToolchainReport {
         MetalToolchainReport {
-            fully_available: metal_available && metallib_available && metal_ar_available,
+            fully_available: metal_available && metallib_available,
             metal: doctor_tool_status_fixture(metal_available, Some("Apple metal version 36000.4")),
             metallib: doctor_tool_status_fixture(
                 metallib_available,
@@ -13977,11 +13995,24 @@ mod tests {
                 .any(|issue| issue.contains("xcrun metallib"))
         );
         assert!(
-            report
+            !report
                 .issues
                 .iter()
                 .any(|issue| issue.contains("xcrun metal-ar"))
         );
+    }
+
+    #[test]
+    fn doctor_report_accepts_command_line_tools_without_metal_ar() {
+        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+        let toolchain = doctor_metal_toolchain_fixture(true, true, false);
+
+        let report = build_doctor_report(host, toolchain);
+
+        assert_eq!(report.status, DoctorStatus::Ready);
+        assert!(report.mlx_runtime_ready);
+        assert!(report.bringup_allowed);
+        assert!(report.issues.is_empty());
     }
 
     #[test]
@@ -14019,6 +14050,7 @@ mod tests {
             }"#,
         )
         .expect("config should write");
+        write_doctor_model_manifest(&model_dir);
         let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
         let toolchain = doctor_metal_toolchain_fixture(true, true, true);
 
@@ -14058,6 +14090,7 @@ mod tests {
             }"#,
         )
         .expect("config should write");
+        write_doctor_model_manifest(&model_dir);
         let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
         let toolchain = doctor_metal_toolchain_fixture(true, true, true);
 
@@ -14069,6 +14102,30 @@ mod tests {
                 .iter()
                 .any(|advice| advice.id == "gemma4_4bit_first")
         );
+
+        fs::remove_dir_all(root).expect("test dir should clean up");
+    }
+
+    #[test]
+    fn doctor_report_points_plain_mlx_snapshot_to_manifest_generation() {
+        let root = unique_test_dir("doctor-missing-manifest");
+        let model_dir = root.join("plain-mlx-snapshot");
+        fs::create_dir_all(&model_dir).expect("model dir should create");
+        fs::write(
+            model_dir.join("config.json"),
+            r#"{"model_type":"qwen3","quantization":{"mode":"affine","group_size":64,"bits":4}}"#,
+        )
+        .expect("config should write");
+        let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+        let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+        let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+        assert!(report.performance_advice.iter().any(|advice| {
+            advice.id == "model_artifacts_unreadable"
+                && advice.detail.contains("model-manifest.json")
+                && advice.detail.contains("generate-manifest")
+        }));
 
         fs::remove_dir_all(root).expect("test dir should clean up");
     }
@@ -15530,6 +15587,54 @@ mod tests {
         observation.merge_route_metadata(&second);
 
         assert_eq!(route_decision(&observation, "live_share_hits"), u32::MAX);
+    }
+
+    #[test]
+    fn deterministic_digest_ignores_route_telemetry_counters() {
+        let first = json!({
+            "step_count": 2,
+            "route": {
+                "crossover_decisions": {
+                    "ax_mlx_decode_steps": 4,
+                    "ax_mlx_decode_wall_us": 100,
+                    "ax_mlx_prefill_wall_us": 50
+                }
+            },
+            "requests": [{"request_id": 1, "generated_tokens": [1, 2, 3]}]
+        });
+        let second = json!({
+            "step_count": 2,
+            "route": {
+                "crossover_decisions": {
+                    "ax_mlx_decode_steps": 4,
+                    "ax_mlx_decode_wall_us": 999,
+                    "ax_mlx_prefill_wall_us": 777
+                }
+            },
+            "requests": [{"request_id": 1, "generated_tokens": [1, 2, 3]}]
+        });
+
+        assert_eq!(
+            deterministic_runtime_digest(&first),
+            deterministic_runtime_digest(&second)
+        );
+    }
+
+    #[test]
+    fn deterministic_digest_keeps_generated_token_differences() {
+        let first = json!({
+            "route": {"crossover_decisions": {"ax_mlx_decode_wall_us": 100}},
+            "requests": [{"request_id": 1, "generated_tokens": [1, 2, 3]}]
+        });
+        let second = json!({
+            "route": {"crossover_decisions": {"ax_mlx_decode_wall_us": 999}},
+            "requests": [{"request_id": 1, "generated_tokens": [1, 2, 4]}]
+        });
+
+        assert_ne!(
+            deterministic_runtime_digest(&first),
+            deterministic_runtime_digest(&second)
+        );
     }
 
     #[test]
