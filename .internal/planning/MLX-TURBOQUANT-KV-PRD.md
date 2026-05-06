@@ -191,6 +191,19 @@ Implemented compressed-buffer quality check slice on 2026-05-06:
 - Keeps the helper disconnected from MLX allocation, runtime KV storage, SDPA,
   generation, and user-visible defaults.
 
+Implemented compressed decode planning slice on 2026-05-06:
+
+- Added `TurboQuantCompressedDecodePlan` as the CPU-only launch/coverage
+  contract for future fused compressed decode kernels.
+- Splits a decode history into compressed cold tokens and full-precision hot
+  tokens using the configured hot window.
+- Reports compressed block count, buffer bytes, required compressed slot writes,
+  decode path, and quality profile derived from the layout preset.
+- Fails closed for empty decode histories and falls back to full-precision-only
+  when the full history remains inside the hot window.
+- Keeps the plan disconnected from MLX allocation, runtime KV storage, SDPA,
+  generation, and user-visible defaults.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction

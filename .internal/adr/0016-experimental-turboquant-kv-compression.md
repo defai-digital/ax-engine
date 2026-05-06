@@ -156,6 +156,13 @@ keeps the comparison report and evaluation together, while
 compressed-buffer decode output through the layout's preset. This remains
 CPU-only and does not alter runtime defaults, KV storage, SDPA, or generation.
 
+The compressed decode plan is accepted as the launch/coverage contract before a
+fused kernel exists. `TurboQuantCompressedDecodePlan` splits decode history into
+compressed cold tokens and full-precision hot-window tokens, reports required
+compressed blocks, buffer bytes, slot writes, decode path, and quality profile,
+and fails closed for empty histories. This remains CPU-only and does not alter
+runtime defaults, KV storage, SDPA, or generation.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a
