@@ -213,6 +213,15 @@ bytes, and cold compression ratio in milli-units. This remains accounting only:
 it makes no throughput claim and does not launch kernels, allocate MLX storage,
 alter SDPA, change generation, or expose a public switch.
 
+The fused decode benchmark estimate is accepted as the stable benchmark-facing
+view of launch descriptor accounting. Descriptor `benchmark_estimate()` reports
+preset, key/value bits, hot/cold token split, KV-head shape, compressed blocks,
+score/output element counts, KiB-rounded full-precision/compressed/read/saved
+bytes, and cold compression ratio. This remains disconnected from runner route
+metadata until the runtime path is explicitly enabled; it does not launch
+kernels, allocate MLX storage, alter SDPA, change generation, or expose a public
+switch.
+
 ## Rationale
 
 TurboQuant is a KV cache storage and attention-kernel policy. Treating it as a

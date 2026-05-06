@@ -286,6 +286,20 @@ Implemented fused decode savings accounting slice on 2026-05-06:
   kernel, allocate MLX storage, change SDPA, change generation, or expose a
   user-facing switch.
 
+Implemented fused decode benchmark estimate slice on 2026-05-06:
+
+- Added `TurboQuantFusedDecodeBenchmarkEstimate` as the benchmark-facing view of
+  the fused decode launch descriptor and workload accounting.
+- Added descriptor `benchmark_estimate()` to report preset, key/value bits,
+  hot/cold token split, KV-head shape, compressed blocks, score/output element
+  counts, KiB-rounded full-precision/compressed/read/saved bytes, and cold
+  compression ratio.
+- Keeps KiB rounding inside the CPU-only contract so future benchmark metadata
+  can avoid re-deriving these fields differently.
+- Keeps the estimate disconnected from runner route metadata for now; it does
+  not launch a kernel, allocate MLX storage, change SDPA, change generation, or
+  expose a user-facing switch.
+
 ## 2. Reference Lessons
 
 The local reference implementations point in the same architectural direction

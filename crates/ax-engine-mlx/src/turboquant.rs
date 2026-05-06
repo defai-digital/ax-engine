@@ -453,6 +453,31 @@ pub struct TurboQuantFusedDecodeLaunchWorkload {
     pub cold_compression_ratio_milli: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TurboQuantFusedDecodeBenchmarkEstimate {
+    pub preset: MlxTurboQuantPreset,
+    pub key_bits: u32,
+    pub value_bits: u32,
+    pub total_tokens: usize,
+    pub cold_tokens: usize,
+    pub hot_tokens: usize,
+    pub n_kv_heads: usize,
+    pub head_dim: usize,
+    pub compressed_blocks: usize,
+    pub cold_score_elements: usize,
+    pub hot_score_elements: usize,
+    pub output_elements: usize,
+    pub compressed_buffer_kib: usize,
+    pub full_precision_cold_kv_kib: usize,
+    pub full_precision_total_kv_kib: usize,
+    pub estimated_compressed_cold_kv_kib: usize,
+    pub hot_full_precision_kv_kib: usize,
+    pub estimated_total_read_kib: usize,
+    pub estimated_cold_saved_kib: usize,
+    pub estimated_total_saved_read_kib: usize,
+    pub cold_compression_ratio_milli: u32,
+}
+
 impl TurboQuantFusedDecodeLaunchDescriptor {
     pub fn workload(self) -> TurboQuantFusedDecodeLaunchWorkload {
         let compressed_key_payload_bytes =
@@ -498,6 +523,35 @@ impl TurboQuantFusedDecodeLaunchDescriptor {
                 compressed_raw_slot_bytes,
                 full_precision_cold_kv_bytes,
             ),
+        }
+    }
+
+    pub fn benchmark_estimate(self) -> TurboQuantFusedDecodeBenchmarkEstimate {
+        let workload = self.workload();
+        TurboQuantFusedDecodeBenchmarkEstimate {
+            preset: self.preset,
+            key_bits: self.key_bits,
+            value_bits: self.value_bits,
+            total_tokens: self.total_tokens,
+            cold_tokens: self.cold_tokens,
+            hot_tokens: self.hot_tokens,
+            n_kv_heads: self.n_kv_heads,
+            head_dim: self.head_dim,
+            compressed_blocks: self.compressed_blocks,
+            cold_score_elements: workload.cold_score_elements,
+            hot_score_elements: workload.hot_score_elements,
+            output_elements: workload.output_elements,
+            compressed_buffer_kib: kib_ceil_usize(self.compressed_buffer_bytes),
+            full_precision_cold_kv_kib: kib_ceil_usize(workload.full_precision_cold_kv_bytes),
+            full_precision_total_kv_kib: kib_ceil_usize(workload.full_precision_total_kv_bytes),
+            estimated_compressed_cold_kv_kib: kib_ceil_usize(workload.compressed_raw_slot_bytes),
+            hot_full_precision_kv_kib: kib_ceil_usize(workload.hot_full_precision_kv_bytes),
+            estimated_total_read_kib: kib_ceil_usize(workload.estimated_total_read_bytes),
+            estimated_cold_saved_kib: kib_ceil_usize(workload.estimated_cold_saved_bytes),
+            estimated_total_saved_read_kib: kib_ceil_usize(
+                workload.estimated_total_saved_read_bytes,
+            ),
+            cold_compression_ratio_milli: workload.cold_compression_ratio_milli,
         }
     }
 }
@@ -1895,6 +1949,10 @@ fn compression_ratio_milli(compressed_bytes: usize, full_precision_bytes: usize)
     }
 }
 
+fn kib_ceil_usize(bytes: usize) -> usize {
+    bytes / 1024 + usize::from(!bytes.is_multiple_of(1024))
+}
+
 fn checked_add_many(values: &[usize]) -> Result<usize, TurboQuantCodecError> {
     values.iter().try_fold(0usize, |acc, value| {
         acc.checked_add(*value)
@@ -2697,6 +2755,64 @@ mod tests {
                 estimated_total_read_bytes: 1252,
                 estimated_cold_saved_bytes: 796,
                 estimated_total_saved_read_bytes: 796,
+                cold_compression_ratio_milli: 222,
+            }
+        );
+    }
+
+    #[test]
+    fn fused_decode_launch_descriptor_reports_benchmark_estimate() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: MlxTurboQuantPreset::K8V4,
+            block_tokens: 2,
+            n_kv_heads: 1,
+            head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+            value_group_size: 32,
+        })
+        .expect("layout should build");
+        let plan = TurboQuantCompressedDecodePlan::new(layout, 2, 1).expect("plan should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        buffer
+            .write_token(
+                0,
+                &[(
+                    vec![0.1; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM],
+                    vec![0.2; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM],
+                )],
+            )
+            .expect("cold token");
+
+        let estimate = plan
+            .fused_decode_launch_descriptor(
+                &buffer,
+                &[vec![0.1; TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM]],
+            )
+            .expect("candidate launch should produce descriptor")
+            .benchmark_estimate();
+
+        assert_eq!(
+            estimate,
+            TurboQuantFusedDecodeBenchmarkEstimate {
+                preset: MlxTurboQuantPreset::K8V4,
+                key_bits: 8,
+                value_bits: 4,
+                total_tokens: 2,
+                cold_tokens: 1,
+                hot_tokens: 1,
+                n_kv_heads: 1,
+                head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+                compressed_blocks: 1,
+                cold_score_elements: 1,
+                hot_score_elements: 1,
+                output_elements: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+                compressed_buffer_kib: 1,
+                full_precision_cold_kv_kib: 1,
+                full_precision_total_kv_kib: 2,
+                estimated_compressed_cold_kv_kib: 1,
+                hot_full_precision_kv_kib: 1,
+                estimated_total_read_kib: 2,
+                estimated_cold_saved_kib: 1,
+                estimated_total_saved_read_kib: 1,
                 cold_compression_ratio_milli: 222,
             }
         );
